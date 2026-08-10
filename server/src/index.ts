@@ -734,6 +734,8 @@ const app = await createApp(db as any, {
   devLocalIdentity: config.devLocalIdentity,
   distributedExecutionEnabled: config.distributedExecutionEnabled,
   tenantAppDb: distributedExecutionDatabases?.appDb,
+  operatorDb: distributedExecutionDatabases?.operatorDb,
+  workerSessionSigningKey: process.env.AOA_WORKER_SESSION_SIGNING_KEY,
 });
 const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 

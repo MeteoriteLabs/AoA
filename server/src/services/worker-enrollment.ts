@@ -1,6 +1,7 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { eq } from "drizzle-orm";
 import {
+  operatorWorkerEnrollmentRepository,
   workerEnrollmentCodeRoutes,
   type Db,
 } from "@armyofagents/db";
@@ -12,12 +13,18 @@ import {
 } from "@armyofagents/worker-protocol";
 import { runInTenant } from "../db/tenant-context.js";
 import { verifyDeviceProof, type DeviceProofHeaders } from "./worker-device-proof.js";
+import { createWorkerSessionToken } from "../middleware/worker-session-auth.js";
+import { logger } from "../middleware/logger.js";
 
 const CODE_TTL_MS = 10 * 60_000;
 const SESSION_TTL_MS = 15 * 60_000;
 
 export class WorkerEnrollmentError extends Error {
-  constructor(public readonly code: "unauthorized" | "malformed" | "target_revoked") {
+  constructor(
+    public readonly code: "unauthorized" | "malformed" | "target_revoked",
+    public readonly auditReasonCode = `worker_enrollment_${code}`,
+    public readonly auditIdentifiers?: { workerId: string; executionTargetId: string },
+  ) {
     super(code === "malformed" ? "Enrollment request is malformed" : "Enrollment is unauthorized");
     this.name = "WorkerEnrollmentError";
   }
@@ -28,6 +35,12 @@ interface IssueTenantCodeInput {
   executionTargetId: string;
   scope: "organization" | "owner";
   ownerUserId: string | null;
+  createdByPrincipalKind: string;
+  createdByPrincipalId: string;
+}
+
+interface IssuePlatformCodeInput {
+  executionTargetId: string;
   createdByPrincipalKind: string;
   createdByPrincipalId: string;
 }
@@ -44,6 +57,12 @@ interface EnrollInput {
 interface StoredEnrollmentResult {
   response: EnrollmentResponseV1;
   session: string;
+  auditAction: "consume" | "rotate" | "replay";
+}
+
+interface StoredEnrollmentReceipt {
+  response: EnrollmentResponseV1;
+  auditAction: "consume" | "rotate";
 }
 
 function sha256(value: Buffer | string): string {
@@ -79,19 +98,40 @@ function providerConstraints(capabilities: Record<string, unknown>): unknown {
   return capabilities.providerConstraints;
 }
 
-function sessionToken(key: string, claims: Record<string, unknown>): string {
-  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT", kid: "worker-session-v1" })).toString("base64url");
-  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
-  const signature = createHmac("sha256", key).update(`${header}.${payload}`).digest("base64url");
-  return `${header}.${payload}.${signature}`;
-}
-
-function storedResult(value: Record<string, unknown> | null): StoredEnrollmentResult {
-  if (!value || typeof value.session !== "string") throw new WorkerEnrollmentError("unauthorized");
+function storedReceipt(value: Record<string, unknown> | null): StoredEnrollmentReceipt {
+  if (!value || (value.auditAction !== "consume" && value.auditAction !== "rotate")) {
+    throw new WorkerEnrollmentError("unauthorized");
+  }
   return {
     response: enrollmentResponseV1Schema.parse(value.response),
-    session: value.session,
+    auditAction: value.auditAction,
   };
+}
+
+function enrollmentSemanticDigest(input: {
+  request: EnrollmentRequestV1;
+  deviceThumbprint: string;
+  scope: string;
+  authoritativeOrganizationId: string | null;
+  executionTargetId: string;
+}): string {
+  return sha256(JSON.stringify({
+    protocolVersion: input.request.protocolVersion,
+    audience: input.request.audience,
+    idempotencyKey: input.request.idempotencyKey,
+    hello: input.request.hello,
+    deviceThumbprint: input.deviceThumbprint,
+    scope: input.scope,
+    authoritativeOrganizationId: input.authoritativeOrganizationId,
+    executionTargetId: input.executionTargetId,
+  }));
+}
+
+function sessionScope(value: string): "platform" | "organization" | "owner" {
+  if (value !== "platform" && value !== "organization" && value !== "owner") {
+    throw new WorkerEnrollmentError("unauthorized");
+  }
+  return value;
 }
 
 export function createWorkerEnrollmentService(input: {
@@ -143,16 +183,55 @@ export function createWorkerEnrollmentService(input: {
       return { code: `aoa_enr_${locator}.${secret}`, expiresAt: expiresAt.toISOString() };
     },
 
+    async issuePlatformCode(issue: IssuePlatformCodeInput): Promise<{ code: string; expiresAt: string }> {
+      const locator = randomBytes(18).toString("base64url");
+      const secret = randomBytes(32).toString("base64url");
+      const locatorHash = sha256(locator);
+      const secretHash = sha256(secret);
+      const expiresAt = new Date(now().getTime() + CODE_TTL_MS);
+      await input.operatorDb.transaction(async (tx) => {
+        const authority = operatorWorkerEnrollmentRepository(tx as unknown as Db);
+        const target = await authority.findActiveTarget({
+          executionTargetId: issue.executionTargetId,
+          scope: "platform",
+          ownerUserId: null,
+        });
+        if (!target) throw new WorkerEnrollmentError("unauthorized");
+        await authority.insertCodeRoute({ locatorHash, candidateOrganizationId: null, expiresAt });
+        await authority.insertCode({
+          organizationId: null,
+          scope: "platform",
+          ownerUserId: null,
+          executionTargetId: target.id,
+          targetAuthorityKey: target.targetAuthorityKey,
+          locatorHash,
+          secretHash,
+          expiresAt,
+          createdByPrincipalKind: issue.createdByPrincipalKind,
+          createdByPrincipalId: issue.createdByPrincipalId,
+        });
+      });
+      logger.info({
+        action: "worker.enrollment_code.issued",
+        executionTargetId: issue.executionTargetId,
+        scope: "platform",
+        principalKind: issue.createdByPrincipalKind,
+        principalId: issue.createdByPrincipalId,
+        reasonCode: "enrollment_code_issued",
+      }, "platform worker enrollment code issued");
+      return { code: `aoa_enr_${locator}.${secret}`, expiresAt: expiresAt.toISOString() };
+    },
+
     async enroll(enrollInput: EnrollInput): Promise<StoredEnrollmentResult> {
       const code = parseCode(enrollInput.code);
       const request = parseRequest(enrollInput.rawBody, enrollInput.request);
-      const semanticDigest = sha256(enrollInput.rawBody);
+      const transportBodyDigest = sha256(enrollInput.rawBody);
       let verified;
       try {
         verified = verifyDeviceProof({
           method: enrollInput.method,
           path: enrollInput.path,
-          bodyDigest: semanticDigest,
+          bodyDigest: transportBodyDigest,
           correlationId: request.correlationId,
           proof: enrollInput.proof,
           now: now(),
@@ -167,18 +246,27 @@ export function createWorkerEnrollmentService(input: {
       }).from(workerEnrollmentCodeRoutes)
         .where(eq(workerEnrollmentCodeRoutes.locatorHash, code.locatorHash))
         .limit(1);
-      if (!route?.candidateOrganizationId || route.expiresAt.getTime() < now().getTime()) {
+      if (!route || route.expiresAt.getTime() < now().getTime()) {
         throw new WorkerEnrollmentError("unauthorized");
       }
 
-      return runInTenant(input.appDb, route.candidateOrganizationId, async (repos) => {
-        const authority = repos.workerEnrollment;
+      const completeEnrollment = async (
+        authority: ReturnType<typeof operatorWorkerEnrollmentRepository>,
+        authoritativeOrganizationId: string | null,
+      ): Promise<StoredEnrollmentResult> => {
         const stored = await authority.lockCode(code.locatorHash);
         if (!stored || !equalDigest(stored.secretHash, code.secretHash)) {
           throw new WorkerEnrollmentError("unauthorized");
         }
+        const semanticDigest = enrollmentSemanticDigest({
+          request,
+          deviceThumbprint: verified.deviceThumbprint,
+          scope: stored.scope,
+          authoritativeOrganizationId,
+          executionTargetId: stored.executionTargetId,
+        });
         const proofRecorded = await authority.recordProof({
-          organizationId: route.candidateOrganizationId,
+          organizationId: authoritativeOrganizationId,
           deviceThumbprint: verified.deviceThumbprint,
           proofId: verified.proofId,
           issuedAt: verified.issuedAt,
@@ -187,14 +275,54 @@ export function createWorkerEnrollmentService(input: {
         if (!proofRecorded) throw new WorkerEnrollmentError("unauthorized");
 
         if (stored.consumedAt) {
-          if (stored.semanticIdempotencyKey !== request.idempotencyKey ||
-              stored.semanticDigest !== semanticDigest) {
+          if (stored.semanticIdempotencyKey !== request.idempotencyKey) {
             throw new WorkerEnrollmentError("malformed");
           }
           if (!stored.deviceThumbprint || !equalDigest(stored.deviceThumbprint, verified.deviceThumbprint)) {
             throw new WorkerEnrollmentError("unauthorized");
           }
-          return storedResult(stored.semanticResult);
+          if (stored.semanticDigest !== semanticDigest) {
+            throw new WorkerEnrollmentError("malformed");
+          }
+          const receipt = storedReceipt(stored.semanticResult);
+          if (receipt.response.outcome !== "enrolled") throw new WorkerEnrollmentError("unauthorized");
+          const current = await authority.findSessionAuthority({
+            workerId: receipt.response.workerId,
+            executionTargetId: receipt.response.targetId,
+          });
+          const requestedProfileHash = sha256(JSON.stringify(request.hello));
+          if (!current || current.target.status === "disabled" || current.worker.status === "revoked" ||
+              current.worker.revokedAt !== null || !current.ownerMembershipActive ||
+              current.worker.organizationId !== authoritativeOrganizationId ||
+              current.worker.scope !== stored.scope ||
+              current.worker.deviceThumbprint !== verified.deviceThumbprint ||
+              current.worker.devicePublicKey !== verified.publicKey ||
+              current.worker.profileHash !== requestedProfileHash ||
+              current.target.deviceGeneration !== current.worker.deviceGeneration ||
+              current.target.deviceGeneration !== receipt.response.deviceGeneration ||
+              receipt.response.workerId !== request.hello.workerId ||
+              receipt.response.targetId !== request.hello.targetId) {
+            throw new WorkerEnrollmentError("target_revoked");
+          }
+          const replayedAt = now();
+          const replayResponse = enrollmentResponseV1Schema.parse({
+            ...receipt.response,
+            correlationId: request.correlationId,
+            serverTime: replayedAt.toISOString(),
+          });
+          const replaySession = createWorkerSessionToken(input.sessionSigningKey, {
+            aud: "device_session",
+            sub: current.worker.id,
+            organizationId: authoritativeOrganizationId,
+            targetId: current.target.id,
+            generation: current.target.deviceGeneration,
+            scope: sessionScope(current.worker.scope),
+            deviceThumbprint: current.worker.deviceThumbprint,
+            profileHash: current.worker.profileHash,
+            iat: Math.floor(replayedAt.getTime() / 1000),
+            exp: Math.floor((replayedAt.getTime() + SESSION_TTL_MS) / 1000),
+          });
+          return { response: replayResponse, session: replaySession, auditAction: "replay" };
         }
         if (stored.expiresAt.getTime() < now().getTime()) throw new WorkerEnrollmentError("unauthorized");
 
@@ -202,12 +330,70 @@ export function createWorkerEnrollmentService(input: {
           executionTargetId: stored.executionTargetId,
           targetAuthorityKey: stored.targetAuthorityKey,
         });
-        if (!target || request.hello.targetId !== target.id ||
-            request.hello.deviceGeneration !== target.deviceGeneration) {
+        if (!target || request.hello.targetId !== target.id) {
           throw new WorkerEnrollmentError("unauthorized");
         }
-        const existingWorker = await authority.findWorker(request.hello.workerId);
-        if (existingWorker) throw new WorkerEnrollmentError("unauthorized");
+        const profileHash = sha256(JSON.stringify(request.hello));
+        const boundWorker = await authority.findWorkerForBinding({
+          scope: stored.scope,
+          organizationId: stored.organizationId,
+          ownerUserId: stored.ownerUserId,
+          executionTargetId: target.id,
+        });
+        let effectiveGeneration = target.deviceGeneration;
+        if (boundWorker) {
+          if (boundWorker.id !== request.hello.workerId) {
+            throw new WorkerEnrollmentError("unauthorized", "worker_transfer_denied", {
+              workerId: request.hello.workerId,
+              executionTargetId: target.id,
+            });
+          }
+          if (request.hello.deviceGeneration !== target.deviceGeneration + 1) {
+            throw new WorkerEnrollmentError("unauthorized");
+          }
+          const advanced = await authority.advanceTargetGeneration({
+            executionTargetId: target.id,
+            expectedGeneration: target.deviceGeneration,
+            now: now(),
+          });
+          if (advanced !== target.deviceGeneration + 1) throw new WorkerEnrollmentError("target_revoked");
+          const rotated = await authority.rotateWorker({
+            id: boundWorker.id,
+            expectedGeneration: boundWorker.deviceGeneration,
+            nextGeneration: advanced,
+            devicePublicKey: verified.publicKey,
+            deviceThumbprint: verified.deviceThumbprint,
+            profileHash,
+            enrolledAt: now(),
+          });
+          if (!rotated) throw new WorkerEnrollmentError("target_revoked");
+          effectiveGeneration = advanced;
+        } else {
+          if (request.hello.deviceGeneration !== target.deviceGeneration) {
+            throw new WorkerEnrollmentError("unauthorized");
+          }
+          if (await authority.findWorker(request.hello.workerId)) {
+            throw new WorkerEnrollmentError("unauthorized", "worker_transfer_denied", {
+              workerId: request.hello.workerId,
+              executionTargetId: target.id,
+            });
+          }
+          await authority.insertWorker({
+            id: request.hello.workerId,
+            scope: stored.scope,
+            organizationId: stored.organizationId,
+            ownerUserId: stored.ownerUserId,
+            executionTargetId: target.id,
+            targetAuthorityKey: target.targetAuthorityKey,
+            devicePublicKey: verified.publicKey,
+            deviceThumbprint: verified.deviceThumbprint,
+            deviceGeneration: effectiveGeneration,
+            profileHash,
+            enrolledAt: now(),
+            label: `Worker ${request.hello.workerId.slice(0, 8)}`,
+            status: "enrolled",
+          });
+        }
 
         const response = enrollmentResponseV1Schema.parse({
           protocolVersion: 1,
@@ -216,37 +402,28 @@ export function createWorkerEnrollmentService(input: {
           outcome: "enrolled",
           workerId: request.hello.workerId,
           targetId: target.id,
-          deviceGeneration: target.deviceGeneration,
+          deviceGeneration: effectiveGeneration,
           providerConstraints: providerConstraints(target.capabilities),
         });
+        const effectiveSessionScope = sessionScope(stored.scope);
         const expiresAt = new Date(now().getTime() + SESSION_TTL_MS);
-        const session = sessionToken(input.sessionSigningKey, {
+        const session = createWorkerSessionToken(input.sessionSigningKey, {
           aud: "device_session",
           sub: request.hello.workerId,
           organizationId: stored.organizationId,
           targetId: target.id,
-          generation: target.deviceGeneration,
-          scope: stored.scope,
+          generation: effectiveGeneration,
+          scope: effectiveSessionScope,
           deviceThumbprint: verified.deviceThumbprint,
+          profileHash,
           iat: Math.floor(now().getTime() / 1000),
           exp: Math.floor(expiresAt.getTime() / 1000),
         });
-        const result: StoredEnrollmentResult = { response, session };
-        await authority.insertWorker({
-          id: request.hello.workerId,
-          scope: stored.scope,
-          organizationId: stored.organizationId,
-          ownerUserId: stored.ownerUserId,
-          executionTargetId: target.id,
-          targetAuthorityKey: target.targetAuthorityKey,
-          devicePublicKey: verified.publicKey,
-          deviceThumbprint: verified.deviceThumbprint,
-          deviceGeneration: target.deviceGeneration,
-          profileHash: sha256(JSON.stringify(request.hello)),
-          enrolledAt: now(),
-          label: `Worker ${request.hello.workerId.slice(0, 8)}`,
-          status: "enrolled",
-        });
+        const result: StoredEnrollmentResult = {
+          response,
+          session,
+          auditAction: boundWorker ? "rotate" : "consume",
+        };
         await authority.retireBootstrapCredential(target.id);
         await authority.consumeCode({
           id: stored.id,
@@ -254,10 +431,19 @@ export function createWorkerEnrollmentService(input: {
           semanticIdempotencyKey: request.idempotencyKey,
           semanticDigest,
           deviceThumbprint: verified.deviceThumbprint,
-          semanticResult: result as unknown as Record<string, unknown>,
+          semanticResult: {
+            response: result.response,
+            auditAction: result.auditAction,
+          },
         });
         return result;
-      });
+      };
+      if (route.candidateOrganizationId === null) {
+        return input.operatorDb.transaction((tx) =>
+          completeEnrollment(operatorWorkerEnrollmentRepository(tx as unknown as Db), null));
+      }
+      return runInTenant(input.appDb, route.candidateOrganizationId, (repos) =>
+        completeEnrollment(repos.workerEnrollment, route.candidateOrganizationId));
     },
   };
 }

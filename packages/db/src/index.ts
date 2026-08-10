@@ -42,3 +42,4 @@ export * from "./schema/index.js";
 // single `tenantRepositories` export (tenant-repository-surface.test.ts) — this
 // re-export does not add a raw unscoped reader.
 export { tenantRepositories, type TenantRepositories } from "./repositories/tenant/index.js";
+export { operatorWorkerEnrollmentRepository } from "./repositories/operator/worker-enrollment.js";

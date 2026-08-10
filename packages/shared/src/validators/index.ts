@@ -504,8 +504,10 @@ export {
   gvisorEnvironmentConfigSchema,
   createExecutionTargetSchema,
   workerExecutionTargetHeartbeatSchema,
+  issueWorkerEnrollmentCodeSchema,
   type CreateExecutionTargetInput,
   type WorkerExecutionTargetHeartbeatInput,
+  type IssueWorkerEnrollmentCodeInput,
 } from "./execution-target.js";
 
 export { isGitHubRepoUrl } from "./github.js";

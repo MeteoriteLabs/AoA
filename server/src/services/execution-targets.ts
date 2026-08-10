@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, notExists } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { executionTargets } from "@armyofagents/db";
+import { executionTargets, workers } from "@armyofagents/db";
 
 // Rotatable worker credential (Finding #3). The row id is NOT a credential;
 // this token is. Only its hash is persisted (execution_targets.worker_token_hash);
@@ -47,6 +47,12 @@ export async function rotateExecutionTargetWorkerToken(
         eq(executionTargets.id, input.targetId),
         eq(executionTargets.organizationId, input.organizationId),
         ne(executionTargets.status, "disabled"),
+        notExists(
+          db.select({ id: workers.id }).from(workers).where(and(
+            eq(workers.executionTargetId, input.targetId),
+            ne(workers.status, "revoked"),
+          )),
+        ),
       ),
     )
     .returning();

@@ -10,6 +10,7 @@ import {
   workerExecutionTargetHeartbeatSchema,
   type CreateExecutionTargetInput,
   type WorkerExecutionTargetHeartbeatInput,
+  WORKER_CONTROL_HEADERS,
 } from "@armyofagents/shared";
 import {
   createWorkerToken,
@@ -28,6 +29,14 @@ import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { isUniqueViolation } from "../services/db-errors.js";
 import { z } from "zod";
+import { deviceProofHeaders } from "./worker-control.js";
+import {
+  createWorkerSessionAuthenticator,
+  registerProofBoundHeartbeat,
+  revokeTenantWorkerAuthority,
+  WorkerSessionError,
+  type VerifiedTargetPrincipal,
+} from "../middleware/worker-session-auth.js";
 
 const uuidParam = z.string().uuid();
 
@@ -37,7 +46,15 @@ const uuidParam = z.string().uuid();
  * row. We hash the presented token and resolve it to exactly one target id.
  * The row id itself is NO LONGER a credential.
  */
-function requireWorkerToken(db: Db) {
+function requireWorkerHeartbeatAuthority(db: Db, workerSession?: {
+  appDb: Db;
+  operatorDb: Db;
+  sessionSigningKey: string;
+  now?: () => Date;
+}) {
+  const sessionAuthenticator = workerSession
+    ? createWorkerSessionAuthenticator(workerSession)
+    : null;
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       const header = req.header("authorization") ?? "";
@@ -48,19 +65,40 @@ function requireWorkerToken(db: Db) {
         return;
       }
       const targetId = await resolveWorkerTargetId(db, token);
-      if (!targetId) {
+      if (targetId) {
+        (req as Request & { workerHeartbeatAuthority?: { kind: "legacy"; targetId: string } })
+          .workerHeartbeatAuthority = { kind: "legacy", targetId };
+        next();
+        return;
+      }
+      const proof = deviceProofHeaders(req);
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      const correlationId = req.header(WORKER_CONTROL_HEADERS.requestId);
+      if (!sessionAuthenticator || !proof || !rawBody || !correlationId) {
         next(unauthorized());
         return;
       }
-      (req as Request & { workerTargetId?: string }).workerTargetId = targetId;
+      const principal = await sessionAuthenticator.authenticate({
+        authorization: header,
+        rawBody,
+        proof,
+        method: req.method,
+        path: req.originalUrl,
+        correlationId,
+      });
+      (req as Request & { workerHeartbeatAuthority?: { kind: "session"; principal: VerifiedTargetPrincipal } })
+        .workerHeartbeatAuthority = { kind: "session", principal };
       next();
     } catch (err) {
-      next(err);
+      next(err instanceof WorkerSessionError ? unauthorized() : err);
     }
   };
 }
 
-export function executionTargetRoutes(opts: { db: Db }) {
+export function executionTargetRoutes(opts: {
+  db: Db;
+  workerSession?: { appDb: Db; operatorDb: Db; sessionSigningKey: string; now?: () => Date };
+}) {
   const router = Router();
   const orgAccess = organizationAccessService(opts.db);
 
@@ -156,6 +194,7 @@ export function executionTargetRoutes(opts: { db: Db }) {
           executionTargetId: targetId,
           operatorUserId,
           scope: "org_scoped",
+          reasonCode: "worker_authority_revoked",
         },
         "execution target worker token rotated",
       );
@@ -170,10 +209,21 @@ export function executionTargetRoutes(opts: { db: Db }) {
       const orgId = uuidParam.parse(req.params.orgId);
       const targetId = uuidParam.parse(req.params.targetId);
       await assertOrgAdmin(req, orgId);
-      const target = await revokeExecutionTargetWorkerToken(opts.db, {
-        organizationId: orgId,
-        targetId,
-      });
+      const target = opts.workerSession
+        ? await revokeTenantWorkerAuthority({
+            appDb: opts.workerSession.appDb,
+            organizationId: orgId,
+            executionTargetId: targetId,
+          }).then((generation) => generation === null ? null : {
+            id: targetId,
+            organizationId: orgId,
+            status: "disabled",
+            deviceGeneration: generation,
+          })
+        : await revokeExecutionTargetWorkerToken(opts.db, {
+            organizationId: orgId,
+            targetId,
+          });
       if (!target) throw notFound("Execution target not found");
 
       const operatorUserId = req.actor.type === "board" ? (req.actor.userId ?? null) : null;
@@ -199,17 +249,28 @@ export function executionTargetRoutes(opts: { db: Db }) {
   // the id no longer exists.
   router.post(
     "/execution-targets/heartbeat",
-    requireWorkerToken(opts.db),
+    requireWorkerHeartbeatAuthority(opts.db, opts.workerSession),
     validate(workerExecutionTargetHeartbeatSchema),
     async (req, res, next) => {
     try {
-      const targetId = (req as Request & { workerTargetId?: string }).workerTargetId!;
       const input = req.body as WorkerExecutionTargetHeartbeatInput;
-      const { updated } = await registerWorkerHeartbeat(opts.db, {
-        targetId,
-        status: input.status,
-        capabilities: input.capabilities,
-      });
+      const authority = (req as Request & {
+        workerHeartbeatAuthority?:
+          | { kind: "legacy"; targetId: string }
+          | { kind: "session"; principal: VerifiedTargetPrincipal };
+      }).workerHeartbeatAuthority!;
+      const updated = authority.kind === "legacy"
+        ? (await registerWorkerHeartbeat(opts.db, {
+            targetId: authority.targetId,
+            status: input.status,
+            capabilities: input.capabilities,
+          })).updated
+        : (await registerProofBoundHeartbeat({
+            appDb: opts.workerSession!.appDb,
+            operatorDb: opts.workerSession!.operatorDb,
+            principal: authority.principal,
+            status: input.status ?? "active",
+          }) ? 1 : 0);
       if (updated === 0) {
         res.status(404).json({ error: "execution target not found" });
         return;

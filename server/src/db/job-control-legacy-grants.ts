@@ -148,7 +148,7 @@ export const APP_ENROLLMENT_TARGET_SELECT_COLUMNS = Object.freeze([
   "status", "device_generation", "capabilities",
 ] as const);
 export const APP_ENROLLMENT_TARGET_UPDATE_COLUMNS = Object.freeze([
-  "worker_token_hash", "device_generation", "status", "updated_at",
+  "worker_token_hash", "device_generation", "status", "last_seen_at", "updated_at",
 ] as const);
 
 /** Platform target projection keeps config and bootstrap hashes unreadable. */
@@ -158,5 +158,5 @@ export const OPERATOR_ENROLLMENT_TARGET_SELECT_COLUMNS = Object.freeze([
   "last_seen_at", "created_at", "updated_at",
 ] as const);
 export const OPERATOR_ENROLLMENT_TARGET_UPDATE_COLUMNS = Object.freeze([
-  "worker_token_hash", "device_generation", "status", "updated_at",
+  "worker_token_hash", "device_generation", "status", "last_seen_at", "updated_at",
 ] as const);

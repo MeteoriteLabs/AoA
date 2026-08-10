@@ -35,7 +35,7 @@ GRANT SELECT, INSERT, DELETE ON "worker_proof_replays" TO "aoa_app";
 GRANT SELECT ("id", "organization_id", "owner_user_id", "scope", "target_authority_key", "status", "device_generation", "capabilities") ON "execution_targets" TO "aoa_app";
 --> statement-breakpoint
 -- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; its guarded/natural/drop-before-create form is idempotent.
-GRANT UPDATE ("worker_token_hash", "device_generation", "status", "updated_at") ON "execution_targets" TO "aoa_app";
+GRANT UPDATE ("worker_token_hash", "device_generation", "status", "last_seen_at", "updated_at") ON "execution_targets" TO "aoa_app";
 --> statement-breakpoint
 -- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; its guarded/natural/drop-before-create form is idempotent.
 GRANT SELECT, INSERT, UPDATE, DELETE ON "workers" TO "aoa_operator";
@@ -53,7 +53,7 @@ GRANT SELECT, INSERT, DELETE ON "worker_proof_replays" TO "aoa_operator";
 GRANT SELECT ("id", "organization_id", "owner_user_id", "slug", "kind", "trust_class", "status", "capabilities", "scope", "target_authority_key", "device_generation", "last_seen_at", "created_at", "updated_at") ON "execution_targets" TO "aoa_operator";
 --> statement-breakpoint
 -- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; its guarded/natural/drop-before-create form is idempotent.
-GRANT UPDATE ("worker_token_hash", "device_generation", "status", "updated_at") ON "execution_targets" TO "aoa_operator";
+GRANT UPDATE ("worker_token_hash", "device_generation", "status", "last_seen_at", "updated_at") ON "execution_targets" TO "aoa_operator";
 --> statement-breakpoint
 -- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; its guarded/natural/drop-before-create form is idempotent.
 ALTER TABLE "worker_enrollment_code_routes" ENABLE ROW LEVEL SECURITY;

@@ -45,6 +45,7 @@ import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { organizationRoutes } from "./routes/organizations.js";
 import { jobControlRoutes } from "./routes/job-control.js";
+import { workerControlRoutes } from "./routes/worker-control.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
@@ -213,6 +214,8 @@ export async function createApp(
     devLocalIdentity?: boolean;
     distributedExecutionEnabled?: boolean;
     tenantAppDb?: Db;
+    operatorDb?: Db;
+    workerSessionSigningKey?: string;
   }
 ) {
   // Pin the STATIC deployment-mode enforcement source once at boot, before any
@@ -379,12 +382,21 @@ export async function createApp(
   );
   api.use("/organizations", organizationRoutes(db));
   if (opts.distributedExecutionEnabled) {
-    if (!opts.tenantAppDb) {
+    if (!opts.tenantAppDb || !opts.operatorDb) {
       throw new Error(
-        "Distributed job submission requires the verified aoa_app database pool; owner fallback is forbidden",
+        "Distributed worker control requires verified aoa_app and aoa_operator database pools; owner fallback is forbidden",
       );
     }
+    if (!opts.workerSessionSigningKey || Buffer.byteLength(opts.workerSessionSigningKey) < 32) {
+      throw new Error("Distributed worker control requires AOA_WORKER_SESSION_SIGNING_KEY with at least 32 bytes");
+    }
     api.use(jobControlRoutes(opts.tenantAppDb));
+    api.use(workerControlRoutes({
+      db,
+      appDb: opts.tenantAppDb,
+      operatorDb: opts.operatorDb,
+      sessionSigningKey: opts.workerSessionSigningKey,
+    }));
   }
   // Settings -> Providers. Path-mounted (mergeParams) so the provider endpoints
   // share one /companies/:companyId/providers prefix.
@@ -459,7 +471,16 @@ export async function createApp(
   api.use(cliAuthRoutes(db));
   api.use(environmentRoutes({ db }));
   api.use(orgSpendRoutes({ db }));
-  api.use(executionTargetRoutes({ db }));
+  api.use(executionTargetRoutes({
+    db,
+    workerSession: opts.distributedExecutionEnabled && opts.tenantAppDb && opts.operatorDb && opts.workerSessionSigningKey
+      ? {
+          appDb: opts.tenantAppDb,
+          operatorDb: opts.operatorDb,
+          sessionSigningKey: opts.workerSessionSigningKey,
+        }
+      : undefined,
+  }));
   api.use(executionWorkspaceRoutes(db));
   api.use(workspaceGitRoutes(db));
   api.use(filesystemRoutes());

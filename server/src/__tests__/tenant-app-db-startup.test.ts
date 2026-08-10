@@ -27,6 +27,8 @@ describe("JOB-001 non-owner startup composition", () => {
     );
     expect(source).toMatch(/distributedExecutionEnabled:\s*config\.distributedExecutionEnabled/);
     expect(source).toMatch(/tenantAppDb:\s*distributedExecutionDatabases\?\.appDb/);
+    expect(source).toMatch(/operatorDb:\s*distributedExecutionDatabases\?\.operatorDb/);
+    expect(source).toMatch(/workerSessionSigningKey:\s*process\.env\.AOA_WORKER_SESSION_SIGNING_KEY/);
     expect(source).not.toMatch(/tenantAppDb:\s*db\b/);
   });
 });

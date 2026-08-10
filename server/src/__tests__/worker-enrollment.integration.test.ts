@@ -1,17 +1,25 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateKeyPairSync, sign, createHash, type KeyObject } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import net from "node:net";
 import postgres, { type Sql } from "postgres";
+import express from "express";
+import request from "supertest";
 import {
   applyPendingMigrations,
+  createDb,
   createOperatorDbConnection,
   createTenantAppDbConnection,
   type NonOwnerDbConnection,
 } from "@armyofagents/db";
+import { WORKER_CONTROL_HEADERS } from "@armyofagents/shared";
 import { provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
+import { workerControlRoutes } from "../routes/worker-control.js";
+import { executionTargetRoutes } from "../routes/execution-targets.js";
+import { rotateExecutionTargetWorkerToken } from "../services/execution-targets.js";
+import { logger } from "../middleware/logger.js";
 
 type EmbeddedPostgresInstance = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 type EmbeddedPostgresCtor = new (opts: Record<string, unknown>) => EmbeddedPostgresInstance;
@@ -20,9 +28,14 @@ const ORG_A = "71000000-0000-4000-8000-000000000001";
 const ORG_B = "71000000-0000-4000-8000-000000000002";
 const TARGET_A = "72000000-0000-4000-8000-000000000001";
 const TARGET_B = "72000000-0000-4000-8000-000000000002";
+const TARGET_PLATFORM = "72000000-0000-4000-8000-000000000003";
+const TARGET_OWNER = "72000000-0000-4000-8000-000000000004";
 const WORKER_A = "73000000-0000-4000-8000-000000000001";
 const WORKER_REPLAY = "73000000-0000-4000-8000-000000000002";
 const WORKER_UNIFORM = "73000000-0000-4000-8000-000000000003";
+const WORKER_PLATFORM = "73000000-0000-4000-8000-000000000004";
+const WORKER_OWNER = "73000000-0000-4000-8000-000000000006";
+const OWNER_USER = "job-002-owner-user";
 const PASSWORD = "job-002-role-test";
 const NOW = new Date("2026-08-10T00:00:00.000Z");
 
@@ -31,6 +44,7 @@ let dataDir = "";
 let admin: Sql | null = null;
 let app: NonOwnerDbConnection | null = null;
 let operator: NonOwnerDbConnection | null = null;
+let ownerDb: ReturnType<typeof createDb> | null = null;
 let setupError: unknown = null;
 let enrollmentModule: Awaited<ReturnType<typeof loadEnrollmentModule>> = null;
 let sessionModule: Awaited<ReturnType<typeof loadSessionModule>> = null;
@@ -62,7 +76,7 @@ function guard() {
   return { admin, appDb: app.db, operatorDb: operator.db, mod: enrollmentModule };
 }
 
-function enrollmentBody(workerId = WORKER_A) {
+function enrollmentBody(workerId = WORKER_A, targetId = TARGET_A, deviceGeneration = 1) {
   return {
     protocolVersion: 1,
     correlationId: "74000000-0000-4000-8000-000000000001",
@@ -73,8 +87,8 @@ function enrollmentBody(workerId = WORKER_A) {
     hello: {
       protocolVersion: 1,
       workerId,
-      targetId: TARGET_A,
-      deviceGeneration: 1,
+      targetId,
+      deviceGeneration,
       agentVersion: "job-002-test",
       supportedProtocol: { min: 1, max: 1 },
       platform: { os: "windows", arch: "x64", runtime: "desktop" },
@@ -92,9 +106,15 @@ function rawBody(body: unknown): Buffer {
   return Buffer.from(JSON.stringify(body));
 }
 
-function deviceProof(body: ReturnType<typeof enrollmentBody>, privateKey: KeyObject, publicKey: KeyObject, proofId: string) {
+function deviceProof(
+  body: ReturnType<typeof enrollmentBody>,
+  privateKey: KeyObject,
+  publicKey: KeyObject,
+  proofId: string,
+  proofNow: Date = NOW,
+) {
   const bytes = rawBody(body);
-  const issuedAt = NOW.toISOString();
+  const issuedAt = proofNow.toISOString();
   const publicKeyDer = publicKey.export({ format: "der", type: "spki" }).toString("base64url");
   const canonical = [
     "AOA-DEVICE-PROOF-V1", "POST", "/api/worker-control/enroll",
@@ -126,27 +146,40 @@ beforeAll(async () => {
     const adminUrl = `postgres://test:test@127.0.0.1:${port}/postgres`;
     await applyPendingMigrations(adminUrl);
     admin = postgres(adminUrl, { max: 1 });
+    ownerDb = createDb(adminUrl);
     await admin.unsafe(provisionTenantAppRoleLoginSql("aoa_app", PASSWORD));
     await admin.unsafe(provisionTenantAppRoleLoginSql("aoa_operator", PASSWORD));
     app = createTenantAppDbConnection(adminUrl.replace("test:test", `aoa_app:${PASSWORD}`));
     operator = createOperatorDbConnection(adminUrl.replace("test:test", `aoa_operator:${PASSWORD}`));
     await admin`INSERT INTO organizations (id, name, slug) VALUES
       (${ORG_A}, 'Enrollment A', 'worker-enrollment-a'), (${ORG_B}, 'Enrollment B', 'worker-enrollment-b')`;
+    await admin`INSERT INTO "user" (id, name, email, email_verified, created_at, updated_at)
+      VALUES (${OWNER_USER}, 'Owner', 'job-002-owner@example.invalid', true, now(), now())`;
+    await admin`INSERT INTO organization_memberships
+      (organization_id, user_id, role, status, joined_at)
+      VALUES (${ORG_A}, ${OWNER_USER}, 'owner', 'active', now())`;
     await admin`INSERT INTO execution_targets
-      (id, organization_id, slug, kind, trust_class, status, capabilities, config, scope, target_authority_key)
+      (id, organization_id, owner_user_id, slug, kind, trust_class, status, capabilities, config, scope, target_authority_key)
       VALUES
-      (${TARGET_A}, ${ORG_A}, 'target-a', 'dedicated_worker', 'dedicated_tenant', 'active',
+      (${TARGET_A}, ${ORG_A}, NULL, 'target-a', 'dedicated_worker', 'dedicated_tenant', 'active',
         ${{ providerConstraints: { profileId: "desktop-v1", version: 1, digest: "b".repeat(64) } }}, '{}',
         'organization', ${`organization:${ORG_A}`}),
-      (${TARGET_B}, ${ORG_B}, 'target-b', 'dedicated_worker', 'dedicated_tenant', 'active',
+      (${TARGET_B}, ${ORG_B}, NULL, 'target-b', 'dedicated_worker', 'dedicated_tenant', 'active',
         ${{ providerConstraints: { profileId: "desktop-v1", version: 1, digest: "b".repeat(64) } }}, '{}',
-        'organization', ${`organization:${ORG_B}`})`;
+        'organization', ${`organization:${ORG_B}`}),
+      (${TARGET_PLATFORM}, NULL, NULL, 'target-platform', 'pooled_gvisor', 'shared_multitenant', 'active',
+        ${{ providerConstraints: { profileId: "platform-v1", version: 1, digest: "c".repeat(64) } }}, '{}',
+        'platform', 'platform'),
+      (${TARGET_OWNER}, ${ORG_A}, ${OWNER_USER}, 'target-owner', 'desktop', 'dedicated_tenant', 'active',
+        ${{ providerConstraints: { profileId: "owner-v1", version: 1, digest: "d".repeat(64) } }}, '{}',
+        'owner', ${`owner:${ORG_A}:${OWNER_USER}`})`;
   } catch (error) {
     setupError = error;
   }
 }, 180_000);
 
 afterAll(async () => {
+  try { await ownerDb?.$client.end(); } catch { /* ignore */ }
   try { await operator?.close(); } catch { /* ignore */ }
   try { await app?.close(); } catch { /* ignore */ }
   try { await admin?.end(); } catch { /* ignore */ }
@@ -156,10 +189,16 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!admin) return;
+  await admin.unsafe(`DROP TRIGGER IF EXISTS job002_fail_worker_insert ON workers`);
+  await admin.unsafe(`DROP TRIGGER IF EXISTS job002_fail_code_insert ON worker_enrollment_codes`);
+  await admin.unsafe(`DROP TRIGGER IF EXISTS job002_fail_code_update ON worker_enrollment_codes`);
+  await admin.unsafe(`DROP FUNCTION IF EXISTS job002_fail_insert()`);
   await admin`DELETE FROM worker_proof_replays`;
   await admin`DELETE FROM worker_enrollment_codes`;
   await admin`DELETE FROM worker_enrollment_code_routes`;
   await admin`DELETE FROM workers`;
+  await admin`UPDATE execution_targets SET device_generation = 1, status = 'active' WHERE id IN (${TARGET_A}, ${TARGET_B}, ${TARGET_PLATFORM}, ${TARGET_OWNER})`;
+  await admin`UPDATE organization_memberships SET status = 'active' WHERE organization_id = ${ORG_A} AND user_id = ${OWNER_USER}`;
 });
 
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
@@ -186,7 +225,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
     });
 
     it("replays the semantic result only for same key/digest with a fresh proof and rejects proof replay", async () => {
-      const { appDb, operatorDb, mod } = guard();
+      const { admin, appDb, operatorDb, mod } = guard();
       const service = mod.createWorkerEnrollmentService({
         appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
       });
@@ -198,11 +237,37 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const body = enrollmentBody(WORKER_REPLAY);
       const firstProof = deviceProof(body, keys.privateKey, keys.publicKey, "proof-replay-1");
       const first = await service.enroll({ code: issued.code, request: body, ...firstProof, method: "POST", path: "/api/worker-control/enroll" });
-      const freshProof = deviceProof(body, keys.privateKey, keys.publicKey, "proof-replay-2");
-      const replay = await service.enroll({ code: issued.code, request: body, ...freshProof, method: "POST", path: "/api/worker-control/enroll" });
-      expect(replay.response).toEqual(first.response);
-      await expect(service.enroll({ code: issued.code, request: body, ...freshProof, method: "POST", path: "/api/worker-control/enroll" }))
+      const transportRetry = {
+        ...body,
+        correlationId: "74000000-0000-4000-8000-000000000002",
+        issuedAt: "2026-08-10T00:00:01.000Z",
+        nonce: "enrollment-nonce-retry",
+      };
+      const freshProof = deviceProof(transportRetry, keys.privateKey, keys.publicKey, "proof-replay-2");
+      const replay = await service.enroll({ code: issued.code, request: transportRetry, ...freshProof, method: "POST", path: "/api/worker-control/enroll" });
+      expect(replay.response).toEqual({
+        ...first.response,
+        correlationId: transportRetry.correlationId,
+      });
+      expect(replay.auditAction).toBe("replay");
+      const [receipt] = await admin`SELECT semantic_result FROM worker_enrollment_codes`;
+      expect(receipt.semantic_result).not.toHaveProperty("session");
+      await expect(service.enroll({ code: issued.code, request: transportRetry, ...freshProof, method: "POST", path: "/api/worker-control/enroll" }))
         .rejects.toMatchObject({ code: "unauthorized" });
+      await admin`UPDATE execution_targets SET device_generation = 2 WHERE id = ${TARGET_A}`;
+      const revokedRetry = {
+        ...transportRetry,
+        correlationId: "74000000-0000-4000-8000-000000000003",
+        issuedAt: "2026-08-10T00:00:02.000Z",
+        nonce: "enrollment-nonce-revoked-retry",
+      };
+      await expect(service.enroll({
+        code: issued.code,
+        request: revokedRetry,
+        ...deviceProof(revokedRetry, keys.privateKey, keys.publicKey, "proof-replay-revoked"),
+        method: "POST",
+        path: "/api/worker-control/enroll",
+      })).rejects.toMatchObject({ code: "target_revoked" });
     });
 
     it("fails uniformly for expired, wrong-shard, unrelated-key, and changed-digest attempts", async () => {
@@ -217,12 +282,109 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const keys = generateKeyPairSync("ed25519");
       const body = enrollmentBody(WORKER_UNIFORM);
       await service.enroll({ code: issued.code, request: body, ...deviceProof(body, keys.privateKey, keys.publicKey, "proof-uniform-1"), method: "POST", path: "/api/worker-control/enroll" });
-      const changed = { ...body, nonce: "changed-semantic-body" };
+      const changed = {
+        ...body,
+        hello: { ...body.hello, agentVersion: "job-002-test-changed" },
+      };
       await expect(service.enroll({ code: issued.code, request: changed, ...deviceProof(changed, keys.privateKey, keys.publicKey, "proof-uniform-2"), method: "POST", path: "/api/worker-control/enroll" }))
         .rejects.toMatchObject({ code: "malformed" });
       const unrelated = generateKeyPairSync("ed25519");
       await expect(service.enroll({ code: issued.code, request: body, ...deviceProof(body, unrelated.privateKey, unrelated.publicKey, "proof-uniform-3"), method: "POST", path: "/api/worker-control/enroll" }))
         .rejects.toMatchObject({ code: "unauthorized" });
+    });
+
+    it("rolls back route issuance and every enrollment fact when a later statement fails", async () => {
+      const { admin, appDb, operatorDb, mod } = guard();
+      const service = mod.createWorkerEnrollmentService({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      await admin.unsafe(`CREATE FUNCTION job002_fail_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'job002 forced insert failure'; END $$`);
+      await admin.unsafe(`CREATE TRIGGER job002_fail_code_insert BEFORE INSERT ON worker_enrollment_codes
+        FOR EACH ROW EXECUTE FUNCTION job002_fail_insert()`);
+      await expect(service.issueTenantCode({
+        organizationId: ORG_A, executionTargetId: TARGET_A, scope: "organization",
+        ownerUserId: null, createdByPrincipalKind: "user", createdByPrincipalId: "founder-a",
+      })).rejects.toBeDefined();
+      expect((await admin`SELECT locator_hash FROM worker_enrollment_code_routes`)).toHaveLength(0);
+      await admin.unsafe(`DROP TRIGGER job002_fail_code_insert ON worker_enrollment_codes`);
+
+      const issued = await service.issueTenantCode({
+        organizationId: ORG_A, executionTargetId: TARGET_A, scope: "organization",
+        ownerUserId: null, createdByPrincipalKind: "user", createdByPrincipalId: "founder-a",
+      });
+      await admin.unsafe(`CREATE TRIGGER job002_fail_worker_insert BEFORE INSERT ON workers
+        FOR EACH ROW EXECUTE FUNCTION job002_fail_insert()`);
+      const keys = generateKeyPairSync("ed25519");
+      const body = enrollmentBody(WORKER_A);
+      const signed = deviceProof(body, keys.privateKey, keys.publicKey, "proof-rollback-1");
+      await expect(service.enroll({
+        code: issued.code, request: body, ...signed,
+        method: "POST", path: "/api/worker-control/enroll",
+      })).rejects.toBeDefined();
+      const [rolledBack] = await admin`SELECT consumed_at FROM worker_enrollment_codes`;
+      expect(rolledBack.consumed_at).toBeNull();
+      expect(await admin`SELECT id FROM worker_proof_replays`).toHaveLength(0);
+      expect(await admin`SELECT id FROM workers`).toHaveLength(0);
+      await admin.unsafe(`DROP TRIGGER job002_fail_worker_insert ON workers`);
+      await admin`UPDATE execution_targets SET worker_token_hash = 'job002-bootstrap-hash' WHERE id = ${TARGET_A}`;
+      await admin.unsafe(`CREATE TRIGGER job002_fail_code_update BEFORE UPDATE ON worker_enrollment_codes
+        FOR EACH ROW EXECUTE FUNCTION job002_fail_insert()`);
+      await expect(service.enroll({
+        code: issued.code, request: body, ...signed,
+        method: "POST", path: "/api/worker-control/enroll",
+      })).rejects.toBeDefined();
+      expect(await admin`SELECT id FROM worker_proof_replays`).toHaveLength(0);
+      expect(await admin`SELECT id FROM workers`).toHaveLength(0);
+      const [finalStatementRollback] = await admin`
+        SELECT worker_token_hash FROM execution_targets WHERE id = ${TARGET_A}`;
+      expect(finalStatementRollback.worker_token_hash).toBe("job002-bootstrap-hash");
+      await admin.unsafe(`DROP TRIGGER job002_fail_code_update ON worker_enrollment_codes`);
+      await expect(service.enroll({
+        code: issued.code, request: body, ...signed,
+        method: "POST", path: "/api/worker-control/enroll",
+      })).resolves.toMatchObject({ response: { workerId: WORKER_A } });
+      const [committed] = await admin`
+        SELECT worker_token_hash FROM execution_targets WHERE id = ${TARGET_A}`;
+      expect(committed.worker_token_hash).toBeNull();
+    });
+
+    it("denies expired and stale-shard routes without consuming authoritative tenant code", async () => {
+      const { admin, appDb, operatorDb, mod } = guard();
+      let clock = NOW;
+      const service = mod.createWorkerEnrollmentService({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => clock,
+      });
+      const issue = () => service.issueTenantCode({
+        organizationId: ORG_A, executionTargetId: TARGET_A, scope: "organization" as const,
+        ownerUserId: null, createdByPrincipalKind: "user", createdByPrincipalId: "founder-a",
+      });
+      const keys = generateKeyPairSync("ed25519");
+      const expired = await issue();
+      clock = new Date(NOW.getTime() + 11 * 60_000);
+      const expiredBody = enrollmentBody(WORKER_A);
+      await expect(service.enroll({
+        code: expired.code, request: expiredBody,
+        ...deviceProof(expiredBody, keys.privateKey, keys.publicKey, "proof-expired-code", clock),
+        method: "POST", path: "/api/worker-control/enroll",
+      })).rejects.toMatchObject({ code: "unauthorized" });
+      let rows = await admin`SELECT consumed_at FROM worker_enrollment_codes`;
+      expect(rows[0].consumed_at).toBeNull();
+
+      clock = NOW;
+      const stale = await issue();
+      const locator = /^aoa_enr_([^.]+)\./.exec(stale.code)![1]!;
+      const staleLocatorHash = createHash("sha256").update(locator).digest("hex");
+      await admin`UPDATE worker_enrollment_code_routes SET candidate_organization_id = ${ORG_B}
+        WHERE locator_hash = ${staleLocatorHash}`;
+      const staleBody = { ...enrollmentBody(WORKER_REPLAY), idempotencyKey: "75000000-0000-4000-8000-000000000088" };
+      await expect(service.enroll({
+        code: stale.code, request: staleBody,
+        ...deviceProof(staleBody, keys.privateKey, keys.publicKey, "proof-stale-route"),
+        method: "POST", path: "/api/worker-control/enroll",
+      })).rejects.toMatchObject({ code: "unauthorized" });
+      rows = await admin`SELECT consumed_at FROM worker_enrollment_codes`;
+      expect(rows.every((row) => row.consumed_at === null)).toBe(true);
     });
 
     it("requires fresh device possession and current target generation for a copied session", async () => {
@@ -251,12 +413,21 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         heartbeatBytes, correlationId, keys.privateKey, keys.publicKey, "proof-session-1",
         "/api/execution-targets/heartbeat",
       );
+      const thumbprint = createHash("sha256")
+        .update(keys.publicKey.export({ format: "der", type: "spki" }))
+        .digest("hex");
+      await admin`INSERT INTO worker_proof_replays
+        (organization_id, device_thumbprint, proof_id, issued_at, expires_at)
+        VALUES (${ORG_A}, ${thumbprint}, ${sessionProof.proofId}, ${new Date(NOW.getTime() - 60_000)}, ${NOW})`;
       await expect(authenticator.authenticate({
         authorization: `Bearer ${enrolled.session}`,
         rawBody: heartbeatBytes, proof: sessionProof, method: "POST",
         path: "/api/execution-targets/heartbeat", correlationId,
       })).resolves.toMatchObject({ workerId: WORKER_A, targetId: TARGET_A, targetGeneration: 1 });
-      await expect(authenticator.authenticate({
+      const replicaAuthenticator = sessionModule!.createWorkerSessionAuthenticator({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      await expect(replicaAuthenticator.authenticate({
         authorization: `Bearer ${enrolled.session}`,
         rawBody: heartbeatBytes, proof: sessionProof, method: "POST",
         path: "/api/execution-targets/heartbeat", correlationId,
@@ -268,12 +439,362 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         proof: deviceProofFor(heartbeatBytes, correlationId, copied.privateKey, copied.publicKey, "proof-session-2", "/api/execution-targets/heartbeat"),
         method: "POST", path: "/api/execution-targets/heartbeat", correlationId,
       })).rejects.toMatchObject({ code: "unauthorized" });
+      const currentClaims = sessionModule!.verifyWorkerSessionToken(
+        "test-signing-key-at-least-32-bytes",
+        enrolled.session,
+        NOW,
+      );
+      const wrongTargetSession = sessionModule!.createWorkerSessionToken(
+        "test-signing-key-at-least-32-bytes",
+        { ...currentClaims, targetId: TARGET_B },
+      );
+      await expect(authenticator.authenticate({
+        authorization: `Bearer ${wrongTargetSession}`,
+        rawBody: heartbeatBytes,
+        proof: deviceProofFor(
+          heartbeatBytes,
+          correlationId,
+          keys.privateKey,
+          keys.publicKey,
+          "proof-session-wrong-target",
+          "/api/execution-targets/heartbeat",
+        ),
+        method: "POST",
+        path: "/api/execution-targets/heartbeat",
+        correlationId,
+      })).rejects.toMatchObject({ code: "target_revoked" });
       await admin`UPDATE execution_targets SET device_generation = 2 WHERE id = ${TARGET_A}`;
       await expect(authenticator.authenticate({
         authorization: `Bearer ${enrolled.session}`,
         rawBody: heartbeatBytes,
         proof: deviceProofFor(heartbeatBytes, correlationId, keys.privateKey, keys.publicKey, "proof-session-3", "/api/execution-targets/heartbeat"),
         method: "POST", path: "/api/execution-targets/heartbeat", correlationId,
+      })).rejects.toMatchObject({ code: "target_revoked" });
+    });
+
+    it("rotates one durable logical profile by incrementing generation and denies transfer/revival", async () => {
+      const { admin, appDb, operatorDb, mod } = guard();
+      expect(sessionModule, "worker-session-auth module is not implemented").not.toBeNull();
+      const service = mod.createWorkerEnrollmentService({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      const issue = () => service.issueTenantCode({
+        organizationId: ORG_A, executionTargetId: TARGET_A, scope: "organization" as const,
+        ownerUserId: null, createdByPrincipalKind: "user", createdByPrincipalId: "founder-a",
+      });
+      const firstKeys = generateKeyPairSync("ed25519");
+      const firstBody = enrollmentBody(WORKER_A);
+      const first = await service.enroll({
+        code: (await issue()).code, request: firstBody,
+        ...deviceProof(firstBody, firstKeys.privateKey, firstKeys.publicKey, "proof-rotate-1"),
+        method: "POST", path: "/api/worker-control/enroll",
+      });
+      expect(first.auditAction).toBe("consume");
+      const replacementKeys = generateKeyPairSync("ed25519");
+      const replacementBody = {
+        ...enrollmentBody(WORKER_A),
+        idempotencyKey: "75000000-0000-4000-8000-000000000002",
+        hello: { ...enrollmentBody(WORKER_A).hello, deviceGeneration: 2 },
+      };
+      const replacement = await service.enroll({
+        code: (await issue()).code, request: replacementBody,
+        ...deviceProof(replacementBody, replacementKeys.privateKey, replacementKeys.publicKey, "proof-rotate-2"),
+        method: "POST", path: "/api/worker-control/enroll",
+      });
+      expect(replacement.auditAction).toBe("rotate");
+      expect(replacement.response).toMatchObject({ deviceGeneration: 2, workerId: WORKER_A });
+      const [worker] = await admin`SELECT device_generation, device_public_key FROM workers WHERE id = ${WORKER_A}`;
+      expect(worker.device_generation).toBe(2);
+      expect(worker.device_public_key).toBe(replacementKeys.publicKey.export({ format: "der", type: "spki" }).toString("base64url"));
+
+      const authenticator = sessionModule!.createWorkerSessionAuthenticator({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      const bytes = Buffer.from("{}");
+      const correlationId = "74000000-0000-4000-8000-000000000199";
+      await expect(authenticator.authenticate({
+        authorization: `Bearer ${first.session}`, rawBody: bytes,
+        proof: deviceProofFor(bytes, correlationId, firstKeys.privateKey, firstKeys.publicKey, "proof-old-session", "/api/execution-targets/heartbeat"),
+        method: "POST", path: "/api/execution-targets/heartbeat", correlationId,
+      })).rejects.toMatchObject({ code: "target_revoked" });
+
+      const transferBody = {
+        ...enrollmentBody(WORKER_UNIFORM),
+        idempotencyKey: "75000000-0000-4000-8000-000000000003",
+        hello: { ...enrollmentBody(WORKER_UNIFORM).hello, deviceGeneration: 3 },
+      };
+      const transferKeys = generateKeyPairSync("ed25519");
+      await expect(service.enroll({
+        code: (await issue()).code, request: transferBody,
+        ...deviceProof(transferBody, transferKeys.privateKey, transferKeys.publicKey, "proof-transfer-denied"),
+        method: "POST", path: "/api/worker-control/enroll",
+      })).rejects.toMatchObject({
+        code: "unauthorized",
+        auditReasonCode: "worker_transfer_denied",
+        auditIdentifiers: { workerId: WORKER_UNIFORM, executionTargetId: TARGET_A },
+      });
+
+      const httpTransfer = await issue();
+      const httpTransferProof = deviceProof(
+        transferBody,
+        transferKeys.privateKey,
+        transferKeys.publicKey,
+        "proof-transfer-denied-http",
+      );
+      const httpApp = express();
+      httpApp.use(express.json({ verify: (req, _res, bytes) => {
+        (req as typeof req & { rawBody?: Buffer }).rawBody = Buffer.from(bytes);
+      } }));
+      httpApp.use("/api", workerControlRoutes({
+        db: ownerDb!,
+        appDb,
+        operatorDb,
+        sessionSigningKey: "test-signing-key-at-least-32-bytes",
+        now: () => NOW,
+      }));
+      const warnSpy = vi.spyOn(logger, "warn");
+      try {
+        const denied = await request(httpApp)
+          .post("/api/worker-control/enroll")
+          .set(WORKER_CONTROL_HEADERS.enrollmentCode, httpTransfer.code)
+          .set(WORKER_CONTROL_HEADERS.proofVersion, httpTransferProof.proof.version)
+          .set(WORKER_CONTROL_HEADERS.publicKey, httpTransferProof.proof.publicKey)
+          .set(WORKER_CONTROL_HEADERS.signature, httpTransferProof.proof.signature)
+          .set(WORKER_CONTROL_HEADERS.issuedAt, httpTransferProof.proof.issuedAt)
+          .set(WORKER_CONTROL_HEADERS.proofId, httpTransferProof.proof.proofId)
+          .send(transferBody);
+        expect(denied.status).toBe(401);
+        expect(warnSpy).toHaveBeenCalledWith(expect.objectContaining({
+          action: "worker.enrollment.denied",
+          workerId: WORKER_UNIFORM,
+          executionTargetId: TARGET_A,
+          reasonCode: "worker_transfer_denied",
+        }), "worker enrollment denied");
+        const auditBytes = JSON.stringify(warnSpy.mock.calls);
+        expect(auditBytes).not.toContain(httpTransfer.code);
+        expect(auditBytes).not.toContain(httpTransferProof.proof.publicKey);
+        expect(auditBytes).not.toContain(httpTransferProof.proof.signature);
+      } finally {
+        warnSpy.mockRestore();
+      }
+      const [target] = await admin`SELECT device_generation FROM execution_targets WHERE id = ${TARGET_A}`;
+      expect(target.device_generation).toBe(2);
+      if (!ownerDb) throw new Error("owner DB unavailable");
+      await expect(rotateExecutionTargetWorkerToken(ownerDb, {
+        organizationId: ORG_A,
+        targetId: TARGET_A,
+      })).resolves.toBeNull();
+      const revokedGeneration = await sessionModule!.revokeTenantWorkerAuthority({
+        appDb,
+        organizationId: ORG_A,
+        executionTargetId: TARGET_A,
+        now: NOW,
+      });
+      expect(revokedGeneration).toBe(3);
+      const [revoked] = await admin`SELECT status, worker_token_hash FROM execution_targets WHERE id = ${TARGET_A}`;
+      expect(revoked).toMatchObject({ status: "disabled", worker_token_hash: null });
+      const [revokedWorker] = await admin`SELECT status, revoked_at FROM workers WHERE id = ${WORKER_A}`;
+      expect(revokedWorker.status).toBe("revoked");
+      expect(revokedWorker.revoked_at).not.toBeNull();
+    });
+
+    it("uses one operator transaction for platform identity and allows the same key as distinct tenant profiles", async () => {
+      const { admin, appDb, operatorDb, mod } = guard();
+      expect(sessionModule, "worker-session-auth module is not implemented").not.toBeNull();
+      const service = mod.createWorkerEnrollmentService({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      const keys = generateKeyPairSync("ed25519");
+      const platformBody = enrollmentBody(WORKER_PLATFORM, TARGET_PLATFORM);
+      await admin.unsafe(`CREATE FUNCTION job002_fail_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'job002 forced insert failure'; END $$`);
+      await admin.unsafe(`CREATE TRIGGER job002_fail_code_insert BEFORE INSERT ON worker_enrollment_codes
+        FOR EACH ROW EXECUTE FUNCTION job002_fail_insert()`);
+      await expect(service.issuePlatformCode({
+        executionTargetId: TARGET_PLATFORM,
+        createdByPrincipalKind: "operator",
+        createdByPrincipalId: "platform-operator",
+      })).rejects.toBeDefined();
+      expect(await admin`SELECT locator_hash FROM worker_enrollment_code_routes`).toHaveLength(0);
+      await admin.unsafe(`DROP TRIGGER job002_fail_code_insert ON worker_enrollment_codes`);
+      const platformCode = await service.issuePlatformCode({
+        executionTargetId: TARGET_PLATFORM,
+        createdByPrincipalKind: "operator",
+        createdByPrincipalId: "platform-operator",
+      });
+      await admin.unsafe(`CREATE TRIGGER job002_fail_code_update BEFORE UPDATE ON worker_enrollment_codes
+        FOR EACH ROW EXECUTE FUNCTION job002_fail_insert()`);
+      await expect(service.enroll({
+        code: platformCode.code, request: platformBody,
+        ...deviceProof(platformBody, keys.privateKey, keys.publicKey, "proof-platform-1"),
+        method: "POST", path: "/api/worker-control/enroll",
+      })).rejects.toBeDefined();
+      expect(await admin`SELECT id FROM workers WHERE organization_id IS NULL`).toHaveLength(0);
+      expect(await admin`SELECT id FROM worker_proof_replays WHERE organization_id IS NULL`).toHaveLength(0);
+      const [unconsumedPlatform] = await admin`
+        SELECT consumed_at FROM worker_enrollment_codes WHERE organization_id IS NULL`;
+      expect(unconsumedPlatform.consumed_at).toBeNull();
+      await admin.unsafe(`DROP TRIGGER job002_fail_code_update ON worker_enrollment_codes`);
+      const platform = await service.enroll({
+        code: platformCode.code, request: platformBody,
+        ...deviceProof(platformBody, keys.privateKey, keys.publicKey, "proof-platform-1"),
+        method: "POST", path: "/api/worker-control/enroll",
+      });
+      expect(platform.response).toMatchObject({ workerId: WORKER_PLATFORM, targetId: TARGET_PLATFORM });
+      const platformBytes = Buffer.from("{}");
+      const platformCorrelation = "74000000-0000-4000-8000-000000000498";
+      const platformAuthenticator = sessionModule!.createWorkerSessionAuthenticator({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      await expect(platformAuthenticator.authenticate({
+        authorization: `Bearer ${platform.session}`,
+        rawBody: platformBytes,
+        proof: deviceProofFor(
+          platformBytes, platformCorrelation, keys.privateKey, keys.publicKey,
+          "proof-platform-session", "/api/execution-targets/heartbeat",
+        ),
+        method: "POST",
+        path: "/api/execution-targets/heartbeat",
+        correlationId: platformCorrelation,
+      })).resolves.toMatchObject({
+        workerId: WORKER_PLATFORM,
+        targetId: TARGET_PLATFORM,
+        organizationId: null,
+        scope: "platform",
+      });
+
+      const orgWorker = "73000000-0000-4000-8000-000000000005";
+      const orgBody = {
+        ...enrollmentBody(orgWorker, TARGET_PLATFORM),
+        idempotencyKey: "75000000-0000-4000-8000-000000000005",
+      };
+      const orgCode = await service.issueTenantCode({
+        organizationId: ORG_A, executionTargetId: TARGET_PLATFORM, scope: "organization",
+        ownerUserId: null, createdByPrincipalKind: "user", createdByPrincipalId: "founder-a",
+      });
+      await expect(service.enroll({
+        code: orgCode.code, request: orgBody,
+        ...deviceProof(orgBody, keys.privateKey, keys.publicKey, "proof-platform-org"),
+        method: "POST", path: "/api/worker-control/enroll",
+      })).resolves.toMatchObject({ response: { workerId: orgWorker, targetId: TARGET_PLATFORM } });
+
+      const [counts] = await admin`SELECT
+        count(*) FILTER (WHERE organization_id IS NULL)::int AS platform_count,
+        count(*) FILTER (WHERE organization_id = ${ORG_A})::int AS org_count
+        FROM workers WHERE execution_target_id = ${TARGET_PLATFORM}`;
+      expect(counts).toMatchObject({ platform_count: 1, org_count: 1 });
+    });
+
+    it("keeps frozen E1 JSON unchanged at the HTTP boundary and returns the session only in a header", async () => {
+      const { appDb, operatorDb, mod } = guard();
+      if (!ownerDb) throw new Error("owner DB unavailable");
+      const service = mod.createWorkerEnrollmentService({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      const issued = await service.issueTenantCode({
+        organizationId: ORG_A, executionTargetId: TARGET_A, scope: "organization",
+        ownerUserId: null, createdByPrincipalKind: "user", createdByPrincipalId: "founder-a",
+      });
+      const keys = generateKeyPairSync("ed25519");
+      const body = enrollmentBody(WORKER_A);
+      const signed = deviceProof(body, keys.privateKey, keys.publicKey, "proof-http-boundary");
+      const httpApp = express();
+      httpApp.use(express.json({ verify: (req, _res, bytes) => {
+        (req as typeof req & { rawBody?: Buffer }).rawBody = Buffer.from(bytes);
+      } }));
+      httpApp.use("/api", workerControlRoutes({
+        db: ownerDb,
+        appDb,
+        operatorDb,
+        sessionSigningKey: "test-signing-key-at-least-32-bytes",
+        now: () => NOW,
+      }));
+      httpApp.use("/api", executionTargetRoutes({
+        db: ownerDb,
+        workerSession: {
+          appDb,
+          operatorDb,
+          sessionSigningKey: "test-signing-key-at-least-32-bytes",
+          now: () => NOW,
+        },
+      }));
+      const response = await request(httpApp)
+        .post("/api/worker-control/enroll")
+        .set(WORKER_CONTROL_HEADERS.enrollmentCode, issued.code)
+        .set(WORKER_CONTROL_HEADERS.proofVersion, signed.proof.version)
+        .set(WORKER_CONTROL_HEADERS.publicKey, signed.proof.publicKey)
+        .set(WORKER_CONTROL_HEADERS.signature, signed.proof.signature)
+        .set(WORKER_CONTROL_HEADERS.issuedAt, signed.proof.issuedAt)
+        .set(WORKER_CONTROL_HEADERS.proofId, signed.proof.proofId)
+        .send(body);
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ outcome: "enrolled", workerId: WORKER_A });
+      expect(response.body).not.toHaveProperty("session");
+      expect(response.headers[WORKER_CONTROL_HEADERS.session]).toEqual(expect.any(String));
+
+      const heartbeat = Buffer.from(JSON.stringify({
+        status: "draining",
+        capabilities: { registeredTrustMustNotChange: true },
+      }));
+      const correlationId = "74000000-0000-4000-8000-000000000299";
+      const heartbeatProof = deviceProofFor(
+        heartbeat, correlationId, keys.privateKey, keys.publicKey,
+        "proof-http-heartbeat", "/api/execution-targets/heartbeat",
+      );
+      const heartbeatResponse = await request(httpApp)
+        .post("/api/execution-targets/heartbeat")
+        .set("authorization", `Bearer ${response.headers[WORKER_CONTROL_HEADERS.session]}`)
+        .set(WORKER_CONTROL_HEADERS.requestId, correlationId)
+        .set(WORKER_CONTROL_HEADERS.proofVersion, heartbeatProof.version)
+        .set(WORKER_CONTROL_HEADERS.publicKey, heartbeatProof.publicKey)
+        .set(WORKER_CONTROL_HEADERS.signature, heartbeatProof.signature)
+        .set(WORKER_CONTROL_HEADERS.issuedAt, heartbeatProof.issuedAt)
+        .set(WORKER_CONTROL_HEADERS.proofId, heartbeatProof.proofId)
+        .send(JSON.parse(heartbeat.toString("utf8")));
+      expect(heartbeatResponse.status).toBe(204);
+      const [target] = await admin`SELECT status, capabilities FROM execution_targets WHERE id = ${TARGET_A}`;
+      expect(target.status).toBe("draining");
+      expect(target.capabilities).not.toHaveProperty("registeredTrustMustNotChange");
+    });
+
+    it("revokes owner-scoped session and new issuance when Organization membership is removed", async () => {
+      const { admin, appDb, operatorDb, mod } = guard();
+      expect(sessionModule, "worker-session-auth module is not implemented").not.toBeNull();
+      const service = mod.createWorkerEnrollmentService({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      const issueInput = {
+        organizationId: ORG_A,
+        executionTargetId: TARGET_OWNER,
+        scope: "owner" as const,
+        ownerUserId: OWNER_USER,
+        createdByPrincipalKind: "user",
+        createdByPrincipalId: OWNER_USER,
+      };
+      const keys = generateKeyPairSync("ed25519");
+      const body = enrollmentBody(WORKER_OWNER, TARGET_OWNER);
+      const enrolled = await service.enroll({
+        code: (await service.issueTenantCode(issueInput)).code,
+        request: body,
+        ...deviceProof(body, keys.privateKey, keys.publicKey, "proof-owner-enroll"),
+        method: "POST",
+        path: "/api/worker-control/enroll",
+      });
+      await admin`UPDATE organization_memberships SET status = 'suspended'
+        WHERE organization_id = ${ORG_A} AND user_id = ${OWNER_USER}`;
+      await expect(service.issueTenantCode(issueInput)).rejects.toMatchObject({ code: "unauthorized" });
+      const bytes = Buffer.from("{}");
+      const correlationId = "74000000-0000-4000-8000-000000000399";
+      const authenticator = sessionModule!.createWorkerSessionAuthenticator({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      await expect(authenticator.authenticate({
+        authorization: `Bearer ${enrolled.session}`,
+        rawBody: bytes,
+        proof: deviceProofFor(bytes, correlationId, keys.privateKey, keys.publicKey, "proof-owner-removed", "/api/execution-targets/heartbeat"),
+        method: "POST",
+        path: "/api/execution-targets/heartbeat",
+        correlationId,
       })).rejects.toMatchObject({ code: "target_revoked" });
     });
   },

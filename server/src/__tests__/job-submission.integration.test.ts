@@ -293,6 +293,8 @@ beforeAll(async () => {
       ...baseOptions,
       distributedExecutionEnabled: true,
       tenantAppDb: appConnection.db,
+      operatorDb: appConnection.db,
+      workerSessionSigningKey: "job-001-test-worker-session-signing-key",
     } as Parameters<typeof createApp>[1]);
     localBoardApp = await createApp(ownerDb, {
       ...baseOptions,
@@ -300,6 +302,8 @@ beforeAll(async () => {
       devLocalIdentity: true,
       distributedExecutionEnabled: true,
       tenantAppDb: appConnection.db,
+      operatorDb: appConnection.db,
+      workerSessionSigningKey: "job-001-test-worker-session-signing-key",
     } as Parameters<typeof createApp>[1]);
     flagOffApp = await createApp(ownerDb, {
       ...baseOptions,
@@ -397,6 +401,14 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const response = await request(flagOffApp).post(route()).set(asUser()).send(command("flag-off"));
       expect(response.status).toBe(404);
       expect(await counts("flag-off")).toEqual({ jobs: 0, attempts: 0, outbox: 0 });
+    });
+
+    it("mounts worker control only while distributed execution is enabled", async () => {
+      guard();
+      const flagOn = await request(app).post("/api/worker-control/enroll").send({});
+      const flagOff = await request(flagOffApp).post("/api/worker-control/enroll").send({});
+      expect(flagOn.status).toBe(401);
+      expect(flagOff.status).toBe(404);
     });
 
     it("collapses 32 concurrent identical submissions to one aggregate", async () => {

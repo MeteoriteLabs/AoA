@@ -31,8 +31,7 @@ describe("JOB-002 signed worker session claims", () => {
     expect(mod, "worker-session-auth module is not implemented").not.toBeNull();
     const token = mod!.createWorkerSessionToken(key, claims);
     expect(() => mod!.verifyWorkerSessionToken(key, token, new Date((claims.exp + 1) * 1000))).toThrow(/worker session/i);
-    const wrongAudience = mod!.createWorkerSessionToken(key, { ...claims, aud: "worker_poll" });
-    expect(() => mod!.verifyWorkerSessionToken(key, wrongAudience, new Date(claims.iat * 1000))).toThrow(/worker session/i);
+    expect(() => mod!.createWorkerSessionToken(key, { ...claims, aud: "worker_poll" })).toThrow(/worker session/i);
     expect(() => mod!.verifyWorkerSessionToken(key, `${token.slice(0, -1)}x`, new Date(claims.iat * 1000))).toThrow(/worker session/i);
     expect(() => mod!.verifyWorkerSessionToken("different-session-key-at-least-32-bytes", token, new Date(claims.iat * 1000))).toThrow(/worker session/i);
   });
