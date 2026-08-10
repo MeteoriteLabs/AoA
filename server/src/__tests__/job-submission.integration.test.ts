@@ -83,6 +83,15 @@ const SOURCE_CASES = [
   },
 ] as const;
 
+const FROZEN_EXECUTOR_AUTHORITY = {
+  task_run: { kind: "worker", id: AGENT_A },
+  commander_turn: { kind: "sandbox", id: COMMANDER_RUN_A },
+  crew_run: { kind: "worker", id: AGENT_A },
+  one_shot: { kind: "worker", id: SOURCE_CASES[3].operationId },
+  browser_request: { kind: "browser_worker", id: BROWSER_RUN_A },
+  service_reconcile: { kind: "service_instance", id: SERVICE_A },
+} as const;
+
 let embedded: EmbeddedPostgresInstance | null = null;
 let dataDir = "";
 let admin: Sql | null = null;
@@ -403,12 +412,12 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
     });
 
     it.each([
-      ["task_run", SOURCE_CASES[0], asUser()],
-      ["commander_turn", SOURCE_CASES[1], asCommander()],
-      ["crew_run", SOURCE_CASES[2], asAgent()],
-      ["one_shot", SOURCE_CASES[3], asAgent()],
-      ["browser_request", SOURCE_CASES[4], asUser()],
-    ] as const)("accepts authenticated %s source intent without delivery authority", async (_kind, source, headers) => {
+      ["task_run", SOURCE_CASES[0], asUser(), { kind: "founder", id: USER_A }],
+      ["commander_turn", SOURCE_CASES[1], asCommander(), { kind: "commander", id: USER_A }],
+      ["crew_run", SOURCE_CASES[2], asAgent(), { kind: "agent", id: AGENT_A }],
+      ["one_shot", SOURCE_CASES[3], asAgent(), { kind: "agent", id: AGENT_A }],
+      ["browser_request", SOURCE_CASES[4], asUser(), { kind: "founder", id: USER_A }],
+    ] as const)("persists authenticated requester and frozen executor authority for %s", async (kind, source, headers, requester) => {
       guard();
       const response = await request(app)
         .post(route())
@@ -421,6 +430,10 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         organization_id: ORG_A,
         company_id: COMPANY_A,
         source_kind: source.kind,
+        requester_principal_kind: requester.kind,
+        requester_principal_id: requester.id,
+        executor_principal_kind: FROZEN_EXECUTOR_AUTHORITY[kind].kind,
+        executor_principal_id: FROZEN_EXECUTOR_AUTHORITY[kind].id,
       });
       expect(job).toHaveProperty("input_hash");
       expect(job).toHaveProperty("policy_hash");
@@ -438,15 +451,23 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       });
       expect(response).toMatchObject({ status: "queued", replayed: false });
       expect(await counts("source-service_reconcile")).toEqual({ jobs: 1, attempts: 1, outbox: 1 });
+      const [job] = await admin!<Record<string, unknown>[]>
+        `SELECT * FROM jobs WHERE id = ${response.jobId}`;
+      expect(job).toMatchObject({
+        requester_principal_kind: "system",
+        requester_principal_id: "service-reconciler",
+        executor_principal_kind: "service_instance",
+        executor_principal_id: SERVICE_A,
+      });
     });
 
     it("enforces the frozen hostile source/caller authority matrix before persistence", async () => {
       guard();
       const callers = [
-        { name: "user", headers: asUser(), allowed: new Set(["task_run", "commander_turn", "crew_run", "browser_request"]) },
-        { name: "agent", headers: asAgent(), allowed: new Set(["task_run", "crew_run", "one_shot", "browser_request"]) },
-        { name: "mcp_user", headers: asMcp(), allowed: new Set(["task_run", "commander_turn", "crew_run", "browser_request"]) },
-        { name: "commander", headers: asCommander(), allowed: new Set(["commander_turn", "one_shot"]) },
+        { name: "user", headers: asUser(), requester: { kind: "founder", id: USER_A }, allowed: new Set(["task_run", "commander_turn", "crew_run", "browser_request"]) },
+        { name: "agent", headers: asAgent(), requester: { kind: "agent", id: AGENT_A }, allowed: new Set(["task_run", "crew_run", "one_shot", "browser_request"]) },
+        { name: "mcp_user", headers: asMcp(), requester: { kind: "founder", id: USER_A }, allowed: new Set(["task_run", "commander_turn", "crew_run", "browser_request"]) },
+        { name: "commander", headers: asCommander(), requester: { kind: "commander", id: USER_A }, allowed: new Set(["commander_turn", "one_shot"]) },
       ];
       for (const caller of callers) {
         for (const source of SOURCE_CASES) {
@@ -457,6 +478,16 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           expect(await counts(key), `${caller.name}/${source.kind} persistence`).toEqual(
             allowed ? { jobs: 1, attempts: 1, outbox: 1 } : { jobs: 0, attempts: 0, outbox: 0 },
           );
+          if (allowed) {
+            const [job] = await admin!<Record<string, unknown>[]>
+              `SELECT * FROM jobs WHERE id = ${response.body.jobId}`;
+            expect(job, `${caller.name}/${source.kind} immutable authority`).toMatchObject({
+              requester_principal_kind: caller.requester.kind,
+              requester_principal_id: caller.requester.id,
+              executor_principal_kind: FROZEN_EXECUTOR_AUTHORITY[source.kind].kind,
+              executor_principal_id: FROZEN_EXECUTOR_AUTHORITY[source.kind].id,
+            });
+          }
         }
       }
     });
