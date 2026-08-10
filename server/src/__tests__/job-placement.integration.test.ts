@@ -38,6 +38,7 @@ const TARGET_PLATFORM = "92000000-0000-4000-8000-000000000003";
 const COMPANY_A = "96000000-0000-4000-8000-000000000001";
 const COMPANY_B = "96000000-0000-4000-8000-000000000002";
 const WORKER_A = "97000000-0000-4000-8000-000000000001";
+const WORKER_PLATFORM = "97000000-0000-4000-8000-000000000002";
 const PASSWORD = "job-009-role-password";
 const POLICY_HASH = "a".repeat(64);
 
@@ -101,6 +102,7 @@ function organizationProfile(provider: ProviderConstraintProfileV1): RegisteredT
     trustCeiling: "organization_isolated",
     credentialCeiling: "organization_brokered",
     dataLocalityCeiling: "organization_target_only",
+    deviceGeneration: 1,
   };
 }
 
@@ -122,17 +124,42 @@ function workerHello() {
   };
 }
 
-function placementRequirements(provider: ProviderConstraintProfileV1) {
+function platformWorkerHello() {
+  return {
+    ...workerHello(),
+    workerId: WORKER_PLATFORM,
+    targetId: TARGET_PLATFORM,
+    deviceGeneration: 4,
+  };
+}
+
+function placementRequirements(
+  provider: ProviderConstraintProfileV1,
+  targetClass: "organization_dedicated" | "managed_cloud" = "organization_dedicated",
+) {
+  const target = targetClass === "managed_cloud"
+    ? {
+        allowedTargetClasses: ["managed_cloud"] as const,
+        allowedTrustClasses: ["shared_isolated"] as const,
+        credentialKind: "platform_brokered" as const,
+        dataLocality: "transfer_allowed" as const,
+      }
+    : {
+        allowedTargetClasses: ["organization_dedicated"] as const,
+        allowedTrustClasses: ["organization_isolated"] as const,
+        credentialKind: "organization_brokered" as const,
+        dataLocality: "organization_target_only" as const,
+      };
   return {
     protocol: { min: 1, max: 1 },
     capabilities: ["sandbox.process_isolated"],
     workloadType: "batch",
     targetRequirements: {
-      allowedTargetClasses: ["organization_dedicated"],
-      allowedTrustClasses: ["organization_isolated"],
+      allowedTargetClasses: target.allowedTargetClasses,
+      allowedTrustClasses: target.allowedTrustClasses,
       requiredOwnerPrincipalId: null,
-      credentialKind: "platform_brokered",
-      dataLocality: "transfer_allowed",
+      credentialKind: target.credentialKind,
+      dataLocality: target.dataLocality,
       fallback: { mode: "forbidden", orderedTargetClasses: [] },
       providerConstraints: { profileId: provider.profileId, version: provider.version, digest: provider.digest },
     },
@@ -212,6 +239,27 @@ describe("JOB-009 slice A registry normalization", () => {
       lastSeenAt: new Date("2026-08-10T10:00:00.000Z"),
     })).resolves.toBeNull();
   });
+
+  it("fails closed when the immutable registered-profile hash changes", async () => {
+    const provider = providerProfile();
+    const registered = registeredProfile(provider);
+    await expect(resolverNamespace.normalizePlacementRegistryTarget({
+      id: TARGET_PLATFORM,
+      slug: "platform-main",
+      kind: "pooled_gvisor",
+      trustClass: "shared_multitenant",
+      status: "active",
+      organizationId: null,
+      ownerUserId: null,
+      scope: "platform",
+      targetAuthorityKey: "platform",
+      deviceGeneration: 4,
+      registeredProfile: registered,
+      registeredProfileHash: "f".repeat(64),
+      providerConstraintProfile: provider,
+      lastSeenAt: new Date("2026-08-10T10:00:00.000Z"),
+    })).resolves.toBeNull();
+  });
 });
 
 integration("JOB-009 slice A schema and role boundaries", () => {
@@ -281,6 +329,7 @@ integration("JOB-009 slice A schema and role boundaries", () => {
         last_seen_at = ${new Date("2026-08-10T10:00:00.000Z")}
         WHERE id = ${TARGET_PLATFORM}`;
       const hello = workerHello();
+      const platformHello = platformWorkerHello();
       await admin`INSERT INTO workers
         (id, scope, organization_id, owner_user_id, execution_target_id, target_authority_key,
          device_public_key, device_thumbprint, device_generation, profile_hash, profile_snapshot,
@@ -289,6 +338,15 @@ integration("JOB-009 slice A schema and role boundaries", () => {
           'job-009-public-key', ${"d".repeat(64)}, 1, ${sha256(JSON.stringify(hello))}, ${hello},
           ${new Date("2026-08-10T09:59:00.000Z")}, ${new Date("2026-08-10T10:00:00.000Z")},
           'JOB-009 worker', 'enrolled')`;
+      await admin`INSERT INTO workers
+        (id, scope, organization_id, owner_user_id, execution_target_id, target_authority_key,
+         device_public_key, device_thumbprint, device_generation, profile_hash, profile_snapshot,
+         enrolled_at, last_seen_at, label, status)
+        VALUES (${WORKER_PLATFORM}, 'platform', NULL, NULL, ${TARGET_PLATFORM}, 'platform',
+          'job-009-platform-public-key', ${"e".repeat(64)}, 4,
+          ${sha256(JSON.stringify(platformHello))}, ${platformHello},
+          ${new Date("2026-08-10T09:59:00.000Z")}, ${new Date("2026-08-10T10:00:00.000Z")},
+          'JOB-009 platform worker', 'enrolled')`;
     } catch (error) {
       setupError = error;
     }
@@ -347,7 +405,13 @@ integration("JOB-009 slice A schema and role boundaries", () => {
     await expect(operator.db.execute(sql`SELECT id FROM jobs`)).rejects.toThrow();
   });
 
-  async function seedJob(input: { jobId: string; attemptId: string; organizationId?: string; companyId?: string }) {
+  async function seedJob(input: {
+    jobId: string;
+    attemptId: string;
+    organizationId?: string;
+    companyId?: string;
+    targetClass?: "organization_dedicated" | "managed_cloud";
+  }) {
     const { admin } = guard();
     const organizationId = input.organizationId ?? ORG_A;
     const companyId = input.companyId ?? COMPANY_A;
@@ -356,7 +420,7 @@ integration("JOB-009 slice A schema and role boundaries", () => {
       (id, organization_id, company_id, workload_type, input_hash, policy_hash, requirements,
        placement_request, status)
       VALUES (${input.jobId}, ${organizationId}, ${companyId}, 'batch', ${"b".repeat(64)},
-        ${POLICY_HASH}, ${placementRequirements(provider)}, ${placementRequest()}, 'queued')`;
+        ${POLICY_HASH}, ${placementRequirements(provider, input.targetClass)}, ${placementRequest()}, 'queued')`;
     await admin`INSERT INTO job_attempts
       (id, organization_id, company_id, job_id, attempt_number, status)
       VALUES (${input.attemptId}, ${organizationId}, ${companyId}, ${input.jobId}, 1, 'pending')`;
@@ -368,7 +432,9 @@ integration("JOB-009 slice A schema and role boundaries", () => {
     expect(typeof fn, "Slice C must expose the single runInTenant placement transaction").toBe("function");
     return (fn as (value: unknown) => Promise<Record<string, unknown>>)({
       appDb: app.db,
-      operatorDb: operator.db,
+      operatorDb: input.enabled === false
+        ? { transaction: () => { throw new Error("flag_off_operator_contact"); } }
+        : operator.db,
       organizationId: input.organizationId ?? ORG_A,
       companyId: input.companyId ?? COMPANY_A,
       jobId: input.jobId,
@@ -411,6 +477,20 @@ integration("JOB-009 slice A schema and role boundaries", () => {
     expect(row?.digest).toBe("b".repeat(64));
   });
 
+  it("selects a platform worker only through the bounded operator snapshot", async () => {
+    const jobId = "98000000-0000-4000-8000-000000000009";
+    const attemptId = "99000000-0000-4000-8000-000000000009";
+    await seedJob({ jobId, attemptId, targetClass: "managed_cloud" });
+    await expect(place({ jobId, attemptId })).resolves.toMatchObject({
+      disposition: "selected",
+      targetId: TARGET_PLATFORM,
+      targetClass: "managed_cloud",
+      targetScope: "platform",
+      targetGeneration: 4,
+      leaseEligible: true,
+    });
+  });
+
   it("persists shadow and flag-off legacy outcomes as lease-ineligible", async () => {
     for (const [suffix, options, expected] of [
       ["3", { mode: "shadow" as const }, { disposition: "selected", mode: "shadow", leaseEligible: false }],
@@ -420,6 +500,37 @@ integration("JOB-009 slice A schema and role boundaries", () => {
       const attemptId = `99000000-0000-4000-8000-${suffix.padStart(12, "0")}`;
       await seedJob({ jobId, attemptId });
       expect(await place({ jobId, attemptId, ...options })).toMatchObject(expected);
+    }
+  });
+
+  it("queues current status changes and generation replacements without widening", async () => {
+    const { admin } = guard();
+    await admin`UPDATE execution_targets SET status = 'draining' WHERE id = ${TARGET_A}`;
+    try {
+      const jobId = "98000000-0000-4000-8000-000000000007";
+      const attemptId = "99000000-0000-4000-8000-000000000007";
+      await seedJob({ jobId, attemptId });
+      await expect(place({ jobId, attemptId })).resolves.toMatchObject({
+        disposition: "queued",
+        reasonCode: "required_target_unavailable",
+        leaseEligible: false,
+      });
+    } finally {
+      await admin`UPDATE execution_targets SET status = 'active' WHERE id = ${TARGET_A}`;
+    }
+
+    await admin`UPDATE execution_targets SET device_generation = 2 WHERE id = ${TARGET_A}`;
+    try {
+      const jobId = "98000000-0000-4000-8000-000000000008";
+      const attemptId = "99000000-0000-4000-8000-000000000008";
+      await seedJob({ jobId, attemptId });
+      await expect(place({ jobId, attemptId })).resolves.toMatchObject({
+        disposition: "queued",
+        reasonCode: "required_target_unavailable",
+        leaseEligible: false,
+      });
+    } finally {
+      await admin`UPDATE execution_targets SET device_generation = 1 WHERE id = ${TARGET_A}`;
     }
   });
 

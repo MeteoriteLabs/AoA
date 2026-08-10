@@ -160,3 +160,17 @@ export const OPERATOR_ENROLLMENT_TARGET_SELECT_COLUMNS = Object.freeze([
 export const OPERATOR_ENROLLMENT_TARGET_UPDATE_COLUMNS = Object.freeze([
   "worker_token_hash", "device_generation", "status", "last_seen_at", "updated_at",
 ] as const);
+
+/**
+ * JOB-009 placement profile authority. These columns contain only the
+ * server-registered capability and provider ceilings used to place an attempt;
+ * enrollment secrets, worker tokens, routing config, and job details remain
+ * outside both projections.
+ */
+export const APP_JOB_PLACEMENT_TARGET_SELECT_COLUMNS = Object.freeze([
+  "slug", "kind", "trust_class", "last_seen_at", "registered_profile",
+  "registered_profile_hash", "provider_constraint_profile",
+] as const);
+export const OPERATOR_JOB_PLACEMENT_TARGET_SELECT_COLUMNS = Object.freeze([
+  "registered_profile", "registered_profile_hash", "provider_constraint_profile",
+] as const);

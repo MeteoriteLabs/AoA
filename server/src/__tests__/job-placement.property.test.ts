@@ -225,9 +225,11 @@ describe("JOB-009 slice B deterministic placement policy", () => {
 
   it("never widens a false privileged hello or provider/runtime/resource/operation ceiling", () => {
     const base = candidate("managed_cloud", 1);
+    const reducedWorker = { ...base.worker, reportedCapabilities: ["workload.batch"] as const };
     const falseHello = {
       ...base,
-      worker: { ...base.worker, reportedCapabilities: ["workload.batch"] },
+      worker: reducedWorker,
+      workerProfileHash: sha256(JSON.stringify(reducedWorker)),
     };
     expect(run({ candidates: [falseHello] })).toMatchObject({ disposition: "queued", reasonCode: "no_eligible_target" });
 
@@ -259,6 +261,20 @@ describe("JOB-009 slice B deterministic placement policy", () => {
     })).toMatchObject({ disposition: "queued", reasonCode: "required_target_unavailable" });
     expect(run({ requirements: ownerRequirements, candidates: [candidate("managed_cloud", 1)] }))
       .toMatchObject({ disposition: "queued", reasonCode: "required_target_unavailable" });
+    expect(run({
+      requirements: ownerRequirements,
+      credentialOwnerPrincipalId: "different-owner",
+      candidates: [candidate("owner_desktop", 3)],
+    })).toMatchObject({ disposition: "queued", reasonCode: "required_target_unavailable" });
+    const sharedRequirements = requirements(["owner_desktop"], {
+      targetRequirements: {
+        ...requirements(["owner_desktop"]).targetRequirements,
+        credentialKind: "organization_brokered",
+        fallback: { mode: "forbidden", orderedTargetClasses: [] },
+      },
+    });
+    expect(run({ requirements: sharedRequirements, candidates: [candidate("owner_desktop", 3)] }))
+      .toMatchObject({ disposition: "queued", reasonCode: "required_target_unavailable" });
   });
 
   it("respects required/ordered fallback and status, generation, health and capacity as read-only inputs", () => {
@@ -276,6 +292,26 @@ describe("JOB-009 slice B deterministic placement policy", () => {
       registry: { ...candidate("managed_cloud", 1).registry, lastSeenAt: new Date(NOW.getTime() - 60_000) },
     });
     expect(run({ candidates: [stale] })).toMatchObject({ disposition: "queued" });
+
+    const revokedBase = candidate("managed_cloud", 1);
+    const revoked = {
+      ...revokedBase,
+      registry: {
+        ...revokedBase.registry,
+        registeredProfile: { ...revokedBase.registry.registeredProfile, revokedAt: "2026-08-10T09:00:00.000Z" },
+      },
+    };
+    expect(run({ candidates: [revoked] })).toMatchObject({ disposition: "queued" });
+    expect(run({ candidates: [candidate("managed_cloud", 1, { currentOperations: 8 })] }))
+      .toMatchObject({ disposition: "queued" });
+    const wrongGenerationBase = candidate("managed_cloud", 1);
+    expect(run({
+      candidates: [{
+        ...wrongGenerationBase,
+        worker: { ...wrongGenerationBase.worker, deviceGeneration: 2 },
+        workerProfileHash: sha256(JSON.stringify({ ...wrongGenerationBase.worker, deviceGeneration: 2 })),
+      }],
+    })).toMatchObject({ disposition: "queued" });
 
     const noCapacity = candidate("managed_cloud", 1, {
       currentCapacity: {

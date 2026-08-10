@@ -44,3 +44,29 @@ export interface SubmitJobResponse {
   status: "queued";
   replayed: boolean;
 }
+
+export type JobPlacementMode = "active" | "shadow" | "legacy";
+export type JobPlacementOwner =
+  | "legacy"
+  | "managed_cloud"
+  | "organization_dedicated"
+  | "owner_desktop";
+export type JobPlacementDisposition = "selected" | "legacy" | "queued" | "failed";
+
+/** Immutable, server-owned JOB-009 result persisted before JOB-003 may lease. */
+export interface JobPlacementDecision {
+  disposition: JobPlacementDisposition;
+  owner: JobPlacementOwner | null;
+  targetId: string | null;
+  targetClass: Exclude<JobPlacementOwner, "legacy"> | null;
+  targetScope: "platform" | "organization" | "owner" | null;
+  targetGeneration: number | null;
+  profileHash: string | null;
+  providerConstraintHash: string | null;
+  fallbackDisposition: "not_applicable" | "primary" | "ordered_explicit" | "forbidden";
+  reasonCode: string;
+  mode: JobPlacementMode;
+  leaseEligible: boolean;
+  inputDigest: string;
+  policyDigest: string;
+}

@@ -10,6 +10,7 @@ import {
   APP_EXECUTION_TARGET_COLUMN_GRANTS,
   APP_ENROLLMENT_TARGET_SELECT_COLUMNS,
   APP_ENROLLMENT_TARGET_UPDATE_COLUMNS,
+  APP_JOB_PLACEMENT_TARGET_SELECT_COLUMNS,
   APP_MCP_API_KEY_COLUMN_GRANTS,
   JOB_CONTROL_LEGACY_GRANTS,
   JOB_CONTROL_NEW_PATH_GRANTS,
@@ -18,6 +19,7 @@ import {
   OPERATOR_METADATA_COLUMN_GRANTS,
   OPERATOR_ENROLLMENT_TARGET_SELECT_COLUMNS,
   OPERATOR_ENROLLMENT_TARGET_UPDATE_COLUMNS,
+  OPERATOR_JOB_PLACEMENT_TARGET_SELECT_COLUMNS,
   WORKER_ENROLLMENT_APP_GRANTS,
   WORKER_ENROLLMENT_OPERATOR_GRANTS,
   type TablePrivilege,
@@ -167,6 +169,7 @@ async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promi
     const operatorColumns = new Set([
       ...((OPERATOR_METADATA_COLUMN_GRANTS as Readonly<Record<string, readonly string[]>>)[row.table_name] ?? []),
       ...(row.table_name === "execution_targets" ? OPERATOR_ENROLLMENT_TARGET_SELECT_COLUMNS : []),
+      ...(row.table_name === "execution_targets" ? OPERATOR_JOB_PLACEMENT_TARGET_SELECT_COLUMNS : []),
     ]);
     const appColumnSelect = row.schema_name === "public" && (
       (row.table_name === "execution_targets" && (
@@ -174,6 +177,8 @@ async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promi
           row.column_name as (typeof APP_EXECUTION_TARGET_COLUMN_GRANTS)[number]
         ) || APP_ENROLLMENT_TARGET_SELECT_COLUMNS.includes(
           row.column_name as (typeof APP_ENROLLMENT_TARGET_SELECT_COLUMNS)[number]
+        ) || APP_JOB_PLACEMENT_TARGET_SELECT_COLUMNS.includes(
+          row.column_name as (typeof APP_JOB_PLACEMENT_TARGET_SELECT_COLUMNS)[number]
         )
       )) ||
       (row.table_name === "mcp_api_keys" &&

@@ -1,5 +1,7 @@
 import {
   jobCapabilityRequirementsSchema,
+  providerOperationSchema,
+  resourceLimitsSchema,
   workerSatisfiesRequirements,
   type ExecutionSourceKind,
   type JobCapabilityRequirementsV1,
@@ -10,10 +12,15 @@ import {
 } from "@armyofagents/worker-protocol";
 import { createHash } from "node:crypto";
 import type { NormalizedPlacementRegistryTarget } from "./execution-target-resolver.js";
+import type { Db } from "@armyofagents/db";
+import type {
+  JobPlacementDecision,
+  JobPlacementDisposition as PlacementDisposition,
+  JobPlacementMode as PlacementMode,
+  JobPlacementOwner as PlacementOwner,
+} from "@armyofagents/shared";
 
-export type PlacementMode = "active" | "shadow" | "legacy";
-export type PlacementOwner = "legacy" | "managed_cloud" | "organization_dedicated" | "owner_desktop";
-export type PlacementDisposition = "selected" | "legacy" | "queued" | "failed";
+export type { JobPlacementDecision, PlacementDisposition, PlacementMode, PlacementOwner };
 
 export interface PlacementProviderDemand {
   maxRuntimeSeconds: number;
@@ -22,6 +29,64 @@ export interface PlacementProviderDemand {
   concurrentOperations: number;
   operations: ProviderOperation[];
   localityTags: string[];
+}
+
+interface PlacementRequestSnapshot {
+  providerDemand: PlacementProviderDemand;
+  credentialOwnerPrincipalId: string | null;
+}
+
+type ParseResult<T> = { success: true; data: T } | { success: false };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every((key) => keys.includes(key));
+}
+
+function parsePlacementProviderDemand(value: unknown): ParseResult<PlacementProviderDemand> {
+  const keys = [
+    "maxRuntimeSeconds", "maxIdleSeconds", "resources", "concurrentOperations", "operations", "localityTags",
+  ] as const;
+  if (!isRecord(value) || !hasExactKeys(value, keys) ||
+      !Number.isInteger(value.maxRuntimeSeconds) || Number(value.maxRuntimeSeconds) < 1 ||
+      !Number.isInteger(value.maxIdleSeconds) || Number(value.maxIdleSeconds) < 1 ||
+      !Number.isInteger(value.concurrentOperations) || Number(value.concurrentOperations) < 1) {
+    return { success: false };
+  }
+  const resources = resourceLimitsSchema.safeParse(value.resources);
+  if (!resources.success || !Array.isArray(value.operations) || value.operations.length === 0 ||
+      value.operations.some((operation) => !providerOperationSchema.safeParse(operation).success) ||
+      !Array.isArray(value.localityTags) || value.localityTags.length === 0 ||
+      value.localityTags.some((tag) => typeof tag !== "string" || tag.length < 1 || tag.length > 64)) {
+    return { success: false };
+  }
+  return {
+    success: true,
+    data: {
+      maxRuntimeSeconds: Number(value.maxRuntimeSeconds),
+      maxIdleSeconds: Number(value.maxIdleSeconds),
+      resources: resources.data,
+      concurrentOperations: Number(value.concurrentOperations),
+      operations: value.operations as ProviderOperation[],
+      localityTags: value.localityTags as string[],
+    },
+  };
+}
+
+export function parsePlacementRequestSnapshot(value: unknown): ParseResult<PlacementRequestSnapshot> {
+  if (!isRecord(value) || !hasExactKeys(value, ["providerDemand", "credentialOwnerPrincipalId"])) {
+    return { success: false };
+  }
+  const providerDemand = parsePlacementProviderDemand(value.providerDemand);
+  const owner = value.credentialOwnerPrincipalId;
+  if (!providerDemand.success || !(owner === null || (typeof owner === "string" && owner.length > 0))) {
+    return { success: false };
+  }
+  return { success: true, data: { providerDemand: providerDemand.data, credentialOwnerPrincipalId: owner } };
 }
 
 export interface PlacementCandidate {
@@ -51,21 +116,22 @@ export interface DecideJobPlacementInput {
   candidates: PlacementCandidate[];
 }
 
-export interface JobPlacementDecision {
-  disposition: PlacementDisposition;
-  owner: PlacementOwner | null;
-  targetId: string | null;
-  targetClass: Exclude<PlacementOwner, "legacy"> | null;
-  targetScope: "platform" | "organization" | "owner" | null;
-  targetGeneration: number | null;
-  profileHash: string | null;
-  providerConstraintHash: string | null;
-  fallbackDisposition: "not_applicable" | "primary" | "ordered_explicit" | "forbidden";
-  reasonCode: string;
-  mode: PlacementMode;
-  leaseEligible: boolean;
-  inputDigest: string;
-  policyDigest: string;
+export interface PlaceJobAttemptInput {
+  appDb: Db;
+  operatorDb: Db;
+  organizationId: string;
+  companyId: string;
+  jobId: string;
+  attemptId: string;
+  rollout: DecideJobPlacementInput["rollout"];
+  now: Date;
+  maxHeartbeatAgeMs: number;
+}
+
+/** Lazy boundary keeps importing this pure policy module free of DB effects. */
+export async function placeJobAttempt(input: PlaceJobAttemptInput): Promise<JobPlacementDecision> {
+  const { placeJobAttemptTransaction } = await import("./job-placement-transaction.js");
+  return placeJobAttemptTransaction(input);
 }
 
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -126,7 +192,7 @@ function providerDemandFits(
 
 function candidateFits(input: DecideJobPlacementInput, candidate: PlacementCandidate): boolean {
   const { registry, worker } = candidate;
-  if (registry.status !== "active" || candidate.workerStatus !== "active") return false;
+  if (registry.status !== "active" || !["active", "enrolled"].includes(candidate.workerStatus)) return false;
   if (!(registry.lastSeenAt instanceof Date) ||
       input.now.getTime() - registry.lastSeenAt.getTime() > input.maxHeartbeatAgeMs ||
       registry.lastSeenAt.getTime() > input.now.getTime() + 1_000) return false;
@@ -181,7 +247,9 @@ export function decideJobPlacement(input: DecideJobPlacementInput): JobPlacement
   }
 
   const parsedRequirements = jobCapabilityRequirementsSchema.safeParse(input.requirements);
-  if (!parsedRequirements.success || !SHA256.test(input.inputDigest) || !SHA256.test(input.policyDigest) ||
+  const parsedDemand = parsePlacementProviderDemand(input.providerDemand);
+  if (!parsedRequirements.success || !parsedDemand.success ||
+      !SHA256.test(input.inputDigest) || !SHA256.test(input.policyDigest) ||
       !(input.now instanceof Date) || !Number.isFinite(input.now.getTime()) ||
       !Number.isInteger(input.maxHeartbeatAgeMs) || input.maxHeartbeatAgeMs < 0 ||
       !["active", "shadow"].includes(input.rollout.mode)) {
