@@ -44,6 +44,7 @@ import { userProfileRoutes } from "./routes/user-profiles.js";
 import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { organizationRoutes } from "./routes/organizations.js";
+import { jobControlRoutes } from "./routes/job-control.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
@@ -210,6 +211,8 @@ export async function createApp(
       req: ExpressRequest
     ) => Promise<BetterAuthSessionResult | null>;
     devLocalIdentity?: boolean;
+    distributedExecutionEnabled?: boolean;
+    tenantAppDb?: Db;
   }
 ) {
   // Pin the STATIC deployment-mode enforcement source once at boot, before any
@@ -375,6 +378,14 @@ export async function createApp(
     companyRoutes(db, { deploymentMode: opts.deploymentMode })
   );
   api.use("/organizations", organizationRoutes(db));
+  if (opts.distributedExecutionEnabled) {
+    if (!opts.tenantAppDb) {
+      throw new Error(
+        "Distributed job submission requires the verified aoa_app database pool; owner fallback is forbidden",
+      );
+    }
+    api.use(jobControlRoutes(opts.tenantAppDb));
+  }
   // Settings -> Providers. Path-mounted (mergeParams) so the provider endpoints
   // share one /companies/:companyId/providers prefix.
   api.use("/companies/:companyId/providers", providerRoutes(db));

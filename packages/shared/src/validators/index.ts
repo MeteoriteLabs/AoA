@@ -511,6 +511,12 @@ export {
 export { isGitHubRepoUrl } from "./github.js";
 
 export {
+  submitJobCommandSchema,
+  submitJobSourceSchema,
+  type SubmitJobCommandInput,
+} from "./job-control.js";
+
+export {
   createUserEntityPinSchema,
   type CreateUserEntityPin,
 } from "./user-entity-pins.js";

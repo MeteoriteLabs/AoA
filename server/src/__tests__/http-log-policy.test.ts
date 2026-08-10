@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { shouldSilenceHttpSuccessLog } from "../middleware/http-log-policy.js";
+import {
+  shouldOmitHttpRequestPayload,
+  shouldSilenceHttpSuccessLog,
+} from "../middleware/http-log-policy.js";
+
+describe("shouldOmitHttpRequestPayload", () => {
+  it("omits only distributed job submission payloads from HTTP logs", () => {
+    const path = "/api/organizations/org-1/companies/company-1/jobs";
+    expect(shouldOmitHttpRequestPayload("POST", `${path}?trace=1`)).toBe(true);
+    expect(shouldOmitHttpRequestPayload("POST", path.slice(4))).toBe(true);
+    expect(shouldOmitHttpRequestPayload("GET", path)).toBe(false);
+    expect(shouldOmitHttpRequestPayload("POST", `${path}/other`)).toBe(false);
+  });
+});
 
 describe("shouldSilenceHttpSuccessLog", () => {
   it("silences cached 304 responses", () => {

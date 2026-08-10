@@ -200,7 +200,12 @@ async function seedGraph(g: TenantGraph): Promise<void> {
   );
   await db.insert(jobAttempts).values(
     g.organizations.flatMap((n) =>
-      n.attempts.map((a) => ({ id: a.id, organizationId: a.organizationId, jobId: a.jobId })),
+      n.attempts.map((a) => ({
+        id: a.id,
+        organizationId: a.organizationId,
+        companyId: n.jobs.find((job) => job.id === a.jobId)!.companyId,
+        jobId: a.jobId,
+      })),
     ),
   );
   await db.insert(leases).values(
@@ -511,13 +516,21 @@ async function runAdversarialOps(g: TenantGraph): Promise<{ anomalies: string[];
     // job_attempts ← jobs (own-org, cross-job vs absent-job)
     const oracleAttemptCross = await captureReject(() =>
       runInTenant(appDb, actor.org.id, (repos) =>
-        repos.attempts.insert({ organizationId: actor.org.id, jobId: crossJob }),
+        repos.attempts.insert({
+          organizationId: actor.org.id,
+          companyId: actor.companies[0]!.id,
+          jobId: crossJob,
+        }),
       ),
     );
     bump("crossParentVsAbsentUniform");
     const oracleAttemptAbsent = await captureReject(() =>
       runInTenant(appDb, actor.org.id, (repos) =>
-        repos.attempts.insert({ organizationId: actor.org.id, jobId: absentB }),
+        repos.attempts.insert({
+          organizationId: actor.org.id,
+          companyId: actor.companies[0]!.id,
+          jobId: absentB,
+        }),
       ),
     );
     bump("crossParentVsAbsentUniform");

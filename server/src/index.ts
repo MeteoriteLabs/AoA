@@ -732,6 +732,8 @@ const app = await createApp(db as any, {
   betterAuthHandler,
   resolveSession,
   devLocalIdentity: config.devLocalIdentity,
+  distributedExecutionEnabled: config.distributedExecutionEnabled,
+  tenantAppDb: distributedExecutionDatabases?.appDb,
 });
 const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 

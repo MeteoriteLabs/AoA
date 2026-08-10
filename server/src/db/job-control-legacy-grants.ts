@@ -16,6 +16,7 @@ export const JOB_CONTROL_LEGACY_GRANTS = Object.freeze({
   notifications: ["SELECT", "INSERT", "UPDATE"],
   user_roles: ["SELECT"],
   company_memberships: ["SELECT"],
+  organization_memberships: ["SELECT"],
   notification_preferences: ["SELECT"],
   notification_digest_items: ["SELECT", "INSERT"],
   hub_counter_snapshots: ["SELECT", "UPDATE"],
@@ -49,6 +50,13 @@ export const JOB_CONTROL_LEGACY_GRANTS = Object.freeze({
   workspace_runtime_services: ["SELECT"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
+/** Columns needed to revalidate the already-authenticated MCP key in-transaction. */
+export const APP_MCP_API_KEY_COLUMN_GRANTS = Object.freeze([
+  "id",
+  "company_id",
+  "revoked_at",
+] as const);
+
 /**
  * Existing E2 new-path DML retained by aoa_app after the corrective ACL reset.
  * Kept separate from the legacy trace so the two authorization seams stay
@@ -63,6 +71,7 @@ export const JOB_CONTROL_NEW_PATH_GRANTS = Object.freeze({
   service_instances: ["SELECT", "INSERT", "UPDATE", "DELETE"],
   job_artifacts: ["SELECT", "INSERT", "UPDATE", "DELETE"],
   job_secret_handles: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  job_outbox: ["SELECT", "INSERT", "UPDATE", "DELETE"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
 /**

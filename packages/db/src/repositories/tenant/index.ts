@@ -29,6 +29,10 @@ import {
   type JobSecretHandle,
   type NewJobSecretHandle,
 } from "../../schema/job_secret_handles.js";
+import {
+  createJobControlRepository,
+  type JobControlRepository,
+} from "./job-control.js";
 
 export interface JobsRepository {
   insert(values: NewJob): Promise<Job>;
@@ -87,6 +91,7 @@ export interface TenantRepositories {
   serviceInstances: ServiceInstancesRepository;
   jobArtifacts: JobArtifactsRepository;
   jobSecretHandles: JobSecretHandlesRepository;
+  jobControl: JobControlRepository;
 }
 
 /**
@@ -99,6 +104,7 @@ export interface TenantRepositories {
  */
 export function tenantRepositories(tx: Db): TenantRepositories {
   return {
+    jobControl: createJobControlRepository(tx),
     jobs: {
       async insert(values) {
         const [row] = await tx.insert(jobs).values(values).returning();

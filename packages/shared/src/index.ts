@@ -1394,6 +1394,12 @@ export * from "./hub.js";
 export * from "./work-questions.js";
 export * from "./user-entity-follows.js";
 export * from "./notification-registry.js";
+export * from "./types/job-control.js";
+export {
+  submitJobCommandSchema,
+  submitJobSourceSchema,
+  type SubmitJobCommandInput,
+} from "./validators/job-control.js";
 
 // ── API contract artifacts ──
 // Phase 1 thread coordination contract: shared by backend (Lane A) and UI (Lane B).

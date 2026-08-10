@@ -35,6 +35,25 @@ function normalizePath(url: string): string {
   return pathname.length > 0 ? pathname : "/";
 }
 
+const PAYLOAD_OMITTED_PATHS = [
+  /^(?:\/api)?\/organizations\/[^/]+\/companies\/[^/]+\/jobs$/,
+];
+
+/** Job commands can contain arbitrary execution input, so log only routing IDs. */
+export function shouldOmitHttpRequestPayload(
+  method: string | undefined,
+  url: string | undefined,
+): boolean {
+  if (method?.toUpperCase() !== "POST" || !url) return false;
+  const pathname = normalizePath(url);
+  return PAYLOAD_OMITTED_PATHS.some((pattern) => pattern.test(pathname));
+}
+
+export function safeHttpLogUrl(method: string | undefined, url: string | undefined): string {
+  if (!url) return "/";
+  return shouldOmitHttpRequestPayload(method, url) ? normalizePath(url) : url;
+}
+
 export function shouldSilenceHttpSuccessLog(method: string | undefined, url: string | undefined, statusCode: number): boolean {
   if (statusCode >= 400) return false;
   if (statusCode === 304) return true;

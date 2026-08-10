@@ -48,6 +48,7 @@
     "@armyofagents/db": "workspace:*",
     "@armyofagents/plugin-sdk": "workspace:^",
     "@armyofagents/shared": "workspace:*",
+    "@armyofagents/worker-protocol": "workspace:*",
     "@aws-sdk/client-s3": "^3.888.0",
     "@aws-sdk/client-secrets-manager": "^3.888.0",
     "@google/generative-ai": "^0.24.1",

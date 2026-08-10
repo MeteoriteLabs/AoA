@@ -617,6 +617,9 @@ importers:
       '@armyofagents/shared':
         specifier: workspace:*
         version: link:../packages/shared
+      '@armyofagents/worker-protocol':
+        specifier: workspace:*
+        version: link:../packages/worker-protocol
       '@aws-sdk/client-s3':
         specifier: ^3.888.0
         version: 3.994.0

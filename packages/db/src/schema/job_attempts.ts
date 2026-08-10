@@ -16,6 +16,7 @@ export const jobAttempts = pgTable(
     organizationId: uuid("organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "restrict" }),
+    companyId: uuid("company_id").notNull(),
     // TEN-004/E2-F013: NO single-column FK to jobs.id — the composite
     // `job_attempts_org_job_fk` (below) is the SOLE parent FK and carries ON DELETE
     // CASCADE (E2-D09). A redundant single-column parent FK is a cross-tenant
@@ -36,14 +37,31 @@ export const jobAttempts = pgTable(
     // TEN-004: FK-target composite unique so `leases` can bind (organization_id,
     // attempt_id) → job_attempts(organization_id, id).
     orgIdUq: unique("job_attempts_org_id_uq").on(table.organizationId, table.id),
+    orgCompanyIdUq: unique("job_attempts_org_company_id_uq").on(
+      table.organizationId,
+      table.companyId,
+      table.id,
+    ),
+    orgCompanyJobIdUq: unique("job_attempts_org_company_job_id_uq").on(
+      table.organizationId,
+      table.companyId,
+      table.jobId,
+      table.id,
+    ),
+    jobAttemptNumberUq: unique("job_attempts_job_number_uq").on(
+      table.organizationId,
+      table.companyId,
+      table.jobId,
+      table.attemptNumber,
+    ),
     // TEN-004: composite org-scoped FK — an attempt's (organization_id, job_id)
     // must exist together in jobs(organization_id, id), so an attempt cannot be
     // stamped with a different tenant than its job. The redundant single-column job
     // FK was DROPPED in E2-F013 (0212) — it bypassed RLS and leaked cross-tenant
     // existence; this composite is the SOLE job FK, ON DELETE cascade (E2-D09).
     orgJobFk: foreignKey({
-      columns: [table.organizationId, table.jobId],
-      foreignColumns: [jobs.organizationId, jobs.id],
+      columns: [table.organizationId, table.companyId, table.jobId],
+      foreignColumns: [jobs.organizationId, jobs.companyId, jobs.id],
       name: "job_attempts_org_job_fk",
     }).onDelete("cascade"),
   }),

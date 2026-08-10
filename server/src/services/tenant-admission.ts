@@ -81,3 +81,12 @@ export function assertAdmissibleOrganization(orgId: string): void {
     throw new ForbiddenOrganizationSentinelError(orgId);
   }
 }
+
+export class TenantAdmissionDeniedError extends Error {
+  readonly code = "TENANT_ADMISSION_DENIED";
+
+  constructor() {
+    super("Job submission denied");
+    this.name = "TenantAdmissionDeniedError";
+  }
+}
