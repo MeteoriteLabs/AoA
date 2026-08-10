@@ -37,12 +37,14 @@ const TARGET_B = "92000000-0000-4000-8000-000000000002";
 const TARGET_PLATFORM = "92000000-0000-4000-8000-000000000003";
 const TARGET_OWNER_A = "92000000-0000-4000-8000-000000000004";
 const TARGET_OWNER_B = "92000000-0000-4000-8000-000000000005";
+const TARGET_PLATFORM_ALT = "92000000-0000-4000-8000-000000000006";
 const COMPANY_A = "96000000-0000-4000-8000-000000000001";
 const COMPANY_B = "96000000-0000-4000-8000-000000000002";
 const WORKER_A = "97000000-0000-4000-8000-000000000001";
 const WORKER_PLATFORM = "97000000-0000-4000-8000-000000000002";
 const WORKER_OWNER_A = "97000000-0000-4000-8000-000000000003";
 const WORKER_OWNER_B = "97000000-0000-4000-8000-000000000004";
+const WORKER_PLATFORM_ALT = "97000000-0000-4000-8000-000000000005";
 const OWNER_A = "job-009-owner-a";
 const PASSWORD = "job-009-role-password";
 const POLICY_HASH = "a".repeat(64);
@@ -309,6 +311,36 @@ integration("JOB-009 slice A schema and role boundaries", () => {
     if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
     if (!admin || !app || !operator) throw new Error("test setup incomplete");
     return { admin, app, operator };
+  }
+
+  async function waitForDatabaseBarrier(input: {
+    role: "aoa_app" | "aoa_operator";
+    queryFragment: string;
+    waitEvent?: string;
+  }) {
+    const { admin } = guard();
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const [state] = await admin<{ blocked: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1 FROM pg_stat_activity
+          WHERE usename = ${input.role}
+            AND wait_event_type = 'Lock'
+            AND query ILIKE ${`%${input.queryFragment}%`}
+            AND (${input.waitEvent ?? null}::text IS NULL OR wait_event = ${input.waitEvent ?? null})
+        ) AS blocked`;
+      if (state?.blocked) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`timed out waiting for ${input.role} database barrier`);
+  }
+
+  async function restoreOwnerMembership() {
+    const { admin } = guard();
+    await admin`INSERT INTO organization_memberships
+      (organization_id, user_id, role, status, joined_at)
+      VALUES (${ORG_A}, ${OWNER_A}, 'owner', 'active', now())
+      ON CONFLICT (organization_id, user_id) DO UPDATE SET status = 'active'`;
   }
 
   beforeAll(async () => {
@@ -623,6 +655,196 @@ integration("JOB-009 slice A schema and role boundaries", () => {
     }
   });
 
+  it("[I-08] makes remove-first owner suspension/deletion fail closed in the final decision write", async () => {
+    const { admin } = guard();
+    const ownerBinding = {
+      credentialId: "personal-owner-b",
+      credentialKind: "personal_subscription" as const,
+      executionTargetSlug: "owner-b",
+      pinnedTargetId: null,
+    };
+
+    for (const [index, removal] of (["suspend", "delete"] as const).entries()) {
+      await restoreOwnerMembership();
+      const suffix = (80 + index).toString().padStart(12, "0");
+      const jobId = `98000000-0000-4000-8000-${suffix}`;
+      const attemptId = `99000000-0000-4000-8000-${suffix}`;
+      await seedJob({ jobId, attemptId });
+
+      const blocker = postgres(adminUrl, { max: 1 });
+      let releaseBarrier = () => {};
+      let signalLocked = () => {};
+      const barrierReleased = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+      const barrierLocked = new Promise<void>((resolve) => { signalLocked = resolve; });
+      const blockingTransaction = blocker.begin(async (tx) => {
+        await tx`SELECT id FROM execution_targets WHERE id = ${TARGET_PLATFORM} FOR UPDATE`;
+        signalLocked();
+        await barrierReleased;
+      });
+      await barrierLocked;
+
+      let placement: Promise<Record<string, unknown>> | null = null;
+      try {
+        placement = place({ jobId, attemptId, credentialBinding: ownerBinding });
+        await waitForDatabaseBarrier({
+          role: "aoa_operator",
+          queryFragment: "execution_targets",
+        });
+        if (removal === "suspend") {
+          await admin`UPDATE organization_memberships SET status = 'suspended'
+            WHERE organization_id = ${ORG_A} AND user_id = ${OWNER_A}`;
+        } else {
+          await admin`DELETE FROM organization_memberships
+            WHERE organization_id = ${ORG_A} AND user_id = ${OWNER_A}`;
+        }
+        releaseBarrier();
+        await blockingTransaction;
+
+        const result = await placement;
+        expect(result, removal).toMatchObject({
+          disposition: "queued",
+          owner: null,
+          targetId: null,
+          reasonCode: "required_target_unavailable",
+          leaseEligible: false,
+        });
+        const [stored] = await admin<{
+          disposition: string;
+          targetId: string | null;
+          targetClass: string | null;
+          targetScope: string | null;
+          targetGeneration: number | null;
+          profileHash: string | null;
+          providerHash: string | null;
+          leaseEligible: boolean;
+        }[]>`SELECT placement_disposition AS disposition,
+          placement_target_id AS "targetId", placement_target_class AS "targetClass",
+          placement_target_scope AS "targetScope", placement_target_generation AS "targetGeneration",
+          placement_profile_hash AS "profileHash",
+          placement_provider_constraint_hash AS "providerHash",
+          placement_lease_eligible AS "leaseEligible"
+          FROM job_attempts WHERE id = ${attemptId}`;
+        expect(stored).toEqual({
+          disposition: "queued",
+          targetId: null,
+          targetClass: null,
+          targetScope: null,
+          targetGeneration: null,
+          profileHash: null,
+          providerHash: null,
+          leaseEligible: false,
+        });
+
+        await restoreOwnerMembership();
+        await expect(place({ jobId, attemptId, credentialBinding: ownerBinding }))
+          .resolves.toEqual(result);
+      } finally {
+        releaseBarrier();
+        await blockingTransaction.catch(() => {});
+        await blocker.end().catch(() => {});
+        await restoreOwnerMembership();
+      }
+    }
+  }, 30_000);
+
+  it("[I-08] preserves a placement-first owner decision and makes foreign/missing authority indistinguishable", async () => {
+    const { admin } = guard();
+    const ownerBinding = {
+      credentialId: "personal-owner-b",
+      credentialKind: "personal_subscription" as const,
+      executionTargetSlug: "owner-b",
+      pinnedTargetId: null,
+    };
+    const placementFirstJob = "98000000-0000-4000-8000-000000000082";
+    const placementFirstAttempt = "99000000-0000-4000-8000-000000000082";
+    const advisoryKey = 9_009_008;
+    const gate = postgres(adminUrl, { max: 1 });
+    await restoreOwnerMembership();
+    await seedJob({ jobId: placementFirstJob, attemptId: placementFirstAttempt });
+    await admin.unsafe(`CREATE OR REPLACE FUNCTION job009_owner_placement_barrier()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.placement_decided_at IS NOT NULL THEN
+          PERFORM pg_advisory_xact_lock(${advisoryKey});
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER job009_owner_placement_barrier_trigger
+      BEFORE UPDATE ON job_attempts FOR EACH ROW
+      EXECUTE FUNCTION job009_owner_placement_barrier();`);
+    await gate`SELECT pg_advisory_lock(${advisoryKey})`;
+    try {
+      const placement = place({
+        jobId: placementFirstJob,
+        attemptId: placementFirstAttempt,
+        credentialBinding: ownerBinding,
+      });
+      await waitForDatabaseBarrier({
+        role: "aoa_app",
+        queryFragment: "job_attempts",
+        waitEvent: "advisory",
+      });
+      await admin`UPDATE organization_memberships SET status = 'suspended'
+        WHERE organization_id = ${ORG_A} AND user_id = ${OWNER_A}`;
+      await gate`SELECT pg_advisory_unlock(${advisoryKey})`;
+      const selected = await placement;
+      expect(selected).toMatchObject({
+        disposition: "selected",
+        targetId: TARGET_OWNER_B,
+        leaseEligible: true,
+      });
+      await expect(place({
+        jobId: placementFirstJob,
+        attemptId: placementFirstAttempt,
+        credentialBinding: ownerBinding,
+      })).resolves.toEqual(selected);
+    } finally {
+      await gate`SELECT pg_advisory_unlock(${advisoryKey})`.catch(() => {});
+      await gate.end().catch(() => {});
+      await admin.unsafe(`DROP TRIGGER IF EXISTS job009_owner_placement_barrier_trigger ON job_attempts;
+        DROP FUNCTION IF EXISTS job009_owner_placement_barrier()`);
+      await restoreOwnerMembership();
+    }
+
+    const authorityCases = [
+      { suffix: "083", authority: "foreign" as const },
+      { suffix: "084", authority: "missing" as const },
+    ];
+    const denied: Array<Record<string, unknown>> = [];
+    for (const current of authorityCases) {
+      await admin`DELETE FROM organization_memberships
+        WHERE organization_id = ${ORG_A} AND user_id = ${OWNER_A}`;
+      if (current.authority === "foreign") {
+        await admin`INSERT INTO organization_memberships
+          (organization_id, user_id, role, status, joined_at)
+          VALUES (${ORG_B}, ${OWNER_A}, 'owner', 'active', now())
+          ON CONFLICT (organization_id, user_id) DO UPDATE SET status = 'active'`;
+      }
+      const jobId = `98000000-0000-4000-8000-000000000${current.suffix}`;
+      const attemptId = `99000000-0000-4000-8000-000000000${current.suffix}`;
+      await seedJob({ jobId, attemptId });
+      denied.push(await place({ jobId, attemptId, credentialBinding: ownerBinding }));
+      await admin`DELETE FROM organization_memberships
+        WHERE organization_id = ${ORG_B} AND user_id = ${OWNER_A}`;
+    }
+    expect(denied.map(({ disposition, owner, targetId, reasonCode, leaseEligible }) => ({
+      disposition, owner, targetId, reasonCode, leaseEligible,
+    }))).toEqual([
+      { disposition: "queued", owner: null, targetId: null, reasonCode: "required_target_unavailable", leaseEligible: false },
+      { disposition: "queued", owner: null, targetId: null, reasonCode: "required_target_unavailable", leaseEligible: false },
+    ]);
+
+    const nonOwnerJob = "98000000-0000-4000-8000-000000000085";
+    const nonOwnerAttempt = "99000000-0000-4000-8000-000000000085";
+    await seedJob({ jobId: nonOwnerJob, attemptId: nonOwnerAttempt });
+    await expect(place({ jobId: nonOwnerJob, attemptId: nonOwnerAttempt })).resolves.toMatchObject({
+      disposition: "selected",
+      targetId: TARGET_A,
+      leaseEligible: true,
+    });
+    await restoreOwnerMembership();
+  }, 30_000);
+
   it("persists one immutable decision and creates no lease or capacity reservation", async () => {
     const { admin } = guard();
     const jobId = "98000000-0000-4000-8000-000000000001";
@@ -663,6 +885,53 @@ integration("JOB-009 slice A schema and role boundaries", () => {
       targetClass: "managed_cloud",
       targetScope: "platform",
       targetGeneration: 4,
+      leaseEligible: true,
+    });
+  });
+
+  it("[I-07] persists byte-identical resolution across multiple shared and tenant-composed candidates", async () => {
+    const { admin } = guard();
+    const provider = providerProfile();
+    const altProfile = {
+      ...registeredProfile(provider),
+      targetId: TARGET_PLATFORM_ALT,
+    } as RegisteredTargetProfileV1;
+    const altHello = {
+      ...platformWorkerHello(),
+      workerId: WORKER_PLATFORM_ALT,
+      targetId: TARGET_PLATFORM_ALT,
+    };
+    await admin`INSERT INTO execution_targets
+      (id, organization_id, owner_user_id, slug, kind, trust_class, status, capabilities, config,
+       scope, target_authority_key, device_generation, registered_profile,
+       registered_profile_hash, provider_constraint_profile, last_seen_at)
+      VALUES (${TARGET_PLATFORM_ALT}, NULL, NULL, '00-platform-pool', 'pooled_gvisor',
+        'shared_multitenant', 'active', '{}', '{}', 'platform', 'platform', 4,
+        ${altProfile}, ${sha256(canonicalizeJsonV1(altProfile))}, ${provider},
+        ${new Date("2026-08-10T10:00:00.000Z")})`;
+    await admin`INSERT INTO workers
+      (id, scope, organization_id, owner_user_id, execution_target_id, target_authority_key,
+       device_public_key, device_thumbprint, device_generation, profile_hash, profile_snapshot,
+       enrolled_at, last_seen_at, label, status)
+      VALUES (${WORKER_PLATFORM_ALT}, 'platform', NULL, NULL, ${TARGET_PLATFORM_ALT}, 'platform',
+        'job-009-alt-platform-key', ${"3".repeat(64)}, 4,
+        ${sha256(JSON.stringify(altHello))}, ${altHello},
+        ${new Date("2026-08-10T09:59:00.000Z")}, ${new Date("2026-08-10T10:00:00.000Z")},
+        'JOB-009 alternate platform worker', 'enrolled')`;
+
+    const results: Array<Record<string, unknown>> = [];
+    for (const suffix of ["086", "087"]) {
+      const jobId = `98000000-0000-4000-8000-000000000${suffix}`;
+      const attemptId = `99000000-0000-4000-8000-000000000${suffix}`;
+      await seedJob({ jobId, attemptId, targetClass: "managed_cloud" });
+      results.push(await place({ jobId, attemptId }));
+    }
+    expect(results[0]).toEqual(results[1]);
+    expect(results[0]).toMatchObject({
+      disposition: "selected",
+      targetId: TARGET_PLATFORM_ALT,
+      targetClass: "managed_cloud",
+      targetScope: "platform",
       leaseEligible: true,
     });
   });

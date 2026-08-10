@@ -20,10 +20,13 @@ const NOW = new Date("2026-08-10T10:00:00.000Z");
 
 let decide: Decide | null = null;
 let placementModule: Record<string, unknown> | null = null;
+let resolverModule: Record<string, unknown> | null = null;
 
 beforeAll(async () => {
   const module = await import("../services/job-placement.js").catch(() => null);
+  const resolver = await import("../services/execution-target-resolver.js").catch(() => null);
   placementModule = module as Record<string, unknown> | null;
+  resolverModule = resolver as Record<string, unknown> | null;
   decide = module && typeof module.decideJobPlacement === "function"
     ? module.decideJobPlacement as Decide
     : null;
@@ -209,7 +212,90 @@ function seededShuffle<T>(values: readonly T[], seed: number): T[] {
   return result;
 }
 
+function permutations<T>(values: readonly T[]): T[][] {
+  if (values.length <= 1) return [[...values]];
+  return values.flatMap((value, index) => permutations([
+    ...values.slice(0, index),
+    ...values.slice(index + 1),
+  ]).map((rest) => [value, ...rest]));
+}
+
+function resolverRow(input: {
+  suffix: number;
+  slug: string;
+  targetClass: "managed_cloud" | "organization_dedicated" | "owner_desktop";
+}) {
+  const targetId = `94100000-0000-4000-8000-${input.suffix.toString().padStart(12, "0")}`;
+  const provider = providerProfile();
+  const profile = targetProfile({ targetId, targetClass: input.targetClass, provider });
+  const legacy = {
+    managed_cloud: { kind: "pooled_gvisor", trustClass: "shared_multitenant" },
+    organization_dedicated: { kind: "dedicated_worker", trustClass: "dedicated_tenant" },
+    owner_desktop: { kind: "local_host", trustClass: "local_trusted" },
+  } as const;
+  return {
+    id: targetId,
+    slug: input.slug,
+    ...legacy[input.targetClass],
+    status: "active",
+    organizationId: profile.organizationId,
+    ownerUserId: profile.ownerPrincipalId,
+    scope: profile.scope,
+    targetAuthorityKey: profile.scope === "platform"
+      ? "platform"
+      : profile.scope === "organization"
+        ? `organization:${ORG}`
+        : `owner:${ORG}:${OWNER}`,
+    deviceGeneration: 1,
+    registeredProfile: profile,
+  };
+}
+
 describe("JOB-009 slice B deterministic placement policy", () => {
+  it("[I-07] gives every Decision #117 candidate permutation one registered-authority order", () => {
+    const order = resolverModule?.sortExecutionTargetRowsForPlacement;
+    const choose = resolverModule?.chooseExecutionTargetRow;
+    expect(typeof order, "placement must total-order candidates before Decision #117 resolution").toBe("function");
+    expect(typeof choose).toBe("function");
+    if (typeof order !== "function" || typeof choose !== "function") return;
+
+    const rows = [
+      resolverRow({ suffix: 2, slug: "pool-b", targetClass: "managed_cloud" }),
+      resolverRow({ suffix: 1, slug: "pool-a", targetClass: "managed_cloud" }),
+      resolverRow({ suffix: 4, slug: "dedicated-b", targetClass: "organization_dedicated" }),
+      resolverRow({ suffix: 3, slug: "dedicated-a", targetClass: "organization_dedicated" }),
+      resolverRow({ suffix: 6, slug: "owner-b", targetClass: "owner_desktop" }),
+      resolverRow({ suffix: 5, slug: "owner-a", targetClass: "owner_desktop" }),
+    ];
+    const expectedOrder = [rows[1]!.id, rows[0]!.id, rows[3]!.id, rows[2]!.id, rows[5]!.id, rows[4]!.id];
+    const expectedShared = rows[1]!.id;
+    const expectedBoundOwner = rows[4]!.id;
+    const expectedPin = rows[2]!.id;
+
+    for (const candidateOrder of permutations(rows)) {
+      const sorted = (order as (targets: unknown[]) => typeof rows)(candidateOrder);
+      expect(sorted.map((target) => target.id)).toEqual(expectedOrder);
+      expect((choose as (input: unknown) => { id: string } | null)({
+        credentialKind: "company_api_key",
+        pinnedTargetId: null,
+        executionTargetSlug: null,
+        targets: sorted,
+      })?.id).toBe(expectedShared);
+      expect((choose as (input: unknown) => { id: string } | null)({
+        credentialKind: "personal_subscription",
+        pinnedTargetId: null,
+        executionTargetSlug: "owner-b",
+        targets: sorted,
+      })?.id).toBe(expectedBoundOwner);
+      expect((choose as (input: unknown) => { id: string } | null)({
+        credentialKind: "company_api_key",
+        pinnedTargetId: expectedPin,
+        executionTargetSlug: null,
+        targets: sorted,
+      })?.id).toBe(expectedPin);
+    }
+  });
+
   it("[I-01] normalizes the exact JOB-001 persisted shapes without caller-authored provider authority", async () => {
     const normalize = placementModule?.normalizeSubmittedJobPlacementFacts;
     expect(typeof normalize, "JOB-001 persisted facts need a production JOB-009 normalizer").toBe("function");
