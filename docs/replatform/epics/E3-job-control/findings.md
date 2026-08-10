@@ -883,3 +883,15 @@ roots. It replaces environment dumps with a closed non-secret descriptor schema,
 output/commands before persistence, and requires injected environment/DB/argv/stdout/stderr
 canaries to be absent from every console/file/archive/QA/handoff artifact. Status remains
 pending fresh exact dual review; RED correction and GREEN remain unauthorized.
+
+Exact review of `9d672ad743d08542c769a58988448294db01470e` found the three prior harness
+P1s materially closed but rejected two final P1s: a manifest cannot contain the hash/tree of
+the future commit that contains that manifest, and permanent artifact/attestation URI strings
+were not explicitly secret-safe or included in the canary matrix. The corrected manifest pins
+the clean evidence-parent revision/tree and its own sole added path; the runner derives and
+verifies the resulting single-parent gate commit/tree and one-file diff, while later QA/handoff
+pins the actual gate/manifest blobs. Strict manifest and evidence schemas permit only
+credentialless content-addressed URIs, reject userinfo/query/fragment/presigned references,
+keep access credentials out-of-band, and recursively scan every manifest string for credential
+patterns and generated canaries before commit and execution. Status remains pending fresh
+exact dual review; implementation remains unauthorized.

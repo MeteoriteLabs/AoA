@@ -521,3 +521,21 @@ descriptor schema, fail-closed command/stdout/stderr redaction, and an archive-w
 The runner contract mutates every input class and injects canaries through environment, DB
 credentials, argv, and child output. JOB-003 remains `needs_changes`; implementation is paused
 pending another fresh exact dual review.
+
+## Static-certificate successor review attempt 6 - needs changes
+
+Whole-plan and schema/security reviewers checked exact revision
+`9d672ad743d08542c769a58988448294db01470e`. Both kept all prior certificate, migration,
+attestation, provenance, and archive-redaction domains closed, but rejected a shared P1: the
+manifest required the hash/tree of its own future containing commit and therefore could never
+be constructed. Security review also found that permanent artifact/attestation URI fields
+were not explicitly non-secret and were absent from the manifest canary matrix.
+
+The correction pins the pre-manifest evidence-parent revision/tree and the exact one manifest
+path to add, then derives and verifies the single-parent gate commit/tree after commit; only
+later immutable QA/handoff records those actual gate and manifest blobs. Strict manifest and
+evidence schemas now allow only credentialless content-addressed URIs, reject userinfo/query/
+fragment/presigned references, keep access credentials out-of-band, and recursively scan
+every manifest string. Tests inject canaries into artifact, attestation, policy, trust-root,
+and nested string fields and prove validation fails without echo. JOB-003 remains
+`needs_changes`; RED correction and GREEN remain paused for fresh exact dual review.

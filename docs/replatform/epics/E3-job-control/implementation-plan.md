@@ -1346,21 +1346,26 @@ The independent E3 Integration Gate Owner owns `E3-PERF-01`; a distinct named Se
 Owner prospectively approves its manifest and independently reviews the result. Before the
 first sample, after the implementation candidate is frozen, they commit an immutable
 `qa/<date>-e3-perf-01-manifest-<sha12>-aN.json`. That manifest pins the exact 40-hex
-implementation revision and must validate against strict, unknown-key-rejecting
-`scripts/e3-perf-01-manifest.schema.json`. It pins the
+implementation revision plus the exact pre-manifest evidence-parent revision/root tree and
+its own one allowed added path. It must validate against strict, unknown-key-rejecting,
+explicitly non-secret `scripts/e3-perf-01-manifest.schema.json`. It deliberately does **not**
+contain its future Git blob, containing commit, or containing root tree. It pins the
 immutable OS/runner image digest; CPU model and vCPU allocation;
 RAM; storage class, filesystem, and tmpfs settings; Node/pnpm versions; PostgreSQL version,
 binary SHA-256, and complete non-default configuration; exclusive competing-workload policy;
 dataset seeds/counts; raw-artifact destination and >=180-day retention deadline; and every
-numeric threshold. It also pins the gate revision/root Git tree; Git blob IDs and SHA-256 for
+numeric threshold. It also pins Git blob IDs and SHA-256 for
 the runner, runner contract test, load suite, root/server/DB manifests, lockfile/workspace/npm
 configuration, root/server Vitest configuration, and every tracked file below `server/src`,
 `packages/db/src`, `packages/shared/src`, and `packages/worker-protocol/src`; Node/pnpm
 executable hashes; the complete frozen-install package inventory and package-store integrity
 digest; the strict manifest/evidence JSON-schema Git blobs and hashes; and the approved runner-image
 provenance inputs below. Both owners and their approval timestamps are part of the committed
-manifest. The gate revision may differ from the implementation candidate only by this
-prospective evidence manifest and already-reviewed ticket evidence.
+manifest. The evidence parent already contains every reviewed ticket artifact; the manifest
+commit must have that exact single parent and add exactly that one manifest path with no other
+delta. The resulting gate revision/tree and manifest Git blob are derived only after commit,
+then verified by the runner and pinned by the later immutable QA/handoff, avoiding any Git
+self-reference.
 
 The first manifest freezes these `INITIAL` latency thresholds before execution: shapes 2/3
 p95 <=250 ms and max <=1,500 ms; head-saturated and fully-certified p95 <=2,000 ms and max
@@ -1383,13 +1388,25 @@ or tampered image is a pre-sample HARD failure. The verified output and policy/r
 retained with the campaign. A test substitutes an unapproved digest and a forged attestation;
 both must fail before the load child starts.
 
-Execution occurs only in a disposable clean detached checkout of the exact gate revision,
+Every manifest URI is a credentialless content-addressed reference using only the reviewed
+`https`, `s3`, `gs`, or `oci` scheme. The schema rejects URI userinfo, query, fragment,
+non-digest tags, inline credentials, presigned URLs, and every unapproved scheme; access
+credentials remain out-of-band and never enter the process argv, manifest, Git, console, or
+evidence. Before owners approve or commit the manifest, and again before execution, the
+validator recursively scans every string value—not only known URI fields—for the generated
+secret-canary set and credential patterns. Canary fixtures in raw-artifact destination,
+attestation, policy, trust-root, and nested manifest strings must all fail without echoing the
+value.
+
+Execution occurs only in a disposable clean detached checkout of the derived gate revision,
 with Git replacement processing disabled, the source and frozen-install dependency tree
 mounted read-only inside the approved image, and only the external evidence directory
 writable. Immediately before the first sample and after the last child exits,
-`scripts/run-e3-perf-01.mjs` requires detached HEAD equality; no replace refs; empty staged,
+`scripts/run-e3-perf-01.mjs` requires detached HEAD equality; a single parent equal to the
+manifest's evidence-parent revision/tree; a parent-to-HEAD diff containing only the exact
+added manifest path; implementation-revision ancestry; no replace refs; empty staged,
 tracked, untracked, and unexpected ignored state; `pnpm install --frozen-lockfile` provenance
-plus package-store integrity; the recorded root tree; and byte-for-byte equality between every
+plus package-store integrity; the parent input tree and derived HEAD tree; and byte-for-byte equality between every
 tracked working file and its `git --no-replace-objects cat-file` blob. It separately verifies
 the critical runner/test/config/manifest/lock/schema/migration blob list above before spawning
 the child. Any mismatch invalidates the entire attempt even when samples met thresholds. The
@@ -1414,9 +1431,23 @@ QA fixture, and handoff fixture.
 Its Node contract test also fails an untracked/modified manifest, dirty runner/load/config/
 lock/schema/migration input, Git replacement, changed installed dependency, pre/post mutation,
 revision or environment mismatch, nonempty/reused output path, altered thresholds, missing
-owner approvals, and a simulated threshold/structural miss; a hermetic success fixture proves
-the expanded child command and complete archive manifest. The Gate Owner runs this exact
-trigger, substituting the already committed manifest path and its literal attempt number:
+owner approvals, a self-referential containing-commit/tree field, a wrong/multiple parent or
+extra parent-to-gate delta, URI userinfo/query/fragment/presign/non-digest references, a canary
+in every manifest string class, and a simulated threshold/structural miss; a hermetic success
+fixture proves the expanded child command and complete archive manifest. From the clean
+evidence-parent revision, the owners run this exact pre-commit validation before approving and
+committing the one new manifest file:
+
+```powershell
+$perfManifest = 'docs/replatform/epics/E3-job-control/qa/<new-manifest-name>.json'
+$perfParent = git rev-parse HEAD
+Invoke-NativeGate 'E3-PERF-01 manifest preflight' {
+  node scripts/run-e3-perf-01.mjs --validate-manifest $perfManifest --evidence-parent $perfParent
+}
+```
+
+After the one-file manifest commit, the Gate Owner runs this exact campaign trigger from its
+derived detached gate revision, substituting the committed manifest path and literal attempt:
 
 ```powershell
 $perfManifest = 'docs/replatform/epics/E3-job-control/qa/<committed-manifest-name>.json'
@@ -1427,7 +1458,8 @@ Invoke-NativeGate 'E3-PERF-01' {
 ```
 
 The expanded command, manifest Git blob, verified source/dependency input closure, runner-
-script Git blob, implementation/config/image/provenance/policy/trust-root digests, controlled
+script Git blob, implementation and evidence-parent revisions/trees, derived gate revision/
+tree, parent-to-gate diff, config/image/provenance/policy/trust-root digests, controlled
 artifact URI, archive SHA-256, retention deadline, redaction/canary result, and every threshold/
 result are recorded in immutable
 `qa/<date>-e3-perf-01-<sha12>-aN.md`. The distinct Security Gate Owner writes
@@ -1886,7 +1918,7 @@ attributable without becoming accepted product actions.
 | H-01 tenant isolation | Every ticket; final hostile cross-Org/Company submit/enroll/place/lease/event/control/operator/parity matrix through `runInTenant`. Zero tolerance. |
 | H-02 lease authority | JOB-003–007/011–014; one shared stale/replaced fence surface matrix. Zero tolerance. |
 | H-03 single executor | JOB-003/004/006/007/010/014 concurrent lease/replace/legacy races. Zero tolerance. |
-| H-04 secret containment | E1 validators + JOB-001/002/005/008/013 redaction/canary tests + E3-PERF-01 closed evidence-schema, child-output redaction, and archive/QA/handoff secret-canary scan. |
+| H-04 secret containment | E1 validators + JOB-001/002/005/008/013 redaction/canary tests + E3-PERF-01 strict non-secret manifest/evidence schemas, credentialless URI checks, child-output redaction, and recursive manifest/archive/QA/handoff secret-canary scans. |
 | H-05 sandbox boundary | E3 sends only protocol control and no DB credential/tenant command to a worker; E6F-05 supplies the topology proof and E3 changes may not weaken it. |
 | H-06 network boundary | E3 exposes no public ingress and no new egress; worker-control auth/topology negative enters E6/D1. |
 | H-07 hosted exclusions | Default-off flag and existing distributed-exclusion checks remain green. |
@@ -1916,13 +1948,16 @@ gate.
 
 1. Freeze one implementation candidate after all fourteen reviewer-completed ledgers.
 2. Before any gate sample, the Integration Gate Owner and distinct Security Gate Owner
-   prospectively approve and commit the `E3-PERF-01` manifest described above. That evidence-
-   only commit becomes the gate revision; its diff from the frozen implementation candidate
-   may contain only the performance manifest and already-reviewed ticket evidence. Any code,
-   dependency, migration, generated artifact, or runtime configuration change is a new
-   implementation candidate and invalidates the campaign. The owners also verify the exact
-   E6F-06 image/signature-or-attestation/policy/trust-root evidence before provisioning the
-   disposable read-only detached checkout.
+   prospectively approve the `E3-PERF-01` manifest described above against a clean evidence-
+   parent revision that already contains all reviewed ticket records. The manifest pins that
+   parent revision/tree and its own intended added path, but never its containing commit/tree.
+   After strict schema/secret/parent preflight passes, commit exactly that one new file as a
+   single-parent commit. Derive that commit/tree as the gate revision, verify its parent and
+   one-path added diff, and record it later in QA/handoff. Any other code, evidence, dependency,
+   migration, generated artifact, or runtime-configuration delta is a new implementation
+   candidate and invalidates the campaign. The owners also verify the exact E6F-06 image/
+   signature-or-attestation/policy/trust-root evidence before provisioning the disposable
+   read-only detached checkout.
 3. Build workspace packages before tests. Run focused critical suites 3×, then D0-R01/R02,
    foundation/protocol-boundary/idempotency/integration-hygiene checks, and byte-clean check.
 4. Run the E3-owned D1 contributions at their INITIAL volumes/topology, retaining seeds and
@@ -2211,13 +2246,24 @@ trust-root linkage and negative verification, a closed non-secret evidence schem
 child-output redaction, and archive/QA/handoff canary scans. Another fresh exact dual review is
 required before RED correction or GREEN.
 
+Exact review of `9d672ad743d08542c769a58988448294db01470e` kept all prior domains closed
+but rejected a cryptographic self-reference: the manifest tried to pin the commit/tree that
+would contain it. Schema/security review also found that permanent manifest URI strings were
+strict in shape but not explicitly secret-safe. This revision instead pins the pre-manifest
+evidence parent/tree and exact one-file addition, derives the gate commit/tree after commit,
+and records those later in QA/handoff. Both manifest and evidence schemas are non-secret;
+artifact/provenance URIs are credentialless content-addressed references with no userinfo,
+query, or fragment; access credentials stay out-of-band; and every manifest string receives
+recursive credential/canary scanning before commit and execution. Another fresh exact dual
+review is required.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–5 rejected | `AMENDMENT RE-REVIEW REQUIRED` | Original plan accepted; the cyclic cursor and five certificate revisions were rejected. The corrected SQL-comparable, snapshot-bound, split-generated-migration successor now includes a source-attested, provenance-verified, secret-safe performance gate and is paused pending fresh whole-plan and schema/security reviews. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–6 rejected | `AMENDMENT RE-REVIEW REQUIRED` | Original plan accepted; the cyclic cursor and six certificate revisions were rejected. The corrected SQL-comparable, snapshot-bound, split-generated-migration successor now includes a constructible parent-bound, source-attested, provenance-verified, secret-safe performance gate and is paused pending fresh whole-plan and schema/security reviews. |
 | Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
 | Claude (user-provided) | pasted review | External plan delta review | 1 | `TRIAGED — STALE BASE` | Reviewed origin `8e2faa590`, not the local plan; three concerns were already closed, while JOB-009 sizing and explicit JOB-012–014 disablement were valid deltas and are now resolved in plan. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
