@@ -1167,6 +1167,46 @@ parsed stored `workerHelloV1` after replacing only `capacity` with the exact neu
 above, using lowercase SHA-256 of `canonicalizeJsonV1`; it does not reuse or attempt to
 reconstruct the enrollment-time `sha256(JSON.stringify(...))` authorization hash. Thus every
 static matcher-consumed snapshot field is bound even if `workers.profile_hash` is unchanged.
+Generation provenance remains distinct even though Decision #124 requires logical-worker,
+platform physical-worker, target, and authenticated generations to agree on every successful
+platform poll. `server/src/services/job-lease-eligibility.ts` exports the closed production
+types `LeaseStaticContextSources` and `LeaseStaticContextInput`, plus the pure
+`buildLeaseStaticContextInput(sources)` projection. `LeaseStaticContextInput` is exactly the 19
+non-version facts above; sources and callers cannot supply version keys. The hash function
+constructs an explicit 25-key object by adding the six exported server version constants, so
+extra caller properties cannot enter the preimage. Any post-deployment key-set, projection,
+neutralization, or algorithm change bumps `certificateVersion` and its affected component
+version.
+
+`LeaseStaticContextSources` groups the Organization ID, successfully parsed `WorkerHelloV1`,
+non-null validated authority/profile/thumbprint facts, and readonly logical-worker and current-
+target snapshots. It is a target-scope-discriminated union: normalized `platform` scope requires
+one non-null minimal guarded physical-worker snapshot; normalized `organization` or `owner`
+scope requires `physicalAuthorityWorker: null`. The physical snapshot is one all-or-none object,
+so a partial triple is not representable. `buildLeaseStaticContextInput` enforces the same
+discriminator at runtime as well as in TypeScript; platform/null, non-platform/non-null, raw or
+cast partial physical sources, or missing validated facts raise `internal_unavailable` and
+abort the enclosing transaction. Any proof or liveness statement already executed in that
+attempt rolls back, leaving no committed proof, liveness, certificate, attempt, or lease
+mutation. Deliberately distinct generation values are allowed only in the pure builder test and
+do not relax H-02 poll authority equality.
+
+`server/src/services/job-leasing.ts` has one lexical `buildLeaseStaticContextInput` call site,
+but executes it exactly once per head-restart attempt inside that attempt's `runInTenant`
+transaction, only after that attempt has reacquired and validated the logical worker,
+post-advisory current target, guarded physical authority, and parsed/normalized hello. It hashes
+only that returned input once and binds the value to that attempt's sole candidate-selection
+statement. No source snapshot, parsed hello, context input, or hash survives rollback or is
+reused by a later attempt. The logical generation comes only from the locked logical-worker
+snapshot, the physical generation only from the guarded operator physical-worker snapshot, and
+the target generation only from the current target snapshot; none may come from the request,
+authenticated-generation scalar, or a shared sibling local.
+
+`createJobLeasingService` exposes no builder, observer, authority guard, or test-only injection
+hook. A symbol-aware call-site contract resolves exact import provenance and rejects source
+substitution or collapse, shadowed/fake bindings, alias/reassignment, spread or computed
+override, wrapper laundering, call/apply/bind, conditional/try-catch/`Promise.all` non-
+dominance, a second builder/hash call, inline hashing, or service-option injection.
 All six version values are stable exported literals covered by contract tests; any
 canonicalizer, leasing algorithm, matcher, placement normalizer, or workload-vocabulary
 behavior change must bump `certificateVersion` before deployment. A worker/device/profile,
@@ -1313,14 +1353,31 @@ index `0230`, and custom RLS `0231`; exact
 Organization/cross-Company certificate denial; and raw-`aoa_app` H-01 oracle probes for both
 the attempt FK and logical-worker-binding FK, where a real foreign parent and a random missing
 parent must return the identical SQLSTATE, constraint name, and server message. Add current-
-hash versus worker generation/profile, platform physical-worker generation/profile, target
-generation/profile/provider, algorithm-version, and candidate-column mismatch cases, proving
-every change makes the old certificate nonmatching before cleanup. Programmatically mutate
-each non-capacity static matcher-consumed `workerHelloV1` field while retaining the same stored
-`workers.profile_hash`, and separately write a correctly rehashed changed profile; both must
-change `logicalWorkerStaticMatcherProfileHash`, ignore the old certificate, and expose the
-candidate for current evaluation. Capacity-only mutations remain governed by the dynamic
-gates, must leave `logicalWorkerStaticMatcherProfileHash` unchanged, and must not create static
+hash cases for worker generation/profile, platform physical-worker generation/profile, target
+generation/profile/provider, algorithm version, and candidate-column mismatches. Because H-02
+rejects a successful platform poll whenever logical-worker, physical-worker, target, and
+authenticated generations diverge, generation-source independence is proved in three layers:
+(1) a behavioral test of the production typed builder with deliberately distinct logical,
+physical, and target generations plus one-source-at-a-time mutations; (2) a symbol-aware static
+contract proving the real poll maps each builder source from its exact locked/guarded authority
+snapshot and binds the returned hash to selection; and (3) integration tests proving each
+isolated DB generation divergence fails before claim with no certificate, attempt, lease,
+proof, or liveness mutation, followed by a coherent rotation that makes the old certificate
+nonmatching before cleanup. Do not bypass authority or require divergent rows to reach
+candidate evaluation. Builder REDs also reject platform/null, non-platform/non-null, and
+raw/cast partial physical snapshots. A head-restart RED forces attempt one to roll back, changes
+a same-generation guarded physical or target profile before attempt two, and proves attempt two
+reacquires its sources and cannot reuse the first attempt's context input or hash. A separate
+restart subcase changes one non-capacity field in the logical worker's stored `profile_snapshot`
+while retaining the same `workers.profile_hash`; attempt two must reparse that hello, reject the
+old static matcher hash/certificate, and reevaluate the candidate. All rollback assertions
+compare committed database state rather than assuming that no repository statement ran.
+Programmatically mutate each non-capacity static matcher-consumed
+`workerHelloV1` field while retaining the same stored `workers.profile_hash`, and separately
+write a correctly rehashed changed profile; both must change
+`logicalWorkerStaticMatcherProfileHash`, ignore the old certificate, and expose the candidate
+for current evaluation. Capacity-only mutations remain governed by the dynamic gates, must
+leave `logicalWorkerStaticMatcherProfileHash` unchanged, and must not create static
 certificates. Cover terminal/retired-worker cleanup and cascades.
 
 The Linux load-characterization lane seeds exactly 1,000,000 canonical candidate rows and
