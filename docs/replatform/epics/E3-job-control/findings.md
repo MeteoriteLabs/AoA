@@ -895,3 +895,17 @@ credentialless content-addressed URIs, reject userinfo/query/fragment/presigned 
 keep access credentials out-of-band, and recursively scan every manifest string for credential
 patterns and generated canaries before commit and execution. Status remains pending fresh
 exact dual review; implementation remains unauthorized.
+
+Exact review of `bddde5b13503799d9b84fed255ddc66cb0f74f4d` found the containing-commit
+self-reference and permanent-string secret issues closed but identified two final P1s. The
+manifest/runner did not constrain the implementation-to-evidence-parent interval, so an
+intervening unreviewed source/config/schema change could be executed; and a prospective output
+destination could not already be digest-addressed before the archive existed. The correction
+pins the exact evidence-only implementation-to-parent path/mode/blob/review closure, rejects
+every unlisted delta, and requires every executable/config/dependency/generated/schema/
+migration blob to equal the implementation revision. Pre-existing inputs remain digest-bound;
+the output uses an approved credentialless repository plus immutable attempt namespace, then
+derives its digest-addressed final URI only after scan/hash. Contract tests cover intervening
+code/config/migration, unlisted evidence, output-namespace drift, and successful future-output
+derivation. Status remains pending fresh exact dual review; RED correction and GREEN remain
+unauthorized.

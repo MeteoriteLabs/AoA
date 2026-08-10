@@ -539,3 +539,21 @@ fragment/presigned references, keep access credentials out-of-band, and recursiv
 every manifest string. Tests inject canaries into artifact, attestation, policy, trust-root,
 and nested string fields and prove validation fails without echo. JOB-003 remains
 `needs_changes`; RED correction and GREEN remain paused for fresh exact dual review.
+
+## Static-certificate successor review attempt 7 - needs changes
+
+Whole-plan and schema/security reviewers checked exact revision
+`bddde5b13503799d9b84fed255ddc66cb0f74f4d`. Both kept all prior findings closed. Whole-plan
+review found that implementation ancestry plus a parent-to-manifest proof did not prevent
+unreviewed executable/config/schema drift between the implementation revision and evidence
+parent. Security review found that the unknown future output archive could not prospectively
+have the digest-addressed destination required of pre-existing input references.
+
+The correction pins and validates the exact reviewed evidence-only implementation-to-parent
+path/mode/blob closure and rejects any unlisted evidence or executable/config/dependency/
+generated/schema/migration change. The manifest now distinguishes digest-bound pre-existing
+inputs from a credentialless approved output repository plus immutable attempt namespace;
+after the secret scan and archive hash, the runner derives the final digest-addressed URI and
+records URI+SHA in QA/handoff. Tests cover intervening source/config/migration drift, unlisted
+evidence, wrong output origin/prefix/attempt, and successful unknown-future-output derivation.
+JOB-003 remains `needs_changes`; implementation is paused pending fresh exact dual review.

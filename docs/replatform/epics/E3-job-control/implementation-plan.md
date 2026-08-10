@@ -1347,13 +1347,17 @@ Owner prospectively approves its manifest and independently reviews the result. 
 first sample, after the implementation candidate is frozen, they commit an immutable
 `qa/<date>-e3-perf-01-manifest-<sha12>-aN.json`. That manifest pins the exact 40-hex
 implementation revision plus the exact pre-manifest evidence-parent revision/root tree and
-its own one allowed added path. It must validate against strict, unknown-key-rejecting,
+its own one allowed added path. It also pins the complete no-replace implementation-to-parent
+diff as an exact list of evidence-only path, add/modify status, file mode, old/new Git blob,
+SHA-256, and independent review-evidence blob; no wildcard or directory allowlist is valid.
+It must validate against strict, unknown-key-rejecting,
 explicitly non-secret `scripts/e3-perf-01-manifest.schema.json`. It deliberately does **not**
 contain its future Git blob, containing commit, or containing root tree. It pins the
 immutable OS/runner image digest; CPU model and vCPU allocation;
 RAM; storage class, filesystem, and tmpfs settings; Node/pnpm versions; PostgreSQL version,
 binary SHA-256, and complete non-default configuration; exclusive competing-workload policy;
-dataset seeds/counts; raw-artifact destination and >=180-day retention deadline; and every
+dataset seeds/counts; credentialless output-store/repository plus immutable attempt namespace
+and >=180-day retention deadline; and every
 numeric threshold. It also pins Git blob IDs and SHA-256 for
 the runner, runner contract test, load suite, root/server/DB manifests, lockfile/workspace/npm
 configuration, root/server Vitest configuration, and every tracked file below `server/src`,
@@ -1388,15 +1392,22 @@ or tampered image is a pre-sample HARD failure. The verified output and policy/r
 retained with the campaign. A test substitutes an unapproved digest and a forged attestation;
 both must fail before the load child starts.
 
-Every manifest URI is a credentialless content-addressed reference using only the reviewed
-`https`, `s3`, `gs`, or `oci` scheme. The schema rejects URI userinfo, query, fragment,
-non-digest tags, inline credentials, presigned URLs, and every unapproved scheme; access
-credentials remain out-of-band and never enter the process argv, manifest, Git, console, or
-evidence. Before owners approve or commit the manifest, and again before execution, the
-validator recursively scans every string value—not only known URI fields—for the generated
-secret-canary set and credential patterns. Canary fixtures in raw-artifact destination,
-attestation, policy, trust-root, and nested manifest strings must all fail without echoing the
-value.
+Every pre-existing manifest input URI (image, attestation, verification policy, trust root,
+and referenced evidence) is a credentialless content-addressed reference using only the
+reviewed `https`, `s3`, `gs`, or `oci` scheme. The prospective output field is different: it
+pins an exact approved store/repository origin plus immutable
+`e3-perf-01/<implementation-sha40>/aN` namespace, because the archive digest does not exist
+yet. It is not an evidence reference and cannot be used as input. After scanning and hashing
+the completed archive, the runner derives the final
+`<output-namespace>/sha256/<archive-sha256>` URI; only that digest-addressed URI and matching
+SHA-256 enter QA/handoff. The schema rejects input refs without a digest, output namespaces
+outside the approved origin/prefix/attempt, URI userinfo, query, fragment, non-digest image
+tags, inline credentials, presigned URLs, and every unapproved scheme; access credentials
+remain out-of-band and never enter process argv, manifest, Git, console, or evidence. Before
+owners approve or commit the manifest, and again before execution, the validator recursively
+scans every string value—not only known URI fields—for the generated secret-canary set and
+credential patterns. Canary fixtures in output namespace, attestation, policy, trust-root,
+referenced-evidence URI, and nested manifest strings must all fail without echoing the value.
 
 Execution occurs only in a disposable clean detached checkout of the derived gate revision,
 with Git replacement processing disabled, the source and frozen-install dependency tree
@@ -1404,12 +1415,16 @@ mounted read-only inside the approved image, and only the external evidence dire
 writable. Immediately before the first sample and after the last child exits,
 `scripts/run-e3-perf-01.mjs` requires detached HEAD equality; a single parent equal to the
 manifest's evidence-parent revision/tree; a parent-to-HEAD diff containing only the exact
-added manifest path; implementation-revision ancestry; no replace refs; empty staged,
+added manifest path; and a no-replace implementation-to-parent diff byte-for-byte equal to
+the manifest's exact reviewed-evidence list. Every path not on that list—and specifically all
+source, script, package/config/lock, generated, schema, and migration inputs—must have the same
+mode/blob as the implementation revision. The implementation revision must be an ancestor;
+no replace refs; empty staged,
 tracked, untracked, and unexpected ignored state; `pnpm install --frozen-lockfile` provenance
 plus package-store integrity; the parent input tree and derived HEAD tree; and byte-for-byte equality between every
 tracked working file and its `git --no-replace-objects cat-file` blob. It separately verifies
 the critical runner/test/config/manifest/lock/schema/migration blob list above before spawning
-the child. Any mismatch invalidates the entire attempt even when samples met thresholds. The
+the child and records both verified diffs. Any mismatch invalidates the entire attempt even when samples met thresholds. The
 read-only mount prevents a mid-run input swap; the post-check detects an environment escape.
 
 The runner then launches `job-leasing-load.integration.test.ts --maxWorkers=1` and emits only
@@ -1432,9 +1447,13 @@ Its Node contract test also fails an untracked/modified manifest, dirty runner/l
 lock/schema/migration input, Git replacement, changed installed dependency, pre/post mutation,
 revision or environment mismatch, nonempty/reused output path, altered thresholds, missing
 owner approvals, a self-referential containing-commit/tree field, a wrong/multiple parent or
-extra parent-to-gate delta, URI userinfo/query/fragment/presign/non-digest references, a canary
-in every manifest string class, and a simulated threshold/structural miss; a hermetic success
-fixture proves the expanded child command and complete archive manifest. From the clean
+extra parent-to-gate delta, an intervening source/config/lock/schema/migration change, an
+unlisted or blob-mismatched evidence path, input URI userinfo/query/fragment/presign/non-digest
+references, output namespace origin/prefix/attempt drift, a canary in every manifest string
+class, and a simulated threshold/structural miss. A hermetic future-output fixture proves an
+unknown archive can target the approved attempt namespace and becomes digest-addressed only
+after bytes exist, while every pre-existing input remains digest-bound; the success fixture
+also proves the expanded child command and complete archive manifest. From the clean
 evidence-parent revision, the owners run this exact pre-commit validation before approving and
 committing the one new manifest file:
 
@@ -1459,7 +1478,8 @@ Invoke-NativeGate 'E3-PERF-01' {
 
 The expanded command, manifest Git blob, verified source/dependency input closure, runner-
 script Git blob, implementation and evidence-parent revisions/trees, derived gate revision/
-tree, parent-to-gate diff, config/image/provenance/policy/trust-root digests, controlled
+tree, exact implementation-to-parent reviewed-evidence closure, parent-to-gate diff,
+config/image/provenance/policy/trust-root digests, controlled
 artifact URI, archive SHA-256, retention deadline, redaction/canary result, and every threshold/
 result are recorded in immutable
 `qa/<date>-e3-perf-01-<sha12>-aN.md`. The distinct Security Gate Owner writes
@@ -1950,7 +1970,10 @@ gate.
 2. Before any gate sample, the Integration Gate Owner and distinct Security Gate Owner
    prospectively approve the `E3-PERF-01` manifest described above against a clean evidence-
    parent revision that already contains all reviewed ticket records. The manifest pins that
-   parent revision/tree and its own intended added path, but never its containing commit/tree.
+   parent revision/tree, the exact implementation-to-parent evidence-only path/blob/review
+   closure, and its own intended added path, but never its containing commit/tree. Preflight
+   proves every executable/config/dependency/generated/schema/migration blob is identical to
+   the frozen implementation revision and rejects an unlisted evidence delta.
    After strict schema/secret/parent preflight passes, commit exactly that one new file as a
    single-parent commit. Derive that commit/tree as the gate revision, verify its parent and
    one-path added diff, and record it later in QA/handoff. Any other code, evidence, dependency,
@@ -2257,13 +2280,24 @@ query, or fragment; access credentials stay out-of-band; and every manifest stri
 recursive credential/canary scanning before commit and execution. Another fresh exact dual
 review is required.
 
+Exact review of `bddde5b13503799d9b84fed255ddc66cb0f74f4d` kept the self-reference and
+secret-string fixes closed but found two remaining lineage/output P1s. The runner proved only
+evidence-parent→manifest, not that implementation→evidence-parent contained no unreviewed
+source/config/schema drift; and a prospective output destination cannot already contain the
+future archive digest. This revision pins and verifies an exact reviewed evidence-only
+implementation→parent path/blob closure while requiring every nonlisted executable/config/
+dependency/generated/schema/migration blob to equal the implementation revision. It also
+distinguishes digest-bound pre-existing input references from a credentialless approved
+output repository/attempt namespace, deriving the final digest URI only after the scanned
+archive exists and recording it in QA/handoff. Another fresh exact dual review is required.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–6 rejected | `AMENDMENT RE-REVIEW REQUIRED` | Original plan accepted; the cyclic cursor and six certificate revisions were rejected. The corrected SQL-comparable, snapshot-bound, split-generated-migration successor now includes a constructible parent-bound, source-attested, provenance-verified, secret-safe performance gate and is paused pending fresh whole-plan and schema/security reviews. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–7 rejected | `AMENDMENT RE-REVIEW REQUIRED` | Original plan accepted; the cyclic cursor and seven certificate revisions were rejected. The corrected SQL-comparable, snapshot-bound, split-generated-migration successor now includes a fully lineage-closed, constructible, source-attested, provenance-verified, secret-safe performance gate and is paused pending fresh whole-plan and schema/security reviews. |
 | Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
 | Claude (user-provided) | pasted review | External plan delta review | 1 | `TRIAGED — STALE BASE` | Reviewed origin `8e2faa590`, not the local plan; three concerns were already closed, while JOB-009 sizing and explicit JOB-012–014 disablement were valid deltas and are now resolved in plan. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
