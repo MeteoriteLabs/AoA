@@ -282,7 +282,7 @@ failed before their tenant assertions.
 
 **Disposition:** Fix round 1 added genuine RED at
 `894b84cbf464e88fd9080cf8eb0ecf0800c73940` and GREEN at
-`988c2a8af8a71593558627280ef0d220a7a54071`. Credential routes now have strict safe request/
+`988c2a8af24a1b24b1b9b896aae94e696dda53e4`. Credential routes now have strict safe request/
 error logging; a shared platform target must first have current proof-bound platform physical
 authority, while tenant heartbeat records profile liveness only and sessions recheck global
 revocation; collisions and all HTTP failures close in frozen protocol vocabulary; proof
