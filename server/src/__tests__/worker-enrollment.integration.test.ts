@@ -33,6 +33,7 @@ let app: NonOwnerDbConnection | null = null;
 let operator: NonOwnerDbConnection | null = null;
 let setupError: unknown = null;
 let enrollmentModule: Awaited<ReturnType<typeof loadEnrollmentModule>> = null;
+let sessionModule: Awaited<ReturnType<typeof loadSessionModule>> = null;
 
 async function allocatePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -48,6 +49,10 @@ async function allocatePort(): Promise<number> {
 
 async function loadEnrollmentModule() {
   return import("../services/worker-enrollment.js").catch(() => null);
+}
+
+async function loadSessionModule() {
+  return import("../middleware/worker-session-auth.js").catch(() => null);
 }
 
 function guard() {
@@ -107,6 +112,7 @@ function deviceProof(body: ReturnType<typeof enrollmentBody>, privateKey: KeyObj
 
 beforeAll(async () => {
   enrollmentModule = await loadEnrollmentModule();
+  sessionModule = await loadSessionModule();
   try {
     dataDir = await mkdtemp(join(tmpdir(), "aoa-worker-enrollment-"));
     const { default: EmbeddedPostgres } = (await import("embedded-postgres")) as { default: EmbeddedPostgresCtor };
@@ -218,5 +224,78 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       await expect(service.enroll({ code: issued.code, request: body, ...deviceProof(body, unrelated.privateKey, unrelated.publicKey, "proof-uniform-3"), method: "POST", path: "/api/worker-control/enroll" }))
         .rejects.toMatchObject({ code: "unauthorized" });
     });
+
+    it("requires fresh device possession and current target generation for a copied session", async () => {
+      const { admin, appDb, operatorDb, mod } = guard();
+      expect(sessionModule, "worker-session-auth module is not implemented").not.toBeNull();
+      const service = mod.createWorkerEnrollmentService({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      const issued = await service.issueTenantCode({
+        organizationId: ORG_A, executionTargetId: TARGET_A, scope: "organization",
+        ownerUserId: null, createdByPrincipalKind: "user", createdByPrincipalId: "founder-a",
+      });
+      const keys = generateKeyPairSync("ed25519");
+      const enrollment = enrollmentBody(WORKER_A);
+      const enrolled = await service.enroll({
+        code: issued.code, request: enrollment,
+        ...deviceProof(enrollment, keys.privateKey, keys.publicKey, "proof-session-enroll"),
+        method: "POST", path: "/api/worker-control/enroll",
+      });
+      const authenticator = sessionModule!.createWorkerSessionAuthenticator({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      const heartbeatBytes = Buffer.from(JSON.stringify({ status: "active" }));
+      const correlationId = "74000000-0000-4000-8000-000000000099";
+      const sessionProof = deviceProofFor(
+        heartbeatBytes, correlationId, keys.privateKey, keys.publicKey, "proof-session-1",
+        "/api/execution-targets/heartbeat",
+      );
+      await expect(authenticator.authenticate({
+        authorization: `Bearer ${enrolled.session}`,
+        rawBody: heartbeatBytes, proof: sessionProof, method: "POST",
+        path: "/api/execution-targets/heartbeat", correlationId,
+      })).resolves.toMatchObject({ workerId: WORKER_A, targetId: TARGET_A, targetGeneration: 1 });
+      await expect(authenticator.authenticate({
+        authorization: `Bearer ${enrolled.session}`,
+        rawBody: heartbeatBytes, proof: sessionProof, method: "POST",
+        path: "/api/execution-targets/heartbeat", correlationId,
+      })).rejects.toMatchObject({ code: "unauthorized" });
+      const copied = generateKeyPairSync("ed25519");
+      await expect(authenticator.authenticate({
+        authorization: `Bearer ${enrolled.session}`,
+        rawBody: heartbeatBytes,
+        proof: deviceProofFor(heartbeatBytes, correlationId, copied.privateKey, copied.publicKey, "proof-session-2", "/api/execution-targets/heartbeat"),
+        method: "POST", path: "/api/execution-targets/heartbeat", correlationId,
+      })).rejects.toMatchObject({ code: "unauthorized" });
+      await admin`UPDATE execution_targets SET device_generation = 2 WHERE id = ${TARGET_A}`;
+      await expect(authenticator.authenticate({
+        authorization: `Bearer ${enrolled.session}`,
+        rawBody: heartbeatBytes,
+        proof: deviceProofFor(heartbeatBytes, correlationId, keys.privateKey, keys.publicKey, "proof-session-3", "/api/execution-targets/heartbeat"),
+        method: "POST", path: "/api/execution-targets/heartbeat", correlationId,
+      })).rejects.toMatchObject({ code: "target_revoked" });
+    });
   },
 );
+
+function deviceProofFor(
+  bytes: Buffer,
+  correlationId: string,
+  privateKey: KeyObject,
+  publicKey: KeyObject,
+  proofId: string,
+  path: string,
+) {
+  const issuedAt = NOW.toISOString();
+  const publicKeyDer = publicKey.export({ format: "der", type: "spki" }).toString("base64url");
+  const canonical = [
+    "AOA-DEVICE-PROOF-V1", "POST", path,
+    createHash("sha256").update(bytes).digest("hex"), correlationId, issuedAt, proofId,
+  ].join("\n");
+  return {
+    version: "1", publicKey: publicKeyDer,
+    signature: sign(null, Buffer.from(canonical), privateKey).toString("base64url"),
+    issuedAt, proofId,
+  };
+}
