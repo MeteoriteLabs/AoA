@@ -1,21 +1,20 @@
 # JOB-009 Result - Resolve authoritative hybrid placement
 
-**Status:** `review_pending`
-**Disposition:** `review_pending`
+**Status:** `complete`
+**Disposition:** `pass`
 **Date opened (UTC):** `2026-08-10`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-009 - Resolve authoritative hybrid placement (L; three bounded internal slices)`
 **Implementer:** `Codex /root/job009_impl`
 **Reviewer:** `Codex /root/job009_review`
 **Start SHA:** 91d074bb9f79abe99aa8efaa6f9a99e0a937650e
-**Reviewed revision:** bc93203be9c5b93f0bc52eb08de2b20aede23205
+**Reviewed revision:** 4c82de037698932ac051aa33977f4c18960d1d5c
 **Implementation candidate:** 372f150c9364d86caa63eb15edaa500ba44b7021
 
 The Start SHA is the reviewed JOB-002 completion revision and the exact JOB-009 assignment
 boundary. JOB-001/JOB-002, E1's frozen v1 protocol, and the E2 tenant kernel are immutable
-inputs. This ledger is implementer evidence, not ticket certification. A fresh distinct
-reviewer must review the new candidate revision, rerun focused acceptance, append review
-attempt 3, and alone may change the ticket status and disposition to `complete` / `pass`.
+inputs. Independent review attempt 3 reproduced the fix-round acceptance on the exact reviewed
+revision and certified this ledger `complete` / `pass`.
 
 ## Dependency and scope state
 
@@ -389,3 +388,57 @@ migration, grant, frozen-E1, lease/fence, capacity, contact, execution, second-r
 cutover change. Status and disposition return only to `review_pending`; a fresh distinct
 reviewer must inspect the Start-to-candidate diff, rerun focused acceptance at the reviewed
 revision, append review attempt 3, and alone may certify JOB-009.
+
+## Independent review attempt 3 - 2026-08-10 - Codex `/root/job009_review`
+
+- **Reviewed revision:** `4c82de037698932ac051aa33977f4c18960d1d5c`
+- **Scoped fix boundary:**
+  `bc93203be9c5b93f0bc52eb08de2b20aede23205..4c82de037698932ac051aa33977f4c18960d1d5c`
+- **Canonical RED:** `d3b4f50cbcf3ce9348d2482261c098b4864f8141`
+- **Canonical GREEN:** `372f150c9364d86caa63eb15edaa500ba44b7021`
+- **Disposition:** `pass`
+- **Specification verdict:** pass.
+- **H-01 verdict:** pass - exact tenant transaction, platform-operator projection, RLS, and
+  foreign/missing non-disclosure boundaries reproduced.
+- **H-03 verdict:** pass for JOB-009 - exactly one immutable decision, no lease creation or
+  capacity claim, and lease eligibility only for `selected + active`; JOB-003 remains the lease
+  authority owner.
+- **H-04 verdict:** pass - bounded reason codes and reviewed logs expose no job payload,
+  credential, membership-existence, or platform-to-tenant detail.
+- **Migration/compatibility verdict:** pass - no fix-round schema/grant/E1 change; 0225/0226,
+  C14 replay, startup role audit, default-off behavior, and frozen v1 integrity remain green.
+
+The reviewer independently reproduced I-07 across all 720 permutations of the six mapped
+candidate classes, platform plus tenant composition, equal-slug ID ties, explicit pins, and
+credential-bound slug precedence. The resolver receives an isolated sorted copy; a temporary
+probe additionally proved caller enumeration is not mutated. Invalid registered authority
+continues to sort after mapped authority and then fail closed in the unchanged normalizer.
+
+I-08 was reproduced with real PostgreSQL barriers. Remove-first suspension and deletion both
+produce the same payload-free, null-target, lease-ineligible unavailable decision. Placement-
+first suspension and a temporary placement-first deletion probe both preserve the already-won
+immutable historical decision for JOB-003's mandatory recheck. Foreign and absent membership
+are indistinguishable, a non-owner target is unaffected, replay converges on the stored digest,
+and the selected-owner write's exact Company/Organization/principal/active-membership predicate
+cannot leave a partial target tuple or existence oracle. Both temporary probes were removed;
+the reviewer changed no production code.
+
+Fresh Windows-local evidence on the exact reviewed revision, from `C:\e3` with
+`AOA_RUN_WIN_INTEGRATION=1` where applicable (Linux CI remains DEC-03 formal authority):
+
+| Command / lane | Result |
+|---|---|
+| JOB-009 property, embedded-PG placement, and exact-grant contract | PASS - 3 files, 39/39 |
+| Temporary caller-copy plus placement-first deletion adversarial probes | PASS - 3 selected tests; probes removed |
+| Exact JOB-001 submission and JOB-002 enrollment/profile/heartbeat path | PASS - 2 files, 50/50 |
+| Resolver, worker-session, tenant-context/RLS/adversarial bundle | PASS - 8 files, 46/46 |
+| Startup, serving-role correction, and integration hygiene | PASS - 3 files, 36/36 (startup 14/14) |
+| Migration idempotency / C14 | PASS - 1 file, 5/5 |
+| Frozen E1 checker at `b7a842870ce7509d8baa75409e0ab19da375c88a`, protocol boundary, and frozen install | PASS |
+| `pnpm -r typecheck` and root `pnpm build` | PASS - build covers 24/25 workspace projects |
+| Exact integration-enabled Windows aggregate | **FAIL, honestly labeled** - 2,138 files: 2,046 passed / 4 failed / 88 skipped; 19,618 tests: 19,130 passed / 2 failed / 486 skipped. JOB-009 passed 21/21. Failures were the known frozen-consumer Windows collection `SyntaxError`, ask-founder embedded-PG cleanup `EBUSY`, one startup timeout under aggregate load (the isolated startup lane passed 14/14), and one UI discussion interaction timeout. |
+
+No Critical, Important, specification, H-01, H-03, or H-04 blocker remains. The aggregate
+failure is not called a pass or a waiver; none of its four failures is in the reviewed JOB-009
+scope, and every affected security/transaction lane passed independently. The reviewed revision
+is a 40-hex ancestor of this reviewer evidence commit. JOB-009 is `complete` / `pass`.
