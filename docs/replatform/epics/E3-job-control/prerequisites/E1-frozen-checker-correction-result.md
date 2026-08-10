@@ -1,19 +1,21 @@
 # Prerequisite P2 Result - E1 frozen-consumer checker correction
 
-**Status:** `gate_review`
-**Disposition:** `needs_changes`
+**Status:** `complete`
+**Disposition:** `pass`
 **Date (UTC):** `2026-08-10`
 **Implementer:** `Codex implementer agent (/root/e1_checker_correction_impl)`
 **Start SHA:** `baf903bc982c7580b6955b69c624fb6dcab570ae`
 **Candidate code revision:** `4fa9df3f08452509f24c94681df73a8909451684`
-**Reviewed revision:** `2bf5297b66a314858954dbdd3e53c320fba9af25`
+**Reviewed revision:** `01ad1ab554fe25c5178c7552ec047d4df45b7dcf`
 **Fix-round 1 RED revisions:** `eef4db2588505b61ffee0fc864792e3fd8873fa4`, `193cea335cec8cb9b3ed423bdb62bffb9c638a92`
 **Fix-round 1 candidate code revision:** `127247f54271bc951db04ea50c016cf4d49e0d66`
 **Fix-round 2 RED revision:** `4ffd5e0d822e8d3b3a763bca47f1c3c621072480`
 **Fix-round 2 candidate code revision:** `7d649a01802bc2062e91ded370ec7d6385c72931`
 **Scope:** Corrective E1 checker/test/evidence work only. No frozen v1 byte, worker-protocol source/schema/bundle, dependency version, or E3 ticket behavior changed.
 
-Distinct review attempts 1 and 2 requested changes. P2 is not complete, this record is not a pass, and JOB-001 is not authorized to rely on this correction.
+Distinct review attempts 1 and 2 requested changes. Review attempt 3 approves the
+exact fix-round 2 evidence revision. P2 is complete and no longer blocks JOB-001;
+this corrective record does not itself implement any E3 ticket.
 
 ## Candidate behavior
 
@@ -241,3 +243,85 @@ consumer coverage. No resolved checker security behavior was reopened.
 No worker-protocol source/schema/bundle, frozen fixture byte, v1 contract, dependency
 manifest/lockfile, freeze script, or E3 ticket implementation changed. Distinct review
 must issue the only authoritative pass/needs-changes decision.
+
+## Review attempt 3 - pass
+
+**Reviewer:** `Codex distinct reviewer (/root/e1_checker_correction_review)`
+**Reviewed revision:** `01ad1ab554fe25c5178c7552ec047d4df45b7dcf`
+**Spec verdict:** `pass`
+**Quality/security verdict:** `pass`
+**Disposition:** `pass`
+
+### Attempt-2 finding disposition
+
+1. **Zero JavaScript environment: resolved.** The smoke wrapper at
+   `scripts/check-frozen-worker-protocol-consumer.mjs:558-577` deletes every
+   JavaScript-visible environment key before a dynamic import while retaining an
+   absolute executable/module path, fixture-local cwd, empty spawn environment,
+   timeout/kill, and output cap. Independent Windows and Linux hostile probes observed
+   zero keys, no parent secret, no `NODE_OPTIONS` preload execution, and no
+   `NODE_PATH` resolution state.
+2. **Cross-process temp ownership: resolved.** The focused corpus at
+   `scripts/check-frozen-worker-protocol-consumer.test.mjs:29-39` creates one unique
+   parent per process and allocates every fixture/repository below it. The staggered
+   regression at `scripts/check-frozen-worker-protocol-consumer-isolation.test.mjs:121-166`
+   ran two complete `30/30` child corpora: A completed and removed only its parent while
+   B's live `.git/HEAD` remained, then B completed and removed its own parent. Two
+   unrelated shared-temp sentinels survived unchanged.
+
+### Independent focused acceptance
+
+| Command / probe | Outcome |
+|---|---|
+| Exact scoped package `## Diff` vs fresh unified-10 `2bf5297b6..01ad1ab55` diff | byte-identical; SHA-256 `4c78460221ccd42a916cdaef89b0238105189d88ed67af32783a5161386037b8` |
+| Checker, main corpus, isolation corpus `node --check` | all exit `0` |
+| Default focused corpus | exit `0`, `30/30` |
+| Focused corpus with inherited `commit.gpgSign=true` | exit `0`, `30/30` |
+| Staggered process-isolation suite | exit `0`, `2/2`; both child corpora `30/30`; A cannot remove B; both owned parents absent; two unrelated sentinels intact |
+| Windows hostile environment probe | zero keys; parent secret absent; `NODE_OPTIONS` preload absent; `NODE_PATH` resolution absent |
+| Linux Node 24 container environment test / hostile probe | exit `0`, `1/1`; same zero-key and injection-isolation result |
+| Actual checker at recorded source SHA | exit `0`; Zod `3.24.2`, esbuild `0.28.1` |
+| Coordinated bundle/schema/manifest, invalid sentinel, timeout, later-consumer, CRLF, missing-object, dependency, and clean-clone cases | all pass within the focused `30/30`; clean clone has no `node_modules` and double invocation is deterministic |
+| Real source and freeze-anchor replacement refs | both exit `1` with the required replacement-ref diagnostic |
+| Output-cap probe | over `1 MiB` fails via bounded `ENOBUFS` in about `52ms`; diagnostic length `108` |
+| Boundary Node suite / boundary CLI | exit `0`, `50/50` / exit `0` |
+| Package smoke / contract-manifest check | both exit `0` |
+| Worker-protocol typecheck / build | both exit `0` |
+| `pnpm -r typecheck` / `pnpm build` | both exit `0`, 24/25 workspace projects |
+| Worker-protocol tests | exit `1` on the documented Windows-local `src/cross-version.test.ts:12` collection SyntaxError; `16` files and all `490` collected tests pass |
+| Protected immutable diff / scoped diff check | both exit `0` |
+| Post-run owned-parent audit | zero `frozen-wp-corpus-run-*` and zero `frozen-wp-isolation-run-*` parents |
+
+The package-test collection error is recorded as a Windows-local non-pass and is not
+converted into a green local command. Linux CI remains the formal DEC-03 authority.
+The correction's dependency-free checker, Windows/Node lane, and local Linux Node 24
+container lane were exercised independently.
+
+### Immutable-anchor proof
+
+Replacement-disabled Git confirms source `b7a842870ce7509d8baa75409e0ab19da375c88a`
+and anchor `c68053421ac53c5b49066b041c8fbcdd920dad62` are exact commit objects. The anchor
+has exactly that source as its sole parent. Anchor/base/reviewed-head fixture tree is
+`e62b3b2977fdd69a20ea62a0be30ecd858aafa20`; base/head worker-protocol tree is
+`73aeaaeebefeabf660bf8e5a5ff809184fe2e33a`; base/head v1 contract tree is
+`7d895c4cb71e8b45b810b99f09dcc6ce37866a60`; and anchor/base/head bundle blob is
+`260bf29edefb138a37bdfd28e68ceba95f3fdc38`. The protected diff also includes the
+freeze script, root/package manifests, and `pnpm-lock.yaml` and is empty.
+
+### Non-blocking quality observation
+
+The isolation regression's emergency failure cleanup releases and immediately kills
+the test-runner controller. A specialist noted that an abnormal assertion/timeout could
+temporarily leave the controller's test-file subprocess running until its own bounded
+completion. This does not affect the successful two-corpus proof, production checker,
+owned cleanup contract, or any required acceptance result, and no leftover parent was
+observed. It is informational rather than Critical/Important.
+
+### Decision
+
+Both attempt-2 blockers are fixed, every retained hostile case passes, no new
+Critical/Important issue was found, and the frozen/protocol/dependency boundaries are
+unchanged. Prerequisite P2 is `complete` / `pass` on reviewed revision
+`01ad1ab554fe25c5178c7552ec047d4df45b7dcf`. E1-F008 is resolved. The immutable a6
+QA and completion handoff carry the same reviewed revision. No E3 implementation is
+part of this evidence commit.
