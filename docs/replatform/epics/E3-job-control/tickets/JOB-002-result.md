@@ -1,7 +1,7 @@
 # JOB-002 Result — Enroll workers and persist logical profiles
 
-**Status:** `implementation_complete_review_pending`
-**Disposition:** `review_pending`
+**Status:** `complete`
+**Disposition:** `pass`
 **Date opened (UTC):** `2026-08-10`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-002 — Enroll workers and persist logical profiles (M)`
@@ -309,3 +309,89 @@ effect.
 
 A distinct reviewer must review the new evidence revision, rerun focused acceptance, append
 review attempt 3, and alone may change the ticket to `complete` / `pass`.
+
+## Independent review attempt 3 — 2026-08-10 — Codex `/root/job002_review`
+
+### Revision and independence
+
+- **Reviewed revision:** `5a9870b89dbab1b626f825ec8e8261a6f77bd641`.
+- **Whole-ticket base:** `434fbaad5e73e5f4f9c0d25896a11625bfa63148`.
+- **Scoped fix boundary:**
+  `f34948e5276cef66386c7ba5ff4beb635b172b32..5a9870b89dbab1b626f825ec8e8261a6f77bd641`.
+- Genuine RED `e66f173918eda336c0340a447ae8eab0862b2c0a` and GREEN
+  `d9c8aa5db73f4218ae02f1ee505623c4ffd7e509` are ancestors of the reviewed revision.
+- Reviewer `Codex /root/job002_review` is distinct from implementer
+  `Codex /root/job002_impl`. The reviewer changed no production code. Two temporary
+  adversarial test probes were applied, executed against ephemeral embedded PostgreSQL, and
+  fully reverted before evidence edits.
+
+The review reread the canonical ticket and approved plan, E3-F005/E3-F010/E3-F012, the
+implementation brief/report/result, frozen PRT-006/007 contracts, E2 operator/RLS decisions,
+and the complete whole-ticket and fix-round diffs. Static and dynamic review covered H-01 and
+H-04, bounded role authority, Drizzle/C14/Decision #122, atomic enrollment, semantic replay,
+device proof, session claims, revocation/rotation/owner removal, bootstrap retirement,
+production log transport, default-off composition, frozen E1 compatibility, and the absence
+of placement/lease behavior.
+
+### Attempt-2 blocker closure
+
+| Finding | Independent attempt-3 result |
+|---|---|
+| I2-01 — shared-platform revocation race | **Closed.** Deterministic revoke-first and heartbeat-first row-lock interleavings passed. The conditional operator mutation requires the exact active target, generation, physical worker/profile, public key, thumbprint, and non-revoked facts. It writes only physical `last_seen_at`/`updated_at`; the revoked principal cannot write again. A temporary probe requested `offline` and proved global status/trust and tenant-profile liveness do not change. |
+| I2-02 — early heartbeat errors outside PRT-007 | **Closed.** Missing bearer, malformed bearer, and lookup failure all parse as frozen `ProtocolErrorV1`, use only descriptor-allowed codes, and reveal no SQL/query facts. Protocol context is installed before every early failure branch. |
+| I2-03 — expired replay collision outside cleanup batch | **Closed.** Committed positions 1/100/101/301, unexpired replay, restart, and two-replica contention passed. A temporary final-row collision also passed. Exact expired deletion uses the database clock and is separate from bounded ordered cleanup; an unexpired replay is never deleted. |
+
+All attempt-1 corrections remain closed. File-transport capture covers successful and rejected
+enrollment/heartbeat paths without raw enrollment code, bearer, proof, signature, public key,
+semantic body, query, or error-property leakage. Foreign/absent UUID errors remain uniform and
+protocol-safe. Route plus code issuance and enrollment commits are atomic in their owning role
+transactions. Semantic receipts contain response/action facts, not a reusable session, and a
+fresh proof plus current authority are required on retry. Bootstrap authority cannot be
+restored while an active enrolled worker exists. Session claims remain short-lived and bound
+to audience, worker, target, generation, device, and profile. Heartbeat cannot upgrade trust.
+
+Actual non-owner app/operator role tests pass, including RLS/FORCE and bounded privilege
+assertions. The exact applied 0219/0220 migrations replay and 0221's builder/file contract
+align. The repaired E2 fixtures reach all original assertions non-vacuously. Frozen E1 has
+zero whole-ticket diff, distributed execution remains default-off, and the ticket adds no
+placement, polling, lease, ACK, event, executor, or cutover behavior.
+
+### Fresh verification evidence
+
+All integration commands ran from `C:\e3` with `AOA_RUN_WIN_INTEGRATION=1` against the exact
+reviewed revision. Windows-local evidence is operator-directed; Linux CI remains the formal
+DEC-03 authority.
+
+| Command / lane | Result |
+|---|---|
+| Enrollment integration + early heartbeat protocol errors | PASS — 2 files, 20/20; both-order row locks, revoked-principal denial, cleanup boundaries/concurrency, and every early frozen error branch |
+| DB worker schema + operator policy + migration idempotency | PASS — 3 files, 13/13; real 0219/0220 replay and role/RLS assertions |
+| Enrollment/session/device proof/RLS/log transport policy | PASS — 7 files, 35/35 |
+| Grant/RBAC/legacy target contracts | PASS — 3 files, 12/12 |
+| Temporary physical-liveness-only status-mutation probe | PASS — global status remained `active`; only global physical liveness changed; tenant logical-profile liveness remained unchanged |
+| Temporary final-row expired-collision probe | PASS — exact expired collision was removed beyond the cleanup batch and enrollment succeeded |
+| E2 tenant-kernel schema-B | PASS — 1 file, 7/7 |
+| E2 tenant RLS + hostile property suite | PASS — 2 files, 21/21; 4,460 operations across eight seeds and every operation class reached |
+| Startup/non-owner/operator/legacy roles | PASS — 5 files, 43/43 plus config 18/18; one Linux-only file / 6 tests explicitly skipped on Windows |
+| JOB-001 default-off submission regression | PASS — 1 file, 31/31 |
+| Frozen E1 checker at `b7a842870ce7509d8baa75409e0ab19da375c88a` | PASS |
+| `pnpm install --frozen-lockfile` | PASS |
+| Affected db/shared/server typecheck and build | PASS |
+| `pnpm -r typecheck` | PASS — 24/25 workspace projects |
+| `pnpm build` | PASS — 24/25 workspace projects |
+| Exact `AOA_RUN_WIN_INTEGRATION=1 pnpm test:run` | **FAIL (honestly labeled Windows-local aggregate)** — exit 1 after 243.1s: the known frozen worker-protocol Windows collection SyntaxError and four opencode adapter timeouts; no JOB-002 focused failure |
+| Isolated three opencode files from the aggregate | PASS — 3 files, 8/8 |
+| Isolated frozen cross-version file | FAIL — one suite, no tests collected, same known Windows transform `SyntaxError` at `cross-version.test.ts:12` |
+| Diff hygiene, frozen E1 zero diff, and reviewed/RED/GREEN ancestry | PASS |
+
+The non-green aggregate is not represented as a pass or waiver. Its four timing failures pass
+immediately in isolation, and the remaining frozen-protocol Windows collection condition is
+independently reproduced and predates JOB-002. Formal Linux certification remains downstream.
+No H-01 or H-04 failure occurred in the focused or hostile acceptance lanes.
+
+### Attempt-3 disposition
+
+There are **zero Critical findings, zero Important findings, and zero specification blockers**
+on the reviewed revision. E3-F012 is resolved. JOB-002 satisfies its approved acceptance and
+is therefore `complete` / `pass`. This is ticket certification only; it is not the independent
+E3 integration gate and does not authorize a push.

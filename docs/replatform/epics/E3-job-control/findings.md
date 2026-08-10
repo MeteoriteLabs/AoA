@@ -293,7 +293,7 @@ remains review-pending until a distinct reviewer independently certifies the can
 ## E3-F012 — JOB-002 review attempt 2 found revocation, protocol-error, and replay-cleanup races
 
 **Date:** 2026-08-10
-**Status:** `resolved_pending_JOB-002_review_attempt_3`
+**Status:** `resolved_in_JOB-002_review_attempt_3`
 **Severity:** P1 authority/replay correctness
 **Affected ticket:** JOB-002 and every later worker-authenticated operation
 
@@ -322,3 +322,14 @@ startup, frozen-E1, typecheck, and build lanes pass. The exact Windows full lane
 honestly non-green for visible non-JOB-002 contention/Windows collection failures and is not
 waived. JOB-002 is `implementation_complete_review_pending` until a distinct reviewer
 independently certifies the candidate.
+
+**Review-attempt-3 closure:** Distinct reviewer `Codex /root/job002_review` reviewed exact
+revision `5a9870b89dbab1b626f825ec8e8261a6f77bd641` and independently reproduced all three
+closures. Deterministic revoke-first and heartbeat-first row-lock tests proved that shared
+platform liveness and revocation linearize and that the revoked principal cannot write again;
+an additional temporary probe proved a caller-requested status change cannot mutate global
+trust/status or tenant-profile liveness. Missing bearer, malformed bearer, and lookup failure
+all produced descriptor-allowed frozen `ProtocolErrorV1`. Expired collisions at the committed
+1/100/101/301 positions, an additional final-row collision, unexpired replay, restart, and
+concurrent replicas all behaved as specified while cleanup remained bounded. No Critical,
+Important, or specification blocker remains; JOB-002 review attempt 3 passed.
