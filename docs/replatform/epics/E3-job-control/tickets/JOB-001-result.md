@@ -1,7 +1,7 @@
 # JOB-001 Result — Submit immutable jobs transactionally
 
-**Status:** `implementation_complete_review_pending`
-**Disposition:** `review_pending`
+**Status:** `implementation_complete_review_needs_changes`
+**Disposition:** `needs_changes`
 **Date opened (UTC):** `2026-08-09`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-001 — Submit immutable jobs transactionally (M)`
@@ -97,3 +97,33 @@ passing before this attempt; they were consumed as immutable dependencies.
   not bind localhost (`Permission denied`). Formal Linux/DEC-03 evidence remains pending.
 - Status is restored only to `implementation_complete_review_pending`; the distinct reviewer
   alone may certify the ticket or change it to complete/pass.
+
+### Review attempt 2 - 2026-08-10 - Codex `/root/job001_review`
+
+- **Reviewed revision:** `d25c52715355ede4f459f1fc9481eae94042f991`
+- **Disposition:** `needs_changes`
+- **Specification verdict:** fail.
+- **Code/security quality verdict:** fail.
+- The four attempt-1 Important findings are resolved on the reviewed revision: all six
+  source/caller combinations are bound to authenticated tenant state; the distributed 5xx
+  path is H-01-safe; historical 0213/0214 builder output remains byte-identical and current
+  authority is versioned through 0218; and tenant repository/company contracts are compatible
+  and non-vacuous.
+- **Important I2-01:** immutable job rows persist coarse wire principals as executor authority:
+  `task_run` stores `agent`, `service_reconcile` stores `service`, and the other four sources
+  store fabricated `system` identities. The frozen FND-007 domain matrix instead requires
+  `worker|sandbox`, `sandbox`, `worker|sandbox`, `worker|sandbox`, `browser_worker`, and
+  `service_instance`. PRT-003 explicitly assigns this domain-role equality to JOB-001/JOB-010,
+  and the JOB-001 plan requires server-derived requester/executor facts to be persisted. The
+  current source matrix tests do not assert the persisted executor kind/identity, so they pass
+  while every source violates that handoff.
+- Focused schema/migration/submission/startup/grant/logging/RLS/adversarial tests pass, including
+  the targeted 32-way convergence and hostile cross-Organization/Company cases. Frozen check,
+  frozen install, affected and recursive typecheck/build all pass.
+- Exact `AOA_RUN_WIN_INTEGRATION=1 pnpm test:run` remains honestly non-green: it exited 1 after
+  211.4s with the pre-existing Windows worker-protocol cross-version transform failure and an
+  embedded-Postgres D18 setup/teardown failure before assertions. The isolated D18 rerun then
+  bound `::1`/`127.0.0.1` and passed 6/6 in 9.84s. This review does not call the full lane a
+  pass; formal Linux/DEC-03 evidence remains pending.
+- No production code was changed. Detailed evidence:
+  `.superpowers/sdd/implementation-plan/job-001-review.md`.
