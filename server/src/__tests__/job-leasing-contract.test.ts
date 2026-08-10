@@ -450,4 +450,135 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       );
     }
   });
+
+  it("selects one database-native global head with an exact static-certificate anti-join", () => {
+    const repository = readFileSync(
+      new URL("../../../packages/db/src/repositories/tenant/job-control.ts", import.meta.url),
+      "utf8",
+    );
+    const leasing = readFileSync(new URL("../services/job-leasing.ts", import.meta.url), "utf8");
+    const scheduler = readFileSync(new URL("../services/job-ready-scheduler.ts", import.meta.url), "utf8");
+
+    expect.soft(repository).not.toMatch(/lockEligibleLeaseCandidates[\s\S]{0,500}attemptIds\??:/);
+    expect.soft(repository).toContain("workerLeaseRejections");
+    expect.soft(repository).toMatch(/notExists\s*\(|NOT EXISTS/i);
+    for (const column of [
+      "organizationId", "companyId", "jobId", "attemptId", "workerId", "targetId",
+      "targetAuthorityKey", "workloadType", "placementOwner", "placementTargetClass",
+      "placementTargetScope", "placementTargetGeneration", "placementProfileHash",
+      "placementProviderConstraintHash", "placementInputDigest", "placementPolicyDigest",
+      "eligibilityVersion", "staticContextHash",
+    ]) expect.soft(repository, `certificate anti-join must bind ${column}`).toContain(column);
+    expect.soft(repository).toContain("statement_timestamp()");
+    expect.soft(repository).toMatch(
+      /orderBy\(asc\(jobs\.availableAt\),\s*desc\(jobs\.priority\),\s*asc\(jobs\.createdAt\),\s*asc\(jobs\.id\)\)/,
+    );
+    expect.soft(repository).toMatch(/\.limit\(256\)/);
+    expect.soft(repository).toMatch(/\.for\(["']update["'],\s*\{[^}]*skipLocked:\s*true/);
+    expect.soft(repository).toMatch(/inArray\(jobs\.workloadType,\s*input\.admissibleWorkloadTypes\)/);
+
+    expect.soft(leasing).not.toContain("hintedAttemptIds");
+    expect.soft(leasing).not.toMatch(/scheduler\?\.take|scheduler\.take/);
+    expect.soft(leasing).toContain("LEASE_STATIC_ELIGIBILITY_VERSION");
+    expect.soft(leasing).toContain("static_requirements_mismatch");
+    expect.soft(leasing).toMatch(/(?:MAX_|max).*HEAD.*RESTART|headRestart/si);
+    expect.soft(leasing).toMatch(/(?:3|THREE)[\s\S]{0,100}(?:restart|attempt)/i);
+    expect.soft(leasing.match(/snapshotLiveLeaseCapacity\s*\(/g) ?? []).toHaveLength(1);
+    expect.soft(leasing).not.toMatch(/for\s*\([^)]*candidate[^)]*\)[\s\S]{0,500}countLiveWorkerLeases/);
+    const hasCapacitySnapshot = repository.includes("snapshotLiveLeaseCapacity");
+    expect.soft(hasCapacitySnapshot).toBe(true);
+    if (hasCapacitySnapshot) {
+      const capacitySnapshot = namedFunctionSource(repository, "snapshotLiveLeaseCapacity");
+      for (const predicate of ["organizationId", "workerId", "targetId"]) {
+        expect.soft(capacitySnapshot, `capacity snapshot must bind ${predicate}`).toContain(predicate);
+      }
+      expect.soft(capacitySnapshot).toMatch(/groupBy\([^)]*workloadType|FILTER\s*\(\s*WHERE[^)]*workload_type/is);
+      expect.soft(capacitySnapshot).not.toMatch(/executionTargetId[\s\S]{0,500}(?:organizationId\s+IS\s+NULL|isNull\([^)]*organization)/i);
+    }
+    expect.soft(repository).toMatch(/cleanupLeaseRejectionCertificates[\s\S]*\.limit\(256\)/);
+    expect.soft(repository).toMatch(/cleanupLeaseRejectionCertificates[\s\S]*(?:terminal|retired|status)/i);
+    expect.soft(scheduler).not.toContain("attemptId");
+    expect.soft(scheduler).toMatch(/consume\(/);
+  });
+
+  it("keeps protected candidate facts immutable and certificate writers certificate-only", () => {
+    const production = [
+      ...productionTypeScriptFiles(join(repositoryRoot, "server", "src")),
+      ...productionTypeScriptFiles(join(repositoryRoot, "packages", "db", "src")),
+    ].map((path) => ({
+      file: relative(repositoryRoot, path).replaceAll("\\", "/"),
+      source: readFileSync(path, "utf8"),
+    }));
+    const protectedFields = new Map<string, Set<string>>([
+      ["jobs", new Set([
+        "workloadType", "input", "inputHash", "policySnapshot", "policyHash",
+        "requirements", "placementRequest", "priority", "availableAt", "createdAt",
+      ])],
+      ["jobAttempts", new Set([
+        "placementDisposition", "placementOwner", "placementTargetId",
+        "placementTargetClass", "placementTargetScope", "placementTargetGeneration",
+        "placementProfileHash", "placementProviderConstraintHash",
+        "placementMode", "placementLeaseEligible", "placementInputDigest",
+        "placementPolicyDigest", "placementDecidedAt",
+      ])],
+    ]);
+
+    function scan(inputs: typeof production): string[] {
+      const found: string[] = [];
+      for (const input of inputs) {
+        const file = ts.createSourceFile(input.file, input.source, ts.ScriptTarget.Latest, true);
+        const visit = (node: ts.Node): void => {
+          if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+              node.expression.name.text === "set") {
+            const update = node.expression.expression;
+            if (ts.isCallExpression(update) && ts.isPropertyAccessExpression(update.expression) &&
+                update.expression.name.text === "update") {
+              const tableNode = update.arguments[0];
+              const table = tableNode && ts.isIdentifier(tableNode) ? tableNode.text : "";
+              const protectedForTable = protectedFields.get(table);
+              const values = node.arguments[0];
+              if (protectedForTable && values && ts.isObjectLiteralExpression(values)) {
+                const fields = values.properties
+                  .map((property) => ts.isSpreadAssignment(property) ? "<spread>" : propertyName(property.name) ?? "<computed>")
+                  .filter((field) => field === "<spread>" || protectedForTable.has(field))
+                  .sort();
+                if (fields.length > 0) {
+                  found.push(`${input.file}#${enclosingFunctionName(node)}:${table}:${fields.join(",")}`);
+                }
+              }
+            }
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(file);
+      }
+      return found.sort();
+    }
+
+    expect.soft(scan(production)).toEqual([
+      "packages/db/src/repositories/tenant/job-control.ts#persistPlacementDecision:jobAttempts:placementDecidedAt,placementDisposition,placementInputDigest,placementLeaseEligible,placementMode,placementOwner,placementPolicyDigest,placementProfileHash,placementProviderConstraintHash,placementTargetClass,placementTargetGeneration,placementTargetId,placementTargetScope",
+    ]);
+    const injected = scan([...production, {
+      file: "server/src/services/injected-candidate-mutation.ts",
+      source: `async function mutate(tx: any) {
+        await tx.update(jobAttempts).set({ placementProfileHash: "changed" });
+      }`,
+    }]);
+    expect.soft(injected).toContain(
+      "server/src/services/injected-candidate-mutation.ts#mutate:jobAttempts:placementProfileHash",
+    );
+
+    const repository = readFileSync(
+      new URL("../../../packages/db/src/repositories/tenant/job-control.ts", import.meta.url),
+      "utf8",
+    );
+    expect.soft(repository).toMatch(/upsertLeaseRejectionCertificates[\s\S]*workerLeaseRejections/);
+    expect.soft(repository).toMatch(/cleanupLeaseRejectionCertificates[\s\S]*workerLeaseRejections/);
+    expect.soft(repository).not.toMatch(
+      /(?:upsert|cleanup)LeaseRejectionCertificates[\s\S]{0,1500}\.update\((?:workers|executionTargets|jobs|jobAttempts|leases)\)/,
+    );
+    for (const predicate of ["organizationId", "workerId", "targetId", "attemptId"]) {
+      expect.soft(repository, `certificate mutation must bind ${predicate}`).toContain(predicate);
+    }
+  });
 });

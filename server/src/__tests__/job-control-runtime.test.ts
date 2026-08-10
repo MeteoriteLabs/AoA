@@ -10,10 +10,12 @@ const runtimeHarness = vi.hoisted(() => ({
     targetId: string;
     attemptId: string;
   }>>(),
+  claimErrors: new Map<string, Error & { code?: string }>(),
   delivered: [] as string[],
   statementTimeouts: [] as number[],
   beforeTenant: null as null | ((organizationId: string) => Promise<void>),
   afterClaim: null as null | (() => Promise<void>),
+  afterDelivery: null as null | (() => Promise<void>),
   activeTenants: 0,
   maxActiveTenants: 0,
 }));
@@ -40,12 +42,15 @@ vi.mock("../db/tenant-context.js", () => ({
           },
           claimReadyOutbox: async (input: Record<string, unknown>) => {
             runtimeHarness.claimInputs.push(input);
+            const failure = runtimeHarness.claimErrors.get(organizationId);
+            if (failure) throw failure;
             const rows = runtimeHarness.claims.get(organizationId) ?? [];
             await runtimeHarness.afterClaim?.();
             return rows;
           },
           deliverReadyOutbox: async (input: { ids: string[] }) => {
             runtimeHarness.delivered.push(...input.ids);
+            await runtimeHarness.afterDelivery?.();
             return input.ids.length;
           },
         },
@@ -63,135 +68,163 @@ function organizationId(ordinal: number): string {
   return `c3000000-0000-4000-8000-${ordinal.toString().padStart(12, "0")}`;
 }
 
+type ReadySignalScheduler = ReturnType<typeof createJobReadyScheduler> & {
+  signal?: (input: { organizationId: string; targetId: string }) => boolean;
+  consume?: (organizationId: string, targetId: string) => boolean;
+  size(): { organizations: number; targets: number; signals: number };
+};
+
+function readySignalScheduler(input: Record<string, unknown> = {}): ReadySignalScheduler {
+  return (createJobReadyScheduler as unknown as (
+    input: Record<string, unknown>,
+  ) => ReadySignalScheduler)(input);
+}
+
 describe("JOB-003 flag-on job-control runtime", () => {
   beforeEach(() => {
     runtimeHarness.visited.length = 0;
     runtimeHarness.claimInputs.length = 0;
     runtimeHarness.claims.clear();
+    runtimeHarness.claimErrors.clear();
     runtimeHarness.delivered.length = 0;
     runtimeHarness.statementTimeouts.length = 0;
     runtimeHarness.beforeTenant = null;
     runtimeHarness.afterClaim = null;
+    runtimeHarness.afterDelivery = null;
     runtimeHarness.activeTenants = 0;
     runtimeHarness.maxActiveTenants = 0;
   });
 
-  it("bounds aggregate and target-cardinality hints and expires stale target churn deterministically", () => {
+  it("stores only one coalesced exact-target readiness bit with deterministic monotonic expiry", () => {
     let nowMs = 0;
-    const scheduler = (createJobReadyScheduler as unknown as (input: {
-      maxOrganizationShards: number;
-      maxHintsPerShard: number;
-      maxHintsPerOrganization: number;
-      maxTargetsPerOrganization: number;
-      maxHintsGlobal: number;
-      hintTtlMs: number;
-      now: () => number;
-    }) => ReturnType<typeof createJobReadyScheduler>)({
-      maxOrganizationShards: 1,
-      maxHintsPerShard: 2,
-      maxHintsPerOrganization: 8,
-      maxTargetsPerOrganization: 8,
-      maxHintsGlobal: 8,
-      hintTtlMs: 1_000,
-      now: () => nowMs,
+    const scheduler = readySignalScheduler({
+      maxOrganizationShards: 2,
+      maxTargetsPerOrganization: 2,
+      maxSignalsGlobal: 3,
+      signalTtlMs: 1_000,
+      monotonicNow: () => nowMs,
     });
-    const org = organizationId(1);
-    let accepted = 0;
-    for (let index = 0; index < 1_000; index += 1) {
-      if (scheduler.hint({
-        organizationId: org,
-        targetId: `c3100000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
-        attemptId: `attempt-${index}`,
-      })) accepted += 1;
-    }
+    expect.soft(typeof scheduler.signal).toBe("function");
+    expect.soft(typeof scheduler.consume).toBe("function");
+    if (!scheduler.signal || !scheduler.consume) return;
 
-    const boundedSize = scheduler.size() as unknown as {
-      organizations: number;
-      targets: number;
-      hints: number;
-    };
-    expect.soft(accepted).toBe(8);
-    expect.soft(boundedSize).toEqual({ organizations: 1, targets: 8, hints: 8 });
-    expect.soft(scheduler.hint({
-      organizationId: org,
-      targetId: "c3100000-0000-4000-8000-000000000000",
-      attemptId: "attempt-0",
-    })).toBe(true);
-    expect.soft(scheduler.size()).toEqual({ organizations: 1, targets: 8, hints: 8 });
+    const orgA = organizationId(1);
+    const orgB = organizationId(2);
+    const targetA = "c3100000-0000-4000-8000-000000000001";
+    const targetB = "c3100000-0000-4000-8000-000000000002";
+    const targetC = "c3100000-0000-4000-8000-000000000003";
+    expect.soft(scheduler.signal({ organizationId: orgA, targetId: targetA })).toBe(true);
+    expect.soft(scheduler.signal({ organizationId: orgA, targetId: targetA })).toBe(true);
+    expect.soft(scheduler.signal({ organizationId: orgA, targetId: targetB })).toBe(true);
+    expect.soft(scheduler.signal({ organizationId: orgB, targetId: targetC })).toBe(true);
+    expect.soft(scheduler.size()).toEqual({ organizations: 2, targets: 3, signals: 3 });
+    expect.soft(scheduler.signal({
+      organizationId: orgB,
+      targetId: "c3100000-0000-4000-8000-000000000004",
+    })).toBe(false);
+    expect.soft(scheduler.consume(orgB, targetA)).toBe(false);
+    expect.soft(scheduler.consume(orgA, targetA)).toBe(true);
+    expect.soft(scheduler.consume(orgA, targetA)).toBe(false);
 
-    // Offline, revoked, and churned targets are not authority and may never pin
-    // memory forever. Once their deterministic TTL elapses, a new target can
-    // enter without losing correctness because PostgreSQL pull remains truth.
+    // A duplicate never extends expiry.
+    nowMs = 999;
+    expect.soft(scheduler.signal({ organizationId: orgA, targetId: targetB })).toBe(true);
     nowMs = 1_001;
-    const replacement = {
-      organizationId: org,
-      targetId: "c3100000-0000-4000-8000-999999999999",
-      attemptId: "replacement-attempt",
-    };
-    expect.soft(scheduler.hint(replacement)).toBe(true);
-    expect.soft(scheduler.take(org, "c3100000-0000-4000-8000-000000000000")).toEqual([]);
-    expect.soft(scheduler.take(org, replacement.targetId)).toEqual([replacement.attemptId]);
-
-    let globalNowMs = 0;
-    const global = (createJobReadyScheduler as unknown as (input: {
-      maxOrganizationShards: number;
-      maxHintsPerShard: number;
-      maxHintsPerOrganization: number;
-      maxTargetsPerOrganization: number;
-      maxHintsGlobal: number;
-      hintTtlMs: number;
-      now: () => number;
-    }) => ReturnType<typeof createJobReadyScheduler>)({
-      maxOrganizationShards: 4,
-      maxHintsPerShard: 2,
-      maxHintsPerOrganization: 4,
-      maxTargetsPerOrganization: 4,
-      maxHintsGlobal: 6,
-      hintTtlMs: 1_000,
-      now: () => globalNowMs,
-    });
-    let globalAccepted = 0;
-    for (const organization of [organizationId(1), organizationId(2)]) {
-      for (let index = 0; index < 4; index += 1) {
-        if (global.hint({
-          organizationId: organization,
-          targetId: `c3200000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
-          attemptId: `${organization}-global-${index}`,
-        })) globalAccepted += 1;
-      }
-    }
-    expect.soft(globalAccepted).toBe(6);
-    expect.soft(global.size()).toEqual({ organizations: 2, targets: 6, hints: 6 });
-    globalNowMs += 1_001;
-    expect.soft(global.hint({
-      organizationId: organizationId(2),
-      targetId: "c3200000-0000-4000-8000-999999999999",
-      attemptId: "global-after-ttl",
-    })).toBe(true);
-
-    const fifo = createJobReadyScheduler({ maxHintsPerShard: 3 });
-    for (const attemptId of ["fifo-1", "fifo-2", "fifo-3"]) {
-      expect(fifo.hint({ organizationId: org, targetId: replacement.targetId, attemptId })).toBe(true);
-    }
-    expect(fifo.take(org, replacement.targetId, 2)).toEqual(["fifo-1", "fifo-2"]);
+    expect.soft(scheduler.consume(orgA, targetB)).toBe(false);
+    expect.soft(scheduler.signal({ organizationId: orgA, targetId: targetA })).toBe(true);
   });
 
-  it("visits admitted Organizations in stable lexical windows and reaches the tail beyond 32", async () => {
-    const admitted = Array.from({ length: 35 }, (_, index) => organizationId(index + 1)).reverse();
+  it("pins scheduler defaults/hard ceilings and rejects non-finite, non-positive, and fractional configuration", () => {
+    for (const invalid of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+      expect(() => readySignalScheduler({ maxOrganizationShards: invalid })).toThrow();
+      expect(() => readySignalScheduler({ maxTargetsPerOrganization: invalid })).toThrow();
+      expect(() => readySignalScheduler({ maxSignalsGlobal: invalid })).toThrow();
+      expect(() => readySignalScheduler({ signalTtlMs: invalid })).toThrow();
+    }
+
+    let nowMs = 0;
+    const clamped = readySignalScheduler({
+      maxOrganizationShards: 10_000,
+      maxTargetsPerOrganization: 10_000,
+      maxSignalsGlobal: 10_000,
+      signalTtlMs: 10_000_000,
+      monotonicNow: () => nowMs,
+    });
+    expect.soft(typeof clamped.signal).toBe("function");
+    expect.soft(typeof clamped.consume).toBe("function");
+    if (!clamped.signal || !clamped.consume) return;
+    const org = organizationId(1);
+    let accepted = 0;
+    for (let index = 0; index < 1_025; index += 1) {
+      if (clamped.signal({
+        organizationId: org,
+        targetId: `c3200000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+      })) accepted += 1;
+    }
+    expect.soft(accepted).toBe(1_024);
+    expect.soft(clamped.size()).toEqual({ organizations: 1, targets: 1_024, signals: 1_024 });
+    nowMs = 300_001;
+    expect.soft(clamped.consume(org, "c3200000-0000-4000-8000-000000000000")).toBe(false);
+
+    const defaults = readySignalScheduler();
+    expect.soft(typeof defaults.signal).toBe("function");
+    if (!defaults.signal) return;
+    let defaultAccepted = 0;
+    for (let orgIndex = 0; orgIndex < 9; orgIndex += 1) {
+      for (let targetIndex = 0; targetIndex < 128; targetIndex += 1) {
+        if (defaults.signal({
+          organizationId: organizationId(orgIndex + 1),
+          targetId: `c3300000-0000-4000-${orgIndex.toString().padStart(4, "0")}-${targetIndex.toString().padStart(12, "0")}`,
+        })) defaultAccepted += 1;
+      }
+    }
+    expect.soft(defaultAccepted).toBe(1_024);
+
+    const organizationBound = readySignalScheduler();
+    expect.soft(typeof organizationBound.signal).toBe("function");
+    if (!organizationBound.signal) return;
+    let organizationAccepted = 0;
+    for (let index = 0; index < 33; index += 1) {
+      if (organizationBound.signal({
+        organizationId: organizationId(index + 1),
+        targetId: `c3400000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+      })) organizationAccepted += 1;
+    }
+    expect.soft(organizationAccepted).toBe(32);
+    expect.soft(organizationBound.size()).toEqual({ organizations: 32, targets: 32, signals: 32 });
+  });
+
+  it("reads at most tail plus bounded wrap and admits at most 32 distinct Organizations per tick", async () => {
+    const admitted = Array.from({ length: 35 }, (_, index) => organizationId(index + 1));
+    const queryInputs: Array<{ after: string | null; limit: number }> = [];
+    const listPage = async (input: { after: string | null; limit: number }) => {
+      queryInputs.push(input);
+      const start = input.after === null
+        ? 0
+        : Math.max(0, admitted.findIndex((id) => id > input.after!));
+      return admitted.slice(start, start + input.limit);
+    };
     const scheduler = createJobReadyScheduler();
     const worker = createJobOutboxWorker({
       appDb: {} as never,
       scheduler,
-      listAdmittedOrganizationIds: async () => admitted,
+      listAdmittedOrganizationIds: listPage,
       maxOrganizationShards: 32,
     });
 
     await worker.tick();
+    const firstTickQueries = queryInputs.splice(0);
+    expect.soft(firstTickQueries).toMatchObject([{ after: null, limit: 32 }]);
+    expect.soft(runtimeHarness.visited).toEqual(admitted.slice(0, 32));
+    runtimeHarness.visited.length = 0;
     await worker.tick();
-
-    expect(runtimeHarness.visited.slice(0, 32)).toEqual([...admitted].sort().slice(0, 32));
-    expect(new Set(runtimeHarness.visited)).toEqual(new Set(admitted));
-    expect(runtimeHarness.visited.slice(32)).toEqual([...admitted].sort().slice(32));
+    expect.soft(queryInputs).toMatchObject([
+      { after: admitted[31], limit: 32 },
+      { after: null, limit: 29 },
+    ]);
+    expect.soft(queryInputs).toHaveLength(2);
+    expect.soft(runtimeHarness.visited).toEqual([...admitted.slice(32), ...admitted.slice(0, 29)]);
+    expect.soft(new Set(runtimeHarness.visited).size).toBe(32);
   });
 
   it("preserves fair progress through membership churn and a runtime restart", async () => {
@@ -223,47 +256,118 @@ describe("JOB-003 flag-on job-control runtime", () => {
     expect(new Set(runtimeHarness.visited)).toEqual(new Set(admitted));
   });
 
-  it("pages admitted Organizations in bounded keyset reads and enforces a real tick budget", async () => {
-    const activeMapped = Array.from({ length: 40 }, (_, index) => organizationId(index + 1));
-    const queryInputs: Array<{ after: string | null; limit: number } | undefined> = [];
-    let monotonicMs = 0;
-    runtimeHarness.afterClaim = async () => {
-      monotonicMs += 400;
-    };
-    const listPage = async (input?: { after: string | null; limit: number }) => {
-      queryInputs.push(input);
-      const start = input?.after
-        ? Math.max(0, activeMapped.findIndex((id) => id > input.after!))
-        : 0;
-      return activeMapped.slice(start, start + (input?.limit ?? activeMapped.length));
-    };
-    const worker = (createJobOutboxWorker as unknown as (input: {
-      appDb: never;
-      scheduler: ReturnType<typeof createJobReadyScheduler>;
-      listAdmittedOrganizationIds: typeof listPage;
-      maxOrganizationShards: number;
-      tickBudgetMs: number;
-      monotonicNow: () => number;
-    }) => ReturnType<typeof createJobOutboxWorker>)({
+  it("does not invent cursor progress when an admitted-Organization page read fails", async () => {
+    const orgA = organizationId(1);
+    const orgB = organizationId(2);
+    const pageInputs: Array<{ after?: string | null; limit?: number }> = [];
+    let fail = true;
+    const worker = createJobOutboxWorker({
       appDb: {} as never,
       scheduler: createJobReadyScheduler(),
-      listAdmittedOrganizationIds: listPage,
-      maxOrganizationShards: 32,
-      tickBudgetMs: 750,
-      monotonicNow: () => monotonicMs,
+      maxOrganizationShards: 1,
+      listAdmittedOrganizationIds: async (input) => {
+        pageInputs.push(input);
+        if (fail) throw new Error("admitted organization page failed");
+        return [orgA, orgB];
+      },
     });
 
-    await worker.tick();
-    expect.soft(runtimeHarness.visited).toEqual(activeMapped.slice(0, 2));
-    expect.soft(queryInputs.length).toBeLessThanOrEqual(2);
-    expect.soft(queryInputs.every((entry) => entry !== undefined && entry.limit <= 32)).toBe(true);
-    expect.soft(runtimeHarness.statementTimeouts).toEqual([750, 350]);
+    await expect(worker.tick()).rejects.toThrow("admitted organization page failed");
+    fail = false;
+    await expect(worker.tick()).resolves.toMatchObject({ organizations: 1 });
+    expect.soft(pageInputs).toHaveLength(2);
+    expect.soft(pageInputs.map((input) => input.after ?? null)).toEqual([null, null]);
+    expect.soft(runtimeHarness.visited).toEqual([orgA]);
+  });
+
+  it("treats 750 ms as launch admission: page completion at the deadline launches no shard", async () => {
+    const org = organizationId(1);
+    let monotonicMs = 0;
+    const pageInputs: Array<{ statementTimeoutMs?: number }> = [];
+    const worker = createJobOutboxWorker({
+      appDb: {} as never,
+      scheduler: createJobReadyScheduler(),
+      listAdmittedOrganizationIds: async (input) => {
+        pageInputs.push(input);
+        monotonicMs = 750;
+        return [org];
+      },
+      tickBudgetMs: 750,
+      monotonicNow: () => monotonicMs,
+    } as never);
+
+    await expect(worker.tick()).resolves.toMatchObject({ organizations: 0, claimed: 0, delivered: 0 });
+    expect.soft(pageInputs).toHaveLength(1);
+    expect.soft(pageInputs[0]?.statementTimeoutMs).toBe(750);
+    expect.soft(runtimeHarness.visited).toEqual([]);
+  });
+
+  it("launches no publisher or delivery after an admitted claim finishes beyond the window", async () => {
+    const org = organizationId(1);
+    const target = "c3100000-0000-4000-8000-000000000001";
+    runtimeHarness.claims.set(org, [{ id: "late-claim", organizationId: org, targetId: target, attemptId: "attempt-a" }]);
+    let monotonicMs = 0;
+    runtimeHarness.afterClaim = async () => { monotonicMs = 800; };
+    const publications: unknown[] = [];
+    const worker = createJobOutboxWorker({
+      appDb: {} as never,
+      scheduler: createJobReadyScheduler(),
+      listAdmittedOrganizationIds: async () => [org],
+      publishHint: async (signal) => { publications.push(signal); },
+      tickBudgetMs: 750,
+      monotonicNow: () => monotonicMs,
+    } as never);
 
     await worker.tick();
-    expect.soft(runtimeHarness.visited.slice(2)).toEqual(activeMapped.slice(2, 4));
-    expect.soft(queryInputs.length).toBeLessThanOrEqual(4);
-    for (let tick = 2; tick < 20; tick += 1) await worker.tick();
-    expect.soft(new Set(runtimeHarness.visited)).toEqual(new Set(activeMapped));
+    expect.soft(publications).toEqual([]);
+    expect.soft(runtimeHarness.delivered).toEqual([]);
+    expect.soft(runtimeHarness.statementTimeouts).toEqual([750]);
+  });
+
+  it("checks launch admission before every signal publication and launches no delivery after publisher k", async () => {
+    const org = organizationId(1);
+    const target = "c3100000-0000-4000-8000-000000000001";
+    runtimeHarness.claims.set(org, [
+      { id: "publish-a", organizationId: org, targetId: target, attemptId: "attempt-a" },
+      { id: "publish-b", organizationId: org, targetId: target, attemptId: "attempt-b" },
+    ]);
+    let monotonicMs = 0;
+    const publications: unknown[] = [];
+    const worker = createJobOutboxWorker({
+      appDb: {} as never,
+      scheduler: createJobReadyScheduler(),
+      listAdmittedOrganizationIds: async () => [org],
+      publishHint: async (signal) => {
+        publications.push(signal);
+        monotonicMs = 750;
+      },
+      tickBudgetMs: 750,
+      monotonicNow: () => monotonicMs,
+    } as never);
+
+    await worker.tick();
+    expect.soft(publications).toHaveLength(1);
+    expect.soft(runtimeHarness.delivered).toEqual([]);
+  });
+
+  it("awaits an already admitted delivery even when it completes after 750 ms", async () => {
+    const org = organizationId(1);
+    const target = "c3100000-0000-4000-8000-000000000001";
+    runtimeHarness.claims.set(org, [{ id: "deliver-a", organizationId: org, targetId: target, attemptId: "attempt-a" }]);
+    let monotonicMs = 0;
+    runtimeHarness.afterDelivery = async () => { monotonicMs = 1_200; };
+    const worker = createJobOutboxWorker({
+      appDb: {} as never,
+      scheduler: createJobReadyScheduler(),
+      listAdmittedOrganizationIds: async () => [org],
+      publishHint: async () => { monotonicMs = 749; },
+      tickBudgetMs: 750,
+      monotonicNow: () => monotonicMs,
+    } as never);
+
+    await expect(worker.tick()).resolves.toMatchObject({ claimed: 1, delivered: 1 });
+    expect.soft(monotonicMs).toBe(1_200);
+    expect.soft(runtimeHarness.statementTimeouts).toEqual([750, 1]);
   });
 
   it("does not overlap a slow shard tick and resumes at the next cursor", async () => {
@@ -298,7 +402,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
     expect.soft(runtimeHarness.visited).toEqual([orgs[0], orgs[1]]);
   });
 
-  it("replays a rejected publication and keeps hints isolated to one logical Organization", async () => {
+  it("advances fair rotation after rejected publication while leaving the claimed row retryable", async () => {
     const orgA = organizationId(1);
     const orgB = organizationId(2);
     const targetA = "c3100000-0000-4000-8000-000000000001";
@@ -308,40 +412,72 @@ describe("JOB-003 flag-on job-control runtime", () => {
       targetId: targetA,
       attemptId: "attempt-a",
     }]);
-    const scheduler = createJobReadyScheduler();
     let reject = true;
     const worker = createJobOutboxWorker({
       appDb: {} as never,
-      scheduler,
+      scheduler: createJobReadyScheduler(),
       listAdmittedOrganizationIds: async () => [orgA, orgB],
+      maxOrganizationShards: 1,
       publishHint: async (hint) => {
         if (reject) throw new Error("publish rejected");
-        scheduler.hint(hint);
+        expect(Object.keys(hint).sort()).toEqual(["organizationId", "targetId"]);
       },
     });
 
     await expect(worker.tick()).rejects.toThrow("publish rejected");
+    expect.soft(runtimeHarness.delivered).toEqual([]);
     reject = false;
+    runtimeHarness.visited.length = 0;
+    await expect(worker.tick()).resolves.toMatchObject({ claimed: 0, delivered: 0 });
+    expect.soft(runtimeHarness.visited).toEqual([orgB]);
+    runtimeHarness.visited.length = 0;
     await expect(worker.tick()).resolves.toMatchObject({ delivered: 1 });
-    const exactScheduler = scheduler as unknown as {
-      take(organizationId: string, targetId: string): string[];
-    };
-    expect(exactScheduler.take(orgB, targetA)).toEqual([]);
-    expect(exactScheduler.take(orgA, targetA)).toEqual(["attempt-a"]);
+    expect.soft(runtimeHarness.visited).toEqual([orgA]);
     expect(runtimeHarness.delivered).toEqual(["ready-a"]);
   });
 
-  it("keeps hints target-scoped and leaves a full scheduler publication retryable", async () => {
+  it("coalesces attempt-aware outbox rows into one two-field exact-target signal", async () => {
+    const orgA = organizationId(1);
+    const orgB = organizationId(2);
+    const targetA = "c3100000-0000-4000-8000-000000000001";
+    runtimeHarness.claims.set(orgA, [
+      { id: "ready-a1", organizationId: orgA, targetId: targetA, attemptId: "attempt-a1" },
+      { id: "ready-a2", organizationId: orgA, targetId: targetA, attemptId: "attempt-a2" },
+    ]);
+    const scheduler = readySignalScheduler();
+    expect.soft(typeof scheduler.signal).toBe("function");
+    expect.soft(typeof scheduler.consume).toBe("function");
+    if (!scheduler.signal || !scheduler.consume) return;
+    const publications: unknown[] = [];
+    const worker = createJobOutboxWorker({
+      appDb: {} as never,
+      scheduler,
+      listAdmittedOrganizationIds: async () => [orgA],
+      publishHint: async (signal) => {
+        publications.push(signal);
+        expect.soft(Object.keys(signal).sort()).toEqual(["organizationId", "targetId"]);
+        expect.soft(scheduler.signal!(signal)).toBe(true);
+      },
+    });
+
+    await expect(worker.tick()).resolves.toMatchObject({ claimed: 2, delivered: 2 });
+    expect.soft(publications).toHaveLength(2);
+    expect.soft(scheduler.size()).toEqual({ organizations: 1, targets: 1, signals: 1 });
+    expect.soft(scheduler.consume(orgB, targetA)).toBe(false);
+    expect.soft(scheduler.consume(orgA, targetA)).toBe(true);
+    expect.soft(scheduler.consume(orgA, targetA)).toBe(false);
+  });
+
+  it("leaves a live-cap signal rejection durable and never evicts an existing target", async () => {
     const orgA = organizationId(1);
     const orgB = organizationId(2);
     const targetA = "c3100000-0000-4000-8000-000000000001";
     const targetB = "c3100000-0000-4000-8000-000000000002";
-    const scheduler = createJobReadyScheduler({ maxOrganizationShards: 1 });
-    const exactScheduler = scheduler as unknown as {
-      hint(hint: { organizationId: string; targetId: string; attemptId: string }): boolean;
-      take(organizationId: string, targetId: string): string[];
-    };
-    expect(exactScheduler.hint({ organizationId: orgB, targetId: targetB, attemptId: "attempt-b" })).toBe(true);
+    const scheduler = readySignalScheduler({ maxOrganizationShards: 1 });
+    expect.soft(typeof scheduler.signal).toBe("function");
+    expect.soft(typeof scheduler.consume).toBe("function");
+    if (!scheduler.signal || !scheduler.consume) return;
+    expect(scheduler.signal({ organizationId: orgB, targetId: targetB })).toBe(true);
     runtimeHarness.claims.set(orgA, [{
       id: "ready-a",
       organizationId: orgA,
@@ -356,7 +492,27 @@ describe("JOB-003 flag-on job-control runtime", () => {
 
     await expect(worker.tick()).rejects.toThrow("job_ready_scheduler_full");
     expect(runtimeHarness.delivered).not.toContain("ready-a");
-    expect(exactScheduler.take(orgB, targetB)).toEqual(["attempt-b"]);
+    expect.soft(scheduler.consume(orgB, targetB)).toBe(true);
+    expect.soft(scheduler.consume(orgA, targetA)).toBe(false);
+  });
+
+  it("advances past a statement-timeout shard and resumes without overlapping ticks", async () => {
+    const orgA = organizationId(1);
+    const orgB = organizationId(2);
+    const timeout = Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" });
+    runtimeHarness.claimErrors.set(orgA, timeout);
+    const worker = createJobOutboxWorker({
+      appDb: {} as never,
+      scheduler: createJobReadyScheduler(),
+      listAdmittedOrganizationIds: async () => [orgA, orgB],
+      maxOrganizationShards: 1,
+    });
+
+    await expect(worker.tick()).resolves.toMatchObject({ organizations: 1, claimed: 0, delivered: 0 });
+    runtimeHarness.claimErrors.delete(orgA);
+    runtimeHarness.visited.length = 0;
+    await worker.tick();
+    expect.soft(runtimeHarness.visited).toEqual([orgB]);
   });
 
   it("composes and stops the runtime only inside the distributed-execution flag", () => {

@@ -6,7 +6,7 @@ import {
   JOB_LEASING_NEW_PATH_GRANTS,
 } from "../db/job-control-legacy-grants.js";
 import * as grants from "../db/job-control-legacy-grants.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 describe("JOB-001 bounded aoa_app authority", () => {
@@ -55,10 +55,11 @@ describe("JOB-001 bounded aoa_app authority", () => {
 });
 
 describe("JOB-003 bounded aoa_app authority", () => {
-  it("keeps receipt DML in a versioned leasing grant delta", () => {
+  it("keeps receipt and rejection-certificate DML in the exact versioned leasing grant delta", () => {
     expect(JOB_CONTROL_NEW_PATH_GRANTS).not.toHaveProperty("worker_operation_receipts");
     expect(JOB_LEASING_NEW_PATH_GRANTS).toEqual({
       worker_operation_receipts: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+      worker_lease_rejections: ["SELECT", "INSERT", "UPDATE", "DELETE"],
     });
 
     const migration = readFileSync(
@@ -69,5 +70,22 @@ describe("JOB-003 bounded aoa_app authority", () => {
       'GRANT SELECT, INSERT, UPDATE, DELETE ON "worker_operation_receipts" TO "aoa_app"',
     );
     expect(migration).toContain('ALTER TABLE "worker_operation_receipts" FORCE ROW LEVEL SECURITY');
+
+    const migrationDirectory = fileURLToPath(
+      new URL("../../../packages/db/src/migrations/", import.meta.url),
+    );
+    const rlsSuccessors = readdirSync(migrationDirectory).filter((name) => /^0231_.*\.sql$/.test(name));
+    expect.soft(rlsSuccessors).toHaveLength(1);
+    if (rlsSuccessors.length !== 1) return;
+    const certificateMigration = readFileSync(`${migrationDirectory}/${rlsSuccessors[0]}`, "utf8");
+    expect(certificateMigration).toContain(
+      'GRANT SELECT, INSERT, UPDATE, DELETE ON "worker_lease_rejections" TO "aoa_app"',
+    );
+    expect(certificateMigration).toMatch(
+      /REVOKE ALL ON(?: TABLE)? "worker_lease_rejections" FROM "aoa_operator"/,
+    );
+    expect(certificateMigration).toContain(
+      'ALTER TABLE "worker_lease_rejections" FORCE ROW LEVEL SECURITY',
+    );
   });
 });

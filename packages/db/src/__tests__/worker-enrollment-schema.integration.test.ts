@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import net from "node:net";
@@ -119,64 +119,17 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       await replayMigration(client, "0220_worker_enrollment_constraints.sql");
     });
 
-    it("stores a nullable paired restart-safe lease scan cursor without a cross-table oracle", async () => {
+    it("keeps restart progress out of the logical-worker authority row", async () => {
       const client = database();
-      const columns = await client<{
-        column_name: string;
-        data_type: string;
-        is_nullable: string;
-      }[]>`
-        SELECT column_name, data_type, is_nullable
+      const cursorColumns = await client<{ column_name: string }[]>`
+        SELECT column_name
         FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'workers'
-          AND column_name IN ('lease_scan_cursor_created_at', 'lease_scan_cursor_id')
+        WHERE table_schema = 'public'
+          AND table_name = 'workers'
+          AND column_name LIKE 'lease_scan_cursor_%'
         ORDER BY column_name
       `;
-      expect.soft(columns).toEqual([
-        {
-          column_name: "lease_scan_cursor_created_at",
-          data_type: "timestamp with time zone",
-          is_nullable: "YES",
-        },
-        {
-          column_name: "lease_scan_cursor_id",
-          data_type: "uuid",
-          is_nullable: "YES",
-        },
-      ]);
-
-      const checks = await client<{ constraint_name: string; definition: string }[]>`
-        SELECT con.conname AS constraint_name, pg_get_constraintdef(con.oid) AS definition
-        FROM pg_constraint con
-        JOIN pg_class rel ON rel.oid = con.conrelid
-        WHERE rel.relname = 'workers' AND con.contype = 'c'
-      `;
-      expect.soft(checks).toContainEqual(expect.objectContaining({
-        constraint_name: "workers_lease_scan_cursor_pair_check",
-        definition: expect.stringMatching(
-          /lease_scan_cursor_created_at.*lease_scan_cursor_id|lease_scan_cursor_id.*lease_scan_cursor_created_at/,
-        ),
-      }));
-
-      const foreignKeys = await client<{ definition: string }[]>`
-        SELECT pg_get_constraintdef(con.oid) AS definition
-        FROM pg_constraint con
-        JOIN pg_class rel ON rel.oid = con.conrelid
-        WHERE rel.relname = 'workers' AND con.contype = 'f'
-      `;
-      expect(foreignKeys.some((row) => row.definition.includes("lease_scan_cursor"))).toBe(false);
-
-      const successors = readdirSync(new URL("../migrations/", import.meta.url))
-        .filter((name) => /^0229_.*\.sql$/.test(name));
-      expect.soft(successors).toHaveLength(1);
-      if (successors[0]) {
-        const migration = readFileSync(new URL(`../migrations/${successors[0]}`, import.meta.url), "utf8");
-        expect.soft(migration).toContain('ADD COLUMN IF NOT EXISTS "lease_scan_cursor_created_at"');
-        expect.soft(migration).toContain('ADD COLUMN IF NOT EXISTS "lease_scan_cursor_id"');
-        expect.soft(migration).toContain("duplicate_object");
-        await replayMigration(client, successors[0]);
-        await replayMigration(client, successors[0]);
-      }
+      expect(cursorColumns).toEqual([]);
     });
 
     it("uses text owner identity, exact authority checks, and a composite worker-to-target FK", async () => {

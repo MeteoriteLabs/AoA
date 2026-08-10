@@ -228,6 +228,42 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(result.code).not.toBe(0);
     }, 60_000);
 
+    it("accepts only the exact aoa_app certificate DML allowlist and denies operator access", async () => {
+      guard();
+      const [certificate] = await admin!<{
+        relation: string | null;
+        app_privileges: string[] | null;
+        operator_privileges: string[] | null;
+      }[]>`
+        SELECT to_regclass('public.worker_lease_rejections')::text AS relation,
+          CASE WHEN to_regclass('public.worker_lease_rejections') IS NULL THEN NULL ELSE ARRAY(
+            SELECT privilege_type FROM information_schema.role_table_grants
+            WHERE grantee = 'aoa_app' AND table_schema = 'public'
+              AND table_name = 'worker_lease_rejections'
+            ORDER BY privilege_type
+          ) END AS app_privileges,
+          CASE WHEN to_regclass('public.worker_lease_rejections') IS NULL THEN NULL ELSE ARRAY(
+            SELECT privilege_type FROM information_schema.role_table_grants
+            WHERE grantee = 'aoa_operator' AND table_schema = 'public'
+              AND table_name = 'worker_lease_rejections'
+            ORDER BY privilege_type
+          ) END AS operator_privileges
+      `;
+      expect.soft(certificate).toEqual({
+        relation: "worker_lease_rejections",
+        app_privileges: ["DELETE", "INSERT", "SELECT", "UPDATE"],
+        operator_privileges: [],
+      });
+      if (certificate?.relation !== "worker_lease_rejections") return;
+
+      const result = await observeStartup({
+        appDatabaseUrl: appUrl,
+        operatorDatabaseUrl: operatorUrl,
+        expectedRole: "aoa_app",
+      });
+      expect(result.exited, result.output).toBe(false);
+    }, 60_000);
+
     it.each(["aoa_app", "aoa_operator"] as const)(
       "rejects an owner-pool fallback for %s even when that connection opens",
       async (expectedRole) => {

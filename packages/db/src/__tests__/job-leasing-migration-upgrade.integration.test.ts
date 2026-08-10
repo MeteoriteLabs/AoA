@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cp, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import net from "node:net";
@@ -44,6 +44,15 @@ function database(): Sql {
 
 async function replay0227(db: Sql): Promise<void> {
   const source = await readFile(MIGRATION_0227, "utf8");
+  await db.begin(async (tx) => {
+    for (const statement of source.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
+      await tx.unsafe(statement);
+    }
+  });
+}
+
+async function replayMigration(db: Sql, fileName: string): Promise<void> {
+  const source = await readFile(new URL(`../migrations/${fileName}`, import.meta.url), "utf8");
   await db.begin(async (tx) => {
     for (const statement of source.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
       await tx.unsafe(statement);
@@ -201,6 +210,33 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           count(*) FILTER (WHERE status = 'active' AND activated_at IS NULL)::int AS missing_active_fact
         FROM leases`;
       expect(counts).toEqual({ rich: 3, missing_active_fact: 0 });
+
+      await replayMigration(db, "0228_job_leasing_rls.sql");
+      const migrationNames = readdirSync(new URL("../migrations/", import.meta.url));
+      const successors = [229, 230, 231].map((ordinal) => migrationNames.filter(
+        (name) => new RegExp(`^0${ordinal}_.*\\.sql$`).test(name),
+      ));
+      expect.soft(successors.map((matches) => matches.length)).toEqual([1, 1, 1]);
+      if (successors.some((matches) => matches.length !== 1)) return;
+
+      await replayMigration(db, successors[0]![0]!);
+      const [parentKey] = await db<{ present: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'workers_org_id_authority_target_uq'
+        ) AS present`;
+      expect.soft(parentKey?.present).toBe(true);
+      await replayMigration(db, successors[1]![0]!);
+      await replayMigration(db, successors[2]![0]!);
+      for (const migration of successors.flat()) await replayMigration(db, migration);
+
+      const [certificateTable] = await db<{ present: boolean }[]>`
+        SELECT to_regclass('public.worker_lease_rejections') IS NOT NULL AS present`;
+      expect.soft(certificateTable?.present).toBe(true);
+      const [claimIndex] = await db<{ definition: string }[]>`
+        SELECT indexdef AS definition FROM pg_indexes
+        WHERE schemaname = 'public' AND indexname = 'jobs_claim_idx'`;
+      expect.soft(claimIndex?.definition).toContain("priority DESC");
     }, 180_000);
   },
 );
