@@ -171,11 +171,13 @@ function lexicalTableDeclarations(
   const visit = (node: ts.Node): void => {
     if (ts.isImportSpecifier(node)) {
       const imported = node.propertyName?.text ?? node.name.text;
-      add(node.name.text, exportedAliases.get(imported) ?? null, node, sourceFile);
+      const direct = imported === "executionTargets" || imported === "workers" ? imported : null;
+      add(node.name.text, exportedAliases.get(imported) ?? direct, node, sourceFile);
     }
     if (ts.isExportSpecifier(node)) {
       const imported = node.propertyName?.text ?? node.name.text;
-      add(node.name.text, exportedAliases.get(imported) ?? null, node, sourceFile);
+      const direct = imported === "executionTargets" || imported === "workers" ? imported : null;
+      add(node.name.text, exportedAliases.get(imported) ?? direct, node, sourceFile);
     }
     if (ts.isFunctionLike(node)) {
       for (const parameter of node.parameters) {
@@ -240,6 +242,37 @@ function templateText(node: ts.TaggedTemplateExpression): string {
   return [node.template.head.text, ...node.template.templateSpans.map((span) => span.literal.text)].join(" ? ");
 }
 
+function staticStringBindings(sourceFile: ts.SourceFile): Map<string, string> {
+  const bindings = new Map<string, string>();
+  const resolve = (node: ts.Expression | undefined, seen = new Set<string>()): string | null => {
+    if (!node) return null;
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+    if (ts.isAsExpression(node) || ts.isParenthesizedExpression(node)) return resolve(node.expression, seen);
+    if (ts.isIdentifier(node)) {
+      if (seen.has(node.text)) return null;
+      const value = bindings.get(node.text);
+      return value ?? null;
+    }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const left = resolve(node.left, seen);
+      const right = resolve(node.right, seen);
+      return left === null || right === null ? null : left + right;
+    }
+    return null;
+  };
+  for (let pass = 0; pass < 4; pass += 1) {
+    const visit = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        const value = resolve(node.initializer, new Set([node.name.text]));
+        if (value !== null) bindings.set(node.name.text, value);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+  return bindings;
+}
+
 function sqlFieldName(value: string): string {
   return value.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase());
 }
@@ -253,6 +286,17 @@ function rawSqlAuthorityWriter(
   fields: string[];
 } | null {
   const text = templateText(node);
+  const deletion = /\bDELETE\s+FROM\s+(?:"?public"?\.)?"?(execution_targets|workers)"?\b/i.exec(text);
+  if (deletion) {
+    return {
+      table: deletion[1]!.toLowerCase() === "execution_targets" ? "executionTargets" : "workers",
+      fields: ["<delete>"],
+    };
+  }
+  if (/^\s*DELETE\s+FROM\s+\?/i.test(text) && ts.isTemplateExpression(node.template)) {
+    const table = resolveTable(node.template.templateSpans[0]?.expression);
+    return table ? { table, fields: ["<delete>"] } : null;
+  }
   const match = /\bUPDATE\s+(?:"?public"?\.)?"?(execution_targets|workers)"?(?:\s+(?:AS\s+)?[a-z][a-z0-9_]*)?\s+SET\s+([\s\S]*?)(?:\bWHERE\b|\bRETURNING\b|$)/i.exec(text);
   let table = match?.[1]?.toLowerCase() === "execution_targets"
     ? "executionTargets" as const
@@ -276,6 +320,13 @@ function rawSqlAuthorityWriterText(text: string): {
   table: AuthorityWriter["table"];
   fields: string[];
 } | null {
+  const deletion = /\bDELETE\s+FROM\s+(?:"?public"?\.)?"?(execution_targets|workers)"?\b/i.exec(text);
+  if (deletion) {
+    return {
+      table: deletion[1]!.toLowerCase() === "execution_targets" ? "executionTargets" : "workers",
+      fields: ["<delete>"],
+    };
+  }
   const match = /\bUPDATE\s+(?:"?public"?\.)?"?(execution_targets|workers)"?(?:\s+(?:AS\s+)?[a-z][a-z0-9_]*)?\s+SET\s+([\s\S]*?)(?:\bWHERE\b|\bRETURNING\b|$)/i.exec(text);
   if (!match) return null;
   const fields = [...match[2]!.matchAll(/"?([a-z][a-z0-9_]*)"?\s*=/gi)]
@@ -293,8 +344,8 @@ function scanAuthorityWriters(sources: Array<{ file: string; source: string }>):
   for (const input of sources) {
     const sourceFile = ts.createSourceFile(input.file, input.source, ts.ScriptTarget.Latest, true);
     const lexicalDeclarations = lexicalTableDeclarations(sourceFile, exportedAliases);
+    const strings = staticStringBindings(sourceFile);
     const objectFields = new Map<string, string[]>();
-    const expressionAliases = new Map<string, ts.Expression>();
     const functionReturnFields = new Map<string, string[]>();
     const collectFunctionReturns = (node: ts.Node): void => {
       if (ts.isFunctionDeclaration(node) && node.name && node.body) {
@@ -315,7 +366,6 @@ function scanAuthorityWriters(sources: Array<{ file: string; source: string }>):
     for (let pass = 0; pass < 3; pass += 1) {
       const collectObjects = (node: ts.Node): void => {
         if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-          expressionAliases.set(node.name.text, node.initializer);
           const fields = expressionObjectFields(node.initializer, objectFields, functionReturnFields);
           if (fields.some((field) => field !== "<dynamic>")) objectFields.set(node.name.text, fields);
         }
@@ -323,15 +373,67 @@ function scanAuthorityWriters(sources: Array<{ file: string; source: string }>):
       };
       collectObjects(sourceFile);
     }
-    const conflictSetFields = (node: ts.Expression | undefined, seen = new Set<string>()): string[] => {
+    type ExpressionAlias = {
+      name: string;
+      expression: ts.Expression | null;
+      start: number;
+      scopeStart: number;
+      scopeEnd: number;
+    };
+    const expressionAliases: ExpressionAlias[] = [];
+    const expressionScope = (node: ts.Node): ts.Node => {
+      let current: ts.Node | undefined = node.parent;
+      while (current && !ts.isBlock(current) && !ts.isSourceFile(current) && !ts.isFunctionLike(current)) {
+        current = current.parent;
+      }
+      return current ?? sourceFile;
+    };
+    const collectExpressionAliases = (node: ts.Node): void => {
+      if (ts.isFunctionLike(node)) {
+        for (const parameter of node.parameters) {
+          if (ts.isIdentifier(parameter.name)) {
+            expressionAliases.push({
+              name: parameter.name.text,
+              expression: null,
+              start: parameter.getStart(sourceFile),
+              scopeStart: node.getStart(sourceFile),
+              scopeEnd: node.getEnd(),
+            });
+          }
+        }
+      }
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+        const scope = expressionScope(node);
+        expressionAliases.push({
+          name: node.name.text,
+          expression: node.initializer ?? null,
+          start: node.getStart(sourceFile),
+          scopeStart: scope.getStart(sourceFile),
+          scopeEnd: scope.getEnd(),
+        });
+      }
+      ts.forEachChild(node, collectExpressionAliases);
+    };
+    collectExpressionAliases(sourceFile);
+    const conflictSetFields = (
+      node: ts.Expression | undefined,
+      useNode: ts.Node,
+      seen = new Set<string>(),
+    ): string[] => {
       if (!node) return ["<dynamic>"];
       if (ts.isAsExpression(node) || ts.isParenthesizedExpression(node)) {
-        return conflictSetFields(node.expression, seen);
+        return conflictSetFields(node.expression, useNode, seen);
       }
       if (ts.isIdentifier(node)) {
         if (seen.has(node.text)) return ["<dynamic>"];
-        const alias = expressionAliases.get(node.text);
-        return alias ? conflictSetFields(alias, new Set([...seen, node.text])) : ["<dynamic>"];
+        const use = useNode.getStart(sourceFile);
+        const alias = expressionAliases.filter((candidate) => candidate.name === node.text &&
+          candidate.start <= use && candidate.scopeStart <= use && use <= candidate.scopeEnd)
+          .sort((left, right) =>
+            (left.scopeEnd - left.scopeStart) - (right.scopeEnd - right.scopeStart) || right.start - left.start)[0];
+        return alias?.expression
+          ? conflictSetFields(alias.expression, useNode, new Set([...seen, node.text]))
+          : ["<dynamic>"];
       }
       if (!ts.isObjectLiteralExpression(node)) return ["<dynamic>"];
       const fields: string[] = [];
@@ -341,30 +443,95 @@ function scanAuthorityWriters(sources: Array<{ file: string; source: string }>):
         } else if (ts.isShorthandPropertyAssignment(property) && property.name.text === "set") {
           fields.push(...expressionObjectFields(property.name, objectFields, functionReturnFields));
         } else if (ts.isSpreadAssignment(property)) {
-          fields.push(...conflictSetFields(property.expression, seen));
+          fields.push(...conflictSetFields(property.expression, useNode, seen));
         }
       }
       return fields.length > 0 ? [...new Set(fields)].sort() : ["<dynamic>"];
     };
+    type Builder = {
+      name: string;
+      kind: "update" | "insert";
+      table: AuthorityWriter["table"] | null;
+      start: number;
+      scopeStart: number;
+      scopeEnd: number;
+    };
+    const builders: Builder[] = [];
+    const builderScope = (node: ts.Node): ts.Node => {
+      let current: ts.Node | undefined = node.parent;
+      while (current && !ts.isBlock(current) && !ts.isSourceFile(current) && !ts.isFunctionLike(current)) {
+        current = current.parent;
+      }
+      return current ?? sourceFile;
+    };
+    const directBuilder = (expression: ts.Expression | undefined, useNode: ts.Node): Omit<Builder, "name" | "start" | "scopeStart" | "scopeEnd"> | null => {
+      if (!expression) return null;
+      if (ts.isAsExpression(expression) || ts.isParenthesizedExpression(expression)) {
+        return directBuilder(expression.expression, useNode);
+      }
+      let chain = expression;
+      while (ts.isCallExpression(chain) && ts.isPropertyAccessExpression(chain.expression)) {
+        const callName = chain.expression.name.text;
+        if (callName === "update" || callName === "insert") {
+          return {
+            kind: callName,
+            table: lexicalTableName(chain.arguments[0], useNode, lexicalDeclarations, exportedAliases),
+          };
+        }
+        chain = chain.expression.expression;
+      }
+      return null;
+    };
+    const collectBuilders = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        const binding = directBuilder(node.initializer, node);
+        if (binding) {
+          const scope = builderScope(node);
+          builders.push({
+            name: node.name.text,
+            ...binding,
+            start: node.getStart(sourceFile),
+            scopeStart: scope.getStart(sourceFile),
+            scopeEnd: scope.getEnd(),
+          });
+        }
+      }
+      ts.forEachChild(node, collectBuilders);
+    };
+    collectBuilders(sourceFile);
+    const resolveBuilder = (expression: ts.Expression | undefined, useNode: ts.Node): Builder | null => {
+      const direct = directBuilder(expression, useNode);
+      if (direct) {
+        return { name: "<direct>", ...direct, start: 0, scopeStart: 0, scopeEnd: sourceFile.getEnd() };
+      }
+      if (!expression || !ts.isIdentifier(expression)) return null;
+      const use = useNode.getStart(sourceFile);
+      return builders.filter((builder) => builder.name === expression.text && builder.start <= use &&
+        builder.scopeStart <= use && use <= builder.scopeEnd)
+        .sort((left, right) =>
+          (left.scopeEnd - left.scopeStart) - (right.scopeEnd - right.scopeStart) || right.start - left.start)[0] ?? null;
+    };
+    const recordWriter = (
+      node: ts.Node,
+      table: AuthorityWriter["table"] | null,
+      fields: string[],
+    ): void => {
+      if (!table) return;
+      const lastSeenOnly = fields.every((field) => field === "lastSeenAt" || field === "updatedAt");
+      writers.push({
+        file: input.file.replaceAll("\\", "/"),
+        functionName: enclosingFunctionName(node),
+        table,
+        fields,
+        mode: lastSeenOnly ? "last_seen_only" : "authority",
+      });
+    };
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
           node.expression.name.text === "set") {
-        const update = node.expression.expression;
-        if (ts.isCallExpression(update) && ts.isPropertyAccessExpression(update.expression) &&
-            update.expression.name.text === "update") {
-          const table = lexicalTableName(update.arguments[0], node, lexicalDeclarations, exportedAliases);
-          if (table === "executionTargets" || table === "workers") {
-            const value = node.arguments[0];
-            const fields = expressionObjectFields(value, objectFields, functionReturnFields);
-            const lastSeenOnly = fields.every((field) => field === "lastSeenAt" || field === "updatedAt");
-            writers.push({
-              file: input.file.replaceAll("\\", "/"),
-              functionName: enclosingFunctionName(node),
-              table,
-              fields,
-              mode: lastSeenOnly ? "last_seen_only" : "authority",
-            });
-          }
+        const update = resolveBuilder(node.expression.expression, node);
+        if (update?.kind === "update") {
+          recordWriter(node, update.table, expressionObjectFields(node.arguments[0], objectFields, functionReturnFields));
         }
       }
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
@@ -372,41 +539,24 @@ function scanAuthorityWriters(sources: Array<{ file: string; source: string }>):
         const argument = node.arguments[0];
         const text = argument && (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument))
           ? argument.text
-          : null;
+          : argument && ts.isIdentifier(argument) ? strings.get(argument.text) ?? null : null;
         const raw = text ? rawSqlAuthorityWriterText(text) : null;
         if (raw) {
-          const lastSeenOnly = raw.fields.every((field) => field === "lastSeenAt" || field === "updatedAt");
-          writers.push({
-            file: input.file.replaceAll("\\", "/"),
-            functionName: enclosingFunctionName(node),
-            table: raw.table,
-            fields: raw.fields,
-            mode: lastSeenOnly ? "last_seen_only" : "authority",
-          });
+          recordWriter(node, raw.table, raw.fields);
         }
       }
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
           node.expression.name.text === "onConflictDoUpdate" && node.arguments[0]) {
-        let chain: ts.Expression = node.expression.expression;
-        let table: AuthorityWriter["table"] | null = null;
-        while (ts.isCallExpression(chain) && ts.isPropertyAccessExpression(chain.expression)) {
-          if (chain.expression.name.text === "insert") {
-            table = lexicalTableName(chain.arguments[0], node, lexicalDeclarations, exportedAliases);
-            break;
-          }
-          chain = chain.expression.expression;
+        const builder = resolveBuilder(node.expression.expression, node);
+        if (builder?.kind === "insert" && builder.table) {
+          const fields = conflictSetFields(node.arguments[0], node);
+          recordWriter(node, builder.table, fields);
         }
-        if (table) {
-          const fields = conflictSetFields(node.arguments[0]);
-          const lastSeenOnly = fields.every((field) => field === "lastSeenAt" || field === "updatedAt");
-          writers.push({
-            file: input.file.replaceAll("\\", "/"),
-            functionName: enclosingFunctionName(node),
-            table,
-            fields,
-            mode: lastSeenOnly ? "last_seen_only" : "authority",
-          });
-        }
+      }
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === "values") {
+        const builder = resolveBuilder(node.expression.expression, node);
+        if (builder?.kind === "insert" && builder.table) recordWriter(node, builder.table, ["<insert>"]);
       }
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
           node.expression.name.text === "delete") {
@@ -427,14 +577,7 @@ function scanAuthorityWriters(sources: Array<{ file: string; source: string }>):
           (expression) => lexicalTableName(expression, node, lexicalDeclarations, exportedAliases),
         );
         if (raw) {
-          const lastSeenOnly = raw.fields.every((field) => field === "lastSeenAt" || field === "updatedAt");
-          writers.push({
-            file: input.file.replaceAll("\\", "/"),
-            functionName: enclosingFunctionName(node),
-            table: raw.table,
-            fields: raw.fields,
-            mode: lastSeenOnly ? "last_seen_only" : "authority",
-          });
+          recordWriter(node, raw.table, raw.fields);
         }
       }
       ts.forEachChild(node, visit);
@@ -448,12 +591,14 @@ function scanDynamicRawSqlSites(sources: Array<{ file: string; source: string }>
   const sites: string[] = [];
   for (const input of sources) {
     const sourceFile = ts.createSourceFile(input.file, input.source, ts.ScriptTarget.Latest, true);
+    const strings = staticStringBindings(sourceFile);
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
           (node.expression.name.text === "unsafe" || node.expression.name.text === "raw")) {
         const argument = node.arguments[0];
         if (!argument || (!ts.isStringLiteral(argument) && !ts.isNoSubstitutionTemplateLiteral(argument))) {
-          const argumentShape = argument?.getText(sourceFile).replace(/\s+/g, " ") ?? "<missing>";
+          const resolved = argument && ts.isIdentifier(argument) ? strings.get(argument.text) : undefined;
+          const argumentShape = resolved ?? argument?.getText(sourceFile).replace(/\s+/g, " ") ?? "<missing>";
           const argumentDigest = createHash("sha256").update(argumentShape).digest("hex").slice(0, 12);
           sites.push(
             `${input.file.replaceAll("\\", "/")}#${enclosingFunctionName(node)}:.${node.expression.name.text}:${argumentDigest}`,
@@ -489,12 +634,399 @@ function namedFunctionSource(source: string, name: string): string {
   return match;
 }
 
+function hasNamedFunction(source: string, name: string): boolean {
+  const file = ts.createSourceFile("named-check.ts", source, ts.ScriptTarget.Latest, true);
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if ((ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) && propertyName(node.name) === name) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return found;
+}
+
+function namedFunctionMutationInventory(source: string, name: string): string[] {
+  const functionSource = namedFunctionSource(source, name);
+  const file = ts.createSourceFile("mutation-inventory.ts", functionSource, ts.ScriptTarget.Latest, true);
+  const canonicalTables = new Set([
+    "workerLeaseRejections", "workers", "executionTargets", "jobs", "jobAttempts", "leases",
+  ]);
+  const aliases = new Map<string, string>();
+  const builders = new Map<string, { operation: "insert" | "update"; table: string | null }>();
+  const tableName = (expression: ts.Expression | undefined): string | null => {
+    if (!expression) return null;
+    if (ts.isAsExpression(expression) || ts.isParenthesizedExpression(expression)) return tableName(expression.expression);
+    if (ts.isIdentifier(expression)) {
+      if (canonicalTables.has(expression.text)) return expression.text;
+      return aliases.get(expression.text) ?? null;
+    }
+    if (ts.isPropertyAccessExpression(expression) && canonicalTables.has(expression.name.text)) {
+      return expression.name.text;
+    }
+    return null;
+  };
+  const directBuilder = (expression: ts.Expression | undefined): { operation: "insert" | "update"; table: string | null } | null => {
+    if (!expression) return null;
+    if (ts.isAsExpression(expression) || ts.isParenthesizedExpression(expression)) return directBuilder(expression.expression);
+    let chain = expression;
+    while (ts.isCallExpression(chain) && ts.isPropertyAccessExpression(chain.expression)) {
+      if (chain.expression.name.text === "insert" || chain.expression.name.text === "update") {
+        return { operation: chain.expression.name.text, table: tableName(chain.arguments[0]) };
+      }
+      chain = chain.expression.expression;
+    }
+    return ts.isIdentifier(expression) ? builders.get(expression.text) ?? null : null;
+  };
+  for (let pass = 0; pass < 3; pass += 1) {
+    const collect = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        const table = tableName(node.initializer);
+        if (table) aliases.set(node.name.text, table);
+        const builder = directBuilder(node.initializer);
+        if (builder) builders.set(node.name.text, builder);
+      }
+      ts.forEachChild(node, collect);
+    };
+    collect(file);
+  }
+  const found: string[] = [];
+  const record = (table: string | null, operation: string): void => {
+    found.push(`${table ?? "<dynamic>"}:${operation}`);
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const callName = node.expression.name.text;
+      if (callName === "values") {
+        const builder = directBuilder(node.expression.expression);
+        if (builder?.operation === "insert") record(builder.table, "insert");
+      } else if (callName === "set") {
+        const builder = directBuilder(node.expression.expression);
+        if (builder?.operation === "update") record(builder.table, "update");
+      } else if (callName === "delete") {
+        record(tableName(node.arguments[0]), "delete");
+      } else if ((callName === "unsafe" || callName === "raw") && node.arguments[0] &&
+          (ts.isStringLiteral(node.arguments[0]) || ts.isNoSubstitutionTemplateLiteral(node.arguments[0]))) {
+        const match = /\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:"?public"?\.)?"?([a-z_]+)"?/i.exec(node.arguments[0].text);
+        if (match) {
+          const table = [...canonicalTables].find((candidate) =>
+            candidate.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`) === match[2]!) ?? null;
+          record(table, match[1]!.toUpperCase().startsWith("INSERT") ? "insert" :
+            match[1]!.toUpperCase().startsWith("DELETE") ? "delete" : "update");
+        }
+      }
+    }
+    if (ts.isTaggedTemplateExpression(node)) {
+      const match = /\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:"?public"?\.)?"?([a-z_]+)"?/i.exec(templateText(node));
+      if (match) {
+        const table = [...canonicalTables].find((candidate) =>
+          candidate.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`) === match[2]!) ?? null;
+        record(table, match[1]!.toUpperCase().startsWith("INSERT") ? "insert" :
+          match[1]!.toUpperCase().startsWith("DELETE") ? "delete" : "update");
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return [...new Set(found)].sort();
+}
+
+function namedFunctionUnexpectedCertificateCalls(source: string, name: string): string[] {
+  const functionSource = namedFunctionSource(source, name);
+  const file = ts.createSourceFile("certificate-call-inventory.ts", functionSource, ts.ScriptTarget.Latest, true);
+  const allowedDatabaseFluent = new Set([
+    "select", "selectDistinct", "from", "innerJoin", "leftJoin", "rightJoin", "fullJoin",
+    "where", "orderBy", "groupBy", "having", "limit", "offset", "for", "as",
+    "insert", "values", "onConflictDoNothing", "onConflictDoUpdate", "delete", "returning",
+  ]);
+  const allowedCollectionFluent = new Set([
+    "map", "filter", "some", "every", "includes", "slice", "sort",
+  ]);
+  const allowedPure = new Set([
+    "and", "or", "eq", "ne", "gt", "gte", "lt", "lte", "inArray", "isNull", "isNotNull",
+    "exists", "notExists", "asc", "desc",
+  ]);
+  const reviewedBuilders = new Set<string>();
+  const databaseRooted = (expression: ts.Expression): boolean => {
+    if (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression)) {
+      return databaseRooted(expression.expression);
+    }
+    if (ts.isIdentifier(expression)) return reviewedBuilders.has(expression.text);
+    if (!ts.isCallExpression(expression) || !ts.isPropertyAccessExpression(expression.expression)) return false;
+    const receiver = expression.expression.expression;
+    const callName = expression.expression.name.text;
+    if (ts.isIdentifier(receiver) && receiver.text === "tx" &&
+        ["select", "selectDistinct", "insert", "delete"].includes(callName)) return true;
+    return allowedDatabaseFluent.has(callName) && databaseRooted(receiver);
+  };
+  for (let pass = 0; pass < 3; pass += 1) {
+    const collectBuilders = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer &&
+          databaseRooted(node.initializer)) reviewedBuilders.add(node.name.text);
+      ts.forEachChild(node, collectBuilders);
+    };
+    collectBuilders(file);
+  }
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      if (ts.isIdentifier(node.expression)) {
+        if (!allowedPure.has(node.expression.text)) found.push(node.expression.text);
+      } else if (ts.isPropertyAccessExpression(node.expression)) {
+        const callName = node.expression.name.text;
+        const receiver = node.expression.expression.getText(file).replace(/\s+/g, "");
+        const allowedMath = receiver === "Math" && ["min", "max", "floor"].includes(callName);
+        const allowedDatabaseCall = allowedDatabaseFluent.has(callName) &&
+          ((ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "tx" &&
+            ["select", "selectDistinct", "insert", "delete"].includes(callName)) ||
+            databaseRooted(node.expression.expression));
+        if (!allowedDatabaseCall && !allowedCollectionFluent.has(callName) && !allowedMath) {
+          found.push(`${receiver}.${callName}`);
+        }
+      } else {
+        found.push("<dynamic-call>");
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return [...new Set(found)].sort();
+}
+
+function namedFunctionCertificateMutationScopes(source: string, name: string): string[] {
+  const functionSource = namedFunctionSource(source, name);
+  const file = ts.createSourceFile("certificate-scope-columns.ts", functionSource, ts.ScriptTarget.Latest, true);
+  const columns = new Set(["organizationId", "workerId", "targetId", "attemptId"]);
+  const expressions = new Map<string, ts.Expression>();
+  const tableAliases = new Map<string, string>();
+  const builders = new Map<string, { table: string; operation: "insert" | "delete" }>();
+  const tableName = (expression: ts.Expression): string | null => {
+    if (ts.isIdentifier(expression)) {
+      if (expression.text === "workerLeaseRejections") return expression.text;
+      return tableAliases.get(expression.text) ?? null;
+    }
+    return null;
+  };
+  const directBuilder = (expression: ts.Expression): { table: string; operation: "insert" | "delete" } | null => {
+    if (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression)) {
+      return directBuilder(expression.expression);
+    }
+    if (ts.isIdentifier(expression)) return builders.get(expression.text) ?? null;
+    if (!ts.isCallExpression(expression) || !ts.isPropertyAccessExpression(expression.expression)) return null;
+    const callName = expression.expression.name.text;
+    if ((callName === "insert" || callName === "delete") && expression.arguments[0]) {
+      const table = tableName(expression.arguments[0]);
+      return table ? { table, operation: callName } : null;
+    }
+    return directBuilder(expression.expression.expression);
+  };
+  for (let pass = 0; pass < 3; pass += 1) {
+    const collect = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        expressions.set(node.name.text, node.initializer);
+        const table = tableName(node.initializer);
+        if (table) tableAliases.set(node.name.text, table);
+        const builder = directBuilder(node.initializer);
+        if (builder) builders.set(node.name.text, builder);
+      }
+      ts.forEachChild(node, collect);
+    };
+    collect(file);
+  }
+  const inspectArgument = (node: ts.Node, found: Set<string>, seen = new Set<string>()): void => {
+    if (ts.isIdentifier(node) && expressions.has(node.text) && !seen.has(node.text)) {
+      const nextSeen = new Set(seen).add(node.text);
+      inspectArgument(expressions.get(node.text)!, found, nextSeen);
+    }
+    if (ts.isPropertyAssignment(node)) {
+      const key = propertyName(node.name);
+      if (key && columns.has(key)) found.add(key);
+    }
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) &&
+        node.expression.text === "workerLeaseRejections" && columns.has(node.name.text)) {
+      found.add(node.name.text);
+    }
+    ts.forEachChild(node, (child) => inspectArgument(child, found, seen));
+  };
+  const maximalChain = (node: ts.CallExpression): ts.Node => {
+    let current: ts.Node = node;
+    while (current.parent) {
+      if (ts.isPropertyAccessExpression(current.parent) && current.parent.expression === current) {
+        current = current.parent;
+        continue;
+      }
+      if (ts.isCallExpression(current.parent) && current.parent.expression === current) {
+        current = current.parent;
+        continue;
+      }
+      break;
+    }
+    return current;
+  };
+  const results: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const callName = node.expression.name.text;
+      const builder = directBuilder(callName === "values" ? node.expression.expression : node);
+      const isInsert = callName === "values" && builder?.operation === "insert";
+      const isDelete = callName === "delete" && builder?.operation === "delete";
+      if ((isInsert || isDelete) && builder?.table === "workerLeaseRejections") {
+        const found = new Set<string>();
+        inspectArgument(maximalChain(node), found);
+        results.push(`${builder.table}:${builder.operation}:${[...found].sort().join(",")}`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return results.sort();
+}
+
 function namedFunctionAuditSource(source: string, name: string): string {
   const file = ts.createSourceFile("audit-source.ts", source, ts.ScriptTarget.Latest, true);
   const imports = file.statements
     .filter(ts.isImportDeclaration)
     .map((statement) => statement.getText(file));
   return `${imports.join("\n")}\n${namedFunctionSource(source, name)}`;
+}
+
+function namedVariableFunctionSource(source: string, name: string): string {
+  const file = ts.createSourceFile("variable-function.ts", source, ts.ScriptTarget.Latest, true);
+  let found: string | null = null;
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name &&
+        node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
+      found = `const ${name} = ${node.initializer.getText(file)};`;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  if (!found) throw new Error(`variable function ${name} was not found`);
+  return found;
+}
+
+function awaitedCallFacts(source: string): Array<{ name: string; awaited: boolean; position: number }> {
+  const file = ts.createSourceFile("awaited-calls.ts", source, ts.ScriptTarget.Latest, true);
+  const facts: Array<{ name: string; awaited: boolean; position: number }> = [];
+  const isAwaited = (node: ts.Node): boolean => {
+    let current = node;
+    while (current.parent && (ts.isParenthesizedExpression(current.parent) || ts.isAsExpression(current.parent))) {
+      current = current.parent;
+    }
+    return Boolean(current.parent && ts.isAwaitExpression(current.parent));
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const name = ts.isIdentifier(node.expression)
+        ? node.expression.text
+        : ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : null;
+      if (name) facts.push({ name, awaited: isAwaited(node), position: node.getStart(file) });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return facts;
+}
+
+function enrollmentAuthorityFlowViolations(source: string): string[] {
+  const file = ts.createSourceFile("enrollment-authority-flow.ts", source, ts.ScriptTarget.Latest, true);
+  const violations: string[] = [];
+  let body: ts.ConciseBody | null = null;
+  const locate = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
+        node.name.text === "completeEnrollment" && node.initializer &&
+        (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
+      body = node.initializer.body;
+      return;
+    }
+    ts.forEachChild(node, locate);
+  };
+  locate(file);
+  if (!body || !ts.isBlock(body)) return ["completeEnrollment:missing"];
+
+  const normalize = (node: ts.Node): string => node.getText(file)
+    .replace(/\s+/g, "")
+    .replace(/'/g, '"');
+  let sharedDeclaration: ts.VariableDeclaration | null = null;
+  let sharedBranch: ts.IfStatement | null = null;
+  const calls: Array<{ node: ts.CallExpression; name: string }> = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
+        node.name.text === "sharedPlatformProfile") sharedDeclaration = node;
+    if (ts.isIfStatement(node) && ts.isIdentifier(node.expression) &&
+        node.expression.text === "sharedPlatformProfile") sharedBranch = node;
+    if (ts.isCallExpression(node)) {
+      const name = ts.isIdentifier(node.expression)
+        ? node.expression.text
+        : ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : null;
+      if (name) calls.push({ node, name });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+  const sharedInitializer = sharedDeclaration?.initializer;
+  if (!sharedInitializer || normalize(sharedInitializer) !==
+      'authoritativeOrganizationId!==null&&target.scope==="platform"') {
+    violations.push("shared-platform-condition");
+  }
+  if (!sharedBranch) return [...violations, "shared-platform-branch"];
+
+  const isDirectlyAwaited = (call: ts.CallExpression): boolean => {
+    let current: ts.Node = call;
+    while (current.parent && (ts.isParenthesizedExpression(current.parent) || ts.isAsExpression(current.parent))) {
+      current = current.parent;
+    }
+    return ts.isAwaitExpression(current.parent);
+  };
+  const isDirectInBranch = (call: ts.CallExpression, branch: ts.Statement): boolean => {
+    let current: ts.Node | undefined = call.parent;
+    while (current && current !== branch) {
+      if (ts.isIfStatement(current) || ts.isConditionalExpression(current) || ts.isTryStatement(current) ||
+          ts.isCatchClause(current) || ts.isForStatement(current) || ts.isForInStatement(current) ||
+          ts.isForOfStatement(current) || ts.isWhileStatement(current) || ts.isDoStatement(current) ||
+          (ts.isBinaryExpression(current) &&
+            (current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+             current.operatorToken.kind === ts.SyntaxKind.BarBarToken))) return false;
+      current = current.parent;
+    }
+    return current === branch;
+  };
+  const branchCalls = (branch: ts.Statement, name: string) => calls.filter((call) =>
+    call.name === name && call.node.getStart(file) >= branch.getStart(file) && call.node.getEnd() <= branch.getEnd());
+  const sharedGuards = branchCalls(sharedBranch.thenStatement, "requireCurrentPlatformPhysicalAuthority");
+  if (sharedGuards.length !== 1 || !isDirectlyAwaited(sharedGuards[0]!.node) ||
+      !isDirectInBranch(sharedGuards[0]!.node, sharedBranch.thenStatement)) {
+    violations.push("shared-platform-guard");
+  }
+
+  const nullBranch = sharedBranch.elseStatement && ts.isIfStatement(sharedBranch.elseStatement)
+    ? sharedBranch.elseStatement
+    : null;
+  if (!nullBranch || normalize(nullBranch.expression) !==
+      'authoritativeOrganizationId===null&&target.scope==="platform"') {
+    violations.push("null-platform-condition");
+  } else {
+    const exclusive = branchCalls(nullBranch.thenStatement, "acquirePlatformTargetAuthorityExclusive");
+    if (exclusive.length !== 1 || !isDirectlyAwaited(exclusive[0]!.node) ||
+        !isDirectInBranch(exclusive[0]!.node, nullBranch.thenStatement)) {
+      violations.push("null-platform-exclusive");
+    }
+  }
+
+  const branchEnd = sharedBranch.getEnd();
+  for (const mutationName of [
+    "advanceTargetGeneration", "rotateWorker", "insertWorker", "retireBootstrapCredential",
+  ]) {
+    const mutations = calls.filter((call) => call.name === mutationName);
+    if (mutations.length === 0 || mutations.some((call) =>
+      call.node.getStart(file) <= branchEnd || !isDirectlyAwaited(call.node))) {
+      violations.push(`mutation:${mutationName}`);
+    }
+  }
+  return [...new Set(violations)].sort();
 }
 
 function forbiddenLeaseContinuationIdentifiers(source: string): string[] {
@@ -632,6 +1164,47 @@ function platformGuardOrderViolations(
   const file = ts.createSourceFile("guard-fixture.ts", source, ts.ScriptTarget.Latest, true);
   const violations: string[] = [];
   const lexicalDeclarations = lexicalTableDeclarations(file);
+  type MutationBuilder = { name: string; kind: "update" | "insert"; table: AuthorityWriter["table"] | null };
+  const mutationBuilders: MutationBuilder[] = [];
+  const directMutationBuilder = (expression: ts.Expression | undefined, useNode: ts.Node): Omit<MutationBuilder, "name"> | null => {
+    if (!expression) return null;
+    if (ts.isAsExpression(expression) || ts.isParenthesizedExpression(expression)) {
+      return directMutationBuilder(expression.expression, useNode);
+    }
+    let chain = expression;
+    while (ts.isCallExpression(chain) && ts.isPropertyAccessExpression(chain.expression)) {
+      const callName = chain.expression.name.text;
+      if (callName === "update" || callName === "insert") {
+        return { kind: callName, table: lexicalTableName(chain.arguments[0], useNode, lexicalDeclarations) };
+      }
+      chain = chain.expression.expression;
+    }
+    return null;
+  };
+  const collectMutationBuilders = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      const builder = directMutationBuilder(node.initializer, node);
+      if (builder) mutationBuilders.push({ name: node.name.text, ...builder });
+    }
+    ts.forEachChild(node, collectMutationBuilders);
+  };
+  collectMutationBuilders(file);
+  const mutationBuilder = (expression: ts.Expression | undefined, useNode: ts.Node): Omit<MutationBuilder, "name"> | null => {
+    const direct = directMutationBuilder(expression, useNode);
+    if (direct) return direct;
+    return expression && ts.isIdentifier(expression)
+      ? mutationBuilders.find((builder) => builder.name === expression.text) ?? null
+      : null;
+  };
+  const directlyAwaited = (node: ts.Node): boolean => {
+    let current: ts.Node = node;
+    while (current.parent && (
+      ts.isParenthesizedExpression(current.parent) || ts.isAsExpression(current.parent) ||
+      (ts.isPropertyAccessExpression(current.parent) && current.parent.expression === current) ||
+      (ts.isCallExpression(current.parent) && current.parent.expression === current)
+    )) current = current.parent;
+    return ts.isAwaitExpression(current.parent);
+  };
   type HelperKind = "exclusive" | "operatorFactory" | null;
   const helperDeclarations: Array<{
     name: string;
@@ -698,6 +1271,7 @@ function platformGuardOrderViolations(
         kind: "target" | "worker" | "combined" | "exclusive" | "mutation";
         position: number;
         controlPath: string[];
+        awaited: boolean;
       }> = [];
       const controlPath = (child: ts.Node): string[] => {
         const path: string[] = [];
@@ -712,6 +1286,10 @@ function platformGuardOrderViolations(
               current === parent.catchClause ? "catch" : "finally"}`);
           } else if (ts.isConditionalExpression(parent)) {
             path.unshift(`${parent.getStart(file)}:${current === parent.whenTrue ? "true" : "false"}`);
+          } else if (ts.isBinaryExpression(parent) &&
+              (parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+               parent.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
+            path.unshift(`${parent.getStart(file)}:${current === parent.left ? "left" : "right"}`);
           } else if (ts.isCaseClause(parent) || ts.isDefaultClause(parent) ||
               ts.isForStatement(parent) || ts.isForInStatement(parent) || ts.isForOfStatement(parent) ||
               ts.isWhileStatement(parent) || ts.isDoStatement(parent) || ts.isCatchClause(parent)) {
@@ -725,7 +1303,12 @@ function platformGuardOrderViolations(
         kind: (typeof markers)[number]["kind"],
         child: ts.Node,
       ): void => {
-        markers.push({ kind, position: child.getStart(file), controlPath: controlPath(child) });
+        markers.push({
+          kind,
+          position: child.getStart(file),
+          controlPath: controlPath(child),
+          awaited: directlyAwaited(child),
+        });
       };
       const scan = (child: ts.Node): void => {
         if (child !== node.body && ts.isFunctionLike(child)) return;
@@ -767,23 +1350,18 @@ function platformGuardOrderViolations(
             if (trustedThis || trustedFactory) addMarker("combined", child);
           }
           if (callName === "set" && ts.isPropertyAccessExpression(child.expression)) {
-            const update = child.expression.expression;
-            if (ts.isCallExpression(update) && ts.isPropertyAccessExpression(update.expression) &&
-                update.expression.name.text === "update" &&
-                (auditAllMutations || lexicalTableName(update.arguments[0], child, lexicalDeclarations) !== null)) {
+            const update = mutationBuilder(child.expression.expression, child);
+            if (update?.kind === "update" && (auditAllMutations || update.table !== null)) {
               addMarker("mutation", child);
             }
           }
           if (callName === "onConflictDoUpdate" && ts.isPropertyAccessExpression(child.expression)) {
-            let chain: ts.Expression = child.expression.expression;
-            while (ts.isCallExpression(chain) && ts.isPropertyAccessExpression(chain.expression)) {
-              if (chain.expression.name.text === "insert" && (auditAllMutations ||
-                  lexicalTableName(chain.arguments[0], child, lexicalDeclarations) !== null)) {
-                addMarker("mutation", child);
-                break;
-              }
-              chain = chain.expression.expression;
-            }
+            const insert = mutationBuilder(child.expression.expression, child);
+            if (insert?.kind === "insert" && (auditAllMutations || insert.table !== null)) addMarker("mutation", child);
+          }
+          if (callName === "values" && ts.isPropertyAccessExpression(child.expression)) {
+            const insert = mutationBuilder(child.expression.expression, child);
+            if (insert?.kind === "insert" && (auditAllMutations || insert.table !== null)) addMarker("mutation", child);
           }
           if (callName === "delete" && ts.isPropertyAccessExpression(child.expression) &&
               (auditAllMutations || lexicalTableName(child.arguments[0], child, lexicalDeclarations) !== null)) {
@@ -824,7 +1402,8 @@ function platformGuardOrderViolations(
       };
       scan(node.body);
       const dominates = (guard: (typeof markers)[number], mutation: (typeof markers)[number]): boolean =>
-        guard.position < mutation.position && guard.controlPath.every((part, index) => mutation.controlPath[index] === part);
+        guard.awaited && mutation.awaited && guard.position < mutation.position &&
+        guard.controlPath.every((part, index) => mutation.controlPath[index] === part);
       const mutations = markers.filter((marker) => marker.kind === "mutation");
       if (mutations.length > 0) {
         for (const mutation of mutations) {
@@ -1034,6 +1613,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     const dynamicRawSqlSites = scanDynamicRawSqlSites(sourceFiles);
     const expected = [
       "packages/db/src/repositories/tenant/job-control.ts#touchWorkerLeaseProfile:workers:lastSeenAt,updatedAt:last_seen_only",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#insertWorker:workers:<insert>:authority",
       "packages/db/src/repositories/tenant/worker-enrollment.ts#advanceTargetGeneration:executionTargets:deviceGeneration,updatedAt:authority",
       "packages/db/src/repositories/tenant/worker-enrollment.ts#heartbeatPlatformPhysicalLivenessOnly:executionTargets:lastSeenAt,updatedAt:last_seen_only",
       "packages/db/src/repositories/tenant/worker-enrollment.ts#heartbeatPlatformPhysicalLivenessOnly:workers:lastSeenAt,updatedAt:last_seen_only",
@@ -1050,6 +1630,8 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       "server/src/services/execution-targets.ts#registerWorkerHeartbeat:executionTargets:capabilities,lastSeenAt,status,updatedAt:authority",
       "server/src/services/execution-targets.ts#revokeExecutionTargetWorkerToken:executionTargets:status,updatedAt,workerTokenHash:authority",
       "server/src/services/execution-targets.ts#rotateExecutionTargetWorkerToken:executionTargets:updatedAt,workerTokenHash:authority",
+      "server/src/routes/execution-targets.ts#executionTargetRoutes:executionTargets:<insert>:authority",
+      "server/src/services/execution-targets.ts#ensureControlPlaneExecutionTarget:executionTargets:<insert>:authority",
     ].sort();
     expect.soft(inventory).toEqual(expected);
     expect.soft(inventory.some((identity) => /<(?:dynamic|computed|spread)>/.test(identity))).toBe(false);
@@ -1138,6 +1720,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
           "export async function injectedRawBypass(tx: any) { await tx`UPDATE public.execution_targets AS et SET status = 'offline'`; }\n" +
           "export async function injectedInterpolatedRawBypass(tx: any) { await tx`UPDATE ${rawTarget} SET ${column} = 'offline'`; }\n" +
           "export async function injectedUnsafeRawBypass(tx: any) { await tx.unsafe(\"UPDATE workers AS w SET status = 'revoked'\"); }\n" +
+          "export async function injectedRawDeleteBypass(tx: any) { await tx.raw(\"DELETE FROM public.execution_targets WHERE id = 'x'\"); }\n" +
           "export async function injectedSqlRawBypass() { return sql.raw(\"UPDATE public.execution_targets SET device_generation = 9\"); }",
       },
       {
@@ -1173,6 +1756,19 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
           }
           export async function deleteBypass(tx: any) {
             await tx.delete(reexportedRows).where(ok);
+          }
+          export async function preboundUpdateBypass(tx: any) {
+            const writer = tx.update(reexportedRows);
+            await writer.set({ status: "offline" }).where(ok);
+          }
+          export async function preboundInsertBypass(tx: any) {
+            const writer = tx.insert(reexportedRows);
+            await writer.values({ status: "active" });
+          }
+          export async function preboundUpsertBypass(tx: any) {
+            const writer = tx.insert(reexportedRows).values({ status: "active" });
+            const options = authorityConflictOptions;
+            await writer.onConflictDoUpdate(options);
           }`,
       },
     ]).map(writerIdentity);
@@ -1188,8 +1784,16 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       "server/src/services/injected-destructured-assignment-bypass.ts#dynamicUpsertBypass:executionTargets:<dynamic>:authority",
       "server/src/services/injected-destructured-assignment-bypass.ts#deleteBypass:executionTargets:<delete>:authority",
       "server/src/services/injected-platform-bypass.ts#injectedBypass:executionTargets:status:authority",
+      "server/src/services/injected-destructured-assignment-bypass.ts#dynamicUpsertBypass:executionTargets:<insert>:authority",
+      "server/src/services/injected-destructured-assignment-bypass.ts#preboundInsertBypass:executionTargets:<insert>:authority",
+      "server/src/services/injected-destructured-assignment-bypass.ts#preboundUpdateBypass:executionTargets:status:authority",
+      "server/src/services/injected-destructured-assignment-bypass.ts#preboundUpsertBypass:executionTargets:<insert>:authority",
+      "server/src/services/injected-destructured-assignment-bypass.ts#preboundUpsertBypass:executionTargets:status:authority",
+      "server/src/services/injected-destructured-assignment-bypass.ts#shorthandUpsertBypass:executionTargets:<insert>:authority",
+      "server/src/services/injected-destructured-assignment-bypass.ts#upsertBypass:executionTargets:<insert>:authority",
       "server/src/services/injected-raw-bypass.ts#injectedInterpolatedRawBypass:executionTargets:<dynamic>:authority",
       "server/src/services/injected-raw-bypass.ts#injectedRawBypass:executionTargets:status:authority",
+      "server/src/services/injected-raw-bypass.ts#injectedRawDeleteBypass:executionTargets:<delete>:authority",
       "server/src/services/injected-raw-bypass.ts#injectedSqlRawBypass:executionTargets:deviceGeneration:authority",
       "server/src/services/injected-raw-bypass.ts#injectedUnsafeRawBypass:workers:status:authority",
     ].sort());
@@ -1201,6 +1805,17 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     }]).filter((identity) => identity.startsWith("server/src/services/injected-"))).toEqual([
       "server/src/services/injected-dynamic-raw-bypass.ts#injectedDynamicRawBypass:.unsafe:b111c6e1d318",
     ]);
+    const resolvedSqlFingerprints = scanDynamicRawSqlSites([{
+      file: "server/src/services/injected-resolved-a.ts",
+      source: `const statement = "UPDATE workers SET status = 'revoked'";
+        export async function write(tx: any) { await tx.unsafe(statement); }`,
+    }, {
+      file: "server/src/services/injected-resolved-b.ts",
+      source: `const statement = "DELETE FROM workers WHERE id = 'x'";
+        export async function write(tx: any) { await tx.unsafe(statement); }`,
+    }]);
+    expect.soft(resolvedSqlFingerprints).toHaveLength(2);
+    expect.soft(new Set(resolvedSqlFingerprints.map((site) => site.split(":").at(-1))).size).toBe(2);
 
     const authorityHelperImport = `import { acquirePlatformTargetAuthorityExclusive }
       from "../../platform-target-authority-lock.js";\n`;
@@ -1280,6 +1895,39 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
         await tx.update(executionTargets).set({ status: "offline" });
       },
     };`;
+    const unawaitedBypass = authorityHelperImport + `async function unawaitedBypass(tx: any) {
+      tx.select().from(executionTargets).where(ok).for("update");
+      tx.select().from(workers).where(ok).for("update");
+      acquirePlatformTargetAuthorityExclusive(tx, targetId);
+      await tx.update(executionTargets).set({ status: "offline" });
+    }`;
+    const promiseAllBypass = authorityHelperImport + `async function promiseAllBypass(tx: any) {
+      await Promise.all([
+        tx.select().from(executionTargets).where(ok).for("update"),
+        tx.select().from(workers).where(ok).for("update"),
+        acquirePlatformTargetAuthorityExclusive(tx, targetId),
+      ]);
+      await tx.update(executionTargets).set({ status: "offline" });
+    }`;
+    const logicalAndBypass = authorityHelperImport + `async function logicalAndBypass(tx: any, lock: boolean) {
+      lock && await tx.select().from(executionTargets).where(ok).for("update");
+      lock && await tx.select().from(workers).where(ok).for("update");
+      lock && await acquirePlatformTargetAuthorityExclusive(tx, targetId);
+      await tx.update(executionTargets).set({ status: "offline" });
+    }`;
+    const logicalOrBypass = authorityHelperImport + `async function logicalOrBypass(tx: any, skip: boolean) {
+      skip || await tx.select().from(executionTargets).where(ok).for("update");
+      skip || await tx.select().from(workers).where(ok).for("update");
+      skip || await acquirePlatformTargetAuthorityExclusive(tx, targetId);
+      await tx.update(executionTargets).set({ status: "offline" });
+    }`;
+    const rawDeleteBypass = `async function rawDeleteBypass(tx: any) {
+      await tx.unsafe("DELETE FROM public.workers WHERE id = 'x'");
+    }`;
+    const preboundGuardBypass = authorityHelperImport + `async function preboundGuardBypass(tx: any) {
+      const writer = tx.update(executionTargets);
+      await writer.set({ status: "offline" });
+    }`;
     expect.soft(platformGuardOrderViolations(guarded)).toEqual([]);
     expect.soft(platformGuardOrderViolations(wrongOrder)).toEqual(["wrongOrder"]);
     expect.soft(platformGuardOrderViolations(unguarded)).toEqual(["unguarded"]);
@@ -1293,6 +1941,12 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     expect.soft(platformGuardOrderViolations(shadowedCombinedBypass)).toContain("shadowedCombinedBypass");
     expect.soft(platformGuardOrderViolations(fakeSuffixImportBypass)).toContain("fakeSuffixImportBypass");
     expect.soft(platformGuardOrderViolations(unrelatedThisDelegateBypass)).toContain("unrelatedThisDelegateBypass");
+    expect.soft(platformGuardOrderViolations(unawaitedBypass)).toContain("unawaitedBypass");
+    expect.soft(platformGuardOrderViolations(promiseAllBypass)).toContain("promiseAllBypass");
+    expect.soft(platformGuardOrderViolations(logicalAndBypass)).toContain("logicalAndBypass");
+    expect.soft(platformGuardOrderViolations(logicalOrBypass)).toContain("logicalOrBypass");
+    expect.soft(platformGuardOrderViolations(rawDeleteBypass)).toContain("rawDeleteBypass");
+    expect.soft(platformGuardOrderViolations(preboundGuardBypass)).toContain("preboundGuardBypass");
 
     const sourceByFile = new Map(sourceFiles.map((entry) => [entry.file, entry.source]));
     const exactNonPlatformWriters = new Set([
@@ -1303,9 +1957,36 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     const exactReviewedThisDelegates = new Set([
       "packages/db/src/repositories/tenant/worker-enrollment.ts#revokeTargetAuthority",
     ]);
+    const exactServiceGuardedDelegates = new Set([
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#advanceTargetGeneration",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#ratifyPlacementProfile",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#retireBootstrapCredential",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#rotateWorker",
+    ]);
+    const reviewedCreateOnlyOrDelegatedInserts = new Set([
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#insertWorker",
+      "server/src/routes/execution-targets.ts#executionTargetRoutes",
+      "server/src/services/execution-targets.ts#ensureControlPlaneExecutionTarget",
+    ]);
     for (const writer of authorityWriters.filter((entry) => entry.mode === "authority")) {
       const key = `${writer.file}#${writer.functionName}`;
       const functionSource = namedFunctionAuditSource(sourceByFile.get(writer.file)!, writer.functionName);
+      if (writer.fields.join(",") === "<insert>" && reviewedCreateOnlyOrDelegatedInserts.has(key)) {
+        if (key.endsWith("#executionTargetRoutes")) {
+          expect.soft(functionSource).toMatch(/assertOrgAdmin[\s\S]*organizationId:\s*orgId[\s\S]*targetAuthorityKey/);
+        } else if (key.endsWith("#ensureControlPlaneExecutionTarget")) {
+          expect.soft(functionSource).toMatch(/organizationId:\s*null[\s\S]*scope:\s*["']platform["'][\s\S]*targetAuthorityKey:\s*["']platform["']/);
+        } else {
+          expect.soft(functionSource).toMatch(/insert\(workers\)[\s\S]*values\(values\)/);
+        }
+        continue;
+      }
+      if (exactServiceGuardedDelegates.has(key)) {
+        expect.soft(functionSource, `${key} must remain a narrow repository delegate`).not.toMatch(
+          /(?:\.transaction\(|runInTenant\(|operatorJobLeasingRepository)/,
+        );
+        continue;
+      }
       if (exactNonPlatformWriters.has(key)) {
         expect.soft(
           functionSource,
@@ -1339,11 +2020,64 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     expect.soft(platformGuardOrderViolations(namedFunctionAuditSource(
       workerRepository,
       "revokeTargetAuthority",
-    ))).toEqual([]);
+    ), false, true)).toEqual([]);
     expect.soft(platformGuardOrderViolations(namedFunctionAuditSource(
       operatorRepository,
       "lockPlatformAuthorityForMutation",
     ))).toEqual([]);
+
+    const enrollmentService = sourceByFile.get("server/src/services/worker-enrollment.ts")!;
+    const platformExclusiveDelegate = namedVariableFunctionSource(
+      enrollmentService,
+      "acquirePlatformTargetAuthorityExclusive",
+    );
+    const delegateFacts = awaitedCallFacts(platformExclusiveDelegate);
+    expect.soft(delegateFacts.filter((fact) => fact.name === "lockPlatformAuthorityForMutation")).toEqual([
+      expect.objectContaining({ awaited: true }),
+    ]);
+    const completeEnrollment = namedVariableFunctionSource(enrollmentService, "completeEnrollment");
+    const enrollmentFacts = awaitedCallFacts(completeEnrollment);
+    for (const mutation of ["advanceTargetGeneration", "rotateWorker", "insertWorker", "retireBootstrapCredential"]) {
+      const calls = enrollmentFacts.filter((fact) => fact.name === mutation);
+      expect.soft(calls, `worker enrollment ${mutation} delegation must be awaited`).not.toHaveLength(0);
+      expect.soft(calls.every((fact) => fact.awaited), `${mutation} must not be unawaited or Promise.all`).toBe(true);
+    }
+    const exclusiveCalls = enrollmentFacts.filter((fact) => fact.name === "acquirePlatformTargetAuthorityExclusive");
+    expect.soft(exclusiveCalls).toEqual([expect.objectContaining({ awaited: true })]);
+    expect.soft(enrollmentAuthorityFlowViolations(completeEnrollment)).toEqual([]);
+    const validEnrollmentFlow = `const completeEnrollment = async (authority: any, authoritativeOrganizationId: string | null) => {
+      const sharedPlatformProfile = authoritativeOrganizationId !== null && target.scope === "platform";
+      if (sharedPlatformProfile) {
+        await requireCurrentPlatformPhysicalAuthority({ target });
+      } else if (authoritativeOrganizationId === null && target.scope === "platform") {
+        await acquirePlatformTargetAuthorityExclusive(authority, target.id);
+      }
+      await authority.advanceTargetGeneration();
+      await authority.rotateWorker();
+      await authority.insertWorker();
+      await authority.retireBootstrapCredential();
+    };`;
+    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentFlow)).toEqual([]);
+    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentFlow.replace(
+      "await requireCurrentPlatformPhysicalAuthority({ target });",
+      "maybe && await requireCurrentPlatformPhysicalAuthority({ target });",
+    ))).toContain("shared-platform-guard");
+    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentFlow.replace(
+      "await requireCurrentPlatformPhysicalAuthority({ target });",
+      "try { await requireCurrentPlatformPhysicalAuthority({ target }); throw failure; } catch {}",
+    ))).toContain("shared-platform-guard");
+    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentFlow.replace(
+      "await acquirePlatformTargetAuthorityExclusive(authority, target.id);",
+      "acquirePlatformTargetAuthorityExclusive(authority, target.id);",
+    ))).toContain("null-platform-exclusive");
+    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentFlow.replace(
+      "await authority.rotateWorker();",
+      "await Promise.all([authority.rotateWorker()]);",
+    ))).toContain("mutation:rotateWorker");
+    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentFlow.replace(
+      "authoritativeOrganizationId !== null && target.scope === \"platform\"",
+      "authoritativeOrganizationId !== null || target.scope === \"platform\"",
+    ))).toContain("shared-platform-condition");
 
     const writerFiles = new Set(inventory.map((identity) => identity.slice(0, identity.indexOf("#"))));
     for (const { file, source } of sourceFiles.filter((entry) => writerFiles.has(entry.file))) {
@@ -1550,6 +2284,14 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
         };
         const declarations: CandidateDeclaration[] = [];
         const objects = new Map<string, string[]>();
+        const expressionAliases: Array<{
+          name: string;
+          expression: ts.Expression;
+          start: number;
+          scopeStart: number;
+          scopeEnd: number;
+        }> = [];
+        const staticStrings = staticStringBindings(file);
         const scopeOf = (node: ts.Node): ts.Node => {
           let current: ts.Node | undefined = node.parent;
           while (current && !ts.isBlock(current) && !ts.isSourceFile(current) && !ts.isFunctionLike(current)) {
@@ -1614,6 +2356,14 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
           if (ts.isVariableDeclaration(node)) {
             if (ts.isIdentifier(node.name) && node.initializer) {
               addDeclaration(node.name.text, tableName(node.initializer, node), node);
+              const scope = scopeOf(node);
+              expressionAliases.push({
+                name: node.name.text,
+                expression: node.initializer,
+                start: node.getStart(file),
+                scopeStart: scope.getStart(file),
+                scopeEnd: scope.getEnd(),
+              });
               const fields = expressionObjectFields(node.initializer, objects, new Map());
               if (fields.some((field) => field !== "<dynamic>")) objects.set(node.name.text, fields);
             } else if (ts.isObjectBindingPattern(node.name)) {
@@ -1631,6 +2381,88 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
           ts.forEachChild(node, collect);
         };
         collect(file);
+        type CandidateBuilder = {
+          name: string;
+          kind: "update" | "insert";
+          table: CandidateTable | null;
+          start: number;
+          scopeStart: number;
+          scopeEnd: number;
+        };
+        const builders: CandidateBuilder[] = [];
+        const directBuilder = (
+          expression: ts.Expression | undefined,
+          useNode: ts.Node,
+        ): Omit<CandidateBuilder, "name" | "start" | "scopeStart" | "scopeEnd"> | null => {
+          if (!expression) return null;
+          if (ts.isAsExpression(expression) || ts.isParenthesizedExpression(expression)) {
+            return directBuilder(expression.expression, useNode);
+          }
+          let chain = expression;
+          while (ts.isCallExpression(chain) && ts.isPropertyAccessExpression(chain.expression)) {
+            const kind = chain.expression.name.text;
+            if (kind === "update" || kind === "insert") {
+              return { kind, table: tableName(chain.arguments[0], useNode) };
+            }
+            chain = chain.expression.expression;
+          }
+          return null;
+        };
+        const collectBuilders = (node: ts.Node): void => {
+          if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+            const builder = directBuilder(node.initializer, node);
+            if (builder) {
+              const scope = scopeOf(node);
+              builders.push({
+                name: node.name.text,
+                ...builder,
+                start: node.getStart(file),
+                scopeStart: scope.getStart(file),
+                scopeEnd: scope.getEnd(),
+              });
+            }
+          }
+          ts.forEachChild(node, collectBuilders);
+        };
+        collectBuilders(file);
+        const resolveBuilder = (expression: ts.Expression | undefined, useNode: ts.Node) => {
+          const direct = directBuilder(expression, useNode);
+          if (direct) return direct;
+          if (!expression || !ts.isIdentifier(expression)) return null;
+          const use = useNode.getStart(file);
+          return builders.filter((builder) => builder.name === expression.text && builder.start <= use &&
+            builder.scopeStart <= use && use <= builder.scopeEnd)
+            .sort((left, right) =>
+              (left.scopeEnd - left.scopeStart) - (right.scopeEnd - right.scopeStart) || right.start - left.start)[0] ?? null;
+        };
+        const resolveAlias = (
+          expression: ts.Expression | undefined,
+          useNode: ts.Node,
+          seen = new Set<string>(),
+        ): ts.Expression | undefined => {
+          if (!expression || !ts.isIdentifier(expression) || seen.has(expression.text)) return expression;
+          const use = useNode.getStart(file);
+          const alias = expressionAliases.filter((candidate) => candidate.name === expression.text &&
+            candidate.start <= use && candidate.scopeStart <= use && use <= candidate.scopeEnd)
+            .sort((left, right) =>
+              (left.scopeEnd - left.scopeStart) - (right.scopeEnd - right.scopeStart) || right.start - left.start)[0];
+          return alias ? resolveAlias(alias.expression, useNode, new Set([...seen, expression.text])) : expression;
+        };
+        const conflictFields = (expression: ts.Expression | undefined, useNode: ts.Node): string[] => {
+          const resolved = resolveAlias(expression, useNode);
+          if (!resolved || !ts.isObjectLiteralExpression(resolved)) return ["<dynamic>"];
+          const fields: string[] = [];
+          for (const property of resolved.properties) {
+            if (ts.isPropertyAssignment(property) && propertyName(property.name) === "set") {
+              fields.push(...expressionObjectFields(resolveAlias(property.initializer, useNode), objects, new Map()));
+            } else if (ts.isShorthandPropertyAssignment(property) && property.name.text === "set") {
+              fields.push(...expressionObjectFields(resolveAlias(property.name, useNode), objects, new Map()));
+            } else if (ts.isSpreadAssignment(property)) {
+              fields.push(...conflictFields(property.expression, useNode));
+            }
+          }
+          return fields.length > 0 ? [...new Set(fields)].sort() : ["<dynamic>"];
+        };
         const record = (node: ts.Node, table: string, fields: string[]): void => {
           const protectedForTable = protectedFields.get(table);
           if (!protectedForTable) return;
@@ -1643,31 +2475,17 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
         const visit = (node: ts.Node): void => {
           if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
               node.expression.name.text === "set") {
-            const update = node.expression.expression;
-            if (ts.isCallExpression(update) && ts.isPropertyAccessExpression(update.expression) &&
-                update.expression.name.text === "update") {
-              const table = tableName(update.arguments[0], node) ?? "";
+            const update = resolveBuilder(node.expression.expression, node);
+            if (update?.kind === "update") {
+              const table = update.table ?? "";
               const values = node.arguments[0];
-              record(node, table, expressionObjectFields(values, objects, new Map()));
+              record(node, table, expressionObjectFields(resolveAlias(values, node), objects, new Map()));
             }
           }
           if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
-              node.expression.name.text === "onConflictDoUpdate" && node.arguments[0] &&
-              ts.isObjectLiteralExpression(node.arguments[0])) {
-            let chain: ts.Expression = node.expression.expression;
-            let insertedTable = "";
-            while (ts.isCallExpression(chain) && ts.isPropertyAccessExpression(chain.expression)) {
-              if (chain.expression.name.text === "insert") {
-                insertedTable = tableName(chain.arguments[0], node) ?? "";
-                break;
-              }
-              chain = chain.expression.expression;
-            }
-            const setProperty = node.arguments[0].properties.find((property) =>
-              ts.isPropertyAssignment(property) && propertyName(property.name) === "set");
-            if (setProperty && ts.isPropertyAssignment(setProperty)) {
-              record(node, insertedTable, expressionObjectFields(setProperty.initializer, objects, new Map()));
-            }
+              node.expression.name.text === "onConflictDoUpdate" && node.arguments[0]) {
+            const insert = resolveBuilder(node.expression.expression, node);
+            if (insert?.kind === "insert") record(node, insert.table ?? "", conflictFields(node.arguments[0], node));
           }
           if (ts.isTaggedTemplateExpression(node)) {
             const raw = templateText(node);
@@ -1689,7 +2507,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
             const argument = node.arguments[0];
             const raw = argument && (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument))
               ? argument.text
-              : "";
+              : argument && ts.isIdentifier(argument) ? staticStrings.get(argument.text) ?? "" : "";
             const match = /\bUPDATE\s+(?:"?public"?\.)?"?(jobs|job_attempts)"?(?:\s+(?:AS\s+)?\w+)?\s+SET\s+([\s\S]*?)(?:\bWHERE\b|$)/i.exec(raw);
             if (match) {
               const table = match[1] === "jobs" ? "jobs" : "jobAttempts";
@@ -1727,6 +2545,8 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
         placementMode: "active", placementLeaseEligible: true, placementInputDigest: "x",
         placementPolicyDigest: "x", placementDecidedAt: new Date(),
       };
+      const aliasedConflictOptions = { target: importedAttempts.id, set: attemptsPatch };
+      const resolvedCandidateSql = "UPDATE public.jobs SET policy_hash = 'resolved-change'";
       async function mutateAll(tx: any) {
         await tx.update(importedJobs).set({ ...jobsPatch });
         await tx.update(importedAttempts).set({ ...attemptsPatch });
@@ -1738,6 +2558,17 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       }
       async function mutateConflict(tx: any) {
         await tx.insert(importedJobs).values({}).onConflictDoUpdate({ target: importedJobs.id, set: jobsPatch });
+      }
+      async function mutatePrebound(tx: any) {
+        const writer = tx.update(importedAttempts);
+        await writer.set(attemptsPatch);
+      }
+      async function mutateAliasedConflict(tx: any) {
+        const insert = tx.insert(importedAttempts).values({});
+        await insert.onConflictDoUpdate(aliasedConflictOptions);
+      }
+      async function mutateResolvedRaw(tx: any) {
+        await tx.unsafe(resolvedCandidateSql);
       }
       async function mutateRaw(tx: any) {
         await tx\`UPDATE public.job_attempts AS attempt SET placement_profile_hash = 'changed'\`;
@@ -1781,6 +2612,15 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       "server/src/services/injected-candidate-mutation.ts#mutateConflict:jobs:availableAt,createdAt,input,inputHash,placementRequest,policyHash,policySnapshot,priority,requirements,workloadType",
     );
     expect.soft(injected).toContain(
+      "server/src/services/injected-candidate-mutation.ts#mutatePrebound:jobAttempts:placementDecidedAt,placementDisposition,placementInputDigest,placementLeaseEligible,placementMode,placementOwner,placementPolicyDigest,placementProfileHash,placementProviderConstraintHash,placementTargetClass,placementTargetGeneration,placementTargetId,placementTargetScope",
+    );
+    expect.soft(injected).toContain(
+      "server/src/services/injected-candidate-mutation.ts#mutateAliasedConflict:jobAttempts:placementDecidedAt,placementDisposition,placementInputDigest,placementLeaseEligible,placementMode,placementOwner,placementPolicyDigest,placementProfileHash,placementProviderConstraintHash,placementTargetClass,placementTargetGeneration,placementTargetId,placementTargetScope",
+    );
+    expect.soft(injected).toContain(
+      "server/src/services/injected-candidate-mutation.ts#mutateResolvedRaw:jobs:policyHash",
+    );
+    expect.soft(injected).toContain(
       "server/src/services/injected-candidate-mutation.ts#mutateRaw:jobAttempts:placementProfileHash",
     );
     expect.soft(injected).toContain(
@@ -1807,13 +2647,118 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       new URL("../../../packages/db/src/repositories/tenant/job-control.ts", import.meta.url),
       "utf8",
     );
-    expect.soft(repository).toMatch(/upsertLeaseRejectionCertificates[\s\S]*workerLeaseRejections/);
-    expect.soft(repository).toMatch(/cleanupLeaseRejectionCertificates[\s\S]*workerLeaseRejections/);
-    expect.soft(repository).not.toMatch(
-      /(?:upsert|cleanup)LeaseRejectionCertificates[\s\S]{0,1500}\.update\((?:workers|executionTargets|jobs|jobAttempts|leases)\)/,
-    );
-    for (const predicate of ["organizationId", "workerId", "targetId", "attemptId"]) {
-      expect.soft(repository, `certificate mutation must bind ${predicate}`).toContain(predicate);
+    const certificateMethods = [
+      ["upsertLeaseRejectionCertificates", ["workerLeaseRejections:insert"]],
+      ["cleanupLeaseRejectionCertificates", ["workerLeaseRejections:delete"]],
+    ] as const;
+    for (const [method, expectedInventory] of certificateMethods) {
+      const exists = hasNamedFunction(repository, method);
+      expect.soft(exists, `${method} production method must exist`).toBe(true);
+      if (!exists) continue;
+      expect.soft(
+        namedFunctionMutationInventory(repository, method),
+        `${method} is eligibility_certificate_only and may mutate no authority/liveness/job/attempt/lease row`,
+      ).toEqual(expectedInventory);
+      expect.soft(
+        namedFunctionUnexpectedCertificateCalls(repository, method),
+        `${method} may call only reviewed Drizzle query/predicate operations and no mutating delegate`,
+      ).toEqual([]);
+      expect.soft(namedFunctionCertificateMutationScopes(repository, method)).toEqual([
+        `workerLeaseRejections:${method === "upsertLeaseRejectionCertificates" ? "insert" : "delete"}:` +
+          "attemptId,organizationId,targetId,workerId",
+      ]);
     }
+    const certificateOnlyFixture = `async function upsertLeaseRejectionCertificates(tx: any, input: any) {
+      const certificateRows = workerLeaseRejections;
+      const insert = tx.insert(certificateRows);
+      await insert.values({
+        organizationId: input.organizationId,
+        workerId: input.workerId,
+        targetId: input.targetId,
+        attemptId: input.attemptId,
+      }).onConflictDoNothing({ target: [
+        workerLeaseRejections.organizationId,
+        workerLeaseRejections.workerId,
+        workerLeaseRejections.attemptId,
+      ] });
+    }
+    async function cleanupLeaseRejectionCertificates(tx: any, input: any) {
+      await tx.delete(workerLeaseRejections).where(and(
+        eq(workerLeaseRejections.organizationId, input.organizationId),
+        eq(workerLeaseRejections.workerId, input.workerId),
+        eq(workerLeaseRejections.targetId, input.targetId),
+        eq(workerLeaseRejections.attemptId, input.attemptId),
+      ));
+    }`;
+    expect.soft(namedFunctionMutationInventory(
+      certificateOnlyFixture,
+      "upsertLeaseRejectionCertificates",
+    )).toEqual(["workerLeaseRejections:insert"]);
+    expect.soft(namedFunctionMutationInventory(
+      certificateOnlyFixture,
+      "cleanupLeaseRejectionCertificates",
+    )).toEqual(["workerLeaseRejections:delete"]);
+    for (const method of ["upsertLeaseRejectionCertificates", "cleanupLeaseRejectionCertificates"]) {
+      expect.soft(namedFunctionUnexpectedCertificateCalls(certificateOnlyFixture, method)).toEqual([]);
+      expect.soft(namedFunctionCertificateMutationScopes(certificateOnlyFixture, method)).toEqual([
+        `workerLeaseRejections:${method === "upsertLeaseRejectionCertificates" ? "insert" : "delete"}:` +
+          "attemptId,organizationId,targetId,workerId",
+      ]);
+    }
+    const certificateAuthorityBypass = `async function upsertLeaseRejectionCertificates(tx: any) {
+      const workerRows = workers;
+      const writer = tx.update(workerRows);
+      await writer.set({ lastSeenAt: new Date() });
+      await this.touchWorkerLeaseProfile();
+      await tx.insert(workerLeaseRejections).values(rows);
+    }
+    async function cleanupLeaseRejectionCertificates(tx: any) {
+      await mutateAuthority();
+      await tx.unsafe("DELETE FROM public.job_attempts WHERE status = 'expired'");
+      await tx.delete(workerLeaseRejections).where(scope);
+    }`;
+    expect.soft(namedFunctionMutationInventory(
+      certificateAuthorityBypass,
+      "upsertLeaseRejectionCertificates",
+    )).toContain("workers:update");
+    expect.soft(namedFunctionMutationInventory(
+      certificateAuthorityBypass,
+      "cleanupLeaseRejectionCertificates",
+    )).toContain("jobAttempts:delete");
+    expect.soft(namedFunctionUnexpectedCertificateCalls(
+      certificateAuthorityBypass,
+      "upsertLeaseRejectionCertificates",
+    )).toContain("this.touchWorkerLeaseProfile");
+    expect.soft(namedFunctionUnexpectedCertificateCalls(
+      certificateAuthorityBypass,
+      "cleanupLeaseRejectionCertificates",
+    )).toContain("mutateAuthority");
+    const certificateScopeDecoy = `async function upsertLeaseRejectionCertificates(tx: any, input: any) {
+      await tx.insert(workerLeaseRejections).values({ reasonCode: "static_requirements_mismatch" });
+      await tx.select().from(workerLeaseRejections).where(and(
+        eq(workerLeaseRejections.organizationId, input.organizationId),
+        eq(workerLeaseRejections.workerId, input.workerId),
+        eq(workerLeaseRejections.targetId, input.targetId),
+        eq(workerLeaseRejections.attemptId, input.attemptId),
+      ));
+    }`;
+    expect.soft(namedFunctionCertificateMutationScopes(
+      certificateScopeDecoy,
+      "upsertLeaseRejectionCertificates",
+    )).toEqual(["workerLeaseRejections:insert:"]);
+    const fakeFluentReceiver = `async function upsertLeaseRejectionCertificates(tx: any, input: any) {
+      await authority.delete();
+      await this.insert();
+      await tx.insert(workerLeaseRejections).values({
+        organizationId: input.organizationId,
+        workerId: input.workerId,
+        targetId: input.targetId,
+        attemptId: input.attemptId,
+      });
+    }`;
+    expect.soft(namedFunctionUnexpectedCertificateCalls(
+      fakeFluentReceiver,
+      "upsertLeaseRejectionCertificates",
+    )).toEqual(["authority.delete", "this.insert"]);
   });
 });

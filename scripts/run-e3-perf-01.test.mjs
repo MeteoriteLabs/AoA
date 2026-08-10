@@ -18,6 +18,21 @@ const SHA40 = "1".repeat(40);
 const TREE40 = "2".repeat(40);
 const BLOB40 = "3".repeat(40);
 const SHA256 = "4".repeat(64);
+const EVIDENCE_PARENT_SHA40 = "5".repeat(40);
+const GATE_SHA40 = "6".repeat(40);
+const IMPLEMENTATION_TREE40 = "7".repeat(40);
+const GATE_TREE40 = "8".repeat(40);
+const MANIFEST_BLOB40 = "9".repeat(40);
+const MANIFEST_SHA256 = "c".repeat(64);
+const EVIDENCE_ARCHIVE_PATH = "e3-perf-01-evidence.json";
+const REVIEWED_BENCHMARK_ENVIRONMENT = Object.freeze({
+  NODE_ENV: "test",
+  TZ: "UTC",
+});
+const E3_PERF_01_CHILD_COMMAND = Object.freeze([
+  "pnpm", "exec", "vitest", "run",
+  "server/src/__tests__/job-leasing-load.integration.test.ts", "--maxWorkers=1",
+]);
 const E3_PERF_01_SHAPES = [
   "hot_worker_fully_certified_then_head_saturated",
   "ten_thousand_workers_by_one_hundred",
@@ -56,6 +71,24 @@ const TRACKED_SOURCE_PREFIXES = [
   "packages/db/src",
   "packages/shared/src",
   "packages/worker-protocol/src",
+];
+const ATTESTED_DIRTY_PATHS = [
+  "scripts/run-e3-perf-01.mjs",
+  "scripts/run-e3-perf-01.test.mjs",
+  "scripts/e3-perf-01-manifest.schema.json",
+  "scripts/e3-perf-01-evidence.schema.json",
+  "server/src/__tests__/job-leasing-load.integration.test.ts",
+  "vitest.config.ts",
+  "server/vitest.config.ts",
+  "package.json",
+  "server/package.json",
+  "packages/db/package.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  ".npmrc",
+  "packages/db/src/schema/jobs.ts",
+  "packages/db/src/migrations/0230_static_certificates.sql",
+  "packages/db/src/repositories/tenant/job-control.ts",
 ];
 const TRACKED_INPUT_MODE_BY_PATH = new Map();
 
@@ -121,7 +154,7 @@ function manifestFixture() {
     gate: "E3-PERF-01",
     attempt: "a1",
     implementationRevision: SHA40,
-    evidenceParentRevision: "5".repeat(40),
+    evidenceParentRevision: EVIDENCE_PARENT_SHA40,
     evidenceParentTree: TREE40,
     manifestPath: `docs/replatform/epics/E3-job-control/qa/2026-08-11-e3-perf-01-${SHA40.slice(0, 12)}-a1.json`,
     reviewedEvidence: [{
@@ -205,10 +238,16 @@ function manifestFixture() {
       packageStoreIntegritySha256: "3".repeat(64),
       criticalInputs: REQUIRED_PINNED_INPUT_PATHS.map(inputFact),
     },
-    referencedEvidence: [{
-      uri: `https://evidence.example.invalid/reviews/sha256/${"6".repeat(64)}`,
-      sha256: "6".repeat(64),
-    }],
+    referencedEvidence: [
+      {
+        uri: `https://evidence.example.invalid/reviews/sha256/${"6".repeat(64)}`,
+        sha256: "6".repeat(64),
+      },
+      {
+        uri: `s3://aoa-evidence/gates/sha256/${"5".repeat(64)}`,
+        sha256: "5".repeat(64),
+      },
+    ],
     output: {
       origin: "s3://aoa-e3-perf",
       namespace: `s3://aoa-e3-perf/e3-perf-01/${SHA40}/a1`,
@@ -217,7 +256,11 @@ function manifestFixture() {
   };
 }
 
-function evidenceFixture() {
+function evidenceFixture(measurementRecords = loadEvidenceRecordsFixture()) {
+  const claimRecords = measurementRecords.filter((record) => record.kind === "claim_scenario");
+  const storageRecord = measurementRecords.find((record) => record.kind === "storage");
+  const bulkRecord = measurementRecords.find((record) => record.kind === "bulk_upsert");
+  const cleanupRecord = measurementRecords.find((record) => record.kind === "cleanup");
   return {
     schemaVersion: 1,
     gate: "E3-PERF-01",
@@ -242,23 +285,25 @@ function evidenceFixture() {
       postgresSettings: { shared_buffers: "8GB", work_mem: "64MB" },
     },
     dataset: { seed: 3003, candidateRows: 1_000_000, certificateRows: 1_000_000 },
-    samples: E3_PERF_01_CLAIM_SCENARIOS.map((scenario, index) => ({
-      scenario,
-      milliseconds: 100 + index,
-      actualRows: E3_PERF_01_EXPECTED_CLAIM_ROWS[scenario],
-      removedRows: 0,
+    samples: claimRecords.map((record) => ({
+      scenario: record.scenario,
+      milliseconds: record.p95Ms,
+      actualRows: record.actualAttemptIds.length,
+      removedRows: record.planSummary.rowsRemoved,
     })),
-    storage: { tableBytes: 1, indexBytes: 1, combinedBytes: 2 },
-    plans: E3_PERF_01_CLAIM_SCENARIOS.map((scenario) => ({
-      scenario,
-      plan: { "Node Type": "Index Scan", "Index Name": "jobs_claim_idx", "Actual Rows": 256 },
-    })),
-    productionQueryFingerprints: {
-      claimSha256: "7".repeat(64),
-      bulkUpsertSha256: "8".repeat(64),
-      cleanupSha256: "9".repeat(64),
+    storage: {
+      tableBytes: storageRecord.table_bytes,
+      indexBytes: storageRecord.index_bytes,
+      combinedBytes: storageRecord.total_bytes,
     },
-    results: { thresholdsPassed: true, structurePassed: true, canaryScanPassed: true },
+    plans: claimRecords.map((record) => ({ scenario: record.scenario, plan: structuredClone(record.plan.Plan) })),
+    measurementRecords,
+    productionQueryFingerprints: {
+      claimSha256: claimRecords[0].querySha256,
+      bulkUpsertSha256: bulkRecord.querySha256,
+      cleanupSha256: cleanupRecord.querySha256,
+    },
+    results: { thresholdsPassed: true, structurePassed: true, canaryScanPassed: true, failedThresholds: [] },
   };
 }
 
@@ -295,31 +340,97 @@ function loadEvidenceRecordsFixture() {
 function makeHarness(overrides = {}) {
   const trace = [];
   const inputInventory = completeInputInventoryFixture();
+  const git = {
+    detached: true,
+    head: GATE_SHA40,
+    implementationAncestor: true,
+    parents: [EVIDENCE_PARENT_SHA40],
+    implementationTree: IMPLEMENTATION_TREE40,
+    parentTree: TREE40,
+    headTree: GATE_TREE40,
+    manifestBlob: MANIFEST_BLOB40,
+    manifestSha256: MANIFEST_SHA256,
+    replaceRefs: [],
+    staged: [],
+    modified: [],
+    untracked: [],
+    unexpectedIgnored: [],
+    parentToHeadDelta: [{ path: manifestFixture().manifestPath, status: "A", mode: "100644" }],
+    implementationToParentDelta: structuredClone(manifestFixture().reviewedEvidence),
+    inputInventory,
+    blobs: Object.fromEntries(inputInventory.map((entry) => [entry.path, entry.blob])),
+    workingBytesMatch: true,
+  };
+  const dependencies = {
+    frozenInstallInventorySha256: "2".repeat(64),
+    packageStoreIntegritySha256: "3".repeat(64),
+    executableHashesMatch: true,
+  };
+  const environment = structuredClone(manifestFixture().environment);
+  const phases = { samplesStarted: false, archiveBytesComplete: false, digestDerived: false };
+  const uploads = [];
+  const passRecords = [];
+  const failureRecords = [];
+  const store = {
+    uploads,
+    passRecords,
+    failureRecords,
+    uploadError: null,
+    receiptUriOverride: null,
+    receiptSha256Override: null,
+    async uploadArchive(record) {
+      const captured = { ...record, bytes: Buffer.from(record.bytes) };
+      uploads.push(captured);
+      if (this.uploadError) throw this.uploadError;
+      const receipt = {
+        uri: this.receiptUriOverride ?? captured.uri,
+        sha256: this.receiptSha256Override ?? createHash("sha256").update(captured.bytes).digest("hex"),
+        byteLength: captured.bytes.length,
+      };
+      trace.push("upload:complete");
+      return receipt;
+    },
+    async writePassRecord(record) {
+      passRecords.push(structuredClone(record));
+      trace.push("record:pass");
+    },
+    async writeFailureRecord(record) {
+      failureRecords.push(structuredClone(record));
+      trace.push("record:fail");
+    },
+  };
+  const archive = {
+    bytes: Buffer.alloc(0),
+    manifest: [],
+    scanPassed: true,
+    hashCalls: 0,
+    buildCalls: 0,
+    injectAfterRedaction: null,
+    async build(outputDirectory) {
+      const files = await readAllFiles(outputDirectory);
+      this.manifest = files.map((file) => ({
+        path: file.path.slice(outputDirectory.length + 1).replaceAll("\\", "/"),
+        sha256: createHash("sha256").update(file.bytes).digest("hex"),
+      })).sort((left, right) => left.path.localeCompare(right.path));
+      this.bytes = buildTestArchiveBytes(files, outputDirectory);
+      this.buildCalls += 1;
+      phases.archiveBytesComplete = true;
+      trace.push("archive:complete");
+      return { bytes: Buffer.from(this.bytes), manifest: structuredClone(this.manifest) };
+    },
+    scanCanaries(bytes) {
+      trace.push("archive:scan");
+      return this.scanPassed && this.injectAfterRedaction === null && Buffer.isBuffer(bytes);
+    },
+    sha256(bytes) {
+      this.hashCalls += 1;
+      trace.push("archive:digest");
+      return createHash("sha256").update(bytes).digest("hex");
+    },
+  };
   const harness = {
-    git: {
-      detached: true,
-      head: SHA40,
-      implementationAncestor: true,
-      parents: ["5".repeat(40)],
-      parentTree: TREE40,
-      headTree: "a".repeat(40),
-      replaceRefs: [],
-      staged: [],
-      modified: [],
-      untracked: [],
-      unexpectedIgnored: [],
-      parentToHeadDelta: [{ path: manifestFixture().manifestPath, status: "A", mode: "100644" }],
-      implementationToParentDelta: structuredClone(manifestFixture().reviewedEvidence),
-      inputInventory,
-      blobs: Object.fromEntries(inputInventory.map((entry) => [entry.path, entry.blob])),
-      workingBytesMatch: true,
-      postRunWorkingBytesMatch: true,
-    },
-    dependencies: {
-      frozenInstallInventorySha256: "2".repeat(64),
-      packageStoreIntegritySha256: "3".repeat(64),
-      executableHashesMatch: true,
-    },
+    git,
+    dependencies,
     provenance: {
       approved: true,
       signed: true,
@@ -329,26 +440,41 @@ function makeHarness(overrides = {}) {
       e6f06EvidenceValid: true,
       imageDigest: `sha256:${"8".repeat(64)}`,
     },
-    environment: structuredClone(manifestFixture().environment),
+    environment,
     output: { exists: false, empty: true, reused: false },
     child: {
       invocations: 0,
       command: [],
-      env: {},
+      env: structuredClone(REVIEWED_BENCHMARK_ENVIRONMENT),
       argv: [],
       databaseUrl: "postgres://benchmark.invalid/aoa",
       stdout: loadEvidenceRecordsFixture().map((record) => JSON.stringify(record)).join("\n"),
       stderr: "",
       exitCode: 0,
       observeSpawnInput: null,
+      async run(input) {
+        this.invocations += 1;
+        this.command = [...input.command];
+        this.observeSpawnInput?.(input);
+        trace.push("child:spawn");
+        const result = { stdout: this.stdout, stderr: this.stderr, exitCode: this.exitCode };
+        trace.push("child:exit");
+        return result;
+      },
     },
     redactor: { observeInput: null },
     files: [],
     console: { lines: [] },
-    archive: { bytes: Buffer.from("archive"), manifest: [], scanPassed: true, hashCalls: 0 },
-    store: { uploads: 0, passRecords: [] },
-    phases: { samplesStarted: false, archiveBytesComplete: false, digestDerived: false },
+    archive,
+    store,
+    phases,
     trace,
+  };
+  harness.postRun = {
+    git: structuredClone(git),
+    dependencies: structuredClone(dependencies),
+    environment: structuredClone(environment),
+    markVerified() { trace.push("post-attestation:complete"); },
   };
   return Object.assign(harness, overrides);
 }
@@ -368,6 +494,27 @@ async function readAllFiles(root) {
     files.push({ path, bytes: await readFile(path) });
   }
   return files;
+}
+
+function buildTestArchiveBytes(files, root) {
+  const entries = files.map((file) => ({
+    path: file.path.slice(root.length + 1).replaceAll("\\", "/"),
+    bytesBase64: file.bytes.toString("base64"),
+  })).sort((left, right) => left.path.localeCompare(right.path));
+  return Buffer.from(JSON.stringify({ format: "aoa-e3-perf-01-test-archive-v1", entries }));
+}
+
+function readTestArchiveBytes(bytes) {
+  const document = JSON.parse(bytes.toString("utf8"));
+  assert.deepEqual(Object.keys(document).sort(), ["entries", "format"]);
+  assert.equal(document.format, "aoa-e3-perf-01-test-archive-v1");
+  assert.ok(Array.isArray(document.entries));
+  return document.entries.map((entry) => {
+    assert.deepEqual(Object.keys(entry).sort(), ["bytesBase64", "path"]);
+    assert.match(entry.path, /^(?!\/)(?!.*\\).+$/);
+    assert.equal(typeof entry.bytesBase64, "string");
+    return { path: entry.path, bytes: Buffer.from(entry.bytesBase64, "base64") };
+  });
 }
 
 function stringLeafPointers(value, path = [], found = []) {
@@ -425,6 +572,67 @@ test("strict schemas close every object and pin revisions, provenance, threshold
   const unknownEvidence = evidenceFixture();
   unknownEvidence.results.secret = "forbidden";
   assert.throws(() => mod.validateEvidenceDocument(unknownEvidence));
+  const contradictoryEvidence = evidenceFixture();
+  contradictoryEvidence.samples[0].milliseconds += 1;
+  assert.throws(
+    () => mod.validateEvidenceDocument(contradictoryEvidence),
+    undefined,
+    "closed evidence must reject a summary that disagrees with its raw measurement record",
+  );
+
+  const digestBindingCases = [
+    {
+      name: "runner image",
+      mutate: (value) => { value.runnerImage.uri = `oci://registry.example.invalid/aoa/e6f06@sha256:${"0".repeat(64)}`; },
+    },
+    {
+      name: "provenance attestation",
+      mutate: (value) => { value.runnerImage.attestationUri = `https://evidence.example.invalid/attestations/sha256/${"0".repeat(64)}`; },
+    },
+    {
+      name: "verification policy",
+      mutate: (value) => { value.runnerImage.policyUri = `s3://aoa-evidence/policy/sha256/${"0".repeat(64)}`; },
+    },
+    {
+      name: "trust root",
+      mutate: (value) => { value.runnerImage.trustRootUri = `gs://aoa-trust/roots/sha256/${"0".repeat(64)}`; },
+    },
+    ...manifestFixture().referencedEvidence.map((_, index) => ({
+      name: `referenced evidence ${index}`,
+      mutate: (value) => {
+        value.referencedEvidence[index].uri = `https://evidence.example.invalid/reviews/sha256/${"0".repeat(64)}`;
+      },
+    })),
+  ];
+  for (const item of digestBindingCases) {
+    const changed = structuredClone(manifestFixture());
+    item.mutate(changed);
+    assert.throws(
+      () => mod.validateManifestDocument(changed),
+      undefined,
+      `${item.name} URI digest must equal its companion digest`,
+    );
+  }
+  const consistentlyRebound = structuredClone(manifestFixture());
+  const reboundDigest = "d".repeat(64);
+  consistentlyRebound.runnerImage.uri = `oci://registry.example.invalid/aoa/e6f06@sha256:${reboundDigest}`;
+  consistentlyRebound.runnerImage.digest = `sha256:${reboundDigest}`;
+  consistentlyRebound.runnerImage.attestationUri = `https://evidence.example.invalid/attestations/sha256/${reboundDigest}`;
+  consistentlyRebound.runnerImage.attestationSha256 = reboundDigest;
+  consistentlyRebound.runnerImage.policyUri = `s3://aoa-evidence/policy/sha256/${reboundDigest}`;
+  consistentlyRebound.runnerImage.policySha256 = reboundDigest;
+  consistentlyRebound.runnerImage.trustRootUri = `gs://aoa-trust/roots/sha256/${reboundDigest}`;
+  consistentlyRebound.runnerImage.trustRootSha256 = reboundDigest;
+  for (const [index, evidence] of consistentlyRebound.referencedEvidence.entries()) {
+    const evidenceDigest = [reboundDigest, "c".repeat(64)][index];
+    evidence.uri = `https://evidence.example.invalid/reviews/sha256/${evidenceDigest}`;
+    evidence.sha256 = evidenceDigest;
+  }
+  assert.equal(
+    mod.validateManifestDocument(consistentlyRebound),
+    true,
+    "content-addressed pairs may change prospectively only when URI and companion digest change together",
+  );
 });
 
 test("input URIs are credentialless and digest-bound while output is prospective then content-addressed", { skip: !assetsPresent }, async () => {
@@ -482,6 +690,34 @@ test("recursive canary and credential rejection never echoes the sensitive value
     assert.equal(orchestrationMessage.includes(canary), false);
     assert.equal(harness.child.invocations, 0);
     assert.equal(harness.store.passRecords.length, 0);
+    assert.equal(harness.store.failureRecords.length, 0);
+  }
+  for (const credential of [
+    "Authorization: Bearer E3_CREDENTIAL_DO_NOT_ECHO",
+    "password=E3_CREDENTIAL_DO_NOT_ECHO",
+    "AKIA1234567890ABCDEF",
+  ]) {
+    const changed = structuredClone(manifestFixture());
+    changed.environment.cpuModel = credential;
+    let message = "";
+    try { mod.validateManifestDocument(changed); } catch (error) { message = String(error); }
+    assert.ok(message.length > 0, "schema-valid nested credential patterns must fail recursive validation");
+    assert.equal(message.includes(credential), false);
+
+    const harness = makeHarness();
+    let orchestrationMessage = "";
+    try {
+      await runGate(mod, changed, "unused", harness);
+      assert.fail("nested credential patterns must fail before the load child");
+    } catch (error) {
+      orchestrationMessage = String(error);
+    }
+    assert.ok(orchestrationMessage.length > 0);
+    assert.equal(orchestrationMessage.includes(credential), false);
+    assert.equal(harness.child.invocations, 0);
+    assert.equal(harness.store.passRecords.length, 0);
+    assert.equal(harness.store.failureRecords.length, 0);
+    assert.equal(harness.store.uploads.length, 0);
   }
 });
 
@@ -490,24 +726,7 @@ test("full pre-sample provenance, Git, environment, manifest, URI, and output dr
   const cases = [
     { name: "modified_manifest", harness: (h) => { h.git.modified = [manifestFixture().manifestPath]; } },
     { name: "untracked_manifest", harness: (h) => { h.git.untracked = [manifestFixture().manifestPath]; } },
-    ...[
-      "scripts/run-e3-perf-01.mjs",
-      "scripts/run-e3-perf-01.test.mjs",
-      "scripts/e3-perf-01-manifest.schema.json",
-      "scripts/e3-perf-01-evidence.schema.json",
-      "server/src/__tests__/job-leasing-load.integration.test.ts",
-      "vitest.config.ts",
-      "server/vitest.config.ts",
-      "package.json",
-      "server/package.json",
-      "packages/db/package.json",
-      "pnpm-lock.yaml",
-      "pnpm-workspace.yaml",
-      ".npmrc",
-      "packages/db/src/schema/jobs.ts",
-      "packages/db/src/migrations/0230_static_certificates.sql",
-      "packages/db/src/repositories/tenant/job-control.ts",
-    ].map((path) => ({ name: `dirty:${path}`, harness: (h) => { h.git.modified = [path]; } })),
+    ...ATTESTED_DIRTY_PATHS.map((path) => ({ name: `dirty:${path}`, harness: (h) => { h.git.modified = [path]; } })),
     { name: "replacement_ref", harness: (h) => { h.git.replaceRefs = ["refs/replace/x"]; } },
     { name: "staged", harness: (h) => { h.git.staged = ["pnpm-lock.yaml"]; } },
     { name: "untracked", harness: (h) => { h.git.untracked = ["secret.txt"]; } },
@@ -518,6 +737,7 @@ test("full pre-sample provenance, Git, environment, manifest, URI, and output dr
     { name: "not_detached", harness: (h) => { h.git.detached = false; } },
     { name: "wrong_gate_head", harness: (h) => { h.git.head = "0".repeat(40); } },
     { name: "wrong_gate_tree", harness: (h) => { h.git.headTree = "0".repeat(40); } },
+    { name: "wrong_implementation_tree", harness: (h) => { h.git.implementationTree = "0".repeat(40); } },
     { name: "implementation_revision", manifest: (m) => { m.implementationRevision = "0".repeat(40); } },
     { name: "implementation_nonancestor", harness: (h) => { h.git.implementationAncestor = false; } },
     { name: "evidence_parent_revision", manifest: (m) => { m.evidenceParentRevision = "0".repeat(40); } },
@@ -525,7 +745,9 @@ test("full pre-sample provenance, Git, environment, manifest, URI, and output dr
     { name: "wrong_parent", harness: (h) => { h.git.parents = ["0".repeat(40)]; } },
     { name: "multiple_parent", harness: (h) => { h.git.parents.push("f".repeat(40)); } },
     { name: "extra_gate_delta", harness: (h) => { h.git.parentToHeadDelta.push({ path: "extra.txt", status: "A", mode: "100644" }); } },
+    { name: "wrong_gate_delta_path", harness: (h) => { h.git.parentToHeadDelta[0].path = "wrong-manifest.json"; } },
     { name: "unlisted_evidence", harness: (h) => { h.git.implementationToParentDelta.push({ path: "extra.md", status: "A", mode: "100644" }); } },
+    { name: "missing_reviewed_evidence", harness: (h) => { h.git.implementationToParentDelta = []; } },
     { name: "evidence_status", harness: (h) => { h.git.implementationToParentDelta[0].status = "A"; } },
     { name: "evidence_mode", harness: (h) => { h.git.implementationToParentDelta[0].mode = "100755"; } },
     { name: "evidence_old_blob", harness: (h) => { h.git.implementationToParentDelta[0].oldBlob = "0".repeat(40); } },
@@ -595,12 +817,39 @@ test("full pre-sample provenance, Git, environment, manifest, URI, and output dr
     ["attestation", ["runnerImage", "attestationUri"]],
     ["policy", ["runnerImage", "policyUri"]],
     ["trust-root", ["runnerImage", "trustRootUri"]],
-    ["evidence", ["referencedEvidence", 0, "uri"]],
+    ...manifestFixture().referencedEvidence.map((_, index) => [
+      `evidence-${index}`,
+      ["referencedEvidence", index, "uri"],
+    ]),
   ]) {
     for (const [index, uri] of uriMutations.entries()) {
       cases.push({ name: `${field}-uri-${index}`, manifest: (m) => setAtPointer(m, path, uri) });
     }
   }
+  for (const item of [
+    {
+      name: "image-uri-companion-digest",
+      manifest: (m) => { m.runnerImage.uri = `oci://registry.example.invalid/aoa/e6f06@sha256:${"0".repeat(64)}`; },
+    },
+    {
+      name: "attestation-uri-companion-digest",
+      manifest: (m) => { m.runnerImage.attestationUri = `https://evidence.example.invalid/attestations/sha256/${"0".repeat(64)}`; },
+    },
+    {
+      name: "policy-uri-companion-digest",
+      manifest: (m) => { m.runnerImage.policyUri = `s3://aoa-evidence/policy/sha256/${"0".repeat(64)}`; },
+    },
+    {
+      name: "trust-root-uri-companion-digest",
+      manifest: (m) => { m.runnerImage.trustRootUri = `gs://aoa-trust/roots/sha256/${"0".repeat(64)}`; },
+    },
+    ...manifestFixture().referencedEvidence.map((_, index) => ({
+      name: `evidence-${index}-uri-companion-digest`,
+      manifest: (m) => {
+        m.referencedEvidence[index].uri = `https://evidence.example.invalid/reviews/sha256/${"0".repeat(64)}`;
+      },
+    })),
+  ]) cases.push(item);
   cases.push(
     { name: "output-origin", manifest: (m) => { m.output.origin = "s3://other"; } },
     { name: "output-prefix", manifest: (m) => { m.output.namespace = `s3://other/e3-perf-01/${SHA40}/a1`; } },
@@ -616,6 +865,8 @@ test("full pre-sample provenance, Git, environment, manifest, URI, and output dr
     await assert.rejects(runGate(mod, manifest, "unused", harness), undefined, item.name);
     assert.equal(harness.child.invocations, 0, item.name);
     assert.equal(harness.store.passRecords.length, 0, item.name);
+    assert.equal(harness.store.failureRecords.length, 0, item.name);
+    assert.equal(harness.store.uploads.length, 0, item.name);
     assert.equal(harness.phases.samplesStarted, false, item.name);
   }
 });
@@ -629,6 +880,23 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
   };
   const recordOf = (records, kind, discriminator) => records.find((record) =>
     record.kind === kind && (discriminator === undefined || record.scenario === discriminator || record.layout === discriminator));
+  const setClaimP95 = (records, scenario, milliseconds) => {
+    const record = recordOf(records, "claim_scenario", scenario);
+    record.samples = Array(30).fill(milliseconds);
+    record.p95Ms = milliseconds;
+    record.maxMs = milliseconds;
+  };
+  const setClaimMax = (records, scenario, milliseconds) => {
+    const record = recordOf(records, "claim_scenario", scenario);
+    record.samples = [...Array(29).fill(100), milliseconds];
+    record.p95Ms = 100;
+    record.maxMs = milliseconds;
+  };
+  const setMutationP95 = (records, kind, discriminator, milliseconds) => {
+    const record = recordOf(records, kind, discriminator);
+    record.samples = Array(20).fill(milliseconds);
+    record.p95Ms = milliseconds;
+  };
   const cases = [
     { name: "child_nonzero", mutate: (h) => { h.child.exitCode = 1; } },
     { name: "non_json", mutate: (h) => { h.child.stdout = "not-json"; } },
@@ -643,7 +911,54 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
     { name: "wrong_candidate_row_cardinality", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "storage").candidate_rows = 999_999; }) },
     { name: "wrong_certificate_row_cardinality", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "storage").certificate_rows = 999_999; }) },
     { name: "wrong_joined_job_cardinality", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "storage").joined_job_rows = 0; }) },
-    { name: "threshold_miss", mutate: (h) => replaceRecords(h, (records) => { records[2].samples[0] = 9_999; records[2].maxMs = 9_999; }) },
+    {
+      name: "threshold_miss",
+      mutate: (h) => replaceRecords(h, (records) => setClaimP95(records, "ten_thousand_workers_by_one_hundred", 251)),
+    },
+    {
+      name: "shape_two_p95_over_250",
+      mutate: (h) => replaceRecords(h, (records) => setClaimP95(records, "ten_thousand_workers_by_one_hundred", 251)),
+    },
+    {
+      name: "shape_three_p95_over_250",
+      mutate: (h) => replaceRecords(h, (records) => setClaimP95(records, "ninety_percent_stale_version_or_context", 251)),
+    },
+    {
+      name: "shape_two_max_over_1500",
+      mutate: (h) => replaceRecords(h, (records) => setClaimMax(records, "ten_thousand_workers_by_one_hundred", 1_501)),
+    },
+    {
+      name: "shape_three_max_over_1500",
+      mutate: (h) => replaceRecords(h, (records) => setClaimMax(records, "ninety_percent_stale_version_or_context", 1_501)),
+    },
+    {
+      name: "fully_certified_p95_over_2000",
+      mutate: (h) => replaceRecords(h, (records) => setClaimP95(records, "hot_worker_fully_certified_no_work", 2_001)),
+    },
+    {
+      name: "head_saturated_p95_over_2000",
+      mutate: (h) => replaceRecords(h, (records) => setClaimP95(records, "hot_worker_head_saturated_999744_prefix", 2_001)),
+    },
+    {
+      name: "fully_certified_max_over_5000",
+      mutate: (h) => replaceRecords(h, (records) => setClaimMax(records, "hot_worker_fully_certified_no_work", 5_001)),
+    },
+    {
+      name: "head_saturated_max_over_5000",
+      mutate: (h) => replaceRecords(h, (records) => setClaimMax(records, "hot_worker_head_saturated_999744_prefix", 5_001)),
+    },
+    {
+      name: "bulk_upsert_p95_over_500",
+      mutate: (h) => replaceRecords(h, (records) => setMutationP95(records, "bulk_upsert", undefined, 501)),
+    },
+    {
+      name: "sparse_cleanup_p95_over_750",
+      mutate: (h) => replaceRecords(h, (records) => setMutationP95(records, "cleanup", "sparse", 751)),
+    },
+    {
+      name: "tail_cleanup_p95_over_750",
+      mutate: (h) => replaceRecords(h, (records) => setMutationP95(records, "cleanup", "tail", 751)),
+    },
     { name: "claim_sample_count", mutate: (h) => replaceRecords(h, (records) => { records[2].samples.pop(); }) },
     { name: "bulk_sample_count", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "bulk_upsert").samples.pop(); }) },
     { name: "cleanup_sample_count", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "cleanup", "sparse").samples.pop(); }) },
@@ -680,9 +995,93 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
     { name: "bulk_query_fingerprint", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "bulk_upsert").querySha256 = "0".repeat(64); }) },
     { name: "sparse_cleanup_query_fingerprint", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "cleanup", "sparse").querySha256 = "0".repeat(64); }) },
     { name: "tail_cleanup_query_fingerprint", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "cleanup", "tail").querySha256 = "0".repeat(64); }) },
-    { name: "post_run_mutation", mutate: (h) => { h.git.postRunWorkingBytesMatch = false; } },
+    { name: "post_run_mutation", mutate: (h) => { h.postRun.git.workingBytesMatch = false; } },
     { name: "archive_canary", mutate: (h) => { h.archive.injectAfterRedaction = "ARCHIVE_CANARY_DO_NOT_PERSIST"; } },
+    {
+      name: "upload_error",
+      publicationFailure: true,
+      mutate: (h) => { h.store.uploadError = new Error("test-owned upload failure"); },
+    },
+    {
+      name: "upload_receipt_uri_mismatch",
+      publicationFailure: true,
+      mutate: (h) => { h.store.receiptUriOverride = "s3://aoa-e3-perf/wrong/sha256/" + "0".repeat(64); },
+    },
+    {
+      name: "upload_receipt_digest_mismatch",
+      publicationFailure: true,
+      mutate: (h) => { h.store.receiptSha256Override = "0".repeat(64); },
+    },
   ];
+  cases.push(
+    { name: "post_not_detached", mutate: (h) => { h.postRun.git.detached = false; } },
+    { name: "post_wrong_gate_head", mutate: (h) => { h.postRun.git.head = "0".repeat(40); } },
+    { name: "post_implementation_nonancestor", mutate: (h) => { h.postRun.git.implementationAncestor = false; } },
+    { name: "post_wrong_parent", mutate: (h) => { h.postRun.git.parents = ["0".repeat(40)]; } },
+    { name: "post_multiple_parent", mutate: (h) => { h.postRun.git.parents.push("f".repeat(40)); } },
+    { name: "post_wrong_parent_tree", mutate: (h) => { h.postRun.git.parentTree = "0".repeat(40); } },
+    { name: "post_wrong_gate_tree", mutate: (h) => { h.postRun.git.headTree = "0".repeat(40); } },
+    { name: "post_wrong_implementation_tree", mutate: (h) => { h.postRun.git.implementationTree = "0".repeat(40); } },
+    { name: "post_manifest_blob", mutate: (h) => { h.postRun.git.manifestBlob = "0".repeat(40); } },
+    { name: "post_manifest_sha", mutate: (h) => { h.postRun.git.manifestSha256 = "0".repeat(64); } },
+    { name: "post_replacement_ref", mutate: (h) => { h.postRun.git.replaceRefs = ["refs/replace/x"]; } },
+    { name: "post_staged", mutate: (h) => { h.postRun.git.staged = ["pnpm-lock.yaml"]; } },
+    ...ATTESTED_DIRTY_PATHS.map((path) => ({
+      name: `post_dirty:${path}`,
+      mutate: (h) => { h.postRun.git.modified = [path]; },
+    })),
+    { name: "post_untracked", mutate: (h) => { h.postRun.git.untracked = ["secret.txt"]; } },
+    { name: "post_ignored", mutate: (h) => { h.postRun.git.unexpectedIgnored = ["swapped-schema.json"]; } },
+    {
+      name: "post_extra_gate_delta",
+      mutate: (h) => { h.postRun.git.parentToHeadDelta.push({ path: "extra.txt", status: "A", mode: "100644" }); },
+    },
+    { name: "post_gate_delta_path", mutate: (h) => { h.postRun.git.parentToHeadDelta[0].path = "wrong-manifest.json"; } },
+    { name: "post_gate_delta_status", mutate: (h) => { h.postRun.git.parentToHeadDelta[0].status = "M"; } },
+    { name: "post_gate_delta_mode", mutate: (h) => { h.postRun.git.parentToHeadDelta[0].mode = "100755"; } },
+    {
+      name: "post_unlisted_evidence",
+      mutate: (h) => { h.postRun.git.implementationToParentDelta.push({ path: "extra.md", status: "A", mode: "100644" }); },
+    },
+    { name: "post_missing_reviewed_evidence", mutate: (h) => { h.postRun.git.implementationToParentDelta = []; } },
+    { name: "post_evidence_status", mutate: (h) => { h.postRun.git.implementationToParentDelta[0].status = "A"; } },
+    { name: "post_evidence_mode", mutate: (h) => { h.postRun.git.implementationToParentDelta[0].mode = "100755"; } },
+    { name: "post_evidence_old_blob", mutate: (h) => { h.postRun.git.implementationToParentDelta[0].oldBlob = "0".repeat(40); } },
+    { name: "post_evidence_new_blob", mutate: (h) => { h.postRun.git.implementationToParentDelta[0].newBlob = "0".repeat(40); } },
+    { name: "post_evidence_sha", mutate: (h) => { h.postRun.git.implementationToParentDelta[0].sha256 = "0".repeat(64); } },
+    { name: "post_review_blob", mutate: (h) => { h.postRun.git.implementationToParentDelta[0].reviewEvidenceBlob = "0".repeat(40); } },
+    { name: "post_input_omission", mutate: (h) => { h.postRun.git.inputInventory.splice(Math.floor(h.postRun.git.inputInventory.length / 2), 1); } },
+    { name: "post_input_addition", mutate: (h) => { h.postRun.git.inputInventory.push(inputFact("unexpected/source.ts")); } },
+    { name: "post_input_mode", mutate: (h) => { h.postRun.git.inputInventory[0].mode = "100755"; } },
+    { name: "post_input_blob", mutate: (h) => { h.postRun.git.inputInventory[0].blob = "0".repeat(40); } },
+    { name: "post_input_sha", mutate: (h) => { h.postRun.git.inputInventory[0].sha256 = "0".repeat(64); } },
+    { name: "post_source_blob", mutate: (h) => { h.postRun.git.blobs["server/src/services/job-leasing.ts"] = "0".repeat(40); } },
+    { name: "post_install_inventory", mutate: (h) => { h.postRun.dependencies.frozenInstallInventorySha256 = "0".repeat(64); } },
+    { name: "post_package_store", mutate: (h) => { h.postRun.dependencies.packageStoreIntegritySha256 = "0".repeat(64); } },
+    { name: "post_executable_hash", mutate: (h) => { h.postRun.dependencies.executableHashesMatch = false; } },
+    ...Object.keys(manifestFixture().environment).map((field) => ({
+      name: `post_environment:${field}`,
+      mutate: (h) => {
+        h.postRun.environment[field] = typeof h.postRun.environment[field] === "number"
+          ? h.postRun.environment[field] + 1
+          : "drift";
+      },
+    })),
+  );
+  const retainedThresholdFailures = new Map([
+    ["threshold_miss", "shapesTwoThreeP95Ms:ten_thousand_workers_by_one_hundred"],
+    ["shape_two_p95_over_250", "shapesTwoThreeP95Ms:ten_thousand_workers_by_one_hundred"],
+    ["shape_three_p95_over_250", "shapesTwoThreeP95Ms:ninety_percent_stale_version_or_context"],
+    ["shape_two_max_over_1500", "shapesTwoThreeMaxMs:ten_thousand_workers_by_one_hundred"],
+    ["shape_three_max_over_1500", "shapesTwoThreeMaxMs:ninety_percent_stale_version_or_context"],
+    ["fully_certified_p95_over_2000", "saturatedP95Ms:hot_worker_fully_certified_no_work"],
+    ["head_saturated_p95_over_2000", "saturatedP95Ms:hot_worker_head_saturated_999744_prefix"],
+    ["fully_certified_max_over_5000", "saturatedMaxMs:hot_worker_fully_certified_no_work"],
+    ["head_saturated_max_over_5000", "saturatedMaxMs:hot_worker_head_saturated_999744_prefix"],
+    ["bulk_upsert_p95_over_500", "bulkUpsertP95Ms"],
+    ["sparse_cleanup_p95_over_750", "cleanupP95Ms:sparse"],
+    ["tail_cleanup_p95_over_750", "cleanupP95Ms:tail"],
+  ]);
   for (const item of cases) {
     const outputDirectory = await mkdtemp(join(tmpdir(), "e3-perf-01-post-"));
     try {
@@ -692,8 +1091,74 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
       assert.equal(harness.child.invocations, 1, item.name);
       assert.equal(harness.phases.samplesStarted, true, item.name);
       assert.equal(harness.store.passRecords.length, 0, item.name);
-      assert.equal(harness.store.uploads, 0, item.name);
-      assert.equal(harness.phases.digestDerived, false, item.name);
+      if (retainedThresholdFailures.has(item.name)) {
+        const failedThreshold = retainedThresholdFailures.get(item.name);
+        assert.equal(harness.phases.digestDerived, true, item.name);
+        assert.equal(harness.store.uploads.length, 1, item.name);
+        const [upload] = harness.store.uploads;
+        const actualArchiveSha256 = createHash("sha256").update(upload.bytes).digest("hex");
+        const archivedFiles = readTestArchiveBytes(upload.bytes);
+        assert.deepEqual(archivedFiles.map((file) => file.path), [EVIDENCE_ARCHIVE_PATH], item.name);
+        const disk = await readAllFiles(outputDirectory);
+        assert.deepEqual(
+          disk.map((file) => file.path.slice(outputDirectory.length + 1).replaceAll("\\", "/")),
+          [EVIDENCE_ARCHIVE_PATH],
+          item.name,
+        );
+        assert.deepEqual(archivedFiles[0].bytes, disk[0].bytes, `${item.name} failure archive must round-trip exact evidence bytes`);
+        const failureDocument = JSON.parse(archivedFiles[0].bytes.toString("utf8"));
+        assert.equal(mod.validateEvidenceDocument(failureDocument), true, item.name);
+        const measuredRecords = harness.child.stdout.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+        const expectedFailureDocument = evidenceFixture(measuredRecords);
+        expectedFailureDocument.results = {
+          thresholdsPassed: false,
+          structurePassed: true,
+          canaryScanPassed: true,
+          failedThresholds: [failedThreshold],
+        };
+        assert.deepEqual(failureDocument, expectedFailureDocument, `${item.name} must retain the actual failing samples and outcome`);
+        assert.equal(upload.sha256, actualArchiveSha256, item.name);
+        assert.equal(upload.uri, `${manifestFixture().output.namespace}/sha256/${actualArchiveSha256}`, item.name);
+        assert.deepEqual(harness.store.failureRecords, [{
+          schemaVersion: 1,
+          gate: "E3-PERF-01",
+          disposition: "fail",
+          failureClass: "INITIAL_THRESHOLD_MISS",
+          failedThresholds: [failedThreshold],
+          attempt: "a1",
+          implementationRevision: SHA40,
+          implementationTree: IMPLEMENTATION_TREE40,
+          gateRevision: GATE_SHA40,
+          gateTree: GATE_TREE40,
+          archive: {
+            uri: upload.uri,
+            sha256: actualArchiveSha256,
+            retentionUntil: "2027-02-07T00:00:00.000Z",
+          },
+        }], item.name);
+        assert.deepEqual(harness.trace, [
+          "child:spawn",
+          "child:exit",
+          "post-attestation:complete",
+          "archive:complete",
+          "archive:scan",
+          "archive:digest",
+          "upload:complete",
+          "record:fail",
+        ], item.name);
+      } else if (item.publicationFailure) {
+        assert.equal(harness.phases.digestDerived, true, item.name);
+        assert.equal(harness.store.uploads.length, 1, item.name);
+        assert.ok(readTestArchiveBytes(harness.store.uploads[0].bytes).length > 0, item.name);
+        assert.equal(harness.store.failureRecords.length, 0, item.name);
+        assert.equal(harness.trace.includes("record:pass"), false, item.name);
+        assert.equal(harness.trace.includes("record:fail"), false, item.name);
+        assert.equal(harness.trace.at(-1), item.name === "upload_error" ? "archive:digest" : "upload:complete", item.name);
+      } else {
+        assert.equal(harness.store.uploads.length, 0, item.name);
+        assert.equal(harness.store.failureRecords.length, 0, item.name);
+        assert.equal(harness.phases.digestDerived, false, item.name);
+      }
     } finally {
       await rm(outputDirectory, { recursive: true, force: true });
     }
@@ -733,12 +1198,22 @@ test("real ingress canaries reach env/DB/argv/stdout/stderr but reach no console
     }
     assert.equal(spawnInputs.length, 1, "the child-spawn seam must observe the actual launch input once");
     const [spawn] = spawnInputs;
-    assert.equal(spawn.env.UNRELATED_CANARY, canaries.environment);
-    assert.ok(spawn.databaseUrl.includes(canaries.databaseUsername));
-    assert.ok(spawn.databaseUrl.includes(canaries.databasePassword));
-    assert.ok(spawn.databaseUrl.includes(canaries.databaseUrl));
+    assert.deepEqual(spawn.command, E3_PERF_01_CHILD_COMMAND);
+    assert.deepEqual(spawn.env, {
+      ...REVIEWED_BENCHMARK_ENVIRONMENT,
+      UNRELATED_CANARY: canaries.environment,
+      AOA_RUN_E3_PERF_01: "1",
+      AOA_E3_PERF_DATABASE_URL: harness.child.databaseUrl,
+    });
+    assert.ok(spawn.env.AOA_E3_PERF_DATABASE_URL.includes(canaries.databaseUsername));
+    assert.ok(spawn.env.AOA_E3_PERF_DATABASE_URL.includes(canaries.databasePassword));
+    assert.ok(spawn.env.AOA_E3_PERF_DATABASE_URL.includes(canaries.databaseUrl));
     assert.deepEqual(spawn.argv, ["--canary", canaries.argv]);
-    assert.deepEqual(redactorInputs.map((entry) => entry.channel), ["stdout", "stderr"]);
+    assert.deepEqual(redactorInputs.map((entry) => entry.channel), ["command", "stdout", "stderr"]);
+    const renderedCommand = redactorInputs.find((entry) => entry.channel === "command")?.value;
+    assert.equal(typeof renderedCommand, "string");
+    assert.ok(renderedCommand.includes(E3_PERF_01_CHILD_COMMAND.join(" ")));
+    assert.ok(renderedCommand.includes(canaries.argv));
     assert.ok(redactorInputs.find((entry) => entry.channel === "stdout")?.value.includes(canaries.stdout));
     assert.ok(redactorInputs.find((entry) => entry.channel === "stderr")?.value.includes(canaries.stderr));
     const disk = existsSync(outputDirectory) ? await readAllFiles(outputDirectory) : [];
@@ -754,7 +1229,8 @@ test("real ingress canaries reach env/DB/argv/stdout/stderr but reach no console
       assert.equal(permanentBytes.includes(Buffer.from(canary)), false);
     }
     assert.equal(harness.store.passRecords.length, 0);
-    assert.equal(harness.store.uploads, 0);
+    assert.equal(harness.store.failureRecords.length, 0);
+    assert.equal(harness.store.uploads.length, 0);
     assert.equal(harness.phases.digestDerived, false);
     assert.equal(harness.archive.hashCalls, 0);
   } finally {
@@ -766,29 +1242,120 @@ test("closed evidence and real output archive gate one digest-addressed success"
   const mod = await runner();
   const outputDirectory = await mkdtemp(join(tmpdir(), "e3-perf-01-success-"));
   try {
+    const manifest = manifestFixture();
     const harness = makeHarness();
-    const result = await runGate(mod, manifestFixture(), outputDirectory, harness);
+    const spawnInputs = [];
+    harness.child.observeSpawnInput = (input) => { spawnInputs.push(structuredClone(input)); };
+    const result = await runGate(mod, manifest, outputDirectory, harness);
     assert.equal(harness.child.invocations, 1);
-    assert.deepEqual(harness.child.command, [
-      "pnpm", "exec", "vitest", "run",
-      "server/src/__tests__/job-leasing-load.integration.test.ts", "--maxWorkers=1",
-    ]);
-    assert.equal(result.archiveUri, `${manifestFixture().output.namespace}/sha256/${result.archiveSha256}`);
-    assert.match(result.archiveSha256, /^[0-9a-f]{64}$/);
+    assert.deepEqual(harness.child.command, E3_PERF_01_CHILD_COMMAND);
+    assert.deepEqual(spawnInputs, [{
+      command: E3_PERF_01_CHILD_COMMAND,
+      env: {
+        ...REVIEWED_BENCHMARK_ENVIRONMENT,
+        AOA_RUN_E3_PERF_01: "1",
+        AOA_E3_PERF_DATABASE_URL: "postgres://benchmark.invalid/aoa",
+      },
+      argv: [],
+    }]);
+    const disk = await readAllFiles(outputDirectory);
+    const diskManifest = disk.map((file) => file.path.slice(outputDirectory.length + 1).replaceAll("\\", "/")).sort();
+    assert.deepEqual(diskManifest, [EVIDENCE_ARCHIVE_PATH], "success must produce the exact nonempty closed evidence artifact");
+    const evidenceDocument = JSON.parse(disk[0].bytes.toString("utf8"));
+    assert.equal(mod.validateEvidenceDocument(evidenceDocument), true);
+    assert.deepEqual(evidenceDocument, evidenceFixture());
+    assert.equal(harness.archive.buildCalls, 1);
+    const archivedFiles = readTestArchiveBytes(harness.archive.bytes);
+    assert.deepEqual(archivedFiles.map((file) => file.path), diskManifest);
+    for (const archived of archivedFiles) {
+      const file = disk.find((candidate) => candidate.path.endsWith(archived.path));
+      assert.ok(file, archived.path);
+      assert.deepEqual(archived.bytes, file.bytes, `${archived.path} archive bytes must round-trip exactly`);
+    }
+    const expectedArchiveSha256 = createHash("sha256").update(harness.archive.bytes).digest("hex");
+    const expectedArchiveUri = `${manifest.output.namespace}/sha256/${expectedArchiveSha256}`;
+    assert.equal(result.archiveSha256, expectedArchiveSha256);
+    assert.equal(result.archiveUri, expectedArchiveUri);
     assert.equal(harness.phases.archiveBytesComplete, true);
     assert.equal(harness.phases.digestDerived, true);
     assert.equal(harness.archive.hashCalls, 1);
-    assert.equal(harness.git.postRunWorkingBytesMatch, true);
-    const disk = await readAllFiles(outputDirectory);
-    const diskManifest = disk.map((file) => file.path.slice(outputDirectory.length + 1)).sort();
+    assert.equal(
+      createHash("sha256").update(harness.archive.bytes).digest("hex"),
+      expectedArchiveSha256,
+      "the published digest must be calculated from the completed archive bytes",
+    );
+    assert.equal(harness.postRun.git.workingBytesMatch, true);
     assert.deepEqual(harness.archive.manifest.map((entry) => entry.path).sort(), diskManifest);
     for (const entry of harness.archive.manifest) {
       const file = disk.find((candidate) => candidate.path.endsWith(entry.path));
       assert.ok(file, entry.path);
       assert.equal(createHash("sha256").update(file.bytes).digest("hex"), entry.sha256);
     }
-    assert.equal(harness.store.uploads, 1);
-    assert.equal(harness.store.passRecords.length, 1);
+    assert.deepEqual(harness.store.uploads, [{
+      uri: expectedArchiveUri,
+      sha256: expectedArchiveSha256,
+      bytes: harness.archive.bytes,
+    }]);
+    const runnerInput = inputFact("scripts/run-e3-perf-01.mjs");
+    assert.deepEqual(harness.store.passRecords, [{
+      schemaVersion: 1,
+      gate: "E3-PERF-01",
+      disposition: "pass",
+      attempt: "a1",
+      implementationRevision: SHA40,
+      implementationTree: IMPLEMENTATION_TREE40,
+      evidenceParentRevision: EVIDENCE_PARENT_SHA40,
+      evidenceParentTree: TREE40,
+      gateRevision: GATE_SHA40,
+      gateTree: GATE_TREE40,
+      manifest: {
+        path: manifest.manifestPath,
+        blob: MANIFEST_BLOB40,
+        sha256: MANIFEST_SHA256,
+      },
+      expandedCommand: E3_PERF_01_CHILD_COMMAND,
+      runner: {
+        path: "scripts/run-e3-perf-01.mjs",
+        blob: runnerInput.blob,
+        sha256: runnerInput.sha256,
+      },
+      verifiedInputs: {
+        sourceInputs: manifest.sourceInputs,
+        dependencyClosure: manifest.dependencyClosure,
+      },
+      runnerImage: manifest.runnerImage,
+      pinnedConfiguration: {
+        environment: manifest.environment,
+        dataset: manifest.dataset,
+        thresholds: manifest.thresholds,
+        structuralRequirements: manifest.structuralRequirements,
+        productionQueryFingerprints: manifest.productionQueryFingerprints,
+      },
+      outcomes: {
+        thresholdsPassed: true,
+        structurePassed: true,
+        canaryScanPassed: true,
+        failedThresholds: [],
+      },
+      implementationToParentDelta: manifest.reviewedEvidence,
+      parentToGateDelta: [{ path: manifest.manifestPath, status: "A", mode: "100644" }],
+      archive: {
+        uri: expectedArchiveUri,
+        sha256: expectedArchiveSha256,
+        retentionUntil: "2027-02-07T00:00:00.000Z",
+      },
+    }]);
+    assert.equal(harness.store.failureRecords.length, 0);
+    assert.deepEqual(harness.trace, [
+      "child:spawn",
+      "child:exit",
+      "post-attestation:complete",
+      "archive:complete",
+      "archive:scan",
+      "archive:digest",
+      "upload:complete",
+      "record:pass",
+    ]);
   } finally {
     await rm(outputDirectory, { recursive: true, force: true });
   }

@@ -322,6 +322,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const jobB = "e3100000-0000-4000-8000-000000000010";
       const attemptA = "e3100000-0000-4000-8000-000000000011";
       const attemptB = "e3100000-0000-4000-8000-000000000012";
+      const attemptA2 = "e3100000-0000-4000-8000-000000000014";
       const missing = "e3100000-0000-4000-8000-999999999999";
       const hash = "a".repeat(64);
 
@@ -361,6 +362,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
             'target_selected', 'active', true, ${hash}, ${hash}, clock_timestamp()),
           (${attemptB}, ${orgB}, ${companyB}, ${jobB}, 1, 'selected', 'organization_dedicated',
             ${targetB}, 'organization_dedicated', 'organization', 1, ${hash}, ${hash}, 'primary',
+            'target_selected', 'active', true, ${hash}, ${hash}, clock_timestamp()),
+          (${attemptA2}, ${orgA}, ${companyA}, ${jobA}, 2, 'selected', 'organization_dedicated',
+            ${targetA}, 'organization_dedicated', 'organization', 1, ${hash}, ${hash}, 'primary',
             'target_selected', 'active', true, ${hash}, ${hash}, clock_timestamp())`;
       await client`INSERT INTO worker_lease_rejections
         (organization_id, company_id, job_id, attempt_id, worker_id, target_id,
@@ -377,6 +381,36 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
             ${`organization:${orgB}`}, 1, ${hash}, 'batch', 'organization_dedicated',
             'organization_dedicated', 'organization', 1, ${hash}, ${hash}, ${hash}, ${hash},
             'static_requirements_mismatch')`;
+
+      let noGucInsert: { code?: string; constraint?: string; message: string };
+      try {
+        await client.begin(async (tx) => {
+          const query = tx as unknown as Sql;
+          await query`SET LOCAL ROLE aoa_app`;
+          await query`INSERT INTO worker_lease_rejections
+            (organization_id, company_id, job_id, attempt_id, worker_id, target_id,
+             target_authority_key, eligibility_version, static_context_hash, workload_type,
+             placement_owner, placement_target_class, placement_target_scope,
+             placement_target_generation, placement_profile_hash,
+             placement_provider_constraint_hash, placement_input_digest,
+             placement_policy_digest, reason_code)
+            VALUES (${orgA}, ${companyA}, ${jobA}, ${attemptA2}, ${workerA}, ${targetA},
+              ${`organization:${orgA}`}, 1, ${hash}, 'batch', 'organization_dedicated',
+              'organization_dedicated', 'organization', 1, ${hash}, ${hash}, ${hash}, ${hash},
+              'static_requirements_mismatch')`;
+        });
+        throw new Error("expected no-GUC certificate INSERT denial");
+      } catch (error) {
+        const failure = error as { code?: string; constraint_name?: string; message?: string };
+        noGucInsert = {
+          code: failure.code,
+          constraint: failure.constraint_name,
+          message: failure.message ?? String(error),
+        };
+      }
+      expect.soft(noGucInsert.code).toBe("42501");
+      expect.soft(noGucInsert.constraint).toBeUndefined();
+      expect.soft(noGucInsert.message).toMatch(/row-level security/i);
 
       const visible = await client.begin(async (tx) => {
         const query = tx as unknown as Sql;

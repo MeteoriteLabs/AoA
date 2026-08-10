@@ -253,12 +253,13 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     targetId = TARGET,
     profileHash = sha256(JSON.stringify(workerHello(workerId, targetId))),
     organizationId = ORG,
+    targetGeneration = 1,
   ): VerifiedWorkerOperation {
     return {
       organizationId,
       workerId,
       targetId,
-      targetGeneration: 1,
+      targetGeneration,
       deviceThumbprint: THUMBPRINT,
       profileHash,
       publicKey: "job-003-public-key",
@@ -1182,6 +1183,449 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     expect.soft(rehashedAfter.outcome === "offer" ? rehashedAfter.body.job.jobId : null)
       .toBe(rehashedContext.jobId);
   });
+
+  it("isolates every mutable platform authority key and algorithm version in the exact 25-key certificate context", async () => {
+    const { admin, app, operator } = guard();
+    const [certificateTable] = await admin<{ name: string | null }[]>`
+      SELECT to_regclass('public.worker_lease_rejections')::text AS name`;
+    expect.soft(certificateTable?.name).toBe("worker_lease_rejections");
+    if (certificateTable?.name !== "worker_lease_rejections") return;
+    const eligibilityUrl = new URL("../services/job-lease-eligibility.ts", import.meta.url);
+    expect.soft(existsSync(eligibilityUrl), "static eligibility implementation must exist").toBe(true);
+    if (!existsSync(eligibilityUrl)) return;
+    const eligibilitySpecifier = `../services/${"job-lease-eligibility"}.js`;
+    const eligibility = await import(eligibilitySpecifier) as {
+      LEASE_STATIC_ELIGIBILITY_VERSION: number;
+      LEASE_CANONICALIZER_VERSION: number;
+      LEASE_ALGORITHM_VERSION: number;
+      LEASE_MATCHER_VERSION: number;
+      LEASE_PLACEMENT_NORMALIZER_VERSION: number;
+      LEASE_WORKLOAD_VOCABULARY_VERSION: number;
+      logicalWorkerStaticMatcherProfileHash(hello: Record<string, unknown>): string;
+      leaseStaticContextHash(input: Record<string, unknown>): string;
+    };
+
+    type PlatformAuthorityState = {
+      generation: number;
+      provider: ProviderConstraintProfileV1;
+      profile: RegisteredTargetProfileV1;
+      profileHash: string;
+      logicalHello: ReturnType<typeof workerHello>;
+      logicalProfileHash: string;
+      physicalHello: ReturnType<typeof workerHello>;
+      physicalProfileHash: string;
+    };
+    type PlatformContextInput = {
+      organizationId: string;
+      logicalWorkerId: string;
+      logicalWorkerScope: string;
+      logicalWorkerOwnerUserId: string | null;
+      logicalWorkerTargetAuthorityKey: string;
+      logicalWorkerDeviceGeneration: number;
+      logicalWorkerDeviceThumbprint: string;
+      logicalWorkerProfileHash: string;
+      logicalWorkerStaticMatcherProfileHash: string;
+      physicalAuthorityWorkerId: string;
+      physicalAuthorityWorkerDeviceGeneration: number;
+      physicalAuthorityWorkerProfileHash: string;
+      targetId: string;
+      targetScope: string;
+      targetOwnerUserId: string | null;
+      targetAuthorityKey: string;
+      targetDeviceGeneration: number;
+      targetRegisteredProfileHash: string;
+      targetProviderConstraintHash: string;
+    };
+    type PlatformAuthorityRow = {
+      organization_id: string;
+      logical_worker_id: string;
+      logical_worker_scope: string;
+      logical_worker_owner_user_id: string | null;
+      logical_worker_target_authority_key: string;
+      logical_worker_device_generation: number;
+      logical_worker_device_thumbprint: string;
+      logical_worker_profile_hash: string;
+      logical_worker_profile_snapshot: Record<string, unknown>;
+      physical_authority_worker_id: string;
+      physical_authority_worker_device_generation: number;
+      physical_authority_worker_profile_hash: string;
+      target_id: string;
+      target_scope: string;
+      target_owner_user_id: string | null;
+      target_authority_key: string;
+      target_device_generation: number;
+      target_registered_profile_hash: string;
+      target_provider_constraint_hash: string;
+    };
+    const authorityState = (input: {
+      generation?: number;
+      provider?: ProviderConstraintProfileV1;
+      profilePolicyHash?: string;
+      logicalAgentVersion?: string;
+      logicalBatchSlots?: number;
+      physicalAgentVersion?: string;
+    } = {}): PlatformAuthorityState => {
+      const generation = input.generation ?? 1;
+      const provider = input.provider ?? platformProviderProfile(1);
+      const profile = {
+        ...platformRegisteredProfile(provider),
+        deviceGeneration: generation,
+        ...(input.profilePolicyHash ? { policyHash: input.profilePolicyHash } : {}),
+      };
+      const logicalHello = {
+        ...workerHello(
+          PLATFORM_LOGICAL_WORKER_A,
+          PLATFORM_TARGET,
+          input.logicalBatchSlots ?? 1,
+        ),
+        deviceGeneration: generation,
+        ...(input.logicalAgentVersion ? { agentVersion: input.logicalAgentVersion } : {}),
+      };
+      const physicalHello = {
+        ...workerHello(PLATFORM_PHYSICAL_WORKER, PLATFORM_TARGET, 1),
+        deviceGeneration: generation,
+        ...(input.physicalAgentVersion ? { agentVersion: input.physicalAgentVersion } : {}),
+      };
+      return {
+        generation,
+        provider,
+        profile,
+        profileHash: sha256(canonicalizeJsonV1(profile)),
+        logicalHello,
+        logicalProfileHash: sha256(JSON.stringify(logicalHello)),
+        physicalHello,
+        physicalProfileHash: sha256(JSON.stringify(physicalHello)),
+      };
+    };
+    const installAuthority = async (state: PlatformAuthorityState): Promise<void> => {
+      await admin`UPDATE execution_targets SET status = 'active', device_generation = ${state.generation},
+        registered_profile = ${state.profile}, registered_profile_hash = ${state.profileHash},
+        provider_constraint_profile = ${state.provider}, last_seen_at = clock_timestamp()
+        WHERE id = ${PLATFORM_TARGET}`;
+      await admin`UPDATE workers SET status = 'active', revoked_at = NULL,
+        device_generation = ${state.generation}, profile_hash = ${state.physicalProfileHash},
+        profile_snapshot = ${state.physicalHello}, device_public_key = 'job-003-public-key',
+        device_thumbprint = ${THUMBPRINT}, last_seen_at = clock_timestamp()
+        WHERE id = ${PLATFORM_PHYSICAL_WORKER}`;
+      await admin`UPDATE workers SET status = 'enrolled', revoked_at = NULL,
+        device_generation = ${state.generation}, profile_hash = ${state.logicalProfileHash},
+        profile_snapshot = ${state.logicalHello}, device_public_key = 'job-003-public-key',
+        device_thumbprint = ${THUMBPRINT}, last_seen_at = NULL
+        WHERE id = ${PLATFORM_LOGICAL_WORKER_A}`;
+    };
+    const pollPlatform = async (
+      service: ReturnType<typeof createJobLeasingService>,
+      state: PlatformAuthorityState,
+      proofId: string,
+    ) => service.poll({
+      auth: auth(
+        proofId,
+        PLATFORM_LOGICAL_WORKER_A,
+        PLATFORM_TARGET,
+        state.logicalProfileHash,
+        ORG,
+        state.generation,
+      ),
+      request: {
+        ...pollRequest(PLATFORM_LOGICAL_WORKER_A, PLATFORM_TARGET, proofId, 1),
+        deviceGeneration: state.generation,
+      },
+    });
+    const readCertificate = async (attemptId: string) => {
+      const [row] = await admin<{
+        count: number;
+        static_context_hash: string | null;
+        eligibility_version: number | null;
+      }[]>`SELECT count(*)::int AS count, min(static_context_hash) AS static_context_hash,
+          min(eligibility_version)::int AS eligibility_version
+        FROM worker_lease_rejections WHERE organization_id = ${ORG}
+          AND worker_id = ${PLATFORM_LOGICAL_WORKER_A} AND attempt_id = ${attemptId}`;
+      return row;
+    };
+    const readContextInput = async (): Promise<PlatformContextInput> => {
+      const [row] = await admin<PlatformAuthorityRow[]>`SELECT
+          logical.organization_id::text AS organization_id,
+          logical.id::text AS logical_worker_id,
+          logical.scope AS logical_worker_scope,
+          logical.owner_user_id AS logical_worker_owner_user_id,
+          logical.target_authority_key AS logical_worker_target_authority_key,
+          logical.device_generation::int AS logical_worker_device_generation,
+          logical.device_thumbprint AS logical_worker_device_thumbprint,
+          logical.profile_hash AS logical_worker_profile_hash,
+          logical.profile_snapshot AS logical_worker_profile_snapshot,
+          physical.id::text AS physical_authority_worker_id,
+          physical.device_generation::int AS physical_authority_worker_device_generation,
+          physical.profile_hash AS physical_authority_worker_profile_hash,
+          target.id::text AS target_id,
+          target.scope AS target_scope,
+          target.owner_user_id AS target_owner_user_id,
+          target.target_authority_key AS target_authority_key,
+          target.device_generation::int AS target_device_generation,
+          target.registered_profile_hash AS target_registered_profile_hash,
+          target.provider_constraint_profile ->> 'digest' AS target_provider_constraint_hash
+        FROM workers logical
+        JOIN execution_targets target ON target.id = logical.execution_target_id
+          AND target.target_authority_key = logical.target_authority_key
+        JOIN workers physical ON physical.execution_target_id = target.id
+          AND physical.target_authority_key = target.target_authority_key
+          AND physical.scope = 'platform'
+        WHERE logical.id = ${PLATFORM_LOGICAL_WORKER_A}`;
+      expect.soft(row, "real platform authority row must exist").toBeDefined();
+      if (!row) throw new Error("real platform authority row missing");
+      return {
+        organizationId: row.organization_id,
+        logicalWorkerId: row.logical_worker_id,
+        logicalWorkerScope: row.logical_worker_scope,
+        logicalWorkerOwnerUserId: row.logical_worker_owner_user_id,
+        logicalWorkerTargetAuthorityKey: row.logical_worker_target_authority_key,
+        logicalWorkerDeviceGeneration: row.logical_worker_device_generation,
+        logicalWorkerDeviceThumbprint: row.logical_worker_device_thumbprint,
+        logicalWorkerProfileHash: row.logical_worker_profile_hash,
+        logicalWorkerStaticMatcherProfileHash:
+          eligibility.logicalWorkerStaticMatcherProfileHash(row.logical_worker_profile_snapshot),
+        physicalAuthorityWorkerId: row.physical_authority_worker_id,
+        physicalAuthorityWorkerDeviceGeneration: row.physical_authority_worker_device_generation,
+        physicalAuthorityWorkerProfileHash: row.physical_authority_worker_profile_hash,
+        targetId: row.target_id,
+        targetScope: row.target_scope,
+        targetOwnerUserId: row.target_owner_user_id,
+        targetAuthorityKey: row.target_authority_key,
+        targetDeviceGeneration: row.target_device_generation,
+        targetRegisteredProfileHash: row.target_registered_profile_hash,
+        targetProviderConstraintHash: row.target_provider_constraint_hash,
+      };
+    };
+    const fullCanonicalContext = (
+      input: PlatformContextInput,
+      algorithmVersion = eligibility.LEASE_ALGORITHM_VERSION,
+    ): Record<string, unknown> => ({
+      certificateVersion: eligibility.LEASE_STATIC_ELIGIBILITY_VERSION,
+      canonicalizerVersion: eligibility.LEASE_CANONICALIZER_VERSION,
+      leasingAlgorithmVersion: algorithmVersion,
+      matcherVersion: eligibility.LEASE_MATCHER_VERSION,
+      placementNormalizerVersion: eligibility.LEASE_PLACEMENT_NORMALIZER_VERSION,
+      workloadVocabularyVersion: eligibility.LEASE_WORKLOAD_VOCABULARY_VERSION,
+      ...input,
+    });
+    const independentContextHash = (canonical: Record<string, unknown>): string =>
+      sha256(canonicalizeJsonV1(canonical));
+    const exactCurrentContextHash = (input: PlatformContextInput): string => {
+      const canonical = fullCanonicalContext(input);
+      expect.soft(Object.keys(canonical), "full certificate context keys")
+        .toHaveLength(25);
+      const independent = independentContextHash(canonical);
+      expect.soft(eligibility.leaseStaticContextHash(input), "production hash must equal independent oracle")
+        .toBe(independent);
+      return independent;
+    };
+    const mirrorOrdinaryCertificateFacts = async (
+      attemptId: string,
+      state: PlatformAuthorityState,
+      staticContextHash: string,
+    ): Promise<void> => {
+      await admin`UPDATE job_attempts SET placement_target_generation = ${state.generation},
+        placement_profile_hash = ${state.profileHash},
+        placement_provider_constraint_hash = ${state.provider.digest}
+        WHERE id = ${attemptId}`;
+      await admin`UPDATE worker_lease_rejections SET eligibility_version = 1,
+        static_context_hash = ${staticContextHash},
+        placement_target_generation = ${state.generation},
+        placement_profile_hash = ${state.profileHash},
+        placement_provider_constraint_hash = ${state.provider.digest}
+        WHERE organization_id = ${ORG} AND worker_id = ${PLATFORM_LOGICAL_WORKER_A}
+          AND attempt_id = ${attemptId}`;
+    };
+
+    const coherentGeneration = authorityState({ generation: 2 });
+    const contextCases: Array<{
+      name: string;
+      omittedKey: keyof PlatformContextInput;
+      next: PlatformAuthorityState;
+      assertIsolation(before: PlatformContextInput, after: PlatformContextInput): void;
+    }> = [
+      {
+        name: "physical-generation",
+        omittedKey: "physicalAuthorityWorkerDeviceGeneration",
+        next: coherentGeneration,
+        assertIsolation: (before, after) => {
+          expect(after.physicalAuthorityWorkerDeviceGeneration)
+            .not.toBe(before.physicalAuthorityWorkerDeviceGeneration);
+        },
+      },
+      {
+        name: "physical-profile",
+        omittedKey: "physicalAuthorityWorkerProfileHash",
+        next: authorityState({ physicalAgentVersion: "job-003-physical-profile-v2" }),
+        assertIsolation: (before, after) => {
+          expect(after.physicalAuthorityWorkerProfileHash)
+            .not.toBe(before.physicalAuthorityWorkerProfileHash);
+          expect(after.physicalAuthorityWorkerDeviceGeneration)
+            .toBe(before.physicalAuthorityWorkerDeviceGeneration);
+        },
+      },
+      {
+        name: "target-generation",
+        omittedKey: "targetDeviceGeneration",
+        next: coherentGeneration,
+        assertIsolation: (before, after) => {
+          expect(after.targetDeviceGeneration).not.toBe(before.targetDeviceGeneration);
+        },
+      },
+      {
+        name: "target-profile",
+        omittedKey: "targetRegisteredProfileHash",
+        next: authorityState({ profilePolicyHash: "e".repeat(64) }),
+        assertIsolation: (before, after) => {
+          expect(after.targetRegisteredProfileHash).not.toBe(before.targetRegisteredProfileHash);
+          expect(after.targetProviderConstraintHash).toBe(before.targetProviderConstraintHash);
+        },
+      },
+      {
+        name: "target-provider",
+        omittedKey: "targetProviderConstraintHash",
+        next: authorityState({ provider: platformProviderProfile(2) }),
+        assertIsolation: (before, after) => {
+          expect(after.targetProviderConstraintHash).not.toBe(before.targetProviderConstraintHash);
+        },
+      },
+      {
+        name: "logical-generation",
+        omittedKey: "logicalWorkerDeviceGeneration",
+        next: coherentGeneration,
+        assertIsolation: (before, after) => {
+          expect(after.logicalWorkerDeviceGeneration).not.toBe(before.logicalWorkerDeviceGeneration);
+        },
+      },
+      {
+        name: "logical-stored-profile",
+        omittedKey: "logicalWorkerProfileHash",
+        next: authorityState({ logicalBatchSlots: 2 }),
+        assertIsolation: (before, after) => {
+          expect(after.logicalWorkerProfileHash).not.toBe(before.logicalWorkerProfileHash);
+          expect(after.logicalWorkerStaticMatcherProfileHash)
+            .toBe(before.logicalWorkerStaticMatcherProfileHash);
+        },
+      },
+      {
+        name: "logical-static-matcher-snapshot",
+        omittedKey: "logicalWorkerStaticMatcherProfileHash",
+        next: authorityState({ logicalAgentVersion: "job-003-logical-static-v2" }),
+        assertIsolation: (before, after) => {
+          expect(after.logicalWorkerStaticMatcherProfileHash)
+            .not.toBe(before.logicalWorkerStaticMatcherProfileHash);
+        },
+      },
+    ];
+
+    for (const [index, contextCase] of contextCases.entries()) {
+      await resetRuntimeRows();
+      const baseline = authorityState();
+      await installAuthority(baseline);
+      const seeded = await seedPlacedJob({
+        ordinal: 980 + index,
+        workerId: PLATFORM_LOGICAL_WORKER_A,
+        requiredCapabilities: ["sandbox.filtered_egress"],
+        placement: {
+          targetId: PLATFORM_TARGET,
+          owner: "managed_cloud",
+          targetClass: "managed_cloud",
+          targetScope: "platform",
+          generation: baseline.generation,
+          profileHash: baseline.profileHash,
+          providerHash: baseline.provider.digest,
+        },
+      });
+      const service = createJobLeasingService({ appDb: app.db, operatorDb: operator.db });
+      const beforePoll = await pollPlatform(service, baseline, `platform-context-${contextCase.name}-before`);
+      expect.soft(beforePoll.outcome, `${contextCase.name}:before`).toBe("no_work");
+      const baselineInput = await readContextInput();
+      const baselineHash = exactCurrentContextHash(baselineInput);
+      expect.soft(await readCertificate(seeded.attemptId), `${contextCase.name}:baseline certificate`)
+        .toMatchObject({ count: 1, eligibility_version: 1, static_context_hash: baselineHash });
+
+      await installAuthority(contextCase.next);
+      const currentInput = await readContextInput();
+      contextCase.assertIsolation(baselineInput, currentInput);
+      const expectedCurrentHash = exactCurrentContextHash(currentInput);
+      const omissionProjection = Object.fromEntries(
+        Object.entries(fullCanonicalContext(currentInput))
+          .filter(([key]) => key !== contextCase.omittedKey),
+      );
+      expect.soft(Object.keys(omissionProjection), `${contextCase.name}:one-key omission`)
+        .toHaveLength(24);
+      const adversarialHash = independentContextHash(omissionProjection);
+      expect.soft(adversarialHash, `${contextCase.name}:omission must differ from current`)
+        .not.toBe(expectedCurrentHash);
+      await mirrorOrdinaryCertificateFacts(seeded.attemptId, contextCase.next, adversarialHash);
+
+      const afterPoll = await pollPlatform(
+        service,
+        contextCase.next,
+        `platform-context-${contextCase.name}-after`,
+      );
+      expect.soft(afterPoll.outcome, `${contextCase.name}:after`).toBe("no_work");
+      expect.soft(await readCertificate(seeded.attemptId), `${contextCase.name}:refreshed certificate`)
+        .toMatchObject({
+          count: 1,
+          eligibility_version: 1,
+          static_context_hash: expectedCurrentHash,
+        });
+    }
+
+    await resetRuntimeRows();
+    const baseline = authorityState();
+    await installAuthority(baseline);
+    const algorithm = await seedPlacedJob({
+      ordinal: 989,
+      workerId: PLATFORM_LOGICAL_WORKER_A,
+      requiredCapabilities: ["sandbox.filtered_egress"],
+      placement: {
+        targetId: PLATFORM_TARGET,
+        owner: "managed_cloud",
+        targetClass: "managed_cloud",
+        targetScope: "platform",
+        generation: baseline.generation,
+        profileHash: baseline.profileHash,
+        providerHash: baseline.provider.digest,
+      },
+    });
+    const service = createJobLeasingService({ appDb: app.db, operatorDb: operator.db });
+    const algorithmBefore = await pollPlatform(service, baseline, "platform-algorithm-version-before");
+    expect.soft(algorithmBefore.outcome).toBe("no_work");
+    const currentInput = await readContextInput();
+    const expectedCurrentHash = exactCurrentContextHash(currentInput);
+    expect.soft(await readCertificate(algorithm.attemptId), "algorithm baseline certificate")
+      .toMatchObject({ count: 1, eligibility_version: 1, static_context_hash: expectedCurrentHash });
+    const currentCanonical = fullCanonicalContext(currentInput);
+    const algorithmAdversaries: Array<[string, Record<string, unknown>]> = [
+      [
+        "omitted",
+        Object.fromEntries(Object.entries(currentCanonical)
+          .filter(([key]) => key !== "leasingAlgorithmVersion")),
+      ],
+      [
+        "incremented",
+        {
+          ...currentCanonical,
+          leasingAlgorithmVersion: eligibility.LEASE_ALGORITHM_VERSION + 1,
+        },
+      ],
+    ];
+    for (const [name, adversarialCanonical] of algorithmAdversaries) {
+      const adversarialHash = independentContextHash(adversarialCanonical);
+      expect.soft(adversarialHash, `algorithm-${name}:adversary must differ from current`)
+        .not.toBe(expectedCurrentHash);
+      await mirrorOrdinaryCertificateFacts(algorithm.attemptId, baseline, adversarialHash);
+      const algorithmAfter = await pollPlatform(
+        service,
+        baseline,
+        `platform-algorithm-version-${name}-after`,
+      );
+      expect.soft(algorithmAfter.outcome, `algorithm-${name}:after`).toBe("no_work");
+      expect.soft(await readCertificate(algorithm.attemptId), `algorithm-${name}:refreshed certificate`)
+        .toMatchObject({ count: 1, eligibility_version: 1, static_context_hash: expectedCurrentHash });
+    }
+  }, 180_000);
 
   it("rolls back predecessor certificates when lease insert fails and never certifies invariant failures", async () => {
     const { admin, app } = guard();

@@ -112,6 +112,122 @@ function normalizedQuerySha256(statement: string): string {
     .digest("hex");
 }
 
+const CERTIFICATE_COLUMN_EQUALITIES = Object.freeze([
+  ["organization_id", "job_attempts.organization_id"],
+  ["company_id", "job_attempts.company_id"],
+  ["job_id", "job_attempts.job_id"],
+  ["attempt_id", "job_attempts.id"],
+  ["workload_type", "jobs.workload_type"],
+  ["placement_owner", "job_attempts.placement_owner"],
+  ["placement_target_class", "job_attempts.placement_target_class"],
+  ["placement_target_scope", "job_attempts.placement_target_scope"],
+  ["placement_target_generation", "job_attempts.placement_target_generation"],
+  ["placement_profile_hash", "job_attempts.placement_profile_hash"],
+  ["placement_provider_constraint_hash", "job_attempts.placement_provider_constraint_hash"],
+  ["placement_input_digest", "job_attempts.placement_input_digest"],
+  ["placement_policy_digest", "job_attempts.placement_policy_digest"],
+] as const);
+
+const CERTIFICATE_PARAMETER_EQUALITIES = Object.freeze([
+  ["worker_id", "workerId"],
+  ["target_id", "targetId"],
+  ["target_authority_key", "targetAuthorityKey"],
+  ["eligibility_version", "eligibilityVersion"],
+  ["static_context_hash", "staticContextHash"],
+] as const);
+
+function canonicalSql(statement: string): string {
+  return statement.toLowerCase().replaceAll('"', "").replace(/\s+/g, " ").trim();
+}
+
+function assertCapturedClaimCertificateOracle(
+  query: { sql: string; parameters: unknown[] },
+  context: ClaimContext,
+): void {
+  const sql = canonicalSql(query.sql);
+  if (!/not\s+exists\s*\(/.test(sql) || !sql.includes("worker_lease_rejections")) {
+    throw new Error("claim query is missing the static-certificate NOT EXISTS anti-join");
+  }
+  for (const [certificateColumn, currentColumn] of CERTIFICATE_COLUMN_EQUALITIES) {
+    const certificate = `worker_lease_rejections.${certificateColumn}`;
+    const equality = new RegExp(
+      `(?:${certificate.replaceAll(".", "\\.")}\\s*=\\s*${currentColumn.replaceAll(".", "\\.")}|` +
+      `${currentColumn.replaceAll(".", "\\.")}\\s*=\\s*${certificate.replaceAll(".", "\\.")})`,
+    );
+    if (!equality.test(sql)) throw new Error(`claim certificate equality missing: ${certificateColumn}`);
+  }
+  for (const [certificateColumn, contextKey] of CERTIFICATE_PARAMETER_EQUALITIES) {
+    const certificate = `worker_lease_rejections.${certificateColumn}`.replaceAll(".", "\\.");
+    const direct = new RegExp(`${certificate}\\s*=\\s*\\$(\\d+)`).exec(sql);
+    const reverse = new RegExp(`\\$(\\d+)\\s*=\\s*${certificate}`).exec(sql);
+    const parameterIndex = Number((direct ?? reverse)?.[1] ?? 0) - 1;
+    if (parameterIndex < 0 || query.parameters[parameterIndex] !== context[contextKey]) {
+      throw new Error(`claim certificate parameter binding invalid: ${certificateColumn}`);
+    }
+  }
+}
+
+type ReviewedIndexFact = {
+  index_name: string;
+  valid: boolean;
+  ready: boolean;
+  columns: string[];
+  descending: boolean[];
+  predicate: string | null;
+};
+
+const REVIEWED_INDEX_CONTRACT = Object.freeze({
+  jobs_claim_idx: {
+    columns: ["organization_id", "status", "available_at", "priority", "created_at", "id"],
+    descending: [false, false, false, true, false, false],
+    predicateTerms: [] as string[],
+  },
+  job_attempts_lease_candidate_idx: {
+    columns: ["organization_id", "placement_target_id", "job_id", "id"],
+    descending: [false, false, false, false],
+    predicateTerms: [
+      "status='pending'", "placement_disposition='selected'", "placement_mode='active'",
+      "placement_lease_eligible=true",
+    ],
+  },
+  worker_lease_rejections_cleanup_idx: {
+    columns: ["organization_id", "updated_at", "worker_id", "attempt_id"],
+    descending: [false, false, false, false],
+    predicateTerms: [] as string[],
+  },
+  worker_lease_rejections_pkey: {
+    columns: ["organization_id", "worker_id", "attempt_id"],
+    descending: [false, false, false],
+    predicateTerms: [] as string[],
+  },
+});
+
+function normalizedPredicateTerms(predicate: string | null): string[] {
+  if (!predicate) return [];
+  return predicate.toLowerCase().replaceAll('"', "").replace(/::text/g, "")
+    .replace(/[()\s]/g, "").split("and").filter(Boolean).sort();
+}
+
+function assertReviewedIndexContract(indexes: ReviewedIndexFact[]): void {
+  const names = indexes.map((index) => index.index_name).sort();
+  const expectedNames = Object.keys(REVIEWED_INDEX_CONTRACT).sort();
+  if (JSON.stringify(names) !== JSON.stringify(expectedNames)) throw new Error("reviewed index set mismatch");
+  for (const [name, contract] of Object.entries(REVIEWED_INDEX_CONTRACT)) {
+    const index = indexes.find((candidate) => candidate.index_name === name);
+    if (!index || !index.valid || !index.ready) throw new Error(`${name} is missing, invalid, or unready`);
+    if (JSON.stringify(index.columns) !== JSON.stringify(contract.columns)) {
+      throw new Error(`${name} column order mismatch`);
+    }
+    if (JSON.stringify(index.descending) !== JSON.stringify(contract.descending)) {
+      throw new Error(`${name} direction mismatch`);
+    }
+    if (JSON.stringify(normalizedPredicateTerms(index.predicate)) !==
+        JSON.stringify([...contract.predicateTerms].sort())) {
+      throw new Error(`${name} predicate mismatch`);
+    }
+  }
+}
+
 function latestProductionClaimQuery(): { sql: string; parameters: unknown[] } | null {
   return [...capturedQueries].reverse().find((query) =>
     /worker_lease_rejections/i.test(query.sql) && /FOR\s+UPDATE/i.test(query.sql)) ?? null;
@@ -146,6 +262,7 @@ async function callProductionClaim(input: ClaimContext): Promise<{
   const query = latestProductionClaimQuery();
   expect.soft(query, "real tenant repository claim query must include the certificate anti-join").not.toBeNull();
   if (!query) throw new Error("production claim query was not captured");
+  assertCapturedClaimCertificateOracle(query, input);
   return { rows, query, querySha256: normalizedQuerySha256(query.sql) };
 }
 
@@ -258,8 +375,8 @@ function assertCleanupPlan(plan: Record<string, unknown>, layout: string, affect
       node["Sort Method"] !== "top-N heapsort" || actualRows > 256 || tempBlocks !== 0
     )) violations.push("unbounded_or_spilled_sort");
     if ((nodeType === "Seq Scan" || nodeType === "Parallel Seq Scan") &&
-        relation === "worker_lease_rejections") {
-      violations.push("hot_sequential_scan:worker_lease_rejections");
+        ["jobs", "job_attempts", "worker_lease_rejections"].includes(relation)) {
+      violations.push(`hot_sequential_scan:${relation}`);
     }
   });
   if (!indexes.has("worker_lease_rejections_cleanup_idx")) {
@@ -434,7 +551,7 @@ async function prepareE3Perf01ClaimScenario(
         '${E3_PERF_01_HOT_WORKER_ID}'::uuid, '${E3_PERF_01_HOT_TARGET_ID}'::uuid,
         '${E3_PERF_01_TARGET_AUTHORITY_KEY}',
         CASE WHEN '${scenario}' = 'ninety_percent_stale_version_or_context'
-          AND j.source_identity::integer <= 450000 THEN 0 ELSE 1 END,
+          AND j.source_identity::integer <= 450000 THEN 2 ELSE 1 END,
         CASE WHEN '${scenario}' = 'ninety_percent_stale_version_or_context'
           AND j.source_identity::integer BETWEEN 450001 AND 900000 THEN '${"8".repeat(64)}'
           ELSE '${E3_PERF_01_STATIC_CONTEXT_HASH}' END,
@@ -504,6 +621,7 @@ async function assertCanonicalClaimShape(
     certificates: number;
     current_certificates: number;
     stale_certificates: number;
+    minimum_eligibility_version: number | null;
   }[]>`
     SELECT
       count(*)::int AS candidates,
@@ -511,7 +629,8 @@ async function assertCanonicalClaimShape(
       count(rejection.attempt_id) FILTER (WHERE rejection.eligibility_version = 1
         AND rejection.static_context_hash = ${E3_PERF_01_STATIC_CONTEXT_HASH})::int AS current_certificates,
       count(rejection.attempt_id) FILTER (WHERE rejection.eligibility_version <> 1
-        OR rejection.static_context_hash <> ${E3_PERF_01_STATIC_CONTEXT_HASH})::int AS stale_certificates
+        OR rejection.static_context_hash <> ${E3_PERF_01_STATIC_CONTEXT_HASH})::int AS stale_certificates,
+      min(rejection.eligibility_version)::int AS minimum_eligibility_version
     FROM job_attempts AS attempt
     JOIN jobs AS job ON job.organization_id = attempt.organization_id
       AND job.company_id = attempt.company_id AND job.id = attempt.job_id
@@ -521,6 +640,7 @@ async function assertCanonicalClaimShape(
       AND rejection.attempt_id = attempt.id
     WHERE job.source_kind = 'e3_perf_01'`;
   expect.soft(counts?.candidates, scenario).toBe(1_000_000);
+  expect.soft(counts?.minimum_eligibility_version, `${scenario}:positive-version`).toBeGreaterThan(0);
 
   if (scenario === "hot_worker_fully_certified_no_work") {
     expect.soft(counts).toMatchObject({ certificates: 1_000_000, current_certificates: 1_000_000, stale_certificates: 0 });
@@ -781,10 +901,90 @@ describe("E3-PERF-01 immutable load contract", () => {
     expect(() => assertCleanupPlan({ Plan: {
       "Node Type": "Seq Scan", "Relation Name": "worker_lease_rejections", "Actual Rows": 0,
     } }, "seq")).toThrow();
+    for (const relation of ["jobs", "job_attempts"]) {
+      expect(() => assertCleanupPlan({ Plan: {
+        "Node Type": "Seq Scan", "Relation Name": relation, "Actual Rows": 256,
+        Plans: [{
+          "Node Type": "Index Scan", "Relation Name": "worker_lease_rejections",
+          "Index Name": "worker_lease_rejections_cleanup_idx", "Actual Rows": 256,
+        }],
+      } }, `cleanup-seq:${relation}`)).toThrow();
+    }
     expect(() => assertCleanupPlan({ Plan: {
       "Node Type": "Index Scan", "Relation Name": "worker_lease_rejections",
       "Index Name": "worker_lease_rejections_cleanup_idx",
     } }, "missing-cardinality")).toThrow();
+  });
+
+  it("attests every equality in the actual production certificate anti-join", () => {
+    const context: ClaimContext = {
+      organizationId: E3_PERF_01_ORGANIZATION_ID,
+      workerId: E3_PERF_01_HOT_WORKER_ID,
+      targetId: E3_PERF_01_HOT_TARGET_ID,
+      targetAuthorityKey: E3_PERF_01_TARGET_AUTHORITY_KEY,
+      targetOwner: "organization_dedicated",
+      targetClass: "organization_dedicated",
+      targetScope: "organization",
+      targetGeneration: 1,
+      targetProfileHash: E3_PERF_01_PROFILE_HASH,
+      targetProviderConstraintHash: E3_PERF_01_PROVIDER_HASH,
+      admissibleWorkloadTypes: ["batch"],
+      eligibilityVersion: 1,
+      staticContextHash: E3_PERF_01_STATIC_CONTEXT_HASH,
+      limit: 256,
+    };
+    const columnClauses = CERTIFICATE_COLUMN_EQUALITIES.map(([certificate, current]) =>
+      `worker_lease_rejections.${certificate} = ${current}`);
+    const parameterClauses = CERTIFICATE_PARAMETER_EQUALITIES.map(([certificate], index) =>
+      `worker_lease_rejections.${certificate} = $${index + 1}`);
+    const clauses = [...columnClauses, ...parameterClauses];
+    const canonicalQuery = {
+      sql: `SELECT job_attempts.id FROM job_attempts JOIN jobs ON true WHERE NOT EXISTS
+        (SELECT 1 FROM worker_lease_rejections WHERE ${clauses.join(" AND ")}) FOR UPDATE`,
+      parameters: [
+        context.workerId, context.targetId, context.targetAuthorityKey,
+        context.eligibilityVersion, context.staticContextHash,
+      ],
+    };
+    expect(() => assertCapturedClaimCertificateOracle(canonicalQuery, context)).not.toThrow();
+    for (const clause of clauses) {
+      expect(
+        () => assertCapturedClaimCertificateOracle({
+          ...canonicalQuery,
+          sql: canonicalQuery.sql.replace(clause, "TRUE"),
+        }, context),
+        `removing ${clause} must invalidate the captured production query`,
+      ).toThrow();
+    }
+    for (let index = 0; index < parameterClauses.length; index += 1) {
+      const wrong = [...canonicalQuery.parameters];
+      wrong[index] = `near-match-${index}`;
+      expect(() => assertCapturedClaimCertificateOracle({ ...canonicalQuery, parameters: wrong }, context)).toThrow();
+    }
+  });
+
+  it("pins exact reviewed index columns, directions, partial predicates, and primary key", () => {
+    const valid = Object.entries(REVIEWED_INDEX_CONTRACT).map(([index_name, contract]) => ({
+      index_name,
+      valid: true,
+      ready: true,
+      columns: [...contract.columns],
+      descending: [...contract.descending],
+      predicate: contract.predicateTerms.length === 0 ? null : contract.predicateTerms.join(" AND "),
+    }));
+    expect(() => assertReviewedIndexContract(valid)).not.toThrow();
+    for (const name of Object.keys(REVIEWED_INDEX_CONTRACT)) {
+      expect(() => assertReviewedIndexContract(valid.filter((index) => index.index_name !== name))).toThrow();
+    }
+    expect(() => assertReviewedIndexContract(valid.map((index) => index.index_name === "jobs_claim_idx"
+      ? { ...index, columns: [...index.columns].reverse() }
+      : index))).toThrow();
+    expect(() => assertReviewedIndexContract(valid.map((index) => index.index_name === "jobs_claim_idx"
+      ? { ...index, descending: index.descending.map(() => false) }
+      : index))).toThrow();
+    expect(() => assertReviewedIndexContract(valid.map((index) => index.index_name === "job_attempts_lease_candidate_idx"
+      ? { ...index, predicate: `${index.predicate} AND placement_lease_eligible=false` }
+      : index))).toThrow();
   });
 });
 
@@ -1037,29 +1237,27 @@ describe.skipIf(!enabled)("E3-PERF-01 production-capacity static-certificate lan
     expect(Number(sizes?.total_bytes ?? 0))
       .toBeLessThanOrEqual(E3_PERF_01_INITIAL_THRESHOLDS.combinedTableIndexBytesMax);
 
-    const indexes = await client<{
-      index_name: string;
-      valid: boolean;
-      ready: boolean;
-      definition: string;
-      predicate: string | null;
-    }[]>`
+    const indexes = await client<(ReviewedIndexFact & { definition: string })[]>`
       SELECT index_rel.relname AS index_name, idx.indisvalid AS valid, idx.indisready AS ready,
         pg_get_indexdef(idx.indexrelid) AS definition,
-        pg_get_expr(idx.indpred, idx.indrelid) AS predicate
+        pg_get_expr(idx.indpred, idx.indrelid) AS predicate,
+        ARRAY(
+          SELECT att.attname
+          FROM unnest(idx.indkey) WITH ORDINALITY AS key(attnum, position)
+          JOIN pg_attribute AS att ON att.attrelid = idx.indrelid AND att.attnum = key.attnum
+          ORDER BY key.position
+        )::text[] AS columns,
+        ARRAY(
+          SELECT (idx.indoption[key.position::int - 1] & 1) = 1
+          FROM unnest(idx.indkey) WITH ORDINALITY AS key(attnum, position)
+          ORDER BY key.position
+        )::boolean[] AS descending
       FROM pg_index idx
       JOIN pg_class index_rel ON index_rel.oid = idx.indexrelid
       WHERE index_rel.relname IN ('jobs_claim_idx', 'job_attempts_lease_candidate_idx',
         'worker_lease_rejections_pkey', 'worker_lease_rejections_cleanup_idx')
       ORDER BY index_rel.relname`;
-    expect.soft(indexes.map((index) => index.index_name)).toEqual([
-      "job_attempts_lease_candidate_idx", "jobs_claim_idx", "worker_lease_rejections_cleanup_idx",
-      "worker_lease_rejections_pkey",
-    ]);
-    expect.soft(indexes.every((index) => index.valid && index.ready)).toBe(true);
-    expect.soft(indexes.find((index) => index.index_name === "jobs_claim_idx")?.definition).toContain("priority DESC");
-    expect.soft(indexes.find((index) => index.index_name === "job_attempts_lease_candidate_idx")?.predicate)
-      .toMatch(/pending[\s\S]*selected[\s\S]*active[\s\S]*placement_lease_eligible/i);
+    expect(() => assertReviewedIndexContract(indexes)).not.toThrow();
     emitEvidence({ kind: "storage", ...sizes, indexes });
   });
 });

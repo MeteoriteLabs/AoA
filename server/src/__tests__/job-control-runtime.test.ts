@@ -506,7 +506,15 @@ describe("JOB-003 flag-on job-control runtime", () => {
     });
 
     const first = worker.tick();
-    await firstEntered;
+    const firstBoundary = await Promise.race([
+      firstEntered.then(() => "entered" as const),
+      first.then(() => "completed-before-tenant-entry" as const),
+    ]);
+    expect.soft(firstBoundary).toBe("entered");
+    if (firstBoundary !== "entered") {
+      releaseFirst();
+      return;
+    }
     const overlapping = worker.tick();
     await Promise.resolve();
     expect.soft(runtimeHarness.maxActiveTenants).toBe(1);
