@@ -1,7 +1,7 @@
 # JOB-001 Result — Submit immutable jobs transactionally
 
-**Status:** `implementation_complete_review_needs_changes`
-**Disposition:** `needs_changes`
+**Status:** `implementation_complete_review_pending`
+**Disposition:** `review_pending`
 **Date opened (UTC):** `2026-08-09`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-001 — Submit immutable jobs transactionally (M)`
@@ -72,3 +72,28 @@ passing before this attempt; they were consumed as immutable dependencies.
 - Windows-local evidence is not formal Linux/DEC-03 certification; nevertheless these are
   deterministic completed failures and block review. No production code was changed.
 - Detailed evidence: `.superpowers/sdd/implementation-plan/job-001-review.md`.
+
+## Review-fix attempts
+
+### Fix round 1 - 2026-08-10 - Codex `/root/job001_impl`
+
+- RED commit `f26b912c65e20050871ef9176e40c8daa432bc48` adds the hostile
+  source/caller matrix, real failing-transaction log capture, immutable-builder checks,
+  and compatible non-vacuous tenant fixture/repository contracts.
+- GREEN commit `da9cfffaa04381b6253b9f4793249427ac33772d` binds all six source
+  forms to the frozen requester matrix and tenant server state, restricts service
+  reconciliation to trusted internal system callers, binds Commander IDs to JWT claims,
+  and sanitizes the complete distributed-submission error channel.
+- Historical 0213/0214 builder inputs and artifacts are byte-identical; JOB-001 authority
+  is versioned only through the 0218 builder/artifact. The exact runtime startup checker
+  consumes the versioned table grants and frozen MCP column projection.
+- Existing eight-group repository enumeration remains compatible while `jobControl` is a
+  deliberate non-enumerable transaction-scoped capability; attempt fixtures carry Company
+  identity and tenant isolation/adversarial assertions execute non-vacuously.
+- Focused JOB-001, hostile, concurrency, rollback/log, migration, startup, RLS, typecheck,
+  frozen install/checker, and build commands pass. The exact Windows full lane is not called
+  a pass: it exited 1 in 217.3s with 10 failures after an unrelated embedded-Postgres setup
+  failure; a bounded isolated D18 run failed 6/6 before assertions because PostgreSQL could
+  not bind localhost (`Permission denied`). Formal Linux/DEC-03 evidence remains pending.
+- Status is restored only to `implementation_complete_review_pending`; the distinct reviewer
+  alone may certify the ticket or change it to complete/pass.
