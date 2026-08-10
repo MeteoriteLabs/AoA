@@ -1,13 +1,14 @@
 # E3 — Durable Job Control — Implementation Plan
 
-**Plan status:** `approved_pre_D1_execution_ready` — the operator approved the reviewed plan
+**Plan status:** `approved_pre_D1_execution_ready_except_JOB-003_review_block` — the operator approved the reviewed plan
 and recommended E2/E1/JOB-002 choices on 2026-08-10. On 2026-08-10 the operator also
 approved the E3-F018 / Decision #124 amendment: tenant work on a platform target uses an
 Organization-scoped logical worker session; a platform-scoped physical session remains
 physical-control-only. The corrective E2 and E1 gates passed
 at reviewed revisions `7843b86e25eb1ff9c520308aef7f123fec6997a7` and
 `01ad1ab554fe25c5178c7552ec047d4df45b7dcf`. Pre-D1 tickets may now execute in dependency
-order; the post-D1 boundary remains locked.
+order except that JOB-003 remains paused on the exact successor review named below; the
+post-D1 boundary remains locked.
 
 **JOB-003 fix-round-2 amendment status:** `pending_independent_review`. Review attempt 2
 proved that restart-safe pull fairness needs durable progress. A first two-field cursor lost
@@ -19,7 +20,8 @@ the canonical oldest-eligible rule. JOB-003 implementation is paused before migr
 ordered global head and anti-joins only exact, tenant-scoped static-ineligibility certificates;
 dynamic capacity is hoisted before selection, and ready signals can affect retry latency but
 never candidate identity or order. No GREEN work may resume until a distinct reviewer accepts
-this exact successor amendment.
+this exact successor amendment and a distinct schema/security reviewer independently accepts
+its DDL, RLS, grant, FK-oracle, and query-validity contract.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use
 > `superpowers:subagent-driven-development` to execute this plan ticket by ticket
@@ -167,7 +169,8 @@ package while preserving the immutable source and fixture anchors.
 
 | Boundary | Tickets | Assignment rule |
 |---|---|---|
-| **Pre-D1, approved and assignable** | JOB-001, JOB-002, JOB-009, JOB-003, JOB-010 | E3-F001/E3-F002 and E3-F004 corrective handoffs passed. E3-F005's device/binding contract is approved for JOB-002 implementation. Respect ticket dependencies; JOB-010 may start after JOB-001. |
+| **Pre-D1, approved and assignable** | JOB-001, JOB-002, JOB-009, JOB-010 | E3-F001/E3-F002 and E3-F004 corrective handoffs passed. E3-F005's device/binding contract is approved for JOB-002 implementation. Respect ticket dependencies; JOB-010 may start after JOB-001. |
+| **Pre-D1, amendment review blocked** | JOB-003 | Do not assign, correct RED, generate `0229`/`0230`, or resume GREEN until a distinct whole-plan reviewer and a distinct schema/security reviewer accept the exact committed static-certificate successor with no P0/P1/P2 finding. |
 | **Post-D1, blocked** | JOB-004–JOB-008, JOB-011–JOB-014 | Do not assign until a committed `E6-D1-FOUNDATION` QA record **and passing handoff** cover E6F-00–E6F-08 on one revision. |
 | **E3 exit gate, blocked** | all JOB-001–JOB-014 evidence | Requires every ticket complete and the post-D1 closure. A Windows-local run is not a substitute for the formal Linux lane. |
 
@@ -331,9 +334,19 @@ placement disposition/mode are `selected`/`active`, and `placement_lease_eligibl
 The generated migration is C14-replayable by dropping the old index with `IF EXISTS` before
 creating the corrected definition with `IF NOT EXISTS`; a create-only guard that silently
 retains the old priority direction is forbidden. Custom Decision #122 successor `0230`
-revokes PUBLIC and `aoa_operator`, grants only required DML to `aoa_app`, and ENABLEs/FORCEs
-tenant RLS on the certificate table. Neither migration changes E1, operator job authority,
-or a public API.
+revokes PUBLIC and `aoa_operator`, grants exactly `SELECT`, `INSERT`, `UPDATE`, and `DELETE`
+to `aoa_app`, and ENABLEs/FORCEs tenant RLS on the certificate table. The same four privileges
+must be added to `JOB_LEASING_NEW_PATH_GRANTS.worker_lease_rejections`; the exact startup
+authority audit and its contract test must fail before that allowlist change and pass after it.
+Neither migration changes E1, operator job authority, or a public API.
+
+The worker parent key
+`(organization_id, id, target_authority_key, execution_target_id)` must exist before the
+certificate table's logical-worker FK is applied. If drizzle-kit emits the child FK before
+that newly generated parent UNIQUE, `0229` uses E2-D08 only: move the generated UNIQUE
+statement verbatim ahead of the generated FK, add an inline explanation, and change no DDL
+text. The populated-chain/replay test must reproduce PostgreSQL `42830` before the reorder and
+prove clean first apply plus replay after it. Hand-authored replacement DDL is forbidden.
 
 The generated certificate columns are exact: `organization_id`, `company_id`, `job_id`,
 `attempt_id`, `worker_id`, `target_id`, `target_authority_key`, `eligibility_version`,
@@ -989,7 +1002,8 @@ ACK activates exactly that lease.
 the stored placement decision.
 
 **Files:** modify `job_attempts.ts`, `leases.ts`, `jobs.ts`, `workers.ts`, tenant job-control and worker-enrollment
-repositories, `server/src/middleware/worker-operation-proof.ts`,
+repositories, `packages/db/src/schema/index.ts`, `server/src/db/job-control-legacy-grants.ts`,
+`server/src/middleware/worker-operation-proof.ts`,
 `server/src/middleware/worker-session-auth.ts`, `server/src/services/worker-enrollment.ts`,
 `server/src/services/execution-targets.ts`, the worker route, and the flag-on runtime
 composition in `server/src/index.ts`; create
@@ -1007,7 +1021,9 @@ composition in `server/src/index.ts`; create
 `job-leasing-migration-upgrade.integration.test.ts`,
 `server/src/__tests__/job-leasing.integration.test.ts`, `job-control-runtime.test.ts`, and
 `job-leasing-contract.test.ts`, `job-lease-eligibility.test.ts`, and
-`job-leasing-load.integration.test.ts`, including runtime-composition, multi-Organization platform
+`job-leasing-load.integration.test.ts`; extend
+`server/src/__tests__/job-control-legacy-grants.contract.test.ts` and
+`distributed-execution-db-startup.integration.test.ts`, including runtime-composition, multi-Organization platform
 target, advisory-handoff/revocation, authority-mutation-inventory, liveness, and fair-scheduler
 cases. Predecessor file edits are bounded synchronization corrections only; they may not
 change JOB-002 enrollment identity or JOB-009 placement semantics.
@@ -1079,14 +1095,19 @@ event transaction. Incompatible/no-work responses reveal no job IDs/details.
 
 Every authoritative poll starts at the global canonical head. After proof and authority
 validation locks the authenticated logical worker, the service takes one database snapshot of
-live lease totals for `batch`, `browser_session`, and `service`. Target-wide provider-total,
-provider resource-ceiling, and target-derived resource-demand gates run before candidate
-selection. The service derives the currently admissible workload classes from the effective
-poll capacity and those live class counts; SQL excludes inadmissible classes before ordering.
-Dynamic slots, free resources, or live counts are never encoded in a durable rejection.
-JOB-009's normalized provider demand is derived solely from the already selected registered
-target, so the one target-wide resource comparison is identical for every candidate in this
-poll; if it fails, the poll returns `no_work` without scanning or certifying a job.
+live lease totals for `batch`, `browser_session`, and `service`, constrained by the current
+Organization, logical worker, and target. Provider-total, resource-ceiling, and normalized
+resource-demand gates are therefore authenticated Organization-scoped logical-profile clamps,
+not cross-tenant physical-target accounting. The service derives the currently admissible
+workload classes from that logical profile's effective poll capacity and live class counts;
+SQL excludes inadmissible classes before ordering. Dynamic slots, free resources, or live
+counts are never encoded in a durable rejection. JOB-009's normalized provider demand is
+derived solely from the already selected registered target, so the logical-profile resource
+comparison is identical for every candidate in this poll; if it fails, the poll returns
+`no_work` without scanning or certifying a job. Aggregate physical capacity across multiple
+Organization profiles sharing one platform target remains WRK-003 scope. A two-tenant/same-
+platform-target test must prove each logical poll counts only its own Organization profile's
+leases and neither query can read or infer the other profile's capacity or jobs.
 
 The server factors a static-only matcher adapter around frozen E1 matching. It uses the
 authenticated stored worker profile/capability/protocol/policy facts and the registered target
@@ -1106,20 +1127,52 @@ satisfied.
 `(organization_id, company_id, job_id, attempt_id)` to the attempt and
 `(organization_id, worker_id, target_authority_key, target_id)` to the logical-worker binding,
 both `ON DELETE CASCADE`; no redundant single-column Company/job/attempt/worker FK is allowed.
-Validity binds a versioned canonical static-context digest covering hash/canonicalizer,
-leasing-algorithm, matcher, placement-normalizer, and workload-vocabulary versions; worker
-identity/profile/generation/authority key; target ID/generation/profile/provider hashes; and
-the candidate workload type, both JOB-009 authority digests, and complete immutable placement
-tuple. An exhaustive AST/exact writer inventory proves the digest-covered job facts and
-placement facts cannot change after submission/placement; injected protected-field writers
-must fail it. A mismatched version, digest, tuple, worker, target, or tenant is ignored.
-Version 1 is the exported server constant `LEASE_STATIC_ELIGIBILITY_VERSION = 1`; its digest is
-lowercase SHA-256 of `canonicalizeJsonV1` over an exact-key object in the order-independent
-canonicalizer, never `JSON.stringify`. Any matcher/normalizer/vocabulary behavior change must
-bump this version before deployment, making old rows nonmatching until bounded cleanup.
+Certificate validity deliberately separates poll-invariant authority from candidate facts.
+After locking and validating the logical worker plus current target/physical authority, the
+service computes one poll-scoped `static_context_hash` and passes it as a bound parameter to
+the claim statement; PostgreSQL compares it for equality and never attempts to reproduce
+application canonicalization. Version 1 is the exported server constant
+`LEASE_STATIC_ELIGIBILITY_VERSION = 1`; the hash is lowercase SHA-256 of
+`canonicalizeJsonV1` over exactly these keys (order-independent canonicalizer, never
+`JSON.stringify`):
+
+```text
+{
+  certificateVersion, canonicalizerVersion, leasingAlgorithmVersion, matcherVersion,
+  placementNormalizerVersion, workloadVocabularyVersion, organizationId,
+  logicalWorkerId, logicalWorkerScope, logicalWorkerOwnerUserId,
+  logicalWorkerTargetAuthorityKey, logicalWorkerDeviceGeneration,
+  logicalWorkerDeviceThumbprint, logicalWorkerProfileHash,
+  physicalAuthorityWorkerId, physicalAuthorityWorkerDeviceGeneration,
+  physicalAuthorityWorkerProfileHash, targetId, targetScope, targetOwnerUserId,
+  targetAuthorityKey, targetDeviceGeneration, targetRegisteredProfileHash,
+  targetProviderConstraintHash
+}
+```
+
+The three `physicalAuthorityWorker*` values are the guarded platform worker snapshot for a
+platform target and `null` otherwise; nullable owner values are represented explicitly as
+`null`. All six version values are stable exported literals covered by contract tests; any
+canonicalizer, leasing algorithm, matcher, placement normalizer, or workload-vocabulary
+behavior change must bump `certificateVersion` before deployment. A worker/device/profile,
+platform physical worker, target generation/profile/provider, authority-key, or version
+change therefore produces a different bound hash and makes old rows nonmatching immediately.
+
+Candidate-specific facts are **not** hidden inside that opaque hash. The correlated
+`NOT EXISTS` anti-join must compare ordinary columns for exact equality across certificate
+and current candidate/input: Organization, Company, job, attempt, logical worker, target,
+target authority key, workload type, placement owner/class/scope/generation/profile hash/
+provider hash, and both JOB-009 placement digests, plus
+`eligibility_version = LEASE_STATIC_ELIGIBILITY_VERSION` and
+`static_context_hash = :currentPollStaticContextHash`. The claim `WHERE` independently
+requires the candidate placement generation/profile/provider facts to equal the current
+validated target snapshot. A mismatched version, context hash, candidate column, worker,
+target, or tenant is ignored. An exhaustive AST/exact writer inventory proves the compared
+immutable job/placement fields cannot change after submission/placement; injected protected-
+field writers must fail it.
 
 Candidate selection is one database-native statement with stable
-`statement_timestamp()`, exact anti-join of still-valid certificates, canonical
+`statement_timestamp()`, the exact correlated equality anti-join above, canonical
 `available_at ASC, priority DESC, created_at ASC, id ASC`, `LIMIT 256`, and `FOR UPDATE SKIP
 LOCKED`. Its `WHERE` binds pending/selected/active/lease-eligible plus the current target ID,
 owner, class, scope, generation, profile hash, and provider hash before ordering. It has no
@@ -1240,10 +1293,24 @@ native microsecond tie ordering; certificate version/digest/placement mismatch; 
 rollback and three head restarts; an exact expired receipt behind >100 other expired rows;
 populated-0228 migration/replay through generated `0229` plus custom `0230`; exact
 `pg_get_indexdef()` priority DESC and Drizzle snapshot direction; forced-RLS/no-GUC/cross-
-Organization/cross-Company certificate denial; terminal/retired-worker cleanup and cascades;
-and a 1,000,000-certificate load report covering table/index bytes, anti-join plan, poll p95,
-256-row upsert, and cleanup latency. The one-statement claim plan at INITIAL/D1 volume may not
-use an unbounded sort or sequential scan of the hot queue/certificate tables.
+Organization/cross-Company certificate denial; and raw-`aoa_app` H-01 oracle probes for both
+the attempt FK and logical-worker-binding FK, where a real foreign parent and a random missing
+parent must return the identical SQLSTATE, constraint name, and server message. Add current-
+hash versus worker generation/profile, platform physical-worker generation/profile, target
+generation/profile/provider, algorithm-version, and candidate-column mismatch cases, proving
+every change makes the old certificate nonmatching before cleanup. Cover terminal/retired-
+worker cleanup and cascades.
+
+The formal DEC-03 Linux load gate seeds exactly 1,000,000 certificate rows and records
+table/index bytes plus `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`. It runs four named shapes:
+(1) one hot logical worker with mostly current certificates, (2) 10,000 workers x 100 rows,
+(3) at least 90% stale-version/context rows, and (4) at least 250,000 terminal/offline cleanup-
+eligible rows. After five warmups, 30 claim samples must have p95 <= 250 ms; 20 bulk-upsert
+samples of 256 rows and 20 cleanup samples of 256 rows must each have p95 <= 500 ms; no sample
+may exceed 1,500 ms; and combined table+index size must remain <= 2 GiB. The one-statement
+claim plan at INITIAL/D1 and every million-row shape may not use an unbounded sort or a
+sequential scan of the hot queue/certificate tables. Windows numbers are diagnostic only;
+the thresholds gate the pinned DEC-03 Linux runner.
 Add an exhaustive AST/exact allowlist mutation inventory proving every current platform
 status/generation/device/profile authority writer uses target→worker row order plus the
 exclusive advisory helper, while last-seen-only heartbeat stays non-authoritative and cannot
@@ -1946,23 +2013,38 @@ negative certificates plus global-head selection, corrects the index and signal 
 and narrows 750 ms to an enforceable launch-admission window. Independent review of this exact
 successor is required before the committed RED is corrected or GREEN resumes.
 
+Two distinct read-only reviewers then rejected exact successor revision
+`7cf1d763222b8f453b2aa1eeb19332f73a942722`. The shared P1 was that its opaque hash included
+candidate fields that the pre-fetch SQL anti-join could not recompute. They also found
+cross-profile capacity wording contrary to Decision #124, the omitted exact grant/startup
+allowlist and schema export, missing raw app-role foreign/missing FK equality, non-gating load
+numbers, no explicit E2-D08 FK/UNIQUE-order contingency, and contradictory execution status.
+This revision resolves those findings by binding one application-computed poll-invariant
+authority hash into SQL while comparing every candidate fact by ordinary correlated columns;
+scoping capacity to the current logical Organization profile; pinning grants, exports, oracle
+tests, load ceilings/distributions, and verbatim E2-D08 reorder proof; and keeping JOB-003
+explicitly blocked. Fresh whole-plan and schema/security acceptance of this exact revision is
+still required.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor pending | `AMENDMENT REVIEW REQUIRED` | Original plan accepted; the JOB-003 cyclic-cursor amendment was rejected, and the static-negative-certificate successor is paused before implementation pending a distinct exact-text review. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempt 1 rejected | `AMENDMENT RE-REVIEW REQUIRED` | Original plan accepted; the cyclic cursor and first certificate revision were rejected. The corrected SQL-comparable, logical-profile-scoped certificate successor is paused pending fresh whole-plan and schema/security reviews. |
 | Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
 | Claude (user-provided) | pasted review | External plan delta review | 1 | `TRIAGED — STALE BASE` | Reviewed origin `8e2faa590`, not the local plan; three concerns were already closed, while JOB-009 sizing and explicit JOB-012–014 disablement were valid deltas and are now resolved in plan. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | Not run. |
 
-**VERDICT:** APPROVED FOR PRE-D1 EXECUTION EXCEPT THE PENDING JOB-003 CERTIFICATE AMENDMENT;
-JOB-003 GREEN is paused until that amendment is independently accepted. The original plan is
+**VERDICT:** APPROVED FOR PRE-D1 EXECUTION EXCEPT THE BLOCKED JOB-003 CERTIFICATE AMENDMENT;
+JOB-003 RED correction, migrations, and GREEN are paused until that amendment is independently
+accepted by both required reviewers. The original plan is
 otherwise independently review-complete;
 the operator selected E2 option B plus the metadata-only operator role, approved the E1
 checker-only correction, and approved JOB-002's HTTP-header proof/composite binding. Both
 corrective gates passed. Post-D1 tickets remain blocked on `E6-D1-FOUNDATION`.
 
-NO UNRESOLVED DECISIONS
+**UNRESOLVED DECISIONS:**
+- No unresolved product choice; JOB-003 retains an unresolved independent-review block and GREEN remains unauthorized.

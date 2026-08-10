@@ -415,3 +415,25 @@ or hard-wall deadline. Generated `0229` owns the table/parent keys/corrected ind
 JOB-003 remains `needs_changes`. GREEN remains unauthorized until a distinct reviewer accepts
 the exact committed successor, the test-only RED is corrected to that reviewed shape, and the
 controller reruns the corrected RED.
+
+## Static-certificate successor review attempt 1 - needs changes
+
+Two distinct read-only reviewers checked exact successor revision
+`7cf1d763222b8f453b2aa1eeb19332f73a942722`; neither changed the worktree. Both rejected it.
+The shared P1 was that a candidate-specific application hash could not be validated by the
+required pre-fetch SQL anti-join. Other P1s were cross-profile `target-wide` capacity wording
+contrary to Decision #124, the missing exact `aoa_app` grant-allowlist seam, and missing H-01
+foreign-versus-absent FK evidence. P2s required executable million-row ceilings/shapes,
+E2-D08 ordering when drizzle-kit emits the new worker UNIQUE after its child FK, and one
+unambiguous blocked execution status.
+
+The corrected successor separates the two domains. The application computes one exact poll-
+invariant hash after locking current logical-worker, target, and any platform physical-worker
+authority, then binds that hash into the SQL statement. Every candidate-specific workload,
+placement tuple, and JOB-009 digest is compared by an ordinary correlated certificate column;
+SQL never canonicalizes JSON. Capacity counts are current Organization + logical worker +
+target only, with a two-tenant shared-platform proof; WRK-003 owns cross-profile totals. The
+file/test inventory now includes the schema export, exact grant allowlist and startup audit,
+raw app-role foreign/missing equality for both composite FKs, numeric DEC-03 load ceilings and
+four distributions, and E2-D08 verbatim reorder evidence. JOB-003 stays `needs_changes` and
+GREEN remains unauthorized pending fresh exact whole-plan and schema/security acceptance.

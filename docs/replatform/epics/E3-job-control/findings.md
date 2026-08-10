@@ -711,15 +711,17 @@ was run once and completely removed. The existing no-head-of-line test has only 
 incompatible heads and does not cross the scan bound or restart the scheduler.
 
 **Disposition:** JOB-003 remains `needs_changes`. Both two- and four-field cyclic cursors are
-rejected. The successor always begins at the global canonical head, hoists target-wide and
-per-class dynamic capacity into SQL, and anti-joins only exact static-ineligibility
-certificates. One database-native statement returns at most 256 uncertified rows; only
-evaluated static-negative predecessors are bulk-upserted. Certificates bind static algorithm/
-matcher/normalizer/vocabulary versions plus exact worker, target, workload, JOB-009 digests,
-and placement tuple; dynamic capacity/live counts, locked rows, races, timeouts, parsing,
-envelope, and authority failures are never certified. One row per worker/attempt survives
-restart; stale/terminal/offline state has bounded tenant cleanup and cascades. Exact-text
-independent review and implementation remain pending.
+rejected. The successor always begins at the global canonical head, hoists authenticated
+Organization-scoped logical-profile provider/class/resource capacity into SQL, and never
+reads cross-profile physical capacity (WRK-003 owns that later boundary). It anti-joins only
+exact static-ineligibility certificates. One application-computed poll-invariant authority
+hash is passed as a bound value; every candidate-specific workload/placement/digest fact is
+matched by ordinary correlated SQL columns, so PostgreSQL need not reproduce
+`canonicalizeJsonV1`. One database-native statement returns at most 256 uncertified rows;
+only evaluated static-negative predecessors are bulk-upserted. Dynamic capacity/live counts,
+locked rows, races, timeouts, parsing, envelope, and authority failures are never certified.
+One row per worker/attempt survives restart; stale/terminal/offline state has bounded tenant
+cleanup and cascades. Exact-text independent re-review and implementation remain pending.
 
 ## E3-F023 - Outbox ticks enumerate all Organizations and have no real 750-ms DB budget
 
@@ -795,3 +797,34 @@ priority ASC rather than DESC, bounds were unpinned, and 750-ms wording overclai
 cursor columns and `scan_cursor_only` semantics are now removed from the successor. E3-F022
 tracks the static-negative-certificate replacement; independent exact-text review remains
 required before RED correction or GREEN.
+
+## E3-F026 - Static-certificate successor lacked SQL-comparable validity and exact gate seams
+
+**Date:** 2026-08-10
+**Status:** `resolved_in_plan_pending_exact_rereview`
+**Severity:** P1 Important - certificate correctness / tenant authority / executable evidence
+**Affected ticket:** JOB-003
+
+**Finding:** Two distinct read-only reviewers rejected exact plan revision
+`7cf1d763222b8f453b2aa1eeb19332f73a942722`. The certificate digest mixed poll authority
+with candidate-specific fields while the selection contract required a pre-fetch SQL
+anti-join; PostgreSQL had neither the inputs nor an approved `canonicalizeJsonV1` equivalent
+to recompute that digest. The plan also described provider totals as target-wide even though
+Decision #124 limits JOB-003 to the authenticated Organization logical profile, omitted the
+new certificate DML from the exact startup grant allowlist and omitted the schema export,
+left foreign-versus-missing composite-FK oracle equality implicit, reported million-row
+performance without ceilings/distributions, lacked an explicit E2-D08 parent-UNIQUE-before-
+child-FK contingency, and simultaneously called JOB-003 assignable and review-blocked.
+
+**Disposition:** Candidate-specific certificate validity is now ordinary correlated SQL
+equality over the complete tenant/job/attempt/worker/target/workload/placement/digest tuple.
+Only one exact poll-invariant logical-worker/current-target/physical-authority/version object
+is application-canonicalized after locks and passed as a bound hash, so any mutable authority
+rotation invalidates old rows without database JSON hashing. Capacity is explicitly current-
+Organization + logical-worker + target; cross-profile physical totals remain WRK-003. The
+JOB-003 inventory now includes `schema/index.ts`, the exact legacy-grant allowlist, its
+contract/startup tests, raw `aoa_app` foreign/missing equality probes for both composite FKs,
+numeric DEC-03 million-row gates and distributions, and verbatim E2-D08 statement reordering
+if drizzle-kit repeats FK-before-UNIQUE. The execution table and terminal review sentinel now
+keep JOB-003 blocked. GREEN remains unauthorized until fresh whole-plan and schema/security
+reviewers accept the exact corrected revision with no P0/P1/P2 finding.
