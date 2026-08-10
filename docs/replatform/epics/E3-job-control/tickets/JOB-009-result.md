@@ -1,7 +1,7 @@
 # JOB-009 Result - Resolve authoritative hybrid placement
 
-**Status:** `needs_changes`
-**Disposition:** `needs_changes`
+**Status:** `review_pending`
+**Disposition:** `review_pending`
 **Date opened (UTC):** `2026-08-10`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-009 - Resolve authoritative hybrid placement (L; three bounded internal slices)`
@@ -9,13 +9,13 @@
 **Reviewer:** `Codex /root/job009_review`
 **Start SHA:** 91d074bb9f79abe99aa8efaa6f9a99e0a937650e
 **Reviewed revision:** aa2b9a81355db1dec125c35bb53be21d4683360c
-**Implementation candidate:** 684f5edf388956c47e7124a58b2a16c08be5e97a
+**Implementation candidate:** 03005fcfacf7b924aae76d9c81666a5487039ce2
 
 The Start SHA is the reviewed JOB-002 completion revision and the exact JOB-009 assignment
 boundary. JOB-001/JOB-002, E1's frozen v1 protocol, and the E2 tenant kernel are immutable
 inputs. This ledger is implementer evidence, not ticket certification. A fresh distinct
-reviewer must review an ancestor revision, rerun focused acceptance, append review attempt 1,
-and alone may change the ticket status and disposition.
+reviewer must review the new candidate revision, rerun focused acceptance, append review
+attempt 2, and alone may change the ticket status and disposition to `complete` / `pass`.
 
 ## Dependency and scope state
 
@@ -190,3 +190,84 @@ All three adversarial probes were temporary and removed. The reviewer changed no
 code. Detailed ignored evidence is in
 `.superpowers/sdd/implementation-plan/job-009-review.md`. A fresh implementer fix round must
 commit genuine REDs for all six findings and return a new exact ancestor revision for re-review.
+
+## Fix round 1 - 2026-08-10 - Codex `/root/job009_impl`
+
+### TDD boundary
+
+- Review evidence revision:
+  `b791a7d4957fee488c26bc2649621d2fbaba5ee0`.
+- Genuine consolidated RED:
+  `11849e0f59b184e8dbc8a3d6041cc00f8173bba1`.
+- Minimal GREEN / new implementation candidate:
+  `03005fcfacf7b924aae76d9c81666a5487039ce2`.
+- Each Important finding had a failing committed acceptance before production edits:
+  exact JOB-001 submitted facts could not enter placement; no production profile writer
+  existed; Decision #117 credential/target binding was bypassed; a one-field authority
+  mutation replayed an old decision; caller-authored rollout could enable placement; and
+  PostgreSQL accepted invalid lease-eligibility tuples.
+
+### Resolution of review findings
+
+- **I-01:** JOB-009 now server-normalizes the exact JOB-001 persisted
+  `{workloadType, requiredCapabilities}` requirements and
+  `{policyId, policyVersion, requestedTarget}` request. All six HTTP/service submission
+  sources reach placement without caller-authored provider or credential facts; malformed
+  and tampered stored facts fail closed.
+- **I-02:** one bounded tenant-admin/platform-admin writer ratifies registered profile and
+  provider constraints on the existing `execution_targets` registry, verifies frozen E1
+  shape/digest plus scope/owner/generation mapping, and stores canonical hashes. Tenant writes
+  use `runInTenant`; platform writes use the existing operator administration authority.
+  Worker hello cannot write or widen registry authority, revoked/disabled/unmapped rows close,
+  and exact column grants are asserted at startup. Real tenant and platform
+  registration/update -> JOB-002 enrollment/heartbeat -> JOB-009 placement paths pass.
+- **I-03:** the transaction consumes `chooseExecutionTargetRow`, the existing Decision #117
+  credential/pin/slug resolver. The normalized immutable identity policy represents required,
+  preferred, and forbidden targets. Two same-owner targets, pin mismatch, missing/foreign
+  binding, personal-to-shared denial, requested identity, and explicit fallback all pass.
+- **I-04:** one canonical digest now binds the exact submitted hashes/requirements/request,
+  normalized requirements/provider demand/fallback, credential identity/kind/slug/pin,
+  resolved target identity, rollout mode/reason, and selected generation/profile/provider
+  hashes. Byte-equivalent retries converge; the committed 20-field mutation matrix rejects
+  every changed authority fact with `placement_already_decided`. No old decision is rewritten.
+- **I-05:** public raw rollout input is ignored. The trusted placement service resolves the
+  deployment -> Organization -> workload gate through
+  `resolveDistributedExecutionRollout`, captures only closed reason codes, and binds the result
+  into the canonical digest. Deployment/Organization/workload-off never opens the operator
+  reader and persists only tenant-local legacy/no-active state; a forged caller value cannot
+  enable active or shadow placement.
+- **I-06:** Drizzle schema plus generated migration `0225` enforce
+  `placement_lease_eligible = (placement_disposition = 'selected' AND placement_mode = 'active')`.
+  Only C14 replay guards were appended to generated schema DDL. Decision #122 custom migration
+  `0226` contains only exact profile-writer column grants. Direct real-PostgreSQL and service
+  negatives cover every invalid disposition/mode/eligibility combination.
+
+The end-to-end profile test exposed one real JOB-002 integration gap: proof-bound heartbeat
+updated target liveness but not the exact worker row, while JOB-009 correctly uses the older of
+both timestamps. The bounded fix updates the proof-bound target and worker in the same owning
+transaction after rechecking target, worker, generation, key, thumbprint, and profile facts.
+It does not change trust/capabilities, contact a worker/provider, or widen revocation authority.
+
+### Fix-round Windows-local evidence on candidate
+`03005fcfacf7b924aae76d9c81666a5487039ce2`
+
+All embedded-PostgreSQL commands ran from `C:\e3` with
+`AOA_RUN_WIN_INTEGRATION=1`. Linux CI remains the formal DEC-03 authority.
+
+| Command / lane | Result |
+|---|---|
+| JOB-009 property, embedded-PG placement, and exact-grant contract | PASS - 3 files, 35/35 (14 property, 18 integration, 3 grants) |
+| Combined JOB-001/JOB-002/JOB-009 focused regression during GREEN | PASS - 5 files, 84/84 |
+| Migration idempotency / C14 | PASS - 1 file, 5/5 |
+| Correct startup path `distributed-execution-db-startup.integration.test.ts` | PASS - 1 file, 14/14 |
+| JOB-001/JOB-002, resolver, worker-session, tenant/RLS regression bundle | PASS - 10 files, 96/96 |
+| Integration hygiene and serving-role correction | PASS - 2 files, 22/22 |
+| Frozen E1 checker at `b7a842870ce7509d8baa75409e0ab19da375c88a`, protocol boundary, and frozen install | PASS |
+| Affected db/shared/server typecheck and build | PASS |
+| `pnpm -r typecheck` and root `pnpm build` | PASS - 24/25 workspace projects |
+| Exact `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm test:run` after root build | **FAIL (honestly labeled Windows-local aggregate)** - exit 1 after 106.1s; no aggregate was emitted because Vitest terminated with unhandled `ERR_IPC_CHANNEL_CLOSED`. The visible precursor was `ask-founder-dogfood.integration.test.ts` embedded-Postgres setup failure; no JOB-009 focused failure was emitted. |
+
+The full-lane failure is neither a waiver nor a pass. The candidate adds no lease/fence,
+capacity reservation/claim, provider/worker contact, execution effect, cutover, second registry,
+or frozen E1 change. Status and disposition remain `review_pending`; only a fresh distinct
+reviewer may append review attempt 2 and certify the ticket.

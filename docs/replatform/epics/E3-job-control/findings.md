@@ -365,3 +365,43 @@ default on Linux while Windows requires `AOA_RUN_WIN_INTEGRATION=1`. Focused pla
 role/RLS, migration/C14, frozen-E1, typecheck, and build lanes are green. The exact Windows
 aggregate remains honestly non-green for visible non-JOB-009 collection/contention/timeouts;
 DEC-03 Linux CI remains formal authority and a distinct reviewer must still certify JOB-009.
+
+## E3-F014 - JOB-009 review exposed producer, registry, resolver, replay, rollout, and lease-invariant gaps
+
+**Date:** 2026-08-10
+**Status:** `resolved_in_JOB-009_fix_round_1_pending_review`
+**Severity:** P1 authority integration / H-03 defense in depth
+**Affected ticket:** JOB-009 and the JOB-001/JOB-002 seams it consumes
+
+**Finding:** Independent review attempt 1 found six Important blockers. JOB-009 parsed a
+synthetic job shape rather than JOB-001's exact persisted requirements/request; the registered
+target profile columns had no production authority writer; placement recreated routing without
+Decision #117 credential/pin/slug resolution; replay digests omitted immutable placement
+authority; rollout mode/reason were caller supplied; and PostgreSQL admitted lease-eligible
+shadow, legacy, queued, and failed decisions. These gaps made the synthetic focused matrix
+green while real submitted jobs and real enrolled targets could not safely become eligible.
+
+**Disposition:** Fix round 1 committed genuine RED at
+`11849e0f59b184e8dbc8a3d6041cc00f8173bba1` and GREEN at
+`03005fcfacf7b924aae76d9c81666a5487039ce2`. The trusted server now normalizes the exact
+JOB-001 persisted source objects for all six sources, ratifies canonical E1 profile/provider
+hashes through bounded tenant-admin and platform-admin writers on the existing target registry,
+and consumes `chooseExecutionTargetRow` for Decision #117 personal credential, bound slug, and
+pin authority. One canonical digest binds every submitted, normalized, credential, resolver,
+rollout, and selected-profile authority fact; byte-equivalent replay converges and a committed
+20-field mutation matrix rejects drift. Rollout is resolved inside the trusted service through
+the established deployment -> Organization -> workload gate using only closed reasons, and
+flag-off never opens the operator reader. Generated Drizzle migration `0225` plus C14 guards
+enforces lease eligibility iff selected+active; custom Decision #122 migration `0226` adds only
+the exact profile-writer column grants.
+
+The real registration -> JOB-002 enrollment/heartbeat -> JOB-009 placement test also showed
+that proof-bound heartbeat updated only target liveness while placement correctly requires both
+target and worker liveness. The bounded correction updates the exact proof-bound worker in the
+same owning transaction after rechecking generation/key/thumbprint/profile facts; it does not
+change status/trust/capabilities or contact the worker. Focused placement/grant **35/35**,
+JOB-001/JOB-002/tenant/RLS **96/96**, serving-role/hygiene **22/22**, migration/C14 **5/5**,
+startup **14/14**, frozen protocol, typecheck, and build lanes pass locally. The exact Windows
+full lane exited 1 after 106.1 seconds without an aggregate because Vitest's IPC channel closed
+after an unrelated embedded-Postgres setup failure; it is recorded as non-green and not waived.
+JOB-009 remains `review_pending` until a fresh distinct reviewer certifies the new candidate.
