@@ -144,6 +144,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     expect(flagBlock).toContain("tenantAppDb");
     expect(flagBlock).toContain("operatorDb");
     expect(flagBlock).toContain("workerSessionSigningKey");
-    expect(flagBlock).not.toContain("fallback");
+    expect(flagBlock).toContain("owner fallback is forbidden");
+    expect(flagBlock).not.toContain("appDb: db");
   });
 });

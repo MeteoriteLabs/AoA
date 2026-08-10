@@ -1,4 +1,4 @@
-import { and, eq, exists, inArray, isNull } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "../../client.js";
 import {
   agents,
@@ -12,6 +12,7 @@ import {
   jobAttempts,
   jobOutbox,
   jobs,
+  leases,
   mcpApiKeys,
   organizationMemberships,
   organizations,
@@ -24,6 +25,7 @@ import {
   type NewJob,
   type NewJobAttempt,
   type NewJobOutbox,
+  type Lease,
 } from "../../schema/index.js";
 
 export interface TenantAdmissionRecord {
@@ -106,6 +108,66 @@ export interface JobControlRepository {
   }): Promise<{ job: Job; attempt: JobAttempt } | null>;
   listPlacementCandidateSnapshots(): Promise<PlacementCandidateSnapshot[]>;
   persistPlacementDecision(input: PlacementDecisionWrite): Promise<JobAttempt | null>;
+  lockWorkerLeaseAuthority(input: {
+    workerId: string;
+    targetId: string;
+  }): Promise<LeaseWorkerAuthority | null>;
+  lockEligibleLeaseCandidates(input: {
+    targetId: string;
+    limit?: number;
+  }): Promise<LeaseCandidate[]>;
+  countLiveWorkerLeases(input: { workerId: string; targetId: string }): Promise<number>;
+  currentDatabaseTime(): Promise<Date>;
+  offerLease(input: {
+    attemptId: string;
+    organizationId: string;
+    companyId: string;
+    jobId: string;
+    attemptNumber: number;
+    workerId: string;
+    targetId: string;
+    targetAuthorityKey: string;
+    targetGeneration: number;
+    profileHash: string;
+    providerConstraintHash: string;
+    fence: string;
+    ackDeadline: Date;
+    expiresAt: Date;
+    createdAt: Date;
+  }): Promise<Lease | null>;
+  claimReadyOutbox(input: {
+    claimToken: string;
+    now: Date;
+    staleBefore: Date;
+    limit?: number;
+  }): Promise<Array<{ id: string; organizationId: string; attemptId: string }>>;
+  deliverReadyOutbox(input: { claimToken: string; ids: string[]; now: Date }): Promise<number>;
+}
+
+export interface LeaseWorkerAuthority {
+  worker: {
+    id: string;
+    scope: string;
+    organizationId: string | null;
+    ownerUserId: string | null;
+    executionTargetId: string;
+    targetAuthorityKey: string;
+    devicePublicKey: string | null;
+    deviceThumbprint: string | null;
+    deviceGeneration: number;
+    profileHash: string | null;
+    profileSnapshot: Record<string, unknown> | null;
+    status: string;
+    revokedAt: Date | null;
+    lastSeenAt: Date | null;
+  };
+  target: PlacementCandidateSnapshot["target"];
+  ownerMembershipActive: boolean;
+}
+
+export interface LeaseCandidate {
+  job: Job;
+  attempt: JobAttempt;
 }
 
 export interface PlacementCandidateSnapshot {
@@ -554,6 +616,202 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         currentOwnerAuthority,
       )).returning();
       return row ?? null;
+    },
+
+    async lockWorkerLeaseAuthority(input) {
+      const [worker] = await tx.select({
+        id: workers.id,
+        scope: workers.scope,
+        organizationId: workers.organizationId,
+        ownerUserId: workers.ownerUserId,
+        executionTargetId: workers.executionTargetId,
+        targetAuthorityKey: workers.targetAuthorityKey,
+        devicePublicKey: workers.devicePublicKey,
+        deviceThumbprint: workers.deviceThumbprint,
+        deviceGeneration: workers.deviceGeneration,
+        profileHash: workers.profileHash,
+        profileSnapshot: workers.profileSnapshot,
+        status: workers.status,
+        revokedAt: workers.revokedAt,
+        lastSeenAt: workers.lastSeenAt,
+      }).from(workers).where(and(
+        eq(workers.id, input.workerId),
+        eq(workers.executionTargetId, input.targetId),
+      )).for("update").limit(1);
+      if (!worker) return null;
+
+      const [target] = await tx.select(placementTargetColumns)
+        .from(executionTargets)
+        .where(and(
+          eq(executionTargets.id, input.targetId),
+          eq(executionTargets.targetAuthorityKey, worker.targetAuthorityKey),
+        ))
+        .limit(1);
+      if (!target) return null;
+
+      let ownerMembershipActive = true;
+      if (worker.scope === "owner") {
+        const [membership] = await tx.select({ id: organizationMemberships.id })
+          .from(organizationMemberships)
+          .where(and(
+            eq(organizationMemberships.organizationId, worker.organizationId!),
+            eq(organizationMemberships.userId, worker.ownerUserId!),
+            eq(organizationMemberships.status, "active"),
+          ))
+          .limit(1);
+        ownerMembershipActive = Boolean(membership);
+      }
+      return { worker, target, ownerMembershipActive };
+    },
+
+    async lockEligibleLeaseCandidates(input) {
+      const boundedLimit = Math.max(1, Math.min(64, Math.floor(input.limit ?? 32)));
+      return tx.select({ job: jobs, attempt: jobAttempts })
+        .from(jobAttempts)
+        .innerJoin(jobs, and(
+          eq(jobs.organizationId, jobAttempts.organizationId),
+          eq(jobs.companyId, jobAttempts.companyId),
+          eq(jobs.id, jobAttempts.jobId),
+        ))
+        .where(and(
+          eq(jobAttempts.status, "pending"),
+          eq(jobAttempts.placementDisposition, "selected"),
+          eq(jobAttempts.placementMode, "active"),
+          eq(jobAttempts.placementLeaseEligible, true),
+          eq(jobAttempts.placementTargetId, input.targetId),
+          eq(jobs.status, "queued"),
+          lte(jobs.availableAt, sql`clock_timestamp()`),
+        ))
+        .orderBy(asc(jobs.availableAt), desc(jobs.priority), asc(jobs.createdAt), asc(jobs.id))
+        .limit(boundedLimit)
+        .for("update", { of: jobAttempts, skipLocked: true });
+    },
+
+    async countLiveWorkerLeases(input) {
+      const [row] = await tx.select({ value: count() }).from(leases).where(and(
+        eq(leases.workerId, input.workerId),
+        eq(leases.targetId, input.targetId),
+        inArray(leases.status, ["offered", "active"]),
+      ));
+      return Number(row?.value ?? 0);
+    },
+
+    async currentDatabaseTime() {
+      const rows = await tx.execute<{ value: Date | string }>(sql`SELECT clock_timestamp() AS value`);
+      const [row] = rows;
+      const value = row?.value;
+      const parsed = value instanceof Date ? value : new Date(String(value));
+      if (Number.isNaN(parsed.getTime())) {
+        throw new Error("Database returned an invalid clock_timestamp() value");
+      }
+      return parsed;
+    },
+
+    async offerLease(input) {
+      const [attempt] = await tx.update(jobAttempts).set({
+        status: "offered",
+        updatedAt: input.createdAt,
+      }).where(and(
+        eq(jobAttempts.id, input.attemptId),
+        eq(jobAttempts.organizationId, input.organizationId),
+        eq(jobAttempts.companyId, input.companyId),
+        eq(jobAttempts.jobId, input.jobId),
+        eq(jobAttempts.attemptNumber, input.attemptNumber),
+        eq(jobAttempts.status, "pending"),
+        eq(jobAttempts.placementDisposition, "selected"),
+        eq(jobAttempts.placementMode, "active"),
+        eq(jobAttempts.placementLeaseEligible, true),
+        eq(jobAttempts.placementTargetId, input.targetId),
+        eq(jobAttempts.placementTargetGeneration, input.targetGeneration),
+        eq(jobAttempts.placementProviderConstraintHash, input.providerConstraintHash),
+      )).returning({ id: jobAttempts.id });
+      if (!attempt) return null;
+      const [lease] = await tx.insert(leases).values({
+        organizationId: input.organizationId,
+        companyId: input.companyId,
+        jobId: input.jobId,
+        attemptId: input.attemptId,
+        attemptNumber: input.attemptNumber,
+        workerId: input.workerId,
+        targetId: input.targetId,
+        targetAuthorityKey: input.targetAuthorityKey,
+        targetGeneration: input.targetGeneration,
+        profileHash: input.profileHash,
+        providerConstraintHash: input.providerConstraintHash,
+        status: "offered",
+        fence: input.fence,
+        ackDeadline: input.ackDeadline,
+        expiresAt: input.expiresAt,
+        createdAt: input.createdAt,
+        updatedAt: input.createdAt,
+      }).returning();
+      return lease ?? null;
+    },
+
+    async claimReadyOutbox(input) {
+      const boundedLimit = Math.max(1, Math.min(128, Math.floor(input.limit ?? 32)));
+      const staleRows = await tx.select({ id: jobOutbox.id }).from(jobOutbox)
+        .where(and(
+          eq(jobOutbox.status, "claimed"),
+          lte(jobOutbox.claimedAt, input.staleBefore),
+        ))
+        .orderBy(asc(jobOutbox.claimedAt), asc(jobOutbox.id))
+        .limit(boundedLimit)
+        .for("update", { skipLocked: true });
+      if (staleRows.length > 0) {
+        await tx.update(jobOutbox).set({
+          status: "retry",
+          claimToken: null,
+          claimedAt: null,
+          availableAt: input.now,
+          lastErrorCode: "claim_visibility_timeout",
+          updatedAt: input.now,
+        }).where(inArray(jobOutbox.id, staleRows.map((row) => row.id)));
+      }
+
+      const ready = await tx.select({
+        id: jobOutbox.id,
+        organizationId: jobOutbox.organizationId,
+        attemptId: jobOutbox.attemptId,
+      }).from(jobOutbox).where(and(
+        eq(jobOutbox.kind, "attempt_ready"),
+        or(eq(jobOutbox.status, "pending"), eq(jobOutbox.status, "retry")),
+        lte(jobOutbox.availableAt, input.now),
+      )).orderBy(asc(jobOutbox.availableAt), asc(jobOutbox.createdAt), asc(jobOutbox.id))
+        .limit(boundedLimit)
+        .for("update", { skipLocked: true });
+      if (ready.length === 0) return [];
+      const claimed = await tx.update(jobOutbox).set({
+        status: "claimed",
+        claimToken: input.claimToken,
+        claimedAt: input.now,
+        attemptCount: sql`${jobOutbox.attemptCount} + 1`,
+        lastErrorCode: null,
+        updatedAt: input.now,
+      }).where(and(
+        inArray(jobOutbox.id, ready.map((row) => row.id)),
+        or(eq(jobOutbox.status, "pending"), eq(jobOutbox.status, "retry")),
+      )).returning({
+        id: jobOutbox.id,
+        organizationId: jobOutbox.organizationId,
+        attemptId: jobOutbox.attemptId,
+      });
+      return claimed;
+    },
+
+    async deliverReadyOutbox(input) {
+      if (input.ids.length === 0) return 0;
+      const delivered = await tx.update(jobOutbox).set({
+        status: "delivered",
+        claimToken: null,
+        claimedAt: null,
+        updatedAt: input.now,
+      }).where(and(
+        inArray(jobOutbox.id, input.ids),
+        eq(jobOutbox.status, "claimed"),
+        eq(jobOutbox.claimToken, input.claimToken),
+      )).returning({ id: jobOutbox.id });
+      return delivered.length;
     },
   };
 }

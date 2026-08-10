@@ -1,9 +1,11 @@
 import type { Request, Response } from "express";
 import {
   OPERATION_DESCRIPTORS,
+  isRetryableProtocolErrorCode,
   protocolErrorV1Schema,
   type ProtocolErrorCode,
   type ProtocolErrorV1,
+  type WorkerProtocolOperation,
 } from "@armyofagents/worker-protocol";
 import { WORKER_CONTROL_HEADERS } from "@armyofagents/shared";
 
@@ -44,6 +46,50 @@ export function workerProtocolErrorV1(
     redaction: "secret",
     detail: {},
   });
+}
+
+export function workerOperationProtocolErrorV1(
+  req: Request,
+  operation: WorkerProtocolOperation,
+  code: ProtocolErrorCode,
+  now: Date = new Date(),
+): ProtocolErrorV1 {
+  if (!OPERATION_DESCRIPTORS[operation].errors.includes(code)) {
+    throw new Error(`Unsupported ${operation} protocol error code: ${code}`);
+  }
+  return protocolErrorV1Schema.parse({
+    protocolVersion: 1,
+    code,
+    correlationId: correlationId(req),
+    message: code === "malformed"
+      ? "Worker control request malformed"
+      : code === "internal_unavailable" || code === "throttled"
+        ? "Worker control temporarily unavailable"
+        : "Worker control request denied",
+    retryAfterMs: isRetryableProtocolErrorCode(code) ? 1_000 : null,
+    serverTime: now.toISOString(),
+    redaction: "secret",
+    detail: {},
+  });
+}
+
+export function sendWorkerOperationProtocolError(
+  req: Request,
+  res: Response,
+  operation: WorkerProtocolOperation,
+  code: ProtocolErrorCode,
+  now: Date = new Date(),
+): void {
+  const status = code === "malformed"
+    ? 400
+    : code === "internal_unavailable"
+      ? 503
+      : code === "throttled"
+        ? 429
+        : code === "unauthorized"
+          ? 401
+          : 409;
+  res.status(status).json(workerOperationProtocolErrorV1(req, operation, code, now));
 }
 
 export function sendWorkerProtocolError(

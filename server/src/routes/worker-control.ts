@@ -5,6 +5,7 @@ import {
   WORKER_CONTROL_HEADERS,
   type IssueWorkerEnrollmentCodeInput,
 } from "@armyofagents/shared";
+import { pollRequestV1Schema } from "@armyofagents/worker-protocol";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
 import { assertBoard } from "./authz.js";
@@ -17,6 +18,12 @@ import {
 import { logger } from "../middleware/logger.js";
 import type { DeviceProofHeaders } from "../services/worker-device-proof.js";
 import { sendWorkerProtocolError } from "../services/worker-protocol-http.js";
+import { sendWorkerOperationProtocolError } from "../services/worker-protocol-http.js";
+import {
+  verifyWorkerOperationProof,
+  WorkerOperationProofError,
+} from "../middleware/worker-operation-proof.js";
+import { createJobLeasingService, JobLeasingError } from "../services/job-leasing.js";
 
 const uuid = z.string().uuid();
 
@@ -47,6 +54,7 @@ export function workerControlRoutes(opts: {
     sessionSigningKey: opts.sessionSigningKey,
     now: opts.now,
   });
+  const leasing = createJobLeasingService({ appDb: opts.appDb });
 
   router.post(
     "/organizations/:organizationId/execution-targets/:targetId/enrollment-codes",
@@ -141,6 +149,45 @@ export function workerControlRoutes(opts: {
         reasonCode: "worker_enrollment_internal_unavailable",
       }, "worker enrollment unavailable");
       sendWorkerProtocolError(req, res, "internal_unavailable", opts.now?.() ?? new Date());
+    }
+  });
+
+  router.post("/worker-control/poll", async (req, res) => {
+    try {
+      const parsed = pollRequestV1Schema.safeParse(req.body);
+      const authorization = req.header("authorization");
+      const proof = deviceProofHeaders(req);
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      if (!parsed.success || !authorization || !proof || !rawBody) {
+        sendWorkerOperationProtocolError(req, res, "poll", "malformed", opts.now?.() ?? new Date());
+        return;
+      }
+      const auth = verifyWorkerOperationProof({
+        sessionSigningKey: opts.sessionSigningKey,
+        authorization,
+        rawBody,
+        proof,
+        method: req.method,
+        path: req.originalUrl,
+        correlationId: parsed.data.correlationId,
+        now: opts.now?.(),
+      });
+      const response = await leasing.poll({ auth, request: parsed.data });
+      res.status(200).json(response);
+    } catch (error) {
+      if (error instanceof WorkerOperationProofError) {
+        sendWorkerOperationProtocolError(req, res, "poll", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      if (error instanceof JobLeasingError) {
+        sendWorkerOperationProtocolError(req, res, "poll", error.code, opts.now?.() ?? new Date());
+        return;
+      }
+      logger.error({
+        action: "worker.poll.failed",
+        reasonCode: "worker_poll_internal_unavailable",
+      }, "worker poll unavailable");
+      sendWorkerOperationProtocolError(req, res, "poll", "internal_unavailable", opts.now?.() ?? new Date());
     }
   });
 
