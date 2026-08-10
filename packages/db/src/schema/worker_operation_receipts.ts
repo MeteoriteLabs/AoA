@@ -111,4 +111,3 @@ export const workerOperationReceipts = pgTable(
 
 export type WorkerOperationReceipt = typeof workerOperationReceipts.$inferSelect;
 export type NewWorkerOperationReceipt = typeof workerOperationReceipts.$inferInsert;
-
