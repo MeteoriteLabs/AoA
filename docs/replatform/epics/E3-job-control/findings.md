@@ -554,7 +554,7 @@ review closes.
 ## E3-F019 - Initial Decision #124 guard and platform-profile liveness were not implementable
 
 **Date:** 2026-08-10
-**Status:** `resolved_in_plan_pending_independent_re_review`
+**Status:** `resolved_in_independently_reviewed_plan_pending_JOB-003_implementation`
 **Severity:** P1 H-02 cutoff linearization / platform logical-profile availability
 **Affected ticket:** JOB-003, with bounded JOB-002/JOB-009 synchronization seams
 
@@ -582,3 +582,8 @@ heartbeat authorizes the platform logical operation; tenant `last_seen_at` is up
 success for observability but is not a prior prerequisite. Real enrollment→physical
 heartbeat→logical poll/ACK and stale-physical cases are mandatory. No production or test edit
 may begin until the distinct reviewer accepts this successor plan revision.
+
+The distinct JOB-003 reviewer accepted the complete amended plan at exact revision
+`2e9217c1e900d42547fd8a1f432efc60f1af71f3` after the exact focused command, helper API/key,
+0227 backfill, runtime test inventory, and stale cross-tenant polling prose were corrected.
+This acceptance authorizes a fresh TDD fix round; it is not a JOB-003 implementation pass.
