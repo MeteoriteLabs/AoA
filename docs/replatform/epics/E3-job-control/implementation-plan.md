@@ -367,8 +367,10 @@ composite tenant FKs, repository-only access, FORCE RLS, and grants to `aoa_app`
 table/column/index/FK DDL comes only from Drizzle schema plus generated migrations. For
 each new RLS table, generate a separate delta-free `--custom` RLS migration per E2-D01 /
 Decision #122. Hand-added SQL is limited to C14 idempotency guards and #122 role/GRANT/
-FORCE/POLICY DDL. Expected first migration is `0213`, but execution always uses the next
-unused number produced by drizzle-kit.
+FORCE/POLICY DDL; the only other permitted migration-file edit is E2-D08 verbatim statement
+reordering, with its required inline explanation, when generated FK-before-UNIQUE order is
+unappliable. Expected first migration is `0213`, but execution always uses the next unused
+number produced by drizzle-kit.
 
 The operator-readable enrollment route, platform enrollment rows, proof-replay, and revocation
 metadata are exceptions to ordinary tenant visibility, not to least privilege. Organization/
@@ -1033,8 +1035,9 @@ Review-attempt-2 corrections additionally generate the next unused Drizzle succe
 keys/indexes, and the corrected mixed-direction jobs claim index; create custom RLS successor
 `0230`; add a database-keyset admitted-Organization reader; and replace the platform-writer
 substring test with an exhaustive AST/exact allowlist plus injected bypass fixtures. Normal
-DDL remains Drizzle-generated. Hand edits are limited to C14 guards in `0229` and Decision
-#122 RLS/GRANT/POLICY DDL in custom `0230`.
+DDL remains Drizzle-generated. Hand edits are limited to C14 guards plus, only if emitted,
+the E2-D08 verbatim UNIQUE-before-FK statement reorder in `0229`, and Decision #122 RLS/
+GRANT/POLICY DDL in custom `0230`.
 
 The shared DB helper exports
 `acquirePlatformTargetAuthorityShared(tx, targetId)`,
@@ -1118,9 +1121,12 @@ a certificate. Placement normalization or envelope construction failure is an in
 `internal_unavailable`, never a skippable rejection.
 The neutral matcher capacity is exactly one slot for each workload class and zero free CPU,
 memory, and disk; the frozen matcher uses those fields only for its already-hoisted
-over-advertisement and nonzero-slot checks. A focused equivalence matrix must prove the static
-adapter never returns true when the frozen matcher would reject with all dynamic gates
-satisfied.
+over-advertisement and nonzero-slot checks. The focused equivalence matrix is bidirectional:
+after all dynamic gates pass, adapter acceptance must equal frozen-matcher acceptance across
+the full frozen corpus and representative admissible real-capacity values. In particular,
+every certifiable `static_requirements_mismatch` must also be a frozen-matcher rejection, and
+the adapter may never certify a rejection that any dynamically admissible capacity would
+accept. The converse offer-safety implication remains mandatory too.
 
 `worker_lease_rejections` has composite primary/unique identity
 `(organization_id, worker_id, attempt_id)`. Its exact tenant relationships are
@@ -1143,6 +1149,7 @@ application canonicalization. Version 1 is the exported server constant
   logicalWorkerId, logicalWorkerScope, logicalWorkerOwnerUserId,
   logicalWorkerTargetAuthorityKey, logicalWorkerDeviceGeneration,
   logicalWorkerDeviceThumbprint, logicalWorkerProfileHash,
+  logicalWorkerStaticMatcherProfileHash,
   physicalAuthorityWorkerId, physicalAuthorityWorkerDeviceGeneration,
   physicalAuthorityWorkerProfileHash, targetId, targetScope, targetOwnerUserId,
   targetAuthorityKey, targetDeviceGeneration, targetRegisteredProfileHash,
@@ -1152,11 +1159,17 @@ application canonicalization. Version 1 is the exported server constant
 
 The three `physicalAuthorityWorker*` values are the guarded platform worker snapshot for a
 platform target and `null` otherwise; nullable owner values are represented explicitly as
-`null`. All six version values are stable exported literals covered by contract tests; any
+`null`. `logicalWorkerStaticMatcherProfileHash` is computed separately from the successfully
+parsed stored `workerHelloV1` after replacing only `capacity` with the exact neutral capacity
+above, using lowercase SHA-256 of `canonicalizeJsonV1`; it does not reuse or attempt to
+reconstruct the enrollment-time `sha256(JSON.stringify(...))` authorization hash. Thus every
+static matcher-consumed snapshot field is bound even if `workers.profile_hash` is unchanged.
+All six version values are stable exported literals covered by contract tests; any
 canonicalizer, leasing algorithm, matcher, placement normalizer, or workload-vocabulary
 behavior change must bump `certificateVersion` before deployment. A worker/device/profile,
-platform physical worker, target generation/profile/provider, authority-key, or version
-change therefore produces a different bound hash and makes old rows nonmatching immediately.
+parsed matcher snapshot, platform physical worker, target generation/profile/provider,
+authority-key, or version change therefore produces a different bound hash and makes old rows
+nonmatching immediately.
 
 Candidate-specific facts are **not** hidden inside that opaque hash. The correlated
 `NOT EXISTS` anti-join must compare ordinary columns for exact equality across certificate
@@ -1298,19 +1311,31 @@ the attempt FK and logical-worker-binding FK, where a real foreign parent and a 
 parent must return the identical SQLSTATE, constraint name, and server message. Add current-
 hash versus worker generation/profile, platform physical-worker generation/profile, target
 generation/profile/provider, algorithm-version, and candidate-column mismatch cases, proving
-every change makes the old certificate nonmatching before cleanup. Cover terminal/retired-
-worker cleanup and cascades.
+every change makes the old certificate nonmatching before cleanup. Programmatically mutate
+each static matcher-consumed `workerHelloV1` field while retaining the same stored
+`workers.profile_hash`, and separately write a correctly rehashed changed profile; both must
+change `logicalWorkerStaticMatcherProfileHash`, ignore the old certificate, and expose the
+candidate for current evaluation. Capacity-only mutations remain governed by the dynamic
+gates and must not create static certificates. Cover terminal/retired-worker cleanup and
+cascades.
 
-The formal DEC-03 Linux load gate seeds exactly 1,000,000 certificate rows and records
-table/index bytes plus `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`. It runs four named shapes:
-(1) one hot logical worker with mostly current certificates, (2) 10,000 workers x 100 rows,
-(3) at least 90% stale-version/context rows, and (4) at least 250,000 terminal/offline cleanup-
-eligible rows. After five warmups, 30 claim samples must have p95 <= 250 ms; 20 bulk-upsert
-samples of 256 rows and 20 cleanup samples of 256 rows must each have p95 <= 500 ms; no sample
-may exceed 1,500 ms; and combined table+index size must remain <= 2 GiB. The one-statement
-claim plan at INITIAL/D1 and every million-row shape may not use an unbounded sort or a
-sequential scan of the hot queue/certificate tables. Windows numbers are diagnostic only;
-the thresholds gate the pinned DEC-03 Linux runner.
+The formal DEC-03 Linux load gate seeds exactly 1,000,000 canonical candidate rows and
+1,000,000 certificate rows and records table/index bytes plus
+`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`. It runs four named shapes: (1) one hot logical
+worker in a fully certified `no_work` state, then deletes only the newest 256 certificates so
+the 999,744 oldest candidates remain a current matching prefix before 256 uncertified rows;
+(2) 10,000 workers x 100 rows; (3) at least 90% stale-version/context rows; and (4) 250,000
+terminal/offline cleanup-eligible rows first evenly sparse among retained rows and then
+re-timestamped to the tail of `(organization_id, updated_at, worker_id, attempt_id)`. Every
+plan records actual/removed rows plus shared/local blocks hit/read, not latency alone. After
+five warmups and 30 claim samples, shapes 2/3 must have p95 <= 250 ms with no sample above
+1,500 ms; the head-saturated and fully certified shape must have p95 <= 2,000 ms with no
+sample above 5,000 ms. Twenty bulk-upsert samples of 256 rows must have p95 <= 500 ms, and 20
+cleanup samples of 256 rows in both sparse/tail layouts must have p95 <= 750 ms. Combined
+table+index size must remain <= 2 GiB. The one-statement claim plan at INITIAL/D1 and every
+million-row shape may not use an unbounded sort or a sequential scan of the hot queue/
+certificate tables. A missed ceiling is a blocking query/schema redesign, not a waiver.
+Windows numbers are diagnostic only; the thresholds gate the pinned DEC-03 Linux runner.
 Add an exhaustive AST/exact allowlist mutation inventory proving every current platform
 status/generation/device/profile authority writer uses target→worker row order plus the
 exclusive advisory helper, while last-seen-only heartbeat stays non-authoritative and cannot
@@ -2026,13 +2051,21 @@ tests, load ceilings/distributions, and verbatim E2-D08 reorder proof; and keepi
 explicitly blocked. Fresh whole-plan and schema/security acceptance of this exact revision is
 still required.
 
+Fresh dual review of `b42992bfa9793f5031b80c726cb340f27d01b428` closed those findings but
+rejected four remaining exactness gaps: the parsed worker matcher snapshot was not separately
+bound from its enrollment hash, neutral-adapter equivalence was only one-way, million-row
+ordering did not force the adverse current-certificate prefix/sparse cleanup cases, and two
+migration sentences omitted E2-D08. This revision binds the canonical neutral matcher
+projection, requires bidirectional frozen equivalence, pins adverse row order plus buffer/row
+evidence and ceilings, and reconciles E2-D08 everywhere. Another fresh dual review is required.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempt 1 rejected | `AMENDMENT RE-REVIEW REQUIRED` | Original plan accepted; the cyclic cursor and first certificate revision were rejected. The corrected SQL-comparable, logical-profile-scoped certificate successor is paused pending fresh whole-plan and schema/security reviews. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–2 rejected | `AMENDMENT RE-REVIEW REQUIRED` | Original plan accepted; the cyclic cursor and two certificate revisions were rejected. The corrected SQL-comparable, snapshot-bound, logical-profile-scoped successor is paused pending fresh whole-plan and schema/security reviews. |
 | Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
 | Claude (user-provided) | pasted review | External plan delta review | 1 | `TRIAGED — STALE BASE` | Reviewed origin `8e2faa590`, not the local plan; three concerns were already closed, while JOB-009 sizing and explicit JOB-012–014 disablement were valid deltas and are now resolved in plan. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |

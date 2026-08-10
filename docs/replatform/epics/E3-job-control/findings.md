@@ -828,3 +828,15 @@ numeric DEC-03 million-row gates and distributions, and verbatim E2-D08 statemen
 if drizzle-kit repeats FK-before-UNIQUE. The execution table and terminal review sentinel now
 keep JOB-003 blocked. GREEN remains unauthorized until fresh whole-plan and schema/security
 reviewers accept the exact corrected revision with no P0/P1/P2 finding.
+
+Fresh re-review of `b42992bfa9793f5031b80c726cb340f27d01b428` closed the original SQL,
+scope, grant, oracle, load-ceiling, FK-order, and status findings but found three remaining
+exactness defects: the poll hash bound only the enrollment authorization hash rather than the
+parsed stored matcher snapshot; the neutral-adapter proof was one-way and could still certify
+a false negative; and the load shapes did not force a current-certificate prefix or sparse/
+tail cleanup. It also found two stale sentences that excluded the already approved E2-D08
+verbatim reorder. The plan now adds a separately canonicalized neutral static-matcher profile
+hash, bidirectional frozen-matcher equivalence, fixed-hash snapshot mutation coverage,
+999,744-row head saturation plus fully certified no-work, sparse/tail cleanup with buffer/row
+evidence, and consistent E2-D08 wording. Status remains pending fresh exact re-review; no RED
+correction or GREEN is authorized.

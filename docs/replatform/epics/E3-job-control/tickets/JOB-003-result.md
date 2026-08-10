@@ -437,3 +437,23 @@ file/test inventory now includes the schema export, exact grant allowlist and st
 raw app-role foreign/missing equality for both composite FKs, numeric DEC-03 load ceilings and
 four distributions, and E2-D08 verbatim reorder evidence. JOB-003 stays `needs_changes` and
 GREEN remains unauthorized pending fresh exact whole-plan and schema/security acceptance.
+
+## Static-certificate successor review attempt 2 - needs changes
+
+Fresh whole-plan and schema/security reviewers checked exact revision
+`b42992bfa9793f5031b80c726cb340f27d01b428`. The prior SQL anti-join, logical-profile scope,
+grant/startup, FK oracle, migration contingency, numeric load gate, and execution-status
+findings were closed. Review still rejected the revision because it bound the stored
+enrollment hash but not the separately parsed matcher `profile_snapshot`, proved only one
+direction of neutral-adapter equivalence, left the million-row prefix/cleanup ordering
+non-adversarial, and retained two hand-edit sentences inconsistent with E2-D08.
+
+The next correction adds `logicalWorkerStaticMatcherProfileHash`, computed from the parsed
+stored hello with only capacity replaced by the reviewed neutral value and canonicalized with
+`canonicalizeJsonV1`; a fixed authorization-hash/snapshot-mutation matrix must invalidate old
+certificates. Static rejection now requires bidirectional equivalence to the frozen matcher
+after all dynamic gates. The load gate pins 999,744 oldest current certificates before 256
+uncertified candidates, a fully certified no-work query, and sparse plus indexed-tail cleanup
+with row/buffer evidence and explicit ceilings. Both migration-rule sentences now name E2-D08
+verbatim reordering. JOB-003 remains `needs_changes`; implementation is still paused pending
+another exact dual re-review.
