@@ -37,9 +37,11 @@ function normalizePath(url: string): string {
 
 const PAYLOAD_OMITTED_PATHS = [
   /^(?:\/api)?\/organizations\/[^/]+\/companies\/[^/]+\/jobs$/,
+  /^(?:\/api)?\/worker-control\/enroll$/,
+  /^(?:\/api)?\/execution-targets\/heartbeat$/,
 ];
 
-/** Job commands can contain arbitrary execution input, so log only routing IDs. */
+/** Credential-bearing worker control and job commands log only a safe route. */
 export function shouldOmitHttpRequestPayload(
   method: string | undefined,
   url: string | undefined,
@@ -47,6 +49,12 @@ export function shouldOmitHttpRequestPayload(
   if (method?.toUpperCase() !== "POST" || !url) return false;
   const pathname = normalizePath(url);
   return PAYLOAD_OMITTED_PATHS.some((pattern) => pattern.test(pathname));
+}
+
+export function isSensitiveWorkerControlPath(url: string | undefined): boolean {
+  if (!url) return false;
+  const pathname = normalizePath(url);
+  return /^(?:\/api)?\/(?:worker-control\/enroll|execution-targets\/heartbeat)$/.test(pathname);
 }
 
 export function safeHttpLogUrl(method: string | undefined, url: string | undefined): string {

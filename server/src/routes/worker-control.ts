@@ -16,6 +16,7 @@ import {
 } from "../services/worker-enrollment.js";
 import { logger } from "../middleware/logger.js";
 import type { DeviceProofHeaders } from "../services/worker-device-proof.js";
+import { sendWorkerProtocolError } from "../services/worker-protocol-http.js";
 
 const uuid = z.string().uuid();
 
@@ -94,7 +95,7 @@ export function workerControlRoutes(opts: {
       const proof = deviceProofHeaders(req);
       const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
       if (!code || !proof || !rawBody) {
-        res.status(401).json({ error: "Worker enrollment denied" });
+        sendWorkerProtocolError(req, res, "unauthorized", opts.now?.() ?? new Date());
         return;
       }
       const result = await enrollment.enroll({
@@ -127,12 +128,19 @@ export function workerControlRoutes(opts: {
           executionTargetId: error.auditIdentifiers?.executionTargetId ?? null,
           reasonCode: error.auditReasonCode,
         }, "worker enrollment denied");
-        res.status(error.code === "malformed" ? 400 : 401).json({
-          error: error.code === "malformed" ? "Worker enrollment malformed" : "Worker enrollment denied",
-        });
+        sendWorkerProtocolError(
+          req,
+          res,
+          error.code === "malformed" ? "malformed" : "unauthorized",
+          opts.now?.() ?? new Date(),
+        );
         return;
       }
-      next(error);
+      logger.error({
+        action: "worker.enrollment.failed",
+        reasonCode: "worker_enrollment_internal_unavailable",
+      }, "worker enrollment unavailable");
+      sendWorkerProtocolError(req, res, "internal_unavailable", opts.now?.() ?? new Date());
     }
   });
 

@@ -34,6 +34,7 @@ export const workers = pgTable(
     deviceGeneration: integer("device_generation").notNull().default(1),
     profileHash: text("profile_hash"),
     enrolledAt: timestamp("enrolled_at", { withTimezone: true }),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     label: text("label").notNull(),
     status: text("status").notNull().default("enrolled"),

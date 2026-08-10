@@ -6,6 +6,7 @@ import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 import {
   safeHttpLogUrl,
+  isSensitiveWorkerControlPath,
   shouldOmitHttpRequestPayload,
   shouldSilenceHttpSuccessLog,
 } from "./http-log-policy.js";
@@ -97,6 +98,9 @@ export const httpLogger = pinoHttp({
     if (isJobSubmissionPath(req.url)) {
       return `${req.method} ${safeHttpLogUrl(req.method, req.url)} ${res.statusCode} — job_submission_internal_error`;
     }
+    if (isSensitiveWorkerControlPath(req.url)) {
+      return `${req.method} ${safeHttpLogUrl(req.method, req.url)} ${res.statusCode} - worker_control_internal_error`;
+    }
     const ctx = (res as any).__errorContext;
     const errMsg = ctx?.error?.message || err?.message || (res as any).err?.message || "unknown error";
     return `${req.method} ${safeHttpLogUrl(req.method, req.url)} ${res.statusCode} — ${errMsg}`;
@@ -115,6 +119,11 @@ export const httpLogger = pinoHttp({
             ? "job_submission_internal_error"
             : "job_submission_rejected",
         };
+      }
+      if (isSensitiveWorkerControlPath(req.url)) {
+        return { reasonCode: res.statusCode >= 500
+          ? "worker_control_internal_error"
+          : "worker_control_rejected" };
       }
       const ctx = (res as any).__errorContext;
       if (ctx) {

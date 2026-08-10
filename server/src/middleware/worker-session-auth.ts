@@ -29,6 +29,7 @@ export interface VerifiedTargetPrincipal {
   expiresAt: string;
   organizationId: string | null;
   scope: WorkerSessionClaims["scope"];
+  targetScope: "platform" | "organization" | "owner";
 }
 
 export class WorkerSessionError extends Error {
@@ -161,14 +162,29 @@ export function createWorkerSessionAuthenticator(input: {
           expiresAt: new Date(claims.exp * 1000).toISOString(),
           organizationId: authoritativeOrganizationId,
           scope: claims.scope,
+          targetScope: current.target.scope as "platform" | "organization" | "owner",
         };
       };
       if (claims.organizationId === null) {
         return input.operatorDb.transaction((tx) =>
           verifyCurrent(operatorWorkerEnrollmentRepository(tx as unknown as Db), null));
       }
-      return runInTenant(input.appDb, claims.organizationId, (repos) =>
+      const principal = await runInTenant(input.appDb, claims.organizationId, (repos) =>
         verifyCurrent(repos.workerEnrollment, claims.organizationId));
+      if (principal.targetScope === "platform") {
+        const physical = await input.operatorDb.transaction((tx) =>
+          operatorWorkerEnrollmentRepository(tx as unknown as Db)
+            .findPlatformPhysicalAuthority(principal.targetId));
+        if (!physical || physical.target.status !== "active" ||
+            physical.target.deviceGeneration !== principal.targetGeneration ||
+            physical.worker.status === "revoked" || physical.worker.revokedAt !== null ||
+            physical.worker.deviceGeneration !== principal.targetGeneration ||
+            physical.worker.deviceThumbprint !== principal.deviceThumbprint ||
+            physical.worker.devicePublicKey !== proof.publicKey) {
+          throw new WorkerSessionError("target_revoked");
+        }
+      }
+      return principal;
     },
   };
 }
@@ -187,6 +203,15 @@ export async function registerProofBoundHeartbeat(input: {
         executionTargetId: input.principal.targetId,
         deviceGeneration: input.principal.targetGeneration,
         status: input.status,
+        now: input.now ?? new Date(),
+      }));
+  }
+  if (input.principal.targetScope === "platform") {
+    return runInTenant(input.appDb, input.principal.organizationId, (repos) =>
+      repos.workerEnrollment.heartbeatSessionProfile({
+        workerId: input.principal.workerId,
+        executionTargetId: input.principal.targetId,
+        deviceGeneration: input.principal.targetGeneration,
         now: input.now ?? new Date(),
       }));
   }

@@ -72,6 +72,7 @@ import {
   serviceInstances,
   jobArtifacts,
   jobSecretHandles,
+  executionTargets,
   workers,
   type Db,
 } from "@armyofagents/db";
@@ -253,12 +254,51 @@ async function seedGraph(g: TenantGraph): Promise<void> {
       })),
     ),
   );
+  await db.insert(executionTargets).values([
+    ...g.organizations.flatMap((n) =>
+      n.workers.map((w) => ({
+        id: w.id,
+        organizationId: w.organizationId,
+        ownerUserId: null,
+        slug: `adversarial-org-${w.id.replaceAll("-", "")}`,
+        kind: "dedicated_worker" as const,
+        trustClass: "dedicated_tenant" as const,
+        status: "active" as const,
+        capabilities: {},
+        config: {},
+        scope: "organization" as const,
+        targetAuthorityKey: `organization:${w.organizationId}`,
+        deviceGeneration: 1,
+      })),
+    ),
+    ...g.platformWorkers.map((w) => ({
+      id: w.id,
+      organizationId: null,
+      ownerUserId: null,
+      slug: `adversarial-platform-${w.id.replaceAll("-", "")}`,
+      kind: "pooled_gvisor" as const,
+      trustClass: "shared_multitenant" as const,
+      status: "active" as const,
+      capabilities: {},
+      config: {},
+      scope: "platform" as const,
+      targetAuthorityKey: "platform",
+      deviceGeneration: 1,
+    })),
+  ]);
   await db.insert(workers).values([
     ...g.organizations.flatMap((n) =>
       n.workers.map((w) => ({
         id: w.id,
         scope: "organization" as const,
         organizationId: w.organizationId,
+        executionTargetId: w.id,
+        targetAuthorityKey: `organization:${w.organizationId}`,
+        deviceGeneration: 1,
+        devicePublicKey: `adversarial-key-${w.id}`,
+        deviceThumbprint: "a".repeat(64),
+        profileHash: "b".repeat(64),
+        enrolledAt: new Date("2026-01-01T00:00:00.000Z"),
         label: w.label,
       })),
     ),
@@ -266,6 +306,13 @@ async function seedGraph(g: TenantGraph): Promise<void> {
       id: w.id,
       scope: "platform" as const,
       organizationId: null,
+      executionTargetId: w.id,
+      targetAuthorityKey: "platform",
+      deviceGeneration: 1,
+      devicePublicKey: `adversarial-key-${w.id}`,
+      deviceThumbprint: "c".repeat(64),
+      profileHash: "d".repeat(64),
+      enrolledAt: new Date("2026-01-01T00:00:00.000Z"),
       label: w.label,
     })),
   ]);
@@ -599,7 +646,11 @@ async function runAdversarialOps(g: TenantGraph): Promise<{ anomalies: string[];
     // null-Org WRITE: aoa_app cannot INSERT a worker to org NULL (WITH CHECK 42501)…
     const errNullInsert = await captureReject(() =>
       withTenantTx(appDb, actor.org.id, (tx) =>
-        tx.execute(sql`INSERT INTO workers (scope, organization_id, label) VALUES ('platform', NULL, 'sneak')`),
+        tx.execute(sql`INSERT INTO workers
+          (scope, organization_id, label, execution_target_id, target_authority_key,
+           device_generation, device_public_key, device_thumbprint, profile_hash, enrolled_at)
+          VALUES ('platform', NULL, 'sneak', ${platformWorkerIds[0]}, 'platform',
+            1, 'adversarial-sneak-key', ${"1".repeat(64)}, ${"2".repeat(64)}, now())`),
       ),
     );
     bump("nullOrgWriteReject");
@@ -609,7 +660,9 @@ async function runAdversarialOps(g: TenantGraph): Promise<{ anomalies: string[];
     const errNullUpdate = await captureReject(() =>
       withTenantTx(appDb, actor.org.id, (tx) =>
         tx.execute(
-          sql`UPDATE workers SET organization_id = NULL, scope = 'platform' WHERE id = ${ownWorkerId}`,
+          sql`UPDATE workers SET organization_id = NULL, scope = 'platform',
+            execution_target_id = ${platformWorkerIds[0]}, target_authority_key = 'platform'
+            WHERE id = ${ownWorkerId}`,
         ),
       ),
     );

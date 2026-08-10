@@ -204,24 +204,45 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         VALUES ('TEN-001b Test Org', 'ten-001b-test-org')
         RETURNING id`;
       const orgId = org!.id;
+      const targetIds = [
+        "12000000-0000-4000-8000-0000000000b1",
+        "12000000-0000-4000-8000-0000000000b2",
+        "12000000-0000-4000-8000-0000000000b3",
+      ];
+      for (const [index, targetId] of targetIds.entries()) {
+        await client`INSERT INTO execution_targets
+          (id, organization_id, slug, kind, trust_class, status, capabilities, config,
+           scope, target_authority_key, device_generation)
+          VALUES (${targetId}, NULL, ${`schema-b-platform-${index}`}, 'pooled_gvisor',
+            'shared_multitenant', 'active', '{}', '{}', 'platform', 'platform', 1)`;
+      }
 
       // (1) platform + null org → succeeds.
       await client`
-        INSERT INTO workers (scope, label)
-        VALUES ('platform', 'platform-worker')`;
+        INSERT INTO workers
+          (scope, organization_id, label, execution_target_id, target_authority_key,
+           device_generation, device_public_key, device_thumbprint, profile_hash, enrolled_at)
+        VALUES ('platform', NULL, 'platform-worker', ${targetIds[0]}, 'platform',
+          1, 'schema-b-key', ${"a".repeat(64)}, ${"b".repeat(64)}, now())`;
 
       // (2) platform + non-null org → rejected by workers_scope_org_check.
       await expect(
         client`
-          INSERT INTO workers (scope, organization_id, label)
-          VALUES ('platform', ${orgId}, 'bad-platform-with-org')`,
+          INSERT INTO workers
+            (scope, organization_id, label, execution_target_id, target_authority_key,
+             device_generation, device_public_key, device_thumbprint, profile_hash, enrolled_at)
+          VALUES ('platform', ${orgId}, 'bad-platform-with-org', ${targetIds[1]}, 'platform',
+            1, 'schema-b-key', ${"c".repeat(64)}, ${"d".repeat(64)}, now())`,
       ).rejects.toThrow(/workers_scope_org_check/);
 
       // (3) organization + null org → rejected by workers_scope_org_check.
       await expect(
         client`
-          INSERT INTO workers (scope, label)
-          VALUES ('organization', 'bad-org-without-org')`,
+          INSERT INTO workers
+            (scope, organization_id, label, execution_target_id, target_authority_key,
+             device_generation, device_public_key, device_thumbprint, profile_hash, enrolled_at)
+          VALUES ('organization', NULL, 'bad-org-without-org', ${targetIds[2]}, 'platform',
+            1, 'schema-b-key', ${"e".repeat(64)}, ${"f".repeat(64)}, now())`,
       ).rejects.toThrow(/workers_scope_org_check/);
     });
   },

@@ -67,6 +67,9 @@ const ORG_B = "00000000-0000-0000-0000-0000000000b2";
 const ORG_NONE = "00000000-0000-0000-0000-0000000000cc"; // valid uuid, owns no rows -> wrong org
 const CO_A = "00000000-0000-0000-0000-0000000000c1";
 const CO_B = "00000000-0000-0000-0000-0000000000c2";
+const TARGET_A = "00000000-0000-4000-8000-0000000000d1";
+const TARGET_B = "00000000-0000-4000-8000-0000000000d2";
+const TARGET_PLATFORM = "00000000-0000-4000-8000-0000000000d3";
 
 let pg: EmbeddedPostgresInstance | null = null;
 let dataDir = "";
@@ -164,6 +167,16 @@ beforeAll(async () => {
     await db.execute(
       sql`INSERT INTO companies (id, name, issue_prefix, organization_id) VALUES (${CO_A}, 'Co A', 'PPA', ${ORG_A}), (${CO_B}, 'Co B', 'PPB', ${ORG_B})`,
     );
+    await db.execute(sql`INSERT INTO execution_targets
+      (id, organization_id, slug, kind, trust_class, status, capabilities, config,
+       scope, target_authority_key, device_generation)
+      VALUES
+      (${TARGET_A}, ${ORG_A}, 'rls-target-a', 'dedicated_worker', 'dedicated_tenant', 'active', '{}', '{}',
+        'organization', ${`organization:${ORG_A}`}, 1),
+      (${TARGET_B}, ${ORG_B}, 'rls-target-b', 'dedicated_worker', 'dedicated_tenant', 'active', '{}', '{}',
+        'organization', ${`organization:${ORG_B}`}, 1),
+      (${TARGET_PLATFORM}, NULL, 'rls-target-platform', 'pooled_gvisor', 'shared_multitenant', 'active', '{}', '{}',
+        'platform', 'platform', 1)`);
 
     // One row per tenant in each new-path table (workers additionally gets a
     // platform null-Org row).
@@ -173,9 +186,21 @@ beforeAll(async () => {
     const attemptB = firstId(await db.execute(sql`INSERT INTO job_attempts (organization_id, company_id, job_id) VALUES (${ORG_B}, ${CO_B}, ${jobB}) RETURNING id`));
     await db.execute(sql`INSERT INTO leases (organization_id, attempt_id, fence) VALUES (${ORG_A}, ${attemptA}, 'fa')`);
     await db.execute(sql`INSERT INTO leases (organization_id, attempt_id, fence) VALUES (${ORG_B}, ${attemptB}, 'fb')`);
-    workerOrgA = firstId(await db.execute(sql`INSERT INTO workers (scope, organization_id, label) VALUES ('organization', ${ORG_A}, 'wa') RETURNING id`));
-    await db.execute(sql`INSERT INTO workers (scope, organization_id, label) VALUES ('organization', ${ORG_B}, 'wb')`);
-    workerPlatform = firstId(await db.execute(sql`INSERT INTO workers (scope, organization_id, label) VALUES ('platform', NULL, 'wp') RETURNING id`));
+    workerOrgA = firstId(await db.execute(sql`INSERT INTO workers
+      (scope, organization_id, label, execution_target_id, target_authority_key,
+       device_generation, device_public_key, device_thumbprint, profile_hash, enrolled_at)
+      VALUES ('organization', ${ORG_A}, 'wa', ${TARGET_A}, ${`organization:${ORG_A}`},
+        1, 'rls-key-a', ${"a".repeat(64)}, ${"b".repeat(64)}, now()) RETURNING id`));
+    await db.execute(sql`INSERT INTO workers
+      (scope, organization_id, label, execution_target_id, target_authority_key,
+       device_generation, device_public_key, device_thumbprint, profile_hash, enrolled_at)
+      VALUES ('organization', ${ORG_B}, 'wb', ${TARGET_B}, ${`organization:${ORG_B}`},
+        1, 'rls-key-b', ${"c".repeat(64)}, ${"d".repeat(64)}, now())`);
+    workerPlatform = firstId(await db.execute(sql`INSERT INTO workers
+      (scope, organization_id, label, execution_target_id, target_authority_key,
+       device_generation, device_public_key, device_thumbprint, profile_hash, enrolled_at)
+      VALUES ('platform', NULL, 'wp', ${TARGET_PLATFORM}, 'platform',
+        1, 'rls-key-platform', ${"e".repeat(64)}, ${"f".repeat(64)}, now()) RETURNING id`));
     serviceA = firstId(await db.execute(sql`INSERT INTO services (organization_id, company_id) VALUES (${ORG_A}, ${CO_A}) RETURNING id`));
     const serviceB = firstId(await db.execute(sql`INSERT INTO services (organization_id, company_id) VALUES (${ORG_B}, ${CO_B}) RETURNING id`));
     await db.execute(sql`INSERT INTO service_instances (organization_id, service_id) VALUES (${ORG_A}, ${serviceA})`);
@@ -302,7 +327,11 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       // (platform => org NULL) so the rejection is the RLS WITH CHECK, not the check.
       const insErr = await expectReject(() =>
         withTenantTx(appDb, ORG_A, async (tx) =>
-          tx.execute(sql`INSERT INTO workers (scope, organization_id, label) VALUES ('platform', NULL, 'sneak')`),
+          tx.execute(sql`INSERT INTO workers
+            (scope, organization_id, label, execution_target_id, target_authority_key,
+             device_generation, device_public_key, device_thumbprint, profile_hash, enrolled_at)
+            VALUES ('platform', NULL, 'sneak', ${TARGET_PLATFORM}, 'platform',
+              1, 'rls-sneak-key', ${"1".repeat(64)}, ${"2".repeat(64)}, now())`),
         ),
       );
       expect(sqlstate(insErr)).toBe("42501");
@@ -312,7 +341,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const updErr = await expectReject(() =>
         withTenantTx(appDb, ORG_A, async (tx) =>
           tx.execute(
-            sql`UPDATE workers SET organization_id = NULL, scope = 'platform' WHERE id = ${workerOrgA}`,
+            sql`UPDATE workers SET organization_id = NULL, scope = 'platform',
+              execution_target_id = ${TARGET_PLATFORM}, target_authority_key = 'platform'
+              WHERE id = ${workerOrgA}`,
           ),
         ),
       );

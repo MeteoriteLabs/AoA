@@ -1555,6 +1555,13 @@
       "when": 1786331770352,
       "tag": "0221_worker_enrollment_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 222,
+      "version": "7",
+      "when": 1786337907601,
+      "tag": "0222_worker_profile_liveness",
+      "breakpoints": true
     }
   ]
 }

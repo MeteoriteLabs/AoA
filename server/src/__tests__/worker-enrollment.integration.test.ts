@@ -194,6 +194,7 @@ beforeEach(async () => {
   await admin.unsafe(`DROP TRIGGER IF EXISTS job002_fail_worker_insert ON workers`);
   await admin.unsafe(`DROP TRIGGER IF EXISTS job002_fail_code_insert ON worker_enrollment_codes`);
   await admin.unsafe(`DROP TRIGGER IF EXISTS job002_fail_code_update ON worker_enrollment_codes`);
+  await admin.unsafe(`DROP TRIGGER IF EXISTS job002_fail_proof_insert ON worker_proof_replays`);
   await admin.unsafe(`DROP FUNCTION IF EXISTS job002_fail_insert()`);
   await admin`DELETE FROM worker_proof_replays`;
   await admin`DELETE FROM worker_enrollment_codes`;
@@ -335,7 +336,23 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         `aoa_enr_${"z".repeat(18)}.${"y".repeat(43)}`,
         "proof-absent-worker-authority",
       ).catch((error) => error as unknown);
-      for (const denied of [collision, absent]) {
+      const platformCode = await service.issuePlatformCode({
+        executionTargetId: TARGET_PLATFORM,
+        createdByPrincipalKind: "operator",
+        createdByPrincipalId: "platform-operator",
+      });
+      const platformBody = {
+        ...enrollmentBody(foreignId, TARGET_PLATFORM),
+        idempotencyKey: "75000000-0000-4000-8000-000000000099",
+      };
+      const platformCollision = await service.enroll({
+        code: platformCode.code,
+        request: platformBody,
+        ...deviceProof(platformBody, localKeys.privateKey, localKeys.publicKey, "proof-platform-foreign-collision"),
+        method: "POST",
+        path: "/api/worker-control/enroll",
+      }).catch((error) => error as unknown);
+      for (const denied of [collision, absent, platformCollision]) {
         expect(denied).toMatchObject({ name: "WorkerEnrollmentError", code: "unauthorized" });
         expect(JSON.stringify(denied)).not.toMatch(/23505|insert into|query|parameters/i);
       }
@@ -856,7 +873,8 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         createdByPrincipalKind: "operator",
         createdByPrincipalId: "platform-operator",
       })).rejects.toBeDefined();
-      expect(await admin`SELECT locator_hash FROM worker_enrollment_code_routes`).toHaveLength(0);
+      expect(await admin`SELECT locator_hash FROM worker_enrollment_code_routes
+        WHERE candidate_organization_id IS NULL`).toHaveLength(0);
       await admin.unsafe(`DROP TRIGGER job002_fail_code_insert ON worker_enrollment_codes`);
       const platformCode = await service.issuePlatformCode({
         executionTargetId: TARGET_PLATFORM,
@@ -994,6 +1012,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           now: () => NOW,
         },
       }));
+      httpApp.use(errorHandler);
       const response = await request(httpApp)
         .post("/api/worker-control/enroll")
         .set(WORKER_CONTROL_HEADERS.enrollmentCode, issued.code)
@@ -1031,6 +1050,68 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const [target] = await admin`SELECT status, capabilities FROM execution_targets WHERE id = ${TARGET_A}`;
       expect(target.status).toBe("draining");
       expect(target.capabilities).not.toHaveProperty("registeredTrustMustNotChange");
+
+      const session = String(response.headers[WORKER_CONTROL_HEADERS.session]);
+      const expectHeartbeatProtocolError = (result: request.Response, code: string) => {
+        expect(protocolErrorV1Schema.safeParse(result.body)).toMatchObject({ success: true });
+        expect(OPERATION_DESCRIPTORS.enrollment.errors).toContain(code);
+        expect(result.body).toMatchObject({
+          protocolVersion: 1,
+          code,
+          redaction: "secret",
+          serverTime: expect.any(String),
+        });
+      };
+      const missingProof = await request(httpApp)
+        .post("/api/execution-targets/heartbeat")
+        .set("authorization", `Bearer ${session}`)
+        .set(WORKER_CONTROL_HEADERS.requestId, "74000000-0000-4000-8000-000000000290")
+        .send({ status: "active" });
+      expectHeartbeatProtocolError(missingProof, "unauthorized");
+
+      const sendProofHeartbeat = async (bodyBytes: Buffer, proofId: string, correlation: string) => {
+        const proof = deviceProofFor(
+          bodyBytes, correlation, keys.privateKey, keys.publicKey,
+          proofId, "/api/execution-targets/heartbeat",
+        );
+        return request(httpApp)
+          .post("/api/execution-targets/heartbeat")
+          .set("authorization", `Bearer ${session}`)
+          .set(WORKER_CONTROL_HEADERS.requestId, correlation)
+          .set(WORKER_CONTROL_HEADERS.proofVersion, proof.version)
+          .set(WORKER_CONTROL_HEADERS.publicKey, proof.publicKey)
+          .set(WORKER_CONTROL_HEADERS.signature, proof.signature)
+          .set(WORKER_CONTROL_HEADERS.issuedAt, proof.issuedAt)
+          .set(WORKER_CONTROL_HEADERS.proofId, proof.proofId)
+          .send(JSON.parse(bodyBytes.toString("utf8")));
+      };
+      const malformedHeartbeat = await sendProofHeartbeat(
+        Buffer.from(JSON.stringify({ status: "not-a-worker-status" })),
+        "proof-http-heartbeat-malformed",
+        "74000000-0000-4000-8000-000000000291",
+      );
+      expectHeartbeatProtocolError(malformedHeartbeat, "malformed");
+
+      await admin.unsafe(`CREATE FUNCTION job002_fail_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'proof replay query parameters must not escape'; END $$`);
+      await admin.unsafe(`CREATE TRIGGER job002_fail_proof_insert BEFORE INSERT ON worker_proof_replays
+        FOR EACH ROW EXECUTE FUNCTION job002_fail_insert()`);
+      const internalHeartbeat = await sendProofHeartbeat(
+        Buffer.from(JSON.stringify({ status: "active" })),
+        "proof-http-heartbeat-internal",
+        "74000000-0000-4000-8000-000000000292",
+      );
+      expectHeartbeatProtocolError(internalHeartbeat, "internal_unavailable");
+      await admin.unsafe(`DROP TRIGGER job002_fail_proof_insert ON worker_proof_replays`);
+      await admin.unsafe(`DROP FUNCTION job002_fail_insert()`);
+
+      await admin`UPDATE execution_targets SET status = 'disabled' WHERE id = ${TARGET_A}`;
+      const revokedHeartbeat = await sendProofHeartbeat(
+        Buffer.from(JSON.stringify({ status: "active" })),
+        "proof-http-heartbeat-revoked",
+        "74000000-0000-4000-8000-000000000293",
+      );
+      expectHeartbeatProtocolError(revokedHeartbeat, "unauthorized");
     });
 
     it("revokes owner-scoped session and new issuance when Organization membership is removed", async () => {

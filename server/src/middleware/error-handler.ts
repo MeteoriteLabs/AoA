@@ -7,6 +7,10 @@ import {
   marketplaceErrorResponse,
 } from "../services/marketplace-http-contract.js";
 import { serializeSafeError } from "../services/safe-error.js";
+import {
+  isEnrollmentWorkerControlPath,
+  sendWorkerProtocolError,
+} from "../services/worker-protocol-http.js";
 
 export interface ErrorContext {
   error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
@@ -27,6 +31,21 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ) {
+  if (isEnrollmentWorkerControlPath(req.originalUrl) || (res.locals as { workerProtocolV1?: boolean }).workerProtocolV1 === true) {
+    const status = err && typeof err === "object"
+      ? Number((err as { status?: unknown; statusCode?: unknown }).status ??
+        (err as { statusCode?: unknown }).statusCode)
+      : Number.NaN;
+    const code = err instanceof ZodError
+      ? "malformed"
+      : err instanceof HttpError && err.status < 500
+        ? "unauthorized"
+        : status >= 400 && status < 500
+          ? "malformed"
+          : "internal_unavailable";
+    sendWorkerProtocolError(req, res, code);
+    return;
+  }
   if (isMarketplaceAdminPath(req.originalUrl)) {
     const status =
       err instanceof HttpError

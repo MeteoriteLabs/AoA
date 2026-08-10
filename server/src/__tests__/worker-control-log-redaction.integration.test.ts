@@ -25,7 +25,7 @@ describe("JOB-002 worker-control production log transport", () => {
     const app = express();
     app.use(httpLogger);
     app.use(express.json());
-    app.post("/api/worker-control/enroll", (req, res, next) => {
+    const respondForOutcome: express.RequestHandler = (req, res, next) => {
       switch (req.header("x-test-outcome")) {
         case "success": res.status(200).json({ outcome: "enrolled" }); return;
         case "malformed": res.status(400).json({ error: "malformed" }); return;
@@ -38,8 +38,9 @@ describe("JOB-002 worker-control production log transport", () => {
           next(internal);
         }
       }
-    });
-    app.post("/api/execution-targets/heartbeat", (_req, res) => res.status(204).end());
+    };
+    app.post("/api/worker-control/enroll", respondForOutcome);
+    app.post("/api/execution-targets/heartbeat", respondForOutcome);
     app.use(errorHandler);
 
     const headers = {
@@ -57,11 +58,14 @@ describe("JOB-002 worker-control production log transport", () => {
         .set("x-test-outcome", outcome)
         .send({ semanticInput: `SEMANTIC_BODY_MARKER_${outcome}` });
     }
-    await request(app)
-      .post("/api/execution-targets/heartbeat?HEARTBEAT_QUERY_MARKER=1")
-      .set("authorization", "Bearer RAW_WORKER_SESSION_MARKER")
-      .set(headers)
-      .send({ capabilities: "HEARTBEAT_SEMANTIC_BODY_MARKER" });
+    for (const outcome of ["success", "malformed", "unauthorized", "revoked", "internal"] as const) {
+      await request(app)
+        .post(`/api/execution-targets/heartbeat?HEARTBEAT_QUERY_MARKER=${outcome}`)
+        .set("authorization", "Bearer RAW_WORKER_SESSION_MARKER")
+        .set(headers)
+        .set("x-test-outcome", outcome)
+        .send({ capabilities: `HEARTBEAT_SEMANTIC_BODY_MARKER_${outcome}` });
+    }
 
     const logs = await capturedLogs();
     expect(logs).toContain("POST /api/worker-control/enroll");

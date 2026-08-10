@@ -15,6 +15,7 @@ import { runInTenant } from "../db/tenant-context.js";
 import { verifyDeviceProof, type DeviceProofHeaders } from "./worker-device-proof.js";
 import { createWorkerSessionToken } from "../middleware/worker-session-auth.js";
 import { logger } from "../middleware/logger.js";
+import { isUniqueViolation } from "./db-errors.js";
 
 const CODE_TTL_MS = 10 * 60_000;
 const SESSION_TTL_MS = 15 * 60_000;
@@ -145,6 +146,26 @@ export function createWorkerEnrollmentService(input: {
   }
   const now = input.now ?? (() => new Date());
 
+  const requireCurrentPlatformPhysicalAuthority = async (authorityInput: {
+    executionTargetId: string;
+    deviceGeneration: number;
+    devicePublicKey: string;
+    deviceThumbprint: string;
+  }): Promise<void> => {
+    const physical = await input.operatorDb.transaction((tx) =>
+      operatorWorkerEnrollmentRepository(tx as unknown as Db)
+        .findPlatformPhysicalAuthority(authorityInput.executionTargetId));
+    if (!physical || physical.target.status !== "active" ||
+        physical.target.scope !== "platform" || physical.target.organizationId !== null ||
+        physical.target.deviceGeneration !== authorityInput.deviceGeneration ||
+        physical.worker.status === "revoked" || physical.worker.revokedAt !== null ||
+        physical.worker.deviceGeneration !== authorityInput.deviceGeneration ||
+        physical.worker.devicePublicKey !== authorityInput.devicePublicKey ||
+        physical.worker.deviceThumbprint !== authorityInput.deviceThumbprint) {
+      throw new WorkerEnrollmentError("unauthorized");
+    }
+  };
+
   return {
     async issueTenantCode(issue: IssueTenantCodeInput): Promise<{ code: string; expiresAt: string }> {
       if ((issue.scope === "owner") !== Boolean(issue.ownerUserId)) {
@@ -265,6 +286,7 @@ export function createWorkerEnrollmentService(input: {
           authoritativeOrganizationId,
           executionTargetId: stored.executionTargetId,
         });
+        await authority.cleanupExpiredProofs(now(), 100);
         const proofRecorded = await authority.recordProof({
           organizationId: authoritativeOrganizationId,
           deviceThumbprint: verified.deviceThumbprint,
@@ -304,6 +326,14 @@ export function createWorkerEnrollmentService(input: {
               receipt.response.targetId !== request.hello.targetId) {
             throw new WorkerEnrollmentError("target_revoked");
           }
+          if (authoritativeOrganizationId !== null && current.target.scope === "platform") {
+            await requireCurrentPlatformPhysicalAuthority({
+              executionTargetId: current.target.id,
+              deviceGeneration: current.target.deviceGeneration,
+              devicePublicKey: current.worker.devicePublicKey!,
+              deviceThumbprint: current.worker.deviceThumbprint!,
+            });
+          }
           const replayedAt = now();
           const replayResponse = enrollmentResponseV1Schema.parse({
             ...receipt.response,
@@ -333,6 +363,15 @@ export function createWorkerEnrollmentService(input: {
         if (!target || request.hello.targetId !== target.id) {
           throw new WorkerEnrollmentError("unauthorized");
         }
+        const sharedPlatformProfile = authoritativeOrganizationId !== null && target.scope === "platform";
+        if (sharedPlatformProfile) {
+          await requireCurrentPlatformPhysicalAuthority({
+            executionTargetId: target.id,
+            deviceGeneration: target.deviceGeneration,
+            devicePublicKey: verified.publicKey,
+            deviceThumbprint: verified.deviceThumbprint,
+          });
+        }
         const profileHash = sha256(JSON.stringify(request.hello));
         const boundWorker = await authority.findWorkerForBinding({
           scope: stored.scope,
@@ -348,15 +387,19 @@ export function createWorkerEnrollmentService(input: {
               executionTargetId: target.id,
             });
           }
-          if (request.hello.deviceGeneration !== target.deviceGeneration + 1) {
-            throw new WorkerEnrollmentError("unauthorized");
+          if (request.hello.deviceGeneration !== (sharedPlatformProfile
+            ? target.deviceGeneration
+            : target.deviceGeneration + 1)) throw new WorkerEnrollmentError("unauthorized");
+          const advanced = sharedPlatformProfile
+            ? target.deviceGeneration
+            : await authority.advanceTargetGeneration({
+                executionTargetId: target.id,
+                expectedGeneration: target.deviceGeneration,
+                now: now(),
+              });
+          if (advanced === null || (!sharedPlatformProfile && advanced !== target.deviceGeneration + 1)) {
+            throw new WorkerEnrollmentError("target_revoked");
           }
-          const advanced = await authority.advanceTargetGeneration({
-            executionTargetId: target.id,
-            expectedGeneration: target.deviceGeneration,
-            now: now(),
-          });
-          if (advanced !== target.deviceGeneration + 1) throw new WorkerEnrollmentError("target_revoked");
           const rotated = await authority.rotateWorker({
             id: boundWorker.id,
             expectedGeneration: boundWorker.deviceGeneration,
@@ -424,7 +467,7 @@ export function createWorkerEnrollmentService(input: {
           session,
           auditAction: boundWorker ? "rotate" : "consume",
         };
-        await authority.retireBootstrapCredential(target.id);
+        if (!sharedPlatformProfile) await authority.retireBootstrapCredential(target.id);
         await authority.consumeCode({
           id: stored.id,
           consumedAt: now(),
@@ -438,12 +481,19 @@ export function createWorkerEnrollmentService(input: {
         });
         return result;
       };
-      if (route.candidateOrganizationId === null) {
-        return input.operatorDb.transaction((tx) =>
-          completeEnrollment(operatorWorkerEnrollmentRepository(tx as unknown as Db), null));
+      try {
+        if (route.candidateOrganizationId === null) {
+          return await input.operatorDb.transaction((tx) =>
+            completeEnrollment(operatorWorkerEnrollmentRepository(tx as unknown as Db), null));
+        }
+        return await runInTenant(input.appDb, route.candidateOrganizationId, (repos) =>
+          completeEnrollment(repos.workerEnrollment, route.candidateOrganizationId));
+      } catch (error) {
+        if (isUniqueViolation(error, "workers_pkey")) {
+          throw new WorkerEnrollmentError("unauthorized");
+        }
+        throw error;
       }
-      return runInTenant(input.appDb, route.candidateOrganizationId, (repos) =>
-        completeEnrollment(repos.workerEnrollment, route.candidateOrganizationId));
     },
   };
 }

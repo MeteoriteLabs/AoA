@@ -120,24 +120,25 @@ SET
 	"status" = 'revoked',
 	"revoked_at" = COALESCE(w."revoked_at", now())
 WHERE w."execution_target_id" IS NULL;--> statement-breakpoint
-DO $$ BEGIN ALTER TABLE "execution_targets" ADD CONSTRAINT "execution_targets_authority_id_uq" UNIQUE("target_authority_key","id"); EXCEPTION WHEN duplicate_object THEN NULL; END $$;--> statement-breakpoint
-ALTER TABLE "worker_enrollment_code_routes" ADD CONSTRAINT "worker_enrollment_code_routes_candidate_organization_id_organizations_id_fk" FOREIGN KEY ("candidate_organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "worker_enrollment_codes" ADD CONSTRAINT "worker_enrollment_codes_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "worker_enrollment_codes" ADD CONSTRAINT "worker_enrollment_codes_owner_user_id_user_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."user"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "worker_enrollment_codes" ADD CONSTRAINT "worker_enrollment_codes_target_authority_fk" FOREIGN KEY ("target_authority_key","execution_target_id") REFERENCES "public"."execution_targets"("target_authority_key","id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "worker_proof_replays" ADD CONSTRAINT "worker_proof_replays_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+-- C14 hand-appended guards: drizzle-kit cannot make ADD CONSTRAINT replay-safe.
+DO $$ BEGIN ALTER TABLE "execution_targets" ADD CONSTRAINT "execution_targets_authority_id_uq" UNIQUE("target_authority_key","id"); EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "worker_enrollment_code_routes" ADD CONSTRAINT "worker_enrollment_code_routes_candidate_organization_id_organizations_id_fk" FOREIGN KEY ("candidate_organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "worker_enrollment_codes" ADD CONSTRAINT "worker_enrollment_codes_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "worker_enrollment_codes" ADD CONSTRAINT "worker_enrollment_codes_owner_user_id_user_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."user"("id") ON DELETE restrict ON UPDATE no action; EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "worker_enrollment_codes" ADD CONSTRAINT "worker_enrollment_codes_target_authority_fk" FOREIGN KEY ("target_authority_key","execution_target_id") REFERENCES "public"."execution_targets"("target_authority_key","id") ON DELETE restrict ON UPDATE no action; EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "worker_proof_replays" ADD CONSTRAINT "worker_proof_replays_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "worker_enrollment_code_routes_expiry_idx" ON "worker_enrollment_code_routes" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "worker_enrollment_codes_expiry_idx" ON "worker_enrollment_codes" USING btree ("organization_id","expires_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "worker_enrollment_codes_replay_idx" ON "worker_enrollment_codes" USING btree ("organization_id","semantic_idempotency_key","semantic_digest");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "worker_proof_replays_expiry_idx" ON "worker_proof_replays" USING btree ("expires_at");--> statement-breakpoint
-ALTER TABLE "execution_targets" ADD CONSTRAINT "execution_targets_owner_user_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."user"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "workers" ADD CONSTRAINT "workers_target_authority_fk" FOREIGN KEY ("target_authority_key","execution_target_id") REFERENCES "public"."execution_targets"("target_authority_key","id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "workers" ADD CONSTRAINT "workers_owner_user_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."user"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "execution_targets" ADD CONSTRAINT "execution_targets_owner_user_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."user"("id") ON DELETE restrict ON UPDATE no action; EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "workers" ADD CONSTRAINT "workers_target_authority_fk" FOREIGN KEY ("target_authority_key","execution_target_id") REFERENCES "public"."execution_targets"("target_authority_key","id") ON DELETE restrict ON UPDATE no action; EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "workers" ADD CONSTRAINT "workers_owner_user_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."user"("id") ON DELETE restrict ON UPDATE no action; EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "workers_execution_target_idx" ON "workers" USING btree ("execution_target_id");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "workers_platform_target_uq" ON "workers" USING btree ("execution_target_id") WHERE "workers"."scope" = 'platform';--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "workers_organization_target_uq" ON "workers" USING btree ("organization_id","execution_target_id") WHERE "workers"."scope" = 'organization';--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "workers_owner_target_uq" ON "workers" USING btree ("organization_id","execution_target_id","owner_user_id") WHERE "workers"."scope" = 'owner';--> statement-breakpoint
-ALTER TABLE "execution_targets" ADD CONSTRAINT "execution_targets_authority_scope_check" CHECK ((
+DO $$ BEGIN ALTER TABLE "execution_targets" ADD CONSTRAINT "execution_targets_authority_scope_check" CHECK ((
         scope = 'platform' AND organization_id IS NULL AND owner_user_id IS NULL AND target_authority_key = 'platform'
       ) OR (
         scope = 'organization' AND organization_id IS NOT NULL AND owner_user_id IS NULL AND
@@ -145,9 +146,9 @@ ALTER TABLE "execution_targets" ADD CONSTRAINT "execution_targets_authority_scop
       ) OR (
         scope = 'owner' AND organization_id IS NOT NULL AND owner_user_id IS NOT NULL AND
         target_authority_key = 'owner:' || organization_id::text || ':' || owner_user_id
-      ));--> statement-breakpoint
-ALTER TABLE "workers" ADD CONSTRAINT "workers_scope_owner_check" CHECK ((scope = 'owner' AND owner_user_id IS NOT NULL) OR (scope IN ('platform', 'organization') AND owner_user_id IS NULL));--> statement-breakpoint
-ALTER TABLE "workers" ADD CONSTRAINT "workers_target_scope_check" CHECK ((
+      )); EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "workers" ADD CONSTRAINT "workers_scope_owner_check" CHECK ((scope = 'owner' AND owner_user_id IS NOT NULL) OR (scope IN ('platform', 'organization') AND owner_user_id IS NULL)); EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "workers" ADD CONSTRAINT "workers_target_scope_check" CHECK ((
         scope = 'platform' AND target_authority_key = 'platform'
       ) OR (
         scope = 'organization' AND (
@@ -155,7 +156,7 @@ ALTER TABLE "workers" ADD CONSTRAINT "workers_target_scope_check" CHECK ((
         )
       ) OR (
         scope = 'owner' AND target_authority_key = 'owner:' || organization_id::text || ':' || owner_user_id
-      ));--> statement-breakpoint
-ALTER TABLE "workers" ADD CONSTRAINT "workers_device_identity_check" CHECK (status = 'revoked' OR (
+      )); EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "workers" ADD CONSTRAINT "workers_device_identity_check" CHECK (status = 'revoked' OR (
         device_public_key IS NOT NULL AND device_thumbprint IS NOT NULL AND profile_hash IS NOT NULL AND enrolled_at IS NOT NULL
-      ));
+      )); EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;

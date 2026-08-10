@@ -50,6 +50,10 @@ export interface WorkerEnrollmentRepository {
     ownerUserId: string | null;
     executionTargetId: string;
   }): Promise<Worker | null>;
+  findPlatformPhysicalAuthority(executionTargetId: string): Promise<{
+    worker: Worker;
+    target: EnrollmentTarget;
+  } | null>;
   insertWorker(values: NewWorker): Promise<Worker>;
   rotateWorker(input: {
     id: string;
@@ -84,6 +88,12 @@ export interface WorkerEnrollmentRepository {
     executionTargetId: string;
     deviceGeneration: number;
     status: "active" | "draining" | "offline";
+    now: Date;
+  }): Promise<boolean>;
+  heartbeatSessionProfile(input: {
+    workerId: string;
+    executionTargetId: string;
+    deviceGeneration: number;
     now: Date;
   }): Promise<boolean>;
   revokeTargetAuthority(input: { executionTargetId: string; now: Date }): Promise<number | null>;
@@ -167,6 +177,27 @@ export function createWorkerEnrollmentRepository(tx: Db): WorkerEnrollmentReposi
       ];
       const [worker] = await tx.select().from(workers).where(and(...conditions)).limit(1).for("update");
       return worker ?? null;
+    },
+    async findPlatformPhysicalAuthority(executionTargetId) {
+      const [row] = await tx.select({
+        worker: workers,
+        target: enrollmentTargetColumns,
+      }).from(workers)
+        .innerJoin(executionTargets, and(
+          eq(workers.executionTargetId, executionTargets.id),
+          eq(workers.targetAuthorityKey, executionTargets.targetAuthorityKey),
+        ))
+        .where(and(
+          eq(executionTargets.id, executionTargetId),
+          isNull(executionTargets.organizationId),
+          isNull(executionTargets.ownerUserId),
+          eq(executionTargets.scope, "platform"),
+          eq(workers.scope, "platform"),
+          isNull(workers.organizationId),
+          isNull(workers.ownerUserId),
+        ))
+        .limit(1);
+      return row ?? null;
     },
     async insertWorker(values) {
       const [worker] = await tx.insert(workers).values(values).returning();
@@ -266,6 +297,18 @@ export function createWorkerEnrollmentRepository(tx: Db): WorkerEnrollmentReposi
         eq(executionTargets.deviceGeneration, input.deviceGeneration),
         ne(executionTargets.status, "disabled"),
       )).returning({ id: executionTargets.id });
+      return rows.length === 1;
+    },
+    async heartbeatSessionProfile(input) {
+      const rows = await tx.update(workers).set({
+        lastSeenAt: input.now,
+        updatedAt: input.now,
+      }).where(and(
+        eq(workers.id, input.workerId),
+        eq(workers.executionTargetId, input.executionTargetId),
+        eq(workers.deviceGeneration, input.deviceGeneration),
+        ne(workers.status, "revoked"),
+      )).returning({ id: workers.id });
       return rows.length === 1;
     },
     async revokeTargetAuthority(input) {

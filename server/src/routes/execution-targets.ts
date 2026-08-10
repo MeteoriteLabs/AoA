@@ -37,6 +37,7 @@ import {
   WorkerSessionError,
   type VerifiedTargetPrincipal,
 } from "../middleware/worker-session-auth.js";
+import { sendWorkerProtocolError } from "../services/worker-protocol-http.js";
 
 const uuidParam = z.string().uuid();
 
@@ -71,6 +72,7 @@ function requireWorkerHeartbeatAuthority(db: Db, workerSession?: {
         next();
         return;
       }
+      if (sessionAuthenticator) res.locals.workerProtocolV1 = true;
       const proof = deviceProofHeaders(req);
       const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
       const correlationId = req.header(WORKER_CONTROL_HEADERS.requestId);
@@ -272,6 +274,10 @@ export function executionTargetRoutes(opts: {
             status: input.status ?? "active",
           }) ? 1 : 0);
       if (updated === 0) {
+        if (authority.kind === "session") {
+          sendWorkerProtocolError(req, res, "unauthorized", opts.workerSession?.now?.() ?? new Date());
+          return;
+        }
         res.status(404).json({ error: "execution target not found" });
         return;
       }
