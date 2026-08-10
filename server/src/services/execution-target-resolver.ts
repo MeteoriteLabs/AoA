@@ -170,14 +170,6 @@ export async function resolveExecutionTargetForRun(
       trustClass: executionTargets.trustClass,
       status: executionTargets.status,
       organizationId: executionTargets.organizationId,
-      ownerUserId: executionTargets.ownerUserId,
-      scope: executionTargets.scope,
-      targetAuthorityKey: executionTargets.targetAuthorityKey,
-      deviceGeneration: executionTargets.deviceGeneration,
-      registeredProfile: executionTargets.registeredProfile,
-      registeredProfileHash: executionTargets.registeredProfileHash,
-      providerConstraintProfile: executionTargets.providerConstraintProfile,
-      lastSeenAt: executionTargets.lastSeenAt,
       config: executionTargets.config,
     })
     .from(executionTargets)

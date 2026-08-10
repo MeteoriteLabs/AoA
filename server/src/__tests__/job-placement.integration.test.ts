@@ -42,7 +42,9 @@ const WORKER_PLATFORM = "97000000-0000-4000-8000-000000000002";
 const PASSWORD = "job-009-role-password";
 const POLICY_HASH = "a".repeat(64);
 
-const integration = process.env.AOA_RUN_WIN_INTEGRATION === "1" ? describe : describe.skip;
+const integration = describe.skipIf(
+  process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1",
+);
 
 function sha256(value: Uint8Array | string): string {
   return createHash("sha256").update(value).digest("hex");
