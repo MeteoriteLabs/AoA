@@ -333,3 +333,35 @@ all produced descriptor-allowed frozen `ProtocolErrorV1`. Expired collisions at 
 1/100/101/301 positions, an additional final-row collision, unexpired replay, restart, and
 concurrent replicas all behaved as specified while cleanup remained bounded. No Critical,
 Important, or specification blocker remains; JOB-002 review attempt 3 passed.
+
+## E3-F013 - JOB-009 needed proof-bound profile authority without widening legacy resolution
+
+**Date:** 2026-08-10
+**Status:** `resolved_in_JOB-009_implementation_pending_review`
+**Severity:** P1 authority boundary / compatibility evidence
+**Affected ticket:** JOB-009
+
+**Finding:** The E2 registry had the correct target identity/generation/scope and JOB-002
+persisted a hash of the worker hello, but authoritative placement also needs the registered
+profile/provider ceilings and the proof-bound full hello that can only narrow those ceilings.
+Legacy target rows do not contain that authority and cannot be inferred safely. JOB-002 also
+leaves a freshly proof-bound worker in `enrolled`; its heartbeat path updates liveness but does
+not promote trust status. During aggregate verification, the first implementation additionally
+widened the pre-existing heartbeat resolver projection to the new profile columns, which broke
+the E2 serving-role fixture and coupled legacy resolution to placement-only authority. Its
+Windows integration skip expression also allowed Linux to skip the suite, which violated the
+fail-closed test-hygiene contract.
+
+**Disposition:** JOB-009 extends the one `execution_targets` registry with an atomic registered
+profile/provider-constraint snapshot and stores the proof-bound full hello on the existing
+worker row; it creates no second registry or wire field. Legacy rows without an explicit
+registered placement profile remain ineligible/queued rather than receiving inferred
+privilege. A current proof-bound `enrolled` worker or `active` worker may be considered only
+when every target/generation/profile/key/thumbprint/hello fact still matches; hello can only
+reduce server authority. Rich profile reads live in the JOB-009 bounded tenant/operator
+repositories, while the legacy heartbeat resolver retains its original projection. Serving
+role grants add only the exact new target-profile columns, and the integration suite runs by
+default on Linux while Windows requires `AOA_RUN_WIN_INTEGRATION=1`. Focused placement,
+role/RLS, migration/C14, frozen-E1, typecheck, and build lanes are green. The exact Windows
+aggregate remains honestly non-green for visible non-JOB-009 collection/contention/timeouts;
+DEC-03 Linux CI remains formal authority and a distinct reviewer must still certify JOB-009.
