@@ -435,6 +435,8 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     abortControllers: [] as AbortController[],
     abortCalls: 0,
     abortAt: null as number | null,
+    observerAliasControls: [] as AbortController[],
+    observerAliasControlObserved: null as boolean | null,
     openInvocations: [] as StartupInvocationReceipt[],
     activeInvocation: null as StartupInvocationReceipt | null,
     transactionReceipts: [] as StartupTransactionReceipt[],
@@ -987,42 +989,111 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     const record = (...args: unknown[]) => { state.logs.push(args); };
     return { ...actual, logger: { trace: record, debug: record, info: record, warn: record, error: record } };
   });
-  const isolated = await import("../db/distributed-execution-databases.js");
 
-  state.ownerClient = postgres(ownerNamedUrl, {
-    max: 4,
-    connection: {
-      client_encoding: "UTF8",
-      statement_timeout: inject?.endsWith("-pending") ? 0 : 5_000,
-      lock_timeout: 750,
-      idle_in_transaction_session_timeout: 5_000,
-    },
-  });
-  const instrumentedOwnerDb = instrumentDb(
-    drizzlePg(state.ownerClient, { schema: dbSchema }) as unknown as Db,
-    "owner",
-  );
-  if (inject === "lock-timeout") {
-    state.blocker = postgres(namedUrl(adminUrl, "blocker"), { max: 1 });
-    await state.blocker`SELECT pg_advisory_lock(903003)`;
+  // Install one observer before the isolated import so a production module-scope constructor
+  // alias captures the observer too. The WeakMap preserves the owning open after activeInvocation
+  // is cleared, while inactive control constructions cannot pollute per-open controller counts.
+  const NativeAbortController = globalThis.AbortController;
+  const controllerOwners = new WeakMap<AbortController, StartupInvocationReceipt>();
+  class ObservedAbortController extends NativeAbortController {
+    constructor() {
+      super();
+      const invocation = state.activeInvocation;
+      if (!invocation) return;
+      controllerOwners.set(this, invocation);
+      invocation.controllerCreatedAt ??= performance.now();
+      invocation.controllers.push(this);
+      state.abortControllers.push(this);
+    }
+
+    override abort(reason?: unknown) {
+      const invocation = controllerOwners.get(this);
+      if (invocation) {
+        state.abortCalls += 1;
+        if (!this.signal.aborted) {
+          const at = performance.now();
+          const receipt: StartupDeadlineReceipt = {
+            invocationId: invocation.id,
+            signal: this.signal,
+            at,
+          };
+          invocation.deadlineReceipt ??= receipt;
+          state.abortAt ??= at;
+        }
+      }
+      super.abort(reason);
+    }
   }
-
-  const cleanup = async () => {
-    for (const pending of state.pendingBudgetWork) pending.release();
-    await Promise.allSettled(state.pendingBudgetWork.map((pending) => pending.drained));
-    for (const waiters of state.positiveWaiters.values()) {
-      for (const resolve of waiters) resolve();
+  globalThis.AbortController = ObservedAbortController;
+  const CapturedBeforeIsolatedImportAbortController = globalThis.AbortController;
+  const restoreObservedAbortController = () => {
+    if (globalThis.AbortController === ObservedAbortController) {
+      globalThis.AbortController = NativeAbortController;
     }
-    state.positiveWaiters.clear();
-    if (state.blocker) {
-      await state.blocker`SELECT pg_advisory_unlock(903003)`.catch(() => {});
-      await state.blocker.end({ timeout: 1 }).catch(() => {});
-    }
-    await state.ownerClient?.end({ timeout: 1 }).catch(() => {});
-    for (const client of state.clients) await client.end({ timeout: 1 }).catch(() => {});
+  };
+  const restoreHarnessGlobals = () => {
+    restoreObservedAbortController();
     vi.doUnmock("@armyofagents/db");
     vi.doUnmock("../middleware/logger.js");
     vi.resetModules();
+  };
+
+  let isolated: typeof import("../db/distributed-execution-databases.js");
+  try {
+    isolated = await import("../db/distributed-execution-databases.js");
+    restoreObservedAbortController();
+    const aliasControl = new CapturedBeforeIsolatedImportAbortController();
+    state.observerAliasControls.push(aliasControl);
+    state.observerAliasControlObserved = aliasControl instanceof ObservedAbortController;
+    aliasControl.abort();
+  } catch (error) {
+    restoreHarnessGlobals();
+    throw error;
+  }
+
+  let instrumentedOwnerDb: Db;
+  try {
+    state.ownerClient = postgres(ownerNamedUrl, {
+      max: 4,
+      connection: {
+        client_encoding: "UTF8",
+        statement_timeout: inject?.endsWith("-pending") ? 0 : 5_000,
+        lock_timeout: 750,
+        idle_in_transaction_session_timeout: 5_000,
+      },
+    });
+    instrumentedOwnerDb = instrumentDb(
+      drizzlePg(state.ownerClient, { schema: dbSchema }) as unknown as Db,
+      "owner",
+    );
+    if (inject === "lock-timeout") {
+      state.blocker = postgres(namedUrl(adminUrl, "blocker"), { max: 1 });
+      await state.blocker`SELECT pg_advisory_lock(903003)`;
+    }
+  } catch (error) {
+    await state.blocker?.end({ timeout: 1 }).catch(() => {});
+    await state.ownerClient?.end({ timeout: 1 }).catch(() => {});
+    restoreHarnessGlobals();
+    throw error;
+  }
+
+  const cleanup = async () => {
+    try {
+      for (const pending of state.pendingBudgetWork) pending.release();
+      await Promise.allSettled(state.pendingBudgetWork.map((pending) => pending.drained));
+      for (const waiters of state.positiveWaiters.values()) {
+        for (const resolve of waiters) resolve();
+      }
+      state.positiveWaiters.clear();
+      if (state.blocker) {
+        await state.blocker`SELECT pg_advisory_unlock(903003)`.catch(() => {});
+        await state.blocker.end({ timeout: 1 }).catch(() => {});
+      }
+      await state.ownerClient?.end({ timeout: 1 }).catch(() => {});
+      for (const client of state.clients) await client.end({ timeout: 1 }).catch(() => {});
+    } finally {
+      restoreHarnessGlobals();
+    }
   };
   return {
     state,
@@ -1041,36 +1112,16 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       };
       state.openInvocations.push(invocation);
       state.activeInvocation = invocation;
-      const NativeAbortController = globalThis.AbortController;
-      class ObservedAbortController extends NativeAbortController {
-        constructor() {
-          super();
-          invocation.controllerCreatedAt ??= performance.now();
-          invocation.controllers.push(this);
-          state.abortControllers.push(this);
-        }
-        override abort(reason?: unknown) {
-          state.abortCalls += 1;
-          if (!this.signal.aborted) {
-            const at = performance.now();
-            const receipt: StartupDeadlineReceipt = {
-              invocationId: invocation.id,
-              signal: this.signal,
-              at,
-            };
-            invocation.deadlineReceipt ??= receipt;
-            state.abortAt ??= at;
-          }
-          super.abort(reason);
-        }
-      }
+      const previousAbortController = globalThis.AbortController;
       globalThis.AbortController = ObservedAbortController;
       try {
         return await (isolated.openDistributedExecutionDatabases as unknown as typeof openFinalStartup)(input);
       } finally {
         invocation.returnedAt = performance.now();
         state.activeInvocation = null;
-        globalThis.AbortController = NativeAbortController;
+        if (globalThis.AbortController === ObservedAbortController) {
+          globalThis.AbortController = previousAbortController;
+        }
       }
     }) as typeof openFinalStartup,
     input: {
@@ -1166,6 +1217,32 @@ async function withOuterWatchdog<T>(promise: Promise<T>, timeoutMs = 12_000): Pr
   }
 }
 
+async function waitForReceiptSettlement(
+  receipts: readonly { settledAt: number | null }[],
+  deadlineAt: number,
+): Promise<
+  | { kind: "settled"; observedAt: number }
+  | { kind: "watchdog"; observedAt: number; unsettled: number }
+> {
+  while (performance.now() < deadlineAt) {
+    if (receipts.every((receipt) => receipt.settledAt !== null)) {
+      return { kind: "settled", observedAt: performance.now() };
+    }
+    await new Promise((resolve) => setTimeout(
+      resolve,
+      Math.max(0, Math.min(10, deadlineAt - performance.now())),
+    ));
+  }
+  if (receipts.every((receipt) => receipt.settledAt !== null)) {
+    return { kind: "settled", observedAt: performance.now() };
+  }
+  return {
+    kind: "watchdog",
+    observedAt: performance.now(),
+    unsettled: receipts.filter((receipt) => receipt.settledAt === null).length,
+  };
+}
+
 function statementTimeoutMs(value: string | null): number | null {
   if (value === null) return null;
   if (value === "0") return 0;
@@ -1176,10 +1253,54 @@ function statementTimeoutMs(value: string | null): number | null {
 }
 
 const EARLY_ABORT_SETTLEMENT_WATCHDOG_MS = 2_000;
+const EARLY_ABORT_PUBLIC_WATCHDOG_MS = 12_000;
 
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
   "distributed-execution non-owner startup gate",
   () => {
+    it("observes a constructor alias captured before isolated import without polluting opens", async () => {
+      guard();
+      const harness = await createAdvisoryStartupHarness();
+      try {
+        const observerControls = harness.state.observerAliasControls;
+        expect(observerControls).toHaveLength(1);
+        expect(harness.state.observerAliasControlObserved).toBe(true);
+        expect(observerControls[0]?.signal.aborted).toBe(true);
+        expect(harness.state.openInvocations).toEqual([]);
+        expect(harness.state.abortControllers).toEqual([]);
+        expect(harness.state.abortCalls).toBe(0);
+        expect(harness.state.abortAt).toBeNull();
+      } finally {
+        await harness.cleanup();
+      }
+    }, 20_000);
+
+    it("keeps the prompt cancellation receipt bound independent from public teardown", async () => {
+      guard();
+      const pendingQuery = { settledAt: null as number | null };
+      const pendingTransaction = { settledAt: null as number | null };
+      let releasePublic!: () => void;
+      const publicOperation = new Promise<string>((resolve) => { releasePublic = () => resolve("closed"); });
+      setTimeout(() => {
+        const settledAt = performance.now();
+        pendingQuery.settledAt = settledAt;
+        pendingTransaction.settledAt = settledAt;
+      }, 0);
+
+      const prompt = await waitForReceiptSettlement(
+        [pendingQuery, pendingTransaction],
+        performance.now() + 100,
+      );
+      expect(prompt).toMatchObject({ kind: "settled", observedAt: expect.any(Number) });
+      expect(await withOuterWatchdog(publicOperation, 25)).toEqual({ kind: "watchdog" });
+
+      releasePublic();
+      expect(await withOuterWatchdog(publicOperation, 250)).toEqual({
+        kind: "fulfilled",
+        value: "closed",
+      });
+    }, 5_000);
+
     it("keeps the real flag-off server usable with a non-superuser execution_targets owner", async () => {
       guard();
       const result = await observeServer({
@@ -2040,6 +2161,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       guard();
       const harness = await createAdvisoryStartupHarness(injection);
       const operation = harness.open(harness.input);
+      void operation.catch(() => {});
       try {
         const pending = await harness.waitForActivePendingQuery(phase, 3_000);
         const [invocation] = harness.state.openInvocations;
@@ -2103,7 +2225,46 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           `SQL timeout remaining at abort (${timeoutRemainingAtAbort}ms) must not settle the short watchdog lane`,
         ).toBe(true);
 
-        const outcome = await withOuterWatchdog(operation, EARLY_ABORT_SETTLEMENT_WATCHDOG_MS);
+        const promptSettlementDeadline = (exactAbortAt ?? Number.NEGATIVE_INFINITY) +
+          EARLY_ABORT_SETTLEMENT_WATCHDOG_MS;
+        const promptSettlement = await waitForReceiptSettlement(
+          [pending, ...transactionsPendingAtAbort],
+          promptSettlementDeadline,
+        );
+        expect.soft(promptSettlement).toMatchObject({
+          kind: "settled",
+          observedAt: expect.any(Number),
+        });
+        expect.soft(pending.settledAt ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(
+          promptSettlementDeadline,
+        );
+        for (const transaction of transactionsPendingAtAbort) {
+          expect.soft(transaction.settledAt ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(
+            promptSettlementDeadline,
+          );
+        }
+        expect.soft(pending.abortObservedAt ?? Number.NEGATIVE_INFINITY)
+          .toBeGreaterThanOrEqual(exactAbortAt ?? Number.POSITIVE_INFINITY);
+        expect.soft(pending.settledAt ?? Number.NEGATIVE_INFINITY)
+          .toBeGreaterThanOrEqual(pending.abortObservedAt ?? Number.POSITIVE_INFINITY);
+        expect.soft(targetTransactions[0]).toMatchObject({
+          role,
+          phase,
+          outcome: "rejected",
+          settledAt: expect.any(Number),
+        });
+        for (const transaction of transactionsPendingAtAbort) {
+          expect.soft(transaction.outcome, `${transaction.role}:${transaction.phase}`).not.toBe("pending");
+          expect.soft(transaction.settledAt ?? Number.NEGATIVE_INFINITY)
+            .toBeGreaterThanOrEqual(pending.abortObservedAt ?? Number.POSITIVE_INFINITY);
+        }
+
+        const publicWatchdogRemaining = Math.max(
+          1,
+          EARLY_ABORT_PUBLIC_WATCHDOG_MS -
+            (performance.now() - (exactAbortAt ?? Number.NEGATIVE_INFINITY)),
+        );
+        const outcome = await withOuterWatchdog(operation, publicWatchdogRemaining);
         const publicReturnedAt = invocation?.returnedAt;
         const settlement = await observeAdvisoryStartupSettlement(harness.token);
         expect.soft(outcome).toMatchObject({
@@ -2116,8 +2277,10 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         expect.soft(typeof publicReturnedAt).toBe("number");
         expect.soft(publicReturnedAt ?? Number.NEGATIVE_INFINITY)
           .toBeGreaterThanOrEqual(externallyAbortedAt);
+        expect.soft(publicReturnedAt ?? Number.NEGATIVE_INFINITY)
+          .toBeGreaterThanOrEqual(exactAbortAt ?? Number.POSITIVE_INFINITY);
         expect.soft((publicReturnedAt ?? Number.POSITIVE_INFINITY) - externallyAbortedAt)
-          .toBeLessThan(EARLY_ABORT_SETTLEMENT_WATCHDOG_MS);
+          .toBeLessThan(EARLY_ABORT_PUBLIC_WATCHDOG_MS);
         expect.soft(harness.state.abortCalls).toBe(1);
         expect.soft(harness.state.abortAt ?? Number.NEGATIVE_INFINITY)
           .toBeGreaterThanOrEqual(externallyAbortedAt);
@@ -2215,7 +2378,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         );
         expect(drained).toMatchObject({ kind: "fulfilled", value: true });
       }
-    }, 20_000);
+    }, 30_000);
 
     it("bounds and awaits a pending owner cleanup query on normal returned close", async () => {
       guard();

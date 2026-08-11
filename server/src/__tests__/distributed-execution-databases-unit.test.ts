@@ -185,6 +185,11 @@ function analyzeSharedStartupBudget(sourceText: string): {
     statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true,
   );
   const openFunction = openFunctions.length === 1 ? openFunctions[0] : undefined;
+  const cleanupFunctions = source.statements.filter((statement): statement is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(statement) &&
+    statement.name?.text === "assertTrackedParticipantsClosed",
+  );
+  const cleanupFunction = cleanupFunctions.length === 1 ? cleanupFunctions[0] : undefined;
   const controllerDeclarations: ts.VariableDeclaration[] = [];
   const controllerConstructions: ts.NewExpression[] = [];
   const deadlineDeclarations: ts.VariableDeclaration[] = [];
@@ -198,6 +203,9 @@ function analyzeSharedStartupBudget(sourceText: string): {
       ts.isTypeAssertionExpression(current)) current = current.expression;
     return current;
   };
+  const isUnshadowedGlobalIdentifier = (node: ts.Node, name: string): node is ts.Identifier =>
+    ts.isIdentifier(node) && node.text === name &&
+    checker.getSymbolAtLocation(node)?.valueDeclaration === undefined;
   const resolvesGlobalMember = (
     node: ts.Expression,
     member: "AbortController" | "setTimeout",
@@ -247,8 +255,10 @@ function analyzeSharedStartupBudget(sourceText: string): {
   };
   const isPerformanceNow = (node: ts.Node): boolean => {
     const expression = ts.isExpression(node) ? unwrap(node) : node;
-    return ts.isCallExpression(expression) && expression.arguments.length === 0 &&
-      expression.expression.getText(source) === "performance.now";
+    if (!ts.isCallExpression(expression) || expression.arguments.length !== 0) return false;
+    const callee = unwrap(expression.expression);
+    return ts.isPropertyAccessExpression(callee) && callee.name.text === "now" &&
+      isUnshadowedGlobalIdentifier(unwrap(callee.expression), "performance");
   };
   const numericConstValue = (node: ts.Expression): number | null => {
     const expression = unwrap(node);
@@ -681,25 +691,101 @@ function analyzeSharedStartupBudget(sourceText: string): {
   const negativeConcurrent = includesPair("app-negative", "operator-negative");
   const positiveConcurrent = includesPair("app-positive", "operator-positive");
   const requiredBarriers = ["owner-exclusive", "app-positive", "operator-positive"];
-  const isWithinOpen = (node: ts.Node): boolean => {
+  const isWithinFunction = (
+    node: ts.Node,
+    expected: ts.FunctionLikeDeclaration | undefined,
+  ): boolean => {
     let current: ts.Node | undefined = node;
-    while (current && current !== openFunction) current = current.parent;
-    return current === openFunction;
+    while (current && current !== expected) current = current.parent;
+    return expected !== undefined && current === expected;
   };
-  const exactStartupTimer = timeoutCalls.length === 1 && isWithinOpen(timeoutCalls[0]!)
-    ? timeoutCalls[0]
-    : undefined;
+  const startupTimers = timeoutCalls.filter((call) => isWithinFunction(call, openFunction));
+  const cleanupTimers = timeoutCalls.filter((call) => isWithinFunction(call, cleanupFunction));
+  const exactStartupTimer = startupTimers.length === 1 ? startupTimers[0] : undefined;
   const hasOneOuterDeadlineTimer = exactStartupTimer !== undefined &&
     nearestFunction(exactStartupTimer) === openFunction && exactStartupTimer.arguments.length >= 2 &&
     containsControllerAbort(exactStartupTimer.arguments[0]!) &&
     containsDeadlineSubtraction(exactStartupTimer.arguments[1]!);
+  const cleanupBudgetDeclarations: ts.VariableDeclaration[] = [];
+  for (const statement of source.statements) {
+    if (!ts.isVariableStatement(statement) ||
+      (statement.declarationList.flags & ts.NodeFlags.Const) === 0) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name) &&
+        declaration.name.text === "STARTUP_CLOSE_TIMEOUT_MS" &&
+        declaration.initializer && numericConstValue(declaration.initializer) === 5_000) {
+        cleanupBudgetDeclarations.push(declaration);
+      }
+    }
+  }
+  const cleanupBudgetSymbol = cleanupBudgetDeclarations.length === 1 &&
+    ts.isIdentifier(cleanupBudgetDeclarations[0]!.name)
+    ? checker.getSymbolAtLocation(cleanupBudgetDeclarations[0]!.name)
+    : undefined;
+  const cleanupStartDeclarations: ts.VariableDeclaration[] = [];
+  const cleanupLoops: ts.DoStatement[] = [];
+  if (cleanupFunction?.body) {
+    const collectCleanupBound = (node: ts.Node) => {
+      if (ts.isVariableDeclaration(node) && nearestFunction(node) === cleanupFunction &&
+        ts.isIdentifier(node.name) && node.name.text === "cleanupStartedAt" &&
+        node.initializer && isPerformanceNow(node.initializer) &&
+        ts.isVariableDeclarationList(node.parent) &&
+        (node.parent.flags & ts.NodeFlags.Const) !== 0) {
+        cleanupStartDeclarations.push(node);
+      }
+      if (ts.isDoStatement(node) && nearestFunction(node) === cleanupFunction) {
+        cleanupLoops.push(node);
+      }
+      ts.forEachChild(node, collectCleanupBound);
+    };
+    collectCleanupBound(cleanupFunction.body);
+  }
+  const cleanupStartSymbol = cleanupStartDeclarations.length === 1 &&
+    ts.isIdentifier(cleanupStartDeclarations[0]!.name)
+    ? checker.getSymbolAtLocation(cleanupStartDeclarations[0]!.name)
+    : undefined;
+  const exactCleanupLoop = cleanupLoops.length === 1 ? cleanupLoops[0] : undefined;
+  const hasExactCleanupDeadline = exactCleanupLoop !== undefined && (() => {
+    const condition = unwrap(exactCleanupLoop.expression);
+    if (!ts.isBinaryExpression(condition) ||
+      condition.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
+      !ts.isIdentifier(unwrap(condition.right)) ||
+      checker.getSymbolAtLocation(unwrap(condition.right)) !== cleanupBudgetSymbol) return false;
+    const elapsed = unwrap(condition.left);
+    return ts.isBinaryExpression(elapsed) &&
+      elapsed.operatorToken.kind === ts.SyntaxKind.MinusToken &&
+      isPerformanceNow(elapsed.left) && ts.isIdentifier(unwrap(elapsed.right)) &&
+      checker.getSymbolAtLocation(unwrap(elapsed.right)) === cleanupStartSymbol;
+  })();
+  const exactCleanupTimer = cleanupTimers.length === 1 ? cleanupTimers[0] : undefined;
+  const hasResolveOnlyCleanupPoll = exactCleanupTimer !== undefined && (() => {
+    if (exactCleanupTimer.arguments.length !== 2 ||
+      numericConstValue(exactCleanupTimer.arguments[1]!) !== 25 ||
+      !ts.isIdentifier(unwrap(exactCleanupTimer.arguments[0]!))) return false;
+    const executor = nearestFunction(exactCleanupTimer);
+    if (!executor || (!ts.isArrowFunction(executor) && !ts.isFunctionExpression(executor)) ||
+      executor.parameters.length !== 1 || !ts.isIdentifier(executor.parameters[0]!.name) ||
+      checker.getSymbolAtLocation(unwrap(exactCleanupTimer.arguments[0]!)) !==
+        checker.getSymbolAtLocation(executor.parameters[0]!.name) ||
+      ts.isBlock(executor.body) || unwrap(executor.body) !== exactCleanupTimer) return false;
+    const promise = executor.parent;
+    return ts.isNewExpression(promise) &&
+      isUnshadowedGlobalIdentifier(unwrap(promise.expression), "Promise") &&
+      promise.arguments?.length === 1 && promise.arguments[0] === executor &&
+      ts.isAwaitExpression(promise.parent) && exactCleanupLoop !== undefined &&
+      containsNode(exactCleanupLoop.statement, promise.parent);
+  })();
+  const hasOneBoundedCleanupPoll = cleanupFunctions.length === 1 &&
+    cleanupFunction?.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true &&
+    cleanupBudgetDeclarations.length === 1 && cleanupStartDeclarations.length === 1 &&
+    hasExactCleanupDeadline && hasResolveOnlyCleanupPoll;
   return {
     valid: openFunctions.length === 1 && controllerConstructions.length === 1 &&
       controllerDeclarations.length === 1 &&
       perOpenControllers.length === 1 && deadlineDeclarations.length === 1 &&
       perOpenDeadlines.length === 1 && budgetMs === 5_000 &&
       deadlineWrites.length === 0 && independentSignalTimeouts === 0 &&
-      hasOneOuterDeadlineTimer &&
+      timeoutCalls.length === 2 && hasOneOuterDeadlineTimer && hasOneBoundedCleanupPoll &&
       budgetedPhases.length === STARTUP_PHASES.length && negativeConcurrent && positiveConcurrent &&
       requiredBarriers.every((phase) => budgetedBarrierPhases.includes(phase)),
     openFunctions: openFunctions.length,
@@ -886,6 +972,15 @@ describe("distributed-execution database strangler", () => {
   it("owns exactly one immutable deadline and one shared abort controller for the complete startup", () => {
     const strictValidFixture = `
       const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;
+      const STARTUP_CLOSE_TIMEOUT_MS = 5_000;
+      async function assertTrackedParticipantsClosed() {
+        const cleanupStartedAt = performance.now();
+        do {
+          if (await cleanupSettled()) return;
+          await new Promise<void>((resolve) => setTimeout(resolve, 25));
+        } while (performance.now() - cleanupStartedAt < STARTUP_CLOSE_TIMEOUT_MS);
+        throw new Error("cleanup did not settle");
+      }
       export async function openDistributedExecutionDatabases() {
         const startupAbort = new AbortController();
         const startupDeadline = performance.now() + STARTUP_HANDSHAKE_TIMEOUT_MS;
@@ -929,6 +1024,85 @@ describe("distributed-execution database strangler", () => {
       positiveConcurrent: true,
       budgetedBarrierPhases: ["owner-exclusive", "app-positive", "operator-positive"],
     });
+
+    const qualifiedCleanupPollFixture = strictValidFixture.replace(
+      "setTimeout(resolve, 25)",
+      "globalThis.setTimeout(resolve, 25)",
+    );
+    const aliasedCleanupPollFixture = strictValidFixture
+      .replace(
+        "const STARTUP_CLOSE_TIMEOUT_MS = 5_000;",
+        `const STARTUP_CLOSE_TIMEOUT_MS = 5_000;
+         const scheduleCleanupPoll = globalThis.setTimeout;`,
+      )
+      .replace("setTimeout(resolve, 25)", "scheduleCleanupPoll(resolve, 25)");
+    for (const validCleanupPoll of [qualifiedCleanupPollFixture, aliasedCleanupPollFixture]) {
+      expect(analyzeSharedStartupBudget(validCleanupPoll)).toMatchObject({
+        valid: true,
+        controllers: 1,
+        deadlines: 1,
+        budgetMs: 5_000,
+        budgetedPhases: STARTUP_PHASES,
+        causallyBoundPhases: STARTUP_PHASES,
+      });
+    }
+
+    const slowCleanupPoll = strictValidFixture.replace(
+      "setTimeout(resolve, 25)",
+      "setTimeout(resolve, 250)",
+    );
+    const rejectingCleanupPoll = strictValidFixture.replace(
+      "new Promise<void>((resolve) => setTimeout(resolve, 25))",
+      "new Promise<void>((resolve, reject) => setTimeout(reject, 25))",
+    );
+    const unboundedCleanupPoll = strictValidFixture.replace(
+      "performance.now() - cleanupStartedAt < STARTUP_CLOSE_TIMEOUT_MS",
+      "performance.now() - cleanupStartedAt < 50_000",
+    );
+    const extraCleanupTimer = strictValidFixture.replace(
+      "if (await cleanupSettled()) return;",
+      `if (await cleanupSettled()) return;
+          globalThis.setTimeout(() => undefined, 25);`,
+    );
+    const shadowedPromiseCleanupPoll = strictValidFixture.replace(
+      "async function assertTrackedParticipantsClosed() {",
+      `async function assertTrackedParticipantsClosed() {
+        const Promise = class NeverSettles<T> {
+          constructor(_executor: (
+            resolve: (value: T) => void,
+            reject: (reason: unknown) => void,
+          ) => void) {}
+          then(
+            _resolve: (value: T) => void,
+            _reject: (reason: unknown) => void,
+          ): void {}
+        };`,
+    );
+    const shadowedPerformanceCleanupPoll = strictValidFixture.replace(
+      "async function assertTrackedParticipantsClosed() {",
+      `async function assertTrackedParticipantsClosed() {
+        const performance = { now: () => 0 };`,
+    );
+    for (const invalidCleanupPoll of [
+      slowCleanupPoll,
+      rejectingCleanupPoll,
+      unboundedCleanupPoll,
+      extraCleanupTimer,
+      shadowedPromiseCleanupPoll,
+      shadowedPerformanceCleanupPoll,
+    ]) {
+      expect(analyzeSharedStartupBudget(invalidCleanupPoll)).toMatchObject({
+        valid: false,
+        controllers: 1,
+        deadlines: 1,
+        budgetMs: 5_000,
+        budgetedPhases: STARTUP_PHASES,
+        causallyBoundPhases: STARTUP_PHASES,
+        negativeConcurrent: true,
+        positiveConcurrent: true,
+        budgetedBarrierPhases: ["owner-exclusive", "app-positive", "operator-positive"],
+      });
+    }
 
     const qualifiedStrictValidFixture = strictValidFixture
       .replace("new AbortController()", "new globalThis.AbortController()")
