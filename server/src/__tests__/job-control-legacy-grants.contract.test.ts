@@ -153,6 +153,68 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreezeFixture({
   columns: Readonly<Record<string, Readonly<Record<string, PlanRolePrivileges>>>>;
 });
 
+// PostgreSQL stores relacl nullness independently from effective privileges. Keep one literal
+// entry for every serving relation so column-only authority cannot make an owner ACL disappear
+// from this oracle, and a newly materialized ACL cannot be inferred away by the grant matrix.
+const PLAN_DERIVED_RELATION_ACL_NULLNESS = deepFreezeFixture({
+  activity_log: false,
+  agent_runtime_decisions: false,
+  agent_runtime_trust_rules: false,
+  agent_wakeup_requests: false,
+  agents: false,
+  approvals: false,
+  artifact_versions: false,
+  artifacts: false,
+  assets: false,
+  budget_incidents: false,
+  budget_policies: false,
+  companies: false,
+  company_memberships: false,
+  cost_events: false,
+  discussion_entries: false,
+  execution_targets: false,
+  execution_workspaces: false,
+  heartbeat_runs: false,
+  hub_audit: false,
+  hub_counter_snapshots: false,
+  internal_agent_config: false,
+  internal_agent_conversations: false,
+  internal_agent_messages: false,
+  internal_agent_runs: false,
+  internal_agent_runtime_approvals: false,
+  internal_agent_tool_trust_rules: false,
+  issue_comments: false,
+  issue_labels: false,
+  issues: false,
+  job_artifacts: false,
+  job_attempts: false,
+  job_outbox: false,
+  job_secret_handles: false,
+  jobs: false,
+  labels: false,
+  leases: false,
+  mcp_api_keys: true,
+  notification_digest_items: false,
+  notification_preferences: false,
+  notifications: false,
+  organization_memberships: false,
+  organizations: false,
+  projects: false,
+  service_instances: false,
+  services: false,
+  task_dependencies: false,
+  task_outputs: false,
+  thread_orchestration_state: false,
+  user_roles: false,
+  worker_enrollment_code_routes: false,
+  worker_enrollment_codes: false,
+  worker_lease_rejections: false,
+  worker_operation_receipts: false,
+  worker_proof_replays: false,
+  workers: false,
+  workspace_runtime_services: false,
+} as const satisfies Readonly<Record<keyof typeof PLAN_DERIVED_ACL_MATRIX.relations, boolean>>);
+
 describe("JOB-001 bounded aoa_app authority", () => {
   it("adds the outbox as a forced-RLS new-path table with exact DML", () => {
     const submissionNewPath = (grants as typeof grants & {
@@ -352,6 +414,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       }
     };
     expectDeepFrozenFixture(PLAN_DERIVED_ACL_MATRIX);
+    expectDeepFrozenFixture(PLAN_DERIVED_RELATION_ACL_NULLNESS);
     const manifest = grants as typeof grants & {
       APP_SERVING_RELATIONS?: readonly string[];
       OPERATOR_SERVING_RELATIONS?: readonly string[];
@@ -398,10 +461,11 @@ describe("JOB-003 bounded aoa_app authority", () => {
     const sorted = (tuples: readonly ExpectedTuple[]) => [...tuples].sort((left, right) =>
       tupleKey(left).localeCompare(tupleKey(right)));
     const ownerTablePrivileges = [
-      "SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER",
+      "SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN",
     ] as const;
     const expectedRelations: Record<string, { aclIsNull: boolean; tuples: ExpectedTuple[] }> = {};
     expect(Object.keys(PLAN_DERIVED_ACL_MATRIX.relations).sort()).toEqual(relations);
+    expect(Object.keys(PLAN_DERIVED_RELATION_ACL_NULLNESS).sort()).toEqual(relations);
     for (const relation of relations) {
       const planPrivileges = (PLAN_DERIVED_ACL_MATRIX.relations as
         Readonly<Record<string, PlanRolePrivileges>>)[relation];
@@ -409,7 +473,9 @@ describe("JOB-003 bounded aoa_app authority", () => {
       if (!planPrivileges) continue;
       const app = planPrivileges.aoa_app;
       const operator = planPrivileges.aoa_operator;
-      const aclIsNull = app.length === 0 && operator.length === 0;
+      const aclIsNull = PLAN_DERIVED_RELATION_ACL_NULLNESS[
+        relation as keyof typeof PLAN_DERIVED_RELATION_ACL_NULLNESS
+      ];
       expectedRelations[relation] = {
         aclIsNull,
         tuples: aclIsNull ? [] : sorted([
@@ -417,7 +483,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
             grantor: "RELATION_OWNER" as const,
             grantee: "RELATION_OWNER" as const,
             privilegeType,
-            isGrantable: true,
+            isGrantable: false,
           })),
           ...app.map((privilegeType) => ({
             grantor: "RELATION_OWNER" as const,

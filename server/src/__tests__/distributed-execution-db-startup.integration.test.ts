@@ -155,17 +155,36 @@ beforeAll(async () => {
       `CREATE ROLE "aoa_legacy_table_owner" LOGIN PASSWORD '${LEGACY_OWNER_PASSWORD}' ` +
         "NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION",
     );
-    await admin.unsafe(`GRANT USAGE ON SCHEMA public, drizzle TO "aoa_legacy_table_owner"`);
-    await admin.unsafe(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "aoa_legacy_table_owner"`);
-    await admin.unsafe(`GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "aoa_legacy_table_owner"`);
-    await admin.unsafe(`GRANT SELECT ON ALL TABLES IN SCHEMA drizzle TO "aoa_legacy_table_owner"`);
-    await admin.unsafe(`ALTER TABLE execution_targets OWNER TO "aoa_legacy_table_owner"`);
-    legacyOwnerUrl = adminUrl.replace("test:test", `aoa_legacy_table_owner:${LEGACY_OWNER_PASSWORD}`);
     await admin.unsafe(`CREATE DATABASE startup_other`);
     otherAdminUrl = adminUrl.replace(/\/postgres$/, "/startup_other");
     await applyPendingMigrations(otherAdminUrl);
     otherAppUrl = otherAdminUrl.replace("test:test", `aoa_app:${APP_PASSWORD}`);
     otherOperatorUrl = otherAdminUrl.replace("test:test", `aoa_operator:${OPERATOR_PASSWORD}`);
+    await admin.unsafe(`CREATE DATABASE startup_legacy_owner`);
+    const legacyAdminUrl = adminUrl.replace(/\/postgres$/, "/startup_legacy_owner");
+    await applyPendingMigrations(legacyAdminUrl);
+    const legacySetup = postgres(legacyAdminUrl, { max: 1 });
+    try {
+      await legacySetup.unsafe(
+        `GRANT USAGE ON SCHEMA public, drizzle TO "aoa_legacy_table_owner"`,
+      );
+      await legacySetup.unsafe(
+        `GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "aoa_legacy_table_owner"`,
+      );
+      await legacySetup.unsafe(
+        `GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "aoa_legacy_table_owner"`,
+      );
+      await legacySetup.unsafe(
+        `GRANT SELECT ON ALL TABLES IN SCHEMA drizzle TO "aoa_legacy_table_owner"`,
+      );
+      await legacySetup.unsafe(`ALTER TABLE execution_targets OWNER TO "aoa_legacy_table_owner"`);
+    } finally {
+      await legacySetup.end();
+    }
+    legacyOwnerUrl = legacyAdminUrl.replace(
+      "test:test",
+      `aoa_legacy_table_owner:${LEGACY_OWNER_PASSWORD}`,
+    );
   } catch (error) {
     setupError = error;
   }
@@ -821,6 +840,23 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
 
       const legacyOwner = postgres(legacyOwnerUrl, { max: 1 });
       try {
+        const [identity] = await legacyOwner<{
+          current_user: string;
+          rolsuper: boolean;
+          owns_execution_targets: boolean;
+        }[]>`
+          SELECT current_user,
+            (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS rolsuper,
+            pg_get_userbyid(relation.relowner) = current_user AS owns_execution_targets
+          FROM pg_class relation
+          JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+          WHERE namespace.nspname = 'public' AND relation.relname = 'execution_targets'
+        `;
+        expect(identity).toEqual({
+          current_user: "aoa_legacy_table_owner",
+          rolsuper: false,
+          owns_execution_targets: true,
+        });
         await legacyOwner`
           INSERT INTO execution_targets
             (organization_id, slug, kind, trust_class, status, capabilities, config, scope, target_authority_key)
