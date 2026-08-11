@@ -1821,7 +1821,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       [
         "an unlisted-column grant option",
         "GRANT SELECT (label) ON workers TO aoa_app WITH GRANT OPTION",
-        "REVOKE GRANT OPTION FOR SELECT (label) ON workers FROM aoa_app",
+        "REVOKE SELECT (label) ON workers FROM aoa_app",
       ],
       [
         "a PUBLIC relation ACL",
