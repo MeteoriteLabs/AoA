@@ -1078,18 +1078,25 @@ delta for E3-F028–E3-F033”
 This record plans, but does not implement or resolve, the six final-review findings:
 
 - **E3-F028:** `openDistributedExecutionDatabases` must accept the already-migrated owner
-  `Db` plus an exact ordered checked-in migration-hash ledger. Only the owner reads the exact
-  `drizzle.__drizzle_migrations` rows; no best-effort timestamp mapping, extra/missing hash,
-  or app/operator journal grant is allowed. With fixed pool/connect/statement/lock/idle/close
-  deadlines, one secret random signed-bigint transaction-advisory probe must prove
+  `Db` plus an exact checked-in migration-hash ledger. Only the owner reads
+  `drizzle.__drizzle_migrations`; DB serial IDs are non-authoritative, and a one-to-one DB-hash
+  set join reconstructs checked-in order before the canonical digest. Missing/extra/duplicate
+  rows fail, while a correctly repaired row with a later/out-of-order ID passes. No best-effort
+  timestamp mapping or app/operator journal grant is allowed. With fixed
+  pool/connect/statement/lock/idle/close deadlines, one secret random signed-bigint probe must prove
   owner-exclusive contention blocks app/operator shared locks while held and app/operator can
-  hold shared locks together after release. Two valid databases, terminated backends, pool
-  saturation, and every timeout are mandatory REDs with stable non-secret errors and cleanup.
+  hold shared locks together after release. One common abort controller rejects every barrier;
+  all participant transactions roll back/settle before postgres.js forced bounded end, after
+  which recorded backend PIDs/advisory locks must disappear. Two valid databases, loss at
+  every lock phase, exact max-four app/operator saturation, and every timeout are mandatory REDs.
 - **E3-F029:** startup relation sets are derived exactly from every table and column grant
   constant, including column-only `mcp_api_keys`/`execution_targets`; every expected relation
   must exist as an ordinary table while every unexpected effective privilege remains denied.
-  A table-specific 15-relation/22-policy catalog certificate checks RLS/FORCE, policy name,
-  permissiveness, command, roles, qual/check, direct ACL, and grant option. The two certificate
+  A checked-in explicit 15-relation/14-FORCE/1-non-FORCE/22-policy catalog certificate lists
+  every row and per-table count, requires permissive policies, and compares the installed
+  PostgreSQL `pg_get_expr` deparse including implicit text casts. It checks every
+  `aclexplode(relacl)` and every user-column `aclexplode(attacl)` tuple with grantor, grantee,
+  privilege, and grantable bit. The two certificate
   tables remain FORCE RLS with one exact app tenant policy and exact non-grantable app CRUD;
   `execution_targets` remains RLS enabled and explicitly not FORCE with its exact three current
   policies. No migration or grant change is planned.
@@ -1100,9 +1107,17 @@ This record plans, but does not implement or resolve, the six final-review findi
   or exact target/placement/current generation/profile/provider/binding drift; age is never a
   correctness predicate. Cleanup runs once inside the existing transaction for every actually
   visited admitted shard, including empty/pending shards, without extending the deadline or
-  changing cursor/page bounds. Dense Cartesian and concurrency REDs are required.
+  changing cursor/page bounds. Before each cleanup select/delete/cardinality, DB-time, claim,
+  and delivery statement, the immutable tick deadline is recomputed and a descending
+  transaction-local timeout installed; no DB/publisher/shard launches at zero. Dense Cartesian,
+  concurrency, descending-timeout, and no-post-deadline REDs are required.
 - **E3-F031:** the campaign CLI must use an unselectable module-private production capability
   factory. Only process/artifact/store/clock seams exist in direct hermetic tests. Production
+  starts through the pinned E6F-06 runner image's credentialless read-only bootstrap config,
+  which verifies an absolute Node/runner/manifest path and digest before JavaScript starts.
+  PATH Node/wrappers, NODE preloads, Git overrides, AWS endpoint/config/static credentials,
+  proxies, and custom CAs are absent from the minimal parent environment; real-entry negatives
+  fail before a JS marker. Production then
   recomputes Git/detached lineage, fixed executable digests/environment, E6F-06 provenance,
   child NDJSON/redaction, archive scan/hash, immutable S3 Object Lock COMPLIANCE upload, exact
   readback/retention, and sanitized QA/failure evidence. The existing AWS SDK is sufficient.
@@ -1116,7 +1131,9 @@ This record plans, but does not implement or resolve, the six final-review findi
   returns bounded SQL-observed counts from the tenant claim statement plus exact `RETURNING`
   counts; no candidate-length inference or privileged/global scan is allowed. IDs, hashes,
   errors, arbitrary labels, payload, proof, fence, and credentials are forbidden. Flag-off
-  imports/constructs/emits none of it.
+  dynamically loads neither `worker-control`/leasing nor metrics/scheduler/outbox; module mocks
+  that throw on resolution prove the entire static import chain is absent. The metrics GREEN
+  boundary includes `index.ts`, `app.ts`, and `routes/worker-control.ts`.
 - **E3-F033:** non-platform poll must move its worker profile touch after authority locking,
   lock/revalidate target before worker, and retain that target→worker order shared with revoke.
   A real PostgreSQL barrier proves poll/revoke settles within the existing 750 ms bound without
@@ -1130,3 +1147,9 @@ schema/migrations, grants, owner fallback, and a selectable production test adap
 conditions. `tickets/JOB-003-result.md` remains `needs_changes` until a distinct reviewer
 certifies the implemented candidate; the later formal performance QA and independent Security
 handoff remain separate required evidence.
+
+Plan exactness re-review of docs commit `c1efbbe2177018d72db6bd0d16dc0996b5af8353`
+opened the six P1 clarifications above. The canonical amendment now closes each at design
+level without widening E1, schema/migrations, grants, production test seams, or evidence
+claims. JOB-003 and E3-F028–E3-F033 remain `needs_changes` until implementation and fresh
+independent review; this planning correction is not a ticket pass.

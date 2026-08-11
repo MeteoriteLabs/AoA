@@ -1548,16 +1548,9 @@ Invoke-NativeGate 'E3-PERF-01 manifest preflight' {
 }
 ```
 
-After the one-file manifest commit, the Gate Owner runs this exact campaign trigger from its
-derived detached gate revision, substituting the committed manifest path and literal attempt:
-
-```powershell
-$perfManifest = 'docs/replatform/epics/E3-job-control/qa/<committed-manifest-name>.json'
-$perfOutput = Join-Path $env:AOA_EVIDENCE_ROOT 'e3-perf-01/<implementation-sha40>/aN'
-Invoke-NativeGate 'E3-PERF-01' {
-  node scripts/run-e3-perf-01.mjs --manifest $perfManifest --output $perfOutput
-}
-```
+After the one-file manifest commit, the Gate Owner must use the final-review binding delta's
+out-of-band pinned absolute-Node bootstrap command below. A PATH-resolved `node`, substituted
+manifest/output argument, or direct invocation of the JS entry is not campaign authority.
 
 The expanded command, manifest Git blob, verified source/dependency input closure, runner-
 script Git blob, implementation and evidence-parent revisions/trees, derived gate revision/
@@ -1603,7 +1596,7 @@ schema, `0229`/`0230`/`0231`, role, or grant change in this round.
 | `server/src/db/distributed-execution-databases.ts` | Derive exact relation/column/RLS manifests from the grant constants, attest them, construct bounded pools, and prove owner/app/operator share one transaction-advisory domain before returning either serving pool. |
 | `server/src/db/job-control-legacy-grants.ts` | Export the immutable derived serving-relation manifests and table-specific RLS manifest. Do not duplicate relation names in the startup helper. |
 | `server/src/index.ts` | Pass the migrated owner `Db` and strict migration identity into startup; construct one Pino metrics adapter only inside the flag-on branch and pass it to leasing, scheduler, and outbox. Flag-off performs no dynamic import, construction, emission, or database probe for these objects. |
-| `server/src/app.ts`, `server/src/routes/worker-control.ts` | Thread the already-created optional `JobControlMetrics` instance to the route-owned leasing service; never construct a logger adapter per request or under flag-off. |
+| `server/src/app.ts`, `server/src/routes/worker-control.ts` | `app.ts` dynamically imports the worker-control route only inside the flag-on branch; the route threads the already-created optional `JobControlMetrics` instance to leasing and uses only erased type imports for metrics/scheduler. Never construct a logger adapter per request or under flag-off. |
 | `packages/db/src/repositories/tenant/job-control.ts` | Return bounded truthful scan telemetry from the claim statement; select and delete only exact cleanup tuples; return the actual affected count; lock non-platform target before worker and revalidate the binding. |
 | `server/src/services/job-outbox-worker.ts` | Invoke cleanup exactly once inside the existing admitted-shard tenant transaction for every actually visited shard, including empty and already-pending shards, without adding a shard/page or resetting the cursor/deadline. Return and emit exact tick/cleanup counts. |
 | `server/src/services/job-leasing.ts` | Consume repository scan/upsert counts and emit only closed metrics; emit one head-restart event per real rollback/restart. Do not infer certificate hits. |
@@ -1612,7 +1605,7 @@ schema, `0229`/`0230`/`0231`, role, or grant change in this round.
 | `scripts/run-e3-perf-01.mjs` | Replace the unconditional campaign failure with a sealed production factory and real Git/process/provenance/NDJSON/redaction/archive/S3 Object Lock/readback/QA orchestration. |
 | `scripts/e3-perf-01-manifest.schema.json`, `scripts/e3-perf-01-evidence.schema.json` | Close executable/digest/environment, store, result, and failure-evidence fields; reject unknown or credential-bearing input. |
 | `scripts/verify-e3-perf-01-handoff.mjs` | New independent Security Gate command that re-fetches and revalidates the immutable object and retention before producing a handoff receipt. |
-| Existing JOB-003 DB/server tests, including `distributed-execution-databases-unit.test.ts` and `tenant-app-db-startup.test.ts`, plus `server/src/__tests__/job-control-metrics.test.ts`, `packages/db/src/__tests__/job-leasing-lock-order.integration.test.ts`, and `scripts/verify-e3-perf-01-handoff.test.mjs` | Own the REDs and hermetic production-driver contracts below. Test seams may not be selected by real CLI/config/environment. |
+| Existing JOB-003 DB/server tests, including `distributed-execution-databases-unit.test.ts` and `tenant-app-db-startup.test.ts`, plus `server/src/__tests__/job-control-metrics.test.ts`, test-only `server/src/__tests__/fixtures/job-control-module-load-sentinel.mjs`, `packages/db/src/__tests__/job-leasing-lock-order.integration.test.ts`, and `scripts/verify-e3-perf-01-handoff.test.mjs` | Own the REDs and hermetic production-driver contracts below. Test seams may not be selected by real CLI/config/environment. |
 
 ##### 1. One migrated database and one advisory domain (E3-F028)
 
@@ -1629,13 +1622,19 @@ export async function loadRequiredMigrationIdentity(): Promise<RequiredMigration
 ```
 
 `loadRequiredMigrationIdentity()` hashes every checked-in migration byte stream using the
-same algorithm/order used by Drizzle, rejects duplicate paths/hashes, and returns the exact
-ordered ledger plus lowercase SHA-256 of its canonical ordered-hash array. The owner query
-reads `id, hash` from `drizzle.__drizzle_migrations ORDER BY id`; startup requires exact
-length, position, hash, and ledger digest equality. Missing, extra, duplicate, reordered, or
-unreadable rows fail `distributed_execution_migration_identity`. This query is executed only
-through `ownerDb`; neither serving role is granted `USAGE` on `drizzle` or any privilege on
-the journal.
+same algorithm and journal-file order used by Drizzle, rejects duplicate paths or hashes, and
+returns that ordered ledger plus lowercase SHA-256 of its canonical ordered-hash array. The
+owner query reads every non-null `id, hash` from `drizzle.__drizzle_migrations` without using
+row order. Startup rejects duplicate DB hashes, then performs a one-to-one hash join from the
+DB set to the checked-in ledger: every checked-in hash must map to exactly one DB row and no DB
+row may remain. Only after that set proof does it reconstruct checked-in journal order and
+recompute `ledgerSha256`. Database serial insertion IDs are diagnostic only and never define
+migration order. Missing, extra, duplicate, unmapped, or unreadable rows fail
+`distributed_execution_migration_identity`; a repaired missing journal row inserted later
+with a higher/out-of-order serial ID passes when and only when the exact hash set is restored.
+The RED matrix includes that repaired/out-of-order success case plus missing, extra, and
+duplicate-hash failures. This query is executed only through `ownerDb`; neither serving role
+is granted `USAGE` on `drizzle` or any privilege on the journal.
 
 The startup signature becomes:
 
@@ -1653,20 +1652,35 @@ Fixed production bounds are `pool max=4`, connect `5_000 ms`, statement `5_000 m
 transaction lock `750 ms`, idle-in-transaction `5_000 ms`, pool idle `30_000 ms`, and close
 `5_000 ms`. `packages/db/src/client.ts` maps these to postgres-js connection options; every
 startup transaction also executes transaction-local `statement_timeout`, `lock_timeout`, and
-`idle_in_transaction_session_timeout`. A single outer deadline covers each phase. Closing is
-deadline-raced and idempotent; startup never returns a partly verified pool.
+`idle_in_transaction_session_timeout`. One `AbortController` and one immutable outer deadline
+cover the owner, app, and operator participants. Startup never returns a partly verified pool.
 
 After the owner ledger check and both existing role/ACL checks, startup creates a secret
 signed-bigint key with `randomBytes(8).readBigInt64BE()` and never logs or persists it. In an
-owner transaction it obtains `pg_advisory_xact_lock(key)` and holds it behind an in-process
-barrier. While held, app and operator each begin a bounded transaction and execute
+owner transaction it obtains `pg_advisory_xact_lock(key)` and holds it behind an abort-aware
+in-process barrier. While held, app and operator each begin a bounded transaction and execute
 `pg_try_advisory_xact_lock_shared(key)`; both results must be exactly `false`. After those
 transactions end and the owner transaction commits, app and operator begin concurrently,
 each obtains the shared transaction lock, reaches a two-party barrier while both locks remain
 held, and then commits; both must be exactly `true`. Transaction scope releases every probe
-lock on success, error, backend loss, or timeout. This owner-exclusive/app+operator-shared
+lock on success, error, backend loss, or timeout. Every participant registers its backend PID
+before locking. Any participant error/timeout/backend loss aborts the common controller,
+rejects every unopened/open barrier, prevents later phases, and makes each transaction execute
+or await rollback. The coordinator awaits `Promise.allSettled` for all three participants
+before close; it never leaves a peer waiting at a barrier. This owner-exclusive/app+operator-shared
 contention followed by simultaneous shared/shared success binds both serving pools to the
 owner's database and Decision #124 advisory domain without revealing database identity.
+
+`NonOwnerDbConnection` changes its close signature to
+`close(input: { timeoutSeconds: number }): Promise<void>`. Normal shutdown and startup failure
+call postgres.js `end({ timeout: 5 })` through
+`NonOwnerDbConnection.close({ timeoutSeconds: 5 })`; a naked `Promise.race` that abandons an
+unsettled `end()` is forbidden. After participant settlement and forced bounded end, the owner
+control connection polls until every recorded app/operator backend PID has disappeared from
+`pg_stat_activity`, the retained owner-pool PID is out of transaction, and `pg_locks` contains
+no advisory lock for any participant PID/key; otherwise it fails `distributed_execution_close`.
+The owner pool itself remains open for the legacy server. PID/key values are assertion-only
+and never logged.
 
 All expected failures are stable, non-secret codes from this closed set:
 `distributed_execution_configuration`, `distributed_execution_migration_identity`,
@@ -1675,10 +1689,13 @@ All expected failures are stable, non-secret codes from this closed set:
 `distributed_execution_close`. Logs may contain only the code and phase enum; never a URL,
 database/role name, advisory key, journal hash, SQL text, driver cause, or credentials.
 Startup REDs use (a) owner/app on one fully migrated database and operator on a second fully
-migrated database, (b) `pg_terminate_backend` during each handshake phase, (c) all four app
-or operator pool slots held, and (d) statement/lock/idle/close deadline expiry. Each must fail
-closed with its stable code and leave zero usable/leaked serving connections; the normal
-same-database case and clean shutdown must pass.
+migrated database, (b) `pg_terminate_backend` separately while owner-exclusive, app-negative,
+operator-negative, app-positive-shared, and operator-positive-shared is held, (c) a test-only
+module mock of the real max-four connection factory that occupies exactly all four app slots
+and then all four operator slots before the next phase, and (d) statement/lock/idle/forced-end
+deadline expiry. Every barrier peer must reject, every transaction must settle, and the owner
+PID/lock disappearance probe must pass before the stable error is observed. The normal
+same-database case and clean shutdown must also prove all probe PIDs/locks disappear.
 
 ##### 2. Exact relation, RLS, policy, and ACL certificate (E3-F029)
 
@@ -1695,32 +1712,82 @@ view, materialized-view, foreign-table, sequence, or partitioned-table substitut
 The existing whole-catalog effective-privilege scan remains and proves every nonmanifest
 relation/column/sequence is inaccessible.
 
-The table-specific RLS manifest records `relrowsecurity`, `relforcerowsecurity`, exact policy
-name/command/role set, normalized `pg_get_expr(polqual)`, normalized
-`pg_get_expr(polwithcheck)`, and exact direct ACL/grant-option posture. In particular:
+`job-control-legacy-grants.ts` freezes these exact relation arrays and counts; no runtime
+discovery may add a row:
 
-- `worker_operation_receipts` is RLS `true`, FORCE `true`, with only
-  `worker_operation_receipts_tenant_isolation`, command `ALL`, role exactly `aoa_app`, and
-  both expressions exactly
-  `organization_id = current_setting('aoa.organization_id', true)::uuid`;
-- `worker_lease_rejections` has the same posture with only
-  `worker_lease_rejections_tenant_isolation`;
-- each certificate table grants app exactly non-grantable `SELECT, INSERT, UPDATE, DELETE`,
-  grants PUBLIC/operator nothing, and has no grant option or unexpected direct grantee; and
-- `execution_targets` is explicitly RLS `true`, FORCE `false`, with exactly the current three
-  policies: `execution_targets_tenant_serving` (`SELECT`, `aoa_app`, the current NULL-or-
-  tenant qual, no check), `execution_targets_platform_operator` (`ALL`, `aoa_operator`, the
-  current null-Organization/null-owner qual and check), and
-  `execution_targets_tenant_enrollment_update` (`UPDATE`, `aoa_app`, exact tenant qual/check).
+```text
+RLS_RELATIONS[15] = [jobs, job_attempts, leases, workers, services,
+  service_instances, job_artifacts, job_secret_handles, job_outbox,
+  worker_enrollment_code_routes, worker_enrollment_codes, worker_proof_replays,
+  execution_targets, worker_operation_receipts, worker_lease_rejections]
+FORCE_RLS_RELATIONS[14] = RLS_RELATIONS except execution_targets
+NON_FORCE_RLS_RELATIONS[1] = [execution_targets]
+POLICY_COUNTS = { jobs:1, job_attempts:1, leases:1, workers:2, services:1,
+  service_instances:1, job_artifacts:1, job_secret_handles:1, job_outbox:1,
+  worker_enrollment_code_routes:3, worker_enrollment_codes:2,
+  worker_proof_replays:2, execution_targets:3, worker_operation_receipts:1,
+  worker_lease_rejections:1 }
+```
 
-The manifest similarly enumerates the already-migrated RLS-bearing serving tables so startup
-cannot accept a granted table with RLS disabled; unlike the two certificate entries, their
-table-specific policy arrays may contain the already-approved multiple app/operator policies.
-Catalog comparison normalizes whitespace/parentheses only, never boolean meaning or role
-membership. REDs drop one expected table in a disposable clone, replace one with each wrong
-relkind, disable RLS/FORCE, add/remove/rename a policy, change command/role/qual/check, add
-PUBLIC/operator ACL, and add app grant option. Every mutation fails startup; the unchanged
-post-0231 database passes. No corrective migration or grant is authorized by this audit.
+The same checked-in manifest contains exactly these 22 permissive policy rows. `ALL` maps to
+catalog `polcmd='*'`; every row requires `polpermissive=true`, the single listed role, and the
+exact `pg_get_expr` qual/check string produced by the installed PostgreSQL, including implicit
+`'literal'::text` casts:
+
+```text
+ORG = (organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)
+CANDIDATE_ORG = (candidate_organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)
+NULL_ORG = (organization_id IS NULL)
+NULL_CANDIDATE_ORG = (candidate_organization_id IS NULL)
+PLATFORM_WORKER = ((organization_id IS NULL) AND (scope = 'platform'::text))
+TENANT_TARGET = ((organization_id IS NULL) OR (organization_id = (current_setting('aoa.organization_id'::text, true))::uuid))
+PLATFORM_TARGET = ((organization_id IS NULL) AND (owner_user_id IS NULL))
+
+[jobs, jobs_tenant_isolation, ALL, aoa_app, ORG, ORG]
+[job_attempts, job_attempts_tenant_isolation, ALL, aoa_app, ORG, ORG]
+[leases, leases_tenant_isolation, ALL, aoa_app, ORG, ORG]
+[workers, workers_tenant_isolation, ALL, aoa_app, ORG, ORG]
+[services, services_tenant_isolation, ALL, aoa_app, ORG, ORG]
+[service_instances, service_instances_tenant_isolation, ALL, aoa_app, ORG, ORG]
+[job_artifacts, job_artifacts_tenant_isolation, ALL, aoa_app, ORG, ORG]
+[job_secret_handles, job_secret_handles_tenant_isolation, ALL, aoa_app, ORG, ORG]
+[job_outbox, job_outbox_tenant_isolation, ALL, aoa_app, ORG, ORG]
+[worker_enrollment_code_routes, worker_enrollment_code_routes_tenant_isolation, ALL, aoa_app, CANDIDATE_ORG, CANDIDATE_ORG]
+[worker_enrollment_code_routes, worker_enrollment_code_routes_platform_operator, ALL, aoa_operator, NULL_CANDIDATE_ORG, NULL_CANDIDATE_ORG]
+[worker_enrollment_code_routes, worker_enrollment_code_routes_operator_discovery, SELECT, aoa_operator, true, null]
+[worker_enrollment_codes, worker_enrollment_codes_tenant_isolation, ALL, aoa_app, ORG, ORG]
+[worker_enrollment_codes, worker_enrollment_codes_platform_operator, ALL, aoa_operator, NULL_ORG, NULL_ORG]
+[worker_proof_replays, worker_proof_replays_tenant_isolation, ALL, aoa_app, ORG, ORG]
+[worker_proof_replays, worker_proof_replays_platform_operator, ALL, aoa_operator, NULL_ORG, NULL_ORG]
+[workers, workers_platform_operator, ALL, aoa_operator, PLATFORM_WORKER, PLATFORM_WORKER]
+[execution_targets, execution_targets_tenant_serving, SELECT, aoa_app, TENANT_TARGET, null]
+[execution_targets, execution_targets_platform_operator, ALL, aoa_operator, PLATFORM_TARGET, PLATFORM_TARGET]
+[execution_targets, execution_targets_tenant_enrollment_update, UPDATE, aoa_app, ORG, ORG]
+[worker_operation_receipts, worker_operation_receipts_tenant_isolation, ALL, aoa_app, ORG, ORG]
+[worker_lease_rejections, worker_lease_rejections_tenant_isolation, ALL, aoa_app, ORG, ORG]
+```
+
+Startup requires exactly 15 RLS rows, 14 FORCE rows, one non-FORCE row, 22 policy rows, and
+the per-table policy counts implied above. It compares `pg_get_expr(polqual, polrelid)` and
+`pg_get_expr(polwithcheck, polrelid)` byte-for-byte with those checked-in deparse strings;
+whitespace/parentheses/casts are not normalized away. A supported PostgreSQL build whose
+deparser differs fails closed until its exact manifest is prospectively reviewed.
+
+For every expected relation, startup records whether `pg_class.relacl` is null and compares
+every tuple from `aclexplode(relacl)` as exact
+`(grantor, grantee, privilege_type, is_grantable)`. Grantor must be the current relation owner
+OID normalized to the checked-in `RELATION_OWNER` symbol; grantee is the exact role or PUBLIC.
+It also enumerates every non-dropped user `pg_attribute` row, records whether `attacl` is null,
+and compares every `aclexplode(attacl)` tuple by column name against the checked-in arrays
+derived from all table/column grant constants. Thus an ACL on an unlisted column, an unexpected
+grantor/grantee/privilege, or any grant option fails even when effective access appears equal.
+The certificate tables have exact non-grantable app CRUD, no app column ACL, and no PUBLIC/
+operator tuple; `execution_targets` keeps only its exact current app/operator column tuples.
+REDs drop/replace an expected relation, disable RLS/FORCE, add/remove/rename/restrict a policy,
+change permissiveness/command/role/qual/check, add a 23rd policy, change a per-table count, add
+PUBLIC/operator ACL, add relation grant option, and add expected or unexpected-column
+`attacl` grant option. Every mutation fails startup; unchanged post-0231 passes. No corrective
+migration or grant is authorized by this audit.
 
 ##### 3. Exact, composed certificate cleanup (E3-F030)
 
@@ -1736,6 +1803,7 @@ export interface LeaseRejectionCleanupResult {
 cleanupLeaseRejectionCertificates(input: {
   limit: number;
   cardinalityLimit: number;
+  beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
 }): Promise<LeaseRejectionCleanupResult>;
 ```
 
@@ -1754,7 +1822,8 @@ is no age/TTL predicate; `updated_at` is ordering only.
 Deletion is a single statement over the exact selected primary-key tuples
 `(organization_id, worker_id, attempt_id)`—a joined
 `DELETE FROM worker_lease_rejections USING selected` CTE or an
-equivalent OR-of-AND tuple predicate—not independent `IN` lists. `DELETE ... RETURNING` is
+equivalent OR-of-AND tuple predicate—not independent `IN` lists. The exact-tuple
+`DELETE RETURNING` result is
 the sole affected-count source. If it ever returns more than `boundedLimit`, the repository
 throws `lease_rejection_cleanup_bound` so the enclosing tenant transaction rolls back; it
 never clamps with `Math.min`. Immediately after the exact-tuple delete, a bounded second query
@@ -1772,12 +1841,28 @@ second transaction nor extends/resets the monotonic deadline, admitted-page limi
 publisher/delivery budget. Cleanup failure rolls back that shard admission and remains
 retryable; it cannot lose the already-durable outbox row.
 
+The tick captures exactly one immutable `deadline = start + tickBudgetMs`. Immediately before
+each cleanup SELECT, exact-tuple DELETE, cardinality SELECT, database-time SELECT, outbox claim,
+and delivery/publication database statement, a closed wrapper recomputes
+`remaining = max(0, floor(deadline - monotonicNow()))`; at zero it throws the existing bounded
+deadline result without issuing `SET LOCAL` or the operation. Otherwise it executes
+`setLocalStatementTimeout(remaining)` and launches exactly that one following statement.
+Cleanup receives this wrapper as `beforeStatement` and calls it immediately before its three
+statements; database time, claim, and delivery call it separately. After every awaited
+non-database publisher, remaining time is recomputed before another publisher, DB statement,
+or shard can launch. A timeout never resets the deadline and an earlier statement timeout is
+never reused for a later statement.
+
 REDs seed dense cross-products of at least three workers × three attempts × two targets and
 prove only the selected tuples disappear; exactly 256 are deleted, the 257th remains, and the
 returned count is 256. Separate cases cover every trigger above, pending/current retention,
 no TTL deletion, cleaner/cleaner `SKIP LOCKED`, cleanup racing claim/upsert, rollback on an
 injected 257-row return, empty/pending shard composition, deadline expiry, cursor continuity,
-and exactly-once invocation per visited shard.
+and exactly-once invocation per visited shard. A fake monotonic clock advances before the six
+statement phases and asserts the installed timeouts are exactly descending
+`[600, 500, 400, 300, 200, 100]`; advancing to the immutable deadline before the next cleanup,
+DB-time, claim, publisher, delivery, or shard asserts that operation is never called. Real-PG
+`pg_sleep` cases repeat the no-post-deadline assertion for cleanup and delivery.
 
 ##### 4. Closed payload-free metrics and truthful claim counts (E3-F032)
 
@@ -1833,8 +1918,13 @@ The existing factories accept those named option interfaces exactly:
 `createJobReadyScheduler(input: JobReadySchedulerOptions = {})`, and
 `createJobOutboxWorker(input: JobOutboxWorkerInput)`.
 `JobOutboxTickResult` adds `cleaned: number`. `createApp` and `workerControlRoutes` add
-`jobControlMetrics?: JobControlMetrics`; `index.ts` passes the same flag-on instance through
-both and uses `NOOP_JOB_CONTROL_METRICS` only as a service default when a caller omits it.
+`jobControlMetrics?: JobControlMetrics`; `index.ts` dynamically imports metrics, scheduler,
+and outbox only after the flag is true, then passes the same instance through both. `app.ts`
+removes its static `worker-control` import and awaits that route import only in its existing
+flag-on composition block. `worker-control.ts` may statically import leasing because the route
+module itself is now absent from the flag-off graph; metrics/scheduler imports there and in
+`app.ts` are `import type`. Services use `NOOP_JOB_CONTROL_METRICS` only when an already-loaded
+flag-on/test caller omits the option.
 
 Every method validates/clamps only to a nonnegative safe integer/boolean/closed scope, catches
 all logger failures, returns `void`, and never changes control flow. The no-op is frozen and
@@ -1847,9 +1937,14 @@ corresponding value above. The complete event allowlist is
 accepted. There are no Organization/company/worker/target/job/attempt/lease IDs, hashes,
 reasons, errors/stacks, SQL, inputs, requirements, fences, proofs, credentials, URLs, or
 caller-supplied labels. Tests capture exact object keys and inject forbidden canaries into all
-nearby domain inputs; zero canary bytes may reach the logger. With the flag off, a module-load
-spy proves the metrics module, scheduler, outbox, and distributed pools are not constructed
-or emitted.
+nearby domain inputs; zero canary bytes may reach the logger. With the flag off, a direct
+`createApp` import uses hoisted module mocks that throw on resolving `worker-control`,
+`job-leasing`, or `job-control-metrics`; all remain untouched. Separately, the real startup
+child runs under a test-only ESM resolve hook that throws if it sees those modules,
+`job-ready-scheduler`, or `job-outbox-worker`, and must reach health. Flag-on variants must hit
+each sentinel, so both REDs are non-vacuous. Static-import AST assertions forbid those runtime
+modules from re-entering the flag-off `index.ts`/`app.ts` graph; the resolve hook is test-only
+and is not selectable by production configuration.
 
 `lockEligibleLeaseCandidates` returns
 `{ candidates, certificateMetrics }`. In the same tenant claim statement, a bounded ordered
@@ -1880,13 +1975,46 @@ dynamic module path, endpoint override, or test mode can select substitutes.
 The strict credentialless manifest adds absolute executable paths plus SHA-256 for Git, Node,
 pnpm, the container runtime, and the E6F-06 provenance verifier; the immutable image digest,
 policy/trust-root digests; the exact fixed argv; and a closed child environment name/value
-allowlist. Only the database URL and default AWS credential chain are out-of-band secret
-slots; neither is serialized or forwarded except to its fixed consumer. Production verifies
-every executable byte digest, runs `git --no-replace-objects` itself, proves detached clean
+allowlist. The Node path/hash must exactly equal the independently pinned bootstrap values
+below. Only a fixed database-secret file mount and the runner image's workload-identity AWS
+chain are out-of-band secret slots; neither secret is serialized or forwarded except to its
+fixed consumer. Production verifies every executable byte digest, runs
+`git --no-replace-objects` itself, proves detached clean
 single-parent lineage and pre/post blob closure, verifies image signature/provenance with the
 pinned verifier/policy/root, and spawns the digest-pinned campaign without a shell and with
 only that environment. Unknown executable, argv, environment, Git, or provenance data fails
 before sampling.
+
+JavaScript cannot attest the Node binary that has already loaded it, so the trust root is the
+pinned E6F-06 Integration Gate runner image/config, not a runner-selected JS seam. That image
+mounts one root-owned read-only credentialless
+`/run/aoa/e3-perf-01-bootstrap.json`. E6F-06 pins the bootstrap schema, image entrypoint,
+native hash verifier, and control-plane signing trust root; before each job, the protected Gate
+control plane binds the exact campaign-config digest out-of-band and the entrypoint verifies/
+mounts those bytes before PowerShell or repository code. QA/handoff later records that digest;
+the manifest and config do not hash each other, so there is no bootstrap self-reference. The
+config's closed fields are: schema version; detached checkout and runner-script absolute paths/hashes; manifest
+absolute path/hash; output directory; absolute Node path/hash; and exact safe parent
+environment keys `LANG=C`, `LC_ALL=C`, `TZ=UTC`, plus `TMPDIR` bound to the config's absolute
+writable temp directory and `AOA_E3_PERF_DATABASE_URL_FILE` bound to its absolute read-only
+secret-file mount. The config contains
+paths and hashes only, never the database value, AWS credential, token, or signing material.
+The pinned image entrypoint supplies this config before repository code runs; real CLI/config/
+environment cannot replace it.
+
+Before Node starts, the formal gate requires the absolute Node/manifest/runner paths, hashes
+their exact bytes with the pinned image PowerShell, and rejects a nonempty `NODE_OPTIONS`,
+`NODE_PATH`, preload, or `PATH`; any `GIT_*` override; `AWS_ENDPOINT_URL*`,
+`AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_PROFILE`, `AWS_CA_BUNDLE`, or static AWS
+credential variable; `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, or `NO_PROXY`; and
+`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, or `GIT_SSL_CAINFO`. It then clears the
+parent environment and installs only the five exact bootstrap values above. Current v1 pins no
+proxy, wrapper, preload, custom CA, AWS endpoint/config file, or PATH; supporting one later is
+a manifest/bootstrap-schema and Security-review change with exact bytes/digest, never an
+ambient exception. Every child executable is absolute, so PATH remains absent.
+The real JS entry immediately re-reads the fixed mount and requires
+`realpath(process.execPath) = realpath(bootstrap.nodeExecutable)` plus the same digest before
+manifest validation; direct invocation outside the verified bootstrap fails closed.
 
 Child stdout is line-buffered with a 1 MiB line cap and total evidence cap, accepts only UTF-8
 NDJSON records valid under the closed evidence schema, and never persists raw stdout/stderr.
@@ -1914,40 +2042,66 @@ verification. Source-contract negatives prove the real entry point has no substi
 selector. Security negatives cover forged/missing provenance, executable or digest drift,
 dirty/attached/replaced Git, environment/argv widening, every NDJSON/redaction/canary failure,
 archive mutation, overwrite, checksum/version/readback mismatch, absent/GOVERNANCE/short
-retention, backend loss, and failure-evidence retention.
+retention, backend loss, and failure-evidence retention. Real-entry subprocess negatives run
+the formal bootstrap—not `runCampaignCommand`—with a relative/PATH Node, wrong Node/script/
+manifest digest, `NODE_OPTIONS` require/import preload, `NODE_PATH`, PATH wrapper, each Git/AWS
+endpoint/config/proxy/custom-CA override above, and a modified bootstrap file. Each exits
+before a JS module-load marker or load child can execute; the valid pinned absolute-node entry
+reaches the real manifest validator. These entry tests expose no capability selector.
 
 Ordinary tests use tiny NDJSON fixtures and never seed one million rows. The formal external
 campaign remains mandatory before an E3 exit, capacity, or SLO claim. External prerequisites
-are: the passing E6F-06 image/signature/provenance/policy/root; reviewed manifest-only gate
-commit and read-only detached checkout; pinned executable bytes; exclusive Linux host with
+are: the passing E6F-06 image/signature/provenance/policy/root and its pinned credentialless
+bootstrap-config digest/mount; reviewed manifest-only gate commit and read-only detached
+checkout; pinned absolute executable bytes; exclusive Linux host with
 the manifest CPU/RAM/storage/PostgreSQL settings; a dedicated migrated benchmark database;
-`AOA_EVIDENCE_ROOT` on encrypted local storage; an S3 bucket with versioning and Object Lock
+the bootstrap `outputDirectory` under the approved encrypted local evidence root; an S3 bucket with versioning and Object Lock
 enabled at creation; Integration credentials limited to immutable put/readback; distinct
 Security read/retention credentials; and outbound access only to the pinned provenance and S3
 origins.
 
-The exact Integration command derives the sole manifest added by the gate commit and the
-attempt directory from its closed fields—there are no path/SHA placeholders:
+The exact Integration command consumes only the fixed out-of-band bootstrap mount; it does not
+use PATH or run Git/Node by name before the absolute Node digest is verified:
 
 ```powershell
-$perfManifestPaths = @(git diff-tree --no-commit-id --name-only -r HEAD -- 'docs/replatform/epics/E3-job-control/qa/*-e3-perf-01-*.json')
-if ($perfManifestPaths.Count -ne 1) { throw 'E3-PERF-01 gate commit must add exactly one manifest' }
-$perfManifest = (Resolve-Path -LiteralPath $perfManifestPaths[0]).Path
-$perfDocument = Get-Content -Raw -LiteralPath $perfManifest | ConvertFrom-Json
-if (-not $env:AOA_EVIDENCE_ROOT) { throw 'AOA_EVIDENCE_ROOT is required' }
-$perfOutput = Join-Path $env:AOA_EVIDENCE_ROOT ("e3-perf-01/{0}/{1}" -f $perfDocument.implementationRevision, $perfDocument.attempt)
+$bootstrapPath = '/run/aoa/e3-perf-01-bootstrap.json'
+$bootstrap = Get-Content -Raw -LiteralPath $bootstrapPath | ConvertFrom-Json
+if ($bootstrap.schemaVersion -ne 1) { throw 'invalid E3-PERF-01 bootstrap schema' }
+$allowedBootstrapKeys = @('schemaVersion','checkoutPath','runnerScriptPath','runnerScriptSha256','manifestPath','manifestSha256','outputDirectory','nodeExecutable','nodeSha256','parentEnvironment')
+$actualBootstrapKeys = @($bootstrap.PSObject.Properties.Name | Sort-Object) -join ','
+$expectedBootstrapKeys = @($allowedBootstrapKeys | Sort-Object) -join ','
+if ($actualBootstrapKeys -ne $expectedBootstrapKeys) { throw 'invalid E3-PERF-01 bootstrap fields' }
+$safeEnvironmentKeys = @('LANG','LC_ALL','TZ','TMPDIR','AOA_E3_PERF_DATABASE_URL_FILE')
+$actualEnvironmentKeys = @($bootstrap.parentEnvironment.PSObject.Properties.Name | Sort-Object) -join ','
+$expectedEnvironmentKeys = @($safeEnvironmentKeys | Sort-Object) -join ','
+if ($actualEnvironmentKeys -ne $expectedEnvironmentKeys) { throw 'invalid E3-PERF-01 parent environment' }
+if ($bootstrap.parentEnvironment.LANG -ne 'C' -or $bootstrap.parentEnvironment.LC_ALL -ne 'C' -or $bootstrap.parentEnvironment.TZ -ne 'UTC') { throw 'invalid E3-PERF-01 locale environment' }
+$forbiddenExact = @('PATH','NODE_OPTIONS','NODE_PATH','NODE_EXTRA_CA_CERTS','AWS_CONFIG_FILE','AWS_SHARED_CREDENTIALS_FILE','AWS_PROFILE','AWS_CA_BUNDLE','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','AWS_SESSION_TOKEN','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','SSL_CERT_FILE','SSL_CERT_DIR','GIT_SSL_CAINFO')
+$forbiddenPresent = @(Get-ChildItem Env: | Where-Object { $_.Name -in $forbiddenExact -or $_.Name -like 'GIT_*' -or $_.Name -like 'AWS_ENDPOINT_URL*' })
+if ($forbiddenPresent.Count -ne 0) { throw 'forbidden E3-PERF-01 parent environment' }
+foreach ($path in @($bootstrap.checkoutPath,$bootstrap.runnerScriptPath,$bootstrap.manifestPath,$bootstrap.outputDirectory,$bootstrap.nodeExecutable,$bootstrap.parentEnvironment.TMPDIR,$bootstrap.parentEnvironment.AOA_E3_PERF_DATABASE_URL_FILE)) { if (-not [IO.Path]::IsPathFullyQualified($path)) { throw 'E3-PERF-01 requires absolute paths' } }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $bootstrap.nodeExecutable).Hash.ToLowerInvariant() -ne $bootstrap.nodeSha256) { throw 'E3-PERF-01 Node digest mismatch' }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $bootstrap.runnerScriptPath).Hash.ToLowerInvariant() -ne $bootstrap.runnerScriptSha256) { throw 'E3-PERF-01 runner digest mismatch' }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $bootstrap.manifestPath).Hash.ToLowerInvariant() -ne $bootstrap.manifestSha256) { throw 'E3-PERF-01 manifest digest mismatch' }
+Get-ChildItem Env: | Remove-Item
+foreach ($property in $bootstrap.parentEnvironment.PSObject.Properties) { Set-Item -LiteralPath ("Env:{0}" -f $property.Name) -Value ([string]$property.Value) }
+Set-Location -LiteralPath $bootstrap.checkoutPath
+$perfManifest = $bootstrap.manifestPath
+$perfOutput = $bootstrap.outputDirectory
 Invoke-NativeGate 'E3-PERF-01 formal campaign' {
-  node scripts/run-e3-perf-01.mjs --manifest $perfManifest --output $perfOutput
+  & $bootstrap.nodeExecutable $bootstrap.runnerScriptPath --manifest $perfManifest --output $perfOutput
 }
 ```
 
-After that command succeeds, the Security owner independently runs:
+After that command succeeds, the Security owner's separate pinned runner independently repeats
+the complete bootstrap validation/environment-clear block above, sets the same credentialless
+`$perfManifest`/`$perfOutput`, and then runs:
 
 ```powershell
 $perfQa = Join-Path $perfOutput 'qa.json'
 $securityReceipt = Join-Path $perfOutput 'security-handoff.json'
 Invoke-NativeGate 'E3-PERF-01 independent security handoff' {
-  node scripts/verify-e3-perf-01-handoff.mjs --manifest $perfManifest --qa $perfQa --output $securityReceipt
+  & $bootstrap.nodeExecutable (Join-Path $bootstrap.checkoutPath 'scripts/verify-e3-perf-01-handoff.mjs') --manifest $perfManifest --qa $perfQa --output $securityReceipt
 }
 ```
 
@@ -1986,7 +2140,7 @@ review a mixed later slice:
 3. `fix(job-control): bound certificate cleanup and lock order` — repository/outbox/leasing
    only; independent concurrency/repository review.
 4. `feat(job-control): add payload-free control metrics` — metrics/scheduler/leasing/outbox/
-   index only; independent privacy/observability review.
+   `index.ts`/`app.ts`/`routes/worker-control.ts` only; independent privacy/observability review.
 5. `feat(perf): launch and attest E3 performance campaign` — runner/schemas/verifier/tests
    only; independent Security review. Do not run the formal campaign in this slice.
 6. `docs(job-control): record JOB-003 final review` — result/evidence only after all focused
@@ -2834,13 +2988,24 @@ metrics were absent; and non-platform poll/revoke inverted row-lock order. The b
 fix-round-3 delta above specifies the fresh RED/GREEN and review path. It does not complete
 JOB-003, authorize an SLO claim, or waive the formal campaign.
 
+Plan exactness review of docs commit `c1efbbe2177018d72db6bd0d16dc0996b5af8353`
+then found six remaining P1 specification gaps: serial migration IDs were treated as order;
+handshake peers/close could be abandoned; the 15/22 RLS/ACL certificate was not enumerated;
+the tick reused a statement budget; flag-off retained a static route/leasing import chain; and
+Node attested its own already-running executable. This revision closes those gaps with the
+one-to-one hash-set reconstruction, common abort/settlement/forced-end proof, explicit
+15-relation/22-policy plus relation/column ACL manifest, per-statement immutable-deadline
+wrapper, flag-on dynamic module boundary, and out-of-band pinned absolute-Node bootstrap above.
+The plan P1s are corrected; JOB-003 still remains `needs_changes` pending implementation and
+fresh exact independent review.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–7 rejected + attempt 8 accepted + final implementation review attempt 3 | `NEEDS CHANGES` | Final review of candidate `392c3a2da52c3fd812d7b9e2801fe6523f1cc657` opened E3-F028–E3-F033. Only the fix-round-3 TDD slices above are assignable; ticket completion and SLO claims remain blocked. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–7 rejected + attempt 8 accepted + final implementation review attempt 3 + fix-plan exactness review | `NEEDS CHANGES — PLAN P1S CORRECTED, RE-REVIEW PENDING` | Final candidate review opened E3-F028–E3-F033; exactness review of `c1efbbe2177018d72db6bd0d16dc0996b5af8353` opened six plan P1s now corrected in the binding delta. Ticket completion/SLO claims remain blocked pending implementation and fresh review. |
 | Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
 | Claude (user-provided) | pasted review | External plan delta review | 1 | `TRIAGED — STALE BASE` | Reviewed origin `8e2faa590`, not the local plan; three concerns were already closed, while JOB-009 sizing and explicit JOB-012–014 disablement were valid deltas and are now resolved in plan. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
