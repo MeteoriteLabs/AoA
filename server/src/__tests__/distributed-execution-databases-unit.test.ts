@@ -190,6 +190,7 @@ function analyzeSharedStartupBudget(sourceText: string): {
   const deadlineBudgets = new Map<ts.VariableDeclaration, number | null>();
   const deadlineWrites: ts.BinaryExpression[] = [];
   let independentSignalTimeouts = 0;
+  const timeoutCalls: ts.CallExpression[] = [];
   const unwrap = (node: ts.Expression): ts.Expression => {
     let current = node;
     while (ts.isParenthesizedExpression(current) || ts.isAsExpression(current) ||
@@ -245,6 +246,9 @@ function analyzeSharedStartupBudget(sourceText: string): {
     }
     if (ts.isCallExpression(node) && node.expression.getText(source) === "AbortSignal.timeout") {
       independentSignalTimeouts += 1;
+    }
+    if (ts.isCallExpression(node) && node.expression.getText(source) === "setTimeout") {
+      timeoutCalls.push(node);
     }
     ts.forEachChild(node, collectBindings);
   };
@@ -404,19 +408,6 @@ function analyzeSharedStartupBudget(sourceText: string): {
     visit(node);
     return found;
   };
-  const containsDeadlineAbortTimer = (node: ts.Node): boolean => {
-    let found = false;
-    const visit = (candidate: ts.Node) => {
-      if (ts.isCallExpression(candidate) && candidate.expression.getText(source) === "setTimeout" &&
-        candidate.arguments.length >= 2 && containsControllerAbort(candidate.arguments[0]!) &&
-        containsDeadlineSubtraction(candidate.arguments[1]!)) {
-        found = true;
-      }
-      ts.forEachChild(candidate, visit);
-    };
-    visit(node);
-    return found;
-  };
   const isCausalCancellationPromise = (node: ts.Expression): boolean => {
     const initializer = unwrap(node);
     if (!ts.isNewExpression(initializer) || initializer.expression.getText(source) !== "Promise") {
@@ -429,8 +420,7 @@ function analyzeSharedStartupBudget(sourceText: string): {
     const rejectParameter = executor.parameters[1];
     if (!rejectParameter || !ts.isIdentifier(rejectParameter.name)) return false;
     const rejectSymbol = checker.getSymbolAtLocation(rejectParameter.name);
-    return rejectSymbol !== undefined && containsRejectingAbortListener(executor, rejectSymbol) &&
-      containsDeadlineAbortTimer(initializer);
+    return rejectSymbol !== undefined && containsRejectingAbortListener(executor, rejectSymbol);
   };
   const causalCarrierParameters = new Map<ts.Symbol, ReadonlySet<number>>();
   const collectCausalCarriers = (node: ts.Node) => {
@@ -625,11 +615,23 @@ function analyzeSharedStartupBudget(sourceText: string): {
   const negativeConcurrent = includesPair("app-negative", "operator-negative");
   const positiveConcurrent = includesPair("app-positive", "operator-positive");
   const requiredBarriers = ["owner-exclusive", "app-positive", "operator-positive"];
+  const isWithinOpen = (node: ts.Node): boolean => {
+    let current: ts.Node | undefined = node;
+    while (current && current !== openFunction) current = current.parent;
+    return current === openFunction;
+  };
+  const perOpenTimeouts = timeoutCalls.filter(isWithinOpen);
+  const exactStartupTimer = perOpenTimeouts.length === 1 ? perOpenTimeouts[0] : undefined;
+  const hasOneOuterDeadlineTimer = exactStartupTimer !== undefined &&
+    nearestFunction(exactStartupTimer) === openFunction && exactStartupTimer.arguments.length >= 2 &&
+    containsControllerAbort(exactStartupTimer.arguments[0]!) &&
+    containsDeadlineSubtraction(exactStartupTimer.arguments[1]!);
   return {
     valid: openFunctions.length === 1 && controllerDeclarations.length === 1 &&
       perOpenControllers.length === 1 && deadlineDeclarations.length === 1 &&
       perOpenDeadlines.length === 1 && budgetMs === 5_000 &&
       deadlineWrites.length === 0 && independentSignalTimeouts === 0 &&
+      hasOneOuterDeadlineTimer &&
       budgetedPhases.length === STARTUP_PHASES.length && negativeConcurrent && positiveConcurrent &&
       requiredBarriers.every((phase) => budgetedBarrierPhases.includes(phase)),
     openFunctions: openFunctions.length,
@@ -645,16 +647,38 @@ function analyzeSharedStartupBudget(sourceText: string): {
 }
 
 describe("distributed-execution database strangler", () => {
-  it("allocates no serving/operator connection and needs no URL while flag-off", async () => {
-    await expect(
-      openDistributedExecutionDatabases({
-        enabled: false,
-        ownerDb: {} as never,
-        requiredMigrationIdentity: { orderedHashes: [], ledgerSha256: "0".repeat(64) },
-        appDatabaseUrl: undefined,
-        operatorDatabaseUrl: undefined,
-      }),
-    ).resolves.toBeNull();
+  it("inspects only enabled and allocates no serving connection while flag-off", async () => {
+    let connectionAllocations = 0;
+    const inspectedProperties: PropertyKey[] = [];
+    vi.resetModules();
+    vi.doMock("@armyofagents/db", async () => {
+      const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
+      const rejectAllocation = () => {
+        connectionAllocations += 1;
+        throw new Error("flag-off attempted to allocate a serving connection");
+      };
+      return {
+        ...actual,
+        createTenantAppDbConnection: rejectAllocation,
+        createOperatorDbConnection: rejectAllocation,
+      };
+    });
+    try {
+      const isolated = await import("../db/distributed-execution-databases.js");
+      const input = new Proxy({ enabled: false }, {
+        get(target, property, receiver) {
+          if (property === "enabled") return Reflect.get(target, property, receiver);
+          inspectedProperties.push(property);
+          throw new Error(`flag-off inspected ${String(property)}`);
+        },
+      });
+      await expect(isolated.openDistributedExecutionDatabases(input as never)).resolves.toBeNull();
+      expect(inspectedProperties).toEqual([]);
+      expect(connectionAllocations).toBe(0);
+    } finally {
+      vi.doUnmock("@armyofagents/db");
+      vi.resetModules();
+    }
   });
 
   it("attempts both pool closes and reports aggregate failure to the awaited shutdown path", async () => {
@@ -746,28 +770,32 @@ describe("distributed-execution database strangler", () => {
       export async function openDistributedExecutionDatabases() {
         const startupAbort = new AbortController();
         const startupDeadline = performance.now() + STARTUP_HANDSHAKE_TIMEOUT_MS;
-        const runPhase = async (_phase: string, work: () => Promise<unknown>) => {
-          const cancellation = new Promise<never>((_resolve, reject) => {
-            startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-            setTimeout(
-              () => startupAbort.abort(),
-              Math.max(0, startupDeadline - performance.now()),
-            );
-          });
-          return await Promise.race([work(), cancellation]);
-        };
-        await runPhase("migration-identity", async () => await migrationIdentity());
-        await runPhase("app-authority", async () => await appAuthority());
-        await runPhase("operator-authority", async () => await operatorAuthority());
-        await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
-        await Promise.all([
-          runPhase("app-negative", async () => await appProbe()),
-          runPhase("operator-negative", async () => await operatorProbe()),
-        ]);
-        await Promise.all([
-          runPhase("app-positive", async () => { await appBarrier.wait(); }),
-          runPhase("operator-positive", async () => { await operatorBarrier.wait(); }),
-        ]);
+        const startupTimer = setTimeout(
+          () => startupAbort.abort(),
+          Math.max(0, startupDeadline - performance.now()),
+        );
+        try {
+          const runPhase = async (_phase: string, work: () => Promise<unknown>) => {
+            const cancellation = new Promise<never>((_resolve, reject) => {
+              startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
+            return await Promise.race([work(), cancellation]);
+          };
+          await runPhase("migration-identity", async () => await migrationIdentity());
+          await runPhase("app-authority", async () => await appAuthority());
+          await runPhase("operator-authority", async () => await operatorAuthority());
+          await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
+          await Promise.all([
+            runPhase("app-negative", async () => await appProbe()),
+            runPhase("operator-negative", async () => await operatorProbe()),
+          ]);
+          await Promise.all([
+            runPhase("app-positive", async () => { await appBarrier.wait(); }),
+            runPhase("operator-positive", async () => { await operatorBarrier.wait(); }),
+          ]);
+        } finally {
+          clearTimeout(startupTimer);
+        }
       }
     `;
     expect(analyzeSharedStartupBudget(strictValidFixture)).toEqual({
@@ -781,6 +809,21 @@ describe("distributed-execution database strangler", () => {
       negativeConcurrent: true,
       positiveConcurrent: true,
       budgetedBarrierPhases: ["owner-exclusive", "app-positive", "operator-positive"],
+    });
+
+    const validSharedBudgetPlusIndependentPhaseTimer = strictValidFixture.replace(
+      `              startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });`,
+      `              startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+              setTimeout(() => reject(new Error("independent phase timeout")), 1_000);`,
+    );
+    expect(validSharedBudgetPlusIndependentPhaseTimer).not.toBe(strictValidFixture);
+    expect(analyzeSharedStartupBudget(validSharedBudgetPlusIndependentPhaseTimer)).toMatchObject({
+      valid: false,
+      controllers: 1,
+      deadlines: 1,
+      budgetMs: 5_000,
+      budgetedPhases: STARTUP_PHASES,
+      causallyBoundPhases: STARTUP_PHASES,
     });
 
     const moduleScopedFreshness = `

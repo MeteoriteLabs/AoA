@@ -7,7 +7,7 @@ afterEach(() => {
 });
 
 async function loadWithFixture(
-  entries: ReadonlyArray<{ idx: number; tag: string }>,
+  entries: ReadonlyArray<{ idx: number; tag: string; when?: number }>,
   files: Readonly<Record<string, Buffer>>,
 ) {
   const journal = JSON.stringify({ version: "7", dialect: "postgresql", entries });
@@ -28,21 +28,40 @@ async function loadWithFixture(
 }
 
 describe("required migration identity", () => {
-  it("uses literal Drizzle journal array order when idx values disagree", async () => {
-    // Mutation caught: sorting journal entries by idx silently changes the migration order
-    // Drizzle consumes. The fixture's literal array order is intentionally the reverse of idx.
+  it("uses literal Drizzle journal array order when idx, tag, and when values all disagree", async () => {
+    // Mutations caught: sorting by idx, migration filename/tag, or timestamp silently changes the
+    // order Drizzle consumes. The literal first entry sorts last under all three alternatives.
     const literalFirst = Buffer.from("literal-array-first\n", "utf8");
     const literalSecond = Buffer.from("literal-array-second\n", "utf8");
-    const loadRequiredMigrationIdentity = await loadWithFixture([
-      { idx: 41, tag: "literal_first" },
-      { idx: 3, tag: "literal_second" },
-    ], {
-      "literal_first.sql": literalFirst,
-      "literal_second.sql": literalSecond,
-    });
+    const entries = [
+      { idx: 91, tag: "z_literal_first", when: 9_100 },
+      { idx: 2, tag: "a_literal_second", when: 200 },
+    ] as const;
+    const files = {
+      "z_literal_first.sql": literalFirst,
+      "a_literal_second.sql": literalSecond,
+    } as const;
+    const loadRequiredMigrationIdentity = await loadWithFixture(entries, files);
+    const hashForTag = (tag: (typeof entries)[number]["tag"]) => createHash("sha256")
+      .update(files[`${tag}.sql`])
+      .digest("hex");
+    const orderedHashes = entries.map(({ tag }) => hashForTag(tag));
+
+    // Fail-first controls for the three tempting local mutations. Each produces the same wrong
+    // order here, so the production-loader expectation below cannot false-green on any of them.
+    for (const mutated of [
+      [...entries].sort((left, right) => left.idx - right.idx),
+      [...entries].sort((left, right) => left.tag.localeCompare(right.tag)),
+      [...entries].sort((left, right) => left.when - right.when),
+    ]) {
+      expect(mutated.map(({ tag }) => hashForTag(tag))).toEqual([
+        hashForTag("a_literal_second"),
+        hashForTag("z_literal_first"),
+      ]);
+      expect(mutated.map(({ tag }) => hashForTag(tag))).not.toEqual(orderedHashes);
+    }
+
     const identity = await loadRequiredMigrationIdentity();
-    const orderedHashes = [literalFirst, literalSecond].map((bytes) =>
-      createHash("sha256").update(bytes).digest("hex"));
     expect(identity).toEqual({
       orderedHashes,
       ledgerSha256: createHash("sha256").update(JSON.stringify(orderedHashes)).digest("hex"),
