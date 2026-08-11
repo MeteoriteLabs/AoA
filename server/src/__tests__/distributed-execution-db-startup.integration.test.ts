@@ -354,6 +354,11 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       releasedAt: number | null;
       drainedAt: number | null;
     }>,
+    pendingQueryTimeouts: [] as Array<{
+      invocationId: number;
+      phase: AdvisoryPhase;
+      effectiveStatementTimeout: string;
+    }>,
   };
   const namedUrl = (url: string, suffix: string) => {
     const separator = url.includes("?") ? "&" : "?";
@@ -532,7 +537,25 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               if (transactionReceipt) transactionReceipt.phase = phase;
               const budgetWindow = await consumeBudget(phase);
               if (inject === "shared-budget-pending") {
+                if (!transactionReceipt) {
+                  throw new Error("pending shared-budget query must run inside its startup transaction");
+                }
                 try {
+                  await (target as T & { execute(s: unknown): Promise<unknown> })
+                    .execute(sql`SET LOCAL statement_timeout = 0`);
+                  const timeoutResult = await (target as T & { execute(s: unknown): Promise<unknown> })
+                    .execute(sql`SELECT current_setting('statement_timeout') AS statement_timeout`);
+                  const effectiveStatementTimeout = rows(timeoutResult)
+                    .flatMap((row) => Object.values((row ?? {}) as Record<string, unknown>))
+                    .find((value): value is string => typeof value === "string");
+                  if (effectiveStatementTimeout === undefined) {
+                    throw new Error("pending shared-budget query could not observe transaction-local timeout");
+                  }
+                  state.pendingQueryTimeouts.push({
+                    invocationId: state.activeInvocation?.id ?? -1,
+                    phase,
+                    effectiveStatementTimeout,
+                  });
                   return await (target as T & { execute(s: unknown): Promise<unknown> })
                     .execute(sql`SELECT pg_sleep(60)`);
                 } finally {
@@ -1216,6 +1239,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       let watchdogHandle: ReturnType<typeof setTimeout> | undefined;
       let drainWatchdogHandle: ReturnType<typeof setTimeout> | undefined;
       let releaseAt: number | null = null;
+      let productionReturnedAtBeforeRelease: number | null = null;
       let fixtureWorkDrainedAt: number | null = null;
       let closeSettledBeforeRelease: typeof harness.state.closeSettled = [];
       let settlement: Awaited<ReturnType<typeof observeAdvisoryStartupSettlement>> | undefined;
@@ -1231,6 +1255,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         if (watchdogHandle) clearTimeout(watchdogHandle);
         const invocationId = harness.state.openInvocations[0]?.id;
         closeSettledBeforeRelease = [...harness.state.closeSettled];
+        productionReturnedAtBeforeRelease = harness.state.openInvocations[0]?.returnedAt ?? null;
         releaseAt = harness.releasePendingBudgetWork(invocationId);
         await harness.waitForPendingBudgetWork(invocationId);
         fixtureWorkDrainedAt = performance.now();
@@ -1302,6 +1327,16 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect.soft(harness.state.pendingBudgetWork.map(({ phase }) => phase).sort()).toEqual([
         "app-negative", "operator-negative",
       ]);
+      expect.soft(harness.state.pendingQueryTimeouts
+        .map(({ phase, effectiveStatementTimeout }) => ({ phase, effectiveStatementTimeout }))
+        .sort((left, right) => left.phase.localeCompare(right.phase))).toEqual([
+        { phase: "app-negative", effectiveStatementTimeout: "0" },
+        { phase: "operator-negative", effectiveStatementTimeout: "0" },
+      ]);
+      expect.soft(harness.state.pendingQueryTimeouts.every(({ invocationId }) =>
+        invocationId === invocation?.id)).toBe(true);
+      expect.soft(typeof productionReturnedAtBeforeRelease).toBe("number");
+      expect.soft(productionReturnedAtBeforeRelease).toBe(invocation?.returnedAt ?? null);
       expect.soft(typeof releaseAt).toBe("number");
       expect.soft(typeof fixtureWorkDrainedAt).toBe("number");
       if (releaseAt !== null && fixtureWorkDrainedAt !== null && invocation?.returnedAt !== null) {

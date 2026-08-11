@@ -366,6 +366,7 @@ function analyzeSharedStartupBudget(sourceText: string): {
       }
     }
     if (!listener?.body) return false;
+    if ("asteriskToken" in listener && listener.asteriskToken) return false;
     if (!ts.isBlock(listener.body)) return isDirectRejectCall(listener.body, rejectSymbol);
     const exits = listenerBlockExits(listener.body, rejectSymbol);
     return exits.size === 1 && exits.has("settled");
@@ -870,8 +871,13 @@ describe("distributed-execution database strangler", () => {
         else reject(new Error("fallback"));
       }, { once: true });`,
     );
+    const generatorRejectListener = strictValidFixture.replace(
+      'startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });',
+      'startupAbort.signal.addEventListener("abort", function* () { reject(new Error("generator")); }, { once: true });',
+    );
     expect(analyzeSharedStartupBudget(branchCompleteRejectListener).valid).toBe(true);
     for (const adversary of [
+      generatorRejectListener,
       unreachableRejectListener,
       deadAfterReturnRejectListener,
       conditionalRejectListener,
