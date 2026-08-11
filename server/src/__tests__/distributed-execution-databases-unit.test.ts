@@ -1282,26 +1282,52 @@ describe("distributed-execution database strangler", () => {
       operator: [] as string[],
     };
     const targetFailure = new Error(`multi-host URL reached the ${targetRole} factory`);
+    const dialect = new PgDialect();
     const controlEnd = vi.fn(async () => {});
-    const controlClient = { end: controlEnd };
     const controlOptions: Array<Record<string, unknown>> = [];
+    const controls = new WeakMap<object, {
+      execute(statement: unknown): Promise<unknown>;
+    }>();
     const postgresFactory = vi.fn((options: Record<string, unknown>) => {
       controlOptions.push(options);
-      return controlClient;
+      const connection = options.connection as Record<string, unknown> | undefined;
+      const applicationName = connection?.application_name;
+      if (typeof applicationName !== "string" || applicationName.length === 0) {
+        throw new Error("dedicated owner fixture requires an application_name");
+      }
+      const ordinal = controlOptions.length;
+      const identity = {
+        pid: 900 + ordinal,
+        control_pid: 900 + ordinal,
+        backend_start: `2026-08-12 00:00:${String(ordinal).padStart(2, "0")}+00`,
+        xact_start: `2026-08-12 00:01:${String(ordinal).padStart(2, "0")}+00`,
+        session_role: "owner",
+        database_name: "aoa_control",
+        application_name: applicationName,
+      };
+      const client = { end: controlEnd };
+      controls.set(client, {
+        execute: async (statement: unknown) => {
+          const text = dialect.sqlToQuery(statement as never).sql.toLowerCase();
+          if (text.includes("__drizzle_migrations")) {
+            return [{ id: 1, hash: HERMETIC_MIGRATION_HASH }];
+          }
+          if (text.includes("participant_pids_gone")) {
+            return [{
+              ...identity,
+              participant_pids_gone: true,
+              owner_out_of_transaction: true,
+              advisory_locks_gone: true,
+            }];
+          }
+          if (text.includes("pg_backend_pid") || text.includes("backend_start")) {
+            return [identity];
+          }
+          return [];
+        },
+      });
+      return client;
     });
-    const controlDb = {
-      transaction: async (callback: (transaction: unknown) => unknown) => {
-        return callback({
-          execute: async () => [{
-            control_pid: 999,
-            participant_pids_gone: true,
-            owner_out_of_transaction: true,
-            advisory_locks_gone: true,
-          }],
-        });
-      },
-    };
-    const dialect = new PgDialect();
     const appExecute = async (statement: unknown) => {
       const text = dialect.sqlToQuery(statement as never).sql.toLowerCase();
       if (text.includes("pg_backend_pid")) {
@@ -1359,7 +1385,14 @@ describe("distributed-execution database strangler", () => {
       const actual = await vi.importActual<typeof import("drizzle-orm/postgres-js")>(
         "drizzle-orm/postgres-js",
       );
-      return { ...actual, drizzle: () => controlDb };
+      return { ...actual, drizzle: (client: object) => {
+        const control = controls.get(client);
+        if (!control) throw new Error("unregistered multihost owner control");
+        return {
+          transaction: async (callback: (transaction: unknown) => unknown) =>
+            callback({ execute: control.execute }),
+        };
+      } };
     });
     vi.doMock("@armyofagents/db", async () => {
       const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
