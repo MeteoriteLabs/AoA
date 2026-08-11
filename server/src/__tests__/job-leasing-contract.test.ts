@@ -2808,6 +2808,68 @@ function leaseStaticContextPollViolations(source: string): string[] {
     .flatMap((statement) => [...statement.declarationList.declarations])
     .find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "oldestHeartbeat");
   const expectedOldestHeartbeat = 'target.scope==="platform"?input.platformPhysicalHeartbeatAt?.getTime()??null:!worker.lastSeenAt||!target.lastSeenAt?null:Math.min(worker.lastSeenAt.getTime(),target.lastSeenAt.getTime())';
+  const soleConstDeclaration = (statement: ts.Statement | undefined): ts.VariableDeclaration | null => {
+    if (!statement || !ts.isVariableStatement(statement) ||
+        !(statement.declarationList.flags & ts.NodeFlags.Const) ||
+        statement.declarationList.declarations.length !== 1) return null;
+    return statement.declarationList.declarations[0]!;
+  };
+  const exactInputBinding = (
+    statement: ts.Statement | undefined,
+    names: readonly string[],
+  ): boolean => {
+    const declaration = soleConstDeclaration(statement);
+    if (!declaration || !ts.isObjectBindingPattern(declaration.name) ||
+        pathOf(declaration.initializer)?.join(".") !== "input" ||
+        declaration.name.elements.length !== names.length) return false;
+    return declaration.name.elements.every((element, index) =>
+      !element.dotDotDotToken && !element.propertyName && !element.initializer &&
+      ts.isIdentifier(element.name) && element.name.text === names[index]);
+  };
+  const exactPathBinding = (
+    statement: ts.Statement | undefined,
+    name: string,
+    initializerPath: string,
+  ): boolean => {
+    const declaration = soleConstDeclaration(statement);
+    return Boolean(declaration && ts.isIdentifier(declaration.name) &&
+      declaration.name.text === name &&
+      pathOf(declaration.initializer)?.join(".") === initializerPath);
+  };
+  const exactAuthorityHelperBody = (
+    declaration: ts.FunctionDeclaration | null,
+    inputNames: readonly string[],
+  ): boolean => {
+    if (!declaration?.body || declaration.body.statements.length !== 5) return false;
+    const statements = [...declaration.body.statements];
+    const directStatements = new Set<ts.Statement>(statements);
+    const returns: ts.ReturnStatement[] = [];
+    let nestedOrAdditionalStatement = false;
+    const auditStatements = (node: ts.Node): void => {
+      if (ts.isReturnStatement(node)) returns.push(node);
+      if (ts.isStatement(node) && !directStatements.has(node)) nestedOrAdditionalStatement = true;
+      ts.forEachChild(node, auditStatements);
+    };
+    for (const statement of statements) auditStatements(statement);
+    const oldestHeartbeat = soleConstDeclaration(statements[3]);
+    return !nestedOrAdditionalStatement &&
+      exactInputBinding(statements[0], inputNames) &&
+      exactPathBinding(statements[1], "worker", "authority.worker") &&
+      exactPathBinding(statements[2], "target", "authority.target") &&
+      Boolean(oldestHeartbeat && ts.isIdentifier(oldestHeartbeat.name) &&
+        oldestHeartbeat.name.text === "oldestHeartbeat" &&
+        compact(oldestHeartbeat.initializer) === expectedOldestHeartbeat) &&
+      ts.isReturnStatement(statements[4]) && Boolean(statements[4].expression) &&
+      returns.length === 1 && returns[0] === statements[4];
+  };
+  const exactPollAuthorityHelperBody = exactAuthorityHelperBody(
+    authorityCurrentDeclaration,
+    ["auth", "authority", "request"],
+  );
+  const exactAckAuthorityHelperBody = exactAuthorityHelperBody(
+    ackAuthorityCurrentDeclaration,
+    ["auth", "authority"],
+  );
   let sharedActiveStatusSymbol = false;
   const auditSharedActiveStatusSymbol = (node: ts.Node): void => {
     if (ts.isIdentifier(node) && node.text === "ACTIVE_WORKER_STATUSES") {
@@ -2903,6 +2965,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
     ackAuthorityCurrentDeclaration.parameters.length === 1 &&
     ts.isIdentifier(ackAuthorityCurrentDeclaration.parameters[0]!.name) &&
     ackAuthorityCurrentDeclaration.parameters[0]!.name.text === "input" &&
+    exactAckAuthorityHelperBody &&
     !helperIsImpure(ackAuthorityCurrentDeclaration) &&
     nonStatusPredicates(ackAuthorityConjuncts).join("|") === requiredAckNonStatusPredicates.join("|") &&
     compact(oldestHeartbeatIn(ackAuthorityCurrentDeclaration)?.initializer) === expectedOldestHeartbeat &&
@@ -2916,7 +2979,8 @@ function leaseStaticContextPollViolations(source: string): string[] {
       directCalls("authorityCurrent").length !== 1) {
     violations.add("builder:trusted-non-platform-authority-current");
   }
-  if (sharedActiveStatusSymbol || !exactPollInlineStatus || !exactAckInlineStatus ||
+  if (sharedActiveStatusSymbol || !exactPollAuthorityHelperBody ||
+      !exactPollInlineStatus || !exactAckInlineStatus ||
       !exactAckAuthorityHelper) {
     violations.add("builder:trusted-service-authority-guard");
   }
@@ -3363,11 +3427,29 @@ function leaseStaticContextPollViolations(source: string): string[] {
     }
     return current.parent === ackBody && ts.isStatement(current) ? current : null;
   };
+  const ackReturns: ts.ReturnStatement[] = [];
+  const collectAckReturns = (node: ts.Node): void => {
+    if (ts.isReturnStatement(node)) ackReturns.push(node);
+    ts.forEachChild(node, collectAckReturns);
+  };
+  collectAckReturns(ackMethod.body!);
+  const outerAckTenantReturns = ackReturns.filter((statement) =>
+    statement.parent === ackMethod.body &&
+    unwrappedCall(statement.expression) === ackTenantCall);
+  const outerAckTenantReturn = outerAckTenantReturns.length === 1
+    ? outerAckTenantReturns[0]!
+    : null;
+  const ackResultReturns = ackReturns.filter((statement) => statement !== outerAckTenantReturn);
+  const followsAckGuard = (statement: ts.Statement | null): boolean => Boolean(
+    ackGuardIf && statement && statement.getStart(file) > ackGuardIf.getEnd(),
+  );
   const exactAckEffectDominance = Boolean(ackGuardIf && ackEffectCalls.length > 0 &&
     !invalidAckEffectUse && ackEffectCalls.every((call) => {
       const statement = directAckStatement(call);
-      return Boolean(statement && statement.getStart(file) > ackGuardIf.getStart(file));
+      return followsAckGuard(statement);
     }));
+  const exactAckReturnDominance = Boolean(outerAckTenantReturn && ackResultReturns.length > 0 &&
+    ackResultReturns.every((statement) => followsAckGuard(directAckStatement(statement))));
   const exactAckGateFlow = Boolean(ackInputName && serviceInputName && ackTenantCall && ackCallback && ackBody &&
     ackTenantCall.arguments.length === 3 &&
     pathOf(ackTenantCall.arguments[0])?.join(".") === `${serviceInputName}.appDb` &&
@@ -3380,7 +3462,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
     pathOf(ackGateInput.get("databaseNow"))?.join(".") === "authorityNow" &&
     pathOf(ackGateInput.get("maxHeartbeatAgeMs"))?.join(".") === "maxHeartbeatAgeMs" &&
     pathOf(ackGateInput.get("platformPhysicalHeartbeatAt"))?.join(".") === "platformPhysicalHeartbeatAt" &&
-    exactAckReject && exactAckEffectDominance);
+    exactAckReject && exactAckEffectDominance && exactAckReturnDominance);
   if (!exactAckGateFlow) violations.add("builder:trusted-service-authority-guard");
   if (guardCall && ts.isIdentifier(guardCall.expression)) {
     const helperName = guardCall.expression.text;
@@ -5784,7 +5866,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       }
       function ackAuthorityCurrent(input: any): boolean {
         const { auth, authority } = input;
-        const worker = input.authority.worker;
+        const worker = authority.worker;
         const target = authority.target;
         const oldestHeartbeat = target.scope === "platform"
           ? input.platformPhysicalHeartbeatAt?.getTime() ?? null
@@ -6151,6 +6233,30 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
         source: valid.replace(fragment, "false"),
         violation: "builder:trusted-service-authority-guard",
       })),
+      {
+        name: "decision-124-poll-helper-early-draining-return",
+        source: valid.replace(
+          "      function authorityCurrent(input: any): boolean {",
+          "      function authorityCurrent(input: any): boolean {\n        if (input.authority.worker.status === \"draining\") return true;",
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-ack-helper-early-draining-return",
+        source: valid.replace(
+          "      function ackAuthorityCurrent(input: any): boolean {",
+          "      function ackAuthorityCurrent(input: any): boolean {\n        if (input.authority.worker.status === \"draining\") return true;",
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-ack-method-early-acknowledged-return",
+        source: valid.replace(
+          "          async ack(ackInput: any) {",
+          "          async ack(ackInput: any) {\n            if (ackInput.request.body.workerId) return { outcome: \"acknowledged\" };",
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
       {
         name: "decision-124-narrow-physical-worker-to-active-only",
         source: valid.replace(physicalStatusPredicate, 'physical.worker.status !== "active"'),
