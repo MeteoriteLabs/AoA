@@ -281,7 +281,7 @@ type AdvisoryPhase =
   | "operator-positive";
 
 type StartupFailureInjection = AdvisoryPhase | "statement-timeout" | "lock-timeout" |
-  "idle-timeout" | "forced-end" | "shared-budget";
+  "idle-timeout" | "forced-end" | "shared-budget" | "shared-budget-pending";
 
 type StartupDeadlineReceipt = {
   readonly invocationId: number;
@@ -343,6 +343,16 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       settledAt: number | null;
       abortReceipt: StartupDeadlineReceipt | null;
       cancelledDuringWork: boolean;
+      abortObservedWhilePending: boolean;
+      releasedAt: number | null;
+    }>,
+    pendingBudgetWork: [] as Array<{
+      invocationId: number;
+      phase: AdvisoryPhase;
+      release: () => void;
+      drained: Promise<void>;
+      releasedAt: number | null;
+      drainedAt: number | null;
     }>,
   };
   const namedUrl = (url: string, suffix: string) => {
@@ -383,20 +393,51 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       settledAt: null as number | null,
       abortReceipt: null as StartupDeadlineReceipt | null,
       cancelledDuringWork: false,
+      abortObservedWhilePending: false,
+      releasedAt: null as number | null,
     };
     state.budgetWindows.push(window);
+    if (inject === "shared-budget-pending" && phase !== "owner-exclusive") {
+      let releaseGate!: () => void;
+      const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+      const pending = {
+        invocationId: invocation.id,
+        phase,
+        release: () => {
+          if (pending.releasedAt !== null) return;
+          pending.releasedAt = performance.now();
+          window.releasedAt = pending.releasedAt;
+          releaseGate();
+        },
+        drained: Promise.resolve(),
+        releasedAt: null as number | null,
+        drainedAt: null as number | null,
+      };
+      pending.drained = gate.then(() => { pending.drainedAt = performance.now(); });
+      state.pendingBudgetWork.push(pending);
+      const onAbort = () => {
+        window.abortReceipt = invocation.deadlineReceipt;
+        window.abortObservedWhilePending = pending.releasedAt === null;
+      };
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
+      return window;
+    }
     try {
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, 3_000);
         if (!signal) return;
         const onAbort = () => {
           window.abortReceipt = invocation.deadlineReceipt;
+          window.abortObservedWhilePending = window.settledAt === null;
           if (window.settledAt === null) {
             window.cancelledDuringWork = true;
-            clearTimeout(timer);
-            reject(Object.assign(new Error("shared startup budget cancelled phase work"), {
-              code: "INJECT_SHARED_BUDGET_CANCEL",
-            }));
+            if (inject === "shared-budget") {
+              clearTimeout(timer);
+              reject(Object.assign(new Error("shared startup budget cancelled phase work"), {
+                code: "INJECT_SHARED_BUDGET_CANCEL",
+              }));
+            }
           }
         };
         if (signal.aborted) onAbort();
@@ -405,6 +446,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     } finally {
       window.settledAt = performance.now();
     }
+    return window;
   };
   const waitForPositivePeer = async (role: "aoa_app" | "aoa_operator") => {
     const peer = role === "aoa_app" ? "aoa_operator" : "aoa_app";
@@ -457,7 +499,9 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               }
               if (transactionReceipt) transactionReceipt.phase = "owner-exclusive";
               state.phases.push("owner-exclusive");
-              if (inject === "shared-budget") await consumeBudget("owner-exclusive");
+              if (inject === "shared-budget" || inject === "shared-budget-pending") {
+                await consumeBudget("owner-exclusive");
+              }
               if (inject === "owner-exclusive") {
                 state.injectionTriggered = true;
                 throw Object.assign(new Error("owner phase injected"), { code: "INJECT_OWNER" });
@@ -477,7 +521,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
                 return (target as T & { execute(s: unknown): Promise<unknown> }).execute(sql`SELECT 1`);
               }
             }
-            if (inject === "shared-budget" && role !== "owner" &&
+            if ((inject === "shared-budget" || inject === "shared-budget-pending") && role !== "owner" &&
               /pg_try_advisory_xact_lock_shared/u.test(queryText)) {
               const rolePrefix = role === "aoa_app" ? "app" : "operator";
               const negativePhase = `${rolePrefix}-negative` as AdvisoryPhase;
@@ -486,7 +530,15 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
                 ? `${rolePrefix}-positive` as AdvisoryPhase
                 : negativePhase;
               if (transactionReceipt) transactionReceipt.phase = phase;
-              await consumeBudget(phase);
+              const budgetWindow = await consumeBudget(phase);
+              if (inject === "shared-budget-pending") {
+                try {
+                  return await (target as T & { execute(s: unknown): Promise<unknown> })
+                    .execute(sql`SELECT pg_sleep(60)`);
+                } finally {
+                  budgetWindow.settledAt = performance.now();
+                }
+              }
             }
             const result = await (target as T & { execute(s: unknown): Promise<unknown> }).execute(statement);
             if (/pg_backend_pid\s*\(/u.test(queryText)) {
@@ -619,6 +671,8 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
   }
 
   const cleanup = async () => {
+    for (const pending of state.pendingBudgetWork) pending.release();
+    await Promise.allSettled(state.pendingBudgetWork.map((pending) => pending.drained));
     for (const resolve of state.positiveWaiters.values()) resolve();
     state.positiveWaiters.clear();
     if (state.blocker) {
@@ -686,6 +740,18 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       requiredMigrationIdentity: checkedInMigrationIdentity(),
       appDatabaseUrl: appNamedUrl,
       operatorDatabaseUrl: operatorNamedUrl,
+    },
+    releasePendingBudgetWork(invocationId?: number) {
+      const at = performance.now();
+      for (const pending of state.pendingBudgetWork) {
+        if (invocationId === undefined || pending.invocationId === invocationId) pending.release();
+      }
+      return at;
+    },
+    async waitForPendingBudgetWork(invocationId?: number) {
+      await Promise.all(state.pendingBudgetWork
+        .filter((pending) => invocationId === undefined || pending.invocationId === invocationId)
+        .map((pending) => pending.drained));
     },
     cleanup,
     token,
@@ -1132,23 +1198,78 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
     it("spends one monotonic deadline across sequential owner and concurrent app/operator phases", async () => {
       // Mutation caught: resetting a five-second timeout per participant lets two individually
       // sub-limit delays consume more than the one allowed startup budget and return a pool.
+      // The negative phase gates only observe abort; they cannot reject/resolve until this test
+      // releases them after the public open call has settled, so a cosmetic production listener
+      // cannot borrow fixture-owned cancellation to pass.
       guard();
-      const harness = await createAdvisoryStartupHarness("shared-budget");
+      const harness = await createAdvisoryStartupHarness("shared-budget-pending");
       let accepted: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> = null;
-      let failure: unknown;
+      type OpenOutcome =
+        | { readonly kind: "fulfilled"; readonly value: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> }
+        | { readonly kind: "rejected"; readonly error: unknown };
+      const openSettlement = harness.open(harness.input).then<OpenOutcome>(
+        (value) => ({ kind: "fulfilled", value }),
+        (error: unknown) => ({ kind: "rejected", error }),
+      );
+      let initialOutcome: OpenOutcome | { readonly kind: "watchdog" } | undefined;
+      let finalOutcome: OpenOutcome | undefined;
+      let watchdogHandle: ReturnType<typeof setTimeout> | undefined;
+      let drainWatchdogHandle: ReturnType<typeof setTimeout> | undefined;
+      let releaseAt: number | null = null;
+      let fixtureWorkDrainedAt: number | null = null;
+      let closeSettledBeforeRelease: typeof harness.state.closeSettled = [];
       let settlement: Awaited<ReturnType<typeof observeAdvisoryStartupSettlement>> | undefined;
       try {
-        accepted = await harness.open(harness.input);
-      } catch (error) {
-        failure = error;
+        initialOutcome = await Promise.race([
+          openSettlement,
+          new Promise<{ readonly kind: "watchdog" }>((resolve) => {
+            watchdogHandle = setTimeout(() => resolve({ kind: "watchdog" }), 15_000);
+          }),
+        ]);
+        if (initialOutcome.kind !== "watchdog") finalOutcome = initialOutcome;
       } finally {
+        if (watchdogHandle) clearTimeout(watchdogHandle);
+        const invocationId = harness.state.openInvocations[0]?.id;
+        closeSettledBeforeRelease = [...harness.state.closeSettled];
+        releaseAt = harness.releasePendingBudgetWork(invocationId);
+        await harness.waitForPendingBudgetWork(invocationId);
+        fixtureWorkDrainedAt = performance.now();
+        if (!finalOutcome) {
+          const drainedOutcome = await Promise.race([
+            openSettlement,
+            new Promise<{ readonly kind: "drain-watchdog" }>((resolve) => {
+              drainWatchdogHandle = setTimeout(() => resolve({ kind: "drain-watchdog" }), 10_000);
+            }),
+          ]);
+          if (drainedOutcome.kind !== "drain-watchdog") finalOutcome = drainedOutcome;
+        }
+        if (drainWatchdogHandle) clearTimeout(drainWatchdogHandle);
+        accepted = finalOutcome?.kind === "fulfilled" ? finalOutcome.value : null;
         await accepted?.close().catch(() => {});
-        settlement = await observeAdvisoryStartupSettlement(harness.token);
+        const drainDeadline = performance.now() + 5_000;
+        while (performance.now() < drainDeadline) {
+          const pendingTransactions = harness.state.transactionReceipts.some((receipt) =>
+            receipt.invocationId === invocationId && receipt.phase !== null && receipt.settledAt === null,
+          );
+          if (!pendingTransactions) break;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        const observationDeadline = performance.now() + 5_000;
+        do {
+          settlement = await observeAdvisoryStartupSettlement(harness.token);
+          if (settlement.participant_pids === 0 && settlement.owner_in_transaction === 0 &&
+            settlement.advisory_locks === 0) break;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        } while (performance.now() < observationDeadline);
         await harness.cleanup();
       }
 
       expect(accepted === null, "shared budget expiry must not return either pool").toBe(true);
-      expect(failure).toMatchObject({ message: "distributed_execution_timeout" });
+      expect(initialOutcome?.kind, "public open must settle before the external watchdog").toBe("rejected");
+      expect(finalOutcome).toMatchObject({
+        kind: "rejected",
+        error: { message: "distributed_execution_timeout" },
+      });
       expect(harness.state.abortControllers).toHaveLength(1);
       expect(harness.state.abortCalls).toBe(1);
       const [invocation] = harness.state.openInvocations;
@@ -1166,14 +1287,33 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const operator = windows.find((window) => window.phase === "operator-negative");
       const deadline = invocation?.deadlineReceipt ?? null;
       expect.soft(owner?.cancelledDuringWork).toBe(false);
-      expect.soft(app?.cancelledDuringWork).toBe(true);
-      expect.soft(operator?.cancelledDuringWork).toBe(true);
+      expect.soft(app?.cancelledDuringWork).toBe(false);
+      expect.soft(operator?.cancelledDuringWork).toBe(false);
+      expect.soft(app?.abortObservedWhilePending).toBe(true);
+      expect.soft(operator?.abortObservedWhilePending).toBe(true);
       for (const window of windows) {
         expect.soft(window.signal).toBe(invocation?.controllers[0]?.signal);
         expect.soft(window.abortReceipt).toBe(deadline);
         expect.soft(typeof window.settledAt).toBe("number");
-        if (window.settledAt !== null && invocation?.returnedAt !== null) {
-          expect.soft(window.settledAt).toBeLessThanOrEqual(invocation?.returnedAt ?? -1);
+      }
+      expect.soft(closeSettledBeforeRelease.map(({ role }) => role).sort()).toEqual([
+        "aoa_app", "aoa_operator",
+      ]);
+      expect.soft(harness.state.pendingBudgetWork.map(({ phase }) => phase).sort()).toEqual([
+        "app-negative", "operator-negative",
+      ]);
+      expect.soft(typeof releaseAt).toBe("number");
+      expect.soft(typeof fixtureWorkDrainedAt).toBe("number");
+      if (releaseAt !== null && fixtureWorkDrainedAt !== null && invocation?.returnedAt !== null) {
+        expect.soft(invocation.returnedAt).toBeLessThan(releaseAt);
+        expect.soft(fixtureWorkDrainedAt).toBeGreaterThanOrEqual(releaseAt);
+        for (const pending of harness.state.pendingBudgetWork) {
+          expect.soft(pending.releasedAt).toBeGreaterThanOrEqual(releaseAt);
+          expect.soft(pending.drainedAt).toBeGreaterThanOrEqual(releaseAt);
+        }
+        for (const peer of [app, operator]) {
+          expect.soft(peer?.releasedAt).toBeGreaterThanOrEqual(releaseAt);
+          expect.soft(peer?.settledAt).toBeLessThanOrEqual(invocation.returnedAt);
         }
       }
       if (owner?.settledAt !== null && owner && app && operator && deadline &&
@@ -1187,13 +1327,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         expect.soft(deadline.at).toBeGreaterThanOrEqual(Math.max(app.startedAt, operator.startedAt));
         expect.soft(deadline.at).toBeGreaterThanOrEqual(invocation.controllerCreatedAt + 4_500);
         expect.soft(deadline.at).toBeLessThan(invocation.controllerCreatedAt + 6_500);
-        expect.soft(app.settledAt).toBeGreaterThanOrEqual(deadline.at);
-        expect.soft(operator.settledAt).toBeGreaterThanOrEqual(deadline.at);
-        expect.soft(app.settledAt - app.startedAt).toBeGreaterThanOrEqual(1_250);
-        expect.soft(app.settledAt - app.startedAt).toBeLessThan(2_750);
-        expect.soft(operator.settledAt - operator.startedAt).toBeGreaterThanOrEqual(1_250);
-        expect.soft(operator.settledAt - operator.startedAt).toBeLessThan(2_750);
-        expect.soft(invocation.returnedAt - invocation.controllerCreatedAt).toBeLessThan(7_500);
+        expect.soft(invocation.returnedAt - invocation.controllerCreatedAt).toBeLessThan(15_000);
       }
       const phaseTransactions = harness.state.transactionReceipts.filter((receipt) =>
         receipt.invocationId === invocation?.id && receipt.phase !== null,

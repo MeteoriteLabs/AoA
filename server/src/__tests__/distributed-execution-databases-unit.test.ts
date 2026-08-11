@@ -291,44 +291,101 @@ function analyzeSharedStartupBudget(sourceText: string): {
     visit(node);
     return found;
   };
-  const listenerInvokesReject = (node: ts.Node, rejectSymbol: ts.Symbol): boolean => {
+  const isDirectRejectCall = (node: ts.Node, rejectSymbol: ts.Symbol): boolean => {
+    const expression = ts.isExpression(node) ? unwrap(node) : undefined;
+    return expression !== undefined && ts.isCallExpression(expression) &&
+      ts.isIdentifier(expression.expression) &&
+      checker.getSymbolAtLocation(expression.expression) === rejectSymbol;
+  };
+  type ListenerExit = "fallthrough" | "settled" | "unsettled";
+  const listenerStatementExits = (
+    statement: ts.Statement,
+    rejectSymbol: ts.Symbol,
+  ): ReadonlySet<ListenerExit> => {
+    if (ts.isExpressionStatement(statement)) {
+      return new Set<ListenerExit>([
+        isDirectRejectCall(statement.expression, rejectSymbol) ? "settled" : "fallthrough",
+      ]);
+    }
+    if (ts.isReturnStatement(statement)) {
+      return new Set<ListenerExit>([
+        statement.expression && isDirectRejectCall(statement.expression, rejectSymbol)
+          ? "settled"
+          : "unsettled",
+      ]);
+    }
+    if (ts.isThrowStatement(statement)) return new Set<ListenerExit>(["unsettled"]);
+    if (ts.isBlock(statement)) return listenerBlockExits(statement, rejectSymbol);
+    if (ts.isIfStatement(statement)) {
+      return new Set<ListenerExit>([
+        ...listenerStatementExits(statement.thenStatement, rejectSymbol),
+        ...(statement.elseStatement
+          ? listenerStatementExits(statement.elseStatement, rejectSymbol)
+          : ["fallthrough" as const]),
+      ]);
+    }
+    if (ts.isEmptyStatement(statement) || ts.isVariableStatement(statement) ||
+      ts.isFunctionDeclaration(statement)) return new Set<ListenerExit>(["fallthrough"]);
+    // Loops, switch/try constructs, labels, and other control flow are rejected conservatively:
+    // this security oracle accepts only a statically complete synchronous settlement path.
+    return new Set<ListenerExit>(["unsettled"]);
+  };
+  function listenerBlockExits(
+    block: ts.Block,
+    rejectSymbol: ts.Symbol,
+  ): ReadonlySet<ListenerExit> {
+    let exits = new Set<ListenerExit>(["fallthrough"]);
+    for (const statement of block.statements) {
+      const next = new Set<ListenerExit>();
+      for (const exit of exits) {
+        if (exit === "fallthrough") {
+          for (const statementExit of listenerStatementExits(statement, rejectSymbol)) {
+            next.add(statementExit);
+          }
+        } else {
+          next.add(exit);
+        }
+      }
+      exits = next;
+    }
+    return exits;
+  }
+  const listenerUnconditionallyRejects = (node: ts.Node, rejectSymbol: ts.Symbol): boolean => {
     const expression = ts.isExpression(node) ? unwrap(node) : undefined;
     if (expression && ts.isIdentifier(expression) &&
       checker.getSymbolAtLocation(expression) === rejectSymbol) return true;
-    let body: ts.Node = node;
-    if (expression && ts.isIdentifier(expression)) {
+    let listener: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration | undefined;
+    if (expression && (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression))) {
+      listener = expression;
+    } else if (expression && ts.isIdentifier(expression)) {
       const declaration = checker.getSymbolAtLocation(expression)?.valueDeclaration;
-      if (declaration && ts.isFunctionDeclaration(declaration) && declaration.body) body = declaration.body;
+      if (declaration && ts.isFunctionDeclaration(declaration) && declaration.body) listener = declaration;
       if (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer &&
         (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))) {
-        body = declaration.initializer.body;
+        listener = declaration.initializer;
       }
     }
-    let found = false;
-    const visit = (candidate: ts.Node) => {
-      if (ts.isCallExpression(candidate) && ts.isIdentifier(candidate.expression) &&
-        checker.getSymbolAtLocation(candidate.expression) === rejectSymbol) found = true;
-      ts.forEachChild(candidate, visit);
-    };
-    visit(body);
-    return found;
+    if (!listener?.body) return false;
+    if (!ts.isBlock(listener.body)) return isDirectRejectCall(listener.body, rejectSymbol);
+    const exits = listenerBlockExits(listener.body, rejectSymbol);
+    return exits.size === 1 && exits.has("settled");
   };
-  const containsRejectingAbortListener = (node: ts.Node, rejectSymbol: ts.Symbol): boolean => {
-    let found = false;
-    const visit = (candidate: ts.Node) => {
-      if (ts.isCallExpression(candidate) &&
+  const containsRejectingAbortListener = (
+    executor: ts.ArrowFunction | ts.FunctionExpression,
+    rejectSymbol: ts.Symbol,
+  ): boolean => {
+    if (!ts.isBlock(executor.body)) return false;
+    return executor.body.statements.some((statement) => {
+      if (!ts.isExpressionStatement(statement)) return false;
+      const candidate = unwrap(statement.expression);
+      return ts.isCallExpression(candidate) &&
         ts.isPropertyAccessExpression(candidate.expression) &&
         candidate.expression.name.text === "addEventListener" &&
         isExactSignal(candidate.expression.expression) &&
         ts.isStringLiteral(candidate.arguments[0]) && candidate.arguments[0].text === "abort" &&
         candidate.arguments[1] !== undefined &&
-        listenerInvokesReject(candidate.arguments[1], rejectSymbol)) {
-        found = true;
-      }
-      ts.forEachChild(candidate, visit);
-    };
-    visit(node);
-    return found;
+        listenerUnconditionallyRejects(candidate.arguments[1], rejectSymbol);
+    });
   };
   const containsDeadlineSubtraction = (node: ts.Node): boolean => {
     let found = false;
@@ -368,7 +425,7 @@ function analyzeSharedStartupBudget(sourceText: string): {
     const rejectParameter = executor.parameters[1];
     if (!rejectParameter || !ts.isIdentifier(rejectParameter.name)) return false;
     const rejectSymbol = checker.getSymbolAtLocation(rejectParameter.name);
-    return rejectSymbol !== undefined && containsRejectingAbortListener(initializer, rejectSymbol) &&
+    return rejectSymbol !== undefined && containsRejectingAbortListener(executor, rejectSymbol) &&
       containsDeadlineAbortTimer(initializer);
   };
   const causalCarrierParameters = new Map<ts.Symbol, ReadonlySet<number>>();
@@ -786,6 +843,41 @@ describe("distributed-execution database strangler", () => {
       }
     `;
     expect(analyzeSharedStartupBudget(cosmeticSignalAndDeadline).valid).toBe(false);
+
+    const unreachableRejectListener = strictValidFixture.replace(
+      'startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });',
+      `startupAbort.signal.addEventListener("abort", () => {
+        if (false) reject(new Error("unreachable"));
+      }, { once: true });`,
+    );
+    const deadAfterReturnRejectListener = strictValidFixture.replace(
+      'startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });',
+      `startupAbort.signal.addEventListener("abort", () => {
+        return;
+        reject(new Error("dead"));
+      }, { once: true });`,
+    );
+    const conditionalRejectListener = strictValidFixture.replace(
+      'startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });',
+      `startupAbort.signal.addEventListener("abort", () => {
+        if (shouldReject) reject(new Error("conditional"));
+      }, { once: true });`,
+    );
+    const branchCompleteRejectListener = strictValidFixture.replace(
+      'startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });',
+      `startupAbort.signal.addEventListener("abort", () => {
+        if (usePrimaryReason) reject(new Error("primary"));
+        else reject(new Error("fallback"));
+      }, { once: true });`,
+    );
+    expect(analyzeSharedStartupBudget(branchCompleteRejectListener).valid).toBe(true);
+    for (const adversary of [
+      unreachableRejectListener,
+      deadAfterReturnRejectListener,
+      conditionalRejectListener,
+    ]) {
+      expect(analyzeSharedStartupBudget(adversary).valid).toBe(false);
+    }
 
     const boundedDecoyWork = `
       const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;
