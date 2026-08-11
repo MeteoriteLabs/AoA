@@ -1191,7 +1191,7 @@ describe("distributed-execution database strangler", () => {
           debug: false,
           max: 1,
           connect_timeout: 5,
-          idle_timeout: 1,
+          idle_timeout: 30,
         });
         expect(control.end).toHaveBeenCalledOnce();
         expect(control.end).toHaveBeenCalledWith({ timeout: 5 });
