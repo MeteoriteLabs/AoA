@@ -415,6 +415,8 @@ type StartupInvocationReceipt = {
 type StartupTransactionReceipt = {
   readonly invocationId: number;
   readonly role: "owner" | "aoa_app" | "aoa_operator";
+  readonly source: "shared-owner-db" | "dedicated-owner" | "serving";
+  readonly dedicatedOwnerId: number | null;
   phase: PendingQueryPhase | null;
   readonly startedAt: number;
   settledAt: number | null;
@@ -423,7 +425,7 @@ type StartupTransactionReceipt = {
 
 type CleanupProbeReceipt = {
   readonly invocationId: number;
-  readonly source: "shared-owner-db" | "dedicated-owner-control";
+  readonly source: "shared-owner-db" | "dedicated-owner";
   readonly controlId: number | null;
   readonly startedAt: number;
   settledAt: number | null;
@@ -431,13 +433,333 @@ type CleanupProbeReceipt = {
   participantPidsGone: boolean | null;
 };
 
-type OwnerControlReceipt = {
+type OwnerQuerySemantic =
+  | "timeout-setup"
+  | "backend-identity"
+  | "migration-identity"
+  | "owner-advisory"
+  | "cancellation-discovery"
+  | "cancellation"
+  | "cleanup"
+  | "other";
+
+type OwnerQueryReceipt = {
+  readonly invocationId: number;
+  readonly source: "shared-owner-db" | "dedicated-owner";
+  readonly dedicatedOwnerId: number | null;
+  readonly semantic: OwnerQuerySemantic;
+  readonly sql: string;
+  readonly params: readonly unknown[];
+  readonly startedAt: number;
+  settledAt: number | null;
+  outcome: "pending" | "fulfilled" | "rejected";
+  dryRun: CancellationDryRunReceipt | null;
+};
+
+type DedicatedOwnerIdentity = {
+  readonly pid: number;
+  readonly backendStart: string;
+  readonly sessionRole: string;
+  readonly databaseName: string;
+  readonly applicationName: string;
+};
+
+type CancellationIdentityField = keyof DedicatedOwnerIdentity;
+
+type CancellationDryRunMutation = {
+  readonly targetPid: number;
+  readonly field: CancellationIdentityField;
+  readonly parameterIndex: number;
+  readonly candidatePids: readonly number[];
+};
+
+type CancellationDryRunSubstitution = {
+  readonly targetPid: number;
+  readonly candidatePids: readonly number[];
+};
+
+type CancellationDryRunReceipt = {
+  readonly startedAt: number;
+  settledAt: number | null;
+  outcome: "pending" | "fulfilled" | "rejected";
+  targetAlias: string | null;
+  controlIdentity: DedicatedOwnerIdentity | null;
+  readonly candidateIdentities: DedicatedOwnerIdentity[];
+  readonly targetIdentities: DedicatedOwnerIdentity[];
+  readonly originalCandidatePids: number[];
+  readonly mutations: CancellationDryRunMutation[];
+  readonly controlSubstitutions: CancellationDryRunSubstitution[];
+};
+
+type PendingQueryReceipt = {
+  readonly invocationId: number;
+  readonly phase: PendingQueryPhase;
+  readonly role: "owner" | "aoa_app" | "aoa_operator";
+  readonly source: StartupTransactionReceipt["source"];
+  readonly dedicatedOwnerId: number | null;
+  backendPid: number | null;
+  effectiveStatementTimeout: string | null;
+  readonly signal: AbortSignal | null;
+  abortObservedAt: number | null;
+  readonly startedAt: number;
+  sleepIssuedAt: number | null;
+  settledAt: number | null;
+};
+
+type DedicatedOwnerReceipt = {
   readonly id: number;
+  readonly invocationId: number;
+  readonly lifecycle: "open" | "close";
   readonly constructedAt: number;
+  readonly options: Record<string, unknown>;
+  readonly applicationName: string | null;
+  readonly queryReceipts: OwnerQueryReceipt[];
+  readonly observedIdentities: DedicatedOwnerIdentity[];
   endStartedAt: number | null;
   endSettledAt: number | null;
   endOutcome: "not-called" | "pending" | "fulfilled" | "rejected";
+  endInput: unknown;
+  cleanupForcedEnd: boolean;
+  externalGoneAt: number | null;
+  externalGone: boolean | null;
 };
+
+function exactBoundedDedicatedEndBefore(
+  receipt: DedicatedOwnerReceipt,
+  publicReturnedAt: number | null | undefined,
+): boolean {
+  const endInput = receipt.endInput;
+  const queriedBackendWasCaptured = receipt.queryReceipts.length === 0 ||
+    (receipt.observedIdentities.length === 1 && receipt.observedIdentities.every((identity) =>
+      identity.applicationName === receipt.applicationName && Number.isSafeInteger(identity.pid) &&
+      identity.backendStart.length > 0 && identity.sessionRole.length > 0 &&
+      identity.databaseName.length > 0));
+  return typeof publicReturnedAt === "number" && !receipt.cleanupForcedEnd &&
+    receipt.endOutcome === "fulfilled" && typeof endInput === "object" && endInput !== null &&
+    (endInput as { timeout?: unknown }).timeout === 5 &&
+    receipt.endStartedAt !== null && receipt.endStartedAt <= publicReturnedAt &&
+    receipt.endSettledAt !== null && receipt.endSettledAt <= publicReturnedAt &&
+    receipt.externalGone === true && receipt.externalGoneAt !== null &&
+    receipt.externalGoneAt <= publicReturnedAt && queriedBackendWasCaptured;
+}
+
+const CANCELLATION_IDENTITY_FIELDS = [
+  { field: "pid", mutant: -2_147_483_648 },
+  { field: "backendStart", mutant: "2000-01-01 00:00:00+00" },
+  { field: "sessionRole", mutant: "job003_mutant_role" },
+  { field: "databaseName", mutant: "job003_mutant_database" },
+  { field: "applicationName", mutant: "job003_mutant_application" },
+] as const satisfies ReadonlyArray<{
+  field: CancellationIdentityField;
+  mutant: string | number;
+}>;
+
+function exactTypedParameterIndices(
+  params: readonly unknown[],
+  expected: string | number,
+): number[] {
+  const indices: number[] = [];
+  params.forEach((value, index) => {
+    if (typeof value === typeof expected && value === expected) indices.push(index);
+  });
+  return indices;
+}
+
+function identityHasExactTypedParams(
+  params: readonly unknown[],
+  identity: DedicatedOwnerIdentity,
+): boolean {
+  return CANCELLATION_IDENTITY_FIELDS.every(({ field }) =>
+    exactTypedParameterIndices(params, identity[field]).length > 0);
+}
+
+async function runCancellationDryRun(
+  control: Sql,
+  query: Pick<OwnerQueryReceipt, "sql" | "params">,
+): Promise<CancellationDryRunReceipt> {
+  const receipt: CancellationDryRunReceipt = {
+    startedAt: performance.now(),
+    settledAt: null,
+    outcome: "pending",
+    targetAlias: null,
+    controlIdentity: null,
+    candidateIdentities: [],
+    targetIdentities: [],
+    originalCandidatePids: [],
+    mutations: [],
+    controlSubstitutions: [],
+  };
+  let savepointCreated = false;
+  try {
+    const cancelCalls = [...query.sql.matchAll(
+      /\bpg_cancel_backend\s*\(\s*([a-z_][a-z0-9_]*)\.pid\s*\)/giu,
+    )];
+    if (cancelCalls.length !== 1) throw new Error("dry-run requires one cancellation call");
+    const cancelCall = cancelCalls[0]!;
+    const targetAlias = cancelCall[1]!;
+    receipt.targetAlias = targetAlias;
+    const callStart = cancelCall.index ?? -1;
+    if (callStart < 0) throw new Error("dry-run cancellation call has no offset");
+    const replaySql = query.sql.slice(0, callStart) +
+      `pg_temp.job003_record_cancel_candidate(${targetAlias}.pid)` +
+      query.sql.slice(callStart + cancelCall[0].length);
+
+    await control.unsafe("SAVEPOINT job003_cancel_dry_run");
+    savepointCreated = true;
+    await control.unsafe(
+      "SELECT set_config('statement_timeout', $1, true)",
+      ["750ms"],
+    );
+    await control.unsafe(`
+      CREATE TEMP TABLE IF NOT EXISTS job003_cancel_dry_run_candidates (
+        pid integer NOT NULL
+      ) ON COMMIT DROP
+    `);
+    await control.unsafe(`
+      CREATE OR REPLACE FUNCTION pg_temp.job003_record_cancel_candidate(candidate_pid integer)
+      RETURNS boolean
+      LANGUAGE plpgsql
+      VOLATILE
+      AS $job003$
+      BEGIN
+        INSERT INTO pg_temp.job003_cancel_dry_run_candidates(pid) VALUES (candidate_pid);
+        RETURN true;
+      END
+      $job003$
+    `);
+
+    const [controlRow] = await control.unsafe<Array<{
+      pid: number;
+      backend_start: string;
+      session_role: string;
+      database_name: string;
+      application_name: string;
+    }>>(`
+      SELECT pg_backend_pid() AS pid,
+        backend_start::text AS backend_start,
+        session_user::text AS session_role,
+        current_database()::text AS database_name,
+        current_setting('application_name')::text AS application_name
+      FROM pg_stat_activity
+      WHERE pid = pg_backend_pid()
+    `);
+    if (!controlRow) throw new Error("dry-run control identity unavailable");
+    receipt.controlIdentity = {
+      pid: controlRow.pid,
+      backendStart: controlRow.backend_start,
+      sessionRole: controlRow.session_role,
+      databaseName: controlRow.database_name,
+      applicationName: controlRow.application_name,
+    };
+
+    const replay = async (params: readonly unknown[]): Promise<number[]> => {
+      await control.unsafe("TRUNCATE pg_temp.job003_cancel_dry_run_candidates");
+      await control.unsafe(replaySql, [...params] as never);
+      const candidateRows = await control.unsafe<Array<{ pid: number }>>(
+        "SELECT pid FROM pg_temp.job003_cancel_dry_run_candidates ORDER BY pid",
+      );
+      return candidateRows.map(({ pid }) => pid);
+    };
+
+    receipt.originalCandidatePids.push(...await replay(query.params));
+    const uniqueCandidatePids = [...new Set(receipt.originalCandidatePids)];
+    if (uniqueCandidatePids.length > 0) {
+      const identityRows = await control.unsafe<Array<{
+        pid: number;
+        backend_start: string;
+        session_role: string;
+        database_name: string;
+        application_name: string;
+      }>>(`
+        SELECT pid, backend_start::text AS backend_start,
+          usename::text AS session_role, datname::text AS database_name,
+          application_name::text AS application_name
+        FROM pg_stat_activity
+        WHERE pid = ANY($1::integer[])
+      `, [uniqueCandidatePids] as never);
+      receipt.candidateIdentities.push(...identityRows.map((row) => ({
+        pid: row.pid,
+        backendStart: row.backend_start,
+        sessionRole: row.session_role,
+        databaseName: row.database_name,
+        applicationName: row.application_name,
+      })));
+    }
+    receipt.targetIdentities.push(...receipt.candidateIdentities.filter((identity) =>
+      identityHasExactTypedParams(query.params, identity)));
+
+    for (const target of receipt.targetIdentities) {
+      for (const { field, mutant } of CANCELLATION_IDENTITY_FIELDS) {
+        for (const parameterIndex of exactTypedParameterIndices(query.params, target[field])) {
+          const mutatedParams = [...query.params];
+          mutatedParams[parameterIndex] = mutant;
+          receipt.mutations.push({
+            targetPid: target.pid,
+            field,
+            parameterIndex,
+            candidatePids: await replay(mutatedParams),
+          });
+        }
+      }
+      const controlIdentity = receipt.controlIdentity;
+      const substitutionParams = [...query.params];
+      let completeSubstitution = true;
+      for (const { field } of CANCELLATION_IDENTITY_FIELDS) {
+        const effectiveMutations = receipt.mutations.filter((mutation) =>
+          mutation.targetPid === target.pid && mutation.field === field &&
+          !mutation.candidatePids.includes(target.pid));
+        if (effectiveMutations.length === 0) {
+          completeSubstitution = false;
+          break;
+        }
+        for (const mutation of effectiveMutations) {
+          substitutionParams[mutation.parameterIndex] = controlIdentity[field];
+        }
+      }
+      receipt.controlSubstitutions.push({
+        targetPid: target.pid,
+        candidatePids: completeSubstitution ? await replay(substitutionParams) : [],
+      });
+      if (!completeSubstitution) receipt.outcome = "rejected";
+    }
+    if (receipt.outcome === "pending") receipt.outcome = "fulfilled";
+  } catch {
+    receipt.outcome = "rejected";
+  } finally {
+    if (savepointCreated) {
+      try {
+        await control.unsafe("ROLLBACK TO SAVEPOINT job003_cancel_dry_run");
+        await control.unsafe("RELEASE SAVEPOINT job003_cancel_dry_run");
+      } catch {
+        receipt.outcome = "rejected";
+      }
+    }
+    receipt.settledAt = performance.now();
+  }
+  return receipt;
+}
+
+function dryRunProvesExactCancellation(
+  dryRun: CancellationDryRunReceipt | null,
+  target: DedicatedOwnerIdentity,
+  forbiddenPids: readonly number[] = [],
+): boolean {
+  const identityMatches = (candidate: DedicatedOwnerIdentity) =>
+    CANCELLATION_IDENTITY_FIELDS.every(({ field }) => candidate[field] === target[field]);
+  const fieldMutationsExcludeTarget = CANCELLATION_IDENTITY_FIELDS.every(({ field }) =>
+    dryRun?.mutations.some((mutation) =>
+      mutation.targetPid === target.pid && mutation.field === field &&
+      !mutation.candidatePids.includes(target.pid)) === true);
+  const substitution = dryRun?.controlSubstitutions.find(({ targetPid }) =>
+    targetPid === target.pid);
+  return dryRun?.outcome === "fulfilled" && typeof dryRun.settledAt === "number" &&
+    dryRun.originalCandidatePids.length === 1 && dryRun.originalCandidatePids[0] === target.pid &&
+    dryRun.targetIdentities.length === 1 && identityMatches(dryRun.targetIdentities[0]!) &&
+    fieldMutationsExcludeTarget && substitution !== undefined &&
+    substitution.candidatePids.length === 0 && dryRun.controlIdentity !== null &&
+    !dryRun.originalCandidatePids.includes(dryRun.controlIdentity.pid) &&
+    forbiddenPids.every((pid) => !dryRun.originalCandidatePids.includes(pid));
+}
 
 type ReservedOwnerSql = Awaited<ReturnType<Sql["reserve"]>>;
 
@@ -472,7 +794,6 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     positiveBarrierReached: false,
     injectionTriggered: false,
     injectionTriggeredAt: null as number | null,
-    preRegistrationTrapArmed: false,
     clients: [] as Sql[],
     ownerClient: null as Sql | null,
     blocker: null as Sql | null,
@@ -487,13 +808,22 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     observerAliasControlObserved: null as boolean | null,
     openInvocations: [] as StartupInvocationReceipt[],
     activeInvocation: null as StartupInvocationReceipt | null,
+    activeOwnerLifecycle: null as {
+      invocation: StartupInvocationReceipt;
+      lifecycle: "open" | "close";
+    } | null,
     transactionReceipts: [] as StartupTransactionReceipt[],
+    ownerQueryReceipts: [] as OwnerQueryReceipt[],
     cleanupProbeReceipts: [] as CleanupProbeReceipt[],
-    ownerControlReceipts: [] as OwnerControlReceipt[],
-    ownerControlClients: [] as Array<{ client: Sql; receipt: OwnerControlReceipt }>,
+    dedicatedOwnerReceipts: [] as DedicatedOwnerReceipt[],
+    dedicatedOwnerClients: [] as Array<{ client: Sql; receipt: DedicatedOwnerReceipt }>,
+    sharedOwnerRawOperations: [] as Array<{ invocationId: number; operation: string }>,
+    sharedOwnerPrivateReads: [] as Array<{ invocationId: number; property: string }>,
     backendIdentities: [] as Array<{
       invocationId: number;
       role: "owner" | "aoa_app" | "aoa_operator";
+      source: "shared-owner-db" | "dedicated-owner";
+      dedicatedOwnerId: number | null;
       pid: number;
       backendStart: string;
       xactStart: string;
@@ -528,18 +858,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       phase: AdvisoryPhase;
       effectiveStatementTimeout: string;
     }>,
-    pendingQueries: [] as Array<{
-      invocationId: number;
-      phase: PendingQueryPhase;
-      role: "owner" | "aoa_app" | "aoa_operator";
-      backendPid: number | null;
-      effectiveStatementTimeout: string | null;
-      signal: AbortSignal | null;
-      abortObservedAt: number | null;
-      startedAt: number;
-      sleepIssuedAt: number | null;
-      settledAt: number | null;
-    }>,
+    pendingQueries: [] as PendingQueryReceipt[],
   };
   let resolveCleanupFailureCloseGate!: () => void;
   const cleanupFailureCloseGate = new Promise<void>((resolve) => {
@@ -751,11 +1070,15 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
   const createPendingReceipt = (
     role: "owner" | "aoa_app" | "aoa_operator",
     phase: PendingQueryPhase,
+    source: StartupTransactionReceipt["source"] = role === "owner" ? "shared-owner-db" : "serving",
+    dedicatedOwnerId: number | null = null,
   ) => {
     const receipt = {
       invocationId: state.activeInvocation?.id ?? state.openInvocations.at(-1)?.id ?? -1,
       phase,
       role,
+      source,
+      dedicatedOwnerId,
       backendPid: null as number | null,
       effectiveStatementTimeout: null as string | null,
       signal: state.activeInvocation?.controllers.at(-1)?.signal ?? null,
@@ -775,10 +1098,14 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     role: "owner" | "aoa_app" | "aoa_operator",
     phase: PendingQueryPhase | null,
     work: (receipt: StartupTransactionReceipt) => Promise<T>,
+    source: StartupTransactionReceipt["source"] = role === "owner" ? "shared-owner-db" : "serving",
+    dedicatedOwnerId: number | null = null,
   ): Promise<T> => {
     const receipt: StartupTransactionReceipt = {
       invocationId: state.activeInvocation?.id ?? -1,
       role,
+      source,
+      dedicatedOwnerId,
       phase,
       startedAt: performance.now(),
       settledAt: null,
@@ -803,8 +1130,10 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     phase: PendingQueryPhase,
     statement: unknown,
     transactionReceipt: StartupTransactionReceipt | undefined,
+    source: StartupTransactionReceipt["source"],
+    dedicatedOwnerId: number | null,
   ): Promise<unknown> => {
-    const receipt = createPendingReceipt(role, phase);
+    const receipt = createPendingReceipt(role, phase, source, dedicatedOwnerId);
     const run = async (transaction: T & { execute(s: unknown): Promise<unknown> }) => {
       const timeoutResult = await transaction.execute(sql`
         SELECT current_setting('statement_timeout') AS statement_timeout`);
@@ -830,86 +1159,130 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     return recordTransaction(role, phase, async () =>
       (target as T & {
         transaction(callback: (transaction: T & { execute(s: unknown): Promise<unknown> }) => Promise<unknown>): Promise<unknown>;
-      }).transaction(run));
+      }).transaction(run), source, dedicatedOwnerId);
   };
 
-  const runPendingRawOwnerQuery = (client: Sql) => {
-    const receipt = createPendingReceipt("owner", "cleanup");
-    let cancelRequested = false;
-    let sleeping: { cancel(): void } | null = null;
-    const operation = recordTransaction("owner", "cleanup", async () =>
-      client.begin(async (transaction) => {
-        const [observation] = await transaction<{
-          statement_timeout: string;
-          pid: number;
-        }[]>`SELECT
-          current_setting('statement_timeout') AS statement_timeout,
-          pg_backend_pid() AS pid`;
-        receipt.effectiveStatementTimeout = observation?.statement_timeout ?? null;
-        receipt.backendPid = observation?.pid ?? null;
-        const pending = transaction`SELECT pg_sleep(60)`;
-        sleeping = pending;
-        if (cancelRequested) pending.cancel();
-        await pending;
-        return [];
-      })).finally(() => {
-      receipt.settledAt = performance.now();
-    });
-    return Object.assign(operation, {
-      cancel() {
-        cancelRequested = true;
-        sleeping?.cancel();
-      },
-    });
+  const ownerQuerySemantic = (queryText: string): OwnerQuerySemantic => {
+    if (/\bpg_cancel_backend\s*\(/u.test(queryText)) return "cancellation";
+    if (/\bparticipant_pids_gone\b/u.test(queryText)) return "cleanup";
+    if (/\bpg_stat_activity\b/u.test(queryText) && /\bapplication_name\b/u.test(queryText)) {
+      return "cancellation-discovery";
+    }
+    if (/\b__drizzle_migrations\b/u.test(queryText)) return "migration-identity";
+    if (/\bpg_advisory_xact_lock\s*\(/u.test(queryText) && !/\bshared\b/u.test(queryText)) {
+      return "owner-advisory";
+    }
+    if (/\bset_config\s*\(\s*'statement_timeout'/u.test(queryText) ||
+      /\bset\s+local\s+statement_timeout\b/u.test(queryText)) return "timeout-setup";
+    if (/\bpg_backend_pid\s*\(/u.test(queryText) || /\bbackend_start\b/u.test(queryText)) {
+      return "backend-identity";
+    }
+    return "other";
   };
 
   const instrumentDb = <T extends object>(
     db: T,
     role: "owner" | "aoa_app" | "aoa_operator",
     transactionReceipt?: StartupTransactionReceipt,
+    source: StartupTransactionReceipt["source"] = role === "owner" ? "shared-owner-db" : "serving",
+    dedicatedOwner?: DedicatedOwnerReceipt,
+    fixtureTransactionControl?: Sql,
   ): T => {
     const cache = new Map<PropertyKey, unknown>();
+    const invocationId = () => state.activeOwnerLifecycle?.invocation.id ??
+      state.activeInvocation?.id ?? state.openInvocations.at(-1)?.id ?? -1;
     return new Proxy(db, {
       get(target, property, receiver) {
         if (cache.has(property)) return cache.get(property);
-        if (property === "$client" && role === "owner") {
-          const client = Reflect.get(target, property, receiver) as Sql;
-          const instrumentedClient = new Proxy(client, {
-            get(clientTarget, clientProperty, clientReceiver) {
-              if (clientProperty === "unsafe") {
-                return (query: string, ...args: unknown[]) => {
-                  if ((inject === "cleanup-pending" || inject === "cleanup-failure-pending") &&
-                    query.toLowerCase().includes("participant_pids_gone")) {
-                    return runPendingRawOwnerQuery(clientTarget as Sql);
-                  }
-                  const unsafe = (clientTarget as Sql).unsafe as unknown as
-                    (...rawArgs: unknown[]) => unknown;
-                  return unsafe(query, ...args);
+        if (role === "owner" && source === "shared-owner-db" && property === "$client") {
+          const rawClient = Reflect.get(target, property, receiver);
+          if ((typeof rawClient !== "object" || rawClient === null) && typeof rawClient !== "function") {
+            return rawClient;
+          }
+          const observedRawClient = new Proxy(rawClient as object, {
+            apply(rawTarget, thisArg, args) {
+              state.sharedOwnerRawOperations.push({ invocationId: invocationId(), operation: "call" });
+              return Reflect.apply(rawTarget as Function, thisArg, args);
+            },
+            get(rawTarget, rawProperty, rawReceiver) {
+              const value = Reflect.get(rawTarget, rawProperty, rawReceiver);
+              if (rawProperty === "options") return value;
+              if (typeof value === "function") {
+                return (...args: unknown[]) => {
+                  state.sharedOwnerRawOperations.push({
+                    invocationId: invocationId(),
+                    operation: String(rawProperty),
+                  });
+                  return Reflect.apply(value, rawTarget, args);
                 };
               }
-              return Reflect.get(clientTarget, clientProperty, clientReceiver);
+              state.sharedOwnerPrivateReads.push({
+                invocationId: invocationId(),
+                property: String(rawProperty),
+              });
+              return value;
             },
           });
-          cache.set(property, instrumentedClient);
-          return instrumentedClient;
+          cache.set(property, observedRawClient);
+          return observedRawClient;
+        }
+        if (role === "owner" && source === "shared-owner-db" &&
+          (property === "_" || property === "session")) {
+          state.sharedOwnerPrivateReads.push({ invocationId: invocationId(), property: String(property) });
         }
         if (property === "execute") {
           const execute = async (statement: unknown) => {
             let queryText = "";
+            let compiledQueryText = "";
             let queryParams: unknown[] = [];
             try {
               const compiled = dialect.sqlToQuery(statement as never);
-              queryText = compiled.sql.toLowerCase();
+              compiledQueryText = compiled.sql;
+              queryText = compiledQueryText.toLowerCase();
               queryParams = compiled.params;
             } catch { /* non-SQL */ }
+            const semantic = ownerQuerySemantic(queryText);
+            const ownerQueryReceipt: OwnerQueryReceipt | null = role === "owner"
+              ? {
+                  invocationId: state.activeOwnerLifecycle?.invocation.id ??
+                    state.activeInvocation?.id ?? state.openInvocations.at(-1)?.id ?? -1,
+                  source: source === "dedicated-owner" ? "dedicated-owner" : "shared-owner-db",
+                  dedicatedOwnerId: dedicatedOwner?.id ?? null,
+                  semantic,
+                  sql: compiledQueryText,
+                  params: [...queryParams],
+                  startedAt: performance.now(),
+                  settledAt: null,
+                  outcome: "pending",
+                  dryRun: null,
+                }
+              : null;
+            if (ownerQueryReceipt) {
+              state.ownerQueryReceipts.push(ownerQueryReceipt);
+              dedicatedOwner?.queryReceipts.push(ownerQueryReceipt);
+            }
+            if (ownerQueryReceipt?.semantic === "cancellation" &&
+              ownerQueryReceipt.source === "dedicated-owner" &&
+              fixtureTransactionControl && typeof fixtureTransactionControl.unsafe === "function") {
+                // Test-owned same-session replay: deliberately excluded from production raw/private counters.
+                ownerQueryReceipt.dryRun = await runCancellationDryRun(
+                  fixtureTransactionControl,
+                  ownerQueryReceipt,
+                );
+            }
+            const executeCore = async (): Promise<unknown> => {
             const preRegistrationPendingPhase: PendingQueryPhase | null =
-              state.preRegistrationTrapArmed &&
-              inject === "timeout-setup-pending" && role === "owner" &&
+              source === "dedicated-owner" && dedicatedOwner !== undefined &&
+              inject === "transaction-acquisition-pending" && role === "owner" &&
+                semantic === "timeout-setup"
+                ? "transaction-acquisition"
+                : source === "dedicated-owner" && dedicatedOwner !== undefined &&
+                  inject === "timeout-setup-pending" && role === "owner" &&
                 queryText.includes("set_config('statement_timeout'")
                 ? "timeout-setup"
-                : state.preRegistrationTrapArmed &&
+                : source === "dedicated-owner" && dedicatedOwner !== undefined &&
                     inject === "backend-identity-pending" && role === "owner" &&
-                    /^select pg_backend_pid\(\) as pid\s*$/u.test(queryText.trim())
+                    semantic === "backend-identity"
                   ? "backend-identity"
                   : null;
             if (preRegistrationPendingPhase) {
@@ -920,6 +1293,8 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
                 preRegistrationPendingPhase,
                 statement,
                 transactionReceipt,
+                source,
+                dedicatedOwner?.id ?? null,
               );
             }
             if (inject === "redaction-sentinel" && role === "aoa_app" &&
@@ -937,12 +1312,10 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               });
             }
             const pendingPhase: PendingQueryPhase | null =
-              inject === "migration-pending" && role === "owner" &&
+              inject === "migration-pending" && role === "owner" && source === "dedicated-owner" &&
                 queryText.includes("__drizzle_migrations")
                 ? "migration-identity"
-                : (inject === "app-authority-pending" || inject === "stale-owner-lifecycle" ||
-                    inject === "transaction-acquisition-pending" ||
-                    inject === "timeout-setup-pending" || inject === "backend-identity-pending") &&
+                : (inject === "app-authority-pending" || inject === "stale-owner-lifecycle") &&
                     role === "aoa_app" &&
                     queryText.includes("session_role_name")
                   ? "app-authority"
@@ -950,11 +1323,20 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
                       queryText.includes("session_role_name")
                     ? "operator-authority"
                     : (inject === "cleanup-pending" || inject === "cleanup-failure-pending") &&
-                        role === "owner" && queryText.includes("participant_pids_gone")
+                        role === "owner" && source === "dedicated-owner" &&
+                        queryText.includes("participant_pids_gone")
                       ? "cleanup"
                       : null;
             if (pendingPhase) {
-              return runPendingQuery(target, role, pendingPhase, statement, transactionReceipt);
+              return runPendingQuery(
+                target,
+                role,
+                pendingPhase,
+                statement,
+                transactionReceipt,
+                source,
+                dedicatedOwner?.id ?? null,
+              );
             }
             const ownerLock = role === "owner" && /pg_advisory_xact_lock\s*\(/u.test(queryText) &&
               !queryText.includes("shared");
@@ -966,7 +1348,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               }
               if (transactionReceipt) transactionReceipt.phase = "owner-exclusive";
               state.phases.push("owner-exclusive");
-              if (pendingAdvisoryPhase === "owner-exclusive") {
+              if (pendingAdvisoryPhase === "owner-exclusive" && source === "dedicated-owner") {
                 if (!transactionReceipt) {
                   throw new Error("pending owner advisory query must run inside its startup transaction");
                 }
@@ -979,6 +1361,8 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
                   "owner-exclusive",
                   statement,
                   transactionReceipt,
+                  source,
+                  dedicatedOwner?.id ?? null,
                 );
               }
               if (inject === "shared-budget" || inject === "shared-budget-pending") {
@@ -1019,7 +1403,15 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
                 state.injectionTriggered = true;
                 await (target as T & { execute(s: unknown): Promise<unknown> })
                   .execute(sql`SET LOCAL statement_timeout = 0`);
-                return runPendingQuery(target, role, phase, statement, transactionReceipt);
+                return runPendingQuery(
+                  target,
+                  role,
+                  phase,
+                  statement,
+                  transactionReceipt,
+                  source,
+                  dedicatedOwner?.id ?? null,
+                );
               }
             }
             if ((inject === "shared-budget" || inject === "shared-budget-pending") && role !== "owner" &&
@@ -1060,8 +1452,8 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               }
             }
             const result = await observeCleanupProbe(
-              "shared-owner-db",
-              null,
+              source === "dedicated-owner" ? "dedicated-owner" : "shared-owner-db",
+              dedicatedOwner?.id ?? null,
               queryText,
               () => (target as T & { execute(s: unknown): Promise<unknown> }).execute(statement),
             );
@@ -1072,40 +1464,36 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
                 if (pid !== undefined) state.backendPids[role].add(pid);
               }
             }
-            if (inject === "stale-owner-lifecycle" && role === "owner" &&
-              /^select pg_backend_pid\(\) as pid\s*$/u.test(queryText.trim())) {
-              const identityResult = await (target as T & { execute(s: unknown): Promise<unknown> })
-                .execute(sql`
-                  SELECT activity.pid,
-                    activity.backend_start::text AS backend_start,
-                    activity.xact_start::text AS xact_start,
-                    current_user AS session_role,
-                    current_database() AS database_name,
-                    activity.application_name
-                  FROM pg_stat_activity activity
-                  WHERE activity.pid = pg_backend_pid()
-                `);
-              const [identity] = rows(identityResult) as Array<{
-                pid: number;
-                backend_start: string;
-                xact_start: string;
-                session_role: string;
-                database_name: string;
-                application_name: string;
-              }>;
-              if (!identity?.backend_start || !identity.xact_start) {
-                throw new Error("owner startup backend identity was incomplete");
+            if (role === "owner") {
+              for (const rawRow of rows(result)) {
+                const identity = (rawRow ?? {}) as Record<string, unknown>;
+                const pid = [identity.pid, identity.control_pid, identity.participant_pid]
+                  .find((value): value is number => Number.isSafeInteger(value));
+                const backendStart = identity.backend_start;
+                const xactStart = identity.xact_start;
+                const sessionRole = identity.session_role ?? identity.role_name ??
+                  identity.usename ?? identity.session_user;
+                const databaseName = identity.database_name ?? identity.datname;
+                const applicationName = identity.application_name ?? identity.session_tag;
+                if (pid === undefined || typeof backendStart !== "string" ||
+                  typeof xactStart !== "string" || typeof sessionRole !== "string" ||
+                  typeof databaseName !== "string" || typeof applicationName !== "string") continue;
+                if (state.backendIdentities.some((candidate) =>
+                  candidate.invocationId === ownerQueryReceipt?.invocationId &&
+                  candidate.pid === pid && candidate.backendStart === backendStart)) continue;
+                state.backendIdentities.push({
+                  invocationId: ownerQueryReceipt?.invocationId ?? -1,
+                  role,
+                  source: source === "dedicated-owner" ? "dedicated-owner" : "shared-owner-db",
+                  dedicatedOwnerId: dedicatedOwner?.id ?? null,
+                  pid,
+                  backendStart,
+                  xactStart,
+                  sessionRole,
+                  databaseName,
+                  applicationName,
+                });
               }
-              state.backendIdentities.push({
-                invocationId: state.activeInvocation?.id ?? -1,
-                role,
-                pid: identity.pid,
-                backendStart: identity.backend_start,
-                xactStart: identity.xact_start,
-                sessionRole: identity.session_role,
-                databaseName: identity.database_name,
-                applicationName: identity.application_name,
-              });
             }
             if (role !== "owner" && /pg_try_advisory_xact_lock_shared/u.test(queryText)) {
               const success = firstBoolean(result);
@@ -1128,6 +1516,17 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               }
             }
             return result;
+            };
+            try {
+              const result = await executeCore();
+              if (ownerQueryReceipt) ownerQueryReceipt.outcome = "fulfilled";
+              return result;
+            } catch (error) {
+              if (ownerQueryReceipt) ownerQueryReceipt.outcome = "rejected";
+              throw error;
+            } finally {
+              if (ownerQueryReceipt) ownerQueryReceipt.settledAt = performance.now();
+            }
           };
           cache.set(property, execute);
           return execute;
@@ -1137,7 +1536,19 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
             return recordTransaction(role, null, async (receipt) =>
               (target as T & {
                 transaction(cb: (tx: T) => unknown, ...rest: unknown[]): Promise<unknown>;
-              }).transaction((tx) => callback(instrumentDb(tx, role, receipt)), ...args));
+              }).transaction(
+                (tx) => callback(instrumentDb(
+                  tx,
+                  role,
+                  receipt,
+                  source,
+                  dedicatedOwner,
+                  dedicatedOwner === undefined
+                    ? undefined
+                    : dedicatedOwnerTransactionControls.get(dedicatedOwner.id),
+                )),
+                ...args,
+              ), source, dedicatedOwner?.id ?? null);
           };
           cache.set(property, transaction);
           return transaction;
@@ -1189,109 +1600,166 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     };
   };
 
-  const captureDedicatedOwnerControls = inject === "cleanup-acquisition-pending" ||
-    inject === "cleanup-failure-acquisition-pending";
-  const ownerControlByClient = new WeakMap<object, OwnerControlReceipt>();
-  const instrumentOwnerControlDb = <T extends object>(
-    db: T,
-    control: OwnerControlReceipt,
-  ): T => {
-    const cache = new Map<PropertyKey, unknown>();
-    return new Proxy(db, {
-      get(target, property, receiver) {
-        if (cache.has(property)) return cache.get(property);
-        if (property === "execute") {
-          const original = Reflect.get(target, property, receiver) as
-            (statement: unknown) => Promise<unknown>;
-          const execute = (statement: unknown) => {
-            let queryText = "";
-            try {
-              queryText = dialect.sqlToQuery(statement as never).sql.toLowerCase();
-            } catch { /* non-SQL */ }
-            return observeCleanupProbe(
-              "dedicated-owner-control",
-              control.id,
-              queryText,
-              () => Reflect.apply(original, target, [statement]),
-            );
-          };
-          cache.set(property, execute);
-          return execute;
-        }
-        if (property === "transaction") {
-          const original = Reflect.get(target, property, receiver) as
-            (callback: (transaction: object) => unknown, ...args: unknown[]) => Promise<unknown>;
-          const transaction = (
-            callback: (transaction: object) => unknown,
-            ...args: unknown[]
-          ) => Reflect.apply(original, target, [
-            (inner: object) => callback(instrumentOwnerControlDb(inner, control)),
-            ...args,
-          ]);
-          cache.set(property, transaction);
-          return transaction;
-        }
-        return Reflect.get(target, property, receiver);
-      },
-    });
-  };
-
   vi.resetModules();
-  if (captureDedicatedOwnerControls) {
-    vi.doMock("postgres", async () => {
-      const actual = await vi.importActual<typeof import("postgres")>("postgres");
-      const factory = (...args: unknown[]) => {
-        const client = Reflect.apply(actual.default as unknown as Function, undefined, args) as Sql;
-        const first = args[0];
-        if (typeof first !== "object" || first === null || Array.isArray(first)) return client;
-        const receipt: OwnerControlReceipt = {
-          id: state.ownerControlReceipts.length + 1,
-          constructedAt: performance.now(),
-          endStartedAt: null,
-          endSettledAt: null,
-          endOutcome: "not-called",
-        };
-        state.ownerControlReceipts.push(receipt);
-        state.ownerControlClients.push({ client, receipt });
-        const observed = new Proxy(client, {
-          get(target, property, receiver) {
-            if (property !== "end") return Reflect.get(target, property, receiver);
-            return async (...endArgs: unknown[]) => {
-              receipt.endStartedAt = performance.now();
-              receipt.endOutcome = "pending";
-              try {
-                const value = await Reflect.apply(target.end as unknown as Function, target, endArgs);
-                receipt.endOutcome = "fulfilled";
-                return value;
-              } catch (error) {
-                receipt.endOutcome = "rejected";
-                throw error;
-              } finally {
-                receipt.endSettledAt = performance.now();
-              }
+  const dedicatedOwnerByClient = new WeakMap<object, DedicatedOwnerReceipt>();
+  const dedicatedOwnerTransactionControls = new Map<number, Sql>();
+  vi.doMock("postgres", async () => {
+    const actual = await vi.importActual<typeof import("postgres")>("postgres");
+    const factory = (...args: unknown[]) => {
+      const client = Reflect.apply(actual.default as unknown as Function, undefined, args) as Sql;
+      const first = args[0];
+      const lifecycle = state.activeOwnerLifecycle ?? (state.activeInvocation
+        ? { invocation: state.activeInvocation, lifecycle: "open" as const }
+        : null);
+      if (!lifecycle || typeof first !== "object" || first === null || Array.isArray(first)) {
+        return client;
+      }
+      const options = first as Record<string, unknown>;
+      const connection = options.connection;
+      const applicationName = typeof connection === "object" && connection !== null &&
+          typeof (connection as Record<string, unknown>).application_name === "string"
+        ? (connection as Record<string, unknown>).application_name as string
+        : null;
+      const receipt: DedicatedOwnerReceipt = {
+        id: state.dedicatedOwnerReceipts.length + 1,
+        invocationId: lifecycle.invocation.id,
+        lifecycle: lifecycle.lifecycle,
+        constructedAt: performance.now(),
+        options,
+        applicationName,
+        queryReceipts: [],
+        observedIdentities: [],
+        endStartedAt: null,
+        endSettledAt: null,
+        endOutcome: "not-called",
+        endInput: null,
+        cleanupForcedEnd: false,
+        externalGoneAt: null,
+        externalGone: null,
+      };
+      state.dedicatedOwnerReceipts.push(receipt);
+      const observed = new Proxy(client, {
+        get(target, property, receiver) {
+          if (property === "begin") {
+            const begin = Reflect.get(target, property, receiver) as (...args: unknown[]) => unknown;
+            return (...beginArgs: unknown[]) => {
+              const callbackIndex = beginArgs.findLastIndex((value) => typeof value === "function");
+              if (callbackIndex < 0) return Reflect.apply(begin, target, beginArgs);
+              const callback = beginArgs[callbackIndex] as (...args: unknown[]) => unknown;
+              const observedArgs = [...beginArgs];
+              observedArgs[callbackIndex] = async (transactionControl: Sql, ...callbackArgs: unknown[]) => {
+                const previous = dedicatedOwnerTransactionControls.get(receipt.id);
+                dedicatedOwnerTransactionControls.set(receipt.id, transactionControl);
+                try {
+                  return await Reflect.apply(callback, undefined, [transactionControl, ...callbackArgs]);
+                } finally {
+                  if (previous) dedicatedOwnerTransactionControls.set(receipt.id, previous);
+                  else dedicatedOwnerTransactionControls.delete(receipt.id);
+                }
+              };
+              return Reflect.apply(begin, target, observedArgs);
             };
-          },
-        });
-        ownerControlByClient.set(observed as unknown as object, receipt);
-        return observed;
-      };
-      return { ...actual, default: factory };
-    });
-    vi.doMock("drizzle-orm/postgres-js", async () => {
-      const actual = await vi.importActual<typeof import("drizzle-orm/postgres-js")>(
-        "drizzle-orm/postgres-js",
-      );
-      const instrumentedDrizzle = (...args: unknown[]) => {
-        const db = Reflect.apply(actual.drizzle as unknown as Function, undefined, args) as object;
-        const client = args[0];
-        const control = typeof client === "object" && client !== null
-          ? ownerControlByClient.get(client)
-          : typeof client === "function" ? ownerControlByClient.get(client) : undefined;
-        return control ? instrumentOwnerControlDb(db, control) : db;
-      };
-      return { ...actual, drizzle: instrumentedDrizzle };
-    });
-  }
+          }
+          if (property !== "end") return Reflect.get(target, property, receiver);
+          return async (...endArgs: unknown[]) => {
+            receipt.endStartedAt = performance.now();
+            receipt.endOutcome = "pending";
+            receipt.endInput = endArgs[0] ?? null;
+            try {
+              if (receipt.applicationName) {
+                receipt.observedIdentities.push(...await admin!.unsafe<Array<{
+                  pid: number;
+                  backend_start: string;
+                  session_role: string;
+                  database_name: string;
+                  application_name: string;
+                }>>(`
+                  SELECT activity.pid,
+                    activity.backend_start::text AS backend_start,
+                    activity.usename AS session_role,
+                    activity.datname AS database_name,
+                    activity.application_name
+                  FROM pg_stat_activity activity
+                  WHERE activity.application_name = $1
+                `, [receipt.applicationName]).then((identities) => identities.map((identity) => ({
+                  pid: identity.pid,
+                  backendStart: identity.backend_start,
+                  sessionRole: identity.session_role,
+                  databaseName: identity.database_name,
+                  applicationName: identity.application_name,
+                }))));
+              }
+              const value = await Reflect.apply(target.end as unknown as Function, target, endArgs);
+              receipt.endOutcome = "fulfilled";
+              if (receipt.applicationName) {
+                const deadline = performance.now() + 2_000;
+                do {
+                  const identityGone = await Promise.all(receipt.observedIdentities.map(async (identity) => {
+                    const [observation] = await admin!.unsafe<Array<{ gone: boolean }>>(`
+                      SELECT NOT EXISTS (
+                        SELECT 1 FROM pg_stat_activity activity
+                        WHERE activity.pid = $1
+                          AND activity.backend_start = $2::timestamptz
+                          AND activity.usename = $3
+                          AND activity.datname = $4
+                          AND activity.application_name = $5
+                      ) AS gone
+                    `, [
+                      identity.pid,
+                      identity.backendStart,
+                      identity.sessionRole,
+                      identity.databaseName,
+                      identity.applicationName,
+                    ]);
+                    return observation?.gone === true;
+                  }));
+                  const [tagObservation] = await admin!.unsafe<Array<{ gone: boolean }>>(`
+                    SELECT NOT EXISTS (
+                      SELECT 1 FROM pg_stat_activity activity
+                      WHERE activity.application_name = $1
+                    ) AS gone
+                  `, [receipt.applicationName]);
+                  if (tagObservation?.gone === true && identityGone.every(Boolean)) {
+                    receipt.externalGone = true;
+                    receipt.externalGoneAt = performance.now();
+                    break;
+                  }
+                  await new Promise((resolve) => setTimeout(resolve, 20));
+                } while (performance.now() < deadline);
+                receipt.externalGone ??= false;
+              }
+              return value;
+            } catch (error) {
+              receipt.endOutcome = "rejected";
+              throw error;
+            } finally {
+              receipt.endSettledAt = performance.now();
+            }
+          };
+        },
+      });
+      state.dedicatedOwnerClients.push({ client: observed, receipt });
+      dedicatedOwnerByClient.set(observed as unknown as object, receipt);
+      return observed;
+    };
+    return { ...actual, default: factory };
+  });
+  vi.doMock("drizzle-orm/postgres-js", async () => {
+    const actual = await vi.importActual<typeof import("drizzle-orm/postgres-js")>(
+      "drizzle-orm/postgres-js",
+    );
+    const instrumentedDrizzle = (...args: unknown[]) => {
+      const db = Reflect.apply(actual.drizzle as unknown as Function, undefined, args) as object;
+      const client = args[0];
+      const dedicatedOwner = typeof client === "object" && client !== null
+        ? dedicatedOwnerByClient.get(client)
+        : typeof client === "function" ? dedicatedOwnerByClient.get(client) : undefined;
+      return dedicatedOwner
+        ? instrumentDb(db, "owner", undefined, "dedicated-owner", dedicatedOwner)
+        : db;
+    };
+    return { ...actual, drizzle: instrumentedDrizzle };
+  });
   vi.doMock("@armyofagents/db", async () => {
     const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
     return {
@@ -1432,42 +1900,6 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     return result?.cancelled === true;
   };
 
-  const provePreRegistrationTrap = async (
-    phase: "timeout-setup" | "backend-identity",
-  ) => {
-    state.preRegistrationTrapArmed = true;
-    try {
-      const operation = instrumentedOwnerDb.transaction(async (transaction) => {
-        if (phase === "backend-identity") {
-          await transaction.execute(sql`
-            SELECT set_config('statement_timeout', '5000ms', true),
-              set_config('lock_timeout', '750ms', true),
-              set_config('idle_in_transaction_session_timeout', '5000ms', true)
-          `);
-        }
-        return transaction.execute(phase === "timeout-setup"
-          ? sql`
-              SELECT set_config('statement_timeout', '5000ms', true),
-                set_config('lock_timeout', '750ms', true),
-                set_config('idle_in_transaction_session_timeout', '5000ms', true)
-            `
-          : sql`SELECT pg_backend_pid() AS pid`);
-      });
-      void operation.catch(() => {});
-      const pending = await waitForActivePendingQuery(phase, 3_500, -1);
-      if (!pending?.backendPid) {
-        throw new Error(`direct ${phase} control did not reach the real pending backend`);
-      }
-      const cancelled = await cancelBackend(pending.backendPid);
-      const outcome = await withOuterWatchdog(operation, 5_000);
-      const transaction = state.transactionReceipts.find((receipt) =>
-        receipt.invocationId === -1 && receipt.phase === phase);
-      return { cancelled, outcome, pending, transaction };
-    } finally {
-      state.preRegistrationTrapArmed = false;
-    }
-  };
-
   const cleanup = async () => {
     try {
       if (state.cleanupFailureCloseGateReleasedAt === null) {
@@ -1487,8 +1919,10 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       for (const group of state.ownerReservationGroups) {
         await group.release().catch(() => {});
       }
-      for (const { client, receipt } of state.ownerControlClients) {
-        if (receipt.endSettledAt === null) await client.end({ timeout: 1 }).catch(() => {});
+      for (const { client, receipt } of state.dedicatedOwnerClients) {
+        if (receipt.endSettledAt !== null) continue;
+        receipt.cleanupForcedEnd = true;
+        await client.end({ timeout: 1 }).catch(() => {});
       }
       await state.ownerClient?.end({ timeout: 1 }).catch(() => {});
       for (const client of state.clients) await client.end({ timeout: 1 }).catch(() => {});
@@ -1513,13 +1947,31 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       };
       state.openInvocations.push(invocation);
       state.activeInvocation = invocation;
+      state.activeOwnerLifecycle = { invocation, lifecycle: "open" };
       const previousAbortController = globalThis.AbortController;
       globalThis.AbortController = ObservedAbortController;
       try {
-        return await (isolated.openDistributedExecutionDatabases as unknown as typeof openFinalStartup)(input);
+        const accepted = await (isolated.openDistributedExecutionDatabases as unknown as typeof openFinalStartup)(input);
+        if (accepted === null) return null;
+        return {
+          ...accepted,
+          close: async () => {
+            if (state.activeOwnerLifecycle) {
+              throw new Error("advisory startup harness does not allow overlapping owner lifecycles");
+            }
+            state.activeOwnerLifecycle = { invocation, lifecycle: "close" };
+            try {
+              return await accepted.close();
+            } finally {
+              state.activeOwnerLifecycle = null;
+            }
+          },
+        };
       } finally {
         invocation.returnedAt = performance.now();
         state.activeInvocation = null;
+        if (state.activeOwnerLifecycle?.invocation === invocation &&
+          state.activeOwnerLifecycle.lifecycle === "open") state.activeOwnerLifecycle = null;
         if (globalThis.AbortController === ObservedAbortController) {
           globalThis.AbortController = previousAbortController;
         }
@@ -1557,42 +2009,6 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       return waitForActivePendingQuery(phase, timeoutMs, invocationId);
     },
     reserveOwnerSlots,
-    provePreRegistrationTrap,
-    async proveDedicatedCleanupProbeControl() {
-      if (!captureDedicatedOwnerControls) {
-        throw new Error("dedicated owner-control capture is not active for this injection");
-      }
-      const probeOffset = state.cleanupProbeReceipts.length;
-      const controlOffset = state.ownerControlReceipts.length;
-      const parsed = new URL(adminUrl);
-      const postgresModule = await import("postgres");
-      const drizzleModule = await import("drizzle-orm/postgres-js");
-      const client = postgresModule.default({
-        host: parsed.hostname,
-        port: Number(parsed.port),
-        database: parsed.pathname.slice(1),
-        user: decodeURIComponent(parsed.username),
-        password: decodeURIComponent(parsed.password),
-        max: 1,
-        connection: { statement_timeout: 5_000 },
-      });
-      try {
-        const controlDb = drizzleModule.drizzle(client);
-        await controlDb.execute(sql`SELECT true AS participant_pids_gone`);
-      } finally {
-        await client.end({ timeout: 1 });
-      }
-      const probe = state.cleanupProbeReceipts.at(probeOffset);
-      const control = state.ownerControlReceipts.at(controlOffset);
-      if (!probe || !control) throw new Error("dedicated cleanup probe control was not observed");
-      return { probe, control };
-    },
-    armPreRegistrationTrap() {
-      state.preRegistrationTrapArmed = true;
-    },
-    disarmPreRegistrationTrap() {
-      state.preRegistrationTrapArmed = false;
-    },
     cancelBackend,
     async waitForCloseAttempts(count: number, timeoutMs = 5_000) {
       const deadline = performance.now() + timeoutMs;
@@ -1612,11 +2028,24 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
   };
 }
 
-async function observeAdvisoryStartupSettlement(token: string) {
+async function observeAdvisoryStartupSettlement(
+  token: string,
+  dedicatedOwners: readonly DedicatedOwnerReceipt[] = [],
+) {
+  const legacyOwnerTag = `${token}_owner`;
+  const dedicatedTags = [...new Set(dedicatedOwners
+    .map(({ applicationName }) => applicationName)
+    .filter((value): value is string =>
+      typeof value === "string" && value.length > 0 && value !== legacyOwnerTag))];
+  const dedicatedPlaceholders = dedicatedTags.map((_, index) => `$${index + 4}`).join(", ");
+  const dedicatedPredicate = dedicatedTags.length > 0
+    ? `activity.application_name IN (${dedicatedPlaceholders})`
+    : "FALSE";
   const [receipt] = await admin!.unsafe<Array<{
     participant_pids: number;
-    owner_pids: number;
-    owner_in_transaction: number;
+    dedicated_owner_pids: number;
+    legacy_owner_pids: number;
+    legacy_owner_invalid: number;
     advisory_locks: number;
   }>>(`
     SELECT
@@ -1624,18 +2053,22 @@ async function observeAdvisoryStartupSettlement(token: string) {
         WHERE activity.application_name IN ($1, $2)
       )::int AS participant_pids,
       count(DISTINCT activity.pid) FILTER (
-        WHERE activity.application_name = $3
-      )::int AS owner_pids,
+        WHERE ${dedicatedPredicate}
+      )::int AS dedicated_owner_pids,
       count(DISTINCT activity.pid) FILTER (
         WHERE activity.application_name = $3
-          AND (activity.state <> 'idle' OR activity.xact_start IS NOT NULL)
-      )::int AS owner_in_transaction,
+      )::int AS legacy_owner_pids,
+      count(DISTINCT activity.pid) FILTER (
+        WHERE activity.application_name = $3
+          AND (activity.state <> 'idle' OR activity.xact_start IS NOT NULL OR advisory.pid IS NOT NULL)
+      )::int AS legacy_owner_invalid,
       count(DISTINCT advisory.pid)::int AS advisory_locks
     FROM pg_stat_activity activity
     LEFT JOIN pg_locks advisory
       ON advisory.pid = activity.pid AND advisory.locktype = 'advisory'
     WHERE activity.application_name IN ($1, $2, $3)
-  `, [`${token}_app`, `${token}_operator`, `${token}_owner`]);
+      OR ${dedicatedPredicate}
+  `, [`${token}_app`, `${token}_operator`, legacyOwnerTag, ...dedicatedTags]);
   return receipt!;
 }
 
@@ -2260,7 +2693,10 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         failure = error;
       } finally {
         await accepted?.close().catch(() => {});
-        settlement = await observeAdvisoryStartupSettlement(harness.token);
+        settlement = await observeAdvisoryStartupSettlement(
+          harness.token,
+          harness.state.dedicatedOwnerReceipts,
+        );
         await harness.cleanup();
       }
 
@@ -2307,8 +2743,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         .toEqual(["aoa_app", "aoa_operator"]);
       expect(settlement).toEqual({
         participant_pids: 0,
-        owner_pids: 1,
-        owner_in_transaction: 0,
+        dedicated_owner_pids: 0,
+        legacy_owner_pids: expect.any(Number),
+        legacy_owner_invalid: 0,
         advisory_locks: 0,
       });
     }, 60_000);
@@ -2330,7 +2767,10 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           failures.push(error);
         } finally {
           await accepted?.close().catch(() => {});
-          settlements.push(await observeAdvisoryStartupSettlement(harness.token));
+          settlements.push(await observeAdvisoryStartupSettlement(
+            harness.token,
+            harness.state.dedicatedOwnerReceipts,
+          ));
         }
         }
       } finally {
@@ -2374,8 +2814,20 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         }
       }
       expect.soft(settlements).toEqual([
-        { participant_pids: 0, owner_pids: 1, owner_in_transaction: 0, advisory_locks: 0 },
-        { participant_pids: 0, owner_pids: 1, owner_in_transaction: 0, advisory_locks: 0 },
+        {
+          participant_pids: 0,
+          dedicated_owner_pids: 0,
+          legacy_owner_pids: expect.any(Number),
+          legacy_owner_invalid: 0,
+          advisory_locks: 0,
+        },
+        {
+          participant_pids: 0,
+          dedicated_owner_pids: 0,
+          legacy_owner_pids: expect.any(Number),
+          legacy_owner_invalid: 0,
+          advisory_locks: 0,
+        },
       ]);
     }, 120_000);
 
@@ -2442,9 +2894,12 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         }
         const observationDeadline = performance.now() + 5_000;
         do {
-          settlement = await observeAdvisoryStartupSettlement(harness.token);
-          if (settlement.participant_pids === 0 && settlement.owner_in_transaction === 0 &&
-            settlement.advisory_locks === 0) break;
+          settlement = await observeAdvisoryStartupSettlement(
+            harness.token,
+            harness.state.dedicatedOwnerReceipts,
+          );
+          if (settlement.participant_pids === 0 && settlement.dedicated_owner_pids === 0 &&
+            settlement.legacy_owner_invalid === 0 && settlement.advisory_locks === 0) break;
           await new Promise((resolve) => setTimeout(resolve, 25));
         } while (performance.now() < observationDeadline);
         await harness.cleanup();
@@ -2538,102 +2993,265 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       }
       expect(settlement).toEqual({
         participant_pids: 0,
-        owner_pids: 1,
-        owner_in_transaction: 0,
+        dedicated_owner_pids: 0,
+        legacy_owner_pids: expect.any(Number),
+        legacy_owner_invalid: 0,
         advisory_locks: 0,
       });
     }, 60_000);
 
-    it("bounds a never-settling owner transaction acquisition without abandoning queued work", async () => {
-      // All real owner-pool slots are reserved before open. The reservations stay held through
-      // every public assertion, so only production's acquisition bound can settle this startup.
+    it("calibrates the same-session cancellation dry-run without canceling any backend", async () => {
+      guard();
+      const token = `job003_dry_run_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const control = postgres(withApplicationName(adminUrl, `${token}_control`), { max: 1 });
+      const target = postgres(withApplicationName(adminUrl, `${token}_target`), { max: 1 });
+      const distractor = postgres(withApplicationName(adminUrl, `${token}_distractor`), { max: 1 });
+      const identityQuery = `
+        SELECT pg_backend_pid() AS pid, backend_start::text AS backend_start,
+          session_user::text AS session_role, current_database()::text AS database_name,
+          current_setting('application_name')::text AS application_name
+        FROM pg_stat_activity WHERE pid = pg_backend_pid()
+      `;
+      try {
+        const [targetIdentity] = await target.unsafe<Array<{
+          pid: number;
+          backend_start: string;
+          session_role: string;
+          database_name: string;
+          application_name: string;
+        }>>(identityQuery);
+        const [distractorIdentity] = await distractor.unsafe<Array<{ pid: number }>>(identityQuery);
+        expect(targetIdentity).toBeDefined();
+        expect(typeof targetIdentity?.backend_start).toBe("string");
+        expect(distractorIdentity).toBeDefined();
+        await control.begin(async (transaction) => {
+          const [controlIdentity] = await transaction.unsafe<Array<{
+            pid: number;
+            backend_start: string;
+            session_role: string;
+            database_name: string;
+            application_name: string;
+          }>>(identityQuery);
+          expect(controlIdentity).toBeDefined();
+          const [targetActivity] = await transaction.unsafe<Array<{
+            pid: number;
+            backend_start: string;
+            session_role: string;
+            database_name: string;
+            application_name: string;
+          }>>(`
+            SELECT pid, backend_start::text AS backend_start,
+              usename::text AS session_role, datname::text AS database_name,
+              application_name::text AS application_name
+            FROM pg_stat_activity WHERE pid = $1
+          `, [targetIdentity!.pid]);
+          expect(targetActivity).toEqual(targetIdentity);
+          const [preflight] = await transaction.unsafe<Array<{
+            pid_match: boolean;
+            backend_start_match: boolean;
+            session_role_match: boolean;
+            database_name_match: boolean;
+            application_name_match: boolean;
+          }>>(`
+            SELECT activity.pid = $1 AS pid_match,
+              activity.backend_start::text = $2 AS backend_start_match,
+              activity.usename = $3 AS session_role_match,
+              activity.datname = $4 AS database_name_match,
+              activity.application_name = $5 AS application_name_match
+            FROM pg_stat_activity activity
+            WHERE activity.pid = $1
+          `, [
+            targetIdentity!.pid,
+            targetIdentity!.backend_start,
+            targetIdentity!.session_role,
+            targetIdentity!.database_name,
+            targetIdentity!.application_name,
+          ]);
+          expect(preflight).toEqual({
+            pid_match: true,
+            backend_start_match: true,
+            session_role_match: true,
+            database_name_match: true,
+            application_name_match: true,
+          });
+          const dryRun = await runCancellationDryRun(transaction, {
+            sql: `
+              select pg_cancel_backend(activity.pid)
+              from pg_stat_activity activity
+              where activity.pid = $1
+                and activity.backend_start::text = $2
+                and activity.usename = $3
+                and activity.datname = $4
+                and activity.application_name = $5
+                and not (
+                  activity.pid = $6
+                  and activity.backend_start::text = $7
+                  and activity.usename = $8
+                  and activity.datname = $9
+                  and activity.application_name = $10
+                )
+            `,
+            params: [
+              targetIdentity!.pid,
+              targetIdentity!.backend_start,
+              targetIdentity!.session_role,
+              targetIdentity!.database_name,
+              targetIdentity!.application_name,
+              controlIdentity!.pid,
+              controlIdentity!.backend_start,
+              controlIdentity!.session_role,
+              controlIdentity!.database_name,
+              controlIdentity!.application_name,
+            ],
+          });
+          const mutationCoverage = Object.fromEntries(CANCELLATION_IDENTITY_FIELDS.map(({ field }) => [
+            field,
+            dryRun.mutations.some((mutation) =>
+              mutation.targetPid === targetIdentity!.pid && mutation.field === field &&
+              !mutation.candidatePids.includes(targetIdentity!.pid)),
+          ]));
+          expect({
+            outcome: dryRun.outcome,
+            settled: typeof dryRun.settledAt === "number",
+            targetAlias: dryRun.targetAlias,
+            originalCandidates: dryRun.originalCandidatePids,
+            targets: dryRun.targetIdentities.map(({ pid }) => pid),
+            mutationCoverage,
+            controlSubstitution: dryRun.controlSubstitutions,
+            controlRecorded: dryRun.originalCandidatePids.includes(controlIdentity!.pid),
+            distractorRecorded: dryRun.originalCandidatePids.includes(distractorIdentity!.pid),
+          }).toEqual({
+            outcome: "fulfilled",
+            settled: true,
+            targetAlias: "activity",
+            originalCandidates: [targetIdentity!.pid],
+            targets: [targetIdentity!.pid],
+            mutationCoverage: {
+              pid: true,
+              backendStart: true,
+              sessionRole: true,
+              databaseName: true,
+              applicationName: true,
+            },
+            controlSubstitution: [{ targetPid: targetIdentity!.pid, candidatePids: [] }],
+            controlRecorded: false,
+            distractorRecorded: false,
+          });
+        });
+      } finally {
+        await Promise.all([
+          control.end({ timeout: 5 }),
+          target.end({ timeout: 5 }),
+          distractor.end({ timeout: 5 }),
+        ]);
+      }
+    });
+
+    it("uses a dedicated owner transaction while every literal input-owner slot is reserved", async () => {
+      // Mutation caught: queuing begin() on input.ownerDb, or treating an app allocation as a
+      // bypass, cannot satisfy this lane. A real dedicated owner transaction must be pending
+      // before abort, and production alone must settle and dispose every dedicated session.
       guard();
       const harness = await createAdvisoryStartupHarness("transaction-acquisition-pending");
       const reservations = await harness.reserveOwnerSlots(4);
       const operation = harness.open(harness.input);
       void operation.catch(() => {});
-      let appPending: (typeof harness.state.pendingQueries)[number] | null = null;
+      let dedicatedPending: (typeof harness.state.pendingQueries)[number] | null = null;
       try {
-        expect(reservations.receipts).toHaveLength(4);
-        expect(new Set(reservations.receipts.map(({ pid }) => pid)).size).toBe(4);
-        expect(reservations.receipts.every(({ releasedAt }) => releasedAt === null)).toBe(true);
         const [invocation] = harness.state.openInvocations;
-        expect(invocation?.controllers).toHaveLength(1);
         const controller = invocation?.controllers[0];
-        expect(controller?.signal.aborted).toBe(false);
-
-        const milestoneDeadline = performance.now() + 3_500;
-        let queuedOwnerTransaction: StartupTransactionReceipt | undefined;
-        do {
-          queuedOwnerTransaction = harness.state.transactionReceipts.find((receipt) =>
-            receipt.invocationId === invocation?.id && receipt.role === "owner" &&
-            receipt.outcome === "pending" && receipt.settledAt === null);
-          appPending = harness.state.pendingQueries.find((receipt) =>
-            receipt.invocationId === invocation?.id && receipt.phase === "app-authority" &&
-            receipt.sleepIssuedAt !== null && receipt.settledAt === null) ?? null;
-          if (queuedOwnerTransaction || appPending) break;
-          await new Promise((resolve) => setTimeout(resolve, 20));
-        } while (performance.now() < milestoneDeadline);
-        expect(
-          queuedOwnerTransaction ? "shared-acquisition" : appPending ? "dedicated-owner-bypass" : null,
-        ).toMatch(/^(shared-acquisition|dedicated-owner-bypass)$/u);
-
+        dedicatedPending = invocation
+          ? await harness.tryWaitForActivePendingQuery("transaction-acquisition", invocation.id, 3_500)
+          : null;
+        const pendingTransactions = harness.state.transactionReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id && receipt.source === "dedicated-owner" &&
+          receipt.phase === "transaction-acquisition" && receipt.settledAt === null);
         const externallyAbortedAt = performance.now();
         controller?.abort();
-
-        const appTransactions = appPending
-          ? harness.state.transactionReceipts.filter((receipt) =>
-              receipt.invocationId === invocation?.id && receipt.phase === "app-authority" &&
-              receipt.outcome === "pending" && receipt.settledAt === null)
-          : [];
-        if (appPending) {
-          const exactAbortAt = invocation?.deadlineReceipt?.at ?? performance.now();
-          const prompt = await waitForReceiptSettlement(
-            [appPending, ...appTransactions],
-            exactAbortAt + EARLY_ABORT_SETTLEMENT_WATCHDOG_MS,
-          );
-          expect.soft(prompt).toMatchObject({ kind: "settled", observedAt: expect.any(Number) });
-        }
-
+        const exactAbortAt = invocation?.deadlineReceipt?.at ?? externallyAbortedAt;
+        const prompt = dedicatedPending
+          ? await waitForReceiptSettlement(
+              [dedicatedPending, ...pendingTransactions],
+              exactAbortAt + EARLY_ABORT_SETTLEMENT_WATCHDOG_MS,
+            )
+          : { kind: "missing" as const };
         const outcome = await withOuterWatchdog(operation, EARLY_ABORT_PUBLIC_WATCHDOG_MS);
-        const publicReturnedAt = invocation?.returnedAt;
-        const queuedOwnerTransactions = harness.state.transactionReceipts.filter((receipt) =>
-          receipt.invocationId === invocation?.id && receipt.role === "owner");
-        const trackedReceipts = [
-          ...queuedOwnerTransactions,
-          ...(appPending ? [appPending, ...appTransactions] : []),
-        ];
+        const publicReturnedAt = invocation?.returnedAt ?? null;
+        const dedicatedOwners = harness.state.dedicatedOwnerReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id);
+        const tags = dedicatedOwners.map(({ applicationName }) => applicationName);
+        const settlement = await observeAdvisoryStartupSettlement(
+          harness.token,
+          dedicatedOwners,
+        );
         expect({
+          reservedDistinctPids: new Set(reservations.receipts.map(({ pid }) => pid)).size,
+          reservationsHeld: reservations.receipts.every(({ releasedAt }) => releasedAt === null),
+          controllerCount: invocation?.controllers.length ?? 0,
+          dedicatedPending: dedicatedPending !== null &&
+            dedicatedPending.source === "dedicated-owner" &&
+            dedicatedPending.dedicatedOwnerId !== null,
+          dedicatedTransactionCount: pendingTransactions.length,
+          promptKind: prompt.kind,
+          sharedOwnerQueries: harness.state.ownerQueryReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          sharedOwnerTransactions: harness.state.transactionReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          sharedOwnerRawOperations: harness.state.sharedOwnerRawOperations.filter((receipt) =>
+            receipt.invocationId === invocation?.id).length,
+          sharedOwnerPrivateReads: harness.state.sharedOwnerPrivateReads.filter((receipt) =>
+            receipt.invocationId === invocation?.id).length,
           publicKind: outcome.kind,
           errorCode: outcome.kind === "rejected"
             ? (outcome.error as { message?: unknown }).message
             : null,
-          returned: typeof publicReturnedAt === "number",
-          withinBound: typeof publicReturnedAt === "number" &&
+          returnedWithinBound: typeof publicReturnedAt === "number" &&
             publicReturnedAt - externallyAbortedAt < EARLY_ABORT_PUBLIC_WATCHDOG_MS,
-          reservationsHeld: reservations.receipts.every(({ releasedAt }) => releasedAt === null),
-          trackedWorkSettledBeforeReturn: typeof publicReturnedAt === "number" &&
-            trackedReceipts.every((receipt) =>
+          dedicatedWorkSettledBeforeReturn: typeof publicReturnedAt === "number" &&
+            dedicatedPending !== null &&
+            [dedicatedPending, ...pendingTransactions].every((receipt) =>
               receipt.settledAt !== null && receipt.settledAt <= publicReturnedAt),
+          dedicatedSessionCount: dedicatedOwners.length,
+          nonemptyDistinctTags: tags.length > 1 && tags.every((tag) =>
+            typeof tag === "string" && tag.length > 0 && tag !== `${harness.token}_owner`) &&
+            new Set(tags).size === tags.length,
+          productionDisposed: typeof publicReturnedAt === "number" &&
+            dedicatedOwners.every((receipt) =>
+              exactBoundedDedicatedEndBefore(receipt, publicReturnedAt)),
+          settlement,
         }).toEqual({
+          reservedDistinctPids: 4,
+          reservationsHeld: true,
+          controllerCount: 1,
+          dedicatedPending: true,
+          dedicatedTransactionCount: 1,
+          promptKind: "settled",
+          sharedOwnerQueries: 0,
+          sharedOwnerTransactions: 0,
+          sharedOwnerRawOperations: 0,
+          sharedOwnerPrivateReads: 0,
           publicKind: "rejected",
           errorCode: "distributed_execution_timeout",
-          returned: true,
-          withinBound: true,
-          reservationsHeld: true,
-          trackedWorkSettledBeforeReturn: true,
+          returnedWithinBound: true,
+          dedicatedWorkSettledBeforeReturn: true,
+          dedicatedSessionCount: expect.any(Number),
+          nonemptyDistinctTags: true,
+          productionDisposed: true,
+          settlement: {
+            participant_pids: 0,
+            dedicated_owner_pids: 0,
+            legacy_owner_pids: 4,
+            legacy_owner_invalid: 0,
+            advisory_locks: 0,
+          },
         });
       } finally {
-        let drained: Awaited<ReturnType<typeof withOuterWatchdog>> | undefined;
-        try {
-          if (appPending?.backendPid && appPending.settledAt === null) {
-            await harness.cancelBackend(appPending.backendPid).catch(() => false);
-          }
-          await reservations.release();
-          drained = await withOuterWatchdog(operation.then(() => true, () => true), 12_000);
-        } finally {
-          await harness.cleanup();
+        if (dedicatedPending?.backendPid && dedicatedPending.settledAt === null) {
+          await harness.cancelBackend(dedicatedPending.backendPid).catch(() => false);
         }
+        await reservations.release();
+        const drained = await withOuterWatchdog(operation.then(() => true, () => true), 12_000);
+        await harness.cleanup();
         expect(drained).toMatchObject({ kind: "fulfilled", value: true });
       }
     }, 35_000);
@@ -2645,33 +3263,14 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       injection,
       phase,
     ) => {
-      // The direct control proves the exact SQL trap is live. Production receives no fixture
-      // cancellation until finally; a fixed disposable owner path may bypass this shared trap.
+      // Mutation caught: executing either pre-registration stage through input.ownerDb, or
+      // omitting a distinct tagged control that excludes itself, cannot settle this lane.
       guard();
       const harness = await createAdvisoryStartupHarness(injection);
-      const directControl = await harness.provePreRegistrationTrap(phase);
-      expect(directControl.cancelled).toBe(true);
-      expect(directControl.outcome.kind).toBe("rejected");
-      expect(directControl.pending).toMatchObject({
-        invocationId: -1,
-        phase,
-        role: "owner",
-        backendPid: expect.any(Number),
-        settledAt: expect.any(Number),
-      });
-      expect(directControl.transaction).toMatchObject({
-        invocationId: -1,
-        phase,
-        role: "owner",
-        outcome: "rejected",
-        settledAt: expect.any(Number),
-      });
-
-      harness.armPreRegistrationTrap();
+      const reservations = await harness.reserveOwnerSlots(4);
       const operation = harness.open(harness.input);
       void operation.catch(() => {});
       let productionPending: (typeof harness.state.pendingQueries)[number] | null = null;
-      let bypassPending: (typeof harness.state.pendingQueries)[number] | null = null;
       try {
         const [invocation] = harness.state.openInvocations;
         expect(invocation?.controllers).toHaveLength(1);
@@ -2682,18 +3281,13 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         do {
           productionPending = harness.state.pendingQueries.find((receipt) =>
             receipt.invocationId === invocation?.id && receipt.phase === phase &&
+            receipt.source === "dedicated-owner" && receipt.dedicatedOwnerId !== null &&
             receipt.sleepIssuedAt !== null && receipt.settledAt === null) ?? null;
-          bypassPending = harness.state.pendingQueries.find((receipt) =>
-            receipt.invocationId === invocation?.id && receipt.phase === "app-authority" &&
-            receipt.sleepIssuedAt !== null && receipt.settledAt === null) ?? null;
-          if (productionPending || bypassPending) break;
+          if (productionPending) break;
           await new Promise((resolve) => setTimeout(resolve, 20));
         } while (performance.now() < milestoneDeadline);
-        const trapOrBypass = productionPending ? "trap" : bypassPending ? "dedicated-owner-bypass" : null;
-        expect(trapOrBypass).toMatch(/^(trap|dedicated-owner-bypass)$/u);
-        harness.disarmPreRegistrationTrap();
 
-        const abortPending = productionPending ?? bypassPending;
+        const abortPending = productionPending;
         const transactionsPendingAtAbort = abortPending
           ? harness.state.transactionReceipts.filter((receipt) =>
               receipt.invocationId === invocation?.id && receipt.phase === abortPending.phase &&
@@ -2707,7 +3301,6 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         const externallyAbortedAt = performance.now();
         controller?.abort();
         const exactAbortAt = invocation?.deadlineReceipt?.at;
-        expect(typeof exactAbortAt).toBe("number");
 
         let promptKind: "settled" | "watchdog" | "missing" = "missing";
         if (abortPending) {
@@ -2730,8 +3323,29 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         const trackedReceipts = abortPending
           ? [abortPending, ...transactionsPendingAtAbort]
           : [];
+        const dedicatedOwners = harness.state.dedicatedOwnerReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id);
+        const participant = dedicatedOwners.find((receipt) =>
+          receipt.id === productionPending?.dedicatedOwnerId);
+        const controls = dedicatedOwners.filter((receipt) => receipt.id !== participant?.id &&
+          receipt.queryReceipts.some(({ semantic }) =>
+            semantic === "cancellation-discovery" || semantic === "cancellation"));
+        const tags = dedicatedOwners.map(({ applicationName }) => applicationName);
+        const participantIdentity = participant?.observedIdentities[0];
+        const cancellationDryRuns = controls.flatMap((control) => control.queryReceipts
+          .filter(({ semantic }) => semantic === "cancellation")
+          .map(({ dryRun }) => dryRun)
+          .filter((dryRun): dryRun is CancellationDryRunReceipt => dryRun !== null));
+        const participantCancellationProven = participantIdentity !== undefined &&
+          cancellationDryRuns.some((dryRun) =>
+            dryRunProvesExactCancellation(dryRun, participantIdentity) &&
+            typeof publicReturnedAt === "number" && dryRun.settledAt !== null &&
+            dryRun.settledAt <= publicReturnedAt);
+        const controlSelfExcluded = participantCancellationProven;
+        const participantTupleBound = participantCancellationProven;
+        const settlement = await observeAdvisoryStartupSettlement(harness.token, dedicatedOwners);
         expect({
-          milestone: trapOrBypass,
+          dedicatedPending: productionPending !== null,
           promptKind,
           publicKind: outcome.kind,
           errorCode: outcome.kind === "rejected"
@@ -2741,25 +3355,63 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           withinBound: typeof publicReturnedAt === "number" &&
             publicReturnedAt - externallyAbortedAt < EARLY_ABORT_PUBLIC_WATCHDOG_MS,
           trackedWorkSettledBeforeReturn: typeof publicReturnedAt === "number" &&
+            trackedReceipts.length > 1 &&
             trackedReceipts.every((receipt) =>
               receipt.settledAt !== null && receipt.settledAt <= publicReturnedAt),
+          reservationsHeld: reservations.receipts.every(({ releasedAt }) => releasedAt === null),
+          sharedOwnerQueries: harness.state.ownerQueryReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          sharedOwnerTransactions: harness.state.transactionReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          sharedOwnerRawOperations: harness.state.sharedOwnerRawOperations.filter((receipt) =>
+            receipt.invocationId === invocation?.id).length,
+          sharedOwnerPrivateReads: harness.state.sharedOwnerPrivateReads.filter((receipt) =>
+            receipt.invocationId === invocation?.id).length,
+          distinctTags: tags.length > 1 && tags.every((tag) =>
+            typeof tag === "string" && tag.length > 0 && tag !== `${harness.token}_owner`) &&
+            new Set(tags).size === tags.length,
+          cancellationControlObserved: controls.some((control) => control.queryReceipts.some(({ semantic }) =>
+            semantic === "cancellation-discovery" || semantic === "cancellation")),
+          controlSelfExcluded,
+          participantTupleBound,
+          allDedicatedEnded: typeof publicReturnedAt === "number" && dedicatedOwners.length > 1 &&
+            dedicatedOwners.every((receipt) =>
+              exactBoundedDedicatedEndBefore(receipt, publicReturnedAt)),
+          settlement,
         }).toEqual({
-          milestone: expect.stringMatching(/^(trap|dedicated-owner-bypass)$/u),
+          dedicatedPending: true,
           promptKind: "settled",
           publicKind: "rejected",
           errorCode: "distributed_execution_timeout",
           returned: true,
           withinBound: true,
           trackedWorkSettledBeforeReturn: true,
+          reservationsHeld: true,
+          sharedOwnerQueries: 0,
+          sharedOwnerTransactions: 0,
+          sharedOwnerRawOperations: 0,
+          sharedOwnerPrivateReads: 0,
+          distinctTags: true,
+          cancellationControlObserved: true,
+          controlSelfExcluded: true,
+          participantTupleBound: true,
+          allDedicatedEnded: true,
+          settlement: {
+            participant_pids: 0,
+            dedicated_owner_pids: 0,
+            legacy_owner_pids: 4,
+            legacy_owner_invalid: 0,
+            advisory_locks: 0,
+          },
         });
       } finally {
-        harness.disarmPreRegistrationTrap();
-        const pendingToRelease = productionPending ?? bypassPending;
+        const pendingToRelease = productionPending;
         if (pendingToRelease?.backendPid && pendingToRelease.settledAt === null) {
           await harness.cancelBackend(pendingToRelease.backendPid).catch(() => false);
         }
         let drained: Awaited<ReturnType<typeof withOuterWatchdog>> | undefined;
         try {
+          await reservations.release();
           drained = await withOuterWatchdog(operation.then(() => true, () => true), 12_000);
         } finally {
           await harness.cleanup();
@@ -2768,8 +3420,200 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       }
     }, 40_000);
 
+    it("runs and cancels the migration ledger on a dedicated owner participant", async () => {
+      guard();
+      const harness = await createAdvisoryStartupHarness("migration-pending");
+      const reservations = await harness.reserveOwnerSlots(4);
+      const operation = harness.open(harness.input);
+      void operation.catch(() => {});
+      let pending: (typeof harness.state.pendingQueries)[number] | null = null;
+      try {
+        const [invocation] = harness.state.openInvocations;
+        pending = invocation
+          ? await harness.tryWaitForActivePendingQuery("migration-identity", invocation.id, 3_500)
+          : null;
+        const transactions = harness.state.transactionReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id && receipt.source === "dedicated-owner" &&
+          receipt.phase === "migration-identity" && receipt.settledAt === null);
+        const controller = invocation?.controllers[0];
+        const externallyAbortedAt = performance.now();
+        controller?.abort();
+        const abortAt = invocation?.deadlineReceipt?.at ?? externallyAbortedAt;
+        const prompt = pending
+          ? await waitForReceiptSettlement(
+              [pending, ...transactions],
+              abortAt + EARLY_ABORT_SETTLEMENT_WATCHDOG_MS,
+            )
+          : { kind: "missing" as const };
+        const outcome = await withOuterWatchdog(operation, EARLY_ABORT_PUBLIC_WATCHDOG_MS);
+        const publicReturnedAt = invocation?.returnedAt ?? null;
+        const owners = harness.state.dedicatedOwnerReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id);
+        const participant = owners.find((receipt) => receipt.id === pending?.dedicatedOwnerId);
+        const tags = owners.map(({ applicationName }) => applicationName);
+        const settlement = await observeAdvisoryStartupSettlement(harness.token, owners);
+        expect({
+          dedicatedLedgerPending: pending?.source === "dedicated-owner" &&
+            pending.dedicatedOwnerId !== null && participant?.queryReceipts.some(({ semantic }) =>
+              semantic === "migration-identity"),
+          dedicatedTransactions: transactions.length,
+          promptKind: prompt.kind,
+          publicKind: outcome.kind,
+          errorCode: outcome.kind === "rejected"
+            ? (outcome.error as { message?: unknown }).message
+            : null,
+          returnedWithinBound: typeof publicReturnedAt === "number" &&
+            publicReturnedAt - externallyAbortedAt < EARLY_ABORT_PUBLIC_WATCHDOG_MS,
+          workSettledBeforeReturn: typeof publicReturnedAt === "number" && pending !== null &&
+            [pending, ...transactions].every((receipt) =>
+              receipt.settledAt !== null && receipt.settledAt <= publicReturnedAt),
+          sharedQueries: harness.state.ownerQueryReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          sharedTransactions: harness.state.transactionReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          sharedRawOperations: harness.state.sharedOwnerRawOperations.filter((receipt) =>
+            receipt.invocationId === invocation?.id).length,
+          sharedPrivateReads: harness.state.sharedOwnerPrivateReads.filter((receipt) =>
+            receipt.invocationId === invocation?.id).length,
+          reservationsHeld: reservations.receipts.every(({ releasedAt }) => releasedAt === null),
+          distinctTags: owners.length > 1 && tags.every((tag) =>
+            typeof tag === "string" && tag.length > 0 && tag !== `${harness.token}_owner`) &&
+            new Set(tags).size === tags.length,
+          allDedicatedEnded: typeof publicReturnedAt === "number" && owners.length > 1 &&
+            owners.every((receipt) => exactBoundedDedicatedEndBefore(receipt, publicReturnedAt)),
+          settlement,
+        }).toEqual({
+          dedicatedLedgerPending: true,
+          dedicatedTransactions: 1,
+          promptKind: "settled",
+          publicKind: "rejected",
+          errorCode: "distributed_execution_timeout",
+          returnedWithinBound: true,
+          workSettledBeforeReturn: true,
+          sharedQueries: 0,
+          sharedTransactions: 0,
+          sharedRawOperations: 0,
+          sharedPrivateReads: 0,
+          reservationsHeld: true,
+          distinctTags: true,
+          allDedicatedEnded: true,
+          settlement: {
+            participant_pids: 0,
+            dedicated_owner_pids: 0,
+            legacy_owner_pids: 4,
+            legacy_owner_invalid: 0,
+            advisory_locks: 0,
+          },
+        });
+      } finally {
+        if (pending?.backendPid && pending.settledAt === null) {
+          await harness.cancelBackend(pending.backendPid).catch(() => false);
+        }
+        await reservations.release();
+        const drained = await withOuterWatchdog(operation.then(() => true, () => true), 12_000);
+        await harness.cleanup();
+        expect(drained).toMatchObject({ kind: "fulfilled", value: true });
+      }
+    }, 35_000);
+
+    it("causally bounds and settles a statement-timeout-free migration-pending query", async () => {
+      guard();
+      const harness = await createAdvisoryStartupHarness("migration-pending");
+      const operation = harness.open(harness.input);
+      void operation.catch(() => {});
+      try {
+        const outcome = await withOuterWatchdog(operation);
+        const [invocation] = harness.state.openInvocations;
+        const publicReturnedAt = invocation?.returnedAt;
+        const pending = harness.state.pendingQueries.filter((receipt) =>
+          receipt.invocationId === invocation?.id && receipt.phase === "migration-identity" &&
+          receipt.source === "dedicated-owner");
+        const transactions = harness.state.transactionReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id && receipt.phase === "migration-identity" &&
+          receipt.source === "dedicated-owner");
+        const participant = harness.state.dedicatedOwnerReceipts.find((receipt) =>
+          receipt.id === pending[0]?.dedicatedOwnerId);
+        const dedicatedOwners = harness.state.dedicatedOwnerReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id);
+        const tags = dedicatedOwners.map(({ applicationName }) => applicationName);
+        const effectiveTimeoutMs = statementTimeoutMs(pending[0]?.effectiveStatementTimeout ?? null);
+        const settlement = await observeAdvisoryStartupSettlement(harness.token, dedicatedOwners);
+        expect({
+          publicKind: outcome.kind,
+          errorCode: outcome.kind === "rejected"
+            ? (outcome.error as { message?: unknown }).message
+            : null,
+          pendingCount: pending.length,
+          pendingIdentity: pending[0] && {
+            source: pending[0].source,
+            dedicatedOwnerId: pending[0].dedicatedOwnerId,
+            backendPid: typeof pending[0].backendPid,
+            timeoutBounded: effectiveTimeoutMs !== null && effectiveTimeoutMs >= 0 &&
+              effectiveTimeoutMs <= 5_000,
+            abortObserved: pending[0].abortObservedAt !== null,
+          },
+          transactionCount: transactions.length,
+          transactionSettledBeforeReturn: typeof publicReturnedAt === "number" &&
+            transactions.length === 1 && transactions.every((receipt) =>
+              receipt.dedicatedOwnerId === participant?.id && receipt.outcome === "rejected" &&
+              receipt.settledAt !== null && receipt.settledAt <= publicReturnedAt),
+          queryObserved: participant?.queryReceipts.some((receipt) =>
+            receipt.semantic === "migration-identity" && receipt.source === "dedicated-owner" &&
+            receipt.outcome === "rejected" && receipt.settledAt !== null) === true,
+          deadlineElapsed: pending[0]?.abortObservedAt !== null &&
+            pending[0]?.abortObservedAt !== undefined && invocation?.controllerCreatedAt !== null &&
+            invocation?.controllerCreatedAt !== undefined &&
+            pending[0].abortObservedAt - invocation.controllerCreatedAt >= 4_500 &&
+            pending[0].abortObservedAt - invocation.controllerCreatedAt <= 6_500,
+          pendingSettledBeforeReturn: typeof publicReturnedAt === "number" && pending.length === 1 &&
+            pending.every((receipt) => receipt.settledAt !== null && receipt.settledAt <= publicReturnedAt),
+          sharedOwnerQueries: harness.state.ownerQueryReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          sharedOwnerTransactions: harness.state.transactionReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          distinctTags: dedicatedOwners.length > 1 && tags.every((tag) =>
+            typeof tag === "string" && tag.length > 0 && tag !== `${harness.token}_owner`) &&
+            new Set(tags).size === tags.length,
+          allDedicatedEnded: typeof publicReturnedAt === "number" && dedicatedOwners.length > 1 &&
+            dedicatedOwners.every((receipt) =>
+              exactBoundedDedicatedEndBefore(receipt, publicReturnedAt)),
+          settlement,
+        }).toEqual({
+          publicKind: "rejected",
+          errorCode: "distributed_execution_timeout",
+          pendingCount: 1,
+          pendingIdentity: {
+            source: "dedicated-owner",
+            dedicatedOwnerId: expect.any(Number),
+            backendPid: "number",
+            timeoutBounded: true,
+            abortObserved: true,
+          },
+          transactionCount: 1,
+          transactionSettledBeforeReturn: true,
+          queryObserved: true,
+          deadlineElapsed: true,
+          pendingSettledBeforeReturn: true,
+          sharedOwnerQueries: 0,
+          sharedOwnerTransactions: 0,
+          distinctTags: true,
+          allDedicatedEnded: true,
+          settlement: {
+            participant_pids: 0,
+            dedicated_owner_pids: 0,
+            legacy_owner_pids: expect.any(Number),
+            legacy_owner_invalid: 0,
+            advisory_locks: 0,
+          },
+        });
+      } finally {
+        await harness.cleanup();
+        const drained = await withOuterWatchdog(operation.then(() => true, () => true), 5_000);
+        expect(drained).toMatchObject({ kind: "fulfilled", value: true });
+      }
+    }, 30_000);
+
     it.each([
-      ["migration-pending", "migration-identity", "owner", []],
       ["app-authority-pending", "app-authority", "aoa_app", ["aoa_app"]],
       ["operator-authority-pending", "operator-authority", "aoa_operator", ["aoa_app", "aoa_operator"]],
     ] as const)("causally bounds and settles a statement-timeout-free %s query", async (
@@ -2788,7 +3632,10 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         const outcome = await withOuterWatchdog(operation);
         const [invocation] = harness.state.openInvocations;
         const returnedAt = invocation?.returnedAt;
-        const settlement = await observeAdvisoryStartupSettlement(harness.token);
+        const settlement = await observeAdvisoryStartupSettlement(
+          harness.token,
+          harness.state.dedicatedOwnerReceipts,
+        );
 
         expect.soft(outcome.kind, "public startup must settle before the outer watchdog").toBe("rejected");
         expect.soft(outcome).toMatchObject({
@@ -2852,8 +3699,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         }
         expect.soft(settlement).toEqual({
           participant_pids: 0,
-          owner_pids: 1,
-          owner_in_transaction: 0,
+          dedicated_owner_pids: 0,
+          legacy_owner_pids: expect.any(Number),
+          legacy_owner_invalid: 0,
           advisory_locks: 0,
         });
         assertClosedStartupLogs(harness.state.logs);
@@ -2882,10 +3730,123 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
     }, 30_000);
 
     it.each([
-      ["migration-pending", "migration-identity", "owner", []],
+      ["migration-pending", "migration-identity", "migration-identity", []],
+      ["owner-exclusive-pending", "owner-exclusive", "owner-advisory", ["aoa_app", "aoa_operator"]],
+    ] as const)("promptly settles dedicated-owner %s after the exact startup controller is externally aborted", async (
+      injection,
+      phase,
+      semantic,
+      expectedAllocatedRoles,
+    ) => {
+      guard();
+      const harness = await createAdvisoryStartupHarness(injection);
+      const operation = harness.open(harness.input);
+      void operation.catch(() => {});
+      let pending: (typeof harness.state.pendingQueries)[number] | null = null;
+      try {
+        const [invocation] = harness.state.openInvocations;
+        pending = await harness.tryWaitForActivePendingQuery(phase, invocation!.id, 3_500);
+        const transactionsPendingAtAbort = pending
+          ? harness.state.transactionReceipts.filter((receipt) =>
+              receipt.invocationId === invocation?.id && receipt.phase === phase &&
+              receipt.source === "dedicated-owner" && receipt.outcome === "pending")
+          : [];
+        const externallyAbortedAt = performance.now();
+        invocation?.controllers[0]?.abort();
+        const exactAbortAt = invocation?.deadlineReceipt?.at;
+        const prompt = pending
+          ? await waitForReceiptSettlement(
+              [pending, ...transactionsPendingAtAbort],
+              (exactAbortAt ?? externallyAbortedAt) + EARLY_ABORT_SETTLEMENT_WATCHDOG_MS,
+            )
+          : { kind: "missing" as const };
+        const publicRemaining = Math.max(
+          1,
+          EARLY_ABORT_PUBLIC_WATCHDOG_MS -
+            (performance.now() - (exactAbortAt ?? externallyAbortedAt)),
+        );
+        const outcome = await withOuterWatchdog(operation, publicRemaining);
+        const publicReturnedAt = invocation?.returnedAt;
+        const transactions = harness.state.transactionReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id && receipt.phase === phase &&
+          receipt.source === "dedicated-owner");
+        const participant = harness.state.dedicatedOwnerReceipts.find((receipt) =>
+          receipt.id === pending?.dedicatedOwnerId);
+        const dedicatedOwners = harness.state.dedicatedOwnerReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id);
+        const tags = dedicatedOwners.map(({ applicationName }) => applicationName);
+        const settlement = await observeAdvisoryStartupSettlement(harness.token, dedicatedOwners);
+        expect({
+          pendingObserved: pending !== null,
+          pendingSource: pending?.source ?? null,
+          pendingOwnerId: pending?.dedicatedOwnerId ?? null,
+          pendingSignalIsController: pending?.signal === invocation?.controllers[0]?.signal,
+          promptKind: prompt.kind,
+          publicKind: outcome.kind,
+          errorCode: outcome.kind === "rejected"
+            ? (outcome.error as { message?: unknown }).message
+            : null,
+          returnedWithinBound: typeof publicReturnedAt === "number" &&
+            publicReturnedAt - externallyAbortedAt < EARLY_ABORT_PUBLIC_WATCHDOG_MS,
+          transactionCount: transactions.length,
+          trackedWorkSettledBeforeReturn: typeof publicReturnedAt === "number" &&
+            pending !== null && pending.settledAt !== null && pending.settledAt <= publicReturnedAt &&
+            transactions.length === 1 && transactions.every((receipt) =>
+              receipt.outcome === "rejected" && receipt.settledAt !== null &&
+              receipt.settledAt <= publicReturnedAt),
+          semanticQueryObserved: participant?.queryReceipts.some((receipt) =>
+            receipt.semantic === semantic && receipt.source === "dedicated-owner" &&
+            receipt.settledAt !== null) === true,
+          sharedOwnerQueries: harness.state.ownerQueryReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          sharedOwnerTransactions: harness.state.transactionReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          allocatedRoles: harness.state.factoryOptions.map(({ role }) => role).sort(),
+          distinctTags: dedicatedOwners.length > 1 && tags.every((tag) =>
+            typeof tag === "string" && tag.length > 0 && tag !== `${harness.token}_owner`) &&
+            new Set(tags).size === tags.length,
+          allDedicatedEnded: typeof publicReturnedAt === "number" && dedicatedOwners.length > 1 &&
+            dedicatedOwners.every((receipt) =>
+              exactBoundedDedicatedEndBefore(receipt, publicReturnedAt)),
+          settlement,
+        }).toEqual({
+          pendingObserved: true,
+          pendingSource: "dedicated-owner",
+          pendingOwnerId: expect.any(Number),
+          pendingSignalIsController: true,
+          promptKind: "settled",
+          publicKind: "rejected",
+          errorCode: "distributed_execution_timeout",
+          returnedWithinBound: true,
+          transactionCount: 1,
+          trackedWorkSettledBeforeReturn: true,
+          semanticQueryObserved: true,
+          sharedOwnerQueries: 0,
+          sharedOwnerTransactions: 0,
+          allocatedRoles: [...expectedAllocatedRoles].sort(),
+          distinctTags: true,
+          allDedicatedEnded: true,
+          settlement: {
+            participant_pids: 0,
+            dedicated_owner_pids: 0,
+            legacy_owner_pids: expect.any(Number),
+            legacy_owner_invalid: 0,
+            advisory_locks: 0,
+          },
+        });
+      } finally {
+        if (pending?.backendPid && pending.settledAt === null) {
+          await harness.cancelBackend(pending.backendPid).catch(() => false);
+        }
+        await harness.cleanup();
+        const drained = await withOuterWatchdog(operation.then(() => true, () => true), 5_000);
+        expect(drained).toMatchObject({ kind: "fulfilled", value: true });
+      }
+    }, 30_000);
+
+    it.each([
       ["app-authority-pending", "app-authority", "aoa_app", ["aoa_app"]],
       ["operator-authority-pending", "operator-authority", "aoa_operator", ["aoa_app", "aoa_operator"]],
-      ["owner-exclusive-pending", "owner-exclusive", "owner", ["aoa_app", "aoa_operator"]],
       ["app-negative-pending", "app-negative", "aoa_app", ["aoa_app", "aoa_operator"]],
       ["operator-negative-pending", "operator-negative", "aoa_operator", ["aoa_app", "aoa_operator"]],
       ["app-positive-pending", "app-positive", "aoa_app", ["aoa_app", "aoa_operator"]],
@@ -3006,7 +3967,10 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         );
         const outcome = await withOuterWatchdog(operation, publicWatchdogRemaining);
         const publicReturnedAt = invocation?.returnedAt;
-        const settlement = await observeAdvisoryStartupSettlement(harness.token);
+        const settlement = await observeAdvisoryStartupSettlement(
+          harness.token,
+          harness.state.dedicatedOwnerReceipts,
+        );
         expect.soft(outcome).toMatchObject({
           kind: "rejected",
           error: {
@@ -3089,8 +4053,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         }
         expect.soft(settlement).toEqual({
           participant_pids: 0,
-          owner_pids: 1,
-          owner_in_transaction: 0,
+          dedicated_owner_pids: 0,
+          legacy_owner_pids: expect.any(Number),
+          legacy_owner_invalid: 0,
           advisory_locks: 0,
         });
         assertClosedStartupLogs(harness.state.logs);
@@ -3123,65 +4088,100 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
     it("bounds owner cleanup acquisition on a normal returned close while the shared pool is reserved", async () => {
       guard();
       const harness = await createAdvisoryStartupHarness("cleanup-acquisition-pending");
-      const directControl = await harness.proveDedicatedCleanupProbeControl();
-      expect({
-        source: directControl.probe.source,
-        linked: directControl.probe.controlId === directControl.control.id,
-        participantPidsGone: directControl.probe.participantPidsGone,
-        probeOutcome: directControl.probe.outcome,
-        probeSettled: directControl.probe.settledAt !== null,
-        controlEndOutcome: directControl.control.endOutcome,
-        controlDisposed: directControl.control.endSettledAt !== null,
-      }).toEqual({
-        source: "dedicated-owner-control",
-        linked: true,
-        participantPidsGone: true,
-        probeOutcome: "fulfilled",
-        probeSettled: true,
-        controlEndOutcome: "fulfilled",
-        controlDisposed: true,
-      });
-      const ownerControlOffset = harness.state.ownerControlReceipts.length;
+      const dedicatedOwnerOffset = harness.state.dedicatedOwnerReceipts.length;
       const accepted = await harness.open(harness.input);
       expect(accepted).not.toBeNull();
       const reservations = await harness.reserveOwnerSlots(4);
       const cleanupProbeOffset = harness.state.cleanupProbeReceipts.length;
+      const sharedQueryOffset = harness.state.ownerQueryReceipts.length;
+      const sharedTransactionOffset = harness.state.transactionReceipts.length;
       const closeOperation = accepted!.close();
       void closeOperation.catch(() => {});
       try {
         const outcome = await withOuterWatchdog(closeOperation, EARLY_ABORT_PUBLIC_WATCHDOG_MS);
         const publicReturnedAt = outcome.kind === "watchdog" ? null : performance.now();
         const cleanupProbes = harness.state.cleanupProbeReceipts.slice(cleanupProbeOffset);
-        const ownerControls = harness.state.ownerControlReceipts.slice(ownerControlOffset);
+        const dedicatedOwners = harness.state.dedicatedOwnerReceipts.slice(dedicatedOwnerOffset);
+        const verifier = dedicatedOwners.find((receipt) =>
+          receipt.lifecycle === "close" && receipt.queryReceipts.some(({ semantic }) => semantic === "cleanup"));
+        const verifierQueries = verifier?.queryReceipts.filter(({ semantic }) => semantic === "cleanup") ?? [];
+        const verifierIdentity = verifier?.observedIdentities[0];
+        const priorPids = [
+          ...harness.state.backendPids.aoa_app,
+          ...harness.state.backendPids.aoa_operator,
+          ...dedicatedOwners.filter((receipt) => receipt.id !== verifier?.id)
+            .flatMap((receipt) => receipt.observedIdentities.map(({ pid }) => pid)),
+        ];
+        const settlement = await observeAdvisoryStartupSettlement(harness.token, dedicatedOwners);
         expect({
           publicKind: outcome.kind,
           returned: typeof publicReturnedAt === "number",
           reservationsHeld: reservations.receipts.every(({ releasedAt }) => releasedAt === null),
           semanticCleanupProbeObserved: cleanupProbes.some((probe) =>
-            probe.participantPidsGone === true),
+            probe.source === "dedicated-owner" && probe.participantPidsGone === true),
           cleanupProbesSettledBeforeReturn: cleanupProbes.length > 0 &&
             typeof publicReturnedAt === "number" && cleanupProbes.every((probe) =>
               probe.settledAt !== null && probe.outcome === "fulfilled" &&
               probe.settledAt <= publicReturnedAt),
-          dedicatedProbesLinkedToControls: cleanupProbes.every((probe) =>
-            probe.source === "shared-owner-db" || ownerControls.some((control) =>
-              control.id === probe.controlId)),
-          controlsDisposedBeforeReturn: typeof publicReturnedAt === "number" &&
-            ownerControls.every((control) => control.endOutcome === "fulfilled" &&
-              control.endSettledAt !== null && control.endSettledAt <= publicReturnedAt),
+          verifierObserved: verifier !== undefined && verifierQueries.length > 0,
+          verifierCoversPriorPids: priorPids.length > 0 && priorPids.every((pid) =>
+            verifierQueries.some((query) => query.params.some((value) => value === pid))) &&
+            verifierQueries.some((query) => /pg_stat_activity/u.test(query.sql)) &&
+            verifierQueries.some((query) => /pg_locks/u.test(query.sql)),
+          verifierDoesNotPollItself: verifierIdentity !== undefined && verifierQueries.length > 0 &&
+            verifierQueries.every((query) =>
+              !query.params.some((value) =>
+                typeof value === "number" && value === verifierIdentity.pid) &&
+              !query.params.some((value) => value === verifierIdentity.applicationName)),
+          verifierEndedExternallyGone: typeof publicReturnedAt === "number" && verifier !== undefined &&
+            verifier.observedIdentities.length === 1 &&
+            exactBoundedDedicatedEndBefore(verifier, publicReturnedAt),
+          allDedicatedDisposedBeforeReturn: dedicatedOwners.length > 1 &&
+            dedicatedOwners.every((receipt) =>
+              exactBoundedDedicatedEndBefore(receipt, publicReturnedAt)),
+          distinctTags: dedicatedOwners.length > 1 &&
+            dedicatedOwners.every(({ applicationName }) =>
+              typeof applicationName === "string" && applicationName.length > 0 &&
+              applicationName !== `${harness.token}_owner`) &&
+            new Set(dedicatedOwners.map(({ applicationName }) => applicationName)).size ===
+              dedicatedOwners.length,
+          sharedCleanupQueries: harness.state.ownerQueryReceipts.slice(sharedQueryOffset)
+            .filter(({ source }) => source === "shared-owner-db").length,
+          sharedCleanupTransactions: harness.state.transactionReceipts.slice(sharedTransactionOffset)
+            .filter(({ source }) => source === "shared-owner-db").length,
+          sharedRawOperations: harness.state.sharedOwnerRawOperations.filter((receipt) =>
+            receipt.invocationId === harness.state.openInvocations[0]?.id).length,
+          sharedPrivateReads: harness.state.sharedOwnerPrivateReads.filter((receipt) =>
+            receipt.invocationId === harness.state.openInvocations[0]?.id).length,
           servingCloses: harness.state.closeSettled.map(({ role }) => role).sort(),
           servingClosedBeforeReturn: typeof publicReturnedAt === "number" &&
             harness.state.closeSettled.every(({ at }) => at <= publicReturnedAt),
+          settlement,
         }).toEqual({
           publicKind: "fulfilled",
           returned: true,
           reservationsHeld: true,
           semanticCleanupProbeObserved: true,
           cleanupProbesSettledBeforeReturn: true,
-          dedicatedProbesLinkedToControls: true,
-          controlsDisposedBeforeReturn: true,
+          verifierObserved: true,
+          verifierCoversPriorPids: true,
+          verifierDoesNotPollItself: true,
+          verifierEndedExternallyGone: true,
+          allDedicatedDisposedBeforeReturn: true,
+          distinctTags: true,
+          sharedCleanupQueries: 0,
+          sharedCleanupTransactions: 0,
+          sharedRawOperations: 0,
+          sharedPrivateReads: 0,
           servingCloses: ["aoa_app", "aoa_operator"],
           servingClosedBeforeReturn: true,
+          settlement: {
+            participant_pids: 0,
+            dedicated_owner_pids: 0,
+            legacy_owner_pids: 4,
+            legacy_owner_invalid: 0,
+            advisory_locks: 0,
+          },
         });
       } finally {
         let drained: Awaited<ReturnType<typeof withOuterWatchdog>> | undefined;
@@ -3201,26 +4201,8 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       // cleanup acquisition, never the earlier startup transaction.
       guard();
       const harness = await createAdvisoryStartupHarness("cleanup-failure-acquisition-pending");
-      const directControl = await harness.proveDedicatedCleanupProbeControl();
-      expect({
-        source: directControl.probe.source,
-        linked: directControl.probe.controlId === directControl.control.id,
-        participantPidsGone: directControl.probe.participantPidsGone,
-        probeOutcome: directControl.probe.outcome,
-        probeSettled: directControl.probe.settledAt !== null,
-        controlEndOutcome: directControl.control.endOutcome,
-        controlDisposed: directControl.control.endSettledAt !== null,
-      }).toEqual({
-        source: "dedicated-owner-control",
-        linked: true,
-        participantPidsGone: true,
-        probeOutcome: "fulfilled",
-        probeSettled: true,
-        controlEndOutcome: "fulfilled",
-        controlDisposed: true,
-      });
       const cleanupProbeOffset = harness.state.cleanupProbeReceipts.length;
-      const ownerControlOffset = harness.state.ownerControlReceipts.length;
+      const dedicatedOwnerOffset = harness.state.dedicatedOwnerReceipts.length;
       const operation = harness.open(harness.input);
       void operation.catch(() => {});
       let reservations: OwnerReservationGroup | null = null;
@@ -3240,6 +4222,8 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         }
 
         reservations = await harness.reserveOwnerSlots(4);
+        const sharedQueryOffset = harness.state.ownerQueryReceipts.length;
+        const sharedTransactionOffset = harness.state.transactionReceipts.length;
         expect(reservations.receipts).toHaveLength(4);
         for (const reservation of reservations.receipts) {
           expect(reservation.reservedAt).toBeGreaterThanOrEqual(
@@ -3251,7 +4235,18 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         const [invocation] = harness.state.openInvocations;
         const publicReturnedAt = invocation?.returnedAt;
         const cleanupProbes = harness.state.cleanupProbeReceipts.slice(cleanupProbeOffset);
-        const ownerControls = harness.state.ownerControlReceipts.slice(ownerControlOffset);
+        const dedicatedOwners = harness.state.dedicatedOwnerReceipts.slice(dedicatedOwnerOffset);
+        const verifier = dedicatedOwners.find((receipt) =>
+          receipt.queryReceipts.some(({ semantic }) => semantic === "cleanup"));
+        const verifierQueries = verifier?.queryReceipts.filter(({ semantic }) => semantic === "cleanup") ?? [];
+        const verifierIdentity = verifier?.observedIdentities[0];
+        const priorPids = [
+          ...harness.state.backendPids.aoa_app,
+          ...harness.state.backendPids.aoa_operator,
+          ...dedicatedOwners.filter((receipt) => receipt.id !== verifier?.id)
+            .flatMap((receipt) => receipt.observedIdentities.map(({ pid }) => pid)),
+        ];
+        const settlement = await observeAdvisoryStartupSettlement(harness.token, dedicatedOwners);
         expect({
           publicKind: outcome.kind,
           errorCode: outcome.kind === "rejected"
@@ -3260,20 +4255,40 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           returned: typeof publicReturnedAt === "number",
           reservationsHeld: reservations.receipts.every(({ releasedAt }) => releasedAt === null),
           semanticCleanupProbeObserved: cleanupProbes.some((probe) =>
-            probe.participantPidsGone === true),
+            probe.source === "dedicated-owner" && probe.participantPidsGone === true),
           cleanupProbesSettledBeforeReturn: cleanupProbes.length > 0 &&
             typeof publicReturnedAt === "number" && cleanupProbes.every((probe) =>
               probe.settledAt !== null && probe.outcome === "fulfilled" &&
               probe.settledAt <= publicReturnedAt),
-          dedicatedProbesLinkedToControls: cleanupProbes.every((probe) =>
-            probe.source === "shared-owner-db" || ownerControls.some((control) =>
-              control.id === probe.controlId)),
-          controlsDisposedBeforeReturn: typeof publicReturnedAt === "number" &&
-            ownerControls.every((control) => control.endOutcome === "fulfilled" &&
-              control.endSettledAt !== null && control.endSettledAt <= publicReturnedAt),
+          verifierObserved: verifier !== undefined && verifierQueries.length > 0,
+          verifierCoversPriorPids: priorPids.length > 0 && priorPids.every((pid) =>
+            verifierQueries.some((query) => query.params.some((value) => value === pid))),
+          verifierDoesNotPollItself: verifierIdentity !== undefined && verifierQueries.length > 0 &&
+            verifierQueries.every((query) =>
+              !query.params.some((value) =>
+                typeof value === "number" && value === verifierIdentity.pid) &&
+              !query.params.some((value) => value === verifierIdentity.applicationName)),
+          allDedicatedDisposedBeforeReturn: dedicatedOwners.length > 1 &&
+            dedicatedOwners.every((receipt) =>
+              exactBoundedDedicatedEndBefore(receipt, publicReturnedAt)),
+          distinctTags: dedicatedOwners.length > 1 &&
+            dedicatedOwners.every(({ applicationName }) =>
+              typeof applicationName === "string" && applicationName.length > 0 &&
+              applicationName !== `${harness.token}_owner`) &&
+            new Set(dedicatedOwners.map(({ applicationName }) => applicationName)).size ===
+              dedicatedOwners.length,
+          sharedCleanupQueries: harness.state.ownerQueryReceipts.slice(sharedQueryOffset)
+            .filter(({ source }) => source === "shared-owner-db").length,
+          sharedCleanupTransactions: harness.state.transactionReceipts.slice(sharedTransactionOffset)
+            .filter(({ source }) => source === "shared-owner-db").length,
+          sharedRawOperations: harness.state.sharedOwnerRawOperations.filter((receipt) =>
+            receipt.invocationId === invocation?.id).length,
+          sharedPrivateReads: harness.state.sharedOwnerPrivateReads.filter((receipt) =>
+            receipt.invocationId === invocation?.id).length,
           servingCloses: harness.state.closeSettled.map(({ role }) => role).sort(),
           servingClosedBeforeReturn: typeof publicReturnedAt === "number" &&
             harness.state.closeSettled.every(({ at }) => at <= publicReturnedAt),
+          settlement,
         }).toEqual({
           publicKind: "rejected",
           errorCode: "distributed_execution_advisory_domain",
@@ -3281,10 +4296,24 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           reservationsHeld: true,
           semanticCleanupProbeObserved: true,
           cleanupProbesSettledBeforeReturn: true,
-          dedicatedProbesLinkedToControls: true,
-          controlsDisposedBeforeReturn: true,
+          verifierObserved: true,
+          verifierCoversPriorPids: true,
+          verifierDoesNotPollItself: true,
+          allDedicatedDisposedBeforeReturn: true,
+          distinctTags: true,
+          sharedCleanupQueries: 0,
+          sharedCleanupTransactions: 0,
+          sharedRawOperations: 0,
+          sharedPrivateReads: 0,
           servingCloses: ["aoa_app", "aoa_operator"],
           servingClosedBeforeReturn: true,
+          settlement: {
+            participant_pids: 0,
+            dedicated_owner_pids: 0,
+            legacy_owner_pids: 4,
+            legacy_owner_invalid: 0,
+            advisory_locks: 0,
+          },
         });
       } finally {
         harness.releaseCleanupFailureCloseGate();
@@ -3299,7 +4328,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       }
     }, 45_000);
 
-    it("does not cancel unrelated owner work that reuses a completed startup backend", async () => {
+    it("does not cancel unrelated legacy-owner work after a completed dedicated-owner transaction", async () => {
       guard();
       const harness = await createAdvisoryStartupHarness("stale-owner-lifecycle");
       const operation = harness.open(harness.input);
@@ -3309,38 +4338,48 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       let outsiderObserved: Promise<void> | null = null;
       let outsiderOutcome: "pending" | "fulfilled" | "rejected" = "pending";
       let outsiderSettledAt: number | null = null;
+      const outsiderApplicationName = `${harness.token}_legacy_outsider`;
       try {
         const appPending = await harness.waitForActivePendingQuery("app-authority", 3_500);
         const [invocation] = harness.state.openInvocations;
         expect(invocation?.controllers).toHaveLength(1);
-        const ownerIdentity = harness.state.backendIdentities.find((identity) =>
-          identity.invocationId === invocation?.id && identity.role === "owner");
-        expect(ownerIdentity).toMatchObject({
-          pid: expect.any(Number),
-          backendStart: expect.any(String),
-          xactStart: expect.any(String),
-          sessionRole: "test",
-          databaseName: expect.any(String),
-          applicationName: `${harness.token}_owner`,
+
+        const [appIdentity] = await admin!.unsafe<Array<{
+          pid: number;
+          backend_start: string;
+          session_role: string;
+          database_name: string;
+          application_name: string;
+        }>>(`
+          SELECT activity.pid,
+            activity.backend_start::text AS backend_start,
+            activity.usename AS session_role,
+            activity.datname AS database_name,
+            activity.application_name
+          FROM pg_stat_activity activity
+          WHERE activity.pid = $1
+            AND activity.state = 'active'
+            AND activity.query ILIKE '%pg_sleep%'
+        `, [appPending.backendPid]);
+        expect(appIdentity).toMatchObject({
+          pid: appPending.backendPid,
+          backend_start: expect.any(String),
+          session_role: "aoa_app",
+          database_name: expect.any(String),
+          application_name: `${harness.token}_app`,
         });
-        const completedOwnerTransaction = harness.state.transactionReceipts.find((receipt) =>
-          receipt.invocationId === invocation?.id && receipt.role === "owner");
-        expect(completedOwnerTransaction).toMatchObject({
-          outcome: "fulfilled",
-          settledAt: expect.any(Number),
-        });
-        expect(completedOwnerTransaction?.settledAt ?? Number.POSITIVE_INFINITY)
-          .toBeLessThanOrEqual(appPending.startedAt);
 
         reservations = await harness.reserveOwnerSlots(1);
         const [reservation] = reservations.receipts;
         expect(reservation).toMatchObject({
-          pid: ownerIdentity?.pid,
-          backendStart: ownerIdentity?.backendStart,
           applicationName: `${harness.token}_owner`,
           releasedAt: null,
         });
 
+        await reservation!.connection.unsafe(
+          "SELECT set_config('application_name', $1, false)",
+          [outsiderApplicationName],
+        );
         outsiderQuery = reservation!.connection.unsafe("SELECT pg_sleep(60)");
         outsiderObserved = outsiderQuery.then(
           () => {
@@ -3383,13 +4422,12 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           await new Promise((resolve) => setTimeout(resolve, 20));
         } while (performance.now() < outsiderDeadline);
         expect(outsiderActivity).toMatchObject({
-          backend_start: ownerIdentity?.backendStart,
-          session_role: ownerIdentity?.sessionRole,
-          database_name: ownerIdentity?.databaseName,
-          application_name: ownerIdentity?.applicationName,
+          backend_start: reservation?.backendStart,
+          session_role: "test",
+          database_name: appIdentity?.database_name,
+          application_name: outsiderApplicationName,
           active: true,
         });
-        expect(outsiderActivity?.xact_start).not.toBe(ownerIdentity?.xactStart);
         expect(outsiderOutcome).toBe("pending");
 
         const controller = invocation!.controllers[0]!;
@@ -3402,13 +4440,54 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           [appPending, ...appTransactions],
           (exactAbortAt ?? performance.now()) + EARLY_ABORT_SETTLEMENT_WATCHDOG_MS,
         );
-        expect.soft(targetSettlement).toMatchObject({
-          kind: "settled",
-          observedAt: expect.any(Number),
-        });
 
         const outcome = await withOuterWatchdog(operation, EARLY_ABORT_PUBLIC_WATCHDOG_MS);
         const publicReturnedAt = invocation?.returnedAt;
+        const dedicatedOwners = harness.state.dedicatedOwnerReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id);
+        const participant = dedicatedOwners.find((receipt) => receipt.queryReceipts.some(({ semantic }) =>
+          semantic === "migration-identity"));
+        const participantIdentity = participant?.observedIdentities[0];
+        const completedMigrationTransaction = harness.state.transactionReceipts.find((receipt) =>
+          receipt.invocationId === invocation?.id && receipt.source === "dedicated-owner" &&
+          receipt.dedicatedOwnerId === participant?.id);
+        const controls = dedicatedOwners.filter((receipt) => receipt.id !== participant?.id &&
+          receipt.queryReceipts.some(({ semantic }) =>
+            semantic === "cancellation-discovery" || semantic === "cancellation"));
+        const cancellationQueries = controls.flatMap((control) => control.queryReceipts.filter(({ semantic }) =>
+          semantic === "cancellation-discovery" || semantic === "cancellation"));
+        const cancellationDryRuns = cancellationQueries
+          .filter(({ semantic }) => semantic === "cancellation")
+          .map(({ dryRun }) => dryRun)
+          .filter((dryRun): dryRun is CancellationDryRunReceipt => dryRun !== null);
+        const targetIdentity: DedicatedOwnerIdentity | undefined = appIdentity && {
+          pid: appIdentity.pid,
+          backendStart: appIdentity.backend_start,
+          sessionRole: appIdentity.session_role,
+          databaseName: appIdentity.database_name,
+          applicationName: appIdentity.application_name,
+        };
+        const forbiddenPids = [
+          participantIdentity?.pid,
+          reservation?.pid,
+        ].filter((pid): pid is number => typeof pid === "number");
+        const targetTupleBound = targetIdentity !== undefined && cancellationDryRuns.some((dryRun) =>
+          dryRunProvesExactCancellation(dryRun, targetIdentity, forbiddenPids) &&
+          typeof publicReturnedAt === "number" && dryRun.settledAt !== null &&
+          dryRun.settledAt <= publicReturnedAt);
+        const controlsSelfExcludeFullIdentity = targetTupleBound;
+        const historicalParticipantNotTargeted = participantIdentity !== undefined &&
+          cancellationDryRuns.length > 0 && cancellationDryRuns.every((dryRun) =>
+            !dryRun.originalCandidatePids.includes(participantIdentity.pid) &&
+            dryRun.targetIdentities.every((identity) =>
+              identity.pid !== participantIdentity.pid ||
+              identity.applicationName !== participantIdentity.applicationName));
+        const outsiderNotTargeted = reservation !== undefined && cancellationDryRuns.length > 0 &&
+          cancellationDryRuns.every((dryRun) =>
+            !dryRun.originalCandidatePids.includes(reservation.pid) &&
+            dryRun.candidateIdentities.every((identity) =>
+              identity.pid !== reservation.pid &&
+              identity.applicationName !== outsiderApplicationName));
         const [stillActive] = await admin!.unsafe<Array<{ active: boolean }>>(`
           SELECT EXISTS (
             SELECT 1 FROM pg_stat_activity
@@ -3416,28 +4495,89 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
               AND state = 'active' AND query ILIKE '%pg_sleep%'
           ) AS active
         `, [reservation!.pid, reservation!.backendStart]);
+        const settlement = await observeAdvisoryStartupSettlement(harness.token, dedicatedOwners);
         expect({
           publicKind: outcome.kind,
           errorCode: outcome.kind === "rejected"
             ? (outcome.error as { message?: unknown }).message
             : null,
           returned: typeof publicReturnedAt === "number",
+          targetSettlementKind: targetSettlement.kind,
           targetSettledBeforeReturn: typeof publicReturnedAt === "number" &&
             [appPending, ...appTransactions].every((receipt) =>
               receipt.settledAt !== null && receipt.settledAt <= publicReturnedAt),
+          dedicatedParticipantObserved: participant !== undefined &&
+            participantIdentity !== undefined,
+          migrationTransactionInactiveBeforeApp: completedMigrationTransaction?.outcome === "fulfilled" &&
+            completedMigrationTransaction.settledAt !== null &&
+            completedMigrationTransaction.settledAt <= appPending.startedAt,
+          cancellationControlObserved: controls.length > 0 && cancellationQueries.length > 0,
+          cancellationDryRunObserved: cancellationDryRuns.length > 0,
+          cancellationDryRunCompleted: cancellationDryRuns.length > 0 &&
+            cancellationDryRuns.every((dryRun) => dryRun.outcome === "fulfilled" &&
+              dryRun.settledAt !== null),
+          cancellationDryRunSettled: cancellationDryRuns.length > 0 &&
+            cancellationDryRuns.every((dryRun) => dryRun.outcome === "fulfilled" &&
+              dryRun.settledAt !== null && typeof publicReturnedAt === "number" &&
+              dryRun.settledAt <= publicReturnedAt),
+          targetTupleBound,
+          controlsSelfExcludeFullIdentity,
+          historicalParticipantNotTargeted,
+          outsiderNotTargeted,
+          distinctTags: dedicatedOwners.length > 1 && dedicatedOwners.every(({ applicationName }) =>
+            typeof applicationName === "string" && applicationName.length > 0 &&
+            applicationName !== `${harness.token}_owner`) &&
+            new Set(dedicatedOwners.map(({ applicationName }) => applicationName)).size ===
+              dedicatedOwners.length,
+          allDedicatedEndedBeforeReturn: typeof publicReturnedAt === "number" &&
+            dedicatedOwners.length > 1 && dedicatedOwners.every((receipt) =>
+              exactBoundedDedicatedEndBefore(receipt, publicReturnedAt)),
+          sharedOwnerQueries: harness.state.ownerQueryReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          sharedOwnerTransactions: harness.state.transactionReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          sharedOwnerRawOperations: harness.state.sharedOwnerRawOperations.filter((receipt) =>
+            receipt.invocationId === invocation?.id).length,
+          sharedOwnerPrivateReads: harness.state.sharedOwnerPrivateReads.filter((receipt) =>
+            receipt.invocationId === invocation?.id).length,
           outsiderOutcome,
           outsiderSettledAt,
           outsiderStillActive: stillActive?.active === true,
           reservationHeld: reservation?.releasedAt === null,
+          settlement,
         }).toEqual({
           publicKind: "rejected",
           errorCode: "distributed_execution_timeout",
           returned: true,
+          targetSettlementKind: "settled",
           targetSettledBeforeReturn: true,
+          dedicatedParticipantObserved: true,
+          migrationTransactionInactiveBeforeApp: true,
+          cancellationControlObserved: true,
+          cancellationDryRunObserved: true,
+          cancellationDryRunCompleted: true,
+          cancellationDryRunSettled: true,
+          targetTupleBound: true,
+          controlsSelfExcludeFullIdentity: true,
+          historicalParticipantNotTargeted: true,
+          outsiderNotTargeted: true,
+          distinctTags: true,
+          allDedicatedEndedBeforeReturn: true,
+          sharedOwnerQueries: 0,
+          sharedOwnerTransactions: 0,
+          sharedOwnerRawOperations: 0,
+          sharedOwnerPrivateReads: 0,
           outsiderOutcome: "pending",
           outsiderSettledAt: null,
           outsiderStillActive: true,
           reservationHeld: true,
+          settlement: {
+            participant_pids: 0,
+            dedicated_owner_pids: 0,
+            legacy_owner_pids: 0,
+            legacy_owner_invalid: 0,
+            advisory_locks: 0,
+          },
         });
       } finally {
         outsiderQuery?.cancel();
@@ -3447,6 +4587,12 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           outsiderDrained = outsiderObserved
             ? await withOuterWatchdog(outsiderObserved, 5_000)
             : undefined;
+          if (reservations?.receipts[0]) {
+            await reservations.receipts[0].connection.unsafe(
+              "SELECT set_config('application_name', $1, false)",
+              [`${harness.token}_owner`],
+            ).catch(() => {});
+          }
           await reservations?.release();
           publicDrained = await withOuterWatchdog(operation.then(() => true, () => true), 12_000);
         } finally {
@@ -3460,139 +4606,204 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
     it("bounds and awaits a pending owner cleanup query on normal returned close", async () => {
       guard();
       const harness = await createAdvisoryStartupHarness("cleanup-pending");
+      const dedicatedOwnerOffset = harness.state.dedicatedOwnerReceipts.length;
       const accepted = await harness.open(harness.input);
       expect(accepted).not.toBeNull();
+      const sharedQueryOffset = harness.state.ownerQueryReceipts.length;
+      const sharedTransactionOffset = harness.state.transactionReceipts.length;
       const closeOperation = accepted!.close();
+      void closeOperation.catch(() => {});
       try {
         const outcome = await withOuterWatchdog(closeOperation);
         const returnedAt = outcome.kind === "watchdog" ? null : performance.now();
-        const settlement = await observeAdvisoryStartupSettlement(harness.token);
-        expect.soft(outcome).toMatchObject({
-          kind: "rejected",
-          error: {
-            name: "DistributedExecutionStartupError",
-            message: "distributed_execution_close",
-          },
-        });
-        expect.soft(typeof returnedAt).toBe("number");
-        const publicReturnedAt = returnedAt ?? -1;
-        expect.soft(harness.state.pendingQueries).toHaveLength(1);
-        expect.soft(harness.state.pendingQueries[0]).toMatchObject({
-          phase: "cleanup",
-          role: "owner",
-          effectiveStatementTimeout: expect.any(String),
-          backendPid: expect.any(Number),
-          settledAt: expect.any(Number),
-        });
-        const cleanupElapsedMs = publicReturnedAt - (harness.state.pendingQueries[0]?.startedAt ?? 0);
-        expect.soft(cleanupElapsedMs).toBeGreaterThanOrEqual(4_500);
-        expect.soft(cleanupElapsedMs).toBeLessThan(6_500);
-        const effectiveTimeoutMs = statementTimeoutMs(
-          harness.state.pendingQueries[0]?.effectiveStatementTimeout ?? null,
-        );
-        expect.soft(effectiveTimeoutMs).not.toBeNull();
-        expect.soft(effectiveTimeoutMs ?? Number.NEGATIVE_INFINITY).toBeGreaterThanOrEqual(0);
-        expect.soft(effectiveTimeoutMs ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(5_000);
-        expect.soft(harness.state.pendingQueries[0]?.settledAt ?? Number.POSITIVE_INFINITY)
-          .toBeLessThanOrEqual(publicReturnedAt);
+        const pending = harness.state.pendingQueries.filter((receipt) =>
+          receipt.phase === "cleanup" && receipt.source === "dedicated-owner");
         const cleanupTransactions = harness.state.transactionReceipts.filter((receipt) =>
-          receipt.phase === "cleanup");
-        expect.soft(cleanupTransactions).toHaveLength(1);
-        expect.soft(cleanupTransactions[0]).toMatchObject({
-          role: "owner",
-          phase: "cleanup",
-          outcome: "rejected",
-          settledAt: expect.any(Number),
+          receipt.phase === "cleanup" && receipt.source === "dedicated-owner");
+        const cleanupControl = harness.state.dedicatedOwnerReceipts.find((receipt) =>
+          receipt.id === pending[0]?.dedicatedOwnerId);
+        const dedicatedOwners = harness.state.dedicatedOwnerReceipts.slice(dedicatedOwnerOffset);
+        const tags = dedicatedOwners.map(({ applicationName }) => applicationName);
+        const effectiveTimeoutMs = statementTimeoutMs(pending[0]?.effectiveStatementTimeout ?? null);
+        const settlement = await observeAdvisoryStartupSettlement(
+          harness.token,
+          dedicatedOwners,
+        );
+        expect({
+          publicKind: outcome.kind,
+          errorCode: outcome.kind === "rejected"
+            ? (outcome.error as { message?: unknown }).message
+            : null,
+          pendingCount: pending.length,
+          pendingIdentity: pending[0] && {
+            source: pending[0].source,
+            dedicatedOwnerId: pending[0].dedicatedOwnerId,
+            backendPid: typeof pending[0].backendPid,
+            timeoutBounded: effectiveTimeoutMs !== null && effectiveTimeoutMs >= 0 &&
+              effectiveTimeoutMs <= 5_000,
+          },
+          elapsedBounded: typeof returnedAt === "number" && pending.length === 1 &&
+            returnedAt - pending[0]!.startedAt >= 4_500 &&
+            returnedAt - pending[0]!.startedAt <= 6_500,
+          pendingSettledBeforeReturn: typeof returnedAt === "number" && pending.length === 1 &&
+            pending.every((receipt) => receipt.settledAt !== null && receipt.settledAt <= returnedAt),
+          transactionCount: cleanupTransactions.length,
+          transactionSettledBeforeReturn: typeof returnedAt === "number" &&
+            cleanupTransactions.length === 1 && cleanupTransactions.every((receipt) =>
+              receipt.dedicatedOwnerId === cleanupControl?.id && receipt.outcome === "rejected" &&
+              receipt.settledAt !== null && receipt.settledAt <= returnedAt),
+          semanticQueryObserved: cleanupControl?.lifecycle === "close" &&
+            cleanupControl.queryReceipts.some((receipt) =>
+              receipt.semantic === "cleanup" && receipt.source === "dedicated-owner" &&
+              receipt.outcome === "rejected" && receipt.settledAt !== null),
+          sharedCleanupQueries: harness.state.ownerQueryReceipts.slice(sharedQueryOffset)
+            .filter(({ source }) => source === "shared-owner-db").length,
+          sharedCleanupTransactions: harness.state.transactionReceipts.slice(sharedTransactionOffset)
+            .filter(({ source }) => source === "shared-owner-db").length,
+          servingCloses: harness.state.closeSettled.map(({ role }) => role).sort(),
+          servingClosedBeforeReturn: typeof returnedAt === "number" &&
+            harness.state.closeSettled.every(({ at }) => at <= returnedAt),
+          distinctTags: dedicatedOwners.length > 1 && tags.every((tag) =>
+            typeof tag === "string" && tag.length > 0 && tag !== `${harness.token}_owner`) &&
+            new Set(tags).size === tags.length,
+          allDedicatedEnded: typeof returnedAt === "number" && dedicatedOwners.length > 1 &&
+            dedicatedOwners.every((receipt) =>
+              exactBoundedDedicatedEndBefore(receipt, returnedAt)),
+          settlement,
+          logs: harness.state.logs,
+        }).toEqual({
+          publicKind: "rejected",
+          errorCode: "distributed_execution_close",
+          pendingCount: 1,
+          pendingIdentity: {
+            source: "dedicated-owner",
+            dedicatedOwnerId: expect.any(Number),
+            backendPid: "number",
+            timeoutBounded: true,
+          },
+          elapsedBounded: true,
+          pendingSettledBeforeReturn: true,
+          transactionCount: 1,
+          transactionSettledBeforeReturn: true,
+          semanticQueryObserved: true,
+          sharedCleanupQueries: 0,
+          sharedCleanupTransactions: 0,
+          servingCloses: ["aoa_app", "aoa_operator"],
+          servingClosedBeforeReturn: true,
+          distinctTags: true,
+          allDedicatedEnded: true,
+          settlement: {
+            participant_pids: 0,
+            dedicated_owner_pids: 0,
+            legacy_owner_pids: expect.any(Number),
+            legacy_owner_invalid: 0,
+            advisory_locks: 0,
+          },
+          logs: [],
         });
-        expect.soft(cleanupTransactions[0]?.settledAt ?? Number.POSITIVE_INFINITY)
-          .toBeLessThanOrEqual(publicReturnedAt);
-        const expectedRoles = ["aoa_app", "aoa_operator"];
-        expect.soft(harness.state.closes.map(({ role }) => role).sort()).toEqual(expectedRoles);
-        expect.soft(harness.state.closes.map(({ input }) => input))
-          .toEqual(expectedRoles.map(() => ({ timeoutSeconds: 5 })));
-        expect.soft(harness.state.closeSettled.map(({ role }) => role).sort()).toEqual(expectedRoles);
-        for (const close of harness.state.closeSettled) {
-          expect.soft(close.at).toBeLessThanOrEqual(publicReturnedAt);
-        }
-        expect.soft(settlement).toEqual({
-          participant_pids: 0,
-          owner_pids: 1,
-          owner_in_transaction: 0,
-          advisory_locks: 0,
-        });
-        expect.soft(harness.state.logs).toEqual([]);
       } finally {
         await harness.cleanup();
-        const operationDrained = (await withOuterWatchdog(
-          closeOperation.then(() => true, () => true),
-          5_000,
-        )).kind === "fulfilled";
-        expect(operationDrained).toBe(true);
+        const drained = await withOuterWatchdog(closeOperation.then(() => true, () => true), 5_000);
+        expect(drained).toMatchObject({ kind: "fulfilled", value: true });
       }
     }, 30_000);
 
     it("bounds and awaits a pending owner cleanup query after startup failure", async () => {
       guard();
       const harness = await createAdvisoryStartupHarness("cleanup-failure-pending");
+      const dedicatedOwnerOffset = harness.state.dedicatedOwnerReceipts.length;
       const operation = harness.open(harness.input);
+      void operation.catch(() => {});
       try {
         const outcome = await withOuterWatchdog(operation, 18_000);
         const [invocation] = harness.state.openInvocations;
         const returnedAt = invocation?.returnedAt;
-        const settlement = await observeAdvisoryStartupSettlement(harness.token);
-        expect.soft(outcome).toMatchObject({
-          kind: "rejected",
-          error: {
-            name: "DistributedExecutionStartupError",
-            message: "distributed_execution_close",
-          },
-        });
-        expect.soft(typeof returnedAt).toBe("number");
-        const publicReturnedAt = returnedAt ?? -1;
-        expect.soft(harness.state.injectionTriggered).toBe(true);
-        expect.soft(harness.state.pendingQueries).toHaveLength(1);
-        expect.soft(harness.state.pendingQueries[0]).toMatchObject({
-          phase: "cleanup",
-          role: "owner",
-          effectiveStatementTimeout: expect.any(String),
-          backendPid: expect.any(Number),
-          settledAt: expect.any(Number),
-        });
-        const cleanupElapsedMs = publicReturnedAt - (harness.state.pendingQueries[0]?.startedAt ?? 0);
-        expect.soft(cleanupElapsedMs).toBeGreaterThanOrEqual(4_500);
-        expect.soft(cleanupElapsedMs).toBeLessThan(6_500);
-        const effectiveTimeoutMs = statementTimeoutMs(
-          harness.state.pendingQueries[0]?.effectiveStatementTimeout ?? null,
-        );
-        expect.soft(effectiveTimeoutMs).not.toBeNull();
-        expect.soft(effectiveTimeoutMs ?? Number.NEGATIVE_INFINITY).toBeGreaterThanOrEqual(0);
-        expect.soft(effectiveTimeoutMs ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(5_000);
-        expect.soft(harness.state.pendingQueries[0]?.settledAt ?? Number.POSITIVE_INFINITY)
-          .toBeLessThanOrEqual(publicReturnedAt);
+        const pending = harness.state.pendingQueries.filter((receipt) =>
+          receipt.invocationId === invocation?.id && receipt.phase === "cleanup" &&
+          receipt.source === "dedicated-owner");
         const cleanupTransactions = harness.state.transactionReceipts.filter((receipt) =>
-          receipt.invocationId === invocation?.id && receipt.phase === "cleanup");
-        expect.soft(cleanupTransactions).toHaveLength(1);
-        expect.soft(cleanupTransactions[0]).toMatchObject({
-          role: "owner",
-          phase: "cleanup",
-          outcome: "rejected",
-          settledAt: expect.any(Number),
-        });
-        expect.soft(cleanupTransactions[0]?.settledAt ?? Number.POSITIVE_INFINITY)
-          .toBeLessThanOrEqual(publicReturnedAt);
-        const expectedRoles = ["aoa_app", "aoa_operator"];
-        expect.soft(harness.state.closes.map(({ role }) => role).sort()).toEqual(expectedRoles);
-        expect.soft(harness.state.closes.map(({ input }) => input))
-          .toEqual(expectedRoles.map(() => ({ timeoutSeconds: 5 })));
-        expect.soft(harness.state.closeSettled.map(({ role }) => role).sort()).toEqual(expectedRoles);
-        for (const close of harness.state.closeSettled) {
-          expect.soft(close.at).toBeLessThanOrEqual(publicReturnedAt);
-        }
-        expect.soft(settlement).toEqual({
-          participant_pids: 0,
-          owner_pids: 1,
-          owner_in_transaction: 0,
-          advisory_locks: 0,
+          receipt.invocationId === invocation?.id && receipt.phase === "cleanup" &&
+          receipt.source === "dedicated-owner");
+        const cleanupControl = harness.state.dedicatedOwnerReceipts.find((receipt) =>
+          receipt.id === pending[0]?.dedicatedOwnerId);
+        const dedicatedOwners = harness.state.dedicatedOwnerReceipts.slice(dedicatedOwnerOffset);
+        const tags = dedicatedOwners.map(({ applicationName }) => applicationName);
+        const effectiveTimeoutMs = statementTimeoutMs(pending[0]?.effectiveStatementTimeout ?? null);
+        const settlement = await observeAdvisoryStartupSettlement(
+          harness.token,
+          dedicatedOwners,
+        );
+        expect({
+          publicKind: outcome.kind,
+          errorCode: outcome.kind === "rejected"
+            ? (outcome.error as { message?: unknown }).message
+            : null,
+          laterFailureReached: harness.state.injectionTriggered,
+          pendingCount: pending.length,
+          pendingIdentity: pending[0] && {
+            source: pending[0].source,
+            dedicatedOwnerId: pending[0].dedicatedOwnerId,
+            backendPid: typeof pending[0].backendPid,
+            timeoutBounded: effectiveTimeoutMs !== null && effectiveTimeoutMs >= 0 &&
+              effectiveTimeoutMs <= 5_000,
+          },
+          elapsedBounded: typeof returnedAt === "number" && pending.length === 1 &&
+            returnedAt - pending[0]!.startedAt >= 4_500 &&
+            returnedAt - pending[0]!.startedAt <= 6_500,
+          pendingSettledBeforeReturn: typeof returnedAt === "number" && pending.length === 1 &&
+            pending.every((receipt) => receipt.settledAt !== null && receipt.settledAt <= returnedAt),
+          transactionCount: cleanupTransactions.length,
+          transactionSettledBeforeReturn: typeof returnedAt === "number" &&
+            cleanupTransactions.length === 1 && cleanupTransactions.every((receipt) =>
+              receipt.dedicatedOwnerId === cleanupControl?.id && receipt.outcome === "rejected" &&
+              receipt.settledAt !== null && receipt.settledAt <= returnedAt),
+          semanticQueryObserved: cleanupControl?.lifecycle === "open" &&
+            cleanupControl.queryReceipts.some((receipt) =>
+              receipt.semantic === "cleanup" && receipt.source === "dedicated-owner" &&
+              receipt.outcome === "rejected" && receipt.settledAt !== null),
+          sharedOwnerQueries: harness.state.ownerQueryReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          sharedOwnerTransactions: harness.state.transactionReceipts.filter((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.source === "shared-owner-db").length,
+          servingCloses: harness.state.closeSettled.map(({ role }) => role).sort(),
+          servingClosedBeforeReturn: typeof returnedAt === "number" &&
+            harness.state.closeSettled.every(({ at }) => at <= returnedAt),
+          distinctTags: dedicatedOwners.length > 1 && tags.every((tag) =>
+            typeof tag === "string" && tag.length > 0 && tag !== `${harness.token}_owner`) &&
+            new Set(tags).size === tags.length,
+          allDedicatedEnded: typeof returnedAt === "number" && dedicatedOwners.length > 1 &&
+            dedicatedOwners.every((receipt) =>
+              exactBoundedDedicatedEndBefore(receipt, returnedAt)),
+          settlement,
+        }).toEqual({
+          publicKind: "rejected",
+          errorCode: "distributed_execution_close",
+          laterFailureReached: true,
+          pendingCount: 1,
+          pendingIdentity: {
+            source: "dedicated-owner",
+            dedicatedOwnerId: expect.any(Number),
+            backendPid: "number",
+            timeoutBounded: true,
+          },
+          elapsedBounded: true,
+          pendingSettledBeforeReturn: true,
+          transactionCount: 1,
+          transactionSettledBeforeReturn: true,
+          semanticQueryObserved: true,
+          sharedOwnerQueries: 0,
+          sharedOwnerTransactions: 0,
+          servingCloses: ["aoa_app", "aoa_operator"],
+          servingClosedBeforeReturn: true,
+          distinctTags: true,
+          allDedicatedEnded: true,
+          settlement: {
+            participant_pids: 0,
+            dedicated_owner_pids: 0,
+            legacy_owner_pids: expect.any(Number),
+            legacy_owner_invalid: 0,
+            advisory_locks: 0,
+          },
         });
         assertClosedStartupLogs(harness.state.logs);
         expectCaseInsensitiveRedaction(JSON.stringify(harness.state.logs), [
@@ -3611,11 +4822,8 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         ]);
       } finally {
         await harness.cleanup();
-        const operationDrained = (await withOuterWatchdog(
-          operation.then(() => true, () => true),
-          5_000,
-        )).kind === "fulfilled";
-        expect(operationDrained).toBe(true);
+        const drained = await withOuterWatchdog(operation.then(() => true, () => true), 5_000);
+        expect(drained).toMatchObject({ kind: "fulfilled", value: true });
       }
     }, 30_000);
 
@@ -3641,7 +4849,10 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           returnedAt = performance.now();
         } finally {
           await accepted?.close().catch(() => {});
-          settlement = await observeAdvisoryStartupSettlement(harness.token);
+          settlement = await observeAdvisoryStartupSettlement(
+            harness.token,
+            harness.state.dedicatedOwnerReceipts,
+          );
           await harness.cleanup();
         }
         const errorCode = (failure as { message?: string } | undefined)?.message ?? "startup_returned_pool";
@@ -3669,8 +4880,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         expect(harness.state.abortCalls, injection).toBe(1);
         expect(settlement, injection).toEqual({
           participant_pids: 0,
-          owner_pids: 1,
-          owner_in_transaction: 0,
+          dedicated_owner_pids: 0,
+          legacy_owner_pids: expect.any(Number),
+          legacy_owner_invalid: 0,
           advisory_locks: 0,
         });
         assertClosedStartupLogs(harness.state.logs);
