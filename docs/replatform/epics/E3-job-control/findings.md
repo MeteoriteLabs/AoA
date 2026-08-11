@@ -994,6 +994,22 @@ FORCE/policy posture for tenant tables, and add missing-table and RLS-disabled s
 negatives. The focused migration/RLS tests remain useful but do not close wrong-database
 startup behavior.
 
+**Accepted disposition (2026-08-11):** The E3-F029 certificate must compare PostgreSQL 18 raw
+catalog facts exactly. A non-null ordinary-table owner ACL expands to the eight owner privileges
+`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`, and `MAINTAIN`, all
+reported by `aclexplode` with `is_grantable=false`. `execution_targets.relacl` is non-null and
+owner-only while its reviewed app/operator serving grants remain exact column ACLs;
+`mcp_api_keys.relacl` is null; and relations with direct table-level serving grants contain the
+owner tuples plus only the reviewed direct serving-role tuples. Only the actual
+`pg_class.relowner` OID normalizes to `RELATION_OWNER`; no synthetic owner, unexpected grantee,
+or privilege is filtered, and PostgreSQL-version drift fails closed. The legacy non-superuser
+flag-off fixture belongs in a third fully migrated database so its broad grants and
+`execution_targets` ownership cannot contaminate the main exact-certificate database or the
+second advisory-domain database. This is a strict catalog-fact/test-isolation correction, not
+new authority: no migration, role-grant, schema, or production-filtering change is authorized.
+JOB-003 remains `needs_changes`; GREEN stays paused until the separate tests-only oracle/fixture
+correction is independently accepted.
+
 ## E3-F030 - Certificate cleanup is uncomposed and Cartesian rather than tuple-bounded
 
 **Date:** 2026-08-11
@@ -1096,10 +1112,20 @@ This record plans, but does not implement or resolve, the six final-review findi
   every row and per-table count, requires permissive policies, and compares the installed
   PostgreSQL `pg_get_expr` deparse including implicit text casts. It checks every
   `aclexplode(relacl)` and every user-column `aclexplode(attacl)` tuple with grantor, grantee,
-  privilege, and grantable bit. The two certificate
+  privilege, and grantable bit. Under PostgreSQL 18, every non-null ordinary-table owner ACL
+  contributes exact non-grantable `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`TRUNCATE`/`REFERENCES`/
+  `TRIGGER`/`MAINTAIN` owner tuples. `execution_targets.relacl` is non-null and owner-only while
+  its serving grants remain column-level; `mcp_api_keys.relacl` is null; and table-level serving
+  grants add only reviewed direct serving-role tuples beside the owner tuples. Only the actual
+  `pg_class.relowner` OID normalizes to `RELATION_OWNER`; nothing unexpected is filtered and
+  PostgreSQL-version drift fails closed. The legacy non-superuser flag-off fixture uses a third
+  migrated database, isolated from both the exact-certificate and advisory-domain databases.
+  The two certificate
   tables remain FORCE RLS with one exact app tenant policy and exact non-grantable app CRUD;
   `execution_targets` remains RLS enabled and explicitly not FORCE with its exact three current
-  policies. No migration or grant change is planned.
+  policies. This correction authorizes no migration, role grant, schema, or production filtering;
+  JOB-003 remains `needs_changes` and GREEN remains paused pending independent acceptance of the
+  separate tests-only oracle/fixture correction.
 - **E3-F030:** cleanup selects with `.limit(boundedLimit)` and `FOR UPDATE SKIP LOCKED`, deletes
   only the selected `(organization_id, worker_id, attempt_id)` tuples, uses `RETURNING` as the
   true count, and rolls the tenant transaction back if the count exceeds the bound. Correctness

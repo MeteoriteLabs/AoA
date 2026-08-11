@@ -1783,6 +1783,23 @@ derived from all table/column grant constants. Thus an ACL on an unlisted column
 grantor/grantee/privilege, or any grant option fails even when effective access appears equal.
 The certificate tables have exact non-grantable app CRUD, no app column ACL, and no PUBLIC/
 operator tuple; `execution_targets` keeps only its exact current app/operator column tuples.
+The PostgreSQL 18 raw-ACL certificate is literal catalog fact, not an effective-privilege
+approximation. A non-null ordinary-table owner ACL materializes exactly eight owner tuples:
+`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`, and `MAINTAIN`;
+`aclexplode` reports each with `is_grantable=false`. `execution_targets.relacl` is non-null and
+owner-only even though its app/operator serving authority is expressed by exact column ACLs,
+while `mcp_api_keys.relacl` is null. A relation with direct table-level serving grants has a
+non-null ACL containing those eight owner tuples plus only the reviewed direct serving-role
+tuples. Only the actual `pg_class.relowner` OID may normalize to `RELATION_OWNER`; no synthetic
+owner, unexpected grantee, or privilege may be filtered before comparison. Any PostgreSQL-
+version drift in these raw catalog facts fails closed until a prospectively reviewed manifest
+pins the new facts.
+
+The legacy non-superuser flag-off fixture runs in a third fully migrated database. Its broad
+legacy grants and its `execution_targets` ownership must never contaminate either the main exact-
+certificate database or the second advisory-domain database. This is strictly a catalog-fact and
+test-isolation correction: it authorizes no migration, role-grant, schema, or production-filtering
+change.
 REDs drop/replace an expected relation, disable RLS/FORCE, add/remove/rename/restrict a policy,
 change permissiveness/command/role/qual/check, add a 23rd policy, change a per-table count, add
 PUBLIC/operator ACL, add relation grant option, and add expected or unexpected-column
