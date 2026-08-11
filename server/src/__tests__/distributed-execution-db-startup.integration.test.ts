@@ -283,6 +283,31 @@ type AdvisoryPhase =
 type StartupFailureInjection = AdvisoryPhase | "statement-timeout" | "lock-timeout" |
   "idle-timeout" | "forced-end" | "shared-budget";
 
+type StartupDeadlineReceipt = {
+  readonly invocationId: number;
+  readonly signal: AbortSignal;
+  readonly at: number;
+};
+
+type StartupInvocationReceipt = {
+  readonly id: number;
+  readonly startedAt: number;
+  readonly advisoryKeys: bigint[];
+  readonly controllers: AbortController[];
+  controllerCreatedAt: number | null;
+  deadlineReceipt: StartupDeadlineReceipt | null;
+  returnedAt: number | null;
+};
+
+type StartupTransactionReceipt = {
+  readonly invocationId: number;
+  readonly role: "owner" | "aoa_app" | "aoa_operator";
+  phase: AdvisoryPhase | null;
+  readonly startedAt: number;
+  settledAt: number | null;
+  outcome: "pending" | "fulfilled" | "rejected";
+};
+
 async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
   const dialect = new PgDialect();
   const token = `job003_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -306,10 +331,18 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     abortControllers: [] as AbortController[],
     abortCalls: 0,
     abortAt: null as number | null,
+    openInvocations: [] as StartupInvocationReceipt[],
+    activeInvocation: null as StartupInvocationReceipt | null,
+    transactionReceipts: [] as StartupTransactionReceipt[],
     budgetWindows: [] as Array<{
+      invocationId: number;
+      phase: AdvisoryPhase;
       role: "owner" | "aoa_app" | "aoa_operator";
+      signal: AbortSignal | null;
       startedAt: number;
       settledAt: number | null;
+      abortReceipt: StartupDeadlineReceipt | null;
+      cancelledDuringWork: boolean;
     }>,
   };
   const namedUrl = (url: string, suffix: string) => {
@@ -331,11 +364,47 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     }
     return undefined;
   };
-  const consumeBudget = async (role: "owner" | "aoa_app" | "aoa_operator") => {
-    const window = { role, startedAt: performance.now(), settledAt: null as number | null };
+  const consumeBudget = async (
+    phase: "owner-exclusive" | "app-negative" | "operator-negative" |
+      "app-positive" | "operator-positive",
+  ) => {
+    const invocation = state.activeInvocation;
+    if (!invocation) throw new Error("shared-budget phase ran outside an open invocation");
+    const role = phase === "owner-exclusive"
+      ? "owner"
+      : phase.startsWith("app-") ? "aoa_app" : "aoa_operator";
+    const signal = invocation.controllers.at(-1)?.signal ?? null;
+    const window = {
+      invocationId: invocation.id,
+      phase,
+      role,
+      signal,
+      startedAt: performance.now(),
+      settledAt: null as number | null,
+      abortReceipt: null as StartupDeadlineReceipt | null,
+      cancelledDuringWork: false,
+    };
     state.budgetWindows.push(window);
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
-    window.settledAt = performance.now();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 3_000);
+        if (!signal) return;
+        const onAbort = () => {
+          window.abortReceipt = invocation.deadlineReceipt;
+          if (window.settledAt === null) {
+            window.cancelledDuringWork = true;
+            clearTimeout(timer);
+            reject(Object.assign(new Error("shared startup budget cancelled phase work"), {
+              code: "INJECT_SHARED_BUDGET_CANCEL",
+            }));
+          }
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      });
+    } finally {
+      window.settledAt = performance.now();
+    }
   };
   const waitForPositivePeer = async (role: "aoa_app" | "aoa_operator") => {
     const peer = role === "aoa_app" ? "aoa_operator" : "aoa_app";
@@ -360,7 +429,11 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     });
   };
 
-  const instrumentDb = <T extends object>(db: T, role: "owner" | "aoa_app" | "aoa_operator"): T => {
+  const instrumentDb = <T extends object>(
+    db: T,
+    role: "owner" | "aoa_app" | "aoa_operator",
+    transactionReceipt?: StartupTransactionReceipt,
+  ): T => {
     const cache = new Map<PropertyKey, unknown>();
     return new Proxy(db, {
       get(target, property, receiver) {
@@ -378,9 +451,13 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               !queryText.includes("shared");
             if (ownerLock) {
               const key = queryParams.find((value): value is bigint => typeof value === "bigint");
-              if (key !== undefined) state.advisoryKeyBindings.push(key);
+              if (key !== undefined) {
+                state.advisoryKeyBindings.push(key);
+                state.activeInvocation?.advisoryKeys.push(key);
+              }
+              if (transactionReceipt) transactionReceipt.phase = "owner-exclusive";
               state.phases.push("owner-exclusive");
-              if (inject === "shared-budget") await consumeBudget("owner");
+              if (inject === "shared-budget") await consumeBudget("owner-exclusive");
               if (inject === "owner-exclusive") {
                 state.injectionTriggered = true;
                 throw Object.assign(new Error("owner phase injected"), { code: "INJECT_OWNER" });
@@ -402,7 +479,14 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
             }
             if (inject === "shared-budget" && role !== "owner" &&
               /pg_try_advisory_xact_lock_shared/u.test(queryText)) {
-              await consumeBudget(role);
+              const rolePrefix = role === "aoa_app" ? "app" : "operator";
+              const negativePhase = `${rolePrefix}-negative` as AdvisoryPhase;
+              const phase = state.budgetWindows.some((window) =>
+                window.invocationId === state.activeInvocation?.id && window.phase === negativePhase)
+                ? `${rolePrefix}-positive` as AdvisoryPhase
+                : negativePhase;
+              if (transactionReceipt) transactionReceipt.phase = phase;
+              await consumeBudget(phase);
             }
             const result = await (target as T & { execute(s: unknown): Promise<unknown> }).execute(statement);
             if (/pg_backend_pid\s*\(/u.test(queryText)) {
@@ -415,6 +499,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
             if (role !== "owner" && /pg_try_advisory_xact_lock_shared/u.test(queryText)) {
               const success = firstBoolean(result);
               const phase = `${role === "aoa_app" ? "app" : "operator"}-${success ? "positive" : "negative"}` as AdvisoryPhase;
+              if (transactionReceipt) transactionReceipt.phase = phase;
               state.phases.push(phase);
               if (inject === phase || (inject === "forced-end" && phase === "operator-positive")) {
                 state.injectionTriggered = true;
@@ -428,9 +513,29 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
           return execute;
         }
         if (property === "transaction") {
-          const transaction = async (callback: (tx: T) => unknown, ...args: unknown[]) =>
-            (target as T & { transaction(cb: (tx: T) => unknown, ...rest: unknown[]): Promise<unknown> })
-              .transaction((tx) => callback(instrumentDb(tx, role)), ...args);
+          const transaction = async (callback: (tx: T) => unknown, ...args: unknown[]) => {
+            const receipt: StartupTransactionReceipt = {
+              invocationId: state.activeInvocation?.id ?? -1,
+              role,
+              phase: null,
+              startedAt: performance.now(),
+              settledAt: null,
+              outcome: "pending",
+            };
+            state.transactionReceipts.push(receipt);
+            try {
+              const value = await (target as T & {
+                transaction(cb: (tx: T) => unknown, ...rest: unknown[]): Promise<unknown>;
+              }).transaction((tx) => callback(instrumentDb(tx, role, receipt)), ...args);
+              receipt.outcome = "fulfilled";
+              return value;
+            } catch (error) {
+              receipt.outcome = "rejected";
+              throw error;
+            } finally {
+              receipt.settledAt = performance.now();
+            }
+          };
           cache.set(property, transaction);
           return transaction;
         }
@@ -531,15 +636,38 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     appNamedUrl,
     operatorNamedUrl,
     open: (async (input: Parameters<typeof openFinalStartup>[0]) => {
+      if (state.activeInvocation) throw new Error("advisory startup harness does not allow overlapping opens");
+      const invocation: StartupInvocationReceipt = {
+        id: state.openInvocations.length + 1,
+        startedAt: performance.now(),
+        advisoryKeys: [],
+        controllers: [],
+        controllerCreatedAt: null,
+        deadlineReceipt: null,
+        returnedAt: null,
+      };
+      state.openInvocations.push(invocation);
+      state.activeInvocation = invocation;
       const NativeAbortController = globalThis.AbortController;
       class ObservedAbortController extends NativeAbortController {
         constructor() {
           super();
+          invocation.controllerCreatedAt ??= performance.now();
+          invocation.controllers.push(this);
           state.abortControllers.push(this);
         }
         override abort(reason?: unknown) {
           state.abortCalls += 1;
-          state.abortAt ??= performance.now();
+          if (!this.signal.aborted) {
+            const at = performance.now();
+            const receipt: StartupDeadlineReceipt = {
+              invocationId: invocation.id,
+              signal: this.signal,
+              at,
+            };
+            invocation.deadlineReceipt ??= receipt;
+            state.abortAt ??= at;
+          }
           super.abort(reason);
         }
       }
@@ -547,6 +675,8 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       try {
         return await (isolated.openDistributedExecutionDatabases as unknown as typeof openFinalStartup)(input);
       } finally {
+        invocation.returnedAt = performance.now();
+        state.activeInvocation = null;
         globalThis.AbortController = NativeAbortController;
       }
     }) as typeof openFinalStartup,
@@ -933,25 +1063,70 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       });
     }, 60_000);
 
-    it("binds each startup handshake to one fresh random signed-bigint advisory key", async () => {
+    it("creates a fresh key, controller, and exact deadline for two calls through one isolated module", async () => {
       guard();
-      const keys: bigint[] = [];
-      for (let run = 0; run < 2; run += 1) {
-        const harness = await createAdvisoryStartupHarness();
+      const harness = await createAdvisoryStartupHarness("shared-budget");
+      const failures: unknown[] = [];
+      const settlements: Awaited<ReturnType<typeof observeAdvisoryStartupSettlement>>[] = [];
+      try {
+        // One harness owns one isolated import. Recreating it here would conceal module-scoped
+        // key/controller/deadline reuse, which is the production mutation this test catches.
+        for (let run = 0; run < 2; run += 1) {
         let accepted: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> = null;
         try {
           accepted = await harness.open(harness.input);
-          expect(harness.state.advisoryKeyBindings).toHaveLength(1);
-          const [key] = harness.state.advisoryKeyBindings;
-          expect(key).toBeGreaterThanOrEqual(-(2n ** 63n));
-          expect(key).toBeLessThan(2n ** 63n);
-          keys.push(key!);
+          failures.push(undefined);
+        } catch (error) {
+          failures.push(error);
         } finally {
           await accepted?.close().catch(() => {});
-          await harness.cleanup();
+          settlements.push(await observeAdvisoryStartupSettlement(harness.token));
+        }
+        }
+      } finally {
+        await harness.cleanup();
+      }
+
+      expect.soft(failures).toHaveLength(2);
+      for (const failure of failures) {
+        expect.soft(failure).toMatchObject({ message: "distributed_execution_timeout" });
+      }
+      expect.soft(harness.state.openInvocations).toHaveLength(2);
+      expect.soft(harness.state.abortCalls).toBe(2);
+      const keys = harness.state.openInvocations.flatMap((receipt) => receipt.advisoryKeys);
+      expect.soft(keys).toHaveLength(2);
+      for (const key of keys) {
+        expect.soft(key).toBeGreaterThanOrEqual(-(2n ** 63n));
+        expect.soft(key).toBeLessThan(2n ** 63n);
+      }
+      if (keys.length === 2) expect.soft(keys[0]).not.toBe(keys[1]);
+
+      const controllers = harness.state.openInvocations.flatMap((receipt) => receipt.controllers);
+      expect.soft(controllers).toHaveLength(2);
+      if (controllers.length === 2) expect.soft(controllers[0]).not.toBe(controllers[1]);
+      const deadlines = harness.state.openInvocations.flatMap((receipt) =>
+        receipt.deadlineReceipt ? [receipt.deadlineReceipt] : [],
+      );
+      expect.soft(deadlines).toHaveLength(2);
+      if (deadlines.length === 2) {
+        expect.soft(deadlines[0]).not.toBe(deadlines[1]);
+        expect.soft(deadlines[0]!.signal).not.toBe(deadlines[1]!.signal);
+        expect.soft(deadlines[0]!.at).toBeLessThan(deadlines[1]!.at);
+      }
+      for (const receipt of harness.state.openInvocations) {
+        expect.soft(receipt.controllers).toHaveLength(1);
+        expect.soft(receipt.deadlineReceipt?.signal).toBe(receipt.controllers[0]?.signal);
+        if (receipt.controllerCreatedAt !== null && receipt.deadlineReceipt && receipt.returnedAt !== null) {
+          const budgetElapsed = receipt.deadlineReceipt.at - receipt.controllerCreatedAt;
+          expect.soft(budgetElapsed).toBeGreaterThanOrEqual(4_500);
+          expect.soft(budgetElapsed).toBeLessThan(6_500);
+          expect.soft(receipt.returnedAt - receipt.controllerCreatedAt).toBeLessThan(7_500);
         }
       }
-      expect(keys[0]).not.toBe(keys[1]);
+      expect.soft(settlements).toEqual([
+        { participant_pids: 0, owner_pids: 1, owner_in_transaction: 0, advisory_locks: 0 },
+        { participant_pids: 0, owner_pids: 1, owner_in_transaction: 0, advisory_locks: 0 },
+      ]);
     }, 120_000);
 
     it("spends one monotonic deadline across sequential owner and concurrent app/operator phases", async () => {
@@ -976,24 +1151,61 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(failure).toMatchObject({ message: "distributed_execution_timeout" });
       expect(harness.state.abortControllers).toHaveLength(1);
       expect(harness.state.abortCalls).toBe(1);
-      const firstWindowByRole = new Map(harness.state.budgetWindows.map((window) => [window.role, window]));
-      expect([...firstWindowByRole.keys()].sort()).toEqual(["aoa_app", "aoa_operator", "owner"]);
-      const owner = firstWindowByRole.get("owner");
-      const app = firstWindowByRole.get("aoa_app");
-      const operator = firstWindowByRole.get("aoa_operator");
-      expect(typeof owner?.settledAt).toBe("number");
-      expect(typeof app?.settledAt).toBe("number");
-      expect(typeof operator?.settledAt).toBe("number");
-      expect(typeof harness.state.abortAt).toBe("number");
-      if (!owner || !app || !operator || typeof owner.settledAt !== "number" ||
-        typeof app.settledAt !== "number" || typeof operator.settledAt !== "number" ||
-        typeof harness.state.abortAt !== "number") {
-        throw new Error("shared budget fixture did not observe every settlement timestamp");
+      const [invocation] = harness.state.openInvocations;
+      expect.soft(harness.state.openInvocations).toHaveLength(1);
+      const windows = harness.state.budgetWindows.filter((window) =>
+        window.invocationId === invocation?.id,
+      );
+      expect.soft(windows.map((window) => window.phase).sort()).toEqual([
+        "app-negative", "operator-negative", "owner-exclusive",
+      ]);
+      expect.soft(windows.some((window) => window.phase.endsWith("positive"))).toBe(false);
+      expect.soft(harness.state.phases.some((phase) => phase.endsWith("positive"))).toBe(false);
+      const owner = windows.find((window) => window.phase === "owner-exclusive");
+      const app = windows.find((window) => window.phase === "app-negative");
+      const operator = windows.find((window) => window.phase === "operator-negative");
+      const deadline = invocation?.deadlineReceipt ?? null;
+      expect.soft(owner?.cancelledDuringWork).toBe(false);
+      expect.soft(app?.cancelledDuringWork).toBe(true);
+      expect.soft(operator?.cancelledDuringWork).toBe(true);
+      for (const window of windows) {
+        expect.soft(window.signal).toBe(invocation?.controllers[0]?.signal);
+        expect.soft(window.abortReceipt).toBe(deadline);
+        expect.soft(typeof window.settledAt).toBe("number");
+        if (window.settledAt !== null && invocation?.returnedAt !== null) {
+          expect.soft(window.settledAt).toBeLessThanOrEqual(invocation?.returnedAt ?? -1);
+        }
       }
-      expect(app.startedAt).toBeGreaterThanOrEqual(owner.settledAt);
-      expect(operator.startedAt).toBeGreaterThanOrEqual(owner.settledAt);
-      expect(harness.state.abortAt).toBeGreaterThanOrEqual(Math.max(app.startedAt, operator.startedAt));
-      expect(harness.state.abortAt).toBeLessThan(Math.min(app.settledAt, operator.settledAt));
+      if (owner?.settledAt !== null && owner && app && operator && deadline &&
+        app.settledAt !== null && operator.settledAt !== null &&
+        invocation?.controllerCreatedAt !== null && invocation?.returnedAt !== null) {
+        const ownerElapsed = owner.settledAt - owner.startedAt;
+        expect.soft(ownerElapsed).toBeGreaterThanOrEqual(2_750);
+        expect.soft(ownerElapsed).toBeLessThan(4_250);
+        expect.soft(app.startedAt).toBeGreaterThanOrEqual(owner.settledAt);
+        expect.soft(operator.startedAt).toBeGreaterThanOrEqual(owner.settledAt);
+        expect.soft(deadline.at).toBeGreaterThanOrEqual(Math.max(app.startedAt, operator.startedAt));
+        expect.soft(deadline.at).toBeGreaterThanOrEqual(invocation.controllerCreatedAt + 4_500);
+        expect.soft(deadline.at).toBeLessThan(invocation.controllerCreatedAt + 6_500);
+        expect.soft(app.settledAt).toBeGreaterThanOrEqual(deadline.at);
+        expect.soft(operator.settledAt).toBeGreaterThanOrEqual(deadline.at);
+        expect.soft(app.settledAt - app.startedAt).toBeGreaterThanOrEqual(1_250);
+        expect.soft(app.settledAt - app.startedAt).toBeLessThan(2_750);
+        expect.soft(operator.settledAt - operator.startedAt).toBeGreaterThanOrEqual(1_250);
+        expect.soft(operator.settledAt - operator.startedAt).toBeLessThan(2_750);
+        expect.soft(invocation.returnedAt - invocation.controllerCreatedAt).toBeLessThan(7_500);
+      }
+      const phaseTransactions = harness.state.transactionReceipts.filter((receipt) =>
+        receipt.invocationId === invocation?.id && receipt.phase !== null,
+      );
+      for (const phase of ["owner-exclusive", "app-negative", "operator-negative"] as const) {
+        const transaction = phaseTransactions.find((receipt) => receipt.phase === phase);
+        expect.soft(transaction?.outcome, phase).toBe("rejected");
+        expect.soft(typeof transaction?.settledAt, phase).toBe("number");
+        if (transaction?.settledAt !== null && invocation?.returnedAt !== null) {
+          expect.soft(transaction.settledAt, phase).toBeLessThanOrEqual(invocation?.returnedAt ?? -1);
+        }
+      }
       expect(settlement).toEqual({
         participant_pids: 0,
         owner_pids: 1,

@@ -6,6 +6,24 @@ import {
   openDistributedExecutionDatabases,
 } from "../db/distributed-execution-databases.js";
 
+function findExportedOpenFunction(source: ts.SourceFile): ts.FunctionDeclaration | undefined {
+  const matches = source.statements.filter((statement): statement is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(statement) &&
+    statement.name?.text === "openDistributedExecutionDatabases" &&
+    statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true,
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function nearestFunction(node: ts.Node): ts.FunctionLikeDeclaration | undefined {
+  let current: ts.Node | undefined = node.parent;
+  while (current) {
+    if (ts.isFunctionLike(current)) return current;
+    current = current.parent;
+  }
+  return undefined;
+}
+
 function analyzeCsprngAdvisoryBinding(sourceText: string): {
   readonly valid: boolean;
   readonly directRandomBytesImports: number;
@@ -38,6 +56,7 @@ function analyzeCsprngAdvisoryBinding(sourceText: string): {
     };
   }
   const checker = program.getTypeChecker();
+  const openFunction = findExportedOpenFunction(source);
   const directImports = source.statements.flatMap((statement) => {
     if (!ts.isImportDeclaration(statement) ||
       !ts.isStringLiteral(statement.moduleSpecifier) ||
@@ -68,8 +87,12 @@ function analyzeCsprngAdvisoryBinding(sourceText: string): {
     ts.forEachChild(node, visitKeys);
   };
   visitKeys(source);
-  const keySymbol = keyDeclarations.length === 1 && ts.isIdentifier(keyDeclarations[0]!.name)
-    ? checker.getSymbolAtLocation(keyDeclarations[0]!.name)
+  const perOpenKeyDeclarations = keyDeclarations.filter((declaration) =>
+    nearestFunction(declaration) === openFunction,
+  );
+  const keySymbol = perOpenKeyDeclarations.length === 1 &&
+    ts.isIdentifier(perOpenKeyDeclarations[0]!.name)
+    ? checker.getSymbolAtLocation(perOpenKeyDeclarations[0]!.name)
     : undefined;
   let ownerTemplates = 0;
   let sharedTemplates = 0;
@@ -94,10 +117,11 @@ function analyzeCsprngAdvisoryBinding(sourceText: string): {
     }
     ts.forEachChild(node, visitTemplates);
   };
-  visitTemplates(source);
+  if (openFunction) visitTemplates(openFunction);
   const totalTemplates = ownerTemplates + sharedTemplates;
   return {
-    valid: directImports.length === 1 && keyDeclarations.length === 1 &&
+    valid: openFunction !== undefined && directImports.length === 1 && keyDeclarations.length === 1 &&
+      perOpenKeyDeclarations.length === 1 &&
       ownerTemplates > 0 && sharedTemplates > 0 && templatesBoundToKey === totalTemplates,
     directRandomBytesImports: directImports.length,
     csprngKeyDeclarations: keyDeclarations.length,
@@ -117,9 +141,12 @@ const STARTUP_PHASES = [
 
 function analyzeSharedStartupBudget(sourceText: string): {
   readonly valid: boolean;
+  readonly openFunctions: number;
   readonly controllers: number;
   readonly deadlines: number;
+  readonly budgetMs: number | null;
   readonly budgetedPhases: readonly string[];
+  readonly causallyBoundPhases: readonly string[];
   readonly negativeConcurrent: boolean;
   readonly positiveConcurrent: boolean;
   readonly budgetedBarrierPhases: readonly string[];
@@ -143,26 +170,62 @@ function analyzeSharedStartupBudget(sourceText: string): {
   const source = program.getSourceFile(fileName);
   if (!source) {
     return {
-      valid: false, controllers: 0, deadlines: 0, budgetedPhases: [],
+      valid: false, openFunctions: 0, controllers: 0, deadlines: 0, budgetMs: null,
+      budgetedPhases: [], causallyBoundPhases: [],
       negativeConcurrent: false, positiveConcurrent: false, budgetedBarrierPhases: [],
     };
   }
   const checker = program.getTypeChecker();
+  const openFunctions = source.statements.filter((statement): statement is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(statement) &&
+    statement.name?.text === "openDistributedExecutionDatabases" &&
+    statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true,
+  );
+  const openFunction = openFunctions.length === 1 ? openFunctions[0] : undefined;
   const controllerDeclarations: ts.VariableDeclaration[] = [];
   const deadlineDeclarations: ts.VariableDeclaration[] = [];
+  const deadlineBudgets = new Map<ts.VariableDeclaration, number | null>();
   const deadlineWrites: ts.BinaryExpression[] = [];
   let independentSignalTimeouts = 0;
-  const containsMonotonicClock = (node: ts.Node): boolean => {
-    let found = false;
-    const visit = (candidate: ts.Node) => {
-      if (ts.isCallExpression(candidate) &&
-        candidate.expression.getText(source) === "performance.now") found = true;
-      ts.forEachChild(candidate, visit);
-    };
-    visit(node);
-    return found;
+  const unwrap = (node: ts.Expression): ts.Expression => {
+    let current = node;
+    while (ts.isParenthesizedExpression(current) || ts.isAsExpression(current) ||
+      ts.isTypeAssertionExpression(current)) current = current.expression;
+    return current;
   };
-  const collectOuterBindings = (node: ts.Node) => {
+  const isPerformanceNow = (node: ts.Node): boolean => {
+    const expression = ts.isExpression(node) ? unwrap(node) : node;
+    return ts.isCallExpression(expression) && expression.arguments.length === 0 &&
+      expression.expression.getText(source) === "performance.now";
+  };
+  const numericConstValue = (node: ts.Expression): number | null => {
+    const expression = unwrap(node);
+    if (ts.isNumericLiteral(expression)) return Number(expression.text.replaceAll("_", ""));
+    if (!ts.isIdentifier(expression)) return null;
+    const declaration = checker.getSymbolAtLocation(expression)?.valueDeclaration;
+    if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer ||
+      !ts.isVariableDeclarationList(declaration.parent) ||
+      (declaration.parent.flags & ts.NodeFlags.Const) === 0) return null;
+    const initializer = unwrap(declaration.initializer);
+    return ts.isNumericLiteral(initializer)
+      ? Number(initializer.text.replaceAll("_", ""))
+      : null;
+  };
+  const deadlineBudget = (node: ts.Expression): number | null => {
+    const expression = unwrap(node);
+    if (!ts.isBinaryExpression(expression) ||
+      expression.operatorToken.kind !== ts.SyntaxKind.PlusToken) return null;
+    if (isPerformanceNow(expression.left)) return numericConstValue(expression.right);
+    if (isPerformanceNow(expression.right)) return numericConstValue(expression.left);
+    return null;
+  };
+  const isDeadlineShape = (node: ts.Expression): boolean => {
+    const expression = unwrap(node);
+    return ts.isBinaryExpression(expression) &&
+      expression.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+      (isPerformanceNow(expression.left) || isPerformanceNow(expression.right));
+  };
+  const collectBindings = (node: ts.Node) => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
       if (node.initializer && ts.isNewExpression(node.initializer) &&
         node.initializer.expression.getText(source) === "AbortController" &&
@@ -170,44 +233,41 @@ function analyzeSharedStartupBudget(sourceText: string): {
         (node.parent.flags & ts.NodeFlags.Const) !== 0) {
         controllerDeclarations.push(node);
       }
-      if (node.initializer && ts.isBinaryExpression(node.initializer) &&
-        node.initializer.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-        containsMonotonicClock(node.initializer) && ts.isVariableDeclarationList(node.parent) &&
+      if (node.initializer && isDeadlineShape(node.initializer) &&
+        ts.isVariableDeclarationList(node.parent) &&
         (node.parent.flags & ts.NodeFlags.Const) !== 0) {
         deadlineDeclarations.push(node);
+        deadlineBudgets.set(node, deadlineBudget(node.initializer));
       }
     }
     if (ts.isCallExpression(node) && node.expression.getText(source) === "AbortSignal.timeout") {
       independentSignalTimeouts += 1;
     }
-    ts.forEachChild(node, collectOuterBindings);
+    ts.forEachChild(node, collectBindings);
   };
-  collectOuterBindings(source);
-  const controllerSymbol = controllerDeclarations.length === 1 &&
-    ts.isIdentifier(controllerDeclarations[0]!.name)
-    ? checker.getSymbolAtLocation(controllerDeclarations[0]!.name)
+  collectBindings(source);
+  const perOpenControllers = controllerDeclarations.filter((declaration) =>
+    nearestFunction(declaration) === openFunction,
+  );
+  const perOpenDeadlines = deadlineDeclarations.filter((declaration) =>
+    nearestFunction(declaration) === openFunction,
+  );
+  const controllerSymbol = perOpenControllers.length === 1 &&
+    ts.isIdentifier(perOpenControllers[0]!.name)
+    ? checker.getSymbolAtLocation(perOpenControllers[0]!.name)
     : undefined;
-  const deadlineSymbol = deadlineDeclarations.length === 1 &&
-    ts.isIdentifier(deadlineDeclarations[0]!.name)
-    ? checker.getSymbolAtLocation(deadlineDeclarations[0]!.name)
+  const deadlineSymbol = perOpenDeadlines.length === 1 &&
+    ts.isIdentifier(perOpenDeadlines[0]!.name)
+    ? checker.getSymbolAtLocation(perOpenDeadlines[0]!.name)
     : undefined;
+  const budgetMs = perOpenDeadlines.length === 1
+    ? deadlineBudgets.get(perOpenDeadlines[0]!) ?? null
+    : null;
   const isExactSignal = (node: ts.Node) => ts.isPropertyAccessExpression(node) &&
     node.name.text === "signal" && ts.isIdentifier(node.expression) &&
     checker.getSymbolAtLocation(node.expression) === controllerSymbol;
   const isExactDeadline = (node: ts.Node) => ts.isIdentifier(node) &&
     checker.getSymbolAtLocation(node) === deadlineSymbol;
-  const subtreeBudgetBindings = (node: ts.Node) => {
-    let signal = false;
-    let deadline = false;
-    const visit = (candidate: ts.Node) => {
-      if (ts.isFunctionLike(candidate)) return;
-      if (isExactSignal(candidate)) signal = true;
-      if (isExactDeadline(candidate)) deadline = true;
-      ts.forEachChild(candidate, visit);
-    };
-    visit(node);
-    return { signal, deadline };
-  };
   const functionSymbol = (node: ts.FunctionLikeDeclaration): ts.Symbol | undefined => {
     if (node.name && ts.isIdentifier(node.name)) return checker.getSymbolAtLocation(node.name);
     if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
@@ -216,61 +276,145 @@ function analyzeSharedStartupBudget(sourceText: string): {
     }
     return undefined;
   };
-  const budgetCarrierParameters = new Map<ts.Symbol, ReadonlySet<number>>();
-  const collectBudgetCarriers = (node: ts.Node) => {
-    if (ts.isFunctionLike(node) && node.body) {
+  const containsControllerAbort = (node: ts.Node): boolean => {
+    let found = false;
+    const visit = (candidate: ts.Node) => {
+      if (ts.isCallExpression(candidate) &&
+        ts.isPropertyAccessExpression(candidate.expression) &&
+        candidate.expression.name.text === "abort" &&
+        ts.isIdentifier(candidate.expression.expression) &&
+        checker.getSymbolAtLocation(candidate.expression.expression) === controllerSymbol) {
+        found = true;
+      }
+      ts.forEachChild(candidate, visit);
+    };
+    visit(node);
+    return found;
+  };
+  const listenerInvokesReject = (node: ts.Node, rejectSymbol: ts.Symbol): boolean => {
+    const expression = ts.isExpression(node) ? unwrap(node) : undefined;
+    if (expression && ts.isIdentifier(expression) &&
+      checker.getSymbolAtLocation(expression) === rejectSymbol) return true;
+    let body: ts.Node = node;
+    if (expression && ts.isIdentifier(expression)) {
+      const declaration = checker.getSymbolAtLocation(expression)?.valueDeclaration;
+      if (declaration && ts.isFunctionDeclaration(declaration) && declaration.body) body = declaration.body;
+      if (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer &&
+        (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))) {
+        body = declaration.initializer.body;
+      }
+    }
+    let found = false;
+    const visit = (candidate: ts.Node) => {
+      if (ts.isCallExpression(candidate) && ts.isIdentifier(candidate.expression) &&
+        checker.getSymbolAtLocation(candidate.expression) === rejectSymbol) found = true;
+      ts.forEachChild(candidate, visit);
+    };
+    visit(body);
+    return found;
+  };
+  const containsRejectingAbortListener = (node: ts.Node, rejectSymbol: ts.Symbol): boolean => {
+    let found = false;
+    const visit = (candidate: ts.Node) => {
+      if (ts.isCallExpression(candidate) &&
+        ts.isPropertyAccessExpression(candidate.expression) &&
+        candidate.expression.name.text === "addEventListener" &&
+        isExactSignal(candidate.expression.expression) &&
+        ts.isStringLiteral(candidate.arguments[0]) && candidate.arguments[0].text === "abort" &&
+        candidate.arguments[1] !== undefined &&
+        listenerInvokesReject(candidate.arguments[1], rejectSymbol)) {
+        found = true;
+      }
+      ts.forEachChild(candidate, visit);
+    };
+    visit(node);
+    return found;
+  };
+  const containsDeadlineSubtraction = (node: ts.Node): boolean => {
+    let found = false;
+    const visit = (candidate: ts.Node) => {
+      if (ts.isBinaryExpression(candidate) &&
+        candidate.operatorToken.kind === ts.SyntaxKind.MinusToken &&
+        isExactDeadline(unwrap(candidate.left)) && isPerformanceNow(candidate.right)) {
+        found = true;
+      }
+      ts.forEachChild(candidate, visit);
+    };
+    visit(node);
+    return found;
+  };
+  const containsDeadlineAbortTimer = (node: ts.Node): boolean => {
+    let found = false;
+    const visit = (candidate: ts.Node) => {
+      if (ts.isCallExpression(candidate) && candidate.expression.getText(source) === "setTimeout" &&
+        candidate.arguments.length >= 2 && containsControllerAbort(candidate.arguments[0]!) &&
+        containsDeadlineSubtraction(candidate.arguments[1]!)) {
+        found = true;
+      }
+      ts.forEachChild(candidate, visit);
+    };
+    visit(node);
+    return found;
+  };
+  const isCausalCancellationPromise = (node: ts.Expression): boolean => {
+    const initializer = unwrap(node);
+    if (!ts.isNewExpression(initializer) || initializer.expression.getText(source) !== "Promise") {
+      return false;
+    }
+    const executor = initializer.arguments?.[0];
+    if (!executor || (!ts.isArrowFunction(executor) && !ts.isFunctionExpression(executor))) {
+      return false;
+    }
+    const rejectParameter = executor.parameters[1];
+    if (!rejectParameter || !ts.isIdentifier(rejectParameter.name)) return false;
+    const rejectSymbol = checker.getSymbolAtLocation(rejectParameter.name);
+    return rejectSymbol !== undefined && containsRejectingAbortListener(initializer, rejectSymbol) &&
+      containsDeadlineAbortTimer(initializer);
+  };
+  const causalCarrierParameters = new Map<ts.Symbol, ReadonlySet<number>>();
+  const collectCausalCarriers = (node: ts.Node) => {
+    if (ts.isFunctionLike(node) && node.body && openFunction &&
+      (node === openFunction || (() => {
+        let parent: ts.Node | undefined = node.parent;
+        while (parent && parent !== openFunction) parent = parent.parent;
+        return parent === openFunction;
+      })())) {
       const symbol = functionSymbol(node);
       const parameterIndexes = new Map<ts.Symbol, number>();
       node.parameters.forEach((parameter, index) => {
         if (!ts.isIdentifier(parameter.name)) return;
         const parameterSymbol = checker.getSymbolAtLocation(parameter.name);
-        if (parameterSymbol !== undefined) parameterIndexes.set(parameterSymbol, index);
+        if (parameterSymbol) parameterIndexes.set(parameterSymbol, index);
       });
+      const cancellationSymbols = new Set<ts.Symbol>();
+      const findCancellationPromises = (candidate: ts.Node) => {
+        if (ts.isVariableDeclaration(candidate) && nearestFunction(candidate) === node &&
+          ts.isIdentifier(candidate.name) && candidate.initializer &&
+          isCausalCancellationPromise(candidate.initializer)) {
+          const cancellationSymbol = checker.getSymbolAtLocation(candidate.name);
+          if (cancellationSymbol) cancellationSymbols.add(cancellationSymbol);
+        }
+        ts.forEachChild(candidate, findCancellationPromises);
+      };
+      findCancellationPromises(node.body);
+
       const allInvocations = new Map<number, Set<ts.CallExpression>>();
-      const boundedInvocations = new Map<number, Set<ts.CallExpression>>();
-      const visit = (candidate: ts.Node) => {
-        if (ts.isFunctionLike(candidate)) return;
-        if (ts.isCallExpression(candidate)) {
-          if (ts.isIdentifier(candidate.expression)) {
-            const invokedSymbol = checker.getSymbolAtLocation(candidate.expression);
-            const parameterIndex = invokedSymbol === undefined
-              ? undefined
-              : parameterIndexes.get(invokedSymbol);
-            if (parameterIndex !== undefined) {
-              const invocations = allInvocations.get(parameterIndex) ?? new Set<ts.CallExpression>();
-              invocations.add(candidate);
-              allInvocations.set(parameterIndex, invocations);
-            }
+      const causalInvocations = new Map<number, Set<ts.CallExpression>>();
+      const collectInvocationsAndRaces = (candidate: ts.Node) => {
+        if (ts.isCallExpression(candidate) && nearestFunction(candidate) === node &&
+          ts.isIdentifier(candidate.expression)) {
+          const parameterIndex = parameterIndexes.get(checker.getSymbolAtLocation(candidate.expression)!);
+          if (parameterIndex !== undefined) {
+            const calls = allInvocations.get(parameterIndex) ?? new Set<ts.CallExpression>();
+            calls.add(candidate);
+            allInvocations.set(parameterIndex, calls);
           }
-          const bindings = candidate.arguments.reduce(
-            (found, argument) => {
-              const current = subtreeBudgetBindings(argument);
-              return {
-                signal: found.signal || current.signal,
-                deadline: found.deadline || current.deadline,
-              };
-            },
-            { signal: false, deadline: false },
-          );
-          const invokedParameters = new Map<number, Set<ts.CallExpression>>();
-          for (const argument of candidate.arguments) {
-            const findWorkInvocation = (descendant: ts.Node) => {
-              if (ts.isFunctionLike(descendant)) return;
-              if (ts.isCallExpression(descendant) && ts.isIdentifier(descendant.expression)) {
-                const invoked = checker.getSymbolAtLocation(descendant.expression);
-                const parameterIndex = invoked === undefined ? undefined : parameterIndexes.get(invoked);
-                if (parameterIndex !== undefined) {
-                  const invocations = invokedParameters.get(parameterIndex) ?? new Set<ts.CallExpression>();
-                  invocations.add(descendant);
-                  invokedParameters.set(parameterIndex, invocations);
-                }
-              }
-              ts.forEachChild(descendant, findWorkInvocation);
-            };
-            findWorkInvocation(argument);
-          }
-          let parent: ts.Node | undefined = candidate.parent;
+        }
+        if (ts.isCallExpression(candidate) && nearestFunction(candidate) === node &&
+          candidate.expression.getText(source) === "Promise.race" &&
+          ts.isArrayLiteralExpression(candidate.arguments[0])) {
           let controlsSettlement = false;
+          let parent: ts.Node | undefined = candidate.parent;
           while (parent && parent !== node) {
             if (ts.isAwaitExpression(parent) || ts.isReturnStatement(parent)) {
               controlsSettlement = true;
@@ -278,31 +422,43 @@ function analyzeSharedStartupBudget(sourceText: string): {
             }
             parent = parent.parent;
           }
-          if (bindings.signal && bindings.deadline && controlsSettlement) {
-            for (const [parameterIndex, invocations] of invokedParameters) {
-              const bounded = boundedInvocations.get(parameterIndex) ?? new Set<ts.CallExpression>();
-              for (const invocation of invocations) bounded.add(invocation);
-              boundedInvocations.set(parameterIndex, bounded);
-            }
+          const raceArray = candidate.arguments[0];
+          const hasCancellation = raceArray.elements.some((element) =>
+            ts.isIdentifier(unwrap(element)) &&
+            cancellationSymbols.has(checker.getSymbolAtLocation(unwrap(element))!),
+          );
+          if (controlsSettlement && hasCancellation) {
+            const findRacedWork = (descendant: ts.Node) => {
+              if (ts.isCallExpression(descendant) && ts.isIdentifier(descendant.expression)) {
+                const parameterIndex = parameterIndexes.get(checker.getSymbolAtLocation(descendant.expression)!);
+                if (parameterIndex !== undefined) {
+                  const calls = causalInvocations.get(parameterIndex) ?? new Set<ts.CallExpression>();
+                  calls.add(descendant);
+                  causalInvocations.set(parameterIndex, calls);
+                }
+              }
+              ts.forEachChild(descendant, findRacedWork);
+            };
+            findRacedWork(raceArray);
           }
         }
-        ts.forEachChild(candidate, visit);
+        ts.forEachChild(candidate, collectInvocationsAndRaces);
       };
-      visit(node.body);
+      collectInvocationsAndRaces(node.body);
       if (symbol) {
-        const exclusivelyBounded = new Set<number>();
-        for (const [parameterIndex, bounded] of boundedInvocations) {
-          const all = allInvocations.get(parameterIndex) ?? new Set<ts.CallExpression>();
-          if (bounded.size > 0 && all.size === bounded.size && [...all].every((call) => bounded.has(call))) {
-            exclusivelyBounded.add(parameterIndex);
+        const exactWorkParameters = new Set<number>();
+        for (const [parameterIndex, calls] of allInvocations) {
+          const raced = causalInvocations.get(parameterIndex) ?? new Set<ts.CallExpression>();
+          if (calls.size > 0 && calls.size === raced.size && [...calls].every((call) => raced.has(call))) {
+            exactWorkParameters.add(parameterIndex);
           }
         }
-        if (exclusivelyBounded.size > 0) budgetCarrierParameters.set(symbol, exclusivelyBounded);
+        if (exactWorkParameters.size > 0) causalCarrierParameters.set(symbol, exactWorkParameters);
       }
     }
-    ts.forEachChild(node, collectBudgetCarriers);
+    ts.forEachChild(node, collectCausalCarriers);
   };
-  collectBudgetCarriers(source);
+  if (openFunction) collectCausalCarriers(openFunction);
   const phaseCalls = new Map<string, ts.CallExpression[]>();
   const promiseAllCalls: ts.CallExpression[] = [];
   const callPhaseLabels = (call: ts.CallExpression) => {
@@ -335,8 +491,9 @@ function analyzeSharedStartupBudget(sourceText: string): {
     }
     ts.forEachChild(node, collectPhaseCalls);
   };
-  collectPhaseCalls(source);
+  if (openFunction) collectPhaseCalls(openFunction);
   const budgetedPhases: string[] = [];
+  const causallyBoundPhases: string[] = [];
   const budgetedBarrierPhases: string[] = [];
   const budgetedCalls = new Map<string, ts.CallExpression>();
   const functionLikeArgument = (node: ts.Expression): boolean => {
@@ -367,7 +524,7 @@ function analyzeSharedStartupBudget(sourceText: string): {
       const calleeSymbol = checker.getSymbolAtLocation(budgeted.expression);
       const boundedIndexes = calleeSymbol === undefined
         ? undefined
-        : budgetCarrierParameters.get(calleeSymbol);
+        : causalCarrierParameters.get(calleeSymbol);
       if (boundedIndexes === undefined) return undefined;
       const callbackIndexes = budgeted.arguments.flatMap((argument, index) =>
         functionLikeArgument(argument) ? [index] : []);
@@ -376,6 +533,7 @@ function analyzeSharedStartupBudget(sourceText: string): {
     })();
     if (budgeted && workArgument) {
       budgetedPhases.push(phase);
+      causallyBoundPhases.push(phase);
       budgetedCalls.set(phase, budgeted);
       if (hasAwaitedBarrier(workArgument)) budgetedBarrierPhases.push(phase);
     }
@@ -387,7 +545,7 @@ function analyzeSharedStartupBudget(sourceText: string): {
         ts.isAssignmentOperator(node.operatorToken.kind)) deadlineWrites.push(node);
       ts.forEachChild(node, findWrites);
     };
-    findWrites(source);
+    if (openFunction) findWrites(openFunction);
   }
   const containsNode = (root: ts.Node, target: ts.Node): boolean => {
     if (root === target) return true;
@@ -407,13 +565,18 @@ function analyzeSharedStartupBudget(sourceText: string): {
   const positiveConcurrent = includesPair("app-positive", "operator-positive");
   const requiredBarriers = ["owner-exclusive", "app-positive", "operator-positive"];
   return {
-    valid: controllerDeclarations.length === 1 && deadlineDeclarations.length === 1 &&
+    valid: openFunctions.length === 1 && controllerDeclarations.length === 1 &&
+      perOpenControllers.length === 1 && deadlineDeclarations.length === 1 &&
+      perOpenDeadlines.length === 1 && budgetMs === 5_000 &&
       deadlineWrites.length === 0 && independentSignalTimeouts === 0 &&
       budgetedPhases.length === STARTUP_PHASES.length && negativeConcurrent && positiveConcurrent &&
       requiredBarriers.every((phase) => budgetedBarrierPhases.includes(phase)),
+    openFunctions: openFunctions.length,
     controllers: controllerDeclarations.length,
     deadlines: deadlineDeclarations.length,
+    budgetMs,
     budgetedPhases,
+    causallyBoundPhases,
     negativeConcurrent,
     positiveConcurrent,
     budgetedBarrierPhases,
@@ -473,13 +636,20 @@ describe("distributed-execution database strangler", () => {
 
   it("owns exactly one immutable deadline and one shared abort controller for the complete handshake", () => {
     const strictValidFixture = `
-      const startupAbort = new AbortController();
-      const startupDeadline = performance.now() + 5_000;
-      const settleWithBudget = async (work: Promise<unknown>, signal: AbortSignal, deadline: number) =>
-        await Promise.resolve([work, signal, deadline]);
-      const runPhase = async (_phase: string, work: () => Promise<unknown>) =>
-        await settleWithBudget(work(), startupAbort.signal, startupDeadline);
-      async function handshake() {
+      const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;
+      export async function openDistributedExecutionDatabases() {
+        const startupAbort = new AbortController();
+        const startupDeadline = performance.now() + STARTUP_HANDSHAKE_TIMEOUT_MS;
+        const runPhase = async (_phase: string, work: () => Promise<unknown>) => {
+          const cancellation = new Promise<never>((_resolve, reject) => {
+            startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            setTimeout(
+              () => startupAbort.abort(),
+              Math.max(0, startupDeadline - performance.now()),
+            );
+          });
+          return await Promise.race([work(), cancellation]);
+        };
         await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
         await Promise.all([
           runPhase("app-negative", async () => await appProbe()),
@@ -490,31 +660,32 @@ describe("distributed-execution database strangler", () => {
           runPhase("operator-positive", async () => { await operatorBarrier.wait(); }),
         ]);
       }
-      void handshake;
     `;
     expect(analyzeSharedStartupBudget(strictValidFixture)).toEqual({
       valid: true,
+      openFunctions: 1,
       controllers: 1,
       deadlines: 1,
+      budgetMs: 5_000,
       budgetedPhases: [...STARTUP_PHASES],
+      causallyBoundPhases: [...STARTUP_PHASES],
       negativeConcurrent: true,
       positiveConcurrent: true,
       budgetedBarrierPhases: ["owner-exclusive", "app-positive", "operator-positive"],
     });
 
-    const dummyOuterBudget = `
+    const moduleScopedFreshness = `
+      const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;
       const startupAbort = new AbortController();
-      const startupDeadline = performance.now() + 5_000;
-      const observeBudget = async (signal: AbortSignal, deadline: number) =>
-        await Promise.resolve([signal, deadline]);
-      const runPhase = async (_phase: string, work: () => Promise<unknown>) => {
-        await observeBudget(startupAbort.signal, startupDeadline);
-        return await Promise.race([
-          work(),
-          new Promise((resolve) => setTimeout(resolve, 5_000)),
-        ]);
-      };
-      async function handshake() {
+      const startupDeadline = performance.now() + STARTUP_HANDSHAKE_TIMEOUT_MS;
+      export async function openDistributedExecutionDatabases() {
+        const runPhase = async (_phase: string, work: () => Promise<unknown>) => {
+          const cancellation = new Promise<never>((_resolve, reject) => {
+            startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            setTimeout(() => startupAbort.abort(), startupDeadline - performance.now());
+          });
+          return await Promise.race([work(), cancellation]);
+        };
         await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
         await Promise.all([
           runPhase("app-negative", async () => await appProbe()),
@@ -525,24 +696,58 @@ describe("distributed-execution database strangler", () => {
           runPhase("operator-positive", async () => { await operatorBarrier.wait(); }),
         ]);
       }
-      void handshake;
+    `;
+    expect(analyzeSharedStartupBudget(moduleScopedFreshness).valid).toBe(false);
+
+    const eightSecondDeadline = strictValidFixture.replace(
+      "const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;",
+      "const STARTUP_HANDSHAKE_TIMEOUT_MS = 8_000;",
+    );
+    expect(analyzeSharedStartupBudget(eightSecondDeadline)).toMatchObject({
+      valid: false,
+      budgetMs: 8_000,
+    });
+
+    const dummyOuterBudget = `
+      const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;
+      export async function openDistributedExecutionDatabases() {
+        const startupAbort = new AbortController();
+        const startupDeadline = performance.now() + STARTUP_HANDSHAKE_TIMEOUT_MS;
+        const observeBudget = async () => {
+          void startupAbort.signal;
+          void startupDeadline;
+        };
+        const runPhase = async (_phase: string, work: () => Promise<unknown>) => {
+          await observeBudget();
+          const independentTimer = new Promise((resolve) => setTimeout(resolve, 5_000));
+          return await Promise.race([work(), independentTimer]);
+        };
+        await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
+        await Promise.all([
+          runPhase("app-negative", async () => await appProbe()),
+          runPhase("operator-negative", async () => await operatorProbe()),
+        ]);
+        await Promise.all([
+          runPhase("app-positive", async () => { await appBarrier.wait(); }),
+          runPhase("operator-positive", async () => { await operatorBarrier.wait(); }),
+        ]);
+      }
     `;
     expect(analyzeSharedStartupBudget(dummyOuterBudget).valid).toBe(false);
 
-    const boundedDecoyWork = `
-      const startupAbort = new AbortController();
-      const startupDeadline = performance.now() + 5_000;
-      const settleWithBudget = async (work: Promise<unknown>, signal: AbortSignal, deadline: number) =>
-        await Promise.resolve([work, signal, deadline]);
-      const runPhase = async (
-        _phase: string,
-        work: () => Promise<unknown>,
-        decoy: () => Promise<unknown> = async () => undefined,
-      ) => {
-        await settleWithBudget(decoy(), startupAbort.signal, startupDeadline);
-        return await work();
-      };
-      async function handshake() {
+    const independentCancellationTimer = `
+      const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;
+      export async function openDistributedExecutionDatabases() {
+        const startupAbort = new AbortController();
+        const startupDeadline = performance.now() + STARTUP_HANDSHAKE_TIMEOUT_MS;
+        const runPhase = async (_phase: string, work: () => Promise<unknown>) => {
+          const independentCancellation = new Promise<never>((_resolve, reject) => {
+            startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            setTimeout(() => reject(new Error("independent")), 1_000);
+            void startupDeadline;
+          });
+          return await Promise.race([work(), independentCancellation]);
+        };
         await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
         await Promise.all([
           runPhase("app-negative", async () => await appProbe()),
@@ -553,7 +758,62 @@ describe("distributed-execution database strangler", () => {
           runPhase("operator-positive", async () => { await operatorBarrier.wait(); }),
         ]);
       }
-      void handshake;
+    `;
+    expect(analyzeSharedStartupBudget(independentCancellationTimer).valid).toBe(false);
+
+    const cosmeticSignalAndDeadline = `
+      const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;
+      export async function openDistributedExecutionDatabases() {
+        const startupAbort = new AbortController();
+        const startupDeadline = performance.now() + STARTUP_HANDSHAKE_TIMEOUT_MS;
+        const runPhase = async (_phase: string, work: () => Promise<unknown>) => {
+          const cosmeticCancellation = new Promise<never>((_resolve, reject) => {
+            startupAbort.signal.addEventListener("abort", () => undefined, { once: true });
+            setTimeout(() => startupAbort.abort(), startupDeadline - performance.now());
+            setTimeout(() => reject(new Error("independent")), 8_000);
+          });
+          return await Promise.race([work(), cosmeticCancellation]);
+        };
+        await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
+        await Promise.all([
+          runPhase("app-negative", async () => await appProbe()),
+          runPhase("operator-negative", async () => await operatorProbe()),
+        ]);
+        await Promise.all([
+          runPhase("app-positive", async () => { await appBarrier.wait(); }),
+          runPhase("operator-positive", async () => { await operatorBarrier.wait(); }),
+        ]);
+      }
+    `;
+    expect(analyzeSharedStartupBudget(cosmeticSignalAndDeadline).valid).toBe(false);
+
+    const boundedDecoyWork = `
+      const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;
+      export async function openDistributedExecutionDatabases() {
+        const startupAbort = new AbortController();
+        const startupDeadline = performance.now() + STARTUP_HANDSHAKE_TIMEOUT_MS;
+        const runPhase = async (
+          _phase: string,
+          work: () => Promise<unknown>,
+          decoy: () => Promise<unknown> = async () => undefined,
+        ) => {
+          const cancellation = new Promise<never>((_resolve, reject) => {
+            startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            setTimeout(() => startupAbort.abort(), startupDeadline - performance.now());
+          });
+          await Promise.race([decoy(), cancellation]);
+          return await work();
+        };
+        await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
+        await Promise.all([
+          runPhase("app-negative", async () => await appProbe()),
+          runPhase("operator-negative", async () => await operatorProbe()),
+        ]);
+        await Promise.all([
+          runPhase("app-positive", async () => { await appBarrier.wait(); }),
+          runPhase("operator-positive", async () => { await operatorBarrier.wait(); }),
+        ]);
+      }
     `;
     expect(analyzeSharedStartupBudget(boundedDecoyWork).valid).toBe(false);
 
@@ -565,18 +825,21 @@ describe("distributed-execution database strangler", () => {
     expect(analyzeSharedStartupBudget(duplicatePhaseSite).valid).toBe(false);
 
     const independentlyResetPhaseBudget = `
-      const startupAbort = new AbortController();
-      const startupDeadline = performance.now() + 5_000;
-      const settleWithBudget = async (work: Promise<unknown>, signal: AbortSignal, deadline: number) =>
-        await Promise.resolve([work, signal, deadline]);
-      const runPhase = async (_phase: string, work: () => Promise<unknown>) => {
-        const phaseAbort = new AbortController();
-        const phaseDeadline = performance.now() + 5_000;
-        void startupAbort.signal;
-        void startupDeadline;
-        return await settleWithBudget(work(), phaseAbort.signal, phaseDeadline);
-      };
-      async function handshake() {
+      const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;
+      export async function openDistributedExecutionDatabases() {
+        const startupAbort = new AbortController();
+        const startupDeadline = performance.now() + STARTUP_HANDSHAKE_TIMEOUT_MS;
+        const runPhase = async (_phase: string, work: () => Promise<unknown>) => {
+          const phaseAbort = new AbortController();
+          const phaseDeadline = performance.now() + STARTUP_HANDSHAKE_TIMEOUT_MS;
+          const cancellation = new Promise<never>((_resolve, reject) => {
+            phaseAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            setTimeout(() => phaseAbort.abort(), phaseDeadline - performance.now());
+          });
+          void startupAbort.signal;
+          void startupDeadline;
+          return await Promise.race([work(), cancellation]);
+        };
         await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
         await Promise.all([
           runPhase("app-negative", async () => await appProbe()),
@@ -587,7 +850,6 @@ describe("distributed-execution database strangler", () => {
           runPhase("operator-positive", async () => { await operatorBarrier.wait(); }),
         ]);
       }
-      void handshake;
     `;
     expect(analyzeSharedStartupBudget(independentlyResetPhaseBudget).valid).toBe(false);
 
@@ -597,9 +859,12 @@ describe("distributed-execution database strangler", () => {
     );
     expect(analyzeSharedStartupBudget(sourceText)).toEqual({
       valid: true,
+      openFunctions: 1,
       controllers: 1,
       deadlines: 1,
+      budgetMs: 5_000,
       budgetedPhases: [...STARTUP_PHASES],
+      causallyBoundPhases: [...STARTUP_PHASES],
       negativeConcurrent: true,
       positiveConcurrent: true,
       budgetedBarrierPhases: ["owner-exclusive", "app-positive", "operator-positive"],
@@ -612,10 +877,12 @@ describe("distributed-execution database strangler", () => {
     const strictValidFixture = `
       import { randomBytes } from "node:crypto";
       import { sql } from "drizzle-orm";
-      const advisoryKey = randomBytes(8).readBigInt64BE();
-      const owner = sql\`SELECT pg_advisory_xact_lock(\${advisoryKey})\`;
-      const shared = sql\`SELECT pg_try_advisory_xact_lock_shared(\${advisoryKey})\`;
-      void owner; void shared;
+      export async function openDistributedExecutionDatabases() {
+        const advisoryKey = randomBytes(8).readBigInt64BE();
+        const owner = sql\`SELECT pg_advisory_xact_lock(\${advisoryKey})\`;
+        const shared = sql\`SELECT pg_try_advisory_xact_lock_shared(\${advisoryKey})\`;
+        return [owner, shared];
+      }
     `;
     expect(analyzeCsprngAdvisoryBinding(strictValidFixture)).toMatchObject({
       valid: true,
@@ -629,51 +896,69 @@ describe("distributed-execution database strangler", () => {
     const locallyShadowedRandomBytes = `
       import { randomBytes } from "node:crypto";
       import { sql } from "drizzle-orm";
-      function handshake() {
+      export async function openDistributedExecutionDatabases() {
         const randomBytes = (_size: number) => ({ readBigInt64BE: () => 7n });
         const advisoryKey = randomBytes(8).readBigInt64BE();
         const owner = sql\`SELECT pg_advisory_xact_lock(\${advisoryKey})\`;
         const shared = sql\`SELECT pg_try_advisory_xact_lock_shared(\${advisoryKey})\`;
         return [owner, shared];
       }
-      void handshake;
     `;
     expect(analyzeCsprngAdvisoryBinding(locallyShadowedRandomBytes).valid).toBe(false);
 
     const aliasedRandomBytes = `
       import { randomBytes as entropy } from "node:crypto";
       import { sql } from "drizzle-orm";
-      const advisoryKey = entropy(8).readBigInt64BE();
-      const owner = sql\`SELECT pg_advisory_xact_lock(\${advisoryKey})\`;
-      const shared = sql\`SELECT pg_try_advisory_xact_lock_shared(\${advisoryKey})\`;
-      void owner; void shared;
+      export async function openDistributedExecutionDatabases() {
+        const advisoryKey = entropy(8).readBigInt64BE();
+        const owner = sql\`SELECT pg_advisory_xact_lock(\${advisoryKey})\`;
+        const shared = sql\`SELECT pg_try_advisory_xact_lock_shared(\${advisoryKey})\`;
+        return [owner, shared];
+      }
     `;
     expect(analyzeCsprngAdvisoryBinding(aliasedRandomBytes).valid).toBe(false);
 
     const unusedRandomKeyWithShadowedAdvisoryKey = `
       import { randomBytes } from "node:crypto";
       import { sql } from "drizzle-orm";
-      const advisoryKey = randomBytes(8).readBigInt64BE();
-      function handshake() {
+      export async function openDistributedExecutionDatabases() {
+        const entropyKey = randomBytes(8).readBigInt64BE();
+        async function probe() {
         const advisoryKey = 42n;
         const owner = sql\`SELECT pg_advisory_xact_lock(\${advisoryKey})\`;
         const shared = sql\`SELECT pg_try_advisory_xact_lock_shared(\${advisoryKey})\`;
         return [owner, shared];
+        }
+        void entropyKey;
+        return await probe();
       }
-      void advisoryKey; void handshake;
     `;
     expect(analyzeCsprngAdvisoryBinding(unusedRandomKeyWithShadowedAdvisoryKey).valid).toBe(false);
 
     const secondKeyLaundering = `
       import { randomBytes } from "node:crypto";
       import { sql } from "drizzle-orm";
-      const advisoryKey = randomBytes(8).readBigInt64BE();
-      const queryKey = advisoryKey;
-      const owner = sql\`SELECT pg_advisory_xact_lock(\${queryKey})\`;
-      const shared = sql\`SELECT pg_try_advisory_xact_lock_shared(\${queryKey})\`;
-      void owner; void shared;
+      export async function openDistributedExecutionDatabases() {
+        const advisoryKey = randomBytes(8).readBigInt64BE();
+        const queryKey = advisoryKey;
+        const owner = sql\`SELECT pg_advisory_xact_lock(\${queryKey})\`;
+        const shared = sql\`SELECT pg_try_advisory_xact_lock_shared(\${queryKey})\`;
+        return [owner, shared];
+      }
     `;
     expect(analyzeCsprngAdvisoryBinding(secondKeyLaundering).valid).toBe(false);
+
+    const moduleScopedKey = `
+      import { randomBytes } from "node:crypto";
+      import { sql } from "drizzle-orm";
+      const advisoryKey = randomBytes(8).readBigInt64BE();
+      export async function openDistributedExecutionDatabases() {
+        const owner = sql\`SELECT pg_advisory_xact_lock(\${advisoryKey})\`;
+        const shared = sql\`SELECT pg_try_advisory_xact_lock_shared(\${advisoryKey})\`;
+        return [owner, shared];
+      }
+    `;
+    expect(analyzeCsprngAdvisoryBinding(moduleScopedKey).valid).toBe(false);
 
     const sourceText = readFileSync(
       new URL("../db/distributed-execution-databases.ts", import.meta.url),
