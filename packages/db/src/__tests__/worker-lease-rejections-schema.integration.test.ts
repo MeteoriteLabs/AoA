@@ -525,7 +525,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const sameOrganizationCrossCompany = await deniedInsert({
         companyId: companyA2,
         jobId: jobA,
-        attemptId: attemptA,
+        attemptId: attemptA2,
         workerId: workerA,
         targetId: targetA,
         authorityKey: `organization:${orgA}`,

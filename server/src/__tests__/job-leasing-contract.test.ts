@@ -3690,7 +3690,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
       : null;
     const expectedCandidateKeys = [
       "admissibleWorkloadTypes", "eligibilityVersion", "limit", "staticContextHash",
-      "targetAuthorityKey", "targetClass", "targetGeneration", "targetId", "targetOwner",
+      "placementOwner", "targetAuthorityKey", "targetClass", "targetGeneration", "targetId",
       "targetProfileHash", "targetProviderConstraintHash", "targetScope", "workerId",
     ];
     const closedCandidate = candidateInput &&
@@ -3724,9 +3724,8 @@ function leaseStaticContextPollViolations(source: string): string[] {
           `${targetName}.providerConstraintHash` ||
         pathOf(candidateInput.get("targetAuthorityKey"))?.join(".") !==
           `${guardName}.currentTarget.targetAuthorityKey` ||
+        pathOf(candidateInput.get("placementOwner"))?.join(".") !== `${targetName}.targetClass` ||
         pathOf(candidateInput.get("targetClass"))?.join(".") !== `${targetName}.targetClass` ||
-        pathOf(candidateInput.get("targetOwner"))?.join(".") !==
-          `${guardName}.currentTarget.ownerUserId` ||
         pathOf(candidateInput.get("targetScope"))?.join(".") !== `${targetName}.targetScope`) {
       violations.add("candidate:current-target-provenance");
     }
@@ -5820,7 +5819,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
                     targetClass: normalizedCurrentTarget.targetClass,
                     targetGeneration: normalizedCurrentTarget.targetGeneration,
                     targetId: normalizedCurrentTarget.targetId,
-                    targetOwner: guardedAuthority.currentTarget.ownerUserId,
+                    placementOwner: normalizedCurrentTarget.targetClass,
                     targetProfileHash: normalizedCurrentTarget.profileHash,
                     targetProviderConstraintHash: normalizedCurrentTarget.providerConstraintHash,
                     targetScope: normalizedCurrentTarget.targetScope,
@@ -6620,12 +6619,28 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
         violation: "candidate:current-target-provenance",
       },
       {
-        name: "candidate-owner-from-auth",
+        name: "candidate-placement-owner-from-target-owner-user-id",
         source: valid.replace(
-          "targetOwner: guardedAuthority.currentTarget.ownerUserId,",
-          "targetOwner: pollInput.auth.ownerUserId,",
+          "placementOwner: normalizedCurrentTarget.targetClass,",
+          "placementOwner: guardedAuthority.currentTarget.ownerUserId,",
         ),
         violation: "candidate:current-target-provenance",
+      },
+      {
+        name: "candidate-placement-owner-from-authenticated-owner-user-id",
+        source: valid.replace(
+          "placementOwner: normalizedCurrentTarget.targetClass,",
+          "placementOwner: pollInput.auth.ownerUserId,",
+        ),
+        violation: "candidate:current-target-provenance",
+      },
+      {
+        name: "candidate-ambiguous-target-owner-key",
+        source: valid.replace(
+          "placementOwner: normalizedCurrentTarget.targetClass,",
+          "targetOwner: normalizedCurrentTarget.targetClass,",
+        ),
+        violation: "candidate:closed-input-object",
       },
       {
         name: "candidate-scope-from-auth",
@@ -7015,12 +7030,12 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       "admissibleWorkloadTypes",
       "eligibilityVersion",
       "limit",
+      "placementOwner",
       "staticContextHash",
       "targetAuthorityKey",
       "targetClass",
       "targetGeneration",
       "targetId",
-      "targetOwner",
       "targetProfileHash",
       "targetProviderConstraintHash",
       "targetScope",
@@ -7053,7 +7068,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       'eq(jobAttempts.placementDisposition,"selected")',
       'eq(jobAttempts.placementLeaseEligible,true)',
       'eq(jobAttempts.placementMode,"active")',
-      'eq(jobAttempts.placementOwner,input.targetOwner)',
+      'eq(jobAttempts.placementOwner,input.placementOwner)',
       'eq(jobAttempts.placementProfileHash,input.targetProfileHash)',
       'eq(jobAttempts.placementProviderConstraintHash,input.targetProviderConstraintHash)',
       'eq(jobAttempts.placementTargetClass,input.targetClass)',

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
+import type { JobPlacementOwner } from "@armyofagents/shared";
 import { runInTenant } from "../db/tenant-context.js";
 
 export const E3_PERF_01_DATASET = Object.freeze({
@@ -68,7 +69,7 @@ type ClaimContext = {
   workerId: string;
   targetId: string;
   targetAuthorityKey: string;
-  targetOwner: string;
+  placementOwner: Exclude<JobPlacementOwner, "legacy">;
   targetClass: string;
   targetScope: string;
   targetGeneration: number;
@@ -570,7 +571,7 @@ async function callProductionClaim(input: ClaimContext): Promise<{
       workerId: input.workerId,
       targetId: input.targetId,
       targetAuthorityKey: input.targetAuthorityKey,
-      targetOwner: input.targetOwner,
+      placementOwner: input.placementOwner,
       targetClass: input.targetClass,
       targetScope: input.targetScope,
       targetGeneration: input.targetGeneration,
@@ -968,7 +969,7 @@ async function directClaimFixture(
     workerId: fixture.worker_id,
     targetId: fixture.target_id,
     targetAuthorityKey: fixture.target_authority_key,
-    targetOwner: "organization_dedicated",
+    placementOwner: "organization_dedicated",
     targetClass: "organization_dedicated",
     targetScope: "organization",
     targetGeneration: fixture.target_generation,
@@ -1318,7 +1319,7 @@ describe("E3-PERF-01 immutable load contract", () => {
       workerId: E3_PERF_01_HOT_WORKER_ID,
       targetId: E3_PERF_01_HOT_TARGET_ID,
       targetAuthorityKey: E3_PERF_01_TARGET_AUTHORITY_KEY,
-      targetOwner: "organization_dedicated",
+      placementOwner: "organization_dedicated",
       targetClass: "organization_dedicated",
       targetScope: "organization",
       targetGeneration: 1,
