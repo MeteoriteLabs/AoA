@@ -1633,8 +1633,20 @@ migration order. Missing, extra, duplicate, unmapped, or unreadable rows fail
 `distributed_execution_migration_identity`; a repaired missing journal row inserted later
 with a higher/out-of-order serial ID passes when and only when the exact hash set is restored.
 The RED matrix includes that repaired/out-of-order success case plus missing, extra, and
-duplicate-hash failures. This query is executed only through `ownerDb`; neither serving role
-is granted `USAGE` on `drizzle` or any privilege on the journal.
+duplicate-hash failures. For E3-F028, “executed only through `ownerDb`” is an owner-authority
+and transport boundary, not a requirement to queue startup work on the retained shared legacy
+pool. Each open constructs one dedicated `max=1` owner-authority participant by losslessly
+cloning the parsed postgres.js authentication and transport from `input.ownerDb`, including
+multi-host hosts and per-host ports, socket/path, database and user,
+passwordless/string/password-function forms, TLS/`ssl`, `sslnegotiation`, target-session
+attributes, and every other domain-affecting parsed option. Apart from the explicit bound and
+application-tag overrides below, the clone does not normalize, omit, or reinterpret those
+options. It installs a unique non-secret per-open `application_name` in the connection startup
+options, before any query can run, applies the fixed bounded connection options below, and
+awaits disposal. The migration-ledger query and every owner advisory phase run through this
+owner-authority participant; app and operator never do. Neither serving role is granted `USAGE`
+on `drizzle` or any privilege on the journal. This clarification changes no database privilege
+or role.
 
 The startup signature becomes:
 
@@ -1652,8 +1664,23 @@ Fixed production bounds are `pool max=4`, connect `5_000 ms`, statement `5_000 m
 transaction lock `750 ms`, idle-in-transaction `5_000 ms`, pool idle `30_000 ms`, and close
 `5_000 ms`. `packages/db/src/client.ts` maps these to postgres-js connection options; every
 startup transaction also executes transaction-local `statement_timeout`, `lock_timeout`, and
-`idle_in_transaction_session_timeout`. One `AbortController` and one immutable outer deadline
-cover the owner, app, and operator participants. Startup never returns a partly verified pool.
+`idle_in_transaction_session_timeout`. The dedicated owner participant is bounded from
+connection startup, including `5_000 ms` connect, statement, and idle-in-transaction limits, so
+its acquisition and first transaction-local timeout/identity statements do not inherit an
+unbounded ambient owner session. One `AbortController` and one immutable outer deadline cover
+the owner, app, and operator participants. Startup never returns a partly verified pool.
+
+Before the dedicated owner participant has returned its PID, abort handling may discover only
+the session carrying that unique per-open `application_name`, using a separately and losslessly
+cloned bounded owner-authority control. The control reads the session's exact PID,
+`backend_start`, authenticated role, database, and application tag and cancels only a row that
+matches that full tuple; PID-only, database-plus-PID, broad role, or historical matching is
+invalid. After registration, an identity remains in the active-cancellation set until the full
+transaction promise, including `COMMIT` or `ROLLBACK`, settles. A distinct teardown-history set
+retains identities needed for disappearance/lock proofs and is never a cancellation target.
+Every owner query still runs through Drizzle; raw postgres.js `Query.cancel()`, an internal
+Drizzle session client, private pool queues/state, or closing the retained legacy pool are not
+permitted implementation seams.
 
 After the owner ledger check and both existing role/ACL checks, startup creates a secret
 signed-bigint key with `randomBytes(8).readBigInt64BE()` and never logs or persists it. In an
@@ -1675,12 +1702,16 @@ owner's database and Decision #124 advisory domain without revealing database id
 `close(input: { timeoutSeconds: number }): Promise<void>`. Normal shutdown and startup failure
 call postgres.js `end({ timeout: 5 })` through
 `NonOwnerDbConnection.close({ timeoutSeconds: 5 })`; a naked `Promise.race` that abandons an
-unsettled `end()` is forbidden. After participant settlement and forced bounded end, the owner
-control connection polls until every recorded app/operator backend PID has disappeared from
-`pg_stat_activity`, the retained owner-pool PID is out of transaction, and `pg_locks` contains
-no advisory lock for any participant PID/key; otherwise it fails `distributed_execution_close`.
-The owner pool itself remains open for the legacy server. PID/key values are assertion-only
-and never logged.
+unsettled `end()` is forbidden. After participant settlement and forced bounded end, bounded
+owner-authority cleanup, independent of shared-owner-pool slot availability, polls until every
+recorded app/operator and per-open owner participant/control backend PID has disappeared from
+`pg_stat_activity` and `pg_locks` contains no advisory lock for any participant PID/key;
+otherwise it fails `distributed_execution_close`. The retained legacy owner pool is never
+ended or closed by this startup gate. Zero legacy owner-pool backend PIDs is valid because the
+pool is lazy; every legacy PID that does exist must be idle, out of transaction, and hold no
+advisory lock. All dedicated per-open participant and control queries, transactions, disposal
+promises, PIDs, and locks settle or disappear before the public open error or returned `close()`
+completes. PID/key values are assertion-only and never logged.
 
 All expected failures are stable, non-secret codes from this closed set:
 `distributed_execution_configuration`, `distributed_execution_migration_identity`,
@@ -1695,7 +1726,12 @@ module mock of the real max-four connection factory that occupies exactly all fo
 and then all four operator slots before the next phase, and (d) statement/lock/idle/forced-end
 deadline expiry. Every barrier peer must reject, every transaction must settle, and the owner
 PID/lock disappearance probe must pass before the stable error is observed. The normal
-same-database case and clean shutdown must also prove all probe PIDs/locks disappear.
+same-database case and clean shutdown must also prove all probe PIDs/locks disappear. Additional
+REDs reserve every slot of the literal shared legacy owner pool while the dedicated owner
+participant completes its ledger, timeout setup, identity, advisory, and cleanup duties; they
+instrument the dedicated participant/control rather than requiring a queued literal
+`input.ownerDb.transaction`. A fixture may prime a legacy idle PID as a non-vacuity control, but
+its presence or exact count is not a production postcondition.
 
 ##### 2. Exact relation, RLS, policy, and ACL certificate (E3-F029)
 

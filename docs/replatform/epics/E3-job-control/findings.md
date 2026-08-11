@@ -976,6 +976,32 @@ contention handshake proves the owner, app, and operator sessions share the same
 database/lock domain. Add a negative startup integration using two fully valid databases.
 This is Critical and keeps JOB-003 `needs_changes`.
 
+**Accepted disposition (2026-08-12):** The F028 phrase “ownerDb-only ledger” denotes owner
+authority and exact transport provenance, not literal execution on the retained shared legacy
+pool. Literal `input.ownerDb.transaction` was found unconstructible for the required startup
+bound: postgres.js can queue its `begin()` acquisition behind a saturated pool through a plain
+promise, Drizzle's async `execute()` hides the underlying query cancellation handle, and before
+the first timeout/PID statement returns production has no exact backend identity to cancel.
+Ending that client would settle the work only by violating the locked requirement that the
+legacy owner pool remain available to the server.
+
+Each open therefore uses a dedicated `max=1` owner-authority participant cloned losslessly from
+the parsed `input.ownerDb` postgres.js authentication and transport, including multi-host
+host/port pairs, socket/path, TLS/`ssl`, `sslnegotiation`, passwordless/string/password-function
+forms, and every other domain-affecting option. A unique non-secret `application_name` is set at
+connection startup; connect, statement, idle-in-transaction, and disposal are bounded and
+awaited. The migration ledger and owner advisory phases run only there. Before PID registration,
+a separately cloned bounded owner control may discover only that unique tagged session and then
+bind/cancel the exact PID + `backend_start` + role + database + application-tag tuple. Active
+identity lasts through full `COMMIT`/`ROLLBACK`; teardown history is separate. Cleanup cannot
+depend on a shared owner slot. The legacy pool is never ended; zero legacy PIDs is valid, while
+any existing legacy PID must be idle, out of transaction, and free of advisory locks. Every
+per-open dedicated participant/control PID and operation must be gone/settled before return.
+Drizzle remains mandatory: raw postgres.js `Query.cancel()`, internal Drizzle session clients,
+and private pool state are not accepted seams. This is an authority/transport clarification,
+not widened privilege: app/operator still receive no `drizzle` access, and no role, grant,
+schema, migration, or serving authority changes.
+
 ## E3-F029 - Startup exact-authority audit omits required relations and RLS posture
 
 **Date:** 2026-08-11
@@ -1096,13 +1122,16 @@ delta for E3-F028–E3-F033”
 This record plans, but does not implement or resolve, the six final-review findings:
 
 - **E3-F028:** `openDistributedExecutionDatabases` must accept the already-migrated owner
-  `Db` plus an exact checked-in migration-hash ledger. Only the owner reads
+  `Db` plus an exact checked-in migration-hash ledger. A losslessly cloned, uniquely tagged,
+  bounded per-open owner-authority participant reads
   `drizzle.__drizzle_migrations`; DB serial IDs are non-authoritative, and a one-to-one DB-hash
   set join reconstructs checked-in order before the canonical digest. Missing/extra/duplicate
   rows fail, while a correctly repaired row with a later/out-of-order ID passes. No best-effort
-  timestamp mapping or app/operator journal grant is allowed. With fixed
-  pool/connect/statement/lock/idle/close deadlines, one secret random signed-bigint probe must prove
-  owner-exclusive contention blocks app/operator shared locks while held and app/operator can
+  timestamp mapping or app/operator journal grant is allowed. The literal legacy owner pool is
+  retained, may have zero backends, and is not a startup-work or cleanup-acquisition dependency.
+  With fixed pool/connect/statement/lock/idle/close deadlines, one secret random signed-bigint
+  probe must prove owner-exclusive contention blocks app/operator shared locks while held and
+  app/operator can
   hold shared locks together after release. One common abort controller rejects every barrier;
   all participant transactions roll back/settle before postgres.js forced bounded end, after
   which recorded backend PIDs/advisory locks must disappear. Two valid databases, loss at
