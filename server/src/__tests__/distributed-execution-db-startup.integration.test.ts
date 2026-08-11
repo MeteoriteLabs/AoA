@@ -360,15 +360,29 @@ type AdvisoryPhase =
   | "app-positive"
   | "operator-positive";
 
-type StartupFailureInjection = AdvisoryPhase | "statement-timeout" | "lock-timeout" |
+const ADVISORY_PHASES: readonly AdvisoryPhase[] = [
+  "owner-exclusive",
+  "app-negative",
+  "operator-negative",
+  "app-positive",
+  "operator-positive",
+];
+
+type AdvisoryPendingInjection = `${AdvisoryPhase}-pending`;
+
+type StartupFailureInjection = AdvisoryPhase | AdvisoryPendingInjection |
+  "statement-timeout" | "lock-timeout" |
   "idle-timeout" | "forced-end" | "shared-budget" | "shared-budget-pending" |
   "migration-pending" | "app-authority-pending" | "operator-authority-pending" |
   "cleanup-pending" | "cleanup-failure-pending" | "redaction-sentinel";
 
-type PendingQueryPhase =
+type StartupPhase =
   | "migration-identity"
   | "app-authority"
   | "operator-authority"
+  | AdvisoryPhase;
+
+type PendingQueryPhase = StartupPhase
   | "cleanup";
 
 type StartupDeadlineReceipt = {
@@ -390,7 +404,7 @@ type StartupInvocationReceipt = {
 type StartupTransactionReceipt = {
   readonly invocationId: number;
   readonly role: "owner" | "aoa_app" | "aoa_operator";
-  phase: AdvisoryPhase | PendingQueryPhase | null;
+  phase: PendingQueryPhase | null;
   readonly startedAt: number;
   settledAt: number | null;
   outcome: "pending" | "fulfilled" | "rejected";
@@ -398,15 +412,17 @@ type StartupTransactionReceipt = {
 
 async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
   const dialect = new PgDialect();
+  const pendingAdvisoryPhase = ADVISORY_PHASES.find((phase) => inject === `${phase}-pending`) ?? null;
   const token = `job003_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const state = {
     phases: [] as AdvisoryPhase[],
     factoryOptions: [] as Array<{ role: "aoa_app" | "aoa_operator"; options: unknown }>,
     slotIds: { aoa_app: new Set<number>(), aoa_operator: new Set<number>() },
     closes: [] as Array<{ role: "aoa_app" | "aoa_operator"; input: unknown }>,
+    closeAttempts: [] as Array<{ role: "aoa_app" | "aoa_operator"; at: number }>,
     closeSettled: [] as Array<{ role: "aoa_app" | "aoa_operator"; at: number }>,
     logs: [] as unknown[][],
-    positiveWaiters: new Map<"aoa_app" | "aoa_operator", () => void>(),
+    positiveWaiters: new Map<"aoa_app" | "aoa_operator", Array<() => void>>(),
     positiveBarrierReached: false,
     injectionTriggered: false,
     clients: [] as Sql[],
@@ -422,6 +438,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     openInvocations: [] as StartupInvocationReceipt[],
     activeInvocation: null as StartupInvocationReceipt | null,
     transactionReceipts: [] as StartupTransactionReceipt[],
+    sharedProbeOrdinals: new Map<string, number>(),
     budgetWindows: [] as Array<{
       invocationId: number;
       phase: AdvisoryPhase;
@@ -456,6 +473,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       signal: AbortSignal | null;
       abortObservedAt: number | null;
       startedAt: number;
+      sleepIssuedAt: number | null;
       settledAt: number | null;
     }>,
   };
@@ -554,24 +572,30 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
   };
   const waitForPositivePeer = async (role: "aoa_app" | "aoa_operator") => {
     const peer = role === "aoa_app" ? "aoa_operator" : "aoa_app";
-    const existing = state.positiveWaiters.get(peer);
+    const peerWaiters = state.positiveWaiters.get(peer);
+    const existing = peerWaiters?.shift();
     if (existing) {
       state.positiveBarrierReached = true;
-      state.positiveWaiters.delete(peer);
+      if (peerWaiters?.length === 0) state.positiveWaiters.delete(peer);
       existing();
       return;
     }
     await new Promise<void>((resolve, reject) => {
-      state.positiveWaiters.set(role, resolve);
-      const timer = setTimeout(() => {
-        state.positiveWaiters.delete(role);
-        reject(new Error(`positive advisory barrier stranded for ${role}`));
-      }, 2_000);
+      const waiters = state.positiveWaiters.get(role) ?? [];
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const wrapped = () => {
-        clearTimeout(timer);
+        if (timer !== undefined) clearTimeout(timer);
         resolve();
       };
-      state.positiveWaiters.set(role, wrapped);
+      waiters.push(wrapped);
+      state.positiveWaiters.set(role, waiters);
+      if (pendingAdvisoryPhase !== null) return;
+      timer = setTimeout(() => {
+        const remaining = state.positiveWaiters.get(role)?.filter((waiter) => waiter !== wrapped) ?? [];
+        if (remaining.length === 0) state.positiveWaiters.delete(role);
+        else state.positiveWaiters.set(role, remaining);
+        reject(new Error(`positive advisory barrier stranded for ${role}`));
+      }, 2_000);
     });
   };
 
@@ -588,6 +612,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       signal: state.activeInvocation?.controllers.at(-1)?.signal ?? null,
       abortObservedAt: null as number | null,
       startedAt: performance.now(),
+      sleepIssuedAt: null as number | null,
       settledAt: null as number | null,
     };
     state.pendingQueries.push(receipt);
@@ -599,7 +624,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
 
   const recordTransaction = async <T>(
     role: "owner" | "aoa_app" | "aoa_operator",
-    phase: AdvisoryPhase | PendingQueryPhase | null,
+    phase: PendingQueryPhase | null,
     work: (receipt: StartupTransactionReceipt) => Promise<T>,
   ): Promise<T> => {
     const receipt: StartupTransactionReceipt = {
@@ -642,6 +667,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
         .flatMap((row) => Object.values((row ?? {}) as Record<string, unknown>))
         .find((value): value is number => Number.isSafeInteger(value)) ?? null;
       try {
+        receipt.sleepIssuedAt = performance.now();
         await transaction.execute(sql`SELECT pg_sleep(60)`);
         return await transaction.execute(statement);
       } finally {
@@ -768,6 +794,21 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               }
               if (transactionReceipt) transactionReceipt.phase = "owner-exclusive";
               state.phases.push("owner-exclusive");
+              if (pendingAdvisoryPhase === "owner-exclusive") {
+                if (!transactionReceipt) {
+                  throw new Error("pending owner advisory query must run inside its startup transaction");
+                }
+                state.injectionTriggered = true;
+                await (target as T & { execute(s: unknown): Promise<unknown> })
+                  .execute(sql`SET LOCAL statement_timeout = 0`);
+                return runPendingQuery(
+                  target,
+                  role,
+                  "owner-exclusive",
+                  statement,
+                  transactionReceipt,
+                );
+              }
               if (inject === "shared-budget" || inject === "shared-budget-pending") {
                 await consumeBudget("owner-exclusive");
               }
@@ -788,6 +829,25 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
                 await (target as T & { execute(s: unknown): Promise<unknown> }).execute(sql`SELECT 1`);
                 await new Promise((resolve) => setTimeout(resolve, 5_500));
                 return (target as T & { execute(s: unknown): Promise<unknown> }).execute(sql`SELECT 1`);
+              }
+            }
+            if (pendingAdvisoryPhase !== null && role !== "owner" &&
+              /pg_try_advisory_xact_lock_shared/u.test(queryText)) {
+              const rolePrefix = role === "aoa_app" ? "app" : "operator";
+              const ordinalKey = `${state.activeInvocation?.id ?? -1}:${role}`;
+              const ordinal = state.sharedProbeOrdinals.get(ordinalKey) ?? 0;
+              state.sharedProbeOrdinals.set(ordinalKey, ordinal + 1);
+              const phase = `${rolePrefix}-${ordinal < 4 ? "negative" : "positive"}` as AdvisoryPhase;
+              if (phase === pendingAdvisoryPhase && !state.injectionTriggered) {
+                if (!transactionReceipt) {
+                  throw new Error("pending peer advisory query must run inside its startup transaction");
+                }
+                transactionReceipt.phase = phase;
+                state.phases.push(phase);
+                state.injectionTriggered = true;
+                await (target as T & { execute(s: unknown): Promise<unknown> })
+                  .execute(sql`SET LOCAL statement_timeout = 0`);
+                return runPendingQuery(target, role, phase, statement, transactionReceipt);
               }
             }
             if ((inject === "shared-budget" || inject === "shared-budget-pending") && role !== "owner" &&
@@ -845,7 +905,12 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
                 state.injectionTriggered = true;
                 throw Object.assign(new Error(`${inject} injected`), { code: `INJECT_${inject}` });
               }
-              if (success) await waitForPositivePeer(role);
+              const hasProductionOwnedPositiveCancellation =
+                pendingAdvisoryPhase === "app-positive" ||
+                pendingAdvisoryPhase === "operator-positive";
+              if (success && !hasProductionOwnedPositiveCancellation) {
+                await waitForPositivePeer(role);
+              }
             }
             return result;
           };
@@ -891,6 +956,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       db,
       async close(input: { timeoutSeconds: number }) {
         state.closes.push({ role, input });
+        state.closeAttempts.push({ role, at: performance.now() });
         const seconds = Number(input.timeoutSeconds);
         const sleeping = inject === "forced-end" && state.injectionTriggered
           ? client`SELECT pg_sleep(60)`.catch(() => {})
@@ -944,7 +1010,9 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
   const cleanup = async () => {
     for (const pending of state.pendingBudgetWork) pending.release();
     await Promise.allSettled(state.pendingBudgetWork.map((pending) => pending.drained));
-    for (const resolve of state.positiveWaiters.values()) resolve();
+    for (const waiters of state.positiveWaiters.values()) {
+      for (const resolve of waiters) resolve();
+    }
     state.positiveWaiters.clear();
     if (state.blocker) {
       await state.blocker`SELECT pg_advisory_unlock(903003)`.catch(() => {});
@@ -1106,6 +1174,8 @@ function statementTimeoutMs(value: string | null): number | null {
   const amount = Number(match[1]);
   return match[2] === "ms" ? amount : match[2] === "s" ? amount * 1_000 : amount * 60_000;
 }
+
+const EARLY_ABORT_SETTLEMENT_WATCHDOG_MS = 2_000;
 
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
   "distributed-execution non-owner startup gate",
@@ -1954,6 +2024,11 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       ["migration-pending", "migration-identity", "owner", []],
       ["app-authority-pending", "app-authority", "aoa_app", ["aoa_app"]],
       ["operator-authority-pending", "operator-authority", "aoa_operator", ["aoa_app", "aoa_operator"]],
+      ["owner-exclusive-pending", "owner-exclusive", "owner", ["aoa_app", "aoa_operator"]],
+      ["app-negative-pending", "app-negative", "aoa_app", ["aoa_app", "aoa_operator"]],
+      ["operator-negative-pending", "operator-negative", "aoa_operator", ["aoa_app", "aoa_operator"]],
+      ["app-positive-pending", "app-positive", "aoa_app", ["aoa_app", "aoa_operator"]],
+      ["operator-positive-pending", "operator-positive", "aoa_operator", ["aoa_app", "aoa_operator"]],
     ] as const)("promptly settles %s after the exact startup controller is externally aborted", async (
       injection,
       phase,
@@ -1968,17 +2043,67 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       try {
         const pending = await harness.waitForActivePendingQuery(phase, 3_000);
         const [invocation] = harness.state.openInvocations;
+        const matchingPendingQueries = harness.state.pendingQueries.filter((receipt) =>
+          receipt.invocationId === invocation?.id && receipt.phase === phase,
+        );
+        expect(matchingPendingQueries).toHaveLength(1);
+        expect(matchingPendingQueries[0]).toBe(pending);
         expect(invocation?.controllers).toHaveLength(1);
         const controller = invocation!.controllers[0]!;
         expect(harness.state.abortControllers).toEqual([controller]);
         expect(pending.signal).toBe(controller.signal);
         expect(controller.signal.aborted).toBe(false);
+        expect(invocation?.deadlineReceipt).toBeNull();
+        expect(invocation?.returnedAt).toBeNull();
+        expect(pending).toMatchObject({
+          phase,
+          role,
+          backendPid: expect.any(Number),
+          effectiveStatementTimeout: expect.any(String),
+          sleepIssuedAt: expect.any(Number),
+          abortObservedAt: null,
+          settledAt: null,
+        });
+        const targetTransactions = harness.state.transactionReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id && receipt.phase === phase);
+        expect(targetTransactions).toHaveLength(1);
+        expect(targetTransactions[0]).toMatchObject({
+          role,
+          phase,
+          outcome: "pending",
+          settledAt: null,
+        });
+        expect(harness.state.closeAttempts).toEqual([]);
+        expect(harness.state.closeSettled).toEqual([]);
+
+        const effectiveTimeoutMs = statementTimeoutMs(pending.effectiveStatementTimeout);
+        expect(effectiveTimeoutMs).not.toBeNull();
+        const transactionsPendingAtAbort = harness.state.transactionReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id &&
+          receipt.outcome === "pending" && receipt.settledAt === null,
+        );
+        expect(transactionsPendingAtAbort.length).toBeGreaterThan(0);
+        expect(transactionsPendingAtAbort).toContain(targetTransactions[0]);
         const externallyAbortedAt = performance.now();
         expect(externallyAbortedAt - (invocation?.controllerCreatedAt ?? Number.NEGATIVE_INFINITY))
           .toBeLessThan(3_500);
         controller.abort();
+        const exactAbortAt = invocation?.deadlineReceipt?.at;
+        expect(typeof exactAbortAt).toBe("number");
+        expect(pending.sleepIssuedAt ?? Number.POSITIVE_INFINITY)
+          .toBeLessThanOrEqual(exactAbortAt ?? Number.NEGATIVE_INFINITY);
+        const timeoutRemainingAtAbort = effectiveTimeoutMs === 0
+          ? 0
+          : (effectiveTimeoutMs ?? Number.NEGATIVE_INFINITY) -
+            ((exactAbortAt ?? Number.POSITIVE_INFINITY) -
+              (pending.sleepIssuedAt ?? Number.NEGATIVE_INFINITY));
+        expect(
+          timeoutRemainingAtAbort === 0 ||
+          timeoutRemainingAtAbort > EARLY_ABORT_SETTLEMENT_WATCHDOG_MS,
+          `SQL timeout remaining at abort (${timeoutRemainingAtAbort}ms) must not settle the short watchdog lane`,
+        ).toBe(true);
 
-        const outcome = await withOuterWatchdog(operation, 3_000);
+        const outcome = await withOuterWatchdog(operation, EARLY_ABORT_SETTLEMENT_WATCHDOG_MS);
         const publicReturnedAt = invocation?.returnedAt;
         const settlement = await observeAdvisoryStartupSettlement(harness.token);
         expect.soft(outcome).toMatchObject({
@@ -1989,10 +2114,19 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           },
         });
         expect.soft(typeof publicReturnedAt).toBe("number");
+        expect.soft(publicReturnedAt ?? Number.NEGATIVE_INFINITY)
+          .toBeGreaterThanOrEqual(externallyAbortedAt);
         expect.soft((publicReturnedAt ?? Number.POSITIVE_INFINITY) - externallyAbortedAt)
-          .toBeLessThan(3_000);
+          .toBeLessThan(EARLY_ABORT_SETTLEMENT_WATCHDOG_MS);
         expect.soft(harness.state.abortCalls).toBe(1);
         expect.soft(harness.state.abortAt ?? Number.NEGATIVE_INFINITY)
+          .toBeGreaterThanOrEqual(externallyAbortedAt);
+        expect.soft(invocation?.deadlineReceipt).toMatchObject({
+          invocationId: invocation?.id,
+          signal: controller.signal,
+          at: expect.any(Number),
+        });
+        expect.soft(invocation?.deadlineReceipt?.at ?? Number.NEGATIVE_INFINITY)
           .toBeGreaterThanOrEqual(externallyAbortedAt);
         expect.soft(pending).toMatchObject({
           phase,
@@ -2004,22 +2138,32 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         });
         expect.soft(pending.abortObservedAt ?? Number.NEGATIVE_INFINITY)
           .toBeGreaterThanOrEqual(externallyAbortedAt);
+        expect.soft(pending.abortObservedAt ?? Number.NEGATIVE_INFINITY)
+          .toBeGreaterThanOrEqual(invocation?.deadlineReceipt?.at ?? Number.POSITIVE_INFINITY);
         expect.soft(pending.abortObservedAt ?? Number.POSITIVE_INFINITY)
           .toBeLessThanOrEqual(publicReturnedAt ?? -1);
+        expect.soft(pending.settledAt ?? Number.NEGATIVE_INFINITY)
+          .toBeGreaterThanOrEqual(pending.abortObservedAt ?? Number.POSITIVE_INFINITY);
         expect.soft(pending.settledAt ?? Number.POSITIVE_INFINITY)
           .toBeLessThanOrEqual(publicReturnedAt ?? -1);
 
-        const targetTransactions = harness.state.transactionReceipts.filter((receipt) =>
-          receipt.invocationId === invocation?.id && receipt.phase === phase);
-        expect.soft(targetTransactions).toHaveLength(1);
         expect.soft(targetTransactions[0]).toMatchObject({
           role,
           phase,
           outcome: "rejected",
           settledAt: expect.any(Number),
         });
+        expect.soft(targetTransactions[0]?.settledAt ?? Number.NEGATIVE_INFINITY)
+          .toBeGreaterThanOrEqual(pending.abortObservedAt ?? Number.POSITIVE_INFINITY);
         expect.soft(targetTransactions[0]?.settledAt ?? Number.POSITIVE_INFINITY)
           .toBeLessThanOrEqual(publicReturnedAt ?? -1);
+        for (const transaction of transactionsPendingAtAbort) {
+          expect.soft(transaction.outcome, `${transaction.role}:${transaction.phase}`).not.toBe("pending");
+          expect.soft(transaction.settledAt ?? Number.NEGATIVE_INFINITY)
+            .toBeGreaterThanOrEqual(pending.abortObservedAt ?? Number.POSITIVE_INFINITY);
+          expect.soft(transaction.settledAt ?? Number.POSITIVE_INFINITY)
+            .toBeLessThanOrEqual(publicReturnedAt ?? -1);
+        }
 
         const expectedRoles = [...expectedAllocatedRoles].sort();
         expect.soft(harness.state.factoryOptions.map(({ role: allocatedRole }) => allocatedRole).sort())
@@ -2028,10 +2172,17 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           .toEqual(expectedRoles);
         expect.soft(harness.state.closes.map(({ input }) => input))
           .toEqual(expectedRoles.map(() => ({ timeoutSeconds: 5 })));
+        expect.soft(harness.state.closeAttempts.map(({ role: closedRole }) => closedRole).sort())
+          .toEqual(expectedRoles);
         expect.soft(harness.state.closeSettled.map(({ role: closedRole }) => closedRole).sort())
           .toEqual(expectedRoles);
-        for (const close of harness.state.closeSettled) {
-          expect.soft(close.at).toBeLessThanOrEqual(publicReturnedAt ?? -1);
+        for (const attempt of harness.state.closeAttempts) {
+          expect.soft(attempt.at).toBeGreaterThanOrEqual(pending.abortObservedAt ?? Number.POSITIVE_INFINITY);
+          expect.soft(attempt.at).toBeLessThanOrEqual(publicReturnedAt ?? -1);
+          const settled = harness.state.closeSettled.find(({ role: settledRole }) =>
+            settledRole === attempt.role);
+          expect.soft(settled?.at ?? Number.NEGATIVE_INFINITY).toBeGreaterThanOrEqual(attempt.at);
+          expect.soft(settled?.at ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(publicReturnedAt ?? -1);
         }
         expect.soft(settlement).toEqual({
           participant_pids: 0,

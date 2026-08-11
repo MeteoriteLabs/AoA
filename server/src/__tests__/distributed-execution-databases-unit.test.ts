@@ -186,6 +186,7 @@ function analyzeSharedStartupBudget(sourceText: string): {
   );
   const openFunction = openFunctions.length === 1 ? openFunctions[0] : undefined;
   const controllerDeclarations: ts.VariableDeclaration[] = [];
+  const controllerConstructions: ts.NewExpression[] = [];
   const deadlineDeclarations: ts.VariableDeclaration[] = [];
   const deadlineBudgets = new Map<ts.VariableDeclaration, number | null>();
   const deadlineWrites: ts.BinaryExpression[] = [];
@@ -196,6 +197,53 @@ function analyzeSharedStartupBudget(sourceText: string): {
     while (ts.isParenthesizedExpression(current) || ts.isAsExpression(current) ||
       ts.isTypeAssertionExpression(current)) current = current.expression;
     return current;
+  };
+  const resolvesGlobalMember = (
+    node: ts.Expression,
+    member: "AbortController" | "setTimeout",
+    remainingAliasHops = 1,
+  ): boolean => {
+    const expression = unwrap(node);
+    if (ts.isPropertyAccessExpression(expression)) {
+      const receiver = unwrap(expression.expression);
+      return expression.name.text === member && ts.isIdentifier(receiver) &&
+        receiver.text === "globalThis" &&
+        checker.getSymbolAtLocation(receiver)?.valueDeclaration === undefined;
+    }
+    if (!ts.isIdentifier(expression)) return false;
+    const symbol = checker.getSymbolAtLocation(expression);
+    if (expression.text === member && symbol?.valueDeclaration === undefined) return true;
+    if (remainingAliasHops === 0) return false;
+    const declaration = symbol?.valueDeclaration;
+    return declaration !== undefined && ts.isVariableDeclaration(declaration) &&
+      ts.isVariableDeclarationList(declaration.parent) &&
+      (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+      declaration.initializer !== undefined &&
+      resolvesGlobalMember(declaration.initializer, member, remainingAliasHops - 1);
+  };
+  const resolvesAbortSignalTimeout = (
+    node: ts.Expression,
+    remainingAliasHops = 1,
+  ): boolean => {
+    const expression = unwrap(node);
+    if (ts.isPropertyAccessExpression(expression) && expression.name.text === "timeout") {
+      const receiver = unwrap(expression.expression);
+      if (ts.isIdentifier(receiver)) {
+        return receiver.text === "AbortSignal" &&
+          checker.getSymbolAtLocation(receiver)?.valueDeclaration === undefined;
+      }
+      return ts.isPropertyAccessExpression(receiver) && receiver.name.text === "AbortSignal" &&
+        ts.isIdentifier(unwrap(receiver.expression)) &&
+        unwrap(receiver.expression).getText(source) === "globalThis" &&
+        checker.getSymbolAtLocation(unwrap(receiver.expression))?.valueDeclaration === undefined;
+    }
+    if (!ts.isIdentifier(expression) || remainingAliasHops === 0) return false;
+    const declaration = checker.getSymbolAtLocation(expression)?.valueDeclaration;
+    return declaration !== undefined && ts.isVariableDeclaration(declaration) &&
+      ts.isVariableDeclarationList(declaration.parent) &&
+      (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+      declaration.initializer !== undefined &&
+      resolvesAbortSignalTimeout(declaration.initializer, remainingAliasHops - 1);
   };
   const isPerformanceNow = (node: ts.Node): boolean => {
     const expression = ts.isExpression(node) ? unwrap(node) : node;
@@ -232,7 +280,7 @@ function analyzeSharedStartupBudget(sourceText: string): {
   const collectBindings = (node: ts.Node) => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
       if (node.initializer && ts.isNewExpression(node.initializer) &&
-        node.initializer.expression.getText(source) === "AbortController" &&
+        resolvesGlobalMember(node.initializer.expression, "AbortController") &&
         ts.isVariableDeclarationList(node.parent) &&
         (node.parent.flags & ts.NodeFlags.Const) !== 0) {
         controllerDeclarations.push(node);
@@ -244,10 +292,14 @@ function analyzeSharedStartupBudget(sourceText: string): {
         deadlineBudgets.set(node, deadlineBudget(node.initializer));
       }
     }
-    if (ts.isCallExpression(node) && node.expression.getText(source) === "AbortSignal.timeout") {
+    if (ts.isNewExpression(node) &&
+      resolvesGlobalMember(node.expression, "AbortController")) {
+      controllerConstructions.push(node);
+    }
+    if (ts.isCallExpression(node) && resolvesAbortSignalTimeout(node.expression)) {
       independentSignalTimeouts += 1;
     }
-    if (ts.isCallExpression(node) && node.expression.getText(source) === "setTimeout") {
+    if (ts.isCallExpression(node) && resolvesGlobalMember(node.expression, "setTimeout")) {
       timeoutCalls.push(node);
     }
     ts.forEachChild(node, collectBindings);
@@ -263,6 +315,20 @@ function analyzeSharedStartupBudget(sourceText: string): {
     ts.isIdentifier(perOpenControllers[0]!.name)
     ? checker.getSymbolAtLocation(perOpenControllers[0]!.name)
     : undefined;
+  const controllerSymbols = new Set<ts.Symbol>();
+  if (controllerSymbol) controllerSymbols.add(controllerSymbol);
+  const collectControllerInstanceAliases = (node: ts.Node) => {
+    if (controllerSymbol && ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
+      node.initializer && ts.isIdentifier(unwrap(node.initializer)) &&
+      checker.getSymbolAtLocation(unwrap(node.initializer)) === controllerSymbol &&
+      ts.isVariableDeclarationList(node.parent) &&
+      (node.parent.flags & ts.NodeFlags.Const) !== 0) {
+      const aliasSymbol = checker.getSymbolAtLocation(node.name);
+      if (aliasSymbol) controllerSymbols.add(aliasSymbol);
+    }
+    ts.forEachChild(node, collectControllerInstanceAliases);
+  };
+  collectControllerInstanceAliases(source);
   const deadlineSymbol = perOpenDeadlines.length === 1 &&
     ts.isIdentifier(perOpenDeadlines[0]!.name)
     ? checker.getSymbolAtLocation(perOpenDeadlines[0]!.name)
@@ -272,7 +338,7 @@ function analyzeSharedStartupBudget(sourceText: string): {
     : null;
   const isExactSignal = (node: ts.Node) => ts.isPropertyAccessExpression(node) &&
     node.name.text === "signal" && ts.isIdentifier(node.expression) &&
-    checker.getSymbolAtLocation(node.expression) === controllerSymbol;
+    controllerSymbols.has(checker.getSymbolAtLocation(node.expression)!);
   const isExactDeadline = (node: ts.Node) => ts.isIdentifier(node) &&
     checker.getSymbolAtLocation(node) === deadlineSymbol;
   const functionSymbol = (node: ts.FunctionLikeDeclaration): ts.Symbol | undefined => {
@@ -290,7 +356,7 @@ function analyzeSharedStartupBudget(sourceText: string): {
         ts.isPropertyAccessExpression(candidate.expression) &&
         candidate.expression.name.text === "abort" &&
         ts.isIdentifier(candidate.expression.expression) &&
-        checker.getSymbolAtLocation(candidate.expression.expression) === controllerSymbol) {
+        controllerSymbols.has(checker.getSymbolAtLocation(candidate.expression.expression)!)) {
         found = true;
       }
       ts.forEachChild(candidate, visit);
@@ -620,14 +686,16 @@ function analyzeSharedStartupBudget(sourceText: string): {
     while (current && current !== openFunction) current = current.parent;
     return current === openFunction;
   };
-  const perOpenTimeouts = timeoutCalls.filter(isWithinOpen);
-  const exactStartupTimer = perOpenTimeouts.length === 1 ? perOpenTimeouts[0] : undefined;
+  const exactStartupTimer = timeoutCalls.length === 1 && isWithinOpen(timeoutCalls[0]!)
+    ? timeoutCalls[0]
+    : undefined;
   const hasOneOuterDeadlineTimer = exactStartupTimer !== undefined &&
     nearestFunction(exactStartupTimer) === openFunction && exactStartupTimer.arguments.length >= 2 &&
     containsControllerAbort(exactStartupTimer.arguments[0]!) &&
     containsDeadlineSubtraction(exactStartupTimer.arguments[1]!);
   return {
-    valid: openFunctions.length === 1 && controllerDeclarations.length === 1 &&
+    valid: openFunctions.length === 1 && controllerConstructions.length === 1 &&
+      controllerDeclarations.length === 1 &&
       perOpenControllers.length === 1 && deadlineDeclarations.length === 1 &&
       perOpenDeadlines.length === 1 && budgetMs === 5_000 &&
       deadlineWrites.length === 0 && independentSignalTimeouts === 0 &&
@@ -635,7 +703,7 @@ function analyzeSharedStartupBudget(sourceText: string): {
       budgetedPhases.length === STARTUP_PHASES.length && negativeConcurrent && positiveConcurrent &&
       requiredBarriers.every((phase) => budgetedBarrierPhases.includes(phase)),
     openFunctions: openFunctions.length,
-    controllers: controllerDeclarations.length,
+    controllers: controllerConstructions.length,
     deadlines: deadlineDeclarations.length,
     budgetMs,
     budgetedPhases,
@@ -649,7 +717,64 @@ function analyzeSharedStartupBudget(sourceText: string): {
 describe("distributed-execution database strangler", () => {
   it("inspects only enabled and allocates no serving connection while flag-off", async () => {
     let connectionAllocations = 0;
-    const inspectedProperties: PropertyKey[] = [];
+    type InputInspection = {
+      readonly operation: "get" | "has" | "ownKeys" | "getOwnPropertyDescriptor";
+      readonly property?: PropertyKey;
+    };
+    const makeTrappedInput = () => {
+      const inspections: InputInspection[] = [];
+      const target = {
+        enabled: false,
+        ownerDb: null,
+        requiredMigrationIdentity: null,
+        appDatabaseUrl: undefined,
+        operatorDatabaseUrl: undefined,
+      };
+      const input = new Proxy(target, {
+        get(candidate, property, receiver) {
+          inspections.push({ operation: "get", property });
+          if (property === "enabled") return Reflect.get(candidate, property, receiver);
+          throw new Error(`flag-off get ${String(property)}`);
+        },
+        has(_candidate, property) {
+          inspections.push({ operation: "has", property });
+          throw new Error(`flag-off has ${String(property)}`);
+        },
+        ownKeys() {
+          inspections.push({ operation: "ownKeys" });
+          throw new Error("flag-off ownKeys");
+        },
+        getOwnPropertyDescriptor(_candidate, property) {
+          inspections.push({ operation: "getOwnPropertyDescriptor", property });
+          throw new Error(`flag-off getOwnPropertyDescriptor ${String(property)}`);
+        },
+      });
+      return { input, inspections };
+    };
+
+    const hasControl = makeTrappedInput();
+    expect(() => "ownerDb" in hasControl.input).toThrow("flag-off has ownerDb");
+    expect(hasControl.inspections).toEqual([{ operation: "has", property: "ownerDb" }]);
+
+    const getControl = makeTrappedInput();
+    expect(() => getControl.input.ownerDb).toThrow("flag-off get ownerDb");
+    expect(getControl.inspections).toEqual([{ operation: "get", property: "ownerDb" }]);
+
+    const ownKeysControl = makeTrappedInput();
+    expect(() => Reflect.ownKeys(ownKeysControl.input)).toThrow("flag-off ownKeys");
+    expect(ownKeysControl.inspections).toEqual([{ operation: "ownKeys" }]);
+
+    const descriptorControl = makeTrappedInput();
+    expect(() => Object.getOwnPropertyDescriptor(descriptorControl.input, "ownerDb"))
+      .toThrow("flag-off getOwnPropertyDescriptor ownerDb");
+    expect(descriptorControl.inspections).toEqual([
+      { operation: "getOwnPropertyDescriptor", property: "ownerDb" },
+    ]);
+
+    const spreadControl = makeTrappedInput();
+    expect(() => ({ ...spreadControl.input })).toThrow("flag-off ownKeys");
+    expect(spreadControl.inspections).toEqual([{ operation: "ownKeys" }]);
+
     vi.resetModules();
     vi.doMock("@armyofagents/db", async () => {
       const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
@@ -665,15 +790,9 @@ describe("distributed-execution database strangler", () => {
     });
     try {
       const isolated = await import("../db/distributed-execution-databases.js");
-      const input = new Proxy({ enabled: false }, {
-        get(target, property, receiver) {
-          if (property === "enabled") return Reflect.get(target, property, receiver);
-          inspectedProperties.push(property);
-          throw new Error(`flag-off inspected ${String(property)}`);
-        },
-      });
-      await expect(isolated.openDistributedExecutionDatabases(input as never)).resolves.toBeNull();
-      expect(inspectedProperties).toEqual([]);
+      const realCall = makeTrappedInput();
+      await expect(isolated.openDistributedExecutionDatabases(realCall.input as never)).resolves.toBeNull();
+      expect(realCall.inspections).toEqual([{ operation: "get", property: "enabled" }]);
       expect(connectionAllocations).toBe(0);
     } finally {
       vi.doUnmock("@armyofagents/db");
@@ -810,6 +929,166 @@ describe("distributed-execution database strangler", () => {
       positiveConcurrent: true,
       budgetedBarrierPhases: ["owner-exclusive", "app-positive", "operator-positive"],
     });
+
+    const qualifiedStrictValidFixture = strictValidFixture
+      .replace("new AbortController()", "new globalThis.AbortController()")
+      .replace("const startupTimer = setTimeout(", "const startupTimer = globalThis.setTimeout(");
+    expect(analyzeSharedStartupBudget(qualifiedStrictValidFixture)).toMatchObject({
+      valid: true,
+      controllers: 1,
+      budgetedPhases: STARTUP_PHASES,
+      causallyBoundPhases: STARTUP_PHASES,
+    });
+
+    const aliasedStrictValidFixture = strictValidFixture
+      .replace(
+        "const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;",
+        `const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;
+         const SharedAbortController = globalThis.AbortController;
+         const scheduleStartupTimeout = globalThis.setTimeout;`,
+      )
+      .replace("new AbortController()", "new SharedAbortController()")
+      .replace("const startupTimer = setTimeout(", "const startupTimer = scheduleStartupTimeout(");
+    expect(analyzeSharedStartupBudget(aliasedStrictValidFixture)).toMatchObject({
+      valid: true,
+      controllers: 1,
+      budgetedPhases: STARTUP_PHASES,
+      causallyBoundPhases: STARTUP_PHASES,
+    });
+
+    const instanceAliasedStrictValidFixture = strictValidFixture
+      .replace(
+        "const startupDeadline = performance.now() + STARTUP_HANDSHAKE_TIMEOUT_MS;",
+        `const startupDeadline = performance.now() + STARTUP_HANDSHAKE_TIMEOUT_MS;
+         const sharedStartupAbort = startupAbort;`,
+      )
+      .replace("() => startupAbort.abort()", "() => sharedStartupAbort.abort()")
+      .replace("startupAbort.signal.addEventListener", "sharedStartupAbort.signal.addEventListener");
+    expect(analyzeSharedStartupBudget(instanceAliasedStrictValidFixture)).toMatchObject({
+      valid: true,
+      controllers: 1,
+      budgetedPhases: STARTUP_PHASES,
+      causallyBoundPhases: STARTUP_PHASES,
+    });
+
+    const executedQualifiedTimer = strictValidFixture.replace(
+      `              startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });`,
+      `              startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+              globalThis.setTimeout(() => reject(new Error("qualified phase timer")), 1_000);`,
+    );
+    const executedAliasedTimer = strictValidFixture
+      .replace(
+        `          const runPhase = async (_phase: string, work: () => Promise<unknown>) => {`,
+        `          const schedulePhaseTimer = globalThis.setTimeout;
+          const runPhase = async (_phase: string, work: () => Promise<unknown>) => {`,
+      )
+      .replace(
+        `              startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });`,
+        `              startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+              schedulePhaseTimer(() => reject(new Error("aliased phase timer")), 1_000);`,
+      );
+    const executedQualifiedController = strictValidFixture
+      .replace(
+        "export async function openDistributedExecutionDatabases() {",
+        `function makeUnrelatedController() {
+           return new globalThis.AbortController();
+         }
+         export async function openDistributedExecutionDatabases() {`,
+      )
+      .replace(
+        "const startupAbort = new AbortController();",
+        `const unrelatedAbort = makeUnrelatedController();
+        void unrelatedAbort;
+        const startupAbort = new AbortController();`,
+      );
+    const executedAliasedController = strictValidFixture
+      .replace(
+        "export async function openDistributedExecutionDatabases() {",
+        `const UnrelatedAbortController = globalThis.AbortController;
+         function makeUnrelatedController() {
+           return new UnrelatedAbortController();
+         }
+         export async function openDistributedExecutionDatabases() {`,
+      )
+      .replace(
+        "const startupAbort = new AbortController();",
+        `const unrelatedAbort = makeUnrelatedController();
+        void unrelatedAbort;
+        const startupAbort = new AbortController();`,
+      );
+    for (const [executedAdversary, expectedControllers] of [
+      [executedQualifiedTimer, 1],
+      [executedAliasedTimer, 1],
+      [executedQualifiedController, 2],
+      [executedAliasedController, 2],
+    ] as const) {
+      expect(analyzeSharedStartupBudget(executedAdversary)).toMatchObject({
+        valid: false,
+        openFunctions: 1,
+        controllers: expectedControllers,
+        deadlines: 1,
+        budgetMs: 5_000,
+        budgetedPhases: STARTUP_PHASES,
+        causallyBoundPhases: STARTUP_PHASES,
+        negativeConcurrent: true,
+        positiveConcurrent: true,
+        budgetedBarrierPhases: ["owner-exclusive", "app-positive", "operator-positive"],
+      });
+    }
+
+    const qualifiedTimerOutsideOpen = strictValidFixture.replace(
+      "export async function openDistributedExecutionDatabases() {",
+      `function armUnrelatedTimeout() {
+         return globalThis.setTimeout(() => undefined, 60_000);
+       }
+       void armUnrelatedTimeout;
+       export async function openDistributedExecutionDatabases() {`,
+    );
+    const aliasedTimerOutsideOpen = strictValidFixture.replace(
+      "export async function openDistributedExecutionDatabases() {",
+      `const scheduleUnrelatedTimeout = globalThis.setTimeout;
+       function armUnrelatedTimeout() {
+         return scheduleUnrelatedTimeout(() => undefined, 60_000);
+       }
+       void armUnrelatedTimeout;
+       export async function openDistributedExecutionDatabases() {`,
+    );
+    const qualifiedControllerOutsideOpen = strictValidFixture.replace(
+      "export async function openDistributedExecutionDatabases() {",
+      `function makeUnrelatedController() {
+         return new globalThis.AbortController();
+       }
+       void makeUnrelatedController;
+       export async function openDistributedExecutionDatabases() {`,
+    );
+    const aliasedControllerOutsideOpen = strictValidFixture.replace(
+      "export async function openDistributedExecutionDatabases() {",
+      `const UnrelatedAbortController = globalThis.AbortController;
+       function makeUnrelatedController() {
+         return new UnrelatedAbortController();
+       }
+       void makeUnrelatedController;
+       export async function openDistributedExecutionDatabases() {`,
+    );
+    for (const [wholeCandidateAdversary, expectedControllers] of [
+      [qualifiedTimerOutsideOpen, 1],
+      [aliasedTimerOutsideOpen, 1],
+      [qualifiedControllerOutsideOpen, 2],
+      [aliasedControllerOutsideOpen, 2],
+    ] as const) {
+      expect(analyzeSharedStartupBudget(wholeCandidateAdversary)).toMatchObject({
+        valid: false,
+        openFunctions: 1,
+        controllers: expectedControllers,
+        deadlines: 1,
+        budgetMs: 5_000,
+        budgetedPhases: STARTUP_PHASES,
+        causallyBoundPhases: STARTUP_PHASES,
+        negativeConcurrent: true,
+        positiveConcurrent: true,
+        budgetedBarrierPhases: ["owner-exclusive", "app-positive", "operator-positive"],
+      });
+    }
 
     const validSharedBudgetPlusIndependentPhaseTimer = strictValidFixture.replace(
       `              startupAbort.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });`,
