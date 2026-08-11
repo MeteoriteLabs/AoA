@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -34,6 +35,9 @@ const EVIDENCE_ARCHIVE_PATH = "e3-perf-01-evidence.json";
 const CAMPAIGN_NOW = "2026-08-11T01:05:00.000Z";
 const MINIMUM_RETENTION_MS = 180 * 24 * 60 * 60 * 1_000;
 const OBJECT_LOCK_MODE = "compliance";
+// Tracked Drizzle snapshots are currently about 2.2 MiB; keep reads bounded at 8 MiB with >3x headroom.
+const GIT_OBJECT_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
+const HERMETIC_MANIFEST_PREFLIGHT_TIMEOUT_MS = 5 * 60_000;
 const REVIEWED_BENCHMARK_ENVIRONMENT = Object.freeze({
   NODE_ENV: "test",
   TZ: "UTC",
@@ -100,6 +104,10 @@ const ATTESTED_DIRTY_PATHS = [
   "packages/db/src/repositories/tenant/job-control.ts",
 ];
 const TRACKED_INPUT_MODE_BY_PATH = new Map();
+
+function loadPinnedServerAjv2020() {
+  return createRequire(new URL("../server/package.json", import.meta.url))("ajv/dist/2020.js").default;
+}
 
 function completePinnedInputPaths() {
   const tracked = execFileSync(
@@ -255,7 +263,7 @@ test("the real CLI default Git adapter accepts one hermetic evidence-parent pref
     "git", ["--no-replace-objects", ...args], { cwd, encoding: "utf8" },
   ).trim();
   const gitBytes = (args, cwd = worktree) => execFileSync(
-    "git", ["--no-replace-objects", ...args], { cwd },
+    "git", ["--no-replace-objects", ...args], { cwd, maxBuffer: GIT_OBJECT_MAX_BUFFER_BYTES },
   );
   try {
     const baseRevision = gitText(["rev-parse", "HEAD"], repositoryRoot);
@@ -384,7 +392,7 @@ test("the real CLI default Git adapter accepts one hermetic evidence-parent pref
       worktreeRunnerPath,
       "--validate-manifest", manifest.manifestPath,
       "--evidence-parent", evidenceParentRevision,
-    ], { cwd: worktree, encoding: "utf8", timeout: 30_000 });
+    ], { cwd: worktree, encoding: "utf8", timeout: HERMETIC_MANIFEST_PREFLIGHT_TIMEOUT_MS });
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     cliResultEnvelope(result, {
@@ -905,7 +913,7 @@ function setAtPointer(document, path, value) {
 
 test("strict schemas close every object and pin revisions, provenance, thresholds, and evidence", { skip: !assetsPresent }, async () => {
   const mod = await runner();
-  const { default: Ajv2020 } = await import("ajv/dist/2020.js");
+  const Ajv2020 = loadPinnedServerAjv2020();
   const manifestSchema = JSON.parse(readFileSync(REQUIRED_ASSETS[1], "utf8"));
   const evidenceSchema = JSON.parse(readFileSync(REQUIRED_ASSETS[2], "utf8"));
   assert.doesNotThrow(() => new Ajv2020({ strict: true }).compile(manifestSchema));
@@ -1226,7 +1234,7 @@ test("recursive canary and credential rejection never echoes the sensitive value
   const uriCanaryManifest = structuredClone(manifestFixture());
   uriCanaryManifest.referencedEvidence[0].uri =
     `https://evidence.example.invalid/${uriCanary}/sha256/${uriCanaryManifest.referencedEvidence[0].sha256}`;
-  const { default: Ajv2020 } = await import("ajv/dist/2020.js");
+  const Ajv2020 = loadPinnedServerAjv2020();
   const validateManifestSchema = new Ajv2020({ strict: true }).compile(
     JSON.parse(readFileSync(REQUIRED_ASSETS[1], "utf8")),
   );
