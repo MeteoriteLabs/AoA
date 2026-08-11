@@ -4338,6 +4338,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       let outsiderObserved: Promise<void> | null = null;
       let outsiderOutcome: "pending" | "fulfilled" | "rejected" = "pending";
       let outsiderSettledAt: number | null = null;
+      let outsiderObserver: Sql | null = null;
       const outsiderApplicationName = `${harness.token}_legacy_outsider`;
       try {
         const appPending = await harness.waitForActivePendingQuery("app-authority", 3_500);
@@ -4488,10 +4489,11 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
             dryRun.candidateIdentities.every((identity) =>
               identity.pid !== reservation.pid &&
               identity.applicationName !== outsiderApplicationName));
-        const [stillActive] = await admin!.unsafe<Array<{ active: boolean }>>(`
+        outsiderObserver = postgres(adminUrl, { max: 1 });
+        const [stillActive] = await outsiderObserver.unsafe<Array<{ active: boolean }>>(`
           SELECT EXISTS (
             SELECT 1 FROM pg_stat_activity
-            WHERE pid = $1 AND backend_start = $2::timestamptz
+            WHERE pid = $1 AND backend_start::text = $2
               AND state = 'active' AND query ILIKE '%pg_sleep%'
           ) AS active
         `, [reservation!.pid, reservation!.backendStart]);
@@ -4580,13 +4582,32 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           },
         });
       } finally {
-        outsiderQuery?.cancel();
         let outsiderDrained: Awaited<ReturnType<typeof withOuterWatchdog>> | undefined;
         let publicDrained: Awaited<ReturnType<typeof withOuterWatchdog>> | undefined;
         try {
+          if (outsiderQuery && reservations?.receipts[0]) {
+            outsiderObserver ??= postgres(adminUrl, { max: 1 });
+            await outsiderObserver.unsafe(`
+              SELECT pg_cancel_backend(activity.pid)
+              FROM pg_stat_activity activity
+              WHERE activity.pid = $1
+                AND activity.backend_start::text = $2
+                AND activity.usename = 'test'
+                AND activity.datname = current_database()
+                AND activity.application_name = $3
+                AND activity.state = 'active'
+                AND activity.query ILIKE '%pg_sleep%'
+            `, [
+              reservations.receipts[0].pid,
+              reservations.receipts[0].backendStart,
+              outsiderApplicationName,
+            ]);
+          }
           outsiderDrained = outsiderObserved
             ? await withOuterWatchdog(outsiderObserved, 5_000)
             : undefined;
+          await outsiderObserver?.end({ timeout: 5 });
+          outsiderObserver = null;
           if (reservations?.receipts[0]) {
             await reservations.receipts[0].connection.unsafe(
               "SELECT set_config('application_name', $1, false)",
@@ -4596,6 +4617,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           await reservations?.release();
           publicDrained = await withOuterWatchdog(operation.then(() => true, () => true), 12_000);
         } finally {
+          await outsiderObserver?.end({ timeout: 5 }).catch(() => {});
           await harness.cleanup();
         }
         expect(outsiderDrained).toMatchObject({ kind: "fulfilled" });
