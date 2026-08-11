@@ -277,7 +277,9 @@ async function observeServer(input: {
   operatorDatabaseUrl?: string;
   expectedFailureCode?: string;
   forbiddenFailureValues?: readonly string[];
-  sentinelMode?: "deny" | "record" | "identity";
+  sentinelMode?: "deny" | "record" | "identity" |
+    "bootstrap-record" | "bootstrap-loader-deny" | "bootstrap-env-deny" |
+    "bootstrap-allocation-deny";
 }): Promise<{ exited: boolean; code: number | null; output: string }> {
   const httpPort = await allocateEmbeddedPgPort();
   const serverEntry = fileURLToPath(new URL("../index.ts", import.meta.url));
@@ -374,7 +376,12 @@ type StartupFailureInjection = AdvisoryPhase | AdvisoryPendingInjection |
   "statement-timeout" | "lock-timeout" |
   "idle-timeout" | "forced-end" | "shared-budget" | "shared-budget-pending" |
   "migration-pending" | "app-authority-pending" | "operator-authority-pending" |
-  "cleanup-pending" | "cleanup-failure-pending" | "redaction-sentinel";
+  "timeout-setup-pending" | "backend-identity-pending" |
+  "transaction-acquisition-pending" |
+  "cleanup-pending" | "cleanup-failure-pending" |
+  "cleanup-acquisition-pending" | "cleanup-failure-acquisition-pending" |
+  "stale-owner-lifecycle" |
+  "redaction-sentinel";
 
 type StartupPhase =
   | "migration-identity"
@@ -383,7 +390,11 @@ type StartupPhase =
   | AdvisoryPhase;
 
 type PendingQueryPhase = StartupPhase
-  | "cleanup";
+  | "timeout-setup"
+  | "backend-identity"
+  | "transaction-acquisition"
+  | "cleanup"
+  | "cleanup-acquisition";
 
 type StartupDeadlineReceipt = {
   readonly invocationId: number;
@@ -410,6 +421,40 @@ type StartupTransactionReceipt = {
   outcome: "pending" | "fulfilled" | "rejected";
 };
 
+type CleanupProbeReceipt = {
+  readonly invocationId: number;
+  readonly source: "shared-owner-db" | "dedicated-owner-control";
+  readonly controlId: number | null;
+  readonly startedAt: number;
+  settledAt: number | null;
+  outcome: "pending" | "fulfilled" | "rejected";
+  participantPidsGone: boolean | null;
+};
+
+type OwnerControlReceipt = {
+  readonly id: number;
+  readonly constructedAt: number;
+  endStartedAt: number | null;
+  endSettledAt: number | null;
+  endOutcome: "not-called" | "pending" | "fulfilled" | "rejected";
+};
+
+type ReservedOwnerSql = Awaited<ReturnType<Sql["reserve"]>>;
+
+type OwnerReservationReceipt = {
+  readonly connection: ReservedOwnerSql;
+  readonly pid: number;
+  readonly backendStart: string;
+  readonly applicationName: string;
+  readonly reservedAt: number;
+  releasedAt: number | null;
+};
+
+type OwnerReservationGroup = {
+  readonly receipts: OwnerReservationReceipt[];
+  readonly release: () => Promise<void>;
+};
+
 async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
   const dialect = new PgDialect();
   const pendingAdvisoryPhase = ADVISORY_PHASES.find((phase) => inject === `${phase}-pending`) ?? null;
@@ -421,10 +466,13 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     closes: [] as Array<{ role: "aoa_app" | "aoa_operator"; input: unknown }>,
     closeAttempts: [] as Array<{ role: "aoa_app" | "aoa_operator"; at: number }>,
     closeSettled: [] as Array<{ role: "aoa_app" | "aoa_operator"; at: number }>,
+    cleanupFailureCloseGateReleasedAt: null as number | null,
     logs: [] as unknown[][],
     positiveWaiters: new Map<"aoa_app" | "aoa_operator", Array<() => void>>(),
     positiveBarrierReached: false,
     injectionTriggered: false,
+    injectionTriggeredAt: null as number | null,
+    preRegistrationTrapArmed: false,
     clients: [] as Sql[],
     ownerClient: null as Sql | null,
     blocker: null as Sql | null,
@@ -440,6 +488,20 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     openInvocations: [] as StartupInvocationReceipt[],
     activeInvocation: null as StartupInvocationReceipt | null,
     transactionReceipts: [] as StartupTransactionReceipt[],
+    cleanupProbeReceipts: [] as CleanupProbeReceipt[],
+    ownerControlReceipts: [] as OwnerControlReceipt[],
+    ownerControlClients: [] as Array<{ client: Sql; receipt: OwnerControlReceipt }>,
+    backendIdentities: [] as Array<{
+      invocationId: number;
+      role: "owner" | "aoa_app" | "aoa_operator";
+      pid: number;
+      backendStart: string;
+      xactStart: string;
+      sessionRole: string;
+      databaseName: string;
+      applicationName: string;
+    }>,
+    ownerReservationGroups: [] as OwnerReservationGroup[],
     sharedProbeOrdinals: new Map<string, number>(),
     budgetWindows: [] as Array<{
       invocationId: number;
@@ -479,6 +541,10 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       settledAt: number | null;
     }>,
   };
+  let resolveCleanupFailureCloseGate!: () => void;
+  const cleanupFailureCloseGate = new Promise<void>((resolve) => {
+    resolveCleanupFailureCloseGate = resolve;
+  });
   const namedUrl = (url: string, suffix: string) => {
     const separator = url.includes("?") ? "&" : "?";
     return `${url}${separator}application_name=${token}_${suffix}`;
@@ -487,9 +553,90 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
   const operatorNamedUrl = namedUrl(operatorUrl, "operator");
   const ownerNamedUrl = namedUrl(adminUrl, "owner");
 
+  const reserveOwnerSlots = async (count: number): Promise<OwnerReservationGroup> => {
+    if (!state.ownerClient) throw new Error("owner client is unavailable for reservation");
+    const receipts: OwnerReservationReceipt[] = [];
+    let releaseTask: Promise<void> | null = null;
+    const group: OwnerReservationGroup = {
+      receipts,
+      release: () => {
+        releaseTask ??= Promise.all(receipts.map(async (receipt) => {
+          if (receipt.releasedAt !== null) return;
+          await receipt.connection.release();
+          receipt.releasedAt = performance.now();
+        })).then(() => undefined);
+        return releaseTask;
+      },
+    };
+    state.ownerReservationGroups.push(group);
+    try {
+      for (let index = 0; index < count; index += 1) {
+        const connection = await state.ownerClient.reserve();
+        const [identity] = await connection<{
+          pid: number;
+          backend_start: string;
+          application_name: string;
+        }[]>`
+          SELECT activity.pid,
+            activity.backend_start::text AS backend_start,
+            activity.application_name
+          FROM pg_stat_activity activity
+          WHERE activity.pid = pg_backend_pid()
+        `;
+        if (!identity || !Number.isSafeInteger(identity.pid) || !identity.backend_start) {
+          await connection.release();
+          throw new Error(`owner reservation ${index} has no exact backend identity`);
+        }
+        receipts.push({
+          connection,
+          pid: identity.pid,
+          backendStart: identity.backend_start,
+          applicationName: identity.application_name,
+          reservedAt: performance.now(),
+          releasedAt: null,
+        });
+      }
+      return group;
+    } catch (error) {
+      await group.release();
+      throw error;
+    }
+  };
+
   const rows = (result: unknown): unknown[] => Array.isArray(result)
     ? result
     : ((result as { rows?: unknown[] })?.rows ?? []);
+  const observeCleanupProbe = async <T>(
+    source: CleanupProbeReceipt["source"],
+    controlId: number | null,
+    queryText: string,
+    work: () => Promise<T>,
+  ): Promise<T> => {
+    if (!/\bparticipant_pids_gone\b/u.test(queryText)) return work();
+    const receipt: CleanupProbeReceipt = {
+      invocationId: state.activeInvocation?.id ?? state.openInvocations.at(-1)?.id ?? -1,
+      source,
+      controlId,
+      startedAt: performance.now(),
+      settledAt: null,
+      outcome: "pending",
+      participantPidsGone: null,
+    };
+    state.cleanupProbeReceipts.push(receipt);
+    try {
+      const result = await work();
+      receipt.outcome = "fulfilled";
+      receipt.participantPidsGone = rows(result).some((row) =>
+        typeof (row as { participant_pids_gone?: unknown })?.participant_pids_gone === "boolean" &&
+        (row as { participant_pids_gone: boolean }).participant_pids_gone);
+      return result;
+    } catch (error) {
+      receipt.outcome = "rejected";
+      throw error;
+    } finally {
+      receipt.settledAt = performance.now();
+    }
+  };
   const firstBoolean = (result: unknown): boolean | undefined => {
     for (const row of rows(result)) {
       for (const value of Object.values((row ?? {}) as Record<string, unknown>)) {
@@ -755,6 +902,26 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               queryText = compiled.sql.toLowerCase();
               queryParams = compiled.params;
             } catch { /* non-SQL */ }
+            const preRegistrationPendingPhase: PendingQueryPhase | null =
+              state.preRegistrationTrapArmed &&
+              inject === "timeout-setup-pending" && role === "owner" &&
+                queryText.includes("set_config('statement_timeout'")
+                ? "timeout-setup"
+                : state.preRegistrationTrapArmed &&
+                    inject === "backend-identity-pending" && role === "owner" &&
+                    /^select pg_backend_pid\(\) as pid\s*$/u.test(queryText.trim())
+                  ? "backend-identity"
+                  : null;
+            if (preRegistrationPendingPhase) {
+              state.injectionTriggered = true;
+              return runPendingQuery(
+                target,
+                role,
+                preRegistrationPendingPhase,
+                statement,
+                transactionReceipt,
+              );
+            }
             if (inject === "redaction-sentinel" && role === "aoa_app" &&
               queryText.includes("session_role_name")) {
               state.injectionTriggered = true;
@@ -773,7 +940,10 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               inject === "migration-pending" && role === "owner" &&
                 queryText.includes("__drizzle_migrations")
                 ? "migration-identity"
-                : inject === "app-authority-pending" && role === "aoa_app" &&
+                : (inject === "app-authority-pending" || inject === "stale-owner-lifecycle" ||
+                    inject === "transaction-acquisition-pending" ||
+                    inject === "timeout-setup-pending" || inject === "backend-identity-pending") &&
+                    role === "aoa_app" &&
                     queryText.includes("session_role_name")
                   ? "app-authority"
                   : inject === "operator-authority-pending" && role === "aoa_operator" &&
@@ -889,7 +1059,12 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
                 }
               }
             }
-            const result = await (target as T & { execute(s: unknown): Promise<unknown> }).execute(statement);
+            const result = await observeCleanupProbe(
+              "shared-owner-db",
+              null,
+              queryText,
+              () => (target as T & { execute(s: unknown): Promise<unknown> }).execute(statement),
+            );
             if (/pg_backend_pid\s*\(/u.test(queryText)) {
               for (const row of rows(result)) {
                 const pid = Object.values((row ?? {}) as Record<string, unknown>)
@@ -897,14 +1072,52 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
                 if (pid !== undefined) state.backendPids[role].add(pid);
               }
             }
+            if (inject === "stale-owner-lifecycle" && role === "owner" &&
+              /^select pg_backend_pid\(\) as pid\s*$/u.test(queryText.trim())) {
+              const identityResult = await (target as T & { execute(s: unknown): Promise<unknown> })
+                .execute(sql`
+                  SELECT activity.pid,
+                    activity.backend_start::text AS backend_start,
+                    activity.xact_start::text AS xact_start,
+                    current_user AS session_role,
+                    current_database() AS database_name,
+                    activity.application_name
+                  FROM pg_stat_activity activity
+                  WHERE activity.pid = pg_backend_pid()
+                `);
+              const [identity] = rows(identityResult) as Array<{
+                pid: number;
+                backend_start: string;
+                xact_start: string;
+                session_role: string;
+                database_name: string;
+                application_name: string;
+              }>;
+              if (!identity?.backend_start || !identity.xact_start) {
+                throw new Error("owner startup backend identity was incomplete");
+              }
+              state.backendIdentities.push({
+                invocationId: state.activeInvocation?.id ?? -1,
+                role,
+                pid: identity.pid,
+                backendStart: identity.backend_start,
+                xactStart: identity.xact_start,
+                sessionRole: identity.session_role,
+                databaseName: identity.database_name,
+                applicationName: identity.application_name,
+              });
+            }
             if (role !== "owner" && /pg_try_advisory_xact_lock_shared/u.test(queryText)) {
               const success = firstBoolean(result);
               const phase = `${role === "aoa_app" ? "app" : "operator"}-${success ? "positive" : "negative"}` as AdvisoryPhase;
               if (transactionReceipt) transactionReceipt.phase = phase;
               state.phases.push(phase);
               if (inject === phase || (inject === "forced-end" && phase === "operator-positive") ||
-                (inject === "cleanup-failure-pending" && phase === "operator-positive")) {
+                ((inject === "cleanup-failure-pending" ||
+                  inject === "cleanup-failure-acquisition-pending") &&
+                  phase === "operator-positive")) {
                 state.injectionTriggered = true;
+                state.injectionTriggeredAt = performance.now();
                 throw Object.assign(new Error(`${inject} injected`), { code: `INJECT_${inject}` });
               }
               const hasProductionOwnedPositiveCancellation =
@@ -959,6 +1172,9 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       async close(input: { timeoutSeconds: number }) {
         state.closes.push({ role, input });
         state.closeAttempts.push({ role, at: performance.now() });
+        if (inject === "cleanup-failure-acquisition-pending") {
+          await cleanupFailureCloseGate;
+        }
         const seconds = Number(input.timeoutSeconds);
         const sleeping = inject === "forced-end" && state.injectionTriggered
           ? client`SELECT pg_sleep(60)`.catch(() => {})
@@ -973,7 +1189,109 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     };
   };
 
+  const captureDedicatedOwnerControls = inject === "cleanup-acquisition-pending" ||
+    inject === "cleanup-failure-acquisition-pending";
+  const ownerControlByClient = new WeakMap<object, OwnerControlReceipt>();
+  const instrumentOwnerControlDb = <T extends object>(
+    db: T,
+    control: OwnerControlReceipt,
+  ): T => {
+    const cache = new Map<PropertyKey, unknown>();
+    return new Proxy(db, {
+      get(target, property, receiver) {
+        if (cache.has(property)) return cache.get(property);
+        if (property === "execute") {
+          const original = Reflect.get(target, property, receiver) as
+            (statement: unknown) => Promise<unknown>;
+          const execute = (statement: unknown) => {
+            let queryText = "";
+            try {
+              queryText = dialect.sqlToQuery(statement as never).sql.toLowerCase();
+            } catch { /* non-SQL */ }
+            return observeCleanupProbe(
+              "dedicated-owner-control",
+              control.id,
+              queryText,
+              () => Reflect.apply(original, target, [statement]),
+            );
+          };
+          cache.set(property, execute);
+          return execute;
+        }
+        if (property === "transaction") {
+          const original = Reflect.get(target, property, receiver) as
+            (callback: (transaction: object) => unknown, ...args: unknown[]) => Promise<unknown>;
+          const transaction = (
+            callback: (transaction: object) => unknown,
+            ...args: unknown[]
+          ) => Reflect.apply(original, target, [
+            (inner: object) => callback(instrumentOwnerControlDb(inner, control)),
+            ...args,
+          ]);
+          cache.set(property, transaction);
+          return transaction;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+  };
+
   vi.resetModules();
+  if (captureDedicatedOwnerControls) {
+    vi.doMock("postgres", async () => {
+      const actual = await vi.importActual<typeof import("postgres")>("postgres");
+      const factory = (...args: unknown[]) => {
+        const client = Reflect.apply(actual.default as unknown as Function, undefined, args) as Sql;
+        const first = args[0];
+        if (typeof first !== "object" || first === null || Array.isArray(first)) return client;
+        const receipt: OwnerControlReceipt = {
+          id: state.ownerControlReceipts.length + 1,
+          constructedAt: performance.now(),
+          endStartedAt: null,
+          endSettledAt: null,
+          endOutcome: "not-called",
+        };
+        state.ownerControlReceipts.push(receipt);
+        state.ownerControlClients.push({ client, receipt });
+        const observed = new Proxy(client, {
+          get(target, property, receiver) {
+            if (property !== "end") return Reflect.get(target, property, receiver);
+            return async (...endArgs: unknown[]) => {
+              receipt.endStartedAt = performance.now();
+              receipt.endOutcome = "pending";
+              try {
+                const value = await Reflect.apply(target.end as unknown as Function, target, endArgs);
+                receipt.endOutcome = "fulfilled";
+                return value;
+              } catch (error) {
+                receipt.endOutcome = "rejected";
+                throw error;
+              } finally {
+                receipt.endSettledAt = performance.now();
+              }
+            };
+          },
+        });
+        ownerControlByClient.set(observed as unknown as object, receipt);
+        return observed;
+      };
+      return { ...actual, default: factory };
+    });
+    vi.doMock("drizzle-orm/postgres-js", async () => {
+      const actual = await vi.importActual<typeof import("drizzle-orm/postgres-js")>(
+        "drizzle-orm/postgres-js",
+      );
+      const instrumentedDrizzle = (...args: unknown[]) => {
+        const db = Reflect.apply(actual.drizzle as unknown as Function, undefined, args) as object;
+        const client = args[0];
+        const control = typeof client === "object" && client !== null
+          ? ownerControlByClient.get(client)
+          : typeof client === "function" ? ownerControlByClient.get(client) : undefined;
+        return control ? instrumentOwnerControlDb(db, control) : db;
+      };
+      return { ...actual, drizzle: instrumentedDrizzle };
+    });
+  }
   vi.doMock("@armyofagents/db", async () => {
     const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
     return {
@@ -1033,6 +1351,8 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
   };
   const restoreHarnessGlobals = () => {
     restoreObservedAbortController();
+    vi.doUnmock("postgres");
+    vi.doUnmock("drizzle-orm/postgres-js");
     vi.doUnmock("@armyofagents/db");
     vi.doUnmock("../middleware/logger.js");
     vi.resetModules();
@@ -1054,7 +1374,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
   let instrumentedOwnerDb: Db;
   try {
     state.ownerClient = postgres(ownerNamedUrl, {
-      max: 4,
+      max: inject === "stale-owner-lifecycle" ? 1 : 4,
       connection: {
         client_encoding: "UTF8",
         statement_timeout: inject?.endsWith("-pending") ? 0 : 5_000,
@@ -1077,8 +1397,83 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     throw error;
   }
 
+  const waitForActivePendingQuery = async (
+    phase: PendingQueryPhase,
+    timeoutMs = 3_500,
+    invocationId?: number,
+  ) => {
+    const deadline = performance.now() + timeoutMs;
+    do {
+      const receipt = state.pendingQueries.find((candidate) =>
+        candidate.phase === phase && candidate.backendPid !== null &&
+        (invocationId === undefined || candidate.invocationId === invocationId));
+      if (receipt?.backendPid !== null && receipt?.backendPid !== undefined) {
+        const [activity] = await admin!.unsafe<Array<{ active: boolean }>>(`
+          SELECT EXISTS (
+            SELECT 1
+            FROM pg_stat_activity
+            WHERE pid = $1
+              AND datname = current_database()
+              AND state = 'active'
+              AND query ILIKE '%pg_sleep%'
+          ) AS active
+        `, [receipt.backendPid]);
+        if (activity?.active) return receipt;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } while (performance.now() < deadline);
+    return null;
+  };
+
+  const cancelBackend = async (pid: number): Promise<boolean> => {
+    const [result] = await admin!<{ cancelled: boolean }[]>`
+      SELECT pg_cancel_backend(${pid}) AS cancelled
+    `;
+    return result?.cancelled === true;
+  };
+
+  const provePreRegistrationTrap = async (
+    phase: "timeout-setup" | "backend-identity",
+  ) => {
+    state.preRegistrationTrapArmed = true;
+    try {
+      const operation = instrumentedOwnerDb.transaction(async (transaction) => {
+        if (phase === "backend-identity") {
+          await transaction.execute(sql`
+            SELECT set_config('statement_timeout', '5000ms', true),
+              set_config('lock_timeout', '750ms', true),
+              set_config('idle_in_transaction_session_timeout', '5000ms', true)
+          `);
+        }
+        return transaction.execute(phase === "timeout-setup"
+          ? sql`
+              SELECT set_config('statement_timeout', '5000ms', true),
+                set_config('lock_timeout', '750ms', true),
+                set_config('idle_in_transaction_session_timeout', '5000ms', true)
+            `
+          : sql`SELECT pg_backend_pid() AS pid`);
+      });
+      void operation.catch(() => {});
+      const pending = await waitForActivePendingQuery(phase, 3_500, -1);
+      if (!pending?.backendPid) {
+        throw new Error(`direct ${phase} control did not reach the real pending backend`);
+      }
+      const cancelled = await cancelBackend(pending.backendPid);
+      const outcome = await withOuterWatchdog(operation, 5_000);
+      const transaction = state.transactionReceipts.find((receipt) =>
+        receipt.invocationId === -1 && receipt.phase === phase);
+      return { cancelled, outcome, pending, transaction };
+    } finally {
+      state.preRegistrationTrapArmed = false;
+    }
+  };
+
   const cleanup = async () => {
     try {
+      if (state.cleanupFailureCloseGateReleasedAt === null) {
+        state.cleanupFailureCloseGateReleasedAt = performance.now();
+        resolveCleanupFailureCloseGate();
+      }
       for (const pending of state.pendingBudgetWork) pending.release();
       await Promise.allSettled(state.pendingBudgetWork.map((pending) => pending.drained));
       for (const waiters of state.positiveWaiters.values()) {
@@ -1088,6 +1483,12 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       if (state.blocker) {
         await state.blocker`SELECT pg_advisory_unlock(903003)`.catch(() => {});
         await state.blocker.end({ timeout: 1 }).catch(() => {});
+      }
+      for (const group of state.ownerReservationGroups) {
+        await group.release().catch(() => {});
+      }
+      for (const { client, receipt } of state.ownerControlClients) {
+        if (receipt.endSettledAt === null) await client.end({ timeout: 1 }).catch(() => {});
       }
       await state.ownerClient?.end({ timeout: 1 }).catch(() => {});
       for (const client of state.clients) await client.end({ timeout: 1 }).catch(() => {});
@@ -1144,26 +1545,67 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
         .map((pending) => pending.drained));
     },
     async waitForActivePendingQuery(phase: PendingQueryPhase, timeoutMs = 3_500) {
-      const deadline = performance.now() + timeoutMs;
-      do {
-        const receipt = state.pendingQueries.find((candidate) =>
-          candidate.phase === phase && candidate.backendPid !== null);
-        if (receipt?.backendPid !== null && receipt?.backendPid !== undefined) {
-          const [activity] = await admin!.unsafe<Array<{ active: boolean }>>(`
-            SELECT EXISTS (
-              SELECT 1
-              FROM pg_stat_activity
-              WHERE pid = $1
-                AND datname = current_database()
-                AND state = 'active'
-                AND query ILIKE '%pg_sleep%'
-            ) AS active
-          `, [receipt.backendPid]);
-          if (activity?.active) return receipt;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      } while (performance.now() < deadline);
+      const receipt = await waitForActivePendingQuery(phase, timeoutMs);
+      if (receipt) return receipt;
       throw new Error(`pending ${phase} query did not reach its exact active backend`);
+    },
+    tryWaitForActivePendingQuery(
+      phase: PendingQueryPhase,
+      invocationId: number,
+      timeoutMs = 1_500,
+    ) {
+      return waitForActivePendingQuery(phase, timeoutMs, invocationId);
+    },
+    reserveOwnerSlots,
+    provePreRegistrationTrap,
+    async proveDedicatedCleanupProbeControl() {
+      if (!captureDedicatedOwnerControls) {
+        throw new Error("dedicated owner-control capture is not active for this injection");
+      }
+      const probeOffset = state.cleanupProbeReceipts.length;
+      const controlOffset = state.ownerControlReceipts.length;
+      const parsed = new URL(adminUrl);
+      const postgresModule = await import("postgres");
+      const drizzleModule = await import("drizzle-orm/postgres-js");
+      const client = postgresModule.default({
+        host: parsed.hostname,
+        port: Number(parsed.port),
+        database: parsed.pathname.slice(1),
+        user: decodeURIComponent(parsed.username),
+        password: decodeURIComponent(parsed.password),
+        max: 1,
+        connection: { statement_timeout: 5_000 },
+      });
+      try {
+        const controlDb = drizzleModule.drizzle(client);
+        await controlDb.execute(sql`SELECT true AS participant_pids_gone`);
+      } finally {
+        await client.end({ timeout: 1 });
+      }
+      const probe = state.cleanupProbeReceipts.at(probeOffset);
+      const control = state.ownerControlReceipts.at(controlOffset);
+      if (!probe || !control) throw new Error("dedicated cleanup probe control was not observed");
+      return { probe, control };
+    },
+    armPreRegistrationTrap() {
+      state.preRegistrationTrapArmed = true;
+    },
+    disarmPreRegistrationTrap() {
+      state.preRegistrationTrapArmed = false;
+    },
+    cancelBackend,
+    async waitForCloseAttempts(count: number, timeoutMs = 5_000) {
+      const deadline = performance.now() + timeoutMs;
+      while (state.closeAttempts.length < count && performance.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return state.closeAttempts.length >= count;
+    },
+    releaseCleanupFailureCloseGate() {
+      if (state.cleanupFailureCloseGateReleasedAt === null) {
+        state.cleanupFailureCloseGateReleasedAt = performance.now();
+        resolveCleanupFailureCloseGate();
+      }
     },
     cleanup,
     token,
@@ -1343,6 +1785,80 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         await legacyOwner.end();
       }
     }, 60_000);
+
+    it("performs zero migration-loader, E3 environment, or serving-pool work in real flag-off bootstrap", async () => {
+      // Mutations caught: an early return inside the helper is too late when index.ts has already
+      // hashed the migration tree or evaluated environment properties to build its input object.
+      // The three flag-on deny controls make every preload trap executable and non-vacuous.
+      guard();
+      const flagOff = await observeServer({
+        databaseUrl: legacyOwnerUrl,
+        distributedEnabled: false,
+        sentinelMode: "bootstrap-record",
+      });
+      const flagOn = await observeServer({
+        databaseUrl: adminUrl,
+        distributedEnabled: true,
+        appDatabaseUrl: appUrl,
+        operatorDatabaseUrl: operatorUrl,
+        sentinelMode: "bootstrap-record",
+      });
+      const loaderDenied = await observeServer({
+        databaseUrl: adminUrl,
+        distributedEnabled: true,
+        appDatabaseUrl: appUrl,
+        operatorDatabaseUrl: operatorUrl,
+        sentinelMode: "bootstrap-loader-deny",
+      });
+      const envDenied = await observeServer({
+        databaseUrl: adminUrl,
+        distributedEnabled: true,
+        appDatabaseUrl: appUrl,
+        operatorDatabaseUrl: operatorUrl,
+        sentinelMode: "bootstrap-env-deny",
+      });
+      const allocationDenied = await observeServer({
+        databaseUrl: adminUrl,
+        distributedEnabled: true,
+        appDatabaseUrl: appUrl,
+        operatorDatabaseUrl: operatorUrl,
+        sentinelMode: "bootstrap-allocation-deny",
+      });
+
+      const bootstrapMarkers = [
+        "JOB_CONTROL_BOOTSTRAP_LOADER_READ",
+        "JOB_CONTROL_BOOTSTRAP_ENV_READ:AOA_APP_DATABASE_URL",
+        "JOB_CONTROL_BOOTSTRAP_ENV_READ:AOA_OPERATOR_DATABASE_URL",
+        "JOB_CONTROL_BOOTSTRAP_POOL_ALLOCATION:aoa_app",
+        "JOB_CONTROL_BOOTSTRAP_POOL_ALLOCATION:aoa_operator",
+      ] as const;
+      expect({
+        exited: flagOff.exited,
+        markerCounts: Object.fromEntries(bootstrapMarkers.map((marker) => [
+          marker,
+          flagOff.output.split(marker).length - 1,
+        ])),
+      }).toEqual({
+        exited: false,
+        markerCounts: Object.fromEntries(bootstrapMarkers.map((marker) => [marker, 0])),
+      });
+
+      expect(flagOn.exited, flagOn.output).toBe(false);
+      expect(flagOn.output.match(/JOB_CONTROL_BOOTSTRAP_LOADER_READ/g)).toHaveLength(1);
+      expect(flagOn.output).toContain("JOB_CONTROL_BOOTSTRAP_ENV_READ:AOA_APP_DATABASE_URL");
+      expect(flagOn.output).toContain("JOB_CONTROL_BOOTSTRAP_ENV_READ:AOA_OPERATOR_DATABASE_URL");
+      expect(flagOn.output).toContain("JOB_CONTROL_BOOTSTRAP_POOL_ALLOCATION:aoa_app");
+      expect(flagOn.output).toContain("JOB_CONTROL_BOOTSTRAP_POOL_ALLOCATION:aoa_operator");
+
+      expect(loaderDenied.exited, loaderDenied.output).toBe(true);
+      expect(loaderDenied.output).toContain("JOB_CONTROL_BOOTSTRAP_LOADER_READ");
+      expect(loaderDenied.output).toContain("JOB_CONTROL_BOOTSTRAP_LOADER_DENIED");
+      expect(envDenied.exited, envDenied.output).toBe(true);
+      expect(envDenied.output).toContain("JOB_CONTROL_BOOTSTRAP_ENV_READ:AOA_APP_DATABASE_URL");
+      expect(envDenied.output).toContain("JOB_CONTROL_BOOTSTRAP_ENV_DENIED:AOA_APP_DATABASE_URL");
+      expect(allocationDenied.exited, allocationDenied.output).toBe(true);
+      expect(allocationDenied.output).toContain("JOB_CONTROL_BOOTSTRAP_POOL_ALLOCATION:aoa_app");
+    }, 180_000);
 
     it("fails closed before serving when the aoa_app connection cannot open", async () => {
       guard();
@@ -2028,6 +2544,230 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       });
     }, 60_000);
 
+    it("bounds a never-settling owner transaction acquisition without abandoning queued work", async () => {
+      // All real owner-pool slots are reserved before open. The reservations stay held through
+      // every public assertion, so only production's acquisition bound can settle this startup.
+      guard();
+      const harness = await createAdvisoryStartupHarness("transaction-acquisition-pending");
+      const reservations = await harness.reserveOwnerSlots(4);
+      const operation = harness.open(harness.input);
+      void operation.catch(() => {});
+      let appPending: (typeof harness.state.pendingQueries)[number] | null = null;
+      try {
+        expect(reservations.receipts).toHaveLength(4);
+        expect(new Set(reservations.receipts.map(({ pid }) => pid)).size).toBe(4);
+        expect(reservations.receipts.every(({ releasedAt }) => releasedAt === null)).toBe(true);
+        const [invocation] = harness.state.openInvocations;
+        expect(invocation?.controllers).toHaveLength(1);
+        const controller = invocation?.controllers[0];
+        expect(controller?.signal.aborted).toBe(false);
+
+        const milestoneDeadline = performance.now() + 3_500;
+        let queuedOwnerTransaction: StartupTransactionReceipt | undefined;
+        do {
+          queuedOwnerTransaction = harness.state.transactionReceipts.find((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.role === "owner" &&
+            receipt.outcome === "pending" && receipt.settledAt === null);
+          appPending = harness.state.pendingQueries.find((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.phase === "app-authority" &&
+            receipt.sleepIssuedAt !== null && receipt.settledAt === null) ?? null;
+          if (queuedOwnerTransaction || appPending) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        } while (performance.now() < milestoneDeadline);
+        expect(
+          queuedOwnerTransaction ? "shared-acquisition" : appPending ? "dedicated-owner-bypass" : null,
+        ).toMatch(/^(shared-acquisition|dedicated-owner-bypass)$/u);
+
+        const externallyAbortedAt = performance.now();
+        controller?.abort();
+
+        const appTransactions = appPending
+          ? harness.state.transactionReceipts.filter((receipt) =>
+              receipt.invocationId === invocation?.id && receipt.phase === "app-authority" &&
+              receipt.outcome === "pending" && receipt.settledAt === null)
+          : [];
+        if (appPending) {
+          const exactAbortAt = invocation?.deadlineReceipt?.at ?? performance.now();
+          const prompt = await waitForReceiptSettlement(
+            [appPending, ...appTransactions],
+            exactAbortAt + EARLY_ABORT_SETTLEMENT_WATCHDOG_MS,
+          );
+          expect.soft(prompt).toMatchObject({ kind: "settled", observedAt: expect.any(Number) });
+        }
+
+        const outcome = await withOuterWatchdog(operation, EARLY_ABORT_PUBLIC_WATCHDOG_MS);
+        const publicReturnedAt = invocation?.returnedAt;
+        const queuedOwnerTransactions = harness.state.transactionReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id && receipt.role === "owner");
+        const trackedReceipts = [
+          ...queuedOwnerTransactions,
+          ...(appPending ? [appPending, ...appTransactions] : []),
+        ];
+        expect({
+          publicKind: outcome.kind,
+          errorCode: outcome.kind === "rejected"
+            ? (outcome.error as { message?: unknown }).message
+            : null,
+          returned: typeof publicReturnedAt === "number",
+          withinBound: typeof publicReturnedAt === "number" &&
+            publicReturnedAt - externallyAbortedAt < EARLY_ABORT_PUBLIC_WATCHDOG_MS,
+          reservationsHeld: reservations.receipts.every(({ releasedAt }) => releasedAt === null),
+          trackedWorkSettledBeforeReturn: typeof publicReturnedAt === "number" &&
+            trackedReceipts.every((receipt) =>
+              receipt.settledAt !== null && receipt.settledAt <= publicReturnedAt),
+        }).toEqual({
+          publicKind: "rejected",
+          errorCode: "distributed_execution_timeout",
+          returned: true,
+          withinBound: true,
+          reservationsHeld: true,
+          trackedWorkSettledBeforeReturn: true,
+        });
+      } finally {
+        let drained: Awaited<ReturnType<typeof withOuterWatchdog>> | undefined;
+        try {
+          if (appPending?.backendPid && appPending.settledAt === null) {
+            await harness.cancelBackend(appPending.backendPid).catch(() => false);
+          }
+          await reservations.release();
+          drained = await withOuterWatchdog(operation.then(() => true, () => true), 12_000);
+        } finally {
+          await harness.cleanup();
+        }
+        expect(drained).toMatchObject({ kind: "fulfilled", value: true });
+      }
+    }, 35_000);
+
+    it.each([
+      ["timeout-setup-pending", "timeout-setup"],
+      ["backend-identity-pending", "backend-identity"],
+    ] as const)("settles the real owner %s stage before returning from an external abort", async (
+      injection,
+      phase,
+    ) => {
+      // The direct control proves the exact SQL trap is live. Production receives no fixture
+      // cancellation until finally; a fixed disposable owner path may bypass this shared trap.
+      guard();
+      const harness = await createAdvisoryStartupHarness(injection);
+      const directControl = await harness.provePreRegistrationTrap(phase);
+      expect(directControl.cancelled).toBe(true);
+      expect(directControl.outcome.kind).toBe("rejected");
+      expect(directControl.pending).toMatchObject({
+        invocationId: -1,
+        phase,
+        role: "owner",
+        backendPid: expect.any(Number),
+        settledAt: expect.any(Number),
+      });
+      expect(directControl.transaction).toMatchObject({
+        invocationId: -1,
+        phase,
+        role: "owner",
+        outcome: "rejected",
+        settledAt: expect.any(Number),
+      });
+
+      harness.armPreRegistrationTrap();
+      const operation = harness.open(harness.input);
+      void operation.catch(() => {});
+      let productionPending: (typeof harness.state.pendingQueries)[number] | null = null;
+      let bypassPending: (typeof harness.state.pendingQueries)[number] | null = null;
+      try {
+        const [invocation] = harness.state.openInvocations;
+        expect(invocation?.controllers).toHaveLength(1);
+        const controller = invocation?.controllers[0];
+        expect(controller?.signal.aborted).toBe(false);
+
+        const milestoneDeadline = performance.now() + 3_500;
+        do {
+          productionPending = harness.state.pendingQueries.find((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.phase === phase &&
+            receipt.sleepIssuedAt !== null && receipt.settledAt === null) ?? null;
+          bypassPending = harness.state.pendingQueries.find((receipt) =>
+            receipt.invocationId === invocation?.id && receipt.phase === "app-authority" &&
+            receipt.sleepIssuedAt !== null && receipt.settledAt === null) ?? null;
+          if (productionPending || bypassPending) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        } while (performance.now() < milestoneDeadline);
+        const trapOrBypass = productionPending ? "trap" : bypassPending ? "dedicated-owner-bypass" : null;
+        expect(trapOrBypass).toMatch(/^(trap|dedicated-owner-bypass)$/u);
+        harness.disarmPreRegistrationTrap();
+
+        const abortPending = productionPending ?? bypassPending;
+        const transactionsPendingAtAbort = abortPending
+          ? harness.state.transactionReceipts.filter((receipt) =>
+              receipt.invocationId === invocation?.id && receipt.phase === abortPending.phase &&
+              receipt.outcome === "pending" && receipt.settledAt === null)
+          : [];
+        if (abortPending) {
+          expect(transactionsPendingAtAbort).toHaveLength(1);
+          expect(abortPending.settledAt).toBeNull();
+        }
+
+        const externallyAbortedAt = performance.now();
+        controller?.abort();
+        const exactAbortAt = invocation?.deadlineReceipt?.at;
+        expect(typeof exactAbortAt).toBe("number");
+
+        let promptKind: "settled" | "watchdog" | "missing" = "missing";
+        if (abortPending) {
+          const promptDeadline = (exactAbortAt ?? Number.NEGATIVE_INFINITY) +
+            EARLY_ABORT_SETTLEMENT_WATCHDOG_MS;
+          const prompt = await waitForReceiptSettlement(
+            [abortPending, ...transactionsPendingAtAbort],
+            promptDeadline,
+          );
+          promptKind = prompt.kind;
+        }
+
+        const publicRemaining = Math.max(
+          1,
+          EARLY_ABORT_PUBLIC_WATCHDOG_MS -
+            (performance.now() - (exactAbortAt ?? externallyAbortedAt)),
+        );
+        const outcome = await withOuterWatchdog(operation, publicRemaining);
+        const publicReturnedAt = invocation?.returnedAt;
+        const trackedReceipts = abortPending
+          ? [abortPending, ...transactionsPendingAtAbort]
+          : [];
+        expect({
+          milestone: trapOrBypass,
+          promptKind,
+          publicKind: outcome.kind,
+          errorCode: outcome.kind === "rejected"
+            ? (outcome.error as { message?: unknown }).message
+            : null,
+          returned: typeof publicReturnedAt === "number",
+          withinBound: typeof publicReturnedAt === "number" &&
+            publicReturnedAt - externallyAbortedAt < EARLY_ABORT_PUBLIC_WATCHDOG_MS,
+          trackedWorkSettledBeforeReturn: typeof publicReturnedAt === "number" &&
+            trackedReceipts.every((receipt) =>
+              receipt.settledAt !== null && receipt.settledAt <= publicReturnedAt),
+        }).toEqual({
+          milestone: expect.stringMatching(/^(trap|dedicated-owner-bypass)$/u),
+          promptKind: "settled",
+          publicKind: "rejected",
+          errorCode: "distributed_execution_timeout",
+          returned: true,
+          withinBound: true,
+          trackedWorkSettledBeforeReturn: true,
+        });
+      } finally {
+        harness.disarmPreRegistrationTrap();
+        const pendingToRelease = productionPending ?? bypassPending;
+        if (pendingToRelease?.backendPid && pendingToRelease.settledAt === null) {
+          await harness.cancelBackend(pendingToRelease.backendPid).catch(() => false);
+        }
+        let drained: Awaited<ReturnType<typeof withOuterWatchdog>> | undefined;
+        try {
+          drained = await withOuterWatchdog(operation.then(() => true, () => true), 12_000);
+        } finally {
+          await harness.cleanup();
+        }
+        expect(drained).toMatchObject({ kind: "fulfilled", value: true });
+      }
+    }, 40_000);
+
     it.each([
       ["migration-pending", "migration-identity", "owner", []],
       ["app-authority-pending", "app-authority", "aoa_app", ["aoa_app"]],
@@ -2379,6 +3119,343 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         expect(drained).toMatchObject({ kind: "fulfilled", value: true });
       }
     }, 30_000);
+
+    it("bounds owner cleanup acquisition on a normal returned close while the shared pool is reserved", async () => {
+      guard();
+      const harness = await createAdvisoryStartupHarness("cleanup-acquisition-pending");
+      const directControl = await harness.proveDedicatedCleanupProbeControl();
+      expect({
+        source: directControl.probe.source,
+        linked: directControl.probe.controlId === directControl.control.id,
+        participantPidsGone: directControl.probe.participantPidsGone,
+        probeOutcome: directControl.probe.outcome,
+        probeSettled: directControl.probe.settledAt !== null,
+        controlEndOutcome: directControl.control.endOutcome,
+        controlDisposed: directControl.control.endSettledAt !== null,
+      }).toEqual({
+        source: "dedicated-owner-control",
+        linked: true,
+        participantPidsGone: true,
+        probeOutcome: "fulfilled",
+        probeSettled: true,
+        controlEndOutcome: "fulfilled",
+        controlDisposed: true,
+      });
+      const ownerControlOffset = harness.state.ownerControlReceipts.length;
+      const accepted = await harness.open(harness.input);
+      expect(accepted).not.toBeNull();
+      const reservations = await harness.reserveOwnerSlots(4);
+      const cleanupProbeOffset = harness.state.cleanupProbeReceipts.length;
+      const closeOperation = accepted!.close();
+      void closeOperation.catch(() => {});
+      try {
+        const outcome = await withOuterWatchdog(closeOperation, EARLY_ABORT_PUBLIC_WATCHDOG_MS);
+        const publicReturnedAt = outcome.kind === "watchdog" ? null : performance.now();
+        const cleanupProbes = harness.state.cleanupProbeReceipts.slice(cleanupProbeOffset);
+        const ownerControls = harness.state.ownerControlReceipts.slice(ownerControlOffset);
+        expect({
+          publicKind: outcome.kind,
+          returned: typeof publicReturnedAt === "number",
+          reservationsHeld: reservations.receipts.every(({ releasedAt }) => releasedAt === null),
+          semanticCleanupProbeObserved: cleanupProbes.some((probe) =>
+            probe.participantPidsGone === true),
+          cleanupProbesSettledBeforeReturn: cleanupProbes.length > 0 &&
+            typeof publicReturnedAt === "number" && cleanupProbes.every((probe) =>
+              probe.settledAt !== null && probe.outcome === "fulfilled" &&
+              probe.settledAt <= publicReturnedAt),
+          dedicatedProbesLinkedToControls: cleanupProbes.every((probe) =>
+            probe.source === "shared-owner-db" || ownerControls.some((control) =>
+              control.id === probe.controlId)),
+          controlsDisposedBeforeReturn: typeof publicReturnedAt === "number" &&
+            ownerControls.every((control) => control.endOutcome === "fulfilled" &&
+              control.endSettledAt !== null && control.endSettledAt <= publicReturnedAt),
+          servingCloses: harness.state.closeSettled.map(({ role }) => role).sort(),
+          servingClosedBeforeReturn: typeof publicReturnedAt === "number" &&
+            harness.state.closeSettled.every(({ at }) => at <= publicReturnedAt),
+        }).toEqual({
+          publicKind: "fulfilled",
+          returned: true,
+          reservationsHeld: true,
+          semanticCleanupProbeObserved: true,
+          cleanupProbesSettledBeforeReturn: true,
+          dedicatedProbesLinkedToControls: true,
+          controlsDisposedBeforeReturn: true,
+          servingCloses: ["aoa_app", "aoa_operator"],
+          servingClosedBeforeReturn: true,
+        });
+      } finally {
+        let drained: Awaited<ReturnType<typeof withOuterWatchdog>> | undefined;
+        try {
+          await reservations.release();
+          drained = await withOuterWatchdog(closeOperation.then(() => true, () => true), 12_000);
+        } finally {
+          await harness.cleanup();
+        }
+        expect(drained).toMatchObject({ kind: "fulfilled", value: true });
+      }
+    }, 40_000);
+
+    it("preserves the startup failure while bounding later owner cleanup acquisition", async () => {
+      // Both serving closes pause only after the injected positive-phase failure has unwound and
+      // participant cancellation/allSettled has finished. Owner reservation therefore targets
+      // cleanup acquisition, never the earlier startup transaction.
+      guard();
+      const harness = await createAdvisoryStartupHarness("cleanup-failure-acquisition-pending");
+      const directControl = await harness.proveDedicatedCleanupProbeControl();
+      expect({
+        source: directControl.probe.source,
+        linked: directControl.probe.controlId === directControl.control.id,
+        participantPidsGone: directControl.probe.participantPidsGone,
+        probeOutcome: directControl.probe.outcome,
+        probeSettled: directControl.probe.settledAt !== null,
+        controlEndOutcome: directControl.control.endOutcome,
+        controlDisposed: directControl.control.endSettledAt !== null,
+      }).toEqual({
+        source: "dedicated-owner-control",
+        linked: true,
+        participantPidsGone: true,
+        probeOutcome: "fulfilled",
+        probeSettled: true,
+        controlEndOutcome: "fulfilled",
+        controlDisposed: true,
+      });
+      const cleanupProbeOffset = harness.state.cleanupProbeReceipts.length;
+      const ownerControlOffset = harness.state.ownerControlReceipts.length;
+      const operation = harness.open(harness.input);
+      void operation.catch(() => {});
+      let reservations: OwnerReservationGroup | null = null;
+      try {
+        const reachedLaterClose = await harness.waitForCloseAttempts(2, 12_000);
+        expect(reachedLaterClose).toBe(true);
+        expect(harness.state.injectionTriggered).toBe(true);
+        expect(typeof harness.state.injectionTriggeredAt).toBe("number");
+        expect(harness.state.closeAttempts.map(({ role }) => role).sort()).toEqual([
+          "aoa_app", "aoa_operator",
+        ]);
+        expect(harness.state.closeSettled).toEqual([]);
+        for (const attempt of harness.state.closeAttempts) {
+          expect(attempt.at).toBeGreaterThanOrEqual(
+            harness.state.injectionTriggeredAt ?? Number.POSITIVE_INFINITY,
+          );
+        }
+
+        reservations = await harness.reserveOwnerSlots(4);
+        expect(reservations.receipts).toHaveLength(4);
+        for (const reservation of reservations.receipts) {
+          expect(reservation.reservedAt).toBeGreaterThanOrEqual(
+            harness.state.injectionTriggeredAt ?? Number.POSITIVE_INFINITY,
+          );
+        }
+        harness.releaseCleanupFailureCloseGate();
+        const outcome = await withOuterWatchdog(operation, EARLY_ABORT_PUBLIC_WATCHDOG_MS);
+        const [invocation] = harness.state.openInvocations;
+        const publicReturnedAt = invocation?.returnedAt;
+        const cleanupProbes = harness.state.cleanupProbeReceipts.slice(cleanupProbeOffset);
+        const ownerControls = harness.state.ownerControlReceipts.slice(ownerControlOffset);
+        expect({
+          publicKind: outcome.kind,
+          errorCode: outcome.kind === "rejected"
+            ? (outcome.error as { message?: unknown }).message
+            : null,
+          returned: typeof publicReturnedAt === "number",
+          reservationsHeld: reservations.receipts.every(({ releasedAt }) => releasedAt === null),
+          semanticCleanupProbeObserved: cleanupProbes.some((probe) =>
+            probe.participantPidsGone === true),
+          cleanupProbesSettledBeforeReturn: cleanupProbes.length > 0 &&
+            typeof publicReturnedAt === "number" && cleanupProbes.every((probe) =>
+              probe.settledAt !== null && probe.outcome === "fulfilled" &&
+              probe.settledAt <= publicReturnedAt),
+          dedicatedProbesLinkedToControls: cleanupProbes.every((probe) =>
+            probe.source === "shared-owner-db" || ownerControls.some((control) =>
+              control.id === probe.controlId)),
+          controlsDisposedBeforeReturn: typeof publicReturnedAt === "number" &&
+            ownerControls.every((control) => control.endOutcome === "fulfilled" &&
+              control.endSettledAt !== null && control.endSettledAt <= publicReturnedAt),
+          servingCloses: harness.state.closeSettled.map(({ role }) => role).sort(),
+          servingClosedBeforeReturn: typeof publicReturnedAt === "number" &&
+            harness.state.closeSettled.every(({ at }) => at <= publicReturnedAt),
+        }).toEqual({
+          publicKind: "rejected",
+          errorCode: "distributed_execution_advisory_domain",
+          returned: true,
+          reservationsHeld: true,
+          semanticCleanupProbeObserved: true,
+          cleanupProbesSettledBeforeReturn: true,
+          dedicatedProbesLinkedToControls: true,
+          controlsDisposedBeforeReturn: true,
+          servingCloses: ["aoa_app", "aoa_operator"],
+          servingClosedBeforeReturn: true,
+        });
+      } finally {
+        harness.releaseCleanupFailureCloseGate();
+        let drained: Awaited<ReturnType<typeof withOuterWatchdog>> | undefined;
+        try {
+          await reservations?.release();
+          drained = await withOuterWatchdog(operation.then(() => true, () => true), 12_000);
+        } finally {
+          await harness.cleanup();
+        }
+        expect(drained).toMatchObject({ kind: "fulfilled", value: true });
+      }
+    }, 45_000);
+
+    it("does not cancel unrelated owner work that reuses a completed startup backend", async () => {
+      guard();
+      const harness = await createAdvisoryStartupHarness("stale-owner-lifecycle");
+      const operation = harness.open(harness.input);
+      void operation.catch(() => {});
+      let reservations: OwnerReservationGroup | null = null;
+      let outsiderQuery: ReturnType<ReservedOwnerSql["unsafe"]> | null = null;
+      let outsiderObserved: Promise<void> | null = null;
+      let outsiderOutcome: "pending" | "fulfilled" | "rejected" = "pending";
+      let outsiderSettledAt: number | null = null;
+      try {
+        const appPending = await harness.waitForActivePendingQuery("app-authority", 3_500);
+        const [invocation] = harness.state.openInvocations;
+        expect(invocation?.controllers).toHaveLength(1);
+        const ownerIdentity = harness.state.backendIdentities.find((identity) =>
+          identity.invocationId === invocation?.id && identity.role === "owner");
+        expect(ownerIdentity).toMatchObject({
+          pid: expect.any(Number),
+          backendStart: expect.any(String),
+          xactStart: expect.any(String),
+          sessionRole: "test",
+          databaseName: expect.any(String),
+          applicationName: `${harness.token}_owner`,
+        });
+        const completedOwnerTransaction = harness.state.transactionReceipts.find((receipt) =>
+          receipt.invocationId === invocation?.id && receipt.role === "owner");
+        expect(completedOwnerTransaction).toMatchObject({
+          outcome: "fulfilled",
+          settledAt: expect.any(Number),
+        });
+        expect(completedOwnerTransaction?.settledAt ?? Number.POSITIVE_INFINITY)
+          .toBeLessThanOrEqual(appPending.startedAt);
+
+        reservations = await harness.reserveOwnerSlots(1);
+        const [reservation] = reservations.receipts;
+        expect(reservation).toMatchObject({
+          pid: ownerIdentity?.pid,
+          backendStart: ownerIdentity?.backendStart,
+          applicationName: `${harness.token}_owner`,
+          releasedAt: null,
+        });
+
+        outsiderQuery = reservation!.connection.unsafe("SELECT pg_sleep(60)");
+        outsiderObserved = outsiderQuery.then(
+          () => {
+            outsiderOutcome = "fulfilled";
+            outsiderSettledAt = performance.now();
+          },
+          () => {
+            outsiderOutcome = "rejected";
+            outsiderSettledAt = performance.now();
+          },
+        );
+        const outsiderDeadline = performance.now() + 3_500;
+        let outsiderActivity: {
+          backend_start: string;
+          xact_start: string;
+          session_role: string;
+          database_name: string;
+          application_name: string;
+          active: boolean;
+        } | undefined;
+        do {
+          [outsiderActivity] = await admin!.unsafe<Array<{
+            backend_start: string;
+            xact_start: string;
+            session_role: string;
+            database_name: string;
+            application_name: string;
+            active: boolean;
+          }>>(`
+            SELECT activity.backend_start::text AS backend_start,
+              activity.xact_start::text AS xact_start,
+              activity.usename AS session_role,
+              activity.datname AS database_name,
+              activity.application_name,
+              activity.state = 'active' AND activity.query ILIKE '%pg_sleep%' AS active
+            FROM pg_stat_activity activity
+            WHERE activity.pid = $1
+          `, [reservation!.pid]);
+          if (outsiderActivity?.active) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        } while (performance.now() < outsiderDeadline);
+        expect(outsiderActivity).toMatchObject({
+          backend_start: ownerIdentity?.backendStart,
+          session_role: ownerIdentity?.sessionRole,
+          database_name: ownerIdentity?.databaseName,
+          application_name: ownerIdentity?.applicationName,
+          active: true,
+        });
+        expect(outsiderActivity?.xact_start).not.toBe(ownerIdentity?.xactStart);
+        expect(outsiderOutcome).toBe("pending");
+
+        const controller = invocation!.controllers[0]!;
+        controller.abort();
+        const exactAbortAt = invocation?.deadlineReceipt?.at;
+        const appTransactions = harness.state.transactionReceipts.filter((receipt) =>
+          receipt.invocationId === invocation?.id && receipt.phase === "app-authority" &&
+          receipt.outcome === "pending");
+        const targetSettlement = await waitForReceiptSettlement(
+          [appPending, ...appTransactions],
+          (exactAbortAt ?? performance.now()) + EARLY_ABORT_SETTLEMENT_WATCHDOG_MS,
+        );
+        expect.soft(targetSettlement).toMatchObject({
+          kind: "settled",
+          observedAt: expect.any(Number),
+        });
+
+        const outcome = await withOuterWatchdog(operation, EARLY_ABORT_PUBLIC_WATCHDOG_MS);
+        const publicReturnedAt = invocation?.returnedAt;
+        const [stillActive] = await admin!.unsafe<Array<{ active: boolean }>>(`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_stat_activity
+            WHERE pid = $1 AND backend_start = $2::timestamptz
+              AND state = 'active' AND query ILIKE '%pg_sleep%'
+          ) AS active
+        `, [reservation!.pid, reservation!.backendStart]);
+        expect({
+          publicKind: outcome.kind,
+          errorCode: outcome.kind === "rejected"
+            ? (outcome.error as { message?: unknown }).message
+            : null,
+          returned: typeof publicReturnedAt === "number",
+          targetSettledBeforeReturn: typeof publicReturnedAt === "number" &&
+            [appPending, ...appTransactions].every((receipt) =>
+              receipt.settledAt !== null && receipt.settledAt <= publicReturnedAt),
+          outsiderOutcome,
+          outsiderSettledAt,
+          outsiderStillActive: stillActive?.active === true,
+          reservationHeld: reservation?.releasedAt === null,
+        }).toEqual({
+          publicKind: "rejected",
+          errorCode: "distributed_execution_timeout",
+          returned: true,
+          targetSettledBeforeReturn: true,
+          outsiderOutcome: "pending",
+          outsiderSettledAt: null,
+          outsiderStillActive: true,
+          reservationHeld: true,
+        });
+      } finally {
+        outsiderQuery?.cancel();
+        let outsiderDrained: Awaited<ReturnType<typeof withOuterWatchdog>> | undefined;
+        let publicDrained: Awaited<ReturnType<typeof withOuterWatchdog>> | undefined;
+        try {
+          outsiderDrained = outsiderObserved
+            ? await withOuterWatchdog(outsiderObserved, 5_000)
+            : undefined;
+          await reservations?.release();
+          publicDrained = await withOuterWatchdog(operation.then(() => true, () => true), 12_000);
+        } finally {
+          await harness.cleanup();
+        }
+        expect(outsiderDrained).toMatchObject({ kind: "fulfilled" });
+        expect(publicDrained).toMatchObject({ kind: "fulfilled", value: true });
+      }
+    }, 45_000);
 
     it("bounds and awaits a pending owner cleanup query on normal returned close", async () => {
       guard();

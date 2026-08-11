@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import { PgDialect } from "drizzle-orm/pg-core";
 import {
   closeBoundedDatabaseConnections,
   openDistributedExecutionDatabases,
@@ -141,6 +143,55 @@ const STARTUP_PHASES = [
   "app-positive",
   "operator-positive",
 ] as const;
+
+const HERMETIC_MIGRATION_HASH = "a".repeat(64);
+const HERMETIC_MIGRATION_IDENTITY = Object.freeze({
+  orderedHashes: Object.freeze([HERMETIC_MIGRATION_HASH]),
+  ledgerSha256: createHash("sha256")
+    .update(JSON.stringify([HERMETIC_MIGRATION_HASH]))
+    .digest("hex"),
+});
+
+function createHermeticOwnerDb(options: Record<string, unknown>) {
+  const dialect = new PgDialect();
+  const ownerIdentity = {
+    pid: 101,
+    backend_start: "2026-08-12 00:00:00+00",
+    role_name: "owner",
+    session_role: "owner",
+    session_user: "owner",
+    usename: "owner",
+    database_name: "aoa_control",
+    datname: "aoa_control",
+    application_name: "job003-hermetic-owner",
+    session_tag: "job003-hermetic-owner",
+  };
+  const execute = async (statement: unknown) => {
+    const text = dialect.sqlToQuery(statement as never).sql.toLowerCase();
+    if (text.includes("__drizzle_migrations")) {
+      return [{ id: 1, hash: HERMETIC_MIGRATION_HASH }];
+    }
+    if (text.includes("participant_pids_gone")) {
+      return [{
+        participant_pids_gone: true,
+        owner_out_of_transaction: true,
+        advisory_locks_gone: true,
+      }];
+    }
+    if (text.includes("pg_backend_pid") || text.includes("backend_start")) {
+      return [ownerIdentity];
+    }
+    return [];
+  };
+  const ownerDb = {
+    execute,
+    $client: { options },
+    transaction: async (callback: (transaction: unknown) => unknown) => {
+      return callback({ execute });
+    },
+  };
+  return { ownerDb };
+}
 
 function analyzeSharedStartupBudget(sourceText: string): {
   readonly valid: boolean;
@@ -882,6 +933,615 @@ describe("distributed-execution database strangler", () => {
       expect(connectionAllocations).toBe(0);
     } finally {
       vi.doUnmock("@armyofagents/db");
+      vi.resetModules();
+    }
+  });
+
+  it.each([
+    ["passwordless", ""],
+    ["password-function", async () => "owner-password-sentinel"],
+  ] as const)("clones the exact owner %s transport into the disposable control and disposes it", async (
+    _credentialMode,
+    pass,
+  ) => {
+    // Mutations caught: dropping a custom postgres.js socket or direct TLS negotiation silently
+    // moves cancellation onto a different transport/domain even when host/database strings match.
+    // The app participant is genuinely pending; only the compiled control cancellation SQL may
+    // settle it after the exact per-open controller is externally aborted.
+    const dialect = new PgDialect();
+    type CompiledQuery = ReturnType<PgDialect["sqlToQuery"]>;
+    const compile = (statement: unknown) => dialect.sqlToQuery(statement as never);
+    const socket = vi.fn(async () => {
+      throw new Error("the hermetic socket must never be opened");
+    });
+    const ownerOptions = {
+      host: ["owner-primary.internal", "owner-standby.internal"],
+      port: [5_432, 5_433],
+      path: undefined,
+      database: "aoa_control",
+      user: "owner_transport_user",
+      pass,
+      ssl: "require" as const,
+      sslnegotiation: "direct" as const,
+      socket,
+      connection: { application_name: "job003-owner-transport" },
+      prepare: false,
+      target_session_attrs: "primary" as const,
+      fetch_types: true,
+      types: {},
+    };
+    const ownerIdentity = {
+      pid: 101,
+      backend_start: "2026-08-12 00:00:00+00",
+      role_name: "owner_transport_user",
+      session_role: "owner_transport_user",
+      session_user: "owner_transport_user",
+      usename: "owner_transport_user",
+      database_name: "aoa_control",
+      datname: "aoa_control",
+      application_name: "job003-owner-transport",
+      session_tag: "job003-owner-transport",
+    };
+    const appIdentity = {
+      pid: 202,
+      backend_start: "2026-08-12 00:00:01+00",
+      role_name: "aoa_app",
+      session_role: "aoa_app",
+      session_user: "aoa_app",
+      usename: "aoa_app",
+      database_name: "aoa_control",
+      datname: "aoa_control",
+      application_name: "job003-open-session-app",
+      session_tag: "job003-open-session-app",
+    };
+    const cleanupReceipt = {
+      participant_pids_gone: true,
+      owner_out_of_transaction: true,
+      advisory_locks_gone: true,
+    };
+    const queryText = (statement: unknown) => compile(statement).sql.toLowerCase();
+    const ownerStatements: CompiledQuery[] = [];
+    const ownerExecute = async (statement: unknown) => {
+      const compiled = compile(statement);
+      ownerStatements.push(compiled);
+      const text = compiled.sql.toLowerCase();
+      if (text.includes("__drizzle_migrations")) {
+        return [{ id: 1, hash: HERMETIC_MIGRATION_HASH }];
+      }
+      if (text.includes("participant_pids_gone")) return [cleanupReceipt];
+      if (text.includes("pg_backend_pid") || text.includes("backend_start")) {
+        return [ownerIdentity];
+      }
+      return [];
+    };
+    const ownerDb = {
+      execute: ownerExecute,
+      $client: { options: ownerOptions },
+      transaction: async (callback: (transaction: unknown) => unknown) => {
+        return callback({ execute: ownerExecute });
+      },
+    };
+
+    let markAppPending!: () => void;
+    const appPendingStarted = new Promise<void>((resolve) => { markAppPending = resolve; });
+    let rejectAppPending!: (error: unknown) => void;
+    const appPending = new Promise<never>((_resolve, reject) => { rejectAppPending = reject; });
+    let appCancellationDelivered = false;
+    const appExecute = async (statement: unknown) => {
+      const text = queryText(statement);
+      if (text.includes("session_role_name")) {
+        markAppPending();
+        return appPending;
+      }
+      if (text.includes("pg_backend_pid") || text.includes("backend_start")) return [appIdentity];
+      return [];
+    };
+    const appDb = {
+      execute: appExecute,
+      transaction: async (callback: (transaction: unknown) => unknown) =>
+        callback({ execute: appExecute }),
+    };
+    const appClose = vi.fn(async () => {});
+    const appFactory = vi.fn(() => ({ db: appDb, close: appClose }));
+    const operatorFactory = vi.fn(() => {
+      throw new Error("operator factory must not be reached");
+    });
+
+    const controls: Array<{
+      options: Record<string, unknown>;
+      client: { end: ReturnType<typeof vi.fn> };
+      end: ReturnType<typeof vi.fn>;
+      statements: CompiledQuery[];
+    }> = [];
+    const postgresFactory = vi.fn((options: Record<string, unknown>) => {
+      const end = vi.fn(async () => {});
+      const client = { end };
+      controls.push({ options, client, end, statements: [] });
+      return client;
+    });
+    const executeControl = async (
+      control: (typeof controls)[number],
+      statement: unknown,
+    ) => {
+      const compiled = compile(statement);
+      control.statements.push(compiled);
+      const text = compiled.sql.toLowerCase();
+      if (text.includes("pg_cancel_backend")) {
+        if (!appCancellationDelivered) {
+          appCancellationDelivered = true;
+          rejectAppPending(Object.assign(new Error("hermetic app query cancelled by control SQL"), {
+            code: "57014",
+          }));
+        }
+        return [{ cancelled: true }];
+      }
+      if (text.includes("participant_pids_gone")) return [cleanupReceipt];
+      if (text.includes("__drizzle_migrations")) {
+        return [{ id: 1, hash: HERMETIC_MIGRATION_HASH }];
+      }
+      if (text.includes("control_pid")) return [{ control_pid: 999 }];
+      if (text.includes("pg_backend_pid") || text.includes("backend_start")) {
+        return [ownerIdentity];
+      }
+      return [];
+    };
+    const logs: unknown[][] = [];
+    const NativeAbortController = globalThis.AbortController;
+    const controllers: AbortController[] = [];
+    class ObservedAbortController extends NativeAbortController {
+      constructor() {
+        super();
+        controllers.push(this);
+      }
+    }
+    const observeWithin = async <T>(promise: Promise<T>, timeoutMs: number) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise.then(
+            (value) => ({ kind: "fulfilled" as const, value }),
+            (error: unknown) => ({ kind: "rejected" as const, error }),
+          ),
+          new Promise<{ kind: "watchdog" }>((resolve) => {
+            timer = setTimeout(() => resolve({ kind: "watchdog" }), timeoutMs);
+          }),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    };
+
+    vi.resetModules();
+    vi.doMock("postgres", () => ({ default: postgresFactory }));
+    vi.doMock("drizzle-orm/postgres-js", async () => {
+      const actual = await vi.importActual<typeof import("drizzle-orm/postgres-js")>(
+        "drizzle-orm/postgres-js",
+      );
+      return { ...actual, drizzle: (client: unknown) => {
+        const control = controls.find((candidate) => candidate.client === client);
+        if (!control) throw new Error("unregistered hermetic owner control");
+        const execute = (statement: unknown) => executeControl(control, statement);
+        return {
+          execute,
+          transaction: async (callback: (transaction: unknown) => unknown) =>
+            callback({ execute }),
+        };
+      } };
+    });
+    vi.doMock("@armyofagents/db", async () => {
+      const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
+      return {
+        ...actual,
+        createTenantAppDbConnection: appFactory,
+        createOperatorDbConnection: operatorFactory,
+      };
+    });
+    vi.doMock("../middleware/logger.js", () => ({
+      logger: { error: (...args: unknown[]) => { logs.push(args); } },
+    }));
+    globalThis.AbortController = ObservedAbortController;
+    try {
+      const isolated = await import("../db/distributed-execution-databases.js");
+      controllers.length = 0;
+      const operation = isolated.openDistributedExecutionDatabases({
+        enabled: true,
+        ownerDb: ownerDb as never,
+        requiredMigrationIdentity: HERMETIC_MIGRATION_IDENTITY,
+        appDatabaseUrl: "postgres://app-user:app-secret@app.internal/aoa_control",
+        operatorDatabaseUrl: "postgres://operator-user:operator-secret@operator.internal/aoa_control",
+      });
+      void operation.catch(() => {});
+      expect(await observeWithin(appPendingStarted, 2_000)).toMatchObject({ kind: "fulfilled" });
+      expect(controllers).toHaveLength(1);
+      expect(controllers[0]?.signal.aborted).toBe(false);
+      controllers[0]!.abort();
+      const outcome = await observeWithin(operation, 5_000);
+      expect(outcome).toMatchObject({
+        kind: "rejected",
+        error: {
+        name: "DistributedExecutionStartupError",
+          message: "distributed_execution_timeout",
+        },
+      });
+
+      expect(appFactory).toHaveBeenCalledOnce();
+      expect(operatorFactory).not.toHaveBeenCalled();
+      expect(appClose).toHaveBeenCalledOnce();
+      expect(appClose).toHaveBeenCalledWith({ timeoutSeconds: 5 });
+      expect(appCancellationDelivered).toBe(true);
+      expect(controls.length).toBeGreaterThan(0);
+      for (const control of controls) {
+        expect(control.options.password).toBe(pass);
+        expect(control.options).toMatchObject({
+          host: ownerOptions.host,
+          port: ownerOptions.port,
+          path: ownerOptions.path,
+          database: ownerOptions.database,
+          user: ownerOptions.user,
+          ssl: ownerOptions.ssl,
+          connection: {
+            statement_timeout: 5_000,
+            lock_timeout: 750,
+            idle_in_transaction_session_timeout: 5_000,
+          },
+          prepare: false,
+          target_session_attrs: "primary",
+          fetch_types: true,
+          types: {},
+          debug: false,
+          max: 1,
+          connect_timeout: 5,
+          idle_timeout: 1,
+        });
+        expect(control.end).toHaveBeenCalledOnce();
+        expect(control.end).toHaveBeenCalledWith({ timeout: 5 });
+      }
+      expect(socket).not.toHaveBeenCalled();
+      expect(JSON.stringify(logs)).not.toContain("owner-password-sentinel");
+      expect(logs).toEqual([[
+        { code: "distributed_execution_timeout", phase: "app-authority" },
+        "distributed execution startup rejected",
+      ]]);
+
+      const controlStatements = controls.flatMap(({ statements }) => statements);
+      expect([...ownerStatements, ...controlStatements]
+        .some(({ sql: text }) => text.toLowerCase().includes("__drizzle_migrations"))).toBe(true);
+      const cancellationQueries = controlStatements
+        .filter(({ sql: text }) => text.toLowerCase().includes("pg_cancel_backend"));
+      expect(cancellationQueries).toHaveLength(1);
+      const cancellationSql = cancellationQueries[0]!.sql.toLowerCase();
+      const cancellationParams = cancellationQueries[0]!.params;
+      expect({
+        socket: controls.every(({ options }) => options.socket === socket),
+        sslnegotiation: controls.every(({ options }) => options.sslnegotiation === "direct"),
+        backendStartColumn: /\bbackend_start\b/u.test(cancellationSql),
+        roleColumn: /\b(?:usename|session_role|role_name|current_user|session_user)\b/u
+          .test(cancellationSql),
+        databaseColumn: /\b(?:datname|database_name|current_database)\b/u.test(cancellationSql),
+        sessionTagColumn: /\b(?:application_name|session_tag|open_tag|control_tag)\b/u
+          .test(cancellationSql),
+        pidParameter: cancellationParams.some((parameter) =>
+          typeof parameter === "number" && parameter === appIdentity.pid),
+        backendStartParameter: cancellationParams.some((parameter) =>
+          typeof parameter === "string" && parameter === appIdentity.backend_start),
+        roleParameter: cancellationParams.some((parameter) =>
+          typeof parameter === "string" && parameter === appIdentity.session_role),
+        databaseParameter: cancellationParams.some((parameter) =>
+          typeof parameter === "string" && parameter === appIdentity.database_name),
+        sessionTagParameter: cancellationParams.some((parameter) =>
+          typeof parameter === "string" && parameter === appIdentity.application_name),
+      }).toEqual({
+        socket: true,
+        sslnegotiation: true,
+        backendStartColumn: true,
+        roleColumn: true,
+        databaseColumn: true,
+        sessionTagColumn: true,
+        pidParameter: true,
+        backendStartParameter: true,
+        roleParameter: true,
+        databaseParameter: true,
+        sessionTagParameter: true,
+      });
+    } finally {
+      globalThis.AbortController = NativeAbortController;
+      vi.doUnmock("postgres");
+      vi.doUnmock("drizzle-orm/postgres-js");
+      vi.doUnmock("@armyofagents/db");
+      vi.doUnmock("../middleware/logger.js");
+      vi.resetModules();
+    }
+  });
+
+  it.each([
+    {
+      targetRole: "app" as const,
+      appDatabaseUrl:
+        "postgres://app-user:app-secret@app-a.internal:5432,app-b.internal:5433/aoa_control",
+      operatorDatabaseUrl:
+        "postgres://operator-user:operator-secret@operator.internal/aoa_control",
+      expectedCode: "distributed_execution_app_authority",
+    },
+    {
+      targetRole: "operator" as const,
+      appDatabaseUrl: "postgres://app-user:app-secret@app.internal/aoa_control",
+      operatorDatabaseUrl:
+        "postgres://operator-user:operator-secret@operator-a.internal:5432,operator-b.internal:5433/aoa_control",
+      expectedCode: "distributed_execution_operator_authority",
+    },
+  ])("accepts a postgres.js multi-host URL with per-host ports for the $targetRole factory", async ({
+    targetRole,
+    appDatabaseUrl,
+    operatorDatabaseUrl,
+    expectedCode,
+  }) => {
+    // postgres.js parses each authority list into two hosts/two ports without opening a socket.
+    // WHATWG URL rejects it; using URL as either serving-role validator rejects valid configs.
+    const factoryUrls = {
+      app: [] as string[],
+      operator: [] as string[],
+    };
+    const targetFailure = new Error(`multi-host URL reached the ${targetRole} factory`);
+    const controlEnd = vi.fn(async () => {});
+    const controlClient = { end: controlEnd };
+    const controlOptions: Array<Record<string, unknown>> = [];
+    const postgresFactory = vi.fn((options: Record<string, unknown>) => {
+      controlOptions.push(options);
+      return controlClient;
+    });
+    const controlDb = {
+      transaction: async (callback: (transaction: unknown) => unknown) => {
+        return callback({
+          execute: async () => [{
+            control_pid: 999,
+            participant_pids_gone: true,
+            owner_out_of_transaction: true,
+            advisory_locks_gone: true,
+          }],
+        });
+      },
+    };
+    const dialect = new PgDialect();
+    const appExecute = async (statement: unknown) => {
+      const text = dialect.sqlToQuery(statement as never).sql.toLowerCase();
+      if (text.includes("pg_backend_pid")) {
+        return [{
+          pid: 202,
+          backend_start: "2026-08-12 00:00:01+00",
+          session_role: "aoa_app",
+          database_name: "aoa_control",
+          application_name: "job003-multihost-app",
+        }];
+      }
+      if (text.includes("session_role_name")) {
+        return [{
+          session_role_name: "aoa_app",
+          role_name: "aoa_app",
+          rolsuper: false,
+          rolbypassrls: false,
+          rolcreatedb: false,
+          rolcreaterole: false,
+          rolinherit: false,
+          rolreplication: false,
+          membership_count: 0,
+          owns_application_objects: false,
+        }];
+      }
+      return [];
+    };
+    const appClose = vi.fn(async () => {});
+    const appConnection = {
+      db: {
+        execute: appExecute,
+        transaction: async (callback: (transaction: unknown) => unknown) =>
+          callback({ execute: appExecute }),
+      },
+      close: appClose,
+    };
+    const { ownerDb } = createHermeticOwnerDb({
+      host: ["owner.internal"],
+      port: [5_432],
+      path: undefined,
+      database: "aoa_control",
+      user: "owner",
+      pass: "",
+      ssl: false,
+      connection: {},
+      prepare: false,
+      target_session_attrs: null,
+      fetch_types: true,
+      types: {},
+    });
+
+    vi.resetModules();
+    vi.doMock("postgres", () => ({ default: postgresFactory }));
+    vi.doMock("drizzle-orm/postgres-js", async () => {
+      const actual = await vi.importActual<typeof import("drizzle-orm/postgres-js")>(
+        "drizzle-orm/postgres-js",
+      );
+      return { ...actual, drizzle: () => controlDb };
+    });
+    vi.doMock("@armyofagents/db", async () => {
+      const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
+      return {
+        ...actual,
+        createTenantAppDbConnection: (url: string) => {
+          factoryUrls.app.push(url);
+          if (targetRole === "app") throw targetFailure;
+          return appConnection;
+        },
+        createOperatorDbConnection: (url: string) => {
+          factoryUrls.operator.push(url);
+          throw targetFailure;
+        },
+      };
+    });
+    vi.doMock("../db/job-control-legacy-grants.js", async () => {
+      const actual = await vi.importActual<typeof import("../db/job-control-legacy-grants.js")>(
+        "../db/job-control-legacy-grants.js",
+      );
+      return {
+        ...actual,
+        APP_EXECUTION_TARGET_COLUMN_GRANTS: [],
+        APP_ENROLLMENT_TARGET_SELECT_COLUMNS: [],
+        APP_ENROLLMENT_TARGET_UPDATE_COLUMNS: [],
+        APP_JOB_PLACEMENT_TARGET_SELECT_COLUMNS: [],
+        APP_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS: [],
+        APP_MCP_API_KEY_COLUMN_GRANTS: [],
+        JOB_CONTROL_LEGACY_GRANTS: {},
+        JOB_CONTROL_NEW_PATH_GRANTS: {},
+        JOB_LEASING_NEW_PATH_GRANTS: {},
+        JOB_SUBMISSION_LEGACY_GRANTS: {},
+        JOB_SUBMISSION_NEW_PATH_GRANTS: {},
+        OPERATOR_METADATA_COLUMN_GRANTS: {},
+        OPERATOR_ENROLLMENT_TARGET_SELECT_COLUMNS: [],
+        OPERATOR_ENROLLMENT_TARGET_UPDATE_COLUMNS: [],
+        OPERATOR_JOB_PLACEMENT_TARGET_SELECT_COLUMNS: [],
+        OPERATOR_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS: [],
+        APP_SERVING_RELATIONS: [],
+        COLUMN_ACL_MANIFEST: {},
+        FORCE_RLS_RELATIONS: [],
+        NON_FORCE_RLS_RELATIONS: [],
+        POLICY_COUNTS: {},
+        RELATION_ACL_MANIFEST: {},
+        RLS_POLICY_MANIFEST: [],
+        RLS_RELATIONS: [],
+        WORKER_ENROLLMENT_APP_GRANTS: {},
+        WORKER_ENROLLMENT_OPERATOR_GRANTS: {},
+      };
+    });
+    vi.doMock("../middleware/logger.js", () => ({
+      logger: { error: vi.fn() },
+    }));
+    try {
+      const isolated = await import("../db/distributed-execution-databases.js");
+      if (targetRole === "operator") {
+        const controlOperatorUrl =
+          "postgres://operator-user:operator-secret@operator.internal/aoa_control";
+        const controlOutcome = await isolated.openDistributedExecutionDatabases({
+          enabled: true,
+          ownerDb: ownerDb as never,
+          requiredMigrationIdentity: HERMETIC_MIGRATION_IDENTITY,
+          appDatabaseUrl,
+          operatorDatabaseUrl: controlOperatorUrl,
+        }).then(
+          () => ({ kind: "fulfilled" as const, error: null }),
+          (error: unknown) => ({ kind: "rejected" as const, error }),
+        );
+        expect({
+          kind: controlOutcome.kind,
+          message: controlOutcome.kind === "rejected"
+            ? (controlOutcome.error as { message?: unknown }).message
+            : null,
+          appFactoryUrls: factoryUrls.app,
+          operatorFactoryUrls: factoryUrls.operator,
+          appCloseCalls: appClose.mock.calls.length,
+        }).toEqual({
+          kind: "rejected",
+          message: "distributed_execution_operator_authority",
+          appFactoryUrls: [appDatabaseUrl],
+          operatorFactoryUrls: [controlOperatorUrl],
+          appCloseCalls: 1,
+        });
+        factoryUrls.app.length = 0;
+        factoryUrls.operator.length = 0;
+        controlOptions.length = 0;
+        appClose.mockClear();
+        controlEnd.mockClear();
+      }
+      const outcome = await isolated.openDistributedExecutionDatabases({
+        enabled: true,
+        ownerDb: ownerDb as never,
+        requiredMigrationIdentity: HERMETIC_MIGRATION_IDENTITY,
+        appDatabaseUrl,
+        operatorDatabaseUrl,
+      }).then(
+        () => ({ kind: "fulfilled" as const, error: null }),
+        (error: unknown) => ({ kind: "rejected" as const, error }),
+      );
+      expect({
+        kind: outcome.kind,
+        error: outcome.kind === "rejected" ? {
+          name: (outcome.error as { name?: unknown }).name,
+          message: (outcome.error as { message?: unknown }).message,
+        } : null,
+        appFactoryUrls: factoryUrls.app,
+        operatorFactoryUrls: factoryUrls.operator,
+        appCloseCalls: appClose.mock.calls.length,
+        controlsDisposed: controlEnd.mock.calls.length === controlOptions.length &&
+          controlEnd.mock.calls.every((call) => JSON.stringify(call) === JSON.stringify([{ timeout: 5 }])),
+      }).toEqual({
+        kind: "rejected",
+        error: { name: "DistributedExecutionStartupError", message: expectedCode },
+        appFactoryUrls: [appDatabaseUrl],
+        operatorFactoryUrls: targetRole === "operator" ? [operatorDatabaseUrl] : [],
+        appCloseCalls: targetRole === "operator" ? 1 : 0,
+        controlsDisposed: true,
+      });
+    } finally {
+      vi.doUnmock("postgres");
+      vi.doUnmock("drizzle-orm/postgres-js");
+      vi.doUnmock("@armyofagents/db");
+      vi.doUnmock("../db/job-control-legacy-grants.js");
+      vi.doUnmock("../middleware/logger.js");
+      vi.resetModules();
+    }
+  });
+
+  it.each((["app", "operator"] as const).flatMap((targetRole) => [
+    "postgres://target-user:target-secret@target-a.internal:5432,,target-b.internal:5433/aoa_control",
+    "postgres://target-user:target-secret@target-a.internal:not-a-port,target-b.internal:5433/aoa_control",
+    "postgres://target-user:target-secret@target-a.internal:5432,target-b.internal:5433/",
+  ].map((malformedUrl) => [targetRole, malformedUrl] as const)))(
+    "rejects malformed %s multi-host database URL %s before either serving factory",
+    async (targetRole, malformedUrl) => {
+    const appFactory = vi.fn();
+    const operatorFactory = vi.fn();
+    const { ownerDb } = createHermeticOwnerDb({
+      host: ["owner.internal"],
+      port: [5_432],
+      path: undefined,
+      database: "aoa_control",
+      user: "owner",
+      pass: "",
+      ssl: false,
+      connection: {},
+      prepare: false,
+      target_session_attrs: null,
+      fetch_types: true,
+      types: {},
+    });
+    vi.resetModules();
+    vi.doMock("@armyofagents/db", async () => {
+      const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
+      return {
+        ...actual,
+        createTenantAppDbConnection: appFactory,
+        createOperatorDbConnection: operatorFactory,
+      };
+    });
+    vi.doMock("../middleware/logger.js", () => ({ logger: { error: vi.fn() } }));
+    try {
+      const isolated = await import("../db/distributed-execution-databases.js");
+      await expect(isolated.openDistributedExecutionDatabases({
+        enabled: true,
+        ownerDb: ownerDb as never,
+        requiredMigrationIdentity: HERMETIC_MIGRATION_IDENTITY,
+        appDatabaseUrl: targetRole === "app"
+          ? malformedUrl
+          : "postgres://app-user:app-secret@app.internal/aoa_control",
+        operatorDatabaseUrl: targetRole === "operator"
+          ? malformedUrl
+          : "postgres://operator-user:operator-secret@operator.internal/aoa_control",
+      })).rejects.toMatchObject({
+        name: "DistributedExecutionStartupError",
+        message: "distributed_execution_configuration",
+      });
+      expect(appFactory).not.toHaveBeenCalled();
+      expect(operatorFactory).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("@armyofagents/db");
+      vi.doUnmock("../middleware/logger.js");
       vi.resetModules();
     }
   });
