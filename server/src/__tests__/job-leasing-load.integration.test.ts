@@ -136,34 +136,357 @@ const CERTIFICATE_PARAMETER_EQUALITIES = Object.freeze([
   ["static_context_hash", "staticContextHash"],
 ] as const);
 
-function canonicalSql(statement: string): string {
-  return statement.toLowerCase().replaceAll('"', "").replace(/\s+/g, " ").trim();
+type ClaimSqlToken = {
+  kind: "word" | "parameter" | "symbol" | "literal";
+  value: string;
+};
+
+type ClaimPredicate =
+  | { kind: "equality"; left: string; right: string }
+  | { kind: "and" | "or"; children: ClaimPredicate[] };
+
+const RELATION_ALIAS_BOUNDARIES = new Set([
+  "where", "join", "inner", "left", "right", "full", "cross", "on", "using",
+  "group", "order", "limit", "offset", "for", "union", "intersect", "except",
+]);
+
+const SUBQUERY_PREDICATE_BOUNDARIES = new Set([
+  "group", "order", "limit", "offset", "for", "union", "intersect", "except", "returning",
+]);
+
+function tokenizeClaimSql(statement: string): ClaimSqlToken[] {
+  const tokens: ClaimSqlToken[] = [];
+  let index = 0;
+  while (index < statement.length) {
+    const character = statement[index]!;
+    if (/\s/.test(character)) {
+      index += 1;
+      continue;
+    }
+    if (statement.startsWith("--", index)) {
+      const newline = statement.indexOf("\n", index + 2);
+      index = newline < 0 ? statement.length : newline + 1;
+      continue;
+    }
+    if (statement.startsWith("/*", index)) {
+      const close = statement.indexOf("*/", index + 2);
+      if (close < 0) throw new Error("claim query contains an unterminated block comment");
+      index = close + 2;
+      continue;
+    }
+    if (character === '"') {
+      let value = "";
+      index += 1;
+      let closed = false;
+      while (index < statement.length) {
+        if (statement[index] === '"') {
+          if (statement[index + 1] === '"') {
+            value += '"';
+            index += 2;
+            continue;
+          }
+          index += 1;
+          closed = true;
+          break;
+        }
+        value += statement[index];
+        index += 1;
+      }
+      if (!closed) throw new Error("claim query contains an unterminated quoted identifier");
+      tokens.push({ kind: "word", value: value.toLowerCase() });
+      continue;
+    }
+    if (character === "'") {
+      let value = "'";
+      index += 1;
+      let closed = false;
+      while (index < statement.length) {
+        value += statement[index];
+        if (statement[index] === "'") {
+          if (statement[index + 1] === "'") {
+            value += "'";
+            index += 2;
+            continue;
+          }
+          index += 1;
+          closed = true;
+          break;
+        }
+        index += 1;
+      }
+      if (!closed) throw new Error("claim query contains an unterminated string literal");
+      tokens.push({ kind: "literal", value });
+      continue;
+    }
+    if (character === "$" && /\d/.test(statement[index + 1] ?? "")) {
+      let end = index + 2;
+      while (/\d/.test(statement[end] ?? "")) end += 1;
+      tokens.push({ kind: "parameter", value: statement.slice(index, end) });
+      index = end;
+      continue;
+    }
+    if (/[a-z_]/i.test(character)) {
+      let end = index + 1;
+      while (/[a-z0-9_$]/i.test(statement[end] ?? "")) end += 1;
+      tokens.push({ kind: "word", value: statement.slice(index, end).toLowerCase() });
+      index = end;
+      continue;
+    }
+    if (/\d/.test(character)) {
+      let end = index + 1;
+      while (/[\d.]/.test(statement[end] ?? "")) end += 1;
+      tokens.push({ kind: "literal", value: statement.slice(index, end) });
+      index = end;
+      continue;
+    }
+    const doubleSymbol = statement.slice(index, index + 2);
+    if (["::", "<=", ">=", "<>", "!=", "||"].includes(doubleSymbol)) {
+      tokens.push({ kind: "symbol", value: doubleSymbol });
+      index += 2;
+      continue;
+    }
+    tokens.push({ kind: "symbol", value: character });
+    index += 1;
+  }
+  return tokens;
+}
+
+function matchingCloseParen(tokens: ClaimSqlToken[], openIndex: number): number {
+  if (tokens[openIndex]?.value !== "(") throw new Error("claim query parser expected an opening parenthesis");
+  let depth = 0;
+  for (let index = openIndex; index < tokens.length; index += 1) {
+    if (tokens[index]?.value === "(") depth += 1;
+    if (tokens[index]?.value === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  throw new Error("claim query contains an unbalanced parenthesis");
+}
+
+function identifierPath(
+  tokens: ClaimSqlToken[],
+  start: number,
+  end = tokens.length,
+): { parts: string[]; next: number } | null {
+  if (tokens[start]?.kind !== "word") return null;
+  const parts = [tokens[start]!.value];
+  let index = start + 1;
+  while (index + 1 < end && tokens[index]?.value === "." && tokens[index + 1]?.kind === "word") {
+    parts.push(tokens[index + 1]!.value);
+    index += 2;
+  }
+  return { parts, next: index };
+}
+
+function collectRelationAliases(tokens: ClaimSqlToken[]): Map<string, string> {
+  const aliases = new Map<string, string>();
+  let depth = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token?.value === "(") {
+      depth += 1;
+      continue;
+    }
+    if (token?.value === ")") {
+      depth -= 1;
+      continue;
+    }
+    if (depth !== 0 || token?.kind !== "word" || (token.value !== "from" && token.value !== "join")) {
+      continue;
+    }
+    const relationPath = identifierPath(tokens, index + 1);
+    if (!relationPath) continue;
+    const relation = relationPath.parts.at(-1)!;
+    aliases.set(relation, relation);
+    let next = relationPath.next;
+    if (tokens[next]?.value === "as") next += 1;
+    const alias = tokens[next];
+    if (alias?.kind === "word" && !RELATION_ALIAS_BOUNDARIES.has(alias.value)) {
+      const prior = aliases.get(alias.value);
+      if (prior && prior !== relation) throw new Error("claim query reuses relation alias " + alias.value);
+      aliases.set(alias.value, relation);
+    }
+  }
+  return aliases;
+}
+
+function isWorkerLeaseRejectionSubquery(tokens: ClaimSqlToken[]): boolean {
+  return [...collectRelationAliases(tokens).values()].includes("worker_lease_rejections");
+}
+
+function canonicalEquality(left: string, right: string): string {
+  return [left, right].sort().join(" = ");
+}
+
+class ClaimPredicateParser {
+  private position = 0;
+
+  constructor(
+    private readonly tokens: ClaimSqlToken[],
+    private readonly aliases: Map<string, string>,
+    private readonly parameters: unknown[],
+    private readonly context: ClaimContext,
+  ) {}
+
+  parse(): ClaimPredicate {
+    if (this.tokens.length === 0) throw new Error("claim certificate anti-join is missing its predicate");
+    const predicate = this.parseOr();
+    if (this.position !== this.tokens.length) {
+      throw new Error(
+        "claim certificate predicate has an unexpected token: " + this.tokens[this.position]?.value,
+      );
+    }
+    return predicate;
+  }
+
+  private parseOr(): ClaimPredicate {
+    const children = [this.parseAnd()];
+    while (this.consume("or")) children.push(this.parseAnd());
+    return children.length === 1 ? children[0]! : { kind: "or", children };
+  }
+
+  private parseAnd(): ClaimPredicate {
+    const children = [this.parsePrimary()];
+    while (this.consume("and")) children.push(this.parsePrimary());
+    return children.length === 1 ? children[0]! : { kind: "and", children };
+  }
+
+  private parsePrimary(): ClaimPredicate {
+    if (this.consume("(")) {
+      const predicate = this.parseOr();
+      this.require(")");
+      return predicate;
+    }
+    const left = this.parseOperand();
+    this.require("=");
+    const right = this.parseOperand();
+    return { kind: "equality", left, right };
+  }
+
+  private parseOperand(): string {
+    const token = this.tokens[this.position];
+    if (token?.kind === "parameter") {
+      this.position += 1;
+      this.consumeCasts();
+      const parameterIndex = Number(token.value.slice(1)) - 1;
+      if (!Number.isSafeInteger(parameterIndex) || parameterIndex < 0 || parameterIndex >= this.parameters.length) {
+        throw new Error("claim certificate predicate references invalid parameter " + token.value);
+      }
+      const matches = CERTIFICATE_PARAMETER_EQUALITIES.filter(([, contextKey]) =>
+        Object.is(this.parameters[parameterIndex], this.context[contextKey]));
+      if (matches.length !== 1) {
+        throw new Error("claim certificate parameter " + token.value + " does not uniquely bind reviewed context");
+      }
+      return "context." + matches[0]![1];
+    }
+    const path = identifierPath(this.tokens, this.position);
+    if (!path || path.parts.length < 2) {
+      throw new Error(
+        "claim certificate predicate expected a qualified identifier at " + (token?.value ?? "end"),
+      );
+    }
+    this.position = path.next;
+    this.consumeCasts();
+    const qualifier = path.parts.at(-2)!;
+    const relation = this.aliases.get(qualifier) ?? qualifier;
+    return relation + "." + path.parts.at(-1);
+  }
+
+  private consumeCasts(): void {
+    while (this.consume("::")) {
+      const type = identifierPath(this.tokens, this.position);
+      if (!type) throw new Error("claim certificate predicate contains a malformed cast");
+      this.position = type.next;
+      if (this.consume("[")) this.require("]");
+    }
+  }
+
+  private consume(value: string): boolean {
+    if (this.tokens[this.position]?.value !== value) return false;
+    this.position += 1;
+    return true;
+  }
+
+  private require(value: string): void {
+    if (!this.consume(value)) {
+      throw new Error(
+        "claim certificate predicate expected " + value + " at " +
+          (this.tokens[this.position]?.value ?? "end"),
+      );
+    }
+  }
+}
+
+function conjunctiveEqualities(predicate: ClaimPredicate): string[] {
+  if (predicate.kind === "or") throw new Error("claim certificate predicate must not contain OR");
+  if (predicate.kind === "equality") return [canonicalEquality(predicate.left, predicate.right)];
+  return predicate.children.flatMap(conjunctiveEqualities);
 }
 
 function assertCapturedClaimCertificateOracle(
   query: { sql: string; parameters: unknown[] },
   context: ClaimContext,
 ): void {
-  const sql = canonicalSql(query.sql);
-  if (!/not\s+exists\s*\(/.test(sql) || !sql.includes("worker_lease_rejections")) {
-    throw new Error("claim query is missing the static-certificate NOT EXISTS anti-join");
+  const tokens = tokenizeClaimSql(query.sql);
+  const outerAliases = collectRelationAliases(tokens);
+  const certificateSubqueries: ClaimSqlToken[][] = [];
+  for (let index = 0; index < tokens.length - 2; index += 1) {
+    if (tokens[index]?.value !== "not" || tokens[index + 1]?.value !== "exists" ||
+        tokens[index + 2]?.value !== "(") continue;
+    const close = matchingCloseParen(tokens, index + 2);
+    const subquery = tokens.slice(index + 3, close);
+    if (isWorkerLeaseRejectionSubquery(subquery)) certificateSubqueries.push(subquery);
   }
-  for (const [certificateColumn, currentColumn] of CERTIFICATE_COLUMN_EQUALITIES) {
-    const certificate = `worker_lease_rejections.${certificateColumn}`;
-    const equality = new RegExp(
-      `(?:${certificate.replaceAll(".", "\\.")}\\s*=\\s*${currentColumn.replaceAll(".", "\\.")}|` +
-      `${currentColumn.replaceAll(".", "\\.")}\\s*=\\s*${certificate.replaceAll(".", "\\.")})`,
+  if (certificateSubqueries.length !== 1) {
+    throw new Error(
+      "claim query requires exactly one worker_lease_rejections NOT EXISTS anti-join; found " +
+        certificateSubqueries.length,
     );
-    if (!equality.test(sql)) throw new Error(`claim certificate equality missing: ${certificateColumn}`);
   }
-  for (const [certificateColumn, contextKey] of CERTIFICATE_PARAMETER_EQUALITIES) {
-    const certificate = `worker_lease_rejections.${certificateColumn}`.replaceAll(".", "\\.");
-    const direct = new RegExp(`${certificate}\\s*=\\s*\\$(\\d+)`).exec(sql);
-    const reverse = new RegExp(`\\$(\\d+)\\s*=\\s*${certificate}`).exec(sql);
-    const parameterIndex = Number((direct ?? reverse)?.[1] ?? 0) - 1;
-    if (parameterIndex < 0 || query.parameters[parameterIndex] !== context[contextKey]) {
-      throw new Error(`claim certificate parameter binding invalid: ${certificateColumn}`);
+  const subquery = certificateSubqueries[0]!;
+  const aliases = new Map([...outerAliases, ...collectRelationAliases(subquery)]);
+  const whereIndexes: number[] = [];
+  let depth = 0;
+  for (let index = 0; index < subquery.length; index += 1) {
+    if (subquery[index]?.value === "(") depth += 1;
+    else if (subquery[index]?.value === ")") depth -= 1;
+    else if (depth === 0 && subquery[index]?.value === "where") whereIndexes.push(index);
+  }
+  if (whereIndexes.length !== 1) {
+    throw new Error(
+      "claim certificate anti-join requires exactly one top-level WHERE; found " + whereIndexes.length,
+    );
+  }
+  const predicateStart = whereIndexes[0]! + 1;
+  let predicateEnd = subquery.length;
+  depth = 0;
+  for (let index = predicateStart; index < subquery.length; index += 1) {
+    if (subquery[index]?.value === "(") depth += 1;
+    else if (subquery[index]?.value === ")") depth -= 1;
+    else if (depth === 0 && SUBQUERY_PREDICATE_BOUNDARIES.has(subquery[index]!.value)) {
+      predicateEnd = index;
+      break;
     }
+  }
+  const predicate = new ClaimPredicateParser(
+    subquery.slice(predicateStart, predicateEnd),
+    aliases,
+    query.parameters,
+    context,
+  ).parse();
+  const actualEqualities = conjunctiveEqualities(predicate).sort();
+  const expectedEqualities = [
+    ...CERTIFICATE_COLUMN_EQUALITIES.map(([certificateColumn, currentColumn]) =>
+      canonicalEquality("worker_lease_rejections." + certificateColumn, currentColumn)),
+    ...CERTIFICATE_PARAMETER_EQUALITIES.map(([certificateColumn, contextKey]) =>
+      canonicalEquality("worker_lease_rejections." + certificateColumn, "context." + contextKey)),
+  ].sort();
+  if (actualEqualities.length !== 18 || JSON.stringify(actualEqualities) !== JSON.stringify(expectedEqualities)) {
+    throw new Error(
+      "claim certificate predicate must be the exact 18-equality conjunction: " +
+        JSON.stringify(actualEqualities),
+    );
   }
 }
 
@@ -427,6 +750,21 @@ async function dropCertificateOnlyMutationGuards(client: Sql): Promise<void> {
     await client.unsafe(`DROP TRIGGER IF EXISTS e3_perf_01_certificate_only_guard ON ${table}`);
   }
   await client.unsafe("DROP FUNCTION IF EXISTS e3_perf_01_reject_non_certificate_mutation() CASCADE");
+}
+
+async function assertCertificateOnlyMutationGuardsRejectTenantWrites(client: Sql): Promise<void> {
+  for (const table of CERTIFICATE_ONLY_GUARDED_TABLES) {
+    await expect(client.begin(async (tx) => {
+      const query = tx as unknown as Sql;
+      await query`SELECT set_config('aoa.organization_id', ${E3_PERF_01_ORGANIZATION_ID}, true)`;
+      const statement = table === "workers"
+        ? "UPDATE workers SET last_seen_at = last_seen_at WHERE false"
+        : `DELETE FROM ${table} WHERE false`;
+      await query.unsafe(statement);
+    }), `${table} guard must reject an aoa_app mutation inside its transaction`).rejects.toThrow(
+      `E3_PERF_01_CERTIFICATE_ONLY_VIOLATION:${table}`,
+    );
+  }
 }
 
 async function seedE3Perf01Corpus(client: Sql): Promise<void> {
@@ -1005,11 +1343,74 @@ describe("E3-PERF-01 immutable load contract", () => {
       ],
     };
     expect(() => assertCapturedClaimCertificateOracle(canonicalQuery, context)).not.toThrow();
+    const productionColumnClauses = CERTIFICATE_COLUMN_EQUALITIES.map(([certificate, current]) => {
+      const [relation, column] = current.split(".");
+      const alias = relation === "job_attempts" ? "attempt" : "job";
+      return `"rejection"."${certificate}" = "${alias}"."${column}"`;
+    });
+    const productionParameterClauses = CERTIFICATE_PARAMETER_EQUALITIES.map(([certificate], index) =>
+      `"rejection"."${certificate}" = $${index + 1}`);
+    const productionShapedQuery = {
+      ...canonicalQuery,
+      sql: `SELECT "attempt"."id" FROM "job_attempts" AS "attempt"
+        JOIN "jobs" AS "job" ON "job"."id" = "attempt"."job_id"
+        WHERE NOT EXISTS (SELECT 1 FROM "worker_lease_rejections" AS "rejection" WHERE (
+          ${[...productionColumnClauses, ...productionParameterClauses].join(") AND (")}
+        )) FOR UPDATE`,
+    };
+    expect(() => assertCapturedClaimCertificateOracle(productionShapedQuery, context)).not.toThrow();
+
+    const globalDecoyQuery = {
+      ...canonicalQuery,
+      sql: `SELECT job_attempts.id FROM job_attempts JOIN jobs ON true
+        WHERE ${clauses[0]} AND NOT EXISTS
+          (SELECT 1 FROM worker_lease_rejections WHERE ${clauses.slice(1).join(" AND ")}) FOR UPDATE`,
+    };
+    expect(() => assertCapturedClaimCertificateOracle(globalDecoyQuery, context)).toThrow();
+
+    const disjunctiveQuery = {
+      ...canonicalQuery,
+      sql: canonicalQuery.sql.replace(
+        clauses.join(" AND "),
+        `${clauses.slice(0, -2).join(" AND ")} AND (${clauses.at(-2)} OR ${clauses.at(-1)})`,
+      ),
+    };
+    expect(() => assertCapturedClaimCertificateOracle(disjunctiveQuery, context)).toThrow();
+
+    const duplicateEqualityQuery = {
+      ...canonicalQuery,
+      sql: canonicalQuery.sql.replace(
+        clauses.join(" AND "),
+        `${clauses.join(" AND ")} AND ${clauses[0]}`,
+      ),
+    };
+    expect(() => assertCapturedClaimCertificateOracle(duplicateEqualityQuery, context)).toThrow();
+
+    const duplicateAntiJoinQuery = {
+      ...canonicalQuery,
+      sql: canonicalQuery.sql.replace(
+        "FOR UPDATE",
+        `AND NOT EXISTS (SELECT 1 FROM worker_lease_rejections WHERE ${clauses.join(" AND ")}) FOR UPDATE`,
+      ),
+    };
+    expect(() => assertCapturedClaimCertificateOracle(duplicateAntiJoinQuery, context)).toThrow();
+
+    const reassociatedEqualityQuery = {
+      ...canonicalQuery,
+      sql: canonicalQuery.sql.replace(
+        "worker_lease_rejections.organization_id = job_attempts.organization_id",
+        "worker_lease_rejections.organization_id = jobs.organization_id",
+      ),
+    };
+    expect(() => assertCapturedClaimCertificateOracle(reassociatedEqualityQuery, context)).toThrow();
     for (const clause of clauses) {
+      const withoutClause = canonicalQuery.sql.includes(`${clause} AND `)
+        ? canonicalQuery.sql.replace(`${clause} AND `, "")
+        : canonicalQuery.sql.replace(` AND ${clause}`, "");
       expect(
         () => assertCapturedClaimCertificateOracle({
           ...canonicalQuery,
-          sql: canonicalQuery.sql.replace(clause, "TRUE"),
+          sql: withoutClause,
         }, context),
         `removing ${clause} must invalidate the captured production query`,
       ).toThrow();
@@ -1203,6 +1604,7 @@ describe.skipIf(!enabled)("E3-PERF-01 production-capacity static-certificate lan
 
   it.each(["sparse", "tail"] as const)("records 20 bounded 256-row %s cleanup samples", async (layout) => {
     const client = database();
+    const authorityClient = seedDatabase();
     await prepareAndAssertCleanupLayout(client, layout);
     const [before] = await client<{ total_rows: number; eligible_rows: number; retained_rows: number }[]>`
       SELECT count(*)::int AS total_rows,
@@ -1216,8 +1618,9 @@ describe.skipIf(!enabled)("E3-PERF-01 production-capacity static-certificate lan
     const samples: number[] = [];
     const queryFingerprints = new Set<string>();
     let measuredQuery: { sql: string; parameters: unknown[] } | undefined;
-    await installCertificateOnlyMutationGuards(client);
     try {
+      await installCertificateOnlyMutationGuards(authorityClient);
+      await assertCertificateOnlyMutationGuardsRejectTenantWrites(client);
       for (let index = 0; index < E3_PERF_01_DATASET.mutationSamples; index += 1) {
         const start = performance.now();
         capturedQueries.length = 0;
@@ -1243,7 +1646,7 @@ describe.skipIf(!enabled)("E3-PERF-01 production-capacity static-certificate lan
         }
       }
     } finally {
-      await dropCertificateOnlyMutationGuards(client);
+      await dropCertificateOnlyMutationGuards(authorityClient);
     }
     expect.soft([...queryFingerprints]).toHaveLength(1);
     expect.soft(measuredQuery).toBeDefined();

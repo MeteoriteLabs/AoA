@@ -522,7 +522,8 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
 
   async function installCertificateWriteCounter(input: {
     attemptId: string;
-    stem: "success" | "exhaustion";
+    stem: "success" | "exhaustion" | "logical_profile" | "physical_profile" | "target_profile";
+    workerId?: string;
   }): Promise<{ readWrites(): Promise<number>; drop(): Promise<void> } | null> {
     const { admin } = guard();
     const [table] = await admin<{ name: string | null }[]>`
@@ -543,7 +544,7 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     await admin.unsafe(`CREATE TRIGGER ${triggerName}
       BEFORE INSERT ON worker_lease_rejections
       FOR EACH ROW WHEN (
-        NEW.worker_id = '${WORKER}'::uuid
+        NEW.worker_id = '${input.workerId ?? WORKER}'::uuid
         AND NEW.attempt_id = '${input.attemptId}'::uuid
       ) EXECUTE FUNCTION ${functionName}()`);
     return {
@@ -555,6 +556,137 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
       },
       async drop() {
         await admin.unsafe(`DROP TRIGGER IF EXISTS ${triggerName} ON worker_lease_rejections`);
+        await admin.unsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
+        await admin.unsafe(`DROP SEQUENCE IF EXISTS ${sequenceName}`);
+      },
+    };
+  }
+
+  async function installClaimAttemptCounter(input: {
+    attemptId: string;
+    stem: "logical_303" | "physical_202" | "target_101";
+  }): Promise<{ readAttempts(): Promise<number>; drop(): Promise<void> }> {
+    const { admin } = guard();
+    const sequenceName = `job003_divergence_claim_${input.stem}_seq`;
+    const functionName = `job003_divergence_claim_${input.stem}_fn`;
+    const triggerName = `job003_divergence_claim_${input.stem}_trigger`;
+    // This sequence survives rollback and proves whether claim was attempted at all.
+    await admin.unsafe(`CREATE SEQUENCE ${sequenceName} START WITH 1`);
+    await admin.unsafe(`GRANT USAGE, SELECT ON SEQUENCE ${sequenceName} TO aoa_app`);
+    await admin.unsafe(`CREATE FUNCTION ${functionName}() RETURNS trigger
+      LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('${sequenceName}'::regclass); RETURN NEW; END $$`);
+    await admin.unsafe(`CREATE TRIGGER ${triggerName}
+      BEFORE UPDATE OF status ON job_attempts
+      FOR EACH ROW WHEN (
+        OLD.id = '${input.attemptId}'::uuid
+        AND OLD.status = 'pending'
+        AND NEW.status = 'offered'
+      ) EXECUTE FUNCTION ${functionName}()`);
+    return {
+      async readAttempts() {
+        const [row] = await admin.unsafe<Array<{ attempts: number }>>(
+          `SELECT CASE WHEN is_called THEN last_value ELSE 0 END::int AS attempts FROM ${sequenceName}`,
+        );
+        return Number(row?.attempts ?? 0);
+      },
+      async drop() {
+        await admin.unsafe(`DROP TRIGGER IF EXISTS ${triggerName} ON job_attempts`);
+        await admin.unsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
+        await admin.unsafe(`DROP SEQUENCE IF EXISTS ${sequenceName}`);
+      },
+    };
+  }
+
+  async function cancelActiveBackends(input: { pids?: number[]; roles?: string[] }): Promise<void> {
+    const { admin } = guard();
+    const pids = input.pids ?? [];
+    const roles = input.roles ?? [];
+    await admin`SELECT pg_cancel_backend(pid) FROM pg_stat_activity
+      WHERE pid <> pg_backend_pid()
+        AND state <> 'idle'
+        AND (${pids.length} = 0 OR pid = ANY(${pids}::int[]))
+        AND (${roles.length} = 0 OR usename = ANY(${roles}::text[]))`;
+  }
+
+  async function boundedAwait<T>(
+    description: string,
+    operation: PromiseLike<T>,
+    cancel: () => Promise<void>,
+    timeoutMs = 15_000,
+  ): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        void cancel().catch(() => {}).finally(() => reject(new Error(`timed out waiting for ${description}`)));
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([Promise.resolve(operation), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async function waitUntil(
+    description: string,
+    predicate: () => Promise<boolean>,
+    timeoutMs = 10_000,
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(`timed out waiting for ${description}`);
+  }
+
+  async function installContextRefreshRestartBarrier(input: {
+    attemptId: string;
+    stem: "logical_profile" | "physical_profile" | "target_profile";
+    advisoryKey: number;
+  }): Promise<{
+    readPasses(): Promise<number>;
+    waitForFirstPass(): Promise<void>;
+    drop(): Promise<void>;
+  }> {
+    const { admin } = guard();
+    const sequenceName = `job003_context_restart_${input.stem}_seq`;
+    const functionName = `job003_context_restart_${input.stem}_fn`;
+    const triggerName = `job003_context_restart_${input.stem}_trigger`;
+    await admin.unsafe(`CREATE SEQUENCE ${sequenceName} START WITH 1`);
+    await admin.unsafe(`GRANT USAGE, SELECT ON SEQUENCE ${sequenceName} TO aoa_app`);
+    await admin.unsafe(`CREATE FUNCTION ${functionName}() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      DECLARE restart_pass bigint;
+      BEGIN
+        restart_pass := nextval('${sequenceName}'::regclass);
+        IF restart_pass = 1 THEN
+          PERFORM pg_advisory_lock(${input.advisoryKey});
+          PERFORM pg_advisory_unlock(${input.advisoryKey});
+          RETURN NULL;
+        END IF;
+        RETURN NEW;
+      END $$`);
+    await admin.unsafe(`CREATE TRIGGER ${triggerName}
+      BEFORE UPDATE OF status ON job_attempts
+      FOR EACH ROW WHEN (
+        OLD.id = '${input.attemptId}'::uuid
+        AND OLD.status = 'pending'
+        AND NEW.status = 'offered'
+      ) EXECUTE FUNCTION ${functionName}()`);
+    const readPasses = async (): Promise<number> => {
+      const [row] = await admin.unsafe<Array<{ passes: number }>>(
+        `SELECT CASE WHEN is_called THEN last_value ELSE 0 END::int AS passes FROM ${sequenceName}`,
+      );
+      return Number(row?.passes ?? 0);
+    };
+    return {
+      readPasses,
+      async waitForFirstPass() {
+        await waitUntil(`${input.stem} first restart pass`, async () => await readPasses() >= 1);
+      },
+      async drop() {
+        await admin.unsafe(`DROP TRIGGER IF EXISTS ${triggerName} ON job_attempts`);
         await admin.unsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
         await admin.unsafe(`DROP SEQUENCE IF EXISTS ${sequenceName}`);
       },
@@ -1365,6 +1497,264 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
       .toBe(rehashedContext.jobId);
   });
 
+  it("rejects each isolated platform generation with full rollback, then invalidates the old certificate on coherent rotation", async () => {
+    const { admin, app, operator } = guard();
+    const [certificateTable] = await admin<{ name: string | null }[]>`
+      SELECT to_regclass('public.worker_lease_rejections')::text AS name`;
+    const certificateTableExists = certificateTable?.name === "worker_lease_rejections";
+
+    const platformAuthority = (generation: number, makeCandidateEligible = false) => {
+      const provider = platformProviderProfile(1);
+      const profile = {
+        ...platformRegisteredProfile(provider),
+        deviceGeneration: generation,
+        ...(makeCandidateEligible
+          ? { capabilityCeiling: [
+              "workload.batch" as const,
+              "sandbox.process_isolated" as const,
+              "sandbox.filtered_egress" as const,
+            ] }
+          : {}),
+      };
+      const logicalHello = {
+        ...workerHello(PLATFORM_LOGICAL_WORKER_A, PLATFORM_TARGET, 1),
+        deviceGeneration: generation,
+        ...(makeCandidateEligible
+          ? { reportedCapabilities: [
+              "workload.batch" as const,
+              "sandbox.process_isolated" as const,
+              "sandbox.filtered_egress" as const,
+            ] }
+          : {}),
+      };
+      const physicalHello = {
+        ...workerHello(PLATFORM_PHYSICAL_WORKER, PLATFORM_TARGET, 1),
+        deviceGeneration: generation,
+      };
+      return {
+        generation,
+        provider,
+        profile,
+        profileHash: sha256(canonicalizeJsonV1(profile)),
+        logicalHello,
+        logicalProfileHash: sha256(JSON.stringify(logicalHello)),
+        physicalHello,
+        physicalProfileHash: sha256(JSON.stringify(physicalHello)),
+      };
+    };
+    const installPlatformAuthority = async (state: ReturnType<typeof platformAuthority>): Promise<void> => {
+      await admin`UPDATE execution_targets SET status = 'active', device_generation = ${state.generation},
+        registered_profile = ${state.profile}, registered_profile_hash = ${state.profileHash},
+        provider_constraint_profile = ${state.provider}, last_seen_at = clock_timestamp()
+        WHERE id = ${PLATFORM_TARGET}`;
+      await admin`UPDATE workers SET status = 'active', revoked_at = NULL,
+        device_generation = ${state.generation}, profile_hash = ${state.physicalProfileHash},
+        profile_snapshot = ${state.physicalHello}, device_public_key = 'job-003-public-key',
+        device_thumbprint = ${THUMBPRINT}, last_seen_at = clock_timestamp()
+        WHERE id = ${PLATFORM_PHYSICAL_WORKER}`;
+      await admin`UPDATE workers SET status = 'enrolled', revoked_at = NULL,
+        device_generation = ${state.generation}, profile_hash = ${state.logicalProfileHash},
+        profile_snapshot = ${state.logicalHello}, device_public_key = 'job-003-public-key',
+        device_thumbprint = ${THUMBPRINT}, last_seen_at = NULL
+        WHERE id = ${PLATFORM_LOGICAL_WORKER_A}`;
+    };
+    const platformPoll = (
+      state: ReturnType<typeof platformAuthority>,
+      proofId: string,
+    ) => createJobLeasingService({ appDb: app.db, operatorDb: operator.db }).poll({
+      auth: auth(
+        proofId,
+        PLATFORM_LOGICAL_WORKER_A,
+        PLATFORM_TARGET,
+        state.logicalProfileHash,
+        ORG,
+        state.generation,
+      ),
+      request: {
+        ...pollRequest(PLATFORM_LOGICAL_WORKER_A, PLATFORM_TARGET, proofId, 1),
+        deviceGeneration: state.generation,
+      },
+    });
+    const committedState = async (attemptId: string, proofId: string) => {
+      const [row] = await admin<{
+        attempt: Record<string, unknown> | null;
+        job: Record<string, unknown> | null;
+        logical_worker: Record<string, unknown> | null;
+        physical_worker: Record<string, unknown> | null;
+        target: Record<string, unknown> | null;
+        leases: Array<Record<string, unknown>>;
+        proofs: Array<Record<string, unknown>>;
+      }[]>`SELECT
+          (SELECT to_jsonb(attempt) FROM job_attempts attempt WHERE attempt.id = ${attemptId}) AS attempt,
+          (SELECT to_jsonb(job) FROM jobs job WHERE job.id = (
+            SELECT attempt.job_id FROM job_attempts attempt WHERE attempt.id = ${attemptId}
+          )) AS job,
+          (SELECT to_jsonb(logical) FROM workers logical
+            WHERE logical.id = ${PLATFORM_LOGICAL_WORKER_A}) AS logical_worker,
+          (SELECT to_jsonb(physical) FROM workers physical
+            WHERE physical.id = ${PLATFORM_PHYSICAL_WORKER}) AS physical_worker,
+          (SELECT to_jsonb(target) FROM execution_targets target
+            WHERE target.id = ${PLATFORM_TARGET}) AS target,
+          COALESCE((SELECT jsonb_agg(to_jsonb(lease_row) ORDER BY lease_row.id)
+            FROM leases lease_row WHERE lease_row.attempt_id = ${attemptId}), '[]'::jsonb) AS leases,
+          COALESCE((SELECT jsonb_agg(to_jsonb(replay) ORDER BY replay.id)
+            FROM worker_proof_replays replay WHERE replay.proof_id = ${proofId}), '[]'::jsonb) AS proofs`;
+      const certificates = certificateTableExists
+        ? await admin<{ row: Record<string, unknown> }[]>`
+            SELECT to_jsonb(rejection) AS row FROM worker_lease_rejections rejection
+            WHERE rejection.attempt_id = ${attemptId}
+            ORDER BY rejection.worker_id, rejection.attempt_id`
+        : [];
+      return row ? { ...row, certificates } : row;
+    };
+
+    const divergences = [
+      {
+        name: "logical-303",
+        mutate: () => admin`UPDATE workers SET device_generation = 303
+          WHERE id = ${PLATFORM_LOGICAL_WORKER_A}`,
+      },
+      {
+        name: "physical-202",
+        mutate: () => admin`UPDATE workers SET device_generation = 202
+          WHERE id = ${PLATFORM_PHYSICAL_WORKER}`,
+      },
+      {
+        name: "target-101",
+        mutate: () => admin`UPDATE execution_targets SET device_generation = 101
+          WHERE id = ${PLATFORM_TARGET}`,
+      },
+    ];
+    for (const [index, divergence] of divergences.entries()) {
+      await resetRuntimeRows();
+      const baseline = platformAuthority(1);
+      await installPlatformAuthority(baseline);
+      const seeded = await seedPlacedJob({
+        ordinal: 1130 + index,
+        workerId: PLATFORM_LOGICAL_WORKER_A,
+        placement: {
+          targetId: PLATFORM_TARGET,
+          owner: "managed_cloud",
+          targetClass: "managed_cloud",
+          targetScope: "platform",
+          generation: baseline.generation,
+          profileHash: baseline.profileHash,
+          providerHash: baseline.provider.digest,
+        },
+      });
+      await divergence.mutate();
+      const proofId = `platform-divergence-${divergence.name}`;
+      const before = await committedState(seeded.attemptId, proofId);
+      expect.soft(before?.attempt?.status, `${divergence.name}:pending baseline`).toBe("pending");
+      expect.soft(before?.job?.status, `${divergence.name}:queued baseline`).toBe("queued");
+      expect.soft(before?.certificates).toEqual([]);
+      expect.soft(before?.leases).toEqual([]);
+      expect.soft(before?.proofs).toEqual([]);
+      const claimCounter = await installClaimAttemptCounter({
+        attemptId: seeded.attemptId,
+        stem: divergence.name.replace("-", "_") as "logical_303" | "physical_202" | "target_101",
+      });
+      try {
+        await expect(boundedAwait(
+          `${divergence.name} authority rejection`,
+          platformPoll(baseline, proofId),
+          () => cancelActiveBackends({ roles: ["aoa_app", "aoa_operator"] }),
+        )).rejects.toMatchObject({ code: "target_revoked" });
+        expect.soft(await claimCounter.readAttempts(), `${divergence.name}:claim-attempt oracle`).toBe(0);
+        expect.soft(
+          await committedState(seeded.attemptId, proofId),
+          `${divergence.name}:complete committed-state rollback`,
+        ).toEqual(before);
+      } finally {
+        await boundedAwait(
+          `${divergence.name} claim-counter cleanup`,
+          claimCounter.drop(),
+          () => cancelActiveBackends({ roles: ["aoa_app", "aoa_operator", "test"] }),
+        );
+      }
+    }
+
+    expect.soft(certificateTable?.name).toBe("worker_lease_rejections");
+    if (!certificateTableExists) return;
+    await resetRuntimeRows();
+    const original = platformAuthority(1);
+    await installPlatformAuthority(original);
+    const rotatedCandidate = await seedPlacedJob({
+      ordinal: 1139,
+      workerId: PLATFORM_LOGICAL_WORKER_A,
+      requiredCapabilities: ["sandbox.filtered_egress"],
+      placement: {
+        targetId: PLATFORM_TARGET,
+        owner: "managed_cloud",
+        targetClass: "managed_cloud",
+        targetScope: "platform",
+        generation: original.generation,
+        profileHash: original.profileHash,
+        providerHash: original.provider.digest,
+      },
+    });
+    const originalPoll = await boundedAwait(
+      "coherent rotation baseline poll",
+      platformPoll(original, "platform-coherent-rotation-before"),
+      () => cancelActiveBackends({ roles: ["aoa_app", "aoa_operator"] }),
+    );
+    expect.soft(originalPoll.outcome).toBe("no_work");
+    const oldCertificates = await admin<{ row: Record<string, unknown> }[]>`
+      SELECT to_jsonb(rejection) AS row FROM worker_lease_rejections rejection
+      WHERE rejection.attempt_id = ${rotatedCandidate.attemptId}
+      ORDER BY rejection.worker_id, rejection.attempt_id`;
+    expect.soft(oldCertificates).toHaveLength(1);
+    expect.soft(oldCertificates[0]?.row.static_context_hash).toMatch(/^[0-9a-f]{64}$/);
+
+    const rotated = platformAuthority(2, true);
+    await installPlatformAuthority(rotated);
+    await admin`UPDATE job_attempts SET placement_target_generation = ${rotated.generation},
+      placement_profile_hash = ${rotated.profileHash},
+      placement_provider_constraint_hash = ${rotated.provider.digest}
+      WHERE id = ${rotatedCandidate.attemptId}`;
+    await admin.unsafe(`CREATE FUNCTION job003_forbid_rotation_certificate_mutation() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      DECLARE affected_attempt uuid;
+      BEGIN
+        affected_attempt := CASE WHEN TG_OP = 'DELETE' THEN OLD.attempt_id ELSE NEW.attempt_id END;
+        IF affected_attempt = '${rotatedCandidate.attemptId}'::uuid THEN
+          RAISE EXCEPTION 'old certificate was cleaned up or rewritten before comparison';
+        END IF;
+        IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+        RETURN NEW;
+      END $$`);
+    await admin.unsafe(`CREATE TRIGGER job003_forbid_rotation_certificate_mutation
+      BEFORE INSERT OR UPDATE OR DELETE ON worker_lease_rejections FOR EACH ROW
+      EXECUTE FUNCTION job003_forbid_rotation_certificate_mutation()`);
+    let rotatedPoll: Awaited<ReturnType<typeof platformPoll>> | undefined;
+    try {
+      rotatedPoll = await boundedAwait(
+        "coherent rotation poll",
+        platformPoll(rotated, "platform-coherent-rotation-after"),
+        () => cancelActiveBackends({ roles: ["aoa_app", "aoa_operator"] }),
+      );
+    } finally {
+      await boundedAwait(
+        "coherent rotation trigger cleanup",
+        admin.unsafe("DROP TRIGGER IF EXISTS job003_forbid_rotation_certificate_mutation ON worker_lease_rejections"),
+        () => cancelActiveBackends({ roles: ["aoa_app", "aoa_operator", "test"] }),
+      );
+      await boundedAwait(
+        "coherent rotation function cleanup",
+        admin.unsafe("DROP FUNCTION IF EXISTS job003_forbid_rotation_certificate_mutation()"),
+        () => cancelActiveBackends({ roles: ["aoa_app", "aoa_operator", "test"] }),
+      );
+    }
+    expect.soft(rotatedPoll?.outcome).toBe("offer");
+    expect.soft(rotatedPoll?.outcome === "offer" ? rotatedPoll.body.job.jobId : null)
+      .toBe(rotatedCandidate.jobId);
+    const currentCertificates = await admin<{ row: Record<string, unknown> }[]>`
+      SELECT to_jsonb(rejection) AS row FROM worker_lease_rejections rejection
+      WHERE rejection.attempt_id = ${rotatedCandidate.attemptId}
+      ORDER BY rejection.worker_id, rejection.attempt_id`;
+    expect.soft(currentCertificates, "old certificate remains byte-for-byte unchanged").toEqual(oldCertificates);
+  }, 180_000);
+
   it("isolates every mutable platform authority key and algorithm version in the exact 25-key certificate context", async () => {
     const { admin, app, operator } = guard();
     const [certificateTable] = await admin<{ name: string | null }[]>`
@@ -1622,12 +2012,14 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
       name: string;
       omittedKey: keyof PlatformContextInput;
       next: PlatformAuthorityState;
+      isolatedGeneration?: number;
       assertIsolation(before: PlatformContextInput, after: PlatformContextInput): void;
     }> = [
       {
         name: "physical-generation",
         omittedKey: "physicalAuthorityWorkerDeviceGeneration",
         next: coherentGeneration,
+        isolatedGeneration: 101,
         assertIsolation: (before, after) => {
           expect(after.physicalAuthorityWorkerDeviceGeneration)
             .not.toBe(before.physicalAuthorityWorkerDeviceGeneration);
@@ -1648,6 +2040,7 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
         name: "target-generation",
         omittedKey: "targetDeviceGeneration",
         next: coherentGeneration,
+        isolatedGeneration: 202,
         assertIsolation: (before, after) => {
           expect(after.targetDeviceGeneration).not.toBe(before.targetDeviceGeneration);
         },
@@ -1673,6 +2066,7 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
         name: "logical-generation",
         omittedKey: "logicalWorkerDeviceGeneration",
         next: coherentGeneration,
+        isolatedGeneration: 303,
         assertIsolation: (before, after) => {
           expect(after.logicalWorkerDeviceGeneration).not.toBe(before.logicalWorkerDeviceGeneration);
         },
@@ -1724,6 +2118,44 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
       expect.soft(await readCertificate(seeded.attemptId), `${contextCase.name}:baseline certificate`)
         .toMatchObject({ count: 1, eligibility_version: 1, static_context_hash: baselineHash });
 
+      if (contextCase.isolatedGeneration !== undefined) {
+        if (contextCase.omittedKey === "targetDeviceGeneration") {
+          await admin`UPDATE execution_targets SET device_generation = ${contextCase.isolatedGeneration}
+            WHERE id = ${PLATFORM_TARGET}`;
+        } else if (contextCase.omittedKey === "physicalAuthorityWorkerDeviceGeneration") {
+          await admin`UPDATE workers SET device_generation = ${contextCase.isolatedGeneration}
+            WHERE id = ${PLATFORM_PHYSICAL_WORKER}`;
+        } else if (contextCase.omittedKey === "logicalWorkerDeviceGeneration") {
+          await admin`UPDATE workers SET device_generation = ${contextCase.isolatedGeneration}
+            WHERE id = ${PLATFORM_LOGICAL_WORKER_A}`;
+        } else {
+          throw new Error(`${contextCase.name}: isolated generation case has a non-generation key`);
+        }
+        const isolatedInput = await readContextInput();
+        expect.soft(isolatedInput[contextCase.omittedKey], `${contextCase.name}: isolated generation value`)
+          .toBe(contextCase.isolatedGeneration);
+        for (const sibling of [
+          "targetDeviceGeneration",
+          "physicalAuthorityWorkerDeviceGeneration",
+          "logicalWorkerDeviceGeneration",
+        ] as const) {
+          if (sibling !== contextCase.omittedKey) {
+            expect.soft(isolatedInput[sibling], `${contextCase.name}: ${sibling} remains independent`)
+              .toBe(baselineInput[sibling]);
+          }
+        }
+        const isolatedHash = independentContextHash(fullCanonicalContext(isolatedInput));
+        expect.soft(
+          eligibility.leaseStaticContextHash(isolatedInput),
+          `${contextCase.name}: production hash uses its distinct generation source`,
+        ).toBe(isolatedHash);
+        expect.soft(isolatedHash, `${contextCase.name}: isolated generation invalidates the context`)
+          .not.toBe(baselineHash);
+      }
+
+      // Polling requires coherent target/physical/logical authority. Restore a
+      // coherent generation and use the one-key omission hash as the runtime
+      // invalidation adversary after proving the three stored sources apart.
       await installAuthority(contextCase.next);
       const currentInput = await readContextInput();
       contextCase.assertIsolation(baselineInput, currentInput);
@@ -1886,6 +2318,565 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
       expect.soft(certificates).toEqual({ staticHead: 1, eligible: 0 });
     }
   }, 60_000);
+
+  it("rebuilds rolled-back logical, physical, and target profile context from fresh database snapshots", async () => {
+    const { admin, app, operator } = guard();
+    const eligibilityUrl = new URL("../services/job-lease-eligibility.ts", import.meta.url);
+    expect.soft(existsSync(eligibilityUrl), "static eligibility implementation must exist").toBe(true);
+    if (!existsSync(eligibilityUrl)) return;
+    const eligibilitySpecifier = `../services/${"job-lease-eligibility"}.js`;
+    const eligibility = await import(eligibilitySpecifier) as {
+      buildLeaseStaticContextInput(sources: Record<string, unknown>): Record<string, unknown>;
+      leaseStaticContextHash(input: Record<string, unknown>): string;
+    };
+    expect.soft(typeof eligibility.buildLeaseStaticContextInput).toBe("function");
+    expect.soft(typeof eligibility.leaseStaticContextHash).toBe("function");
+    if (typeof eligibility.buildLeaseStaticContextInput !== "function" ||
+        typeof eligibility.leaseStaticContextHash !== "function") return;
+    const [certificateTable] = await admin<{ name: string | null }[]>`
+      SELECT to_regclass('public.worker_lease_rejections')::text AS name`;
+    expect.soft(certificateTable?.name, "static-negative certificate table must exist")
+      .toBe("worker_lease_rejections");
+    if (certificateTable?.name !== "worker_lease_rejections") return;
+
+    const readCurrentContext = async (input: {
+      logicalWorkerId: string;
+      targetId: string;
+      physicalWorkerId: string | null;
+    }, database: Sql = admin): Promise<{ input: Record<string, unknown>; hash: string }> => {
+      const [row] = await database<{
+        organization_id: string;
+        logical_id: string;
+        logical_scope: "organization" | "owner";
+        logical_owner_user_id: string | null;
+        logical_target_authority_key: string;
+        logical_device_generation: number;
+        logical_device_thumbprint: string;
+        logical_profile_hash: string;
+        logical_profile_snapshot: Record<string, unknown>;
+        target_id: string;
+        target_scope: "platform" | "organization" | "owner";
+        target_owner_user_id: string | null;
+        target_authority_key: string;
+        target_device_generation: number;
+        target_registered_profile_hash: string;
+        target_provider_constraint_hash: string;
+        physical_id: string | null;
+        physical_device_generation: number | null;
+        physical_profile_hash: string | null;
+      }[]>`SELECT
+          logical.organization_id::text AS organization_id,
+          logical.id::text AS logical_id,
+          logical.scope AS logical_scope,
+          logical.owner_user_id AS logical_owner_user_id,
+          logical.target_authority_key AS logical_target_authority_key,
+          logical.device_generation::int AS logical_device_generation,
+          logical.device_thumbprint AS logical_device_thumbprint,
+          logical.profile_hash AS logical_profile_hash,
+          logical.profile_snapshot AS logical_profile_snapshot,
+          target.id::text AS target_id,
+          target.scope AS target_scope,
+          target.owner_user_id AS target_owner_user_id,
+          target.target_authority_key AS target_authority_key,
+          target.device_generation::int AS target_device_generation,
+          target.registered_profile_hash AS target_registered_profile_hash,
+          target.provider_constraint_profile ->> 'digest' AS target_provider_constraint_hash,
+          physical.id::text AS physical_id,
+          physical.device_generation::int AS physical_device_generation,
+          physical.profile_hash AS physical_profile_hash
+        FROM workers logical
+        JOIN execution_targets target ON target.id = ${input.targetId}
+          AND target.id = logical.execution_target_id
+          AND target.target_authority_key = logical.target_authority_key
+        LEFT JOIN workers physical ON physical.id = ${input.physicalWorkerId}
+        WHERE logical.id = ${input.logicalWorkerId}`;
+      expect.soft(row, "current context source row").toBeDefined();
+      if (!row) throw new Error("current context source row missing");
+      const physicalAuthorityWorker = row.target_scope === "platform"
+        ? {
+            id: row.physical_id,
+            deviceGeneration: row.physical_device_generation,
+            profileHash: row.physical_profile_hash,
+          }
+        : null;
+      const projected = eligibility.buildLeaseStaticContextInput({
+        organizationId: row.organization_id,
+        parsedWorkerHello: row.logical_profile_snapshot,
+        logicalWorker: {
+          id: row.logical_id,
+          scope: row.logical_scope,
+          ownerUserId: row.logical_owner_user_id,
+          targetAuthorityKey: row.logical_target_authority_key,
+          deviceGeneration: row.logical_device_generation,
+          deviceThumbprint: row.logical_device_thumbprint,
+          profileHash: row.logical_profile_hash,
+        },
+        currentTarget: {
+          id: row.target_id,
+          scope: row.target_scope,
+          ownerUserId: row.target_owner_user_id,
+          targetAuthorityKey: row.target_authority_key,
+          deviceGeneration: row.target_device_generation,
+          registeredProfileHash: row.target_registered_profile_hash,
+          providerConstraintHash: row.target_provider_constraint_hash,
+        },
+        physicalAuthorityWorker,
+      });
+      return { input: projected, hash: eligibility.leaseStaticContextHash(projected) };
+    };
+
+    type RestartCase = {
+      stem: "logical_profile" | "physical_profile" | "target_profile";
+      advisoryKey: number;
+      proofId: string;
+      logicalWorkerId: string;
+      targetId: string;
+      physicalWorkerId: string | null;
+      staticAttemptId: string;
+      eligibleAttemptId: string;
+      expectedJobId: string;
+      expectedPasses: number;
+      expectedCertificateWrites: number;
+      expectedChangedContextKey: string;
+      poll(): Promise<Awaited<ReturnType<ReturnType<typeof createJobLeasingService>["poll"]>>>;
+      mutate(sql: Sql): Promise<void>;
+      verify(oldHash: string, newHash: string): Promise<void>;
+    };
+    type RestartCommittedState = {
+      logical_worker: Record<string, unknown> | null;
+      physical_worker: Record<string, unknown> | null;
+      target: Record<string, unknown> | null;
+      attempts: Array<Record<string, unknown>>;
+      jobs: Array<Record<string, unknown>>;
+      proofs: Array<Record<string, unknown>>;
+      certificates: Array<Record<string, unknown>>;
+      leases: Array<Record<string, unknown>>;
+    };
+    const readRestartCommittedState = async (
+      input: RestartCase,
+      database: Sql = admin,
+    ): Promise<RestartCommittedState> => {
+      const [state] = await database<RestartCommittedState[]>`SELECT
+          (SELECT to_jsonb(logical) FROM workers logical
+            WHERE logical.id = ${input.logicalWorkerId}) AS logical_worker,
+          (SELECT to_jsonb(physical) FROM workers physical
+            WHERE physical.id = ${input.physicalWorkerId}) AS physical_worker,
+          (SELECT to_jsonb(target) FROM execution_targets target
+            WHERE target.id = ${input.targetId}) AS target,
+          COALESCE((SELECT jsonb_agg(to_jsonb(attempt) ORDER BY attempt.id)
+            FROM job_attempts attempt
+            WHERE attempt.id IN (${input.staticAttemptId}, ${input.eligibleAttemptId})), '[]'::jsonb)
+            AS attempts,
+          COALESCE((SELECT jsonb_agg(to_jsonb(job) ORDER BY job.id)
+            FROM jobs job WHERE job.id IN (
+              SELECT attempt.job_id FROM job_attempts attempt
+              WHERE attempt.id IN (${input.staticAttemptId}, ${input.eligibleAttemptId})
+            )), '[]'::jsonb) AS jobs,
+          COALESCE((SELECT jsonb_agg(to_jsonb(replay) ORDER BY replay.id)
+            FROM worker_proof_replays replay
+            WHERE replay.proof_id = ${input.proofId}), '[]'::jsonb) AS proofs,
+          COALESCE((SELECT jsonb_agg(to_jsonb(rejection)
+              ORDER BY rejection.worker_id, rejection.attempt_id)
+            FROM worker_lease_rejections rejection
+            WHERE rejection.attempt_id IN (${input.staticAttemptId}, ${input.eligibleAttemptId})),
+            '[]'::jsonb) AS certificates,
+          COALESCE((SELECT jsonb_agg(to_jsonb(lease_row) ORDER BY lease_row.id)
+            FROM leases lease_row
+            WHERE lease_row.attempt_id IN (${input.staticAttemptId}, ${input.eligibleAttemptId})),
+            '[]'::jsonb) AS leases`;
+      if (!state) throw new Error(`${input.stem}: committed-state snapshot missing`);
+      return state;
+    };
+    const runRestartCase = async (testCase: RestartCase): Promise<void> => {
+      const barrier = await installContextRefreshRestartBarrier({
+        attemptId: testCase.eligibleAttemptId,
+        stem: testCase.stem,
+        advisoryKey: testCase.advisoryKey,
+      });
+      const counter = await installCertificateWriteCounter({
+        attemptId: testCase.staticAttemptId,
+        stem: testCase.stem,
+        workerId: testCase.logicalWorkerId,
+      });
+      expect.soft(counter, `${testCase.stem}:certificate counter`).not.toBeNull();
+      if (!counter) {
+        await barrier.drop();
+        return;
+      }
+      const coordinator = postgres(adminUrl, { max: 1 });
+      const mutator = postgres(adminUrl, { max: 1 });
+      const [coordinatorSession] = await coordinator<{ pid: number }[]>`SELECT pg_backend_pid()::int AS pid`;
+      const [mutatorSession] = await mutator<{ pid: number }[]>`SELECT pg_backend_pid()::int AS pid`;
+      const commitBarrierKey = testCase.advisoryKey + 10_000;
+      let passBarrierLocked = false;
+      let commitBarrierLocked = false;
+      let pollPromise: ReturnType<RestartCase["poll"]> | undefined;
+      let mutationPromise: Promise<unknown> | undefined;
+      try {
+        await coordinator`SELECT pg_advisory_lock(${testCase.advisoryKey})`;
+        passBarrierLocked = true;
+        await coordinator`SELECT pg_advisory_lock(${commitBarrierKey})`;
+        commitBarrierLocked = true;
+        const committedBaseline = await readRestartCommittedState(testCase);
+        const oldContext = await readCurrentContext(testCase);
+        pollPromise = testCase.poll();
+        await barrier.waitForFirstPass();
+        let firstPollPid: number | null = null;
+        await waitUntil(`${testCase.stem} pass one blocked by coordinator`, async () => {
+          const [activity] = await admin<{ pid: number; blocking_pids: number[] }[]>`
+            SELECT pid::int, pg_blocking_pids(pid) AS blocking_pids
+            FROM pg_stat_activity
+            WHERE usename = 'aoa_app'
+              AND ${coordinatorSession?.pid ?? -1} = ANY(pg_blocking_pids(pid))
+            ORDER BY pid LIMIT 1`;
+          firstPollPid = activity?.pid ?? null;
+          return Boolean(firstPollPid && activity?.blocking_pids.includes(coordinatorSession?.pid ?? -1));
+        });
+        mutationPromise = mutator.begin(async (tx) => {
+          const transactionalSql = tx as unknown as Sql;
+          await transactionalSql`SELECT id FROM workers
+            WHERE id = ${testCase.logicalWorkerId} FOR UPDATE`;
+          const afterPassOne = await readRestartCommittedState(testCase, transactionalSql);
+          expect(afterPassOne, `${testCase.stem}:pass one commits no relevant state`)
+            .toEqual(committedBaseline);
+          const committedContext = await readCurrentContext(testCase, transactionalSql);
+          expect(committedContext, `${testCase.stem}:mutator observes rolled-back context`)
+            .toEqual(oldContext);
+          await testCase.mutate(tx as unknown as Sql);
+          await transactionalSql`SELECT pg_advisory_lock(${commitBarrierKey})`;
+          await transactionalSql`SELECT pg_advisory_unlock(${commitBarrierKey})`;
+        });
+        await waitUntil(`${testCase.stem} mutator queued behind pass one`, async () => {
+          const [activity] = await admin<{ wait_event_type: string | null; blocking_pids: number[] }[]>`
+            SELECT wait_event_type, pg_blocking_pids(pid) AS blocking_pids
+            FROM pg_stat_activity WHERE pid = ${mutatorSession?.pid ?? -1}`;
+          return activity?.wait_event_type === "Lock" &&
+            activity.blocking_pids.includes(firstPollPid ?? -1);
+        });
+        await coordinator`SELECT pg_advisory_unlock(${testCase.advisoryKey})`;
+        passBarrierLocked = false;
+        await waitUntil(`${testCase.stem} mutation committed facts held before pass two`, async () => {
+          const [activity] = await admin<{ wait_event_type: string | null; blocking_pids: number[] }[]>`
+            SELECT wait_event_type, pg_blocking_pids(pid) AS blocking_pids
+            FROM pg_stat_activity WHERE pid = ${mutatorSession?.pid ?? -1}`;
+          return activity?.wait_event_type === "Lock" &&
+            activity.blocking_pids.includes(coordinatorSession?.pid ?? -1);
+        });
+        await waitUntil(`${testCase.stem} pass two queued behind mutator`, async () => {
+          const [activity] = await admin<{ pid: number; wait_event_type: string | null; blocking_pids: number[] }[]>`
+            SELECT pid::int, wait_event_type, pg_blocking_pids(pid) AS blocking_pids
+            FROM pg_stat_activity
+            WHERE usename = 'aoa_app'
+              AND ${mutatorSession?.pid ?? -1} = ANY(pg_blocking_pids(pid))
+            ORDER BY pid LIMIT 1`;
+          return activity?.wait_event_type === "Lock" &&
+            activity.blocking_pids.includes(mutatorSession?.pid ?? -1);
+        });
+        await coordinator`SELECT pg_advisory_unlock(${commitBarrierKey})`;
+        commitBarrierLocked = false;
+        await boundedAwait(
+          `${testCase.stem} mutation commit`,
+          mutationPromise,
+          () => cancelActiveBackends({ pids: [mutatorSession?.pid ?? -1] }),
+        );
+        const newContext = await readCurrentContext(testCase);
+        const changedContextKeys = Object.keys(newContext.input)
+          .filter((key) => newContext.input[key] !== oldContext.input[key]);
+        expect.soft(changedContextKeys, `${testCase.stem}:one-factor source rotation`)
+          .toEqual([testCase.expectedChangedContextKey]);
+        expect.soft(newContext.hash, `${testCase.stem}:source rotation changes context`).not.toBe(oldContext.hash);
+        const result = await boundedAwait(
+          `${testCase.stem} restarted poll`,
+          pollPromise,
+          () => cancelActiveBackends({ roles: ["aoa_app", "aoa_operator"] }),
+        );
+        expect.soft(result.outcome, `${testCase.stem}:second attempt result`).toBe("offer");
+        expect.soft(result.outcome === "offer" ? result.body.job.jobId : null, `${testCase.stem}:fresh head`)
+          .toBe(testCase.expectedJobId);
+        expect.soft(await barrier.readPasses(), `${testCase.stem}:restart passes`).toBe(testCase.expectedPasses);
+        expect.soft(await counter.readWrites(), `${testCase.stem}:one certificate evaluation per reached attempt`)
+          .toBe(testCase.expectedCertificateWrites);
+        await testCase.verify(oldContext.hash, newContext.hash);
+      } finally {
+        if (passBarrierLocked) {
+          await boundedAwait(
+            `${testCase.stem} pass-barrier unlock`,
+            coordinator`SELECT pg_advisory_unlock(${testCase.advisoryKey})`,
+            () => cancelActiveBackends({ pids: [coordinatorSession?.pid ?? -1] }),
+          ).catch(() => {});
+        }
+        if (commitBarrierLocked) {
+          await boundedAwait(
+            `${testCase.stem} mutation-barrier unlock`,
+            coordinator`SELECT pg_advisory_unlock(${commitBarrierKey})`,
+            () => cancelActiveBackends({ pids: [coordinatorSession?.pid ?? -1] }),
+          ).catch(() => {});
+        }
+        await boundedAwait(
+          `${testCase.stem} pending operation cancellation`,
+          Promise.allSettled([
+            ...(pollPromise ? [pollPromise] : []),
+            ...(mutationPromise ? [mutationPromise] : []),
+          ]),
+          async () => {
+            await Promise.all([
+              cancelActiveBackends({ pids: [mutatorSession?.pid ?? -1] }),
+              cancelActiveBackends({ roles: ["aoa_app", "aoa_operator"] }),
+            ]);
+          },
+        ).catch(() => {});
+        await boundedAwait(
+          `${testCase.stem} restart barrier cleanup`,
+          barrier.drop(),
+          () => cancelActiveBackends({ roles: ["aoa_app", "aoa_operator", "test"] }),
+        );
+        await boundedAwait(
+          `${testCase.stem} certificate counter cleanup`,
+          counter.drop(),
+          () => cancelActiveBackends({ roles: ["aoa_app", "aoa_operator", "test"] }),
+        );
+        await boundedAwait(
+          `${testCase.stem} mutator close`,
+          mutator.end(),
+          () => cancelActiveBackends({ pids: [mutatorSession?.pid ?? -1] }),
+        ).catch(() => {});
+        await boundedAwait(
+          `${testCase.stem} coordinator close`,
+          coordinator.end(),
+          () => cancelActiveBackends({ pids: [coordinatorSession?.pid ?? -1] }),
+        ).catch(() => {});
+      }
+    };
+
+    await resetRuntimeRows();
+    const logicalProvider = providerProfile();
+    const logicalTargetProfile = {
+      ...registeredProfile(logicalProvider),
+      capabilityCeiling: [
+        "workload.batch",
+        "sandbox.process_isolated",
+        "sandbox.filtered_egress",
+      ],
+    };
+    const logicalTargetProfileHash = sha256(canonicalizeJsonV1(logicalTargetProfile));
+    const logicalHelloBefore = workerHello();
+    const retainedEnrollmentHash = sha256(JSON.stringify(logicalHelloBefore));
+    const logicalHelloAfter = {
+      ...logicalHelloBefore,
+      reportedCapabilities: [
+        "workload.batch" as const,
+        "sandbox.process_isolated" as const,
+        "sandbox.filtered_egress" as const,
+      ],
+    };
+    await admin`UPDATE execution_targets SET registered_profile = ${logicalTargetProfile},
+      registered_profile_hash = ${logicalTargetProfileHash},
+      provider_constraint_profile = ${logicalProvider}, status = 'active', device_generation = 1,
+      last_seen_at = clock_timestamp() WHERE id = ${TARGET}`;
+    await admin`UPDATE workers SET profile_snapshot = ${logicalHelloBefore},
+      profile_hash = ${retainedEnrollmentHash}, status = 'enrolled', revoked_at = NULL,
+      device_generation = 1, last_seen_at = clock_timestamp() WHERE id = ${WORKER}`;
+    const logicalStaticHead = await seedPlacedJob({
+      ordinal: 1140,
+      requiredCapabilities: ["sandbox.filtered_egress"],
+      availableAt: new Date(Date.now() - 120_000),
+      placement: { profileHash: logicalTargetProfileHash, providerHash: logicalProvider.digest },
+    });
+    const logicalEligible = await seedPlacedJob({
+      ordinal: 1141,
+      availableAt: new Date(Date.now() - 60_000),
+      placement: { profileHash: logicalTargetProfileHash, providerHash: logicalProvider.digest },
+    });
+    const logicalService = createJobLeasingService({ appDb: app.db });
+    await runRestartCase({
+      stem: "logical_profile",
+      advisoryKey: 30_031,
+      proofId: "restart-logical-profile",
+      logicalWorkerId: WORKER,
+      targetId: TARGET,
+      physicalWorkerId: null,
+      staticAttemptId: logicalStaticHead.attemptId,
+      eligibleAttemptId: logicalEligible.attemptId,
+      expectedJobId: logicalStaticHead.jobId,
+      expectedPasses: 1,
+      expectedCertificateWrites: 1,
+      expectedChangedContextKey: "logicalWorkerStaticMatcherProfileHash",
+      poll: () => logicalService.poll({
+        auth: auth("restart-logical-profile", WORKER, TARGET, retainedEnrollmentHash),
+        request: pollRequest(WORKER, TARGET, "restart-logical-profile"),
+      }),
+      async mutate(sql) {
+        await sql`UPDATE workers SET profile_snapshot = ${logicalHelloAfter}
+          WHERE id = ${WORKER}`;
+      },
+      async verify(_oldHash, _newHash) {
+        const [state] = await admin<{
+          profile_hash: string;
+          profile_snapshot: Record<string, unknown>;
+          certificates: number;
+        }[]>`SELECT worker.profile_hash, worker.profile_snapshot,
+            (SELECT count(*)::int FROM worker_lease_rejections
+              WHERE attempt_id = ${logicalStaticHead.attemptId}) AS certificates
+          FROM workers worker WHERE worker.id = ${WORKER}`;
+        expect.soft(state?.profile_hash).toBe(retainedEnrollmentHash);
+        expect.soft(state?.profile_snapshot).toEqual(logicalHelloAfter);
+        expect.soft(state?.certificates).toBe(0);
+      },
+    });
+
+    const platformAuthority = (input: { physicalAgentVersion?: string; reverseTargetCapabilities?: boolean } = {}) => {
+      const provider = platformProviderProfile(1);
+      const baseProfile = platformRegisteredProfile(provider);
+      const profile = input.reverseTargetCapabilities
+        ? { ...baseProfile, capabilityCeiling: [...baseProfile.capabilityCeiling].reverse() }
+        : baseProfile;
+      const logicalHello = workerHello(PLATFORM_LOGICAL_WORKER_A, PLATFORM_TARGET, 1);
+      const physicalHello = {
+        ...workerHello(PLATFORM_PHYSICAL_WORKER, PLATFORM_TARGET, 1),
+        ...(input.physicalAgentVersion ? { agentVersion: input.physicalAgentVersion } : {}),
+      };
+      return {
+        provider,
+        profile,
+        profileHash: sha256(canonicalizeJsonV1(profile)),
+        logicalHello,
+        logicalProfileHash: sha256(JSON.stringify(logicalHello)),
+        physicalHello,
+        physicalProfileHash: sha256(JSON.stringify(physicalHello)),
+      };
+    };
+    const installPlatform = async (state: ReturnType<typeof platformAuthority>): Promise<void> => {
+      await admin`UPDATE execution_targets SET registered_profile = ${state.profile},
+        registered_profile_hash = ${state.profileHash}, provider_constraint_profile = ${state.provider},
+        status = 'active', device_generation = 1, last_seen_at = clock_timestamp()
+        WHERE id = ${PLATFORM_TARGET}`;
+      await admin`UPDATE workers SET profile_snapshot = ${state.logicalHello},
+        profile_hash = ${state.logicalProfileHash}, status = 'enrolled', revoked_at = NULL,
+        device_generation = 1, last_seen_at = NULL WHERE id = ${PLATFORM_LOGICAL_WORKER_A}`;
+      await admin`UPDATE workers SET profile_snapshot = ${state.physicalHello},
+        profile_hash = ${state.physicalProfileHash}, status = 'active', revoked_at = NULL,
+        device_generation = 1, last_seen_at = clock_timestamp() WHERE id = ${PLATFORM_PHYSICAL_WORKER}`;
+    };
+    const platformPoll = (
+      state: ReturnType<typeof platformAuthority>,
+      proofId: string,
+    ) => createJobLeasingService({ appDb: app.db, operatorDb: operator.db }).poll({
+      auth: auth(
+        proofId,
+        PLATFORM_LOGICAL_WORKER_A,
+        PLATFORM_TARGET,
+        state.logicalProfileHash,
+        ORG,
+        1,
+      ),
+      request: pollRequest(PLATFORM_LOGICAL_WORKER_A, PLATFORM_TARGET, proofId, 1),
+    });
+
+    await resetRuntimeRows();
+    const physicalBefore = platformAuthority();
+    const physicalAfter = platformAuthority({ physicalAgentVersion: "job-003-physical-retry-v2" });
+    await installPlatform(physicalBefore);
+    const physicalStaticHead = await seedPlacedJob({
+      ordinal: 1142,
+      workerId: PLATFORM_LOGICAL_WORKER_A,
+      requiredCapabilities: ["sandbox.filtered_egress"],
+      availableAt: new Date(Date.now() - 120_000),
+      placement: {
+        targetId: PLATFORM_TARGET, owner: "managed_cloud", targetClass: "managed_cloud",
+        targetScope: "platform", profileHash: physicalBefore.profileHash,
+        providerHash: physicalBefore.provider.digest,
+      },
+    });
+    const physicalEligible = await seedPlacedJob({
+      ordinal: 1143,
+      workerId: PLATFORM_LOGICAL_WORKER_A,
+      availableAt: new Date(Date.now() - 60_000),
+      placement: {
+        targetId: PLATFORM_TARGET, owner: "managed_cloud", targetClass: "managed_cloud",
+        targetScope: "platform", profileHash: physicalBefore.profileHash,
+        providerHash: physicalBefore.provider.digest,
+      },
+    });
+    await runRestartCase({
+      stem: "physical_profile",
+      advisoryKey: 30_032,
+      proofId: "restart-physical-profile",
+      logicalWorkerId: PLATFORM_LOGICAL_WORKER_A,
+      targetId: PLATFORM_TARGET,
+      physicalWorkerId: PLATFORM_PHYSICAL_WORKER,
+      staticAttemptId: physicalStaticHead.attemptId,
+      eligibleAttemptId: physicalEligible.attemptId,
+      expectedJobId: physicalEligible.jobId,
+      expectedPasses: 2,
+      expectedCertificateWrites: 2,
+      expectedChangedContextKey: "physicalAuthorityWorkerProfileHash",
+      poll: () => platformPoll(physicalBefore, "restart-physical-profile"),
+      async mutate(sql) {
+        await sql`UPDATE workers SET profile_snapshot = ${physicalAfter.physicalHello},
+          profile_hash = ${physicalAfter.physicalProfileHash}
+          WHERE id = ${PLATFORM_PHYSICAL_WORKER}`;
+      },
+      async verify(_oldHash, newHash) {
+        const [certificate] = await admin<{ count: number; static_context_hash: string | null }[]>`
+          SELECT count(*)::int AS count, min(static_context_hash) AS static_context_hash
+          FROM worker_lease_rejections WHERE attempt_id = ${physicalStaticHead.attemptId}`;
+        expect.soft(certificate).toEqual({ count: 1, static_context_hash: newHash });
+      },
+    });
+
+    await resetRuntimeRows();
+    const targetBefore = platformAuthority();
+    const targetAfter = platformAuthority({ reverseTargetCapabilities: true });
+    await installPlatform(targetBefore);
+    const targetStaticHead = await seedPlacedJob({
+      ordinal: 1144,
+      workerId: PLATFORM_LOGICAL_WORKER_A,
+      requiredCapabilities: ["sandbox.filtered_egress"],
+      availableAt: new Date(Date.now() - 120_000),
+      placement: {
+        targetId: PLATFORM_TARGET, owner: "managed_cloud", targetClass: "managed_cloud",
+        targetScope: "platform", profileHash: targetBefore.profileHash,
+        providerHash: targetBefore.provider.digest,
+      },
+    });
+    const targetEligible = await seedPlacedJob({
+      ordinal: 1145,
+      workerId: PLATFORM_LOGICAL_WORKER_A,
+      availableAt: new Date(Date.now() - 60_000),
+      placement: {
+        targetId: PLATFORM_TARGET, owner: "managed_cloud", targetClass: "managed_cloud",
+        targetScope: "platform", profileHash: targetBefore.profileHash,
+        providerHash: targetBefore.provider.digest,
+      },
+    });
+    await runRestartCase({
+      stem: "target_profile",
+      advisoryKey: 30_033,
+      proofId: "restart-target-profile",
+      logicalWorkerId: PLATFORM_LOGICAL_WORKER_A,
+      targetId: PLATFORM_TARGET,
+      physicalWorkerId: PLATFORM_PHYSICAL_WORKER,
+      staticAttemptId: targetStaticHead.attemptId,
+      eligibleAttemptId: targetEligible.attemptId,
+      expectedJobId: targetEligible.jobId,
+      expectedPasses: 2,
+      expectedCertificateWrites: 2,
+      expectedChangedContextKey: "targetRegisteredProfileHash",
+      poll: () => platformPoll(targetBefore, "restart-target-profile"),
+      async mutate(sql) {
+        await sql`UPDATE execution_targets SET registered_profile = ${targetAfter.profile},
+          registered_profile_hash = ${targetAfter.profileHash} WHERE id = ${PLATFORM_TARGET}`;
+        await sql`UPDATE job_attempts SET placement_profile_hash = ${targetAfter.profileHash}
+          WHERE id IN (${targetStaticHead.attemptId}, ${targetEligible.attemptId})`;
+      },
+      async verify(_oldHash, newHash) {
+        const [certificate] = await admin<{ count: number; static_context_hash: string | null }[]>`
+          SELECT count(*)::int AS count, min(static_context_hash) AS static_context_hash
+          FROM worker_lease_rejections WHERE attempt_id = ${targetStaticHead.attemptId}`;
+        expect.soft(certificate).toEqual({ count: 1, static_context_hash: newHash });
+      },
+    });
+  }, 180_000);
 
   it("bounds all three static head restarts and rolls the exhausted poll transaction back", async () => {
     const { admin, app } = guard();

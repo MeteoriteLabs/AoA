@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +13,11 @@ const REQUIRED_ASSETS = [
   new URL("./e3-perf-01-manifest.schema.json", import.meta.url),
   new URL("./e3-perf-01-evidence.schema.json", import.meta.url),
   new URL("../server/src/__tests__/job-leasing-load.integration.test.ts", import.meta.url),
+];
+const GENERATED_PERF_ASSET_PATHS = [
+  "scripts/run-e3-perf-01.mjs",
+  "scripts/e3-perf-01-manifest.schema.json",
+  "scripts/e3-perf-01-evidence.schema.json",
 ];
 const assetsPresent = REQUIRED_ASSETS.every((asset) => existsSync(asset));
 const SHA40 = "1".repeat(40);
@@ -28,6 +33,7 @@ const MANIFEST_SHA256 = "c".repeat(64);
 const EVIDENCE_ARCHIVE_PATH = "e3-perf-01-evidence.json";
 const CAMPAIGN_NOW = "2026-08-11T01:05:00.000Z";
 const MINIMUM_RETENTION_MS = 180 * 24 * 60 * 60 * 1_000;
+const OBJECT_LOCK_MODE = "compliance";
 const REVIEWED_BENCHMARK_ENVIRONMENT = Object.freeze({
   NODE_ENV: "test",
   TZ: "UTC",
@@ -154,21 +160,27 @@ test("E3-PERF-01 requires the reviewed runner, strict schemas, and dedicated loa
   );
 });
 
-function cliFailureEnvelope(result) {
-  const records = `${result.stdout}\n${result.stderr}`
-    .split(/\r?\n/u)
-    .filter(Boolean)
-    .flatMap((line) => {
-      try {
-        const parsed = JSON.parse(line);
-        return parsed && typeof parsed === "object" ? [parsed] : [];
-      } catch {
-        return [];
-      }
-    })
-    .filter((record) => record.kind === "e3_perf_01_cli_failure");
-  assert.equal(records.length, 1, "the real CLI must emit exactly one closed mode-specific failure envelope");
-  return records[0];
+function cliResultEnvelope(result, expected) {
+  const completeOutput = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  const lines = [result.stdout ?? "", result.stderr ?? ""]
+    .flatMap((stream) => stream.split(/\r?\n/u))
+    .filter((line) => line.length > 0);
+  assert.equal(lines.length, 1, "the real CLI must emit exactly one record and no extra/non-JSON output");
+  let record;
+  assert.doesNotThrow(() => { record = JSON.parse(lines[0]); }, "the only CLI output record must be JSON");
+  assert.ok(record && typeof record === "object" && !Array.isArray(record));
+  assert.deepEqual(
+    Object.keys(record).sort(),
+    ["disposition", "kind", "mode", "phase"],
+    "the CLI result envelope is closed and rejects extra keys",
+  );
+  assert.deepEqual(record, expected);
+  assert.doesNotMatch(
+    completeOutput,
+    /E3_[A-Z0-9_]*CANARY|authorization\s*:\s*bearer|password\s*=|AKIA[0-9A-Z]{16}/iu,
+    "complete CLI stdout and stderr must be secret/canary free",
+  );
+  return record;
 }
 
 test("the real CLI implements pre-commit validation and campaign trigger modes", { skip: !assetsPresent }, async () => {
@@ -185,21 +197,12 @@ test("the real CLI implements pre-commit validation and campaign trigger modes",
     ], { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8", timeout: 30_000 });
     assert.equal(validation.error, undefined);
     assert.notEqual(validation.status, 0, "synthetic Git facts must fail closed in validation mode");
-    const validationFailure = cliFailureEnvelope(validation);
-    assert.deepEqual(
-      {
-        kind: validationFailure.kind,
-        mode: validationFailure.mode,
-        phase: validationFailure.phase,
-        disposition: validationFailure.disposition,
-      },
-      {
-        kind: "e3_perf_01_cli_failure",
-        mode: "validate-manifest",
-        phase: "manifest-preflight",
-        disposition: "fail",
-      },
-    );
+    cliResultEnvelope(validation, {
+      kind: "e3_perf_01_cli_failure",
+      mode: "validate-manifest",
+      phase: "manifest-preflight",
+      disposition: "fail",
+    });
 
     const campaign = spawnSync(process.execPath, [
       runnerPath,
@@ -208,23 +211,196 @@ test("the real CLI implements pre-commit validation and campaign trigger modes",
     ], { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8", timeout: 30_000 });
     assert.equal(campaign.error, undefined);
     assert.notEqual(campaign.status, 0, "an unattested fixture campaign must fail during real preflight");
-    const campaignFailure = cliFailureEnvelope(campaign);
-    assert.deepEqual(
-      {
-        kind: campaignFailure.kind,
-        mode: campaignFailure.mode,
-        phase: campaignFailure.phase,
-        disposition: campaignFailure.disposition,
-      },
-      {
+    cliResultEnvelope(campaign, {
+      kind: "e3_perf_01_cli_failure",
+      mode: "campaign",
+      phase: "campaign-preflight",
+      disposition: "fail",
+    });
+
+    for (const sensitiveValue of [
+      "E3_CLI_CANARY_DO_NOT_PERSIST",
+      "Authorization: Bearer E3_CLI_BEARER_DO_NOT_PERSIST",
+      "password=E3_CLI_PASSWORD_DO_NOT_PERSIST",
+    ]) {
+      const sensitiveManifest = manifestFixture();
+      sensitiveManifest.environment.cpuModel = sensitiveValue;
+      await writeFile(manifestPath, `${JSON.stringify(sensitiveManifest)}\n`, "utf8");
+      const sensitive = spawnSync(process.execPath, [
+        runnerPath,
+        "--validate-manifest", manifestPath,
+        "--evidence-parent", EVIDENCE_PARENT_SHA40,
+      ], { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8", timeout: 30_000 });
+      assert.equal(sensitive.error, undefined);
+      assert.notEqual(sensitive.status, 0);
+      assert.equal(`${sensitive.stdout}${sensitive.stderr}`.includes(sensitiveValue), false);
+      cliResultEnvelope(sensitive, {
         kind: "e3_perf_01_cli_failure",
-        mode: "campaign",
-        phase: "campaign-preflight",
+        mode: "validate-manifest",
+        phase: "manifest-preflight",
         disposition: "fail",
-      },
-    );
+      });
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the real CLI default Git adapter accepts one hermetic evidence-parent preflight", { skip: !assetsPresent }, async () => {
+  const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "e3-perf-01-git-adapter-"));
+  const worktree = join(fixtureRoot, "worktree");
+  let worktreeAdded = false;
+  const gitText = (args, cwd = worktree) => execFileSync(
+    "git", ["--no-replace-objects", ...args], { cwd, encoding: "utf8" },
+  ).trim();
+  const gitBytes = (args, cwd = worktree) => execFileSync(
+    "git", ["--no-replace-objects", ...args], { cwd },
+  );
+  try {
+    const baseRevision = gitText(["rev-parse", "HEAD"], repositoryRoot);
+    execFileSync("git", [
+      "-c", "core.autocrlf=false",
+      "worktree", "add", "--detach", worktree, baseRevision,
+    ], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+    });
+    worktreeAdded = true;
+
+    for (const path of GENERATED_PERF_ASSET_PATHS) {
+      const source = join(repositoryRoot, ...path.split("/"));
+      const destination = join(worktree, ...path.split("/"));
+      await mkdir(dirname(destination), { recursive: true });
+      await writeFile(destination, await readFile(source));
+    }
+    const implementationDelta = gitText(
+      ["status", "--porcelain=v1", "--untracked-files=all", "--", ...GENERATED_PERF_ASSET_PATHS],
+    );
+    if (implementationDelta.length > 0) {
+      execFileSync("git", ["-c", "core.autocrlf=false", "add", "--", ...GENERATED_PERF_ASSET_PATHS], {
+        cwd: worktree,
+      });
+      execFileSync("git", [
+        "-c", "user.name=E3 Perf Fixture",
+        "-c", "user.email=e3-perf-fixture@example.invalid",
+        "commit", "--no-verify", "-m", "test: pin hermetic implementation assets",
+      ], { cwd: worktree, encoding: "utf8" });
+    }
+    const implementationRevision = gitText(["rev-parse", "HEAD"]);
+
+    const reviewedPaths = [
+      "docs/replatform/epics/E3-job-control/findings.md",
+      "docs/replatform/epics/E3-job-control/tickets/JOB-003-result.md",
+    ];
+    for (const [index, path] of reviewedPaths.entries()) {
+      const absolute = join(worktree, ...path.split("/"));
+      const original = await readFile(absolute, "utf8");
+      await writeFile(
+        absolute,
+        `${original.trimEnd()}\n\n<!-- hermetic E3-PERF-01 review closure ${index + 1} -->\n`,
+        "utf8",
+      );
+    }
+    execFileSync("git", ["-c", "core.autocrlf=false", "add", "--", ...reviewedPaths], { cwd: worktree });
+    execFileSync("git", [
+      "-c", "user.name=E3 Perf Fixture",
+      "-c", "user.email=e3-perf-fixture@example.invalid",
+      "commit", "--no-verify", "-m", "test: create hermetic evidence parent",
+    ], { cwd: worktree, encoding: "utf8" });
+    const evidenceParentRevision = gitText(["rev-parse", "HEAD"]);
+    const evidenceParentTree = gitText(["rev-parse", "HEAD^{tree}"]);
+
+    const factAtRevision = (path, revision) => {
+      const row = gitText(["ls-tree", revision, "--", path]);
+      const [metadata, resolvedPath] = row.split("\t", 2);
+      const [mode, type, blob] = metadata.split(" ");
+      assert.equal(resolvedPath, path);
+      assert.equal(type, "blob");
+      const bytes = gitBytes(["show", `${revision}:${path}`]);
+      return { path, mode, blob, sha256: createHash("sha256").update(bytes).digest("hex") };
+    };
+    const sourceInputs = COMPLETE_PINNED_INPUT_PATHS.map((path) => factAtRevision(path, implementationRevision));
+    const sourceByPath = new Map(sourceInputs.map((fact) => [fact.path, fact]));
+    const reviewedEvidence = reviewedPaths.map((path) => {
+      const oldFact = factAtRevision(path, implementationRevision);
+      const newFact = factAtRevision(path, evidenceParentRevision);
+      return {
+        path,
+        status: "M",
+        mode: newFact.mode,
+        oldBlob: oldFact.blob,
+        newBlob: newFact.blob,
+        sha256: newFact.sha256,
+        reviewEvidenceBlob: newFact.blob,
+      };
+    });
+    reviewedEvidence[0].reviewEvidenceBlob = reviewedEvidence[1].newBlob;
+    reviewedEvidence[1].reviewEvidenceBlob = reviewedEvidence[0].newBlob;
+
+    const manifest = manifestFixture();
+    manifest.implementationRevision = implementationRevision;
+    manifest.evidenceParentRevision = evidenceParentRevision;
+    manifest.evidenceParentTree = evidenceParentTree;
+    manifest.manifestPath =
+      `docs/replatform/epics/E3-job-control/qa/fixture-e3-perf-01-${implementationRevision.slice(0, 12)}-a1.json`;
+    manifest.reviewedEvidence = reviewedEvidence;
+    manifest.sourceInputs = sourceInputs;
+    manifest.dependencyClosure.criticalInputs = REQUIRED_PINNED_INPUT_PATHS.map((path) =>
+      structuredClone(sourceByPath.get(path)));
+    manifest.output.namespace = `s3://aoa-e3-perf/e3-perf-01/${implementationRevision}/a1`;
+    manifest.output.retentionUntil = new Date(
+      Date.parse(CAMPAIGN_NOW) + MINIMUM_RETENTION_MS,
+    ).toISOString();
+    const manifestPath = join(worktree, ...manifest.manifestPath.split("/"));
+    await mkdir(dirname(manifestPath), { recursive: true });
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
+    assert.deepEqual(
+      gitText(["status", "--porcelain=v1", "--untracked-files=all"]).split(/\r?\n/u),
+      [`?? ${manifest.manifestPath}`],
+    );
+
+    const worktreeRunnerPath = join(worktree, "scripts", "run-e3-perf-01.mjs");
+    const executedRunnerBytes = await readFile(worktreeRunnerPath);
+    const pinnedRunner = sourceByPath.get("scripts/run-e3-perf-01.mjs");
+    assert.ok(pinnedRunner, "the manifest must pin the runner that this fixture executes");
+    assert.equal(
+      createHash("sha256").update(executedRunnerBytes).digest("hex"),
+      pinnedRunner.sha256,
+      "the executed detached-worktree runner bytes must equal the manifest implementation input",
+    );
+    assert.equal(
+      gitText(["hash-object", "--", worktreeRunnerPath]),
+      pinnedRunner.blob,
+      "the executed detached-worktree runner Git blob must equal the manifest implementation input",
+    );
+    assert.deepEqual(
+      executedRunnerBytes,
+      gitBytes(["show", `${implementationRevision}:scripts/run-e3-perf-01.mjs`]),
+      "the runner process must execute the exact implementation-revision bytes",
+    );
+
+    const result = spawnSync(process.execPath, [
+      worktreeRunnerPath,
+      "--validate-manifest", manifest.manifestPath,
+      "--evidence-parent", evidenceParentRevision,
+    ], { cwd: worktree, encoding: "utf8", timeout: 30_000 });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    cliResultEnvelope(result, {
+      kind: "e3_perf_01_cli_result",
+      mode: "validate-manifest",
+      phase: "manifest-preflight",
+      disposition: "pass",
+    });
+  } finally {
+    if (worktreeAdded) {
+      execFileSync("git", ["worktree", "remove", "--force", worktree], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+      });
+    }
+    await rm(fixtureRoot, { recursive: true, force: true });
   }
 });
 
@@ -232,7 +408,8 @@ async function runner() {
   const mod = await import("./run-e3-perf-01.mjs");
   for (const exportName of [
     "validateManifestDocument", "validateEvidenceDocument", "validateContentAddressedInputUri",
-    "validateProspectiveOutputNamespace", "deriveDigestAddressedOutputUri", "runE3Perf01",
+    "validateProspectiveOutputNamespace", "deriveDigestAddressedOutputUri", "buildEvidenceArchive",
+    "encodeEvidenceArchive", "decodeEvidenceArchive", "validateEvidenceArchive", "runE3Perf01",
   ]) assert.equal(typeof mod[exportName], "function", `runner export ${exportName} must exist`);
   return mod;
 }
@@ -396,6 +573,27 @@ function evidenceFixture(measurementRecords = loadEvidenceRecordsFixture()) {
   };
 }
 
+function postSampleFailureEvidenceFixture({ failureClass, failedCheck, childOutputSha256 }) {
+  return {
+    schemaVersion: 1,
+    gate: "E3-PERF-01",
+    attempt: "a1",
+    implementationRevision: SHA40,
+    disposition: "fail",
+    failure: {
+      class: failureClass,
+      failedChecks: [failedCheck],
+      childOutputSha256,
+    },
+    results: {
+      thresholdsPassed: true,
+      structurePassed: false,
+      canaryScanPassed: true,
+      failedThresholds: [],
+    },
+  };
+}
+
 function loadEvidenceRecordsFixture() {
   return [
     ...E3_PERF_01_CLAIM_SCENARIOS.map((scenario, index) => ({
@@ -458,15 +656,20 @@ function makeHarness(overrides = {}) {
   const environment = structuredClone(manifestFixture().environment);
   const phases = { samplesStarted: false, archiveBytesComplete: false, digestDerived: false };
   const uploads = [];
+  const receipts = [];
   const passRecords = [];
   const failureRecords = [];
   const store = {
     uploads,
+    receipts,
     passRecords,
     failureRecords,
     uploadError: null,
     receiptUriOverride: null,
     receiptSha256Override: null,
+    receiptByteLengthOverride: null,
+    receiptRetentionUntilOverride: null,
+    receiptObjectLockModeOverride: null,
     async uploadArchive(record) {
       const captured = { ...record, bytes: Buffer.from(record.bytes) };
       uploads.push(captured);
@@ -474,8 +677,13 @@ function makeHarness(overrides = {}) {
       const receipt = {
         uri: this.receiptUriOverride ?? captured.uri,
         sha256: this.receiptSha256Override ?? createHash("sha256").update(captured.bytes).digest("hex"),
-        byteLength: captured.bytes.length,
+        byteLength: this.receiptByteLengthOverride ?? captured.bytes.length,
+        retentionPolicy: {
+          retainUntil: this.receiptRetentionUntilOverride ?? captured.retentionPolicy?.retainUntil,
+          objectLockMode: this.receiptObjectLockModeOverride ?? captured.retentionPolicy?.objectLockMode,
+        },
       };
+      receipts.push(structuredClone(receipt));
       trace.push("upload:complete");
       return receipt;
     },
@@ -502,6 +710,8 @@ function makeHarness(overrides = {}) {
       const files = await readAllFiles(outputDirectory);
       this.manifest = files.map((file) => ({
         path: file.path.slice(outputDirectory.length + 1).replaceAll("\\", "/"),
+        type: "file",
+        byteLength: file.bytes.length,
         sha256: createHash("sha256").update(file.bytes).digest("hex"),
       })).sort((left, right) => left.path.localeCompare(right.path));
       this.bytes = buildTestArchiveBytes(files, outputDirectory);
@@ -590,7 +800,9 @@ async function readAllFiles(root) {
   const paths = await readdir(root, { recursive: true, withFileTypes: true });
   const files = [];
   for (const entry of paths) {
-    if (!entry.isFile()) continue;
+    if (entry.isDirectory()) continue;
+    assert.equal(entry.isSymbolicLink(), false, `evidence output contains a forbidden symlink: ${entry.name}`);
+    assert.equal(entry.isFile(), true, `evidence output contains a forbidden special file: ${entry.name}`);
     const parent = entry.parentPath ?? entry.path ?? root;
     const path = join(parent, entry.name);
     files.push({ path, bytes: await readFile(path) });
@@ -598,25 +810,82 @@ async function readAllFiles(root) {
   return files;
 }
 
+function assertSafeArchivePath(path) {
+  assert.equal(typeof path, "string");
+  assert.ok(path.length > 0);
+  assert.doesNotMatch(path, /[\\\0]/u);
+  assert.doesNotMatch(path, /^(?:\/|[A-Za-z]:|\/\/)/u);
+  const segments = path.split("/");
+  assert.equal(segments.some((segment) => segment === "" || segment === "." || segment === ".."), false);
+}
+
 function buildTestArchiveBytes(files, root) {
   const entries = files.map((file) => ({
     path: file.path.slice(root.length + 1).replaceAll("\\", "/"),
+    type: "file",
     bytesBase64: file.bytes.toString("base64"),
   })).sort((left, right) => left.path.localeCompare(right.path));
-  return Buffer.from(JSON.stringify({ format: "aoa-e3-perf-01-test-archive-v1", entries }));
+  const manifest = entries.map((entry) => {
+    const bytes = Buffer.from(entry.bytesBase64, "base64");
+    return {
+      path: entry.path,
+      type: entry.type,
+      byteLength: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    };
+  });
+  return encodeTestArchiveDocument({ format: "aoa-e3-perf-01-test-archive-v2", manifest, entries });
+}
+
+function decodeTestArchiveDocument(bytes) {
+  assert.ok(Buffer.isBuffer(bytes), "archive bytes must be a Buffer");
+  const document = JSON.parse(bytes.toString("utf8"));
+  assert.deepEqual(Object.keys(document).sort(), ["entries", "format", "manifest"]);
+  assert.equal(document.format, "aoa-e3-perf-01-test-archive-v2");
+  assert.ok(Array.isArray(document.entries));
+  assert.ok(Array.isArray(document.manifest));
+  return document;
+}
+
+function encodeTestArchiveDocument(document) {
+  return Buffer.from(JSON.stringify(document));
+}
+
+function assertTestArchivePayloadMatchesManifestIgnoringSafety({ bytes, manifest }) {
+  const document = decodeTestArchiveDocument(bytes);
+  assert.deepEqual(document.manifest, manifest, "external and embedded archive manifests must match");
+  assert.equal(document.entries.length, manifest.length, "every archive entry must have one manifest row");
+  for (const [index, entry] of document.entries.entries()) {
+    const decoded = Buffer.from(entry.bytesBase64, "base64");
+    assert.deepEqual(manifest[index], {
+      path: entry.path,
+      type: entry.type,
+      byteLength: decoded.length,
+      sha256: createHash("sha256").update(decoded).digest("hex"),
+    });
+  }
 }
 
 function readTestArchiveBytes(bytes) {
-  const document = JSON.parse(bytes.toString("utf8"));
-  assert.deepEqual(Object.keys(document).sort(), ["entries", "format"]);
-  assert.equal(document.format, "aoa-e3-perf-01-test-archive-v1");
-  assert.ok(Array.isArray(document.entries));
-  return document.entries.map((entry) => {
-    assert.deepEqual(Object.keys(entry).sort(), ["bytesBase64", "path"]);
-    assert.match(entry.path, /^(?!\/)(?!.*\\).+$/);
+  const document = decodeTestArchiveDocument(bytes);
+  const seen = new Set();
+  const files = document.entries.map((entry) => {
+    assert.deepEqual(Object.keys(entry).sort(), ["bytesBase64", "path", "type"]);
+    assertSafeArchivePath(entry.path);
+    assert.equal(entry.type, "file");
+    assert.equal(seen.has(entry.path), false, `duplicate archive path: ${entry.path}`);
+    seen.add(entry.path);
     assert.equal(typeof entry.bytesBase64, "string");
     return { path: entry.path, bytes: Buffer.from(entry.bytesBase64, "base64") };
   });
+  const expectedManifest = files.map((file) => ({
+    path: file.path,
+    type: "file",
+    byteLength: file.bytes.length,
+    sha256: createHash("sha256").update(file.bytes).digest("hex"),
+  }));
+  assert.deepEqual(document.manifest, expectedManifest, "archive manifest must bind every exact entry byte");
+  return files;
 }
 
 function stringLeafPointers(value, path = [], found = []) {
@@ -643,6 +912,11 @@ test("strict schemas close every object and pin revisions, provenance, threshold
   assert.doesNotThrow(() => new Ajv2020({ strict: true }).compile(evidenceSchema));
   assert.equal(mod.validateManifestDocument(manifestFixture()), true);
   assert.equal(mod.validateEvidenceDocument(evidenceFixture()), true);
+  assert.equal(mod.validateEvidenceDocument(postSampleFailureEvidenceFixture({
+    failureClass: "REQUIRED_STRUCTURE_MISS",
+    failedCheck: "hot_sequential_scan",
+    childOutputSha256: "0".repeat(64),
+  })), true, "the closed evidence schema must retain non-secret post-sample failures");
   assert.ok(
     Date.parse(manifestFixture().output.retentionUntil) - Date.parse(CAMPAIGN_NOW) >= MINIMUM_RETENTION_MS,
     "passing manifest fixture must retain the immutable archive for at least 180 full days",
@@ -739,6 +1013,129 @@ test("strict schemas close every object and pin revisions, provenance, threshold
     true,
     "content-addressed pairs may change prospectively only when URI and companion digest change together",
   );
+});
+
+test("real archive adapter rejects path escapes, non-regular files, duplicates, and byte/manifest drift", { skip: !assetsPresent }, async () => {
+  const mod = await runner();
+  const root = await mkdtemp(join(tmpdir(), "e3-perf-01-archive-"));
+  try {
+    const evidencePath = join(root, EVIDENCE_ARCHIVE_PATH);
+    const evidenceBytes = Buffer.from(JSON.stringify(evidenceFixture()));
+    await writeFile(evidencePath, evidenceBytes);
+    const built = await mod.buildEvidenceArchive(root);
+    assert.ok(Buffer.isBuffer(built.bytes) && built.bytes.length > 0);
+    assert.deepEqual(built.manifest, [{
+      path: EVIDENCE_ARCHIVE_PATH,
+      type: "file",
+      byteLength: evidenceBytes.length,
+      sha256: createHash("sha256").update(evidenceBytes).digest("hex"),
+    }]);
+    assert.equal(mod.validateEvidenceArchive(built), true);
+
+    const assertCodecRoundTrip = async (encoded, expectedEntries, label) => {
+      assert.ok(Buffer.isBuffer(encoded.bytes) && encoded.bytes.length > 0, label);
+      const expectedManifest = expectedEntries.map((entry) => ({
+        path: entry.path,
+        type: entry.type,
+        byteLength: entry.bytes.length,
+        sha256: createHash("sha256").update(entry.bytes).digest("hex"),
+      }));
+      assert.deepEqual(encoded.manifest, expectedManifest, `${label}: encoder manifest`);
+      const decoded = await mod.decodeEvidenceArchive(encoded.bytes);
+      assert.deepEqual(decoded.manifest, expectedManifest, `${label}: decoded embedded manifest`);
+      assert.deepEqual(
+        decoded.entries.map((entry) => ({
+          path: entry.path,
+          type: entry.type,
+          bytes: Buffer.from(entry.bytes),
+        })),
+        expectedEntries,
+        `${label}: decoded entry bytes`,
+      );
+    };
+    await assertCodecRoundTrip(
+      built,
+      [{ path: EVIDENCE_ARCHIVE_PATH, type: "file", bytes: evidenceBytes }],
+      "real builder",
+    );
+
+    const selfConsistentMaliciousArchives = [
+      { name: "traversal", path: `../${EVIDENCE_ARCHIVE_PATH}`, type: "file" },
+      { name: "backslash-traversal", path: `..\\${EVIDENCE_ARCHIVE_PATH}`, type: "file" },
+      { name: "absolute-posix", path: `/${EVIDENCE_ARCHIVE_PATH}`, type: "file" },
+      { name: "absolute-drive", path: `C:/${EVIDENCE_ARCHIVE_PATH}`, type: "file" },
+      { name: "absolute-unc", path: `//server/share/${EVIDENCE_ARCHIVE_PATH}`, type: "file" },
+      { name: "absolute-unc-backslash", path: `\\\\server\\share\\${EVIDENCE_ARCHIVE_PATH}`, type: "file" },
+      { name: "symlink-entry", path: EVIDENCE_ARCHIVE_PATH, type: "symlink" },
+      { name: "special-entry", path: EVIDENCE_ARCHIVE_PATH, type: "fifo" },
+      {
+        name: "duplicate-entry",
+        path: EVIDENCE_ARCHIVE_PATH,
+        type: "file",
+        duplicate: true,
+      },
+    ];
+    for (const item of selfConsistentMaliciousArchives) {
+      const entry = { path: item.path, type: item.type, bytes: Buffer.from(evidenceBytes) };
+      const entries = item.duplicate
+        ? [entry, { path: entry.path, type: entry.type, bytes: Buffer.from(entry.bytes) }]
+        : [entry];
+      const changed = await mod.encodeEvidenceArchive(entries);
+      await assertCodecRoundTrip(changed, entries, item.name);
+      assert.equal(mod.validateEvidenceArchive(changed), false, item.name);
+    }
+
+    const digestMismatch = structuredClone(built.manifest);
+    digestMismatch[0].sha256 = "0".repeat(64);
+    assert.equal(mod.validateEvidenceArchive({
+      bytes: Buffer.from(built.bytes),
+      manifest: digestMismatch,
+    }), false, "archive entry bytes cannot disagree with their supplied digest");
+
+    const archiveManifestMismatch = structuredClone(built.manifest);
+    archiveManifestMismatch[0].path = "different-evidence.json";
+    assert.equal(mod.validateEvidenceArchive({
+      bytes: Buffer.from(built.bytes),
+      manifest: archiveManifestMismatch,
+    }), false, "decoded archive manifest and supplied manifest cannot disagree");
+
+    const tamperedBytes = Buffer.from(built.bytes);
+    tamperedBytes[tamperedBytes.length - 1] ^= 1;
+    assert.equal(
+      mod.validateEvidenceArchive({ bytes: tamperedBytes, manifest: structuredClone(built.manifest) }),
+      false,
+      "archive bytes cannot drift from their reviewed manifest",
+    );
+
+    if (process.platform !== "win32") {
+      const symlinkPath = join(root, "forbidden-symlink.json");
+      await symlink(evidencePath, symlinkPath);
+      await assert.rejects(mod.buildEvidenceArchive(root), undefined, "filesystem symlinks fail closed");
+      await rm(symlinkPath, { force: true });
+      const fifoPath = join(root, "forbidden-fifo");
+      const fifo = spawnSync("mkfifo", [fifoPath], { encoding: "utf8", timeout: 5_000 });
+      assert.equal(fifo.status, 0, fifo.stderr);
+      const fifoProbe = spawnSync(process.execPath, [
+        "--input-type=module",
+        "--eval",
+        `const mod = await import(${JSON.stringify(REQUIRED_ASSETS[0].href)});` +
+          `try { await mod.buildEvidenceArchive(${JSON.stringify(root)}); process.exitCode = 2; }` +
+          "catch { process.exitCode = 0; }",
+      ], { encoding: "utf8", timeout: 3_000 });
+      assert.equal(
+        fifoProbe.error,
+        undefined,
+        "filesystem FIFO detection must reject before the bounded child-process timeout",
+      );
+      assert.equal(
+        fifoProbe.status,
+        0,
+        `filesystem FIFO must fail closed without reading it (${fifoProbe.stdout}${fifoProbe.stderr})`,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("input URIs are credentialless and digest-bound while output is prospective then content-addressed", { skip: !assetsPresent }, async () => {
@@ -1176,17 +1573,76 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
       publicationFailure: true,
       mutate: (h) => { h.store.uploadError = new Error("test-owned upload failure"); },
     },
+  ];
+  const receiptMismatches = [
     {
-      name: "upload_receipt_uri_mismatch",
-      publicationFailure: true,
+      name: "uri_mismatch",
       mutate: (h) => { h.store.receiptUriOverride = "s3://aoa-e3-perf/wrong/sha256/" + "0".repeat(64); },
+      assertMismatch: (receipt, upload) => assert.notEqual(receipt.uri, upload.uri),
     },
     {
-      name: "upload_receipt_digest_mismatch",
-      publicationFailure: true,
+      name: "digest_mismatch",
       mutate: (h) => { h.store.receiptSha256Override = "0".repeat(64); },
+      assertMismatch: (receipt, upload) => assert.notEqual(receipt.sha256, upload.sha256),
+    },
+    {
+      name: "byte_length_mismatch",
+      mutate: (h) => { h.store.receiptByteLengthOverride = 0; },
+      assertMismatch: (receipt, upload) => assert.notEqual(receipt.byteLength, upload.bytes.length),
+    },
+    {
+      name: "retention_under_180_days",
+      mutate: (h) => {
+        h.store.receiptRetentionUntilOverride = new Date(
+          Date.parse(CAMPAIGN_NOW) + MINIMUM_RETENTION_MS - 1,
+        ).toISOString();
+      },
+      assertMismatch: (receipt, upload) =>
+        assert.notEqual(receipt.retentionPolicy.retainUntil, upload.retentionPolicy.retainUntil),
+    },
+    {
+      name: "without_compliance_object_lock",
+      mutate: (h) => { h.store.receiptObjectLockModeOverride = "none"; },
+      assertMismatch: (receipt, upload) =>
+        assert.notEqual(receipt.retentionPolicy.objectLockMode, upload.retentionPolicy.objectLockMode),
     },
   ];
+  const receiptOutcomes = [
+    { name: "pass", mutate: () => {}, evidenceKind: "pass" },
+    {
+      name: "threshold_failure",
+      evidenceKind: "threshold",
+      failedThreshold: "shapesTwoThreeP95Ms:ten_thousand_workers_by_one_hundred",
+      mutate: (h) => replaceRecords(h, (records) =>
+        setClaimP95(records, "ten_thousand_workers_by_one_hundred", 251)),
+    },
+    {
+      name: "structural_failure",
+      evidenceKind: "structural",
+      failureClass: "REQUIRED_STRUCTURE_MISS",
+      failedCheck: "tail_cleanup_sequential_scan",
+      mutate: (h) => replaceRecords(h, (records) => {
+        recordOf(records, "cleanup", "tail").plan = {
+          Plan: { "Node Type": "Seq Scan", "Relation Name": "worker_lease_rejections", "Actual Rows": 256 },
+        };
+      }),
+    },
+  ];
+  for (const mismatch of receiptMismatches) {
+    for (const outcome of receiptOutcomes) {
+      cases.push({
+        name: `upload_receipt_${mismatch.name}_${outcome.name}`,
+        publicationFailure: true,
+        receiptMismatch: true,
+        receiptOutcome: outcome,
+        assertReceiptMismatch: mismatch.assertMismatch,
+        mutate: (h) => {
+          outcome.mutate(h);
+          mismatch.mutate(h);
+        },
+      });
+    }
+  }
   cases.push(
     { name: "post_not_detached", mutate: (h) => { h.postRun.git.detached = false; } },
     { name: "post_wrong_gate_head", mutate: (h) => { h.postRun.git.head = "0".repeat(40); } },
@@ -1256,6 +1712,18 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
     ["sparse_cleanup_p95_over_750", "cleanupP95Ms:sparse"],
     ["tail_cleanup_p95_over_750", "cleanupP95Ms:tail"],
   ]);
+  const unsafeOrUntrustedPostSampleFailures = new Set([
+    "non_json",
+    "unknown_record",
+    "archive_canary",
+    "empty_scan_cannot_authorize_contaminated_archive",
+  ]);
+  const evidenceContractFailures = new Set([
+    "missing_record",
+    "duplicate_record",
+    "out_of_order",
+    "wrong_scenario",
+  ]);
   for (const item of cases) {
     const outputDirectory = await mkdtemp(join(tmpdir(), "e3-perf-01-post-"));
     try {
@@ -1270,6 +1738,16 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
         assert.equal(harness.phases.digestDerived, true, item.name);
         assert.equal(harness.store.uploads.length, 1, item.name);
         const [upload] = harness.store.uploads;
+        assert.deepEqual(upload.retentionPolicy, {
+          retainUntil: manifestFixture().output.retentionUntil,
+          objectLockMode: OBJECT_LOCK_MODE,
+        }, `${item.name} upload request must apply the manifest retention/object-lock policy`);
+        assert.deepEqual(harness.store.receipts, [{
+          uri: upload.uri,
+          sha256: createHash("sha256").update(upload.bytes).digest("hex"),
+          byteLength: upload.bytes.length,
+          retentionPolicy: upload.retentionPolicy,
+        }], `${item.name} must verify the immutable store receipt policy`);
         assert.deepEqual(harness.archive.scannedBytes, upload.bytes, `${item.name} must scan the exact uploaded bytes`);
         assert.deepEqual(harness.archive.hashedBytes, upload.bytes, `${item.name} must hash the exact uploaded bytes`);
         const actualArchiveSha256 = createHash("sha256").update(upload.bytes).digest("hex");
@@ -1310,6 +1788,7 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
             uri: upload.uri,
             sha256: actualArchiveSha256,
             retentionUntil: "2027-02-08T00:00:00.000Z",
+            objectLockMode: OBJECT_LOCK_MODE,
           },
         }], item.name);
         assert.deepEqual(harness.trace, [
@@ -1322,17 +1801,136 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
           "upload:complete",
           "record:fail",
         ], item.name);
+      } else if (
+        !item.publicationFailure &&
+        !unsafeOrUntrustedPostSampleFailures.has(item.name) &&
+        !item.name.startsWith("post_")
+      ) {
+        const failureClass = item.name === "child_nonzero"
+          ? "LOAD_CHILD_FAILURE"
+          : evidenceContractFailures.has(item.name)
+            ? "LOAD_EVIDENCE_CONTRACT_FAILURE"
+            : "REQUIRED_STRUCTURE_MISS";
+        const childOutputSha256 = createHash("sha256")
+          .update(`${harness.child.stdout}\n${harness.child.stderr}`)
+          .digest("hex");
+        assert.equal(harness.phases.digestDerived, true, item.name);
+        assert.equal(harness.store.uploads.length, 1, item.name);
+        const [upload] = harness.store.uploads;
+        assert.deepEqual(upload.retentionPolicy, {
+          retainUntil: manifestFixture().output.retentionUntil,
+          objectLockMode: OBJECT_LOCK_MODE,
+        }, item.name);
+        assert.deepEqual(harness.archive.scannedBytes, upload.bytes, item.name);
+        assert.deepEqual(harness.archive.hashedBytes, upload.bytes, item.name);
+        const archiveSha256 = createHash("sha256").update(upload.bytes).digest("hex");
+        assert.deepEqual(harness.store.receipts, [{
+          uri: upload.uri,
+          sha256: archiveSha256,
+          byteLength: upload.bytes.length,
+          retentionPolicy: upload.retentionPolicy,
+        }], `${item.name} must verify the immutable receipt before recording the safe failure`);
+        const archivedFiles = readTestArchiveBytes(upload.bytes);
+        assert.deepEqual(archivedFiles.map((file) => file.path), [EVIDENCE_ARCHIVE_PATH], item.name);
+        const failureDocument = JSON.parse(archivedFiles[0].bytes.toString("utf8"));
+        const expectedFailureDocument = postSampleFailureEvidenceFixture({
+          failureClass,
+          failedCheck: item.name,
+          childOutputSha256,
+        });
+        assert.equal(mod.validateEvidenceDocument(failureDocument), true, item.name);
+        assert.deepEqual(failureDocument, expectedFailureDocument, item.name);
+        assert.deepEqual(harness.store.failureRecords, [{
+          schemaVersion: 1,
+          gate: "E3-PERF-01",
+          disposition: "fail",
+          failureClass,
+          failedChecks: [item.name],
+          childOutputSha256,
+          attempt: "a1",
+          implementationRevision: SHA40,
+          implementationTree: IMPLEMENTATION_TREE40,
+          gateRevision: GATE_SHA40,
+          gateTree: GATE_TREE40,
+          archive: {
+            uri: `${manifestFixture().output.namespace}/sha256/${archiveSha256}`,
+            sha256: archiveSha256,
+            retentionUntil: manifestFixture().output.retentionUntil,
+            objectLockMode: OBJECT_LOCK_MODE,
+          },
+        }], item.name);
+        assert.equal(harness.store.passRecords.length, 0, item.name);
+        assert.deepEqual(harness.trace.slice(-6), [
+          "post-attestation:complete",
+          "archive:complete",
+          "archive:scan",
+          "archive:digest",
+          "upload:complete",
+          "record:fail",
+        ], item.name);
       } else if (item.publicationFailure) {
         assert.equal(harness.phases.digestDerived, true, item.name);
         assert.equal(harness.store.uploads.length, 1, item.name);
-        assert.deepEqual(harness.archive.scannedBytes, harness.store.uploads[0].bytes, item.name);
-        assert.deepEqual(harness.archive.hashedBytes, harness.store.uploads[0].bytes, item.name);
-        assert.ok(readTestArchiveBytes(harness.store.uploads[0].bytes).length > 0, item.name);
+        const [upload] = harness.store.uploads;
+        assert.deepEqual(upload.retentionPolicy, {
+          retainUntil: manifestFixture().output.retentionUntil,
+          objectLockMode: OBJECT_LOCK_MODE,
+        }, `${item.name} must not omit the prospective immutable retention policy`);
+        assert.deepEqual(harness.archive.scannedBytes, upload.bytes, item.name);
+        assert.deepEqual(harness.archive.hashedBytes, upload.bytes, item.name);
+        assertTestArchivePayloadMatchesManifestIgnoringSafety({
+          bytes: upload.bytes,
+          manifest: harness.archive.manifest,
+        });
+        const archivedFiles = readTestArchiveBytes(upload.bytes);
+        assert.deepEqual(archivedFiles.map((file) => file.path), [EVIDENCE_ARCHIVE_PATH], item.name);
+        const retainedDocument = JSON.parse(archivedFiles[0].bytes.toString("utf8"));
+        assert.equal(mod.validateEvidenceDocument(retainedDocument), true, item.name);
+        if (item.receiptMismatch) {
+          assert.equal(harness.store.receipts.length, 1, item.name);
+          item.assertReceiptMismatch(harness.store.receipts[0], upload);
+          const measuredRecords = harness.child.stdout
+            .split(/\r?\n/u)
+            .filter(Boolean)
+            .map((line) => JSON.parse(line));
+          let expectedDocument;
+          if (item.receiptOutcome.evidenceKind === "pass") {
+            expectedDocument = evidenceFixture(measuredRecords);
+          } else if (item.receiptOutcome.evidenceKind === "threshold") {
+            expectedDocument = evidenceFixture(measuredRecords);
+            expectedDocument.results = {
+              thresholdsPassed: false,
+              structurePassed: true,
+              canaryScanPassed: true,
+              failedThresholds: [item.receiptOutcome.failedThreshold],
+            };
+          } else {
+            const childOutputSha256 = createHash("sha256")
+              .update(`${harness.child.stdout}\n${harness.child.stderr}`)
+              .digest("hex");
+            expectedDocument = postSampleFailureEvidenceFixture({
+              failureClass: item.receiptOutcome.failureClass,
+              failedCheck: item.receiptOutcome.failedCheck,
+              childOutputSha256,
+            });
+          }
+          assert.deepEqual(
+            retainedDocument,
+            expectedDocument,
+            `${item.name} must retain the schema-valid pass/failure evidence even though publication is unverified`,
+          );
+        } else {
+          assert.equal(harness.store.receipts.length, 0, item.name);
+        }
         assert.equal(harness.store.failureRecords.length, 0, item.name);
         assert.equal(harness.trace.includes("record:pass"), false, item.name);
         assert.equal(harness.trace.includes("record:fail"), false, item.name);
         assert.equal(harness.trace.at(-1), item.name === "upload_error" ? "archive:digest" : "upload:complete", item.name);
       } else {
+        assert.ok(
+          unsafeOrUntrustedPostSampleFailures.has(item.name) || item.name.startsWith("post_"),
+          `${item.name} may omit immutable failure evidence only when bytes/provenance are unsafe`,
+        );
         assert.equal(harness.store.uploads.length, 0, item.name);
         assert.equal(harness.store.failureRecords.length, 0, item.name);
         assert.equal(harness.phases.digestDerived, false, item.name);
@@ -1495,6 +2093,19 @@ test("closed evidence and real output archive gate one digest-addressed success"
       uri: expectedArchiveUri,
       sha256: expectedArchiveSha256,
       bytes: harness.archive.bytes,
+      retentionPolicy: {
+        retainUntil: manifest.output.retentionUntil,
+        objectLockMode: OBJECT_LOCK_MODE,
+      },
+    }]);
+    assert.deepEqual(harness.store.receipts, [{
+      uri: expectedArchiveUri,
+      sha256: expectedArchiveSha256,
+      byteLength: harness.archive.bytes.length,
+      retentionPolicy: {
+        retainUntil: manifest.output.retentionUntil,
+        objectLockMode: OBJECT_LOCK_MODE,
+      },
     }]);
     const runnerInput = inputFact("scripts/run-e3-perf-01.mjs");
     assert.deepEqual(harness.store.passRecords, [{
@@ -1543,6 +2154,7 @@ test("closed evidence and real output archive gate one digest-addressed success"
         uri: expectedArchiveUri,
         sha256: expectedArchiveSha256,
         retentionUntil: manifest.output.retentionUntil,
+        objectLockMode: OBJECT_LOCK_MODE,
       },
     }]);
     assert.equal(harness.store.failureRecords.length, 0);

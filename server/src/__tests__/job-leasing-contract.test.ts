@@ -719,12 +719,22 @@ function namedFunctionMutationInventory(source: string, name: string): string[] 
       }
     }
     if (ts.isTaggedTemplateExpression(node)) {
-      const match = /\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:"?public"?\.)?"?([a-z_]+)"?/i.exec(templateText(node));
+      const text = templateText(node);
+      const match = /\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:"?public"?\.)?"?([a-z_]+)"?/i.exec(text);
       if (match) {
         const table = [...canonicalTables].find((candidate) =>
           candidate.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`) === match[2]!) ?? null;
         record(table, match[1]!.toUpperCase().startsWith("INSERT") ? "insert" :
           match[1]!.toUpperCase().startsWith("DELETE") ? "delete" : "update");
+      } else if (ts.isTemplateExpression(node.template)) {
+        const dynamic = /\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+\?/i.exec(text);
+        if (dynamic) {
+          record(
+            tableName(node.template.templateSpans[0]?.expression),
+            dynamic[1]!.toUpperCase().startsWith("INSERT") ? "insert" :
+              dynamic[1]!.toUpperCase().startsWith("DELETE") ? "delete" : "update",
+          );
+        }
       }
     }
     ts.forEachChild(node, visit);
@@ -977,11 +987,119 @@ function repositoryDelegateCallSiteInventory(
   const found: string[] = [];
   for (const input of sources) {
     const file = ts.createSourceFile(input.file, input.source, ts.ScriptTarget.Latest, true);
-    const aliases = new Map<string, string>();
-    const delegateReference = (expression: ts.Expression): string | null => {
+    type DelegateBinding = {
+      name: string;
+      initializer: ts.Expression | null;
+      fixedMethod: string | null;
+      start: number;
+      scopeStart: number;
+      scopeEnd: number;
+      assignment: boolean;
+    };
+    const bindings: DelegateBinding[] = [];
+    const bindingScope = (node: ts.Node): ts.Node => {
+      let current: ts.Node | undefined = node.parent;
+      while (current && !ts.isBlock(current) && !ts.isSourceFile(current) && !ts.isFunctionLike(current)) {
+        current = current.parent;
+      }
+      return current ?? file;
+    };
+    const addBinding = (
+      name: string,
+      initializer: ts.Expression | null,
+      fixedMethod: string | null,
+      node: ts.Node,
+      scope = bindingScope(node),
+      assignment = false,
+    ): void => {
+      bindings.push({
+        name,
+        initializer,
+        fixedMethod,
+        start: node.getStart(file),
+        scopeStart: scope.getStart(file),
+        scopeEnd: scope.getEnd(),
+        assignment,
+      });
+    };
+    const collectDeclarations = (node: ts.Node): void => {
+      if (ts.isFunctionLike(node)) {
+        for (const parameter of node.parameters) {
+          if (ts.isIdentifier(parameter.name)) addBinding(parameter.name.text, null, null, parameter, node);
+        }
+      }
+      if (ts.isFunctionDeclaration(node) && node.name) {
+        addBinding(node.name.text, null, null, node);
+      }
+      if (ts.isVariableDeclaration(node)) {
+        if (ts.isIdentifier(node.name)) {
+          addBinding(node.name.text, node.initializer ?? null, null, node);
+        } else if (ts.isObjectBindingPattern(node.name)) {
+          for (const element of node.name.elements) {
+            if (!ts.isIdentifier(element.name)) continue;
+            const imported = element.propertyName ? propertyName(element.propertyName) : element.name.text;
+            addBinding(
+              element.name.text,
+              null,
+              imported && authorityRepositoryDelegateMethods.has(imported) ? imported : null,
+              element,
+            );
+          }
+        }
+      }
+      ts.forEachChild(node, collectDeclarations);
+    };
+    collectDeclarations(file);
+    const declarationAt = (name: string, useNode: ts.Node): DelegateBinding | null => {
+      const use = useNode.getStart(file);
+      return bindings.filter((binding) => !binding.assignment && binding.name === name &&
+        binding.scopeStart <= use && use <= binding.scopeEnd)
+        .sort((left, right) =>
+          (left.scopeEnd - left.scopeStart) - (right.scopeEnd - right.scopeStart) ||
+          right.start - left.start)[0] ?? null;
+    };
+    const collectAssignments = (node: ts.Node): void => {
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left)) {
+        const declaration = declarationAt(node.left.text, node);
+        if (declaration) {
+          bindings.push({
+            name: node.left.text,
+            initializer: node.right,
+            fixedMethod: null,
+            start: node.getStart(file),
+            scopeStart: declaration.scopeStart,
+            scopeEnd: declaration.scopeEnd,
+            assignment: true,
+          });
+        }
+      }
+      ts.forEachChild(node, collectAssignments);
+    };
+    collectAssignments(file);
+    const delegateReference = (
+      expression: ts.Expression,
+      useNode: ts.Node,
+      seen = new Set<string>(),
+    ): string | null => {
       if (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) ||
-          ts.isNonNullExpression(expression)) return delegateReference(expression.expression);
-      if (ts.isIdentifier(expression)) return aliases.get(expression.text) ?? null;
+          ts.isNonNullExpression(expression)) return delegateReference(expression.expression, useNode, seen);
+      if (ts.isIdentifier(expression)) {
+        if (seen.has(expression.text)) return null;
+        const declaration = declarationAt(expression.text, useNode);
+        if (!declaration) return null;
+        const use = useNode.getStart(file);
+        const assignment = bindings.filter((binding) => binding.assignment &&
+          binding.name === expression.text && binding.scopeStart === declaration.scopeStart &&
+          binding.scopeEnd === declaration.scopeEnd && binding.start <= use)
+          .sort((left, right) => right.start - left.start)[0];
+        const binding = assignment ?? declaration;
+        if (!assignment && use < declaration.start) return null;
+        if (binding.fixedMethod) return binding.fixedMethod;
+        return binding.initializer
+          ? delegateReference(binding.initializer, binding.initializer, new Set([...seen, expression.text]))
+          : null;
+      }
       if (ts.isPropertyAccessExpression(expression) &&
           authorityRepositoryDelegateMethods.has(expression.name.text)) return expression.name.text;
       if (ts.isElementAccessExpression(expression) && expression.argumentExpression &&
@@ -992,35 +1110,10 @@ function repositoryDelegateCallSiteInventory(
       }
       if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression) &&
           expression.expression.name.text === "bind") {
-        return delegateReference(expression.expression.expression);
+        return delegateReference(expression.expression.expression, useNode, seen);
       }
       return null;
     };
-    for (let pass = 0; pass < 3; pass += 1) {
-      const collectAliases = (node: ts.Node): void => {
-        if (ts.isVariableDeclaration(node) && node.initializer) {
-          if (ts.isIdentifier(node.name)) {
-            const method = delegateReference(node.initializer);
-            if (method) aliases.set(node.name.text, method);
-          } else if (ts.isObjectBindingPattern(node.name)) {
-            for (const element of node.name.elements) {
-              if (!ts.isIdentifier(element.name)) continue;
-              const imported = element.propertyName ? propertyName(element.propertyName) : element.name.text;
-              if (imported && authorityRepositoryDelegateMethods.has(imported)) {
-                aliases.set(element.name.text, imported);
-              }
-            }
-          }
-        }
-        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            ts.isIdentifier(node.left)) {
-          const method = delegateReference(node.right);
-          if (method) aliases.set(node.left.text, method);
-        }
-        ts.forEachChild(node, collectAliases);
-      };
-      collectAliases(file);
-    }
     const observation = (call: ts.CallExpression): "awaited" | "returned" | "unobserved" => {
       let current: ts.Node = call;
       while (current.parent && (
@@ -1035,7 +1128,11 @@ function repositoryDelegateCallSiteInventory(
     };
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node)) {
-        const method = delegateReference(node.expression);
+        const direct = delegateReference(node.expression, node);
+        const method = direct ?? (ts.isPropertyAccessExpression(node.expression) &&
+          (node.expression.name.text === "call" || node.expression.name.text === "apply")
+          ? delegateReference(node.expression.expression, node)
+          : null);
         if (method) {
           found.push(`${input.file.replaceAll("\\", "/")}#${enclosingFunctionName(node)}:${method}:${observation(node)}`);
         }
@@ -1300,6 +1397,84 @@ function persistPlacementDecisionPredicateFacts(source: string): Array<{
   conjuncts: string[];
 }> {
   const file = ts.createSourceFile("placement-decision-predicate.ts", source, ts.ScriptTarget.Latest, true);
+  type DrizzleBindingKind = "isNull" | "eq" | "exists" | "sql" | null;
+  type PredicateBinding = {
+    name: string;
+    kind: DrizzleBindingKind;
+    initializer: ts.Expression | null;
+    scopeStart: number;
+    scopeEnd: number;
+  };
+  const bindings: PredicateBinding[] = [];
+  const bindingScope = (node: ts.Node): ts.Node => {
+    let current: ts.Node | undefined = node.parent;
+    while (current && !ts.isBlock(current) && !ts.isSourceFile(current) && !ts.isFunctionLike(current)) {
+      current = current.parent;
+    }
+    return current ?? file;
+  };
+  const addBinding = (
+    name: string,
+    kind: DrizzleBindingKind,
+    initializer: ts.Expression | null,
+    node: ts.Node,
+    scope = bindingScope(node),
+  ): void => {
+    bindings.push({
+      name,
+      kind,
+      initializer,
+      scopeStart: scope.getStart(file),
+      scopeEnd: scope.getEnd(),
+    });
+  };
+  const collectBindings = (node: ts.Node): void => {
+    if (ts.isImportSpecifier(node)) {
+      const imported = node.propertyName?.text ?? node.name.text;
+      const declaration = node.parent.parent.parent;
+      const moduleName = ts.isImportDeclaration(declaration) && ts.isStringLiteral(declaration.moduleSpecifier)
+        ? declaration.moduleSpecifier.text
+        : "";
+      const kind = moduleName === "drizzle-orm" &&
+          ["isNull", "eq", "exists", "sql"].includes(imported)
+        ? imported as Exclude<DrizzleBindingKind, null>
+        : null;
+      addBinding(node.name.text, kind, null, node, file);
+    }
+    if (ts.isFunctionLike(node)) {
+      for (const parameter of node.parameters) {
+        if (ts.isIdentifier(parameter.name)) addBinding(parameter.name.text, null, null, parameter, node);
+      }
+    }
+    if (ts.isFunctionDeclaration(node) && node.name) addBinding(node.name.text, null, null, node);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      addBinding(node.name.text, null, node.initializer ?? null, node);
+    }
+    ts.forEachChild(node, collectBindings);
+  };
+  collectBindings(file);
+  const bindingAt = (name: string, useNode: ts.Node): PredicateBinding | null => {
+    const use = useNode.getStart(file);
+    return bindings.filter((binding) => binding.name === name &&
+      binding.scopeStart <= use && use <= binding.scopeEnd)
+      .sort((left, right) =>
+        (left.scopeEnd - left.scopeStart) - (right.scopeEnd - right.scopeStart))[0] ?? null;
+  };
+  const drizzlePredicate = (expression: ts.Expression, useNode: ts.Node): boolean => {
+    if (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) ||
+        ts.isNonNullExpression(expression)) return drizzlePredicate(expression.expression, useNode);
+    if (ts.isConditionalExpression(expression)) {
+      return drizzlePredicate(expression.whenTrue, useNode) && drizzlePredicate(expression.whenFalse, useNode);
+    }
+    if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression)) {
+      const kind = bindingAt(expression.expression.text, expression)?.kind;
+      return kind === "eq" || kind === "exists";
+    }
+    if (ts.isTaggedTemplateExpression(expression) && ts.isIdentifier(expression.tag)) {
+      return bindingAt(expression.tag.text, expression)?.kind === "sql";
+    }
+    return false;
+  };
   let owner: ts.FunctionLikeDeclaration | null = null;
   const locate = (node: ts.Node): void => {
     const name = (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) ||
@@ -1355,7 +1530,23 @@ function persistPlacementDecisionPredicateFacts(source: string): Array<{
       let conjuncts: string[] = [];
       if (ts.isCallExpression(predicate) && ts.isIdentifier(predicate.expression) &&
           predicate.expression.text === "and") {
-        conjuncts = predicate.arguments.map((argument) => argument.getText(file).replace(/\s+/g, "")).sort();
+        conjuncts = predicate.arguments.map((argument) => {
+          const compact = argument.getText(file).replace(/\s+/g, "");
+          if (ts.isCallExpression(argument) && ts.isIdentifier(argument.expression) &&
+              argument.expression.text === "isNull" &&
+              compact === "isNull(jobAttempts.placementDecidedAt)") {
+            return bindingAt(argument.expression.text, argument)?.kind === "isNull"
+              ? compact
+              : "<invalid-isNull-binding>";
+          }
+          if (ts.isIdentifier(argument) && argument.text === "currentOwnerAuthority") {
+            const binding = bindingAt(argument.text, argument);
+            return binding?.initializer && drizzlePredicate(binding.initializer, binding.initializer)
+              ? "currentOwnerAuthority"
+              : "<invalid-currentOwnerAuthority>";
+          }
+          return compact;
+        }).sort();
       }
       facts.push({ exactMutation: isExactMutation(node.expression.expression), conjuncts });
     }
@@ -1515,7 +1706,18 @@ function platformGuardOrderViolations(
   const file = ts.createSourceFile("guard-fixture.ts", source, ts.ScriptTarget.Latest, true);
   const violations: string[] = [];
   const lexicalDeclarations = lexicalTableDeclarations(file);
-  type MutationBuilder = { name: string; kind: "update" | "insert"; table: AuthorityWriter["table"] | null };
+  const expressionIdentity = (expression: ts.Expression | undefined): string | null => {
+    if (!expression) return null;
+    if (ts.isAsExpression(expression) || ts.isParenthesizedExpression(expression) ||
+        ts.isNonNullExpression(expression)) return expressionIdentity(expression.expression);
+    return expression.getText(file).replace(/\s+/g, "");
+  };
+  type MutationBuilder = {
+    name: string;
+    kind: "update" | "insert";
+    table: AuthorityWriter["table"] | null;
+    transaction: string | null;
+  };
   const mutationBuilders: MutationBuilder[] = [];
   const directMutationBuilder = (expression: ts.Expression | undefined, useNode: ts.Node): Omit<MutationBuilder, "name"> | null => {
     if (!expression) return null;
@@ -1526,7 +1728,11 @@ function platformGuardOrderViolations(
     while (ts.isCallExpression(chain) && ts.isPropertyAccessExpression(chain.expression)) {
       const callName = chain.expression.name.text;
       if (callName === "update" || callName === "insert") {
-        return { kind: callName, table: lexicalTableName(chain.arguments[0], useNode, lexicalDeclarations) };
+        return {
+          kind: callName,
+          table: lexicalTableName(chain.arguments[0], useNode, lexicalDeclarations),
+          transaction: expressionIdentity(chain.expression.expression),
+        };
       }
       chain = chain.expression.expression;
     }
@@ -1623,7 +1829,107 @@ function platformGuardOrderViolations(
         position: number;
         controlPath: string[];
         awaited: boolean;
+        transaction: string | null;
+        target: string | null;
+        identityBound: boolean;
       }> = [];
+      const rowTargetAliases = new Map<string, { transaction: string | null; target: string }>();
+      const queryFacts = (expression: ts.Expression): {
+        transaction: string | null;
+        target: string | null;
+      } => {
+        let current = expression;
+        while (ts.isAwaitExpression(current) || ts.isAsExpression(current) ||
+            ts.isParenthesizedExpression(current) || ts.isNonNullExpression(current)) {
+          current = current.expression;
+        }
+        let transaction: string | null = null;
+        let target: string | null = null;
+        const inspectPredicate = (predicate: ts.Node): void => {
+          if (target === null && ts.isCallExpression(predicate) &&
+              ts.isIdentifier(predicate.expression) && predicate.expression.text === "eq" &&
+              predicate.arguments.length === 2) {
+            const [left, right] = predicate.arguments;
+            if (ts.isPropertyAccessExpression(left!) && left.name.text === "id" &&
+                lexicalTableName(left.expression, predicate, lexicalDeclarations) === "executionTargets") {
+              target = expressionIdentity(right);
+            } else if (ts.isPropertyAccessExpression(right!) && right.name.text === "id" &&
+                lexicalTableName(right.expression, predicate, lexicalDeclarations) === "executionTargets") {
+              target = expressionIdentity(left);
+            }
+          }
+          ts.forEachChild(predicate, inspectPredicate);
+        };
+        let chain: ts.Expression = current;
+        while (ts.isCallExpression(chain) && ts.isPropertyAccessExpression(chain.expression)) {
+          const callName = chain.expression.name.text;
+          if (callName === "select") transaction = expressionIdentity(chain.expression.expression);
+          if (callName === "where" && chain.arguments[0]) inspectPredicate(chain.arguments[0]);
+          chain = chain.expression.expression;
+        }
+        return { transaction, target };
+      };
+      const collectRowTargetAliases = (child: ts.Node): void => {
+        if (child !== node.body && ts.isFunctionLike(child)) return;
+        if (ts.isVariableDeclaration(child) && ts.isArrayBindingPattern(child.name) && child.initializer) {
+          const first = child.name.elements[0];
+          if (first && ts.isBindingElement(first) && ts.isIdentifier(first.name)) {
+            const facts = queryFacts(child.initializer);
+            if (facts.target) rowTargetAliases.set(first.name.text, {
+              transaction: facts.transaction,
+              target: facts.target,
+            });
+          }
+        }
+        ts.forEachChild(child, collectRowTargetAliases);
+      };
+      collectRowTargetAliases(node.body);
+      const targetIdentity = (expression: ts.Expression | undefined): string | null => {
+        if (!expression) return null;
+        if (ts.isAsExpression(expression) || ts.isParenthesizedExpression(expression) ||
+            ts.isNonNullExpression(expression)) return targetIdentity(expression.expression);
+        if (ts.isPropertyAccessExpression(expression) && expression.name.text === "id" &&
+            ts.isIdentifier(expression.expression)) {
+          return rowTargetAliases.get(expression.expression.text)?.target ?? expressionIdentity(expression);
+        }
+        return expressionIdentity(expression);
+      };
+      const mutationTarget = (
+        mutation: ts.CallExpression,
+        table: AuthorityWriter["table"] | null,
+      ): string | null => {
+        let current: ts.Node = mutation;
+        while (current.parent && (
+          ts.isPropertyAccessExpression(current.parent) && current.parent.expression === current ||
+          ts.isCallExpression(current.parent) && current.parent.expression === current
+        )) {
+          current = current.parent;
+          if (ts.isCallExpression(current) && ts.isPropertyAccessExpression(current.expression) &&
+              current.expression.name.text === "where" && current.arguments[0]) {
+            let found: string | null = null;
+            const inspect = (predicate: ts.Node): void => {
+              if (found !== null || !ts.isCallExpression(predicate) ||
+                  !ts.isIdentifier(predicate.expression) || predicate.expression.text !== "eq" ||
+                  predicate.arguments.length !== 2) {
+                ts.forEachChild(predicate, inspect);
+                return;
+              }
+              const [left, right] = predicate.arguments;
+              const columnMatches = (candidate: ts.Expression): boolean =>
+                ts.isPropertyAccessExpression(candidate) &&
+                lexicalTableName(candidate.expression, candidate, lexicalDeclarations) === table &&
+                (candidate.name.text === "id" ||
+                  table === "workers" && candidate.name.text === "executionTargetId");
+              if (columnMatches(left!)) found = targetIdentity(right);
+              else if (columnMatches(right!)) found = targetIdentity(left);
+              if (found === null) ts.forEachChild(predicate, inspect);
+            };
+            inspect(current.arguments[0]);
+            if (found !== null) return found;
+          }
+        }
+        return null;
+      };
       const controlPath = (child: ts.Node): string[] => {
         const path: string[] = [];
         let current: ts.Node | undefined = child;
@@ -1653,12 +1959,16 @@ function platformGuardOrderViolations(
       const addMarker = (
         kind: (typeof markers)[number]["kind"],
         child: ts.Node,
+        identity: Partial<Pick<(typeof markers)[number], "transaction" | "target" | "identityBound">> = {},
       ): void => {
         markers.push({
           kind,
           position: child.getStart(file),
           controlPath: controlPath(child),
           awaited: directlyAwaited(child),
+          transaction: identity.transaction ?? null,
+          target: identity.target ?? null,
+          identityBound: identity.identityBound ?? false,
         });
       };
       const scan = (child: ts.Node): void => {
@@ -1698,12 +2008,20 @@ function platformGuardOrderViolations(
             const trustedThis = allowReviewedThisDelegate && receiver.kind === ts.SyntaxKind.ThisKeyword;
             const trustedFactory = ts.isCallExpression(receiver) && ts.isIdentifier(receiver.expression) &&
               helperKindAt(receiver.expression.text, child) === "operatorFactory";
-            if (trustedThis || trustedFactory) addMarker("combined", child);
+            if (trustedThis) addMarker("combined", child);
+            if (trustedFactory) addMarker("combined", child, {
+              transaction: expressionIdentity(receiver.arguments[0]),
+              target: targetIdentity(child.arguments[0]),
+              identityBound: true,
+            });
           }
           if (callName === "set" && ts.isPropertyAccessExpression(child.expression)) {
             const update = mutationBuilder(child.expression.expression, child);
             if (update?.kind === "update" && (auditAllMutations || update.table !== null)) {
-              addMarker("mutation", child);
+              addMarker("mutation", child, {
+                transaction: update.transaction,
+                target: mutationTarget(child, update.table),
+              });
             }
           }
           if (callName === "onConflictDoUpdate" && ts.isPropertyAccessExpression(child.expression)) {
@@ -1768,7 +2086,12 @@ function platformGuardOrderViolations(
           // A delegated writer may call the single reviewed helper. The helper
           // itself is audited below and must contain target -> worker ->
           // exclusive; a call bearing this name is never enough on its own.
-          const delegatedOrder = combined.some((guard) => dominates(guard, mutation));
+          const delegatedOrder = combined.some((guard) => dominates(guard, mutation) && (
+            !guard.identityBound || Boolean(
+              guard.transaction && mutation.transaction && guard.transaction === mutation.transaction &&
+              guard.target && mutation.target && guard.target === mutation.target
+            )
+          ));
           if (directOrder || delegatedOrder) continue;
           violations.push(enclosingFunctionName(node));
           break;
@@ -1849,6 +2172,2471 @@ function signedPoll() {
       proofId,
     },
   };
+}
+
+function leaseStaticContextPollViolations(source: string): string[] {
+  const file = ts.createSourceFile("job-leasing-static-context.ts", source, ts.ScriptTarget.Latest, true);
+  const violations = new Set<string>();
+  const exactImports = [
+    ["buildLeaseStaticContextInput", "./job-lease-eligibility.js"],
+    ["evaluateStaticLeaseEligibility", "./job-lease-eligibility.js"],
+    ["leaseStaticContextHash", "./job-lease-eligibility.js"],
+    ["normalizePlacementRegistryTarget", "./execution-target-resolver.js"],
+    ["normalizeSubmittedJobPlacementFacts", "./job-placement.js"],
+    ["leaseOfferV1Schema", "@armyofagents/worker-protocol"],
+    ["jobEnvelopeV1Schema", "@armyofagents/worker-protocol"],
+    ["pollRequestV1Schema", "@armyofagents/worker-protocol"],
+    ["pollResponseV1Schema", "@armyofagents/worker-protocol"],
+    ["workerHelloV1Schema", "@armyofagents/worker-protocol"],
+    ["runInTenant", "../db/tenant-context.js"],
+    ["operatorJobLeasingRepository", "@armyofagents/db"],
+  ] as const;
+  const imports = new Map<string, Array<{ local: string; module: string }>>();
+  const eligibilityNamespaces = new Set<string>();
+  const namespaceImports = new Set<string>();
+  for (const statement of file.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (bindings && ts.isNamespaceImport(bindings)) {
+      namespaceImports.add(bindings.name.text);
+      if (statement.moduleSpecifier.text === "./job-lease-eligibility.js") {
+        eligibilityNamespaces.add(bindings.name.text);
+      }
+      continue;
+    }
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const specifier of bindings.elements) {
+      const imported = specifier.propertyName?.text ?? specifier.name.text;
+      const facts = imports.get(imported) ?? [];
+      facts.push({ local: specifier.name.text, module: statement.moduleSpecifier.text });
+      imports.set(imported, facts);
+    }
+  }
+  for (const [name, module] of exactImports) {
+    const facts = imports.get(name) ?? [];
+    if (facts.length !== 1 || facts[0]!.local !== name || facts[0]!.module !== module) {
+      violations.add(`import:${name}`);
+    }
+  }
+  const eligibilityImportDeclarations = file.statements.filter((statement): statement is ts.ImportDeclaration =>
+    ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) &&
+    statement.moduleSpecifier.text === "./job-lease-eligibility.js");
+  const reviewedEligibilityNames = [
+    "buildLeaseStaticContextInput",
+    "evaluateStaticLeaseEligibility",
+    "LEASE_STATIC_ELIGIBILITY_VERSION",
+    "leaseStaticContextHash",
+  ];
+  const reviewedEligibilityBindings = eligibilityImportDeclarations.length === 1
+    ? eligibilityImportDeclarations[0]!.importClause?.namedBindings
+    : null;
+  if (eligibilityImportDeclarations.length !== 1 || !reviewedEligibilityBindings ||
+      !ts.isNamedImports(reviewedEligibilityBindings) ||
+      reviewedEligibilityBindings.elements.some((element) => Boolean(element.propertyName)) ||
+      reviewedEligibilityBindings.elements.map((element) => element.name.text).sort().join(",") !==
+        [...reviewedEligibilityNames].sort().join(",")) {
+    violations.add("import:job-lease-eligibility-named-only");
+  }
+
+  const directCalls = (name: string): ts.CallExpression[] => {
+    const found: ts.CallExpression[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name) {
+        found.push(node);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    return found;
+  };
+  let builderCalls: ts.CallExpression[] = [];
+  let hashCalls: ts.CallExpression[] = [];
+  const auditImportedUse = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) &&
+        (node.text === "buildLeaseStaticContextInput" || node.text === "leaseStaticContextHash")) {
+      if (ts.isImportSpecifier(node.parent)) return;
+      if (!(ts.isCallExpression(node.parent) && node.parent.expression === node)) {
+        violations.add(`${node.text === "buildLeaseStaticContextInput" ? "builder" : "hash"}:laundered-use`);
+      }
+    }
+    ts.forEachChild(node, auditImportedUse);
+  };
+  auditImportedUse(file);
+  const exactImportNames = new Set<string>([
+    ...exactImports.map(([name]) => name),
+    "LEASE_STATIC_ELIGIBILITY_VERSION",
+  ]);
+  const auditShadowedImports = (node: ts.Node): void => {
+    const declared = ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isFunctionDeclaration(node)
+      ? node.name
+      : null;
+    if (declared && ts.isIdentifier(declared) && exactImportNames.has(declared.text)) {
+      const category = declared.text === "buildLeaseStaticContextInput"
+        ? "builder"
+        : declared.text === "leaseStaticContextHash"
+          ? "hash"
+          : `import-symbol:${declared.text}`;
+      violations.add(`${category}:shadowed-import`);
+    }
+    ts.forEachChild(node, auditShadowedImports);
+  };
+  auditShadowedImports(file);
+
+  const services = file.statements.filter((statement): statement is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(statement) && statement.name?.text === "createJobLeasingService" && Boolean(statement.body));
+  if (services.length !== 1) {
+    violations.add("service:exact-createJobLeasingService");
+    return [...violations].sort();
+  }
+  const service = services[0]!;
+  const serviceBody = service.body!;
+  const serviceInputName = service.parameters.length === 1 && ts.isIdentifier(service.parameters[0]!.name)
+    ? service.parameters[0]!.name.text
+    : null;
+  const returnedPolls: ts.MethodDeclaration[] = [];
+  for (const statement of serviceBody.statements) {
+    if (!ts.isReturnStatement(statement) || !statement.expression ||
+        !ts.isObjectLiteralExpression(statement.expression)) continue;
+    for (const property of statement.expression.properties) {
+      if (ts.isMethodDeclaration(property) && propertyName(property.name) === "poll" && property.body) {
+        returnedPolls.push(property);
+      }
+    }
+  }
+  if (returnedPolls.length !== 1) {
+    violations.add("poll:exact-returned-service-method");
+    return [...violations].sort();
+  }
+  const pollMethod = returnedPolls[0]!;
+  const within = (node: ts.Node, ancestor: ts.Node): boolean => {
+    let current: ts.Node | undefined = node;
+    while (current) {
+      if (current === ancestor) return true;
+      current = current.parent;
+    }
+    return false;
+  };
+  const allBuilderCalls = directCalls("buildLeaseStaticContextInput");
+  const allHashCalls = directCalls("leaseStaticContextHash");
+  builderCalls = allBuilderCalls.filter((call) => within(call, pollMethod));
+  hashCalls = allHashCalls.filter((call) => within(call, pollMethod));
+  if (allBuilderCalls.length !== 1 || builderCalls.length !== 1) {
+    violations.add("builder:exactly-one-direct-call");
+  }
+  if (allHashCalls.length !== 1 || hashCalls.length !== 1) {
+    violations.add("hash:exactly-one-direct-call");
+  }
+  if (allBuilderCalls.some((call) => !within(call, pollMethod)) ||
+      allHashCalls.some((call) => !within(call, pollMethod))) {
+    violations.add("poll:context-call-outside-poll");
+  }
+
+  const unwrap = (expression: ts.Expression | undefined): ts.Expression | undefined => {
+    let current = expression;
+    while (current && (
+      ts.isParenthesizedExpression(current) || ts.isAsExpression(current) ||
+      ts.isTypeAssertionExpression(current) || ts.isNonNullExpression(current) ||
+      ts.isSatisfiesExpression(current) || ts.isAwaitExpression(current)
+    )) current = current.expression;
+    return current;
+  };
+  const pathOf = (expression: ts.Expression | undefined): string[] | null => {
+    const current = unwrap(expression);
+    if (!current) return null;
+    if (ts.isIdentifier(current)) return [current.text];
+    if (ts.isPropertyAccessExpression(current)) {
+      const receiver = pathOf(current.expression);
+      return receiver ? [...receiver, current.name.text] : null;
+    }
+    if (ts.isElementAccessExpression(current)) {
+      const receiver = pathOf(current.expression);
+      const property = unwrap(current.argumentExpression);
+      return receiver && property && ts.isStringLiteral(property)
+        ? [...receiver, property.text]
+        : null;
+    }
+    return null;
+  };
+  const unwrappedCall = (expression: ts.Expression | undefined): ts.CallExpression | null => {
+    const current = unwrap(expression);
+    return current && ts.isCallExpression(current) ? current : null;
+  };
+  const callPath = (call: ts.CallExpression | null): string | null =>
+    call ? pathOf(call.expression)?.join(".") ?? null : null;
+  const criticalComputedNames = new Set([
+    "HeadRestartConflict", "authorityCurrent", "buildLeaseStaticContextInput",
+    "deriveAdmissibleWorkloadTypes", "evaluateStaticLeaseEligibility", "guardPlatformAuthority",
+    "isHeadRestartConflict", "leaseStaticContextHash", "lockEligibleLeaseCandidates",
+    "offerLease", "snapshotLiveLeaseCapacity", "tryOffer", "upsertLeaseRejectionCertificates",
+  ]);
+  const dangerousObjectMethods = new Set([
+    "assign", "defineProperties", "defineProperty", "setPrototypeOf",
+  ]);
+  const metaprogramAliases = new Set<string>();
+  let metaprogramAliasAdded = true;
+  while (metaprogramAliasAdded) {
+    metaprogramAliasAdded = false;
+    const discover = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        const path = pathOf(node.initializer)?.join(".");
+        if ((path && (path.startsWith("Reflect.") ||
+              [...dangerousObjectMethods].some((method) =>
+                path === `Object.${method}` || path.startsWith(`Object.${method}.`)))) ||
+            (path && metaprogramAliases.has(path.split(".")[0]!))) {
+          if (!metaprogramAliases.has(node.name.text)) {
+            metaprogramAliases.add(node.name.text);
+            metaprogramAliasAdded = true;
+          }
+        }
+      }
+      ts.forEachChild(node, discover);
+    };
+    discover(serviceBody);
+  }
+  const auditDynamicMetaprogramming = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      violations.add("binding:dynamic-metaprogramming");
+    }
+    if (ts.isIdentifier(node) && namespaceImports.has(node.text) &&
+        !(ts.isNamespaceImport(node.parent))) {
+      violations.add("binding:dynamic-metaprogramming");
+    }
+    if (ts.isIdentifier(node) && node.text === "Reflect") {
+      violations.add("binding:dynamic-metaprogramming");
+    }
+    if (ts.isPropertyAccessExpression(node)) {
+      const path = pathOf(node)?.join(".") ?? "";
+      if (path.startsWith("Reflect.") || [...dangerousObjectMethods].some((method) =>
+        path === `Object.${method}` || path.startsWith(`Object.${method}.`)) ||
+          metaprogramAliases.has(path.split(".")[0]!)) {
+        violations.add("binding:dynamic-metaprogramming");
+      }
+    }
+    if (ts.isElementAccessExpression(node)) {
+      const argument = unwrap(node.argumentExpression);
+      const property = argument && ts.isStringLiteral(argument) ? argument.text : null;
+      const root = pathOf(node.expression)?.[0];
+      if (criticalComputedNames.has(property ?? "") || root === "Reflect" ||
+          root === "Object" || Boolean(root && namespaceImports.has(root)) ||
+          Boolean(root && metaprogramAliases.has(root))) {
+        violations.add("binding:dynamic-metaprogramming");
+      }
+    }
+    if (ts.isBindingElement(node) && (Boolean(node.propertyName && ts.isStringLiteral(node.propertyName)) ||
+        Boolean(node.propertyName && ts.isComputedPropertyName(node.propertyName)))) {
+      violations.add("binding:dynamic-metaprogramming");
+    }
+    ts.forEachChild(node, auditDynamicMetaprogramming);
+  };
+  // Dynamic imports, namespace access, and reflection are forbidden across the
+  // whole reviewed module: limiting this inventory to poll permits a helper to
+  // manufacture a critical export before the canonical chain begins.
+  auditDynamicMetaprogramming(file);
+  const eligibilityNamespaceAliases = new Set(eligibilityNamespaces);
+  let namespaceAliasAdded = true;
+  while (namespaceAliasAdded) {
+    namespaceAliasAdded = false;
+    const discoverNamespaceAliases = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        const path = pathOf(node.initializer);
+        if (path?.length === 1 && eligibilityNamespaceAliases.has(path[0]!) &&
+            !eligibilityNamespaceAliases.has(node.name.text)) {
+          eligibilityNamespaceAliases.add(node.name.text);
+          namespaceAliasAdded = true;
+        }
+      }
+      ts.forEachChild(node, discoverNamespaceAliases);
+    };
+    discoverNamespaceAliases(file);
+  }
+  const containsEligibilityDynamicImport = (node: ts.Node): boolean => {
+    let found = false;
+    const scan = (current: ts.Node): void => {
+      if (ts.isCallExpression(current) && current.expression.kind === ts.SyntaxKind.ImportKeyword &&
+          current.arguments.length === 1 && ts.isStringLiteral(unwrap(current.arguments[0])!) &&
+          (unwrap(current.arguments[0]) as ts.StringLiteral).text === "./job-lease-eligibility.js") {
+        found = true;
+        return;
+      }
+      ts.forEachChild(current, scan);
+    };
+    scan(node);
+    return found;
+  };
+  const auditEligibilityModuleAccess = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments.length === 1 && ts.isStringLiteral(unwrap(node.arguments[0])!) &&
+        (unwrap(node.arguments[0]) as ts.StringLiteral).text === "./job-lease-eligibility.js") {
+      violations.add("import:job-lease-eligibility-named-only");
+    }
+    if (ts.isIdentifier(node) && eligibilityNamespaceAliases.has(node.text) &&
+        !ts.isNamespaceImport(node.parent)) {
+      violations.add("import:job-lease-eligibility-named-only");
+    }
+    if (ts.isCallExpression(node) && pathOf(node.expression)?.join(".")?.startsWith("Reflect.")) {
+      const text = node.getText(file);
+      if (text.includes("eligibility") || reviewedEligibilityNames.some((name) => text.includes(name))) {
+        violations.add("import:job-lease-eligibility-named-only");
+      }
+    }
+    ts.forEachChild(node, auditEligibilityModuleAccess);
+  };
+  auditEligibilityModuleAccess(file);
+  const auditAlternateContextSymbols = (node: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(node) &&
+        ["buildLeaseStaticContextInput", "leaseStaticContextHash"].includes(node.name.text)) {
+      violations.add(node.name.text === "buildLeaseStaticContextInput"
+        ? "builder:laundered-use"
+        : "hash:laundered-use");
+    }
+    if (ts.isElementAccessExpression(node)) {
+      const argument = unwrap(node.argumentExpression);
+      const name = argument && ts.isStringLiteral(argument) ? argument.text : null;
+      const receiverRoot = pathOf(node.expression)?.[0];
+      const alternateModule = Boolean(receiverRoot && eligibilityNamespaceAliases.has(receiverRoot)) ||
+        containsEligibilityDynamicImport(node.expression);
+      if (name === "buildLeaseStaticContextInput" || alternateModule && name === null) {
+        violations.add("builder:laundered-use");
+      }
+      if (name === "leaseStaticContextHash" || alternateModule && name === null) {
+        violations.add("hash:laundered-use");
+      }
+    }
+    ts.forEachChild(node, auditAlternateContextSymbols);
+  };
+  auditAlternateContextSymbols(file);
+  const isAwaitedCall = (call: ts.CallExpression): boolean => {
+    let current: ts.Node = call;
+    while (current.parent && (
+      ts.isParenthesizedExpression(current.parent) || ts.isAsExpression(current.parent) ||
+      ts.isTypeAssertionExpression(current.parent) || ts.isNonNullExpression(current.parent) ||
+      ts.isSatisfiesExpression(current.parent)
+    ) && current.parent.expression === current) current = current.parent;
+    return ts.isAwaitExpression(current.parent) && current.parent.expression === current;
+  };
+  const closedObjectProperties = (expression: ts.Expression | undefined): Map<string, ts.Expression> | null => {
+    const current = unwrap(expression);
+    if (!current || !ts.isObjectLiteralExpression(current)) return null;
+    const properties = new Map<string, ts.Expression>();
+    for (const property of current.properties) {
+      if (ts.isShorthandPropertyAssignment(property)) {
+        if (properties.has(property.name.text)) return null;
+        properties.set(property.name.text, property.name);
+        continue;
+      }
+      if (!ts.isPropertyAssignment(property) || ts.isComputedPropertyName(property.name)) return null;
+      const name = propertyName(property.name);
+      if (!name || properties.has(name)) return null;
+      properties.set(name, property.initializer);
+    }
+    return properties;
+  };
+  const calledName = (expression: ts.Expression | undefined): string | null => {
+    const call = unwrappedCall(expression);
+    if (!call) return null;
+    if (ts.isIdentifier(call.expression)) return call.expression.text;
+    return ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : null;
+  };
+  type DirectBinding = {
+    declaration: ts.VariableDeclaration;
+    statement: ts.VariableStatement;
+    initializer: ts.Expression;
+  };
+  const directBinding = (body: ts.Block, name: string): DirectBinding | null => {
+    const matches: DirectBinding[] = [];
+    for (const statement of body.statements) {
+      if (!ts.isVariableStatement(statement) || !(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name) && declaration.name.text === name && declaration.initializer) {
+          matches.push({ declaration, statement, initializer: declaration.initializer });
+        }
+      }
+    }
+    return matches.length === 1 ? matches[0]! : null;
+  };
+  const bindingForCall = (call: ts.CallExpression | undefined): DirectBinding | null => {
+    if (!call || !ts.isVariableDeclaration(call.parent) || call.parent.initializer !== call ||
+        !ts.isIdentifier(call.parent.name)) return null;
+    const list = call.parent.parent;
+    const statement = list.parent;
+    if (!ts.isVariableDeclarationList(list) || !ts.isVariableStatement(statement) ||
+        !(list.flags & ts.NodeFlags.Const)) return null;
+    return { declaration: call.parent, statement, initializer: call };
+  };
+  const directBodyBindingForCall = (body: ts.Block, call: ts.CallExpression): DirectBinding | null => {
+    let current: ts.Node = call;
+    while (current.parent && (
+      ts.isAwaitExpression(current.parent) || ts.isParenthesizedExpression(current.parent) ||
+      ts.isAsExpression(current.parent) || ts.isTypeAssertionExpression(current.parent) ||
+      ts.isNonNullExpression(current.parent) || ts.isSatisfiesExpression(current.parent)
+    ) && current.parent.expression === current) current = current.parent;
+    if (!ts.isVariableDeclaration(current.parent) || current.parent.initializer !== current ||
+        !ts.isIdentifier(current.parent.name)) return null;
+    const list = current.parent.parent;
+    const statement = list.parent;
+    if (!ts.isVariableDeclarationList(list) || !ts.isVariableStatement(statement) ||
+        !(list.flags & ts.NodeFlags.Const) || statement.parent !== body) return null;
+    return { declaration: current.parent, statement, initializer: current.parent.initializer! };
+  };
+
+  const criticalHelperNames = new Set([
+    "authorityCurrent", "buildJobEnvelope", "deriveAdmissibleWorkloadTypes", "minCapacity",
+    "normalizedProviderDemand", "normalizedRequirements",
+  ]);
+  const criticalDeclarationNames = new Map<string, ts.Identifier[]>();
+  const recordCriticalBindingName = (name: ts.BindingName): void => {
+    if (ts.isIdentifier(name)) {
+      if (criticalHelperNames.has(name.text)) {
+        const declarations = criticalDeclarationNames.get(name.text) ?? [];
+        declarations.push(name);
+        criticalDeclarationNames.set(name.text, declarations);
+      }
+      return;
+    }
+    for (const element of name.elements) {
+      if (!ts.isOmittedExpression(element)) recordCriticalBindingName(element.name);
+    }
+  };
+  const collectCriticalDeclarations = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node) ||
+        ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isBindingElement(node)) {
+      if (node.name) recordCriticalBindingName(node.name);
+    }
+    ts.forEachChild(node, collectCriticalDeclarations);
+  };
+  collectCriticalDeclarations(file);
+  const topLevelCriticalFunction = (name: string): ts.FunctionDeclaration | null => {
+    const declarations = file.statements.filter((statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === name && Boolean(statement.body));
+    return declarations.length === 1 ? declarations[0]! : null;
+  };
+  const criticalRootBindings = new Map<string, ts.Node | null>([
+    ["authorityCurrent", topLevelCriticalFunction("authorityCurrent")],
+    ["buildJobEnvelope", topLevelCriticalFunction("buildJobEnvelope")],
+    ["minCapacity", topLevelCriticalFunction("minCapacity")],
+    ["normalizedProviderDemand", topLevelCriticalFunction("normalizedProviderDemand")],
+    ["normalizedRequirements", topLevelCriticalFunction("normalizedRequirements")],
+    ["deriveAdmissibleWorkloadTypes", directBinding(serviceBody, "deriveAdmissibleWorkloadTypes")?.declaration ?? null],
+  ]);
+  let criticalHelperBindingInvalid = false;
+  for (const [name, root] of criticalRootBindings) {
+    if (!root || (criticalDeclarationNames.get(name)?.length ?? 0) !== 1 || directCalls(name).length !== 1) {
+      criticalHelperBindingInvalid = true;
+    }
+  }
+  const auditCriticalHelperUses = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && criticalHelperNames.has(node.text)) {
+      const declarations = criticalDeclarationNames.get(node.text) ?? [];
+      const isDeclaration = declarations.includes(node);
+      const isDirectCall = ts.isCallExpression(node.parent) && node.parent.expression === node;
+      if (!isDeclaration && !isDirectCall) criticalHelperBindingInvalid = true;
+    }
+    ts.forEachChild(node, auditCriticalHelperUses);
+  };
+  auditCriticalHelperUses(file);
+  if (criticalHelperBindingInvalid) violations.add("binding:trusted-critical-helper-symbols");
+
+  const builderCall = builderCalls[0];
+  const hashCall = hashCalls[0];
+  if (!builderCall || !hashCall) return [...violations].sort();
+  const builderBinding = bindingForCall(builderCall);
+  const hashBinding = bindingForCall(hashCall);
+  if (!builderBinding) violations.add("builder:direct-const-binding");
+  if (!hashBinding) violations.add("hash:direct-const-binding");
+
+  const headConflictClasses: ts.ClassDeclaration[] = [];
+  const classifierDeclarations: ts.VariableDeclaration[] = [];
+  const collectRetrySentinelDeclarations = (node: ts.Node): void => {
+    if (ts.isClassDeclaration(node) && node.name?.text === "HeadRestartConflict") {
+      headConflictClasses.push(node);
+    }
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
+        node.name.text === "isHeadRestartConflict") classifierDeclarations.push(node);
+    ts.forEachChild(node, collectRetrySentinelDeclarations);
+  };
+  collectRetrySentinelDeclarations(file);
+  const headConflictClass = headConflictClasses.length === 1 ? headConflictClasses[0]! : null;
+  const classifierBinding = directBinding(serviceBody, "isHeadRestartConflict");
+  const classifierExpression = classifierBinding ? unwrap(classifierBinding.initializer) : null;
+  const classifier = classifierExpression &&
+      (ts.isArrowFunction(classifierExpression) || ts.isFunctionExpression(classifierExpression))
+    ? classifierExpression
+    : null;
+  const classifierParameter = classifier?.parameters.length === 1 &&
+      ts.isIdentifier(classifier.parameters[0]!.name)
+    ? classifier.parameters[0]!.name.text
+    : null;
+  const classifierBody = classifier && !ts.isBlock(classifier.body) ? unwrap(classifier.body) : null;
+  let classifierWritten = false;
+  let retrySentinelEscaped = false;
+  const auditClassifierWrites = (node: ts.Node): void => {
+    if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+        !ts.isBlock(node.body) && node !== classifier &&
+        node.body.getText(file).match(/\b(?:HeadRestartConflict|isHeadRestartConflict)\b/)) {
+      retrySentinelEscaped = true;
+    }
+    if (ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
+      const leftRoot = pathOf(node.left)?.[0];
+      const rightRoot = pathOf(node.right)?.[0];
+      if (leftRoot === "isHeadRestartConflict") classifierWritten = true;
+      if (["HeadRestartConflict", "isHeadRestartConflict"].includes(leftRoot ?? "") ||
+          ["HeadRestartConflict", "isHeadRestartConflict"].includes(rightRoot ?? "")) {
+        retrySentinelEscaped = true;
+      }
+    }
+    if (ts.isClassDeclaration(node) && node.name?.text === "HeadRestartConflict" &&
+        node.members.some((member) => member.name && propertyName(member.name) === "__@hasInstance")) {
+      retrySentinelEscaped = true;
+    }
+    if (ts.isPropertyAccessExpression(node) && pathOf(node)?.join(".") === "Symbol.hasInstance") {
+      retrySentinelEscaped = true;
+    }
+    if (ts.isElementAccessExpression(node) && pathOf(node.expression)?.join(".") === "Symbol" &&
+        ts.isStringLiteral(unwrap(node.argumentExpression)!) &&
+        (unwrap(node.argumentExpression) as ts.StringLiteral).text === "hasInstance") {
+      retrySentinelEscaped = true;
+    }
+    if (ts.isVariableDeclaration(node) && node.initializer && ts.isIdentifier(node.name) &&
+        ["HeadRestartConflict", "isHeadRestartConflict"].includes(pathOf(node.initializer)?.join(".") ?? "") &&
+        !["HeadRestartConflict", "isHeadRestartConflict"].includes(node.name.text)) {
+      retrySentinelEscaped = true;
+    }
+    if ((ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node) ||
+        ts.isReturnStatement(node) || ts.isCallExpression(node) || ts.isNewExpression(node)) &&
+        node !== classifierBinding?.initializer) {
+      const sentinelIdentifiers: string[] = [];
+      const scan = (current: ts.Node): void => {
+        if (ts.isFunctionLike(current) && current !== node) return;
+        if (ts.isIdentifier(current) &&
+            ["HeadRestartConflict", "isHeadRestartConflict"].includes(current.text)) {
+          sentinelIdentifiers.push(current.text);
+        }
+        ts.forEachChild(current, scan);
+      };
+      scan(node);
+      const exactClassifierInstanceof = classifierBody && within(node, classifierBody);
+      const exactRestartConstruction = ts.isNewExpression(node) &&
+        pathOf(node.expression)?.join(".") === "HeadRestartConflict";
+      const exactCatchClassification = ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) && node.expression.text === "isHeadRestartConflict";
+      if (sentinelIdentifiers.length > 0 && !exactClassifierInstanceof &&
+          !exactRestartConstruction && !exactCatchClassification) retrySentinelEscaped = true;
+    }
+    ts.forEachChild(node, auditClassifierWrites);
+  };
+  auditClassifierWrites(file);
+  const exactClassifier = Boolean(headConflictClass && headConflictClass.parent === serviceBody &&
+    headConflictClass.heritageClauses?.length === 1 &&
+    headConflictClass.heritageClauses[0]!.token === ts.SyntaxKind.ExtendsKeyword &&
+    headConflictClass.heritageClauses[0]!.types.length === 1 &&
+    pathOf(headConflictClass.heritageClauses[0]!.types[0]!.expression)?.join(".") === "Error" &&
+    headConflictClass.members.length === 0 && classifierDeclarations.length === 1 && !classifierWritten &&
+    !retrySentinelEscaped &&
+    classifierBinding?.statement.parent === serviceBody && classifierParameter && classifierBody &&
+    ts.isBinaryExpression(classifierBody) &&
+    classifierBody.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword &&
+    pathOf(classifierBody.left)?.join(".") === classifierParameter &&
+    pathOf(classifierBody.right)?.join(".") === "HeadRestartConflict");
+  if (!exactClassifier) violations.add("poll:trusted-head-conflict-sentinel");
+
+  const maxHeartbeatBinding = directBinding(serviceBody, "maxHeartbeatAgeMs");
+  const maxHeartbeatCall = maxHeartbeatBinding ? unwrappedCall(maxHeartbeatBinding.initializer) : null;
+  const maxHeartbeatFallback = maxHeartbeatCall?.arguments.length === 2
+    ? unwrap(maxHeartbeatCall.arguments[1])
+    : null;
+  const exactConfiguredMaxHeartbeat = Boolean(maxHeartbeatBinding?.statement.parent === serviceBody &&
+    maxHeartbeatCall && callPath(maxHeartbeatCall) === "Math.max" &&
+    ts.isNumericLiteral(unwrap(maxHeartbeatCall.arguments[0])!) &&
+    Number((unwrap(maxHeartbeatCall.arguments[0]) as ts.NumericLiteral).text.replaceAll("_", "")) === 1000 &&
+    maxHeartbeatFallback && ts.isBinaryExpression(maxHeartbeatFallback) &&
+    maxHeartbeatFallback.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
+    pathOf(maxHeartbeatFallback.left)?.join(".") === `${serviceInputName}.maxHeartbeatAgeMs` &&
+    ts.isNumericLiteral(unwrap(maxHeartbeatFallback.right)!) &&
+    Number((unwrap(maxHeartbeatFallback.right) as ts.NumericLiteral).text.replaceAll("_", "")) === 300000);
+  if (!exactConfiguredMaxHeartbeat) violations.add("builder:trusted-service-authority-guard");
+  const compactServiceExpression = (expression: ts.Expression | undefined): string =>
+    expression?.getText(file).replace(/\s+/g, "") ?? "";
+  const ackTimeoutBinding = directBinding(serviceBody, "ackTimeoutMs");
+  const leaseDurationBinding = directBinding(serviceBody, "leaseDurationMs");
+  const exactConfiguredLeaseTiming = Boolean(ackTimeoutBinding && leaseDurationBinding &&
+    compactServiceExpression(ackTimeoutBinding.initializer) ===
+      `Math.max(1000,${serviceInputName}.ackTimeoutMs??15000)` &&
+    compactServiceExpression(leaseDurationBinding.initializer) ===
+      `Math.max(ackTimeoutMs+1000,${serviceInputName}.leaseDurationMs??300000)`);
+  if (!exactConfiguredLeaseTiming) violations.add("candidate:result-consumed-by-canonical-chain");
+
+  const authorityCurrentDeclaration = topLevelCriticalFunction("authorityCurrent");
+  const requiredAuthorityCurrentPredicates = [
+    "worker.id===auth.workerId",
+    "worker.executionTargetId===auth.targetId",
+    "worker.organizationId===auth.organizationId",
+    'worker.scope!=="platform"',
+    "worker.deviceGeneration===auth.targetGeneration",
+    "worker.deviceThumbprint===auth.deviceThumbprint",
+    "worker.devicePublicKey===auth.publicKey",
+    "worker.profileHash===auth.profileHash",
+    "worker.revokedAt===null",
+    "ACTIVE_WORKER_STATUSES.has(worker.status)",
+    "authority.ownerMembershipActive",
+    "target.id===auth.targetId",
+    'target.status==="active"',
+    "target.deviceGeneration===auth.targetGeneration",
+    "request.workerId===auth.workerId",
+    "request.targetId===auth.targetId",
+    "request.deviceGeneration===auth.targetGeneration",
+    "oldestHeartbeat!==null",
+    "input.databaseNow.getTime()-oldestHeartbeat<=input.maxHeartbeatAgeMs",
+  ];
+  const compact = (node: ts.Node | undefined): string => node?.getText(file).replace(/\s+/g, "") ?? "";
+  const flattenAnd = (expression: ts.Expression): ts.Expression[] => {
+    const current = unwrap(expression)!;
+    return ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+      ? [...flattenAnd(current.left), ...flattenAnd(current.right)]
+      : [current];
+  };
+  const authorityReturnStatements = authorityCurrentDeclaration?.body?.statements.filter(
+    (statement): statement is ts.ReturnStatement => ts.isReturnStatement(statement) && Boolean(statement.expression),
+  ) ?? [];
+  const authorityReturnPredicates = authorityReturnStatements.length === 1
+    ? flattenAnd(authorityReturnStatements[0]!.expression!).map((expression) => compact(expression)).sort()
+    : [];
+  const oldestHeartbeatDeclaration = authorityCurrentDeclaration?.body?.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => [...statement.declarationList.declarations])
+    .find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "oldestHeartbeat");
+  const expectedOldestHeartbeat = 'target.scope==="platform"?input.platformPhysicalHeartbeatAt?.getTime()??null:!worker.lastSeenAt||!target.lastSeenAt?null:Math.min(worker.lastSeenAt.getTime(),target.lastSeenAt.getTime())';
+  const activeStatusDeclarations = file.statements.filter((statement): statement is ts.VariableStatement =>
+    ts.isVariableStatement(statement) && [...statement.declarationList.declarations].some((declaration) =>
+      ts.isIdentifier(declaration.name) && declaration.name.text === "ACTIVE_WORKER_STATUSES"));
+  const activeStatusDeclaration = activeStatusDeclarations.length === 1
+    ? [...activeStatusDeclarations[0]!.declarationList.declarations].find((declaration) =>
+      ts.isIdentifier(declaration.name) && declaration.name.text === "ACTIVE_WORKER_STATUSES")
+    : null;
+  const activeStatusInitializer = activeStatusDeclaration ? unwrap(activeStatusDeclaration.initializer) : null;
+  const exactActiveStatuses = Boolean(activeStatusDeclarations.length === 1 &&
+    (activeStatusDeclarations[0]!.declarationList.flags & ts.NodeFlags.Const) &&
+    activeStatusInitializer && ts.isNewExpression(activeStatusInitializer) &&
+    pathOf(activeStatusInitializer.expression)?.join(".") === "Set" &&
+    activeStatusInitializer.arguments?.length === 1 &&
+    ts.isArrayLiteralExpression(unwrap(activeStatusInitializer.arguments[0])!) &&
+    (unwrap(activeStatusInitializer.arguments[0]) as ts.ArrayLiteralExpression).elements
+      .map((element) => ts.isStringLiteral(unwrap(element)!)
+        ? (unwrap(element) as ts.StringLiteral).text
+        : "<dynamic>")
+      .join(",") === "enrolled,active");
+  let authorityCurrentImpure = false;
+  if (authorityCurrentDeclaration?.body) {
+    const auditPureAuthority = (node: ts.Node): void => {
+      if (ts.isBinaryExpression(node) &&
+          node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+          node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) authorityCurrentImpure = true;
+      if ((ts.isPrefixUnaryExpression(node) &&
+            [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(node.operator)) ||
+          ts.isPostfixUnaryExpression(node) || ts.isDeleteExpression(node) ||
+          ts.isAwaitExpression(node) || ts.isYieldExpression(node) || ts.isNewExpression(node)) {
+        authorityCurrentImpure = true;
+      }
+      if (ts.isCallExpression(node) && callPath(node) !== "input.databaseNow.getTime" &&
+          callPath(node) !== "worker.lastSeenAt.getTime" && callPath(node) !== "target.lastSeenAt.getTime" &&
+          callPath(node) !== "input.platformPhysicalHeartbeatAt.getTime" && callPath(node) !== "Math.min" &&
+          callPath(node) !== "ACTIVE_WORKER_STATUSES.has") {
+        authorityCurrentImpure = true;
+      }
+      ts.forEachChild(node, auditPureAuthority);
+    };
+    auditPureAuthority(authorityCurrentDeclaration.body);
+  }
+  if (!authorityCurrentDeclaration || authorityCurrentDeclaration.parameters.length !== 1 ||
+      !ts.isIdentifier(authorityCurrentDeclaration.parameters[0]!.name) ||
+      authorityCurrentDeclaration.parameters[0]!.name.text !== "input" || authorityCurrentImpure ||
+      !exactActiveStatuses ||
+      authorityReturnPredicates.join("|") !== [...requiredAuthorityCurrentPredicates].sort().join("|") ||
+      compact(oldestHeartbeatDeclaration?.initializer) !== expectedOldestHeartbeat ||
+      directCalls("authorityCurrent").length !== 1) {
+    violations.add("builder:trusted-non-platform-authority-current");
+  }
+
+  const normalizedRequirementsDeclaration = topLevelCriticalFunction("normalizedRequirements");
+  const normalizedRequirementsStatements = normalizedRequirementsDeclaration?.body?.statements ?? [];
+  const normalizedDeclaration = normalizedRequirementsStatements[0] &&
+      ts.isVariableStatement(normalizedRequirementsStatements[0]) &&
+      normalizedRequirementsStatements[0].declarationList.declarations.length === 1
+    ? normalizedRequirementsStatements[0].declarationList.declarations[0]!
+    : null;
+  const normalizedFactsCall = normalizedDeclaration ? unwrappedCall(normalizedDeclaration.initializer) : null;
+  const normalizedFactsInput = normalizedFactsCall?.arguments.length === 1
+    ? closedObjectProperties(normalizedFactsCall.arguments[0])
+    : null;
+  const normalizedReturn = normalizedRequirementsStatements[1] &&
+      ts.isReturnStatement(normalizedRequirementsStatements[1])
+    ? normalizedRequirementsStatements[1]
+    : null;
+  const exactNormalizedRequirements = Boolean(normalizedRequirementsDeclaration &&
+    normalizedRequirementsDeclaration.parameters.length === 2 &&
+    normalizedRequirementsDeclaration.parameters.every((parameter) => ts.isIdentifier(parameter.name)) &&
+    normalizedRequirementsDeclaration.parameters.map((parameter) =>
+      (parameter.name as ts.Identifier).text).join(",") === "job,target" &&
+    normalizedRequirementsStatements.length === 2 && normalizedDeclaration &&
+    ts.isIdentifier(normalizedDeclaration.name) && normalizedDeclaration.name.text === "normalized" &&
+    normalizedFactsCall && ts.isIdentifier(normalizedFactsCall.expression) &&
+    normalizedFactsCall.expression.text === "normalizeSubmittedJobPlacementFacts" &&
+    directCalls("normalizeSubmittedJobPlacementFacts").length === 1 &&
+    normalizedFactsInput && [...normalizedFactsInput.keys()].sort().join(",") ===
+      "credentialBinding,inputHash,placementRequest,policyHash,requirements,resolvedTarget,rollout,sourceKind" &&
+    pathOf(normalizedFactsInput.get("sourceKind"))?.join(".") === "job.sourceKind" &&
+    pathOf(normalizedFactsInput.get("inputHash"))?.join(".") === "job.inputHash" &&
+    pathOf(normalizedFactsInput.get("policyHash"))?.join(".") === "job.policyHash" &&
+    pathOf(normalizedFactsInput.get("requirements"))?.join(".") === "job.requirements" &&
+    pathOf(normalizedFactsInput.get("placementRequest"))?.join(".") === "job.placementRequest" &&
+    compact(normalizedFactsInput.get("rollout")) ===
+      '{enabled:true,mode:"active",reason:"stored_placement"}' &&
+    compact(normalizedFactsInput.get("credentialBinding")) === "inferredCredentialBinding(target)" &&
+    pathOf(normalizedFactsInput.get("resolvedTarget"))?.join(".") === "target" &&
+    compact(normalizedReturn?.expression) ===
+      "normalized.success&&normalized.active?normalized:null");
+  if (!exactNormalizedRequirements) violations.add("binding:trusted-critical-helper-symbols");
+
+  let tenantCallback: ts.ArrowFunction | ts.FunctionExpression | null = null;
+  let runInTenantCall: ts.CallExpression | null = null;
+  let ancestor: ts.Node | undefined = builderCall;
+  while (ancestor && ancestor !== pollMethod) {
+    if ((ts.isArrowFunction(ancestor) || ts.isFunctionExpression(ancestor)) &&
+        ts.isCallExpression(ancestor.parent) && ancestor.parent.arguments[2] === ancestor &&
+        ts.isIdentifier(ancestor.parent.expression) && ancestor.parent.expression.text === "runInTenant") {
+      tenantCallback = ancestor;
+      runInTenantCall = ancestor.parent;
+      break;
+    }
+    ancestor = ancestor.parent;
+  }
+  if (!tenantCallback || !runInTenantCall || !ts.isBlock(tenantCallback.body)) {
+    violations.add("builder:inside-direct-tenant-attempt");
+    return [...violations].sort();
+  }
+  const tenantBody = tenantCallback.body;
+  const pollInputName = pollMethod.parameters.length === 1 && ts.isIdentifier(pollMethod.parameters[0]!.name)
+    ? pollMethod.parameters[0]!.name.text
+    : null;
+  const reposName = tenantCallback.parameters.length === 1 && ts.isIdentifier(tenantCallback.parameters[0]!.name)
+    ? tenantCallback.parameters[0]!.name.text
+    : null;
+  if (!pollInputName) violations.add("poll:one-identifier-input");
+  if (!reposName) violations.add("poll:one-identifier-tenant-repositories");
+  if (!serviceInputName || runInTenantCall.arguments.length !== 3 ||
+      pathOf(runInTenantCall.arguments[0])?.join(".") !== `${serviceInputName}.appDb`) {
+    violations.add("poll:tenant-from-service-app-db");
+  }
+  if (!pollInputName || runInTenantCall.arguments.length !== 3 ||
+      pathOf(runInTenantCall.arguments[1])?.join(".") !== `${pollInputName}.auth.organizationId`) {
+    violations.add("poll:tenant-from-auth-organization");
+  }
+  if (!builderBinding || builderBinding.statement.parent !== tenantBody) {
+    violations.add("builder:unconditional-top-level-attempt-call");
+  }
+  if (!hashBinding || hashBinding.statement.parent !== tenantBody) {
+    violations.add("hash:unconditional-top-level-attempt-call");
+  }
+  const tenantCalls = directCalls("runInTenant").filter((call) => within(call, pollMethod));
+  if (tenantCalls.length !== 1 || tenantCalls[0] !== runInTenantCall) {
+    violations.add("poll:one-tenant-transaction-per-restart-site");
+  }
+  let restartLoop: ts.IterationStatement | null = null;
+  ancestor = runInTenantCall.parent;
+  while (ancestor && ancestor !== pollMethod) {
+    if (ts.isForStatement(ancestor) || ts.isForOfStatement(ancestor) ||
+        ts.isWhileStatement(ancestor) || ts.isDoStatement(ancestor)) {
+      restartLoop = ancestor;
+      break;
+    }
+    ancestor = ancestor.parent;
+  }
+  if (!restartLoop) {
+    violations.add("poll:tenant-transaction-inside-restart-loop");
+  } else {
+    const loop = restartLoop;
+    let validLoop = false;
+    let restartLoopName: string | null = null;
+    let restartAttemptLimit: number | null = null;
+    if (ts.isForStatement(loop) && loop.initializer && ts.isVariableDeclarationList(loop.initializer) &&
+        loop.initializer.declarations.length === 1) {
+      const declaration = loop.initializer.declarations[0]!;
+      const loopName = ts.isIdentifier(declaration.name) ? declaration.name.text : null;
+      const initial = unwrap(declaration.initializer);
+      const condition = loop.condition;
+      const incrementor = loop.incrementor;
+      const bound = condition && ts.isBinaryExpression(condition) &&
+        condition.operatorToken.kind === ts.SyntaxKind.LessThanToken &&
+        pathOf(condition.left)?.join(".") === loopName &&
+        ts.isNumericLiteral(unwrap(condition.right)!)
+        ? Number((unwrap(condition.right) as ts.NumericLiteral).text)
+        : null;
+      const incrementsOnce = Boolean(loopName && incrementor && (
+        (ts.isPostfixUnaryExpression(incrementor) &&
+          incrementor.operator === ts.SyntaxKind.PlusPlusToken &&
+          pathOf(incrementor.operand)?.join(".") === loopName) ||
+        (ts.isBinaryExpression(incrementor) && incrementor.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken &&
+          pathOf(incrementor.left)?.join(".") === loopName &&
+          ts.isNumericLiteral(unwrap(incrementor.right)!) && Number((unwrap(incrementor.right) as ts.NumericLiteral).text) === 1)
+      ));
+      validLoop = Boolean(loopName && initial && ts.isNumericLiteral(initial) && Number(initial.text) === 0 &&
+        bound === 3 && incrementsOnce);
+      if (validLoop) {
+        restartLoopName = loopName;
+        restartAttemptLimit = bound;
+      }
+      if (loopName) {
+        let illegalCounterWrite = false;
+        const auditCounterWrites = (node: ts.Node): void => {
+          if (ts.isVariableDeclaration(node) && node !== declaration &&
+              ts.isIdentifier(node.name) && node.name.text === loopName) illegalCounterWrite = true;
+          if (ts.isBinaryExpression(node) &&
+              node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+              node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+              pathOf(node.left)?.join(".") === loopName && node !== incrementor) {
+            illegalCounterWrite = true;
+          }
+          if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+              (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) &&
+              pathOf(node.operand)?.join(".") === loopName && node !== incrementor) {
+            illegalCounterWrite = true;
+          }
+          ts.forEachChild(node, auditCounterWrites);
+        };
+        auditCounterWrites(pollMethod);
+        if (illegalCounterWrite) violations.add("poll:immutable-restart-counter");
+      }
+    }
+    if (!validLoop) violations.add("poll:bounded-two-to-three-restart-attempts");
+
+    let retryTry: ts.TryStatement | null = null;
+    let current: ts.Node | undefined = runInTenantCall.parent;
+    while (current && current !== loop) {
+      if (ts.isTryStatement(current) && within(runInTenantCall, current.tryBlock)) {
+        retryTry = current;
+        break;
+      }
+      current = current.parent;
+    }
+    const directThrowExpression = (statement: ts.Statement | undefined): ts.Expression | null => {
+      if (!statement) return null;
+      if (ts.isThrowStatement(statement)) return statement.expression;
+      if (ts.isBlock(statement) && statement.statements.length === 1 &&
+          ts.isThrowStatement(statement.statements[0]!)) return statement.statements[0]!.expression;
+      return null;
+    };
+    const internalUnavailableThrow = (statement: ts.Statement | undefined): boolean => {
+      const expression = unwrap(directThrowExpression(statement) ?? undefined);
+      if (!expression || (!ts.isNewExpression(expression) && !ts.isCallExpression(expression))) return false;
+      if (!ts.isIdentifier(expression.expression) ||
+          !["Error", "JobLeasingError"].includes(expression.expression.text) ||
+          expression.arguments?.length !== 1) return false;
+      const argument = unwrap(expression.arguments[0]);
+      return Boolean(argument && ts.isStringLiteral(argument) && argument.text === "internal_unavailable");
+    };
+    const caughtErrorThrow = (statement: ts.Statement | undefined, errorName: string): boolean =>
+      pathOf(directThrowExpression(statement) ?? undefined)?.join(".") === errorName;
+    const headConflictOnlyCondition = (expression: ts.Expression, errorName: string): boolean => {
+      const current = unwrap(expression);
+      if (!current || !ts.isPrefixUnaryExpression(current) ||
+          current.operator !== ts.SyntaxKind.ExclamationToken) return false;
+      const call = unwrappedCall(current.operand);
+      return Boolean(call && ts.isIdentifier(call.expression) &&
+        call.expression.text === "isHeadRestartConflict" && call.arguments.length === 1 &&
+        pathOf(call.arguments[0])?.join(".") === errorName);
+    };
+    const exhaustionCondition = (expression: ts.Expression): boolean => {
+      const current = unwrap(expression);
+      if (!current || !restartLoopName || restartAttemptLimit === null ||
+          !ts.isBinaryExpression(current) ||
+          current.operatorToken.kind !== ts.SyntaxKind.GreaterThanEqualsToken ||
+          pathOf(current.left)?.join(".") !== restartLoopName) return false;
+      const right = unwrap(current.right);
+      return Boolean(right && ts.isNumericLiteral(right) &&
+        Number(right.text) === restartAttemptLimit - 1);
+    };
+    const catchClause = retryTry?.catchClause;
+    const catchName = catchClause?.variableDeclaration && ts.isIdentifier(catchClause.variableDeclaration.name)
+      ? catchClause.variableDeclaration.name.text
+      : null;
+    const catchStatements = catchClause?.block.statements ?? [];
+    const classifier = catchStatements[0];
+    const exhaustion = catchStatements[1];
+    const continueStatement = catchStatements[2];
+    const exactHeadConflictRetry = Boolean(catchName && catchStatements.length === 3 &&
+      classifier && ts.isIfStatement(classifier) && !classifier.elseStatement &&
+      headConflictOnlyCondition(classifier.expression, catchName) &&
+      caughtErrorThrow(classifier.thenStatement, catchName) &&
+      exhaustion && ts.isIfStatement(exhaustion) && !exhaustion.elseStatement &&
+      exhaustionCondition(exhaustion.expression) && internalUnavailableThrow(exhaustion.thenStatement) &&
+      continueStatement && ts.isContinueStatement(continueStatement));
+    const successReturns = retryTry?.tryBlock.statements.some((statement) =>
+      ts.isReturnStatement(statement) && statement.getStart(file) <= runInTenantCall!.getStart(file) &&
+      runInTenantCall!.getEnd() <= statement.getEnd());
+    const statementsAfterLoop = pollMethod.body!.statements.filter((statement) =>
+      statement.getStart(file) > loop.getEnd());
+    const exactExhaustion = statementsAfterLoop.length === 1 &&
+      internalUnavailableThrow(statementsAfterLoop[0]);
+    if (!exactHeadConflictRetry || !exactExhaustion) {
+      violations.add("poll:head-conflict-only-restart");
+    }
+    if (!isAwaitedCall(runInTenantCall) || !retryTry || !exactHeadConflictRetry ||
+        !exactExhaustion || !successReturns) {
+      violations.add("poll:awaited-retryable-tenant-attempt");
+    }
+  }
+
+  const sourceArgument = builderCall.arguments[0];
+  if (!sourceArgument || !ts.isObjectLiteralExpression(sourceArgument)) {
+    violations.add("builder:direct-source-object");
+    return [...violations].sort();
+  }
+  const exactSourceKeys = [
+    "currentTarget", "logicalWorker", "organizationId", "parsedWorkerHello", "physicalAuthorityWorker",
+  ];
+  const sourceProperties = new Map<string, ts.Expression>();
+  let malformedSourceProperty = false;
+  for (const property of sourceArgument.properties) {
+    if (!ts.isPropertyAssignment(property) || ts.isComputedPropertyName(property.name)) {
+      malformedSourceProperty = true;
+      continue;
+    }
+    const key = propertyName(property.name);
+    if (!key || sourceProperties.has(key)) {
+      malformedSourceProperty = true;
+      continue;
+    }
+    sourceProperties.set(key, property.initializer);
+  }
+  if (malformedSourceProperty || [...sourceProperties.keys()].sort().join(",") !== exactSourceKeys.join(",")) {
+    violations.add("builder:closed-source-object");
+  }
+  const organizationPath = pathOf(sourceProperties.get("organizationId"));
+  const logicalPath = pathOf(sourceProperties.get("logicalWorker"));
+  const helloPath = pathOf(sourceProperties.get("parsedWorkerHello"));
+  const targetPath = pathOf(sourceProperties.get("currentTarget"));
+  const physicalPath = pathOf(sourceProperties.get("physicalAuthorityWorker"));
+  const authorityName = logicalPath?.length === 2 && logicalPath[1] === "worker" ? logicalPath[0] : null;
+  const parseName = helloPath?.length === 2 && helloPath[1] === "data" ? helloPath[0] : null;
+  const targetName = targetPath?.length === 1 ? targetPath[0] : null;
+  const guardName = physicalPath?.length === 2 && physicalPath[1] === "physicalAuthorityWorker"
+    ? physicalPath[0]
+    : null;
+  if (!authorityName || organizationPath?.join(".") !== `${authorityName}.worker.organizationId`) {
+    violations.add("builder:locked-logical-organization-source");
+  }
+  if (!authorityName) violations.add("builder:locked-logical-worker-source");
+  if (!parseName) violations.add("builder:parsed-stored-hello-source");
+  if (!targetName) violations.add("builder:current-normalized-target-source");
+  if (!guardName) violations.add("builder:guarded-physical-source");
+  if (new Set([authorityName, parseName, targetName, guardName].filter(Boolean)).size !== 4) {
+    violations.add("builder:distinct-source-bindings");
+  }
+
+  const sourceNames = [authorityName, parseName, targetName, guardName]
+    .filter((name): name is string => Boolean(name));
+  for (const name of sourceNames) {
+    const binding = directBinding(tenantBody, name);
+    if (!binding || binding.statement.getStart(file) >= builderCall.getStart(file)) {
+      violations.add(`builder:attempt-local-source:${name}`);
+    }
+  }
+  const authorityBinding = authorityName ? directBinding(tenantBody, authorityName) : null;
+  const parseBinding = parseName ? directBinding(tenantBody, parseName) : null;
+  const targetBinding = targetName ? directBinding(tenantBody, targetName) : null;
+  const guardResultBinding = guardName ? directBinding(tenantBody, guardName) : null;
+  const authorityCall = authorityBinding ? unwrappedCall(authorityBinding.initializer) : null;
+  const authorityInput = authorityCall?.arguments.length === 1
+    ? closedObjectProperties(authorityCall.arguments[0])
+    : null;
+  if (!authorityBinding || !authorityCall || !isAwaitedCall(authorityCall) ||
+      callPath(authorityCall) !== `${reposName}.jobControl.lockWorkerLeaseAuthority` ||
+      !authorityInput || [...authorityInput.keys()].sort().join(",") !== "targetId,workerId" ||
+      pathOf(authorityInput.get("workerId"))?.join(".") !== `${pollInputName}.auth.workerId` ||
+      pathOf(authorityInput.get("targetId"))?.join(".") !== `${pollInputName}.auth.targetId`) {
+    violations.add("builder:logical-from-locked-authority");
+  }
+  const parseCall = parseBinding ? unwrappedCall(parseBinding.initializer) : null;
+  if (!parseCall || !ts.isPropertyAccessExpression(parseCall.expression) ||
+      pathOf(parseCall.expression)?.join(".") !== "workerHelloV1Schema.safeParse" ||
+      pathOf(parseCall.arguments[0])?.join(".") !== `${authorityName}.worker.profileSnapshot`) {
+    violations.add("builder:hello-from-locked-profile-snapshot");
+  }
+  const guardCall = guardResultBinding ? unwrappedCall(guardResultBinding.initializer) : null;
+  if (!guardCall || !ts.isIdentifier(guardCall.expression) || guardCall.expression.text !== "guardPlatformAuthority" ||
+      !isAwaitedCall(guardCall) || guardCall.arguments.length !== 3 ||
+      pathOf(guardCall.arguments[0])?.join(".") !== reposName ||
+      pathOf(guardCall.arguments[1])?.join(".") !== `${pollInputName}.auth` ||
+      pathOf(guardCall.arguments[2])?.join(".") !== authorityName) {
+    violations.add("builder:physical-from-authority-guard");
+  }
+  const commonAuthorityCalls = directCalls("authorityCurrent").filter((call) => within(call, tenantBody));
+  const commonAuthorityCall = commonAuthorityCalls.length === 1 ? commonAuthorityCalls[0]! : null;
+  const commonAuthorityBinding = commonAuthorityCall
+    ? directBodyBindingForCall(tenantBody, commonAuthorityCall)
+    : null;
+  const commonAuthorityName = commonAuthorityBinding && ts.isIdentifier(commonAuthorityBinding.declaration.name)
+    ? commonAuthorityBinding.declaration.name.text
+    : null;
+  const commonAuthorityInput = commonAuthorityCall?.arguments.length === 1
+    ? closedObjectProperties(commonAuthorityCall.arguments[0])
+    : null;
+  const commonAuthorityIndex = commonAuthorityBinding
+    ? tenantBody.statements.indexOf(commonAuthorityBinding.statement)
+    : -1;
+  const commonAuthorityReject = commonAuthorityIndex >= 0
+    ? tenantBody.statements[commonAuthorityIndex + 1]
+    : null;
+  const platformHeartbeatBinding = directBinding(tenantBody, "platformPhysicalHeartbeatAt");
+  const platformHeartbeatSource = platformHeartbeatBinding?.initializer.getText(file).replace(/\s+/g, "") ?? "";
+  const exactCommonAuthority = Boolean(commonAuthorityCall && commonAuthorityBinding &&
+    commonAuthorityInput && [...commonAuthorityInput.keys()].sort().join(",") ===
+      "auth,authority,databaseNow,maxHeartbeatAgeMs,platformPhysicalHeartbeatAt,request" &&
+    pathOf(commonAuthorityInput.get("auth"))?.join(".") === `${pollInputName}.auth` &&
+    pathOf(commonAuthorityInput.get("authority"))?.join(".") === authorityName &&
+    pathOf(commonAuthorityInput.get("request"))?.join(".") === "parsedRequest" &&
+    pathOf(commonAuthorityInput.get("databaseNow"))?.join(".") === "databaseNow" &&
+    pathOf(commonAuthorityInput.get("maxHeartbeatAgeMs"))?.join(".") === "maxHeartbeatAgeMs" &&
+    pathOf(commonAuthorityInput.get("platformPhysicalHeartbeatAt"))?.join(".") ===
+      "platformPhysicalHeartbeatAt" &&
+    platformHeartbeatBinding && platformHeartbeatBinding.statement.getStart(file) >
+      (guardResultBinding?.statement.getStart(file) ?? Number.MAX_SAFE_INTEGER) &&
+    platformHeartbeatBinding.statement.getStart(file) < commonAuthorityBinding.statement.getStart(file) &&
+    platformHeartbeatSource.includes(`${guardName}.physicalAuthorityWorker`) &&
+    platformHeartbeatSource.includes(`${guardName}.currentTarget.lastSeenAt`) &&
+    platformHeartbeatSource.includes(`${guardName}.physicalAuthorityWorker.lastSeenAt`) &&
+    commonAuthorityName && commonAuthorityReject && ts.isIfStatement(commonAuthorityReject) &&
+    !commonAuthorityReject.elseStatement && (() => {
+      const condition = unwrap(commonAuthorityReject.expression);
+      return Boolean(condition && ts.isPrefixUnaryExpression(condition) &&
+        condition.operator === ts.SyntaxKind.ExclamationToken &&
+        pathOf(condition.operand)?.join(".") === commonAuthorityName &&
+        (ts.isThrowStatement(commonAuthorityReject.thenStatement) ||
+          ts.isBlock(commonAuthorityReject.thenStatement) &&
+          commonAuthorityReject.thenStatement.statements.length === 1 &&
+          ts.isThrowStatement(commonAuthorityReject.thenStatement.statements[0]!)));
+    })());
+  if (!exactCommonAuthority) violations.add("builder:trusted-common-authority-current");
+  if (guardCall && ts.isIdentifier(guardCall.expression)) {
+    const helperName = guardCall.expression.text;
+    const declarations: ts.VariableDeclaration[] = [];
+    const collectDeclarations = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === helperName) {
+        declarations.push(node);
+      }
+      ts.forEachChild(node, collectDeclarations);
+    };
+    collectDeclarations(file);
+    const helperBinding = directBinding(serviceBody, helperName);
+    const helperExpression = helperBinding ? unwrap(helperBinding.initializer) : null;
+    const helper = helperExpression && (ts.isArrowFunction(helperExpression) || ts.isFunctionExpression(helperExpression))
+      ? helperExpression
+      : null;
+    const helperBody = helper && ts.isBlock(helper.body) ? helper.body : null;
+    const helperParameters = helper?.parameters.map((parameter) =>
+      ts.isIdentifier(parameter.name) ? parameter.name.text : null) ?? [];
+    if (declarations.length !== 1 || !helperBody || helperParameters.length !== 3 ||
+        helperParameters.some((name) => !name) || !helperBinding ||
+        helperBinding.statement.parent !== serviceBody) {
+      violations.add("builder:trusted-service-authority-guard");
+    } else {
+      const [guardReposName, guardAuthName, guardLockedName] =
+        helperParameters as [string, string, string];
+      auditDynamicMetaprogramming(helperBody);
+      const helperCalls: ts.CallExpression[] = [];
+      const collectCalls = (node: ts.Node, output: ts.CallExpression[]): void => {
+        if (ts.isCallExpression(node)) output.push(node);
+        ts.forEachChild(node, (child) => collectCalls(child, output));
+      };
+      collectCalls(helperBody, helperCalls);
+      const operatorTransactions = helperCalls.filter((call) =>
+        callPath(call) === `${serviceInputName}.operatorDb.transaction`);
+      const operatorTransaction = operatorTransactions.length === 1 ? operatorTransactions[0]! : null;
+      const operatorCallbackExpression = operatorTransaction?.arguments.length === 1
+        ? unwrap(operatorTransaction.arguments[0])
+        : null;
+      const operatorCallback = operatorCallbackExpression &&
+          (ts.isArrowFunction(operatorCallbackExpression) || ts.isFunctionExpression(operatorCallbackExpression)) &&
+          ts.isBlock(operatorCallbackExpression.body)
+        ? operatorCallbackExpression
+        : null;
+      const operatorBody = operatorCallback?.body && ts.isBlock(operatorCallback.body)
+        ? operatorCallback.body
+        : null;
+      const operatorTxName = operatorCallback?.parameters.length === 1 &&
+          ts.isIdentifier(operatorCallback.parameters[0]!.name)
+        ? operatorCallback.parameters[0]!.name.text
+        : null;
+      const operatorCalls: ts.CallExpression[] = [];
+      if (operatorBody) collectCalls(operatorBody, operatorCalls);
+      const physicalCalls = operatorCalls.filter((call) =>
+        ts.isPropertyAccessExpression(call.expression) &&
+        call.expression.name.text === "lockPlatformPhysicalAuthority");
+      const sharedCalls = operatorCalls.filter((call) =>
+        callPath(call) === `${guardReposName}.jobControl.acquirePlatformTargetAuthorityShared`);
+      const recheckCalls = operatorCalls.filter((call) =>
+        callPath(call) === `${guardReposName}.jobControl.recheckPlatformTargetAuthority`);
+      const databaseNowCalls = operatorCalls.filter((call) =>
+        callPath(call) === `${guardReposName}.jobControl.currentDatabaseTime`);
+      const wrappedBindingName = (call: ts.CallExpression | undefined): string | null => {
+        if (!call) return null;
+        let current: ts.Node = call;
+        while (current.parent && (
+          ts.isAwaitExpression(current.parent) || ts.isParenthesizedExpression(current.parent) ||
+          ts.isAsExpression(current.parent) || ts.isTypeAssertionExpression(current.parent) ||
+          ts.isNonNullExpression(current.parent) || ts.isSatisfiesExpression(current.parent)
+        ) && current.parent.expression === current) current = current.parent;
+        return ts.isVariableDeclaration(current.parent) && current.parent.initializer === current &&
+          ts.isIdentifier(current.parent.name) ? current.parent.name.text : null;
+      };
+      const physicalName = physicalCalls.length === 1 && isAwaitedCall(physicalCalls[0]!)
+        ? wrappedBindingName(physicalCalls[0])
+        : null;
+      const currentName = recheckCalls.length === 1 && isAwaitedCall(recheckCalls[0]!)
+        ? wrappedBindingName(recheckCalls[0])
+        : null;
+      const platformNowName = databaseNowCalls.length === 1 && isAwaitedCall(databaseNowCalls[0]!)
+        ? wrappedBindingName(databaseNowCalls[0])
+        : null;
+      const repositoryFactory = physicalCalls.length === 1 &&
+          ts.isPropertyAccessExpression(physicalCalls[0]!.expression)
+        ? unwrappedCall(physicalCalls[0]!.expression.expression)
+        : null;
+      const physicalBinding = operatorBody && physicalCalls.length === 1
+        ? directBodyBindingForCall(operatorBody, physicalCalls[0]!)
+        : null;
+      const currentBinding = operatorBody && recheckCalls.length === 1
+        ? directBodyBindingForCall(operatorBody, recheckCalls[0]!)
+        : null;
+      const platformNowBinding = operatorBody && databaseNowCalls.length === 1
+        ? directBodyBindingForCall(operatorBody, databaseNowCalls[0]!)
+        : null;
+      const recheckInput = recheckCalls.length === 1 && recheckCalls[0]!.arguments.length === 1
+        ? closedObjectProperties(recheckCalls[0]!.arguments[0])
+        : null;
+      const callbackReturns: ts.ReturnStatement[] = [];
+      const collectCallbackReturns = (node: ts.Node): void => {
+        if (node !== operatorCallback && ts.isFunctionLike(node)) return;
+        if (ts.isReturnStatement(node)) callbackReturns.push(node);
+        ts.forEachChild(node, collectCallbackReturns);
+      };
+      if (operatorCallback) collectCallbackReturns(operatorCallback);
+      const helperReturns: ts.ReturnStatement[] = [];
+      const collectHelperReturns = (node: ts.Node): void => {
+        if (node !== helper && ts.isFunctionLike(node)) return;
+        if (ts.isReturnStatement(node)) helperReturns.push(node);
+        ts.forEachChild(node, collectHelperReturns);
+      };
+      if (helper) collectHelperReturns(helper);
+      const directlyThrowsFromGuard = (statement: ts.Statement): boolean =>
+        ts.isThrowStatement(statement) ||
+        ts.isBlock(statement) && statement.statements.length === 1 &&
+        ts.isThrowStatement(statement.statements[0]!);
+      const nonPlatformBranch = helperBody.statements[0];
+      const nonPlatformCondition = nonPlatformBranch && ts.isIfStatement(nonPlatformBranch)
+        ? unwrap(nonPlatformBranch.expression)
+        : null;
+      const exactScopeComparison = (expression: ts.Expression, scope: "organization" | "owner"): boolean => {
+        const current = unwrap(expression);
+        if (!current || !ts.isBinaryExpression(current) ||
+            current.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) return false;
+        const left = pathOf(current.left)?.join(".");
+        const right = unwrap(current.right);
+        return left === `${guardLockedName}.target.scope` &&
+          Boolean(right && ts.isStringLiteral(right) && right.text === scope);
+      };
+      const exactNonPlatformCondition = Boolean(nonPlatformCondition &&
+        ts.isBinaryExpression(nonPlatformCondition) &&
+        nonPlatformCondition.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
+        exactScopeComparison(nonPlatformCondition.left, "organization") &&
+        exactScopeComparison(nonPlatformCondition.right, "owner"));
+      const nonPlatformReturns: ts.ReturnStatement[] = [];
+      if (nonPlatformBranch && ts.isIfStatement(nonPlatformBranch)) {
+        const scan = (node: ts.Node): void => {
+          if (ts.isFunctionLike(node)) return;
+          if (ts.isReturnStatement(node)) nonPlatformReturns.push(node);
+          ts.forEachChild(node, scan);
+        };
+        scan(nonPlatformBranch.thenStatement);
+      }
+      const nonPlatformReturn = nonPlatformReturns.length === 1
+        ? closedObjectProperties(nonPlatformReturns[0]!.expression)
+        : null;
+      const exactNonPlatformReturn = Boolean(nonPlatformReturn &&
+        [...nonPlatformReturn.keys()].sort().join(",") === "currentTarget,physicalAuthorityWorker" &&
+        pathOf(nonPlatformReturn.get("currentTarget"))?.join(".") === `${guardLockedName}.target` &&
+        unwrap(nonPlatformReturn.get("physicalAuthorityWorker"))?.kind === ts.SyntaxKind.NullKeyword);
+      const platformScopeReject = helperBody.statements[1];
+      const exactPlatformFallthrough = Boolean(platformScopeReject && ts.isIfStatement(platformScopeReject) &&
+        !platformScopeReject.elseStatement && directlyThrowsFromGuard(platformScopeReject.thenStatement) &&
+        (() => {
+          const condition = unwrap(platformScopeReject.expression);
+          if (!condition || !ts.isBinaryExpression(condition) ||
+              condition.operatorToken.kind !== ts.SyntaxKind.ExclamationEqualsEqualsToken) return false;
+          const right = unwrap(condition.right);
+          return pathOf(condition.left)?.join(".") === `${guardLockedName}.target.scope` &&
+            Boolean(right && ts.isStringLiteral(right) && right.text === "platform");
+        })());
+      const platformTransactionReturn = helperBody.statements[2];
+      const exactTransactionWrapper = helperReturns.length === 2 &&
+        exactNonPlatformCondition && exactNonPlatformReturn && exactPlatformFallthrough &&
+        platformTransactionReturn && ts.isReturnStatement(platformTransactionReturn) &&
+        unwrappedCall(platformTransactionReturn.expression) === operatorTransaction;
+      const exactReturn = callbackReturns.length === 1 && operatorBody &&
+          callbackReturns[0]!.parent === operatorBody
+        ? closedObjectProperties(callbackReturns[0]!.expression)
+        : null;
+      const exactReturnedSnapshots = Boolean(exactReturn &&
+        [...exactReturn.keys()].sort().join(",") === "currentTarget,physicalAuthorityWorker" &&
+        pathOf(exactReturn.get("currentTarget"))?.join(".") === currentName &&
+        pathOf(exactReturn.get("physicalAuthorityWorker"))?.join(".") === `${physicalName}.worker`);
+      const flattenOr = (expression: ts.Expression): ts.Expression[] => {
+        const current = unwrap(expression)!;
+        return ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.BarBarToken
+          ? [...flattenOr(current.left), ...flattenOr(current.right)]
+          : [current];
+      };
+      const platformValidationStatements = operatorBody?.statements.filter((statement) =>
+        ts.isIfStatement(statement) && !statement.elseStatement &&
+        directlyThrowsFromGuard(statement.thenStatement)) ?? [];
+      const platformValidation = platformValidationStatements.length === 1 &&
+          ts.isIfStatement(platformValidationStatements[0]!)
+        ? platformValidationStatements[0]!
+        : null;
+      const compact = (value: string): string => value.replace(/\s+/g, "");
+      const expectedPlatformChecks = physicalName && currentName && platformNowName ? [
+        `!${physicalName}`,
+        `!${currentName}`,
+        `${physicalName}.target.scope!=="platform"`,
+        `${physicalName}.worker.scope!=="platform"`,
+        `${currentName}.scope!=="platform"`,
+        `${physicalName}.target.status!=="active"`,
+        `${physicalName}.worker.status!=="active"`,
+        `${currentName}.status!=="active"`,
+        `${physicalName}.worker.revokedAt!==null`,
+        `${physicalName}.target.id!==${guardAuthName}.targetId`,
+        `${currentName}.id!==${guardAuthName}.targetId`,
+        `${physicalName}.worker.executionTargetId!==${physicalName}.target.id`,
+        `${physicalName}.worker.targetAuthorityKey!==${physicalName}.target.targetAuthorityKey`,
+        `${currentName}.targetAuthorityKey!==${physicalName}.target.targetAuthorityKey`,
+        `${guardLockedName}.worker.executionTargetId!==${currentName}.id`,
+        `${guardLockedName}.worker.targetAuthorityKey!==${currentName}.targetAuthorityKey`,
+        `${guardLockedName}.worker.deviceGeneration!==${guardAuthName}.targetGeneration`,
+        `${physicalName}.target.deviceGeneration!==${guardAuthName}.targetGeneration`,
+        `${physicalName}.worker.deviceGeneration!==${guardAuthName}.targetGeneration`,
+        `${currentName}.deviceGeneration!==${guardAuthName}.targetGeneration`,
+        `${physicalName}.worker.devicePublicKey!==${guardAuthName}.publicKey`,
+        `${physicalName}.worker.deviceThumbprint!==${guardAuthName}.deviceThumbprint`,
+        `!${physicalName}.target.registeredProfileHash`,
+        `${physicalName}.target.registeredProfileHash!==${currentName}.registeredProfileHash`,
+        `!${physicalName}.worker.profileHash`,
+        `${guardLockedName}.worker.profileHash!==${guardAuthName}.profileHash`,
+        `!${physicalName}.target.lastSeenAt`,
+        `!${physicalName}.worker.lastSeenAt`,
+        `${platformNowName}.getTime()-${physicalName}.target.lastSeenAt.getTime()>maxHeartbeatAgeMs`,
+        `${platformNowName}.getTime()-${physicalName}.worker.lastSeenAt.getTime()>maxHeartbeatAgeMs`,
+      ].sort() : [];
+      const actualPlatformChecks = platformValidation
+        ? flattenOr(platformValidation.expression).map((expression) => compact(expression.getText(file))).sort()
+        : [];
+      const exactPlatformChecks = expectedPlatformChecks.length === 30 &&
+        actualPlatformChecks.length === expectedPlatformChecks.length &&
+        actualPlatformChecks.every((value, index) => value === expectedPlatformChecks[index]);
+      const physicalRepositoryBoundToOperatorTx = Boolean(repositoryFactory &&
+        ts.isIdentifier(repositoryFactory.expression) &&
+        repositoryFactory.expression.text === "operatorJobLeasingRepository" &&
+        repositoryFactory.arguments.length === 1 &&
+        pathOf(repositoryFactory.arguments[0])?.join(".") === operatorTxName);
+      const transactionWrapsGuard = Boolean(operatorTransaction && operatorCallback && operatorBody &&
+        operatorTxName && serviceInputName &&
+        within(operatorTransaction, helperBody) && exactTransactionWrapper);
+      const sharedTopLevel = Boolean(operatorBody && sharedCalls.length === 1 &&
+        (() => {
+          let current: ts.Node = sharedCalls[0]!;
+          while (current.parent && (
+            ts.isAwaitExpression(current.parent) || ts.isParenthesizedExpression(current.parent) ||
+            ts.isAsExpression(current.parent) || ts.isTypeAssertionExpression(current.parent) ||
+            ts.isNonNullExpression(current.parent) || ts.isSatisfiesExpression(current.parent)
+          ) && current.parent.expression === current) current = current.parent;
+          return ts.isExpressionStatement(current.parent) && current.parent.parent === operatorBody;
+        })());
+      const orderedGuard = Boolean(physicalCalls[0] && sharedCalls[0] && recheckCalls[0] &&
+        databaseNowCalls[0] && platformValidation && callbackReturns[0] &&
+        physicalCalls[0]!.getStart(file) < sharedCalls[0]!.getStart(file) &&
+        sharedCalls[0]!.getStart(file) < recheckCalls[0]!.getStart(file) &&
+        recheckCalls[0]!.getStart(file) < databaseNowCalls[0]!.getStart(file) &&
+        databaseNowCalls[0]!.getStart(file) < platformValidation.getStart(file) &&
+        platformValidation.getStart(file) < callbackReturns[0]!.getStart(file));
+      const guardProtectedNames = new Set<string>([
+        guardAuthName, guardLockedName, physicalName, currentName,
+      ].filter((name): name is string => Boolean(name)));
+      const guardAllowedCalls = new Set<ts.CallExpression>([
+        physicalCalls[0], sharedCalls[0], recheckCalls[0], databaseNowCalls[0], repositoryFactory,
+      ].filter((call): call is ts.CallExpression => Boolean(call)));
+      const guardAllowedContainers = new Set<ts.Node>([
+        recheckCalls[0]?.arguments[0], callbackReturns[0]?.expression, nonPlatformReturns[0]?.expression,
+      ].filter((node): node is ts.Node => Boolean(node)));
+      let guardCriticalEscape = false;
+      let guardAliasAdded = true;
+      while (guardAliasAdded) {
+        guardAliasAdded = false;
+        const discoverGuardAliases = (node: ts.Node): void => {
+          const addName = (name: ts.BindingName): void => {
+            if (ts.isIdentifier(name)) {
+              if (!guardProtectedNames.has(name.text)) {
+                guardProtectedNames.add(name.text);
+                guardAliasAdded = true;
+              }
+              return;
+            }
+            for (const element of name.elements) {
+              if (!ts.isOmittedExpression(element)) addName(element.name);
+            }
+          };
+          if (ts.isVariableDeclaration(node) && node.initializer) {
+            const root = pathOf(node.initializer)?.[0];
+            if (root && guardProtectedNames.has(root)) addName(node.name);
+          }
+          if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+            const root = pathOf(node.right)?.[0];
+            if (root && guardProtectedNames.has(root) && ts.isIdentifier(node.left)) addName(node.left);
+          }
+          ts.forEachChild(node, discoverGuardAliases);
+        };
+        discoverGuardAliases(helperBody);
+      }
+      const containsGuardReference = (node: ts.Node): boolean => {
+        let found = false;
+        const scan = (currentNode: ts.Node): void => {
+          if (ts.isFunctionLike(currentNode)) return;
+          if (ts.isIdentifier(currentNode) && guardProtectedNames.has(currentNode.text)) {
+            found = true;
+            return;
+          }
+          ts.forEachChild(currentNode, scan);
+        };
+        scan(node);
+        return found;
+      };
+      const auditGuardSnapshots = (node: ts.Node): void => {
+        if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+            !ts.isBlock(node.body) && containsGuardReference(node.body)) {
+          guardCriticalEscape = true;
+        }
+        if (ts.isReturnStatement(node) && node.expression && containsGuardReference(node.expression) &&
+            !guardAllowedContainers.has(node.expression)) {
+          guardCriticalEscape = true;
+        }
+        if (ts.isVariableDeclaration(node) && node.initializer) {
+          const root = pathOf(node.initializer)?.[0];
+          if (root && guardProtectedNames.has(root) && ts.isIdentifier(node.name) &&
+              !guardProtectedNames.has(node.name.text)) guardCriticalEscape = true;
+        }
+        if (ts.isBinaryExpression(node) &&
+            node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+            node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+            (containsGuardReference(node.left) || containsGuardReference(node.right))) guardCriticalEscape = true;
+        if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+            [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(node.operator) &&
+            containsGuardReference(node.operand)) guardCriticalEscape = true;
+        if (ts.isDeleteExpression(node) && containsGuardReference(node.expression)) {
+          guardCriticalEscape = true;
+        }
+        if (ts.isElementAccessExpression(node) && containsGuardReference(node.expression)) {
+          guardCriticalEscape = true;
+        }
+        if ((ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) &&
+            containsGuardReference(node) && !guardAllowedContainers.has(node)) {
+          guardCriticalEscape = true;
+        }
+        if (ts.isCallExpression(node) &&
+            (node.arguments.some(containsGuardReference) || containsGuardReference(node.expression)) &&
+            !guardAllowedCalls.has(node) && !(callPath(node)?.endsWith(".getTime") ?? false)) {
+          guardCriticalEscape = true;
+        }
+        ts.forEachChild(node, auditGuardSnapshots);
+      };
+      auditGuardSnapshots(helperBody);
+      if (!transactionWrapsGuard || operatorTransactions.length !== 1 ||
+          !physicalName || !currentName || physicalCalls.length !== 1 ||
+          !physicalRepositoryBoundToOperatorTx || !isAwaitedCall(physicalCalls[0]!) ||
+          !physicalBinding || !currentBinding || !platformNowBinding || !sharedTopLevel ||
+          physicalCalls[0]!.arguments.length !== 2 ||
+          pathOf(physicalCalls[0]!.arguments[0])?.join(".") !== `${guardAuthName}.targetId` ||
+          !ts.isStringLiteral(unwrap(physicalCalls[0]!.arguments[1])!) ||
+          (unwrap(physicalCalls[0]!.arguments[1]) as ts.StringLiteral).text !== "share" ||
+          sharedCalls.length !== 1 || !isAwaitedCall(sharedCalls[0]!) || sharedCalls[0]!.arguments.length !== 1 ||
+          pathOf(sharedCalls[0]!.arguments[0])?.join(".") !== `${guardAuthName}.targetId` ||
+          !recheckInput || [...recheckInput.keys()].sort().join(",") !==
+            "targetAuthorityKey,targetGeneration,targetId" ||
+          pathOf(recheckInput.get("targetId"))?.join(".") !== `${guardAuthName}.targetId` ||
+          pathOf(recheckInput.get("targetGeneration"))?.join(".") !== `${guardAuthName}.targetGeneration` ||
+          !ts.isStringLiteral(unwrap(recheckInput.get("targetAuthorityKey"))!) ||
+          (unwrap(recheckInput.get("targetAuthorityKey")) as ts.StringLiteral).text !== "platform" ||
+          databaseNowCalls.length !== 1 || databaseNowCalls[0]!.arguments.length !== 0 ||
+          !exactPlatformChecks || !exactReturnedSnapshots || !orderedGuard || guardCriticalEscape) {
+        violations.add("builder:trusted-service-authority-guard");
+      }
+    }
+  }
+  const targetCall = targetBinding ? unwrappedCall(targetBinding.initializer) : null;
+  if (!targetCall || !ts.isIdentifier(targetCall.expression) ||
+      targetCall.expression.text !== "normalizePlacementRegistryTarget" ||
+      pathOf(targetCall.arguments[0])?.join(".") !== `${guardName}.currentTarget`) {
+    violations.add("builder:target-from-post-advisory-current-snapshot");
+  }
+
+  const directlyThrows = (statement: ts.Statement | undefined): boolean =>
+    Boolean(statement && (ts.isThrowStatement(statement) ||
+      ts.isBlock(statement) && statement.statements.some((child) => ts.isThrowStatement(child))));
+  const conditionRejects = (expression: ts.Expression, requiredPath: string): boolean => {
+    const current = unwrap(expression);
+    if (!current) return false;
+    if (ts.isPrefixUnaryExpression(current) && current.operator === ts.SyntaxKind.ExclamationToken &&
+        pathOf(current.operand)?.join(".") === requiredPath) return true;
+    if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+      return conditionRejects(current.left, requiredPath) || conditionRejects(current.right, requiredPath);
+    }
+    if (ts.isBinaryExpression(current) && [
+      ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken,
+    ].includes(current.operatorToken.kind)) {
+      const left = pathOf(current.left)?.join(".");
+      const right = unwrap(current.right);
+      return left === requiredPath && Boolean(right &&
+        (right.kind === ts.SyntaxKind.NullKeyword || right.kind === ts.SyntaxKind.FalseKeyword));
+    }
+    return false;
+  };
+  const failClosedBeforeBuilder = (requiredPath: string | null): boolean => Boolean(requiredPath &&
+    tenantBody.statements.some((statement) =>
+      ts.isIfStatement(statement) && statement.getStart(file) < builderCall.getStart(file) &&
+      conditionRejects(statement.expression, requiredPath) && directlyThrows(statement.thenStatement)));
+  if (!failClosedBeforeBuilder(authorityName)) violations.add("builder:locked-logical-validated");
+  if (!failClosedBeforeBuilder(parseName ? `${parseName}.success` : null)) {
+    violations.add("builder:stored-hello-validated");
+  }
+  if (!failClosedBeforeBuilder(targetName)) violations.add("builder:current-target-validated");
+
+  const builderName = builderBinding && ts.isIdentifier(builderBinding.declaration.name)
+    ? builderBinding.declaration.name.text
+    : null;
+  const hashName = hashBinding && ts.isIdentifier(hashBinding.declaration.name)
+    ? hashBinding.declaration.name.text
+    : null;
+  if (!builderName || hashCall.arguments.length !== 1 || pathOf(hashCall.arguments[0])?.join(".") !== builderName) {
+    violations.add("hash:only-projected-input");
+  }
+  if (builderCall.getStart(file) >= hashCall.getStart(file)) violations.add("hash:after-builder");
+
+  const candidateReceiverAliases = new Set<string>();
+  let candidateAliasAdded = true;
+  while (candidateAliasAdded) {
+    candidateAliasAdded = false;
+    const discoverCandidateReceivers = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        const initializerPath = pathOf(node.initializer)?.join(".");
+        if (initializerPath === `${reposName}.jobControl` ||
+            (initializerPath && candidateReceiverAliases.has(initializerPath))) {
+          if (!candidateReceiverAliases.has(node.name.text)) {
+            candidateReceiverAliases.add(node.name.text);
+            candidateAliasAdded = true;
+          }
+        }
+      }
+      ts.forEachChild(node, discoverCandidateReceivers);
+    };
+    discoverCandidateReceivers(tenantBody);
+  }
+  const isCandidateReceiver = (expression: ts.Expression): boolean => {
+    const path = pathOf(expression)?.join(".");
+    return path === `${reposName}.jobControl` || Boolean(path && candidateReceiverAliases.has(path));
+  };
+  const candidateAccesses: ts.Expression[] = [];
+  const directCandidateCalls: ts.CallExpression[] = [];
+  const collectCandidateInventory = (node: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(node) && node.name.text === "lockEligibleLeaseCandidates") {
+      candidateAccesses.push(node);
+      if (ts.isCallExpression(node.parent) && node.parent.expression === node) {
+        directCandidateCalls.push(node.parent);
+      }
+    } else if (ts.isElementAccessExpression(node) && isCandidateReceiver(node.expression)) {
+      const argument = unwrap(node.argumentExpression);
+      if (!argument || !ts.isStringLiteral(argument) ||
+          argument.text === "lockEligibleLeaseCandidates") candidateAccesses.push(node);
+    } else if (ts.isBindingElement(node) &&
+        (propertyName(node.propertyName) ?? propertyName(node.name as ts.PropertyName)) ===
+          "lockEligibleLeaseCandidates") {
+      candidateAccesses.push(node as unknown as ts.Expression);
+    }
+    ts.forEachChild(node, collectCandidateInventory);
+  };
+  collectCandidateInventory(tenantBody);
+  const candidateCalls = directCandidateCalls.filter((call) =>
+    callPath(call) === `${reposName}.jobControl.lockEligibleLeaseCandidates`);
+  if (candidateAccesses.length !== 1 || candidateCalls.length !== 1 ||
+      candidateAccesses[0] !== candidateCalls[0]!.expression) {
+    violations.add("candidate:exactly-one-selection-call");
+  }
+  if (directCandidateCalls.length !== 1 || candidateCalls.length !== 1) {
+    violations.add("candidate:awaited-top-level-repository-selection");
+  }
+  const canonicalCandidateTaintNames = new Set<string>();
+  if (candidateCalls.length === 1) {
+    const candidate = candidateCalls[0]!;
+    const candidateBinding = directBodyBindingForCall(tenantBody, candidate);
+    const candidateInput = candidate.arguments.length === 1
+      ? closedObjectProperties(candidate.arguments[0])
+      : null;
+    const expectedCandidateKeys = [
+      "admissibleWorkloadTypes", "eligibilityVersion", "limit", "staticContextHash",
+      "targetAuthorityKey", "targetClass", "targetGeneration", "targetId", "targetOwner",
+      "targetProfileHash", "targetProviderConstraintHash", "targetScope", "workerId",
+    ];
+    const closedCandidate = candidateInput &&
+      [...candidateInput.keys()].sort().join(",") === expectedCandidateKeys.sort().join(",");
+    const boundHash = closedCandidate && hashName &&
+      pathOf(candidateInput.get("staticContextHash"))?.join(".") === hashName;
+    if (!candidateBinding || !isAwaitedCall(candidate) ||
+        callPath(candidate) !== `${reposName}.jobControl.lockEligibleLeaseCandidates`) {
+      violations.add("candidate:awaited-top-level-repository-selection");
+    }
+    if (!closedCandidate) violations.add("candidate:closed-input-object");
+    if (!boundHash) violations.add("candidate:bind-one-context-hash");
+    if (candidateInput && (
+      pathOf(candidateInput.get("workerId"))?.join(".") !== `${pollInputName}.auth.workerId` ||
+      pathOf(candidateInput.get("targetId"))?.join(".") !== `${targetName}.targetId` ||
+      [...candidateInput.values()].some((value) => value.getText(file).includes(`${pollInputName}.request`))
+    )) violations.add("candidate:validated-auth-and-target-sources");
+    const eligibilityVersionImports = imports.get("LEASE_STATIC_ELIGIBILITY_VERSION") ?? [];
+    if (!candidateInput || eligibilityVersionImports.length !== 1 ||
+        eligibilityVersionImports[0]!.local !== "LEASE_STATIC_ELIGIBILITY_VERSION" ||
+        eligibilityVersionImports[0]!.module !== "./job-lease-eligibility.js" ||
+        violations.has("import-symbol:LEASE_STATIC_ELIGIBILITY_VERSION:shadowed-import") ||
+        pathOf(candidateInput.get("eligibilityVersion"))?.join(".") !==
+          "LEASE_STATIC_ELIGIBILITY_VERSION") {
+      violations.add("candidate:server-eligibility-version");
+    }
+    if (!candidateInput ||
+        pathOf(candidateInput.get("targetGeneration"))?.join(".") !== `${targetName}.targetGeneration` ||
+        pathOf(candidateInput.get("targetProfileHash"))?.join(".") !== `${targetName}.profileHash` ||
+        pathOf(candidateInput.get("targetProviderConstraintHash"))?.join(".") !==
+          `${targetName}.providerConstraintHash` ||
+        pathOf(candidateInput.get("targetAuthorityKey"))?.join(".") !==
+          `${guardName}.currentTarget.targetAuthorityKey` ||
+        pathOf(candidateInput.get("targetClass"))?.join(".") !== `${targetName}.targetClass` ||
+        pathOf(candidateInput.get("targetOwner"))?.join(".") !==
+          `${guardName}.currentTarget.ownerUserId` ||
+        pathOf(candidateInput.get("targetScope"))?.join(".") !== `${targetName}.targetScope`) {
+      violations.add("candidate:current-target-provenance");
+    }
+    const candidateLimit = candidateInput ? unwrap(candidateInput.get("limit")) : null;
+    if (!candidateLimit || !ts.isNumericLiteral(candidateLimit) || Number(candidateLimit.text) !== 256) {
+      violations.add("candidate:bounded-global-head-limit");
+    }
+    const admissiblePath = candidateInput ? pathOf(candidateInput.get("admissibleWorkloadTypes")) : null;
+    const admissibleName = admissiblePath?.length === 1 ? admissiblePath[0]! : null;
+    const admissibleBinding = admissibleName ? directBinding(tenantBody, admissibleName) : null;
+    const admissibleCall = admissibleBinding ? unwrappedCall(admissibleBinding.initializer) : null;
+    const effectiveCapacityBinding = directBinding(tenantBody, "effectiveCapacity");
+    const effectiveCapacityCall = effectiveCapacityBinding
+      ? unwrappedCall(effectiveCapacityBinding.initializer)
+      : null;
+    const liveCapacityBinding = directBinding(tenantBody, "liveCapacity");
+    const liveCapacityCall = liveCapacityBinding ? unwrappedCall(liveCapacityBinding.initializer) : null;
+    const liveCapacityInput = liveCapacityCall?.arguments.length === 1
+      ? closedObjectProperties(liveCapacityCall.arguments[0])
+      : null;
+    const liveCapacityCalls: ts.CallExpression[] = [];
+    const collectLiveCapacityCalls = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) &&
+          callPath(node) === `${reposName}.jobControl.snapshotLiveLeaseCapacity`) {
+        liveCapacityCalls.push(node);
+      }
+      ts.forEachChild(node, collectLiveCapacityCalls);
+    };
+    collectLiveCapacityCalls(tenantBody);
+    const deriveBinding = directBinding(serviceBody, "deriveAdmissibleWorkloadTypes");
+    const deriveExpression = deriveBinding ? unwrap(deriveBinding.initializer) : null;
+    const deriveHelper = deriveExpression &&
+        (ts.isArrowFunction(deriveExpression) || ts.isFunctionExpression(deriveExpression)) &&
+        ts.isBlock(deriveExpression.body)
+      ? deriveExpression
+      : null;
+    const deriveParameters = deriveHelper?.parameters.map((parameter) =>
+      ts.isIdentifier(parameter.name) ? parameter.name.text : null) ?? [];
+    const requiredDerivationPredicates = [
+      "live.total>=provider.maxConcurrentOperations",
+      "capacity.freeCpuMillis>provider.resourceCeiling.cpuMillis",
+      "capacity.freeMemoryMiB>provider.resourceCeiling.memoryMiB",
+      "capacity.freeDiskMiB>provider.resourceCeiling.diskMiB",
+      "capacity.freeCpuMillis<demand.resources.cpuMillis",
+      "capacity.freeMemoryMiB<demand.resources.memoryMiB",
+      "capacity.freeDiskMiB<demand.resources.diskMiB",
+    ].sort();
+    const deriveStatements = deriveHelper?.body.statements ?? [];
+    const deriveGate = deriveStatements[0] && ts.isIfStatement(deriveStatements[0])
+      ? deriveStatements[0]
+      : null;
+    const flattenOrExpressions = (expression: ts.Expression): ts.Expression[] => {
+      const current = unwrap(expression)!;
+      return ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.BarBarToken
+        ? [...flattenOrExpressions(current.left), ...flattenOrExpressions(current.right)]
+        : [current];
+    };
+    const actualDerivationPredicates = deriveGate
+      ? flattenOrExpressions(deriveGate.expression).map((expression) => compact(expression)).sort()
+      : [];
+    const expectedDerivationStatements = [
+      "capacity.batchSlots>live.batch",
+      "capacity.browserSessionSlots>live.browserSession",
+      "capacity.serviceSlots>live.service",
+    ];
+    const minCapacityDeclaration = topLevelCriticalFunction("minCapacity");
+    const minCapacityStatements = minCapacityDeclaration?.body?.statements ?? [];
+    const minCapacityReturn = minCapacityStatements.length === 1 && ts.isReturnStatement(minCapacityStatements[0])
+      ? minCapacityStatements[0]
+      : null;
+    const minCapacityFields = closedObjectProperties(minCapacityReturn?.expression);
+    const capacityFields = [
+      "batchSlots", "browserSessionSlots", "serviceSlots", "freeCpuMillis", "freeMemoryMiB",
+      "freeDiskMiB",
+    ];
+    const exactMinCapacityHelper = Boolean(minCapacityDeclaration &&
+      minCapacityDeclaration.parameters.length === 2 &&
+      minCapacityDeclaration.parameters.every((parameter) => ts.isIdentifier(parameter.name)) &&
+      minCapacityDeclaration.parameters.map((parameter) =>
+        (parameter.name as ts.Identifier).text).join(",") === "left,right" &&
+      minCapacityFields && [...minCapacityFields.keys()].sort().join(",") ===
+        [...capacityFields].sort().join(",") && capacityFields.every((field) =>
+        compact(minCapacityFields.get(field)) === `Math.min(left.${field},right.${field})`));
+    const exactEffectiveCapacity = Boolean(effectiveCapacityBinding && effectiveCapacityCall &&
+      callPath(effectiveCapacityCall) === "minCapacity" && effectiveCapacityCall.arguments.length === 2 &&
+      pathOf(effectiveCapacityCall.arguments[0])?.join(".") === `${parseName}.data.capacity` &&
+      pathOf(effectiveCapacityCall.arguments[1])?.join(".") === "parsedRequest.capacity" &&
+      exactMinCapacityHelper);
+    const exactLiveCapacity = Boolean(liveCapacityBinding && liveCapacityCall &&
+      liveCapacityCalls.length === 1 && liveCapacityCalls[0] === liveCapacityCall &&
+      isAwaitedCall(liveCapacityCall) &&
+      liveCapacityInput && [...liveCapacityInput.keys()].sort().join(",") === "targetId,workerId" &&
+      pathOf(liveCapacityInput.get("workerId"))?.join(".") === `${pollInputName}.auth.workerId` &&
+      pathOf(liveCapacityInput.get("targetId"))?.join(".") === `${targetName}.targetId` &&
+      liveCapacityBinding.statement.getStart(file) >
+        (commonAuthorityReject?.getStart(file) ?? Number.MAX_SAFE_INTEGER));
+    const providerDemandBinding = directBinding(tenantBody, "providerDemand");
+    const providerDemandCall = providerDemandBinding ? unwrappedCall(providerDemandBinding.initializer) : null;
+    const providerDemandDeclaration = topLevelCriticalFunction("normalizedProviderDemand");
+    const providerDemandParameter = providerDemandDeclaration?.parameters.length === 1 &&
+        ts.isIdentifier(providerDemandDeclaration.parameters[0]!.name)
+      ? providerDemandDeclaration.parameters[0]!.name.text
+      : null;
+    const providerDemandStatements = providerDemandDeclaration?.body?.statements ?? [];
+    const providerDeclaration = providerDemandStatements[0] && ts.isVariableStatement(providerDemandStatements[0])
+      ? providerDemandStatements[0].declarationList.declarations[0]
+      : null;
+    const supportedDeclaration = providerDemandStatements[1] && ts.isVariableStatement(providerDemandStatements[1])
+      ? providerDemandStatements[1].declarationList.declarations[0]
+      : null;
+    const operationsDeclaration = providerDemandStatements[2] && ts.isVariableStatement(providerDemandStatements[2])
+      ? providerDemandStatements[2].declarationList.declarations[0]
+      : null;
+    const providerDemandReturn = providerDemandStatements[3] && ts.isReturnStatement(providerDemandStatements[3])
+      ? providerDemandStatements[3]
+      : null;
+    const providerDemandInput = closedObjectProperties(providerDemandReturn?.expression);
+    const providerResources = providerDemandInput
+      ? closedObjectProperties(providerDemandInput.get("resources"))
+      : null;
+    const exactProviderDemand = Boolean(providerDemandBinding && providerDemandCall &&
+      providerDemandBinding.statement.getStart(file) < (liveCapacityBinding?.statement.getStart(file) ?? -1) &&
+      ts.isIdentifier(providerDemandCall.expression) &&
+      providerDemandCall.expression.text === "normalizedProviderDemand" &&
+      providerDemandCall.arguments.length === 1 &&
+      pathOf(providerDemandCall.arguments[0])?.join(".") === targetName &&
+      providerDemandParameter === "target" && providerDemandStatements.length === 4 &&
+      providerDeclaration && ts.isIdentifier(providerDeclaration.name) && providerDeclaration.name.text === "provider" &&
+      pathOf(providerDeclaration.initializer)?.join(".") === "target.providerConstraintProfile" &&
+      supportedDeclaration && ts.isIdentifier(supportedDeclaration.name) &&
+      supportedDeclaration.name.text === "supported" &&
+      compact(supportedDeclaration.initializer) === "newSet(provider.supportedOperations)" &&
+      operationsDeclaration && ts.isIdentifier(operationsDeclaration.name) &&
+      operationsDeclaration.name.text === "operations" &&
+      compact(operationsDeclaration.initializer) ===
+        '["create","execute"].filter((operation)=>supported.has(operation))' &&
+      providerDemandInput && [...providerDemandInput.keys()].sort().join(",") ===
+        "concurrentOperations,localityTags,maxIdleSeconds,maxRuntimeSeconds,operations,resources" &&
+      providerResources && [...providerResources.keys()].sort().join(",") ===
+        "cpuMillis,diskMiB,memoryMiB,pids" &&
+      compact(providerDemandInput.get("maxRuntimeSeconds")) ===
+        "Math.min(600,provider.maxContinuousRuntimeSeconds)" &&
+      compact(providerDemandInput.get("maxIdleSeconds")) === "Math.min(60,provider.maxIdleSeconds)" &&
+      compact(providerResources.get("cpuMillis")) === "Math.min(1000,provider.resourceCeiling.cpuMillis)" &&
+      compact(providerResources.get("memoryMiB")) === "Math.min(1024,provider.resourceCeiling.memoryMiB)" &&
+      compact(providerResources.get("pids")) === "Math.min(128,provider.resourceCeiling.pids)" &&
+      compact(providerResources.get("diskMiB")) === "Math.min(1024,provider.resourceCeiling.diskMiB)" &&
+      compact(providerDemandInput.get("concurrentOperations")) ===
+        "Math.min(1,provider.maxConcurrentOperations)" &&
+      pathOf(providerDemandInput.get("operations"))?.join(".") === "operations" &&
+      compact(providerDemandInput.get("localityTags")) === "provider.localityTags.slice(0,1)");
+    const exactDerivation = Boolean(deriveBinding?.statement.parent === serviceBody && deriveHelper &&
+      deriveParameters.join(",") === "capacity,live,provider,demand" && deriveStatements.length === 6 &&
+      deriveGate && !deriveGate.elseStatement &&
+      actualDerivationPredicates.join("|") === requiredDerivationPredicates.join("|") &&
+      compact(deriveGate.thenStatement) === "return[];" &&
+      expectedDerivationStatements.every((predicate, index) =>
+        compact(deriveStatements[index + 2]).startsWith(`if(${predicate})workloadTypes.push(`)) &&
+      compact(deriveStatements[1]) === "constworkloadTypes:string[]=[];" &&
+      compact(deriveStatements[5]) === "returnworkloadTypes;" &&
+      directCalls("deriveAdmissibleWorkloadTypes").length === 1 && admissibleCall &&
+      ts.isIdentifier(admissibleCall.expression) &&
+      admissibleCall.expression.text === "deriveAdmissibleWorkloadTypes" &&
+      admissibleCall.arguments.length === 4 &&
+      pathOf(admissibleCall.arguments[0])?.join(".") === "effectiveCapacity" &&
+      pathOf(admissibleCall.arguments[1])?.join(".") === "liveCapacity" &&
+      pathOf(admissibleCall.arguments[2])?.join(".") ===
+        `${targetName}.providerConstraintProfile` &&
+      pathOf(admissibleCall.arguments[3])?.join(".") === "providerDemand");
+    let dynamicBindingWritten = false;
+    const auditDynamicBindingWrites = (node: ts.Node): void => {
+      if (ts.isBinaryExpression(node) &&
+          node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+          node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+          ["effectiveCapacity", "liveCapacity", admissibleName].includes(pathOf(node.left)?.[0] ?? null)) {
+        dynamicBindingWritten = true;
+      }
+      ts.forEachChild(node, auditDynamicBindingWrites);
+    };
+    auditDynamicBindingWrites(tenantBody);
+    if (!admissibleBinding || admissibleBinding.statement.getStart(file) >= candidate.getStart(file) ||
+        !exactEffectiveCapacity || !exactProviderDemand || !exactLiveCapacity ||
+        !exactDerivation || dynamicBindingWritten) {
+      violations.add("candidate:dynamic-admissible-workload-source");
+    }
+    if (candidateBinding) {
+      const preceding = tenantBody.statements.filter((statement) =>
+        statement.getStart(file) < candidateBinding.statement.getStart(file));
+      const allowedValidationPaths = new Set<string>([
+        authorityName ?? "<missing-authority>",
+        commonAuthorityName ?? "<missing-common-authority>",
+        parseName ? `${parseName}.success` : "<missing-parse>",
+        targetName ?? "<missing-target>",
+      ]);
+      const auditedValidationBranches = new Set<ts.IfStatement>();
+      for (const statement of preceding) {
+        if (!ts.isIfStatement(statement) || statement.elseStatement ||
+            !directlyThrows(statement.thenStatement)) continue;
+        if ([...allowedValidationPaths].some((path) => conditionRejects(statement.expression, path))) {
+          auditedValidationBranches.add(statement);
+        }
+      }
+      let bypassesCanonicalChain = false;
+      const auditPreChainControl = (node: ts.Node): void => {
+        if (ts.isFunctionLike(node)) return;
+        if (ts.isReturnStatement(node)) bypassesCanonicalChain = true;
+        if (ts.isThrowStatement(node)) {
+          let owner: ts.Node | undefined = node.parent;
+          while (owner && owner.parent !== tenantBody) owner = owner.parent;
+          if (!owner || !ts.isIfStatement(owner) || !auditedValidationBranches.has(owner)) {
+            bypassesCanonicalChain = true;
+          }
+        }
+        ts.forEachChild(node, auditPreChainControl);
+      };
+      for (const statement of preceding) auditPreChainControl(statement);
+      if (bypassesCanonicalChain) {
+        violations.add("candidate:canonical-chain-dominates-return");
+      }
+      const candidateName = ts.isIdentifier(candidateBinding.declaration.name)
+        ? candidateBinding.declaration.name.text
+        : null;
+      if (candidateName) canonicalCandidateTaintNames.add(candidateName);
+      const laterStatements = tenantBody.statements.filter((statement) =>
+        statement.getStart(file) > candidateBinding.statement.getStart(file));
+      const candidateLoops = laterStatements.filter((statement): statement is ts.ForOfStatement =>
+        ts.isForOfStatement(statement) && pathOf(statement.expression)?.join(".") === candidateName);
+      const evaluationCalls: ts.CallExpression[] = [];
+      const offerLeaseCalls: ts.CallExpression[] = [];
+      const upsertCalls: ts.CallExpression[] = [];
+      const tryOfferCalls: ts.CallExpression[] = [];
+      let inventedCandidateSurface = false;
+      const collectEvaluationCalls = (node: ts.Node): void => {
+        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
+            node.expression.text === "evaluateStaticLeaseEligibility") evaluationCalls.push(node);
+        if (ts.isCallExpression(node) && callPath(node) === `${reposName}.jobControl.offerLease`) {
+          offerLeaseCalls.push(node);
+        }
+        if (ts.isCallExpression(node) &&
+            callPath(node) === `${reposName}.jobControl.upsertLeaseRejectionCertificates`) upsertCalls.push(node);
+        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
+            node.expression.text === "tryOffer") tryOfferCalls.push(node);
+        if (ts.isIdentifier(node) && node.text === "evaluateCandidate" ||
+            ts.isPropertyAccessExpression(node) &&
+            ["staticEligible", "offerCandidate"].includes(node.name.text)) inventedCandidateSurface = true;
+        ts.forEachChild(node, collectEvaluationCalls);
+      };
+      collectEvaluationCalls(tenantBody);
+      let auditedCandidateLoop = false;
+      if (candidateLoops.length === 1 && candidateName) {
+        const loop = candidateLoops[0]!;
+        const loopDeclaration = ts.isVariableDeclarationList(loop.initializer) &&
+            loop.initializer.declarations.length === 1
+          ? loop.initializer.declarations[0]!
+          : null;
+        const loopCandidateName = loopDeclaration && ts.isIdentifier(loopDeclaration.name)
+          ? loopDeclaration.name.text
+          : null;
+        const loopBody = ts.isBlock(loop.statement) ? loop.statement : null;
+        const statements = loopBody?.statements ?? [];
+        const normalizedDeclaration = statements[0] && ts.isVariableStatement(statements[0]) &&
+            statements[0].declarationList.declarations.length === 1
+          ? statements[0].declarationList.declarations[0]!
+          : null;
+        const normalizedName = normalizedDeclaration && ts.isIdentifier(normalizedDeclaration.name)
+          ? normalizedDeclaration.name.text
+          : null;
+        const normalizedCall = normalizedDeclaration ? unwrappedCall(normalizedDeclaration.initializer) : null;
+        const normalizedReject = statements[1] && ts.isIfStatement(statements[1]) ? statements[1] : null;
+        const evaluationDeclaration = statements[2] && ts.isVariableStatement(statements[2]) &&
+            statements[2].declarationList.declarations.length === 1
+          ? statements[2].declarationList.declarations[0]!
+          : null;
+        const evaluationName = evaluationDeclaration && ts.isIdentifier(evaluationDeclaration.name)
+          ? evaluationDeclaration.name.text
+          : null;
+        const evaluationCall = evaluationDeclaration ? unwrappedCall(evaluationDeclaration.initializer) : null;
+        const evaluationInput = evaluationCall?.arguments.length === 1
+          ? closedObjectProperties(evaluationCall.arguments[0])
+          : null;
+        const staticNegative = statements[3] && ts.isIfStatement(statements[3]) ? statements[3] : null;
+        const staticNegativeBody = staticNegative && ts.isBlock(staticNegative.thenStatement)
+          ? staticNegative.thenStatement
+          : null;
+        const negativeStatements = staticNegativeBody?.statements ?? [];
+        const reasonReject = negativeStatements[0] && ts.isIfStatement(negativeStatements[0])
+          ? negativeStatements[0]
+          : null;
+        const negativePushStatement = negativeStatements[1] && ts.isExpressionStatement(negativeStatements[1])
+          ? negativeStatements[1]
+          : null;
+        const negativePush = negativePushStatement
+          ? unwrappedCall(negativePushStatement.expression)
+          : null;
+        const negativeInput = negativePush?.arguments.length === 1
+          ? closedObjectProperties(negativePush.arguments[0])
+          : null;
+        const flushBeforeOffer = statements[4] && ts.isIfStatement(statements[4])
+          ? statements[4]
+          : null;
+        const flushBeforeOfferCall = flushBeforeOffer ? (() => {
+          const thenStatement = flushBeforeOffer.thenStatement;
+          const statement = ts.isBlock(thenStatement) && thenStatement.statements.length === 1
+            ? thenStatement.statements[0]
+            : thenStatement;
+          return ts.isExpressionStatement(statement) ? unwrappedCall(statement.expression) : null;
+        })() : null;
+        const offeredDeclaration = statements[5] && ts.isVariableStatement(statements[5]) &&
+            statements[5].declarationList.declarations.length === 1
+          ? statements[5].declarationList.declarations[0]!
+          : null;
+        const offeredName = offeredDeclaration && ts.isIdentifier(offeredDeclaration.name)
+          ? offeredDeclaration.name.text
+          : null;
+        const offerCall = offeredDeclaration ? unwrappedCall(offeredDeclaration.initializer) : null;
+        const restart = statements[6] && ts.isIfStatement(statements[6]) ? statements[6] : null;
+        const restartThrow = restart
+          ? ts.isThrowStatement(restart.thenStatement)
+            ? restart.thenStatement.expression
+            : ts.isBlock(restart.thenStatement) && restart.thenStatement.statements.length === 1 &&
+                ts.isThrowStatement(restart.thenStatement.statements[0]!)
+              ? restart.thenStatement.statements[0]!.expression
+              : null
+          : null;
+        const restartError = restartThrow && ts.isNewExpression(unwrap(restartThrow)!)
+          ? unwrap(restartThrow) as ts.NewExpression
+          : null;
+        const offeredReturn = statements[7] && ts.isReturnStatement(statements[7])
+          ? statements[7]
+          : null;
+        const certificateBinding = directBinding(tenantBody, "staticNegativeCertificates");
+        const certificateInitializer = certificateBinding ? unwrap(certificateBinding.initializer) : null;
+        const loopIndex = tenantBody.statements.indexOf(loop);
+        const flushAfterLoop = loopIndex >= 0 && tenantBody.statements[loopIndex + 1] &&
+            ts.isIfStatement(tenantBody.statements[loopIndex + 1]!)
+          ? tenantBody.statements[loopIndex + 1] as ts.IfStatement
+          : null;
+        const flushAfterLoopCall = flushAfterLoop ? (() => {
+          const thenStatement = flushAfterLoop.thenStatement;
+          const statement = ts.isBlock(thenStatement) && thenStatement.statements.length === 1
+            ? thenStatement.statements[0]
+            : thenStatement;
+          return ts.isExpressionStatement(statement) ? unwrappedCall(statement.expression) : null;
+        })() : null;
+        const noWorkReturn = loopIndex >= 0 && ts.isReturnStatement(tenantBody.statements[loopIndex + 2]!)
+          ? tenantBody.statements[loopIndex + 2] as ts.ReturnStatement
+          : null;
+        const noWorkCall = noWorkReturn ? unwrappedCall(noWorkReturn.expression) : null;
+        const noWorkInput = noWorkCall?.arguments.length === 1
+          ? closedObjectProperties(noWorkCall.arguments[0])
+          : null;
+        const readySignalBinding = directBinding(pollMethod.body!, "readySignaled");
+        const readySignalExpression = readySignalBinding
+          ? unwrap(readySignalBinding.initializer)
+          : null;
+        const readySignalCall = readySignalExpression && ts.isBinaryExpression(readySignalExpression) &&
+            readySignalExpression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+          ? unwrappedCall(readySignalExpression.left)
+          : null;
+        let readySignalUses = 0;
+        const countReadySignalUses = (node: ts.Node): void => {
+          if (ts.isIdentifier(node) && node.text === "readySignaled") readySignalUses += 1;
+          ts.forEachChild(node, countReadySignalUses);
+        };
+        countReadySignalUses(pollMethod);
+        const exactReadySignal = Boolean(readySignalBinding && readySignalExpression &&
+          ts.isBinaryExpression(readySignalExpression) &&
+          unwrap(readySignalExpression.right)?.kind === ts.SyntaxKind.FalseKeyword &&
+          readySignalCall && callPath(readySignalCall) === `${serviceInputName}.scheduler.consume` &&
+          readySignalCall.arguments.length === 2 &&
+          pathOf(readySignalCall.arguments[0])?.join(".") === `${pollInputName}.auth.organizationId` &&
+          pathOf(readySignalCall.arguments[1])?.join(".") === `${pollInputName}.auth.targetId` &&
+          readySignalUses === 2);
+        const tryOfferBinding = directBinding(tenantBody, "tryOffer");
+        const tryOfferExpression = tryOfferBinding ? unwrap(tryOfferBinding.initializer) : null;
+        const tryOfferHelper = tryOfferExpression &&
+            (ts.isArrowFunction(tryOfferExpression) || ts.isFunctionExpression(tryOfferExpression)) &&
+            ts.isBlock(tryOfferExpression.body)
+          ? tryOfferExpression
+          : null;
+        const tryOfferParameter = tryOfferHelper?.parameters.length === 2 &&
+            ts.isIdentifier(tryOfferHelper.parameters[0]!.name)
+          ? tryOfferHelper.parameters[0]!.name.text
+          : null;
+        const tryOfferNormalizedParameter = tryOfferHelper?.parameters.length === 2 &&
+            ts.isIdentifier(tryOfferHelper.parameters[1]!.name)
+          ? tryOfferHelper.parameters[1]!.name.text
+          : null;
+        const tryOfferStatements = tryOfferHelper?.body.statements ?? [];
+        const declarationAt = (index: number): ts.VariableDeclaration | null =>
+          tryOfferStatements[index] && ts.isVariableStatement(tryOfferStatements[index]!) &&
+            (tryOfferStatements[index] as ts.VariableStatement).declarationList.declarations.length === 1
+            ? (tryOfferStatements[index] as ts.VariableStatement).declarationList.declarations[0]!
+            : null;
+        const ackDeadlineDeclaration = declarationAt(0);
+        const expiresAtDeclaration = declarationAt(1);
+        const jobEnvelopeDeclaration = declarationAt(2);
+        const jobEnvelopeName = jobEnvelopeDeclaration && ts.isIdentifier(jobEnvelopeDeclaration.name)
+          ? jobEnvelopeDeclaration.name.text
+          : null;
+        const jobEnvelopeCall = jobEnvelopeDeclaration
+          ? unwrappedCall(jobEnvelopeDeclaration.initializer)
+          : null;
+        const jobEnvelopeInput = jobEnvelopeCall?.arguments.length === 1
+          ? closedObjectProperties(jobEnvelopeCall.arguments[0])
+          : null;
+        const jobEnvelopeReject = tryOfferStatements[3] && ts.isIfStatement(tryOfferStatements[3])
+          ? tryOfferStatements[3]
+          : null;
+        const fenceDeclaration = declarationAt(4);
+        const leaseDeclaration = declarationAt(5);
+        const ackDeadlineName = ackDeadlineDeclaration && ts.isIdentifier(ackDeadlineDeclaration.name)
+          ? ackDeadlineDeclaration.name.text
+          : null;
+        const expiresAtName = expiresAtDeclaration && ts.isIdentifier(expiresAtDeclaration.name)
+          ? expiresAtDeclaration.name.text
+          : null;
+        const fenceName = fenceDeclaration && ts.isIdentifier(fenceDeclaration.name)
+          ? fenceDeclaration.name.text
+          : null;
+        const leaseName = leaseDeclaration && ts.isIdentifier(leaseDeclaration.name)
+          ? leaseDeclaration.name.text
+          : null;
+        const offerLeaseCall = leaseDeclaration ? unwrappedCall(leaseDeclaration.initializer) : null;
+        const offerLeaseInput = offerLeaseCall?.arguments.length === 1
+          ? closedObjectProperties(offerLeaseCall.arguments[0])
+          : null;
+        const leaseReject = tryOfferStatements[6] && ts.isIfStatement(tryOfferStatements[6])
+          ? tryOfferStatements[6]
+          : null;
+        const offerDeclaration = declarationAt(7);
+        const offerName = offerDeclaration && ts.isIdentifier(offerDeclaration.name)
+          ? offerDeclaration.name.text
+          : null;
+        const leaseOfferCall = offerDeclaration ? unwrappedCall(offerDeclaration.initializer) : null;
+        const leaseOfferInput = leaseOfferCall?.arguments.length === 1
+          ? closedObjectProperties(leaseOfferCall.arguments[0])
+          : null;
+        const protocolReturn = tryOfferStatements[8] && ts.isReturnStatement(tryOfferStatements[8])
+          ? tryOfferStatements[8]
+          : null;
+        const protocolCall = protocolReturn ? unwrappedCall(protocolReturn.expression) : null;
+        const protocolInput = protocolCall?.arguments.length === 1
+          ? closedObjectProperties(protocolCall.arguments[0])
+          : null;
+        const exactTryOffer = Boolean(tryOfferBinding && tryOfferHelper && tryOfferParameter &&
+          tryOfferNormalizedParameter === "normalized" && tryOfferStatements.length === 9 &&
+          ackDeadlineName === "ackDeadline" &&
+          expiresAtName === "expiresAt" && fenceName === "fence" &&
+          compact(ackDeadlineDeclaration?.initializer) === "newDate(databaseNow.getTime()+ackTimeoutMs)" &&
+          compact(expiresAtDeclaration?.initializer) === "newDate(databaseNow.getTime()+leaseDurationMs)" &&
+          jobEnvelopeName === "jobEnvelope" && jobEnvelopeCall &&
+          callPath(jobEnvelopeCall) === "buildJobEnvelope" && jobEnvelopeInput &&
+          [...jobEnvelopeInput.keys()].sort().join(",") ===
+            "attempt,databaseNow,job,leaseExpiresAt,requirements,resourceLimits,target" &&
+          pathOf(jobEnvelopeInput.get("job"))?.join(".") === `${tryOfferParameter}.job` &&
+          pathOf(jobEnvelopeInput.get("attempt"))?.join(".") === `${tryOfferParameter}.attempt` &&
+          pathOf(jobEnvelopeInput.get("target"))?.join(".") === targetName &&
+          pathOf(jobEnvelopeInput.get("requirements"))?.join(".") ===
+            `${tryOfferNormalizedParameter}.requirements` &&
+          pathOf(jobEnvelopeInput.get("resourceLimits"))?.join(".") === "providerDemand.resources" &&
+          pathOf(jobEnvelopeInput.get("databaseNow"))?.join(".") === "databaseNow" &&
+          pathOf(jobEnvelopeInput.get("leaseExpiresAt"))?.join(".") === expiresAtName &&
+          jobEnvelopeReject && !jobEnvelopeReject.elseStatement &&
+          conditionRejects(jobEnvelopeReject.expression, jobEnvelopeName) &&
+          directlyThrows(jobEnvelopeReject.thenStatement) &&
+          compact(fenceDeclaration?.initializer) === 'randomBytes(32).toString("base64url")' &&
+          offerLeaseCall && offerLeaseCalls.length === 1 &&
+          offerLeaseCalls[0] === offerLeaseCall && isAwaitedCall(offerLeaseCall) &&
+          callPath(offerLeaseCall) === `${reposName}.jobControl.offerLease` &&
+          offerLeaseInput && [...offerLeaseInput.keys()].sort().join(",") ===
+            "ackDeadline,attemptId,attemptNumber,companyId,createdAt,expiresAt,fence,jobId,organizationId,profileHash,providerConstraintHash,targetAuthorityKey,targetGeneration,targetId,workerId" &&
+          pathOf(offerLeaseInput.get("attemptId"))?.join(".") === `${tryOfferParameter}.attempt.id` &&
+          pathOf(offerLeaseInput.get("organizationId"))?.join(".") === `${tryOfferParameter}.job.organizationId` &&
+          pathOf(offerLeaseInput.get("companyId"))?.join(".") === `${tryOfferParameter}.job.companyId` &&
+          pathOf(offerLeaseInput.get("jobId"))?.join(".") === `${tryOfferParameter}.job.id` &&
+          pathOf(offerLeaseInput.get("attemptNumber"))?.join(".") ===
+            `${tryOfferParameter}.attempt.attemptNumber` &&
+          pathOf(offerLeaseInput.get("workerId"))?.join(".") === `${pollInputName}.auth.workerId` &&
+          pathOf(offerLeaseInput.get("targetId"))?.join(".") === `${targetName}.targetId` &&
+          pathOf(offerLeaseInput.get("targetAuthorityKey"))?.join(".") ===
+            `${authorityName}.worker.targetAuthorityKey` &&
+          pathOf(offerLeaseInput.get("targetGeneration"))?.join(".") === `${targetName}.targetGeneration` &&
+          pathOf(offerLeaseInput.get("profileHash"))?.join(".") === `${pollInputName}.auth.profileHash` &&
+          pathOf(offerLeaseInput.get("providerConstraintHash"))?.join(".") ===
+            `${targetName}.providerConstraintHash` &&
+          pathOf(offerLeaseInput.get("fence"))?.join(".") === fenceName &&
+          pathOf(offerLeaseInput.get("ackDeadline"))?.join(".") === ackDeadlineName &&
+          pathOf(offerLeaseInput.get("expiresAt"))?.join(".") === expiresAtName &&
+          pathOf(offerLeaseInput.get("createdAt"))?.join(".") === "databaseNow" &&
+          leaseName && leaseReject && !leaseReject.elseStatement &&
+          conditionRejects(leaseReject.expression, leaseName) &&
+          (() => {
+            const returned = ts.isReturnStatement(leaseReject.thenStatement)
+              ? leaseReject.thenStatement.expression
+              : ts.isBlock(leaseReject.thenStatement) && leaseReject.thenStatement.statements.length === 1 &&
+                  ts.isReturnStatement(leaseReject.thenStatement.statements[0]!)
+                ? leaseReject.thenStatement.statements[0]!.expression
+                : null;
+            return unwrap(returned ?? undefined)?.kind === ts.SyntaxKind.NullKeyword;
+          })() && offerName === "offer" && leaseOfferCall &&
+          callPath(leaseOfferCall) === "leaseOfferV1Schema.parse" && leaseOfferInput &&
+          [...leaseOfferInput.keys()].sort().join(",") ===
+            "ackDeadline,expiresAt,extensions,fenceToken,job,leaseId,protocolVersion,workerId" &&
+          compact(leaseOfferInput.get("protocolVersion")) === "1" &&
+          pathOf(leaseOfferInput.get("workerId"))?.join(".") === `${pollInputName}.auth.workerId` &&
+          pathOf(leaseOfferInput.get("leaseId"))?.join(".") === `${leaseName}.id` &&
+          pathOf(leaseOfferInput.get("fenceToken"))?.join(".") === fenceName &&
+          compact(leaseOfferInput.get("ackDeadline")) === `${ackDeadlineName}.toISOString()` &&
+          compact(leaseOfferInput.get("expiresAt")) === `${expiresAtName}.toISOString()` &&
+          pathOf(leaseOfferInput.get("job"))?.join(".") === jobEnvelopeName &&
+          ts.isArrayLiteralExpression(unwrap(leaseOfferInput.get("extensions"))!) &&
+          (unwrap(leaseOfferInput.get("extensions")) as ts.ArrayLiteralExpression).elements.length === 0 &&
+          protocolCall && callPath(protocolCall) === "pollResponseV1Schema.parse" &&
+          protocolInput && [...protocolInput.keys()].sort().join(",") ===
+            "body,correlationId,outcome,protocolVersion,serverTime" &&
+          compact(protocolInput.get("protocolVersion")) === "1" &&
+          pathOf(protocolInput.get("correlationId"))?.join(".") === "parsedRequest.correlationId" &&
+          compact(protocolInput.get("serverTime")) === "databaseNow.toISOString()" &&
+          ts.isStringLiteral(unwrap(protocolInput.get("outcome"))!) &&
+          (unwrap(protocolInput.get("outcome")) as ts.StringLiteral).text === "offer" &&
+          pathOf(protocolInput.get("body"))?.join(".") === offerName);
+        const exactFlush = (flush: ts.IfStatement | null, call: ts.CallExpression | null): boolean => Boolean(
+          flush && !flush.elseStatement && call && isAwaitedCall(call) &&
+          callPath(call) === `${reposName}.jobControl.upsertLeaseRejectionCertificates` &&
+          call.arguments.length === 1 &&
+          pathOf(call.arguments[0])?.join(".") === "staticNegativeCertificates" &&
+          flush.expression.getText(file).replace(/\s+/g, "") === "staticNegativeCertificates.length>0",
+        );
+        auditedCandidateLoop = Boolean(loopDeclaration &&
+          (loop.initializer.flags & ts.NodeFlags.Const) && loopCandidateName && loopBody &&
+          statements.length === 8 && normalizedName && normalizedCall &&
+          callPath(normalizedCall) === "normalizedRequirements" && normalizedCall.arguments.length === 2 &&
+          pathOf(normalizedCall.arguments[0])?.join(".") === `${loopCandidateName}.job` &&
+          pathOf(normalizedCall.arguments[1])?.join(".") === targetName &&
+          normalizedReject && !normalizedReject.elseStatement &&
+          conditionRejects(normalizedReject.expression, normalizedName) &&
+          directlyThrows(normalizedReject.thenStatement) && evaluationName && evaluationCall &&
+          evaluationCalls.length === 1 && evaluationCalls[0] === evaluationCall &&
+          ts.isIdentifier(evaluationCall.expression) &&
+          evaluationCall.expression.text === "evaluateStaticLeaseEligibility" &&
+          evaluationInput && [...evaluationInput.keys()].sort().join(",") ===
+            "requirements,target,verifiedProviderConstraints,worker" &&
+          pathOf(evaluationInput.get("target"))?.join(".") === `${targetName}.registeredProfile` &&
+          pathOf(evaluationInput.get("verifiedProviderConstraints"))?.join(".") ===
+            `${targetName}.providerConstraintProfile` &&
+          pathOf(evaluationInput.get("worker"))?.join(".") === `${parseName}.data` &&
+          pathOf(evaluationInput.get("requirements"))?.join(".") === `${normalizedName}.requirements` &&
+          staticNegative && !staticNegative.elseStatement && staticNegativeBody &&
+          staticNegative.expression.getText(file).replace(/\s+/g, "") === `!${evaluationName}.eligible` &&
+          negativeStatements.length === 3 && reasonReject && !reasonReject.elseStatement &&
+          reasonReject.expression.getText(file).replace(/\s+/g, "") ===
+            `${evaluationName}.reasonCode!=="static_requirements_mismatch"` &&
+          directlyThrows(reasonReject.thenStatement) && negativePush &&
+          callPath(negativePush) === "staticNegativeCertificates.push" && negativeInput &&
+          [...negativeInput.keys()].sort().join(",") === "candidate,reasonCode,staticContextHash" &&
+          pathOf(negativeInput.get("candidate"))?.join(".") === loopCandidateName &&
+          pathOf(negativeInput.get("reasonCode"))?.join(".") === `${evaluationName}.reasonCode` &&
+          pathOf(negativeInput.get("staticContextHash"))?.join(".") === hashName &&
+          ts.isContinueStatement(negativeStatements[2]!) && certificateBinding &&
+          certificateBinding.statement.getStart(file) > candidateBinding.statement.getStart(file) &&
+          certificateBinding.statement.getStart(file) < loop.getStart(file) &&
+          certificateInitializer && ts.isArrayLiteralExpression(certificateInitializer) &&
+          certificateInitializer.elements.length === 0 && upsertCalls.length === 2 &&
+          exactFlush(flushBeforeOffer, flushBeforeOfferCall) &&
+          exactFlush(flushAfterLoop, flushAfterLoopCall) &&
+          offeredName && offerCall && tryOfferCalls.length === 1 && tryOfferCalls[0] === offerCall &&
+          isAwaitedCall(offerCall) && ts.isIdentifier(offerCall.expression) &&
+          offerCall.expression.text === "tryOffer" && offerCall.arguments.length === 2 &&
+          pathOf(offerCall.arguments[0])?.join(".") === loopCandidateName &&
+          pathOf(offerCall.arguments[1])?.join(".") === normalizedName && exactTryOffer &&
+          restart && !restart.elseStatement && conditionRejects(restart.expression, offeredName) &&
+          restartError && pathOf(restartError.expression)?.join(".") === "HeadRestartConflict" &&
+          restartError.arguments?.length === 0 && offeredReturn &&
+          pathOf(offeredReturn.expression)?.join(".") === offeredName && noWorkReturn && noWorkCall &&
+          exactReadySignal &&
+          callPath(noWorkCall) === "pollResponseV1Schema.parse" && noWorkInput &&
+          [...noWorkInput.keys()].sort().join(",") ===
+            "correlationId,outcome,protocolVersion,retryAfterMs,serverTime" &&
+          compact(noWorkInput.get("protocolVersion")) === "1" &&
+          pathOf(noWorkInput.get("correlationId"))?.join(".") === "parsedRequest.correlationId" &&
+          compact(noWorkInput.get("serverTime")) === "databaseNow.toISOString()" &&
+          ts.isStringLiteral(unwrap(noWorkInput.get("outcome"))!) &&
+          (unwrap(noWorkInput.get("outcome")) as ts.StringLiteral).text === "no_work" &&
+          compact(noWorkInput.get("retryAfterMs")) === "readySignaled?100:750" &&
+          !inventedCandidateSurface);
+        if (loopCandidateName) canonicalCandidateTaintNames.add(loopCandidateName);
+        if (normalizedName) canonicalCandidateTaintNames.add(normalizedName);
+        if (evaluationName) canonicalCandidateTaintNames.add(evaluationName);
+        if (offeredName) canonicalCandidateTaintNames.add(offeredName);
+        if (jobEnvelopeName) canonicalCandidateTaintNames.add(jobEnvelopeName);
+        if (leaseName) canonicalCandidateTaintNames.add(leaseName);
+        canonicalCandidateTaintNames.add("staticNegativeCertificates");
+      }
+      if (!candidateName || !auditedCandidateLoop) {
+        violations.add("candidate:result-consumed-by-canonical-chain");
+      }
+    } else {
+      violations.add("candidate:result-consumed-by-canonical-chain");
+    }
+    if (hashCall.getStart(file) >= candidate.getStart(file)) violations.add("candidate:after-context-hash");
+  }
+
+  const assigned = new Set<string>();
+  const protectedContextNames = new Set(
+    [...sourceNames, builderName, hashName, ...canonicalCandidateTaintNames,
+      "admissibleWorkloadTypes", "currentAuthority", "databaseNow", "effectiveCapacity",
+      "liveCapacity", "parsedRequest", "platformPhysicalHeartbeatAt", "providerDemand", pollInputName]
+      .filter((value): value is string => Boolean(value)),
+  );
+  const allowedServiceOptionKeys = new Set([
+    "ackTimeoutMs", "appDb", "leaseDurationMs", "maxHeartbeatAgeMs", "operatorDb", "scheduler",
+  ]);
+  const rejectUnknownServiceOption = (name: string): void => {
+    if (!allowedServiceOptionKeys.has(name)) violations.add("service:no-context-or-guard-injection");
+  };
+  const identifiersIn = (node: ts.Node): string[] => {
+    const names: string[] = [];
+    const scan = (current: ts.Node): void => {
+      if (ts.isIdentifier(current)) names.push(current.text);
+      ts.forEachChild(current, scan);
+    };
+    scan(node);
+    return names;
+  };
+  const acquisitionStart = authorityBinding?.statement.getStart(file) ?? builderCall.getStart(file);
+  let aliasAdded = true;
+  while (aliasAdded) {
+    aliasAdded = false;
+    const discoverProtectedAliases = (node: ts.Node): void => {
+      if (node.getStart(file) < acquisitionStart) {
+        ts.forEachChild(node, discoverProtectedAliases);
+        return;
+      }
+      if (ts.isVariableDeclaration(node) && node.initializer) {
+        const root = pathOf(node.initializer)?.[0];
+        if (root && protectedContextNames.has(root)) {
+          const addBindingNames = (name: ts.BindingName): void => {
+            if (ts.isIdentifier(name)) {
+              if (!protectedContextNames.has(name.text)) {
+                protectedContextNames.add(name.text);
+                aliasAdded = true;
+              }
+              return;
+            }
+            for (const element of name.elements) {
+              if (!ts.isOmittedExpression(element)) addBindingNames(element.name);
+            }
+          };
+          addBindingNames(node.name);
+        }
+      }
+      if (ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left)) {
+        const root = pathOf(node.right)?.[0];
+        if (root && protectedContextNames.has(root) &&
+            !protectedContextNames.has(node.left.text)) {
+          protectedContextNames.add(node.left.text);
+          aliasAdded = true;
+        }
+      }
+      ts.forEachChild(node, discoverProtectedAliases);
+    };
+    discoverProtectedAliases(tenantBody);
+  }
+  const mutatesProtected = (node: ts.Node): boolean =>
+    identifiersIn(node).some((name) => protectedContextNames.has(name));
+  const inspectProtectedMutations = (node: ts.Node): void => {
+    if (node.getStart(file) < acquisitionStart) {
+      ts.forEachChild(node, inspectProtectedMutations);
+      return;
+    }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
+      if (ts.isIdentifier(node.left)) assigned.add(node.left.text);
+      if (mutatesProtected(node.left)) {
+        violations.add("binding:mutated-authority-or-context");
+      }
+    }
+    if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) &&
+        mutatesProtected(node.operand)) violations.add("binding:mutated-authority-or-context");
+    if (ts.isDeleteExpression(node) && mutatesProtected(node.expression)) {
+      violations.add("binding:mutated-authority-or-context");
+    }
+    if (ts.isCallExpression(node)) {
+      const path = pathOf(node.expression)?.join(".");
+      if (["Object.assign", "Object.defineProperty", "Reflect.set"].includes(path ?? "") &&
+          node.arguments[0] && mutatesProtected(node.arguments[0])) {
+        violations.add("binding:mutated-authority-or-context");
+      }
+      if (ts.isPropertyAccessExpression(node.expression) &&
+          ["copyWithin", "fill", "pop", "push", "reverse", "shift", "sort", "splice", "unshift"].includes(
+            node.expression.name.text,
+          ) && mutatesProtected(node.expression.expression) &&
+          pathOf(node.expression)?.join(".") !== "staticNegativeCertificates.push") {
+        violations.add("binding:mutated-authority-or-context");
+      }
+    }
+    ts.forEachChild(node, inspectProtectedMutations);
+  };
+  inspectProtectedMutations(tenantBody);
+  const allowedProtectedCalls = new Set<ts.CallExpression>([
+    builderCall,
+    hashCall,
+    ...[authorityCall, guardCall, commonAuthorityCall, targetCall, parseCall, candidateCalls[0]].filter(
+      (call): call is ts.CallExpression => Boolean(call),
+    ),
+  ]);
+  const auditedProtectedCallPath = (call: ts.CallExpression): boolean => {
+    const path = callPath(call);
+    return [
+      "authorityCurrent", "deriveAdmissibleWorkloadTypes", "evaluateStaticLeaseEligibility",
+      "buildJobEnvelope", "leaseOfferV1Schema.parse", "Math.min", "minCapacity", "normalizedProviderDemand",
+      "normalizedRequirements", "pollResponseV1Schema.parse",
+      "staticNegativeCertificates.push", "tryOffer",
+      `${reposName}.jobControl.offerLease`,
+      `${reposName}.jobControl.snapshotLiveLeaseCapacity`,
+      `${reposName}.jobControl.upsertLeaseRejectionCertificates`,
+    ].includes(path ?? "") || Boolean(path &&
+      (path.endsWith(".getTime") || path === "databaseNow.toISOString"));
+  };
+  const containsProtectedReference = (node: ts.Node): boolean => {
+    let found = false;
+    const scan = (current: ts.Node): void => {
+      if (ts.isFunctionLike(current)) return;
+      if (ts.isIdentifier(current) && protectedContextNames.has(current.text)) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(current, scan);
+    };
+    scan(node);
+    return found;
+  };
+  const auditProtectedEscapes = (node: ts.Node): void => {
+    if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && !ts.isBlock(node.body) &&
+        containsProtectedReference(node.body)) {
+      const returnedPath = pathOf(node.body)?.join(".");
+      const returnedCall = unwrappedCall(node.body);
+      if (returnedPath !== "offered" && callPath(returnedCall) !== "pollResponseV1Schema.parse") {
+        violations.add("binding:protected-value-escape");
+      }
+    }
+    if (ts.isCallExpression(node)) {
+      const hasProtectedArgument = node.arguments.some(containsProtectedReference);
+      const protectedReceiver = containsProtectedReference(node.expression);
+      if ((hasProtectedArgument || protectedReceiver) && !allowedProtectedCalls.has(node) &&
+          !auditedProtectedCallPath(node)) {
+        violations.add("binding:protected-value-escape");
+      }
+    }
+    if (ts.isNewExpression(node) && node.arguments?.some(containsProtectedReference)) {
+      if (pathOf(node.expression)?.join(".") !== "Date") {
+        violations.add("binding:protected-value-escape");
+      }
+    }
+    if (ts.isElementAccessExpression(node) && containsProtectedReference(node.expression)) {
+      violations.add("binding:protected-value-escape");
+    }
+    if ((ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) &&
+        containsProtectedReference(node)) {
+      const parentCall = ts.isCallExpression(node.parent) ? node.parent : null;
+      const parentPath = callPath(parentCall);
+      const approvedContainer = node === sourceArgument ||
+        Boolean(parentCall && [
+          "authorityCurrent", "buildJobEnvelope", "buildLeaseStaticContextInput", "evaluateStaticLeaseEligibility",
+          "leaseOfferV1Schema.parse", "pollResponseV1Schema.parse", "staticNegativeCertificates.push",
+          `${reposName}.jobControl.lockEligibleLeaseCandidates`,
+          `${reposName}.jobControl.lockWorkerLeaseAuthority`,
+          `${reposName}.jobControl.offerLease`,
+          `${reposName}.jobControl.snapshotLiveLeaseCapacity`,
+        ].includes(parentPath ?? ""));
+      if (!approvedContainer) {
+        violations.add("binding:protected-value-escape");
+      }
+    }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) &&
+        containsProtectedReference(node.right)) {
+      violations.add("binding:protected-value-escape");
+    }
+    if (ts.isReturnStatement(node) && node.expression && containsProtectedReference(node.expression)) {
+      const returnedPath = pathOf(node.expression)?.join(".");
+      const returnedCall = unwrappedCall(node.expression);
+      if (returnedPath !== "offered" && callPath(returnedCall) !== "pollResponseV1Schema.parse") {
+        violations.add("binding:protected-value-escape");
+      }
+    }
+    ts.forEachChild(node, auditProtectedEscapes);
+  };
+  auditProtectedEscapes(tenantBody);
+  for (const name of protectedContextNames) {
+    if (assigned.has(name)) violations.add(`binding:reassigned:${name}`);
+  }
+
+  const serviceParameter = service.parameters[0];
+  const inspectBindingHooks = (name: ts.BindingName): void => {
+    if (ts.isIdentifier(name)) {
+      return;
+    }
+    for (const element of name.elements) {
+      if (ts.isOmittedExpression(element)) continue;
+      const boundName = propertyName(element.propertyName) ??
+        (ts.isIdentifier(element.name) ? element.name.text : null);
+      if (boundName) rejectUnknownServiceOption(boundName);
+      inspectBindingHooks(element.name);
+    }
+  };
+  if (serviceParameter && !ts.isIdentifier(serviceParameter.name)) {
+    inspectBindingHooks(serviceParameter.name);
+  }
+  const inspectedTypes = new Set<ts.TypeNode>();
+  const inspectServiceType = (type: ts.TypeNode | undefined): void => {
+    if (!type || inspectedTypes.has(type)) return;
+    inspectedTypes.add(type);
+    if (ts.isTypeLiteralNode(type)) {
+      for (const member of type.members) {
+        if (!ts.isPropertySignature(member)) continue;
+        const name = propertyName(member.name);
+        if (name) rejectUnknownServiceOption(name);
+      }
+      return;
+    }
+    if (ts.isTypeReferenceNode(type) && ts.isIdentifier(type.typeName)) {
+      for (const statement of file.statements) {
+        if (ts.isInterfaceDeclaration(statement) && statement.name.text === type.typeName.text) {
+          for (const member of statement.members) {
+            if (!ts.isPropertySignature(member)) continue;
+            const name = propertyName(member.name);
+            if (name) rejectUnknownServiceOption(name);
+          }
+        } else if (ts.isTypeAliasDeclaration(statement) && statement.name.text === type.typeName.text) {
+          inspectServiceType(statement.type);
+        }
+      }
+      return;
+    }
+    if (ts.isUnionTypeNode(type) || ts.isIntersectionTypeNode(type)) {
+      for (const member of type.types) inspectServiceType(member);
+    }
+  };
+  inspectServiceType(serviceParameter?.type);
+
+  const serviceAliases = new Set<string>();
+  if (serviceInputName) serviceAliases.add(serviceInputName);
+  let serviceAliasAdded = true;
+  while (serviceAliasAdded) {
+    serviceAliasAdded = false;
+    const discoverServiceAliases = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && node.initializer) {
+        const initializerPath = pathOf(node.initializer);
+        if (initializerPath?.length === 1 && serviceAliases.has(initializerPath[0]!)) {
+          if (ts.isIdentifier(node.name) && !serviceAliases.has(node.name.text)) {
+            serviceAliases.add(node.name.text);
+            serviceAliasAdded = true;
+          } else if (!ts.isIdentifier(node.name)) {
+            inspectBindingHooks(node.name);
+          }
+        }
+      }
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left)) {
+        const initializerPath = pathOf(node.right);
+        if (initializerPath?.length === 1 && serviceAliases.has(initializerPath[0]!) &&
+            !serviceAliases.has(node.left.text)) {
+          serviceAliases.add(node.left.text);
+          serviceAliasAdded = true;
+        }
+      }
+      ts.forEachChild(node, discoverServiceAliases);
+    };
+    discoverServiceAliases(serviceBody);
+  }
+  const isServiceAliasExpression = (expression: ts.Expression | undefined): boolean => {
+    const path = pathOf(expression);
+    return Boolean(path?.length === 1 && serviceAliases.has(path[0]!));
+  };
+  const inspectServiceHookAccess = (node: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(node) && isServiceAliasExpression(node.expression) &&
+        !allowedServiceOptionKeys.has(node.name.text)) rejectUnknownServiceOption(node.name.text);
+    if (ts.isElementAccessExpression(node) && isServiceAliasExpression(node.expression)) {
+      violations.add("service:no-context-or-guard-injection");
+    }
+    if (ts.isVariableDeclaration(node) && node.initializer &&
+        isServiceAliasExpression(node.initializer) && !ts.isIdentifier(node.name)) {
+      inspectBindingHooks(node.name);
+    }
+    if (ts.isCallExpression(node) && pathOf(node.expression)?.join(".") === "Object.assign" &&
+        node.arguments.some((argument) => isServiceAliasExpression(argument))) {
+      violations.add("service:no-context-or-guard-injection");
+    }
+    ts.forEachChild(node, inspectServiceHookAccess);
+  };
+  inspectServiceHookAccess(serviceBody);
+  if ([...serviceAliases].some((name) => name !== serviceInputName)) {
+    violations.add("service:no-context-or-guard-injection");
+  }
+  const auditExactServiceInputUses = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && node.text === serviceInputName) {
+      if (ts.isParameter(node.parent) && node.parent.name === node) return;
+      if (ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node &&
+          allowedServiceOptionKeys.has(node.parent.name.text)) return;
+      violations.add("service:no-context-or-guard-injection");
+    }
+    ts.forEachChild(node, auditExactServiceInputUses);
+  };
+  auditExactServiceInputUses(serviceBody);
+  return [...violations].sort();
 }
 
 describe("JOB-003 frozen worker-operation HTTP contract", () => {
@@ -2003,11 +4791,28 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       async function bound(repos: any) {
         const retire = repos.workerEnrollment.retireBootstrapCredential.bind(repos.workerEnrollment);
         await retire({});
+      }
+      async function called(repos: any) {
+        const advance = repos.workerEnrollment.advanceTargetGeneration;
+        await advance.call(repos.workerEnrollment, {});
+      }
+      async function appliedUnobserved(repos: any) {
+        const rotate = repos.workerEnrollment.rotateWorker;
+        rotate.apply(repos.workerEnrollment, [{}]);
+      }
+      async function shadowedCall(repos: any) {
+        const rotate = repos.workerEnrollment.rotateWorker;
+        {
+          const rotate = () => undefined;
+          await rotate.call(null, {});
+        }
       }`,
     }];
     expect(repositoryDelegateCallSiteInventory(fixture)).toEqual([
       "server/src/services/delegate-fixture.ts#aliased:advanceTargetGeneration:awaited",
+      "server/src/services/delegate-fixture.ts#appliedUnobserved:rotateWorker:unobserved",
       "server/src/services/delegate-fixture.ts#bound:retireBootstrapCredential:awaited",
+      "server/src/services/delegate-fixture.ts#called:advanceTargetGeneration:awaited",
       "server/src/services/delegate-fixture.ts#computed:insertWorker:awaited",
       "server/src/services/delegate-fixture.ts#guarded:rotateWorker:awaited",
       "server/src/services/delegate-fixture.ts#injectedUnguarded:rotateWorker:unobserved",
@@ -2046,9 +4851,10 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
   });
 
   it("requires the placement decision writer's exact one-shot null predicate", () => {
-    const validWriter = `const repository = {
+    const validWriter = `import { and, eq, isNull } from "drizzle-orm";
+    const repository = {
       async persistPlacementDecision(input: any) {
-        const currentOwnerAuthority = undefined;
+        const currentOwnerAuthority = eq(ownerAuthority.current, input.currentOwnerAuthority);
         return tx.update(jobAttempts).set({ placementDecidedAt: input.placementDecidedAt }).where(and(
           eq(jobAttempts.organizationId, input.organizationId),
           eq(jobAttempts.companyId, input.companyId),
@@ -2069,6 +4875,26 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       "isNull(jobAttempts.placementDecidedAt)",
       "isNotNull(jobAttempts.placementDecidedAt)",
     ))).toEqual(["persistPlacementDecision:one-shot-predicate"]);
+    expect.soft(persistPlacementDecisionPredicateViolations(validWriter.replace(
+      'import { and, eq, isNull } from "drizzle-orm";',
+      'import { and, eq } from "drizzle-orm"; import { isNull } from "./fake-drizzle.js";',
+    ))).toEqual(["persistPlacementDecision:one-shot-predicate"]);
+    expect.soft(persistPlacementDecisionPredicateViolations(validWriter.replace(
+      "const currentOwnerAuthority =",
+      "const isNull = () => true; const currentOwnerAuthority =",
+    ))).toEqual(["persistPlacementDecision:one-shot-predicate"]);
+    expect.soft(persistPlacementDecisionPredicateViolations(validWriter.replace(
+      "const currentOwnerAuthority =",
+      "const eq = () => true; const currentOwnerAuthority =",
+    ))).toEqual(["persistPlacementDecision:one-shot-predicate"]);
+    expect.soft(persistPlacementDecisionPredicateViolations(validWriter.replace(
+      "eq(ownerAuthority.current, input.currentOwnerAuthority)",
+      "undefined",
+    ))).toEqual(["persistPlacementDecision:one-shot-predicate"]);
+    expect.soft(persistPlacementDecisionPredicateViolations(validWriter.replace(
+      "eq(ownerAuthority.current, input.currentOwnerAuthority)",
+      "input.enforceOwner ? eq(ownerAuthority.current, input.currentOwnerAuthority) : undefined",
+    ))).toEqual(["persistPlacementDecision:one-shot-predicate"]);
     const decoyWriter = `const repository = {
       async persistPlacementDecision(input: any) {
         const currentOwnerAuthority = undefined;
@@ -2087,6 +4913,52 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     };`;
     expect.soft(persistPlacementDecisionPredicateViolations(decoyWriter)).toEqual([
       "persistPlacementDecision:one-shot-predicate",
+    ]);
+  });
+
+  it("binds the combined platform-authority guard to the protected transaction and target", () => {
+    const importedFactory = `import { operatorJobLeasingRepository } from "@armyofagents/db";\n`;
+    const valid = importedFactory + `async function guarded(tx: any, targetId: string) {
+      await operatorJobLeasingRepository(tx).lockPlatformAuthorityForMutation(targetId);
+      await tx.update(executionTargets).set({ status: "offline" })
+        .where(eq(executionTargets.id, targetId));
+    }`;
+    const otherTransaction = valid.replace(
+      "operatorJobLeasingRepository(tx)",
+      "operatorJobLeasingRepository(otherTx)",
+    );
+    const otherTarget = valid.replace(
+      "lockPlatformAuthorityForMutation(targetId)",
+      "lockPlatformAuthorityForMutation(otherTargetId)",
+    );
+    const unawaited = valid.replace(
+      "await operatorJobLeasingRepository(tx)",
+      "operatorJobLeasingRepository(tx)",
+    );
+    const branchOnly = importedFactory + `async function guarded(tx: any, targetId: string, lock: boolean) {
+      if (lock) {
+        await operatorJobLeasingRepository(tx).lockPlatformAuthorityForMutation(targetId);
+      }
+      await tx.update(executionTargets).set({ status: "offline" })
+        .where(eq(executionTargets.id, targetId));
+    }`;
+    expect.soft(platformGuardOrderViolations(valid)).toEqual([]);
+    expect.soft(platformGuardOrderViolations(otherTransaction)).toEqual(["guarded"]);
+    expect.soft(platformGuardOrderViolations(otherTarget)).toEqual(["guarded"]);
+    expect.soft(platformGuardOrderViolations(unawaited)).toEqual(["guarded"]);
+    expect.soft(platformGuardOrderViolations(branchOnly)).toEqual(["guarded"]);
+  });
+
+  it("inventories interpolated tagged-SQL certificate mutations by their real target", () => {
+    const fixture = `async function cleanupLeaseRejectionCertificates(tx: any, raw: any, unknownRows: any) {
+      await raw\`DELETE FROM \${leases} WHERE organization_id = 'x'\`;
+      await raw\`DELETE FROM \${unknownRows} WHERE organization_id = 'x'\`;
+      await tx.delete(workerLeaseRejections).where(scope);
+    }`;
+    expect(namedFunctionMutationInventory(fixture, "cleanupLeaseRejectionCertificates")).toEqual([
+      "<dynamic>:delete",
+      "leases:delete",
+      "workerLeaseRejections:delete",
     ]);
   });
 
@@ -2606,6 +5478,1524 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
         "execution_targets_tenant_enrollment_update",
       );
     }
+  });
+
+  it("maps one attempt-local typed static context from exact authority symbols with no laundering or injection", () => {
+    const valid = `
+      import { randomBytes } from "node:crypto";
+      import {
+        buildLeaseStaticContextInput,
+        evaluateStaticLeaseEligibility,
+        LEASE_STATIC_ELIGIBILITY_VERSION,
+        leaseStaticContextHash,
+      } from "./job-lease-eligibility.js";
+      import { normalizePlacementRegistryTarget } from "./execution-target-resolver.js";
+      import { normalizeSubmittedJobPlacementFacts } from "./job-placement.js";
+      import {
+        jobEnvelopeV1Schema,
+        leaseOfferV1Schema,
+        pollRequestV1Schema,
+        pollResponseV1Schema,
+        workerHelloV1Schema,
+      } from "@armyofagents/worker-protocol";
+      import { runInTenant } from "../db/tenant-context.js";
+      import { operatorJobLeasingRepository } from "@armyofagents/db";
+      const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);
+      function minCapacity(left: any, right: any) {
+        return {
+          batchSlots: Math.min(left.batchSlots, right.batchSlots),
+          browserSessionSlots: Math.min(left.browserSessionSlots, right.browserSessionSlots),
+          serviceSlots: Math.min(left.serviceSlots, right.serviceSlots),
+          freeCpuMillis: Math.min(left.freeCpuMillis, right.freeCpuMillis),
+          freeMemoryMiB: Math.min(left.freeMemoryMiB, right.freeMemoryMiB),
+          freeDiskMiB: Math.min(left.freeDiskMiB, right.freeDiskMiB),
+        };
+      }
+      function inferredCredentialBinding(target: any) {
+        return target.credentialBinding;
+      }
+      function normalizedRequirements(job: any, target: any) {
+        const normalized = normalizeSubmittedJobPlacementFacts({
+          sourceKind: job.sourceKind,
+          inputHash: job.inputHash,
+          policyHash: job.policyHash,
+          requirements: job.requirements,
+          placementRequest: job.placementRequest,
+          rollout: { enabled: true, mode: "active", reason: "stored_placement" },
+          credentialBinding: inferredCredentialBinding(target),
+          resolvedTarget: target,
+        });
+        return normalized.success && normalized.active ? normalized : null;
+      }
+      function normalizedProviderDemand(target: any) {
+        const provider = target.providerConstraintProfile;
+        const supported = new Set(provider.supportedOperations);
+        const operations = ["create", "execute"].filter((operation) => supported.has(operation));
+        return {
+          maxRuntimeSeconds: Math.min(600, provider.maxContinuousRuntimeSeconds),
+          maxIdleSeconds: Math.min(60, provider.maxIdleSeconds),
+          resources: {
+            cpuMillis: Math.min(1000, provider.resourceCeiling.cpuMillis),
+            memoryMiB: Math.min(1024, provider.resourceCeiling.memoryMiB),
+            pids: Math.min(128, provider.resourceCeiling.pids),
+            diskMiB: Math.min(1024, provider.resourceCeiling.diskMiB),
+          },
+          concurrentOperations: Math.min(1, provider.maxConcurrentOperations),
+          operations,
+          localityTags: provider.localityTags.slice(0, 1),
+        };
+      }
+      function source(job: any) {
+        return job.executionSource;
+      }
+      function buildJobEnvelope(input: any) {
+        const executionSource = source(input.job);
+        if (!executionSource) return null;
+        const deadline = new Date(Math.max(
+          input.job.createdAt.getTime() + 1,
+          input.databaseNow.getTime() + 600000,
+          input.leaseExpiresAt.getTime() + 1,
+        ));
+        const parsed = jobEnvelopeV1Schema.safeParse({
+          protocolVersion: 1,
+          jobId: input.job.id,
+          attempt: input.attempt.attemptNumber,
+          organizationId: input.job.organizationId,
+          companyId: input.job.companyId,
+          source: executionSource,
+          createdAt: input.job.createdAt.toISOString(),
+          notBefore: input.job.availableAt.toISOString(),
+          deadline: deadline.toISOString(),
+          inputHash: input.job.inputHash,
+          policyHash: input.requirements.policyHash,
+          placement: {
+            policyId: "job-placement",
+            version: 1,
+            digest: input.attempt.placementPolicyDigest,
+            targetRequirements: input.requirements.targetRequirements,
+          },
+          adapter: { type: "aoa_job_control", version: "1", configArtifactId: null },
+          requiredCapabilities: input.requirements.capabilities,
+          workspace: null,
+          secretHandles: [],
+          resourceLimits: input.resourceLimits,
+          networkPolicy: {
+            policyId: "job-default-deny",
+            version: 1,
+            digest: input.attempt.placementPolicyDigest,
+          },
+          offlinePolicy: "cancel",
+          extensions: [],
+          workloadType: input.job.workloadType,
+          workload: input.job.input,
+        });
+        return parsed.success ? parsed.data : null;
+      }
+      function authorityCurrent(input: any): boolean {
+        const { auth, authority, request } = input;
+        const worker = authority.worker;
+        const target = authority.target;
+        const oldestHeartbeat = target.scope === "platform"
+          ? input.platformPhysicalHeartbeatAt?.getTime() ?? null
+          : !worker.lastSeenAt || !target.lastSeenAt
+            ? null
+            : Math.min(worker.lastSeenAt.getTime(), target.lastSeenAt.getTime());
+        return worker.id === auth.workerId &&
+          worker.executionTargetId === auth.targetId &&
+          worker.organizationId === auth.organizationId &&
+          worker.scope !== "platform" &&
+          worker.deviceGeneration === auth.targetGeneration &&
+          worker.deviceThumbprint === auth.deviceThumbprint &&
+          worker.devicePublicKey === auth.publicKey &&
+          worker.profileHash === auth.profileHash &&
+          worker.revokedAt === null &&
+          ACTIVE_WORKER_STATUSES.has(worker.status) &&
+          authority.ownerMembershipActive &&
+          target.id === auth.targetId &&
+          target.status === "active" &&
+          target.deviceGeneration === auth.targetGeneration &&
+          request.workerId === auth.workerId &&
+          request.targetId === auth.targetId &&
+          request.deviceGeneration === auth.targetGeneration &&
+          oldestHeartbeat !== null &&
+          input.databaseNow.getTime() - oldestHeartbeat <= input.maxHeartbeatAgeMs;
+      }
+      export function createJobLeasingService(input: {
+        appDb: unknown;
+        operatorDb: any;
+        scheduler?: any;
+        ackTimeoutMs?: number;
+        leaseDurationMs?: number;
+        maxHeartbeatAgeMs?: number;
+      }) {
+        const ackTimeoutMs = Math.max(1000, input.ackTimeoutMs ?? 15000);
+        const leaseDurationMs = Math.max(ackTimeoutMs + 1000, input.leaseDurationMs ?? 300000);
+        const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300000);
+        class HeadRestartConflict extends Error {}
+        const isHeadRestartConflict = (error: unknown): error is HeadRestartConflict =>
+          error instanceof HeadRestartConflict;
+        const guardPlatformAuthority = async (guardRepos: any, guardAuth: any, locked: any) => {
+          if (locked.target.scope === "organization" || locked.target.scope === "owner") {
+            return { currentTarget: locked.target, physicalAuthorityWorker: null };
+          }
+          if (locked.target.scope !== "platform") throw new Error("target_revoked");
+          return input.operatorDb.transaction(async (operatorTx: any) => {
+            const physical = await operatorJobLeasingRepository(operatorTx)
+              .lockPlatformPhysicalAuthority(guardAuth.targetId, "share");
+            await guardRepos.jobControl.acquirePlatformTargetAuthorityShared(guardAuth.targetId);
+            const current = await guardRepos.jobControl.recheckPlatformTargetAuthority({
+              targetId: guardAuth.targetId,
+              targetAuthorityKey: "platform",
+              targetGeneration: guardAuth.targetGeneration,
+            });
+            const platformNow = await guardRepos.jobControl.currentDatabaseTime();
+            if (!physical ||
+                !current ||
+                physical.target.scope !== "platform" ||
+                physical.worker.scope !== "platform" ||
+                current.scope !== "platform" ||
+                physical.target.status !== "active" ||
+                physical.worker.status !== "active" ||
+                current.status !== "active" ||
+                physical.worker.revokedAt !== null ||
+                physical.target.id !== guardAuth.targetId ||
+                current.id !== guardAuth.targetId ||
+                physical.worker.executionTargetId !== physical.target.id ||
+                physical.worker.targetAuthorityKey !== physical.target.targetAuthorityKey ||
+                current.targetAuthorityKey !== physical.target.targetAuthorityKey ||
+                locked.worker.executionTargetId !== current.id ||
+                locked.worker.targetAuthorityKey !== current.targetAuthorityKey ||
+                locked.worker.deviceGeneration !== guardAuth.targetGeneration ||
+                physical.target.deviceGeneration !== guardAuth.targetGeneration ||
+                physical.worker.deviceGeneration !== guardAuth.targetGeneration ||
+                current.deviceGeneration !== guardAuth.targetGeneration ||
+                physical.worker.devicePublicKey !== guardAuth.publicKey ||
+                physical.worker.deviceThumbprint !== guardAuth.deviceThumbprint ||
+                !physical.target.registeredProfileHash ||
+                physical.target.registeredProfileHash !== current.registeredProfileHash ||
+                !physical.worker.profileHash ||
+                locked.worker.profileHash !== guardAuth.profileHash ||
+                !physical.target.lastSeenAt ||
+                !physical.worker.lastSeenAt ||
+                platformNow.getTime() - physical.target.lastSeenAt.getTime() > maxHeartbeatAgeMs ||
+                platformNow.getTime() - physical.worker.lastSeenAt.getTime() > maxHeartbeatAgeMs) {
+              throw new Error("target_revoked");
+            }
+            return { currentTarget: current, physicalAuthorityWorker: physical.worker };
+          });
+        };
+        const deriveAdmissibleWorkloadTypes = (capacity: any, live: any, provider: any, demand: any) => {
+          if (live.total >= provider.maxConcurrentOperations ||
+              capacity.freeCpuMillis > provider.resourceCeiling.cpuMillis ||
+              capacity.freeMemoryMiB > provider.resourceCeiling.memoryMiB ||
+              capacity.freeDiskMiB > provider.resourceCeiling.diskMiB ||
+              capacity.freeCpuMillis < demand.resources.cpuMillis ||
+              capacity.freeMemoryMiB < demand.resources.memoryMiB ||
+              capacity.freeDiskMiB < demand.resources.diskMiB) return [];
+          const workloadTypes: string[] = [];
+          if (capacity.batchSlots > live.batch) workloadTypes.push("batch");
+          if (capacity.browserSessionSlots > live.browserSession) workloadTypes.push("browser_session");
+          if (capacity.serviceSlots > live.service) workloadTypes.push("service");
+          return workloadTypes;
+        };
+        return {
+          async poll(pollInput: any) {
+            const parsedRequestResult = pollRequestV1Schema.safeParse(pollInput.request);
+            if (!parsedRequestResult.success) throw new Error("malformed");
+            const parsedRequest = parsedRequestResult.data;
+            const readySignaled = input.scheduler?.consume(
+              pollInput.auth.organizationId,
+              pollInput.auth.targetId,
+            ) ?? false;
+            for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {
+              try {
+                return await runInTenant(input.appDb, pollInput.auth.organizationId, async (repos) => {
+                  const databaseNow = await repos.jobControl.currentDatabaseTime();
+                  const lockedAuthority = await repos.jobControl.lockWorkerLeaseAuthority({
+                    workerId: pollInput.auth.workerId,
+                    targetId: pollInput.auth.targetId,
+                  });
+                  if (!lockedAuthority) throw new Error("target_revoked");
+                  const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);
+                  const platformPhysicalHeartbeatAt = guardedAuthority.physicalAuthorityWorker &&
+                      guardedAuthority.currentTarget.lastSeenAt &&
+                      guardedAuthority.physicalAuthorityWorker.lastSeenAt
+                    ? new Date(Math.min(
+                        guardedAuthority.currentTarget.lastSeenAt.getTime(),
+                        guardedAuthority.physicalAuthorityWorker.lastSeenAt.getTime(),
+                      ))
+                    : null;
+                  const currentAuthority = authorityCurrent({
+                    auth: pollInput.auth,
+                    authority: lockedAuthority,
+                    request: parsedRequest,
+                    databaseNow,
+                    maxHeartbeatAgeMs,
+                    platformPhysicalHeartbeatAt,
+                  });
+                  if (!currentAuthority) throw new Error("target_revoked");
+                  const normalizedCurrentTarget = await normalizePlacementRegistryTarget(guardedAuthority.currentTarget);
+                  if (!normalizedCurrentTarget) throw new Error("target_revoked");
+                   const parsedStoredHello = workerHelloV1Schema.safeParse(lockedAuthority.worker.profileSnapshot);
+                   if (!parsedStoredHello.success) throw new Error("target_revoked");
+                   const effectiveCapacity = minCapacity(
+                     parsedStoredHello.data.capacity,
+                     parsedRequest.capacity,
+                   );
+                   const providerDemand = normalizedProviderDemand(normalizedCurrentTarget);
+                   const liveCapacity = await repos.jobControl.snapshotLiveLeaseCapacity({
+                     workerId: pollInput.auth.workerId,
+                     targetId: normalizedCurrentTarget.targetId,
+                   });
+                   const admissibleWorkloadTypes = deriveAdmissibleWorkloadTypes(
+                     effectiveCapacity,
+                     liveCapacity,
+                     normalizedCurrentTarget.providerConstraintProfile,
+                     providerDemand,
+                   );
+                   const staticContextInput = buildLeaseStaticContextInput({
+                    organizationId: lockedAuthority.worker.organizationId,
+                    parsedWorkerHello: parsedStoredHello.data,
+                    logicalWorker: lockedAuthority.worker,
+                    currentTarget: normalizedCurrentTarget,
+                    physicalAuthorityWorker: guardedAuthority.physicalAuthorityWorker,
+                  });
+                   const staticContextHash = leaseStaticContextHash(staticContextInput);
+                   const tryOffer = async (candidate: any, normalized: any) => {
+                     const ackDeadline = new Date(databaseNow.getTime() + ackTimeoutMs);
+                     const expiresAt = new Date(databaseNow.getTime() + leaseDurationMs);
+                     const jobEnvelope = buildJobEnvelope({
+                       job: candidate.job,
+                       attempt: candidate.attempt,
+                       target: normalizedCurrentTarget,
+                       requirements: normalized.requirements,
+                       resourceLimits: providerDemand.resources,
+                       databaseNow,
+                       leaseExpiresAt: expiresAt,
+                     });
+                     if (!jobEnvelope) throw new Error("internal_unavailable");
+                     const fence = randomBytes(32).toString("base64url");
+                     const lease = await repos.jobControl.offerLease({
+                       attemptId: candidate.attempt.id,
+                       organizationId: candidate.job.organizationId,
+                       companyId: candidate.job.companyId,
+                       jobId: candidate.job.id,
+                       attemptNumber: candidate.attempt.attemptNumber,
+                       workerId: pollInput.auth.workerId,
+                       targetId: normalizedCurrentTarget.targetId,
+                       targetAuthorityKey: lockedAuthority.worker.targetAuthorityKey,
+                       targetGeneration: normalizedCurrentTarget.targetGeneration,
+                       profileHash: pollInput.auth.profileHash,
+                       providerConstraintHash: normalizedCurrentTarget.providerConstraintHash,
+                       fence,
+                       ackDeadline,
+                       expiresAt,
+                       createdAt: databaseNow,
+                     });
+                     if (!lease) return null;
+                     const offer = leaseOfferV1Schema.parse({
+                       protocolVersion: 1,
+                       workerId: pollInput.auth.workerId,
+                       leaseId: lease.id,
+                       fenceToken: fence,
+                       ackDeadline: ackDeadline.toISOString(),
+                       expiresAt: expiresAt.toISOString(),
+                       job: jobEnvelope,
+                       extensions: [],
+                     });
+                     return pollResponseV1Schema.parse({
+                       protocolVersion: 1,
+                       correlationId: parsedRequest.correlationId,
+                       serverTime: databaseNow.toISOString(),
+                       outcome: "offer",
+                       body: offer,
+                     });
+                   };
+                   const candidates = await repos.jobControl.lockEligibleLeaseCandidates({
+                     admissibleWorkloadTypes,
+                    eligibilityVersion: LEASE_STATIC_ELIGIBILITY_VERSION,
+                    limit: 256,
+                    staticContextHash,
+                     targetAuthorityKey: guardedAuthority.currentTarget.targetAuthorityKey,
+                    targetClass: normalizedCurrentTarget.targetClass,
+                    targetGeneration: normalizedCurrentTarget.targetGeneration,
+                    targetId: normalizedCurrentTarget.targetId,
+                    targetOwner: guardedAuthority.currentTarget.ownerUserId,
+                    targetProfileHash: normalizedCurrentTarget.profileHash,
+                    targetProviderConstraintHash: normalizedCurrentTarget.providerConstraintHash,
+                    targetScope: normalizedCurrentTarget.targetScope,
+                    workerId: pollInput.auth.workerId,
+                   });
+                   const staticNegativeCertificates: any[] = [];
+                   for (const candidate of candidates) {
+                     const normalized = normalizedRequirements(candidate.job, normalizedCurrentTarget);
+                     if (!normalized) throw new Error("internal_unavailable");
+                     const evaluation = evaluateStaticLeaseEligibility({
+                       target: normalizedCurrentTarget.registeredProfile,
+                       verifiedProviderConstraints: normalizedCurrentTarget.providerConstraintProfile,
+                       worker: parsedStoredHello.data,
+                       requirements: normalized.requirements,
+                     });
+                     if (!evaluation.eligible) {
+                       if (evaluation.reasonCode !== "static_requirements_mismatch") {
+                         throw new Error("internal_unavailable");
+                       }
+                       staticNegativeCertificates.push({
+                         candidate,
+                         reasonCode: evaluation.reasonCode,
+                         staticContextHash,
+                       });
+                       continue;
+                     }
+                     if (staticNegativeCertificates.length > 0) {
+                       await repos.jobControl.upsertLeaseRejectionCertificates(staticNegativeCertificates);
+                     }
+                     const offered = await tryOffer(candidate, normalized);
+                     if (!offered) throw new HeadRestartConflict();
+                     return offered;
+                   }
+                   if (staticNegativeCertificates.length > 0) {
+                     await repos.jobControl.upsertLeaseRejectionCertificates(staticNegativeCertificates);
+                   }
+                   return pollResponseV1Schema.parse({
+                     protocolVersion: 1,
+                     correlationId: parsedRequest.correlationId,
+                     serverTime: databaseNow.toISOString(),
+                     outcome: "no_work",
+                     retryAfterMs: readySignaled ? 100 : 750,
+                   });
+                });
+              } catch (error) {
+                if (!isHeadRestartConflict(error)) throw error;
+                if (restartAttempt >= 2) throw new Error("internal_unavailable");
+                continue;
+              }
+            }
+            throw new Error("internal_unavailable");
+          },
+        };
+      }
+    `;
+    const validViolations = leaseStaticContextPollViolations(valid);
+    expect.soft(validViolations, `valid symbol/provenance fixture: ${validViolations.join("|")}`).toEqual([]);
+    const decision124Checks = [
+      ["physical-present", "!physical"],
+      ["current-target-present", "!current"],
+      ["physical-target-platform-scope", 'physical.target.scope !== "platform"'],
+      ["physical-worker-platform-scope", 'physical.worker.scope !== "platform"'],
+      ["current-target-platform-scope", 'current.scope !== "platform"'],
+      ["physical-target-active", 'physical.target.status !== "active"'],
+      ["physical-worker-active", 'physical.worker.status !== "active"'],
+      ["current-target-active", 'current.status !== "active"'],
+      ["physical-worker-not-revoked", "physical.worker.revokedAt !== null"],
+      ["physical-target-auth-id", "physical.target.id !== guardAuth.targetId"],
+      ["current-target-auth-id", "current.id !== guardAuth.targetId"],
+      ["physical-worker-target-binding", "physical.worker.executionTargetId !== physical.target.id"],
+      ["physical-worker-authority-binding", "physical.worker.targetAuthorityKey !== physical.target.targetAuthorityKey"],
+      ["current-target-authority-binding", "current.targetAuthorityKey !== physical.target.targetAuthorityKey"],
+      ["logical-worker-current-target-binding", "locked.worker.executionTargetId !== current.id"],
+      ["logical-worker-current-authority-binding", "locked.worker.targetAuthorityKey !== current.targetAuthorityKey"],
+      ["logical-generation-auth", "locked.worker.deviceGeneration !== guardAuth.targetGeneration"],
+      ["physical-target-generation-auth", "physical.target.deviceGeneration !== guardAuth.targetGeneration"],
+      ["physical-worker-generation-auth", "physical.worker.deviceGeneration !== guardAuth.targetGeneration"],
+      ["current-target-generation-auth", "current.deviceGeneration !== guardAuth.targetGeneration"],
+      ["physical-device-public-key", "physical.worker.devicePublicKey !== guardAuth.publicKey"],
+      ["physical-device-thumbprint", "physical.worker.deviceThumbprint !== guardAuth.deviceThumbprint"],
+      ["physical-target-profile-present", "!physical.target.registeredProfileHash"],
+      ["physical-current-target-profile", "physical.target.registeredProfileHash !== current.registeredProfileHash"],
+      ["physical-worker-profile-present", "!physical.worker.profileHash"],
+      ["logical-worker-profile-auth", "locked.worker.profileHash !== guardAuth.profileHash"],
+      ["physical-target-heartbeat-present", "!physical.target.lastSeenAt"],
+      ["physical-worker-heartbeat-present", "!physical.worker.lastSeenAt"],
+      ["physical-target-heartbeat-fresh", "platformNow.getTime() - physical.target.lastSeenAt.getTime() > maxHeartbeatAgeMs"],
+      ["physical-worker-heartbeat-fresh", "platformNow.getTime() - physical.worker.lastSeenAt.getTime() > maxHeartbeatAgeMs"],
+    ] as const;
+    for (const [name, fragment] of decision124Checks) {
+      expect.soft(valid, `Decision #124 fixture must contain ${name}`).toContain(fragment);
+    }
+    const adversaries: Array<{ name: string; source: string; violation: string }> = [
+      ...decision124Checks.map(([name, fragment]) => ({
+        name: `decision-124-delete-${name}`,
+        source: valid.replace(fragment, "false"),
+        violation: "builder:trusted-service-authority-guard",
+      })),
+      {
+        name: "fake-builder-import",
+        source: valid.replace(
+          'from "./job-lease-eligibility.js";',
+          'from "./fake-job-lease-eligibility.js";',
+        ),
+        violation: "import:buildLeaseStaticContextInput",
+      },
+      {
+        name: "aliased-builder-import",
+        source: valid
+          .replace("buildLeaseStaticContextInput,", "buildLeaseStaticContextInput as projectContext,")
+          .replace("const staticContextInput = buildLeaseStaticContextInput(", "const staticContextInput = projectContext("),
+        violation: "builder:exactly-one-direct-call",
+      },
+      {
+        name: "builder-wrapper",
+        source: valid.replace(
+          "const staticContextInput = buildLeaseStaticContextInput(",
+          "const projectContext = buildLeaseStaticContextInput; const staticContextInput = projectContext(",
+        ),
+        violation: "builder:laundered-use",
+      },
+      {
+        name: "builder-call",
+        source: valid.replace(
+          "const staticContextInput = buildLeaseStaticContextInput(",
+          "const staticContextInput = buildLeaseStaticContextInput.call(null, ",
+        ),
+        violation: "builder:laundered-use",
+      },
+      {
+        name: "builder-apply",
+        source: valid.replace(
+          "const staticContextInput = buildLeaseStaticContextInput(",
+          "const staticContextInput = buildLeaseStaticContextInput.apply(null, [",
+        ).replace(
+          "                });\n                const staticContextHash",
+          "                }]);\n                const staticContextHash",
+        ),
+        violation: "builder:laundered-use",
+      },
+      {
+        name: "builder-bind",
+        source: valid.replace(
+          "const staticContextInput = buildLeaseStaticContextInput(",
+          "const staticContextInput = buildLeaseStaticContextInput.bind(null)(",
+        ),
+        violation: "builder:laundered-use",
+      },
+      {
+        name: "conditional-builder",
+        source: valid.replace(
+          "const staticContextInput = buildLeaseStaticContextInput(",
+          "const staticContextInput = pollInput.useFresh ? buildLeaseStaticContextInput(",
+        ).replace(
+          "                });\n                const staticContextHash",
+          "                }) : buildLeaseStaticContextInput(pollInput.context);\n                const staticContextHash",
+        ),
+        violation: "builder:direct-const-binding",
+      },
+      {
+        name: "promise-all-builder",
+        source: valid.replace(
+          "const staticContextInput = buildLeaseStaticContextInput(",
+          "const [staticContextInput] = await Promise.all([buildLeaseStaticContextInput(",
+        ).replace(
+          "                });\n                const staticContextHash",
+          "                })]);\n                const staticContextHash",
+        ),
+        violation: "builder:direct-const-binding",
+      },
+      {
+        name: "try-catch-builder",
+        source: valid.replace(
+          "const staticContextInput = buildLeaseStaticContextInput(",
+          "try { const staticContextInput = buildLeaseStaticContextInput(",
+        ).replace(
+          "                return candidates;",
+          "                return candidates; } catch { return []; }",
+        ),
+        violation: "builder:unconditional-top-level-attempt-call",
+      },
+      {
+        name: "shadowed-builder",
+        source: valid.replace(
+          "const staticContextInput = buildLeaseStaticContextInput(",
+          "const buildLeaseStaticContextInput = fakeBuilder; const staticContextInput = buildLeaseStaticContextInput(",
+        ),
+        violation: "builder:shadowed-import",
+      },
+      {
+        name: "reassigned-builder-result",
+        source: valid.replace(
+          "const staticContextHash = leaseStaticContextHash(staticContextInput);",
+          "staticContextInput = pollInput.context; const staticContextHash = leaseStaticContextHash(staticContextInput);",
+        ),
+        violation: "binding:reassigned:staticContextInput",
+      },
+      {
+        name: "auth-organization-substitution",
+        source: valid.replace(
+          "organizationId: lockedAuthority.worker.organizationId",
+          "organizationId: pollInput.auth.organizationId",
+        ),
+        violation: "builder:locked-logical-organization-source",
+      },
+      {
+        name: "raw-profile-instead-of-parsed-hello",
+        source: valid.replace(
+          "parsedWorkerHello: parsedStoredHello.data",
+          "parsedWorkerHello: lockedAuthority.worker.profileSnapshot",
+        ),
+        violation: "builder:parsed-stored-hello-source",
+      },
+      {
+        name: "request-logical-substitution",
+        source: valid.replace(
+          "logicalWorker: lockedAuthority.worker",
+          "logicalWorker: pollInput.request.worker",
+        ),
+        violation: "builder:locked-logical-worker-source",
+      },
+      {
+        name: "pre-guard-target-substitution",
+        source: valid.replace(
+          "currentTarget: normalizedCurrentTarget",
+          "currentTarget: lockedAuthority.target",
+        ),
+        violation: "builder:current-normalized-target-source",
+      },
+      {
+        name: "logical-physical-collapse",
+        source: valid.replace(
+          "physicalAuthorityWorker: guardedAuthority.physicalAuthorityWorker",
+          "physicalAuthorityWorker: lockedAuthority.worker",
+        ),
+        violation: "builder:guarded-physical-source",
+      },
+      {
+        name: "spread-override",
+        source: valid.replace(
+          "organizationId: lockedAuthority.worker.organizationId,",
+          "...pollInput.context, organizationId: lockedAuthority.worker.organizationId,",
+        ),
+        violation: "builder:closed-source-object",
+      },
+      {
+        name: "computed-override",
+        source: valid.replace(
+          "organizationId: lockedAuthority.worker.organizationId,",
+          "[pollInput.key]: pollInput.value, organizationId: lockedAuthority.worker.organizationId,",
+        ),
+        violation: "builder:closed-source-object",
+      },
+      {
+        name: "second-builder",
+        source: valid.replace(
+          "const staticContextHash = leaseStaticContextHash(staticContextInput);",
+          "buildLeaseStaticContextInput(pollInput.context); const staticContextHash = leaseStaticContextHash(staticContextInput);",
+        ),
+        violation: "builder:exactly-one-direct-call",
+      },
+      {
+        name: "inline-hash",
+        source: valid.replace(
+          "const staticContextHash = leaseStaticContextHash(staticContextInput);",
+          "const staticContextHash = \"decoy\";",
+        ).replace(
+          "{ staticContextHash }",
+          "{ staticContextHash: leaseStaticContextHash(staticContextInput) }",
+        ),
+        violation: "hash:exactly-one-direct-call",
+      },
+      {
+        name: "hash-wrapper",
+        source: valid.replace(
+          "const staticContextHash = leaseStaticContextHash(staticContextInput);",
+          "const hashContext = leaseStaticContextHash; const staticContextHash = hashContext(staticContextInput);",
+        ),
+        violation: "hash:laundered-use",
+      },
+      {
+        name: "second-hash",
+        source: valid.replace(
+          "const staticContextHash = leaseStaticContextHash(staticContextInput);",
+          "leaseStaticContextHash(staticContextInput); const staticContextHash = leaseStaticContextHash(staticContextInput);",
+        ),
+        violation: "hash:exactly-one-direct-call",
+      },
+      {
+        name: "second-candidate-selection",
+        source: valid.replace(
+          "const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+          "await repos.jobControl.lockEligibleLeaseCandidates({}); const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+        ),
+        violation: "candidate:exactly-one-selection-call",
+      },
+      {
+        name: "service-builder-injection",
+        source: valid.replace(
+          "operatorDb: any",
+          "operatorDb: any; contextBuilder?: unknown",
+        ),
+        violation: "service:no-context-or-guard-injection",
+      },
+      {
+        name: "builder-outside-attempt-transaction",
+        source: valid.replace(
+          "return await runInTenant(input.appDb, pollInput.auth.organizationId, async (repos) => {",
+          "const leaked = buildLeaseStaticContextInput(pollInput.context); return await runInTenant(input.appDb, pollInput.auth.organizationId, async (repos) => {",
+        ),
+        violation: "builder:exactly-one-direct-call",
+      },
+      {
+        name: "transaction-outside-restart",
+        source: valid
+          .replace("for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {", "{")
+          .replace("            throw new Error(\"internal_unavailable\");", "            throw new Error(\"internal_unavailable\");"),
+        violation: "poll:tenant-transaction-inside-restart-loop",
+      },
+      {
+        name: "request-tenant-organization",
+        source: valid.replace(
+          "runInTenant(input.appDb, pollInput.auth.organizationId",
+          "runInTenant(input.appDb, pollInput.request.organizationId",
+        ),
+        violation: "poll:tenant-from-auth-organization",
+      },
+      {
+        name: "request-lock-receiver",
+        source: valid.replace(
+          "repos.jobControl.lockWorkerLeaseAuthority",
+          "pollInput.request.jobControl.lockWorkerLeaseAuthority",
+        ),
+        violation: "builder:logical-from-locked-authority",
+      },
+      {
+        name: "request-lock-worker",
+        source: valid.replace(
+          "workerId: pollInput.auth.workerId,\n                    targetId: pollInput.auth.targetId,",
+          "workerId: pollInput.request.workerId,\n                    targetId: pollInput.auth.targetId,",
+        ),
+        violation: "builder:logical-from-locked-authority",
+      },
+      {
+        name: "request-lock-target",
+        source: valid.replace("targetId: pollInput.auth.targetId,", "targetId: pollInput.request.targetId,"),
+        violation: "builder:logical-from-locked-authority",
+      },
+      {
+        name: "fake-local-authority-guard",
+        source: valid.replace(
+          "const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+          "const guardPlatformAuthority = async () => pollInput.request; const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "guard-request-repositories",
+        source: valid.replace(
+          "guardPlatformAuthority(repos, pollInput.auth, lockedAuthority)",
+          "guardPlatformAuthority(pollInput.request.repos, pollInput.auth, lockedAuthority)",
+        ),
+        violation: "builder:physical-from-authority-guard",
+      },
+      {
+        name: "duplicate-builder-property",
+        source: valid.replace(
+          "organizationId: lockedAuthority.worker.organizationId,",
+          "organizationId: pollInput.request.organizationId, organizationId: lockedAuthority.worker.organizationId,",
+        ),
+        violation: "builder:closed-source-object",
+      },
+      {
+        name: "candidate-spread-override",
+        source: valid.replace(
+          "admissibleWorkloadTypes,",
+          "...pollInput.request, admissibleWorkloadTypes,",
+        ),
+        violation: "candidate:closed-input-object",
+      },
+      {
+        name: "candidate-computed-override",
+        source: valid.replace(
+          "admissibleWorkloadTypes,",
+          "[pollInput.key]: pollInput.value, admissibleWorkloadTypes,",
+        ),
+        violation: "candidate:closed-input-object",
+      },
+      {
+        name: "candidate-duplicate-hash-override",
+        source: valid.replace(
+          "                    staticContextHash,\n                     targetAuthorityKey:",
+          "                    staticContextHash, staticContextHash: pollInput.request.hash,\n                     targetAuthorityKey:",
+        ),
+        violation: "candidate:closed-input-object",
+      },
+      {
+        name: "candidate-request-receiver",
+        source: valid.replace(
+          "repos.jobControl.lockEligibleLeaseCandidates",
+          "pollInput.request.jobControl.lockEligibleLeaseCandidates",
+        ),
+        violation: "candidate:awaited-top-level-repository-selection",
+      },
+      {
+        name: "candidate-request-hash",
+        source: valid.replace(
+          "                    staticContextHash,\n                     targetAuthorityKey:",
+          "                    staticContextHash: pollInput.request.hash,\n                     targetAuthorityKey:",
+        ),
+        violation: "candidate:bind-one-context-hash",
+      },
+      {
+        name: "conditional-candidate",
+        source: valid.replace(
+          "const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+          "const candidates = pollInput.useFresh ? await repos.jobControl.lockEligibleLeaseCandidates({",
+        ).replace(
+          "                  });\n                  return candidates;",
+          "                  }) : [];\n                  return candidates;",
+        ),
+        violation: "candidate:awaited-top-level-repository-selection",
+      },
+      {
+        name: "try-catch-candidate",
+        source: valid.replace(
+          "const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+          "try { const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+        ).replace(
+          "                  return candidates;",
+          "                  return candidates; } catch { return []; }",
+        ),
+        violation: "candidate:awaited-top-level-repository-selection",
+      },
+      {
+        name: "promise-all-candidate",
+        source: valid.replace(
+          "const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+          "const [candidates] = await Promise.all([repos.jobControl.lockEligibleLeaseCandidates({",
+        ).replace(
+          "                  });\n                  return candidates;",
+          "                  })]);\n                  return candidates;",
+        ),
+        violation: "candidate:awaited-top-level-repository-selection",
+      },
+      {
+        name: "early-return-before-canonical-chain",
+        source: valid.replace(
+          "const staticContextInput = buildLeaseStaticContextInput({",
+          "if (pollInput.request.skip) return []; const staticContextInput = buildLeaseStaticContextInput({",
+        ),
+        violation: "candidate:canonical-chain-dominates-return",
+      },
+      {
+        name: "one-iteration-restart-loop",
+        source: valid.replace("restartAttempt < 3", "restartAttempt < 1"),
+        violation: "poll:bounded-two-to-three-restart-attempts",
+      },
+      {
+        name: "mutate-locked-authority",
+        source: valid.replace(
+          "const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+          "Object.assign(lockedAuthority.worker, pollInput.request.worker); const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+        ),
+        violation: "binding:mutated-authority-or-context",
+      },
+      {
+        name: "mutate-projected-context",
+        source: valid.replace(
+          "const staticContextHash = leaseStaticContextHash(staticContextInput);",
+          "staticContextInput[pollInput.key] = pollInput.value; const staticContextHash = leaseStaticContextHash(staticContextInput);",
+        ),
+        violation: "binding:mutated-authority-or-context",
+      },
+      {
+        name: "inverted-authority-validation",
+        source: valid.replace("if (!lockedAuthority) throw", "if (lockedAuthority) throw"),
+        violation: "builder:locked-logical-validated",
+      },
+      {
+        name: "inverted-hello-validation",
+        source: valid.replace("if (!parsedStoredHello.success) throw", "if (parsedStoredHello.success) throw"),
+        violation: "builder:stored-hello-validated",
+      },
+      {
+        name: "dead-nested-authority-throw",
+        source: valid.replace(
+          "if (!lockedAuthority) throw new Error(\"target_revoked\");",
+          "if (!lockedAuthority) { if (false) throw new Error(\"target_revoked\"); }",
+        ),
+        violation: "builder:locked-logical-validated",
+      },
+      {
+        name: "shadowed-run-in-tenant",
+        source: valid.replace(
+          "for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {",
+          "const runInTenant = fakeTenant; for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {",
+        ),
+        violation: "import-symbol:runInTenant:shadowed-import",
+      },
+      {
+        name: "shadowed-worker-hello-schema",
+        source: valid.replace(
+          "const parsedStoredHello = workerHelloV1Schema.safeParse",
+          "const workerHelloV1Schema = fakeSchema; const parsedStoredHello = workerHelloV1Schema.safeParse",
+        ),
+        violation: "import-symbol:workerHelloV1Schema:shadowed-import",
+      },
+      {
+        name: "shadowed-placement-normalizer",
+        source: valid.replace(
+          "const normalizedCurrentTarget = await normalizePlacementRegistryTarget",
+          "const normalizePlacementRegistryTarget = fakeNormalizer; const normalizedCurrentTarget = await normalizePlacementRegistryTarget",
+        ),
+        violation: "import-symbol:normalizePlacementRegistryTarget:shadowed-import",
+      },
+      {
+        name: "computed-service-hook",
+        source: valid.replace(
+          "export function createJobLeasingService(input: {",
+          "export function createJobLeasingService(input: {",
+        ).replace(
+          "        const guardPlatformAuthority",
+          "        input[\"contextBuilder\"]; const guardPlatformAuthority",
+        ),
+        violation: "service:no-context-or-guard-injection",
+      },
+      {
+        name: "named-interface-service-hook",
+        source: `interface ServiceOptions { appDb: unknown; operatorDb: any; scheduler?: any; ackTimeoutMs?: number; leaseDurationMs?: number; maxHeartbeatAgeMs?: number; contextBuilder?: unknown }\n${valid}`.replace(
+          "input: {\n        appDb: unknown;\n        operatorDb: any;\n        scheduler?: any;\n        ackTimeoutMs?: number;\n        leaseDurationMs?: number;\n        maxHeartbeatAgeMs?: number;\n      }",
+          "input: ServiceOptions",
+        ),
+        violation: "service:no-context-or-guard-injection",
+      },
+      {
+        name: "first-decoy-poll-does-not-mask-returned-poll",
+        source: `const decoy = { async poll() { const decoyInput = buildLeaseStaticContextInput({}); return leaseStaticContextHash(decoyInput); } };\n${valid.replace(
+          "runInTenant(input.appDb, pollInput.auth.organizationId",
+          "runInTenant(input.appDb, pollInput.request.organizationId",
+        )}`,
+        violation: "poll:tenant-from-auth-organization",
+      },
+      {
+        name: "extra-helper-builder-and-hash-calls",
+        source: `${valid}\nfunction extraContextHelper() { const projected = buildLeaseStaticContextInput({}); return leaseStaticContextHash(projected); }`,
+        violation: "builder:exactly-one-direct-call",
+      },
+      {
+        name: "request-supplied-app-db",
+        source: valid.replace(
+          "runInTenant(input.appDb, pollInput.auth.organizationId",
+          "runInTenant(pollInput.request.appDb, pollInput.auth.organizationId",
+        ),
+        violation: "poll:tenant-from-service-app-db",
+      },
+      {
+        name: "retry-all-catch-with-dead-throw",
+        source: valid.replace(
+          "if (!isHeadRestartConflict(error)) throw error;",
+          "if (false) throw error;",
+        ),
+        violation: "poll:head-conflict-only-restart",
+      },
+      {
+        name: "wrong-head-conflict-classifier",
+        source: valid.replace("isHeadRestartConflict(error)", "isAnyRetryableError(error)"),
+        violation: "poll:head-conflict-only-restart",
+      },
+      {
+        name: "head-conflict-exhaustion-reraises-sentinel",
+        source: valid.replace(
+          'if (restartAttempt >= 2) throw new Error("internal_unavailable");',
+          "if (restartAttempt >= 2) throw error;",
+        ),
+        violation: "poll:head-conflict-only-restart",
+      },
+      {
+        name: "head-conflict-catch-without-explicit-continue",
+        source: valid.replace(
+          '                if (restartAttempt >= 2) throw new Error("internal_unavailable");\n                continue;',
+          '                if (restartAttempt >= 2) throw new Error("internal_unavailable");',
+        ),
+        violation: "poll:head-conflict-only-restart",
+      },
+      {
+        name: "operator-repository-uses-wrong-transaction",
+        source: valid.replace(
+          "operatorJobLeasingRepository(operatorTx)",
+          "operatorJobLeasingRepository(input.operatorDb)",
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "authority-guard-deletes-null-validation",
+        source: valid.replace(
+          "            if (!physical ||\n",
+          "            if (\n",
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "dead-exact-authority-return-before-request-return",
+        source: valid.replace(
+          "return { currentTarget: current, physicalAuthorityWorker: physical.worker };",
+          "if (false) return { currentTarget: current, physicalAuthorityWorker: physical.worker }; return { currentTarget: locked.request.currentTarget, physicalAuthorityWorker: locked.request.worker };",
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "candidate-target-generation-from-auth",
+        source: valid.replace(
+          "                    targetGeneration: normalizedCurrentTarget.targetGeneration,\n                    targetId:",
+          "                    targetGeneration: pollInput.auth.targetGeneration,\n                    targetId:",
+        ),
+        violation: "candidate:current-target-provenance",
+      },
+      {
+        name: "candidate-target-profile-from-auth",
+        source: valid.replace(
+          "targetProfileHash: normalizedCurrentTarget.profileHash,",
+          "targetProfileHash: pollInput.auth.profileHash,",
+        ),
+        violation: "candidate:current-target-provenance",
+      },
+      {
+        name: "candidate-target-provider-from-auth",
+        source: valid.replace(
+          "targetProviderConstraintHash: normalizedCurrentTarget.providerConstraintHash,",
+          "targetProviderConstraintHash: pollInput.auth.providerConstraintHash,",
+        ),
+        violation: "candidate:current-target-provenance",
+      },
+      {
+        name: "candidate-hard-coded-eligibility-version",
+        source: valid.replace(
+          "eligibilityVersion: LEASE_STATIC_ELIGIBILITY_VERSION,",
+          "eligibilityVersion: 999,",
+        ),
+        violation: "candidate:server-eligibility-version",
+      },
+      {
+        name: "ignored-candidate-result",
+        source: valid.replace(
+          "                   for (const candidate of candidates) {",
+          "                   for (const candidate of []) {",
+        ),
+        violation: "candidate:result-consumed-by-canonical-chain",
+      },
+      {
+        name: "request-candidate-result",
+        source: valid.replace(
+          "                   for (const candidate of candidates) {",
+          "                   for (const candidate of pollInput.request.candidates) {",
+        ),
+        violation: "candidate:result-consumed-by-canonical-chain",
+      },
+      {
+        name: "computed-second-candidate-selection",
+        source: valid.replace(
+          "const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+          "await repos.jobControl[pollInput.request.method]({}); const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+        ),
+        violation: "candidate:exactly-one-selection-call",
+      },
+      {
+        name: "element-access-second-candidate-selection",
+        source: valid.replace(
+          "const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+          'await repos.jobControl["lockEligibleLeaseCandidates"]({}); const candidates = await repos.jobControl.lockEligibleLeaseCandidates({',
+        ),
+        violation: "candidate:exactly-one-selection-call",
+      },
+      {
+        name: "aliased-second-candidate-selection",
+        source: valid.replace(
+          "const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+          "const selectCandidates = repos.jobControl.lockEligibleLeaseCandidates; await selectCandidates({}); const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+        ),
+        violation: "candidate:exactly-one-selection-call",
+      },
+      {
+        name: "destructured-second-candidate-selection",
+        source: valid.replace(
+          "const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+          "const { lockEligibleLeaseCandidates: selectCandidates } = repos.jobControl; await selectCandidates({}); const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+        ),
+        violation: "candidate:exactly-one-selection-call",
+      },
+      {
+        name: "destructured-service-builder-hook",
+        source: valid
+          .replace(
+            "createJobLeasingService(input: {\n        appDb: unknown;\n        operatorDb: any;\n        scheduler?: any;\n        ackTimeoutMs?: number;\n        leaseDurationMs?: number;\n        maxHeartbeatAgeMs?: number;\n      })",
+            "createJobLeasingService({ appDb, operatorDb, scheduler, ackTimeoutMs: configuredAckTimeoutMs, leaseDurationMs: configuredLeaseDurationMs, maxHeartbeatAgeMs: configuredMaxHeartbeatAgeMs, builder }: { appDb: unknown; operatorDb: any; scheduler?: any; ackTimeoutMs?: number; leaseDurationMs?: number; maxHeartbeatAgeMs?: number; builder?: unknown })",
+          )
+          .replaceAll("input.appDb", "appDb")
+          .replaceAll("input.operatorDb", "operatorDb")
+          .replaceAll("input.scheduler", "scheduler")
+          .replaceAll("input.ackTimeoutMs", "configuredAckTimeoutMs")
+          .replaceAll("input.leaseDurationMs", "configuredLeaseDurationMs")
+          .replaceAll("input.maxHeartbeatAgeMs", "configuredMaxHeartbeatAgeMs"),
+        violation: "service:no-context-or-guard-injection",
+      },
+      {
+        name: "renamed-service-option-builder-hook",
+        source: valid
+          .replace(
+            "createJobLeasingService(input: {\n        appDb: unknown;\n        operatorDb: any;\n        scheduler?: any;\n        ackTimeoutMs?: number;\n        leaseDurationMs?: number;\n        maxHeartbeatAgeMs?: number;\n      })",
+            "createJobLeasingService(options: { appDb: unknown; operatorDb: any; scheduler?: any; ackTimeoutMs?: number; leaseDurationMs?: number; maxHeartbeatAgeMs?: number; builder?: unknown })",
+          )
+          .replaceAll("input.", "options.")
+          .replace(
+            "const guardPlatformAuthority",
+            "const { builder } = options; const guardPlatformAuthority",
+          ),
+        violation: "service:no-context-or-guard-injection",
+      },
+      {
+        name: "object-assign-service-observer-hook",
+        source: valid.replace(
+          "const guardPlatformAuthority",
+          "Object.assign(input, { observer: pollInputObserver }); const guardPlatformAuthority",
+        ),
+        violation: "service:no-context-or-guard-injection",
+      },
+      {
+        name: "aliased-worker-object-assign-mutation",
+        source: valid.replace(
+          "const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+          "const workerAlias = lockedAuthority.worker; Object.assign(workerAlias, pollInput.request.worker); const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+        ),
+        violation: "binding:mutated-authority-or-context",
+      },
+      {
+        name: "destructured-worker-object-assign-mutation",
+        source: valid.replace(
+          "const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+          "const { worker: workerAlias } = lockedAuthority; Object.assign(workerAlias, pollInput.request.worker); const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+        ),
+        violation: "binding:mutated-authority-or-context",
+      },
+      {
+        name: "non-platform-source-collapse",
+        source: valid.replace(
+          "return { currentTarget: locked.target, physicalAuthorityWorker: null };",
+          "return { currentTarget: locked.target, physicalAuthorityWorker: locked.worker };",
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "shadowed-head-conflict-classifier",
+        source: valid.replace(
+          "            for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {",
+          "            const isHeadRestartConflict = () => true; for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {",
+        ),
+        violation: "poll:trusted-head-conflict-sentinel",
+      },
+      {
+        name: "fake-head-conflict-classifier-semantics",
+        source: valid.replace(
+          "error instanceof HeadRestartConflict;",
+          "Boolean(error);",
+        ),
+        violation: "poll:trusted-head-conflict-sentinel",
+      },
+      {
+        name: "reset-restart-counter-inside-attempt",
+        source: valid.replace(
+          "              try {\n                return await runInTenant",
+          "              try { restartAttempt = 0;\n                return await runInTenant",
+        ),
+        violation: "poll:immutable-restart-counter",
+      },
+      {
+        name: "mutable-restart-bound",
+        source: valid.replace(
+          "            for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {",
+          "            let restartBound = 3; for (let restartAttempt = 0; restartAttempt < restartBound; restartAttempt += 1) {",
+        ),
+        violation: "poll:bounded-two-to-three-restart-attempts",
+      },
+      {
+        name: "candidate-authority-key-from-auth",
+        source: valid.replace(
+          "targetAuthorityKey: guardedAuthority.currentTarget.targetAuthorityKey,",
+          "targetAuthorityKey: pollInput.auth.targetAuthorityKey,",
+        ),
+        violation: "candidate:current-target-provenance",
+      },
+      {
+        name: "candidate-class-from-auth",
+        source: valid.replace(
+          "targetClass: normalizedCurrentTarget.targetClass,",
+          "targetClass: pollInput.auth.targetClass,",
+        ),
+        violation: "candidate:current-target-provenance",
+      },
+      {
+        name: "candidate-owner-from-auth",
+        source: valid.replace(
+          "targetOwner: guardedAuthority.currentTarget.ownerUserId,",
+          "targetOwner: pollInput.auth.ownerUserId,",
+        ),
+        violation: "candidate:current-target-provenance",
+      },
+      {
+        name: "candidate-scope-from-auth",
+        source: valid.replace(
+          "targetScope: normalizedCurrentTarget.targetScope,",
+          "targetScope: pollInput.auth.targetScope,",
+        ),
+        violation: "candidate:current-target-provenance",
+      },
+      {
+        name: "candidate-limit-one",
+        source: valid.replace("limit: 256,", "limit: 1,"),
+        violation: "candidate:bounded-global-head-limit",
+      },
+      {
+        name: "candidate-literal-admissible-workloads",
+        source: valid.replace("admissibleWorkloadTypes,", 'admissibleWorkloadTypes: ["batch"],'),
+        violation: "candidate:dynamic-admissible-workload-source",
+      },
+      {
+        name: "candidate-request-derived-admissible-workloads",
+        source: valid.replace(
+          "const admissibleWorkloadTypes = deriveAdmissibleWorkloadTypes(\n                     effectiveCapacity,\n                     liveCapacity,\n                     normalizedCurrentTarget.providerConstraintProfile,\n                     providerDemand,\n                   );",
+          "const admissibleWorkloadTypes = pollInput.request.workloadTypes;",
+        ),
+        violation: "candidate:dynamic-admissible-workload-source",
+      },
+      {
+        name: "ceremonial-candidate-loop",
+        source: valid.replace(
+          "const evaluation = evaluateStaticLeaseEligibility({",
+          "const evaluation = ignoredEvaluateStaticLeaseEligibility({",
+        ),
+        violation: "candidate:result-consumed-by-canonical-chain",
+      },
+      {
+        name: "namespace-extra-builder-call",
+        source: `import * as eligibilityExtra from "./job-lease-eligibility.js";\n${valid}\nfunction extraNamespaceBuilder() { return eligibilityExtra.buildLeaseStaticContextInput({}); }`,
+        violation: "builder:laundered-use",
+      },
+      {
+        name: "element-extra-hash-call",
+        source: `${valid}\nfunction extraElementHash(value: any) { return eligibilityExtra["leaseStaticContextHash"](value); }`,
+        violation: "hash:laundered-use",
+      },
+      {
+        name: "dynamic-import-extra-builder-call",
+        source: `${valid}\nasync function extraDynamicBuilder() { return (await import("./job-lease-eligibility.js")).buildLeaseStaticContextInput({}); }`,
+        violation: "builder:laundered-use",
+      },
+      {
+        name: "unknown-hash-tap",
+        source: valid.replace(
+          "const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+          "auditTap(staticContextHash); const candidates = await repos.jobControl.lockEligibleLeaseCandidates({",
+        ),
+        violation: "binding:protected-value-escape",
+      },
+      {
+        name: "unknown-authority-helper",
+        source: valid.replace(
+          "const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+          "unknownHelper(lockedAuthority); const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+        ),
+        violation: "binding:protected-value-escape",
+      },
+      {
+        name: "object-assign-call-worker-mutation",
+        source: valid.replace(
+          "const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+          "Object.assign.call(null, lockedAuthority.worker, pollInput.request.worker); const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+        ),
+        violation: "binding:protected-value-escape",
+      },
+      {
+        name: "object-assign-apply-worker-mutation",
+        source: valid.replace(
+          "const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+          "Object.assign.apply(null, [lockedAuthority.worker, pollInput.request.worker]); const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+        ),
+        violation: "binding:protected-value-escape",
+      },
+      {
+        name: "object-assign-bind-worker-mutation",
+        source: valid.replace(
+          "const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+          "Object.assign.bind(null, lockedAuthority.worker, pollInput.request.worker)(); const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+        ),
+        violation: "binding:protected-value-escape",
+      },
+      {
+        name: "unknown-service-tap-option",
+        source: valid.replace(
+          "        maxHeartbeatAgeMs?: number;\n      }",
+          "        maxHeartbeatAgeMs?: number;\n        tap?: unknown;\n      }",
+        ),
+        violation: "service:no-context-or-guard-injection",
+      },
+      {
+        name: "inner-authority-current-shadow",
+        source: valid.replace(
+          "            const parsedRequestResult = pollRequestV1Schema.safeParse(pollInput.request);",
+          "            if (pollInput.request.shadow) { const authorityCurrent = () => true; void authorityCurrent(); }\n            const parsedRequestResult = pollRequestV1Schema.safeParse(pollInput.request);",
+        ),
+        violation: "binding:trusted-critical-helper-symbols",
+      },
+      {
+        name: "inner-min-capacity-shadow",
+        source: valid.replace(
+          "            const parsedRequestResult = pollRequestV1Schema.safeParse(pollInput.request);",
+          "            if (pollInput.request.shadow) { const minCapacity = () => pollInput.request.capacity; void minCapacity(); }\n            const parsedRequestResult = pollRequestV1Schema.safeParse(pollInput.request);",
+        ),
+        violation: "binding:trusted-critical-helper-symbols",
+      },
+      {
+        name: "inner-derived-workloads-shadow",
+        source: valid.replace(
+          "            const parsedRequestResult = pollRequestV1Schema.safeParse(pollInput.request);",
+          "            if (pollInput.request.shadow) { const deriveAdmissibleWorkloadTypes = () => [\"batch\"]; void deriveAdmissibleWorkloadTypes(); }\n            const parsedRequestResult = pollRequestV1Schema.safeParse(pollInput.request);",
+        ),
+        violation: "binding:trusted-critical-helper-symbols",
+      },
+      {
+        name: "inner-normalized-requirements-shadow",
+        source: valid.replace(
+          "            const parsedRequestResult = pollRequestV1Schema.safeParse(pollInput.request);",
+          "            if (pollInput.request.shadow) { const normalizedRequirements = () => pollInput.request.requirements; void normalizedRequirements(); }\n            const parsedRequestResult = pollRequestV1Schema.safeParse(pollInput.request);",
+        ),
+        violation: "binding:trusted-critical-helper-symbols",
+      },
+      {
+        name: "inner-provider-demand-shadow",
+        source: valid.replace(
+          "            const parsedRequestResult = pollRequestV1Schema.safeParse(pollInput.request);",
+          "            if (pollInput.request.shadow) { const normalizedProviderDemand = () => pollInput.request.demand; void normalizedProviderDemand(); }\n            const parsedRequestResult = pollRequestV1Schema.safeParse(pollInput.request);",
+        ),
+        violation: "binding:trusted-critical-helper-symbols",
+      },
+      {
+        name: "dead-authority-current-predicate",
+        source: valid.replace(
+          "        return worker.id === auth.workerId &&\n          worker.executionTargetId",
+          "        void (worker.id === auth.workerId);\n        return true &&\n          worker.executionTargetId",
+        ),
+        violation: "builder:trusted-non-platform-authority-current",
+      },
+      {
+        name: "assignment-rhs-platform-snapshot-alias",
+        source: valid.replace(
+          '.lockPlatformPhysicalAuthority(guardAuth.targetId, "share");',
+          '.lockPlatformPhysicalAuthority(guardAuth.targetId, "share"); let snapshotAlias: any; snapshotAlias = physical; snapshotAlias.worker.profileHash = guardAuth.profileHash;',
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "assigned-retry-sentinel-escape",
+        source: valid.replace(
+          "          error instanceof HeadRestartConflict;",
+          "          error instanceof HeadRestartConflict; let retrySentinel: any; retrySentinel = HeadRestartConflict;",
+        ),
+        violation: "poll:trusted-head-conflict-sentinel",
+      },
+      {
+        name: "computed-symbol-has-instance",
+        source: valid.replace(
+          "          error instanceof HeadRestartConflict;",
+          '          error instanceof HeadRestartConflict; Object.defineProperty(HeadRestartConflict, Symbol["hasInstance"], { value: () => true });',
+        ),
+        violation: "poll:trusted-head-conflict-sentinel",
+      },
+      {
+        name: "whole-module-eligibility-namespace-reflect",
+        source: `import * as eligibilityMirror from "./job-lease-eligibility.js";\n${valid}\nconst reflectedEligibilityHash = Reflect.get(eligibilityMirror, "leaseStaticContextHash");`,
+        violation: "import:job-lease-eligibility-named-only",
+      },
+      {
+        name: "whole-module-eligibility-dynamic-import",
+        source: `${valid}\nasync function loadEligibilityMirror() { return import("./job-lease-eligibility.js"); }`,
+        violation: "import:job-lease-eligibility-named-only",
+      },
+      {
+        name: "whole-module-reflect-critical-string",
+        source: `${valid}\nconst reflectedEligibilityHash = Reflect.get(globalThis, "leaseStaticContextHash");`,
+        violation: "import:job-lease-eligibility-named-only",
+      },
+      {
+        name: "reflect-service-input-tap",
+        source: valid.replace(
+          "        const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300000);",
+          '        const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300000); Reflect.get(input, "tap");',
+        ),
+        violation: "service:no-context-or-guard-injection",
+      },
+      {
+        name: "container-service-input-escape",
+        source: valid.replace(
+          "        const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300000);",
+          "        const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300000); const escapedOptions = { input }; void escapedOptions;",
+        ),
+        violation: "service:no-context-or-guard-injection",
+      },
+      {
+        name: "computed-allowed-service-option",
+        source: valid.replace("runInTenant(input.appDb,", 'runInTenant(input["appDb"],'),
+        violation: "service:no-context-or-guard-injection",
+      },
+      {
+        name: "provider-demand-from-request",
+        source: valid.replace(
+          "normalizedProviderDemand(normalizedCurrentTarget)",
+          "normalizedProviderDemand(pollInput.request.target)",
+        ),
+        violation: "candidate:dynamic-admissible-workload-source",
+      },
+      {
+        name: "provider-demand-cpu-fit-deleted",
+        source: valid.replace(
+          "              capacity.freeCpuMillis < demand.resources.cpuMillis ||\n",
+          "",
+        ),
+        violation: "candidate:dynamic-admissible-workload-source",
+      },
+      {
+        name: "provider-demand-memory-fit-deleted",
+        source: valid.replace(
+          "              capacity.freeMemoryMiB < demand.resources.memoryMiB ||\n",
+          "",
+        ),
+        violation: "candidate:dynamic-admissible-workload-source",
+      },
+      {
+        name: "provider-demand-disk-fit-deleted",
+        source: valid.replace(
+          "              capacity.freeDiskMiB < demand.resources.diskMiB) return [];",
+          "              false) return [];",
+        ),
+        violation: "candidate:dynamic-admissible-workload-source",
+      },
+      {
+        name: "short-invented-offer-lease-input",
+        source: valid.replace(
+          /                       attemptId: candidate\.attempt\.id,[\s\S]*?                       createdAt: databaseNow,/,
+          "                       candidate,\n                       staticContextHash,",
+        ),
+        violation: "candidate:result-consumed-by-canonical-chain",
+      },
+      {
+        name: "offer-lease-wrong-authority-key",
+        source: valid.replace(
+          "targetAuthorityKey: lockedAuthority.worker.targetAuthorityKey,",
+          "targetAuthorityKey: pollInput.auth.targetAuthorityKey,",
+        ),
+        violation: "candidate:result-consumed-by-canonical-chain",
+      },
+      {
+        name: "lease-offer-missing-protocol-version",
+        source: valid.replace(
+          "                       protocolVersion: 1,\n                       workerId: pollInput.auth.workerId,",
+          "                       workerId: pollInput.auth.workerId,",
+        ),
+        violation: "candidate:result-consumed-by-canonical-chain",
+      },
+      {
+        name: "poll-offer-missing-server-time",
+        source: valid.replace(
+          "                       serverTime: databaseNow.toISOString(),\n                       outcome: \"offer\",",
+          "                       outcome: \"offer\",",
+        ),
+        violation: "candidate:result-consumed-by-canonical-chain",
+      },
+      {
+        name: "no-work-missing-retry-after",
+        source: valid.replace("                     retryAfterMs: readySignaled ? 100 : 750,\n", ""),
+        violation: "candidate:result-consumed-by-canonical-chain",
+      },
+      {
+        name: "nested-closure-protected-snapshot-laundering",
+        source: valid.replace(
+          "const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+          "const leakAuthority = () => lockedAuthority; void leakAuthority(); const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);",
+        ),
+        violation: "binding:protected-value-escape",
+      },
+      {
+        name: "nested-closure-guard-snapshot-laundering",
+        source: valid.replace(
+          "            await guardRepos.jobControl.acquirePlatformTargetAuthorityShared(guardAuth.targetId);",
+          "            const leakPhysical = () => physical; void leakPhysical(); await guardRepos.jobControl.acquirePlatformTargetAuthorityShared(guardAuth.targetId);",
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "nested-closure-retry-sentinel-laundering",
+        source: valid.replace(
+          "          error instanceof HeadRestartConflict;",
+          "          error instanceof HeadRestartConflict; const leakSentinel = () => HeadRestartConflict; void leakSentinel();",
+        ),
+        violation: "poll:trusted-head-conflict-sentinel",
+      },
+      {
+        name: "constructed-dynamic-module-import",
+        source: `${valid}\nconst dynamicModuleName = ["./job-lease-", "eligibility.js"].join(""); async function loadDynamicModule() { return import(dynamicModuleName); }`,
+        violation: "binding:dynamic-metaprogramming",
+      },
+      {
+        name: "constructed-reflected-export-name",
+        source: `${valid}\nconst reflectedExportName = ["leaseStatic", "ContextHash"].join(""); const reflectedExport = Reflect.get(globalThis, reflectedExportName);`,
+        violation: "binding:dynamic-metaprogramming",
+      },
+      {
+        name: "nonexistent-candidate-job-envelope",
+        source: valid.replace("                       job: jobEnvelope,", "                       job: candidate.jobEnvelope,"),
+        violation: "candidate:result-consumed-by-canonical-chain",
+      },
+      {
+        name: "hard-coded-ack-timeout",
+        source: valid.replace(
+          "new Date(databaseNow.getTime() + ackTimeoutMs)",
+          "new Date(databaseNow.getTime() + 15000)",
+        ),
+        violation: "candidate:result-consumed-by-canonical-chain",
+      },
+      {
+        name: "hard-coded-lease-duration",
+        source: valid.replace(
+          "new Date(databaseNow.getTime() + leaseDurationMs)",
+          "new Date(databaseNow.getTime() + 60000)",
+        ),
+        violation: "candidate:result-consumed-by-canonical-chain",
+      },
+      {
+        name: "hard-coded-no-work-retry",
+        source: valid.replace("readySignaled ? 100 : 750", "750"),
+        violation: "candidate:result-consumed-by-canonical-chain",
+      },
+      {
+        name: "ready-signal-influences-candidate-selection",
+        source: valid.replace("limit: 256,", "limit: readySignaled ? 1 : 256,"),
+        violation: "candidate:result-consumed-by-canonical-chain",
+      },
+      {
+        name: "conditional-unconditional-throw-before-builder",
+        source: valid.replace(
+          "const staticContextInput = buildLeaseStaticContextInput({",
+          'if (true) { throw new Error("decoy"); } const staticContextInput = buildLeaseStaticContextInput({',
+        ),
+        violation: "candidate:canonical-chain-dominates-return",
+      },
+      {
+        name: "unconditional-throw-before-builder",
+        source: valid.replace(
+          "const staticContextInput = buildLeaseStaticContextInput({",
+          'throw new Error("decoy"); const staticContextInput = buildLeaseStaticContextInput({',
+        ),
+        violation: "candidate:canonical-chain-dominates-return",
+      },
+    ];
+    for (const adversary of adversaries) {
+      const found = leaseStaticContextPollViolations(adversary.source);
+      expect.soft(
+        found,
+        `${adversary.name}: ${found.join("|")}`,
+      ).toContain(adversary.violation);
+    }
+
+    const leasing = readFileSync(new URL("../services/job-leasing.ts", import.meta.url), "utf8");
+    expect.soft(
+      leaseStaticContextPollViolations(leasing),
+      "the real poll must use the exact direct typed source/hash/candidate chain once in every restart transaction",
+    ).toEqual([]);
   });
 
   it("selects one database-native global head with an exact static-certificate anti-join", () => {
