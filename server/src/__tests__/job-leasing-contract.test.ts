@@ -2810,12 +2810,22 @@ function leaseStaticContextPollViolations(source: string): string[] {
   const activeStatusDeclarations = file.statements.filter((statement): statement is ts.VariableStatement =>
     ts.isVariableStatement(statement) && [...statement.declarationList.declarations].some((declaration) =>
       ts.isIdentifier(declaration.name) && declaration.name.text === "ACTIVE_WORKER_STATUSES"));
+  const activeStatusVariableDeclarations: ts.VariableDeclaration[] = [];
+  const collectActiveStatusVariableDeclarations = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
+        node.name.text === "ACTIVE_WORKER_STATUSES") {
+      activeStatusVariableDeclarations.push(node);
+    }
+    ts.forEachChild(node, collectActiveStatusVariableDeclarations);
+  };
+  collectActiveStatusVariableDeclarations(file);
   const activeStatusDeclaration = activeStatusDeclarations.length === 1
     ? [...activeStatusDeclarations[0]!.declarationList.declarations].find((declaration) =>
       ts.isIdentifier(declaration.name) && declaration.name.text === "ACTIVE_WORKER_STATUSES")
     : null;
   const activeStatusInitializer = activeStatusDeclaration ? unwrap(activeStatusDeclaration.initializer) : null;
   const exactActiveStatuses = Boolean(activeStatusDeclarations.length === 1 &&
+    activeStatusVariableDeclarations.length === 1 &&
     (activeStatusDeclarations[0]!.declarationList.flags & ts.NodeFlags.Const) &&
     activeStatusInitializer && ts.isNewExpression(activeStatusInitializer) &&
     pathOf(activeStatusInitializer.expression)?.join(".") === "Set" &&
@@ -3299,6 +3309,11 @@ function leaseStaticContextPollViolations(source: string): string[] {
       const platformNowName = databaseNowCalls.length === 1 && isAwaitedCall(databaseNowCalls[0]!)
         ? wrappedBindingName(databaseNowCalls[0])
         : null;
+      const physicalWorkerActiveStatusCalls = physicalName
+        ? operatorCalls.filter((call) =>
+            callPath(call) === "ACTIVE_WORKER_STATUSES.has" && call.arguments.length === 1 &&
+            pathOf(call.arguments[0])?.join(".") === `${physicalName}.worker.status`)
+        : [];
       const repositoryFactory = physicalCalls.length === 1 &&
           ts.isPropertyAccessExpression(physicalCalls[0]!.expression)
         ? unwrappedCall(physicalCalls[0]!.expression.expression)
@@ -3412,7 +3427,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
         `${physicalName}.worker.scope!=="platform"`,
         `${currentName}.scope!=="platform"`,
         `${physicalName}.target.status!=="active"`,
-        `${physicalName}.worker.status!=="active"`,
+        `!ACTIVE_WORKER_STATUSES.has(${physicalName}.worker.status)`,
         `${currentName}.status!=="active"`,
         `${physicalName}.worker.revokedAt!==null`,
         `${physicalName}.target.id!==${guardAuthName}.targetId`,
@@ -3473,6 +3488,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
       ].filter((name): name is string => Boolean(name)));
       const guardAllowedCalls = new Set<ts.CallExpression>([
         physicalCalls[0], sharedCalls[0], recheckCalls[0], databaseNowCalls[0], repositoryFactory,
+        physicalWorkerActiveStatusCalls[0],
       ].filter((call): call is ts.CallExpression => Boolean(call)));
       const guardAllowedContainers = new Set<ts.Node>([
         recheckCalls[0]?.arguments[0], callbackReturns[0]?.expression, nonPlatformReturns[0]?.expression,
@@ -3575,6 +3591,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
           !ts.isStringLiteral(unwrap(recheckInput.get("targetAuthorityKey"))!) ||
           (unwrap(recheckInput.get("targetAuthorityKey")) as ts.StringLiteral).text !== "platform" ||
           databaseNowCalls.length !== 1 || databaseNowCalls[0]!.arguments.length !== 0 ||
+          physicalWorkerActiveStatusCalls.length !== 1 || !exactActiveStatuses ||
           !exactPlatformChecks || !exactReturnedSnapshots || !orderedGuard || guardCriticalEscape) {
         violations.add("builder:trusted-service-authority-guard");
       }
@@ -5654,7 +5671,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
                 physical.worker.scope !== "platform" ||
                 current.scope !== "platform" ||
                 physical.target.status !== "active" ||
-                physical.worker.status !== "active" ||
+                !ACTIVE_WORKER_STATUSES.has(physical.worker.status) ||
                 current.status !== "active" ||
                 physical.worker.revokedAt !== null ||
                 physical.target.id !== guardAuth.targetId ||
@@ -5884,7 +5901,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       ["physical-worker-platform-scope", 'physical.worker.scope !== "platform"'],
       ["current-target-platform-scope", 'current.scope !== "platform"'],
       ["physical-target-active", 'physical.target.status !== "active"'],
-      ["physical-worker-active", 'physical.worker.status !== "active"'],
+      ["physical-worker-admitted-status", "!ACTIVE_WORKER_STATUSES.has(physical.worker.status)"],
       ["current-target-active", 'current.status !== "active"'],
       ["physical-worker-not-revoked", "physical.worker.revokedAt !== null"],
       ["physical-target-auth-id", "physical.target.id !== guardAuth.targetId"],
@@ -5916,6 +5933,30 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       ...decision124Checks.map(([name, fragment]) => ({
         name: `decision-124-delete-${name}`,
         source: valid.replace(fragment, "false"),
+        violation: "builder:trusted-service-authority-guard",
+      })),
+      {
+        name: "decision-124-narrow-physical-worker-to-active-only",
+        source: valid.replace(
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
+          'const ACTIVE_WORKER_STATUSES = new Set(["active"]);',
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-omit-physical-worker-status-membership",
+        source: valid.replace(
+          '                !ACTIVE_WORKER_STATUSES.has(physical.worker.status) ||\n',
+          "",
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      ...["draining", "revoked", "unknown"].map((status) => ({
+        name: `decision-124-admit-physical-worker-${status}`,
+        source: valid.replace(
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
+          `const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active", "${status}"]);`,
+        ),
         violation: "builder:trusted-service-authority-guard",
       })),
       {
