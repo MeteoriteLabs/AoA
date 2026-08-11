@@ -75,7 +75,7 @@ export function createDb(url: string) {
  */
 export interface NonOwnerDbConnection {
   db: Db;
-  close(input?: { timeoutSeconds: number }): Promise<void>;
+  close(input: { timeoutSeconds: number }): Promise<void>;
 }
 
 export interface NonOwnerDbConnectionOptions {
@@ -111,9 +111,14 @@ function createRequiredNonOwnerDbConnection(
   });
   return {
     db: drizzlePg(client, { schema }),
-    close: (input = { timeoutSeconds: 5 }) => input.timeoutSeconds === 5
-      ? client.end({ timeout: 5 })
-      : client.end({ timeout: input.timeoutSeconds }),
+    close: (input) => {
+      if (input === undefined) {
+        throw new Error("A non-owner database close timeout is required");
+      }
+      return input.timeoutSeconds === 5
+        ? client.end({ timeout: 5 })
+        : client.end({ timeout: input.timeoutSeconds });
+    },
   };
 }
 
@@ -153,17 +158,15 @@ export async function loadRequiredMigrationIdentity(): Promise<RequiredMigration
   }
 
   const orderedPaths = journal.entries
-    .map((entry, entryIndex) => {
+    .map((entry) => {
       if (typeof entry?.tag !== "string" || entry.tag.length === 0) {
         throw new Error("The checked-in migration journal contains an invalid tag");
       }
       if (!Number.isInteger(entry.idx)) {
         throw new Error("The checked-in migration journal contains an invalid index");
       }
-      return { path: `${entry.tag}.sql`, order: Number(entry.idx), entryIndex };
-    })
-    .sort((left, right) => left.order - right.order || left.entryIndex - right.entryIndex)
-    .map((entry) => entry.path);
+      return `${entry.tag}.sql`;
+    });
 
   if (new Set(orderedPaths).size !== orderedPaths.length) {
     throw new Error("The checked-in migration journal contains duplicate paths");

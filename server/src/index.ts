@@ -543,9 +543,7 @@ if (config.databaseUrl) {
 // secret managers may instead provision the URLs' credentials ahead of startup.
 await maybeProvisionDistributedExecutionRoles(activeDatabaseConnectionString);
 
-const requiredMigrationIdentity = config.distributedExecutionEnabled
-  ? await loadRequiredMigrationIdentity()
-  : undefined;
+const requiredMigrationIdentity = await loadRequiredMigrationIdentity();
 
 // Corrective E2 successor to E2-D03: flag-on boot must prove both bounded roles
 // before any E3 route/work could start. There is deliberately no owner fallback.

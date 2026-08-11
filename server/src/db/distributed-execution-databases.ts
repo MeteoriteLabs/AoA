@@ -8,6 +8,8 @@ import {
   type RequiredMigrationIdentity,
 } from "@armyofagents/db";
 import { sql } from "drizzle-orm";
+import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 import { logger } from "../middleware/logger.js";
 import {
   APP_EXECUTION_TARGET_COLUMN_GRANTS,
@@ -47,6 +49,21 @@ export interface DistributedExecutionDatabases {
 
 type ServingRole = "aoa_app" | "aoa_operator";
 type SqlExecutor = Pick<Db, "execute">;
+type OwnerControlOptions = {
+  host: string[];
+  port: number[];
+  path: string | undefined;
+  database: string;
+  user: string;
+  pass: string | (() => string | Promise<string>);
+  ssl: "require" | "allow" | "prefer" | "verify-full" | boolean | object;
+  connection: Record<string, string | number | boolean>;
+  prepare: boolean;
+  target_session_attrs: "read-write" | "read-only" | "primary" | "standby" |
+    "prefer-standby" | null;
+  fetch_types: boolean;
+  types: Record<string, postgres.PostgresType>;
+};
 
 function rowsOf<T>(result: unknown): T[] {
   return (Array.isArray(result) ? result : (result as { rows: T[] }).rows) as T[];
@@ -99,6 +116,7 @@ async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promi
     truncate_allowed: boolean;
     references_allowed: boolean;
     trigger_allowed: boolean;
+    maintain_allowed: boolean;
   }>(await db.execute(sql`
     SELECT
       namespace.nspname AS schema_name,
@@ -109,7 +127,8 @@ async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promi
       has_table_privilege(current_user, relation.oid, 'DELETE') AS delete_allowed,
       has_table_privilege(current_user, relation.oid, 'TRUNCATE') AS truncate_allowed,
       has_table_privilege(current_user, relation.oid, 'REFERENCES') AS references_allowed,
-      has_table_privilege(current_user, relation.oid, 'TRIGGER') AS trigger_allowed
+      has_table_privilege(current_user, relation.oid, 'TRIGGER') AS trigger_allowed,
+      has_table_privilege(current_user, relation.oid, 'MAINTAIN') AS maintain_allowed
     FROM pg_class relation
     JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
     WHERE namespace.nspname <> 'information_schema'
@@ -142,6 +161,7 @@ async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promi
       ["TRUNCATE", row.truncate_allowed],
       ["REFERENCES", row.references_allowed],
       ["TRIGGER", row.trigger_allowed],
+      ["MAINTAIN", row.maintain_allowed],
     ] as const) {
       if (allowed) {
         throw new Error(
@@ -548,6 +568,7 @@ export async function closeBoundedDatabaseConnections(
 
 const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;
 const STARTUP_CLOSE_TIMEOUT_MS = 5_000;
+const STARTUP_TRANSACTION_ROLLBACK_GRACE_MS = 500;
 const statement_timeout = 5_000;
 const lock_timeout = 750;
 const idle_in_transaction_session_timeout = 5_000;
@@ -570,9 +591,9 @@ type StartupErrorCode =
   | "distributed_execution_close";
 
 class DistributedExecutionStartupError extends Error {
-  constructor(code: StartupErrorCode, role?: ServingRole) {
+  constructor(code: StartupErrorCode) {
     super(code);
-    if (role) this.name = role;
+    this.name = "DistributedExecutionStartupError";
   }
 }
 
@@ -678,46 +699,105 @@ function isTimeoutOrDisconnect(error: unknown): boolean {
     code === "CONNECTION_CLOSED";
 }
 
-async function setStartupTransactionTimeouts(db: SqlExecutor): Promise<void> {
+function remainingStartupTimeoutMs(startupDeadline: number): number {
+  return Math.max(1, Math.ceil(startupDeadline - performance.now()));
+}
+
+async function setStartupTransactionTimeouts(
+  db: SqlExecutor,
+  startupDeadline: number,
+): Promise<void> {
+  const remainingMs = remainingStartupTimeoutMs(startupDeadline);
+  const remainingLockMs = Math.min(lock_timeout, remainingMs);
+  const remainingIdleMs = Math.min(
+    idle_in_transaction_session_timeout,
+    remainingMs + STARTUP_TRANSACTION_ROLLBACK_GRACE_MS,
+  );
   await db.execute(sql`
-    SELECT set_config('statement_timeout', ${`${statement_timeout}ms`}, true),
-      set_config('lock_timeout', ${`${lock_timeout}ms`}, true),
+    SELECT set_config('statement_timeout', ${`${remainingMs}ms`}, true),
+      set_config('lock_timeout', ${`${remainingLockMs}ms`}, true),
       set_config(
         'idle_in_transaction_session_timeout',
-        ${`${idle_in_transaction_session_timeout}ms`},
+        ${`${remainingIdleMs}ms`},
         true
       )
   `);
 }
 
 async function cancelTrackedParticipantQueries(
-  ownerDb: SqlExecutor,
-  participantPids: ReadonlyMap<number, ServingRole>,
+  ownerDb: Db,
+  participantPids: ReadonlyMap<number, "owner" | ServingRole>,
 ): Promise<void> {
-  const participants = [...participantPids.entries()];
-  if (participants.length === 0) return;
-  const exactParticipants = sql.join(
-    participants.map(([pid, role]) => sql`(activity.pid = ${pid} AND activity.usename = ${role})`),
-    sql` OR `,
-  );
-  await ownerDb.execute(sql`
-    SELECT pg_cancel_backend(activity.pid)
-    FROM pg_stat_activity activity
-    WHERE activity.datname = current_database()
-      AND activity.state = 'active'
-      AND (${exactParticipants})
-  `);
+  const pids = [...participantPids.keys()];
+  if (pids.length === 0) return;
+  const ownerClient = (ownerDb as unknown as {
+    $client: { options: OwnerControlOptions };
+  }).$client;
+  const ownerOptions = ownerClient.options;
+  const control = postgres({
+    host: ownerOptions.host,
+    port: ownerOptions.port,
+    path: ownerOptions.path,
+    database: ownerOptions.database,
+    user: ownerOptions.user,
+    password: ownerOptions.pass,
+    ssl: ownerOptions.ssl,
+    connection: {
+      ...ownerOptions.connection,
+      statement_timeout,
+      lock_timeout,
+      idle_in_transaction_session_timeout,
+    },
+    prepare: ownerOptions.prepare,
+    target_session_attrs: ownerOptions.target_session_attrs ?? undefined,
+    fetch_types: ownerOptions.fetch_types,
+    types: ownerOptions.types,
+    debug: false,
+    max: 1,
+    connect_timeout: 5,
+    idle_timeout: 1,
+  } as unknown as postgres.Options<{}>);
+  const controlDb = drizzlePg(control) as unknown as Db;
+  const exactPids = sql.join(pids.map((pid) => sql`${pid}`), sql`, `);
+  try {
+    await controlDb.transaction(async (transaction) => {
+      await transaction.execute(sql`
+        SELECT set_config('statement_timeout', ${`${statement_timeout}ms`}, true),
+          set_config('lock_timeout', ${`${lock_timeout}ms`}, true),
+          set_config(
+            'idle_in_transaction_session_timeout',
+            ${`${idle_in_transaction_session_timeout}ms`},
+            true
+          )
+      `);
+      const controlPid = firstRowPid(
+        await transaction.execute(sql`SELECT pg_backend_pid() AS control_pid`),
+      );
+      if (controlPid === undefined) {
+        throw new Error("owner cancellation PID unavailable");
+      }
+      await transaction.execute(sql`
+        SELECT pg_cancel_backend(activity.pid)
+        FROM pg_stat_activity activity
+        WHERE activity.datname = current_database()
+          AND activity.state = 'active'
+          AND activity.pid <> ${controlPid}
+          AND activity.pid IN (${exactPids})
+      `);
+    });
+  } finally {
+    await control.end({ timeout: 5 });
+  }
 }
 
 async function assertTrackedParticipantsClosed(
   ownerDb: Db,
-  participantPids: ReadonlyMap<number, ServingRole>,
-  ownerPid: number | undefined,
+  participantPids: ReadonlyMap<number, "owner" | ServingRole>,
+  ownerPids: ReadonlySet<number>,
 ): Promise<void> {
   const participantPidList = [...participantPids.keys()];
-  const advisoryPidList = ownerPid === undefined
-    ? participantPidList
-    : [...participantPidList, ownerPid];
+  const ownerPidList = [...ownerPids];
+  const advisoryPidList = [...participantPidList, ...ownerPidList];
   const participantPidsSql = sql.join(
     (participantPidList.length > 0 ? participantPidList : [-1]).map((pid) => sql`${pid}`),
     sql`, `,
@@ -726,34 +806,115 @@ async function assertTrackedParticipantsClosed(
     (advisoryPidList.length > 0 ? advisoryPidList : [-1]).map((pid) => sql`${pid}`),
     sql`, `,
   );
+  const ownerPidsSql = sql.join(
+    (ownerPidList.length > 0 ? ownerPidList : [-1]).map((pid) => sql`${pid}`),
+    sql`, `,
+  );
   const cleanupStartedAt = performance.now();
   do {
+    const cleanupRemainingMs = Math.max(
+      1,
+      Math.ceil(STARTUP_CLOSE_TIMEOUT_MS - (performance.now() - cleanupStartedAt)),
+    );
     const [receipt] = rowsOf<{
       participant_pids_gone: boolean;
       owner_out_of_transaction: boolean;
       advisory_locks_gone: boolean;
-    }>(await ownerDb.execute(sql`
-      SELECT
-        NOT EXISTS (
-          SELECT 1 FROM pg_stat_activity
-          WHERE pid IN (${participantPidsSql})
-        ) AS participant_pids_gone,
-        NOT EXISTS (
-          SELECT 1 FROM pg_stat_activity
-          WHERE pid = ${ownerPid ?? -1}
-            AND pid <> pg_backend_pid()
-            AND (state <> 'idle' OR xact_start IS NOT NULL)
-        ) AS owner_out_of_transaction,
-        NOT EXISTS (
-          SELECT 1 FROM pg_locks
-          WHERE locktype = 'advisory' AND pid IN (${advisoryPidsSql})
-        ) AS advisory_locks_gone
-    `));
+    }>(await ownerDb.transaction(async (control) => {
+      await control.execute(sql`
+        SELECT set_config('statement_timeout', ${`${cleanupRemainingMs}ms`}, true),
+          set_config('lock_timeout', ${`${cleanupRemainingMs}ms`}, true),
+          set_config(
+            'idle_in_transaction_session_timeout',
+            ${`${cleanupRemainingMs}ms`},
+            true
+          )
+      `);
+      return control.execute(sql`
+        SELECT
+          NOT EXISTS (
+            SELECT 1 FROM pg_stat_activity
+            WHERE pid IN (${participantPidsSql})
+          ) AS participant_pids_gone,
+          NOT EXISTS (
+            SELECT 1 FROM pg_stat_activity
+            WHERE pid IN (${ownerPidsSql})
+              AND pid <> pg_backend_pid()
+              AND (state <> 'idle' OR xact_start IS NOT NULL)
+          ) AS owner_out_of_transaction,
+          NOT EXISTS (
+            SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory' AND pid IN (${advisoryPidsSql})
+          ) AS advisory_locks_gone
+      `);
+    }));
     if (receipt?.participant_pids_gone && receipt.owner_out_of_transaction &&
       receipt.advisory_locks_gone) return;
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
   } while (performance.now() - cleanupStartedAt < STARTUP_CLOSE_TIMEOUT_MS);
   throw new Error("distributed execution participant cleanup did not settle");
+}
+
+function isRuntimeOwnerDb(value: unknown): value is Db {
+  if (typeof value !== "object" || value === null ||
+    typeof (value as { execute?: unknown }).execute !== "function" ||
+    typeof (value as { transaction?: unknown }).transaction !== "function") return false;
+  try {
+    const options = (value as {
+      $client?: { options?: Partial<OwnerControlOptions> };
+    }).$client?.options;
+    const sslIsValid = typeof options?.ssl === "boolean" ||
+      options?.ssl === "require" || options?.ssl === "allow" ||
+      options?.ssl === "prefer" || options?.ssl === "verify-full" ||
+      (typeof options?.ssl === "object" && options.ssl !== null);
+    return options !== undefined && Array.isArray(options.host) && options.host.length > 0 &&
+      options.host.every((host) => typeof host === "string" && host.length > 0) &&
+      Array.isArray(options.port) && options.port.length === options.host.length &&
+      options.port.every((port) => Number.isSafeInteger(port) && port > 0 && port <= 65_535) &&
+      typeof options.database === "string" && options.database.length > 0 &&
+      typeof options.user === "string" && options.user.length > 0 &&
+      (typeof options.pass === "string" || typeof options.pass === "function") &&
+      sslIsValid && typeof options.connection === "object" && options.connection !== null &&
+      typeof options.prepare === "boolean" && typeof options.fetch_types === "boolean" &&
+      typeof options.types === "object" && options.types !== null;
+  } catch {
+    return false;
+  }
+}
+
+function isRuntimeRequiredMigrationIdentity(
+  value: unknown,
+): value is RequiredMigrationIdentity {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as { orderedHashes?: unknown; ledgerSha256?: unknown };
+  if (!Array.isArray(candidate.orderedHashes) || candidate.orderedHashes.length === 0 ||
+    candidate.orderedHashes.some((hash) => typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)) ||
+    new Set(candidate.orderedHashes).size !== candidate.orderedHashes.length ||
+    typeof candidate.ledgerSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(candidate.ledgerSha256)) return false;
+  return candidate.ledgerSha256 === createHash("sha256")
+    .update(JSON.stringify(candidate.orderedHashes))
+    .digest("hex");
+}
+
+function isRuntimeDatabaseUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.trim() !== value || value.length === 0) return false;
+  try {
+    const parsed = new URL(value);
+    return (parsed.protocol === "postgres:" || parsed.protocol === "postgresql:") &&
+      parsed.hostname.length > 0 && parsed.pathname.length > 1;
+  } catch {
+    return false;
+  }
+}
+
+function throwConfigurationFailure(): never {
+  const failure = new DistributedExecutionStartupError("distributed_execution_configuration");
+  logger.error(
+    { code: failure.message, phase: "configuration" },
+    "distributed execution startup rejected",
+  );
+  throw failure;
 }
 
 /**
@@ -763,18 +924,35 @@ async function assertTrackedParticipantsClosed(
  */
 export async function openDistributedExecutionDatabases(input: {
   enabled: boolean;
-  ownerDb?: Db;
-  requiredMigrationIdentity?: RequiredMigrationIdentity;
+  ownerDb: Db;
+  requiredMigrationIdentity: RequiredMigrationIdentity;
   appDatabaseUrl: string | undefined;
   operatorDatabaseUrl: string | undefined;
 }): Promise<DistributedExecutionDatabases | null> {
   if (!input.enabled) return null;
 
-  const advisoryKey = randomBytes(8).readBigInt64BE();
+  if (input.enabled !== true || !isRuntimeOwnerDb(input.ownerDb) ||
+    !isRuntimeRequiredMigrationIdentity(input.requiredMigrationIdentity) ||
+    !isRuntimeDatabaseUrl(input.appDatabaseUrl) ||
+    !isRuntimeDatabaseUrl(input.operatorDatabaseUrl)) throwConfigurationFailure();
+
+  const ownerDb = input.ownerDb;
+  const requiredMigrationIdentity = input.requiredMigrationIdentity;
+  const appDatabaseUrl = input.appDatabaseUrl;
+  const operatorDatabaseUrl = input.operatorDatabaseUrl;
   const startupAbort = new AbortController();
   const startupDeadline = performance.now() + STARTUP_HANDSHAKE_TIMEOUT_MS;
+  const startupTimer = setTimeout(
+    () => {
+      if (!startupAbort.signal.aborted) startupAbort.abort();
+    },
+    Math.max(0, startupDeadline - performance.now()),
+  );
+  const advisoryKey = randomBytes(8).readBigInt64BE();
   const participants: Promise<unknown>[] = [];
   const participantPids = new Map<number, ServingRole>();
+  const activePids = new Map<number, "owner" | ServingRole>();
+  const ownerPids = new Set<number>();
   const ownerBarrier = new RejectableBarrier();
   const ownerLockedBarrier = new RejectableBarrier();
   const negativePairSequence = new RolePairSequence(STARTUP_POOL_OPTIONS.max);
@@ -783,37 +961,46 @@ export async function openDistributedExecutionDatabases(input: {
   let phase = "configuration";
   let app: NonOwnerDbConnection | null = null;
   let operator: NonOwnerDbConnection | null = null;
-  let ownerPid: number | undefined;
+  let cancellationTask: Promise<void> | null = null;
 
   const runPhase = async <T>(_phase: string, work: () => Promise<T>): Promise<T> => {
-    if (startupAbort.signal.aborted || performance.now() >= startupDeadline) {
-      if (!startupAbort.signal.aborted) startupAbort.abort();
+    if (startupAbort.signal.aborted) {
       throw new DistributedExecutionStartupError("distributed_execution_timeout");
     }
-    let timer: ReturnType<typeof setTimeout> | undefined;
     const cancellation = new Promise<never>((_resolve, reject) => {
       startupAbort.signal.addEventListener(
         "abort",
         () => reject(new Error("startup deadline expired")),
         { once: true },
       );
-      timer = setTimeout(
-        () => {
-          if (!startupAbort.signal.aborted) startupAbort.abort();
-        },
-        Math.max(0, startupDeadline - performance.now()),
-      );
     });
-    try {
-      return await Promise.race([work(), cancellation]);
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
+    return await Promise.race([work(), cancellation]);
   };
 
   const track = <T>(participant: Promise<T>): Promise<T> => {
     participants.push(participant);
     return participant;
+  };
+
+  const runTrackedTransaction = async <T>(
+    db: Db,
+    role: "owner" | ServingRole,
+    work: (transaction: Db, pid: number) => Promise<T>,
+  ): Promise<T> => {
+    const participant = db.transaction(async (transaction) => {
+      await setStartupTransactionTimeouts(transaction, startupDeadline);
+      const pidResult = await transaction.execute(sql`SELECT pg_backend_pid() AS pid`);
+      const pid = firstRowPid(pidResult);
+      if (pid === undefined) throw new Error("startup participant PID unavailable");
+      activePids.set(pid, role);
+      if (role === "owner") ownerPids.add(pid);
+      else participantPids.set(pid, role);
+      if (startupAbort.signal.aborted) {
+        throw new DistributedExecutionStartupError("distributed_execution_timeout");
+      }
+      return work(transaction as unknown as Db, pid);
+    });
+    return track(participant);
   };
 
   const runSharedTransactions = async (
@@ -824,13 +1011,8 @@ export async function openDistributedExecutionDatabases(input: {
     beforeLock?: (index: number) => Promise<void>,
     afterLock?: (index: number) => void,
   ): Promise<void> => {
-    const transactions = Array.from({ length: STARTUP_POOL_OPTIONS.max }, (_, index) => track(
-      connection.db.transaction(async (transaction) => {
-        await setStartupTransactionTimeouts(transaction);
-        const pidResult = await transaction.execute(sql`SELECT pg_backend_pid() AS pid`);
-        const pid = firstRowPid(pidResult);
-        if (pid === undefined) throw new Error("advisory participant PID unavailable");
-        participantPids.set(pid, role);
+    const transactions = Array.from({ length: STARTUP_POOL_OPTIONS.max }, (_, index) =>
+      runTrackedTransaction(connection.db, role, async (transaction) => {
         if (beforeLock) await beforeLock(index);
         const lockResult = await transaction.execute(sql`
           SELECT pg_try_advisory_xact_lock_shared(${advisoryKey}) AS acquired
@@ -840,75 +1022,74 @@ export async function openDistributedExecutionDatabases(input: {
         }
         if (onAcquired) await onAcquired();
         if (afterLock) afterLock(index);
-      }),
-    ));
+      }));
     await Promise.all(transactions);
   };
 
-  try {
-    if (!input.ownerDb || !input.requiredMigrationIdentity) {
-      throw new DistributedExecutionStartupError("distributed_execution_configuration");
-    }
-    if (typeof input.appDatabaseUrl !== "string" || input.appDatabaseUrl.trim() === "") {
-      throw new DistributedExecutionStartupError("distributed_execution_configuration", "aoa_app");
-    }
-    if (typeof input.operatorDatabaseUrl !== "string" || input.operatorDatabaseUrl.trim() === "") {
-      throw new DistributedExecutionStartupError(
-        "distributed_execution_configuration",
-        "aoa_operator",
-      );
-    }
+  const rejectStartupBarriers = () => {
+    ownerBarrier.reject();
+    ownerLockedBarrier.reject();
+    negativePairSequence.reject();
+    positiveBarrier.reject();
+    positivePairSequence.reject();
+  };
 
+  const handleStartupAbort = () => {
+    rejectStartupBarriers();
+    cancellationTask ??= cancelTrackedParticipantQueries(ownerDb, activePids);
+    void cancellationTask.catch(() => {});
+  };
+  startupAbort.signal.addEventListener("abort", handleStartupAbort, { once: true });
+
+  try {
     phase = "migration-identity";
-    try {
-      await assertRequiredMigrationIdentity(input.ownerDb, input.requiredMigrationIdentity);
-    } catch {
-      throw new DistributedExecutionStartupError("distributed_execution_migration_identity");
-    }
+    await runPhase("migration-identity", async () => {
+      try {
+        await runTrackedTransaction(ownerDb, "owner", async (transaction) => {
+          await assertRequiredMigrationIdentity(transaction, requiredMigrationIdentity);
+        });
+      } catch (error) {
+        if (startupAbort.signal.aborted || isTimeoutOrDisconnect(error)) throw error;
+        throw new DistributedExecutionStartupError("distributed_execution_migration_identity");
+      }
+    });
 
     phase = "app-authority";
-    try {
-      app = createTenantAppDbConnection(input.appDatabaseUrl, STARTUP_POOL_OPTIONS);
-      await assertNonOwnerConnection(app.db, "aoa_app");
-      await assertExactServingRoleAuthority(app.db, "aoa_app");
-      await assertExactCatalogCertificate(app.db);
-    } catch {
-      throw new DistributedExecutionStartupError(
-        "distributed_execution_app_authority",
-        "aoa_app",
-      );
-    }
+    await runPhase("app-authority", async () => {
+      try {
+        app = createTenantAppDbConnection(appDatabaseUrl, STARTUP_POOL_OPTIONS);
+        await runTrackedTransaction(app.db, "aoa_app", async (transaction) => {
+          await assertNonOwnerConnection(transaction, "aoa_app");
+          await assertExactServingRoleAuthority(transaction, "aoa_app");
+          await assertExactCatalogCertificate(transaction);
+        });
+      } catch (error) {
+        if (startupAbort.signal.aborted || isTimeoutOrDisconnect(error)) throw error;
+        throw new DistributedExecutionStartupError("distributed_execution_app_authority");
+      }
+    });
 
     phase = "operator-authority";
-    try {
-      operator = createOperatorDbConnection(input.operatorDatabaseUrl, STARTUP_POOL_OPTIONS);
-      await assertNonOwnerConnection(operator.db, "aoa_operator");
-      await assertExactServingRoleAuthority(operator.db, "aoa_operator");
-    } catch {
-      throw new DistributedExecutionStartupError(
-        "distributed_execution_operator_authority",
-        "aoa_operator",
-      );
-    }
+    await runPhase("operator-authority", async () => {
+      try {
+        operator = createOperatorDbConnection(operatorDatabaseUrl, STARTUP_POOL_OPTIONS);
+        await runTrackedTransaction(operator.db, "aoa_operator", async (transaction) => {
+          await assertNonOwnerConnection(transaction, "aoa_operator");
+          await assertExactServingRoleAuthority(transaction, "aoa_operator");
+        });
+      } catch (error) {
+        if (startupAbort.signal.aborted || isTimeoutOrDisconnect(error)) throw error;
+        throw new DistributedExecutionStartupError("distributed_execution_operator_authority");
+      }
+    });
 
     phase = "owner-exclusive";
     const ownerPhase = runPhase("owner-exclusive", async () => {
-      const ownerTransaction = track(input.ownerDb!.transaction(async (transaction) => {
-        await setStartupTransactionTimeouts(transaction);
-        const pidResult = await transaction.execute(sql`SELECT pg_backend_pid() AS pid`);
-        const pid = firstRowPid(pidResult);
-        if (pid === undefined) throw new Error("owner participant PID unavailable");
-        ownerPid = pid;
+      await runTrackedTransaction(ownerDb, "owner", async (transaction) => {
         await transaction.execute(sql`SELECT pg_advisory_xact_lock(${advisoryKey})`);
         ownerLockedBarrier.resolve();
-        try {
-          await ownerBarrier.wait();
-        } catch (error) {
-          await cancelTrackedParticipantQueries(transaction, participantPids).catch(() => {});
-          throw error;
-        }
-      }));
-      await ownerTransaction;
+        await ownerBarrier.wait();
+      });
     });
     await Promise.race([
       ownerLockedBarrier.wait(),
@@ -960,29 +1141,43 @@ export async function openDistributedExecutionDatabases(input: {
     if (settlements.some((settlement) => settlement.status === "rejected")) {
       throw new Error("advisory participant did not settle successfully");
     }
+    if (app === null || operator === null) {
+      throw new Error("distributed execution serving pools were not verified");
+    }
+    const verifiedApp = app as NonOwnerDbConnection;
+    const verifiedOperator = operator as NonOwnerDbConnection;
 
     return {
-      appDb: app.db,
-      operatorDb: operator.db,
+      appDb: verifiedApp.db,
+      operatorDb: verifiedOperator.db,
       close: async () => {
+        let closeFailed = false;
         try {
-          await closeBoundedDatabaseConnections([operator!, app!]);
-          await assertTrackedParticipantsClosed(input.ownerDb!, participantPids, ownerPid);
+          await closeBoundedDatabaseConnections([verifiedOperator, verifiedApp]);
         } catch {
-          throw new DistributedExecutionStartupError("distributed_execution_close");
+          closeFailed = true;
         }
+        try {
+          await assertTrackedParticipantsClosed(ownerDb, participantPids, ownerPids);
+        } catch {
+          closeFailed = true;
+        }
+        if (closeFailed) throw new DistributedExecutionStartupError("distributed_execution_close");
       },
     };
   } catch (error) {
+    const timedOut = startupAbort.signal.aborted || performance.now() >= startupDeadline ||
+      isTimeoutOrDisconnect(error);
     if (!startupAbort.signal.aborted) startupAbort.abort();
-    ownerBarrier.reject();
-    ownerLockedBarrier.reject();
-    negativePairSequence.reject();
-    positiveBarrier.reject();
-    positivePairSequence.reject();
+    rejectStartupBarriers();
+    let closeFailed = false;
+    try {
+      await cancellationTask;
+    } catch {
+      closeFailed = true;
+    }
     await Promise.allSettled(participants);
 
-    let closeFailed = false;
     if (operator || app) {
       try {
         await closeBoundedDatabaseConnections([
@@ -994,7 +1189,7 @@ export async function openDistributedExecutionDatabases(input: {
       }
     }
     try {
-      await assertTrackedParticipantsClosed(input.ownerDb!, participantPids, ownerPid);
+      await assertTrackedParticipantsClosed(ownerDb, participantPids, ownerPids);
     } catch {
       closeFailed = true;
     }
@@ -1003,10 +1198,13 @@ export async function openDistributedExecutionDatabases(input: {
       ? new DistributedExecutionStartupError("distributed_execution_close")
       : error instanceof DistributedExecutionStartupError
         ? error
-        : startupAbort.signal.aborted && (performance.now() >= startupDeadline || isTimeoutOrDisconnect(error))
+        : timedOut
           ? new DistributedExecutionStartupError("distributed_execution_timeout")
           : new DistributedExecutionStartupError("distributed_execution_advisory_domain");
     logger.error({ code: stable.message, phase }, "distributed execution startup rejected");
     throw stable;
+  } finally {
+    clearTimeout(startupTimer);
+    startupAbort.signal.removeEventListener("abort", handleStartupAbort);
   }
 }
