@@ -952,12 +952,13 @@ preserves all `JobLeasingError` authority decisions, and maps other operator inf
 failures to `internal_unavailable`. Focused operator-loss plus tenant-context tests pass 9/9,
 the whole contract passes 15/15, and the final exact server matrix passes 136/136. The broad
 aggregate itself remains honestly non-green for separately recorded setup/load effects and was
-not rerun. JOB-003 remains `review_pending`; this finding does not mark a pass or completion.
+not rerun. Final review attempt 3 subsequently returned `needs_changes` for E3-F028–E3-F033;
+this finding does not mark a pass or completion.
 
 ## E3-F028 - Bounded pools are not bound to one advisory-lock authority domain
 
 **Date:** 2026-08-11
-**Status:** `open_in_JOB-003_final_review_attempt_3`
+**Status:** `needs_changes`
 **Severity:** P0 STOP - H-02 revocation linearization / split-brain authority
 **Affected ticket:** JOB-003
 
@@ -978,7 +979,7 @@ This is Critical and keeps JOB-003 `needs_changes`.
 ## E3-F029 - Startup exact-authority audit omits required relations and RLS posture
 
 **Date:** 2026-08-11
-**Status:** `open_in_JOB-003_final_review_attempt_3`
+**Status:** `needs_changes`
 **Severity:** P1 Important - H-01 fail-closed startup / exact grant and RLS authority
 **Affected ticket:** JOB-003
 
@@ -996,7 +997,7 @@ startup behavior.
 ## E3-F030 - Certificate cleanup is uncomposed and Cartesian rather than tuple-bounded
 
 **Date:** 2026-08-11
-**Status:** `open_in_JOB-003_final_review_attempt_3`
+**Status:** `needs_changes`
 **Severity:** P1 Important - H-03 bounded storage / certificate stability
 **Affected ticket:** JOB-003
 
@@ -1016,7 +1017,7 @@ dense multi-worker/multi-attempt PostgreSQL plus runtime-composition regressions
 ## E3-F031 - E3-PERF-01 has no executable real campaign adapter
 
 **Date:** 2026-08-11
-**Status:** `open_in_JOB-003_final_review_attempt_3`
+**Status:** `needs_changes`
 **Severity:** P1 Important - executable evidence / H-04 and H-08 attestation
 **Affected ticket:** JOB-003
 
@@ -1036,7 +1037,7 @@ campaign remains correctly unrun and is not waived.
 ## E3-F032 - Required payload-free leasing and scheduler telemetry is absent
 
 **Date:** 2026-08-11
-**Status:** `open_in_JOB-003_final_review_attempt_3`
+**Status:** `needs_changes`
 **Severity:** P1 Important - plan alignment / starvation and storage observability
 **Affected ticket:** JOB-003
 
@@ -1054,7 +1055,7 @@ non-vacuous tests that reject job input, requirements, fence, proof, and credent
 ## E3-F033 - Non-platform poll and revoke invert target/worker lock order
 
 **Date:** 2026-08-11
-**Status:** `open_in_JOB-003_final_review_attempt_3`
+**Status:** `needs_changes`
 **Severity:** P2 Minor - control-plane contention / bounded revoke availability
 **Affected ticket:** JOB-003
 
@@ -1066,3 +1067,66 @@ but sustained polling can repeatedly fail a control-plane cutoff.
 
 **Required disposition:** Use one target/worker order with revalidation and add a contention
 test. This Minor does not change the Critical/Important disposition above.
+
+## JOB-003 final-review fix-round-3 disposition record
+
+**Date:** 2026-08-11
+**Ticket status:** `needs_changes`
+**Canonical design:** `implementation-plan.md` → “JOB-003 final-review fix round 3 — binding
+delta for E3-F028–E3-F033”
+
+This record plans, but does not implement or resolve, the six final-review findings:
+
+- **E3-F028:** `openDistributedExecutionDatabases` must accept the already-migrated owner
+  `Db` plus an exact ordered checked-in migration-hash ledger. Only the owner reads the exact
+  `drizzle.__drizzle_migrations` rows; no best-effort timestamp mapping, extra/missing hash,
+  or app/operator journal grant is allowed. With fixed pool/connect/statement/lock/idle/close
+  deadlines, one secret random signed-bigint transaction-advisory probe must prove
+  owner-exclusive contention blocks app/operator shared locks while held and app/operator can
+  hold shared locks together after release. Two valid databases, terminated backends, pool
+  saturation, and every timeout are mandatory REDs with stable non-secret errors and cleanup.
+- **E3-F029:** startup relation sets are derived exactly from every table and column grant
+  constant, including column-only `mcp_api_keys`/`execution_targets`; every expected relation
+  must exist as an ordinary table while every unexpected effective privilege remains denied.
+  A table-specific 15-relation/22-policy catalog certificate checks RLS/FORCE, policy name,
+  permissiveness, command, roles, qual/check, direct ACL, and grant option. The two certificate
+  tables remain FORCE RLS with one exact app tenant policy and exact non-grantable app CRUD;
+  `execution_targets` remains RLS enabled and explicitly not FORCE with its exact three current
+  policies. No migration or grant change is planned.
+- **E3-F030:** cleanup selects with `.limit(boundedLimit)` and `FOR UPDATE SKIP LOCKED`, deletes
+  only the selected `(organization_id, worker_id, attempt_id)` tuples, uses `RETURNING` as the
+  true count, and rolls the tenant transaction back if the count exceeds the bound. Correctness
+  triggers are non-pending attempts, terminal jobs, revoked workers, disabled/offline targets,
+  or exact target/placement/current generation/profile/provider/binding drift; age is never a
+  correctness predicate. Cleanup runs once inside the existing transaction for every actually
+  visited admitted shard, including empty/pending shards, without extending the deadline or
+  changing cursor/page bounds. Dense Cartesian and concurrency REDs are required.
+- **E3-F031:** the campaign CLI must use an unselectable module-private production capability
+  factory. Only process/artifact/store/clock seams exist in direct hermetic tests. Production
+  recomputes Git/detached lineage, fixed executable digests/environment, E6F-06 provenance,
+  child NDJSON/redaction, archive scan/hash, immutable S3 Object Lock COMPLIANCE upload, exact
+  readback/retention, and sanitized QA/failure evidence. The existing AWS SDK is sufficient.
+  A separate Security-owner command re-fetches the exact version and writes the handoff; all
+  security negatives and failure retention are blocking. Ordinary tests use tiny fixtures;
+  the external million-row campaign remains mandatory before any SLO/capacity claim.
+- **E3-F032:** one closed synchronous nonthrowing metrics interface and frozen no-op exposes
+  only whitelisted numeric/boolean/closed-scope events for exact claim-query certificate
+  hit/miss/saturation, scan exhaustion, upsert/cleanup, head restart, per-shard cardinality,
+  scheduler capacity/expiry/cardinality, and outbox budget/elapsed/overshoot. The repository
+  returns bounded SQL-observed counts from the tenant claim statement plus exact `RETURNING`
+  counts; no candidate-length inference or privileged/global scan is allowed. IDs, hashes,
+  errors, arbitrary labels, payload, proof, fence, and credentials are forbidden. Flag-off
+  imports/constructs/emits none of it.
+- **E3-F033:** non-platform poll must move its worker profile touch after authority locking,
+  lock/revalidate target before worker, and retain that target→worker order shared with revoke.
+  A real PostgreSQL barrier proves poll/revoke settles within the existing 750 ms bound without
+  `40P01` and without stale lease effects. Platform ordering remains Decision #124's bounded
+  logical-worker/app plus physical target→worker/operator and advisory handoff; it is not
+  weakened.
+
+The fix is divided into tests-only RED, startup authority GREEN, cleanup/lock-order GREEN,
+metrics GREEN, performance-launcher GREEN, and final evidence/review commits. E1 bytes,
+schema/migrations, grants, owner fallback, and a selectable production test adapter are STOP
+conditions. `tickets/JOB-003-result.md` remains `needs_changes` until a distinct reviewer
+certifies the implemented candidate; the later formal performance QA and independent Security
+handoff remain separate required evidence.

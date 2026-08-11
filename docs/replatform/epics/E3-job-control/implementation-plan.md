@@ -1,16 +1,16 @@
 # E3 — Durable Job Control — Implementation Plan
 
-**Plan status:** `approved_pre_D1_execution_ready_JOB-003_corrected_RED_only` — the operator approved the reviewed plan
+**Plan status:** `needs_changes` — JOB-003 final-review fix round 3 is planned but not implemented; the operator approved the earlier reviewed plan
 and recommended E2/E1/JOB-002 choices on 2026-08-10. On 2026-08-10 the operator also
 approved the E3-F018 / Decision #124 amendment: tenant work on a platform target uses an
 Organization-scoped logical worker session; a platform-scoped physical session remains
 physical-control-only. The corrective E2 and E1 gates passed
 at reviewed revisions `7843b86e25eb1ff9c520308aef7f123fec6997a7` and
 `01ad1ab554fe25c5178c7552ec047d4df45b7dcf`. Pre-D1 tickets may now execute in dependency
-order except that JOB-003 may proceed only to the corrected tests-only RED named below; the
+order except that JOB-003 is paused for the final-review fix round named below; the
 post-D1 boundary remains locked.
 
-**JOB-003 fix-round-2 amendment status:** `accepted_for_corrected_RED`. Review attempt 2
+**JOB-003 final-review amendment status:** `needs_changes`. Review attempt 2
 proved that restart-safe pull fairness needs durable progress. A first two-field cursor lost
 the locked claim order, and independent review of the replacement four-field cyclic cursor
 also rejected it: stale continuation can bypass newly eligible older work, JavaScript `Date`
@@ -24,7 +24,13 @@ reviewer independently accepted exact revision
 `73675cc621008ea0dcf18f6ae0c430162e7e448e` with zero P0/P1/P2 findings. This authorizes only
 replacement of the obsolete cursor-based tests with one corrected tests-only RED matching the
 accepted successor. Migration generation and production GREEN remain paused until the controller
-independently verifies that committed RED and its intended failure map.
+independently verifies that committed RED and its intended failure map. Final review attempt 3
+of implementation candidate `392c3a2da52c3fd812d7b9e2801fe6523f1cc657` then opened
+E3-F028 through E3-F033: one Critical shared-database/advisory-domain defect, four Important
+startup/cleanup/performance/telemetry defects, and one Minor row-lock-order defect. The exact
+fix-round-3 contract is appended to JOB-003 below. It supersedes only conflicting JOB-003
+implementation details; prior accepted certificate, ordering, migration, and evidence
+contracts remain binding. No part of JOB-003 is complete or accepted for release.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use
 > `superpowers:subagent-driven-development` to execute this plan ticket by ticket
@@ -173,7 +179,7 @@ package while preserving the immutable source and fixture anchors.
 | Boundary | Tickets | Assignment rule |
 |---|---|---|
 | **Pre-D1, approved and assignable** | JOB-001, JOB-002, JOB-009, JOB-010 | E3-F001/E3-F002 and E3-F004 corrective handoffs passed. E3-F005's device/binding contract is approved for JOB-002 implementation. Respect ticket dependencies; JOB-010 may start after JOB-001. |
-| **Pre-D1, corrected RED authorized** | JOB-003 | Exact successor revision `73675cc621008ea0dcf18f6ae0c430162e7e448e` passed distinct whole-plan and schema/security review with zero P0/P1/P2 findings. Authorize only a replacement tests-only RED. Do not generate `0229`/`0230`/`0231` or resume production GREEN until the controller independently verifies that RED contains only intended behavioral failures. |
+| **Pre-D1, needs changes** | JOB-003 | Final review attempt 3 opened E3-F028–E3-F033. Implement only the appended fix-round-3 contract with fresh behavior-first REDs, bounded GREEN commits, and distinct whole-plan plus schema/security review. Do not mark the ticket complete, run the formal million-row campaign, or make an SLO/capacity claim until all listed gates pass. |
 | **Post-D1, blocked** | JOB-004–JOB-008, JOB-011–JOB-014 | Do not assign until a committed `E6-D1-FOUNDATION` QA record **and passing handoff** cover E6F-00–E6F-08 on one revision. |
 | **E3 exit gate, blocked** | all JOB-001–JOB-014 evidence | Requires every ticket complete, the post-D1 closure, and a passing `E3-PERF-01` handoff before any production-capacity/SLO claim. A Windows-local run is not a substitute for the formal Linux lane or the pinned performance environment. |
 
@@ -1581,6 +1587,448 @@ times because it is H-03 critical, plus db/server build. Evidence
 `tickets/JOB-003-result.md`; commit `feat(job-control): lease placed jobs atomically`.
 Maps D0-T01/T02/T05, H-01/H-02/H-03, E6F-01/E6F-04 inputs.
 
+#### JOB-003 final-review fix round 3 — binding delta for E3-F028–E3-F033
+
+**Status and precedence.** This is a design-only amendment for the `needs_changes`
+disposition in `tickets/JOB-003-result.md`. It does not reopen the accepted static-certificate
+or canonical-order design and does not mark JOB-003 complete. Where this subsection conflicts
+with earlier JOB-003 implementation wording, this subsection controls. There is no E1 wire,
+schema, `0229`/`0230`/`0231`, role, or grant change in this round.
+
+**Exact file responsibility delta:**
+
+| File | Required responsibility |
+|---|---|
+| `packages/db/src/client.ts` | Export the strict checked-in migration identity and bounded non-owner connection options. Only the owner connection reads `drizzle.__drizzle_migrations`; app/operator receive no schema/table/column grant on `drizzle`. |
+| `server/src/db/distributed-execution-databases.ts` | Derive exact relation/column/RLS manifests from the grant constants, attest them, construct bounded pools, and prove owner/app/operator share one transaction-advisory domain before returning either serving pool. |
+| `server/src/db/job-control-legacy-grants.ts` | Export the immutable derived serving-relation manifests and table-specific RLS manifest. Do not duplicate relation names in the startup helper. |
+| `server/src/index.ts` | Pass the migrated owner `Db` and strict migration identity into startup; construct one Pino metrics adapter only inside the flag-on branch and pass it to leasing, scheduler, and outbox. Flag-off performs no dynamic import, construction, emission, or database probe for these objects. |
+| `server/src/app.ts`, `server/src/routes/worker-control.ts` | Thread the already-created optional `JobControlMetrics` instance to the route-owned leasing service; never construct a logger adapter per request or under flag-off. |
+| `packages/db/src/repositories/tenant/job-control.ts` | Return bounded truthful scan telemetry from the claim statement; select and delete only exact cleanup tuples; return the actual affected count; lock non-platform target before worker and revalidate the binding. |
+| `server/src/services/job-outbox-worker.ts` | Invoke cleanup exactly once inside the existing admitted-shard tenant transaction for every actually visited shard, including empty and already-pending shards, without adding a shard/page or resetting the cursor/deadline. Return and emit exact tick/cleanup counts. |
+| `server/src/services/job-leasing.ts` | Consume repository scan/upsert counts and emit only closed metrics; emit one head-restart event per real rollback/restart. Do not infer certificate hits. |
+| `server/src/services/job-ready-scheduler.ts` | Emit exact capacity-reject, expiry, and bounded cardinality events while preserving the public boolean scheduler contract. |
+| `server/src/services/job-control-metrics.ts` | New closed synchronous, nonthrowing interface, frozen no-op singleton, and Pino-backed exact-field implementation. |
+| `scripts/run-e3-perf-01.mjs` | Replace the unconditional campaign failure with a sealed production factory and real Git/process/provenance/NDJSON/redaction/archive/S3 Object Lock/readback/QA orchestration. |
+| `scripts/e3-perf-01-manifest.schema.json`, `scripts/e3-perf-01-evidence.schema.json` | Close executable/digest/environment, store, result, and failure-evidence fields; reject unknown or credential-bearing input. |
+| `scripts/verify-e3-perf-01-handoff.mjs` | New independent Security Gate command that re-fetches and revalidates the immutable object and retention before producing a handoff receipt. |
+| Existing JOB-003 DB/server tests, including `distributed-execution-databases-unit.test.ts` and `tenant-app-db-startup.test.ts`, plus `server/src/__tests__/job-control-metrics.test.ts`, `packages/db/src/__tests__/job-leasing-lock-order.integration.test.ts`, and `scripts/verify-e3-perf-01-handoff.test.mjs` | Own the REDs and hermetic production-driver contracts below. Test seams may not be selected by real CLI/config/environment. |
+
+##### 1. One migrated database and one advisory domain (E3-F028)
+
+`packages/db/src/client.ts` adds this closed owner-produced value; no best-effort
+`created_at` mapping, prefix match, unknown-row tolerance, or fallback is valid:
+
+```ts
+export interface RequiredMigrationIdentity {
+  readonly orderedHashes: readonly string[];
+  readonly ledgerSha256: string;
+}
+
+export async function loadRequiredMigrationIdentity(): Promise<RequiredMigrationIdentity>;
+```
+
+`loadRequiredMigrationIdentity()` hashes every checked-in migration byte stream using the
+same algorithm/order used by Drizzle, rejects duplicate paths/hashes, and returns the exact
+ordered ledger plus lowercase SHA-256 of its canonical ordered-hash array. The owner query
+reads `id, hash` from `drizzle.__drizzle_migrations ORDER BY id`; startup requires exact
+length, position, hash, and ledger digest equality. Missing, extra, duplicate, reordered, or
+unreadable rows fail `distributed_execution_migration_identity`. This query is executed only
+through `ownerDb`; neither serving role is granted `USAGE` on `drizzle` or any privilege on
+the journal.
+
+The startup signature becomes:
+
+```ts
+export async function openDistributedExecutionDatabases(input: {
+  enabled: boolean;
+  ownerDb: Db;
+  requiredMigrationIdentity: RequiredMigrationIdentity;
+  appDatabaseUrl: string | undefined;
+  operatorDatabaseUrl: string | undefined;
+}): Promise<DistributedExecutionDatabases | null>;
+```
+
+Fixed production bounds are `pool max=4`, connect `5_000 ms`, statement `5_000 ms`,
+transaction lock `750 ms`, idle-in-transaction `5_000 ms`, pool idle `30_000 ms`, and close
+`5_000 ms`. `packages/db/src/client.ts` maps these to postgres-js connection options; every
+startup transaction also executes transaction-local `statement_timeout`, `lock_timeout`, and
+`idle_in_transaction_session_timeout`. A single outer deadline covers each phase. Closing is
+deadline-raced and idempotent; startup never returns a partly verified pool.
+
+After the owner ledger check and both existing role/ACL checks, startup creates a secret
+signed-bigint key with `randomBytes(8).readBigInt64BE()` and never logs or persists it. In an
+owner transaction it obtains `pg_advisory_xact_lock(key)` and holds it behind an in-process
+barrier. While held, app and operator each begin a bounded transaction and execute
+`pg_try_advisory_xact_lock_shared(key)`; both results must be exactly `false`. After those
+transactions end and the owner transaction commits, app and operator begin concurrently,
+each obtains the shared transaction lock, reaches a two-party barrier while both locks remain
+held, and then commits; both must be exactly `true`. Transaction scope releases every probe
+lock on success, error, backend loss, or timeout. This owner-exclusive/app+operator-shared
+contention followed by simultaneous shared/shared success binds both serving pools to the
+owner's database and Decision #124 advisory domain without revealing database identity.
+
+All expected failures are stable, non-secret codes from this closed set:
+`distributed_execution_configuration`, `distributed_execution_migration_identity`,
+`distributed_execution_app_authority`, `distributed_execution_operator_authority`,
+`distributed_execution_advisory_domain`, `distributed_execution_timeout`, and
+`distributed_execution_close`. Logs may contain only the code and phase enum; never a URL,
+database/role name, advisory key, journal hash, SQL text, driver cause, or credentials.
+Startup REDs use (a) owner/app on one fully migrated database and operator on a second fully
+migrated database, (b) `pg_terminate_backend` during each handshake phase, (c) all four app
+or operator pool slots held, and (d) statement/lock/idle/close deadline expiry. Each must fail
+closed with its stable code and leave zero usable/leaked serving connections; the normal
+same-database case and clean shutdown must pass.
+
+##### 2. Exact relation, RLS, policy, and ACL certificate (E3-F029)
+
+The app expected-relation set is the exact sorted union of the keys of
+`JOB_CONTROL_LEGACY_GRANTS`, `JOB_CONTROL_NEW_PATH_GRANTS`,
+`JOB_SUBMISSION_LEGACY_GRANTS`, `JOB_SUBMISSION_NEW_PATH_GRANTS`,
+`WORKER_ENROLLMENT_APP_GRANTS`, and `JOB_LEASING_NEW_PATH_GRANTS`, plus the relations named by
+all app column-grant constants (`mcp_api_keys` and `execution_targets`). The operator set is
+the exact sorted union of `WORKER_ENROLLMENT_OPERATOR_GRANTS` keys and every relation named by
+`OPERATOR_METADATA_COLUMN_GRANTS` or operator enrollment/placement column-grant constants.
+The contract test proves there is no duplicate hand-maintained startup list. Every expected
+`public` relation must exist exactly once with `pg_class.relkind = 'r'`; missing, duplicate,
+view, materialized-view, foreign-table, sequence, or partitioned-table substitution fails.
+The existing whole-catalog effective-privilege scan remains and proves every nonmanifest
+relation/column/sequence is inaccessible.
+
+The table-specific RLS manifest records `relrowsecurity`, `relforcerowsecurity`, exact policy
+name/command/role set, normalized `pg_get_expr(polqual)`, normalized
+`pg_get_expr(polwithcheck)`, and exact direct ACL/grant-option posture. In particular:
+
+- `worker_operation_receipts` is RLS `true`, FORCE `true`, with only
+  `worker_operation_receipts_tenant_isolation`, command `ALL`, role exactly `aoa_app`, and
+  both expressions exactly
+  `organization_id = current_setting('aoa.organization_id', true)::uuid`;
+- `worker_lease_rejections` has the same posture with only
+  `worker_lease_rejections_tenant_isolation`;
+- each certificate table grants app exactly non-grantable `SELECT, INSERT, UPDATE, DELETE`,
+  grants PUBLIC/operator nothing, and has no grant option or unexpected direct grantee; and
+- `execution_targets` is explicitly RLS `true`, FORCE `false`, with exactly the current three
+  policies: `execution_targets_tenant_serving` (`SELECT`, `aoa_app`, the current NULL-or-
+  tenant qual, no check), `execution_targets_platform_operator` (`ALL`, `aoa_operator`, the
+  current null-Organization/null-owner qual and check), and
+  `execution_targets_tenant_enrollment_update` (`UPDATE`, `aoa_app`, exact tenant qual/check).
+
+The manifest similarly enumerates the already-migrated RLS-bearing serving tables so startup
+cannot accept a granted table with RLS disabled; unlike the two certificate entries, their
+table-specific policy arrays may contain the already-approved multiple app/operator policies.
+Catalog comparison normalizes whitespace/parentheses only, never boolean meaning or role
+membership. REDs drop one expected table in a disposable clone, replace one with each wrong
+relkind, disable RLS/FORCE, add/remove/rename a policy, change command/role/qual/check, add
+PUBLIC/operator ACL, and add app grant option. Every mutation fails startup; the unchanged
+post-0231 database passes. No corrective migration or grant is authorized by this audit.
+
+##### 3. Exact, composed certificate cleanup (E3-F030)
+
+The repository contract changes to:
+
+```ts
+export interface LeaseRejectionCleanupResult {
+  readonly deleted: number;
+  readonly cardinalityObserved: number;
+  readonly cardinalitySaturated: boolean;
+}
+
+cleanupLeaseRejectionCertificates(input: {
+  limit: number;
+  cardinalityLimit: number;
+}): Promise<LeaseRejectionCleanupResult>;
+```
+
+Both integers must be finite positive safe integers; production passes `limit=256` and
+`cardinalityLimit=4096`. The selection uses `.limit(boundedLimit)`, deterministic
+`updated_at, worker_id, attempt_id`, and `FOR UPDATE SKIP LOCKED`. It uses left joins/current
+authority comparisons so drift and missing/cascading parents cannot disappear from the
+candidate set. A row is eligible only for a correctness reason: attempt status
+`ne(jobAttempts.status, "pending")`; job status in
+`succeeded|failed|cancelled|dead_letter`; worker status `revoked`;
+target status `offline|disabled`; or mismatch/missing current target ID, logical-worker
+placement/binding, current target authority key/generation/registered-profile hash/provider-
+constraint hash, or stored certificate placement generation/profile/provider/digests. There
+is no age/TTL predicate; `updated_at` is ordering only.
+
+Deletion is a single statement over the exact selected primary-key tuples
+`(organization_id, worker_id, attempt_id)`—a joined
+`DELETE FROM worker_lease_rejections USING selected` CTE or an
+equivalent OR-of-AND tuple predicate—not independent `IN` lists. `DELETE ... RETURNING` is
+the sole affected-count source. If it ever returns more than `boundedLimit`, the repository
+throws `lease_rejection_cleanup_bound` so the enclosing tenant transaction rolls back; it
+never clamps with `Math.min`. Immediately after the exact-tuple delete, a bounded second query
+in the same tenant transaction probes at most `cardinalityLimit + 1` remaining certificate
+keys; it reports the cardinality visible at that query as
+`observed=min(rows, limit)` plus `saturated=rows>limit`; it is truthful, bounded, and not a
+global owner scan.
+
+`createJobOutboxWorker` performs one admission transaction for every shard it actually visits
+after the durable cursor advances and before its deadline expires. Inside that existing
+transaction it first invokes cleanup exactly once, then either claims rows or honors an
+already-cached pending row. Thus empty shards and pending-delivery shards are cleaned; a shard
+not visited because the 32-shard/page/deadline bound fired is not. Cleanup neither creates a
+second transaction nor extends/resets the monotonic deadline, admitted-page limit, cursor, or
+publisher/delivery budget. Cleanup failure rolls back that shard admission and remains
+retryable; it cannot lose the already-durable outbox row.
+
+REDs seed dense cross-products of at least three workers × three attempts × two targets and
+prove only the selected tuples disappear; exactly 256 are deleted, the 257th remains, and the
+returned count is 256. Separate cases cover every trigger above, pending/current retention,
+no TTL deletion, cleaner/cleaner `SKIP LOCKED`, cleanup racing claim/upsert, rollback on an
+injected 257-row return, empty/pending shard composition, deadline expiry, cursor continuity,
+and exactly-once invocation per visited shard.
+
+##### 4. Closed payload-free metrics and truthful claim counts (E3-F032)
+
+The new interface is synchronous and closed:
+
+```ts
+export type SchedulerCapacityScope = "organization" | "target" | "global";
+
+export interface JobControlMetrics {
+  certificateScan(value: { hitsObserved: number; hitsSaturated: boolean;
+    missesObserved: number; missesSaturated: boolean; scanExhausted: boolean;
+    cardinalityObserved: number; cardinalitySaturated: boolean }): void;
+  certificateUpsert(value: { count: number }): void;
+  certificateCleanup(value: { count: number; cardinalityObserved: number;
+    cardinalitySaturated: boolean }): void;
+  headRestart(): void;
+  schedulerCapacityReject(value: { scope: SchedulerCapacityScope }): void;
+  schedulerExpiry(value: { count: number }): void;
+  schedulerCardinality(value: { organizations: number; targets: number;
+    signals: number }): void;
+  outboxTick(value: { budgetMs: number; elapsedMs: number; overshootMs: number;
+    organizations: number; claimed: number; delivered: number; cleaned: number }): void;
+}
+
+export const NOOP_JOB_CONTROL_METRICS: JobControlMetrics;
+export function createPinoJobControlMetrics(log: Pick<Logger, "info">): JobControlMetrics;
+```
+
+The option deltas are exact and optional for source compatibility; returned public methods
+remain unchanged except for the tick result noted below:
+
+```ts
+export interface JobLeasingServiceOptions { appDb: Db; operatorDb?: Db;
+  scheduler?: JobReadyScheduler; metrics?: JobControlMetrics;
+  ackTimeoutMs?: number; leaseDurationMs?: number; maxHeartbeatAgeMs?: number }
+export interface JobReadySchedulerOptions { maxOrganizationShards?: number;
+  maxTargetsPerOrganization?: number; maxSignalsGlobal?: number;
+  signalTtlMs?: number; monotonicNow?: () => number;
+  metrics?: JobControlMetrics }
+export interface JobOutboxWorkerInput {
+  appDb: Db; scheduler: JobReadyScheduler;
+  listAdmittedOrganizationIds(input: AdmittedOrganizationPageInput): Promise<string[]>;
+  publishHint?(signal: JobReadySignal): Promise<void>;
+  visibilityTimeoutMs?: number; maxOrganizationShards?: number;
+  maxRowsPerShard?: number; tickBudgetMs?: number; monotonicNow?: () => number;
+  metrics?: JobControlMetrics; cleanupLimit?: number;
+  cleanupCardinalityLimit?: number;
+}
+```
+
+The existing factories accept those named option interfaces exactly:
+`createJobLeasingService(input: JobLeasingServiceOptions)`,
+`createJobReadyScheduler(input: JobReadySchedulerOptions = {})`, and
+`createJobOutboxWorker(input: JobOutboxWorkerInput)`.
+`JobOutboxTickResult` adds `cleaned: number`. `createApp` and `workerControlRoutes` add
+`jobControlMetrics?: JobControlMetrics`; `index.ts` passes the same flag-on instance through
+both and uses `NOOP_JOB_CONTROL_METRICS` only as a service default when a caller omits it.
+
+Every method validates/clamps only to a nonnegative safe integer/boolean/closed scope, catches
+all logger failures, returns `void`, and never changes control flow. The no-op is frozen and
+allocates/logs nothing per call. Pino emits fixed event names and exactly the fields in the
+corresponding value above. The complete event allowlist is
+`job_control.certificate_scan`, `job_control.certificate_upsert`,
+`job_control.certificate_cleanup`, `job_control.head_restart`,
+`job_control.scheduler_capacity_reject`, `job_control.scheduler_expiry`,
+`job_control.scheduler_cardinality`, and `job_control.outbox_tick`; no other event/field is
+accepted. There are no Organization/company/worker/target/job/attempt/lease IDs, hashes,
+reasons, errors/stacks, SQL, inputs, requirements, fences, proofs, credentials, URLs, or
+caller-supplied labels. Tests capture exact object keys and inject forbidden canaries into all
+nearby domain inputs; zero canary bytes may reach the logger. With the flag off, a module-load
+spy proves the metrics module, scheduler, outbox, and distributed pools are not constructed
+or emitted.
+
+`lockEligibleLeaseCandidates` returns
+`{ candidates, certificateMetrics }`. In the same tenant claim statement, a bounded ordered
+probe of at most 4,097 current candidate rows counts exact correlated-certificate matches and
+misses; it reports each as `min(count, 4096)` with a saturation boolean. The actual canonical
+claim/anti-join remains unchanged and `scanExhausted` means its returned candidate batch is
+exactly 256. The same statement probes at most 4,097 tenant-visible certificate primary keys
+for per-shard cardinality. These are SQL-returned facts, not `candidates.length` inference,
+planner row estimates, a second privileged/global scan, or post-hoc application matching.
+Upsert uses its exact `RETURNING` row count; cleanup uses its exact result above. Leasing emits
+one restart only when a failed claim attempt really rolls back and the bounded head loop
+continues. Scheduler expiry reports the actual removed entries and capacity rejects report
+the exact closed cap that denied insertion. Outbox uses its monotonic clock at entry/settle:
+`elapsedMs=max(0,end-start)` and `overshootMs=max(0,elapsedMs-budgetMs)`.
+
+##### 5. Executable E3-PERF-01 campaign (E3-F031)
+
+`runE3Perf01` is refactored so hermetic tests can replace only four capability objects:
+`process` (spawn/exit/byte streams), `artifact` (exclusive-create/read/archive/local-retain),
+`store` (put/head/get/retention), and `clock`. Git facts, dependency/provenance decisions,
+NDJSON parsing/schema validation, redaction, thresholds, archive manifest/hash, QA result, and
+pass/fail classification are recomputed by production code and are not injectable facts.
+`runCampaignCommand(argv, capabilities)` may be exported for hermetic CLI-contract tests.
+The real module entry point always calls a module-private frozen
+`createProductionCampaignCapabilities()`; no CLI option, manifest key, environment variable,
+dynamic module path, endpoint override, or test mode can select substitutes.
+
+The strict credentialless manifest adds absolute executable paths plus SHA-256 for Git, Node,
+pnpm, the container runtime, and the E6F-06 provenance verifier; the immutable image digest,
+policy/trust-root digests; the exact fixed argv; and a closed child environment name/value
+allowlist. Only the database URL and default AWS credential chain are out-of-band secret
+slots; neither is serialized or forwarded except to its fixed consumer. Production verifies
+every executable byte digest, runs `git --no-replace-objects` itself, proves detached clean
+single-parent lineage and pre/post blob closure, verifies image signature/provenance with the
+pinned verifier/policy/root, and spawns the digest-pinned campaign without a shell and with
+only that environment. Unknown executable, argv, environment, Git, or provenance data fails
+before sampling.
+
+Child stdout is line-buffered with a 1 MiB line cap and total evidence cap, accepts only UTF-8
+NDJSON records valid under the closed evidence schema, and never persists raw stdout/stderr.
+Non-JSON, unknown-key, oversize, invalid UTF-8, canary, or redaction failure terminates the
+child and produces only a stable sanitized failure code. The artifact adapter exclusively
+creates a new output directory, writes with `wx`/atomic rename, builds the deterministic
+archive from the allowlisted files, rescans the exact archive bytes, then hashes them.
+
+The production store uses the already-present `@aws-sdk/client-s3`—no dependency change—to
+issue `PutObject` with checksum, `IfNoneMatch: *`, Object Lock `COMPLIANCE`, and the manifest's
+retention date at least 180 days away. It then requires matching `HeadObject`, `GetObject`, and
+`GetObjectRetention` bytes/checksum/version/lock-mode/retain-until before writing `qa.json`.
+Any pre-sample or post-sample failure still writes a sanitized failure record and immutable
+failed-attempt archive when the approved store is reachable. If upload/readback itself fails,
+the new local attempt directory is retained, exit is nonzero, and no pass/handoff may be
+written; no failure path deletes, overwrites, or reuses evidence.
+
+`scripts/verify-e3-perf-01-handoff.mjs` runs under the distinct Security Gate Owner's AWS
+identity, revalidates the committed manifest/Git blob, fetches the exact version from
+`qa.json`, checks archive bytes/hash/schema/canaries and Object Lock COMPLIANCE retention, and
+exclusive-creates `security-handoff.json`; it cannot trust the Integration Owner's local
+archive. Hermetic tests call `runCampaignCommand` with only the four fake capabilities and
+reach Git, provenance, child, redaction, archive, put/readback/retention, QA, and Security
+verification. Source-contract negatives prove the real entry point has no substitute
+selector. Security negatives cover forged/missing provenance, executable or digest drift,
+dirty/attached/replaced Git, environment/argv widening, every NDJSON/redaction/canary failure,
+archive mutation, overwrite, checksum/version/readback mismatch, absent/GOVERNANCE/short
+retention, backend loss, and failure-evidence retention.
+
+Ordinary tests use tiny NDJSON fixtures and never seed one million rows. The formal external
+campaign remains mandatory before an E3 exit, capacity, or SLO claim. External prerequisites
+are: the passing E6F-06 image/signature/provenance/policy/root; reviewed manifest-only gate
+commit and read-only detached checkout; pinned executable bytes; exclusive Linux host with
+the manifest CPU/RAM/storage/PostgreSQL settings; a dedicated migrated benchmark database;
+`AOA_EVIDENCE_ROOT` on encrypted local storage; an S3 bucket with versioning and Object Lock
+enabled at creation; Integration credentials limited to immutable put/readback; distinct
+Security read/retention credentials; and outbound access only to the pinned provenance and S3
+origins.
+
+The exact Integration command derives the sole manifest added by the gate commit and the
+attempt directory from its closed fields—there are no path/SHA placeholders:
+
+```powershell
+$perfManifestPaths = @(git diff-tree --no-commit-id --name-only -r HEAD -- 'docs/replatform/epics/E3-job-control/qa/*-e3-perf-01-*.json')
+if ($perfManifestPaths.Count -ne 1) { throw 'E3-PERF-01 gate commit must add exactly one manifest' }
+$perfManifest = (Resolve-Path -LiteralPath $perfManifestPaths[0]).Path
+$perfDocument = Get-Content -Raw -LiteralPath $perfManifest | ConvertFrom-Json
+if (-not $env:AOA_EVIDENCE_ROOT) { throw 'AOA_EVIDENCE_ROOT is required' }
+$perfOutput = Join-Path $env:AOA_EVIDENCE_ROOT ("e3-perf-01/{0}/{1}" -f $perfDocument.implementationRevision, $perfDocument.attempt)
+Invoke-NativeGate 'E3-PERF-01 formal campaign' {
+  node scripts/run-e3-perf-01.mjs --manifest $perfManifest --output $perfOutput
+}
+```
+
+After that command succeeds, the Security owner independently runs:
+
+```powershell
+$perfQa = Join-Path $perfOutput 'qa.json'
+$securityReceipt = Join-Path $perfOutput 'security-handoff.json'
+Invoke-NativeGate 'E3-PERF-01 independent security handoff' {
+  node scripts/verify-e3-perf-01-handoff.mjs --manifest $perfManifest --qa $perfQa --output $securityReceipt
+}
+```
+
+##### 6. Non-platform target→worker lock order (E3-F033)
+
+For Organization/owner poll, `lockWorkerLeaseAuthority` first locks the authenticated
+`execution_targets.id = input.targetId` row `FOR UPDATE`, then locks the exact worker by
+`(organization_id, id, execution_target_id, target_authority_key)` `FOR UPDATE`, and finally
+revalidates target scope/owner/status/generation/profile/provider and worker binding before any
+profile/liveness, certificate, claim, attempt, or lease mutation. The proof receipt may be
+recorded earlier only inside the same rollback-capable tenant transaction; the current
+`touchWorkerLeaseProfile` worker update moves after target→worker authority locking. Merely
+reversing the two repository selects while retaining that earlier worker update is not a fix.
+Revoke already uses
+target→worker; neither path may invert the order. A barrier test repeatedly overlaps poll and
+revoke, requires both transactions to settle inside the existing 750 ms bound with no `40P01`,
+and proves either poll commits before cutoff or observes cutoff with no effects.
+
+The platform path remains the exact Decision #124 bounded nesting: the app tenant transaction
+locks only its logical worker; the operator transaction locks physical target→physical worker
+and acquires the shared advisory handoff; it commits while the app retains the shared advisory
+lock. Authority writers use physical target→physical worker→exclusive advisory. Because the
+app logical row is not an operator physical row and the operator transaction never waits on
+it, this order cannot close a row-lock cycle. Existing operator-loss and writer-inventory
+tests remain required.
+
+##### TDD, commits, review, commands, and stop conditions
+
+Implementation is split at these mandatory plain-commit/review boundaries; no reviewer may
+review a mixed later slice:
+
+1. `test(job-control): expose final review blockers` — tests only for all six findings; record
+   the exact intended failure map. Controller review must accept the RED before GREEN.
+2. `fix(job-control): bind serving pools to migrated authority` — client/startup/manifests/
+   index only; independent schema/security review.
+3. `fix(job-control): bound certificate cleanup and lock order` — repository/outbox/leasing
+   only; independent concurrency/repository review.
+4. `feat(job-control): add payload-free control metrics` — metrics/scheduler/leasing/outbox/
+   index only; independent privacy/observability review.
+5. `feat(perf): launch and attest E3 performance campaign` — runner/schemas/verifier/tests
+   only; independent Security review. Do not run the formal campaign in this slice.
+6. `docs(job-control): record JOB-003 final review` — result/evidence only after all focused
+   GREEN commands and a distinct whole-candidate reviewer; retain `needs_changes` unless that
+   reviewer explicitly returns pass. The later manifest, formal campaign QA, and Security
+   handoff are separate immutable commits owned by their named gate owners.
+
+Exact fix-round command from `C:\e3` (RED and GREEN use the identical invocation; run the DB
+and server groups three times before candidate review):
+
+```powershell
+Invoke-E3Integration {
+  Invoke-NativeGate 'JOB-003 final DB' {
+    pnpm --filter @armyofagents/db exec vitest run src/__tests__/worker-lease-rejections-schema.integration.test.ts src/__tests__/job-leasing-lock-order.integration.test.ts
+  }
+  Invoke-NativeGate 'JOB-003 final server' {
+    pnpm --filter @armyofagents/server exec vitest run src/__tests__/distributed-execution-db-startup.integration.test.ts src/__tests__/distributed-execution-databases-unit.test.ts src/__tests__/tenant-app-db-startup.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-control-runtime.test.ts src/__tests__/job-leasing.integration.test.ts src/__tests__/job-leasing-contract.test.ts src/__tests__/job-control-metrics.test.ts src/__tests__/server-shutdown.test.ts
+  }
+}
+Invoke-NativeGate 'JOB-003 final perf contracts' {
+  node --test scripts/run-e3-perf-01.test.mjs scripts/verify-e3-perf-01-handoff.test.mjs
+}
+Invoke-NativeGate 'JOB-003 db typecheck' { pnpm --filter @armyofagents/db typecheck }
+Invoke-NativeGate 'JOB-003 server typecheck' { pnpm --filter @armyofagents/server typecheck }
+```
+
+Then rerun the pre-existing complete JOB-003 focused command in section 3, package builds,
+and the Linux aggregate required by the ticket result. The ordinary gate does not run
+E3-PERF-01's million-row campaign; only the formal command above may create that evidence.
+
+Rollback keeps `AOA_DISTRIBUTED_EXECUTION_ENABLED=false`, stops new offers, closes both
+serving pools inside the close deadline, and reverts one GREEN slice at a time; certificate
+tables remain inert derived metadata and offered leases expire normally. STOP rather than
+bypass if the exact ledger cannot be proven, any contention result is ambiguous, a required
+relation/policy/ACL differs, cleanup could affect more than its selected tuples, a metric
+requires payload/arbitrary labels or can throw, production CLI needs a selectable test seam,
+immutable evidence cannot be retained/read back, or the lock-order fix requires an E1/schema/
+migration/grant/owner-pool expansion. Any >256 cleanup result rolls back. Any startup or
+campaign timeout/backend loss is a fail-closed error, never a retry that weakens attestation.
+No new dependency is authorized while the existing AWS SDK suffices. E1 stays byte-frozen;
+app/operator receive no new privilege, especially no `drizzle` access.
+
 ### JOB-010 — Preserve admission and assignment invariants (parity-exempt, PRE-D1)
 
 **Depends on:** TEN-006, JOB-001.
@@ -2377,25 +2825,33 @@ closes the amendment-review block and authorizes only a corrected tests-only RED
 schema, migration, and GREEN work remain unauthorized until the controller independently
 reruns that RED and confirms that every failure is intentional and behavior-first.
 
+That authorization is historical, not current. Final review attempt 3 of implementation
+candidate `392c3a2da52c3fd812d7b9e2801fe6523f1cc657` returned `needs_changes` and opened
+E3-F028–E3-F033: the serving pools were not bound to the migrated owner's advisory domain;
+startup could accept missing relations or wrong RLS/policy posture; cleanup was neither
+composed nor tuple-bounded; the formal performance CLI could not launch; required payload-free
+metrics were absent; and non-platform poll/revoke inverted row-lock order. The binding
+fix-round-3 delta above specifies the fresh RED/GREEN and review path. It does not complete
+JOB-003, authorize an SLO claim, or waive the formal campaign.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–7 rejected + attempt 8 accepted | `ACCEPTED FOR CORRECTED RED` | Exact revision `73675cc621008ea0dcf18f6ae0c430162e7e448e` passed distinct whole-plan and schema/security review with zero P0/P1/P2 findings. Corrected tests-only RED is authorized; migrations and GREEN remain gated on controller RED verification. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–7 rejected + attempt 8 accepted + final implementation review attempt 3 | `NEEDS CHANGES` | Final review of candidate `392c3a2da52c3fd812d7b9e2801fe6523f1cc657` opened E3-F028–E3-F033. Only the fix-round-3 TDD slices above are assignable; ticket completion and SLO claims remain blocked. |
 | Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
 | Claude (user-provided) | pasted review | External plan delta review | 1 | `TRIAGED — STALE BASE` | Reviewed origin `8e2faa590`, not the local plan; three concerns were already closed, while JOB-009 sizing and explicit JOB-012–014 disablement were valid deltas and are now resolved in plan. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | Not run. |
 
-**VERDICT:** APPROVED FOR PRE-D1 EXECUTION; THE JOB-003 CERTIFICATE AMENDMENT IS ACCEPTED FOR
-A CORRECTED TESTS-ONLY RED. JOB-003 migrations and GREEN remain paused until the controller
-independently verifies that RED. The original plan is
-otherwise independently review-complete;
+**VERDICT:** `NEEDS_CHANGES` FOR JOB-003 FINAL REVIEW. The original plan is otherwise
+independently review-complete, but JOB-003 must complete the binding fix-round-3 RED/GREEN,
+focused/aggregate gates, and fresh independent review before a pass can be recorded;
 the operator selected E2 option B plus the metadata-only operator role, approved the E1
 checker-only correction, and approved JOB-002's HTTP-header proof/composite binding. Both
 corrective gates passed. Post-D1 tickets remain blocked on `E6-D1-FOUNDATION`.
 
 **UNRESOLVED DECISIONS:**
-- No unresolved product or architecture choice. JOB-003 retains an execution checkpoint: corrected tests-only RED verification must pass before migration generation or GREEN authorization.
+- No unresolved product or architecture choice. JOB-003 retains execution checkpoints at the fix-round-3 tests-only RED, each bounded GREEN review, the whole-candidate review, and the later independent E3-PERF-01 campaign/security handoff.
