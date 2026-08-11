@@ -281,7 +281,7 @@ type AdvisoryPhase =
   | "operator-positive";
 
 type StartupFailureInjection = AdvisoryPhase | "statement-timeout" | "lock-timeout" |
-  "idle-timeout" | "forced-end";
+  "idle-timeout" | "forced-end" | "shared-budget";
 
 async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
   const dialect = new PgDialect();
@@ -305,6 +305,12 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     advisoryKeyBindings: [] as bigint[],
     abortControllers: [] as AbortController[],
     abortCalls: 0,
+    abortAt: null as number | null,
+    budgetWindows: [] as Array<{
+      role: "owner" | "aoa_app" | "aoa_operator";
+      startedAt: number;
+      settledAt: number | null;
+    }>,
   };
   const namedUrl = (url: string, suffix: string) => {
     const separator = url.includes("?") ? "&" : "?";
@@ -324,6 +330,12 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       }
     }
     return undefined;
+  };
+  const consumeBudget = async (role: "owner" | "aoa_app" | "aoa_operator") => {
+    const window = { role, startedAt: performance.now(), settledAt: null as number | null };
+    state.budgetWindows.push(window);
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    window.settledAt = performance.now();
   };
   const waitForPositivePeer = async (role: "aoa_app" | "aoa_operator") => {
     const peer = role === "aoa_app" ? "aoa_operator" : "aoa_app";
@@ -368,6 +380,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               const key = queryParams.find((value): value is bigint => typeof value === "bigint");
               if (key !== undefined) state.advisoryKeyBindings.push(key);
               state.phases.push("owner-exclusive");
+              if (inject === "shared-budget") await consumeBudget("owner");
               if (inject === "owner-exclusive") {
                 state.injectionTriggered = true;
                 throw Object.assign(new Error("owner phase injected"), { code: "INJECT_OWNER" });
@@ -386,6 +399,10 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
                 await new Promise((resolve) => setTimeout(resolve, 5_500));
                 return (target as T & { execute(s: unknown): Promise<unknown> }).execute(sql`SELECT 1`);
               }
+            }
+            if (inject === "shared-budget" && role !== "owner" &&
+              /pg_try_advisory_xact_lock_shared/u.test(queryText)) {
+              await consumeBudget(role);
             }
             const result = await (target as T & { execute(s: unknown): Promise<unknown> }).execute(statement);
             if (/pg_backend_pid\s*\(/u.test(queryText)) {
@@ -522,6 +539,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
         }
         override abort(reason?: unknown) {
           state.abortCalls += 1;
+          state.abortAt ??= performance.now();
           super.abort(reason);
         }
       }
@@ -935,6 +953,54 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       }
       expect(keys[0]).not.toBe(keys[1]);
     }, 120_000);
+
+    it("spends one monotonic deadline across sequential owner and concurrent app/operator phases", async () => {
+      // Mutation caught: resetting a five-second timeout per participant lets two individually
+      // sub-limit delays consume more than the one allowed startup budget and return a pool.
+      guard();
+      const harness = await createAdvisoryStartupHarness("shared-budget");
+      let accepted: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> = null;
+      let failure: unknown;
+      let settlement: Awaited<ReturnType<typeof observeAdvisoryStartupSettlement>> | undefined;
+      try {
+        accepted = await harness.open(harness.input);
+      } catch (error) {
+        failure = error;
+      } finally {
+        await accepted?.close().catch(() => {});
+        settlement = await observeAdvisoryStartupSettlement(harness.token);
+        await harness.cleanup();
+      }
+
+      expect(accepted === null, "shared budget expiry must not return either pool").toBe(true);
+      expect(failure).toMatchObject({ message: "distributed_execution_timeout" });
+      expect(harness.state.abortControllers).toHaveLength(1);
+      expect(harness.state.abortCalls).toBe(1);
+      const firstWindowByRole = new Map(harness.state.budgetWindows.map((window) => [window.role, window]));
+      expect([...firstWindowByRole.keys()].sort()).toEqual(["aoa_app", "aoa_operator", "owner"]);
+      const owner = firstWindowByRole.get("owner");
+      const app = firstWindowByRole.get("aoa_app");
+      const operator = firstWindowByRole.get("aoa_operator");
+      expect(typeof owner?.settledAt).toBe("number");
+      expect(typeof app?.settledAt).toBe("number");
+      expect(typeof operator?.settledAt).toBe("number");
+      expect(typeof harness.state.abortAt).toBe("number");
+      if (!owner || !app || !operator || typeof owner.settledAt !== "number" ||
+        typeof app.settledAt !== "number" || typeof operator.settledAt !== "number" ||
+        typeof harness.state.abortAt !== "number") {
+        throw new Error("shared budget fixture did not observe every settlement timestamp");
+      }
+      expect(app.startedAt).toBeGreaterThanOrEqual(owner.settledAt);
+      expect(operator.startedAt).toBeGreaterThanOrEqual(owner.settledAt);
+      expect(harness.state.abortAt).toBeGreaterThanOrEqual(Math.max(app.startedAt, operator.startedAt));
+      expect(harness.state.abortAt).toBeLessThan(Math.min(app.settledAt, operator.settledAt));
+      expect(settlement).toEqual({
+        participant_pids: 0,
+        owner_pids: 1,
+        owner_in_transaction: 0,
+        advisory_locks: 0,
+      });
+    }, 60_000);
 
     it("settles and tears down every advisory participant for each failure/timeout/forced-end phase without payload-bearing diagnostics", async () => {
       // Mutations caught: per-peer aborts, naked Promise.race closes, or logging URLs/keys can

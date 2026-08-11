@@ -1,6 +1,128 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
+
+const METRICS_TYPES_COMPILER_FIXTURE = String.raw`
+import type {
+  JobControlMetrics,
+  SchedulerCapacityScope,
+} from "../../services/job-control-metrics.js";
+
+type Equal<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2)
+    ? (<Value>() => Value extends Right ? 1 : 2) extends
+      (<Value>() => Value extends Left ? 1 : 2)
+      ? true
+      : false
+    : false;
+type Assert<Condition extends true> = Condition;
+
+type PlanJobControlMetrics = {
+  certificateScan(value: Readonly<{
+    hitsObserved: number;
+    hitsSaturated: boolean;
+    missesObserved: number;
+    missesSaturated: boolean;
+    scanExhausted: boolean;
+    cardinalityObserved: number;
+    cardinalitySaturated: boolean;
+  }>): void;
+  certificateUpsert(value: Readonly<{ count: number }>): void;
+  certificateCleanup(value: Readonly<{
+    count: number;
+    cardinalityObserved: number;
+    cardinalitySaturated: boolean;
+  }>): void;
+  headRestart(): void;
+  schedulerCapacityReject(value: Readonly<{
+    scope: "organization" | "target" | "global";
+  }>): void;
+  schedulerExpiry(value: Readonly<{ count: number }>): void;
+  schedulerCardinality(value: Readonly<{
+    organizations: number;
+    targets: number;
+    signals: number;
+  }>): void;
+  outboxTick(value: Readonly<{
+    budgetMs: number;
+    elapsedMs: number;
+    overshootMs: number;
+    organizations: number;
+    claimed: number;
+    delivered: number;
+    cleaned: number;
+  }>): void;
+};
+
+type _MetricsAreBidirectionallyExact = Assert<Equal<JobControlMetrics, PlanJobControlMetrics>>;
+type _ScopeIsBidirectionallyExact = Assert<
+  Equal<SchedulerCapacityScope, "organization" | "target" | "global">
+>;
+type _MetricsHaveNoOpenStringIndex = Assert<Equal<string extends keyof JobControlMetrics ? true : false, false>>;
+
+declare const metrics: JobControlMetrics;
+declare const openRecord: Record<string, unknown>;
+
+metrics.certificateScan({
+  hitsObserved: 1,
+  hitsSaturated: false,
+  missesObserved: 2,
+  missesSaturated: false,
+  scanExhausted: false,
+  cardinalityObserved: 3,
+  cardinalitySaturated: false,
+});
+metrics.schedulerCapacityReject({ scope: "organization" });
+
+// @ts-expect-error The exact upsert payload is closed to caller-defined fields.
+metrics.certificateUpsert({ count: 1, organizationId: "forbidden" });
+// @ts-expect-error An open Record cannot stand in for a closed scan payload.
+metrics.certificateScan(openRecord);
+// @ts-expect-error Scheduler scope is the exact three-value plan union.
+const invalidScope: SchedulerCapacityScope = "tenant";
+
+void invalidScope;
+`;
+
+const METRICS_TYPES_EXPECTED_MODULE = String.raw`
+export type SchedulerCapacityScope = "organization" | "target" | "global";
+export interface JobControlMetrics {
+  certificateScan(value: Readonly<{
+    hitsObserved: number;
+    hitsSaturated: boolean;
+    missesObserved: number;
+    missesSaturated: boolean;
+    scanExhausted: boolean;
+    cardinalityObserved: number;
+    cardinalitySaturated: boolean;
+  }>): void;
+  certificateUpsert(value: Readonly<{ count: number }>): void;
+  certificateCleanup(value: Readonly<{
+    count: number;
+    cardinalityObserved: number;
+    cardinalitySaturated: boolean;
+  }>): void;
+  headRestart(): void;
+  schedulerCapacityReject(value: Readonly<{ scope: SchedulerCapacityScope }>): void;
+  schedulerExpiry(value: Readonly<{ count: number }>): void;
+  schedulerCardinality(value: Readonly<{
+    organizations: number;
+    targets: number;
+    signals: number;
+  }>): void;
+  outboxTick(value: Readonly<{
+    budgetMs: number;
+    elapsedMs: number;
+    overshootMs: number;
+    organizations: number;
+    claimed: number;
+    delivered: number;
+    cleaned: number;
+  }>): void;
+}
+`;
 
 type CertificateScanMetrics = Readonly<{
   hitsObserved: number;
@@ -67,6 +189,63 @@ async function loadMetricsModule(): Promise<unknown> {
 }
 
 describe("JOB-003 closed payload-free metrics", () => {
+  it("compiler-binds the exported metrics and scope types to the exact closed plan contract", () => {
+    // Mutation caught: an exported open Record, an added field/method, or a widened scheduler
+    // scope makes this independent fixture fail even if the source-shape inspection below passes.
+    const fixturePath = fileURLToPath(new URL(
+      "./fixtures/job-control-metrics-types.virtual.ts",
+      import.meta.url,
+    ));
+    const canonicalFixturePath = ts.sys.resolvePath(fixturePath);
+    const modulePath = fileURLToPath(new URL("../services/job-control-metrics.ts", import.meta.url));
+    const canonicalModulePath = ts.sys.resolvePath(modulePath);
+    const options: ts.CompilerOptions = {
+      target: ts.ScriptTarget.ES2023,
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      strict: true,
+      noEmit: true,
+      skipLibCheck: true,
+      types: [],
+      lib: ["lib.es2023.d.ts"],
+    };
+    const compile = (expectedModuleSource?: string) => {
+      const host = ts.createCompilerHost(options);
+      const originalFileExists = host.fileExists.bind(host);
+      const originalReadFile = host.readFile.bind(host);
+      const originalGetSourceFile = host.getSourceFile.bind(host);
+      const virtualSource = (fileName: string) => {
+        const canonical = ts.sys.resolvePath(fileName);
+        if (canonical === canonicalFixturePath) return METRICS_TYPES_COMPILER_FIXTURE;
+        if (expectedModuleSource !== undefined && canonical === canonicalModulePath) {
+          return expectedModuleSource;
+        }
+        return undefined;
+      };
+      host.fileExists = (fileName) => virtualSource(fileName) !== undefined || originalFileExists(fileName);
+      host.readFile = (fileName) => virtualSource(fileName) ?? originalReadFile(fileName);
+      host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
+        const sourceText = virtualSource(fileName);
+        return sourceText !== undefined
+          ? ts.createSourceFile(fileName, sourceText, languageVersion, true)
+          : originalGetSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile);
+      };
+      const diagnostics = ts.getPreEmitDiagnostics(ts.createProgram({
+        rootNames: [fixturePath],
+        options,
+        host,
+      }));
+      return ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+        getCanonicalFileName: (fileName) => fileName,
+        getCurrentDirectory: () => fileURLToPath(new URL("../../..", import.meta.url)),
+        getNewLine: () => "\n",
+      });
+    };
+    expect(compile(METRICS_TYPES_EXPECTED_MODULE), "compiler fixture must accept the exact plan type")
+      .toBe("");
+    expect(compile(), "production exports must satisfy the validated compiler fixture").toBe("");
+  });
+
   it("emits the eight exact event names with only their closed hand-derived fields", async () => {
     // Mutation caught: adding arbitrary labels/payloads or inferring counts in the adapter makes
     // a domain canary observable even though the service result is otherwise unchanged.

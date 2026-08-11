@@ -11,6 +11,148 @@ import { fileURLToPath } from "node:url";
 import { getTableColumns, getTableName, type Table } from "drizzle-orm";
 import * as dbSchema from "../../../packages/db/src/schema/index.js";
 
+type PlanGrantedPrivilege = "SELECT" | "INSERT" | "UPDATE" | "DELETE";
+type PlanRolePrivileges = Readonly<Record<
+  "aoa_app" | "aoa_operator",
+  readonly PlanGrantedPrivilege[]
+>>;
+
+function deepFreezeFixture<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const nested of Object.values(value as Record<string, unknown>)) {
+      deepFreezeFixture(nested);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
+// Hand-transcribed from the accepted bounded-grant and column-projection plan. This fixture is
+// intentionally independent of the production grant constants so changing a production
+// privilege cannot silently rewrite both the implementation and the expected ACL certificate.
+const PLAN_DERIVED_ACL_MATRIX = deepFreezeFixture({
+  relations: {
+    activity_log: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
+    agent_runtime_decisions: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    agent_runtime_trust_rules: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    agent_wakeup_requests: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    agents: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
+    approvals: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    artifact_versions: { aoa_app: ["SELECT"], aoa_operator: [] },
+    artifacts: { aoa_app: ["SELECT"], aoa_operator: [] },
+    assets: { aoa_app: ["SELECT"], aoa_operator: [] },
+    budget_incidents: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    budget_policies: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    companies: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
+    company_memberships: { aoa_app: ["SELECT"], aoa_operator: [] },
+    cost_events: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
+    discussion_entries: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
+    execution_targets: { aoa_app: [], aoa_operator: [] },
+    execution_workspaces: { aoa_app: ["SELECT"], aoa_operator: [] },
+    heartbeat_runs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    hub_audit: { aoa_app: ["INSERT"], aoa_operator: [] },
+    hub_counter_snapshots: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
+    internal_agent_config: { aoa_app: ["SELECT"], aoa_operator: [] },
+    internal_agent_conversations: { aoa_app: ["SELECT"], aoa_operator: [] },
+    internal_agent_messages: { aoa_app: ["SELECT"], aoa_operator: [] },
+    internal_agent_runs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    internal_agent_runtime_approvals: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    internal_agent_tool_trust_rules: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    issue_comments: { aoa_app: ["INSERT"], aoa_operator: [] },
+    issue_labels: { aoa_app: ["SELECT"], aoa_operator: [] },
+    issues: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
+    job_artifacts: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    job_attempts: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    job_outbox: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    job_secret_handles: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    jobs: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    labels: { aoa_app: ["SELECT"], aoa_operator: [] },
+    leases: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    mcp_api_keys: { aoa_app: [], aoa_operator: [] },
+    notification_digest_items: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
+    notification_preferences: { aoa_app: ["SELECT"], aoa_operator: [] },
+    notifications: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    organization_memberships: { aoa_app: ["SELECT"], aoa_operator: [] },
+    organizations: { aoa_app: ["SELECT"], aoa_operator: [] },
+    projects: { aoa_app: ["SELECT"], aoa_operator: [] },
+    service_instances: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    services: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    task_dependencies: { aoa_app: ["SELECT"], aoa_operator: [] },
+    task_outputs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    thread_orchestration_state: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
+    user_roles: { aoa_app: ["SELECT"], aoa_operator: [] },
+    worker_enrollment_code_routes: {
+      aoa_app: ["SELECT", "INSERT", "DELETE"],
+      aoa_operator: ["SELECT", "INSERT", "DELETE"],
+    },
+    worker_enrollment_codes: {
+      aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+      aoa_operator: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+    },
+    worker_lease_rejections: {
+      aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+      aoa_operator: [],
+    },
+    worker_operation_receipts: {
+      aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+      aoa_operator: [],
+    },
+    worker_proof_replays: {
+      aoa_app: ["SELECT", "INSERT", "DELETE"],
+      aoa_operator: ["SELECT", "INSERT", "DELETE"],
+    },
+    workers: {
+      aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+      aoa_operator: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+    },
+    workspace_runtime_services: { aoa_app: ["SELECT"], aoa_operator: [] },
+  },
+  columns: {
+    mcp_api_keys: {
+      id: { aoa_app: ["SELECT"], aoa_operator: [] },
+      company_id: { aoa_app: ["SELECT"], aoa_operator: [] },
+      user_id: { aoa_app: ["SELECT"], aoa_operator: [] },
+      revoked_at: { aoa_app: ["SELECT"], aoa_operator: [] },
+    },
+    workers: {
+      id: { aoa_app: [], aoa_operator: ["SELECT"] },
+      scope: { aoa_app: [], aoa_operator: ["SELECT"] },
+      organization_id: { aoa_app: [], aoa_operator: ["SELECT"] },
+      label: { aoa_app: [], aoa_operator: ["SELECT"] },
+      status: { aoa_app: [], aoa_operator: ["SELECT"] },
+      created_at: { aoa_app: [], aoa_operator: ["SELECT"] },
+      updated_at: { aoa_app: [], aoa_operator: ["SELECT"] },
+    },
+    execution_targets: {
+      id: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      organization_id: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      owner_user_id: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      slug: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      kind: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      trust_class: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      status: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: ["SELECT", "UPDATE"] },
+      capabilities: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      scope: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      target_authority_key: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      device_generation: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: ["SELECT", "UPDATE"] },
+      worker_token_hash: { aoa_app: ["UPDATE"], aoa_operator: ["UPDATE"] },
+      config: { aoa_app: ["SELECT"], aoa_operator: [] },
+      last_seen_at: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: ["SELECT", "UPDATE"] },
+      created_at: { aoa_app: [], aoa_operator: ["SELECT"] },
+      updated_at: { aoa_app: ["UPDATE"], aoa_operator: ["SELECT", "UPDATE"] },
+      registered_profile: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: ["SELECT", "UPDATE"] },
+      registered_profile_hash: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: ["SELECT", "UPDATE"] },
+      provider_constraint_profile: {
+        aoa_app: ["SELECT", "UPDATE"],
+        aoa_operator: ["SELECT", "UPDATE"],
+      },
+    },
+  },
+} as const satisfies {
+  relations: Readonly<Record<string, PlanRolePrivileges>>;
+  columns: Readonly<Record<string, Readonly<Record<string, PlanRolePrivileges>>>>;
+});
+
 describe("JOB-001 bounded aoa_app authority", () => {
   it("adds the outbox as a forced-RLS new-path table with exact DML", () => {
     const submissionNewPath = (grants as typeof grants & {
@@ -200,6 +342,16 @@ describe("JOB-003 bounded aoa_app authority", () => {
   });
 
   it("derives exact relation and column ACL tuple manifests for every serving relation", () => {
+    // Mutation caught: deriving the oracle from the production grant constants lets an
+    // accidental privilege expansion change both sides of the assertion and pass unnoticed.
+    const expectDeepFrozenFixture = (value: unknown): void => {
+      if (value === null || typeof value !== "object") return;
+      expect(Object.isFrozen(value)).toBe(true);
+      for (const nested of Object.values(value as Record<string, unknown>)) {
+        expectDeepFrozenFixture(nested);
+      }
+    };
+    expectDeepFrozenFixture(PLAN_DERIVED_ACL_MATRIX);
     const manifest = grants as typeof grants & {
       APP_SERVING_RELATIONS?: readonly string[];
       OPERATOR_SERVING_RELATIONS?: readonly string[];
@@ -245,23 +397,18 @@ describe("JOB-003 bounded aoa_app authority", () => {
     ].join(":");
     const sorted = (tuples: readonly ExpectedTuple[]) => [...tuples].sort((left, right) =>
       tupleKey(left).localeCompare(tupleKey(right)));
-    const appTablePrivileges = {
-      ...grants.JOB_CONTROL_LEGACY_GRANTS,
-      ...grants.JOB_CONTROL_NEW_PATH_GRANTS,
-      ...grants.JOB_SUBMISSION_LEGACY_GRANTS,
-      ...grants.JOB_SUBMISSION_NEW_PATH_GRANTS,
-      ...grants.WORKER_ENROLLMENT_APP_GRANTS,
-      ...grants.JOB_LEASING_NEW_PATH_GRANTS,
-    } as Readonly<Record<string, readonly string[]>>;
-    const operatorTablePrivileges = grants.WORKER_ENROLLMENT_OPERATOR_GRANTS as
-      Readonly<Record<string, readonly string[]>>;
     const ownerTablePrivileges = [
       "SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER",
     ] as const;
     const expectedRelations: Record<string, { aclIsNull: boolean; tuples: ExpectedTuple[] }> = {};
+    expect(Object.keys(PLAN_DERIVED_ACL_MATRIX.relations).sort()).toEqual(relations);
     for (const relation of relations) {
-      const app = appTablePrivileges[relation] ?? [];
-      const operator = operatorTablePrivileges[relation] ?? [];
+      const planPrivileges = (PLAN_DERIVED_ACL_MATRIX.relations as
+        Readonly<Record<string, PlanRolePrivileges>>)[relation];
+      expect(planPrivileges, `${relation} must have one literal plan-derived ACL row`).toBeDefined();
+      if (!planPrivileges) continue;
+      const app = planPrivileges.aoa_app;
+      const operator = planPrivileges.aoa_operator;
       const aclIsNull = app.length === 0 && operator.length === 0;
       expectedRelations[relation] = {
         aclIsNull,
@@ -297,45 +444,24 @@ describe("JOB-003 bounded aoa_app authority", () => {
       } catch { /* schema export is not a table */ }
     }
     const explicitColumns = new Map<string, Map<string, ExpectedTuple[]>>();
-    const addColumns = (
-      role: "aoa_app" | "aoa_operator",
-      relation: string,
-      privilegeType: "SELECT" | "UPDATE",
-      columns: readonly string[],
-    ) => {
-      const relationColumns = explicitColumns.get(relation) ?? new Map<string, ExpectedTuple[]>();
+    for (const [relation, columns] of Object.entries(PLAN_DERIVED_ACL_MATRIX.columns)) {
+      expect(relations, `${relation} column ACL fixture must name a serving relation`).toContain(relation);
+      expect(columnsByRelation.get(relation), `${relation} must resolve to one checked-in Drizzle table`)
+        .toEqual(expect.arrayContaining(Object.keys(columns)));
+      const relationColumns = new Map<string, ExpectedTuple[]>();
       explicitColumns.set(relation, relationColumns);
-      for (const column of new Set(columns)) {
-        const tuples = relationColumns.get(column) ?? [];
-        if (!tuples.some((tuple) => tuple.grantee === role && tuple.privilegeType === privilegeType)) {
-          tuples.push({
-            grantor: "RELATION_OWNER", grantee: role, privilegeType, isGrantable: false,
-          });
+      for (const [column, privilegesByRole] of Object.entries(columns)) {
+        const tuples: ExpectedTuple[] = [];
+        for (const role of ["aoa_app", "aoa_operator"] as const) {
+          for (const privilegeType of privilegesByRole[role]) {
+            tuples.push({
+              grantor: "RELATION_OWNER", grantee: role, privilegeType, isGrantable: false,
+            });
+          }
         }
-        relationColumns.set(column, tuples);
+        relationColumns.set(column, sorted(tuples));
       }
-    };
-    addColumns("aoa_app", "mcp_api_keys", "SELECT", grants.APP_MCP_API_KEY_COLUMN_GRANTS);
-    addColumns("aoa_app", "execution_targets", "SELECT", [
-      ...grants.APP_EXECUTION_TARGET_COLUMN_GRANTS,
-      ...grants.APP_ENROLLMENT_TARGET_SELECT_COLUMNS,
-      ...grants.APP_JOB_PLACEMENT_TARGET_SELECT_COLUMNS,
-    ]);
-    addColumns("aoa_app", "execution_targets", "UPDATE", [
-      ...grants.APP_ENROLLMENT_TARGET_UPDATE_COLUMNS,
-      ...grants.APP_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS,
-    ]);
-    for (const [relation, columns] of Object.entries(grants.OPERATOR_METADATA_COLUMN_GRANTS)) {
-      addColumns("aoa_operator", relation, "SELECT", columns);
     }
-    addColumns("aoa_operator", "execution_targets", "SELECT", [
-      ...grants.OPERATOR_ENROLLMENT_TARGET_SELECT_COLUMNS,
-      ...grants.OPERATOR_JOB_PLACEMENT_TARGET_SELECT_COLUMNS,
-    ]);
-    addColumns("aoa_operator", "execution_targets", "UPDATE", [
-      ...grants.OPERATOR_ENROLLMENT_TARGET_UPDATE_COLUMNS,
-      ...grants.OPERATOR_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS,
-    ]);
     const expectedColumns: Record<string, Record<string, {
       aclIsNull: boolean;
       tuples: ExpectedTuple[];
