@@ -193,7 +193,7 @@ const PLAN_DERIVED_RELATION_ACL_NULLNESS = deepFreezeFixture({
   jobs: false,
   labels: false,
   leases: false,
-  mcp_api_keys: true,
+  mcp_api_keys: false,
   notification_digest_items: false,
   notification_preferences: false,
   notifications: false,
