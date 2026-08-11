@@ -1227,6 +1227,14 @@ target, or tenant is ignored. An exhaustive AST/exact writer inventory proves th
 immutable job/placement fields cannot change after submission/placement; injected protected-
 field writers must fail it.
 
+`placement_owner` is the JOB-009 placement-class enum and, for a selected attempt, equals
+`placement_target_class`. The leasing candidate/repository input names this fact
+`placementOwner` and sources it only from `normalizedCurrentTarget.targetClass`; it must never
+use `execution_targets.owner_user_id`, an authenticated/request owner, or any user principal.
+The optional target owner UUID remains exclusively `targetOwnerUserId` inside the static
+authority context above. Contract REDs reject the ambiguous `targetOwner` candidate field name
+and any owner-user-ID-to-placement-owner mapping.
+
 Candidate selection is one database-native statement with stable
 `statement_timestamp()`, the exact correlated equality anti-join above, canonical
 `available_at ASC, priority DESC, created_at ASC, id ASC`, `LIMIT 256`, and `FOR UPDATE SKIP
