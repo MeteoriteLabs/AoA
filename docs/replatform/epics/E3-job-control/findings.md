@@ -1117,7 +1117,11 @@ This record plans, but does not implement or resolve, the six final-review findi
   which verifies an absolute Node/runner/manifest path and digest before JavaScript starts.
   PATH Node/wrappers, NODE preloads, Git overrides, AWS endpoint/config/static credentials,
   proxies, and custom CAs are absent from the minimal parent environment; real-entry negatives
-  fail before a JS marker. Production then
+  fail before a JS marker. The independent Security handoff has its own out-of-band pinned
+  bootstrap whose runner path/hash and resolved realpath must be exactly
+  `scripts/verify-e3-perf-01-handoff.mjs`; it invokes that configured path, never a hardcoded
+  sibling. Mutating only the verifier while the campaign runner remains valid fails before
+  verifier module load. Production then
   recomputes Git/detached lineage, fixed executable digests/environment, E6F-06 provenance,
   child NDJSON/redaction, archive scan/hash, immutable S3 Object Lock COMPLIANCE upload, exact
   readback/retention, and sanitized QA/failure evidence. The existing AWS SDK is sufficient.
@@ -1153,3 +1157,8 @@ opened the six P1 clarifications above. The canonical amendment now closes each 
 level without widening E1, schema/migrations, grants, production test seams, or evidence
 claims. JOB-003 and E3-F028–E3-F033 remain `needs_changes` until implementation and fresh
 independent review; this planning correction is not a ticket pass.
+
+Security re-review of `b1773d6743efaead970ca5edfee0d41911e5028c` found that the handoff
+reused the campaign bootstrap but invoked a different hardcoded script. The distinct Security
+bootstrap/realpath/digest contract above closes that plan P1 without changing ticket status or
+claiming implementation.

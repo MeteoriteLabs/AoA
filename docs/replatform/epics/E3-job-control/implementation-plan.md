@@ -2093,17 +2093,41 @@ Invoke-NativeGate 'E3-PERF-01 formal campaign' {
 }
 ```
 
-After that command succeeds, the Security owner's separate pinned runner independently repeats
-the complete bootstrap validation/environment-clear block above, sets the same credentialless
-`$perfManifest`/`$perfOutput`, and then runs:
+After that command succeeds, the Security owner uses a distinct protected-control-plane pin
+and root-owned read-only `/run/aoa/e3-perf-01-security-bootstrap.json`; reusing the Integration
+bootstrap is forbidden. It has the same exact closed fields/parent-environment denial contract,
+but its independently approved `runnerScriptPath` and `runnerScriptSha256` must name/hash
+exactly `scripts/verify-e3-perf-01-handoff.mjs`; QA/handoff records its config digest separately
+from the Integration bootstrap digest. The Security runner repeats the complete
+absolute-path, Node/manifest hash, forbidden-environment, clear-and-rebuild validation above,
+then additionally performs this verifier-specific gate and invocation:
 
 ```powershell
+$securityBootstrapPath = '/run/aoa/e3-perf-01-security-bootstrap.json'
+$bootstrap = Get-Content -Raw -LiteralPath $securityBootstrapPath | ConvertFrom-Json
+$expectedVerifierPath = Join-Path $bootstrap.checkoutPath 'scripts/verify-e3-perf-01-handoff.mjs'
+$realpathProgram = 'const fs=require("node:fs");process.stdout.write(JSON.stringify(process.argv.slice(1).map((value)=>fs.realpathSync.native(value))))'
+$resolvedVerifierPaths = @(& $bootstrap.nodeExecutable -e $realpathProgram $bootstrap.runnerScriptPath $expectedVerifierPath | ConvertFrom-Json)
+if ($LASTEXITCODE -ne 0 -or $resolvedVerifierPaths.Count -ne 2) { throw 'E3-PERF-01 Security verifier realpath failure' }
+$configuredVerifierRealPath = [string]$resolvedVerifierPaths[0]
+$expectedVerifierRealPath = [string]$resolvedVerifierPaths[1]
+if ($configuredVerifierRealPath -cne $expectedVerifierRealPath) { throw 'E3-PERF-01 Security verifier path mismatch' }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $configuredVerifierRealPath).Hash.ToLowerInvariant() -ne $bootstrap.runnerScriptSha256) { throw 'E3-PERF-01 Security verifier digest mismatch' }
+$perfManifest = $bootstrap.manifestPath
+$perfOutput = $bootstrap.outputDirectory
 $perfQa = Join-Path $perfOutput 'qa.json'
 $securityReceipt = Join-Path $perfOutput 'security-handoff.json'
 Invoke-NativeGate 'E3-PERF-01 independent security handoff' {
-  & $bootstrap.nodeExecutable (Join-Path $bootstrap.checkoutPath 'scripts/verify-e3-perf-01-handoff.mjs') --manifest $perfManifest --qa $perfQa --output $securityReceipt
+  & $bootstrap.nodeExecutable $bootstrap.runnerScriptPath --manifest $perfManifest --qa $perfQa --output $securityReceipt
 }
 ```
+
+A real-entry RED changes only the checked-out
+`scripts/verify-e3-perf-01-handoff.mjs` bytes (and a sibling case redirects only the configured
+path) while the campaign bootstrap's `run-e3-perf-01.mjs` digest remains valid. The independent
+Security digest/realpath gate must fail before the verifier module-load marker, S3 read, or
+handoff write. This proves a valid campaign-runner pin cannot authorize a substituted Security
+verifier.
 
 ##### 6. Non-platform target→worker lock order (E3-F033)
 
@@ -2999,13 +3023,19 @@ wrapper, flag-on dynamic module boundary, and out-of-band pinned absolute-Node b
 The plan P1s are corrected; JOB-003 still remains `needs_changes` pending implementation and
 fresh exact independent review.
 
+Security re-review of docs commit `b1773d6743efaead970ca5edfee0d41911e5028c`
+found one residual bootstrap substitution: handoff reused the campaign pin while invoking a
+different hardcoded verifier path. The distinct Security config, exact verifier realpath/hash,
+configured-path invocation, and isolated-verifier mutation RED above correct that plan P1.
+Ticket status and evidence gates remain unchanged.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–7 rejected + attempt 8 accepted + final implementation review attempt 3 + fix-plan exactness review | `NEEDS CHANGES — PLAN P1S CORRECTED, RE-REVIEW PENDING` | Final candidate review opened E3-F028–E3-F033; exactness review of `c1efbbe2177018d72db6bd0d16dc0996b5af8353` opened six plan P1s now corrected in the binding delta. Ticket completion/SLO claims remain blocked pending implementation and fresh review. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–7 rejected + attempt 8 accepted + final implementation review attempt 3 + fix-plan exactness review + Security bootstrap re-review | `NEEDS CHANGES — PLAN P1S CORRECTED, RE-REVIEW PENDING` | Final candidate review opened E3-F028–E3-F033; exactness review opened six plan P1s and Security re-review of `b1773d6743efaead970ca5edfee0d41911e5028c` opened one verifier-bootstrap P1, all now corrected in the binding delta. Ticket completion/SLO claims remain blocked pending implementation and fresh review. |
 | Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
 | Claude (user-provided) | pasted review | External plan delta review | 1 | `TRIAGED — STALE BASE` | Reviewed origin `8e2faa590`, not the local plan; three concerns were already closed, while JOB-009 sizing and explicit JOB-012–014 disablement were valid deltas and are now resolved in plan. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
