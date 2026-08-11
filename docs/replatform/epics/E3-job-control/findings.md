@@ -988,19 +988,25 @@ legacy owner pool remain available to the server.
 Each open therefore uses a dedicated `max=1` owner-authority participant cloned losslessly from
 the parsed `input.ownerDb` postgres.js authentication and transport, including multi-host
 host/port pairs, socket/path, TLS/`ssl`, `sslnegotiation`, passwordless/string/password-function
-forms, and every other domain-affecting option. A unique non-secret `application_name` is set at
-connection startup; connect, statement, idle-in-transaction, and disposal are bounded and
-awaited. The migration ledger and owner advisory phases run only there. Before PID registration,
-a separately cloned bounded owner control may discover only that unique tagged session and then
-bind/cancel the exact PID + `backend_start` + role + database + application-tag tuple. Active
-identity lasts through full `COMMIT`/`ROLLBACK`; teardown history is separate. Cleanup cannot
-depend on a shared owner slot. The legacy pool is never ended; zero legacy PIDs is valid, while
-any existing legacy PID must be idle, out of transaction, and free of advisory locks. Every
-per-open dedicated participant/control PID and operation must be gone/settled before return.
-Drizzle remains mandatory: raw postgres.js `Query.cancel()`, internal Drizzle session clients,
-and private pool state are not accepted seams. This is an authority/transport clarification,
-not widened privilege: app/operator still receive no `drizzle` access, and no role, grant,
-schema, migration, or serving authority changes.
+forms, and every other domain-affecting option. The participant and every control receive their
+own distinct unique non-secret per-open/per-session `application_name` at connection startup;
+connect, statement, idle-in-transaction, and disposal are bounded and awaited. The migration
+ledger and owner advisory phases run only on the participant. Before PID registration, a
+separately cloned bounded owner control may discover only the participant's unique tagged
+session; every discovery/cancel query explicitly excludes the querying control's own tag, PID,
+and full identity, then binds/cancels the exact participant PID + `backend_start` + role +
+database + application-tag tuple. Active identity lasts through full `COMMIT`/`ROLLBACK`;
+teardown history is separate. Cleanup cannot depend on a shared owner slot. Its final verifier
+control checks all prior participant, serving, and control identities and locks, then calls and
+awaits its own bounded `end({ timeout: 5 })`; it never polls for its own disappearance while
+connected. The awaited end is production's closure proof, and tests or admin observation after
+end externally prove its PID disappeared. The legacy pool is never ended; zero legacy PIDs is
+valid, while any existing legacy PID must be idle, out of transaction, and free of advisory
+locks. Every per-open dedicated participant/control PID and operation must be gone/settled
+before return. Drizzle remains mandatory: raw postgres.js `Query.cancel()`, internal Drizzle
+session clients, and private pool state are not accepted seams. This is an authority/transport
+clarification, not widened privilege: app/operator still receive no `drizzle` access, and no
+role, grant, schema, migration, or serving authority changes.
 
 ## E3-F029 - Startup exact-authority audit omits required relations and RLS posture
 

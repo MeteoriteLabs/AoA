@@ -1641,12 +1641,13 @@ multi-host hosts and per-host ports, socket/path, database and user,
 passwordless/string/password-function forms, TLS/`ssl`, `sslnegotiation`, target-session
 attributes, and every other domain-affecting parsed option. Apart from the explicit bound and
 application-tag overrides below, the clone does not normalize, omit, or reinterpret those
-options. It installs a unique non-secret per-open `application_name` in the connection startup
-options, before any query can run, applies the fixed bounded connection options below, and
-awaits disposal. The migration-ledger query and every owner advisory phase run through this
-owner-authority participant; app and operator never do. Neither serving role is granted `USAGE`
-on `drizzle` or any privilege on the journal. This clarification changes no database privilege
-or role.
+options. The participant and every separately cloned owner control each install their own
+distinct unique non-secret per-open/per-session `application_name` in the connection startup
+options, before any query can run; no participant or control within an open shares another's
+tag. They apply the fixed bounded connection options below and await disposal. The
+migration-ledger query and every owner advisory phase run through the owner-authority
+participant; app and operator never do. Neither serving role is granted `USAGE` on `drizzle` or
+any privilege on the journal. This clarification changes no database privilege or role.
 
 The startup signature becomes:
 
@@ -1671,16 +1672,18 @@ unbounded ambient owner session. One `AbortController` and one immutable outer d
 the owner, app, and operator participants. Startup never returns a partly verified pool.
 
 Before the dedicated owner participant has returned its PID, abort handling may discover only
-the session carrying that unique per-open `application_name`, using a separately and losslessly
-cloned bounded owner-authority control. The control reads the session's exact PID,
+the session carrying that participant's unique tag, using a separately and losslessly cloned
+bounded owner-authority control carrying its own distinct tag. Every discovery or cancellation
+query explicitly excludes the querying control's own application tag, PID, and full identity
+tuple, and may select only the target participant tag. The control reads the target's exact PID,
 `backend_start`, authenticated role, database, and application tag and cancels only a row that
-matches that full tuple; PID-only, database-plus-PID, broad role, or historical matching is
-invalid. After registration, an identity remains in the active-cancellation set until the full
-transaction promise, including `COMMIT` or `ROLLBACK`, settles. A distinct teardown-history set
-retains identities needed for disappearance/lock proofs and is never a cancellation target.
-Every owner query still runs through Drizzle; raw postgres.js `Query.cancel()`, an internal
-Drizzle session client, private pool queues/state, or closing the retained legacy pool are not
-permitted implementation seams.
+matches that full tuple; PID-only, database-plus-PID, broad role, self, or historical matching
+is invalid. After registration, an identity remains in the active-cancellation set until the
+full transaction promise, including `COMMIT` or `ROLLBACK`, settles. A distinct
+teardown-history set retains identities needed for disappearance/lock proofs and is never a
+cancellation target. Every owner query still runs through Drizzle; raw postgres.js
+`Query.cancel()`, an internal Drizzle session client, private pool queues/state, or closing the
+retained legacy pool are not permitted implementation seams.
 
 After the owner ledger check and both existing role/ACL checks, startup creates a secret
 signed-bigint key with `randomBytes(8).readBigInt64BE()` and never logs or persists it. In an
@@ -1702,16 +1705,19 @@ owner's database and Decision #124 advisory domain without revealing database id
 `close(input: { timeoutSeconds: number }): Promise<void>`. Normal shutdown and startup failure
 call postgres.js `end({ timeout: 5 })` through
 `NonOwnerDbConnection.close({ timeoutSeconds: 5 })`; a naked `Promise.race` that abandons an
-unsettled `end()` is forbidden. After participant settlement and forced bounded end, bounded
-owner-authority cleanup, independent of shared-owner-pool slot availability, polls until every
-recorded app/operator and per-open owner participant/control backend PID has disappeared from
-`pg_stat_activity` and `pg_locks` contains no advisory lock for any participant PID/key;
-otherwise it fails `distributed_execution_close`. The retained legacy owner pool is never
-ended or closed by this startup gate. Zero legacy owner-pool backend PIDs is valid because the
-pool is lazy; every legacy PID that does exist must be idle, out of transaction, and hold no
-advisory lock. All dedicated per-open participant and control queries, transactions, disposal
-promises, PIDs, and locks settle or disappear before the public open error or returned `close()`
-completes. PID/key values are assertion-only and never logged.
+unsettled `end()` is forbidden. After participant settlement and forced bounded end, a bounded
+final owner-authority verifier control, independent of shared-owner-pool slot availability,
+polls until every recorded serving identity and every prior per-open participant/control
+identity has disappeared from `pg_stat_activity` and `pg_locks` contains no advisory lock for
+any participant PID/key; otherwise it fails `distributed_execution_close`. The verifier then
+calls and awaits its own bounded postgres.js `end({ timeout: 5 })`. It never polls for its own
+PID disappearance while connected: the awaited end is production's closure proof, and tests or
+admin observation after end externally prove that final verifier PID disappeared. The retained
+legacy owner pool is never ended or closed by this startup gate. Zero legacy owner-pool backend
+PIDs is valid because the pool is lazy; every legacy PID that does exist must be idle, out of
+transaction, and hold no advisory lock. All dedicated per-open participant and control queries,
+transactions, disposal promises, PIDs, and locks settle or disappear before the public open
+error or returned `close()` completes. PID/key values are assertion-only and never logged.
 
 All expected failures are stable, non-secret codes from this closed set:
 `distributed_execution_configuration`, `distributed_execution_migration_identity`,
