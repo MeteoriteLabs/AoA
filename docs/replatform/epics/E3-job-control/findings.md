@@ -610,9 +610,11 @@ guard-first/cutoff-first, static writer inventory, and no-grant-widening tests a
 For liveness, a fresh session-bound device proof plus guarded fresh physical worker/target
 heartbeat authorizes the platform logical operation; tenant `last_seen_at` is updated after
 success for observability but is not a prior prerequisite. The physical worker's proof-bound
-admissible status set is exactly `enrolled|active`: last-seen-only heartbeat never changes that
-authority status, while `draining`, `revoked`, unknown, non-null `revoked_at`, or any other
-noncurrent fact denies. Real enrollment→physical
+admissibility is exactly `enrolled|active`, checked independently by closed inline disjunctions
+in poll authority, ACK authority, and the physical guard rather than a shared mutable set. Each
+logical rejection dominates its operation's lease effects. Last-seen-only heartbeat never
+changes authority status, while `draining`, `revoked`, unknown, non-null `revoked_at`, or any
+other noncurrent fact denies. Real enrollment→physical
 heartbeat→logical poll/ACK and stale-physical cases are mandatory. No production or test edit
 may begin until the distinct reviewer accepts this successor plan revision.
 

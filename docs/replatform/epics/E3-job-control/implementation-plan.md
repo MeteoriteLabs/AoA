@@ -1092,9 +1092,13 @@ be NULL immediately after real enrollment. After all authority checks pass, the 
 transaction updates only that exact logical profile's `last_seen_at` from
 `clock_timestamp()` for observability. The physical worker remains eligible in exactly the
 proof-bound `enrolled` or `active` states; the last-seen-only heartbeat does not promote
-`enrolled` to `active`. The guard uses the shared exact `ACTIVE_WORKER_STATUSES` binding and
-rejects `!ACTIVE_WORKER_STATUSES.has(physical.worker.status)`. `draining`, `revoked`, unknown,
-non-null `revoked_at`, or otherwise noncurrent physical authority denies before claim. A stale
+`enrolled` to `active`. Poll's `authorityCurrent` return, ACK's `ackAuthorityCurrent` return,
+and the physical-authority guard each embed their own closed inline
+`status === "enrolled" || status === "active"` predicate; no shared mutable set, helper, alias,
+or precomputed boolean may supply it. The physical guard rejects
+`!(physical.worker.status === "enrolled" || physical.worker.status === "active")` before claim,
+and the poll/ACK rejection must dominate their respective lease effects. `draining`, `revoked`,
+unknown, non-null `revoked_at`, or otherwise noncurrent physical authority denies. A stale
 physical heartbeat still denies. The transaction also stores the ACK operation receipt. A
 lost-response retry with the same
 authenticated scope/idempotency key/semantic digest and a fresh device proof returns the
