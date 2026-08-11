@@ -997,10 +997,12 @@ startup behavior.
 **Accepted disposition (2026-08-11):** The E3-F029 certificate must compare PostgreSQL 18 raw
 catalog facts exactly. A non-null ordinary-table owner ACL expands to the eight owner privileges
 `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`, and `MAINTAIN`, all
-reported by `aclexplode` with `is_grantable=false`. `execution_targets.relacl` is non-null and
-owner-only while its reviewed app/operator serving grants remain exact column ACLs;
-`mcp_api_keys.relacl` is null; and relations with direct table-level serving grants contain the
-owner tuples plus only the reviewed direct serving-role tuples. Only the actual
+reported by `aclexplode` with `is_grantable=false`. `execution_targets.relacl` and
+`mcp_api_keys.relacl` are both non-null and owner-only: each contains exactly those eight owner
+tuples and no app, operator, or PUBLIC table tuple. Their reviewed serving grants remain exact
+column ACLs, including the four exact app `SELECT` privileges on `mcp_api_keys`. Relations with
+direct table-level serving grants contain the owner tuples plus only the reviewed direct
+serving-role tuples. Only the actual
 `pg_class.relowner` OID normalizes to `RELATION_OWNER`; no synthetic owner, unexpected grantee,
 or privilege is filtered, and PostgreSQL-version drift fails closed. The legacy non-superuser
 flag-off fixture belongs in a third fully migrated database so its broad grants and
@@ -1114,9 +1116,11 @@ This record plans, but does not implement or resolve, the six final-review findi
   `aclexplode(relacl)` and every user-column `aclexplode(attacl)` tuple with grantor, grantee,
   privilege, and grantable bit. Under PostgreSQL 18, every non-null ordinary-table owner ACL
   contributes exact non-grantable `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`TRUNCATE`/`REFERENCES`/
-  `TRIGGER`/`MAINTAIN` owner tuples. `execution_targets.relacl` is non-null and owner-only while
-  its serving grants remain column-level; `mcp_api_keys.relacl` is null; and table-level serving
-  grants add only reviewed direct serving-role tuples beside the owner tuples. Only the actual
+  `TRIGGER`/`MAINTAIN` owner tuples. `execution_targets.relacl` and `mcp_api_keys.relacl` are both
+  non-null and owner-only, each with exactly those eight owner tuples and no app, operator, or
+  PUBLIC table tuple; their serving grants remain column-level, including the four exact app
+  `SELECT` privileges on `mcp_api_keys`. Table-level serving grants add only reviewed direct
+  serving-role tuples beside the owner tuples. Only the actual
   `pg_class.relowner` OID normalizes to `RELATION_OWNER`; nothing unexpected is filtered and
   PostgreSQL-version drift fails closed. The legacy non-superuser flag-off fixture uses a third
   migrated database, isolated from both the exact-certificate and advisory-domain databases.

@@ -1786,9 +1786,11 @@ operator tuple; `execution_targets` keeps only its exact current app/operator co
 The PostgreSQL 18 raw-ACL certificate is literal catalog fact, not an effective-privilege
 approximation. A non-null ordinary-table owner ACL materializes exactly eight owner tuples:
 `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`, and `MAINTAIN`;
-`aclexplode` reports each with `is_grantable=false`. `execution_targets.relacl` is non-null and
-owner-only even though its app/operator serving authority is expressed by exact column ACLs,
-while `mcp_api_keys.relacl` is null. A relation with direct table-level serving grants has a
+`aclexplode` reports each with `is_grantable=false`. `execution_targets.relacl` and
+`mcp_api_keys.relacl` are both non-null and owner-only: each contains exactly those eight owner
+tuples and no app, operator, or PUBLIC table tuple. Their serving authority remains expressed by
+exact column ACLs, including the four exact app `SELECT` privileges on `mcp_api_keys`. A relation
+with direct table-level serving grants has a
 non-null ACL containing those eight owner tuples plus only the reviewed direct serving-role
 tuples. Only the actual `pg_class.relowner` OID may normalize to `RELATION_OWNER`; no synthetic
 owner, unexpected grantee, or privilege may be filtered before comparison. Any PostgreSQL-
