@@ -1,5 +1,9 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "../../client.js";
+import {
+  acquirePlatformTargetAuthorityExclusive,
+  configurePlatformTargetAuthorityLockTimeout,
+} from "../../platform-target-authority-lock.js";
 import { executionTargets, workers } from "../../schema/index.js";
 
 const targetColumns = {
@@ -67,6 +71,7 @@ export type PlatformPhysicalLeaseAuthority = {
 export function operatorJobLeasingRepository(tx: Db) {
   return {
     async lockPlatformAuthorityForMutation(targetId: string) {
+      await configurePlatformTargetAuthorityLockTimeout(tx);
       const [target] = await tx.select(targetColumns).from(executionTargets).where(and(
         eq(executionTargets.id, targetId),
         eq(executionTargets.scope, "platform"),
@@ -81,6 +86,7 @@ export function operatorJobLeasingRepository(tx: Db) {
         isNull(workers.organizationId),
         isNull(workers.ownerUserId),
       )).limit(1).for("update");
+      await acquirePlatformTargetAuthorityExclusive(tx, target.id);
       return { target, worker: worker ?? null };
     },
     async lockPlatformPhysicalAuthority(

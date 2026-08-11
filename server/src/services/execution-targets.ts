@@ -263,15 +263,17 @@ export async function registerWorkerHeartbeat(
     organizationId?: string;
     status?: "active" | "draining" | "offline";
     capabilities?: Record<string, unknown>;
+    now?: Date;
   },
 ): Promise<{ updated: number }> {
+  const heartbeatAt = input.now ?? new Date();
   const rows = await db
     .update(executionTargets)
     .set({
-      lastSeenAt: new Date(),
+      lastSeenAt: heartbeatAt,
       status: input.status ?? "active",
       ...(input.capabilities ? { capabilities: input.capabilities } : {}),
-      updatedAt: new Date(),
+      updatedAt: heartbeatAt,
     })
     .where(and(
       eq(executionTargets.id, input.targetId),

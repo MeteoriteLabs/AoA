@@ -75,7 +75,7 @@ export const jobs = pgTable(
       table.organizationId,
       table.status,
       table.availableAt,
-      table.priority,
+      table.priority.desc(),
       table.createdAt,
       table.id,
     ),

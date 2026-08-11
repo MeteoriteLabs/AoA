@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, asc, eq, exists, ne } from "drizzle-orm";
+import { and, asc, eq, exists, gt, ne, sql } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -560,20 +560,33 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
   const { createJobReadyScheduler } = await import("./services/job-ready-scheduler.js");
   const { createJobOutboxWorker } = await import("./services/job-outbox-worker.js");
   scheduler = createJobReadyScheduler();
-  const listAdmittedOrganizationIds = async (): Promise<string[]> => {
-    const rows = await distributedExecutionDatabases.appDb.select({ id: organizations.id })
-      .from(organizations)
-      .where(and(
-        eq(organizations.status, "active"),
-        ne(organizations.id, "00000000-0000-0000-0000-000000000001"),
-        exists(
-          distributedExecutionDatabases.appDb.select({ id: companies.id })
-            .from(companies)
-            .where(eq(companies.organizationId, organizations.id)),
-        ),
-      ))
-      .orderBy(asc(organizations.id));
-    return rows.map((row) => row.id);
+  const listAdmittedOrganizationIds = async (input: {
+    afterOrganizationId: string | null;
+    limit: number;
+    statementTimeoutMs: number;
+  }): Promise<string[]> => {
+    const boundedLimit = Math.max(1, Math.min(32, Math.floor(input.limit)));
+    const boundedTimeout = Math.max(1, Math.min(750, Math.floor(input.statementTimeoutMs)));
+    return distributedExecutionDatabases.appDb.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('statement_timeout', ${String(boundedTimeout)}, true)`);
+      const rows = await tx.select({ id: organizations.id })
+        .from(organizations)
+        .where(and(
+          eq(organizations.status, "active"),
+          ne(organizations.id, "00000000-0000-0000-0000-000000000001"),
+          input.afterOrganizationId
+            ? gt(organizations.id, input.afterOrganizationId)
+            : undefined,
+          exists(
+            tx.select({ id: companies.id })
+              .from(companies)
+              .where(eq(companies.organizationId, organizations.id)),
+          ),
+        ))
+        .orderBy(asc(organizations.id))
+        .limit(boundedLimit);
+      return rows.map((row) => row.id);
+    });
   };
   const outbox = createJobOutboxWorker({
     appDb: distributedExecutionDatabases.appDb,

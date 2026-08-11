@@ -16,7 +16,7 @@ import type { Db } from "../../client.js";
 import { jobs, type Job, type NewJob } from "../../schema/jobs.js";
 import { jobAttempts, type JobAttempt, type NewJobAttempt } from "../../schema/job_attempts.js";
 import { leases, type Lease, type NewLease } from "../../schema/leases.js";
-import { workers, type Worker, type NewWorker } from "../../schema/workers.js";
+import { workers, type Worker } from "../../schema/workers.js";
 import { services, type Service, type NewService } from "../../schema/services.js";
 import {
   serviceInstances,
@@ -57,7 +57,6 @@ export interface LeasesRepository {
 }
 
 export interface WorkersRepository {
-  insert(values: NewWorker): Promise<Worker>;
   getById(id: string): Promise<Worker | null>;
   listForOrganization(organizationId: string): Promise<Worker[]>;
 }
@@ -153,10 +152,6 @@ export function tenantRepositories(tx: Db): TenantRepositories {
       },
     },
     workers: {
-      async insert(values) {
-        const [row] = await tx.insert(workers).values(values).returning();
-        return row!;
-      },
       async getById(id) {
         const [row] = await tx.select().from(workers).where(eq(workers.id, id)).limit(1);
         return row ?? null;

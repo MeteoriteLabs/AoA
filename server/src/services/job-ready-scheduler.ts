@@ -1,80 +1,125 @@
-export interface JobReadyHint {
+export interface JobReadySignal {
   organizationId: string;
   targetId: string;
-  attemptId: string;
 }
 
 export interface JobReadyScheduler {
-  hint(hint: JobReadyHint): boolean;
-  take(organizationId: string, targetId: string, limit?: number): string[];
-  nextOrganization(): string | null;
-  size(): { organizations: number; hints: number };
+  signal(signal: JobReadySignal): boolean;
+  consume(organizationId: string, targetId: string): boolean;
+  size(): { organizations: number; targets: number; signals: number };
+}
+
+interface StoredSignal {
+  expiresAt: number;
+}
+
+const MAX_ORGANIZATIONS = 32;
+const MAX_TARGETS_PER_ORGANIZATION = 1_024;
+const MAX_SIGNALS_GLOBAL = 1_024;
+const MAX_SIGNAL_TTL_MS = 300_000;
+
+function boundedPositiveInteger(
+  name: string,
+  value: number | undefined,
+  defaultValue: number,
+  ceiling: number,
+): number {
+  const configured = value ?? defaultValue;
+  if (!Number.isFinite(configured) || !Number.isInteger(configured) || configured <= 0) {
+    throw new Error(`${name}_must_be_a_finite_positive_integer`);
+  }
+  return Math.min(configured, ceiling);
 }
 
 /**
- * Bounded identifier-only fairness hints. This process-local structure is never
- * lease authority: worker poll always returns to PostgreSQL and rechecks the
- * placement and row locks, so a lost hint or restart cannot lose work.
+ * A bounded, process-local readiness accelerator. Signals contain only the
+ * exact tenant/target key and never carry lease authority or candidate order.
  */
 export function createJobReadyScheduler(input: {
   maxOrganizationShards?: number;
-  maxHintsPerShard?: number;
+  maxTargetsPerOrganization?: number;
+  maxSignalsGlobal?: number;
+  signalTtlMs?: number;
+  monotonicNow?: () => number;
 } = {}): JobReadyScheduler {
-  const maxOrganizations = Math.max(1, Math.min(32, input.maxOrganizationShards ?? 32));
-  const maxHints = Math.max(1, Math.min(1_024, input.maxHintsPerShard ?? 128));
-  const shards = new Map<string, Map<string, Set<string>>>();
-  let cursor = 0;
+  const maxOrganizations = boundedPositiveInteger(
+    "maxOrganizationShards",
+    input.maxOrganizationShards,
+    32,
+    MAX_ORGANIZATIONS,
+  );
+  const maxTargetsPerOrganization = boundedPositiveInteger(
+    "maxTargetsPerOrganization",
+    input.maxTargetsPerOrganization,
+    128,
+    MAX_TARGETS_PER_ORGANIZATION,
+  );
+  const maxSignalsGlobal = boundedPositiveInteger(
+    "maxSignalsGlobal",
+    input.maxSignalsGlobal,
+    1_024,
+    MAX_SIGNALS_GLOBAL,
+  );
+  const signalTtlMs = boundedPositiveInteger(
+    "signalTtlMs",
+    input.signalTtlMs,
+    30_000,
+    MAX_SIGNAL_TTL_MS,
+  );
+  const monotonicNow = input.monotonicNow ?? (() => performance.now());
+  const organizations = new Map<string, Map<string, StoredSignal>>();
+  let totalSignals = 0;
 
-  function boundedLimit(limit: number | undefined): number {
-    return Math.max(1, Math.min(maxHints, Math.floor(limit ?? maxHints)));
+  function cleanupExpired(now: number): void {
+    for (const [organizationId, targets] of organizations) {
+      for (const [targetId, stored] of targets) {
+        if (stored.expiresAt > now) continue;
+        targets.delete(targetId);
+        totalSignals -= 1;
+      }
+      if (targets.size === 0) organizations.delete(organizationId);
+    }
   }
 
   return {
-    hint(hint) {
-      let organization = shards.get(hint.organizationId);
-      if (!organization) {
-        if (shards.size >= maxOrganizations) return false;
-        organization = new Map<string, Set<string>>();
-        shards.set(hint.organizationId, organization);
+    signal(signal) {
+      const now = monotonicNow();
+      cleanupExpired(now);
+
+      const existingOrganization = organizations.get(signal.organizationId);
+      if (existingOrganization?.has(signal.targetId)) {
+        // Duplicate publication is idempotent and deliberately does not extend
+        // expiry, otherwise replay from an offline target could pin memory.
+        return true;
       }
-      let shard = organization.get(hint.targetId);
-      if (!shard) {
-        shard = new Set<string>();
-        organization.set(hint.targetId, shard);
+      if (!existingOrganization && organizations.size >= maxOrganizations) return false;
+      if (totalSignals >= maxSignalsGlobal) return false;
+      if (existingOrganization && existingOrganization.size >= maxTargetsPerOrganization) {
+        return false;
       }
-      if (shard.has(hint.attemptId)) return true;
-      if (shard.size >= maxHints) return false;
-      shard.add(hint.attemptId);
+
+      const targets = existingOrganization ?? new Map<string, StoredSignal>();
+      if (!existingOrganization) organizations.set(signal.organizationId, targets);
+      targets.set(signal.targetId, { expiresAt: now + signalTtlMs });
+      totalSignals += 1;
       return true;
     },
-    take(organizationId, targetId, limit) {
-      const organization = shards.get(organizationId);
-      const shard = organization?.get(targetId);
-      if (!shard) return [];
-      const values = [...shard].slice(0, boundedLimit(limit));
-      for (const value of values) shard.delete(value);
-      if (shard.size === 0) organization!.delete(targetId);
-      if (organization!.size === 0) shards.delete(organizationId);
-      return values;
+
+    consume(organizationId, targetId) {
+      cleanupExpired(monotonicNow());
+      const targets = organizations.get(organizationId);
+      if (!targets?.delete(targetId)) return false;
+      totalSignals -= 1;
+      if (targets.size === 0) organizations.delete(organizationId);
+      return true;
     },
-    nextOrganization() {
-      const organizations = [...shards.keys()];
-      if (organizations.length === 0) return null;
-      cursor %= organizations.length;
-      const selected = organizations[cursor]!;
-      cursor = (cursor + 1) % organizations.length;
-      return selected;
-    },
+
     size() {
+      cleanupExpired(monotonicNow());
       return {
-        organizations: shards.size,
-        hints: [...shards.values()].reduce(
-          (sum, organization) => sum + [...organization.values()].reduce(
-            (organizationSum, shard) => organizationSum + shard.size,
-            0,
-          ),
-          0,
-        ),
+        organizations: organizations.size,
+        targets: totalSignals,
+        signals: totalSignals,
       };
     },
   };

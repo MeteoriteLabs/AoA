@@ -88,6 +88,12 @@ export const workers = pgTable(
     // are distinct under the default UNIQUE semantics, so multiple platform
     // (null-org) workers coexist freely.
     orgIdUq: unique("workers_org_id_uq").on(table.organizationId, table.id),
+    orgIdAuthorityTargetUq: unique("workers_org_id_authority_target_uq").on(
+      table.organizationId,
+      table.id,
+      table.targetAuthorityKey,
+      table.executionTargetId,
+    ),
     targetAuthorityFk: foreignKey({
       columns: [table.targetAuthorityKey, table.executionTargetId],
       foreignColumns: [executionTargets.targetAuthorityKey, executionTargets.id],

@@ -30,6 +30,12 @@ export interface ExecutionTargetRow {
 }
 
 export interface NormalizedPlacementRegistryTarget {
+  id: string;
+  scope: RegisteredTargetProfileV1["scope"];
+  ownerUserId: string | null;
+  targetAuthorityKey: string;
+  deviceGeneration: number;
+  registeredProfileHash: string;
   targetId: string;
   targetSlug: string;
   targetClass: RegisteredTargetProfileV1["targetClass"];
@@ -143,6 +149,12 @@ export async function normalizePlacementRegistryTarget(
   if (row.targetAuthorityKey !== expectedAuthority) return null;
 
   return {
+    id: row.id,
+    scope: profile.scope,
+    ownerUserId: row.ownerUserId ?? null,
+    targetAuthorityKey: row.targetAuthorityKey,
+    deviceGeneration: profile.deviceGeneration,
+    registeredProfileHash: calculatedProfileHash,
     targetId: row.id,
     targetSlug: row.slug,
     targetClass: profile.targetClass,

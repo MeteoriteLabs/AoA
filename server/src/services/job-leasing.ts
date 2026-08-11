@@ -18,7 +18,6 @@ import {
   pollResponseV1Schema,
   principalV1Schema,
   workerHelloV1Schema,
-  workerSatisfiesRequirements,
   type ExecutionSourceV1,
   type JobCapabilityRequirementsV1,
   type JobEnvelopeV1,
@@ -37,11 +36,16 @@ import {
   type NormalizedPlacementRegistryTarget,
 } from "./execution-target-resolver.js";
 import { normalizeSubmittedJobPlacementFacts } from "./job-placement.js";
+import {
+  buildLeaseStaticContextInput,
+  evaluateStaticLeaseEligibility,
+  LEASE_STATIC_ELIGIBILITY_VERSION,
+  leaseStaticContextHash,
+} from "./job-lease-eligibility.js";
 import type { VerifiedWorkerOperation } from "../middleware/worker-operation-proof.js";
 
 export type { VerifiedWorkerOperation } from "../middleware/worker-operation-proof.js";
 
-const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);
 
 export class JobLeasingError extends Error {
   constructor(public readonly code:
@@ -54,6 +58,20 @@ export class JobLeasingError extends Error {
     super(`Job leasing ${code}`);
     this.name = "JobLeasingError";
   }
+}
+
+function normalizeOperatorDatabaseErrors(operatorDb: Db | undefined): Db | undefined {
+  if (!operatorDb) return undefined;
+  return {
+    transaction: async (callback: (tx: Db) => Promise<unknown>) => {
+      try {
+        return await operatorDb.transaction(callback as never);
+      } catch (error) {
+        if (error instanceof JobLeasingError) throw error;
+        throw new JobLeasingError("internal_unavailable");
+      }
+    },
+  } as unknown as Db;
 }
 
 function semanticAckDigest(
@@ -147,13 +165,6 @@ function minCapacity(left: WorkerCapacity, right: WorkerCapacity): WorkerCapacit
   };
 }
 
-function workloadSlots(capacity: WorkerCapacity, workloadType: string): number {
-  if (workloadType === "batch") return capacity.batchSlots;
-  if (workloadType === "browser_session") return capacity.browserSessionSlots;
-  if (workloadType === "service") return capacity.serviceSlots;
-  return 0;
-}
-
 function inferredCredentialBinding(target: NormalizedPlacementRegistryTarget) {
   if (target.targetClass === "owner_desktop") {
     return {
@@ -185,6 +196,25 @@ function normalizedRequirements(job: Job, target: NormalizedPlacementRegistryTar
   return normalized.success && normalized.active ? normalized : null;
 }
 
+function normalizedProviderDemand(target: NormalizedPlacementRegistryTarget) {
+  const provider = target.providerConstraintProfile;
+  const supported: ReadonlySet<string> = new Set(provider.supportedOperations);
+  const operations = ["create", "execute"].filter((operation) => supported.has(operation));
+  return {
+    maxRuntimeSeconds: Math.min(600, provider.maxContinuousRuntimeSeconds),
+    maxIdleSeconds: Math.min(60, provider.maxIdleSeconds),
+    resources: {
+      cpuMillis: Math.min(1000, provider.resourceCeiling.cpuMillis),
+      memoryMiB: Math.min(1024, provider.resourceCeiling.memoryMiB),
+      pids: Math.min(128, provider.resourceCeiling.pids),
+      diskMiB: Math.min(1024, provider.resourceCeiling.diskMiB),
+    },
+    concurrentOperations: Math.min(1, provider.maxConcurrentOperations),
+    operations,
+    localityTags: provider.localityTags.slice(0, 1),
+  };
+}
+
 function authorityCurrent(input: {
   auth: VerifiedWorkerOperation;
   authority: LeaseWorkerAuthority;
@@ -210,7 +240,7 @@ function authorityCurrent(input: {
     && worker.devicePublicKey === auth.publicKey
     && worker.profileHash === auth.profileHash
     && worker.revokedAt === null
-    && ACTIVE_WORKER_STATUSES.has(worker.status)
+    && (worker.status === "enrolled" || worker.status === "active")
     && authority.ownerMembershipActive
     && target.id === auth.targetId
     && target.status === "active"
@@ -248,33 +278,13 @@ function ackAuthorityCurrent(input: {
     && worker.devicePublicKey === auth.publicKey
     && worker.profileHash === auth.profileHash
     && worker.revokedAt === null
-    && ACTIVE_WORKER_STATUSES.has(worker.status)
+    && (worker.status === "enrolled" || worker.status === "active")
     && authority.ownerMembershipActive
     && target.id === auth.targetId
     && target.status === "active"
     && target.deviceGeneration === auth.targetGeneration
     && oldestHeartbeat !== null
     && input.databaseNow.getTime() - oldestHeartbeat <= input.maxHeartbeatAgeMs;
-}
-
-function candidateMatchesPlacement(
-  attempt: JobAttempt,
-  authority: LeaseWorkerAuthority,
-  target: NormalizedPlacementRegistryTarget,
-): boolean {
-  const expectedOwner = target.targetClass;
-  return attempt.status === "pending"
-    && attempt.placementDisposition === "selected"
-    && attempt.placementMode === "active"
-    && attempt.placementLeaseEligible === true
-    && attempt.placementOwner === expectedOwner
-    && attempt.placementTargetId === target.targetId
-    && attempt.placementTargetClass === target.targetClass
-    && attempt.placementTargetScope === target.targetScope
-    && attempt.placementTargetGeneration === target.targetGeneration
-    && attempt.placementProfileHash === target.profileHash
-    && attempt.placementProviderConstraintHash === target.providerConstraintHash
-    && authority.worker.targetAuthorityKey === authority.target.targetAuthorityKey;
 }
 
 function ackPlacementCurrent(
@@ -294,15 +304,6 @@ function ackPlacementCurrent(
     && attempt.placementProfileHash === target.profileHash
     && attempt.placementProviderConstraintHash === target.providerConstraintHash
     && authority.worker.targetAuthorityKey === authority.target.targetAuthorityKey;
-}
-
-function resourceCapacityFits(
-  capacity: WorkerCapacity,
-  demand: { resources: { cpuMillis: number; memoryMiB: number; diskMiB: number } },
-): boolean {
-  return capacity.freeCpuMillis >= demand.resources.cpuMillis
-    && capacity.freeMemoryMiB >= demand.resources.memoryMiB
-    && capacity.freeDiskMiB >= demand.resources.diskMiB;
 }
 
 function buildJobEnvelope(input: {
@@ -368,59 +369,87 @@ export function createJobLeasingService(input: {
   leaseDurationMs?: number;
   maxHeartbeatAgeMs?: number;
 }) {
-  const ackTimeoutMs = Math.max(1_000, input.ackTimeoutMs ?? 15_000);
-  const leaseDurationMs = Math.max(ackTimeoutMs + 1_000, input.leaseDurationMs ?? 5 * 60_000);
-  const maxHeartbeatAgeMs = Math.max(1_000, input.maxHeartbeatAgeMs ?? 5 * 60_000);
+  input.operatorDb = normalizeOperatorDatabaseErrors(input.operatorDb);
+  const ackTimeoutMs = Math.max(1000, input.ackTimeoutMs ?? 15000);
+  const leaseDurationMs = Math.max(ackTimeoutMs + 1000, input.leaseDurationMs ?? 300000);
+  const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300000);
 
+  class HeadRestartConflict extends Error {}
+  const isHeadRestartConflict = (error: unknown): error is HeadRestartConflict =>
+    error instanceof HeadRestartConflict;
   const guardPlatformAuthority = async (
-    repos: TenantRepositories,
-    auth: VerifiedWorkerOperation,
-    authority: LeaseWorkerAuthority,
-  ): Promise<Date | null> => {
-    if (authority.target.scope !== "platform") return null;
-    if (!input.operatorDb) throw new JobLeasingError("internal_unavailable");
-    let physicalHeartbeatAt: Date | null = null;
-    try {
-      await input.operatorDb.transaction(async (operatorTx) => {
-        await configurePlatformTargetAuthorityLockTimeout(operatorTx as unknown as Db);
-        const physical = await operatorJobLeasingRepository(operatorTx as unknown as Db)
-          .lockPlatformPhysicalAuthority(auth.targetId, "share");
-        if (!physical || physical.target.status !== "active" ||
-            physical.target.targetAuthorityKey !== "platform" ||
-            physical.target.deviceGeneration !== auth.targetGeneration ||
-            physical.target.registeredProfileHash !== authority.target.registeredProfileHash ||
-            physical.worker.status === "revoked" || physical.worker.revokedAt !== null ||
-            physical.worker.deviceGeneration !== auth.targetGeneration ||
-            physical.worker.devicePublicKey !== auth.publicKey ||
-            physical.worker.deviceThumbprint !== auth.deviceThumbprint ||
-            !physical.worker.profileHash ||
-            !physical.target.lastSeenAt || !physical.worker.lastSeenAt) {
-          throw new JobLeasingError("target_revoked");
-        }
-
-        // App transaction is outermost. Acquire its shared xact advisory lock
-        // while the operator target→physical-worker FOR SHARE locks are held,
-        // then plain-recheck the app-visible target before operator commit.
-        await repos.jobControl.acquirePlatformTargetAuthorityShared(auth.targetId);
-        const current = await repos.jobControl.recheckPlatformTargetAuthority({
-          targetId: auth.targetId,
-          targetAuthorityKey: "platform",
-          targetGeneration: auth.targetGeneration,
-        });
-        if (!current || current.status !== "active" ||
-            current.registeredProfileHash !== physical.target.registeredProfileHash) {
-          throw new JobLeasingError("target_revoked");
-        }
-        physicalHeartbeatAt = new Date(Math.min(
-          physical.target.lastSeenAt.getTime(),
-          physical.worker.lastSeenAt.getTime(),
-        ));
-      });
-    } catch (error) {
-      if (error instanceof JobLeasingError) throw error;
-      throw new JobLeasingError("internal_unavailable");
+    guardRepos: TenantRepositories,
+    guardAuth: VerifiedWorkerOperation,
+    locked: LeaseWorkerAuthority,
+  ) => {
+    if (locked.target.scope === "organization" || locked.target.scope === "owner") {
+      return { currentTarget: locked.target, physicalAuthorityWorker: null };
     }
-    return physicalHeartbeatAt;
+    if (locked.target.scope !== "platform") throw new JobLeasingError("target_revoked");
+    return input.operatorDb!.transaction(async (operatorTx) => {
+      await configurePlatformTargetAuthorityLockTimeout(operatorTx as unknown as Db);
+      const physical = await operatorJobLeasingRepository(operatorTx as unknown as Db)
+        .lockPlatformPhysicalAuthority(guardAuth.targetId, "share");
+      await guardRepos.jobControl.acquirePlatformTargetAuthorityShared(guardAuth.targetId);
+      const current = await guardRepos.jobControl.recheckPlatformTargetAuthority({
+        targetId: guardAuth.targetId,
+        targetAuthorityKey: "platform",
+        targetGeneration: guardAuth.targetGeneration,
+      });
+      const platformNow = await guardRepos.jobControl.currentDatabaseTime();
+      if (!physical ||
+          !current ||
+          physical.target.scope !== "platform" ||
+          physical.worker.scope !== "platform" ||
+          current.scope !== "platform" ||
+          physical.target.status !== "active" ||
+          !(physical.worker.status === "enrolled" || physical.worker.status === "active") ||
+          current.status !== "active" ||
+          physical.worker.revokedAt !== null ||
+          physical.target.id !== guardAuth.targetId ||
+          current.id !== guardAuth.targetId ||
+          physical.worker.executionTargetId !== physical.target.id ||
+          physical.worker.targetAuthorityKey !== physical.target.targetAuthorityKey ||
+          current.targetAuthorityKey !== physical.target.targetAuthorityKey ||
+          locked.worker.executionTargetId !== current.id ||
+          locked.worker.targetAuthorityKey !== current.targetAuthorityKey ||
+          locked.worker.deviceGeneration !== guardAuth.targetGeneration ||
+          physical.target.deviceGeneration !== guardAuth.targetGeneration ||
+          physical.worker.deviceGeneration !== guardAuth.targetGeneration ||
+          current.deviceGeneration !== guardAuth.targetGeneration ||
+          physical.worker.devicePublicKey !== guardAuth.publicKey ||
+          physical.worker.deviceThumbprint !== guardAuth.deviceThumbprint ||
+          !physical.target.registeredProfileHash ||
+          physical.target.registeredProfileHash !== current.registeredProfileHash ||
+          !physical.worker.profileHash ||
+          locked.worker.profileHash !== guardAuth.profileHash ||
+          !physical.target.lastSeenAt ||
+          !physical.worker.lastSeenAt ||
+          platformNow.getTime() - physical.target.lastSeenAt.getTime() > maxHeartbeatAgeMs ||
+          platformNow.getTime() - physical.worker.lastSeenAt.getTime() > maxHeartbeatAgeMs) {
+        throw new JobLeasingError("target_revoked");
+      }
+      return { currentTarget: current, physicalAuthorityWorker: physical.worker };
+    });
+  };
+  const deriveAdmissibleWorkloadTypes = (
+    capacity: WorkerCapacity,
+    live: { total: number; batch: number; browserSession: number; service: number },
+    provider: NormalizedPlacementRegistryTarget["providerConstraintProfile"],
+    demand: { resources: { cpuMillis: number; memoryMiB: number; diskMiB: number } },
+  ) => {
+    if (live.total >= provider.maxConcurrentOperations ||
+        capacity.freeCpuMillis > provider.resourceCeiling.cpuMillis ||
+        capacity.freeMemoryMiB > provider.resourceCeiling.memoryMiB ||
+        capacity.freeDiskMiB > provider.resourceCeiling.diskMiB ||
+        capacity.freeCpuMillis < demand.resources.cpuMillis ||
+        capacity.freeMemoryMiB < demand.resources.memoryMiB ||
+        capacity.freeDiskMiB < demand.resources.diskMiB) return [];
+    const workloadTypes: string[] = [];
+    if (capacity.batchSlots > live.batch) workloadTypes.push("batch");
+    if (capacity.browserSessionSlots > live.browserSession) workloadTypes.push("browser_session");
+    if (capacity.serviceSlots > live.service) workloadTypes.push("service");
+    return workloadTypes;
   };
 
   return {
@@ -428,86 +457,111 @@ export function createJobLeasingService(input: {
       auth: VerifiedWorkerOperation;
       request: PollRequestV1;
     }): Promise<PollResponseV1> {
-      const parsedRequest = pollRequestV1Schema.safeParse(pollInput.request);
-      if (!parsedRequest.success) throw new JobLeasingError("malformed");
-      const request = parsedRequest.data;
-      return runInTenant(input.appDb, pollInput.auth.organizationId, async (repos) => {
-        const databaseNow = await repos.jobControl.currentDatabaseTime();
-        await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);
-        const proofRecorded = await repos.workerEnrollment.recordProof({
-          organizationId: pollInput.auth.organizationId,
-          deviceThumbprint: pollInput.auth.deviceThumbprint,
-          proofId: pollInput.auth.proofId,
-          issuedAt: pollInput.auth.proofIssuedAt,
-          expiresAt: pollInput.auth.sessionExpiresAt,
-        });
-        if (!proofRecorded) throw new JobLeasingError("unauthorized");
-
-        const authority = await repos.jobControl.lockWorkerLeaseAuthority({
-          workerId: pollInput.auth.workerId,
-          targetId: pollInput.auth.targetId,
-        });
-        const platformPhysicalHeartbeatAt = authority
-          ? await guardPlatformAuthority(repos, pollInput.auth, authority)
-          : null;
-        const authorityNow = await repos.jobControl.currentDatabaseTime();
-        if (!authority || !authorityCurrent({
-          auth: pollInput.auth,
-          authority,
-          request,
-          databaseNow: authorityNow,
-          maxHeartbeatAgeMs,
-          platformPhysicalHeartbeatAt,
-        })) throw new JobLeasingError(authority ? "target_revoked" : "unauthorized");
-
-        const target = await normalizePlacementRegistryTarget(authority.target);
-        const storedHello = workerHelloV1Schema.safeParse(authority.worker.profileSnapshot);
-        if (!target || !storedHello.success || target.status !== "active") {
-          throw new JobLeasingError("target_revoked");
-        }
-        const effectiveCapacity = minCapacity(storedHello.data.capacity, request.capacity);
-        const effectiveHello: WorkerHelloV1 = { ...storedHello.data, capacity: effectiveCapacity };
-        if (!await repos.jobControl.touchWorkerLeaseProfile({
-          workerId: pollInput.auth.workerId,
-          targetId: pollInput.auth.targetId,
-          targetGeneration: pollInput.auth.targetGeneration,
-        })) throw new JobLeasingError("target_revoked");
-        const providerSlots = target.providerConstraintProfile.maxConcurrentOperations;
-        type LeaseCandidate = Awaited<ReturnType<
-          TenantRepositories["jobControl"]["lockEligibleLeaseCandidates"]
-        >>[number];
-        const tryOffer = async (candidate: LeaseCandidate): Promise<PollResponseV1 | null> => {
-          if (!candidateMatchesPlacement(candidate.attempt, authority, target)) return null;
-          const normalized = normalizedRequirements(candidate.job, target);
-          if (!normalized) return null;
-          const workloadLimit = workloadSlots(effectiveCapacity, candidate.job.workloadType);
-          if (workloadLimit < 1) return null;
-          const liveLeases = await repos.jobControl.countLiveWorkerLeases({
-            workerId: pollInput.auth.workerId,
-            targetId: pollInput.auth.targetId,
-            workloadType: candidate.job.workloadType,
-          });
-          if (liveLeases.total >= providerSlots || liveLeases.workload >= workloadLimit) return null;
-          if (!resourceCapacityFits(effectiveCapacity, normalized.providerDemand)) return null;
-          if (!workerSatisfiesRequirements(
-            target.registeredProfile,
-            target.providerConstraintProfile,
-            effectiveHello,
-            normalized.requirements,
-          )) return null;
-
-          const ackDeadline = new Date(authorityNow.getTime() + ackTimeoutMs);
-          const expiresAt = new Date(authorityNow.getTime() + leaseDurationMs);
-          const job = buildJobEnvelope({
+      const parsedRequestResult = pollRequestV1Schema.safeParse(pollInput.request);
+      if (!parsedRequestResult.success) throw new JobLeasingError("malformed");
+      const parsedRequest = parsedRequestResult.data;
+      const proofContext = {
+        organizationId: pollInput.auth.organizationId,
+        deviceThumbprint: pollInput.auth.deviceThumbprint,
+        proofId: pollInput.auth.proofId,
+        issuedAt: pollInput.auth.proofIssuedAt,
+        expiresAt: pollInput.auth.sessionExpiresAt,
+      };
+      const touchContext = {
+        workerId: pollInput.auth.workerId,
+        targetId: pollInput.auth.targetId,
+        targetGeneration: pollInput.auth.targetGeneration,
+      };
+      const readySignaled = input.scheduler?.consume(
+        pollInput.auth.organizationId,
+        pollInput.auth.targetId,
+      ) ?? false;
+      for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {
+        try {
+          return await runInTenant(input.appDb, pollInput.auth.organizationId, async (repos) => {
+            const cleanupNow = await repos.jobControl.currentDatabaseTime();
+            await repos.workerEnrollment.cleanupExpiredProofs(cleanupNow, 100);
+            const databaseNow = await repos.jobControl.currentDatabaseTime();
+            const proofRecorded = await repos.workerEnrollment.recordProof(proofContext);
+            const profileTouched = await repos.jobControl.touchWorkerLeaseProfile(touchContext);
+            const lockedAuthority = await repos.jobControl.lockWorkerLeaseAuthority({
+              workerId: pollInput.auth.workerId,
+              targetId: pollInput.auth.targetId,
+            });
+            const authorityErrorCode = !lockedAuthority || !proofRecorded
+              ? "unauthorized"
+              : "target_revoked";
+            if (!lockedAuthority || !proofRecorded || !profileTouched) {
+              throw new JobLeasingError(authorityErrorCode);
+            }
+            const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);
+            const platformPhysicalHeartbeatAt = guardedAuthority.physicalAuthorityWorker &&
+                guardedAuthority.currentTarget.lastSeenAt &&
+                guardedAuthority.physicalAuthorityWorker.lastSeenAt
+              ? new Date(Math.min(
+                  guardedAuthority.currentTarget.lastSeenAt.getTime(),
+                  guardedAuthority.physicalAuthorityWorker.lastSeenAt.getTime(),
+                ))
+              : null;
+            const currentAuthority = authorityCurrent({
+              auth: pollInput.auth,
+              authority: lockedAuthority,
+              request: parsedRequest,
+              databaseNow,
+              maxHeartbeatAgeMs,
+              platformPhysicalHeartbeatAt,
+            });
+            if (!currentAuthority) throw new JobLeasingError("target_revoked");
+            const normalizedCurrentTarget = await normalizePlacementRegistryTarget(
+              guardedAuthority.currentTarget,
+            );
+            if (!normalizedCurrentTarget) throw new JobLeasingError("target_revoked");
+            const parsedStoredHello = workerHelloV1Schema.safeParse(
+              lockedAuthority.worker.profileSnapshot,
+            );
+            if (!parsedStoredHello.success) throw new JobLeasingError("target_revoked");
+            const effectiveCapacity = minCapacity(
+              parsedStoredHello.data.capacity,
+              parsedRequest.capacity,
+            );
+            const providerDemand = normalizedProviderDemand(normalizedCurrentTarget);
+            const liveCapacity = await repos.jobControl.snapshotLiveLeaseCapacity({
+              workerId: pollInput.auth.workerId,
+              targetId: normalizedCurrentTarget.targetId,
+            });
+            const admissibleWorkloadTypes = deriveAdmissibleWorkloadTypes(
+              effectiveCapacity,
+              liveCapacity,
+              normalizedCurrentTarget.providerConstraintProfile,
+              providerDemand,
+            );
+            const staticContextInput = buildLeaseStaticContextInput({
+              organizationId: lockedAuthority.worker.organizationId!,
+              parsedWorkerHello: parsedStoredHello.data,
+              logicalWorker: lockedAuthority.worker as never,
+              currentTarget: normalizedCurrentTarget as never,
+              physicalAuthorityWorker: guardedAuthority.physicalAuthorityWorker as never,
+            });
+            const staticContextHash = leaseStaticContextHash(staticContextInput);
+            type LeaseCandidate = Awaited<ReturnType<
+              TenantRepositories["jobControl"]["lockEligibleLeaseCandidates"]
+            >>[number];
+            const tryOffer = async (
+              candidate: LeaseCandidate,
+              normalized: { requirements: JobCapabilityRequirementsV1 },
+            ): Promise<PollResponseV1 | null> => {
+          const ackDeadline = new Date(databaseNow.getTime() + ackTimeoutMs);
+          const expiresAt = new Date(databaseNow.getTime() + leaseDurationMs);
+          const jobEnvelope = buildJobEnvelope({
             job: candidate.job,
             attempt: candidate.attempt,
-            target,
+            target: normalizedCurrentTarget,
             requirements: normalized.requirements,
-            resourceLimits: normalized.providerDemand.resources,
-            databaseNow: authorityNow,
+            resourceLimits: providerDemand.resources,
+            databaseNow,
             leaseExpiresAt: expiresAt,
           });
-          if (!job) return null;
+          if (!jobEnvelope) throw new JobLeasingError("internal_unavailable");
           const fence = randomBytes(32).toString("base64url");
           const lease = await repos.jobControl.offerLease({
             attemptId: candidate.attempt.id,
@@ -516,15 +570,15 @@ export function createJobLeasingService(input: {
             jobId: candidate.job.id,
             attemptNumber: candidate.attempt.attemptNumber,
             workerId: pollInput.auth.workerId,
-            targetId: target.targetId,
-            targetAuthorityKey: authority.worker.targetAuthorityKey,
-            targetGeneration: target.targetGeneration,
+            targetId: normalizedCurrentTarget.targetId,
+            targetAuthorityKey: lockedAuthority.worker.targetAuthorityKey,
+            targetGeneration: normalizedCurrentTarget.targetGeneration,
             profileHash: pollInput.auth.profileHash,
-            providerConstraintHash: target.providerConstraintHash,
+            providerConstraintHash: normalizedCurrentTarget.providerConstraintHash,
             fence,
             ackDeadline,
             expiresAt,
-            createdAt: authorityNow,
+            createdAt: databaseNow,
           });
           if (!lease) return null;
           const offer = leaseOfferV1Schema.parse({
@@ -534,71 +588,83 @@ export function createJobLeasingService(input: {
             fenceToken: fence,
             ackDeadline: ackDeadline.toISOString(),
             expiresAt: expiresAt.toISOString(),
-            job,
+            job: jobEnvelope,
             extensions: [],
           });
           return pollResponseV1Schema.parse({
             protocolVersion: 1,
-            correlationId: request.correlationId,
-            serverTime: authorityNow.toISOString(),
+            correlationId: parsedRequest.correlationId,
+            serverTime: databaseNow.toISOString(),
             outcome: "offer",
             body: offer,
           });
         };
 
-        // Hints are identifier-only preference, never authority. Consume them
-        // only after session, tenant, worker, target and platform guards pass;
-        // PostgreSQL then locks and rechecks the exact attempts. A lost, stale,
-        // duplicate or process-restart hint always falls through to ordered pull.
-        const hintedAttemptIds = input.scheduler?.take(
-          pollInput.auth.organizationId,
-          pollInput.auth.targetId,
-          32,
-        ) ?? [];
-        if (hintedAttemptIds.length > 0) {
-          const hintedCandidates = await repos.jobControl.lockEligibleLeaseCandidates({
-            targetId: target.targetId,
-            attemptIds: hintedAttemptIds,
-            limit: hintedAttemptIds.length,
+            const candidates = await repos.jobControl.lockEligibleLeaseCandidates({
+              admissibleWorkloadTypes,
+              eligibilityVersion: LEASE_STATIC_ELIGIBILITY_VERSION,
+              limit: 256,
+              staticContextHash,
+              targetAuthorityKey: guardedAuthority.currentTarget.targetAuthorityKey,
+              targetClass: normalizedCurrentTarget.targetClass,
+              targetGeneration: normalizedCurrentTarget.targetGeneration,
+              targetId: normalizedCurrentTarget.targetId,
+              placementOwner: normalizedCurrentTarget.targetClass,
+              targetProfileHash: normalizedCurrentTarget.profileHash,
+              targetProviderConstraintHash: normalizedCurrentTarget.providerConstraintHash,
+              targetScope: normalizedCurrentTarget.targetScope,
+              workerId: pollInput.auth.workerId,
+            });
+            const staticNegativeCertificates: Array<{
+              candidate: LeaseCandidate;
+              reasonCode: "static_requirements_mismatch";
+              staticContextHash: string;
+            }> = [];
+            for (const candidate of candidates) {
+              const normalized = normalizedRequirements(candidate.job, normalizedCurrentTarget);
+              if (!normalized) throw new JobLeasingError("internal_unavailable");
+              const evaluation = evaluateStaticLeaseEligibility({
+                target: normalizedCurrentTarget.registeredProfile,
+                verifiedProviderConstraints: normalizedCurrentTarget.providerConstraintProfile,
+                worker: parsedStoredHello.data,
+                requirements: normalized.requirements,
+              });
+              if (!evaluation.eligible) {
+                if (evaluation.reasonCode !== "static_requirements_mismatch") {
+                  throw new JobLeasingError("internal_unavailable");
+                }
+                staticNegativeCertificates.push({
+                  candidate,
+                  reasonCode: evaluation.reasonCode,
+                  staticContextHash,
+                });
+                continue;
+              }
+              if (staticNegativeCertificates.length > 0) {
+                await repos.jobControl.upsertLeaseRejectionCertificates(staticNegativeCertificates);
+              }
+              const offered = await tryOffer(candidate, normalized);
+              if (!offered) throw new HeadRestartConflict();
+              return offered;
+            }
+            if (staticNegativeCertificates.length > 0) {
+              await repos.jobControl.upsertLeaseRejectionCertificates(staticNegativeCertificates);
+            }
+            return pollResponseV1Schema.parse({
+              protocolVersion: 1,
+              correlationId: parsedRequest.correlationId,
+              serverTime: databaseNow.toISOString(),
+              outcome: "no_work",
+              retryAfterMs: readySignaled ? 100 : 750,
+            });
           });
-          for (const candidate of hintedCandidates) {
-            const response = await tryOffer(candidate);
-            if (response) return response;
-          }
+        } catch (error) {
+          if (!isHeadRestartConflict(error)) throw error;
+          if (restartAttempt >= 2) throw new JobLeasingError("internal_unavailable");
+          continue;
         }
-
-        let after: { availableAt: Date; priority: number; createdAt: Date; jobId: string } | undefined;
-        let scanned = 0;
-        while (scanned < 256) {
-          const candidates = await repos.jobControl.lockEligibleLeaseCandidates({
-            targetId: target.targetId,
-            limit: Math.min(32, 256 - scanned),
-            after,
-          });
-          if (candidates.length === 0) break;
-          scanned += candidates.length;
-          for (const candidate of candidates) {
-            const response = await tryOffer(candidate);
-            if (response) return response;
-          }
-          const last = candidates[candidates.length - 1]!;
-          after = {
-            availableAt: last.job.availableAt,
-            priority: last.job.priority,
-            createdAt: last.job.createdAt,
-            jobId: last.job.id,
-          };
-          if (candidates.length < 32) break;
-        }
-
-        return pollResponseV1Schema.parse({
-          protocolVersion: 1,
-          correlationId: request.correlationId,
-          serverTime: authorityNow.toISOString(),
-          outcome: "no_work",
-          retryAfterMs: 750,
-        });
-      });
+      }
+      throw new JobLeasingError("internal_unavailable");
     },
 
     async ack(ackInput: {
@@ -626,8 +692,16 @@ export function createJobLeasingService(input: {
           workerId: ackInput.auth.workerId,
           targetId: ackInput.auth.targetId,
         });
-        const platformPhysicalHeartbeatAt = authority
+        const guardedAuthority = authority
           ? await guardPlatformAuthority(repos, ackInput.auth, authority)
+          : null;
+        const platformPhysicalHeartbeatAt = guardedAuthority?.physicalAuthorityWorker &&
+            guardedAuthority.currentTarget.lastSeenAt &&
+            guardedAuthority.physicalAuthorityWorker.lastSeenAt
+          ? new Date(Math.min(
+              guardedAuthority.currentTarget.lastSeenAt.getTime(),
+              guardedAuthority.physicalAuthorityWorker.lastSeenAt.getTime(),
+            ))
           : null;
         const authorityNow = await repos.jobControl.currentDatabaseTime();
         if (!authority || !ackAuthorityCurrent({
@@ -639,7 +713,9 @@ export function createJobLeasingService(input: {
           platformPhysicalHeartbeatAt,
         })) throw new JobLeasingError(authority ? "target_revoked" : "unauthorized");
 
-        const target = await normalizePlacementRegistryTarget(authority.target);
+        const target = guardedAuthority
+          ? await normalizePlacementRegistryTarget(guardedAuthority.currentTarget)
+          : null;
         if (!target || target.status !== "active") throw new JobLeasingError("target_revoked");
         if (!await repos.jobControl.touchWorkerLeaseProfile({
           workerId: ackInput.auth.workerId,

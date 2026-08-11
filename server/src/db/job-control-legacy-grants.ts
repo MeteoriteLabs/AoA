@@ -86,6 +86,7 @@ export const JOB_SUBMISSION_NEW_PATH_GRANTS = Object.freeze({
 /** JOB-003-only receipt authority, versioned after the immutable E2 grant set. */
 export const JOB_LEASING_NEW_PATH_GRANTS = Object.freeze({
   worker_operation_receipts: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  worker_lease_rejections: ["SELECT", "INSERT", "UPDATE", "DELETE"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
 /**

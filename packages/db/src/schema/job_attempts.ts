@@ -48,6 +48,19 @@ export const jobAttempts = pgTable(
   (table) => ({
     organizationIdx: index("job_attempts_organization_idx").on(table.organizationId),
     jobIdx: index("job_attempts_job_idx").on(table.jobId),
+    leaseCandidateIdx: index("job_attempts_lease_candidate_idx")
+      .on(
+        table.organizationId,
+        table.placementTargetId,
+        table.jobId,
+        table.id,
+      )
+      .where(sql`
+        ${table.status} = 'pending' AND
+        ${table.placementDisposition} = 'selected' AND
+        ${table.placementMode} = 'active' AND
+        ${table.placementLeaseEligible} = true
+      `),
     statusValid: check(
       "job_attempts_status_check",
       sql`status IN ('pending', 'offered', 'leased', 'running', 'cancel_requested', 'succeeded', 'failed', 'cancelled', 'expired')`,

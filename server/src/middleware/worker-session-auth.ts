@@ -7,6 +7,7 @@ import {
   type Db,
 } from "@armyofagents/db";
 import { runInTenant } from "../db/tenant-context.js";
+import { registerWorkerHeartbeat } from "../services/execution-targets.js";
 import { verifyDeviceProof, type DeviceProofHeaders } from "../services/worker-device-proof.js";
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -298,7 +299,7 @@ export async function registerProofBoundHeartbeat(input: {
         now: heartbeatAt,
       }));
   }
-  return runInTenant(input.appDb, input.principal.organizationId, async (repos) => {
+  return runInTenant(input.appDb, input.principal.organizationId, async (repos, tx) => {
     const targetCurrent = await repos.workerEnrollment.heartbeatSessionTarget({
       executionTargetId: input.principal.targetId,
       deviceGeneration: input.principal.targetGeneration,
@@ -306,6 +307,13 @@ export async function registerProofBoundHeartbeat(input: {
       now: heartbeatAt,
     });
     if (!targetCurrent) return false;
+    const statusCurrent = await registerWorkerHeartbeat(tx, {
+      targetId: input.principal.targetId,
+      organizationId: input.principal.organizationId!,
+      status: input.status,
+      now: heartbeatAt,
+    });
+    if (statusCurrent.updated !== 1) return false;
     const profileCurrent = await repos.workerEnrollment.heartbeatSessionProfile({
       workerId: input.principal.workerId,
       executionTargetId: input.principal.targetId,

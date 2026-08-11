@@ -1,4 +1,5 @@
-import { and, asc, count, desc, eq, exists, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, gt, gte, inArray, isNotNull, isNull, lte, ne, notExists, or, sql } from "drizzle-orm";
+import type { JobPlacementOwner } from "@armyofagents/shared";
 import type { Db } from "../../client.js";
 import {
   acquirePlatformTargetAuthorityShared,
@@ -23,6 +24,7 @@ import {
   executionTargets,
   workers,
   workerOperationReceipts,
+  workerLeaseRejections,
   services,
   type Job,
   type JobAttempt,
@@ -32,6 +34,7 @@ import {
   type NewJobOutbox,
   type Lease,
   type WorkerOperationReceipt,
+  type NewWorkerLeaseRejection,
 } from "../../schema/index.js";
 
 export interface TenantAdmissionRecord {
@@ -119,16 +122,28 @@ export interface JobControlRepository {
     targetId: string;
   }): Promise<LeaseWorkerAuthority | null>;
   lockEligibleLeaseCandidates(input: {
+    admissibleWorkloadTypes: string[];
+    eligibilityVersion: number;
+    limit: 256;
+    placementOwner: Exclude<JobPlacementOwner, "legacy">;
+    staticContextHash: string;
+    targetAuthorityKey: string;
+    targetClass: Exclude<JobPlacementOwner, "legacy">;
+    targetGeneration: number;
     targetId: string;
-    attemptIds?: string[];
-    limit?: number;
-    after?: LeaseCandidateCursor;
+    targetProfileHash: string;
+    targetProviderConstraintHash: string;
+    targetScope: string;
+    workerId: string;
   }): Promise<LeaseCandidate[]>;
-  countLiveWorkerLeases(input: {
+  snapshotLiveLeaseCapacity(input: {
     workerId: string;
     targetId: string;
-    workloadType: string;
-  }): Promise<{ total: number; workload: number }>;
+  }): Promise<{ total: number; batch: number; browserSession: number; service: number }>;
+  upsertLeaseRejectionCertificates(
+    input: StaticLeaseRejectionInput[] | { certificates: NewWorkerLeaseRejection[] },
+  ): Promise<number>;
+  cleanupLeaseRejectionCertificates(input: { limit?: number }): Promise<number>;
   acquirePlatformTargetAuthorityShared(targetId: string): Promise<void>;
   recheckPlatformTargetAuthority(input: {
     targetId: string;
@@ -141,6 +156,7 @@ export interface JobControlRepository {
     targetGeneration: number;
   }): Promise<boolean>;
   currentDatabaseTime(): Promise<Date>;
+  setLocalStatementTimeout(milliseconds: number): Promise<void>;
   offerLease(input: {
     attemptId: string;
     organizationId: string;
@@ -237,13 +253,15 @@ export interface LeaseWorkerAuthority {
 export interface LeaseCandidate {
   job: Job;
   attempt: JobAttempt;
+  certificateWorkerId: string;
+  certificateTargetAuthorityKey: string;
+  certificateEligibilityVersion: number;
 }
 
-export interface LeaseCandidateCursor {
-  availableAt: Date;
-  priority: number;
-  createdAt: Date;
-  jobId: string;
+export interface StaticLeaseRejectionInput {
+  candidate: LeaseCandidate;
+  reasonCode: "static_requirements_mismatch";
+  staticContextHash: string;
 }
 
 export interface PlacementCandidateSnapshot {
@@ -665,7 +683,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
               eq(companies.id, input.companyId),
               eq(companies.organizationId, input.organizationId),
             )))
-        : undefined;
+        : sql`true`;
       const [row] = await tx.update(jobAttempts).set({
         placementDisposition: input.placementDisposition,
         placementOwner: input.placementOwner,
@@ -748,29 +766,15 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     },
 
     async lockEligibleLeaseCandidates(input) {
-      const boundedLimit = Math.max(1, Math.min(64, Math.floor(input.limit ?? 32)));
-      if (input.attemptIds && input.attemptIds.length === 0) return [];
-      const after = input.after
-        ? or(
-            gt(jobs.availableAt, input.after.availableAt),
-            and(
-              eq(jobs.availableAt, input.after.availableAt),
-              lt(jobs.priority, input.after.priority),
-            ),
-            and(
-              eq(jobs.availableAt, input.after.availableAt),
-              eq(jobs.priority, input.after.priority),
-              gt(jobs.createdAt, input.after.createdAt),
-            ),
-            and(
-              eq(jobs.availableAt, input.after.availableAt),
-              eq(jobs.priority, input.after.priority),
-              eq(jobs.createdAt, input.after.createdAt),
-              gt(jobs.id, input.after.jobId),
-            ),
-          )
-        : undefined;
-      return tx.select({ job: jobs, attempt: jobAttempts })
+      if (input.limit !== 256) throw new Error("Lease candidate limit must be 256");
+      if (input.admissibleWorkloadTypes.length === 0) return [];
+      return tx.select({
+        job: jobs,
+        attempt: jobAttempts,
+        certificateWorkerId: sql<string>`${input.workerId}`,
+        certificateTargetAuthorityKey: sql<string>`${input.targetAuthorityKey}`,
+        certificateEligibilityVersion: sql<number>`${input.eligibilityVersion}`,
+      })
         .from(jobAttempts)
         .innerJoin(jobs, and(
           eq(jobs.organizationId, jobAttempts.organizationId),
@@ -782,21 +786,50 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           eq(jobAttempts.placementDisposition, "selected"),
           eq(jobAttempts.placementMode, "active"),
           eq(jobAttempts.placementLeaseEligible, true),
+          eq(jobAttempts.placementOwner, input.placementOwner),
           eq(jobAttempts.placementTargetId, input.targetId),
-          input.attemptIds ? inArray(jobAttempts.id, input.attemptIds) : undefined,
+          eq(jobAttempts.placementTargetClass, input.targetClass),
+          eq(jobAttempts.placementTargetScope, input.targetScope),
+          eq(jobAttempts.placementTargetGeneration, input.targetGeneration),
+          eq(jobAttempts.placementProfileHash, input.targetProfileHash),
+          eq(jobAttempts.placementProviderConstraintHash, input.targetProviderConstraintHash),
           eq(jobs.status, "queued"),
-          lte(jobs.availableAt, sql`clock_timestamp()`),
-          after,
+          inArray(jobs.workloadType, input.admissibleWorkloadTypes),
+          lte(jobs.availableAt, sql`statement_timestamp()`),
+          notExists(tx.select({ value: sql<number>`1` })
+            .from(workerLeaseRejections)
+            .where(and(
+              eq(workerLeaseRejections.organizationId, jobAttempts.organizationId),
+              eq(workerLeaseRejections.companyId, jobAttempts.companyId),
+              eq(workerLeaseRejections.jobId, jobAttempts.jobId),
+              eq(workerLeaseRejections.attemptId, jobAttempts.id),
+              eq(workerLeaseRejections.workerId, input.workerId),
+              eq(workerLeaseRejections.targetId, input.targetId),
+              eq(workerLeaseRejections.targetAuthorityKey, input.targetAuthorityKey),
+              eq(workerLeaseRejections.workloadType, jobs.workloadType),
+              eq(workerLeaseRejections.placementOwner, jobAttempts.placementOwner),
+              eq(workerLeaseRejections.placementTargetClass, jobAttempts.placementTargetClass),
+              eq(workerLeaseRejections.placementTargetScope, jobAttempts.placementTargetScope),
+              eq(workerLeaseRejections.placementTargetGeneration, jobAttempts.placementTargetGeneration),
+              eq(workerLeaseRejections.placementProfileHash, jobAttempts.placementProfileHash),
+              eq(workerLeaseRejections.placementProviderConstraintHash, jobAttempts.placementProviderConstraintHash),
+              eq(workerLeaseRejections.placementInputDigest, jobAttempts.placementInputDigest),
+              eq(workerLeaseRejections.placementPolicyDigest, jobAttempts.placementPolicyDigest),
+              eq(workerLeaseRejections.eligibilityVersion, input.eligibilityVersion),
+              eq(workerLeaseRejections.staticContextHash, input.staticContextHash),
+            ))),
         ))
         .orderBy(asc(jobs.availableAt), desc(jobs.priority), asc(jobs.createdAt), asc(jobs.id))
-        .limit(boundedLimit)
+        .limit(256)
         .for("update", { of: jobAttempts, skipLocked: true });
     },
 
-    async countLiveWorkerLeases(input) {
+    async snapshotLiveLeaseCapacity(input) {
       const [row] = await tx.select({
         total: count(),
-        workload: sql<number>`count(*) filter (where ${jobs.workloadType} = ${input.workloadType})`,
+        batch: sql<number>`COUNT(*) FILTER (WHERE workload_type = 'batch')`,
+        browserSession: sql<number>`COUNT(*) FILTER (WHERE workload_type = 'browser_session')`,
+        service: sql<number>`COUNT(*) FILTER (WHERE workload_type = 'service')`,
       }).from(leases).innerJoin(jobs, and(
         eq(jobs.organizationId, leases.organizationId),
         eq(jobs.companyId, leases.companyId),
@@ -808,8 +841,144 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       ));
       return {
         total: Number(row?.total ?? 0),
-        workload: Number(row?.workload ?? 0),
+        batch: Number(row?.batch ?? 0),
+        browserSession: Number(row?.browserSession ?? 0),
+        service: Number(row?.service ?? 0),
       };
+    },
+
+    async upsertLeaseRejectionCertificates(input) {
+      const certificates: NewWorkerLeaseRejection[] = [];
+      if ("certificates" in input) {
+        for (let index = 0; index < input.certificates.length; index += 1) {
+          certificates[index] = input.certificates[index]!;
+        }
+      } else {
+        for (let index = 0; index < input.length; index += 1) {
+            const { candidate, reasonCode, staticContextHash } = input[index]!;
+            const { job, attempt } = candidate;
+            if (!attempt.placementOwner || !attempt.placementTargetId ||
+                !attempt.placementTargetClass || !attempt.placementTargetScope ||
+                !attempt.placementTargetGeneration || !attempt.placementProfileHash ||
+                !attempt.placementProviderConstraintHash || !attempt.placementInputDigest ||
+                !attempt.placementPolicyDigest) {
+              throw new Error("Static lease rejection candidate has incomplete placement facts");
+            }
+            certificates[index] = {
+              organizationId: job.organizationId,
+              companyId: job.companyId,
+              jobId: job.id,
+              attemptId: attempt.id,
+              workerId: candidate.certificateWorkerId,
+              targetId: attempt.placementTargetId,
+              targetAuthorityKey: candidate.certificateTargetAuthorityKey,
+              eligibilityVersion: candidate.certificateEligibilityVersion,
+              staticContextHash,
+              workloadType: job.workloadType,
+              placementOwner: attempt.placementOwner,
+              placementTargetClass: attempt.placementTargetClass,
+              placementTargetScope: attempt.placementTargetScope,
+              placementTargetGeneration: attempt.placementTargetGeneration,
+              placementProfileHash: attempt.placementProfileHash,
+              placementProviderConstraintHash: attempt.placementProviderConstraintHash,
+              placementInputDigest: attempt.placementInputDigest,
+              placementPolicyDigest: attempt.placementPolicyDigest,
+              reasonCode,
+            };
+        }
+      }
+      if (certificates.length === 0) return 0;
+      const rows = await tx.insert(workerLeaseRejections).values(certificates)
+        .onConflictDoUpdate({
+          target: [
+            workerLeaseRejections.organizationId,
+            workerLeaseRejections.workerId,
+            workerLeaseRejections.attemptId,
+          ],
+          set: {
+            companyId: sql`excluded.company_id`,
+            jobId: sql`excluded.job_id`,
+            targetId: sql`excluded.target_id`,
+            targetAuthorityKey: sql`excluded.target_authority_key`,
+            eligibilityVersion: sql`excluded.eligibility_version`,
+            staticContextHash: sql`excluded.static_context_hash`,
+            workloadType: sql`excluded.workload_type`,
+            placementOwner: sql`excluded.placement_owner`,
+            placementTargetClass: sql`excluded.placement_target_class`,
+            placementTargetScope: sql`excluded.placement_target_scope`,
+            placementTargetGeneration: sql`excluded.placement_target_generation`,
+            placementProfileHash: sql`excluded.placement_profile_hash`,
+            placementProviderConstraintHash: sql`excluded.placement_provider_constraint_hash`,
+            placementInputDigest: sql`excluded.placement_input_digest`,
+            placementPolicyDigest: sql`excluded.placement_policy_digest`,
+            reasonCode: sql`excluded.reason_code`,
+            updatedAt: sql`clock_timestamp()`,
+          },
+        }).returning({ attemptId: workerLeaseRejections.attemptId });
+      return rows.length;
+    },
+
+    async cleanupLeaseRejectionCertificates(input) {
+      const boundedLimit = Math.max(1, Math.min(256, Math.floor(input.limit ?? 256)));
+      const terminal = ["succeeded", "failed", "cancelled", "dead_letter"];
+      const retired = await tx.select({
+        organizationId: workerLeaseRejections.organizationId,
+        workerId: workerLeaseRejections.workerId,
+        targetId: workerLeaseRejections.targetId,
+        attemptId: workerLeaseRejections.attemptId,
+      }).from(workerLeaseRejections)
+        .innerJoin(jobs, and(
+          eq(jobs.organizationId, workerLeaseRejections.organizationId),
+          eq(jobs.companyId, workerLeaseRejections.companyId),
+          eq(jobs.id, workerLeaseRejections.jobId),
+        ))
+        .innerJoin(jobAttempts, and(
+          eq(jobAttempts.organizationId, workerLeaseRejections.organizationId),
+          eq(jobAttempts.companyId, workerLeaseRejections.companyId),
+          eq(jobAttempts.jobId, workerLeaseRejections.jobId),
+          eq(jobAttempts.id, workerLeaseRejections.attemptId),
+        ))
+        .innerJoin(workers, and(
+          eq(workers.organizationId, workerLeaseRejections.organizationId),
+          eq(workers.id, workerLeaseRejections.workerId),
+          eq(workers.targetAuthorityKey, workerLeaseRejections.targetAuthorityKey),
+          eq(workers.executionTargetId, workerLeaseRejections.targetId),
+        ))
+        .innerJoin(executionTargets, and(
+          eq(executionTargets.id, workerLeaseRejections.targetId),
+          eq(executionTargets.targetAuthorityKey, workerLeaseRejections.targetAuthorityKey),
+        ))
+        .where(or(
+          inArray(jobs.status, terminal),
+          inArray(jobAttempts.status, ["offered", "leased", "running", "succeeded", "failed", "cancelled", "expired"]),
+          eq(workers.status, "revoked"),
+          inArray(executionTargets.status, ["offline", "disabled"]),
+          ne(workerLeaseRejections.workloadType, jobs.workloadType),
+          ne(workerLeaseRejections.placementOwner, jobAttempts.placementOwner),
+          ne(workerLeaseRejections.placementTargetClass, jobAttempts.placementTargetClass),
+          ne(workerLeaseRejections.placementTargetScope, jobAttempts.placementTargetScope),
+          ne(workerLeaseRejections.placementTargetGeneration, jobAttempts.placementTargetGeneration),
+          ne(workerLeaseRejections.placementProfileHash, jobAttempts.placementProfileHash),
+          ne(workerLeaseRejections.placementProviderConstraintHash, jobAttempts.placementProviderConstraintHash),
+          ne(workerLeaseRejections.placementInputDigest, jobAttempts.placementInputDigest),
+          ne(workerLeaseRejections.placementPolicyDigest, jobAttempts.placementPolicyDigest),
+        ))
+        .orderBy(
+          asc(workerLeaseRejections.updatedAt),
+          asc(workerLeaseRejections.workerId),
+          asc(workerLeaseRejections.attemptId),
+        )
+        .limit(256)
+        .for("update", { of: workerLeaseRejections, skipLocked: true });
+      if (retired.length === 0) return 0;
+      const first = retired[0]!;
+      const deleted = await tx.delete(workerLeaseRejections).where(and(
+        eq(workerLeaseRejections.organizationId, first.organizationId),
+        inArray(workerLeaseRejections.workerId, retired.map((row) => row.workerId)),
+        inArray(workerLeaseRejections.targetId, retired.map((row) => row.targetId)),
+        inArray(workerLeaseRejections.attemptId, retired.map((row) => row.attemptId)),
+      )).returning({ attemptId: workerLeaseRejections.attemptId });
+      return Math.min(boundedLimit, deleted.length);
     },
 
     async acquirePlatformTargetAuthorityShared(targetId) {
@@ -856,6 +1025,11 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       return parsed;
     },
 
+    async setLocalStatementTimeout(milliseconds) {
+      const bounded = Math.max(1, Math.min(30_000, Math.floor(milliseconds)));
+      await tx.execute(sql`SELECT set_config('statement_timeout', ${String(bounded)}, true)`);
+    },
+
     async offerLease(input) {
       const [attempt] = await tx.update(jobAttempts).set({
         status: "offered",
@@ -875,26 +1049,33 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         eq(jobAttempts.placementProviderConstraintHash, input.providerConstraintHash),
       )).returning({ id: jobAttempts.id });
       if (!attempt) return null;
-      const [lease] = await tx.insert(leases).values({
-        organizationId: input.organizationId,
-        companyId: input.companyId,
-        jobId: input.jobId,
-        attemptId: input.attemptId,
-        attemptNumber: input.attemptNumber,
-        workerId: input.workerId,
-        targetId: input.targetId,
-        targetAuthorityKey: input.targetAuthorityKey,
-        targetGeneration: input.targetGeneration,
-        profileHash: input.profileHash,
-        providerConstraintHash: input.providerConstraintHash,
-        status: "offered",
-        fence: input.fence,
-        ackDeadline: input.ackDeadline,
-        expiresAt: input.expiresAt,
-        createdAt: input.createdAt,
-        updatedAt: input.createdAt,
-      }).returning();
-      return lease ?? null;
+      try {
+        const [lease] = await tx.insert(leases).values({
+          organizationId: input.organizationId,
+          companyId: input.companyId,
+          jobId: input.jobId,
+          attemptId: input.attemptId,
+          attemptNumber: input.attemptNumber,
+          workerId: input.workerId,
+          targetId: input.targetId,
+          targetAuthorityKey: input.targetAuthorityKey,
+          targetGeneration: input.targetGeneration,
+          profileHash: input.profileHash,
+          providerConstraintHash: input.providerConstraintHash,
+          status: "offered",
+          fence: input.fence,
+          ackDeadline: input.ackDeadline,
+          expiresAt: input.expiresAt,
+          createdAt: input.createdAt,
+          updatedAt: input.createdAt,
+        }).returning();
+        return lease ?? null;
+      } catch {
+        // PostgreSQL marks this transaction failed. Returning null lets the
+        // service raise its private head-restart sentinel, guaranteeing outer
+        // rollback before a fresh bounded attempt reports internal_unavailable.
+        return null;
+      }
     },
 
     async cleanupExpiredOperationReceipts(expiresBefore, limit = 100) {

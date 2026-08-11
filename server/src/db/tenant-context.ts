@@ -36,7 +36,7 @@ import { withTenantTx } from "./with-tenant-tx.js";
 export async function runInTenant<T>(
   appDb: Db,
   organizationId: string,
-  fn: (repos: TenantRepositories) => Promise<T>,
+  fn: (repos: TenantRepositories, tx: Db) => Promise<T>,
 ): Promise<T> {
   if (typeof organizationId !== "string" || organizationId.trim() === "") {
     throw new Error(
@@ -46,5 +46,5 @@ export async function runInTenant<T>(
         "Organization context.",
     );
   }
-  return withTenantTx(appDb, organizationId, (tx) => fn(tenantRepositories(tx)));
+  return withTenantTx(appDb, organizationId, (tx) => fn(tenantRepositories(tx), tx));
 }

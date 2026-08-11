@@ -397,7 +397,6 @@ export function createWorkerEnrollmentRepository(tx: Db): WorkerEnrollmentReposi
     },
     async heartbeatSessionTarget(input) {
       const rows = await tx.update(executionTargets).set({
-        status: input.status,
         lastSeenAt: input.now,
         updatedAt: input.now,
       }).where(and(

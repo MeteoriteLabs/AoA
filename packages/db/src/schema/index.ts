@@ -47,6 +47,7 @@ export {
   type WorkerOperationReceipt,
   type NewWorkerOperationReceipt,
 } from "./worker_operation_receipts.js";
+export * from "./worker_lease_rejections.js";
 // E2 tenant kernel (TEN-001b): worker/service/artifact/secret-handle ownership tables.
 export { workers, type Worker, type NewWorker } from "./workers.js";
 export {
