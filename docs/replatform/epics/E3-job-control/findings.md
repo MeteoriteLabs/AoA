@@ -953,3 +953,116 @@ failures to `internal_unavailable`. Focused operator-loss plus tenant-context te
 the whole contract passes 15/15, and the final exact server matrix passes 136/136. The broad
 aggregate itself remains honestly non-green for separately recorded setup/load effects and was
 not rerun. JOB-003 remains `review_pending`; this finding does not mark a pass or completion.
+
+## E3-F028 - Bounded pools are not bound to one advisory-lock authority domain
+
+**Date:** 2026-08-11
+**Status:** `open_in_JOB-003_final_review_attempt_3`
+**Severity:** P0 STOP - H-02 revocation linearization / split-brain authority
+**Affected ticket:** JOB-003
+
+**Finding:** Exact review of `392c3a2da52c3fd812d7b9e2801fe6523f1cc657` found that
+`server/src/db/distributed-execution-databases.ts:285-304` authenticates and audits the app and
+operator pools independently, but never proves that they address the same PostgreSQL database
+and transaction-advisory-lock domain. The startup call also does not bind them to the owner
+pool whose database received migration/bootstrap. Two separately valid migrated copies can
+therefore pass. Platform poll/ACK can release operator row locks and retain an app shared
+advisory lock that cannot conflict with a cutoff's operator exclusive advisory lock, allowing
+stale tenant work to commit after revocation finishes.
+
+**Required disposition:** Fail startup unless an unpredictable transaction-advisory
+contention handshake proves the owner, app, and operator sessions share the same canonical
+database/lock domain. Add a negative startup integration using two fully valid databases.
+This is Critical and keeps JOB-003 `needs_changes`.
+
+## E3-F029 - Startup exact-authority audit omits required relations and RLS posture
+
+**Date:** 2026-08-11
+**Status:** `open_in_JOB-003_final_review_attempt_3`
+**Severity:** P1 Important - H-01 fail-closed startup / exact grant and RLS authority
+**Affected ticket:** JOB-003
+
+**Finding:** `server/src/db/distributed-execution-databases.ts:108-140` validates only catalog
+relations that exist. It does not require every allowlisted relation to be present and does
+not inspect `relrowsecurity`, `relforcerowsecurity`, or policy role/`USING`/`WITH CHECK` facts.
+A partial database missing `worker_lease_rejections`, or a database with the expected DML
+grants but RLS disabled, can pass before the distributed routes start.
+
+**Required disposition:** Compare actual and expected relation sets, attest the exact RLS/
+FORCE/policy posture for tenant tables, and add missing-table and RLS-disabled startup
+negatives. The focused migration/RLS tests remain useful but do not close wrong-database
+startup behavior.
+
+## E3-F030 - Certificate cleanup is uncomposed and Cartesian rather than tuple-bounded
+
+**Date:** 2026-08-11
+**Status:** `open_in_JOB-003_final_review_attempt_3`
+**Severity:** P1 Important - H-03 bounded storage / certificate stability
+**Affected ticket:** JOB-003
+
+**Finding:** The locked per-admitted-shard cleanup has no production caller; the transaction
+at `server/src/services/job-outbox-worker.ts:117-125` only claims outbox rows. The dormant
+implementation at `packages/db/src/repositories/tenant/job-control.ts:971-981` hardcodes its
+selection limit to 256, then deletes by independent worker, target, and attempt `IN` sets.
+Those predicates expand selected tuples into a Cartesian set and can delete unselected current
+certificates and far more than the requested batch. `Math.min` hides rather than bounds the
+actual delete. Without invocation, stale terminal/retired/offline/mismatched rows persist and
+the promised `O(workers x pending attempts)` lifecycle bound is false.
+
+**Required disposition:** Invoke one cleanup within each admitted-shard budget, use
+`boundedLimit`, delete only exact selected composite tuples, return the actual count, and add
+dense multi-worker/multi-attempt PostgreSQL plus runtime-composition regressions.
+
+## E3-F031 - E3-PERF-01 has no executable real campaign adapter
+
+**Date:** 2026-08-11
+**Status:** `open_in_JOB-003_final_review_attempt_3`
+**Severity:** P1 Important - executable evidence / H-04 and H-08 attestation
+**Affected ticket:** JOB-003
+
+**Finding:** `scripts/run-e3-perf-01.mjs:1174-1198` recognizes the locked campaign CLI and
+then unconditionally rejects it with `campaign_launcher_attestation`. No production adapter
+constructs the exported engine's Git, dependency, image-provenance, redaction, child, archive,
+store, and retention interfaces. The nominal real-CLI test at
+`scripts/run-e3-perf-01.test.mjs:194-227` explicitly expects a nonzero campaign exit; all
+successful orchestration tests use synthetic self-attested harness facts. The exact future
+campaign command can therefore never reach sampling or immutable evidence publication.
+
+**Required disposition:** Wire the approved real launcher and make a hermetic real-CLI success
+fixture prove recomputed provenance, child execution, fail-closed redaction, archive canary
+scan/hash, immutable upload, retention receipt, and final pass/fail record. The million-row
+campaign remains correctly unrun and is not waived.
+
+## E3-F032 - Required payload-free leasing and scheduler telemetry is absent
+
+**Date:** 2026-08-11
+**Status:** `open_in_JOB-003_final_review_attempt_3`
+**Severity:** P1 Important - plan alignment / starvation and storage observability
+**Affected ticket:** JOB-003
+
+**Finding:** The locked plan requires certificate hit/miss/upsert/cleanup counts, scan-limit
+exhaustion, head restarts, certificate cardinality, readiness rejection/expiry, and launch-
+window overshoot without tenant payload. The scan/upsert at
+`server/src/services/job-leasing.ts:603-653` and scheduler expiry/rejection at
+`server/src/services/job-ready-scheduler.ts:73-105` emit nothing, while
+`server/src/index.ts:601-604` discards the outbox tick result. No production telemetry surface
+or non-secret field contract exists.
+
+**Required disposition:** Add bounded payload-free metrics for every locked signal and
+non-vacuous tests that reject job input, requirements, fence, proof, and credential fields.
+
+## E3-F033 - Non-platform poll and revoke invert target/worker lock order
+
+**Date:** 2026-08-11
+**Status:** `open_in_JOB-003_final_review_attempt_3`
+**Severity:** P2 Minor - control-plane contention / bounded revoke availability
+**Affected ticket:** JOB-003
+
+**Finding:** Non-platform poll locks worker then target in
+`packages/db/src/repositories/tenant/job-control.ts:715-749`; revoke updates target then workers
+in `packages/db/src/repositories/tenant/worker-enrollment.ts:519-533`. Concurrent operations
+can form a lock cycle. The revoke's 750 ms transaction-local lock timeout bounds one attempt,
+but sustained polling can repeatedly fail a control-plane cutoff.
+
+**Required disposition:** Use one target/worker order with revalidation and add a contention
+test. This Minor does not change the Critical/Important disposition above.

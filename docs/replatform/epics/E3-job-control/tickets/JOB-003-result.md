@@ -6,10 +6,10 @@
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-003 - Lease jobs with ACK deadlines (L; three bounded internal slices)`
 **Implementer:** `Codex /root/job003_impl`
-**Reviewer:** `Codex /root/job003_final_review`
+**Reviewer:** `Codex /root/job003_final_review3`
 **Start SHA:** 4276331160afb77d47ffa488543b968da949c02f
-**Implementation candidate:** 808a17b5cfa545eff77da13aeb9735aa7ebb0a99
-**Reviewed revision:** a48faac86cf3a875e5a16c487d91e88d9f78d6fd
+**Implementation candidate:** 63f9e409d017258aad899c5f955c54c0b09d954a
+**Reviewed revision:** 392c3a2da52c3fd812d7b9e2801fe6523f1cc657
 
 The Start SHA is the committed passing JOB-009 completion revision and the exact JOB-003
 assignment boundary. JOB-001, JOB-002, JOB-009, the frozen E1 v1 protocol, and the E2 tenant
@@ -626,3 +626,112 @@ The million-row pinned campaign itself was not executed here. Runner and ordinar
 contracts pass, but no capacity, latency, or SLO claim is made. JOB-003 is not marked passed or
 complete, no ledger is advanced, and nothing is pushed. A fresh distinct reviewer must inspect
 the production candidate and alone set the next disposition.
+
+## Final independent review attempt 3 - needs changes
+
+**Date:** 2026-08-11
+**Reviewer:** `Codex /root/job003_final_review3`
+**Start/base:** `4276331160afb77d47ffa488543b968da949c02f`
+**Production GREEN:** `63f9e409d017258aad899c5f955c54c0b09d954a`
+**Exact reviewed revision:** `392c3a2da52c3fd812d7b9e2801fe6523f1cc657`
+**Disposition:** `needs_changes`
+
+The complete base-to-reviewed diff was inspected. The production GREEN is one 29-file code/
+migration/schema/runner commit; its reviewed child changes only this result ledger and the
+epic findings. The earlier BASE-to-GREEN history contains the tests and plan corrections, so
+green test history was not mistaken for production-commit scope.
+
+### Strengths
+
+- Atomic offer and ACK behavior, exact receipt expiry/replay, rollback, static-only matcher
+  context, class/total capacity, canonical global-head ordering, and uniform frozen-protocol
+  errors have strong real-PostgreSQL and adversarial coverage.
+- Generated `0229` and `0230`, custom seven-statement `0231`, C14 guards, populated upgrade,
+  composite FKs, app/operator grants, FORCE RLS migrations, raw-role oracle probes, and the
+  protected-writer inventory all passed their focused lanes.
+- Organization-scoped platform routing, inline `enrolled || active` authority predicates,
+  default-off composition, bounded two-page/32-shard traversal, scheduler caps/TTL, and awaited
+  shutdown ordering are implemented without changing frozen E1.
+- The performance library has strict schemas and useful negative fixtures for provenance,
+  canaries, archive validation, and retention receipts. The defect below is that no real
+  campaign adapter reaches that library from the documented command.
+
+### Critical
+
+1. **C-01 - app/operator/owner pools are not proven to share one PostgreSQL authority and
+   advisory-lock domain.** `server/src/db/distributed-execution-databases.ts:285-304` opens and
+   audits the two bounded pools independently, then returns them without a cross-pool identity/
+   lock-domain proof; `server/src/index.ts:548-552` also supplies no binding to the owner pool
+   whose database was migrated. Two separately valid database copies can pass startup. A poll
+   may then release its operator row locks while retaining a shared advisory lock only in the
+   app database; an exclusive cutoff in the operator database does not conflict and can finish
+   while stale tenant work offers or ACKs. This defeats Decision #124/H-02 linearization.
+   Fail startup unless a random transaction-advisory contention handshake proves all pools use
+   the same canonical database/lock domain, and add separate-database negative tests.
+
+### Important
+
+1. **I-01 - startup's exact allowlist is one-sided and does not prove RLS posture.**
+   `server/src/db/distributed-execution-databases.ts:108-140` checks only relations returned by
+   the catalog. It never asserts that every expected relation exists, and its catalog audit
+   does not check `relrowsecurity`, `relforcerowsecurity`, or policy role/`USING`/`WITH CHECK`.
+   A partial database missing `worker_lease_rejections`, or exact DML grants with RLS disabled,
+   can pass startup. Compare actual and expected relation sets and fail closed on the exact
+   JOB-003 RLS/policy posture; add missing-table and disabled-RLS negatives.
+2. **I-02 - the required certificate sweeper is uncomposed and its delete is not bounded to
+   selected tuples.** The only per-shard transaction at
+   `server/src/services/job-outbox-worker.ts:117-125` claims outbox rows and never calls the
+   repository cleanup; production has zero callers. In
+   `packages/db/src/repositories/tenant/job-control.ts:971-981`, selection hardcodes 256 instead
+   of `boundedLimit`, deletion independently combines worker/target/attempt `IN` sets (a
+   Cartesian expansion), and the return value hides over-deletion with `Math.min`. Terminal,
+   retired, offline, and mismatched rows accumulate indefinitely; if invoked, cleanup can
+   delete current unselected certificates and more than the batch. Compose one cleanup per
+   admitted shard and delete exact selected composite tuples using the requested bound. Add a
+   dense multi-worker/multi-attempt PostgreSQL regression and runtime composition test.
+3. **I-03 - the documented E3-PERF-01 campaign command cannot execute a campaign.**
+   `scripts/run-e3-perf-01.mjs:1174-1198` recognizes the exact `--manifest ... --output ...`
+   command, validates the manifest, then unconditionally fails
+   `campaign_launcher_attestation`; no production harness/adapter calls exported
+   `runE3Perf01`. `scripts/run-e3-perf-01.test.mjs:194-227` calls the real CLI but declares
+   success only when that campaign exits nonzero. The other runner tests supply a synthetic
+   self-attesting harness. Wire an approved real launcher that recomputes Git/dependency/image
+   facts, runs and redacts the child, builds/scans/uploads the archive, and verifies the
+   immutable retention receipt. Make a hermetic real-CLI success fixture reach every stage.
+4. **I-04 - locked payload-free operational metrics are absent.** The required certificate
+   hit/miss/upsert/cleanup, scan-exhaustion, head-restart, table-cardinality, readiness rejection/
+   expiry, and launch-overshoot measurements are not emitted anywhere.
+   `server/src/services/job-leasing.ts:603-653` scans/upserts silently,
+   `server/src/services/job-ready-scheduler.ts:73-105` expires/rejects silently, and
+   `server/src/index.ts:601-604` discards the outbox tick result. Add a bounded payload-free
+   metrics interface plus tests that prove all required signals and reject job, fence, proof,
+   requirement, and credential fields.
+
+### Minor
+
+1. **M-01 - non-platform poll and revoke invert target/worker row order.** Poll locks worker
+   then target in `packages/db/src/repositories/tenant/job-control.ts:715-749`; revoke updates
+   target then workers in `packages/db/src/repositories/tenant/worker-enrollment.ts:519-533`.
+   The revoke transaction's 750 ms timeout bounds the deadlock, but sustained polling can make
+   a control-plane revoke repeatedly fail. Rework the poll to discover identity, then lock and
+   revalidate target followed by worker, or otherwise establish one order and test contention.
+
+### Evidence and honesty
+
+| Verification at exact reviewed revision | Result |
+| --- | --- |
+| Repository identity, clean tree, BASE/production ancestry, `git diff --check` | PASS |
+| BASE-to-reviewed frozen `packages/worker-protocol` diff | PASS - zero files |
+| `pnpm check:frozen-worker-protocol-v1 -- --source-sha b7a842870ce7509d8baa75409e0ab19da375c88a` | PASS |
+| Focused DB matrix | PASS - 7 files, 30/30 |
+| Focused server matrix | PASS - 10 files, 136/136 |
+| Leasing integration within server matrix | PASS - 28/28 |
+| Contract/scanner within server matrix | PASS - 15/15 |
+| Ordinary load lane, without `AOA_RUN_E3_PERF_01` | PASS - 4 passed, 9 campaign-gated skips |
+| Focused real-CLI runner test | PASS - 1/1, but it proves the campaign exits nonzero |
+
+The previously recorded 12/12 runner library lane, predecessor bundles, recursive typecheck,
+build, and frozen-install checks were not rerun in this review. The honest Windows aggregate
+remains the recorded exit 1 after 269.8 seconds; it was not relabeled or rerun. The formal
+million-row campaign was not run, and no performance/capacity/SLO claim is made. Because C-01
+and the Important gaps remain, JOB-003 stays `needs_changes`; no epic/global gate is advanced.
