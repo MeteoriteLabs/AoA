@@ -3359,6 +3359,12 @@ function leaseStaticContextPollViolations(source: string): string[] {
     ? ackCallbackExpression
     : null;
   const ackBody = ackCallback?.body && ts.isBlock(ackCallback.body) ? ackCallback.body : null;
+  const ackCallbackParameter = ackCallback?.parameters[0] ?? null;
+  const exactAckCallbackParameters = Boolean(ackCallback && ackCallback.parameters.length === 1 &&
+    ackCallbackParameter && ts.isIdentifier(ackCallbackParameter.name) &&
+    !ackCallbackParameter.initializer && !ackCallbackParameter.dotDotDotToken &&
+    !ackCallbackParameter.questionToken && !ackCallbackParameter.type &&
+    !(ackCallbackParameter.modifiers?.length));
   const ackGateCalls = directCalls("ackAuthorityCurrent").filter((call) => within(call, ackMethod));
   const ackGateCall = ackGateCalls.length === 1 ? ackGateCalls[0]! : null;
   const ackGateInput = ackGateCall?.arguments.length === 1
@@ -3451,6 +3457,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
   const exactAckReturnDominance = Boolean(outerAckTenantReturn && ackResultReturns.length > 0 &&
     ackResultReturns.every((statement) => followsAckGuard(directAckStatement(statement))));
   const exactAckGateFlow = Boolean(ackInputName && serviceInputName && ackTenantCall && ackCallback && ackBody &&
+    exactAckCallbackParameters &&
     ackTenantCall.arguments.length === 3 &&
     pathOf(ackTenantCall.arguments[0])?.join(".") === `${serviceInputName}.appDb` &&
     pathOf(ackTenantCall.arguments[1])?.join(".") === `${ackInputName}.auth.organizationId` &&
@@ -6224,9 +6231,12 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       '                platformPhysicalHeartbeatAt,\n' +
       '              })';
     const ackReject = `if (!authority || !${ackAuthorityCall}) throw new Error("target_revoked");`;
+    const ackCallbackStart =
+      "return runInTenant(input.appDb, ackInput.auth.organizationId, async (repos) => {";
     expect.soft(valid).toContain(logicalStatusPredicate);
     expect.soft(valid).toContain(physicalStatusPredicate);
     expect.soft(valid).toContain(ackReject);
+    expect.soft(valid).toContain(ackCallbackStart);
     const adversaries: Array<{ name: string; source: string; violation: string }> = [
       ...decision124Checks.map(([name, fragment]) => ({
         name: `decision-124-delete-${name}`,
@@ -6254,6 +6264,43 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
         source: valid.replace(
           "          async ack(ackInput: any) {",
           "          async ack(ackInput: any) {\n            if (ackInput.request.body.workerId) return { outcome: \"acknowledged\" };",
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      ...["activateLeaseAck", "findOperationReceipt", "lockLeaseAckContext", "touchWorkerLeaseProfile"].map(
+        (effect) => ({
+          name: `decision-124-ack-${effect}-default-parameter-effect`,
+          source: valid.replace(
+            ackCallbackStart,
+            ackCallbackStart.replace(
+              "async (repos)",
+              `async (repos, _unused = repos.jobControl.${effect}({}))`,
+            ),
+          ),
+          violation: "builder:trusted-service-authority-guard",
+        }),
+      ),
+      {
+        name: "decision-124-ack-extra-optional-parameter",
+        source: valid.replace(
+          ackCallbackStart,
+          ackCallbackStart.replace("async (repos)", "async (repos, _extra?: unknown)"),
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-ack-destructured-parameter",
+        source: valid.replace(
+          ackCallbackStart,
+          ackCallbackStart.replace("async (repos)", "async ({ repos }: any)"),
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-ack-rest-parameter",
+        source: valid.replace(
+          ackCallbackStart,
+          ackCallbackStart.replace("async (repos)", "async (...[repos]: any[])"),
         ),
         violation: "builder:trusted-service-authority-guard",
       },
