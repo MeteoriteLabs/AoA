@@ -925,3 +925,31 @@ Final exact dual review of `73675cc621008ea0dcf18f6ae0c430162e7e448e` returned
 `ACCEPT` from both the whole-plan reviewer and the independent schema/security reviewer with
 zero P0/P1/P2 findings. The plan defect is resolved. Only a corrected tests-only RED is now
 authorized; implementation and ticket completion remain pending.
+
+## E3-F027 - Broad verification exposed stale authority fixtures and operator-error leakage
+
+**Date:** 2026-08-11
+**Status:** `resolved_in_candidate_review_pending`
+**Severity:** P1 Important - fail-closed operator loss / exact repository authority surface
+**Affected ticket:** JOB-003
+
+**Finding:** The first full Windows aggregate against the static-certificate implementation
+candidate exposed two JOB-003-adjacent mismatches hidden by the required 10-file matrix. The
+operator-loss fixture returned only three target fields, so the accepted 30-fact H-02 guard
+correctly rejected the decoy before the fixture could inject post-callback operator loss; the
+service also allowed non-domain operator transport/commit errors to escape instead of mapping
+them to `internal_unavailable`. Separately, the TEN-003 unit still assumed every enumerable
+tenant repository offered generic `insert`, contradicting the accepted authority hardening
+that removes generic `workers.insert` and permits worker creation only through the audited
+enrollment path.
+
+**Disposition:** The tests-only fixture commit
+`eed83fbff28a99790fbfc36aca8ef1cc2054f181` supplies the complete current-target authority
+snapshot and asserts the exact read-only worker repository surface; a distinct reviewer
+returned `ACCEPT` with zero P0/P1/P2. Production candidate
+`63f9e409d017258aad899c5f955c54c0b09d954a` wraps only the operator transaction boundary,
+preserves all `JobLeasingError` authority decisions, and maps other operator infrastructure
+failures to `internal_unavailable`. Focused operator-loss plus tenant-context tests pass 9/9,
+the whole contract passes 15/15, and the final exact server matrix passes 136/136. The broad
+aggregate itself remains honestly non-green for separately recorded setup/load effects and was
+not rerun. JOB-003 remains `review_pending`; this finding does not mark a pass or completion.

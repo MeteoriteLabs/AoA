@@ -574,3 +574,55 @@ corrected tests-only RED matching the accepted successor. The controller must in
 inspect and rerun that RED and confirm intended assertion failures only before authorizing any
 schema edit, migration generation, or production GREEN work. JOB-003 therefore remains
 `needs_changes`; no pass, completion, production change, migration, or push is claimed here.
+
+## Static-certificate production candidate - review pending
+
+**Date:** 2026-08-11
+**Status:** `review_pending`
+**Accepted plan:** `b7b6f201b056d908401040dff049c5923f547308`
+**Accepted corrected RED:** `e70425ba61c586ef0adc57c83be9fa914ffc4d74`
+**Production candidate:** `63f9e409d017258aad899c5f955c54c0b09d954a`
+
+The candidate implements the reviewed static-negative-certificate successor: typed per-head
+static context, frozen static matcher evaluation, complete SQL-correlated certificate
+anti-join, generated `0229` parent key then generated `0230` table/FKs/indexes, custom seven-
+statement `0231` security DDL, exact tenant/operator authority ordering, bounded scheduler and
+outbox behavior, and the fail-closed `E3-PERF-01` runner/evidence schemas. Candidate and
+repository `placementOwner` are sourced only from
+`normalizedCurrentTarget.targetClass`; `ownerUserId` remains solely a static authority fact.
+
+The final authority clarification admits proof-bound `enrolled` or `active` workers through
+three independent inline poll/ACK/physical predicates while retaining every revocation,
+generation, key, thumbprint, profile, and freshness check. The corrected RED for that rule was
+accepted at `092ab3d96`. A broad aggregate then exposed stale operator-loss and read-only-worker
+fixtures; the tests-only synchronization `eed83fbff28a99790fbfc36aca8ef1cc2054f181`
+was independently accepted with zero P0/P1/P2, and the production candidate normalizes only
+non-domain operator transaction/commit failures to `internal_unavailable`.
+
+| Gate | Evidence |
+| --- | --- |
+| JOB-003 DB matrix | PASS - 7 files, 30/30 |
+| Final JOB-003 server matrix | PASS - 10 files, 136/136, 141.47s |
+| Leasing integration | PASS - 28/28 |
+| Contract/scanner | PASS - 15/15 |
+| Real platform enrollment/heartbeat/poll/ACK | PASS - selected test 1/1, 19 skipped |
+| Operator-loss and tenant-context focused lane | PASS - 2 files, 9/9 |
+| Ordinary load contract | PASS - 4 passed, 9 campaign-gated skips |
+| Perf runner contract | PASS - 12/12, 838.8s |
+| Server predecessor/security bundle | PASS - 8 files, 101/101 |
+| DB predecessor/composite bundle | PASS - 3 files, 22/22 |
+| Frozen install and frozen E1 checker | PASS |
+| Recursive typecheck | PASS - 24/25 workspace projects |
+| Root build and final server build | PASS |
+
+The exact Windows aggregate remains honestly non-green. Its 269.8-second run exited 1 with
+18 visible failure blocks and one worker RPC timeout. The two bounded JOB-003-adjacent fixture/
+normalization issues it exposed were corrected and the exact final server matrix then passed
+136/136. Remaining visible aggregate-only failures were the D18 embedded-PostgreSQL setup
+cascade, a scanner timeout under aggregate load, and loss of the Node type path inside the
+in-process compiler harness despite green focused evidence. The full aggregate was not rerun.
+
+The million-row pinned campaign itself was not executed here. Runner and ordinary load
+contracts pass, but no capacity, latency, or SLO claim is made. JOB-003 is not marked passed or
+complete, no ledger is advanced, and nothing is pushed. A fresh distinct reviewer must inspect
+the production candidate and alone set the next disposition.
