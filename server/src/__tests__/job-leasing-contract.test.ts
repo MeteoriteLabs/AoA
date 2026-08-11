@@ -2810,22 +2810,54 @@ function leaseStaticContextPollViolations(source: string): string[] {
   const activeStatusDeclarations = file.statements.filter((statement): statement is ts.VariableStatement =>
     ts.isVariableStatement(statement) && [...statement.declarationList.declarations].some((declaration) =>
       ts.isIdentifier(declaration.name) && declaration.name.text === "ACTIVE_WORKER_STATUSES"));
-  const activeStatusVariableDeclarations: ts.VariableDeclaration[] = [];
-  const collectActiveStatusVariableDeclarations = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
-        node.name.text === "ACTIVE_WORKER_STATUSES") {
-      activeStatusVariableDeclarations.push(node);
+  const activeStatusBindingIdentifiers: ts.Identifier[] = [];
+  const collectActiveStatusBindingName = (name: ts.BindingName | ts.Identifier | undefined): void => {
+    if (!name) return;
+    if (ts.isIdentifier(name)) {
+      if (name.text === "ACTIVE_WORKER_STATUSES") activeStatusBindingIdentifiers.push(name);
+      return;
     }
-    ts.forEachChild(node, collectActiveStatusVariableDeclarations);
+    for (const element of name.elements) {
+      if (!ts.isOmittedExpression(element)) collectActiveStatusBindingName(element.name);
+    }
   };
-  collectActiveStatusVariableDeclarations(file);
+  const collectActiveStatusBindings = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) || ts.isParameter(node)) {
+      collectActiveStatusBindingName(node.name);
+    } else if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) ||
+        ts.isClassDeclaration(node) || ts.isClassExpression(node) ||
+        ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node) ||
+        ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node) ||
+        ts.isTypeParameterDeclaration(node)) {
+      collectActiveStatusBindingName(node.name && ts.isIdentifier(node.name) ? node.name : undefined);
+    } else if (ts.isImportClause(node)) {
+      collectActiveStatusBindingName(node.name);
+    } else if (ts.isNamespaceImport(node) || ts.isImportSpecifier(node) ||
+        ts.isImportEqualsDeclaration(node)) {
+      collectActiveStatusBindingName(node.name);
+    }
+    ts.forEachChild(node, collectActiveStatusBindings);
+  };
+  collectActiveStatusBindings(file);
+  const activeStatusIdentifiers: ts.Identifier[] = [];
+  const collectActiveStatusIdentifiers = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && node.text === "ACTIVE_WORKER_STATUSES") {
+      activeStatusIdentifiers.push(node);
+    }
+    ts.forEachChild(node, collectActiveStatusIdentifiers);
+  };
+  collectActiveStatusIdentifiers(file);
   const activeStatusDeclaration = activeStatusDeclarations.length === 1
     ? [...activeStatusDeclarations[0]!.declarationList.declarations].find((declaration) =>
       ts.isIdentifier(declaration.name) && declaration.name.text === "ACTIVE_WORKER_STATUSES")
     : null;
+  const canonicalActiveStatusBinding = activeStatusDeclaration && ts.isIdentifier(activeStatusDeclaration.name)
+    ? activeStatusDeclaration.name
+    : null;
   const activeStatusInitializer = activeStatusDeclaration ? unwrap(activeStatusDeclaration.initializer) : null;
   const exactActiveStatuses = Boolean(activeStatusDeclarations.length === 1 &&
-    activeStatusVariableDeclarations.length === 1 &&
+    activeStatusBindingIdentifiers.length === 1 && canonicalActiveStatusBinding &&
+    activeStatusBindingIdentifiers[0] === canonicalActiveStatusBinding &&
     (activeStatusDeclarations[0]!.declarationList.flags & ts.NodeFlags.Const) &&
     activeStatusInitializer && ts.isNewExpression(activeStatusInitializer) &&
     pathOf(activeStatusInitializer.expression)?.join(".") === "Set" &&
@@ -2836,6 +2868,23 @@ function leaseStaticContextPollViolations(source: string): string[] {
         ? (unwrap(element) as ts.StringLiteral).text
         : "<dynamic>")
       .join(",") === "enrolled,active");
+  const logicalActiveStatusCalls: ts.CallExpression[] = [];
+  if (authorityCurrentDeclaration?.body) {
+    const collectLogicalActiveStatusCalls = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && callPath(node) === "ACTIVE_WORKER_STATUSES.has" &&
+          node.arguments.length === 1 && pathOf(node.arguments[0])?.join(".") === "worker.status") {
+        logicalActiveStatusCalls.push(node);
+      }
+      ts.forEachChild(node, collectLogicalActiveStatusCalls);
+    };
+    collectLogicalActiveStatusCalls(authorityCurrentDeclaration.body);
+  }
+  const directActiveStatusReadIdentifier = (call: ts.CallExpression | undefined): ts.Identifier | null => {
+    if (!call || !ts.isPropertyAccessExpression(call.expression) || call.expression.questionDotToken ||
+        call.expression.name.text !== "has" || !ts.isIdentifier(call.expression.expression) ||
+        call.expression.expression.text !== "ACTIVE_WORKER_STATUSES") return null;
+    return call.expression.expression;
+  };
   let authorityCurrentImpure = false;
   if (authorityCurrentDeclaration?.body) {
     const auditPureAuthority = (node: ts.Node): void => {
@@ -3314,6 +3363,25 @@ function leaseStaticContextPollViolations(source: string): string[] {
             callPath(call) === "ACTIVE_WORKER_STATUSES.has" && call.arguments.length === 1 &&
             pathOf(call.arguments[0])?.join(".") === `${physicalName}.worker.status`)
         : [];
+      const logicalActiveStatusRead = logicalActiveStatusCalls.length === 1
+        ? directActiveStatusReadIdentifier(logicalActiveStatusCalls[0])
+        : null;
+      const physicalActiveStatusRead = physicalWorkerActiveStatusCalls.length === 1
+        ? directActiveStatusReadIdentifier(physicalWorkerActiveStatusCalls[0])
+        : null;
+      const activeStatusBindingSet = new Set<ts.Identifier>(activeStatusBindingIdentifiers);
+      const activeStatusUseIdentifiers = activeStatusIdentifiers.filter((identifier) =>
+        !activeStatusBindingSet.has(identifier));
+      const authorizedActiveStatusUses = new Set<ts.Identifier>([
+        logicalActiveStatusRead,
+        physicalActiveStatusRead,
+      ].filter((identifier): identifier is ts.Identifier => Boolean(identifier)));
+      const exactActiveStatusClosedUses = Boolean(exactActiveStatuses && canonicalActiveStatusBinding &&
+        logicalActiveStatusRead && physicalActiveStatusRead && authorizedActiveStatusUses.size === 2 &&
+        activeStatusIdentifiers.length === 3 && activeStatusUseIdentifiers.length === 2 &&
+        activeStatusIdentifiers.every((identifier) =>
+          identifier === canonicalActiveStatusBinding || authorizedActiveStatusUses.has(identifier)) &&
+        activeStatusUseIdentifiers.every((identifier) => authorizedActiveStatusUses.has(identifier)));
       const repositoryFactory = physicalCalls.length === 1 &&
           ts.isPropertyAccessExpression(physicalCalls[0]!.expression)
         ? unwrappedCall(physicalCalls[0]!.expression.expression)
@@ -3591,7 +3659,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
           !ts.isStringLiteral(unwrap(recheckInput.get("targetAuthorityKey"))!) ||
           (unwrap(recheckInput.get("targetAuthorityKey")) as ts.StringLiteral).text !== "platform" ||
           databaseNowCalls.length !== 1 || databaseNowCalls[0]!.arguments.length !== 0 ||
-          physicalWorkerActiveStatusCalls.length !== 1 || !exactActiveStatuses ||
+          !exactActiveStatusClosedUses ||
           !exactPlatformChecks || !exactReturnedSnapshots || !orderedGuard || guardCriticalEscape) {
         violations.add("builder:trusted-service-authority-guard");
       }
@@ -5948,6 +6016,71 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
         source: valid.replace(
           '                !ACTIVE_WORKER_STATUSES.has(physical.worker.status) ||\n',
           "",
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-mutate-active-statuses-direct-add",
+        source: valid.replace(
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
+            'ACTIVE_WORKER_STATUSES.add("draining");',
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-mutate-active-statuses-through-alias",
+        source: valid.replace(
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
+            'const mutableActiveWorkerStatuses = ACTIVE_WORKER_STATUSES;\n' +
+            'mutableActiveWorkerStatuses.add("draining");',
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-escape-active-statuses-as-argument",
+        source: valid.replace(
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
+            'function retainActiveWorkerStatuses(statuses: ReadonlySet<string>): ReadonlySet<string> { return statuses; }\n' +
+            'retainActiveWorkerStatuses(ACTIVE_WORKER_STATUSES);',
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-mutate-active-statuses-element-access",
+        source: valid.replace(
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
+            'ACTIVE_WORKER_STATUSES["add"]("draining");',
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-nested-function-shadow-active-statuses",
+        source: valid.replace(
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
+            '(() => { function ACTIVE_WORKER_STATUSES(): void {} void ACTIVE_WORKER_STATUSES; })();',
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-nested-class-shadow-active-statuses",
+        source: valid.replace(
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
+            '(() => { class ACTIVE_WORKER_STATUSES {} void ACTIVE_WORKER_STATUSES; })();',
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-nested-parameter-shadow-active-statuses",
+        source: valid.replace(
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
+          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
+            '((ACTIVE_WORKER_STATUSES: Set<string>) => { void ACTIVE_WORKER_STATUSES; })(new Set());',
         ),
         violation: "builder:trusted-service-authority-guard",
       },
