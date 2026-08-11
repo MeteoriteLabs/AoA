@@ -122,6 +122,9 @@ async function observeServer(input: {
       ...process.env,
       DATABASE_URL: input.databaseUrl,
       AOA_DISTRIBUTED_EXECUTION_ENABLED: input.distributedEnabled ? "true" : "false",
+      ...(input.distributedEnabled
+        ? { AOA_WORKER_SESSION_SIGNING_KEY: "job003-startup-fixture-signing-key-0001" }
+        : {}),
       ...(input.appDatabaseUrl ? { AOA_APP_DATABASE_URL: input.appDatabaseUrl } : {}),
       ...(input.operatorDatabaseUrl ? { AOA_OPERATOR_DATABASE_URL: input.operatorDatabaseUrl } : {}),
       AOA_DEPLOYMENT_MODE: "local_trusted",
