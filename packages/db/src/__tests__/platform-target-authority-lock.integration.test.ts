@@ -127,8 +127,8 @@ afterAll(async () => {
       new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
     ]);
   };
-  await boundedClose(operator ? () => operator!.close() : undefined);
-  await boundedClose(app ? () => app!.close() : undefined);
+  await boundedClose(operator ? () => operator!.close({ timeoutSeconds: 5 }) : undefined);
+  await boundedClose(app ? () => app!.close({ timeoutSeconds: 5 }) : undefined);
   await admin?.end().catch(() => {});
   await embedded?.stop().catch(() => {});
   if (dataDir) await rm(dataDir, { recursive: true, force: true }).catch(() => {});

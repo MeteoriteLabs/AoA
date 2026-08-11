@@ -467,8 +467,8 @@ integration("JOB-009 slice A schema and role boundaries", () => {
   }, 60_000);
 
   afterAll(async () => {
-    await app?.close().catch(() => {});
-    await operator?.close().catch(() => {});
+    await app?.close({ timeoutSeconds: 5 }).catch(() => {});
+    await operator?.close({ timeoutSeconds: 5 }).catch(() => {});
     await admin?.end().catch(() => {});
     await embedded?.stop().catch(() => {});
     if (dataDir) await rm(dataDir, { recursive: true, force: true }).catch(() => {});

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { openDistributedExecutionDatabases } from "../db/distributed-execution-databases.js";
@@ -15,12 +16,59 @@ const openFinalStartup = openDistributedExecutionDatabases as unknown as (
   input: FinalStartupInput,
 ) => ReturnType<typeof openDistributedExecutionDatabases>;
 
+const validMigrationIdentity = {
+  orderedHashes: ["a".repeat(64)],
+  ledgerSha256: createHash("sha256")
+    .update(JSON.stringify(["a".repeat(64)]))
+    .digest("hex"),
+} as const;
+
+function validOwnerDbFixture(): unknown {
+  const receipt = [{
+    hash: "b".repeat(64),
+    participant_pids_gone: true,
+    owner_out_of_transaction: true,
+    advisory_locks_gone: true,
+  }];
+  const owner = {
+    execute: async () => receipt,
+    transaction: async (callback: (transaction: unknown) => unknown) => callback(owner),
+    $client: { unsafe: async () => receipt },
+  };
+  return owner;
+}
+
 function startupInput(input: Pick<FinalStartupInput, "enabled" | "appDatabaseUrl" | "operatorDatabaseUrl">) {
   return {
     ...input,
-    ownerDb: {} as unknown,
-    requiredMigrationIdentity: { orderedHashes: [], ledgerSha256: "0".repeat(64) },
+    ownerDb: validOwnerDbFixture(),
+    requiredMigrationIdentity: validMigrationIdentity,
   };
+}
+
+async function expectStableStartupFailure(
+  input: FinalStartupInput,
+  code: string,
+  forbidden: readonly string[],
+): Promise<void> {
+  let failure: unknown;
+  try {
+    await openFinalStartup(input);
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure).toMatchObject({
+    name: "DistributedExecutionStartupError",
+    message: code,
+  });
+  const serialized = [
+    String(failure),
+    (failure as { name?: unknown } | undefined)?.name,
+    (failure as { message?: unknown } | undefined)?.message,
+    JSON.stringify(failure),
+  ].join("\n");
+  for (const value of forbidden) expect(serialized).not.toContain(value);
 }
 
 describe("JOB-001 non-owner startup composition", () => {
@@ -32,12 +80,53 @@ describe("JOB-001 non-owner startup composition", () => {
     }))).resolves.toBeNull();
   });
 
-  it.each([undefined, "", "   "])("fails flag-on boot for a blank aoa_app URL (%s)", async (appDatabaseUrl) => {
-    await expect(openFinalStartup(startupInput({
+  it.each([
+    ["app", undefined, "postgres://operator-user:operator-secret@127.0.0.1/example"],
+    ["app", "   ", "postgres://operator-user:operator-secret@127.0.0.1/example"],
+    ["operator", "postgres://app-user:app-secret@127.0.0.1/example", undefined],
+    ["operator", "postgres://app-user:app-secret@127.0.0.1/example", ""],
+  ] as const)("preserves the exact configuration code for a blank %s URL", async (
+    _role,
+    appDatabaseUrl,
+    operatorDatabaseUrl,
+  ) => {
+    await expectStableStartupFailure(startupInput({
       enabled: true,
       appDatabaseUrl,
-      operatorDatabaseUrl: "postgres://aoa_operator:test@127.0.0.1/aoa",
-    }))).rejects.toThrow(/aoa_app|non-owner|explicit/i);
+      operatorDatabaseUrl,
+    }), "distributed_execution_configuration", [
+      "aoa_app",
+      "aoa_operator",
+      "app-secret",
+      "operator-secret",
+      "postgres://",
+    ]);
+  });
+
+  it.each([
+    ["missing owner", undefined, validMigrationIdentity],
+    ["invalid owner", {}, validMigrationIdentity],
+    ["missing identity", validOwnerDbFixture(), undefined],
+    ["invalid identity", validOwnerDbFixture(), { orderedHashes: "not-an-array", ledgerSha256: 7 }],
+  ] as const)("does not remap %s input from configuration to close", async (
+    _caseName,
+    ownerDb,
+    requiredMigrationIdentity,
+  ) => {
+    await expectStableStartupFailure({
+      enabled: true,
+      ownerDb,
+      requiredMigrationIdentity,
+      appDatabaseUrl: "postgres://app-user:app-secret@127.0.0.1/example",
+      operatorDatabaseUrl: "postgres://operator-user:operator-secret@127.0.0.1/example",
+    } as unknown as FinalStartupInput, "distributed_execution_configuration", [
+      "distributed_execution_close",
+      "aoa_app",
+      "aoa_operator",
+      "app-secret",
+      "operator-secret",
+      "postgres://",
+    ]);
   });
 
   it("passes only the verified aoa_app handle and flag into createApp", () => {

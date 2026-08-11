@@ -322,7 +322,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   try { if (admin) await clearFailureTriggers(); } catch { /* ignore */ }
-  try { await appConnection?.close(); } catch { /* ignore */ }
+  try { await appConnection?.close({ timeoutSeconds: 5 }); } catch { /* ignore */ }
   try { await admin?.end(); } catch { /* ignore */ }
   try { await embedded?.stop(); } catch { /* ignore */ }
   try { if (dataDir) await rm(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }

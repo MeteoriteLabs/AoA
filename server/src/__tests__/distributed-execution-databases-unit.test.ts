@@ -132,6 +132,9 @@ function analyzeCsprngAdvisoryBinding(sourceText: string): {
 }
 
 const STARTUP_PHASES = [
+  "migration-identity",
+  "app-authority",
+  "operator-authority",
   "owner-exclusive",
   "app-negative",
   "operator-negative",
@@ -646,6 +649,8 @@ describe("distributed-execution database strangler", () => {
     await expect(
       openDistributedExecutionDatabases({
         enabled: false,
+        ownerDb: {} as never,
+        requiredMigrationIdentity: { orderedHashes: [], ledgerSha256: "0".repeat(64) },
         appDatabaseUrl: undefined,
         operatorDatabaseUrl: undefined,
       }),
@@ -692,7 +697,50 @@ describe("distributed-execution database strangler", () => {
     expect(source).not.toMatch(/Promise\.race\([\s\S]{0,120}\.close\(/);
   });
 
-  it("owns exactly one immutable deadline and one shared abort controller for the complete handshake", () => {
+  it("requires the exact unconditional owner and migration-identity startup inputs", () => {
+    // Mutation caught: optional owner/identity properties let a flag-on JavaScript caller enter
+    // cleanup with unusable control-plane state and mask configuration as a close failure.
+    const sourceText = readFileSync(
+      new URL("../db/distributed-execution-databases.ts", import.meta.url),
+      "utf8",
+    );
+    const source = ts.createSourceFile(
+      "distributed-execution-databases.ts",
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const open = findExportedOpenFunction(source);
+    const inputType = open?.parameters[0]?.type;
+    expect(open?.parameters).toHaveLength(1);
+    expect(inputType && ts.isTypeLiteralNode(inputType)).toBe(true);
+    if (!inputType || !ts.isTypeLiteralNode(inputType)) return;
+
+    const properties = inputType.members.filter((member): member is ts.PropertySignature =>
+      ts.isPropertySignature(member) && ts.isIdentifier(member.name));
+    expect(properties.map((property) => property.name.getText(source))).toEqual([
+      "enabled",
+      "ownerDb",
+      "requiredMigrationIdentity",
+      "appDatabaseUrl",
+      "operatorDatabaseUrl",
+    ]);
+    expect(properties.map((property) => property.questionToken === undefined)).toEqual([
+      true, true, true, true, true,
+    ]);
+    expect(Object.fromEntries(properties.map((property) => [
+      property.name.getText(source),
+      property.type?.getText(source).replaceAll(/\s+/g, " "),
+    ]))).toEqual({
+      enabled: "boolean",
+      ownerDb: "Db",
+      requiredMigrationIdentity: "RequiredMigrationIdentity",
+      appDatabaseUrl: "string | undefined",
+      operatorDatabaseUrl: "string | undefined",
+    });
+  });
+
+  it("owns exactly one immutable deadline and one shared abort controller for the complete startup", () => {
     const strictValidFixture = `
       const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;
       export async function openDistributedExecutionDatabases() {
@@ -708,6 +756,9 @@ describe("distributed-execution database strangler", () => {
           });
           return await Promise.race([work(), cancellation]);
         };
+        await runPhase("migration-identity", async () => await migrationIdentity());
+        await runPhase("app-authority", async () => await appAuthority());
+        await runPhase("operator-authority", async () => await operatorAuthority());
         await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
         await Promise.all([
           runPhase("app-negative", async () => await appProbe()),
@@ -744,6 +795,9 @@ describe("distributed-execution database strangler", () => {
           });
           return await Promise.race([work(), cancellation]);
         };
+        await runPhase("migration-identity", async () => await migrationIdentity());
+        await runPhase("app-authority", async () => await appAuthority());
+        await runPhase("operator-authority", async () => await operatorAuthority());
         await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
         await Promise.all([
           runPhase("app-negative", async () => await appProbe()),
@@ -780,6 +834,9 @@ describe("distributed-execution database strangler", () => {
           const independentTimer = new Promise((resolve) => setTimeout(resolve, 5_000));
           return await Promise.race([work(), independentTimer]);
         };
+        await runPhase("migration-identity", async () => await migrationIdentity());
+        await runPhase("app-authority", async () => await appAuthority());
+        await runPhase("operator-authority", async () => await operatorAuthority());
         await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
         await Promise.all([
           runPhase("app-negative", async () => await appProbe()),
@@ -806,6 +863,9 @@ describe("distributed-execution database strangler", () => {
           });
           return await Promise.race([work(), independentCancellation]);
         };
+        await runPhase("migration-identity", async () => await migrationIdentity());
+        await runPhase("app-authority", async () => await appAuthority());
+        await runPhase("operator-authority", async () => await operatorAuthority());
         await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
         await Promise.all([
           runPhase("app-negative", async () => await appProbe()),
@@ -832,6 +892,9 @@ describe("distributed-execution database strangler", () => {
           });
           return await Promise.race([work(), cosmeticCancellation]);
         };
+        await runPhase("migration-identity", async () => await migrationIdentity());
+        await runPhase("app-authority", async () => await appAuthority());
+        await runPhase("operator-authority", async () => await operatorAuthority());
         await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
         await Promise.all([
           runPhase("app-negative", async () => await appProbe()),
@@ -902,6 +965,9 @@ describe("distributed-execution database strangler", () => {
           await Promise.race([decoy(), cancellation]);
           return await work();
         };
+        await runPhase("migration-identity", async () => await migrationIdentity());
+        await runPhase("app-authority", async () => await appAuthority());
+        await runPhase("operator-authority", async () => await operatorAuthority());
         await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
         await Promise.all([
           runPhase("app-negative", async () => await appProbe()),
@@ -938,6 +1004,9 @@ describe("distributed-execution database strangler", () => {
           void startupDeadline;
           return await Promise.race([work(), cancellation]);
         };
+        await runPhase("migration-identity", async () => await migrationIdentity());
+        await runPhase("app-authority", async () => await appAuthority());
+        await runPhase("operator-authority", async () => await operatorAuthority());
         await runPhase("owner-exclusive", async () => { await ownerBarrier.wait(); });
         await Promise.all([
           runPhase("app-negative", async () => await appProbe()),

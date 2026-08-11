@@ -220,7 +220,7 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
-  try { await appConnection?.close(); } catch { /* ignore */ }
+  try { await appConnection?.close({ timeoutSeconds: 5 }); } catch { /* ignore */ }
   try { await appSql?.end(); } catch { /* ignore */ }
   try { await operator?.end(); } catch { /* ignore */ }
   try { await admin?.end(); } catch { /* ignore */ }

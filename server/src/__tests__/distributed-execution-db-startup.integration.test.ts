@@ -57,9 +57,7 @@ function checkedInMigrationIdentity(): RequiredMigrationIdentity {
     new URL("../../../packages/db/src/migrations/meta/_journal.json", import.meta.url),
     "utf8",
   )) as { entries?: Array<{ idx?: number; tag?: string }> };
-  const orderedHashes = [...(journal.entries ?? [])]
-    .sort((left, right) => Number(left.idx) - Number(right.idx))
-    .map((entry) => createHash("sha256").update(readFileSync(
+  const orderedHashes = (journal.entries ?? []).map((entry) => createHash("sha256").update(readFileSync(
       new URL(`../../../packages/db/src/migrations/${entry.tag}.sql`, import.meta.url),
     )).digest("hex"));
   return {
@@ -200,14 +198,23 @@ afterAll(async () => {
 async function observeStartup(input: {
   appDatabaseUrl: string;
   operatorDatabaseUrl: string;
-  expectedRole: "aoa_app" | "aoa_operator";
+  expectedCode?: "distributed_execution_app_authority" | "distributed_execution_operator_authority";
 }): Promise<{ exited: boolean; code: number | null; output: string }> {
   return observeServer({
     databaseUrl: adminUrl,
     distributedEnabled: true,
     appDatabaseUrl: input.appDatabaseUrl,
     operatorDatabaseUrl: input.operatorDatabaseUrl,
-    expectedFailureText: input.expectedRole,
+    expectedFailureCode: input.expectedCode,
+    forbiddenFailureValues: [
+      "aoa_app",
+      "aoa_operator",
+      input.appDatabaseUrl,
+      input.operatorDatabaseUrl,
+      APP_PASSWORD,
+      OPERATOR_PASSWORD,
+      "wrong-password",
+    ],
   });
 }
 
@@ -216,7 +223,8 @@ async function observeServer(input: {
   distributedEnabled: boolean;
   appDatabaseUrl?: string;
   operatorDatabaseUrl?: string;
-  expectedFailureText?: string;
+  expectedFailureCode?: string;
+  forbiddenFailureValues?: readonly string[];
   sentinelMode?: "deny" | "record" | "identity";
 }): Promise<{ exited: boolean; code: number | null; output: string }> {
   const httpPort = await allocateEmbeddedPgPort();
@@ -286,8 +294,11 @@ async function observeServer(input: {
     await Promise.race([exit, new Promise((resolveDelay) => setTimeout(resolveDelay, 5_000))]);
     return { exited: false, code: null, output };
   }
-  if (input.expectedFailureText) {
-    expect(output.toLowerCase()).toContain(input.expectedFailureText.toLowerCase());
+  if (input.expectedFailureCode) {
+    expect(output).toContain(input.expectedFailureCode);
+    for (const forbidden of input.forbiddenFailureValues ?? []) {
+      expect(output, `startup output disclosed ${forbidden}`).not.toContain(forbidden);
+    }
   }
   return { exited: true, code: outcome.code, output };
 }
@@ -300,7 +311,15 @@ type AdvisoryPhase =
   | "operator-positive";
 
 type StartupFailureInjection = AdvisoryPhase | "statement-timeout" | "lock-timeout" |
-  "idle-timeout" | "forced-end" | "shared-budget" | "shared-budget-pending";
+  "idle-timeout" | "forced-end" | "shared-budget" | "shared-budget-pending" |
+  "migration-pending" | "app-authority-pending" | "operator-authority-pending" |
+  "cleanup-pending" | "cleanup-failure-pending";
+
+type PendingQueryPhase =
+  | "migration-identity"
+  | "app-authority"
+  | "operator-authority"
+  | "cleanup";
 
 type StartupDeadlineReceipt = {
   readonly invocationId: number;
@@ -377,6 +396,17 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       invocationId: number;
       phase: AdvisoryPhase;
       effectiveStatementTimeout: string;
+    }>,
+    pendingQueries: [] as Array<{
+      invocationId: number;
+      phase: PendingQueryPhase;
+      role: "owner" | "aoa_app" | "aoa_operator";
+      backendPid: number | null;
+      effectiveStatementTimeout: string | null;
+      signal: AbortSignal | null;
+      abortObservedAt: number | null;
+      startedAt: number;
+      settledAt: number | null;
     }>,
   };
   const namedUrl = (url: string, suffix: string) => {
@@ -495,6 +525,90 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     });
   };
 
+  const createPendingReceipt = (
+    role: "owner" | "aoa_app" | "aoa_operator",
+    phase: PendingQueryPhase,
+  ) => {
+    const receipt = {
+      invocationId: state.activeInvocation?.id ?? state.openInvocations.at(-1)?.id ?? -1,
+      phase,
+      role,
+      backendPid: null as number | null,
+      effectiveStatementTimeout: null as string | null,
+      signal: state.activeInvocation?.controllers.at(-1)?.signal ?? null,
+      abortObservedAt: null as number | null,
+      startedAt: performance.now(),
+      settledAt: null as number | null,
+    };
+    state.pendingQueries.push(receipt);
+    const observeAbort = () => { receipt.abortObservedAt ??= performance.now(); };
+    if (receipt.signal?.aborted) observeAbort();
+    else receipt.signal?.addEventListener("abort", observeAbort, { once: true });
+    return receipt;
+  };
+
+  const runPendingQuery = async <T extends object>(
+    target: T,
+    role: "owner" | "aoa_app" | "aoa_operator",
+    phase: PendingQueryPhase,
+    statement: unknown,
+    alreadyInTransaction: boolean,
+  ): Promise<unknown> => {
+    const receipt = createPendingReceipt(role, phase);
+    const run = async (transaction: T & { execute(s: unknown): Promise<unknown> }) => {
+      const timeoutResult = await transaction.execute(sql`
+        SELECT current_setting('statement_timeout') AS statement_timeout`);
+      receipt.effectiveStatementTimeout = rows(timeoutResult)
+        .flatMap((row) => Object.values((row ?? {}) as Record<string, unknown>))
+        .find((value): value is string => typeof value === "string") ?? null;
+      const pidResult = await transaction.execute(sql`SELECT pg_backend_pid() AS pid`);
+      receipt.backendPid = rows(pidResult)
+        .flatMap((row) => Object.values((row ?? {}) as Record<string, unknown>))
+        .find((value): value is number => Number.isSafeInteger(value)) ?? null;
+      try {
+        await transaction.execute(sql`SELECT pg_sleep(60)`);
+        return await transaction.execute(statement);
+      } finally {
+        receipt.settledAt = performance.now();
+      }
+    };
+    if (alreadyInTransaction) {
+      return run(target as T & { execute(s: unknown): Promise<unknown> });
+    }
+    return (target as T & {
+      transaction(callback: (transaction: T & { execute(s: unknown): Promise<unknown> }) => Promise<unknown>): Promise<unknown>;
+    }).transaction(run);
+  };
+
+  const runPendingRawOwnerQuery = (client: Sql) => {
+    const receipt = createPendingReceipt("owner", "cleanup");
+    let cancelRequested = false;
+    let sleeping: { cancel(): void } | null = null;
+    const operation = client.begin(async (transaction) => {
+      const [observation] = await transaction<{
+        statement_timeout: string;
+        pid: number;
+      }[]>`SELECT
+        current_setting('statement_timeout') AS statement_timeout,
+        pg_backend_pid() AS pid`;
+      receipt.effectiveStatementTimeout = observation?.statement_timeout ?? null;
+      receipt.backendPid = observation?.pid ?? null;
+      const pending = transaction`SELECT pg_sleep(60)`;
+      sleeping = pending;
+      if (cancelRequested) pending.cancel();
+      await pending;
+      return [];
+    }).finally(() => {
+      receipt.settledAt = performance.now();
+    });
+    return Object.assign(operation, {
+      cancel() {
+        cancelRequested = true;
+        sleeping?.cancel();
+      },
+    });
+  };
+
   const instrumentDb = <T extends object>(
     db: T,
     role: "owner" | "aoa_app" | "aoa_operator",
@@ -504,6 +618,27 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     return new Proxy(db, {
       get(target, property, receiver) {
         if (cache.has(property)) return cache.get(property);
+        if (property === "$client" && role === "owner") {
+          const client = Reflect.get(target, property, receiver) as Sql;
+          const instrumentedClient = new Proxy(client, {
+            get(clientTarget, clientProperty, clientReceiver) {
+              if (clientProperty === "unsafe") {
+                return (query: string, ...args: unknown[]) => {
+                  if ((inject === "cleanup-pending" || inject === "cleanup-failure-pending") &&
+                    query.toLowerCase().includes("participant_pids_gone")) {
+                    return runPendingRawOwnerQuery(clientTarget as Sql);
+                  }
+                  const unsafe = (clientTarget as Sql).unsafe as unknown as
+                    (...rawArgs: unknown[]) => unknown;
+                  return unsafe(query, ...args);
+                };
+              }
+              return Reflect.get(clientTarget, clientProperty, clientReceiver);
+            },
+          });
+          cache.set(property, instrumentedClient);
+          return instrumentedClient;
+        }
         if (property === "execute") {
           const execute = async (statement: unknown) => {
             let queryText = "";
@@ -513,6 +648,23 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               queryText = compiled.sql.toLowerCase();
               queryParams = compiled.params;
             } catch { /* non-SQL */ }
+            const pendingPhase: PendingQueryPhase | null =
+              inject === "migration-pending" && role === "owner" &&
+                queryText.includes("__drizzle_migrations")
+                ? "migration-identity"
+                : inject === "app-authority-pending" && role === "aoa_app" &&
+                    queryText.includes("session_role_name")
+                  ? "app-authority"
+                  : inject === "operator-authority-pending" && role === "aoa_operator" &&
+                      queryText.includes("session_role_name")
+                    ? "operator-authority"
+                    : (inject === "cleanup-pending" || inject === "cleanup-failure-pending") &&
+                        role === "owner" && queryText.includes("participant_pids_gone")
+                      ? "cleanup"
+                      : null;
+            if (pendingPhase) {
+              return runPendingQuery(target, role, pendingPhase, statement, transactionReceipt !== undefined);
+            }
             const ownerLock = role === "owner" && /pg_advisory_xact_lock\s*\(/u.test(queryText) &&
               !queryText.includes("shared");
             if (ownerLock) {
@@ -595,7 +747,8 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               const phase = `${role === "aoa_app" ? "app" : "operator"}-${success ? "positive" : "negative"}` as AdvisoryPhase;
               if (transactionReceipt) transactionReceipt.phase = phase;
               state.phases.push(phase);
-              if (inject === phase || (inject === "forced-end" && phase === "operator-positive")) {
+              if (inject === phase || (inject === "forced-end" && phase === "operator-positive") ||
+                (inject === "cleanup-failure-pending" && phase === "operator-positive")) {
                 state.injectionTriggered = true;
                 throw Object.assign(new Error(`${inject} injected`), { code: `INJECT_${inject}` });
               }
@@ -650,7 +803,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
       idle_timeout: 30,
       connection: {
         client_encoding: "UTF8",
-        statement_timeout: 5_000,
+        statement_timeout: inject?.endsWith("-pending") ? 0 : 5_000,
         lock_timeout: 750,
         idle_in_transaction_session_timeout: 5_000,
       },
@@ -660,9 +813,9 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     const db = instrumentDb(drizzlePg(client, { schema: dbSchema }) as unknown as Db, role);
     return {
       db,
-      async close(input?: unknown) {
+      async close(input: { timeoutSeconds: number }) {
         state.closes.push({ role, input });
-        const seconds = Number((input as { timeoutSeconds?: number } | undefined)?.timeoutSeconds ?? 5);
+        const seconds = Number(input.timeoutSeconds);
         const sleeping = inject === "forced-end" && state.injectionTriggered
           ? client`SELECT pg_sleep(60)`.catch(() => {})
           : Promise.resolve();
@@ -698,7 +851,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     max: 4,
     connection: {
       client_encoding: "UTF8",
-      statement_timeout: 5_000,
+      statement_timeout: inject?.endsWith("-pending") ? 0 : 5_000,
       lock_timeout: 750,
       idle_in_transaction_session_timeout: 5_000,
     },
@@ -827,6 +980,35 @@ async function observeAdvisoryStartupSettlement(token: string) {
   return receipt!;
 }
 
+async function withOuterWatchdog<T>(promise: Promise<T>, timeoutMs = 12_000): Promise<
+  | { kind: "fulfilled"; value: T }
+  | { kind: "rejected"; error: unknown }
+  | { kind: "watchdog" }
+> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const observed = promise.then(
+    (value) => ({ kind: "fulfilled" as const, value }),
+    (error: unknown) => ({ kind: "rejected" as const, error }),
+  );
+  const watchdog = new Promise<{ kind: "watchdog" }>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "watchdog" }), timeoutMs);
+  });
+  try {
+    return await Promise.race([observed, watchdog]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function statementTimeoutMs(value: string | null): number | null {
+  if (value === null) return null;
+  if (value === "0") return 0;
+  const match = /^(\d+(?:\.\d+)?)(ms|s|min)$/u.exec(value);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  return match[2] === "ms" ? amount : match[2] === "s" ? amount * 1_000 : amount * 60_000;
+}
+
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
   "distributed-execution non-owner startup gate",
   () => {
@@ -878,7 +1060,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const result = await observeStartup({
         appDatabaseUrl: appUrl.replace(APP_PASSWORD, "wrong-password"),
         operatorDatabaseUrl: operatorUrl,
-        expectedRole: "aoa_app",
+        expectedCode: "distributed_execution_app_authority",
       });
       expect(result.exited).toBe(true);
       expect(result.code).not.toBe(0);
@@ -889,7 +1071,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const result = await observeStartup({
         appDatabaseUrl: appUrl,
         operatorDatabaseUrl: operatorUrl.replace(OPERATOR_PASSWORD, "wrong-password"),
-        expectedRole: "aoa_operator",
+        expectedCode: "distributed_execution_operator_authority",
       });
       expect(result.exited).toBe(true);
       expect(result.code).not.toBe(0);
@@ -926,7 +1108,6 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const result = await observeStartup({
         appDatabaseUrl: appUrl,
         operatorDatabaseUrl: operatorUrl,
-        expectedRole: "aoa_app",
       });
       expect(result.exited, result.output).toBe(false);
     }, 60_000);
@@ -938,7 +1119,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const result = await observeStartup({
         appDatabaseUrl: expectedRole === "aoa_app" ? adminUrl : appUrl,
         operatorDatabaseUrl: expectedRole === "aoa_operator" ? adminUrl : operatorUrl,
-        expectedRole,
+        expectedCode: expectedRole === "aoa_app"
+          ? "distributed_execution_app_authority"
+          : "distributed_execution_operator_authority",
       });
       expect(result.exited).toBe(true);
       expect(result.code).not.toBe(0);
@@ -985,8 +1168,28 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         } finally {
           await accepted?.close();
         }
-        expect(failure).toBeInstanceOf(Error);
-        expect(String(failure)).toContain(expectedRole);
+        const expectedCode = expectedRole === "aoa_app"
+          ? "distributed_execution_app_authority"
+          : "distributed_execution_operator_authority";
+        expect(failure).toMatchObject({
+          name: "DistributedExecutionStartupError",
+          message: expectedCode,
+        });
+        const serialized = String(failure);
+        for (const forbidden of [
+          "aoa_app",
+          "aoa_operator",
+          maskedOwnerUrl,
+          appUrl,
+          operatorUrl,
+          adminUrl,
+          APP_PASSWORD,
+          OPERATOR_PASSWORD,
+          "test:test",
+          "postgres://",
+        ]) {
+          expect(serialized).not.toContain(forbidden);
+        }
       },
       60_000,
     );
@@ -999,7 +1202,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         const result = await observeStartup({
           appDatabaseUrl: expectedRole === "aoa_app" ? maskedOwnerUrl : appUrl,
           operatorDatabaseUrl: expectedRole === "aoa_operator" ? maskedOwnerUrl : operatorUrl,
-          expectedRole,
+          expectedCode: expectedRole === "aoa_app"
+            ? "distributed_execution_app_authority"
+            : "distributed_execution_operator_authority",
         });
         expect(result.exited, result.output).toBe(true);
         expect(result.code).not.toBe(0);
@@ -1015,7 +1220,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         const result = await observeStartup({
           appDatabaseUrl: appUrl,
           operatorDatabaseUrl: operatorUrl,
-          expectedRole: "aoa_operator",
+          expectedCode: "distributed_execution_operator_authority",
         });
         expect(result.exited, result.output).toBe(true);
         expect(result.code).not.toBe(0);
@@ -1033,7 +1238,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         const result = await observeStartup({
           appDatabaseUrl: appUrl,
           operatorDatabaseUrl: operatorUrl,
-          expectedRole: "aoa_app",
+          expectedCode: "distributed_execution_app_authority",
         });
         expect(result.exited).toBe(true);
         expect(result.code).not.toBe(0);
@@ -1051,13 +1256,53 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         const result = await observeStartup({
           appDatabaseUrl: appUrl,
           operatorDatabaseUrl: operatorUrl,
-          expectedRole: "aoa_operator",
+          expectedCode: "distributed_execution_operator_authority",
         });
         expect(result.exited).toBe(true);
         expect(result.code).not.toBe(0);
       } finally {
         await admin!.unsafe(`REVOKE SELECT ON company_secrets FROM aoa_operator`).catch(() => {});
       }
+    }, 60_000);
+
+    it.each([
+      ["aoa_app", "distributed_execution_app_authority", "app"],
+      ["aoa_operator", "distributed_execution_operator_authority", "operator"],
+    ] as const)("rejects PostgreSQL 18 MAINTAIN on an ephemeral non-manifest table for %s", async (
+      role,
+      errorCode,
+      suffix,
+    ) => {
+      // Mutation caught: omitting MAINTAIN from the whole-catalog effective-privilege scan
+      // accepts authority that is absent from every checked-in serving manifest.
+      guard();
+      const relation = `job003_maintain_${suffix}_${process.pid}`;
+      const [before] = await admin!<{ relation: string | null }[]>`
+        SELECT to_regclass(${`public.${relation}`})::text AS relation`;
+      expect(before?.relation).toBeNull();
+      let created = false;
+      let failure: unknown;
+      try {
+        await admin!.unsafe(`CREATE TABLE "${relation}" (id integer)`);
+        created = true;
+        await admin!.unsafe(`GRANT MAINTAIN ON TABLE "${relation}" TO "${role}"`);
+        const [granted] = await admin!<{ maintain: boolean }[]>`
+          SELECT has_table_privilege(${role}, ${`public.${relation}`}, 'MAINTAIN') AS maintain`;
+        expect(granted?.maintain).toBe(true);
+        failure = await captureFinalStartupFailure();
+      } finally {
+        if (created) {
+          try {
+            await admin!.unsafe(`REVOKE MAINTAIN ON TABLE "${relation}" FROM "${role}"`);
+          } finally {
+            await admin!.unsafe(`DROP TABLE "${relation}"`);
+          }
+        }
+      }
+      const [after] = await admin!<{ relation: string | null }[]>`
+        SELECT to_regclass(${`public.${relation}`})::text AS relation`;
+      expect(after?.relation).toBeNull();
+      expect(failure).toMatchObject({ message: errorCode });
     }, 60_000);
 
     it("rejects an exact-named operator role that owns an application object", async () => {
@@ -1068,7 +1313,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         const result = await observeStartup({
           appDatabaseUrl: appUrl,
           operatorDatabaseUrl: operatorUrl,
-          expectedRole: "aoa_operator",
+          expectedCode: "distributed_execution_operator_authority",
         });
         expect(result.exited).toBe(true);
         expect(result.code).not.toBe(0);
@@ -1084,7 +1329,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         const result = await observeStartup({
           appDatabaseUrl: appUrl,
           operatorDatabaseUrl: operatorUrl,
-          expectedRole: "aoa_operator",
+          expectedCode: "distributed_execution_operator_authority",
         });
         expect(result.exited).toBe(true);
         expect(result.code).not.toBe(0);
@@ -1418,6 +1663,208 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         advisory_locks: 0,
       });
     }, 60_000);
+
+    it.each([
+      ["migration-pending", "migration-identity"],
+      ["app-authority-pending", "app-authority"],
+      ["operator-authority-pending", "operator-authority"],
+    ] as const)("causally bounds and settles a statement-timeout-free %s query", async (
+      injection,
+      phase,
+    ) => {
+      // Mutation caught: limiting only the advisory handshake lets a pre-handshake owner or
+      // authority query exceed the one immutable startup deadline. The real query ignores abort
+      // and has no statement timeout; production must cancel and await it before returning.
+      guard();
+      const harness = await createAdvisoryStartupHarness(injection);
+      const operation = harness.open(harness.input);
+      const outcome = await withOuterWatchdog(operation);
+      const returnedAt = performance.now();
+      const accepted = outcome.kind === "fulfilled" ? outcome.value : null;
+      let settlement: Awaited<ReturnType<typeof observeAdvisoryStartupSettlement>> | undefined;
+      let operationDrained = false;
+      try {
+        await accepted?.close().catch(() => {});
+        if (outcome.kind !== "watchdog") {
+          settlement = await observeAdvisoryStartupSettlement(harness.token);
+        }
+      } finally {
+        await harness.cleanup();
+        operationDrained = (await withOuterWatchdog(
+          operation.then(() => true, () => true),
+          5_000,
+        )).kind === "fulfilled";
+      }
+
+      expect(outcome.kind, "public startup must settle before the outer watchdog").toBe("rejected");
+      expect(outcome).toMatchObject({
+        kind: "rejected",
+        error: {
+          name: "DistributedExecutionStartupError",
+          message: "distributed_execution_timeout",
+        },
+      });
+      const receipts = harness.state.pendingQueries.filter((receipt) => receipt.phase === phase);
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]).toMatchObject({
+        phase,
+        effectiveStatementTimeout: expect.any(String),
+        backendPid: expect.any(Number),
+        settledAt: expect.any(Number),
+      });
+      const effectiveTimeoutMs = statementTimeoutMs(receipts[0]!.effectiveStatementTimeout);
+      expect(effectiveTimeoutMs).not.toBeNull();
+      expect(effectiveTimeoutMs).toBeGreaterThanOrEqual(0);
+      expect(effectiveTimeoutMs).toBeLessThanOrEqual(5_000);
+      expect(receipts[0]!.settledAt).toBeLessThanOrEqual(returnedAt);
+      const [invocation] = harness.state.openInvocations;
+      expect(receipts[0]!.signal).toBe(invocation?.controllers[0]?.signal);
+      expect(receipts[0]!.signal?.aborted).toBe(true);
+      expect(receipts[0]!.abortObservedAt).toBeGreaterThanOrEqual(
+        (invocation?.controllerCreatedAt ?? Number.POSITIVE_INFINITY) + 4_500,
+      );
+      expect(receipts[0]!.abortObservedAt).toBeLessThanOrEqual(
+        (invocation?.controllerCreatedAt ?? Number.NEGATIVE_INFINITY) + 6_500,
+      );
+      expect(receipts[0]!.abortObservedAt).toBeLessThanOrEqual(returnedAt);
+      expect(operationDrained).toBe(true);
+      expect(harness.state.transactionReceipts.every((receipt) =>
+        receipt.settledAt !== null && receipt.settledAt <= returnedAt)).toBe(true);
+      expect(harness.state.closeSettled.every(({ at }) => at <= returnedAt)).toBe(true);
+      expect(settlement).toEqual({
+        participant_pids: 0,
+        owner_pids: 1,
+        owner_in_transaction: 0,
+        advisory_locks: 0,
+      });
+      const serialized = JSON.stringify(harness.state.logs);
+      for (const forbidden of [
+        harness.appNamedUrl,
+        harness.operatorNamedUrl,
+        "aoa_app",
+        "aoa_operator",
+        "pg_sleep",
+        "postgres://",
+        ...checkedInMigrationIdentity().orderedHashes,
+      ]) {
+        expect(serialized).not.toContain(forbidden);
+      }
+    }, 30_000);
+
+    it("bounds and awaits a pending owner cleanup query on normal returned close", async () => {
+      guard();
+      const harness = await createAdvisoryStartupHarness("cleanup-pending");
+      const accepted = await harness.open(harness.input);
+      expect(accepted).not.toBeNull();
+      const closeOperation = accepted!.close();
+      const outcome = await withOuterWatchdog(closeOperation);
+      const returnedAt = performance.now();
+      let settlement: Awaited<ReturnType<typeof observeAdvisoryStartupSettlement>> | undefined;
+      let operationDrained = false;
+      try {
+        if (outcome.kind !== "watchdog") {
+          settlement = await observeAdvisoryStartupSettlement(harness.token);
+        }
+      } finally {
+        await harness.cleanup();
+        operationDrained = (await withOuterWatchdog(
+          closeOperation.then(() => true, () => true),
+          5_000,
+        )).kind === "fulfilled";
+      }
+
+      expect(outcome).toMatchObject({
+        kind: "rejected",
+        error: {
+          name: "DistributedExecutionStartupError",
+          message: "distributed_execution_close",
+        },
+      });
+      expect(harness.state.pendingQueries).toHaveLength(1);
+      expect(harness.state.pendingQueries[0]).toMatchObject({
+        phase: "cleanup",
+        effectiveStatementTimeout: expect.any(String),
+        backendPid: expect.any(Number),
+        settledAt: expect.any(Number),
+      });
+      const cleanupElapsedMs = returnedAt - harness.state.pendingQueries[0]!.startedAt;
+      expect(cleanupElapsedMs).toBeGreaterThanOrEqual(4_500);
+      expect(cleanupElapsedMs).toBeLessThan(6_500);
+      const effectiveTimeoutMs = statementTimeoutMs(
+        harness.state.pendingQueries[0]!.effectiveStatementTimeout,
+      );
+      expect(effectiveTimeoutMs).not.toBeNull();
+      expect(effectiveTimeoutMs).toBeGreaterThanOrEqual(0);
+      expect(effectiveTimeoutMs).toBeLessThanOrEqual(5_000);
+      expect(harness.state.pendingQueries[0]!.settledAt).toBeLessThanOrEqual(returnedAt);
+      expect(operationDrained).toBe(true);
+      expect(harness.state.closeSettled.every(({ at }) => at <= returnedAt)).toBe(true);
+      expect(harness.state.transactionReceipts.every((receipt) =>
+        receipt.settledAt !== null && receipt.settledAt <= returnedAt)).toBe(true);
+      expect(settlement).toEqual({
+        participant_pids: 0,
+        owner_pids: 1,
+        owner_in_transaction: 0,
+        advisory_locks: 0,
+      });
+    }, 30_000);
+
+    it("bounds and awaits a pending owner cleanup query after startup failure", async () => {
+      guard();
+      const harness = await createAdvisoryStartupHarness("cleanup-failure-pending");
+      const operation = harness.open(harness.input);
+      const outcome = await withOuterWatchdog(operation, 18_000);
+      const returnedAt = performance.now();
+      let settlement: Awaited<ReturnType<typeof observeAdvisoryStartupSettlement>> | undefined;
+      let operationDrained = false;
+      try {
+        if (outcome.kind !== "watchdog") {
+          settlement = await observeAdvisoryStartupSettlement(harness.token);
+        }
+      } finally {
+        await harness.cleanup();
+        operationDrained = (await withOuterWatchdog(
+          operation.then(() => true, () => true),
+          5_000,
+        )).kind === "fulfilled";
+      }
+
+      expect(outcome).toMatchObject({
+        kind: "rejected",
+        error: {
+          name: "DistributedExecutionStartupError",
+          message: "distributed_execution_close",
+        },
+      });
+      expect(harness.state.injectionTriggered).toBe(true);
+      expect(harness.state.pendingQueries).toHaveLength(1);
+      expect(harness.state.pendingQueries[0]).toMatchObject({
+        phase: "cleanup",
+        effectiveStatementTimeout: expect.any(String),
+        backendPid: expect.any(Number),
+        settledAt: expect.any(Number),
+      });
+      const cleanupElapsedMs = returnedAt - harness.state.pendingQueries[0]!.startedAt;
+      expect(cleanupElapsedMs).toBeGreaterThanOrEqual(4_500);
+      expect(cleanupElapsedMs).toBeLessThan(6_500);
+      const effectiveTimeoutMs = statementTimeoutMs(
+        harness.state.pendingQueries[0]!.effectiveStatementTimeout,
+      );
+      expect(effectiveTimeoutMs).not.toBeNull();
+      expect(effectiveTimeoutMs).toBeGreaterThanOrEqual(0);
+      expect(effectiveTimeoutMs).toBeLessThanOrEqual(5_000);
+      expect(harness.state.pendingQueries[0]!.settledAt).toBeLessThanOrEqual(returnedAt);
+      expect(operationDrained).toBe(true);
+      expect(harness.state.closeSettled.every(({ at }) => at <= returnedAt)).toBe(true);
+      expect(harness.state.transactionReceipts.every((receipt) =>
+        receipt.settledAt !== null && receipt.settledAt <= returnedAt)).toBe(true);
+      expect(settlement).toEqual({
+        participant_pids: 0,
+        owner_pids: 1,
+        owner_in_transaction: 0,
+        advisory_locks: 0,
+      });
+    }, 30_000);
 
     it("settles and tears down every advisory participant for each failure/timeout/forced-end phase without payload-bearing diagnostics", async () => {
       // Mutations caught: per-peer aborts, naked Promise.race closes, or logging URLs/keys can

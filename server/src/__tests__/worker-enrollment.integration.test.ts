@@ -248,8 +248,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   try { await ownerDb?.$client.end(); } catch { /* ignore */ }
-  try { await operator?.close(); } catch { /* ignore */ }
-  try { await app?.close(); } catch { /* ignore */ }
+  try { await operator?.close({ timeoutSeconds: 5 }); } catch { /* ignore */ }
+  try { await app?.close({ timeoutSeconds: 5 }); } catch { /* ignore */ }
   try { await admin?.end(); } catch { /* ignore */ }
   try { await embedded?.stop(); } catch { /* ignore */ }
   try { if (dataDir) await rm(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }

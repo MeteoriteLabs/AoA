@@ -887,8 +887,8 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
   }, 180_000);
 
   afterAll(async () => {
-    await operator?.close().catch(() => {});
-    await app?.close().catch(() => {});
+    await operator?.close({ timeoutSeconds: 5 }).catch(() => {});
+    await app?.close({ timeoutSeconds: 5 }).catch(() => {});
     await admin?.end().catch(() => {});
     await embedded?.stop().catch(() => {});
     if (dataDir) await rm(dataDir, { recursive: true, force: true }).catch(() => {});

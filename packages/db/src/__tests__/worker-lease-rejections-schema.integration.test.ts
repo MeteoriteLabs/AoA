@@ -99,9 +99,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const journal = JSON.parse(
         readFileSync(new URL("../migrations/meta/_journal.json", import.meta.url), "utf8"),
       ) as { entries?: Array<{ idx?: number; tag?: string }> };
-      const orderedPaths = [...(journal.entries ?? [])]
-        .sort((left, right) => Number(left.idx) - Number(right.idx))
-        .map((entry) => `${entry.tag}.sql`);
+      const orderedPaths = (journal.entries ?? []).map((entry) => `${entry.tag}.sql`);
       const orderedHashes = orderedPaths.map((path) => createHash("sha256")
         .update(readFileSync(new URL(`../migrations/${path}`, import.meta.url)))
         .digest("hex"));
