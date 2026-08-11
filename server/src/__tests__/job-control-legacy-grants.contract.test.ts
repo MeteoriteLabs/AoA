@@ -88,4 +88,112 @@ describe("JOB-003 bounded aoa_app authority", () => {
       'ALTER TABLE "worker_lease_rejections" FORCE ROW LEVEL SECURITY',
     );
   });
+
+  it("derives one immutable serving-relation inventory from every table and column grant", () => {
+    // Mutation caught: a hand-maintained startup list can omit a column-only relation or retain
+    // a removed grant while the authority constants continue to look correct in isolation.
+    const manifest = grants as typeof grants & {
+      APP_SERVING_RELATIONS?: readonly string[];
+      OPERATOR_SERVING_RELATIONS?: readonly string[];
+    };
+    const appExpected = [...new Set([
+      ...Object.keys(grants.JOB_CONTROL_LEGACY_GRANTS),
+      ...Object.keys(grants.JOB_CONTROL_NEW_PATH_GRANTS),
+      ...Object.keys(grants.JOB_SUBMISSION_LEGACY_GRANTS),
+      ...Object.keys(grants.JOB_SUBMISSION_NEW_PATH_GRANTS),
+      ...Object.keys(grants.WORKER_ENROLLMENT_APP_GRANTS),
+      ...Object.keys(grants.JOB_LEASING_NEW_PATH_GRANTS),
+      "mcp_api_keys",
+      "execution_targets",
+    ])].sort();
+    const operatorExpected = [...new Set([
+      ...Object.keys(grants.WORKER_ENROLLMENT_OPERATOR_GRANTS),
+      ...Object.keys(grants.OPERATOR_METADATA_COLUMN_GRANTS),
+      "execution_targets",
+    ])].sort();
+    expect(manifest.APP_SERVING_RELATIONS).toEqual(appExpected);
+    expect(manifest.OPERATOR_SERVING_RELATIONS).toEqual(operatorExpected);
+    expect(Object.isFrozen(manifest.APP_SERVING_RELATIONS)).toBe(true);
+    expect(Object.isFrozen(manifest.OPERATOR_SERVING_RELATIONS)).toBe(true);
+  });
+
+  it("pins the exact 15-table RLS, 14-table FORCE, and 22-row permissive policy certificate", () => {
+    const manifest = grants as typeof grants & {
+      RLS_RELATIONS?: readonly string[];
+      FORCE_RLS_RELATIONS?: readonly string[];
+      NON_FORCE_RLS_RELATIONS?: readonly string[];
+      POLICY_COUNTS?: Readonly<Record<string, number>>;
+      RLS_POLICY_MANIFEST?: readonly Array<{
+        relation: string;
+        name: string;
+        command: string;
+        role: string;
+        permissive: boolean;
+        qual: string | null;
+        check: string | null;
+      }>;
+    };
+    const rls = [
+      "jobs", "job_attempts", "leases", "workers", "services", "service_instances",
+      "job_artifacts", "job_secret_handles", "job_outbox", "worker_enrollment_code_routes",
+      "worker_enrollment_codes", "worker_proof_replays", "execution_targets",
+      "worker_operation_receipts", "worker_lease_rejections",
+    ];
+    const counts = {
+      jobs: 1, job_attempts: 1, leases: 1, workers: 2, services: 1,
+      service_instances: 1, job_artifacts: 1, job_secret_handles: 1, job_outbox: 1,
+      worker_enrollment_code_routes: 3, worker_enrollment_codes: 2,
+      worker_proof_replays: 2, execution_targets: 3, worker_operation_receipts: 1,
+      worker_lease_rejections: 1,
+    };
+    const ORG = "(organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
+    const CANDIDATE_ORG = "(candidate_organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
+    const NULL_ORG = "(organization_id IS NULL)";
+    const NULL_CANDIDATE_ORG = "(candidate_organization_id IS NULL)";
+    const PLATFORM_WORKER = "((organization_id IS NULL) AND (scope = 'platform'::text))";
+    const TENANT_TARGET = "((organization_id IS NULL) OR (organization_id = (current_setting('aoa.organization_id'::text, true))::uuid))";
+    const PLATFORM_TARGET = "((organization_id IS NULL) AND (owner_user_id IS NULL))";
+    const policy = (
+      relation: string,
+      name: string,
+      command: string,
+      role: string,
+      qual: string,
+      check: string | null,
+    ) => ({ relation, name, command, role, permissive: true, qual, check });
+    const policies = [
+      policy("jobs", "jobs_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("job_attempts", "job_attempts_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("leases", "leases_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("workers", "workers_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("services", "services_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("service_instances", "service_instances_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("job_artifacts", "job_artifacts_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("job_secret_handles", "job_secret_handles_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("job_outbox", "job_outbox_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("worker_enrollment_code_routes", "worker_enrollment_code_routes_tenant_isolation", "ALL", "aoa_app", CANDIDATE_ORG, CANDIDATE_ORG),
+      policy("worker_enrollment_code_routes", "worker_enrollment_code_routes_platform_operator", "ALL", "aoa_operator", NULL_CANDIDATE_ORG, NULL_CANDIDATE_ORG),
+      policy("worker_enrollment_code_routes", "worker_enrollment_code_routes_operator_discovery", "SELECT", "aoa_operator", "true", null),
+      policy("worker_enrollment_codes", "worker_enrollment_codes_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("worker_enrollment_codes", "worker_enrollment_codes_platform_operator", "ALL", "aoa_operator", NULL_ORG, NULL_ORG),
+      policy("worker_proof_replays", "worker_proof_replays_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("worker_proof_replays", "worker_proof_replays_platform_operator", "ALL", "aoa_operator", NULL_ORG, NULL_ORG),
+      policy("workers", "workers_platform_operator", "ALL", "aoa_operator", PLATFORM_WORKER, PLATFORM_WORKER),
+      policy("execution_targets", "execution_targets_tenant_serving", "SELECT", "aoa_app", TENANT_TARGET, null),
+      policy("execution_targets", "execution_targets_platform_operator", "ALL", "aoa_operator", PLATFORM_TARGET, PLATFORM_TARGET),
+      policy("execution_targets", "execution_targets_tenant_enrollment_update", "UPDATE", "aoa_app", ORG, ORG),
+      policy("worker_operation_receipts", "worker_operation_receipts_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("worker_lease_rejections", "worker_lease_rejections_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+    ];
+    expect(manifest.RLS_RELATIONS).toEqual(rls);
+    expect(manifest.FORCE_RLS_RELATIONS).toEqual(rls.filter((relation) => relation !== "execution_targets"));
+    expect(manifest.NON_FORCE_RLS_RELATIONS).toEqual(["execution_targets"]);
+    expect(manifest.POLICY_COUNTS).toEqual(counts);
+    expect(manifest.RLS_POLICY_MANIFEST).toEqual(policies);
+    expect(manifest.RLS_POLICY_MANIFEST?.reduce<Record<string, number>>((actual, row) => {
+      actual[row.relation] = (actual[row.relation] ?? 0) + 1;
+      return actual;
+    }, {})).toEqual(counts);
+    expect(Object.isFrozen(manifest.RLS_POLICY_MANIFEST)).toBe(true);
+  });
 });

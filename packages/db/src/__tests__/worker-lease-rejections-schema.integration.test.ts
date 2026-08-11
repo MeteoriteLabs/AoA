@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import { tmpdir } from "node:os";
 import net from "node:net";
 import postgres, { type Sql } from "postgres";
 import { applyPendingMigrations } from "../client.js";
+import * as dbClient from "../client.js";
 
 type EmbeddedPostgresInstance = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 type EmbeddedPostgresCtor = new (opts: Record<string, unknown>) => EmbeddedPostgresInstance;
@@ -86,6 +88,36 @@ afterAll(async () => {
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
   "JOB-003 static lease-rejection certificate schema",
   () => {
+    it("derives the strict checked-in migration identity in journal order without trusting database serial IDs", async () => {
+      // Mutation caught: deleting the owner-produced identity export, sorting by filename/DB id,
+      // or hashing a partial ledger must change this hand-derived result.
+      const loadRequiredMigrationIdentity = (dbClient as Record<string, unknown>)
+        .loadRequiredMigrationIdentity;
+      expect(typeof loadRequiredMigrationIdentity).toBe("function");
+      if (typeof loadRequiredMigrationIdentity !== "function") return;
+
+      const journal = JSON.parse(
+        readFileSync(new URL("../migrations/meta/_journal.json", import.meta.url), "utf8"),
+      ) as { entries?: Array<{ idx?: number; tag?: string }> };
+      const orderedPaths = [...(journal.entries ?? [])]
+        .sort((left, right) => Number(left.idx) - Number(right.idx))
+        .map((entry) => `${entry.tag}.sql`);
+      const orderedHashes = orderedPaths.map((path) => createHash("sha256")
+        .update(readFileSync(new URL(`../migrations/${path}`, import.meta.url)))
+        .digest("hex"));
+      const ledgerSha256 = createHash("sha256")
+        .update(JSON.stringify(orderedHashes))
+        .digest("hex");
+
+      const identity = await (loadRequiredMigrationIdentity as () => Promise<{
+        orderedHashes: readonly string[];
+        ledgerSha256: string;
+      }>)();
+      expect(identity).toEqual({ orderedHashes, ledgerSha256 });
+      expect(new Set(identity.orderedHashes).size).toBe(identity.orderedHashes.length);
+      expect(identity.ledgerSha256).toMatch(/^[0-9a-f]{64}$/);
+    });
+
     it("uses split generated 0229/0230 plus custom 0231 with C14 and mixed-direction index replacement", async () => {
       const migrationNames = readdirSync(new URL("../migrations/", import.meta.url));
       const m0229 = migrationNames.filter((name) => /^0229_.*\.sql$/.test(name));

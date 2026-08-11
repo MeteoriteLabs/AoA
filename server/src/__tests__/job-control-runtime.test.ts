@@ -12,7 +12,11 @@ const runtimeHarness = vi.hoisted(() => ({
   }>>(),
   claimErrors: new Map<string, Error & { code?: string }>(),
   delivered: [] as string[],
+  cleanupInputs: [] as Array<Record<string, unknown>>,
+  cleanupResult: { deleted: 0, cardinalityObserved: 0, cardinalitySaturated: false },
+  cleanupError: null as Error | null,
   statementTimeouts: [] as number[],
+  afterStatementTimeout: null as null | (() => void),
   beforeTenant: null as null | ((organizationId: string) => Promise<void>),
   afterClaim: null as null | (() => Promise<void>),
   afterDelivery: null as null | (() => Promise<void>),
@@ -39,6 +43,16 @@ vi.mock("../db/tenant-context.js", () => ({
           currentDatabaseTime: async () => new Date("2026-08-10T12:00:00.000Z"),
           setLocalStatementTimeout: async (milliseconds: number) => {
             runtimeHarness.statementTimeouts.push(milliseconds);
+            runtimeHarness.afterStatementTimeout?.();
+          },
+          cleanupLeaseRejectionCertificates: async (input: Record<string, unknown>) => {
+            runtimeHarness.cleanupInputs.push(input);
+            if (runtimeHarness.cleanupError) throw runtimeHarness.cleanupError;
+            const beforeStatement = input.beforeStatement as ((phase: string) => Promise<void>) | undefined;
+            for (const phase of ["select", "delete", "cardinality"]) {
+              await beforeStatement?.(phase);
+            }
+            return runtimeHarness.cleanupResult;
           },
           claimReadyOutbox: async (input: Record<string, unknown>) => {
             runtimeHarness.claimInputs.push(input);
@@ -102,7 +116,11 @@ describe("JOB-003 flag-on job-control runtime", () => {
     runtimeHarness.claims.clear();
     runtimeHarness.claimErrors.clear();
     runtimeHarness.delivered.length = 0;
+    runtimeHarness.cleanupInputs.length = 0;
+    runtimeHarness.cleanupResult = { deleted: 0, cardinalityObserved: 0, cardinalitySaturated: false };
+    runtimeHarness.cleanupError = null;
     runtimeHarness.statementTimeouts.length = 0;
+    runtimeHarness.afterStatementTimeout = null;
     runtimeHarness.beforeTenant = null;
     runtimeHarness.afterClaim = null;
     runtimeHarness.afterDelivery = null;
@@ -472,7 +490,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
     await worker.tick();
     expect.soft(publications).toEqual([]);
     expect.soft(runtimeHarness.delivered).toEqual([]);
-    expect.soft(runtimeHarness.statementTimeouts).toEqual([750]);
+    expect.soft(runtimeHarness.statementTimeouts).toEqual([750, 750, 750, 750, 750]);
   });
 
   it("checks launch admission before every signal publication and launches no delivery after publisher k", async () => {
@@ -518,7 +536,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
 
     await expect(worker.tick()).resolves.toMatchObject({ claimed: 1, delivered: 1 });
     expect.soft(monotonicMs).toBe(1_200);
-    expect.soft(runtimeHarness.statementTimeouts).toEqual([750, 1]);
+    expect.soft(runtimeHarness.statementTimeouts).toEqual([750, 750, 750, 750, 750, 1]);
   });
 
   it("does not overlap a slow shard tick and resumes at the next cursor", async () => {
@@ -672,6 +690,107 @@ describe("JOB-003 flag-on job-control runtime", () => {
     runtimeHarness.visited.length = 0;
     await worker.tick();
     expect.soft(runtimeHarness.visited).toEqual([orgB]);
+  });
+
+  it("composes cleanup once per visited shard and re-budgets all six database statements from one deadline", async () => {
+    // Mutation caught: cleanup in a second transaction, omission on empty/pending shards, or
+    // reuse/reset of one statement timeout produces a different call/timeout trace.
+    const org = organizationId(1);
+    const target = "c3900000-0000-4000-8000-000000000001";
+    runtimeHarness.claims.set(org, [{
+      id: "cleanup-outbox-row",
+      organizationId: org,
+      targetId: target,
+      attemptId: "cleanup-attempt",
+    }]);
+    runtimeHarness.cleanupResult = {
+      deleted: 5,
+      cardinalityObserved: 7,
+      cardinalitySaturated: true,
+    };
+    let monotonicMs = 0;
+    runtimeHarness.afterStatementTimeout = () => { monotonicMs += 100; };
+    const worker = (createJobOutboxWorker as unknown as (input: Record<string, unknown>) => {
+      tick(): Promise<Record<string, number>>;
+    })({
+      appDb: {},
+      scheduler: createJobReadyScheduler(),
+      listAdmittedOrganizationIds: async (input: unknown) => admittedOrganizationPage(input, [org]),
+      publishHint: async () => {},
+      tickBudgetMs: 600,
+      monotonicNow: () => monotonicMs,
+      cleanupLimit: 256,
+      cleanupCardinalityLimit: 4096,
+    });
+
+    await expect(worker.tick()).resolves.toEqual({
+      organizations: 1,
+      claimed: 1,
+      delivered: 1,
+      cleaned: 5,
+    });
+    expect(runtimeHarness.cleanupInputs).toHaveLength(1);
+    expect(runtimeHarness.cleanupInputs[0]).toMatchObject({ limit: 256, cardinalityLimit: 4096 });
+    expect(runtimeHarness.statementTimeouts).toEqual([600, 500, 400, 300, 200, 100]);
+  });
+
+  it("rolls back shard admission on cleanup failure without publishing or losing durable outbox work", async () => {
+    const org = organizationId(1);
+    const target = "c3910000-0000-4000-8000-000000000001";
+    runtimeHarness.claims.set(org, [{
+      id: "durable-after-cleanup-failure",
+      organizationId: org,
+      targetId: target,
+      attemptId: "cleanup-attempt",
+    }]);
+    runtimeHarness.cleanupError = new Error("lease rejection cleanup failed");
+    const publications: unknown[] = [];
+    const worker = (createJobOutboxWorker as unknown as (input: Record<string, unknown>) => {
+      tick(): Promise<Record<string, number>>;
+    })({
+      appDb: {},
+      scheduler: createJobReadyScheduler(),
+      listAdmittedOrganizationIds: async (input: unknown) => admittedOrganizationPage(input, [org]),
+      publishHint: async (signal: unknown) => { publications.push(signal); },
+      cleanupLimit: 256,
+      cleanupCardinalityLimit: 4096,
+    });
+
+    await expect(worker.tick()).rejects.toThrow("lease rejection cleanup failed");
+    expect(publications).toEqual([]);
+    expect(runtimeHarness.delivered).toEqual([]);
+    expect(runtimeHarness.claimInputs).toEqual([]);
+  });
+
+  it("reports exact scheduler expiry, closed capacity scope, and post-operation cardinality", () => {
+    const metrics = {
+      schedulerCapacityReject: vi.fn(),
+      schedulerExpiry: vi.fn(),
+      schedulerCardinality: vi.fn(),
+    };
+    let now = 0;
+    const scheduler = readySignalScheduler({
+      maxOrganizationShards: 1,
+      maxTargetsPerOrganization: 1,
+      maxSignalsGlobal: 1,
+      signalTtlMs: 100,
+      monotonicNow: () => now,
+      metrics,
+    });
+    const orgA = organizationId(1);
+    const orgB = organizationId(2);
+    expect(scheduler.signal?.({ organizationId: orgA, targetId: "target-a" })).toBe(true);
+    expect(scheduler.signal?.({ organizationId: orgB, targetId: "target-b" })).toBe(false);
+    expect(metrics.schedulerCapacityReject).toHaveBeenCalledWith({ scope: "organization" });
+    now = 100;
+    expect(scheduler.signal?.({ organizationId: orgB, targetId: "target-b" })).toBe(true);
+    expect(metrics.schedulerExpiry).toHaveBeenCalledWith({ count: 1 });
+    expect(scheduler.size()).toEqual({ organizations: 1, targets: 1, signals: 1 });
+    expect(metrics.schedulerCardinality).toHaveBeenLastCalledWith({
+      organizations: 1,
+      targets: 1,
+      signals: 1,
+    });
   });
 
   it("composes and stops the runtime only inside the distributed-execution flag", () => {

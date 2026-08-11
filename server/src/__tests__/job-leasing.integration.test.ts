@@ -783,6 +783,231 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     if (dataDir) await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   }, 60_000);
 
+  it("cleans only exact certificate tuples and reports truthful bounded cardinality in the same tenant transaction", async () => {
+    // Mutation caught: independent worker/target/attempt IN lists delete the retained
+    // WORKER x attempt-2 cross-tuple when attempt-1 and OTHER_WORKER x attempt-2 are selected.
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    const first = await seedPlacedJob({ ordinal: 7_001, outbox: false });
+    const second = await seedPlacedJob({ ordinal: 7_002, outbox: false });
+    const [platformFacts] = await admin<{
+      profileHash: string;
+      providerHash: string;
+    }[]>`SELECT registered_profile_hash AS "profileHash",
+        provider_constraint_profile->>'digest' AS "providerHash"
+      FROM execution_targets WHERE id = ${PLATFORM_TARGET}`;
+    const third = await seedPlacedJob({
+      ordinal: 7_003,
+      outbox: false,
+      workerId: PLATFORM_LOGICAL_WORKER_A,
+      placement: {
+        targetId: PLATFORM_TARGET,
+        owner: "managed_cloud",
+        targetClass: "managed_cloud",
+        targetScope: "platform",
+        profileHash: platformFacts!.profileHash,
+        providerHash: platformFacts!.providerHash,
+      },
+    });
+
+    const certificateHash = "9".repeat(64);
+    async function insertCertificate(input: {
+      attemptId: string;
+      workerId: string;
+      targetId: string;
+      authorityKey: string;
+    }): Promise<void> {
+      await admin`INSERT INTO worker_lease_rejections
+        (organization_id, company_id, job_id, attempt_id, worker_id, target_id,
+         target_authority_key, eligibility_version, static_context_hash, workload_type,
+         placement_owner, placement_target_class, placement_target_scope,
+         placement_target_generation, placement_profile_hash,
+         placement_provider_constraint_hash, placement_input_digest,
+         placement_policy_digest, reason_code)
+        SELECT attempt.organization_id, attempt.company_id, attempt.job_id, attempt.id,
+          ${input.workerId}, ${input.targetId}, ${input.authorityKey}, 1, ${certificateHash},
+          job.workload_type, attempt.placement_owner, attempt.placement_target_class,
+          attempt.placement_target_scope, attempt.placement_target_generation,
+          attempt.placement_profile_hash, attempt.placement_provider_constraint_hash,
+          attempt.placement_input_digest, attempt.placement_policy_digest,
+          'static_requirements_mismatch'
+        FROM job_attempts attempt JOIN jobs job ON job.id = attempt.job_id
+        WHERE attempt.id = ${input.attemptId}`;
+    }
+
+    await insertCertificate({
+      attemptId: first.attemptId,
+      workerId: WORKER,
+      targetId: TARGET,
+      authorityKey: `organization:${ORG}`,
+    });
+    await insertCertificate({
+      attemptId: second.attemptId,
+      workerId: OTHER_WORKER,
+      targetId: OTHER_TARGET,
+      authorityKey: `organization:${ORG}`,
+    });
+    // This exact cross-tuple must remain: attempt-2 is pending/current for WORKER on TARGET.
+    await insertCertificate({
+      attemptId: second.attemptId,
+      workerId: WORKER,
+      targetId: TARGET,
+      authorityKey: `organization:${ORG}`,
+    });
+    await insertCertificate({
+      attemptId: third.attemptId,
+      workerId: PLATFORM_LOGICAL_WORKER_A,
+      targetId: PLATFORM_TARGET,
+      authorityKey: "platform",
+    });
+    await admin`UPDATE job_attempts SET status = 'leased' WHERE id = ${first.attemptId}`;
+    await admin`UPDATE workers SET status = 'revoked', revoked_at = clock_timestamp()
+      WHERE id = ${OTHER_WORKER}`;
+
+    const phases: string[] = [];
+    const result = await runInTenant(app.db, ORG, async (repos) => {
+      const cleanup = repos.jobControl.cleanupLeaseRejectionCertificates as unknown as (input: {
+        limit: number;
+        cardinalityLimit: number;
+        beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
+      }) => Promise<{ deleted: number; cardinalityObserved: number; cardinalitySaturated: boolean }>;
+      return cleanup({
+        limit: 256,
+        cardinalityLimit: 4_096,
+        beforeStatement: async (phase) => { phases.push(phase); },
+      });
+    });
+    const remaining = await admin<{ workerId: string; attemptId: string }[]>`
+      SELECT worker_id AS "workerId", attempt_id AS "attemptId"
+      FROM worker_lease_rejections WHERE organization_id = ${ORG}
+      ORDER BY worker_id, attempt_id`;
+    await admin`UPDATE workers SET status = 'enrolled', revoked_at = NULL WHERE id = ${OTHER_WORKER}`;
+
+    expect(result).toEqual({
+      deleted: 2,
+      cardinalityObserved: 2,
+      cardinalitySaturated: false,
+    });
+    expect(phases).toEqual(["select", "delete", "cardinality"]);
+    expect(remaining).toEqual([
+      { workerId: WORKER, attemptId: second.attemptId },
+      { workerId: PLATFORM_LOGICAL_WORKER_A, attemptId: third.attemptId },
+    ].sort((left, right) => `${left.workerId}:${left.attemptId}`.localeCompare(`${right.workerId}:${right.attemptId}`)));
+  }, 60_000);
+
+  it("rejects every non-finite, non-positive, fractional, or unsafe cleanup bound", async () => {
+    const { app } = guard();
+    const invalid = [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1];
+    const results = await runInTenant(app.db, ORG, async (repos) => {
+      const cleanup = repos.jobControl.cleanupLeaseRejectionCertificates as unknown as (input: {
+        limit: number;
+        cardinalityLimit: number;
+        beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
+      }) => Promise<unknown>;
+      return Promise.allSettled([
+        ...invalid.map((limit) => cleanup({
+          limit,
+          cardinalityLimit: 4_096,
+          beforeStatement: async () => {},
+        })),
+        ...invalid.map((cardinalityLimit) => cleanup({
+          limit: 256,
+          cardinalityLimit,
+          beforeStatement: async () => {},
+        })),
+      ]);
+    });
+    expect(results.map((result) => result.status)).toEqual(Array(12).fill("rejected"));
+  }, 60_000);
+
+  it("deletes exactly the first 256 obsolete tuples, leaves tuple 257, and reports bounded cardinality", async () => {
+    // Mutation caught: a literal/unbounded limit, clamped DELETE count, or cardinality query
+    // outside the tenant transaction makes this exact 256/257 boundary disagree.
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    const targetRows = await admin<{
+      id: string;
+      authorityKey: string;
+      profileHash: string;
+      providerHash: string;
+      scope: string;
+    }[]>`SELECT id, target_authority_key AS "authorityKey",
+        registered_profile_hash AS "profileHash",
+        provider_constraint_profile->>'digest' AS "providerHash", scope
+      FROM execution_targets
+      WHERE id IN (${TARGET}, ${OTHER_TARGET}, ${PLATFORM_TARGET})`;
+    const targetById = new Map(targetRows.map((row) => [row.id, row]));
+    const placements = [
+      { workerId: WORKER, targetId: TARGET },
+      { workerId: OTHER_WORKER, targetId: OTHER_TARGET },
+      { workerId: PLATFORM_LOGICAL_WORKER_A, targetId: PLATFORM_TARGET },
+    ];
+    const attemptIds: string[] = [];
+
+    for (let index = 0; index < 257; index += 1) {
+      const placement = placements[index % placements.length]!;
+      const target = targetById.get(placement.targetId)!;
+      const seeded = await seedPlacedJob({
+        ordinal: 7_100 + index,
+        outbox: false,
+        workerId: placement.workerId,
+        placement: {
+          targetId: placement.targetId,
+          owner: target.scope === "platform" ? "managed_cloud" : "organization_dedicated",
+          targetClass: target.scope === "platform" ? "managed_cloud" : "organization_dedicated",
+          targetScope: target.scope,
+          profileHash: target.profileHash,
+          providerHash: target.providerHash,
+        },
+      });
+      attemptIds.push(seeded.attemptId);
+      const orderedAt = new Date(Date.UTC(2026, 0, 1, 0, 0, 0, index));
+      await admin`INSERT INTO worker_lease_rejections
+        (organization_id, company_id, job_id, attempt_id, worker_id, target_id,
+         target_authority_key, eligibility_version, static_context_hash, workload_type,
+         placement_owner, placement_target_class, placement_target_scope,
+         placement_target_generation, placement_profile_hash,
+         placement_provider_constraint_hash, placement_input_digest,
+         placement_policy_digest, reason_code, created_at, updated_at)
+        SELECT attempt.organization_id, attempt.company_id, attempt.job_id, attempt.id,
+          ${placement.workerId}, ${placement.targetId}, ${target.authorityKey}, 1, ${"8".repeat(64)},
+          job.workload_type, attempt.placement_owner, attempt.placement_target_class,
+          attempt.placement_target_scope, attempt.placement_target_generation,
+          attempt.placement_profile_hash, attempt.placement_provider_constraint_hash,
+          attempt.placement_input_digest, attempt.placement_policy_digest,
+          'static_requirements_mismatch', ${orderedAt}, ${orderedAt}
+        FROM job_attempts attempt JOIN jobs job ON job.id = attempt.job_id
+        WHERE attempt.id = ${seeded.attemptId}`;
+    }
+    await admin`UPDATE job_attempts SET status = 'leased'
+      WHERE id = ANY(${attemptIds}::uuid[])`;
+
+    const phases: string[] = [];
+    const result = await runInTenant(app.db, ORG, async (repos) => {
+      const cleanup = repos.jobControl.cleanupLeaseRejectionCertificates as unknown as (input: {
+        limit: number;
+        cardinalityLimit: number;
+        beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
+      }) => Promise<{ deleted: number; cardinalityObserved: number; cardinalitySaturated: boolean }>;
+      return cleanup({
+        limit: 256,
+        cardinalityLimit: 4_096,
+        beforeStatement: async (phase) => { phases.push(phase); },
+      });
+    });
+    const remaining = await admin<{ attemptId: string }[]>`
+      SELECT attempt_id AS "attemptId" FROM worker_lease_rejections
+      WHERE organization_id = ${ORG} ORDER BY updated_at, worker_id, attempt_id`;
+
+    expect(remaining).toEqual([{ attemptId: attemptIds[256] }]);
+    expect(result).toEqual({
+      deleted: 256,
+      cardinalityObserved: 1,
+      cardinalitySaturated: false,
+    });
+    expect(phases).toEqual(["select", "delete", "cardinality"]);
+  }, 120_000);
+
   it("gives exactly one of 100 concurrent claimers one opaque offer and reveals nothing to losers", async () => {
     const { admin, app } = guard();
     await resetRuntimeRows();

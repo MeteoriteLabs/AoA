@@ -8236,3 +8236,77 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     )).toEqual(["authority.map", "eq"]);
   });
 });
+
+describe("JOB-003 final-review repository and telemetry contracts", () => {
+  const repositorySource = readFileSync(
+    new URL("../../../packages/db/src/repositories/tenant/job-control.ts", import.meta.url),
+    "utf8",
+  );
+  const leasingSource = readFileSync(new URL("../services/job-leasing.ts", import.meta.url), "utf8");
+  const outboxSource = readFileSync(new URL("../services/job-outbox-worker.ts", import.meta.url), "utf8");
+  const schedulerSource = readFileSync(new URL("../services/job-ready-scheduler.ts", import.meta.url), "utf8");
+
+  it("defines bounded tuple-exact cleanup with left-join drift retention and three statement gates", () => {
+    // Paired with the executable real-PG cross-tuple test: these assertions close the
+    // false-green mutations that replace the bound with a literal or hide missing parents.
+    expect(repositorySource).toMatch(/interface LeaseRejectionCleanupResult[\s\S]*deleted:\s*number[\s\S]*cardinalityObserved:\s*number[\s\S]*cardinalitySaturated:\s*boolean/);
+    expect(repositorySource).toMatch(/cleanupLeaseRejectionCertificates\(input:\s*\{[\s\S]*limit:\s*number[\s\S]*cardinalityLimit:\s*number[\s\S]*beforeStatement/);
+    expect(repositorySource).toMatch(/Number\.isSafeInteger\([^)]*limit/);
+    expect(repositorySource).toMatch(/Number\.isSafeInteger\([^)]*cardinalityLimit/);
+    expect(repositorySource).toMatch(/cleanupLeaseRejectionCertificates[\s\S]*\.leftJoin\(jobs/);
+    expect(repositorySource).toMatch(/cleanupLeaseRejectionCertificates[\s\S]*\.leftJoin\(jobAttempts/);
+    expect(repositorySource).toMatch(/cleanupLeaseRejectionCertificates[\s\S]*\.limit\(boundedLimit\)/);
+    expect(repositorySource).toMatch(/beforeStatement\(["']select["']\)[\s\S]*beforeStatement\(["']delete["']\)[\s\S]*beforeStatement\(["']cardinality["']\)/);
+    expect(repositorySource).toMatch(/cardinalityLimit\s*\+\s*1/);
+    expect(repositorySource).toMatch(/lease_rejection_cleanup_bound/);
+    expect(repositorySource).not.toMatch(/cleanupLeaseRejectionCertificates[\s\S]{0,5000}inArray\(workerLeaseRejections\.workerId/);
+    expect(repositorySource).not.toMatch(/return Math\.min\(boundedLimit,\s*deleted\.length\)/);
+  });
+
+  it("returns certificate telemetry from the claim SQL instead of inferring it from candidate length", () => {
+    expect(repositorySource).toMatch(/lockEligibleLeaseCandidates[\s\S]*certificateMetrics/);
+    expect(repositorySource).toMatch(/hitsObserved[\s\S]*hitsSaturated[\s\S]*missesObserved[\s\S]*missesSaturated/);
+    expect(repositorySource).toMatch(/scanExhausted[\s\S]*cardinalityObserved[\s\S]*cardinalitySaturated/);
+    expect(repositorySource).toMatch(/4_?097|4097/);
+    expect(repositorySource).toMatch(/256/);
+    expect(leasingSource).toMatch(/certificateMetrics/);
+    expect(leasingSource).not.toMatch(/hitsObserved\s*:\s*candidates\.length/);
+    expect(leasingSource).not.toMatch(/missesObserved\s*:\s*candidates\.length/);
+  });
+
+  it("locks non-platform target before worker and touches liveness only after authority revalidation", () => {
+    const repositoryFunction = repositorySource.slice(
+      repositorySource.indexOf("async lockWorkerLeaseAuthority"),
+      repositorySource.indexOf("async lockEligibleLeaseCandidates"),
+    );
+    expect(repositoryFunction.indexOf(".from(executionTargets)")).toBeGreaterThanOrEqual(0);
+    expect(repositoryFunction.indexOf(".from(workers)")).toBeGreaterThan(
+      repositoryFunction.indexOf(".from(executionTargets)"),
+    );
+    expect(repositoryFunction).toMatch(/organizationId[\s\S]*targetAuthorityKey/);
+
+    const firstTouch = leasingSource.indexOf("touchWorkerLeaseProfile");
+    const firstAuthorityLock = leasingSource.indexOf("lockWorkerLeaseAuthority");
+    expect(firstAuthorityLock).toBeGreaterThanOrEqual(0);
+    expect(firstTouch).toBeGreaterThan(firstAuthorityLock);
+  });
+
+  it("threads one optional closed metrics instance through leasing, scheduler, and outbox", () => {
+    for (const [source, factory] of [
+      [leasingSource, "createJobLeasingService"],
+      [schedulerSource, "createJobReadyScheduler"],
+      [outboxSource, "createJobOutboxWorker"],
+    ] as const) {
+      expect(source).toMatch(new RegExp(`${factory}[\\s\\S]*metrics\\?:\\s*JobControlMetrics`));
+      expect(source).toContain("NOOP_JOB_CONTROL_METRICS");
+    }
+    expect(leasingSource).toMatch(/headRestart\(\)/);
+    expect(leasingSource).toMatch(/certificateScan\(/);
+    expect(leasingSource).toMatch(/certificateUpsert\(/);
+    expect(outboxSource).toMatch(/certificateCleanup\(/);
+    expect(outboxSource).toMatch(/outboxTick\(/);
+    expect(schedulerSource).toMatch(/schedulerCapacityReject\(/);
+    expect(schedulerSource).toMatch(/schedulerExpiry\(/);
+    expect(schedulerSource).toMatch(/schedulerCardinality\(/);
+  });
+});

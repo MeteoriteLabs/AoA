@@ -1,11 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import postgres, { type Sql } from "postgres";
-import { applyPendingMigrations } from "@armyofagents/db";
+import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
+import { applyPendingMigrations, type Db } from "@armyofagents/db";
+import * as dbSchema from "@armyofagents/db";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import {
   provisionTenantAppRoleLoginSql,
@@ -26,7 +30,12 @@ let adminUrl = "";
 let appUrl = "";
 let operatorUrl = "";
 let legacyOwnerUrl = "";
+let otherAdminUrl = "";
+let otherAppUrl = "";
+let otherOperatorUrl = "";
 let admin: Sql | null = null;
+let ownerClient: Sql | null = null;
+let ownerDb: Db | null = null;
 let setupError: unknown = null;
 
 function guard(): void {
@@ -36,6 +45,71 @@ function guard(): void {
 function withStartupRole(url: string, role: "aoa_app" | "aoa_operator"): string {
   const separator = url.includes("?") ? "&" : "?";
   return `${url}${separator}options=${encodeURIComponent(`-c role=${role}`)}`;
+}
+
+type RequiredMigrationIdentity = { orderedHashes: readonly string[]; ledgerSha256: string };
+
+function checkedInMigrationIdentity(): RequiredMigrationIdentity {
+  const journal = JSON.parse(readFileSync(
+    new URL("../../../packages/db/src/migrations/meta/_journal.json", import.meta.url),
+    "utf8",
+  )) as { entries?: Array<{ idx?: number; tag?: string }> };
+  const orderedHashes = [...(journal.entries ?? [])]
+    .sort((left, right) => Number(left.idx) - Number(right.idx))
+    .map((entry) => createHash("sha256").update(readFileSync(
+      new URL(`../../../packages/db/src/migrations/${entry.tag}.sql`, import.meta.url),
+    )).digest("hex"));
+  return {
+    orderedHashes,
+    ledgerSha256: createHash("sha256").update(JSON.stringify(orderedHashes)).digest("hex"),
+  };
+}
+
+const openFinalStartup = openDistributedExecutionDatabases as unknown as (input: {
+  enabled: boolean;
+  ownerDb: Db;
+  requiredMigrationIdentity: RequiredMigrationIdentity;
+  appDatabaseUrl: string | undefined;
+  operatorDatabaseUrl: string | undefined;
+}) => ReturnType<typeof openDistributedExecutionDatabases>;
+
+function finalStartupInput(input: {
+  appDatabaseUrl: string;
+  operatorDatabaseUrl: string;
+}) {
+  if (!ownerDb) throw new Error("owner database was not initialized");
+  return {
+    enabled: true,
+    ownerDb,
+    requiredMigrationIdentity: checkedInMigrationIdentity(),
+    ...input,
+  };
+}
+
+async function captureFinalStartupFailure(): Promise<unknown> {
+  let accepted: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> = null;
+  try {
+    accepted = await openFinalStartup(finalStartupInput({
+      appDatabaseUrl: appUrl,
+      operatorDatabaseUrl: operatorUrl,
+    }));
+    return undefined;
+  } catch (error) {
+    return error;
+  } finally {
+    await accepted?.close().catch(() => {});
+  }
+}
+
+const LEASE_REJECTION_POLICY_SQL = `CREATE POLICY worker_lease_rejections_tenant_isolation
+  ON worker_lease_rejections AS PERMISSIVE FOR ALL TO aoa_app
+  USING (organization_id = current_setting('aoa.organization_id', true)::uuid)
+  WITH CHECK (organization_id = current_setting('aoa.organization_id', true)::uuid)`;
+
+async function restoreLeaseRejectionPolicy(): Promise<void> {
+  await admin!.unsafe(`DROP POLICY IF EXISTS worker_lease_rejections_tenant_isolation
+    ON worker_lease_rejections`);
+  await admin!.unsafe(LEASE_REJECTION_POLICY_SQL);
 }
 
 beforeAll(async () => {
@@ -58,6 +132,8 @@ beforeAll(async () => {
     adminUrl = `postgres://test:test@127.0.0.1:${port}/postgres`;
     await applyPendingMigrations(adminUrl);
     admin = postgres(adminUrl, { max: 1 });
+    ownerClient = postgres(adminUrl, { max: 4 });
+    ownerDb = drizzlePg(ownerClient, { schema: dbSchema }) as unknown as Db;
     await admin.unsafe(provisionTenantAppRoleLoginSql(TENANT_APP_ROLE, APP_PASSWORD));
     const exists = await admin<{ exists: boolean }[]>`
       SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'aoa_operator') AS exists
@@ -82,12 +158,18 @@ beforeAll(async () => {
     await admin.unsafe(`GRANT SELECT ON ALL TABLES IN SCHEMA drizzle TO "aoa_legacy_table_owner"`);
     await admin.unsafe(`ALTER TABLE execution_targets OWNER TO "aoa_legacy_table_owner"`);
     legacyOwnerUrl = adminUrl.replace("test:test", `aoa_legacy_table_owner:${LEGACY_OWNER_PASSWORD}`);
+    await admin.unsafe(`CREATE DATABASE startup_other`);
+    otherAdminUrl = adminUrl.replace(/\/postgres$/, "/startup_other");
+    await applyPendingMigrations(otherAdminUrl);
+    otherAppUrl = otherAdminUrl.replace("test:test", `aoa_app:${APP_PASSWORD}`);
+    otherOperatorUrl = otherAdminUrl.replace("test:test", `aoa_operator:${OPERATOR_PASSWORD}`);
   } catch (error) {
     setupError = error;
   }
 }, 180_000);
 
 afterAll(async () => {
+  try { await ownerClient?.end(); } catch { /* ignore */ }
   try { await admin?.end(); } catch { /* ignore */ }
   try { await embedded?.stop(); } catch { /* ignore */ }
   try { if (dataDir) await rm(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -113,10 +195,17 @@ async function observeServer(input: {
   appDatabaseUrl?: string;
   operatorDatabaseUrl?: string;
   expectedFailureText?: string;
+  sentinelMode?: "deny" | "record";
 }): Promise<{ exited: boolean; code: number | null; output: string }> {
   const httpPort = await allocateEmbeddedPgPort();
   const serverEntry = fileURLToPath(new URL("../index.ts", import.meta.url));
-  const child = spawn(process.execPath, ["--import", "tsx", serverEntry], {
+  const sentinel = pathToFileURL(
+    fileURLToPath(new URL("./fixtures/job-control-module-load-sentinel.mjs", import.meta.url)),
+  ).href;
+  const child = spawn(process.execPath, [
+    ...(input.sentinelMode ? ["--import", sentinel] : []),
+    "--import", "tsx", serverEntry,
+  ], {
     cwd: process.cwd(),
     env: {
       ...process.env,
@@ -133,6 +222,7 @@ async function observeServer(input: {
       SERVE_UI: "false",
       HOST: "127.0.0.1",
       PORT: String(httpPort),
+      ...(input.sentinelMode ? { AOA_JOB_CONTROL_MODULE_LOAD_SENTINEL: input.sentinelMode } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -312,11 +402,10 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         let accepted: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> = null;
         let failure: unknown;
         try {
-          accepted = await openDistributedExecutionDatabases({
-            enabled: true,
+          accepted = await openFinalStartup(finalStartupInput({
             appDatabaseUrl: expectedRole === "aoa_app" ? maskedOwnerUrl : appUrl,
             operatorDatabaseUrl: expectedRole === "aoa_operator" ? maskedOwnerUrl : operatorUrl,
-          });
+          }));
         } catch (error) {
           failure = error;
         } finally {
@@ -427,6 +516,283 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         expect(result.code).not.toBe(0);
       } finally {
         await admin!.unsafe(`ALTER ROLE aoa_operator NOREPLICATION`).catch(() => {});
+      }
+    }, 60_000);
+
+    it.each([
+      ["app", () => otherAppUrl, () => operatorUrl],
+      ["operator", () => appUrl, () => otherOperatorUrl],
+    ] as const)("rejects a fully migrated %s pool on another valid database before returning either pool", async (
+      _participant,
+      appDatabaseUrl,
+      operatorDatabaseUrl,
+    ) => {
+      guard();
+      const selectedAppUrl = appDatabaseUrl();
+      const selectedOperatorUrl = operatorDatabaseUrl();
+      let accepted: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> = null;
+      let failure: unknown;
+      try {
+        accepted = await openFinalStartup(finalStartupInput({
+          appDatabaseUrl: selectedAppUrl,
+          operatorDatabaseUrl: selectedOperatorUrl,
+        }));
+      } catch (error) {
+        failure = error;
+      } finally {
+        await accepted?.close().catch(() => {});
+      }
+      expect(failure).toMatchObject({ message: "distributed_execution_advisory_domain" });
+      expect(String(failure)).not.toContain(selectedAppUrl);
+      expect(String(failure)).not.toContain(selectedOperatorUrl);
+    }, 60_000);
+
+    it("uses exact migration hashes so a missing row fails and a repaired out-of-order serial ID succeeds", async () => {
+      guard();
+      const [removed] = await admin!.unsafe<Array<{ hash: string; created_at: string | number | null }>>(
+        `DELETE FROM drizzle.__drizzle_migrations
+         WHERE id = (SELECT max(id) FROM drizzle.__drizzle_migrations)
+         RETURNING hash, created_at`,
+      );
+      expect(removed?.hash).toMatch(/^[0-9a-f]{64}$/);
+      if (!removed) return;
+      try {
+        let failure: unknown;
+        try {
+          const unexpected = await openFinalStartup(finalStartupInput({
+            appDatabaseUrl: appUrl,
+            operatorDatabaseUrl: operatorUrl,
+          }));
+          await unexpected?.close();
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toMatchObject({ message: "distributed_execution_migration_identity" });
+      } finally {
+        await admin!.unsafe(
+          "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
+          [removed.hash, removed.created_at],
+        );
+      }
+
+      const repaired = await openFinalStartup(finalStartupInput({
+        appDatabaseUrl: appUrl,
+        operatorDatabaseUrl: operatorUrl,
+      }));
+      expect(repaired).not.toBeNull();
+      await repaired?.close();
+    }, 60_000);
+
+    it.each([
+      ["an extra unmapped hash", async () => "e".repeat(64)],
+      ["a duplicate hash", async () => {
+        const [row] = await admin!<{ hash: string }[]>`
+          SELECT hash FROM drizzle.__drizzle_migrations ORDER BY id LIMIT 1`;
+        return row!.hash;
+      }],
+      ["an unreadable hash", async () => "not-a-sha256"],
+    ] as const)("fails migration identity for %s", async (_caseName, buildHash) => {
+      guard();
+      const hash = await buildHash();
+      const [inserted] = await admin!.unsafe<Array<{ id: number }>>(
+        "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2) RETURNING id",
+        [hash, Date.now()],
+      );
+      try {
+        let accepted: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> = null;
+        let failure: unknown;
+        try {
+          accepted = await openFinalStartup(finalStartupInput({
+            appDatabaseUrl: appUrl,
+            operatorDatabaseUrl: operatorUrl,
+          }));
+        } catch (error) {
+          failure = error;
+        } finally {
+          await accepted?.close().catch(() => {});
+        }
+        expect(failure).toMatchObject({ message: "distributed_execution_migration_identity" });
+      } finally {
+        await admin!.unsafe("DELETE FROM drizzle.__drizzle_migrations WHERE id = $1", [inserted!.id]);
+      }
+    }, 60_000);
+
+    it("fails the exact RLS certificate when FORCE is disabled even though effective DML is unchanged", async () => {
+      guard();
+      await admin!.unsafe(`ALTER TABLE worker_lease_rejections NO FORCE ROW LEVEL SECURITY`);
+      try {
+        let failure: unknown;
+        try {
+          const unexpected = await openFinalStartup(finalStartupInput({
+            appDatabaseUrl: appUrl,
+            operatorDatabaseUrl: operatorUrl,
+          }));
+          await unexpected?.close();
+        } catch (error) { failure = error; }
+        expect(failure).toMatchObject({ message: "distributed_execution_app_authority" });
+      } finally {
+        await admin!.unsafe(`ALTER TABLE worker_lease_rejections FORCE ROW LEVEL SECURITY`);
+      }
+    }, 60_000);
+
+    it("fails the exact RLS certificate when RLS itself is disabled", async () => {
+      guard();
+      await admin!.unsafe(`ALTER TABLE worker_lease_rejections DISABLE ROW LEVEL SECURITY`);
+      try {
+        expect(await captureFinalStartupFailure()).toMatchObject({
+          message: "distributed_execution_app_authority",
+        });
+      } finally {
+        await admin!.unsafe(`ALTER TABLE worker_lease_rejections ENABLE ROW LEVEL SECURITY`);
+      }
+    }, 60_000);
+
+    it.each([
+      ["removed", null],
+      ["renamed", LEASE_REJECTION_POLICY_SQL.replaceAll(
+        "worker_lease_rejections_tenant_isolation",
+        "job003_renamed_policy",
+      )],
+      ["restrictive", LEASE_REJECTION_POLICY_SQL.replace("AS PERMISSIVE", "AS RESTRICTIVE")],
+      ["SELECT-only command", `CREATE POLICY worker_lease_rejections_tenant_isolation
+        ON worker_lease_rejections AS PERMISSIVE FOR SELECT TO aoa_app
+        USING (organization_id = current_setting('aoa.organization_id', true)::uuid)`],
+      ["PUBLIC role", LEASE_REJECTION_POLICY_SQL.replace("TO aoa_app", "TO PUBLIC")],
+      ["false qual", LEASE_REJECTION_POLICY_SQL.replace(
+        "USING (organization_id = current_setting('aoa.organization_id', true)::uuid)",
+        "USING (false)",
+      )],
+      ["false check", LEASE_REJECTION_POLICY_SQL.replace(
+        "WITH CHECK (organization_id = current_setting('aoa.organization_id', true)::uuid)",
+        "WITH CHECK (false)",
+      )],
+    ] as const)("fails the exact policy certificate when its row is %s", async (_mutation, replacementSql) => {
+      guard();
+      await admin!.unsafe(`DROP POLICY worker_lease_rejections_tenant_isolation
+        ON worker_lease_rejections`);
+      if (replacementSql) await admin!.unsafe(replacementSql);
+      try {
+        expect(await captureFinalStartupFailure()).toMatchObject({
+          message: "distributed_execution_app_authority",
+        });
+      } finally {
+        await admin!.unsafe(`DROP POLICY IF EXISTS job003_renamed_policy
+          ON worker_lease_rejections`);
+        await restoreLeaseRejectionPolicy();
+      }
+    }, 60_000);
+
+    it("fails the exact policy certificate on a harmless-looking 23rd permissive row", async () => {
+      guard();
+      await admin!.unsafe(`CREATE POLICY job003_extra_policy ON worker_lease_rejections
+        AS PERMISSIVE FOR SELECT TO aoa_app USING (false)`);
+      try {
+        let failure: unknown;
+        try {
+          const unexpected = await openFinalStartup(finalStartupInput({
+            appDatabaseUrl: appUrl,
+            operatorDatabaseUrl: operatorUrl,
+          }));
+          await unexpected?.close();
+        } catch (error) { failure = error; }
+        expect(failure).toMatchObject({ message: "distributed_execution_app_authority" });
+      } finally {
+        await admin!.unsafe(`DROP POLICY IF EXISTS job003_extra_policy ON worker_lease_rejections`);
+      }
+    }, 60_000);
+
+    it("fails exact attacl tuples when an expected column gains a grant option", async () => {
+      guard();
+      await admin!.unsafe(`GRANT SELECT (id) ON execution_targets TO aoa_app WITH GRANT OPTION`);
+      try {
+        let failure: unknown;
+        try {
+          const unexpected = await openFinalStartup(finalStartupInput({
+            appDatabaseUrl: appUrl,
+            operatorDatabaseUrl: operatorUrl,
+          }));
+          await unexpected?.close();
+        } catch (error) { failure = error; }
+        expect(failure).toMatchObject({ message: "distributed_execution_app_authority" });
+      } finally {
+        await admin!.unsafe(`REVOKE GRANT OPTION FOR SELECT (id) ON execution_targets FROM aoa_app`);
+      }
+    }, 60_000);
+
+    it.each([
+      [
+        "a relation grant option",
+        "GRANT SELECT ON job_outbox TO aoa_app WITH GRANT OPTION",
+        "REVOKE GRANT OPTION FOR SELECT ON job_outbox FROM aoa_app",
+      ],
+      [
+        "an unlisted-column grant option",
+        "GRANT SELECT (label) ON workers TO aoa_app WITH GRANT OPTION",
+        "REVOKE GRANT OPTION FOR SELECT (label) ON workers FROM aoa_app",
+      ],
+      [
+        "a PUBLIC relation ACL",
+        "GRANT SELECT ON worker_lease_rejections TO PUBLIC",
+        "REVOKE SELECT ON worker_lease_rejections FROM PUBLIC",
+      ],
+    ] as const)("fails exact ACL tuples for %s", async (_mutation, installSql, restoreSql) => {
+      guard();
+      await admin!.unsafe(installSql);
+      try {
+        expect(await captureFinalStartupFailure()).toMatchObject({
+          message: "distributed_execution_app_authority",
+        });
+      } finally {
+        await admin!.unsafe(restoreSql);
+      }
+    }, 60_000);
+
+    it.each([
+      ["aoa_app", "distributed_execution_app_authority"],
+      ["aoa_operator", "distributed_execution_operator_authority"],
+    ] as const)("keeps %s outside the drizzle migration schema", async (role, errorCode) => {
+      guard();
+      await admin!.unsafe(`GRANT USAGE ON SCHEMA drizzle TO ${role}`);
+      await admin!.unsafe(`GRANT SELECT ON drizzle.__drizzle_migrations TO ${role}`);
+      try {
+        expect(await captureFinalStartupFailure()).toMatchObject({
+          message: errorCode,
+        });
+      } finally {
+        await admin!.unsafe(`REVOKE ALL ON drizzle.__drizzle_migrations FROM ${role}`);
+        await admin!.unsafe(`REVOKE USAGE ON SCHEMA drizzle FROM ${role}`);
+      }
+    }, 60_000);
+
+    it("loads none of the flag-on job-control graph while disabled", async () => {
+      guard();
+      const flagOff = await observeServer({
+        databaseUrl: legacyOwnerUrl,
+        distributedEnabled: false,
+        sentinelMode: "deny",
+      });
+      expect(flagOff.exited, flagOff.output).toBe(false);
+      for (const moduleName of [
+        "worker-control", "job-leasing", "job-control-metrics", "job-ready-scheduler", "job-outbox-worker",
+      ]) {
+        expect(flagOff.output).not.toContain(`JOB_CONTROL_MODULE_LOAD:${moduleName}`);
+      }
+    }, 60_000);
+
+    it("proves the module-load sentinel reaches every guarded module while enabled", async () => {
+      guard();
+      const flagOn = await observeServer({
+        databaseUrl: adminUrl,
+        distributedEnabled: true,
+        appDatabaseUrl: appUrl,
+        operatorDatabaseUrl: operatorUrl,
+        sentinelMode: "record",
+      });
+      expect(flagOn.exited, flagOn.output).toBe(false);
+      for (const moduleName of [
+        "worker-control", "job-leasing", "job-control-metrics", "job-ready-scheduler", "job-outbox-worker",
+      ]) {
+        expect(flagOn.output).toContain(`JOB_CONTROL_MODULE_LOAD:${moduleName}`);
       }
     }, 60_000);
   },

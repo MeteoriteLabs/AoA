@@ -2197,3 +2197,41 @@ test("runner contract source and both schemas contain no secret-bearing open esc
     assert.equal(evidenceText.toLowerCase().includes(forbidden.toLowerCase()), false, forbidden);
   }
 });
+
+test("sealed campaign command owns production capabilities and exposes only the four hermetic capability groups", { skip: !assetsPresent }, async () => {
+  // Mutation caught: retaining the always-fail launcher, or selecting injected facts through
+  // argv/env/manifest/dynamic module input, prevents a real campaign from being attestable.
+  const runner = await import("./run-e3-perf-01.mjs");
+  assert.equal(typeof runner.runCampaignCommand, "function",
+    "runCampaignCommand(argv, capabilities) must be the hermetic executable boundary");
+  const source = readFileSync(REQUIRED_ASSETS[0], "utf8");
+  assert.match(source, /createProductionCampaignCapabilities/);
+  assert.match(source, /runCampaignCommand\(process\.argv\.slice\(2\),\s*createProductionCampaignCapabilities\(\)\)/);
+  assert.doesNotMatch(source, /(?:--fake|test[-_]?mode|fake[-_]?module|capabilit(?:y|ies)[-_]?path)/iu);
+
+  const fakeMode = spawnSync(process.execPath, [
+    fileURLToPath(REQUIRED_ASSETS[0]), "--fake", "./attacker.mjs",
+  ], { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8", timeout: 30_000 });
+  assert.equal(fakeMode.error, undefined);
+  assert.notEqual(fakeMode.status, 0);
+  assert.doesNotMatch(`${fakeMode.stdout}${fakeMode.stderr}`, /attacker\.mjs|ERR_MODULE_NOT_FOUND/iu);
+});
+
+test("manifest and evidence schemas close executable provenance, immutable store, and failed-attempt facts", { skip: !assetsPresent }, () => {
+  const manifestText = readFileSync(REQUIRED_ASSETS[1], "utf8");
+  const evidenceText = readFileSync(REQUIRED_ASSETS[2], "utf8");
+  for (const field of [
+    "gitExecutable", "gitSha256", "nodeExecutable", "nodeSha256", "pnpmExecutable",
+    "pnpmSha256", "containerRuntimeExecutable", "containerRuntimeSha256",
+    "provenanceVerifierExecutable", "provenanceVerifierSha256", "policyDigest",
+    "trustRootDigest", "argv", "childEnvironment",
+  ]) {
+    assert.match(manifestText, new RegExp(`"${field}"`), `manifest omits ${field}`);
+  }
+  for (const field of [
+    "objectVersion", "checksumSha256", "objectLockMode", "retentionUntil",
+    "readbackSha256", "failureCode", "failedAttempt",
+  ]) {
+    assert.match(evidenceText, new RegExp(`"${field}"`), `evidence omits ${field}`);
+  }
+});
