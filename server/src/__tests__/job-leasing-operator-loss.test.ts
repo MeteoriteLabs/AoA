@@ -101,8 +101,20 @@ vi.mock("../db/tenant-context.js", () => ({
         },
         recheckPlatformTargetAuthority: async () => ({
           id: TARGET,
+          slug: "platform-target",
+          kind: "desktop",
+          trustClass: "trusted",
           status: "active",
+          organizationId: null,
+          ownerUserId: null,
+          scope: "platform",
+          targetAuthorityKey: "platform",
+          deviceGeneration: 1,
+          registeredProfile: null,
           registeredProfileHash: TARGET_PROFILE_HASH,
+          providerConstraintProfile: null,
+          capabilities: {},
+          lastSeenAt: NOW,
         }),
         touchWorkerLeaseProfile: async () => {
           authorityHarness.state.touches += 1;

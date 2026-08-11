@@ -61,7 +61,18 @@ describe("runInTenant (TEN-003) — wrapper contract (pure)", () => {
     ]);
     expect(Object.prototype.propertyIsEnumerable.call(received, "jobControl")).toBe(false);
     expect(typeof (received as { jobControl: { admission?: unknown } }).jobControl.admission).toBe("function");
-    for (const group of Object.values(received as Record<string, { insert?: unknown; getById?: unknown }>)) {
+    const repositoryGroups = received as Record<string, {
+      insert?: unknown;
+      getById?: unknown;
+      listForOrganization?: unknown;
+    }>;
+    const workersRepository = repositoryGroups.workers!;
+    expect(Object.keys(workersRepository).sort()).toEqual(["getById", "listForOrganization"]);
+    expect(workersRepository.insert).toBeUndefined();
+    expect(typeof workersRepository.getById).toBe("function");
+    expect(typeof workersRepository.listForOrganization).toBe("function");
+    for (const [name, group] of Object.entries(repositoryGroups)) {
+      if (name === "workers") continue;
       expect(typeof group.insert).toBe("function");
       expect(typeof group.getById).toBe("function");
     }
