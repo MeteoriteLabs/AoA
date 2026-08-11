@@ -2785,7 +2785,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
     "worker.devicePublicKey===auth.publicKey",
     "worker.profileHash===auth.profileHash",
     "worker.revokedAt===null",
-    "ACTIVE_WORKER_STATUSES.has(worker.status)",
+    'worker.status==="enrolled"||worker.status==="active"',
     "authority.ownerMembershipActive",
     "target.id===auth.targetId",
     'target.status==="active"',
@@ -2803,172 +2803,122 @@ function leaseStaticContextPollViolations(source: string): string[] {
       ? [...flattenAnd(current.left), ...flattenAnd(current.right)]
       : [current];
   };
-  const authorityReturnStatements = authorityCurrentDeclaration?.body?.statements.filter(
-    (statement): statement is ts.ReturnStatement => ts.isReturnStatement(statement) && Boolean(statement.expression),
-  ) ?? [];
-  const authorityReturnPredicates = authorityReturnStatements.length === 1
-    ? flattenAnd(authorityReturnStatements[0]!.expression!).map((expression) => compact(expression)).sort()
-    : [];
   const oldestHeartbeatDeclaration = authorityCurrentDeclaration?.body?.statements
     .filter(ts.isVariableStatement)
     .flatMap((statement) => [...statement.declarationList.declarations])
     .find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "oldestHeartbeat");
   const expectedOldestHeartbeat = 'target.scope==="platform"?input.platformPhysicalHeartbeatAt?.getTime()??null:!worker.lastSeenAt||!target.lastSeenAt?null:Math.min(worker.lastSeenAt.getTime(),target.lastSeenAt.getTime())';
-  const activeStatusDeclarations = file.statements.filter((statement): statement is ts.VariableStatement =>
-    ts.isVariableStatement(statement) && [...statement.declarationList.declarations].some((declaration) =>
-      ts.isIdentifier(declaration.name) && declaration.name.text === "ACTIVE_WORKER_STATUSES"));
-  const activeStatusBindingIdentifiers: ts.Identifier[] = [];
-  const setBindingIdentifiers: ts.Identifier[] = [];
-  const collectReviewedBindingName = (name: ts.BindingName | ts.Identifier | undefined): void => {
-    if (!name) return;
-    if (ts.isIdentifier(name)) {
-      if (name.text === "ACTIVE_WORKER_STATUSES") activeStatusBindingIdentifiers.push(name);
-      if (name.text === "Set") setBindingIdentifiers.push(name);
-      return;
-    }
-    for (const element of name.elements) {
-      if (!ts.isOmittedExpression(element)) collectReviewedBindingName(element.name);
-    }
-  };
-  const collectReviewedBindings = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) || ts.isParameter(node)) {
-      collectReviewedBindingName(node.name);
-    } else if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) ||
-        ts.isClassDeclaration(node) || ts.isClassExpression(node) ||
-        ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node) ||
-        ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node) ||
-        ts.isTypeParameterDeclaration(node)) {
-      collectReviewedBindingName(node.name && ts.isIdentifier(node.name) ? node.name : undefined);
-    } else if (ts.isImportClause(node)) {
-      collectReviewedBindingName(node.name);
-    } else if (ts.isNamespaceImport(node) || ts.isImportSpecifier(node) ||
-        ts.isImportEqualsDeclaration(node)) {
-      collectReviewedBindingName(node.name);
-    }
-    ts.forEachChild(node, collectReviewedBindings);
-  };
-  collectReviewedBindings(file);
-  const activeStatusIdentifiers: ts.Identifier[] = [];
-  const setIdentifiers: ts.Identifier[] = [];
-  const computedSetAccesses: ts.ElementAccessExpression[] = [];
-  const collectReviewedIdentifiers = (node: ts.Node): void => {
+  let sharedActiveStatusSymbol = false;
+  const auditSharedActiveStatusSymbol = (node: ts.Node): void => {
     if (ts.isIdentifier(node) && node.text === "ACTIVE_WORKER_STATUSES") {
-      activeStatusIdentifiers.push(node);
+      sharedActiveStatusSymbol = true;
     }
-    if (ts.isIdentifier(node) && node.text === "Set") setIdentifiers.push(node);
-    if (ts.isElementAccessExpression(node)) {
-      const argument = unwrap(node.argumentExpression);
-      if (argument && ts.isStringLiteral(argument) && argument.text === "Set") {
-        computedSetAccesses.push(node);
-      }
-    }
-    ts.forEachChild(node, collectReviewedIdentifiers);
+    ts.forEachChild(node, auditSharedActiveStatusSymbol);
   };
-  collectReviewedIdentifiers(file);
-  const activeStatusDeclaration = activeStatusDeclarations.length === 1
-    ? [...activeStatusDeclarations[0]!.declarationList.declarations].find((declaration) =>
-      ts.isIdentifier(declaration.name) && declaration.name.text === "ACTIVE_WORKER_STATUSES")
-    : null;
-  const canonicalActiveStatusBinding = activeStatusDeclaration && ts.isIdentifier(activeStatusDeclaration.name)
-    ? activeStatusDeclaration.name
-    : null;
-  const activeStatusInitializer = activeStatusDeclaration ? unwrap(activeStatusDeclaration.initializer) : null;
-  const directBareSetConstructorIdentifiers = new Set(setIdentifiers.filter((identifier) =>
-    ts.isNewExpression(identifier.parent) && identifier.parent.expression === identifier));
-  let hasImplementationMutation = false;
-  const accessedPropertyName = (expression: ts.Expression): string | null => {
+  auditSharedActiveStatusSymbol(file);
+  const exactClosedStatusPredicate = (expression: ts.Expression, requiredPath: string): boolean => {
     const current = unwrap(expression);
-    if (current && ts.isPropertyAccessExpression(current)) return current.name.text;
-    if (current && ts.isElementAccessExpression(current)) {
-      const argument = unwrap(current.argumentExpression);
-      return argument && ts.isStringLiteral(argument) ? argument.text : null;
-    }
-    return null;
+    if (!current || !ts.isBinaryExpression(current) ||
+        current.operatorToken.kind !== ts.SyntaxKind.BarBarToken) return false;
+    const exactStatus = (candidate: ts.Expression, status: "enrolled" | "active"): boolean => {
+      const comparison = unwrap(candidate);
+      if (!comparison || !ts.isBinaryExpression(comparison) ||
+          comparison.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) return false;
+      const right = unwrap(comparison.right);
+      return pathOf(comparison.left)?.join(".") === requiredPath &&
+        Boolean(right && ts.isStringLiteral(right) && right.text === status);
+    };
+    return exactStatus(current.left, "enrolled") && exactStatus(current.right, "active");
   };
-  const auditHasImplementationMutation = (node: ts.Node): void => {
-    if (ts.isBinaryExpression(node) &&
-        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-        accessedPropertyName(node.left) === "has") {
-      hasImplementationMutation = true;
-    }
-    if (ts.isDeleteExpression(node) && accessedPropertyName(node.expression) === "has") {
-      hasImplementationMutation = true;
-    }
-    ts.forEachChild(node, auditHasImplementationMutation);
+  const returnedConjuncts = (declaration: ts.FunctionDeclaration | null): ts.Expression[] => {
+    const returns = declaration?.body?.statements.filter((statement): statement is ts.ReturnStatement =>
+      ts.isReturnStatement(statement) && Boolean(statement.expression)) ?? [];
+    return returns.length === 1 ? flattenAnd(returns[0]!.expression!) : [];
   };
-  auditHasImplementationMutation(file);
-  // Bare `new Set(...)` is equivalent to `new globalThis.Set(...)` only while
-  // the whole module has no Set binding and no non-constructor Set access.
-  const exactUnshadowedSetConstructor = setBindingIdentifiers.length === 0 &&
-    computedSetAccesses.length === 0 && !hasImplementationMutation && setIdentifiers.length > 0 &&
-    setIdentifiers.every((identifier) => directBareSetConstructorIdentifiers.has(identifier));
-  const exactActiveStatuses = Boolean(activeStatusDeclarations.length === 1 &&
-    activeStatusBindingIdentifiers.length === 1 && canonicalActiveStatusBinding &&
-    activeStatusBindingIdentifiers[0] === canonicalActiveStatusBinding &&
-    (activeStatusDeclarations[0]!.declarationList.flags & ts.NodeFlags.Const) &&
-    exactUnshadowedSetConstructor && activeStatusInitializer && ts.isNewExpression(activeStatusInitializer) &&
-    ts.isIdentifier(activeStatusInitializer.expression) && activeStatusInitializer.expression.text === "Set" &&
-    directBareSetConstructorIdentifiers.has(activeStatusInitializer.expression) &&
-    activeStatusInitializer.arguments?.length === 1 &&
-    ts.isArrayLiteralExpression(unwrap(activeStatusInitializer.arguments[0])!) &&
-    (unwrap(activeStatusInitializer.arguments[0]) as ts.ArrayLiteralExpression).elements
-      .map((element) => ts.isStringLiteral(unwrap(element)!)
-        ? (unwrap(element) as ts.StringLiteral).text
-        : "<dynamic>")
-      .join(",") === "enrolled,active");
-  const activeStatusCallsIn = (declaration: ts.FunctionDeclaration | null): ts.CallExpression[] => {
-    const found: ts.CallExpression[] = [];
-    if (declaration?.body) {
-      const collect = (node: ts.Node): void => {
-      if (ts.isCallExpression(node) && callPath(node) === "ACTIVE_WORKER_STATUSES.has" &&
-          node.arguments.length === 1 && pathOf(node.arguments[0])?.join(".") === "worker.status") {
-          found.push(node);
-        }
-        ts.forEachChild(node, collect);
-      }
-      collect(declaration.body);
-    }
-    return found;
-  };
-  const pollActiveStatusCalls = activeStatusCallsIn(authorityCurrentDeclaration);
-  const ackActiveStatusCalls = activeStatusCallsIn(ackAuthorityCurrentDeclaration);
-  const directActiveStatusReadIdentifier = (call: ts.CallExpression | undefined): ts.Identifier | null => {
-    if (!call || !ts.isPropertyAccessExpression(call.expression) || call.expression.questionDotToken ||
-        call.expression.name.text !== "has" || !ts.isIdentifier(call.expression.expression) ||
-        call.expression.expression.text !== "ACTIVE_WORKER_STATUSES") return null;
-    return call.expression.expression;
-  };
-  let authorityCurrentImpure = false;
-  if (authorityCurrentDeclaration?.body) {
-    const auditPureAuthority = (node: ts.Node): void => {
+  const pollAuthorityConjuncts = returnedConjuncts(authorityCurrentDeclaration);
+  const ackAuthorityConjuncts = returnedConjuncts(ackAuthorityCurrentDeclaration);
+  const statusConjuncts = (conjuncts: ts.Expression[]): ts.Expression[] => conjuncts.filter((expression) => {
+    const text = compact(expression);
+    return text.includes("worker.status") || text.includes("ACTIVE_WORKER_STATUSES");
+  });
+  const pollStatusConjuncts = statusConjuncts(pollAuthorityConjuncts);
+  const ackStatusConjuncts = statusConjuncts(ackAuthorityConjuncts);
+  const exactPollInlineStatus = pollStatusConjuncts.length === 1 &&
+    exactClosedStatusPredicate(pollStatusConjuncts[0]!, "worker.status");
+  const exactAckInlineStatus = ackStatusConjuncts.length === 1 &&
+    exactClosedStatusPredicate(ackStatusConjuncts[0]!, "worker.status");
+  const nonStatusPredicates = (conjuncts: ts.Expression[]): string[] => conjuncts
+    .filter((expression) => !statusConjuncts(conjuncts).includes(expression))
+    .map((expression) => compact(expression))
+    .sort();
+  const requiredPollNonStatusPredicates = requiredAuthorityCurrentPredicates
+    .filter((predicate) => !predicate.includes("worker.status"))
+    .sort();
+  const requiredAckNonStatusPredicates = [
+    "input.workerId===auth.workerId",
+    "worker.id===auth.workerId",
+    "worker.executionTargetId===auth.targetId",
+    "worker.organizationId===auth.organizationId",
+    'worker.scope!=="platform"',
+    "worker.deviceGeneration===auth.targetGeneration",
+    "worker.deviceThumbprint===auth.deviceThumbprint",
+    "worker.devicePublicKey===auth.publicKey",
+    "worker.profileHash===auth.profileHash",
+    "worker.revokedAt===null",
+    "authority.ownerMembershipActive",
+    "target.id===auth.targetId",
+    'target.status==="active"',
+    "target.deviceGeneration===auth.targetGeneration",
+    "oldestHeartbeat!==null",
+    "input.databaseNow.getTime()-oldestHeartbeat<=input.maxHeartbeatAgeMs",
+  ].sort();
+  const helperIsImpure = (declaration: ts.FunctionDeclaration | null): boolean => {
+    let impure = false;
+    const audit = (node: ts.Node): void => {
       if (ts.isBinaryExpression(node) &&
           node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-          node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) authorityCurrentImpure = true;
+          node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) impure = true;
       if ((ts.isPrefixUnaryExpression(node) &&
             [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(node.operator)) ||
           ts.isPostfixUnaryExpression(node) || ts.isDeleteExpression(node) ||
           ts.isAwaitExpression(node) || ts.isYieldExpression(node) || ts.isNewExpression(node)) {
-        authorityCurrentImpure = true;
+        impure = true;
       }
       if (ts.isCallExpression(node) && callPath(node) !== "input.databaseNow.getTime" &&
           callPath(node) !== "worker.lastSeenAt.getTime" && callPath(node) !== "target.lastSeenAt.getTime" &&
           callPath(node) !== "input.platformPhysicalHeartbeatAt.getTime" && callPath(node) !== "Math.min" &&
           callPath(node) !== "ACTIVE_WORKER_STATUSES.has") {
-        authorityCurrentImpure = true;
+        impure = true;
       }
-      ts.forEachChild(node, auditPureAuthority);
+      ts.forEachChild(node, audit);
     };
-    auditPureAuthority(authorityCurrentDeclaration.body);
-  }
+    if (declaration?.body) audit(declaration.body);
+    return impure;
+  };
+  const oldestHeartbeatIn = (declaration: ts.FunctionDeclaration | null): ts.VariableDeclaration | undefined =>
+    declaration?.body?.statements.filter(ts.isVariableStatement)
+      .flatMap((statement) => [...statement.declarationList.declarations])
+      .find((candidate) => ts.isIdentifier(candidate.name) && candidate.name.text === "oldestHeartbeat");
+  const exactAckAuthorityHelper = Boolean(ackAuthorityCurrentDeclaration &&
+    ackAuthorityCurrentDeclaration.parameters.length === 1 &&
+    ts.isIdentifier(ackAuthorityCurrentDeclaration.parameters[0]!.name) &&
+    ackAuthorityCurrentDeclaration.parameters[0]!.name.text === "input" &&
+    !helperIsImpure(ackAuthorityCurrentDeclaration) &&
+    nonStatusPredicates(ackAuthorityConjuncts).join("|") === requiredAckNonStatusPredicates.join("|") &&
+    compact(oldestHeartbeatIn(ackAuthorityCurrentDeclaration)?.initializer) === expectedOldestHeartbeat &&
+    directCalls("ackAuthorityCurrent").length === 1);
   if (!authorityCurrentDeclaration || authorityCurrentDeclaration.parameters.length !== 1 ||
       !ts.isIdentifier(authorityCurrentDeclaration.parameters[0]!.name) ||
-      authorityCurrentDeclaration.parameters[0]!.name.text !== "input" || authorityCurrentImpure ||
-      !exactActiveStatuses ||
-      authorityReturnPredicates.join("|") !== [...requiredAuthorityCurrentPredicates].sort().join("|") ||
+      authorityCurrentDeclaration.parameters[0]!.name.text !== "input" ||
+      helperIsImpure(authorityCurrentDeclaration) ||
+      nonStatusPredicates(pollAuthorityConjuncts).join("|") !== requiredPollNonStatusPredicates.join("|") ||
       compact(oldestHeartbeatDeclaration?.initializer) !== expectedOldestHeartbeat ||
       directCalls("authorityCurrent").length !== 1) {
     violations.add("builder:trusted-non-platform-authority-current");
+  }
+  if (sharedActiveStatusSymbol || !exactPollInlineStatus || !exactAckInlineStatus ||
+      !exactAckAuthorityHelper) {
+    violations.add("builder:trusted-service-authority-guard");
   }
 
   const normalizedRequirementsDeclaration = topLevelCriticalFunction("normalizedRequirements");
@@ -3331,6 +3281,107 @@ function leaseStaticContextPollViolations(source: string): string[] {
           ts.isThrowStatement(commonAuthorityReject.thenStatement.statements[0]!)));
     })());
   if (!exactCommonAuthority) violations.add("builder:trusted-common-authority-current");
+  const ackInputName = ackMethod.parameters.length === 1 && ts.isIdentifier(ackMethod.parameters[0]!.name)
+    ? ackMethod.parameters[0]!.name.text
+    : null;
+  const ackTenantCalls = directCalls("runInTenant").filter((call) => within(call, ackMethod));
+  const ackTenantCall = ackTenantCalls.length === 1 ? ackTenantCalls[0]! : null;
+  const ackCallbackExpression = ackTenantCall?.arguments.length === 3
+    ? unwrap(ackTenantCall.arguments[2])
+    : null;
+  const ackCallback = ackCallbackExpression &&
+      (ts.isArrowFunction(ackCallbackExpression) || ts.isFunctionExpression(ackCallbackExpression)) &&
+      ts.isBlock(ackCallbackExpression.body)
+    ? ackCallbackExpression
+    : null;
+  const ackBody = ackCallback?.body && ts.isBlock(ackCallback.body) ? ackCallback.body : null;
+  const ackGateCalls = directCalls("ackAuthorityCurrent").filter((call) => within(call, ackMethod));
+  const ackGateCall = ackGateCalls.length === 1 ? ackGateCalls[0]! : null;
+  const ackGateInput = ackGateCall?.arguments.length === 1
+    ? closedObjectProperties(ackGateCall.arguments[0])
+    : null;
+  const ackAuthorityName = ackGateInput ? pathOf(ackGateInput.get("authority"))?.join(".") ?? null : null;
+  const ackGuardIf = ackGateCall && ackBody ? (() => {
+    let current: ts.Node = ackGateCall;
+    while (current.parent && current.parent !== ackBody) {
+      if (ts.isFunctionLike(current.parent)) return null;
+      if (ts.isIfStatement(current.parent) && within(ackGateCall, current.parent.expression)) {
+        return current.parent;
+      }
+      current = current.parent;
+    }
+    return null;
+  })() : null;
+  const flattenOrExpression = (expression: ts.Expression): ts.Expression[] => {
+    const current = unwrap(expression)!;
+    return ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.BarBarToken
+      ? [...flattenOrExpression(current.left), ...flattenOrExpression(current.right)]
+      : [current];
+  };
+  const exactAckReject = Boolean(ackGuardIf && ackBody && ackGateCall && ackAuthorityName &&
+    ackGuardIf.parent === ackBody && !ackGuardIf.elseStatement &&
+    (ts.isThrowStatement(ackGuardIf.thenStatement) ||
+      ts.isBlock(ackGuardIf.thenStatement) && ackGuardIf.thenStatement.statements.length === 1 &&
+      ts.isThrowStatement(ackGuardIf.thenStatement.statements[0]!)) && (() => {
+      const terms = flattenOrExpression(ackGuardIf.expression);
+      const missingAuthority = unwrap(terms[0]);
+      const staleAuthority = unwrap(terms[1]);
+      return terms.length === 2 && missingAuthority && ts.isPrefixUnaryExpression(missingAuthority) &&
+        missingAuthority.operator === ts.SyntaxKind.ExclamationToken &&
+        pathOf(missingAuthority.operand)?.join(".") === ackAuthorityName &&
+        staleAuthority && ts.isPrefixUnaryExpression(staleAuthority) &&
+        staleAuthority.operator === ts.SyntaxKind.ExclamationToken &&
+        unwrap(staleAuthority.operand) === ackGateCall;
+    })());
+  const protectedAckEffectNames = new Set([
+    "activateLeaseAck", "findOperationReceipt", "lockLeaseAckContext", "touchWorkerLeaseProfile",
+  ]);
+  const ackEffectCalls: ts.CallExpression[] = [];
+  let invalidAckEffectUse = false;
+  if (ackBody) {
+    const collectAckEffects = (node: ts.Node): void => {
+      if (ts.isPropertyAccessExpression(node) && protectedAckEffectNames.has(node.name.text)) {
+        if (ts.isCallExpression(node.parent) && node.parent.expression === node) ackEffectCalls.push(node.parent);
+        else invalidAckEffectUse = true;
+      }
+      if (ts.isElementAccessExpression(node)) {
+        const argument = unwrap(node.argumentExpression);
+        if (argument && ts.isStringLiteral(argument) && protectedAckEffectNames.has(argument.text)) {
+          invalidAckEffectUse = true;
+        }
+      }
+      ts.forEachChild(node, collectAckEffects);
+    };
+    collectAckEffects(ackBody);
+  }
+  const directAckStatement = (node: ts.Node): ts.Statement | null => {
+    if (!ackBody) return null;
+    let current: ts.Node = node;
+    while (current.parent && current.parent !== ackBody) {
+      if (ts.isFunctionLike(current.parent) && current.parent !== ackCallback) return null;
+      current = current.parent;
+    }
+    return current.parent === ackBody && ts.isStatement(current) ? current : null;
+  };
+  const exactAckEffectDominance = Boolean(ackGuardIf && ackEffectCalls.length > 0 &&
+    !invalidAckEffectUse && ackEffectCalls.every((call) => {
+      const statement = directAckStatement(call);
+      return Boolean(statement && statement.getStart(file) > ackGuardIf.getStart(file));
+    }));
+  const exactAckGateFlow = Boolean(ackInputName && serviceInputName && ackTenantCall && ackCallback && ackBody &&
+    ackTenantCall.arguments.length === 3 &&
+    pathOf(ackTenantCall.arguments[0])?.join(".") === `${serviceInputName}.appDb` &&
+    pathOf(ackTenantCall.arguments[1])?.join(".") === `${ackInputName}.auth.organizationId` &&
+    ackGateCall && ackGateInput && [...ackGateInput.keys()].sort().join(",") ===
+      "auth,authority,databaseNow,maxHeartbeatAgeMs,platformPhysicalHeartbeatAt,workerId" &&
+    pathOf(ackGateInput.get("auth"))?.join(".") === `${ackInputName}.auth` &&
+    ackAuthorityName === "authority" &&
+    pathOf(ackGateInput.get("workerId"))?.join(".") === "request.body.workerId" &&
+    pathOf(ackGateInput.get("databaseNow"))?.join(".") === "authorityNow" &&
+    pathOf(ackGateInput.get("maxHeartbeatAgeMs"))?.join(".") === "maxHeartbeatAgeMs" &&
+    pathOf(ackGateInput.get("platformPhysicalHeartbeatAt"))?.join(".") === "platformPhysicalHeartbeatAt" &&
+    exactAckReject && exactAckEffectDominance);
+  if (!exactAckGateFlow) violations.add("builder:trusted-service-authority-guard");
   if (guardCall && ts.isIdentifier(guardCall.expression)) {
     const helperName = guardCall.expression.text;
     const declarations: ts.VariableDeclaration[] = [];
@@ -3412,40 +3463,6 @@ function leaseStaticContextPollViolations(source: string): string[] {
       const platformNowName = databaseNowCalls.length === 1 && isAwaitedCall(databaseNowCalls[0]!)
         ? wrappedBindingName(databaseNowCalls[0])
         : null;
-      const physicalWorkerActiveStatusCalls = physicalName
-        ? operatorCalls.filter((call) =>
-            callPath(call) === "ACTIVE_WORKER_STATUSES.has" && call.arguments.length === 1 &&
-            pathOf(call.arguments[0])?.join(".") === `${physicalName}.worker.status`)
-        : [];
-      const pollActiveStatusRead = pollActiveStatusCalls.length === 1
-        ? directActiveStatusReadIdentifier(pollActiveStatusCalls[0])
-        : null;
-      const ackActiveStatusRead = ackActiveStatusCalls.length === 1
-        ? directActiveStatusReadIdentifier(ackActiveStatusCalls[0])
-        : null;
-      const physicalActiveStatusRead = physicalWorkerActiveStatusCalls.length === 1
-        ? directActiveStatusReadIdentifier(physicalWorkerActiveStatusCalls[0])
-        : null;
-      const pollAuthorityGateCalls = directCalls("authorityCurrent");
-      const ackAuthorityGateCalls = directCalls("ackAuthorityCurrent");
-      const exactLogicalGatePlacement = pollAuthorityGateCalls.length === 1 &&
-        ackAuthorityGateCalls.length === 1 && within(pollAuthorityGateCalls[0]!, pollMethod) &&
-        within(ackAuthorityGateCalls[0]!, ackMethod);
-      const activeStatusBindingSet = new Set<ts.Identifier>(activeStatusBindingIdentifiers);
-      const activeStatusUseIdentifiers = activeStatusIdentifiers.filter((identifier) =>
-        !activeStatusBindingSet.has(identifier));
-      const authorizedActiveStatusUses = new Set<ts.Identifier>([
-        pollActiveStatusRead,
-        ackActiveStatusRead,
-        physicalActiveStatusRead,
-      ].filter((identifier): identifier is ts.Identifier => Boolean(identifier)));
-      const exactActiveStatusClosedUses = Boolean(exactActiveStatuses && canonicalActiveStatusBinding &&
-        pollActiveStatusRead && ackActiveStatusRead && physicalActiveStatusRead && exactLogicalGatePlacement &&
-        authorizedActiveStatusUses.size === 3 && activeStatusIdentifiers.length === 4 &&
-        activeStatusUseIdentifiers.length === 3 &&
-        activeStatusIdentifiers.every((identifier) =>
-          identifier === canonicalActiveStatusBinding || authorizedActiveStatusUses.has(identifier)) &&
-        activeStatusUseIdentifiers.every((identifier) => authorizedActiveStatusUses.has(identifier)));
       const repositoryFactory = physicalCalls.length === 1 &&
           ts.isPropertyAccessExpression(physicalCalls[0]!.expression)
         ? unwrappedCall(physicalCalls[0]!.expression.expression)
@@ -3559,7 +3576,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
         `${physicalName}.worker.scope!=="platform"`,
         `${currentName}.scope!=="platform"`,
         `${physicalName}.target.status!=="active"`,
-        `!ACTIVE_WORKER_STATUSES.has(${physicalName}.worker.status)`,
+        `!(${physicalName}.worker.status==="enrolled"||${physicalName}.worker.status==="active")`,
         `${currentName}.status!=="active"`,
         `${physicalName}.worker.revokedAt!==null`,
         `${physicalName}.target.id!==${guardAuthName}.targetId`,
@@ -3620,7 +3637,6 @@ function leaseStaticContextPollViolations(source: string): string[] {
       ].filter((name): name is string => Boolean(name)));
       const guardAllowedCalls = new Set<ts.CallExpression>([
         physicalCalls[0], sharedCalls[0], recheckCalls[0], databaseNowCalls[0], repositoryFactory,
-        physicalWorkerActiveStatusCalls[0],
       ].filter((call): call is ts.CallExpression => Boolean(call)));
       const guardAllowedContainers = new Set<ts.Node>([
         recheckCalls[0]?.arguments[0], callbackReturns[0]?.expression, nonPlatformReturns[0]?.expression,
@@ -3723,7 +3739,6 @@ function leaseStaticContextPollViolations(source: string): string[] {
           !ts.isStringLiteral(unwrap(recheckInput.get("targetAuthorityKey"))!) ||
           (unwrap(recheckInput.get("targetAuthorityKey")) as ts.StringLiteral).text !== "platform" ||
           databaseNowCalls.length !== 1 || databaseNowCalls[0]!.arguments.length !== 0 ||
-          !exactActiveStatusClosedUses ||
           !exactPlatformChecks || !exactReturnedSnapshots || !orderedGuard || guardCriticalEscape) {
         violations.add("builder:trusted-service-authority-guard");
       }
@@ -5648,7 +5663,6 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       } from "@armyofagents/worker-protocol";
       import { runInTenant } from "../db/tenant-context.js";
       import { operatorJobLeasingRepository } from "@armyofagents/db";
-      const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);
       function minCapacity(left: any, right: any) {
         return {
           batchSlots: Math.min(left.batchSlots, right.batchSlots),
@@ -5757,7 +5771,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
           worker.devicePublicKey === auth.publicKey &&
           worker.profileHash === auth.profileHash &&
           worker.revokedAt === null &&
-          ACTIVE_WORKER_STATUSES.has(worker.status) &&
+          (worker.status === "enrolled" || worker.status === "active") &&
           authority.ownerMembershipActive &&
           target.id === auth.targetId &&
           target.status === "active" &&
@@ -5769,8 +5783,31 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
           input.databaseNow.getTime() - oldestHeartbeat <= input.maxHeartbeatAgeMs;
       }
       function ackAuthorityCurrent(input: any): boolean {
+        const { auth, authority } = input;
         const worker = input.authority.worker;
-        return ACTIVE_WORKER_STATUSES.has(worker.status);
+        const target = authority.target;
+        const oldestHeartbeat = target.scope === "platform"
+          ? input.platformPhysicalHeartbeatAt?.getTime() ?? null
+          : !worker.lastSeenAt || !target.lastSeenAt
+            ? null
+            : Math.min(worker.lastSeenAt.getTime(), target.lastSeenAt.getTime());
+        return input.workerId === auth.workerId &&
+          worker.id === auth.workerId &&
+          worker.executionTargetId === auth.targetId &&
+          worker.organizationId === auth.organizationId &&
+          worker.scope !== "platform" &&
+          worker.deviceGeneration === auth.targetGeneration &&
+          worker.deviceThumbprint === auth.deviceThumbprint &&
+          worker.devicePublicKey === auth.publicKey &&
+          worker.profileHash === auth.profileHash &&
+          worker.revokedAt === null &&
+          (worker.status === "enrolled" || worker.status === "active") &&
+          authority.ownerMembershipActive &&
+          target.id === auth.targetId &&
+          target.status === "active" &&
+          target.deviceGeneration === auth.targetGeneration &&
+          oldestHeartbeat !== null &&
+          input.databaseNow.getTime() - oldestHeartbeat <= input.maxHeartbeatAgeMs;
       }
       export function createJobLeasingService(input: {
         appDb: unknown;
@@ -5807,7 +5844,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
                 physical.worker.scope !== "platform" ||
                 current.scope !== "platform" ||
                 physical.target.status !== "active" ||
-                !ACTIVE_WORKER_STATUSES.has(physical.worker.status) ||
+                !(physical.worker.status === "enrolled" || physical.worker.status === "active") ||
                 current.status !== "active" ||
                 physical.worker.revokedAt !== null ||
                 physical.target.id !== guardAuth.targetId ||
@@ -6026,10 +6063,22 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
             throw new Error("internal_unavailable");
           },
           async ack(ackInput: any) {
-            if (!ackAuthorityCurrent({ authority: ackInput.authority })) {
-              throw new Error("target_revoked");
-            }
-            return { outcome: "acknowledged" };
+            const request = ackInput.request;
+            return runInTenant(input.appDb, ackInput.auth.organizationId, async (repos) => {
+              const authority = ackInput.authority;
+              const authorityNow = ackInput.databaseNow;
+              const platformPhysicalHeartbeatAt = ackInput.platformPhysicalHeartbeatAt;
+              if (!authority || !ackAuthorityCurrent({
+                auth: ackInput.auth,
+                authority,
+                workerId: request.body.workerId,
+                databaseNow: authorityNow,
+                maxHeartbeatAgeMs,
+                platformPhysicalHeartbeatAt,
+              })) throw new Error("target_revoked");
+              await repos.jobControl.activateLeaseAck({});
+              return { outcome: "acknowledged" };
+            });
           },
         };
       }
@@ -6043,7 +6092,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       ["physical-worker-platform-scope", 'physical.worker.scope !== "platform"'],
       ["current-target-platform-scope", 'current.scope !== "platform"'],
       ["physical-target-active", 'physical.target.status !== "active"'],
-      ["physical-worker-admitted-status", "!ACTIVE_WORKER_STATUSES.has(physical.worker.status)"],
+      ["physical-worker-admitted-status", '!(physical.worker.status === "enrolled" || physical.worker.status === "active")'],
       ["current-target-active", 'current.status !== "active"'],
       ["physical-worker-not-revoked", "physical.worker.revokedAt !== null"],
       ["physical-target-auth-id", "physical.target.id !== guardAuth.targetId"],
@@ -6071,6 +6120,31 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     for (const [name, fragment] of decision124Checks) {
       expect.soft(valid, `Decision #124 fixture must contain ${name}`).toContain(fragment);
     }
+    const logicalStatusPredicate = '(worker.status === "enrolled" || worker.status === "active")';
+    const physicalStatusPredicate =
+      '!(physical.worker.status === "enrolled" || physical.worker.status === "active")';
+    const replaceOccurrence = (source: string, fragment: string, occurrence: number, replacement: string): string => {
+      let index = -1;
+      let offset = 0;
+      for (let current = 0; current <= occurrence; current += 1) {
+        index = source.indexOf(fragment, offset);
+        if (index < 0) return source;
+        offset = index + fragment.length;
+      }
+      return source.slice(0, index) + replacement + source.slice(index + fragment.length);
+    };
+    const ackAuthorityCall = 'ackAuthorityCurrent({\n' +
+      '                auth: ackInput.auth,\n' +
+      '                authority,\n' +
+      '                workerId: request.body.workerId,\n' +
+      '                databaseNow: authorityNow,\n' +
+      '                maxHeartbeatAgeMs,\n' +
+      '                platformPhysicalHeartbeatAt,\n' +
+      '              })';
+    const ackReject = `if (!authority || !${ackAuthorityCall}) throw new Error("target_revoked");`;
+    expect.soft(valid).toContain(logicalStatusPredicate);
+    expect.soft(valid).toContain(physicalStatusPredicate);
+    expect.soft(valid).toContain(ackReject);
     const adversaries: Array<{ name: string; source: string; violation: string }> = [
       ...decision124Checks.map(([name, fragment]) => ({
         name: `decision-124-delete-${name}`,
@@ -6079,150 +6153,146 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       })),
       {
         name: "decision-124-narrow-physical-worker-to-active-only",
-        source: valid.replace(
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-          'const ACTIVE_WORKER_STATUSES = new Set(["active"]);',
-        ),
+        source: valid.replace(physicalStatusPredicate, 'physical.worker.status !== "active"'),
         violation: "builder:trusted-service-authority-guard",
       },
       {
         name: "decision-124-omit-physical-worker-status-membership",
-        source: valid.replace(
-          '                !ACTIVE_WORKER_STATUSES.has(physical.worker.status) ||\n',
-          "",
-        ),
+        source: valid.replace(`                ${physicalStatusPredicate} ||\n`, ""),
         violation: "builder:trusted-service-authority-guard",
       },
       {
         name: "decision-124-drop-poll-logical-worker-status-gate",
-        source: valid.replace(
-          '          ACTIVE_WORKER_STATUSES.has(worker.status) &&\n' +
-            '          authority.ownerMembershipActive',
-          '          true &&\n          authority.ownerMembershipActive',
-        ),
+        source: replaceOccurrence(valid, logicalStatusPredicate, 0, "true"),
         violation: "builder:trusted-service-authority-guard",
       },
       {
         name: "decision-124-drop-ack-logical-worker-status-gate",
-        source: valid.replace(
-          "return ACTIVE_WORKER_STATUSES.has(worker.status);",
-          "return true;",
-        ),
+        source: replaceOccurrence(valid, logicalStatusPredicate, 1, "true"),
         violation: "builder:trusted-service-authority-guard",
       },
-      {
-        name: "decision-124-shadow-global-set-with-local-class",
-        source: valid.replace(
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-          'class Set<T> {\n' +
-            '  constructor(_values?: Iterable<T>) {}\n' +
-            '  has(_value: T): boolean { return true; }\n' +
-            '  add(_value: T): this { return this; }\n' +
-            '}\n' +
-            'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-        ),
-        violation: "builder:trusted-service-authority-guard",
-      },
-      {
-        name: "decision-124-nested-set-class-shadow",
-        source: valid.replace(
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
-            '(() => { class Set<T> { has(_value: T): boolean { return true; } } void Set; })();',
-        ),
-        violation: "builder:trusted-service-authority-guard",
-      },
-      {
-        name: "decision-124-mutate-set-prototype-has",
-        source: valid.replace(
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-          'Set.prototype.has = (_value: unknown) => true;\n' +
-            'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-        ),
-        violation: "builder:trusted-service-authority-guard",
-      },
-      {
-        name: "decision-124-mutate-global-set-prototype-has",
-        source: valid.replace(
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-          'globalThis.Set.prototype.has = (_value: unknown) => true;\n' +
-            'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-        ),
-        violation: "builder:trusted-service-authority-guard",
-      },
-      {
-        name: "decision-124-mutate-active-statuses-direct-add",
-        source: valid.replace(
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
-            'ACTIVE_WORKER_STATUSES.add("draining");',
-        ),
-        violation: "builder:trusted-service-authority-guard",
-      },
-      {
-        name: "decision-124-mutate-active-statuses-through-alias",
-        source: valid.replace(
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
-            'const mutableActiveWorkerStatuses = ACTIVE_WORKER_STATUSES;\n' +
-            'mutableActiveWorkerStatuses.add("draining");',
-        ),
-        violation: "builder:trusted-service-authority-guard",
-      },
-      {
-        name: "decision-124-escape-active-statuses-as-argument",
-        source: valid.replace(
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
-            'function retainActiveWorkerStatuses(statuses: ReadonlySet<string>): ReadonlySet<string> { return statuses; }\n' +
-            'retainActiveWorkerStatuses(ACTIVE_WORKER_STATUSES);',
-        ),
-        violation: "builder:trusted-service-authority-guard",
-      },
-      {
-        name: "decision-124-mutate-active-statuses-element-access",
-        source: valid.replace(
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
-            'ACTIVE_WORKER_STATUSES["add"]("draining");',
-        ),
-        violation: "builder:trusted-service-authority-guard",
-      },
-      {
-        name: "decision-124-nested-function-shadow-active-statuses",
-        source: valid.replace(
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
-            '(() => { function ACTIVE_WORKER_STATUSES(): void {} void ACTIVE_WORKER_STATUSES; })();',
-        ),
-        violation: "builder:trusted-service-authority-guard",
-      },
-      {
-        name: "decision-124-nested-class-shadow-active-statuses",
-        source: valid.replace(
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
-            '(() => { class ACTIVE_WORKER_STATUSES {} void ACTIVE_WORKER_STATUSES; })();',
-        ),
-        violation: "builder:trusted-service-authority-guard",
-      },
-      {
-        name: "decision-124-nested-parameter-shadow-active-statuses",
-        source: valid.replace(
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);\n' +
-            '((ACTIVE_WORKER_STATUSES: Set<string>) => { void ACTIVE_WORKER_STATUSES; })(new Set());',
-        ),
-        violation: "builder:trusted-service-authority-guard",
-      },
-      ...["draining", "revoked", "unknown"].map((status) => ({
-        name: `decision-124-admit-physical-worker-${status}`,
-        source: valid.replace(
-          'const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);',
-          `const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active", "${status}"]);`,
+      ...[
+        ["poll", 0],
+        ["ack", 1],
+      ].map(([gate, occurrence]) => ({
+        name: `decision-124-widen-${gate}-worker-status-gate`,
+        source: replaceOccurrence(
+          valid,
+          logicalStatusPredicate,
+          occurrence as number,
+          '(worker.status === "enrolled" || worker.status === "active" || worker.status === "draining")',
         ),
         violation: "builder:trusted-service-authority-guard",
       })),
+      {
+        name: "decision-124-widen-physical-worker-status-gate",
+        source: valid.replace(
+          physicalStatusPredicate,
+          '!(physical.worker.status === "enrolled" || physical.worker.status === "active" || physical.worker.status === "draining")',
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-invert-poll-worker-status-gate",
+        source: replaceOccurrence(
+          valid,
+          logicalStatusPredicate,
+          0,
+          '(worker.status !== "enrolled" || worker.status === "active")',
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-invert-ack-worker-status-gate",
+        source: replaceOccurrence(
+          valid,
+          logicalStatusPredicate,
+          1,
+          '(worker.status === "enrolled" || worker.status !== "active")',
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-invert-physical-worker-status-gate",
+        source: valid.replace(physicalStatusPredicate, physicalStatusPredicate.slice(1)),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-launder-poll-worker-status-gate",
+        source: replaceOccurrence(valid, logicalStatusPredicate, 0, "pollStatusAllowed").replace(
+          "        return worker.id === auth.workerId &&",
+          `        const pollStatusAllowed = ${logicalStatusPredicate};\n        return worker.id === auth.workerId &&`,
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-launder-ack-status-expression-then-return-true",
+        source: replaceOccurrence(valid, logicalStatusPredicate, 1, "true").replace(
+          "        return input.workerId === auth.workerId &&",
+          `        ${logicalStatusPredicate};\n        return input.workerId === auth.workerId &&`,
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-launder-physical-worker-status-gate",
+        source: valid.replace(physicalStatusPredicate, "!physicalStatusAllowed").replace(
+          "            if (!physical ||",
+          `            const physicalStatusAllowed = ${physicalStatusPredicate.slice(1)};\n            if (!physical ||`,
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-dead-ack-authority-call",
+        source: valid.replace(
+          ackReject,
+          `void ${ackAuthorityCall};\n              if (!authority) throw new Error("target_revoked");`,
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-inverted-ack-authority-reject",
+        source: valid.replace(ackReject, ackReject.replace("!ackAuthorityCurrent", "ackAuthorityCurrent")),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-constant-ack-authority-reject",
+        source: valid.replace(ackReject, ackReject.replace(")) throw", ") || true) throw")),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-conditional-ack-authority-reject",
+        source: valid.replace(ackReject, `if (ackInput.enforceAuthority) { ${ackReject} }`),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-caught-ack-authority-reject",
+        source: valid.replace(ackReject, `try { ${ackReject} } catch {}`),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-promise-wrapped-ack-authority-call",
+        source: valid.replace(
+          ackReject,
+          `await Promise.all([${ackAuthorityCall}]);\n              if (!authority) throw new Error("target_revoked");`,
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-aliased-ack-authority-result",
+        source: valid.replace(
+          ackReject,
+          `const ackCurrent = ${ackAuthorityCall};\n              if (!authority || !ackCurrent) throw new Error("target_revoked");`,
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
+      {
+        name: "decision-124-ack-effect-before-authority-reject",
+        source: valid.replace(
+          ackReject,
+          `await repos.jobControl.findOperationReceipt({});\n              ${ackReject}`,
+        ),
+        violation: "builder:trusted-service-authority-guard",
+      },
       {
         name: "fake-builder-import",
         source: valid.replace(
