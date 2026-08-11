@@ -2216,7 +2216,14 @@ test("sealed campaign command owns production capabilities and exposes only the 
   assert.equal(outcome.value?.disposition, "pass");
   assert.equal(outcome.value?.archiveSha256, fixture.state.archiveSha256);
   assert.equal(outcome.value?.objectVersion, "version-a1");
-  assert.deepEqual(fixture.state.storeTrace, ["put", "head", "get", "retention"]);
+  assert.deepEqual(fixture.state.storeTrace.map(({ operation }) => operation), ["put", "head", "get", "retention"]);
+  const uploadedVersion = {
+    objectUri: fixture.state.objectUri,
+    versionId: "version-a1",
+  };
+  assert.deepEqual(fixture.state.storeTrace.slice(1).map(({ input }) => input), [
+    uploadedVersion, uploadedVersion, uploadedVersion,
+  ], "readback and retention must remain pinned to the uploaded immutable version");
   assert.equal(fixture.state.localRetains, 1, "the exact local attempt remains after immutable upload");
   assert.deepEqual(fixture.state.exclusiveWrites.map((entry) => entry.path), [fixture.paths.qa]);
   assert.ok(fixture.state.processRuns.some((entry) => entry.executable === fixture.paths.git));
@@ -2265,13 +2272,38 @@ test("sealed campaign command fails closed across bootstrap, provenance, child, 
   assert.equal(typeof runner.runCampaignCommand, "function");
   if (typeof runner.runCampaignCommand !== "function") return;
 
-  const cases = [
-    ["relative_node", "bootstrap_executable_path", (fixture) => fixture.rewriteManifest((manifest) => {
-      manifest.nodeExecutable = "node";
+  const executablePins = [
+    ["git", "gitExecutable", "gitSha256", "git"],
+    ["node", "nodeExecutable", "nodeSha256", "node"],
+    ["pnpm", "pnpmExecutable", "pnpmSha256", "pnpm"],
+    ["container", "containerRuntimeExecutable", "containerRuntimeSha256", "container"],
+    ["provenance", "provenanceVerifierExecutable", "provenanceVerifierSha256", "provenance"],
+  ];
+  const executableCases = executablePins.flatMap(([name, pathField, digestField, pathKey]) => [
+    [`${name}_relative`, "bootstrap_executable_path", (fixture) => fixture.rewriteManifest((manifest) => {
+      manifest[pathField] = `./${name}`;
     })],
-    ["node_bytes", "bootstrap_executable_digest", (fixture) => {
-      fixture.state.files.set(fixture.paths.node, Buffer.from("substituted-node"));
+    [`${name}_path_lookup`, "bootstrap_executable_path", (fixture) => fixture.rewriteManifest((manifest) => {
+      manifest[pathField] = name;
+    })],
+    [`${name}_manifest_digest`, "bootstrap_executable_digest", (fixture) => fixture.rewriteManifest((manifest) => {
+      manifest[digestField] = "0".repeat(64);
+    })],
+    [`${name}_bytes`, "bootstrap_executable_digest", (fixture) => {
+      fixture.state.files.set(fixture.paths[pathKey], Buffer.from(`substituted-${name}`));
     }],
+  ]);
+  const cases = [
+    ...executableCases,
+    ["runner_relative", "bootstrap_runner_path", (fixture) => fixture.rewriteManifest((manifest) => {
+      manifest.loadRunnerPath = "./job-leasing-load.integration.test.ts";
+    })],
+    ["runner_path_lookup", "bootstrap_runner_path", (fixture) => fixture.rewriteManifest((manifest) => {
+      manifest.loadRunnerPath = "job-leasing-load.integration.test.ts";
+    })],
+    ["runner_manifest_digest", "bootstrap_runner_digest", (fixture) => fixture.rewriteManifest((manifest) => {
+      manifest.loadRunnerSha256 = "0".repeat(64);
+    })],
     ["runner_bytes", "bootstrap_runner_digest", (fixture) => {
       fixture.state.files.set(fixture.paths.loadRunner, Buffer.from("substituted-runner"));
     }],
@@ -2292,6 +2324,7 @@ test("sealed campaign command fails closed across bootstrap, provenance, child, 
       fixture.state.childStdout = `${JSON.stringify({ token: "E3_SECRET_CANARY" })}\n`;
     }],
     ["archive_mutation", "campaign_archive_readback", (fixture) => { fixture.state.mutateReadback = true; }],
+    ["immutable_upload_failure", "campaign_store_upload", (fixture) => { fixture.state.putFails = true; }],
     ["checksum", "campaign_store_checksum", (fixture) => { fixture.state.wrongChecksum = true; }],
     ["version", "campaign_store_version", (fixture) => { fixture.state.missingVersion = true; }],
     ["retention_absent", "campaign_store_retention", (fixture) => { fixture.state.retention = null; }],
@@ -2331,6 +2364,227 @@ test("sealed campaign command fails closed across bootstrap, provenance, child, 
     assert.equal(outcome.error?.code ?? outcome.value?.failureCode, "bootstrap_parent_environment", key);
     assert.equal(fixture.state.processRuns.length, 0, `${key} must fail before Git, verifier, or load child`);
   }
+});
+
+test("the formal PowerShell entry validates absolute pinned bytes before the real JavaScript entry", {
+  skip: process.platform !== "win32" || !assetsPresent,
+}, async () => {
+  // Mutation caught: moving the trust root into JavaScript, consulting PATH, or accepting an
+  // ambient preload/credential/proxy lets attacker code run before the campaign can fail closed.
+  const powershell = join(process.env.SystemRoot ?? "C:\\Windows",
+    "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  assert.equal(existsSync(powershell), true, "the exact Windows RED lane requires Windows PowerShell");
+  const root = await mkdtemp(join(tmpdir(), "e3-perf-01-formal-entry-"));
+  const runnerPath = fileURLToPath(REQUIRED_ASSETS[0]);
+  const checkoutPath = fileURLToPath(new URL("..", import.meta.url));
+  const nodeBytes = await readFile(process.execPath);
+  const runnerBytes = await readFile(runnerPath);
+  const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  let caseNumber = 0;
+
+  const runEntry = async ({ mutateBootstrap, mutateFiles, environment = {} } = {}) => {
+    const caseRoot = join(root, `case-${caseNumber += 1}`);
+    const outputDirectory = join(caseRoot, "output");
+    const tempDirectory = join(caseRoot, "temp");
+    const manifestPath = join(caseRoot, "manifest.json");
+    const databaseUrlFile = join(caseRoot, "database-url");
+    const bootstrapPath = join(caseRoot, "bootstrap.json");
+    const scriptPath = join(caseRoot, "bootstrap.ps1");
+    const copiedRunner = join(caseRoot, "run-e3-perf-01.mjs");
+    const copiedNode = join(caseRoot, "node.exe");
+    const preloadMarker = join(caseRoot, "preload-marker.txt");
+    const preloadPath = join(caseRoot, "preload.cjs");
+    await mkdir(outputDirectory, { recursive: true });
+    await mkdir(tempDirectory, { recursive: true });
+    await writeFile(manifestPath, "{}\n", "utf8");
+    await writeFile(databaseUrlFile, "postgres://test-only.invalid/aoa\n", "utf8");
+    await writeFile(copiedRunner, runnerBytes);
+    await writeFile(copiedNode, nodeBytes);
+    await writeFile(preloadPath,
+      `require("node:fs").writeFileSync(${JSON.stringify(preloadMarker)}, "loaded")\n`, "utf8");
+    const bootstrap = {
+      schemaVersion: 1,
+      checkoutPath,
+      runnerScriptPath: runnerPath,
+      runnerScriptSha256: sha256(runnerBytes),
+      manifestPath,
+      manifestSha256: sha256(await readFile(manifestPath)),
+      outputDirectory,
+      nodeExecutable: process.execPath,
+      nodeSha256: sha256(nodeBytes),
+      parentEnvironment: {
+        LANG: "C", LC_ALL: "C", TZ: "UTC", TMPDIR: tempDirectory,
+        AOA_E3_PERF_DATABASE_URL_FILE: databaseUrlFile,
+      },
+    };
+    mutateBootstrap?.(bootstrap, { copiedNode, copiedRunner, manifestPath });
+    await writeFile(bootstrapPath, JSON.stringify(bootstrap), "utf8");
+    await mutateFiles?.({ copiedNode, copiedRunner, manifestPath, bootstrapPath });
+    const quote = (value) => value.replaceAll("'", "''");
+    const script = String.raw`
+$ErrorActionPreference = 'Stop'
+$bootstrapPath = '${quote(bootstrapPath)}'
+$bootstrap = Get-Content -Raw -LiteralPath $bootstrapPath | ConvertFrom-Json
+if ($bootstrap.schemaVersion -ne 1) { throw 'invalid E3-PERF-01 bootstrap schema' }
+$allowedBootstrapKeys = @('schemaVersion','checkoutPath','runnerScriptPath','runnerScriptSha256','manifestPath','manifestSha256','outputDirectory','nodeExecutable','nodeSha256','parentEnvironment')
+$actualBootstrapKeys = @($bootstrap.PSObject.Properties.Name | Sort-Object) -join ','
+$expectedBootstrapKeys = @($allowedBootstrapKeys | Sort-Object) -join ','
+if ($actualBootstrapKeys -ne $expectedBootstrapKeys) { throw 'invalid E3-PERF-01 bootstrap fields' }
+$safeEnvironmentKeys = @('LANG','LC_ALL','TZ','TMPDIR','AOA_E3_PERF_DATABASE_URL_FILE')
+$actualEnvironmentKeys = @($bootstrap.parentEnvironment.PSObject.Properties.Name | Sort-Object) -join ','
+$expectedEnvironmentKeys = @($safeEnvironmentKeys | Sort-Object) -join ','
+if ($actualEnvironmentKeys -ne $expectedEnvironmentKeys) { throw 'invalid E3-PERF-01 parent environment' }
+if ($bootstrap.parentEnvironment.LANG -ne 'C' -or $bootstrap.parentEnvironment.LC_ALL -ne 'C' -or $bootstrap.parentEnvironment.TZ -ne 'UTC') { throw 'invalid E3-PERF-01 locale environment' }
+$forbiddenExact = @('PATH','NODE_OPTIONS','NODE_PATH','NODE_EXTRA_CA_CERTS','AWS_CONFIG_FILE','AWS_SHARED_CREDENTIALS_FILE','AWS_PROFILE','AWS_CA_BUNDLE','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','AWS_SESSION_TOKEN','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','SSL_CERT_FILE','SSL_CERT_DIR','GIT_SSL_CAINFO')
+$forbiddenPresent = @(Get-ChildItem Env: | Where-Object { $_.Name -in $forbiddenExact -or $_.Name -like 'GIT_*' -or $_.Name -like 'AWS_ENDPOINT_URL*' })
+if ($forbiddenPresent.Count -ne 0) { throw 'forbidden E3-PERF-01 parent environment' }
+function Test-FullyQualified([string]$path) {
+  $modern = [IO.Path].GetMethods() | Where-Object { $_.Name -eq 'IsPathFullyQualified' } | Select-Object -First 1
+  if ($null -ne $modern) { return [IO.Path]::IsPathFullyQualified($path) }
+  return [IO.Path]::IsPathRooted($path) -and ([IO.Path]::GetFullPath($path) -ceq $path)
+}
+foreach ($path in @($bootstrap.checkoutPath,$bootstrap.runnerScriptPath,$bootstrap.manifestPath,$bootstrap.outputDirectory,$bootstrap.nodeExecutable,$bootstrap.parentEnvironment.TMPDIR,$bootstrap.parentEnvironment.AOA_E3_PERF_DATABASE_URL_FILE)) { if (-not (Test-FullyQualified $path)) { throw 'E3-PERF-01 requires absolute paths' } }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $bootstrap.nodeExecutable).Hash.ToLowerInvariant() -ne $bootstrap.nodeSha256) { throw 'E3-PERF-01 Node digest mismatch' }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $bootstrap.runnerScriptPath).Hash.ToLowerInvariant() -ne $bootstrap.runnerScriptSha256) { throw 'E3-PERF-01 runner digest mismatch' }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $bootstrap.manifestPath).Hash.ToLowerInvariant() -ne $bootstrap.manifestSha256) { throw 'E3-PERF-01 manifest digest mismatch' }
+$windowsSystemRoot = $env:SystemRoot
+Get-ChildItem Env: | Remove-Item
+foreach ($property in $bootstrap.parentEnvironment.PSObject.Properties) { Set-Item -LiteralPath ("Env:{0}" -f $property.Name) -Value ([string]$property.Value) }
+$postClearKeys = @((Get-ChildItem Env:).Name | Sort-Object) -join ','
+if ($postClearKeys -ne (@($safeEnvironmentKeys | Sort-Object) -join ',')) { throw 'E3-PERF-01 environment clear failed' }
+Set-Location -LiteralPath $bootstrap.checkoutPath
+# Node on the Windows RED host needs SystemRoot only to initialize its native CSPRNG. The
+# production pinned Linux gate does not take this compatibility branch; the hermetic command
+# test separately proves that the campaign child receives exactly the five reviewed values.
+if ($null -ne $windowsSystemRoot) { Set-Item -LiteralPath Env:SystemRoot -Value $windowsSystemRoot }
+& $bootstrap.nodeExecutable $bootstrap.runnerScriptPath --manifest $bootstrap.manifestPath --output $bootstrap.outputDirectory
+exit $LASTEXITCODE
+`;
+    await writeFile(scriptPath, script, "utf8");
+    const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+    // Windows PowerShell reconstructs a registry PATH when the process environment omits it;
+    // remove that host-added value before entering the verbatim protected-image gate.
+    const powerShellArgs = Object.hasOwn(environment, "PATH")
+      ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", scriptPath]
+      : ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+        `Remove-Item Env:PATH -ErrorAction SilentlyContinue; & '${quote(scriptPath)}'`];
+    const result = spawnSync(powershell, powerShellArgs, {
+      cwd: caseRoot,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        SystemRoot: systemRoot, WINDIR: systemRoot,
+        TEMP: process.env.TEMP ?? tempDirectory, TMP: process.env.TMP ?? tempDirectory,
+        ...environment,
+      },
+    });
+    return { result, preloadMarker, preloadPath };
+  };
+
+  try {
+    const valid = await runEntry();
+    assert.equal(valid.result.error, undefined);
+    assert.notEqual(valid.result.status, 0, "the tiny invalid manifest must stop before sampling");
+    assert.match(valid.result.stdout, /"kind":"e3_perf_01_cli_failure"/u,
+      `a valid outer pin must reach the real manifest validator: ${valid.result.stderr}`);
+
+    const pathAndDigestCases = [
+      ["relative-node", (bootstrap) => { bootstrap.nodeExecutable = ".\\node.exe"; }],
+      ["PATH-node", (bootstrap) => { bootstrap.nodeExecutable = "node"; }],
+      ["wrong-node-digest", (bootstrap) => { bootstrap.nodeSha256 = "0".repeat(64); }],
+      ["relative-runner", (bootstrap) => { bootstrap.runnerScriptPath = ".\\run-e3-perf-01.mjs"; }],
+      ["PATH-runner", (bootstrap) => { bootstrap.runnerScriptPath = "run-e3-perf-01.mjs"; }],
+      ["wrong-runner-digest", (bootstrap) => { bootstrap.runnerScriptSha256 = "0".repeat(64); }],
+      ["relative-manifest", (bootstrap) => { bootstrap.manifestPath = ".\\manifest.json"; }],
+      ["PATH-manifest", (bootstrap) => { bootstrap.manifestPath = "manifest.json"; }],
+      ["wrong-manifest-digest", (bootstrap) => { bootstrap.manifestSha256 = "0".repeat(64); }],
+      ["modified-bootstrap", (bootstrap) => { bootstrap.unreviewed = true; }],
+      ["modified-node-bytes", (bootstrap, paths) => {
+        bootstrap.nodeExecutable = paths.copiedNode;
+      }, async ({ copiedNode }) => { await writeFile(copiedNode, "substituted-node", "utf8"); }],
+      ["modified-runner-bytes", (bootstrap, paths) => {
+        bootstrap.runnerScriptPath = paths.copiedRunner;
+      }, async ({ copiedRunner }) => { await writeFile(copiedRunner, "substituted-runner", "utf8"); }],
+      ["modified-manifest-bytes", undefined,
+        async ({ manifestPath }) => { await writeFile(manifestPath, "{\"changed\":true}\n", "utf8"); }],
+    ];
+    for (const [name, mutateBootstrap, mutateFiles] of pathAndDigestCases) {
+      const { result } = await runEntry({ mutateBootstrap, mutateFiles });
+      assert.equal(result.error, undefined, name);
+      assert.notEqual(result.status, 0, name);
+      assert.doesNotMatch(result.stdout, /"kind":"e3_perf_01_cli_/u,
+        `${name} must fail before the JavaScript entry loads`);
+    }
+
+    const forbiddenParentEnvironment = [
+      "NODE_OPTIONS", "NODE_PATH", "PATH", "GIT_CONFIG", "GIT_CONFIG_GLOBAL",
+      "GIT_CONFIG_SYSTEM", "GIT_SSH_COMMAND", "GIT_SSL_CAINFO", "AWS_CONFIG_FILE",
+      "AWS_SHARED_CREDENTIALS_FILE", "AWS_PROFILE", "AWS_CA_BUNDLE", "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3",
+      "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+      "NODE_EXTRA_CA_CERTS",
+    ];
+    for (const key of forbiddenParentEnvironment) {
+      const environment = { [key]: "attacker-value" };
+      let preloadMarker;
+      if (key === "NODE_OPTIONS") {
+        const fixture = await runEntry();
+        environment[key] = `--require=${fixture.preloadPath}`;
+        ({ preloadMarker } = fixture);
+      }
+      const executed = await runEntry({ environment });
+      assert.equal(executed.result.error, undefined, key);
+      assert.notEqual(executed.result.status, 0, key);
+      assert.doesNotMatch(executed.result.stdout, /"kind":"e3_perf_01_cli_/u,
+        `${key} must fail before the JavaScript entry loads`);
+      if (preloadMarker) assert.equal(existsSync(preloadMarker), false, "NODE_OPTIONS preload ran");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("safe pre/post-sample failures retain exact-version immutable evidence and store loss retains local bytes", {
+  skip: !assetsPresent,
+}, async () => {
+  // Mutation caught: returning only an error code can discard the sole forensic artifact or
+  // accidentally turn failed-attempt bytes into QA/handoff evidence.
+  const runner = await import("./run-e3-perf-01.mjs");
+  assert.equal(typeof runner.runCampaignCommand, "function");
+  if (typeof runner.runCampaignCommand !== "function") return;
+  for (const [name, expectedCode, mutate] of [
+    ["safe-pre-sample", "campaign_git_dirty", (fixture) => { fixture.state.gitDirty = true; }],
+    ["safe-post-sample", "campaign_child_exit", (fixture) => { fixture.state.childCode = 23; }],
+    ["failure-retention-tamper", "campaign_store_retention", (fixture) => {
+      fixture.state.gitDirty = true;
+      fixture.state.retention = { mode: "GOVERNANCE", retainUntil: "2027-02-08T00:00:00.000Z" };
+    }],
+  ]) {
+    const fixture = sealedCampaignCommandFixture();
+    mutate(fixture);
+    const outcome = await captureCommandOutcome(() => runner.runCampaignCommand([
+      "--manifest", fixture.paths.manifest, "--output", fixture.paths.output,
+    ], fixture.capabilities));
+    assert.equal(outcome.error?.code ?? outcome.value?.failureCode, expectedCode, name);
+    assert.deepEqual(fixture.state.storeTrace.map(({ operation }) => operation),
+      ["put", "head", "get", "retention"], name);
+    assert.deepEqual(fixture.state.storeTrace.slice(1).map(({ input }) => input), Array(3).fill({
+      objectUri: fixture.state.objectUri, versionId: "version-a1",
+    }), `${name} failure readback must pin the created version`);
+    assert.equal(fixture.state.localRetains, 1, name);
+    assert.equal(fixture.state.exclusiveWrites.some(({ path }) => path === fixture.paths.qa), false, name);
+  }
+
+  const storeLoss = sealedCampaignCommandFixture();
+  storeLoss.state.childCode = 23;
+  storeLoss.state.putFails = true;
+  const lost = await captureCommandOutcome(() => runner.runCampaignCommand([
+    "--manifest", storeLoss.paths.manifest, "--output", storeLoss.paths.output,
+  ], storeLoss.capabilities));
+  assert.equal(lost.error?.code ?? lost.value?.failureCode, "campaign_store_upload");
+  assert.deepEqual(storeLoss.state.storeTrace.map(({ operation }) => operation), ["put"]);
+  assert.equal(storeLoss.state.localRetains, 1);
+  assert.equal(storeLoss.state.exclusiveWrites.some(({ path }) => path === storeLoss.paths.qa), false);
 });
 
 async function captureCommandOutcome(run) {
@@ -2407,10 +2661,13 @@ function sealedCampaignCommandFixture() {
     provenanceValid: true,
     parentEnvironment: {},
     childStdout: loadEvidenceRecordsFixture().map((row) => JSON.stringify(row)).join("\n"),
+    childCode: 0,
     archiveBytes: Buffer.from("closed-e3-perf-01-archive"),
     archiveSha256: "",
+    objectUri: "s3://aoa-e3-perf/e3-perf-01/a1/archive",
     storedBytes: null,
     wrongChecksum: false,
+    putFails: false,
     missingVersion: false,
     mutateReadback: false,
     backendLost: false,
@@ -2445,7 +2702,7 @@ function sealedCampaignCommandFixture() {
         return { code: state.provenanceValid ? 0 : 1, stdout: state.provenanceValid ? JSON.stringify({ verified: true }) : "", stderr: "" };
       }
       if (input.executable === paths.node && input.argv[0] === paths.loadRunner) {
-        return { code: 0, stdout: state.childStdout, stderr: "" };
+        return { code: state.childCode, stdout: state.childStdout, stderr: "" };
       }
       if (input.executable === paths.container || input.executable === paths.pnpm) {
         return { code: 0, stdout: "", stderr: "" };
@@ -2476,25 +2733,26 @@ function sealedCampaignCommandFixture() {
   });
   const storeCapability = Object.freeze({
     async putObject(input) {
-      state.storeTrace.push("put");
+      state.storeTrace.push({ operation: "put", input: structuredClone({ ...input, bytes: undefined }) });
+      if (state.putFails) throw Object.assign(new Error("store unavailable"), { code: "BACKEND_LOST" });
       state.storedBytes = Buffer.from(input.bytes);
       return {
         versionId: state.missingVersion ? "" : "version-a1",
         checksumSha256: state.wrongChecksum ? "0".repeat(64) : createHash("sha256").update(input.bytes).digest("hex"),
       };
     },
-    async headObject() {
-      state.storeTrace.push("head");
+    async headObject(input) {
+      state.storeTrace.push({ operation: "head", input: structuredClone(input) });
       if (state.backendLost) throw Object.assign(new Error("backend unavailable"), { code: "BACKEND_LOST" });
       return { versionId: "version-a1", byteLength: state.storedBytes?.length ?? 0 };
     },
-    async getObject() {
-      state.storeTrace.push("get");
+    async getObject(input) {
+      state.storeTrace.push({ operation: "get", input: structuredClone(input) });
       if (state.backendLost) throw Object.assign(new Error("backend unavailable"), { code: "BACKEND_LOST" });
       return state.mutateReadback ? Buffer.from("mutated-readback") : Buffer.from(state.storedBytes ?? []);
     },
-    async getObjectRetention() {
-      state.storeTrace.push("retention");
+    async getObjectRetention(input) {
+      state.storeTrace.push({ operation: "retention", input: structuredClone(input) });
       return state.retention && { ...state.retention };
     },
   });

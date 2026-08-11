@@ -26,7 +26,15 @@ test("independent Security handoff verifier is an executable sealed command", as
   assert.equal(outcome.error, undefined, "the distinct Security command must execute end to end");
   assert.equal(outcome.value?.disposition, "pass");
   assert.equal(outcome.value?.objectVersion, "version-a1");
-  assert.deepEqual(fixture.state.storeTrace, ["head", "get", "retention"]);
+  const exactVersionRefetch = {
+    objectUri: fixture.state.qa.objectUri,
+    versionId: fixture.state.qa.objectVersion,
+  };
+  assert.deepEqual(fixture.state.storeTrace, [
+    { operation: "head", input: exactVersionRefetch },
+    { operation: "get", input: exactVersionRefetch },
+    { operation: "retention", input: exactVersionRefetch },
+  ], "head, get, and retention must all address the exact QA-pinned object version");
   assert.deepEqual(fixture.state.writes.map((entry) => entry.path), [fixture.paths.handoff]);
   const handoff = JSON.parse(fixture.state.writes[0].bytes.toString("utf8"));
   assert.equal(handoff.securityVerifierSha256, fixture.state.verifierSha256);
@@ -212,8 +220,8 @@ function securityVerifierFixture() {
       },
     }),
     store: Object.freeze({
-      async headObject() {
-        state.storeTrace.push("head");
+      async headObject(input) {
+        state.storeTrace.push({ operation: "head", input: structuredClone(input) });
         if (state.backendLost) throw Object.assign(new Error("backend unavailable"), { code: "BACKEND_LOST" });
         return {
           versionId: state.headVersion,
@@ -221,14 +229,14 @@ function securityVerifierFixture() {
           byteLength: state.archiveBytes.length,
         };
       },
-      async getObject() {
-        state.storeTrace.push("get");
+      async getObject(input) {
+        state.storeTrace.push({ operation: "get", input: structuredClone(input) });
         if (state.backendLost) throw Object.assign(new Error("backend unavailable"), { code: "BACKEND_LOST" });
         if (state.archiveCanary) return Buffer.from("E3_SECRET_CANARY");
         return state.mutateArchive ? Buffer.from("mutated-archive") : Buffer.from(state.archiveBytes);
       },
-      async getObjectRetention() {
-        state.storeTrace.push("retention");
+      async getObjectRetention(input) {
+        state.storeTrace.push({ operation: "retention", input: structuredClone(input) });
         return state.retention && { ...state.retention };
       },
     }),

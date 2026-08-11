@@ -16,8 +16,6 @@ import {
 } from "../middleware/worker-operation-proof.js";
 import { buildDeviceProofCanonicalInput } from "../services/worker-device-proof.js";
 import { workerOperationProtocolErrorV1 } from "../services/worker-protocol-http.js";
-import { createJobControlRepository } from "../../../packages/db/src/repositories/tenant/job-control.js";
-import type { Db } from "../../../packages/db/src/client.js";
 
 type AuthorityWriter = {
   file: string;
@@ -8265,112 +8263,6 @@ describe("JOB-003 final-review repository and telemetry contracts", () => {
     expect(repositorySource).not.toMatch(/return Math\.min\(boundedLimit,\s*deleted\.length\)/);
   });
 
-  it("rejects an injected 257-row cleanup RETURNING result so the surrounding transaction rolls back", async () => {
-    const selected = Array.from({ length: 256 }, (_, index) => ({
-      organizationId: "d3000000-0000-4000-8000-000000000001",
-      workerId: `d31${index.toString(16).padStart(5, "0")}-0000-4000-8000-000000000001`,
-      targetId: "d3000000-0000-4000-8000-000000000002",
-      attemptId: `d32${index.toString(16).padStart(5, "0")}-0000-4000-8000-000000000001`,
-    }));
-    const returned = [...selected, selected[0]!];
-    const phases: string[] = [];
-    let rolledBack = false;
-    let committed = false;
-    const fluent = (terminal: unknown[]) => {
-      const chain: Record<string, unknown> = {};
-      for (const method of ["from", "leftJoin", "innerJoin", "where", "orderBy", "limit"]) {
-        chain[method] = () => chain;
-      }
-      chain.for = async () => terminal;
-      chain.returning = async () => terminal;
-      return chain;
-    };
-    const db = {
-      async transaction<T>(callback: (tx: Db) => Promise<T>): Promise<T> {
-        try {
-          const value = await callback({
-            select: () => fluent(selected),
-            delete: () => fluent(returned),
-          } as unknown as Db);
-          committed = true;
-          return value;
-        } catch (error) {
-          rolledBack = true;
-          throw error;
-        }
-      },
-    };
-
-    let error: unknown = null;
-    try {
-      await db.transaction(async (tx) => {
-        const cleanup = createJobControlRepository(tx)
-          .cleanupLeaseRejectionCertificates as unknown as (input: {
-            limit: number;
-            cardinalityLimit: number;
-            beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
-          }) => Promise<unknown>;
-        return cleanup({
-          limit: 256,
-          cardinalityLimit: 4_096,
-          beforeStatement: async (phase) => { phases.push(phase); },
-        });
-      });
-    } catch (caught) {
-      error = caught;
-    }
-
-    expect(error instanceof Error ? error.message : null).toBe("lease_rejection_cleanup_bound");
-    expect({ rolledBack, committed }).toEqual({ rolledBack: true, committed: false });
-    expect(phases).toEqual(["select", "delete"]);
-  });
-
-  it("probes exactly 4097 remaining cleanup keys and reports saturated cardinality without a global count", async () => {
-    const keys = Array.from({ length: 4_097 }, (_, index) => ({
-      organizationId: "d3000000-0000-4000-8000-000000000001",
-      workerId: `worker-${index}`,
-      targetId: "d3000000-0000-4000-8000-000000000002",
-      attemptId: `attempt-${index}`,
-    }));
-    const selected = keys.slice(0, 256);
-    const deleted = selected.map(({ attemptId }) => ({ attemptId }));
-    const limits: number[] = [];
-    let selectCall = 0;
-    const fluent = (terminal: unknown[]) => {
-      const chain: Record<string, unknown> = {};
-      for (const method of ["from", "leftJoin", "innerJoin", "where", "orderBy"]) {
-        chain[method] = () => chain;
-      }
-      chain.limit = (limit: number) => { limits.push(limit); return chain; };
-      chain.for = async () => terminal;
-      chain.returning = async () => terminal;
-      return chain;
-    };
-    const tx = {
-      select: () => fluent(++selectCall === 1 ? selected : keys),
-      delete: () => fluent(deleted),
-    } as unknown as Db;
-    const cleanup = createJobControlRepository(tx)
-      .cleanupLeaseRejectionCertificates as unknown as (input: {
-        limit: number;
-        cardinalityLimit: number;
-        beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
-      }) => Promise<unknown>;
-
-    const result = await cleanup({
-      limit: 256,
-      cardinalityLimit: 4_096,
-      beforeStatement: async () => {},
-    });
-
-    expect(result).toEqual({
-      deleted: 256,
-      cardinalityObserved: 4_096,
-      cardinalitySaturated: true,
-    });
-    expect(limits).toEqual([256, 4_097]);
-  });
-
   it("returns certificate telemetry from the claim SQL instead of inferring it from candidate length", () => {
     expect(repositorySource).toMatch(/lockEligibleLeaseCandidates[\s\S]*certificateMetrics/);
     expect(repositorySource).toMatch(/hitsObserved[\s\S]*hitsSaturated[\s\S]*missesObserved[\s\S]*missesSaturated/);
@@ -8400,15 +8292,34 @@ describe("JOB-003 final-review repository and telemetry contracts", () => {
   });
 
   it("requires the real-PG lock-order overlap to enter through the public poll service", () => {
-    const repositoryLockControl = readFileSync(
+    const nonPlatformRepositoryLockControl = readFileSync(
       new URL("../../../packages/db/src/__tests__/job-leasing-lock-order.integration.test.ts", import.meta.url),
+      "utf8",
+    );
+    const platformAuthorityLockControl = readFileSync(
+      new URL("../../../packages/db/src/__tests__/platform-target-authority-lock.integration.test.ts", import.meta.url),
+      "utf8",
+    );
+    const platformOperatorServiceControl = readFileSync(
+      new URL("./worker-enrollment.integration.test.ts", import.meta.url),
       "utf8",
     );
     const publicServiceOverlap = readFileSync(
       new URL("./job-leasing.integration.test.ts", import.meta.url),
       "utf8",
     );
-    expect(repositoryLockControl).toMatch(/platform[\s\S]*operator[\s\S]*advisory/i);
+    expect(nonPlatformRepositoryLockControl).toMatch(
+      /locks target before worker so overlapping poll and revoke settle without a deadlock or post-cutoff effect/,
+    );
+    expect(platformAuthorityLockControl).toMatch(
+      /serializes shared tenant guards against exclusive cutoffs[\s\S]*acquirePlatformTargetAuthorityShared/,
+    );
+    expect(platformAuthorityLockControl).toMatch(
+      /implements target-to-worker row handoff with guard-first and cutoff-first ordering[\s\S]*acquirePlatformTargetAuthorityExclusive/,
+    );
+    expect(platformOperatorServiceControl).toMatch(
+      /uses one operator transaction for platform identity[\s\S]*issuePlatformCode[\s\S]*\.enroll\s*\(/,
+    );
     expect(publicServiceOverlap).toContain("createJobLeasingService");
     expect(publicServiceOverlap).toMatch(/\.poll\s*\(/);
     expect(publicServiceOverlap).toMatch(/settles public poll against target-first revoke/);

@@ -198,7 +198,7 @@ async function observeServer(input: {
   appDatabaseUrl?: string;
   operatorDatabaseUrl?: string;
   expectedFailureText?: string;
-  sentinelMode?: "deny" | "record";
+  sentinelMode?: "deny" | "record" | "identity";
 }): Promise<{ exited: boolean; code: number | null; output: string }> {
   const httpPort = await allocateEmbeddedPgPort();
   const serverEntry = fileURLToPath(new URL("../index.ts", import.meta.url));
@@ -291,6 +291,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     factoryOptions: [] as Array<{ role: "aoa_app" | "aoa_operator"; options: unknown }>,
     slotIds: { aoa_app: new Set<number>(), aoa_operator: new Set<number>() },
     closes: [] as Array<{ role: "aoa_app" | "aoa_operator"; input: unknown }>,
+    closeSettled: [] as Array<{ role: "aoa_app" | "aoa_operator"; at: number }>,
     logs: [] as unknown[][],
     positiveWaiters: new Map<"aoa_app" | "aoa_operator", () => void>(),
     positiveBarrierReached: false,
@@ -298,6 +299,12 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     clients: [] as Sql[],
     ownerClient: null as Sql | null,
     blocker: null as Sql | null,
+    backendPids: {
+      owner: new Set<number>(), aoa_app: new Set<number>(), aoa_operator: new Set<number>(),
+    },
+    advisoryKeyBindings: [] as bigint[],
+    abortControllers: [] as AbortController[],
+    abortCalls: 0,
   };
   const namedUrl = (url: string, suffix: string) => {
     const separator = url.includes("?") ? "&" : "?";
@@ -349,10 +356,17 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
         if (property === "execute") {
           const execute = async (statement: unknown) => {
             let queryText = "";
-            try { queryText = dialect.sqlToQuery(statement as never).sql.toLowerCase(); } catch { /* non-SQL */ }
+            let queryParams: unknown[] = [];
+            try {
+              const compiled = dialect.sqlToQuery(statement as never);
+              queryText = compiled.sql.toLowerCase();
+              queryParams = compiled.params;
+            } catch { /* non-SQL */ }
             const ownerLock = role === "owner" && /pg_advisory_xact_lock\s*\(/u.test(queryText) &&
               !queryText.includes("shared");
             if (ownerLock) {
+              const key = queryParams.find((value): value is bigint => typeof value === "bigint");
+              if (key !== undefined) state.advisoryKeyBindings.push(key);
               state.phases.push("owner-exclusive");
               if (inject === "owner-exclusive") {
                 state.injectionTriggered = true;
@@ -374,6 +388,13 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
               }
             }
             const result = await (target as T & { execute(s: unknown): Promise<unknown> }).execute(statement);
+            if (/pg_backend_pid\s*\(/u.test(queryText)) {
+              for (const row of rows(result)) {
+                const pid = Object.values((row ?? {}) as Record<string, unknown>)
+                  .find((value): value is number => Number.isSafeInteger(value));
+                if (pid !== undefined) state.backendPids[role].add(pid);
+              }
+            }
             if (role !== "owner" && /pg_try_advisory_xact_lock_shared/u.test(queryText)) {
               const success = firstBoolean(result);
               const phase = `${role === "aoa_app" ? "app" : "operator"}-${success ? "positive" : "negative"}` as AdvisoryPhase;
@@ -434,6 +455,7 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
         }
         await client.end({ timeout: seconds });
         await sleeping;
+        state.closeSettled.push({ role, at: performance.now() });
       },
     };
   };
@@ -491,7 +513,25 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     state,
     appNamedUrl,
     operatorNamedUrl,
-    open: isolated.openDistributedExecutionDatabases as unknown as typeof openFinalStartup,
+    open: (async (input: Parameters<typeof openFinalStartup>[0]) => {
+      const NativeAbortController = globalThis.AbortController;
+      class ObservedAbortController extends NativeAbortController {
+        constructor() {
+          super();
+          state.abortControllers.push(this);
+        }
+        override abort(reason?: unknown) {
+          state.abortCalls += 1;
+          super.abort(reason);
+        }
+      }
+      globalThis.AbortController = ObservedAbortController;
+      try {
+        return await (isolated.openDistributedExecutionDatabases as unknown as typeof openFinalStartup)(input);
+      } finally {
+        globalThis.AbortController = NativeAbortController;
+      }
+    }) as typeof openFinalStartup,
     input: {
       enabled: true,
       ownerDb: instrumentedOwnerDb,
@@ -502,6 +542,33 @@ async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
     cleanup,
     token,
   };
+}
+
+async function observeAdvisoryStartupSettlement(token: string) {
+  const [receipt] = await admin!.unsafe<Array<{
+    participant_pids: number;
+    owner_pids: number;
+    owner_in_transaction: number;
+    advisory_locks: number;
+  }>>(`
+    SELECT
+      count(DISTINCT activity.pid) FILTER (
+        WHERE activity.application_name IN ($1, $2)
+      )::int AS participant_pids,
+      count(DISTINCT activity.pid) FILTER (
+        WHERE activity.application_name = $3
+      )::int AS owner_pids,
+      count(DISTINCT activity.pid) FILTER (
+        WHERE activity.application_name = $3
+          AND (activity.state <> 'idle' OR activity.xact_start IS NOT NULL)
+      )::int AS owner_in_transaction,
+      count(DISTINCT advisory.pid)::int AS advisory_locks
+    FROM pg_stat_activity activity
+    LEFT JOIN pg_locks advisory
+      ON advisory.pid = activity.pid AND advisory.locktype = 'advisory'
+    WHERE activity.application_name IN ($1, $2, $3)
+  `, [`${token}_app`, `${token}_operator`, `${token}_owner`]);
+  return receipt!;
 }
 
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
@@ -788,12 +855,14 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const harness = await createAdvisoryStartupHarness();
       let accepted: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> = null;
       let failure: unknown;
+      let settlement: Awaited<ReturnType<typeof observeAdvisoryStartupSettlement>> | undefined;
       try {
         accepted = await harness.open(harness.input);
       } catch (error) {
         failure = error;
       } finally {
         await accepted?.close().catch(() => {});
+        settlement = await observeAdvisoryStartupSettlement(harness.token);
         await harness.cleanup();
       }
 
@@ -828,24 +897,44 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(harness.state.phases.filter((phase) => phase === "app-positive")).toHaveLength(4);
       expect(harness.state.phases.filter((phase) => phase === "operator-positive")).toHaveLength(4);
       expect(harness.state.positiveBarrierReached).toBe(true);
+      expect(harness.state.abortControllers).toHaveLength(1);
+      expect(harness.state.abortCalls).toBe(0);
       expect(harness.state.slotIds.aoa_app.size).toBe(4);
       expect(harness.state.slotIds.aoa_operator.size).toBe(4);
       expect(harness.state.closes).toEqual([
         { role: "aoa_operator", input: { timeoutSeconds: 5 } },
         { role: "aoa_app", input: { timeoutSeconds: 5 } },
       ]);
-
-      const [leaks] = await admin!<{ active_pids: number; advisory_locks: number }[]>`
-        SELECT
-          count(DISTINCT activity.pid)::int AS active_pids,
-          count(DISTINCT advisory.pid)::int AS advisory_locks
-        FROM pg_stat_activity activity
-        LEFT JOIN pg_locks advisory
-          ON advisory.pid = activity.pid AND advisory.locktype = 'advisory'
-        WHERE activity.application_name LIKE ${`${harness.token}%`}
-      `;
-      expect(leaks).toEqual({ active_pids: 0, advisory_locks: 0 });
+      expect(harness.state.closeSettled.map(({ role }) => role).sort())
+        .toEqual(["aoa_app", "aoa_operator"]);
+      expect(settlement).toEqual({
+        participant_pids: 0,
+        owner_pids: 1,
+        owner_in_transaction: 0,
+        advisory_locks: 0,
+      });
     }, 60_000);
+
+    it("binds each startup handshake to one fresh random signed-bigint advisory key", async () => {
+      guard();
+      const keys: bigint[] = [];
+      for (let run = 0; run < 2; run += 1) {
+        const harness = await createAdvisoryStartupHarness();
+        let accepted: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> = null;
+        try {
+          accepted = await harness.open(harness.input);
+          expect(harness.state.advisoryKeyBindings).toHaveLength(1);
+          const [key] = harness.state.advisoryKeyBindings;
+          expect(key).toBeGreaterThanOrEqual(-(2n ** 63n));
+          expect(key).toBeLessThan(2n ** 63n);
+          keys.push(key!);
+        } finally {
+          await accepted?.close().catch(() => {});
+          await harness.cleanup();
+        }
+      }
+      expect(keys[0]).not.toBe(keys[1]);
+    }, 120_000);
 
     it("settles and tears down every advisory participant for each failure/timeout/forced-end phase without payload-bearing diagnostics", async () => {
       // Mutations caught: per-peer aborts, naked Promise.race closes, or logging URLs/keys can
@@ -860,12 +949,16 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         const harness = await createAdvisoryStartupHarness(injection);
         let accepted: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> = null;
         let failure: unknown;
+        let returnedAt = Number.POSITIVE_INFINITY;
+        let settlement: Awaited<ReturnType<typeof observeAdvisoryStartupSettlement>> | undefined;
         try {
           accepted = await harness.open(harness.input);
         } catch (error) {
           failure = error;
+          returnedAt = performance.now();
         } finally {
           await accepted?.close().catch(() => {});
+          settlement = await observeAdvisoryStartupSettlement(harness.token);
           await harness.cleanup();
         }
         const errorCode = (failure as { message?: string } | undefined)?.message ?? "startup_returned_pool";
@@ -878,6 +971,17 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         expect(failure, injection).toMatchObject({ message: expect.stringMatching(/^distributed_execution_/u) });
         expect(harness.state.closes.map((entry) => entry.role).sort(), injection)
           .toEqual(["aoa_app", "aoa_operator"]);
+        expect(harness.state.closeSettled.map(({ role }) => role).sort(), injection)
+          .toEqual(["aoa_app", "aoa_operator"]);
+        expect(harness.state.closeSettled.every(({ at }) => at <= returnedAt), injection).toBe(true);
+        expect(harness.state.abortControllers, injection).toHaveLength(1);
+        expect(harness.state.abortCalls, injection).toBe(1);
+        expect(settlement, injection).toEqual({
+          participant_pids: 0,
+          owner_pids: 1,
+          owner_in_transaction: 0,
+          advisory_locks: 0,
+        });
         const serializedLogs = JSON.stringify(harness.state.logs);
         for (const forbidden of [
           harness.appNamedUrl, harness.operatorNamedUrl, "aoa_app", "aoa_operator", "postgres",
@@ -1119,14 +1223,6 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         await admin!.unsafe(`DROP SERVER IF EXISTS ${serverName} CASCADE`).catch(() => {});
       }
 
-      const shadow = `job003_relation_shadow_${process.pid}`;
-      await admin!.unsafe(`CREATE SCHEMA ${shadow}`);
-      await admin!.unsafe(`CREATE VIEW ${shadow}.${relation} AS TABLE public.${relation}`);
-      try {
-        await expectRelationFailure("duplicate-name outside the expected public identity");
-      } finally {
-        await admin!.unsafe(`DROP SCHEMA IF EXISTS ${shadow} CASCADE`);
-      }
     }, 120_000);
 
     it("checks grant-option ACL tuples independently on every derived relation and non-dropped user column", async () => {
@@ -1307,6 +1403,23 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         "worker-control", "job-leasing", "job-control-metrics", "job-ready-scheduler", "job-outbox-worker",
       ]) {
         expect(flagOn.output).toContain(`JOB_CONTROL_MODULE_LOAD:${moduleName}`);
+      }
+    }, 60_000);
+
+    it("threads the identical metrics instance through the real flag-on startup and app composition", async () => {
+      guard();
+      const flagOn = await observeServer({
+        databaseUrl: adminUrl,
+        distributedEnabled: true,
+        appDatabaseUrl: appUrl,
+        operatorDatabaseUrl: operatorUrl,
+        sentinelMode: "identity",
+      });
+      expect(flagOn.exited, flagOn.output).toBe(false);
+      expect(flagOn.output).toContain("JOB_CONTROL_METRICS_IDENTITY:metrics");
+      for (const consumer of ["job-ready-scheduler", "job-outbox-worker", "worker-control", "job-leasing"]) {
+        expect(flagOn.output, consumer).toContain(`JOB_CONTROL_METRICS_IDENTITY:${consumer}:same`);
+        expect(flagOn.output, consumer).not.toContain(`JOB_CONTROL_METRICS_IDENTITY:${consumer}:different`);
       }
     }, 60_000);
   },

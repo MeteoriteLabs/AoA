@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import ts from "typescript";
 
 type CertificateScanMetrics = Readonly<{
   hitsObserved: number;
@@ -29,7 +30,7 @@ type OutboxTickMetrics = Readonly<{
   cleaned: number;
 }>;
 
-type JobControlMetrics = {
+type RuntimeMetrics = {
   certificateScan(value: CertificateScanMetrics): void;
   certificateUpsert(value: CertificateUpsertMetrics): void;
   certificateCleanup(value: CertificateCleanupMetrics): void;
@@ -40,15 +41,26 @@ type JobControlMetrics = {
   outboxTick(value: OutboxTickMetrics): void;
 };
 
-type MetricsModule = {
-  NOOP_JOB_CONTROL_METRICS: JobControlMetrics;
-  createPinoJobControlMetrics(log: { info(...args: unknown[]): void }): JobControlMetrics;
+type RuntimeMetricsModule = {
+  NOOP_JOB_CONTROL_METRICS: RuntimeMetrics;
+  createPinoJobControlMetrics(log: { info(...args: unknown[]): void }): RuntimeMetrics;
 };
 
-async function loadMetricsModule(): Promise<MetricsModule | null> {
+function isMetricsModule(value: unknown): value is RuntimeMetricsModule {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<RuntimeMetricsModule>;
+  return typeof candidate.createPinoJobControlMetrics === "function" &&
+    !!candidate.NOOP_JOB_CONTROL_METRICS &&
+    ["certificateScan", "certificateUpsert", "certificateCleanup", "headRestart",
+      "schedulerCapacityReject", "schedulerExpiry", "schedulerCardinality", "outboxTick"]
+      .every((method) => typeof (candidate.NOOP_JOB_CONTROL_METRICS as unknown as
+        Record<string, unknown>)[method] === "function");
+}
+
+async function loadMetricsModule(): Promise<unknown> {
   const moduleSpecifier: string = "../services/job-control-metrics.js";
   try {
-    return await import(moduleSpecifier) as MetricsModule;
+    return await import(moduleSpecifier);
   } catch {
     return null;
   }
@@ -60,7 +72,8 @@ describe("JOB-003 closed payload-free metrics", () => {
     // a domain canary observable even though the service result is otherwise unchanged.
     const loaded = await loadMetricsModule();
     expect(loaded).not.toBeNull();
-    if (!loaded) return;
+    expect(isMetricsModule(loaded)).toBe(true);
+    if (!isMetricsModule(loaded)) return;
     const records: unknown[][] = [];
     const metrics = loaded.createPinoJobControlMetrics({
       info: (...args) => { records.push(args); },
@@ -119,7 +132,8 @@ describe("JOB-003 closed payload-free metrics", () => {
   it("freezes the no-op singleton and isolates every logger failure from control flow", async () => {
     const loaded = await loadMetricsModule();
     expect(loaded).not.toBeNull();
-    if (!loaded) return;
+    expect(isMetricsModule(loaded)).toBe(true);
+    if (!isMetricsModule(loaded)) return;
     expect(Object.isFrozen(loaded.NOOP_JOB_CONTROL_METRICS)).toBe(true);
     for (const method of Object.values(loaded.NOOP_JOB_CONTROL_METRICS)) {
       expect(() => (method as (value?: unknown) => void)({ count: 1 })).not.toThrow();
@@ -147,7 +161,8 @@ describe("JOB-003 closed payload-free metrics", () => {
   it("clamps invalid numeric values and rejects the open scheduler scope", async () => {
     const loaded = await loadMetricsModule();
     expect(loaded).not.toBeNull();
-    if (!loaded) return;
+    expect(isMetricsModule(loaded)).toBe(true);
+    if (!isMetricsModule(loaded)) return;
     const records: unknown[][] = [];
     const metrics = loaded.createPinoJobControlMetrics({ info: (...args) => { records.push(args); } });
     metrics.schedulerCapacityReject({ scope: "tenant" } as unknown as SchedulerCapacityRejectMetrics);
@@ -178,5 +193,63 @@ describe("JOB-003 closed payload-free metrics", () => {
     ]) {
       expect(source).not.toMatch(new RegExp(`\\b${forbidden}\\b`, "i"));
     }
+  });
+
+  it("exports the exact closed compiler-visible JobControlMetrics argument types", () => {
+    const sourceUrl = new URL("../services/job-control-metrics.ts", import.meta.url);
+    let sourceText: string | null = null;
+    try { sourceText = readFileSync(sourceUrl, "utf8"); } catch { /* assertion owns missing module */ }
+    expect(sourceText).not.toBeNull();
+    if (sourceText === null) return;
+    const source = ts.createSourceFile(
+      "job-control-metrics.ts", sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS,
+    );
+    const interfaceNode = source.statements.find((statement): statement is ts.InterfaceDeclaration =>
+      ts.isInterfaceDeclaration(statement) && statement.name.text === "JobControlMetrics");
+    expect(interfaceNode).toBeDefined();
+    if (!interfaceNode) return;
+    expect(interfaceNode.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)).toBe(true);
+    expect(interfaceNode.members.some(ts.isIndexSignatureDeclaration)).toBe(false);
+    const expectedParameters: Record<string, readonly string[] | null> = {
+      certificateScan: ["hitsObserved:number", "hitsSaturated:boolean", "missesObserved:number",
+        "missesSaturated:boolean", "scanExhausted:boolean", "cardinalityObserved:number",
+        "cardinalitySaturated:boolean"],
+      certificateUpsert: ["count:number"],
+      certificateCleanup: ["count:number", "cardinalityObserved:number", "cardinalitySaturated:boolean"],
+      headRestart: null,
+      schedulerCapacityReject: ["scope:SchedulerCapacityScope"],
+      schedulerExpiry: ["count:number"],
+      schedulerCardinality: ["organizations:number", "targets:number", "signals:number"],
+      outboxTick: ["budgetMs:number", "elapsedMs:number", "overshootMs:number", "organizations:number",
+        "claimed:number", "delivered:number", "cleaned:number"],
+    };
+    expect(interfaceNode.members).toHaveLength(Object.keys(expectedParameters).length);
+    for (const member of interfaceNode.members) {
+      expect(ts.isMethodSignature(member)).toBe(true);
+      if (!ts.isMethodSignature(member) || !member.name || !ts.isIdentifier(member.name)) continue;
+      const expected = expectedParameters[member.name.text];
+      expect(expected, `unexpected method ${member.name.text}`).not.toBeUndefined();
+      expect(member.type?.getText(source)).toBe("void");
+      if (expected === null) {
+        expect(member.parameters).toHaveLength(0);
+        continue;
+      }
+      expect(member.parameters).toHaveLength(1);
+      const parameterType = member.parameters[0]?.type;
+      expect(parameterType && ts.isTypeLiteralNode(parameterType)).toBe(true);
+      if (!parameterType || !ts.isTypeLiteralNode(parameterType)) continue;
+      expect(parameterType.members.some(ts.isIndexSignatureDeclaration)).toBe(false);
+      const actual = parameterType.members.map((field) => {
+        expect(ts.isPropertySignature(field)).toBe(true);
+        if (!ts.isPropertySignature(field) || !field.name || !ts.isIdentifier(field.name)) return "invalid";
+        expect(field.questionToken).toBeUndefined();
+        return `${field.name.text}:${field.type?.getText(source)}`;
+      });
+      expect(actual).toEqual(expected);
+    }
+    const scope = source.statements.find((statement): statement is ts.TypeAliasDeclaration =>
+      ts.isTypeAliasDeclaration(statement) && statement.name.text === "SchedulerCapacityScope");
+    expect(scope?.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)).toBe(true);
+    expect(scope?.type.getText(source).replaceAll(" ", "")).toBe('"organization"|"target"|"global"');
   });
 });

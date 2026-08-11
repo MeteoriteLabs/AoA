@@ -30,6 +30,8 @@ import { createJobReadyScheduler } from "../services/job-ready-scheduler.js";
 import { createJobOutboxWorker } from "../services/job-outbox-worker.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import { runInTenant } from "../db/tenant-context.js";
+import { createJobControlRepository } from "../../../packages/db/src/repositories/tenant/job-control.js";
+import type { Db } from "../../../packages/db/src/client.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -479,6 +481,77 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
       FROM job_attempts attempt JOIN jobs job ON job.id = attempt.job_id
       WHERE attempt.id = ${seeded.attemptId}`;
     return { ...seeded, workerId };
+  }
+
+  async function seedBulkLeaseRejectionCertificates(count: number, obsolete: boolean): Promise<void> {
+    const { admin } = guard();
+    await admin.unsafe(`
+      WITH seed AS (
+        SELECT series AS ordinal,
+          ('b3100000-0000-4000-8000-' || lpad(to_hex(series), 12, '0'))::uuid AS job_id,
+          ('b3200000-0000-4000-8000-' || lpad(to_hex(series), 12, '0'))::uuid AS attempt_id
+        FROM generate_series(1, $1::integer) AS series
+      )
+      INSERT INTO jobs
+        (id, organization_id, company_id, workload_type, source_kind, source_identity, source_intent,
+         requester_principal_kind, requester_principal_id, executor_principal_kind, executor_principal_id,
+         input, input_hash, policy_snapshot, policy_hash, requirements, placement_request,
+         available_at, priority, status, created_at, updated_at)
+      SELECT job_id, $2::uuid, $3::uuid, 'batch', 'one_shot', job_id::text,
+        jsonb_build_object('kind', 'one_shot', 'operationId', job_id, 'operationKind', 'extraction'),
+        'system', 'job-003-bulk', 'worker', $4::uuid, '{}'::jsonb, repeat('5', 64),
+        '{"policyId":"job-submission-default","version":1}'::jsonb, repeat('3', 64),
+        '{"workloadType":"batch","requiredCapabilities":[]}'::jsonb,
+        jsonb_build_object('policyId', 'job-submission-default', 'policyVersion', 1,
+          'requestedTarget', $5::uuid),
+        clock_timestamp(), 50, 'queued', clock_timestamp(), clock_timestamp()
+      FROM seed
+    `, [count, ORG, COMPANY, WORKER, TARGET]);
+    await admin.unsafe(`
+      WITH seed AS (
+        SELECT series AS ordinal,
+          ('b3100000-0000-4000-8000-' || lpad(to_hex(series), 12, '0'))::uuid AS job_id,
+          ('b3200000-0000-4000-8000-' || lpad(to_hex(series), 12, '0'))::uuid AS attempt_id
+        FROM generate_series(1, $1::integer) AS series
+      ), authority AS (
+        SELECT registered_profile_hash, provider_constraint_profile->>'digest' AS provider_hash,
+          device_generation
+        FROM execution_targets WHERE id = $4::uuid
+      )
+      INSERT INTO job_attempts
+        (id, organization_id, company_id, job_id, attempt_number, status,
+         placement_disposition, placement_owner, placement_target_id, placement_target_class,
+         placement_target_scope, placement_target_generation, placement_profile_hash,
+         placement_provider_constraint_hash, placement_fallback_disposition, placement_reason_code,
+         placement_mode, placement_lease_eligible, placement_input_digest, placement_policy_digest,
+         placement_decided_at, created_at, updated_at)
+      SELECT attempt_id, $2::uuid, $3::uuid, job_id, 1,
+        CASE WHEN $5::boolean THEN 'leased' ELSE 'pending' END,
+        'selected', 'organization_dedicated', $4::uuid, 'organization_dedicated', 'organization',
+        authority.device_generation, authority.registered_profile_hash, authority.provider_hash,
+        'primary', 'target_selected', 'active', true, repeat('6', 64), repeat('6', 64),
+        clock_timestamp(), clock_timestamp(), clock_timestamp()
+      FROM seed CROSS JOIN authority
+    `, [count, ORG, COMPANY, TARGET, obsolete]);
+    await admin.unsafe(`
+      INSERT INTO worker_lease_rejections
+        (organization_id, company_id, job_id, attempt_id, worker_id, target_id,
+         target_authority_key, eligibility_version, static_context_hash, workload_type,
+         placement_owner, placement_target_class, placement_target_scope,
+         placement_target_generation, placement_profile_hash,
+         placement_provider_constraint_hash, placement_input_digest,
+         placement_policy_digest, reason_code, created_at, updated_at)
+      SELECT attempt.organization_id, attempt.company_id, attempt.job_id, attempt.id,
+        $2::uuid, $3::uuid, $4, 1, repeat('8', 64), job.workload_type,
+        attempt.placement_owner, attempt.placement_target_class, attempt.placement_target_scope,
+        attempt.placement_target_generation, attempt.placement_profile_hash,
+        attempt.placement_provider_constraint_hash, attempt.placement_input_digest,
+        attempt.placement_policy_digest, 'static_requirements_mismatch',
+        clock_timestamp() + (attempt.attempt_number * interval '1 microsecond'),
+        clock_timestamp() + (attempt.attempt_number * interval '1 microsecond')
+      FROM job_attempts attempt JOIN jobs job ON job.id = attempt.job_id
+      WHERE attempt.organization_id = $1::uuid AND attempt.id::text LIKE 'b3200000-%'
+    `, [ORG, WORKER, TARGET, `organization:${ORG}`]);
   }
 
   async function offerPlacedJob(input: {
@@ -1169,6 +1242,100 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     expect(phases).toEqual(["select", "delete", "cardinality"]);
   }, 120_000);
 
+  it("rolls back a real PostgreSQL delete when instrumentation injects a 257-row RETURNING result", async () => {
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    await seedBulkLeaseRejectionCertificates(256, true);
+    let actualDeleted = -1;
+    let injectedReturned = -1;
+    let failure: unknown;
+    try {
+      await runInTenant(app.db, ORG, async (_repos, tx) => {
+        const instrumented = new Proxy(tx, {
+          get(target, property, receiver) {
+            if (property !== "delete") return Reflect.get(target, property, receiver);
+            return (...args: unknown[]) => {
+              const builder = (target.delete as (...input: unknown[]) => object)(...args);
+              let proxy: object;
+              proxy = new Proxy(builder, {
+                get(queryTarget, queryProperty, queryReceiver) {
+                  if (queryProperty === "returning") {
+                    return async (...returningArgs: unknown[]) => {
+                      const rows = await (Reflect.get(queryTarget, queryProperty, queryReceiver) as
+                        (...input: unknown[]) => Promise<unknown[]>).apply(queryTarget, returningArgs);
+                      actualDeleted = rows.length;
+                      const injected = rows.length === 256 ? [...rows, rows[0]] : rows;
+                      injectedReturned = injected.length;
+                      return injected;
+                    };
+                  }
+                  const value = Reflect.get(queryTarget, queryProperty, queryReceiver);
+                  if (typeof value !== "function") return value;
+                  return (...methodArgs: unknown[]) => {
+                    const result = value.apply(queryTarget, methodArgs);
+                    return result === queryTarget ? proxy : result;
+                  };
+                },
+              });
+              return proxy;
+            };
+          },
+        }) as Db;
+        const cleanup = createJobControlRepository(instrumented)
+          .cleanupLeaseRejectionCertificates as unknown as (input: {
+            limit: number;
+            cardinalityLimit: number;
+            beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
+          }) => Promise<unknown>;
+        return cleanup({
+          limit: 256,
+          cardinalityLimit: 4_096,
+          beforeStatement: async () => {},
+        });
+      });
+    } catch (error) {
+      failure = error;
+    }
+    const [external] = await admin<{ count: number }[]>`
+      SELECT count(*)::int AS count FROM worker_lease_rejections WHERE organization_id = ${ORG}`;
+
+    expect({ actualDeleted, injectedReturned }).toEqual({ actualDeleted: 256, injectedReturned: 257 });
+    expect(failure).toMatchObject({ message: "lease_rejection_cleanup_bound" });
+    expect(external?.count).toBe(256);
+  }, 120_000);
+
+  it("bounds a real 4097-row tenant cardinality probe without deleting current certificates", async () => {
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    await seedBulkLeaseRejectionCertificates(4_097, false);
+    const [before] = await admin<{ count: number }[]>`
+      SELECT count(*)::int AS count FROM worker_lease_rejections WHERE organization_id = ${ORG}`;
+    const phases: string[] = [];
+    const result = await runInTenant(app.db, ORG, async (repos) => {
+      const cleanup = repos.jobControl.cleanupLeaseRejectionCertificates as unknown as (input: {
+        limit: number;
+        cardinalityLimit: number;
+        beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
+      }) => Promise<unknown>;
+      return cleanup({
+        limit: 256,
+        cardinalityLimit: 4_096,
+        beforeStatement: async (phase) => { phases.push(phase); },
+      });
+    });
+    const [after] = await admin<{ count: number }[]>`
+      SELECT count(*)::int AS count FROM worker_lease_rejections WHERE organization_id = ${ORG}`;
+
+    expect(before?.count).toBe(4_097);
+    expect(result).toEqual({
+      deleted: 0,
+      cardinalityObserved: 4_096,
+      cardinalitySaturated: true,
+    });
+    expect(phases).toEqual(["select", "cardinality"]);
+    expect(after?.count).toBe(4_097);
+  }, 120_000);
+
   it("partitions overlapping cleaners with SKIP LOCKED instead of double-deleting or stranding tuples", async () => {
     const { admin, app } = guard();
     await resetRuntimeRows();
@@ -1185,10 +1352,11 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
       });
       await admin`UPDATE job_attempts SET status = 'leased' WHERE id = ${seeded.attemptId}`;
     }
-    let selected = 0;
-    let releaseSelects!: () => void;
-    const bothSelected = new Promise<void>((resolve) => { releaseSelects = resolve; });
-    const runCleaner = () => runInTenant(app.db, ORG, async (repos) => {
+    let firstHoldsSelectedLocks!: () => void;
+    const selectedLocksHeld = new Promise<void>((resolve) => { firstHoldsSelectedLocks = resolve; });
+    let releaseFirst!: () => void;
+    const firstMayDelete = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const runCleaner = (holdAfterSelect: boolean) => runInTenant(app.db, ORG, async (repos) => {
       const cleanup = repos.jobControl.cleanupLeaseRejectionCertificates as unknown as (input: {
         limit: number;
         cardinalityLimit: number;
@@ -1198,21 +1366,43 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
         limit: 3,
         cardinalityLimit: 4_096,
         beforeStatement: async (phase) => {
-          if (phase !== "select") return;
-          selected += 1;
-          if (selected === 2) releaseSelects();
-          await bothSelected;
+          if (!holdAfterSelect || phase !== "delete") return;
+          firstHoldsSelectedLocks();
+          await firstMayDelete;
         },
       });
     });
-    const settled = await Promise.allSettled([runCleaner(), runCleaner()]);
+    const first = runCleaner(true);
+    const firstOutcome = first.then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason) => ({ status: "rejected" as const, reason }),
+    );
+    const firstBoundary = await Promise.race([
+      selectedLocksHeld.then(() => "selected-locks-held" as const),
+      firstOutcome.then((outcome) => ({ completed: outcome } as const)),
+      new Promise<"select-boundary-timeout">((resolve) =>
+        setTimeout(() => resolve("select-boundary-timeout"), 2_000)),
+    ]);
+    if (firstBoundary !== "selected-locks-held") {
+      releaseFirst();
+      await firstOutcome;
+      expect(firstBoundary).toBe("selected-locks-held");
+      return;
+    }
+    const second = runCleaner(false);
+    const secondBeforeRelease = await Promise.race([
+      second.then((value) => ({ settled: true as const, value })),
+      new Promise<{ settled: false }>((resolve) => setTimeout(() => resolve({ settled: false }), 750)),
+    ]);
+    releaseFirst();
+    const settled = await Promise.allSettled([first, second]);
     const [remaining] = await admin<{ count: number }[]>`
       SELECT count(*)::int AS count FROM worker_lease_rejections WHERE organization_id = ${ORG}`;
 
     expect.soft(settled.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
     expect.soft(settled.map((result) => result.status === "fulfilled" ? result.value.deleted : -1).sort())
       .toEqual([3, 3]);
-    expect.soft(selected).toBe(2);
+    expect.soft(secondBeforeRelease).toMatchObject({ settled: true, value: { deleted: 3 } });
     expect.soft(remaining?.count).toBe(0);
   }, 60_000);
 

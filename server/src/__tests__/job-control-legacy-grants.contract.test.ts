@@ -8,6 +8,8 @@ import {
 import * as grants from "../db/job-control-legacy-grants.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { getTableColumns, getTableName, type Table } from "drizzle-orm";
+import * as dbSchema from "../../../packages/db/src/schema/index.js";
 
 describe("JOB-001 bounded aoa_app authority", () => {
   it("adds the outbox as a forced-RLS new-path table with exact DML", () => {
@@ -206,8 +208,8 @@ describe("JOB-003 bounded aoa_app authority", () => {
         tuples: readonly {
           grantor: "RELATION_OWNER";
           grantee: "RELATION_OWNER" | "PUBLIC" | "aoa_app" | "aoa_operator";
-          privilegeType: "SELECT" | "INSERT" | "UPDATE" | "DELETE";
-          isGrantable: false;
+          privilegeType: string;
+          isGrantable: boolean;
         }[];
       }>>>;
       COLUMN_ACL_MANIFEST?: Readonly<Record<string, Readonly<Record<string, Readonly<{
@@ -215,43 +217,147 @@ describe("JOB-003 bounded aoa_app authority", () => {
         tuples: readonly {
           grantor: "RELATION_OWNER";
           grantee: "RELATION_OWNER" | "PUBLIC" | "aoa_app" | "aoa_operator";
-          privilegeType: "SELECT";
-          isGrantable: false;
+          privilegeType: string;
+          isGrantable: boolean;
         }[];
       }>>>>>;
     };
     const relations = [...new Set([
-      ...(manifest.APP_SERVING_RELATIONS ?? []),
-      ...(manifest.OPERATOR_SERVING_RELATIONS ?? []),
+      ...Object.keys(grants.JOB_CONTROL_LEGACY_GRANTS),
+      ...Object.keys(grants.JOB_CONTROL_NEW_PATH_GRANTS),
+      ...Object.keys(grants.JOB_SUBMISSION_LEGACY_GRANTS),
+      ...Object.keys(grants.JOB_SUBMISSION_NEW_PATH_GRANTS),
+      ...Object.keys(grants.WORKER_ENROLLMENT_APP_GRANTS),
+      ...Object.keys(grants.JOB_LEASING_NEW_PATH_GRANTS),
+      ...Object.keys(grants.WORKER_ENROLLMENT_OPERATOR_GRANTS),
+      ...Object.keys(grants.OPERATOR_METADATA_COLUMN_GRANTS),
+      "mcp_api_keys",
+      "execution_targets",
     ])].sort();
-    expect(Object.keys(manifest.RELATION_ACL_MANIFEST ?? {}).sort()).toEqual(relations);
-    expect(Object.keys(manifest.COLUMN_ACL_MANIFEST ?? {}).sort()).toEqual(relations);
+    type ExpectedTuple = {
+      grantor: "RELATION_OWNER";
+      grantee: "RELATION_OWNER" | "aoa_app" | "aoa_operator";
+      privilegeType: string;
+      isGrantable: boolean;
+    };
+    const tupleKey = (tuple: ExpectedTuple) => [
+      tuple.grantor, tuple.grantee, tuple.privilegeType, String(tuple.isGrantable),
+    ].join(":");
+    const sorted = (tuples: readonly ExpectedTuple[]) => [...tuples].sort((left, right) =>
+      tupleKey(left).localeCompare(tupleKey(right)));
+    const appTablePrivileges = {
+      ...grants.JOB_CONTROL_LEGACY_GRANTS,
+      ...grants.JOB_CONTROL_NEW_PATH_GRANTS,
+      ...grants.JOB_SUBMISSION_LEGACY_GRANTS,
+      ...grants.JOB_SUBMISSION_NEW_PATH_GRANTS,
+      ...grants.WORKER_ENROLLMENT_APP_GRANTS,
+      ...grants.JOB_LEASING_NEW_PATH_GRANTS,
+    } as Readonly<Record<string, readonly string[]>>;
+    const operatorTablePrivileges = grants.WORKER_ENROLLMENT_OPERATOR_GRANTS as
+      Readonly<Record<string, readonly string[]>>;
+    const ownerTablePrivileges = [
+      "SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER",
+    ] as const;
+    const expectedRelations: Record<string, { aclIsNull: boolean; tuples: ExpectedTuple[] }> = {};
     for (const relation of relations) {
-      const relationAcl = manifest.RELATION_ACL_MANIFEST?.[relation];
-      expect.soft(relationAcl, `${relation} relacl`).toBeDefined();
-      expect.soft(Object.keys(relationAcl ?? {}).sort(), `${relation} relacl shape`).toEqual([
-        "aclIsNull", "tuples",
-      ]);
-      expect.soft(manifest.COLUMN_ACL_MANIFEST?.[relation], `${relation} attacl`).toBeDefined();
-      for (const tuple of relationAcl?.tuples ?? []) {
-        expect.soft(Object.keys(tuple).sort(), `${relation} exact relacl tuple`).toEqual([
-          "grantee", "grantor", "isGrantable", "privilegeType",
-        ]);
-        expect.soft(tuple.isGrantable, `${relation} relation grant option`).toBe(false);
-      }
-      for (const [column, columnAcl] of Object.entries(manifest.COLUMN_ACL_MANIFEST?.[relation] ?? {})) {
-        expect.soft(column.length, `${relation} nonempty column`).toBeGreaterThan(0);
-        expect.soft(Object.keys(columnAcl).sort(), `${relation}.${column} attacl shape`).toEqual([
-          "aclIsNull", "tuples",
-        ]);
-        for (const tuple of columnAcl.tuples) {
-          expect.soft(Object.keys(tuple).sort(), `${relation}.${column} exact attacl tuple`).toEqual([
-            "grantee", "grantor", "isGrantable", "privilegeType",
-          ]);
-          expect.soft(tuple).toMatchObject({ privilegeType: "SELECT", isGrantable: false });
+      const app = appTablePrivileges[relation] ?? [];
+      const operator = operatorTablePrivileges[relation] ?? [];
+      const aclIsNull = app.length === 0 && operator.length === 0;
+      expectedRelations[relation] = {
+        aclIsNull,
+        tuples: aclIsNull ? [] : sorted([
+          ...ownerTablePrivileges.map((privilegeType) => ({
+            grantor: "RELATION_OWNER" as const,
+            grantee: "RELATION_OWNER" as const,
+            privilegeType,
+            isGrantable: true,
+          })),
+          ...app.map((privilegeType) => ({
+            grantor: "RELATION_OWNER" as const,
+            grantee: "aoa_app" as const,
+            privilegeType,
+            isGrantable: false,
+          })),
+          ...operator.map((privilegeType) => ({
+            grantor: "RELATION_OWNER" as const,
+            grantee: "aoa_operator" as const,
+            privilegeType,
+            isGrantable: false,
+          })),
+        ]),
+      };
+    }
+
+    const columnsByRelation = new Map<string, string[]>();
+    for (const candidate of Object.values(dbSchema)) {
+      try {
+        const table = candidate as Table;
+        const name = getTableName(table);
+        columnsByRelation.set(name, Object.values(getTableColumns(table)).map((column) => column.name).sort());
+      } catch { /* schema export is not a table */ }
+    }
+    const explicitColumns = new Map<string, Map<string, ExpectedTuple[]>>();
+    const addColumns = (
+      role: "aoa_app" | "aoa_operator",
+      relation: string,
+      privilegeType: "SELECT" | "UPDATE",
+      columns: readonly string[],
+    ) => {
+      const relationColumns = explicitColumns.get(relation) ?? new Map<string, ExpectedTuple[]>();
+      explicitColumns.set(relation, relationColumns);
+      for (const column of new Set(columns)) {
+        const tuples = relationColumns.get(column) ?? [];
+        if (!tuples.some((tuple) => tuple.grantee === role && tuple.privilegeType === privilegeType)) {
+          tuples.push({
+            grantor: "RELATION_OWNER", grantee: role, privilegeType, isGrantable: false,
+          });
         }
+        relationColumns.set(column, tuples);
+      }
+    };
+    addColumns("aoa_app", "mcp_api_keys", "SELECT", grants.APP_MCP_API_KEY_COLUMN_GRANTS);
+    addColumns("aoa_app", "execution_targets", "SELECT", [
+      ...grants.APP_EXECUTION_TARGET_COLUMN_GRANTS,
+      ...grants.APP_ENROLLMENT_TARGET_SELECT_COLUMNS,
+      ...grants.APP_JOB_PLACEMENT_TARGET_SELECT_COLUMNS,
+    ]);
+    addColumns("aoa_app", "execution_targets", "UPDATE", [
+      ...grants.APP_ENROLLMENT_TARGET_UPDATE_COLUMNS,
+      ...grants.APP_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS,
+    ]);
+    for (const [relation, columns] of Object.entries(grants.OPERATOR_METADATA_COLUMN_GRANTS)) {
+      addColumns("aoa_operator", relation, "SELECT", columns);
+    }
+    addColumns("aoa_operator", "execution_targets", "SELECT", [
+      ...grants.OPERATOR_ENROLLMENT_TARGET_SELECT_COLUMNS,
+      ...grants.OPERATOR_JOB_PLACEMENT_TARGET_SELECT_COLUMNS,
+    ]);
+    addColumns("aoa_operator", "execution_targets", "UPDATE", [
+      ...grants.OPERATOR_ENROLLMENT_TARGET_UPDATE_COLUMNS,
+      ...grants.OPERATOR_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS,
+    ]);
+    const expectedColumns: Record<string, Record<string, {
+      aclIsNull: boolean;
+      tuples: ExpectedTuple[];
+    }>> = {};
+    for (const relation of relations) {
+      const columns = columnsByRelation.get(relation);
+      expect(columns, `${relation} must resolve to one checked-in Drizzle table`).toBeDefined();
+      expectedColumns[relation] = {};
+      for (const column of columns ?? []) {
+        const tuples = sorted(explicitColumns.get(relation)?.get(column) ?? []);
+        expectedColumns[relation]![column] = { aclIsNull: tuples.length === 0, tuples };
       }
     }
+
+    const actualRelations = Object.fromEntries(Object.entries(manifest.RELATION_ACL_MANIFEST ?? {})
+      .map(([relation, acl]) => [relation, { ...acl, tuples: sorted(acl.tuples as ExpectedTuple[]) }]));
+    const actualColumns = Object.fromEntries(Object.entries(manifest.COLUMN_ACL_MANIFEST ?? {})
+      .map(([relation, columns]) => [relation, Object.fromEntries(Object.entries(columns).map(
+        ([column, acl]) => [column, { ...acl, tuples: sorted(acl.tuples as ExpectedTuple[]) }],
+      ))]));
+    expect(actualRelations).toEqual(expectedRelations);
+    expect(actualColumns).toEqual(expectedColumns);
     expect(Object.isFrozen(manifest.RELATION_ACL_MANIFEST)).toBe(true);
     expect(Object.isFrozen(manifest.COLUMN_ACL_MANIFEST)).toBe(true);
   });

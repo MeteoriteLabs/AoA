@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import ts from "typescript";
 import {
   closeBoundedDatabaseConnections,
   openDistributedExecutionDatabases,
@@ -54,6 +55,49 @@ describe("distributed-execution database strangler", () => {
     expect(client).toMatch(/idle_timeout[\s\S]{0,160}30_?000/i);
     expect(client).toMatch(/end\(\{\s*timeout:\s*5\s*\}\)/);
     expect(source).not.toMatch(/Promise\.race\([\s\S]{0,120}\.close\(/);
+  });
+
+  it("owns exactly one immutable deadline and one shared abort controller for the complete handshake", () => {
+    const sourceText = readFileSync(
+      new URL("../db/distributed-execution-databases.ts", import.meta.url),
+      "utf8",
+    );
+    const source = ts.createSourceFile(
+      "distributed-execution-databases.ts",
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const abortConstructions: ts.NewExpression[] = [];
+    const deadlines: ts.VariableDeclaration[] = [];
+    const deadlineWrites: ts.Node[] = [];
+    const visit = (node: ts.Node) => {
+      if (ts.isNewExpression(node) && node.expression.getText(source) === "AbortController") {
+        abortConstructions.push(node);
+      }
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
+        /deadline/iu.test(node.name.text)) {
+        deadlines.push(node);
+      }
+      if (ts.isBinaryExpression(node) && ts.isIdentifier(node.left) &&
+        /deadline/iu.test(node.left.text) && ts.isAssignmentOperator(node.operatorToken.kind)) {
+        deadlineWrites.push(node);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+
+    expect(abortConstructions, "one controller must own owner/app/operator cancellation").toHaveLength(1);
+    expect(deadlines, "one immutable outer deadline must cover every startup phase").toHaveLength(1);
+    const declarationList = deadlines[0]!.parent;
+    expect(ts.isVariableDeclarationList(declarationList)).toBe(true);
+    expect((declarationList as ts.VariableDeclarationList).flags & ts.NodeFlags.Const).not.toBe(0);
+    expect(deadlines[0]!.initializer).toBeDefined();
+    expect(deadlineWrites).toHaveLength(0);
+    const deadlineName = (deadlines[0]!.name as ts.Identifier).text;
+    const deadlineReferences = sourceText.match(new RegExp(`\\b${deadlineName}\\b`, "gu")) ?? [];
+    expect(deadlineReferences.length).toBeGreaterThanOrEqual(4);
   });
 
   it("exports only the closed non-secret startup error vocabulary", () => {
