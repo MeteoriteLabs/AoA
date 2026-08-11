@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -441,6 +441,44 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
           clock_timestamp())`;
     }
     return { jobId, attemptId, outboxId };
+  }
+
+  async function seedLeaseRejectionCertificate(input: {
+    ordinal: number;
+    workerId?: string;
+    targetId?: string;
+    authorityKey?: string;
+    placement?: Parameters<typeof seedPlacedJob>[0]["placement"];
+    updatedAt?: Date;
+  }): Promise<{ jobId: string; attemptId: string; workerId: string }> {
+    const { admin } = guard();
+    const workerId = input.workerId ?? WORKER;
+    const targetId = input.targetId ?? TARGET;
+    const authorityKey = input.authorityKey ?? `organization:${ORG}`;
+    const seeded = await seedPlacedJob({
+      ordinal: input.ordinal,
+      outbox: false,
+      workerId,
+      placement: input.placement,
+    });
+    await admin`INSERT INTO worker_lease_rejections
+      (organization_id, company_id, job_id, attempt_id, worker_id, target_id,
+       target_authority_key, eligibility_version, static_context_hash, workload_type,
+       placement_owner, placement_target_class, placement_target_scope,
+       placement_target_generation, placement_profile_hash,
+       placement_provider_constraint_hash, placement_input_digest,
+       placement_policy_digest, reason_code, created_at, updated_at)
+      SELECT attempt.organization_id, attempt.company_id, attempt.job_id, attempt.id,
+        ${workerId}, ${targetId}, ${authorityKey}, 1, ${"8".repeat(64)}, job.workload_type,
+        attempt.placement_owner, attempt.placement_target_class, attempt.placement_target_scope,
+        attempt.placement_target_generation, attempt.placement_profile_hash,
+        attempt.placement_provider_constraint_hash, attempt.placement_input_digest,
+        attempt.placement_policy_digest, 'static_requirements_mismatch',
+        ${input.updatedAt ?? new Date("2026-01-01T00:00:00.000Z")},
+        ${input.updatedAt ?? new Date("2026-01-01T00:00:00.000Z")}
+      FROM job_attempts attempt JOIN jobs job ON job.id = attempt.job_id
+      WHERE attempt.id = ${seeded.attemptId}`;
+    return { ...seeded, workerId };
   }
 
   async function offerPlacedJob(input: {
@@ -898,27 +936,150 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
   it("rejects every non-finite, non-positive, fractional, or unsafe cleanup bound", async () => {
     const { app } = guard();
     const invalid = [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1];
-    const results = await runInTenant(app.db, ORG, async (repos) => {
-      const cleanup = repos.jobControl.cleanupLeaseRejectionCertificates as unknown as (input: {
-        limit: number;
-        cardinalityLimit: number;
-        beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
-      }) => Promise<unknown>;
-      return Promise.allSettled([
-        ...invalid.map((limit) => cleanup({
-          limit,
+    const cases = [
+      ...invalid.map((limit) => ({ limit, cardinalityLimit: 4_096 })),
+      ...invalid.map((cardinalityLimit) => ({ limit: 256, cardinalityLimit })),
+    ];
+    const outcomes: Array<{ error: unknown; phases: string[] }> = [];
+    for (const bounds of cases) {
+      const phases: string[] = [];
+      let error: unknown = null;
+      try {
+        // Each invalid input gets a fresh transaction: PostgreSQL aborting the
+        // first transaction cannot make the other eleven assertions vacuous.
+        await runInTenant(app.db, ORG, async (repos) => {
+          const cleanup = repos.jobControl.cleanupLeaseRejectionCertificates as unknown as (input: {
+            limit: number;
+            cardinalityLimit: number;
+            beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
+          }) => Promise<unknown>;
+          return cleanup({
+            ...bounds,
+            beforeStatement: async (phase) => { phases.push(phase); },
+          });
+        });
+      } catch (caught) {
+        error = caught;
+      }
+      outcomes.push({ error, phases });
+    }
+
+    expect(outcomes.map(({ error }) => (
+      error instanceof Error ? error.message : null
+    ))).toEqual(Array(12).fill("lease_rejection_cleanup_bound"));
+    expect(outcomes.map(({ phases }) => phases)).toEqual(Array.from({ length: 12 }, () => []));
+  }, 60_000);
+
+  it("executes every cleanup trigger and retains current pending certificates regardless of age", async () => {
+    const { admin, app } = guard();
+    const outcomes: Array<{ trigger: string; remaining: number }> = [];
+    let ordinal = 7_050;
+    const exercise = async (
+      trigger: string,
+      mutate: (seeded: { jobId: string; attemptId: string; workerId: string }) => Promise<void>,
+      expectedRemaining = 0,
+    ): Promise<void> => {
+      await admin`DELETE FROM worker_lease_rejections`;
+      await resetRuntimeRows();
+      const seeded = await seedLeaseRejectionCertificate({
+        ordinal: ordinal++,
+        updatedAt: new Date("2000-01-01T00:00:00.000Z"),
+      });
+      await mutate(seeded);
+      await runInTenant(app.db, ORG, async (repos) => {
+        const cleanup = repos.jobControl.cleanupLeaseRejectionCertificates as unknown as (input: {
+          limit: number;
+          cardinalityLimit: number;
+          beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
+        }) => Promise<unknown>;
+        return cleanup({
+          limit: 256,
           cardinalityLimit: 4_096,
           beforeStatement: async () => {},
-        })),
-        ...invalid.map((cardinalityLimit) => cleanup({
-          limit: 256,
-          cardinalityLimit,
-          beforeStatement: async () => {},
-        })),
-      ]);
+        });
+      });
+      const [row] = await admin<{ count: number }[]>`
+        SELECT count(*)::int AS count FROM worker_lease_rejections
+        WHERE organization_id = ${ORG}`;
+      outcomes.push({ trigger, remaining: Number(row?.count ?? -1) });
+      expect.soft(row?.count, trigger).toBe(expectedRemaining);
+    };
+
+    await exercise("terminal job", async ({ jobId }) => {
+      await admin`UPDATE jobs SET status = 'failed' WHERE id = ${jobId}`;
     });
-    expect(results.map((result) => result.status)).toEqual(Array(12).fill("rejected"));
-  }, 60_000);
+    await exercise("non-pending attempt", async ({ attemptId }) => {
+      await admin`UPDATE job_attempts SET status = 'leased' WHERE id = ${attemptId}`;
+    });
+    await exercise("revoked worker", async ({ workerId }) => {
+      await admin`UPDATE workers SET status = 'revoked', revoked_at = clock_timestamp() WHERE id = ${workerId}`;
+    });
+    for (const status of ["offline", "disabled"] as const) {
+      await exercise(`${status} target`, async () => {
+        await admin`UPDATE execution_targets SET status = ${status} WHERE id = ${TARGET}`;
+      });
+    }
+    const attemptDrifts = [
+      ["workload type", "UPDATE worker_lease_rejections SET workload_type = 'service'"],
+      ["placement owner", "UPDATE worker_lease_rejections SET placement_owner = 'managed_cloud'"],
+      ["placement class", "UPDATE worker_lease_rejections SET placement_target_class = 'managed_cloud'"],
+      ["placement scope", "UPDATE worker_lease_rejections SET placement_target_scope = 'platform'"],
+      ["stored placement generation", "UPDATE worker_lease_rejections SET placement_target_generation = 2"],
+      ["stored placement profile", `UPDATE worker_lease_rejections SET placement_profile_hash = '${"a".repeat(64)}'`],
+      ["stored placement provider", `UPDATE worker_lease_rejections SET placement_provider_constraint_hash = '${"b".repeat(64)}'`],
+      ["stored placement input digest", `UPDATE worker_lease_rejections SET placement_input_digest = '${"c".repeat(64)}'`],
+      ["stored placement policy digest", `UPDATE worker_lease_rejections SET placement_policy_digest = '${"d".repeat(64)}'`],
+    ] as const;
+    for (const [trigger, statement] of attemptDrifts) {
+      await exercise(trigger, async () => { await admin.unsafe(statement); });
+    }
+    await exercise("mismatched target id", async () => {
+      await admin.begin(async (tx) => {
+        await tx`SET LOCAL session_replication_role = 'replica'`;
+        await tx`UPDATE worker_lease_rejections SET target_id = ${OTHER_TARGET}`;
+      });
+    });
+    await exercise("mismatched target authority", async () => {
+      await admin.begin(async (tx) => {
+        await tx`SET LOCAL session_replication_role = 'replica'`;
+        await tx`UPDATE worker_lease_rejections SET target_authority_key = 'platform'`;
+      });
+    });
+    await exercise("missing attempt parent", async ({ attemptId }) => {
+      await admin.begin(async (tx) => {
+        await tx`SET LOCAL session_replication_role = 'replica'`;
+        await tx`DELETE FROM job_attempts WHERE id = ${attemptId}`;
+      });
+    });
+    await exercise("missing job parent", async ({ jobId }) => {
+      await admin.begin(async (tx) => {
+        await tx`SET LOCAL session_replication_role = 'replica'`;
+        await tx`DELETE FROM jobs WHERE id = ${jobId}`;
+      });
+    });
+    await exercise("target generation drift", async () => {
+      await admin`UPDATE execution_targets SET device_generation = 2 WHERE id = ${TARGET}`;
+    });
+    await exercise("target profile drift", async () => {
+      await admin`UPDATE execution_targets SET registered_profile_hash = ${"e".repeat(64)} WHERE id = ${TARGET}`;
+    });
+    await exercise("target provider drift", async () => {
+      await admin`UPDATE execution_targets
+        SET provider_constraint_profile = jsonb_set(provider_constraint_profile, '{digest}', ${JSON.stringify("f".repeat(64))}::jsonb)
+        WHERE id = ${TARGET}`;
+    });
+    await exercise("current pending certificate has no TTL", async () => {}, 1);
+
+    expect(outcomes.map(({ trigger }) => trigger)).toEqual([
+      "terminal job", "non-pending attempt", "revoked worker", "offline target", "disabled target",
+      "workload type", "placement owner", "placement class", "placement scope",
+      "stored placement generation", "stored placement profile", "stored placement provider",
+      "stored placement input digest", "stored placement policy digest", "mismatched target id",
+      "mismatched target authority", "missing attempt parent", "missing job parent",
+      "target generation drift", "target profile drift", "target provider drift",
+      "current pending certificate has no TTL",
+    ]);
+  }, 120_000);
 
   it("deletes exactly the first 256 obsolete tuples, leaves tuple 257, and reports bounded cardinality", async () => {
     // Mutation caught: a literal/unbounded limit, clamped DELETE count, or cardinality query
@@ -1007,6 +1168,111 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     });
     expect(phases).toEqual(["select", "delete", "cardinality"]);
   }, 120_000);
+
+  it("partitions overlapping cleaners with SKIP LOCKED instead of double-deleting or stranding tuples", async () => {
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    for (let index = 0; index < 6; index += 1) {
+      const workerId = index % 2 === 0 ? WORKER : OTHER_WORKER;
+      const targetId = index % 2 === 0 ? TARGET : OTHER_TARGET;
+      const seeded = await seedLeaseRejectionCertificate({
+        ordinal: 7_400 + index,
+        workerId,
+        targetId,
+        authorityKey: `organization:${ORG}`,
+        placement: { targetId },
+        updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)),
+      });
+      await admin`UPDATE job_attempts SET status = 'leased' WHERE id = ${seeded.attemptId}`;
+    }
+    let selected = 0;
+    let releaseSelects!: () => void;
+    const bothSelected = new Promise<void>((resolve) => { releaseSelects = resolve; });
+    const runCleaner = () => runInTenant(app.db, ORG, async (repos) => {
+      const cleanup = repos.jobControl.cleanupLeaseRejectionCertificates as unknown as (input: {
+        limit: number;
+        cardinalityLimit: number;
+        beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
+      }) => Promise<{ deleted: number; cardinalityObserved: number; cardinalitySaturated: boolean }>;
+      return cleanup({
+        limit: 3,
+        cardinalityLimit: 4_096,
+        beforeStatement: async (phase) => {
+          if (phase !== "select") return;
+          selected += 1;
+          if (selected === 2) releaseSelects();
+          await bothSelected;
+        },
+      });
+    });
+    const settled = await Promise.allSettled([runCleaner(), runCleaner()]);
+    const [remaining] = await admin<{ count: number }[]>`
+      SELECT count(*)::int AS count FROM worker_lease_rejections WHERE organization_id = ${ORG}`;
+
+    expect.soft(settled.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect.soft(settled.map((result) => result.status === "fulfilled" ? result.value.deleted : -1).sort())
+      .toEqual([3, 3]);
+    expect.soft(selected).toBe(2);
+    expect.soft(remaining?.count).toBe(0);
+  }, 60_000);
+
+  it("retains a current certificate when cleanup overlaps the public poll claim and certificate upsert", async () => {
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    const authority = await configureMixedWorkloadAuthority();
+    const seeded = await seedPlacedJob({
+      ordinal: 7_500,
+      workloadType: "batch",
+      requiredCapabilities: ["sandbox.filtered_egress"],
+      placement: { profileHash: authority.targetProfileHash, providerHash: authority.providerHash },
+    });
+    let atSelect!: () => void;
+    const selectReached = new Promise<void>((resolve) => { atSelect = resolve; });
+    let releaseSelect!: () => void;
+    const selectMayRun = new Promise<void>((resolve) => { releaseSelect = resolve; });
+    const cleanup = runInTenant(app.db, ORG, async (repos) => {
+      const method = repos.jobControl.cleanupLeaseRejectionCertificates as unknown as (input: {
+        limit: number;
+        cardinalityLimit: number;
+        beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
+      }) => Promise<unknown>;
+      return method({
+        limit: 256,
+        cardinalityLimit: 4_096,
+        beforeStatement: async (phase) => {
+          if (phase !== "select") return;
+          atSelect();
+          await selectMayRun;
+        },
+      });
+    });
+    const selectBoundary = await Promise.race([
+      selectReached.then(() => "reached" as const),
+      cleanup.then(() => "cleanup-completed-before-select-gate" as const),
+    ]);
+    const service = createJobLeasingService({ appDb: app.db });
+    const poll = await service.poll({
+      auth: auth("cleanup-upsert-race", WORKER, TARGET, authority.workerProfileHash),
+      request: pollRequestWithCapacity(WORKER, TARGET, "cleanup-upsert-race", {
+        batchSlots: 1,
+        browserSessionSlots: 1,
+        serviceSlots: 0,
+        freeCpuMillis: 2_000,
+        freeMemoryMiB: 4_096,
+        freeDiskMiB: 8_192,
+      }),
+    });
+    releaseSelect();
+    await cleanup;
+    const [state] = await admin<{ certificates: number; attemptStatus: string }[]>`
+      SELECT
+        (SELECT count(*)::int FROM worker_lease_rejections WHERE attempt_id = ${seeded.attemptId}) AS certificates,
+        (SELECT status FROM job_attempts WHERE id = ${seeded.attemptId}) AS "attemptStatus"`;
+
+    expect.soft(selectBoundary).toBe("reached");
+    expect.soft(poll.outcome).toBe("no_work");
+    expect.soft(state).toEqual({ certificates: 1, attemptStatus: "pending" });
+  }, 60_000);
 
   it("gives exactly one of 100 concurrent claimers one opaque offer and reveals nothing to losers", async () => {
     const { admin, app } = guard();
@@ -1380,6 +1646,84 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     expect.soft(churnFirst.outcome).toBe("offer");
     expect.soft(churnFirst.outcome === "offer" ? churnFirst.body.job.jobId : null).toBe(newlyOlder.jobId);
   }, 180_000);
+
+  it("emits only SQL-returned certificate facts and one metric per real public-poll mutation or restart", async () => {
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    const authority = await configureMixedWorkloadAuthority();
+    const placement = { profileHash: authority.targetProfileHash, providerHash: authority.providerHash };
+    await seedPlacedJob({
+      ordinal: 958,
+      workloadType: "batch",
+      requiredCapabilities: ["sandbox.filtered_egress"],
+      placement,
+    });
+    const metrics = {
+      certificateScan: vi.fn(), certificateUpsert: vi.fn(), certificateCleanup: vi.fn(),
+      headRestart: vi.fn(), schedulerCapacityReject: vi.fn(), schedulerExpiry: vi.fn(),
+      schedulerCardinality: vi.fn(), outboxTick: vi.fn(),
+    };
+    const incompatibleCapacity = {
+      batchSlots: 1, browserSessionSlots: 0, serviceSlots: 0,
+      freeCpuMillis: 2_000, freeMemoryMiB: 4_096, freeDiskMiB: 8_192,
+    };
+    const first = createJobLeasingService({ appDb: app.db, metrics } as unknown as
+      Parameters<typeof createJobLeasingService>[0]);
+    expect.soft((await first.poll({
+      auth: auth("metrics-miss", WORKER, TARGET, authority.workerProfileHash),
+      request: pollRequestWithCapacity(WORKER, TARGET, "metrics-miss", incompatibleCapacity),
+    })).outcome).toBe("no_work");
+    const restarted = createJobLeasingService({ appDb: app.db, metrics } as unknown as
+      Parameters<typeof createJobLeasingService>[0]);
+    expect.soft((await restarted.poll({
+      auth: auth("metrics-hit", WORKER, TARGET, authority.workerProfileHash),
+      request: pollRequestWithCapacity(WORKER, TARGET, "metrics-hit", incompatibleCapacity),
+    })).outcome).toBe("no_work");
+    expect.soft(metrics.certificateScan.mock.calls).toEqual([
+      [{ hitsObserved: 0, hitsSaturated: false, missesObserved: 1, missesSaturated: false,
+        scanExhausted: false, cardinalityObserved: 0, cardinalitySaturated: false }],
+      [{ hitsObserved: 1, hitsSaturated: false, missesObserved: 0, missesSaturated: false,
+        scanExhausted: false, cardinalityObserved: 1, cardinalitySaturated: false }],
+    ]);
+    expect.soft(metrics.certificateUpsert.mock.calls).toEqual([[{ count: 1 }]]);
+    expect.soft(metrics.headRestart).not.toHaveBeenCalled();
+
+    await resetRuntimeRows();
+    const restartAuthority = await configureMixedWorkloadAuthority();
+    const offerable = await seedPlacedJob({ ordinal: 959, placement });
+    const sequenceName = `job003_metric_restart_${process.pid}`;
+    const functionName = `job003_metric_restart_fn_${process.pid}`;
+    const triggerName = `job003_metric_restart_trg_${process.pid}`;
+    await admin.unsafe(`CREATE SEQUENCE ${sequenceName}`);
+    await admin.unsafe(`GRANT USAGE, SELECT ON SEQUENCE ${sequenceName} TO aoa_app`);
+    await admin.unsafe(`CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF OLD.id = '${offerable.attemptId}'::uuid AND NEW.status = 'offered'
+           AND nextval('${sequenceName}') = 1 THEN
+          RETURN NULL;
+        END IF;
+        RETURN NEW;
+      END $$`);
+    await admin.unsafe(`CREATE TRIGGER ${triggerName} BEFORE UPDATE ON job_attempts
+      FOR EACH ROW EXECUTE FUNCTION ${functionName}()`);
+    try {
+      const offered = await createJobLeasingService({ appDb: app.db, metrics } as unknown as
+        Parameters<typeof createJobLeasingService>[0]).poll({
+        auth: auth("metrics-real-restart", WORKER, TARGET, restartAuthority.workerProfileHash),
+        request: pollRequest(WORKER, TARGET, "metrics-real-restart"),
+      });
+      expect.soft(offered.outcome).toBe("offer");
+      expect.soft(metrics.headRestart.mock.calls).toEqual([[]]);
+      const [state] = await admin<{ attempts: number; leases: number }[]>`SELECT
+        (SELECT count(*)::int FROM job_attempts WHERE id = ${offerable.attemptId} AND status = 'offered') AS attempts,
+        (SELECT count(*)::int FROM leases WHERE attempt_id = ${offerable.attemptId}) AS leases`;
+      expect.soft(state).toEqual({ attempts: 1, leases: 1 });
+    } finally {
+      await admin.unsafe(`DROP TRIGGER IF EXISTS ${triggerName} ON job_attempts`);
+      await admin.unsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
+      await admin.unsafe(`DROP SEQUENCE IF EXISTS ${sequenceName}`);
+    }
+  }, 60_000);
 
   it("ignores stale certificate version, context, and candidate facts at the database-native global head", async () => {
     const { admin, app } = guard();
@@ -3444,6 +3788,128 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     }
   });
 
+  it("settles public poll against target-first revoke in both valid orders with complete side-effect snapshots", async () => {
+    const { admin, app } = guard();
+    const snapshot = async (attemptId: string, jobId: string, outboxId: string) => {
+      const [row] = await admin<{
+        jobStatus: string; attemptStatus: string; leases: number; certificates: number;
+        receipts: number; replays: number; outboxStatus: string; workerLastSeen: Date | null;
+      }[]>`SELECT
+        (SELECT status FROM jobs WHERE id = ${jobId}) AS "jobStatus",
+        (SELECT status FROM job_attempts WHERE id = ${attemptId}) AS "attemptStatus",
+        (SELECT count(*)::int FROM leases WHERE attempt_id = ${attemptId}) AS leases,
+        (SELECT count(*)::int FROM worker_lease_rejections WHERE attempt_id = ${attemptId}) AS certificates,
+        (SELECT count(*)::int FROM worker_operation_receipts WHERE attempt_id = ${attemptId}) AS receipts,
+        (SELECT count(*)::int FROM worker_proof_replays WHERE device_thumbprint = ${THUMBPRINT}) AS replays,
+        (SELECT status FROM job_outbox WHERE id = ${outboxId}) AS "outboxStatus",
+        (SELECT last_seen_at FROM workers WHERE id = ${WORKER}) AS "workerLastSeen"`;
+      return row!;
+    };
+    const revoke = async (release: Promise<void>, entered: () => void) => admin.begin(async (tx) => {
+      await tx`SET LOCAL lock_timeout = '750ms'`;
+      await tx`SELECT id FROM execution_targets WHERE id = ${TARGET} FOR UPDATE`;
+      entered();
+      await release;
+      await tx`SELECT id FROM workers WHERE id = ${WORKER} AND execution_target_id = ${TARGET} FOR UPDATE`;
+      await tx`UPDATE execution_targets SET status = 'disabled', updated_at = clock_timestamp() WHERE id = ${TARGET}`;
+      return "revoked" as const;
+    });
+
+    // Revoke wins: public poll must wait at target authority before any liveness,
+    // certificate, claim, attempt, lease, receipt, replay, or outbox mutation.
+    await resetRuntimeRows();
+    const revokeWinsSeed = await seedPlacedJob({ ordinal: 7_700 });
+    const beforeRevokeWins = await snapshot(
+      revokeWinsSeed.attemptId, revokeWinsSeed.jobId, revokeWinsSeed.outboxId,
+    );
+    let revokeLocked!: () => void;
+    const revokeHasTarget = new Promise<void>((resolve) => { revokeLocked = resolve; });
+    let releaseRevoke!: () => void;
+    const revokeMayCommit = new Promise<void>((resolve) => { releaseRevoke = resolve; });
+    const revokeFirst = revoke(revokeMayCommit, revokeLocked);
+    await revokeHasTarget;
+    const service = createJobLeasingService({ appDb: app.db });
+    let revokeWinsError: unknown = null;
+    const revokeWinsPoll = service.poll({
+      auth: auth("revoke-wins-public-poll"),
+      request: pollRequest(WORKER, TARGET, "revoke-wins-public-poll"),
+    }).catch((error) => { revokeWinsError = error; return null; });
+    await waitUntil("public poll waits on revoke target lock", async () => {
+      const [row] = await admin<{ waiting: boolean }[]>`SELECT EXISTS (
+        SELECT 1 FROM pg_stat_activity
+        WHERE usename = 'aoa_app' AND wait_event_type = 'Lock'
+      ) AS waiting`;
+      return row?.waiting === true;
+    });
+    releaseRevoke();
+    const revokeWinsSettled = await Promise.allSettled([revokeFirst, revokeWinsPoll]);
+    expect.soft(revokeWinsSettled.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect.soft(revokeWinsSettled[0]).toEqual({ status: "fulfilled", value: "revoked" });
+    expect.soft(revokeWinsSettled[1]).toEqual({ status: "fulfilled", value: null });
+    expect.soft(revokeWinsError).toMatchObject({ code: "target_revoked" });
+    expect.soft(await snapshot(
+      revokeWinsSeed.attemptId, revokeWinsSeed.jobId, revokeWinsSeed.outboxId,
+    )).toEqual({ ...beforeRevokeWins, workerLastSeen: beforeRevokeWins.workerLastSeen });
+
+    // Poll wins: an offer-transition trigger blocks only after the public poll
+    // has crossed authority and reached its real attempt mutation.
+    await resetRuntimeRows();
+    const pollWinsSeed = await seedPlacedJob({ ordinal: 7_701 });
+    const blocker = postgres(adminUrl, { max: 1 });
+    const advisoryKey = 3_350_033;
+    await blocker`SELECT pg_advisory_lock(${advisoryKey})`;
+    await admin.unsafe(`CREATE SEQUENCE job003_public_poll_wins_seq START WITH 1`);
+    await admin.unsafe(`GRANT USAGE, SELECT ON SEQUENCE job003_public_poll_wins_seq TO aoa_app`);
+    await admin.unsafe(`CREATE FUNCTION job003_public_poll_wins_fn() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        PERFORM nextval('job003_public_poll_wins_seq'::regclass);
+        PERFORM pg_advisory_lock(${advisoryKey});
+        PERFORM pg_advisory_unlock(${advisoryKey});
+        RETURN NEW;
+      END $$`);
+    await admin.unsafe(`CREATE TRIGGER job003_public_poll_wins_trigger
+      BEFORE UPDATE OF status ON job_attempts FOR EACH ROW
+      WHEN (OLD.id = '${pollWinsSeed.attemptId}'::uuid AND NEW.status = 'offered')
+      EXECUTE FUNCTION job003_public_poll_wins_fn()`);
+    try {
+      const pollFirst = service.poll({
+        auth: auth("poll-wins-public-poll"),
+        request: pollRequest(WORKER, TARGET, "poll-wins-public-poll"),
+      });
+      await waitUntil("public poll reaches offer mutation", async () => {
+        const [row] = await admin<{ reached: boolean }[]>`
+          SELECT is_called AS reached FROM job003_public_poll_wins_seq`;
+        return row?.reached === true;
+      });
+      let pollWinsRevokeEntered!: () => void;
+      const pollWinsRevokeHasTarget = new Promise<void>((resolve) => { pollWinsRevokeEntered = resolve; });
+      const pollWinsRevoke = revoke(Promise.resolve(), pollWinsRevokeEntered);
+      await waitUntil("revoke waits behind public poll", async () => {
+        const [row] = await admin<{ waiting: boolean }[]>`SELECT EXISTS (
+          SELECT 1 FROM pg_stat_activity
+          WHERE usename = 'test' AND wait_event_type = 'Lock' AND query LIKE '%execution_targets%FOR UPDATE%'
+        ) AS waiting`;
+        return row?.waiting === true;
+      });
+      await blocker`SELECT pg_advisory_unlock(${advisoryKey})`;
+      const [pollResult, revokeResult] = await Promise.all([pollFirst, pollWinsRevoke]);
+      expect.soft(pollResult.outcome).toBe("offer");
+      expect.soft(revokeResult).toBe("revoked");
+      const state = await snapshot(pollWinsSeed.attemptId, pollWinsSeed.jobId, pollWinsSeed.outboxId);
+      expect.soft(state).toMatchObject({
+        jobStatus: "offered", attemptStatus: "offered", leases: 1,
+        certificates: 0, receipts: 0, replays: 0, outboxStatus: "pending",
+      });
+      expect.soft(state.workerLastSeen).not.toBeNull();
+    } finally {
+      await blocker`SELECT pg_advisory_unlock_all()`;
+      await blocker.end();
+      await admin.unsafe(`DROP TRIGGER IF EXISTS job003_public_poll_wins_trigger ON job_attempts`);
+      await admin.unsafe(`DROP FUNCTION IF EXISTS job003_public_poll_wins_fn()`);
+      await admin.unsafe(`DROP SEQUENCE IF EXISTS job003_public_poll_wins_seq`);
+    }
+  }, 60_000);
+
   it("keeps readiness signals attempt-free, coalesced, and recovers a crashed claim", async () => {
     const { admin, app } = guard();
     await resetRuntimeRows();
@@ -3516,6 +3982,110 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
       attemptId: ready.attemptId,
     }]);
   });
+
+  it("enforces the immutable tick deadline inside real PostgreSQL cleanup and delivery statements", async () => {
+    const { admin, app } = guard();
+    const scheduler = createJobReadyScheduler();
+    const installSleepOracle = async (input: {
+      stem: "cleanup" | "delivery";
+      table: "worker_lease_rejections" | "job_outbox";
+      event: "DELETE" | "UPDATE OF status";
+      when: string;
+    }) => {
+      const sequence = `job003_deadline_${input.stem}_seq`;
+      const fn = `job003_deadline_${input.stem}_fn`;
+      const trigger = `job003_deadline_${input.stem}_trigger`;
+      await admin.unsafe(`CREATE SEQUENCE ${sequence} START WITH 1`);
+      await admin.unsafe(`GRANT USAGE, SELECT ON SEQUENCE ${sequence} TO aoa_app`);
+      await admin.unsafe(`CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          PERFORM nextval('${sequence}'::regclass);
+          PERFORM pg_sleep(0.10);
+          RETURN OLD;
+        END $$`);
+      await admin.unsafe(`CREATE TRIGGER ${trigger} BEFORE ${input.event} ON ${input.table}
+        FOR EACH ROW WHEN (${input.when}) EXECUTE FUNCTION ${fn}()`);
+      return {
+        async calls(): Promise<number> {
+          const [row] = await admin.unsafe<Array<{ calls: number }>>(
+            `SELECT CASE WHEN is_called THEN last_value ELSE 0 END::int AS calls FROM ${sequence}`,
+          );
+          return Number(row?.calls ?? 0);
+        },
+        async drop(): Promise<void> {
+          await admin.unsafe(`DROP TRIGGER IF EXISTS ${trigger} ON ${input.table}`);
+          await admin.unsafe(`DROP FUNCTION IF EXISTS ${fn}()`);
+          await admin.unsafe(`DROP SEQUENCE IF EXISTS ${sequence}`);
+        },
+      };
+    };
+
+    await resetRuntimeRows();
+    const obsolete = await seedLeaseRejectionCertificate({ ordinal: 7_090 });
+    await admin`UPDATE job_attempts SET status = 'leased' WHERE id = ${obsolete.attemptId}`;
+    const cleanupOracle = await installSleepOracle({
+      stem: "cleanup",
+      table: "worker_lease_rejections",
+      event: "DELETE",
+      when: `OLD.attempt_id = '${obsolete.attemptId}'::uuid`,
+    });
+    try {
+      const cleanupWorker = (createJobOutboxWorker as unknown as (input: Record<string, unknown>) => {
+        tick(): Promise<Record<string, number>>;
+      })({
+        appDb: app.db,
+        scheduler,
+        listAdmittedOrganizationIds: async () => [ORG],
+        tickBudgetMs: 50,
+        cleanupLimit: 256,
+        cleanupCardinalityLimit: 4_096,
+      });
+      const cleanupResult = await cleanupWorker.tick();
+      expect.soft(cleanupResult).toMatchObject({ claimed: 0, delivered: 0, cleaned: 0 });
+      expect.soft(await cleanupOracle.calls()).toBe(1);
+      const [certificate] = await admin<{ count: number }[]>`
+        SELECT count(*)::int AS count FROM worker_lease_rejections WHERE attempt_id = ${obsolete.attemptId}`;
+      expect.soft(certificate?.count).toBe(1);
+    } finally {
+      await cleanupOracle.drop();
+    }
+
+    await resetRuntimeRows();
+    const deliverable = await seedPlacedJob({ ordinal: 7_091 });
+    const deliveryOracle = await installSleepOracle({
+      stem: "delivery",
+      table: "job_outbox",
+      event: "UPDATE OF status",
+      when: `OLD.id = '${deliverable.outboxId}'::uuid AND NEW.status = 'delivered'`,
+    });
+    try {
+      const deliveryWorker = (createJobOutboxWorker as unknown as (input: Record<string, unknown>) => {
+        tick(): Promise<Record<string, number>>;
+      })({
+        appDb: app.db,
+        scheduler: createJobReadyScheduler(),
+        listAdmittedOrganizationIds: async () => [ORG],
+        publishHint: async () => {},
+        tickBudgetMs: 50,
+        cleanupLimit: 256,
+        cleanupCardinalityLimit: 4_096,
+      });
+      let deliveryError: unknown = null;
+      try {
+        await deliveryWorker.tick();
+      } catch (caught) {
+        deliveryError = caught;
+      }
+      expect((deliveryError as { code?: string; cause?: { code?: string } } | null)?.code
+        ?? (deliveryError as { cause?: { code?: string } } | null)?.cause?.code).toBe("57014");
+      expect(await deliveryOracle.calls()).toBe(1);
+      const [outbox] = await admin<{ status: string }[]>`
+        SELECT status FROM job_outbox WHERE id = ${deliverable.outboxId}`;
+      expect(outbox?.status).toBe("claimed");
+    } finally {
+      await deliveryOracle.drop();
+    }
+  }, 60_000);
 
   it("publishes only current lease-eligible placement signals without changing canonical claim order", async () => {
     const { admin, app } = guard();

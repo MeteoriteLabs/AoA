@@ -2204,6 +2204,47 @@ test("sealed campaign command owns production capabilities and exposes only the 
   const runner = await import("./run-e3-perf-01.mjs");
   assert.equal(typeof runner.runCampaignCommand, "function",
     "runCampaignCommand(argv, capabilities) must be the hermetic executable boundary");
+  if (typeof runner.runCampaignCommand !== "function") return;
+
+  const fixture = sealedCampaignCommandFixture();
+  assert.deepEqual(Object.keys(fixture.capabilities).sort(), ["artifact", "clock", "process", "store"]);
+  const outcome = await captureCommandOutcome(() => runner.runCampaignCommand([
+    "--manifest", fixture.paths.manifest,
+    "--output", fixture.paths.output,
+  ], fixture.capabilities));
+  assert.equal(outcome.error, undefined, "a complete four-capability campaign must execute");
+  assert.equal(outcome.value?.disposition, "pass");
+  assert.equal(outcome.value?.archiveSha256, fixture.state.archiveSha256);
+  assert.equal(outcome.value?.objectVersion, "version-a1");
+  assert.deepEqual(fixture.state.storeTrace, ["put", "head", "get", "retention"]);
+  assert.equal(fixture.state.localRetains, 1, "the exact local attempt remains after immutable upload");
+  assert.deepEqual(fixture.state.exclusiveWrites.map((entry) => entry.path), [fixture.paths.qa]);
+  assert.ok(fixture.state.processRuns.some((entry) => entry.executable === fixture.paths.git));
+  assert.ok(fixture.state.processRuns.some((entry) => entry.executable === fixture.paths.provenance));
+  const child = fixture.state.processRuns.find((entry) => entry.executable === fixture.paths.node &&
+    entry.argv[0] === fixture.paths.loadRunner);
+  assert.ok(child, "the absolute pinned Node must execute the absolute pinned load runner");
+  assert.equal(child.shell, false);
+  assert.deepEqual(child.env, {
+    LANG: "C", LC_ALL: "C", TZ: "UTC",
+    TMPDIR: fixture.paths.temp,
+    AOA_E3_PERF_DATABASE_URL_FILE: fixture.paths.databaseUrlFile,
+  });
+  assert.equal(Object.hasOwn(child.env, "PATH"), false);
+
+  for (const missing of ["process", "artifact", "store", "clock"]) {
+    const candidate = { ...fixture.capabilities };
+    delete candidate[missing];
+    const rejected = await captureCommandOutcome(() => runner.runCampaignCommand([
+      "--manifest", fixture.paths.manifest, "--output", fixture.paths.output,
+    ], candidate));
+    assert.equal(rejected.error?.code ?? rejected.value?.failureCode, "campaign_capabilities", missing);
+  }
+  const withExtra = { ...fixture.capabilities, network: Object.freeze({}) };
+  const extraRejected = await captureCommandOutcome(() => runner.runCampaignCommand([
+    "--manifest", fixture.paths.manifest, "--output", fixture.paths.output,
+  ], withExtra));
+  assert.equal(extraRejected.error?.code ?? extraRejected.value?.failureCode, "campaign_capabilities");
   const source = readFileSync(REQUIRED_ASSETS[0], "utf8");
   assert.match(source, /createProductionCampaignCapabilities/);
   assert.match(source, /runCampaignCommand\(process\.argv\.slice\(2\),\s*createProductionCampaignCapabilities\(\)\)/);
@@ -2216,6 +2257,264 @@ test("sealed campaign command owns production capabilities and exposes only the 
   assert.notEqual(fakeMode.status, 0);
   assert.doesNotMatch(`${fakeMode.stdout}${fakeMode.stderr}`, /attacker\.mjs|ERR_MODULE_NOT_FOUND/iu);
 });
+
+test("sealed campaign command fails closed across bootstrap, provenance, child, archive, and immutable-store tampering", { skip: !assetsPresent }, async () => {
+  // Mutations caught: a command that trusts a bootstrap/manifest fact, skips immutable
+  // readback/retention, or drops failed-attempt evidence can otherwise return a false pass.
+  const runner = await import("./run-e3-perf-01.mjs");
+  assert.equal(typeof runner.runCampaignCommand, "function");
+  if (typeof runner.runCampaignCommand !== "function") return;
+
+  const cases = [
+    ["relative_node", "bootstrap_executable_path", (fixture) => fixture.rewriteManifest((manifest) => {
+      manifest.nodeExecutable = "node";
+    })],
+    ["node_bytes", "bootstrap_executable_digest", (fixture) => {
+      fixture.state.files.set(fixture.paths.node, Buffer.from("substituted-node"));
+    }],
+    ["runner_bytes", "bootstrap_runner_digest", (fixture) => {
+      fixture.state.files.set(fixture.paths.loadRunner, Buffer.from("substituted-runner"));
+    }],
+    ["dirty_git", "campaign_git_dirty", (fixture) => { fixture.state.gitDirty = true; }],
+    ["attached_git", "campaign_git_detached", (fixture) => { fixture.state.gitAttached = true; }],
+    ["replace_ref", "campaign_git_replace", (fixture) => { fixture.state.gitReplace = true; }],
+    ["provenance", "campaign_provenance", (fixture) => { fixture.state.provenanceValid = false; }],
+    ["argv_widening", "campaign_child_argv", (fixture) => fixture.rewriteManifest((manifest) => {
+      manifest.argv = [...manifest.argv, "--unreviewed"];
+    })],
+    ["environment_widening", "campaign_child_environment", (fixture) => fixture.rewriteManifest((manifest) => {
+      manifest.childEnvironment.PATH = "C:/attacker";
+    })],
+    ["ndjson_line_cap", "campaign_ndjson_line_bytes", (fixture) => {
+      fixture.state.childStdout = `${"x".repeat(1_048_577)}\n`;
+    }],
+    ["ndjson_canary", "campaign_redaction", (fixture) => {
+      fixture.state.childStdout = `${JSON.stringify({ token: "E3_SECRET_CANARY" })}\n`;
+    }],
+    ["archive_mutation", "campaign_archive_readback", (fixture) => { fixture.state.mutateReadback = true; }],
+    ["checksum", "campaign_store_checksum", (fixture) => { fixture.state.wrongChecksum = true; }],
+    ["version", "campaign_store_version", (fixture) => { fixture.state.missingVersion = true; }],
+    ["retention_absent", "campaign_store_retention", (fixture) => { fixture.state.retention = null; }],
+    ["retention_governance", "campaign_store_retention", (fixture) => {
+      fixture.state.retention = { mode: "GOVERNANCE", retainUntil: "2027-02-08T00:00:00.000Z" };
+    }],
+    ["retention_short", "campaign_store_retention", (fixture) => {
+      fixture.state.retention = { mode: "COMPLIANCE", retainUntil: "2026-08-12T00:00:00.000Z" };
+    }],
+    ["backend_loss", "campaign_store_readback", (fixture) => { fixture.state.backendLost = true; }],
+    ["qa_collision", "campaign_qa_exclusive", (fixture) => { fixture.state.existingWrites.add(fixture.paths.qa); }],
+  ];
+  for (const [name, expectedCode, mutate] of cases) {
+    const fixture = sealedCampaignCommandFixture();
+    mutate(fixture);
+    const outcome = await captureCommandOutcome(() => runner.runCampaignCommand([
+      "--manifest", fixture.paths.manifest,
+      "--output", fixture.paths.output,
+    ], fixture.capabilities));
+    assert.equal(outcome.error?.code ?? outcome.value?.failureCode, expectedCode, name);
+    assert.equal(fixture.state.exclusiveWrites.some((entry) => entry.path === fixture.paths.qa), false, name);
+    assert.equal(fixture.state.localRetains >= 1, true, `${name} must retain sanitized local failure evidence`);
+  }
+
+  const forbiddenParentEnvironment = [
+    "NODE_OPTIONS", "NODE_PATH", "PATH", "GIT_CONFIG", "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM", "GIT_SSH_COMMAND", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_ENDPOINT_URL", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+  ];
+  for (const key of forbiddenParentEnvironment) {
+    const fixture = sealedCampaignCommandFixture();
+    fixture.state.parentEnvironment[key] = key === "PATH" ? "C:/attacker" : "attacker-value";
+    const outcome = await captureCommandOutcome(() => runner.runCampaignCommand([
+      "--manifest", fixture.paths.manifest, "--output", fixture.paths.output,
+    ], fixture.capabilities));
+    assert.equal(outcome.error?.code ?? outcome.value?.failureCode, "bootstrap_parent_environment", key);
+    assert.equal(fixture.state.processRuns.length, 0, `${key} must fail before Git, verifier, or load child`);
+  }
+});
+
+async function captureCommandOutcome(run) {
+  try {
+    return { value: await run(), error: undefined };
+  } catch (error) {
+    return { value: undefined, error };
+  }
+}
+
+function sealedCampaignCommandFixture() {
+  const paths = Object.freeze({
+    checkout: "C:/gate/checkout",
+    manifest: "C:/gate/checkout/perf-manifest.json",
+    output: "C:/gate/output/a1",
+    temp: "C:/gate/tmp/a1",
+    databaseUrlFile: "C:/gate/secrets/database-url",
+    git: "C:/gate/bin/git.exe",
+    node: "C:/gate/bin/node.exe",
+    pnpm: "C:/gate/bin/pnpm.cjs",
+    container: "C:/gate/bin/container.exe",
+    provenance: "C:/gate/bin/provenance.exe",
+    loadRunner: "C:/gate/checkout/server/src/__tests__/job-leasing-load.integration.test.ts",
+    policy: "C:/gate/policy/provenance-policy.json",
+    trustRoot: "C:/gate/policy/trust-root.pem",
+    qa: "C:/gate/output/a1/qa.json",
+  });
+  const executableBytes = new Map([
+    [paths.git, Buffer.from("pinned-git")],
+    [paths.node, Buffer.from("pinned-node")],
+    [paths.pnpm, Buffer.from("pinned-pnpm")],
+    [paths.container, Buffer.from("pinned-container")],
+    [paths.provenance, Buffer.from("pinned-provenance")],
+    [paths.loadRunner, Buffer.from("pinned-load-runner")],
+    [paths.policy, Buffer.from("pinned-policy")],
+    [paths.trustRoot, Buffer.from("pinned-trust-root")],
+    [paths.databaseUrlFile, Buffer.from("postgres://test-only.invalid/aoa")],
+  ]);
+  const digest = (path) => createHash("sha256").update(executableBytes.get(path)).digest("hex");
+  const manifest = {
+    ...manifestFixture(),
+    gitExecutable: paths.git,
+    gitSha256: digest(paths.git),
+    nodeExecutable: paths.node,
+    nodeSha256: digest(paths.node),
+    pnpmExecutable: paths.pnpm,
+    pnpmSha256: digest(paths.pnpm),
+    containerRuntimeExecutable: paths.container,
+    containerRuntimeSha256: digest(paths.container),
+    provenanceVerifierExecutable: paths.provenance,
+    provenanceVerifierSha256: digest(paths.provenance),
+    loadRunnerPath: paths.loadRunner,
+    loadRunnerSha256: digest(paths.loadRunner),
+    policyDigest: digest(paths.policy),
+    trustRootDigest: digest(paths.trustRoot),
+    argv: [paths.loadRunner, "--maxWorkers=1"],
+    childEnvironment: {
+      LANG: "C", LC_ALL: "C", TZ: "UTC",
+      TMPDIR: paths.temp,
+      AOA_E3_PERF_DATABASE_URL_FILE: paths.databaseUrlFile,
+    },
+  };
+  const state = {
+    files: new Map(executableBytes),
+    manifest,
+    processRuns: [],
+    storeTrace: [],
+    exclusiveWrites: [],
+    existingWrites: new Set(),
+    localRetains: 0,
+    gitDirty: false,
+    gitAttached: false,
+    gitReplace: false,
+    provenanceValid: true,
+    parentEnvironment: {},
+    childStdout: loadEvidenceRecordsFixture().map((row) => JSON.stringify(row)).join("\n"),
+    archiveBytes: Buffer.from("closed-e3-perf-01-archive"),
+    archiveSha256: "",
+    storedBytes: null,
+    wrongChecksum: false,
+    missingVersion: false,
+    mutateReadback: false,
+    backendLost: false,
+    retention: { mode: "COMPLIANCE", retainUntil: "2027-02-08T00:00:00.000Z" },
+  };
+  state.archiveSha256 = createHash("sha256").update(state.archiveBytes).digest("hex");
+  const writeManifest = () => state.files.set(paths.manifest, Buffer.from(JSON.stringify(state.manifest)));
+  writeManifest();
+
+  const processCapability = Object.freeze({
+    parentEnvironment: () => ({ ...state.parentEnvironment }),
+    async run(input) {
+      const captured = {
+        executable: input.executable,
+        argv: [...input.argv],
+        cwd: input.cwd,
+        env: { ...input.env },
+        shell: input.shell,
+      };
+      state.processRuns.push(captured);
+      if (input.executable === paths.git) {
+        const command = input.argv.join(" ");
+        if (command.includes("symbolic-ref")) return { code: state.gitAttached ? 0 : 1, stdout: state.gitAttached ? "refs/heads/main\n" : "", stderr: "" };
+        if (command.includes("refs/replace")) return { code: 0, stdout: state.gitReplace ? "refs/replace/attacker\n" : "", stderr: "" };
+        if (command.includes("diff") || command.includes("ls-files --others")) return { code: 0, stdout: state.gitDirty ? "attacker.txt\n" : "", stderr: "" };
+        if (command.includes("rev-list --parents")) return { code: 0, stdout: `${GATE_SHA40} ${EVIDENCE_PARENT_SHA40}\n`, stderr: "" };
+        if (command.includes("rev-parse HEAD^{tree}")) return { code: 0, stdout: `${GATE_TREE40}\n`, stderr: "" };
+        if (command.includes("rev-parse HEAD")) return { code: 0, stdout: `${GATE_SHA40}\n`, stderr: "" };
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (input.executable === paths.provenance) {
+        return { code: state.provenanceValid ? 0 : 1, stdout: state.provenanceValid ? JSON.stringify({ verified: true }) : "", stderr: "" };
+      }
+      if (input.executable === paths.node && input.argv[0] === paths.loadRunner) {
+        return { code: 0, stdout: state.childStdout, stderr: "" };
+      }
+      if (input.executable === paths.container || input.executable === paths.pnpm) {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 127, stdout: "", stderr: "unknown executable" };
+    },
+  });
+  const artifactCapability = Object.freeze({
+    async realpath(path) { return path; },
+    async readFile(path) {
+      const bytes = state.files.get(path);
+      if (!bytes) throw Object.assign(new Error("artifact missing"), { code: "ENOENT" });
+      return Buffer.from(bytes);
+    },
+    async stat(path) {
+      return { type: state.files.has(path) ? "file" : "directory", mode: "100644", size: state.files.get(path)?.length ?? 0 };
+    },
+    async list() { return []; },
+    async makeDirectoryExclusive() { return true; },
+    async writeExclusive(path, bytes) {
+      if (state.existingWrites.has(path)) return false;
+      state.existingWrites.add(path);
+      state.exclusiveWrites.push({ path, bytes: Buffer.from(bytes) });
+      return true;
+    },
+    async archive() { return Buffer.from(state.archiveBytes); },
+    async retainLocal() { state.localRetains += 1; },
+  });
+  const storeCapability = Object.freeze({
+    async putObject(input) {
+      state.storeTrace.push("put");
+      state.storedBytes = Buffer.from(input.bytes);
+      return {
+        versionId: state.missingVersion ? "" : "version-a1",
+        checksumSha256: state.wrongChecksum ? "0".repeat(64) : createHash("sha256").update(input.bytes).digest("hex"),
+      };
+    },
+    async headObject() {
+      state.storeTrace.push("head");
+      if (state.backendLost) throw Object.assign(new Error("backend unavailable"), { code: "BACKEND_LOST" });
+      return { versionId: "version-a1", byteLength: state.storedBytes?.length ?? 0 };
+    },
+    async getObject() {
+      state.storeTrace.push("get");
+      if (state.backendLost) throw Object.assign(new Error("backend unavailable"), { code: "BACKEND_LOST" });
+      return state.mutateReadback ? Buffer.from("mutated-readback") : Buffer.from(state.storedBytes ?? []);
+    },
+    async getObjectRetention() {
+      state.storeTrace.push("retention");
+      return state.retention && { ...state.retention };
+    },
+  });
+  const clockCapability = Object.freeze({ now: () => new Date(CAMPAIGN_NOW) });
+  const fixture = {
+    paths,
+    state,
+    capabilities: Object.freeze({
+      process: processCapability,
+      artifact: artifactCapability,
+      store: storeCapability,
+      clock: clockCapability,
+    }),
+    rewriteManifest(mutate) {
+      mutate(state.manifest);
+      writeManifest();
+    },
+  };
+  return fixture;
+}
 
 test("manifest and evidence schemas close executable provenance, immutable store, and failed-attempt facts", { skip: !assetsPresent }, () => {
   const manifestText = readFileSync(REQUIRED_ASSETS[1], "utf8");

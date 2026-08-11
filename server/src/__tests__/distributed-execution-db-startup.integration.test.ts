@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import postgres, { type Sql } from "postgres";
 import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { applyPendingMigrations, type Db } from "@armyofagents/db";
 import * as dbSchema from "@armyofagents/db";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
@@ -16,6 +18,7 @@ import {
   TENANT_APP_ROLE,
 } from "../db/rls-tenant.js";
 import { openDistributedExecutionDatabases } from "../db/distributed-execution-databases.js";
+import * as legacyGrants from "../db/job-control-legacy-grants.js";
 
 type EmbeddedPostgresInstance = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 type EmbeddedPostgresCtor = new (opts: Record<string, unknown>) => EmbeddedPostgresInstance;
@@ -268,6 +271,237 @@ async function observeServer(input: {
     expect(output.toLowerCase()).toContain(input.expectedFailureText.toLowerCase());
   }
   return { exited: true, code: outcome.code, output };
+}
+
+type AdvisoryPhase =
+  | "owner-exclusive"
+  | "app-negative"
+  | "operator-negative"
+  | "app-positive"
+  | "operator-positive";
+
+type StartupFailureInjection = AdvisoryPhase | "statement-timeout" | "lock-timeout" |
+  "idle-timeout" | "forced-end";
+
+async function createAdvisoryStartupHarness(inject?: StartupFailureInjection) {
+  const dialect = new PgDialect();
+  const token = `job003_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const state = {
+    phases: [] as AdvisoryPhase[],
+    factoryOptions: [] as Array<{ role: "aoa_app" | "aoa_operator"; options: unknown }>,
+    slotIds: { aoa_app: new Set<number>(), aoa_operator: new Set<number>() },
+    closes: [] as Array<{ role: "aoa_app" | "aoa_operator"; input: unknown }>,
+    logs: [] as unknown[][],
+    positiveWaiters: new Map<"aoa_app" | "aoa_operator", () => void>(),
+    positiveBarrierReached: false,
+    injectionTriggered: false,
+    clients: [] as Sql[],
+    ownerClient: null as Sql | null,
+    blocker: null as Sql | null,
+  };
+  const namedUrl = (url: string, suffix: string) => {
+    const separator = url.includes("?") ? "&" : "?";
+    return `${url}${separator}application_name=${token}_${suffix}`;
+  };
+  const appNamedUrl = namedUrl(appUrl, "app");
+  const operatorNamedUrl = namedUrl(operatorUrl, "operator");
+  const ownerNamedUrl = namedUrl(adminUrl, "owner");
+
+  const rows = (result: unknown): unknown[] => Array.isArray(result)
+    ? result
+    : ((result as { rows?: unknown[] })?.rows ?? []);
+  const firstBoolean = (result: unknown): boolean | undefined => {
+    for (const row of rows(result)) {
+      for (const value of Object.values((row ?? {}) as Record<string, unknown>)) {
+        if (typeof value === "boolean") return value;
+      }
+    }
+    return undefined;
+  };
+  const waitForPositivePeer = async (role: "aoa_app" | "aoa_operator") => {
+    const peer = role === "aoa_app" ? "aoa_operator" : "aoa_app";
+    const existing = state.positiveWaiters.get(peer);
+    if (existing) {
+      state.positiveBarrierReached = true;
+      state.positiveWaiters.delete(peer);
+      existing();
+      return;
+    }
+    await new Promise<void>((resolve, reject) => {
+      state.positiveWaiters.set(role, resolve);
+      const timer = setTimeout(() => {
+        state.positiveWaiters.delete(role);
+        reject(new Error(`positive advisory barrier stranded for ${role}`));
+      }, 2_000);
+      const wrapped = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      state.positiveWaiters.set(role, wrapped);
+    });
+  };
+
+  const instrumentDb = <T extends object>(db: T, role: "owner" | "aoa_app" | "aoa_operator"): T => {
+    const cache = new Map<PropertyKey, unknown>();
+    return new Proxy(db, {
+      get(target, property, receiver) {
+        if (cache.has(property)) return cache.get(property);
+        if (property === "execute") {
+          const execute = async (statement: unknown) => {
+            let queryText = "";
+            try { queryText = dialect.sqlToQuery(statement as never).sql.toLowerCase(); } catch { /* non-SQL */ }
+            const ownerLock = role === "owner" && /pg_advisory_xact_lock\s*\(/u.test(queryText) &&
+              !queryText.includes("shared");
+            if (ownerLock) {
+              state.phases.push("owner-exclusive");
+              if (inject === "owner-exclusive") {
+                state.injectionTriggered = true;
+                throw Object.assign(new Error("owner phase injected"), { code: "INJECT_OWNER" });
+              }
+              if (inject === "statement-timeout") {
+                state.injectionTriggered = true;
+                return (target as T & { execute(s: unknown): Promise<unknown> }).execute(sql`SELECT pg_sleep(6)`);
+              }
+              if (inject === "lock-timeout") {
+                state.injectionTriggered = true;
+                return (target as T & { execute(s: unknown): Promise<unknown> }).execute(sql`SELECT pg_advisory_xact_lock(903003)`);
+              }
+              if (inject === "idle-timeout") {
+                state.injectionTriggered = true;
+                await (target as T & { execute(s: unknown): Promise<unknown> }).execute(sql`SELECT 1`);
+                await new Promise((resolve) => setTimeout(resolve, 5_500));
+                return (target as T & { execute(s: unknown): Promise<unknown> }).execute(sql`SELECT 1`);
+              }
+            }
+            const result = await (target as T & { execute(s: unknown): Promise<unknown> }).execute(statement);
+            if (role !== "owner" && /pg_try_advisory_xact_lock_shared/u.test(queryText)) {
+              const success = firstBoolean(result);
+              const phase = `${role === "aoa_app" ? "app" : "operator"}-${success ? "positive" : "negative"}` as AdvisoryPhase;
+              state.phases.push(phase);
+              if (inject === phase || (inject === "forced-end" && phase === "operator-positive")) {
+                state.injectionTriggered = true;
+                throw Object.assign(new Error(`${inject} injected`), { code: `INJECT_${inject}` });
+              }
+              if (success) await waitForPositivePeer(role);
+            }
+            return result;
+          };
+          cache.set(property, execute);
+          return execute;
+        }
+        if (property === "transaction") {
+          const transaction = async (callback: (tx: T) => unknown, ...args: unknown[]) =>
+            (target as T & { transaction(cb: (tx: T) => unknown, ...rest: unknown[]): Promise<unknown> })
+              .transaction((tx) => callback(instrumentDb(tx, role)), ...args);
+          cache.set(property, transaction);
+          return transaction;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+  };
+
+  const createServingConnection = (
+    url: string,
+    role: "aoa_app" | "aoa_operator",
+    options: Record<string, unknown> | undefined,
+  ) => {
+    state.factoryOptions.push({ role, options });
+    const client = postgres(url, {
+      max: Number(options?.max ?? 4),
+      connect_timeout: 5,
+      idle_timeout: 30,
+      connection: {
+        client_encoding: "UTF8",
+        statement_timeout: 5_000,
+        lock_timeout: 750,
+        idle_in_transaction_session_timeout: 5_000,
+      },
+      debug(connectionId) { state.slotIds[role].add(connectionId); },
+    });
+    state.clients.push(client);
+    const db = instrumentDb(drizzlePg(client, { schema: dbSchema }) as unknown as Db, role);
+    return {
+      db,
+      async close(input?: unknown) {
+        state.closes.push({ role, input });
+        const seconds = Number((input as { timeoutSeconds?: number } | undefined)?.timeoutSeconds ?? 5);
+        const sleeping = inject === "forced-end" && state.injectionTriggered
+          ? client`SELECT pg_sleep(60)`.catch(() => {})
+          : Promise.resolve();
+        if (inject === "forced-end" && state.injectionTriggered) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        await client.end({ timeout: seconds });
+        await sleeping;
+      },
+    };
+  };
+
+  vi.resetModules();
+  vi.doMock("@armyofagents/db", async () => {
+    const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
+    return {
+      ...actual,
+      createTenantAppDbConnection: (url: string, options?: Record<string, unknown>) =>
+        createServingConnection(url, "aoa_app", options),
+      createOperatorDbConnection: (url: string, options?: Record<string, unknown>) =>
+        createServingConnection(url, "aoa_operator", options),
+    };
+  });
+  vi.doMock("../middleware/logger.js", async () => {
+    const actual = await vi.importActual<typeof import("../middleware/logger.js")>("../middleware/logger.js");
+    const record = (...args: unknown[]) => { state.logs.push(args); };
+    return { ...actual, logger: { trace: record, debug: record, info: record, warn: record, error: record } };
+  });
+  const isolated = await import("../db/distributed-execution-databases.js");
+
+  state.ownerClient = postgres(ownerNamedUrl, {
+    max: 4,
+    connection: {
+      client_encoding: "UTF8",
+      statement_timeout: 5_000,
+      lock_timeout: 750,
+      idle_in_transaction_session_timeout: 5_000,
+    },
+  });
+  const instrumentedOwnerDb = instrumentDb(
+    drizzlePg(state.ownerClient, { schema: dbSchema }) as unknown as Db,
+    "owner",
+  );
+  if (inject === "lock-timeout") {
+    state.blocker = postgres(namedUrl(adminUrl, "blocker"), { max: 1 });
+    await state.blocker`SELECT pg_advisory_lock(903003)`;
+  }
+
+  const cleanup = async () => {
+    for (const resolve of state.positiveWaiters.values()) resolve();
+    state.positiveWaiters.clear();
+    if (state.blocker) {
+      await state.blocker`SELECT pg_advisory_unlock(903003)`.catch(() => {});
+      await state.blocker.end({ timeout: 1 }).catch(() => {});
+    }
+    await state.ownerClient?.end({ timeout: 1 }).catch(() => {});
+    for (const client of state.clients) await client.end({ timeout: 1 }).catch(() => {});
+    vi.doUnmock("@armyofagents/db");
+    vi.doUnmock("../middleware/logger.js");
+    vi.resetModules();
+  };
+  return {
+    state,
+    appNamedUrl,
+    operatorNamedUrl,
+    open: isolated.openDistributedExecutionDatabases as unknown as typeof openFinalStartup,
+    input: {
+      enabled: true,
+      ownerDb: instrumentedOwnerDb,
+      requiredMigrationIdentity: checkedInMigrationIdentity(),
+      appDatabaseUrl: appNamedUrl,
+      operatorDatabaseUrl: operatorNamedUrl,
+    },
+    cleanup,
+    token,
+  };
 }
 
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
@@ -547,6 +781,116 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(String(failure)).not.toContain(selectedOperatorUrl);
     }, 60_000);
 
+    it("proves the public startup API exhausts both max-four pools through the real transaction-advisory barrier and leaves no peer", async () => {
+      // Mutations caught: comparing URL/database strings, probing one lazy connection, or
+      // running the positive peers sequentially cannot produce this real-PG phase receipt.
+      guard();
+      const harness = await createAdvisoryStartupHarness();
+      let accepted: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> = null;
+      let failure: unknown;
+      try {
+        accepted = await harness.open(harness.input);
+      } catch (error) {
+        failure = error;
+      } finally {
+        await accepted?.close().catch(() => {});
+        await harness.cleanup();
+      }
+
+      expect(failure).toBeUndefined();
+      expect(harness.state.factoryOptions).toEqual([
+        {
+          role: "aoa_app",
+          options: {
+            max: 4,
+            connectTimeoutMs: 5_000,
+            statementTimeoutMs: 5_000,
+            lockTimeoutMs: 750,
+            idleInTransactionSessionTimeoutMs: 5_000,
+            idleTimeoutMs: 30_000,
+          },
+        },
+        {
+          role: "aoa_operator",
+          options: {
+            max: 4,
+            connectTimeoutMs: 5_000,
+            statementTimeoutMs: 5_000,
+            lockTimeoutMs: 750,
+            idleInTransactionSessionTimeoutMs: 5_000,
+            idleTimeoutMs: 30_000,
+          },
+        },
+      ]);
+      expect(harness.state.phases[0]).toBe("owner-exclusive");
+      expect(harness.state.phases.filter((phase) => phase === "app-negative")).toHaveLength(4);
+      expect(harness.state.phases.filter((phase) => phase === "operator-negative")).toHaveLength(4);
+      expect(harness.state.phases.filter((phase) => phase === "app-positive")).toHaveLength(4);
+      expect(harness.state.phases.filter((phase) => phase === "operator-positive")).toHaveLength(4);
+      expect(harness.state.positiveBarrierReached).toBe(true);
+      expect(harness.state.slotIds.aoa_app.size).toBe(4);
+      expect(harness.state.slotIds.aoa_operator.size).toBe(4);
+      expect(harness.state.closes).toEqual([
+        { role: "aoa_operator", input: { timeoutSeconds: 5 } },
+        { role: "aoa_app", input: { timeoutSeconds: 5 } },
+      ]);
+
+      const [leaks] = await admin!<{ active_pids: number; advisory_locks: number }[]>`
+        SELECT
+          count(DISTINCT activity.pid)::int AS active_pids,
+          count(DISTINCT advisory.pid)::int AS advisory_locks
+        FROM pg_stat_activity activity
+        LEFT JOIN pg_locks advisory
+          ON advisory.pid = activity.pid AND advisory.locktype = 'advisory'
+        WHERE activity.application_name LIKE ${`${harness.token}%`}
+      `;
+      expect(leaks).toEqual({ active_pids: 0, advisory_locks: 0 });
+    }, 60_000);
+
+    it("settles and tears down every advisory participant for each failure/timeout/forced-end phase without payload-bearing diagnostics", async () => {
+      // Mutations caught: per-peer aborts, naked Promise.race closes, or logging URLs/keys can
+      // strand a backend or disclose the random advisory domain after an injected phase fault.
+      guard();
+      const injections: StartupFailureInjection[] = [
+        "owner-exclusive", "app-negative", "operator-negative", "app-positive", "operator-positive",
+        "statement-timeout", "lock-timeout", "idle-timeout", "forced-end",
+      ];
+      const receipts: Array<{ injection: StartupFailureInjection; errorCode: string; closed: string[] }> = [];
+      for (const injection of injections) {
+        const harness = await createAdvisoryStartupHarness(injection);
+        let accepted: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> = null;
+        let failure: unknown;
+        try {
+          accepted = await harness.open(harness.input);
+        } catch (error) {
+          failure = error;
+        } finally {
+          await accepted?.close().catch(() => {});
+          await harness.cleanup();
+        }
+        const errorCode = (failure as { message?: string } | undefined)?.message ?? "startup_returned_pool";
+        receipts.push({
+          injection,
+          errorCode,
+          closed: harness.state.closes.map((entry) => entry.role),
+        });
+        expect(accepted === null, `${injection}: startup must not return either pool`).toBe(true);
+        expect(failure, injection).toMatchObject({ message: expect.stringMatching(/^distributed_execution_/u) });
+        expect(harness.state.closes.map((entry) => entry.role).sort(), injection)
+          .toEqual(["aoa_app", "aoa_operator"]);
+        const serializedLogs = JSON.stringify(harness.state.logs);
+        for (const forbidden of [
+          harness.appNamedUrl, harness.operatorNamedUrl, "aoa_app", "aoa_operator", "postgres",
+          "pg_advisory", "903003", "startup-app-password", "startup-operator-password",
+          ...checkedInMigrationIdentity().orderedHashes,
+        ]) {
+          expect(serializedLogs, `${injection}:${forbidden}`).not.toContain(forbidden);
+        }
+      }
+      expect(receipts.map((receipt) => receipt.injection)).toEqual(injections);
+      expect(receipts.every((receipt) => receipt.errorCode !== "startup_returned_pool")).toBe(true);
+    }, 120_000);
+
     it("uses exact migration hashes so a missing row fails and a repaired out-of-order serial ID succeeds", async () => {
       guard();
       const [removed] = await admin!.unsafe<Array<{ hash: string; created_at: string | number | null }>>(
@@ -700,6 +1044,176 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         await admin!.unsafe(`DROP POLICY IF EXISTS job003_extra_policy ON worker_lease_rejections`);
       }
     }, 60_000);
+
+    it("rejects every real catalog relkind substitution, including a column-only serving relation", async () => {
+      // mcp_api_keys is intentionally derived only from APP_MCP_API_KEY_COLUMN_GRANTS. A
+      // hand-maintained table-grant list or broad effective-privilege scan misses every case
+      // below once the original relation's column ACL is removed.
+      guard();
+      const relation = "mcp_api_keys";
+      const backup = `job003_mcp_api_keys_backup_${process.pid}`;
+      const columns = "id, company_id, user_id, revoked_at";
+      const expectRelationFailure = async (shape: string) => {
+        expect.soft(await captureFinalStartupFailure(), shape).toMatchObject({
+          message: "distributed_execution_app_authority",
+        });
+      };
+      const replace = async (
+        shape: string,
+        createSql: string,
+        dropSql: string,
+        grantColumns = true,
+      ) => {
+        await admin!.unsafe(`ALTER TABLE ${relation} RENAME TO ${backup}`);
+        await admin!.unsafe(`REVOKE SELECT (${columns}) ON ${backup} FROM aoa_app`);
+        try {
+          if (createSql) await admin!.unsafe(createSql);
+          if (grantColumns) {
+            await admin!.unsafe(`GRANT SELECT (${columns}) ON ${relation} TO aoa_app`);
+          }
+          await expectRelationFailure(shape);
+        } finally {
+          if (dropSql) await admin!.unsafe(dropSql).catch(() => {});
+          await admin!.unsafe(`GRANT SELECT (${columns}) ON ${backup} TO aoa_app`);
+          await admin!.unsafe(`ALTER TABLE ${backup} RENAME TO ${relation}`);
+        }
+      };
+
+      await replace("missing", "", "", false);
+      await replace(
+        "view",
+        `CREATE VIEW ${relation} AS TABLE ${backup}`,
+        `DROP VIEW IF EXISTS ${relation}`,
+      );
+      await replace(
+        "materialized-view",
+        `CREATE MATERIALIZED VIEW ${relation} AS TABLE ${backup} WITH NO DATA`,
+        `DROP MATERIALIZED VIEW IF EXISTS ${relation}`,
+      );
+      await replace(
+        "partitioned-table",
+        `CREATE TABLE ${relation} (LIKE ${backup} INCLUDING DEFAULTS) PARTITION BY HASH (id)`,
+        `DROP TABLE IF EXISTS ${relation}`,
+      );
+      await replace(
+        "sequence",
+        `CREATE SEQUENCE ${relation}`,
+        `DROP SEQUENCE IF EXISTS ${relation}`,
+        false,
+      );
+
+      const serverName = `job003_relation_shape_${process.pid}`;
+      await admin!.unsafe("CREATE EXTENSION IF NOT EXISTS postgres_fdw");
+      await admin!.unsafe(`CREATE SERVER ${serverName} FOREIGN DATA WRAPPER postgres_fdw
+        OPTIONS (host '127.0.0.1', dbname 'postgres')`);
+      try {
+        await replace(
+          "foreign-table",
+          `CREATE FOREIGN TABLE ${relation} (
+            id uuid, company_id uuid, user_id text, name text, key_hash text,
+            last_used_at timestamptz, revoked_at timestamptz, created_at timestamptz
+          ) SERVER ${serverName} OPTIONS (table_name '${backup}')`,
+          `DROP FOREIGN TABLE IF EXISTS ${relation}`,
+        );
+      } finally {
+        await admin!.unsafe(`DROP SERVER IF EXISTS ${serverName} CASCADE`).catch(() => {});
+      }
+
+      const shadow = `job003_relation_shadow_${process.pid}`;
+      await admin!.unsafe(`CREATE SCHEMA ${shadow}`);
+      await admin!.unsafe(`CREATE VIEW ${shadow}.${relation} AS TABLE public.${relation}`);
+      try {
+        await expectRelationFailure("duplicate-name outside the expected public identity");
+      } finally {
+        await admin!.unsafe(`DROP SCHEMA IF EXISTS ${shadow} CASCADE`);
+      }
+    }, 120_000);
+
+    it("checks grant-option ACL tuples independently on every derived relation and non-dropped user column", async () => {
+      // The mutations preserve effective SELECT wherever it already exists. Only inspection of
+      // relacl/attacl nullness and aclexplode(...).is_grantable can reject those cases.
+      guard();
+      const appTables = {
+        ...legacyGrants.JOB_CONTROL_LEGACY_GRANTS,
+        ...legacyGrants.JOB_CONTROL_NEW_PATH_GRANTS,
+        ...legacyGrants.JOB_SUBMISSION_LEGACY_GRANTS,
+        ...legacyGrants.JOB_SUBMISSION_NEW_PATH_GRANTS,
+        ...legacyGrants.WORKER_ENROLLMENT_APP_GRANTS,
+        ...legacyGrants.JOB_LEASING_NEW_PATH_GRANTS,
+      } as Readonly<Record<string, readonly string[]>>;
+      const operatorTables = legacyGrants.WORKER_ENROLLMENT_OPERATOR_GRANTS as
+        Readonly<Record<string, readonly string[]>>;
+      const relations = [...new Set([
+        ...Object.keys(appTables),
+        ...Object.keys(operatorTables),
+        ...Object.keys(legacyGrants.OPERATOR_METADATA_COLUMN_GRANTS),
+        "mcp_api_keys",
+        "execution_targets",
+      ])].sort();
+      const quote = (value: string) => `"${value.replaceAll('"', '""')}"`;
+      const acceptedMutations: string[] = [];
+
+      for (const relation of relations) {
+        const [access] = await admin!<{ app: boolean; operator: boolean }[]>`
+          SELECT
+            has_table_privilege('aoa_app', ${`public.${relation}`}, 'SELECT') AS app,
+            has_table_privilege('aoa_operator', ${`public.${relation}`}, 'SELECT') AS operator`;
+        const role = access?.app ? "aoa_app" : access?.operator ? "aoa_operator" : null;
+        if (role) {
+          await admin!.unsafe(`GRANT SELECT ON TABLE ${quote(relation)} TO ${role} WITH GRANT OPTION`);
+          try {
+            if (await captureFinalStartupFailure() === undefined) acceptedMutations.push(`${relation}:relacl`);
+          } finally {
+            await admin!.unsafe(
+              `REVOKE GRANT OPTION FOR SELECT ON TABLE ${quote(relation)} FROM ${role}`,
+            );
+          }
+        }
+
+        const columns = await admin!<{ column_name: string; app: boolean; operator: boolean }[]>`
+          SELECT attribute.attname AS column_name,
+            has_column_privilege('aoa_app', relation.oid, attribute.attnum, 'SELECT') AS app,
+            has_column_privilege('aoa_operator', relation.oid, attribute.attnum, 'SELECT') AS operator
+          FROM pg_class relation
+          JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+          JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
+          WHERE namespace.nspname = 'public' AND relation.relname = ${relation}
+            AND relation.relkind = 'r' AND attribute.attnum > 0 AND NOT attribute.attisdropped
+          ORDER BY attribute.attnum`;
+        for (const column of columns) {
+          const role = column.app ? "aoa_app" : column.operator ? "aoa_operator" : "aoa_app";
+          const [prior] = await admin!<{ explicit_select: boolean }[]>`
+            SELECT EXISTS (
+              SELECT 1 FROM pg_class relation
+              JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+              JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
+              CROSS JOIN LATERAL aclexplode(attribute.attacl) acl
+              LEFT JOIN pg_roles grantee ON grantee.oid = acl.grantee
+              WHERE namespace.nspname = 'public' AND relation.relname = ${relation}
+                AND attribute.attname = ${column.column_name}
+                AND grantee.rolname = ${role} AND acl.privilege_type = 'SELECT'
+            ) AS explicit_select`;
+          await admin!.unsafe(
+            `GRANT SELECT (${quote(column.column_name)}) ON ${quote(relation)} TO ${role} WITH GRANT OPTION`,
+          );
+          try {
+            if (await captureFinalStartupFailure() === undefined) {
+              acceptedMutations.push(`${relation}.${column.column_name}:attacl`);
+            }
+          } finally {
+            await admin!.unsafe(
+              `REVOKE SELECT (${quote(column.column_name)}) ON ${quote(relation)} FROM ${role}`,
+            );
+            if (prior?.explicit_select) {
+              await admin!.unsafe(
+                `GRANT SELECT (${quote(column.column_name)}) ON ${quote(relation)} TO ${role}`,
+              );
+            }
+          }
+        }
+      }
+      expect(acceptedMutations).toEqual([]);
+    }, 180_000);
 
     it("fails exact attacl tuples when an expected column gains a grant option", async () => {
       guard();

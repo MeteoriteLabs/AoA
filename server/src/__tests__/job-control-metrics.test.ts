@@ -1,15 +1,43 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
+type CertificateScanMetrics = Readonly<{
+  hitsObserved: number;
+  hitsSaturated: boolean;
+  missesObserved: number;
+  missesSaturated: boolean;
+  scanExhausted: boolean;
+  cardinalityObserved: number;
+  cardinalitySaturated: boolean;
+}>;
+type CertificateUpsertMetrics = Readonly<{ count: number }>;
+type CertificateCleanupMetrics = Readonly<{
+  count: number;
+  cardinalityObserved: number;
+  cardinalitySaturated: boolean;
+}>;
+type SchedulerCapacityRejectMetrics = Readonly<{ scope: "organization" | "target" | "global" }>;
+type SchedulerExpiryMetrics = Readonly<{ count: number }>;
+type SchedulerCardinalityMetrics = Readonly<{ organizations: number; targets: number; signals: number }>;
+type OutboxTickMetrics = Readonly<{
+  budgetMs: number;
+  elapsedMs: number;
+  overshootMs: number;
+  organizations: number;
+  claimed: number;
+  delivered: number;
+  cleaned: number;
+}>;
+
 type JobControlMetrics = {
-  certificateScan(value: Record<string, unknown>): void;
-  certificateUpsert(value: Record<string, unknown>): void;
-  certificateCleanup(value: Record<string, unknown>): void;
+  certificateScan(value: CertificateScanMetrics): void;
+  certificateUpsert(value: CertificateUpsertMetrics): void;
+  certificateCleanup(value: CertificateCleanupMetrics): void;
   headRestart(): void;
-  schedulerCapacityReject(value: Record<string, unknown>): void;
-  schedulerExpiry(value: Record<string, unknown>): void;
-  schedulerCardinality(value: Record<string, unknown>): void;
-  outboxTick(value: Record<string, unknown>): void;
+  schedulerCapacityReject(value: SchedulerCapacityRejectMetrics): void;
+  schedulerExpiry(value: SchedulerExpiryMetrics): void;
+  schedulerCardinality(value: SchedulerCardinalityMetrics): void;
+  outboxTick(value: OutboxTickMetrics): void;
 };
 
 type MetricsModule = {
@@ -48,18 +76,18 @@ describe("JOB-003 closed payload-free metrics", () => {
       cardinalityObserved: 7,
       cardinalitySaturated: false,
       organizationId: forbidden,
-    });
-    metrics.certificateUpsert({ count: 11, input: forbidden });
+    } as CertificateScanMetrics);
+    metrics.certificateUpsert({ count: 11, input: forbidden } as CertificateUpsertMetrics);
     metrics.certificateCleanup({
       count: 13,
       cardinalityObserved: 17,
       cardinalitySaturated: true,
       reason: forbidden,
-    });
+    } as CertificateCleanupMetrics);
     metrics.headRestart();
-    metrics.schedulerCapacityReject({ scope: "target", targetId: forbidden });
-    metrics.schedulerExpiry({ count: 19, error: forbidden });
-    metrics.schedulerCardinality({ organizations: 2, targets: 23, signals: 29, sql: forbidden });
+    metrics.schedulerCapacityReject({ scope: "target", targetId: forbidden } as SchedulerCapacityRejectMetrics);
+    metrics.schedulerExpiry({ count: 19, error: forbidden } as SchedulerExpiryMetrics);
+    metrics.schedulerCardinality({ organizations: 2, targets: 23, signals: 29, sql: forbidden } as SchedulerCardinalityMetrics);
     metrics.outboxTick({
       budgetMs: 600,
       elapsedMs: 650,
@@ -69,7 +97,7 @@ describe("JOB-003 closed payload-free metrics", () => {
       delivered: 37,
       cleaned: 41,
       credential: forbidden,
-    });
+    } as OutboxTickMetrics);
 
     expect(records).toEqual([
       [{ event: "job_control.certificate_scan", hitsObserved: 3, hitsSaturated: false,
@@ -100,10 +128,42 @@ describe("JOB-003 closed payload-free metrics", () => {
     const metrics = loaded.createPinoJobControlMetrics({ info: vi.fn(() => {
       throw new Error("logger unavailable");
     }) });
-    expect(() => metrics.certificateUpsert({ count: 1 })).not.toThrow();
-    expect(() => metrics.headRestart()).not.toThrow();
-    expect(() => metrics.outboxTick({ budgetMs: 1, elapsedMs: 1, overshootMs: 0,
-      organizations: 0, claimed: 0, delivered: 0, cleaned: 0 })).not.toThrow();
+    const everyMethod: Array<() => void> = [
+      () => metrics.certificateScan({ hitsObserved: 1, hitsSaturated: false,
+        missesObserved: 2, missesSaturated: false, scanExhausted: false,
+        cardinalityObserved: 3, cardinalitySaturated: false }),
+      () => metrics.certificateUpsert({ count: 1 }),
+      () => metrics.certificateCleanup({ count: 1, cardinalityObserved: 2, cardinalitySaturated: false }),
+      () => metrics.headRestart(),
+      () => metrics.schedulerCapacityReject({ scope: "global" }),
+      () => metrics.schedulerExpiry({ count: 1 }),
+      () => metrics.schedulerCardinality({ organizations: 1, targets: 2, signals: 3 }),
+      () => metrics.outboxTick({ budgetMs: 1, elapsedMs: 1, overshootMs: 0,
+        organizations: 0, claimed: 0, delivered: 0, cleaned: 0 }),
+    ];
+    for (const call of everyMethod) expect(call).not.toThrow();
+  });
+
+  it("clamps invalid numeric values and rejects the open scheduler scope", async () => {
+    const loaded = await loadMetricsModule();
+    expect(loaded).not.toBeNull();
+    if (!loaded) return;
+    const records: unknown[][] = [];
+    const metrics = loaded.createPinoJobControlMetrics({ info: (...args) => { records.push(args); } });
+    metrics.schedulerCapacityReject({ scope: "tenant" } as unknown as SchedulerCapacityRejectMetrics);
+    metrics.schedulerExpiry({ count: -1 });
+    metrics.schedulerCardinality({ organizations: Number.NaN, targets: 1.5, signals: Number.POSITIVE_INFINITY });
+    metrics.outboxTick({ budgetMs: -1, elapsedMs: Number.MAX_SAFE_INTEGER + 1,
+      overshootMs: Number.NaN, organizations: -2, claimed: 1.5,
+      delivered: Number.NEGATIVE_INFINITY, cleaned: 3 });
+
+    expect(records).toEqual([
+      [{ event: "job_control.scheduler_capacity_reject", scope: "global" }],
+      [{ event: "job_control.scheduler_expiry", count: 0 }],
+      [{ event: "job_control.scheduler_cardinality", organizations: 0, targets: 1, signals: 0 }],
+      [{ event: "job_control.outbox_tick", budgetMs: 0, elapsedMs: Number.MAX_SAFE_INTEGER,
+        overshootMs: 0, organizations: 0, claimed: 1, delivered: 0, cleaned: 3 }],
+    ]);
   });
 
   it("keeps the metrics implementation free of open payload and identity vocabulary", async () => {

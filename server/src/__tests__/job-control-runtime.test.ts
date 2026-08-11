@@ -734,6 +734,83 @@ describe("JOB-003 flag-on job-control runtime", () => {
     expect(runtimeHarness.statementTimeouts).toEqual([600, 500, 400, 300, 200, 100]);
   });
 
+  it("runs cleanup once for an empty shard and again when that shard already has a durable pending claim", async () => {
+    const org = organizationId(1);
+    const target = "c3900000-0000-4000-8000-000000000002";
+    let rejectPublication = false;
+    const worker = (createJobOutboxWorker as unknown as (input: Record<string, unknown>) => {
+      tick(): Promise<Record<string, number>>;
+    })({
+      appDb: {},
+      scheduler: createJobReadyScheduler(),
+      listAdmittedOrganizationIds: async (input: unknown) => admittedOrganizationPage(input, [org]),
+      publishHint: async () => {
+        if (rejectPublication) throw new Error("retain pending claim");
+      },
+      maxOrganizationShards: 1,
+      cleanupLimit: 256,
+      cleanupCardinalityLimit: 4_096,
+    });
+
+    const emptyResult = await worker.tick();
+    expect.soft(emptyResult).toEqual({
+      organizations: 1,
+      claimed: 0,
+      delivered: 0,
+      cleaned: 0,
+    });
+    expect.soft(runtimeHarness.cleanupInputs).toHaveLength(1);
+
+    runtimeHarness.claims.set(org, [{
+      id: "already-pending",
+      organizationId: org,
+      targetId: target,
+      attemptId: "already-pending-attempt",
+    }]);
+    rejectPublication = true;
+    await expect(worker.tick()).rejects.toThrow("retain pending claim");
+    expect.soft(runtimeHarness.cleanupInputs).toHaveLength(2);
+    rejectPublication = false;
+    runtimeHarness.claims.set(org, []);
+
+    const pendingResult = await worker.tick();
+    expect.soft(pendingResult).toMatchObject({ claimed: 1, delivered: 1 });
+    expect.soft(runtimeHarness.cleanupInputs).toHaveLength(3);
+    expect.soft(runtimeHarness.delivered).toEqual(["already-pending"]);
+  });
+
+  it("admits no cleanup, tenant DB call, publisher, delivery, or next shard at an exact zero deadline", async () => {
+    const orgA = organizationId(1);
+    const orgB = organizationId(2);
+    let monotonicMs = 0;
+    const publications: unknown[] = [];
+    const worker = createJobOutboxWorker({
+      appDb: {} as never,
+      scheduler: createJobReadyScheduler(),
+      listAdmittedOrganizationIds: async (input) => {
+        const page = admittedOrganizationPage(input, [orgA, orgB]);
+        monotonicMs = 600;
+        return page;
+      },
+      publishHint: async (signal) => { publications.push(signal); },
+      maxOrganizationShards: 2,
+      tickBudgetMs: 600,
+      monotonicNow: () => monotonicMs,
+    });
+
+    await expect(worker.tick()).resolves.toMatchObject({
+      organizations: 0,
+      claimed: 0,
+      delivered: 0,
+    });
+    expect(runtimeHarness.visited).toEqual([]);
+    expect(runtimeHarness.cleanupInputs).toEqual([]);
+    expect(runtimeHarness.claimInputs).toEqual([]);
+    expect(runtimeHarness.statementTimeouts).toEqual([]);
+    expect(publications).toEqual([]);
+    expect(runtimeHarness.delivered).toEqual([]);
+  });
+
   it("rolls back shard admission on cleanup failure without publishing or losing durable outbox work", async () => {
     const org = organizationId(1);
     const target = "c3910000-0000-4000-8000-000000000001";
@@ -790,6 +867,63 @@ describe("JOB-003 flag-on job-control runtime", () => {
       organizations: 1,
       targets: 1,
       signals: 1,
+    });
+  });
+
+  it("threads SQL-returned cleanup facts and real outbox mutation counts into one metrics instance", async () => {
+    const org = organizationId(1);
+    const metrics = {
+      certificateScan: vi.fn(),
+      certificateUpsert: vi.fn(),
+      certificateCleanup: vi.fn(),
+      headRestart: vi.fn(),
+      schedulerCapacityReject: vi.fn(),
+      schedulerExpiry: vi.fn(),
+      schedulerCardinality: vi.fn(),
+      outboxTick: vi.fn(),
+    };
+    runtimeHarness.cleanupResult = {
+      deleted: 5,
+      cardinalityObserved: 4_096,
+      cardinalitySaturated: true,
+    };
+    runtimeHarness.claims.set(org, [
+      { id: "metrics-a", organizationId: org, targetId: "target-a", attemptId: "attempt-a" },
+      { id: "metrics-b", organizationId: org, targetId: "target-b", attemptId: "attempt-b" },
+    ]);
+    let monotonicMs = 0;
+    runtimeHarness.afterDelivery = async () => { monotonicMs = 650; };
+    const worker = (createJobOutboxWorker as unknown as (input: Record<string, unknown>) => {
+      tick(): Promise<Record<string, number>>;
+    })({
+      appDb: {},
+      scheduler: createJobReadyScheduler({ metrics } as never),
+      listAdmittedOrganizationIds: async (input: unknown) => admittedOrganizationPage(input, [org]),
+      publishHint: async () => {},
+      tickBudgetMs: 600,
+      monotonicNow: () => monotonicMs,
+      cleanupLimit: 256,
+      cleanupCardinalityLimit: 4_096,
+      metrics,
+    });
+
+    const result = await worker.tick();
+    expect.soft(result).toEqual({ organizations: 1, claimed: 2, delivered: 2, cleaned: 5 });
+    expect.soft(metrics.certificateCleanup).toHaveBeenCalledTimes(1);
+    expect.soft(metrics.certificateCleanup).toHaveBeenCalledWith({
+      count: 5,
+      cardinalityObserved: 4_096,
+      cardinalitySaturated: true,
+    });
+    expect.soft(metrics.outboxTick).toHaveBeenCalledTimes(1);
+    expect.soft(metrics.outboxTick).toHaveBeenCalledWith({
+      budgetMs: 600,
+      elapsedMs: 650,
+      overshootMs: 50,
+      organizations: 1,
+      claimed: 2,
+      delivered: 2,
+      cleaned: 5,
     });
   });
 

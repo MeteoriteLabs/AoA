@@ -196,4 +196,63 @@ describe("JOB-003 bounded aoa_app authority", () => {
     }, {})).toEqual(counts);
     expect(Object.isFrozen(manifest.RLS_POLICY_MANIFEST)).toBe(true);
   });
+
+  it("derives exact relation and column ACL tuple manifests for every serving relation", () => {
+    const manifest = grants as typeof grants & {
+      APP_SERVING_RELATIONS?: readonly string[];
+      OPERATOR_SERVING_RELATIONS?: readonly string[];
+      RELATION_ACL_MANIFEST?: Readonly<Record<string, Readonly<{
+        aclIsNull: boolean;
+        tuples: readonly {
+          grantor: "RELATION_OWNER";
+          grantee: "RELATION_OWNER" | "PUBLIC" | "aoa_app" | "aoa_operator";
+          privilegeType: "SELECT" | "INSERT" | "UPDATE" | "DELETE";
+          isGrantable: false;
+        }[];
+      }>>>;
+      COLUMN_ACL_MANIFEST?: Readonly<Record<string, Readonly<Record<string, Readonly<{
+        aclIsNull: boolean;
+        tuples: readonly {
+          grantor: "RELATION_OWNER";
+          grantee: "RELATION_OWNER" | "PUBLIC" | "aoa_app" | "aoa_operator";
+          privilegeType: "SELECT";
+          isGrantable: false;
+        }[];
+      }>>>>>;
+    };
+    const relations = [...new Set([
+      ...(manifest.APP_SERVING_RELATIONS ?? []),
+      ...(manifest.OPERATOR_SERVING_RELATIONS ?? []),
+    ])].sort();
+    expect(Object.keys(manifest.RELATION_ACL_MANIFEST ?? {}).sort()).toEqual(relations);
+    expect(Object.keys(manifest.COLUMN_ACL_MANIFEST ?? {}).sort()).toEqual(relations);
+    for (const relation of relations) {
+      const relationAcl = manifest.RELATION_ACL_MANIFEST?.[relation];
+      expect.soft(relationAcl, `${relation} relacl`).toBeDefined();
+      expect.soft(Object.keys(relationAcl ?? {}).sort(), `${relation} relacl shape`).toEqual([
+        "aclIsNull", "tuples",
+      ]);
+      expect.soft(manifest.COLUMN_ACL_MANIFEST?.[relation], `${relation} attacl`).toBeDefined();
+      for (const tuple of relationAcl?.tuples ?? []) {
+        expect.soft(Object.keys(tuple).sort(), `${relation} exact relacl tuple`).toEqual([
+          "grantee", "grantor", "isGrantable", "privilegeType",
+        ]);
+        expect.soft(tuple.isGrantable, `${relation} relation grant option`).toBe(false);
+      }
+      for (const [column, columnAcl] of Object.entries(manifest.COLUMN_ACL_MANIFEST?.[relation] ?? {})) {
+        expect.soft(column.length, `${relation} nonempty column`).toBeGreaterThan(0);
+        expect.soft(Object.keys(columnAcl).sort(), `${relation}.${column} attacl shape`).toEqual([
+          "aclIsNull", "tuples",
+        ]);
+        for (const tuple of columnAcl.tuples) {
+          expect.soft(Object.keys(tuple).sort(), `${relation}.${column} exact attacl tuple`).toEqual([
+            "grantee", "grantor", "isGrantable", "privilegeType",
+          ]);
+          expect.soft(tuple).toMatchObject({ privilegeType: "SELECT", isGrantable: false });
+        }
+      }
+    }
+    expect(Object.isFrozen(manifest.RELATION_ACL_MANIFEST)).toBe(true);
+    expect(Object.isFrozen(manifest.COLUMN_ACL_MANIFEST)).toBe(true);
+  });
 });
