@@ -609,7 +609,10 @@ generation, device binding, or registered profile. Lock timeout, connection/proc
 guard-first/cutoff-first, static writer inventory, and no-grant-widening tests are mandatory.
 For liveness, a fresh session-bound device proof plus guarded fresh physical worker/target
 heartbeat authorizes the platform logical operation; tenant `last_seen_at` is updated after
-success for observability but is not a prior prerequisite. Real enrollment→physical
+success for observability but is not a prior prerequisite. The physical worker's proof-bound
+admissible status set is exactly `enrolled|active`: last-seen-only heartbeat never changes that
+authority status, while `draining`, `revoked`, unknown, non-null `revoked_at`, or any other
+noncurrent fact denies. Real enrollment→physical
 heartbeat→logical poll/ACK and stale-physical cases are mandatory. No production or test edit
 may begin until the distinct reviewer accepts this successor plan revision.
 

@@ -1090,8 +1090,13 @@ session-bound device proof plus the guarded current physical worker/target heart
 liveness; `workers.last_seen_at` on the logical profile is not a circular prerequisite and may
 be NULL immediately after real enrollment. After all authority checks pass, the tenant
 transaction updates only that exact logical profile's `last_seen_at` from
-`clock_timestamp()` for observability. A stale physical heartbeat still denies. The
-transaction also stores the ACK operation receipt. A lost-response retry with the same
+`clock_timestamp()` for observability. The physical worker remains eligible in exactly the
+proof-bound `enrolled` or `active` states; the last-seen-only heartbeat does not promote
+`enrolled` to `active`. The guard uses the shared exact `ACTIVE_WORKER_STATUSES` binding and
+rejects `!ACTIVE_WORKER_STATUSES.has(physical.worker.status)`. `draining`, `revoked`, unknown,
+non-null `revoked_at`, or otherwise noncurrent physical authority denies before claim. A stale
+physical heartbeat still denies. The transaction also stores the ACK operation receipt. A
+lost-response retry with the same
 authenticated scope/idempotency key/semantic digest and a fresh device proof returns the
 original `acknowledged` outcome even though the lease is already active; it never reapplies
 the transition. Same key with a changed digest is generic `malformed`.
