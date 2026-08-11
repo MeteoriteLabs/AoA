@@ -9,6 +9,7 @@ import type { Request as ExpressRequest, RequestHandler } from "express";
 import { and, asc, eq, exists, gt, ne, sql } from "drizzle-orm";
 import {
   createDb,
+  loadRequiredMigrationIdentity,
   ensurePostgresDatabase,
   inspectMigrations,
   applyPendingMigrations,
@@ -542,11 +543,17 @@ if (config.databaseUrl) {
 // secret managers may instead provision the URLs' credentials ahead of startup.
 await maybeProvisionDistributedExecutionRoles(activeDatabaseConnectionString);
 
+const requiredMigrationIdentity = config.distributedExecutionEnabled
+  ? await loadRequiredMigrationIdentity()
+  : undefined;
+
 // Corrective E2 successor to E2-D03: flag-on boot must prove both bounded roles
 // before any E3 route/work could start. There is deliberately no owner fallback.
 // Flag-off returns null without reading URLs or allocating either new pool.
 const distributedExecutionDatabases = await openDistributedExecutionDatabases({
   enabled: config.distributedExecutionEnabled,
+  ownerDb: db,
+  requiredMigrationIdentity,
   appDatabaseUrl: process.env.AOA_APP_DATABASE_URL,
   operatorDatabaseUrl: process.env.AOA_OPERATOR_DATABASE_URL,
 });

@@ -1,4 +1,32 @@
+import { getTableColumns, getTableName, type Table } from "drizzle-orm";
+import * as dbSchema from "@armyofagents/db";
+
 export type TablePrivilege = "SELECT" | "INSERT" | "UPDATE" | "DELETE";
+
+type ServingRolePrivileges = Readonly<Record<
+  "aoa_app" | "aoa_operator",
+  readonly TablePrivilege[]
+>>;
+
+export interface AclTupleManifest {
+  readonly grantor: "RELATION_OWNER";
+  readonly grantee: "RELATION_OWNER" | "PUBLIC" | "aoa_app" | "aoa_operator";
+  readonly privilegeType: string;
+  readonly isGrantable: boolean;
+}
+
+export interface AclManifestEntry {
+  readonly aclIsNull: boolean;
+  readonly tuples: readonly AclTupleManifest[];
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
+    Object.freeze(value);
+  }
+  return value;
+}
 
 /**
  * Corrective E2 prerequisite (E3-F001): the operation-level aoa_app allowlist
@@ -184,3 +212,365 @@ export const APP_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS = Object.freeze([
   "registered_profile", "registered_profile_hash", "provider_constraint_profile", "updated_at",
 ] as const);
 export const OPERATOR_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS = APP_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS;
+
+function sortedUnion(...collections: readonly (readonly string[])[]): readonly string[] {
+  return Object.freeze([...new Set(collections.flat())].sort());
+}
+
+/** The app serving inventory is derived once from every table and column grant source. */
+export const APP_SERVING_RELATIONS = sortedUnion(
+  Object.keys(JOB_CONTROL_LEGACY_GRANTS),
+  Object.keys(JOB_CONTROL_NEW_PATH_GRANTS),
+  Object.keys(JOB_SUBMISSION_LEGACY_GRANTS),
+  Object.keys(JOB_SUBMISSION_NEW_PATH_GRANTS),
+  Object.keys(WORKER_ENROLLMENT_APP_GRANTS),
+  Object.keys(JOB_LEASING_NEW_PATH_GRANTS),
+  ["mcp_api_keys", "execution_targets"],
+);
+
+/** The operator serving inventory is derived once from every table and column grant source. */
+export const OPERATOR_SERVING_RELATIONS = sortedUnion(
+  Object.keys(WORKER_ENROLLMENT_OPERATOR_GRANTS),
+  Object.keys(OPERATOR_METADATA_COLUMN_GRANTS),
+  ["execution_targets"],
+);
+
+export const RLS_RELATIONS = Object.freeze([
+  "jobs", "job_attempts", "leases", "workers", "services", "service_instances",
+  "job_artifacts", "job_secret_handles", "job_outbox", "worker_enrollment_code_routes",
+  "worker_enrollment_codes", "worker_proof_replays", "execution_targets",
+  "worker_operation_receipts", "worker_lease_rejections",
+] as const);
+
+export const FORCE_RLS_RELATIONS = Object.freeze(
+  RLS_RELATIONS.filter((relation) => relation !== "execution_targets"),
+);
+
+export const NON_FORCE_RLS_RELATIONS = Object.freeze(["execution_targets"] as const);
+
+export const POLICY_COUNTS = deepFreeze({
+  jobs: 1,
+  job_attempts: 1,
+  leases: 1,
+  workers: 2,
+  services: 1,
+  service_instances: 1,
+  job_artifacts: 1,
+  job_secret_handles: 1,
+  job_outbox: 1,
+  worker_enrollment_code_routes: 3,
+  worker_enrollment_codes: 2,
+  worker_proof_replays: 2,
+  execution_targets: 3,
+  worker_operation_receipts: 1,
+  worker_lease_rejections: 1,
+} as const);
+
+const ORGANIZATION_QUAL =
+  "(organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
+const CANDIDATE_ORGANIZATION_QUAL =
+  "(candidate_organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
+const NULL_ORGANIZATION_QUAL = "(organization_id IS NULL)";
+const NULL_CANDIDATE_ORGANIZATION_QUAL = "(candidate_organization_id IS NULL)";
+const PLATFORM_WORKER_QUAL = "((organization_id IS NULL) AND (scope = 'platform'::text))";
+const TENANT_TARGET_QUAL =
+  "((organization_id IS NULL) OR (organization_id = (current_setting('aoa.organization_id'::text, true))::uuid))";
+const PLATFORM_TARGET_QUAL = "((organization_id IS NULL) AND (owner_user_id IS NULL))";
+
+function policy(
+  relation: string,
+  name: string,
+  command: string,
+  role: string,
+  qual: string,
+  check: string | null,
+) {
+  return { relation, name, command, role, permissive: true, qual, check } as const;
+}
+
+export const RLS_POLICY_MANIFEST = deepFreeze([
+  policy("jobs", "jobs_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("job_attempts", "job_attempts_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("leases", "leases_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("workers", "workers_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("services", "services_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("service_instances", "service_instances_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("job_artifacts", "job_artifacts_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("job_secret_handles", "job_secret_handles_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("job_outbox", "job_outbox_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("worker_enrollment_code_routes", "worker_enrollment_code_routes_tenant_isolation", "ALL", "aoa_app", CANDIDATE_ORGANIZATION_QUAL, CANDIDATE_ORGANIZATION_QUAL),
+  policy("worker_enrollment_code_routes", "worker_enrollment_code_routes_platform_operator", "ALL", "aoa_operator", NULL_CANDIDATE_ORGANIZATION_QUAL, NULL_CANDIDATE_ORGANIZATION_QUAL),
+  policy("worker_enrollment_code_routes", "worker_enrollment_code_routes_operator_discovery", "SELECT", "aoa_operator", "true", null),
+  policy("worker_enrollment_codes", "worker_enrollment_codes_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("worker_enrollment_codes", "worker_enrollment_codes_platform_operator", "ALL", "aoa_operator", NULL_ORGANIZATION_QUAL, NULL_ORGANIZATION_QUAL),
+  policy("worker_proof_replays", "worker_proof_replays_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("worker_proof_replays", "worker_proof_replays_platform_operator", "ALL", "aoa_operator", NULL_ORGANIZATION_QUAL, NULL_ORGANIZATION_QUAL),
+  policy("workers", "workers_platform_operator", "ALL", "aoa_operator", PLATFORM_WORKER_QUAL, PLATFORM_WORKER_QUAL),
+  policy("execution_targets", "execution_targets_tenant_serving", "SELECT", "aoa_app", TENANT_TARGET_QUAL, null),
+  policy("execution_targets", "execution_targets_platform_operator", "ALL", "aoa_operator", PLATFORM_TARGET_QUAL, PLATFORM_TARGET_QUAL),
+  policy("execution_targets", "execution_targets_tenant_enrollment_update", "UPDATE", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("worker_operation_receipts", "worker_operation_receipts_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("worker_lease_rejections", "worker_lease_rejections_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+] as const);
+
+/*
+ * Hand-transcribed from the accepted bounded-grant plan. It is intentionally
+ * independent of the mutable production grant constants above: a grant change
+ * must update this certificate explicitly and survive review.
+ */
+const PLAN_DERIVED_ACL_MATRIX = deepFreeze({
+  relations: {
+    activity_log: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
+    agent_runtime_decisions: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    agent_runtime_trust_rules: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    agent_wakeup_requests: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    agents: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
+    approvals: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    artifact_versions: { aoa_app: ["SELECT"], aoa_operator: [] },
+    artifacts: { aoa_app: ["SELECT"], aoa_operator: [] },
+    assets: { aoa_app: ["SELECT"], aoa_operator: [] },
+    budget_incidents: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    budget_policies: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    companies: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
+    company_memberships: { aoa_app: ["SELECT"], aoa_operator: [] },
+    cost_events: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
+    discussion_entries: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
+    execution_targets: { aoa_app: [], aoa_operator: [] },
+    execution_workspaces: { aoa_app: ["SELECT"], aoa_operator: [] },
+    heartbeat_runs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    hub_audit: { aoa_app: ["INSERT"], aoa_operator: [] },
+    hub_counter_snapshots: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
+    internal_agent_config: { aoa_app: ["SELECT"], aoa_operator: [] },
+    internal_agent_conversations: { aoa_app: ["SELECT"], aoa_operator: [] },
+    internal_agent_messages: { aoa_app: ["SELECT"], aoa_operator: [] },
+    internal_agent_runs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    internal_agent_runtime_approvals: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    internal_agent_tool_trust_rules: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    issue_comments: { aoa_app: ["INSERT"], aoa_operator: [] },
+    issue_labels: { aoa_app: ["SELECT"], aoa_operator: [] },
+    issues: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
+    job_artifacts: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    job_attempts: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    job_outbox: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    job_secret_handles: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    jobs: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    labels: { aoa_app: ["SELECT"], aoa_operator: [] },
+    leases: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    mcp_api_keys: { aoa_app: [], aoa_operator: [] },
+    notification_digest_items: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
+    notification_preferences: { aoa_app: ["SELECT"], aoa_operator: [] },
+    notifications: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    organization_memberships: { aoa_app: ["SELECT"], aoa_operator: [] },
+    organizations: { aoa_app: ["SELECT"], aoa_operator: [] },
+    projects: { aoa_app: ["SELECT"], aoa_operator: [] },
+    service_instances: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    services: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    task_dependencies: { aoa_app: ["SELECT"], aoa_operator: [] },
+    task_outputs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
+    thread_orchestration_state: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
+    user_roles: { aoa_app: ["SELECT"], aoa_operator: [] },
+    worker_enrollment_code_routes: { aoa_app: ["SELECT", "INSERT", "DELETE"], aoa_operator: ["SELECT", "INSERT", "DELETE"] },
+    worker_enrollment_codes: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: ["SELECT", "INSERT", "UPDATE", "DELETE"] },
+    worker_lease_rejections: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    worker_operation_receipts: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    worker_proof_replays: { aoa_app: ["SELECT", "INSERT", "DELETE"], aoa_operator: ["SELECT", "INSERT", "DELETE"] },
+    workers: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: ["SELECT", "INSERT", "UPDATE", "DELETE"] },
+    workspace_runtime_services: { aoa_app: ["SELECT"], aoa_operator: [] },
+  },
+  columns: {
+    mcp_api_keys: {
+      id: { aoa_app: ["SELECT"], aoa_operator: [] },
+      company_id: { aoa_app: ["SELECT"], aoa_operator: [] },
+      user_id: { aoa_app: ["SELECT"], aoa_operator: [] },
+      revoked_at: { aoa_app: ["SELECT"], aoa_operator: [] },
+    },
+    workers: {
+      id: { aoa_app: [], aoa_operator: ["SELECT"] },
+      scope: { aoa_app: [], aoa_operator: ["SELECT"] },
+      organization_id: { aoa_app: [], aoa_operator: ["SELECT"] },
+      label: { aoa_app: [], aoa_operator: ["SELECT"] },
+      status: { aoa_app: [], aoa_operator: ["SELECT"] },
+      created_at: { aoa_app: [], aoa_operator: ["SELECT"] },
+      updated_at: { aoa_app: [], aoa_operator: ["SELECT"] },
+    },
+    execution_targets: {
+      id: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      organization_id: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      owner_user_id: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      slug: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      kind: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      trust_class: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      status: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: ["SELECT", "UPDATE"] },
+      capabilities: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      scope: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      target_authority_key: { aoa_app: ["SELECT"], aoa_operator: ["SELECT"] },
+      device_generation: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: ["SELECT", "UPDATE"] },
+      worker_token_hash: { aoa_app: ["UPDATE"], aoa_operator: ["UPDATE"] },
+      config: { aoa_app: ["SELECT"], aoa_operator: [] },
+      last_seen_at: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: ["SELECT", "UPDATE"] },
+      created_at: { aoa_app: [], aoa_operator: ["SELECT"] },
+      updated_at: { aoa_app: ["UPDATE"], aoa_operator: ["SELECT", "UPDATE"] },
+      registered_profile: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: ["SELECT", "UPDATE"] },
+      registered_profile_hash: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: ["SELECT", "UPDATE"] },
+      provider_constraint_profile: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: ["SELECT", "UPDATE"] },
+    },
+  },
+} as const satisfies {
+  relations: Readonly<Record<string, ServingRolePrivileges>>;
+  columns: Readonly<Record<string, Readonly<Record<string, ServingRolePrivileges>>>>;
+});
+
+function aclTupleKey(tuple: AclTupleManifest): string {
+  return [tuple.grantor, tuple.grantee, tuple.privilegeType, String(tuple.isGrantable)].join(":");
+}
+
+function sortedAclTuples(tuples: readonly AclTupleManifest[]): AclTupleManifest[] {
+  return [...tuples].sort((left, right) => aclTupleKey(left).localeCompare(aclTupleKey(right)));
+}
+
+const OWNER_TABLE_PRIVILEGES = [
+  "SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN",
+] as const;
+const ALL_SERVING_RELATIONS = sortedUnion(APP_SERVING_RELATIONS, OPERATOR_SERVING_RELATIONS);
+
+/*
+ * PostgreSQL records relacl nullness independently from effective privileges.
+ * This is an explicit PostgreSQL 18 catalog certificate: table-granted relations
+ * and both column-only relations have materialized owner ACLs.
+ */
+const RELATION_ACL_NULLNESS_CERTIFICATE = deepFreeze({
+  activity_log: false,
+  agent_runtime_decisions: false,
+  agent_runtime_trust_rules: false,
+  agent_wakeup_requests: false,
+  agents: false,
+  approvals: false,
+  artifact_versions: false,
+  artifacts: false,
+  assets: false,
+  budget_incidents: false,
+  budget_policies: false,
+  companies: false,
+  company_memberships: false,
+  cost_events: false,
+  discussion_entries: false,
+  execution_targets: false,
+  execution_workspaces: false,
+  heartbeat_runs: false,
+  hub_audit: false,
+  hub_counter_snapshots: false,
+  internal_agent_config: false,
+  internal_agent_conversations: false,
+  internal_agent_messages: false,
+  internal_agent_runs: false,
+  internal_agent_runtime_approvals: false,
+  internal_agent_tool_trust_rules: false,
+  issue_comments: false,
+  issue_labels: false,
+  issues: false,
+  job_artifacts: false,
+  job_attempts: false,
+  job_outbox: false,
+  job_secret_handles: false,
+  jobs: false,
+  labels: false,
+  leases: false,
+  mcp_api_keys: false,
+  notification_digest_items: false,
+  notification_preferences: false,
+  notifications: false,
+  organization_memberships: false,
+  organizations: false,
+  projects: false,
+  service_instances: false,
+  services: false,
+  task_dependencies: false,
+  task_outputs: false,
+  thread_orchestration_state: false,
+  user_roles: false,
+  worker_enrollment_code_routes: false,
+  worker_enrollment_codes: false,
+  worker_lease_rejections: false,
+  worker_operation_receipts: false,
+  worker_proof_replays: false,
+  workers: false,
+  workspace_runtime_services: false,
+} as const satisfies Readonly<Record<keyof typeof PLAN_DERIVED_ACL_MATRIX.relations, boolean>>);
+
+export const RELATION_ACL_MANIFEST: Readonly<Record<string, AclManifestEntry>> = deepFreeze(
+  Object.fromEntries(ALL_SERVING_RELATIONS.map((relation) => {
+    const privileges = (PLAN_DERIVED_ACL_MATRIX.relations as
+      Readonly<Record<string, ServingRolePrivileges>>)[relation];
+    if (!privileges) throw new Error(`Missing plan-derived relation ACL certificate for ${relation}`);
+    const aclIsNull = RELATION_ACL_NULLNESS_CERTIFICATE[
+      relation as keyof typeof RELATION_ACL_NULLNESS_CERTIFICATE
+    ];
+    if (aclIsNull === undefined) {
+      throw new Error(`Missing PostgreSQL 18 relacl nullness certificate for ${relation}`);
+    }
+    const tuples = aclIsNull ? [] : sortedAclTuples([
+      ...OWNER_TABLE_PRIVILEGES.map((privilegeType) => ({
+        grantor: "RELATION_OWNER" as const,
+        grantee: "RELATION_OWNER" as const,
+        privilegeType,
+        isGrantable: false,
+      })),
+      ...privileges.aoa_app.map((privilegeType) => ({
+        grantor: "RELATION_OWNER" as const,
+        grantee: "aoa_app" as const,
+        privilegeType,
+        isGrantable: false,
+      })),
+      ...privileges.aoa_operator.map((privilegeType) => ({
+        grantor: "RELATION_OWNER" as const,
+        grantee: "aoa_operator" as const,
+        privilegeType,
+        isGrantable: false,
+      })),
+    ]);
+    return [relation, { aclIsNull, tuples }];
+  })),
+);
+
+const schemaColumnsByRelation = new Map<string, string[]>();
+for (const candidate of Object.values(dbSchema)) {
+  try {
+    const table = candidate as Table;
+    schemaColumnsByRelation.set(
+      getTableName(table),
+      Object.values(getTableColumns(table)).map((column) => column.name).sort(),
+    );
+  } catch {
+    // The db barrel also exports helpers and constants; only Drizzle tables participate.
+  }
+}
+
+export const COLUMN_ACL_MANIFEST: Readonly<
+  Record<string, Readonly<Record<string, AclManifestEntry>>>
+> = deepFreeze(Object.fromEntries(ALL_SERVING_RELATIONS.map((relation) => {
+  const columns = schemaColumnsByRelation.get(relation);
+  if (!columns) throw new Error(`Missing checked-in Drizzle table for serving relation ${relation}`);
+  const explicitColumns = (PLAN_DERIVED_ACL_MATRIX.columns as Readonly<Record<
+    string,
+    Readonly<Record<string, ServingRolePrivileges>>
+  >>)[relation] ?? {};
+  return [relation, Object.fromEntries(columns.map((column) => {
+    const privileges = explicitColumns[column];
+    const tuples = privileges ? sortedAclTuples([
+      ...privileges.aoa_app.map((privilegeType) => ({
+        grantor: "RELATION_OWNER" as const,
+        grantee: "aoa_app" as const,
+        privilegeType,
+        isGrantable: false,
+      })),
+      ...privileges.aoa_operator.map((privilegeType) => ({
+        grantor: "RELATION_OWNER" as const,
+        grantee: "aoa_operator" as const,
+        privilegeType,
+        isGrantable: false,
+      })),
+    ]) : [];
+    return [column, { aclIsNull: tuples.length === 0, tuples }];
+  }))];
+})),
+);

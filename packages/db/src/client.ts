@@ -75,13 +75,22 @@ export function createDb(url: string) {
  */
 export interface NonOwnerDbConnection {
   db: Db;
-  close(): Promise<void>;
+  close(input?: { timeoutSeconds: number }): Promise<void>;
+}
+
+export interface NonOwnerDbConnectionOptions {
+  max?: number;
+  connectTimeoutMs?: number;
+  statementTimeoutMs?: number;
+  lockTimeoutMs?: number;
+  idleInTransactionSessionTimeoutMs?: number;
+  idleTimeoutMs?: number;
 }
 
 function createRequiredNonOwnerDbConnection(
   url: string,
   role: "aoa_app" | "aoa_operator",
-  opts?: { max?: number },
+  opts?: NonOwnerDbConnectionOptions,
 ): NonOwnerDbConnection {
   if (typeof url !== "string" || url.trim() === "") {
     throw new Error(
@@ -90,31 +99,89 @@ function createRequiredNonOwnerDbConnection(
     );
   }
   const client = postgres(url, {
-    connection: { client_encoding: "UTF8" },
+    connect_timeout: (opts?.connectTimeoutMs ?? 5_000) / 1_000,
+    idle_timeout: (opts?.idleTimeoutMs ?? 30_000) / 1_000,
+    connection: {
+      client_encoding: "UTF8",
+      statement_timeout: opts?.statementTimeoutMs ?? 5_000,
+      lock_timeout: opts?.lockTimeoutMs ?? 750,
+      idle_in_transaction_session_timeout: opts?.idleInTransactionSessionTimeoutMs ?? 5_000,
+    },
     ...(opts?.max !== undefined ? { max: opts.max } : {}),
   });
   return {
     db: drizzlePg(client, { schema }),
-    close: () => client.end(),
+    close: (input = { timeoutSeconds: 5 }) => input.timeoutSeconds === 5
+      ? client.end({ timeout: 5 })
+      : client.end({ timeout: input.timeoutSeconds }),
   };
 }
 
 export function createTenantAppDbConnection(
   url: string,
-  opts?: { max?: number },
+  opts?: NonOwnerDbConnectionOptions,
 ): NonOwnerDbConnection {
   return createRequiredNonOwnerDbConnection(url, "aoa_app", opts);
 }
 
 export function createOperatorDbConnection(
   url: string,
-  opts?: { max?: number },
+  opts?: NonOwnerDbConnectionOptions,
 ): NonOwnerDbConnection {
   return createRequiredNonOwnerDbConnection(url, "aoa_operator", opts);
 }
 
 export function createTenantAppDb(url: string, opts?: { max?: number }) {
   return createTenantAppDbConnection(url, opts).db;
+}
+
+export interface RequiredMigrationIdentity {
+  readonly orderedHashes: readonly string[];
+  readonly ledgerSha256: string;
+}
+
+/**
+ * Produce the owner-side migration certificate from the checked-in Drizzle
+ * journal and raw migration bytes. Database serial IDs are deliberately absent:
+ * they are allocation details, not migration identity.
+ */
+export async function loadRequiredMigrationIdentity(): Promise<RequiredMigrationIdentity> {
+  const rawJournal = await readFile(MIGRATIONS_JOURNAL_JSON, "utf8");
+  const journal = JSON.parse(rawJournal) as MigrationJournalFile;
+  if (!Array.isArray(journal.entries)) {
+    throw new Error("The checked-in migration journal has no entries");
+  }
+
+  const orderedPaths = journal.entries
+    .map((entry, entryIndex) => {
+      if (typeof entry?.tag !== "string" || entry.tag.length === 0) {
+        throw new Error("The checked-in migration journal contains an invalid tag");
+      }
+      if (!Number.isInteger(entry.idx)) {
+        throw new Error("The checked-in migration journal contains an invalid index");
+      }
+      return { path: `${entry.tag}.sql`, order: Number(entry.idx), entryIndex };
+    })
+    .sort((left, right) => left.order - right.order || left.entryIndex - right.entryIndex)
+    .map((entry) => entry.path);
+
+  if (new Set(orderedPaths).size !== orderedPaths.length) {
+    throw new Error("The checked-in migration journal contains duplicate paths");
+  }
+
+  const orderedHashes = await Promise.all(orderedPaths.map(async (migrationPath) =>
+    createHash("sha256")
+      .update(await readFile(new URL(`./migrations/${migrationPath}`, import.meta.url)))
+      .digest("hex")));
+  if (new Set(orderedHashes).size !== orderedHashes.length) {
+    throw new Error("The checked-in migration journal contains duplicate migration hashes");
+  }
+
+  const frozenHashes = Object.freeze(orderedHashes);
+  return Object.freeze({
+    orderedHashes: frozenHashes,
+    ledgerSha256: createHash("sha256").update(JSON.stringify(frozenHashes)).digest("hex"),
+  });
 }
 
 /**
