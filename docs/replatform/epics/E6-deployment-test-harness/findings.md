@@ -60,3 +60,34 @@ files exist. Add explicit REDs or fold-and-note.
 `--custom` mechanism (E2-D01 precedent, product Decision #122/C14) for the RLS
 marker migration; confirm both slugs (`distributed_cutover_marker` + `_rls`)
 generate after `0231`.
+
+## E6-F008 — DEP-000 contract port is provider-neutral, NOT WRK-004's authoritative `SandboxProvider` — reconcile before CLI-001/D2
+
+**Status:** `open` · resolve before **CLI-001/D2** (real-provider conformance) · does NOT block `E6-D1-FOUNDATION` · Severity: MED (contravened a plan STOP; harness self-consistent). Source: DEP-000 adversarial review (CONFIRMED should-fix).
+
+DEP-000's `@armyofagents/sandbox-provider-contract` defines a provider-neutral
+`SandboxProviderDriver` (single `invoke(op, args)` over the frozen worker-protocol
+`PROVIDER_OPERATIONS` vocabulary). This is **structurally unrelated** to WRK-004's authoritative
+`SandboxProvider` (`packages/worker-daemon/src/supervisor/provider.ts`, a per-op method surface
+exported per E4-F003). The DEP-000 boundary forbids importing `@armyofagents/worker-daemon`, so
+the two ports cannot be mechanically linked as built.
+
+**Why it happened:** the E6 plan has an internal tension — §2.1 wants DEP-000 provider-neutral
+with deps limited to worker-protocol+zod+Node (no worker-daemon), while §0 (lines 66-74) STOPs on
+"inventing a second provider-driver interface" as requiring an E4 amendment. The orchestrator
+resolved toward §2.1 (provider-neutral) when directing DEP-000; the review flagged that this
+improvised past the §0 STOP.
+
+**Impact:** NONE on `E6-D1-FOUNDATION` — real-provider conformance is explicitly out of that
+gate's scope (plan lines 37-38, 83, 102-103); the harness is internally consistent (deterministic
+fixture replay against the fake, which conforms to the driver). The gap is that a real E2B
+provider implementing `SandboxProvider` cannot be passed to `runSandboxProviderContract` as-is, so
+a green contract does not (yet) prove real-supervisor conformance.
+
+**Resolution (do at CLI-001/D2, before a real provider is validated by this suite):** either
+(a) relocate the `SandboxProvider` port + result types to a shared worker-protocol-only leaf that
+BOTH `@armyofagents/worker-daemon` and the contract import (the E4-F003 "shared leaf" option), so
+the contract validates the authoritative per-op port; OR (b) add a tested
+`SandboxProvider → SandboxProviderDriver` adapter with a totality assertion over all 11 ops + their
+result shapes. The misleading "satisfies this shape" comment in `port.ts` was corrected in the
+DEP-000 fix round; this finding records the deferred reconciliation.

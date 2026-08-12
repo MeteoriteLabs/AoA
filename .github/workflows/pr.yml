@@ -121,6 +121,11 @@ jobs:
           node scripts/check-worker-daemon-boundary.mjs
           node --test scripts/check-worker-daemon-boundary.test.mjs
 
+      - name: Sandbox fake provider dependency boundary
+        run: |
+          node scripts/check-sandbox-fake-provider-boundary.mjs
+          node --test scripts/check-sandbox-fake-provider-boundary.test.mjs
+
       - name: Shared device-proof canonicalization vectors
         run: |
           node scripts/check-device-proof-vectors.mjs

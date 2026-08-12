@@ -46,6 +46,7 @@
     "check:distributed-foundation": "node scripts/check-distributed-execution-foundation.mjs",
     "check:worker-protocol-boundary": "node scripts/check-worker-protocol-boundary.mjs",
     "check:worker-daemon-boundary": "node scripts/check-worker-daemon-boundary.mjs",
+    "check:sandbox-fake-provider-boundary": "node scripts/check-sandbox-fake-provider-boundary.mjs",
     "check:device-proof-vectors": "node scripts/check-device-proof-vectors.mjs",
     "gen:worker-protocol-contract": "node scripts/update-worker-protocol-contract-manifest.mjs",
     "freeze:worker-protocol-v1": "node scripts/freeze-worker-protocol-consumer.mjs",
