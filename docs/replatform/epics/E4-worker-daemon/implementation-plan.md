@@ -506,9 +506,11 @@ the combined revision and alone completes WRK-001.
 **Depends on:** WRK-001; **JOB-002 must be `complete`** at a recorded reviewed revision (its
 as-built enroll/session HTTP contract is the interface consumed here).
 **Outcome:** Generate/store a device-bound Ed25519 key, enroll against the frozen
-`target_enrollment` operation with a transport-boundary device proof, maintain short-lived
-sessions with replay-based renewal, and handle rotation/revocation — with the private key never
-entering logs or config.
+`target_enrollment` operation with a transport-boundary device proof, recover a lost enroll
+response via replay within the code-route window, and handle rotation/revocation/terminal-401 —
+with the private key never entering logs or config. **(Amended per E4-D11: replay is
+lost-response recovery, NOT sustained session renewal; sustained renewal past the 10-min
+code-route window is unsupported by the as-built JOB-002 server and is escalated as E4-F007.)**
 
 **Ticket non-goals:** polling/leasing/execution, sandbox supervision, recovering a lost private
 key, real OS-keychain bindings (DSK-001/002), and changing registered trust via worker report.
@@ -541,10 +543,12 @@ interface (+ in-memory stub for tests). `enroll({config, keyStore, hello, code})
 — assembles `workerHelloV1Schema` (dynamic version/protocol/platform/capabilities/capacity/
 policyHash only), posts `enrollmentRequestV1Schema`, verifies `enrolled`/`rejected`, stores the
 `aoa-worker-session` header, and returns `{workerId, targetId, deviceGeneration,
-providerConstraints, session}`. `SessionStore` schedules refresh before the 15-min TTL via the
-replay path (fresh proof + retained `idempotencyKey` + unchanged digest) and rotates on key
-change. The client obeys `OPERATION_DESCRIPTORS.enrollment` (audience `target_enrollment`,
-256 KiB, 15s, `idempotent`).
+providerConstraints, session}`. `SessionStore` holds the session and uses the
+replay path (fresh proof + retained `idempotencyKey` + unchanged digest) for **lost-response
+recovery within the code-route window**; it does NOT schedule sustained periodic renewal (the
+as-built server rejects replays past the 10-min code route — E4-D11/E4-F007). It rotates on key
+change and, on any enroll-path 401, stops and signals `reenrollment_required`. The client obeys
+`OPERATION_DESCRIPTORS.enrollment` (audience `target_enrollment`, 256 KiB, 15s, `idempotent`).
 
 **Failure behavior:** reused proof ID/signature, expired code/session, key mismatch, replaced
 generation, or revocation returns the closed `unauthorized`/`target_revoked` protocol error;
@@ -577,11 +581,16 @@ worker.
   session; a consumed code with an unrelated key, an invalid/missing signature, a tampered
   body/path/method, a copied session without the key, and a wrong audience/target/generation
   are all rejected.
-- RED `session-renewal.test.ts`: a near-expiry session refreshes via the replay path
-  (fresh proof, same idempotency key, unchanged digest) and returns a new session; a lost
-  response replays the stored identity without double consumption.
-- RED `session-revocation.test.ts`: a revoked/replaced generation returns `target_revoked` and
-  the worker stops using the old identity and backs off.
+- RED `session-renewal.test.ts` (**amended per E4-D11 — replay is lost-response RECOVERY, not
+  sustained renewal**): against a fake that models the enrollment code-route TTL, a lost enroll
+  response is recovered by a replay (same code + retained idempotency key + unchanged digest +
+  a **fresh** proof) WITHIN the code window → same identity + a new session, no double-consume;
+  after the code route expires, a replay returns 401 `unauthorized` and the worker stops and
+  signals `reenrollment_required`. No assertion that a replay succeeds past the code-route window
+  (the as-built server rejects it; sustained renewal is escalated as E4-F007).
+- RED `session-revocation.test.ts`: a revoked/replaced generation on the **enroll/renew path**
+  returns 401 `unauthorized` (NOT `target_revoked`/409, which is a poll/ack-only signal — E4-D11)
+  and the worker treats it as terminal: stops using the old identity and backs off.
 - GREEN: implement identity/transport/enrollment/session; run the focused command + protocol
   build + worker typecheck/build.
 

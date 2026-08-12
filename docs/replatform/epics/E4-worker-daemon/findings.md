@@ -98,3 +98,29 @@ all resolved except one deferred defense-in-depth nit:
 - **N3** metric labels validate VALUES against a bounded token, not just keys.
 - **N1 (deferred)** logger passes `Error` through untouched — a blanket message scrub is
   deferred to WRK-002+; the one reachable instance (S2) is fixed. Tracked, not lost.
+
+## E4-F007 — JOB-002 provides no sustained worker-session renewal (10-min code route < 15-min session) — ESCALATION to E3/JOB-002
+
+**Status:** `open` · escalated to **E3/JOB-002** · Severity: HIGH (blocks long-running workers; does NOT block WRK-002 CORE) · Source: WRK-002 adversarial review (CONFIRMED blocking, reframed per [[E4-D11]]).
+
+The as-built JOB-002 enroll/session contract cannot sustain a worker session beyond the
+enrollment code-route window:
+- `CODE_TTL_MS = 10 min` (never extended) gates **all** enroll replays (`worker-enrollment.ts:295`),
+  and is shorter than `SESSION_TTL_MS = 15 min`.
+- `/worker-control/poll` + `/leases/:id/ack` do not re-issue the session (no sliding renewal).
+- Enroll always requires the one-time code header; there is no device-proof-only reauth.
+
+Therefore a worker whose 15-min session nears expiry has **no path** to a fresh session: replay
+is dead (code route expired at 10 min), poll won't slide it, and it has no live code. A
+job-execution platform needs workers to run longer than 10–15 min, so this is a real gap.
+
+**Resolution (E3/JOB-002 follow-up ticket, server-side — NOT WRK-002, which consumes JOB-002 as
+an immutable input):** pick one — (a) do NOT gate an already-consumed **replay** on the
+code-route TTL (bind it to the enrollment record's own lifetime + a device-proof reauth window
+instead); (b) slide/re-issue the session on authenticated `poll`; or (c) add a device-proof-only
+reauth endpoint. Each needs its own RED coverage + independent review. Until then, WRK-002 ships
+enroll + identity + lost-response recovery + revocation only, and downstream poll (WRK-003) will
+observe session expiry as a 401 requiring re-enrollment.
+
+**Does NOT block:** WRK-002 CORE acceptance (per [[E4-D11]]). **Blocks:** any claim that workers
+run sustained/long jobs (relevant to WRK-005 lease renewal, DEP journeys, E7+ coding runs).
