@@ -22,6 +22,26 @@ export const ALLOWED_LABEL_KEYS = new Set([
   "bucket",
 ]);
 
+// -----------------------------------------------------------------------------
+// WRK-004 sandbox-supervisor metric NAMES.
+//
+// The observable-signals contract names `sandbox_op{op,outcome}`,
+// `cleanup_outcome{status}`, `cleanup_escalation{stage}`, and
+// `reconcile_orphans_total`. To keep label-KEY cardinality inside the closed
+// allow-list already registered above (this module pre-declared `operation`,
+// `outcome`, and `escalation_stage` for exactly this ticket), the supervisor
+// carries the sandbox op name under the existing `operation` key, the op/cleanup
+// disposition under `outcome`, and the escalation rung under `escalation_stage`
+// — NOT new `op`/`status`/`stage` keys. Each of those keys has a CLOSED value set
+// below, so the series space stays provably finite and NO command/env/secret/
+// byte/id content can enter a metric as a key OR value (E4 metrics contract;
+// resourceLabels are HASHED and never labeled).
+// -----------------------------------------------------------------------------
+export const SANDBOX_OP_METRIC = "sandbox_op";
+export const CLEANUP_OUTCOME_METRIC = "cleanup_outcome";
+export const CLEANUP_ESCALATION_METRIC = "cleanup_escalation";
+export const RECONCILE_ORPHANS_METRIC = "reconcile_orphans_total";
+
 /**
  * A bounded low-cardinality enum token: lowercase, starts with a letter, at most
  * 40 chars of [a-z0-9_]. Rejects UUIDs (hyphens/mixed case), long free-form
@@ -39,6 +59,20 @@ const LABEL_VALUE_TOKEN = /^[a-z][a-z0-9_]{0,39}$/;
  * the series space through `outcome`/`workload`/`bucket`.
  */
 export const CLOSED_LABEL_VALUES: Readonly<Record<string, ReadonlySet<string>>> = {
+  operation: new Set([
+    // WRK-004 provider ops (the frozen PROVIDER_OPERATIONS vocabulary).
+    "create",
+    "execute",
+    "cancel",
+    "kill",
+    "destroy",
+    "list",
+    "inspect",
+    "reconcile_cleanup",
+    "checkpoint",
+    "restore",
+    "health",
+  ]),
   outcome: new Set([
     // poll outcomes
     "offer",
@@ -63,9 +97,19 @@ export const CLOSED_LABEL_VALUES: Readonly<Record<string, ReadonlySet<string>>> 
     "acknowledged",
     "rejected",
     "handed_off",
+    // WRK-004 sandbox-op + cleanup outcomes.
+    "success",
+    "failed",
+    "timed_out",
+    "denied",
+    "unsupported",
+    "ignored",
+    "stopped",
   ]),
   workload: new Set(["batch", "browser_session", "service"]),
   bucket: new Set(["lt_1s", "lt_5s", "lt_30s", "gte_30s"]),
+  // WRK-004 escalation ladder rungs.
+  escalation_stage: new Set(["none", "cancel", "kill", "destroy"]),
 };
 
 export interface Metrics {

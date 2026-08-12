@@ -405,10 +405,15 @@ export interface LeaseHandoff {
 }
 
 /**
- * The WRK-004 sandbox-supervisor seam. In WRK-003 this is a STUB (a typed
- * interface + handoff); the real supervisor lands in WRK-004. `accept` returns a
- * promise the loop treats as the in-flight lifetime — it releases the concurrency
- * slot and clears the active-lease when it settles, and the drain step awaits it.
+ * The WRK-004 sandbox-supervisor seam. WRK-003 introduced this typed interface +
+ * handoff; the REAL supervisor (`createSupervisor` in `../supervisor/supervisor.ts`)
+ * now implements it — the loop hands each ACKed lease to the supervisor, which
+ * drives create → execute (inside the sandbox) → terminal → destroy under effect
+ * authority, escalating to the distinct monotonic cleanup authority on abnormal
+ * paths. `accept` returns a promise the loop treats as the in-flight lifetime — it
+ * releases the concurrency slot and clears the active-lease when it settles, and
+ * the drain step awaits it. The seam SHAPE is unchanged (WRK-003 stayed green);
+ * only the implementation behind it landed.
  */
 export interface SupervisorSeam {
   accept(handoff: LeaseHandoff): Promise<void> | void;

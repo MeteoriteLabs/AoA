@@ -180,3 +180,93 @@ export type {
   PollLoopController,
   PollLoopDeps,
 } from "./poll/poll-loop.js";
+
+// --- WRK-004: sandbox supervisor + monotonic cleanup authority ---------------
+
+export {
+  SANDBOX_OP_METRIC,
+  CLEANUP_OUTCOME_METRIC,
+  CLEANUP_ESCALATION_METRIC,
+  RECONCILE_ORPHANS_METRIC,
+} from "./metrics/metrics.js";
+
+// E4-F003: the SandboxProvider PORT type + its result/label types are exported
+// from the public API so a future `@armyofagents/sandbox-fake-provider` (DEP-000)
+// can `implements SandboxProvider` without copying the shape. The port stays
+// authoritative here in worker-daemon.
+export {
+  SANDBOX_STATES,
+  PROVIDER_OPERATIONS,
+  UnsupportedProviderOperation,
+  SandboxNotFoundError,
+  labelsEqual,
+  labelsMatchSelector,
+  hashResourceLabels,
+} from "./supervisor/provider.js";
+export type {
+  SandboxProvider,
+  ProviderOperation,
+  ProviderOpContext,
+  CheckpointMode,
+  HealthMode,
+  SandboxState,
+  CleanupStatus,
+  StopOutcome,
+  ResourceLabels,
+  OwnershipSelector,
+  CreateSandboxSpec,
+  CreateResult,
+  ExecuteInput,
+  ExecuteResult,
+  StopResult,
+  CleanupResult,
+  ResourceSummary,
+  ListInput,
+  ListResult,
+  InspectResult,
+  CheckpointResult,
+  RestoreResult,
+  HealthResult,
+  RedactedResourceProjection,
+} from "./supervisor/provider.js";
+
+export { createFakeSandboxProvider } from "./supervisor/fake-provider.js";
+export type {
+  FakeSandboxProvider,
+  FakeProviderScript,
+  FakeProviderCall,
+  SeededResource,
+} from "./supervisor/fake-provider.js";
+
+export { EffectAuthority, EffectAuthorityWithdrawnError } from "./supervisor/effect-authority.js";
+export type { EffectFence } from "./supervisor/effect-authority.js";
+
+export {
+  CleanupAuthority,
+  CleanupAuthorityDeniedError,
+  ResourceNotAvailableError,
+  CLEANUP_STAGES,
+} from "./supervisor/cleanup-authority.js";
+export type { CleanupAuthorityConfig, CleanupStage } from "./supervisor/cleanup-authority.js";
+
+export { EventSequencer } from "./supervisor/events.js";
+export type {
+  EventDeliveryIdentity,
+  EventSequencerDeps,
+  WorkerEventSink,
+} from "./supervisor/events.js";
+
+export { reconcile } from "./supervisor/reconcile.js";
+export type {
+  ReconcileDeps,
+  ReconcileResult,
+  ReconcileOutcomeRecord,
+} from "./supervisor/reconcile.js";
+
+export { createSupervisor } from "./supervisor/supervisor.js";
+export type {
+  Supervisor,
+  SupervisorDeps,
+  WorkerSupervisionIdentity,
+  SupervisorRunStatus,
+} from "./supervisor/supervisor.js";

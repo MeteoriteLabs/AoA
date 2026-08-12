@@ -36,9 +36,19 @@ server never reads proves only worker self-consistency, not server compatibility
    file, plus a `policy`-job checker that fails if the two consumers diverge.
 3. **Hard STOP:** WRK-002 may not be closed by self-authoring a worker-local copy.
 
-## E4-F002 — Networked worker→provider driver + wire is OUT of WRK-004 CORE
+## E4-F002 — Networked worker→provider driver + wire is OUT of WRK-004 CORE — RESOLVED
 
-**Status:** `open` · resolve at **WRK-004** · Severity: HIGH (cross-plan seam; E6F-03 depends on it).
+**Status:** `resolved` (WRK-004, 2026-08-13) · Severity: HIGH (cross-plan seam; E6F-03 depends on it).
+
+**Resolution:** the `SandboxProvider` port (`packages/worker-daemon/src/supervisor/provider.ts`)
+is transport-agnostic — a plain async method surface with no wire assumptions. WRK-004 CORE binds
+ONLY the in-process `createFakeSandboxProvider`; the networked worker→provider driver + wire is a
+named NON-GOAL owned by a later ticket (reconcile with E6-F003), documented at `provider.ts:24-33`.
+Original text below.
+
+---
+
+**Status (original):** `open` · resolve at **WRK-004** · Severity: HIGH (cross-plan seam; E6F-03 depends on it).
 
 WRK-004 CORE builds only an in-process fake provider. E1 froze only the
 worker↔control-plane transport; the worker↔provider networked path is unowned,
@@ -49,9 +59,19 @@ worker→provider smoke.
 seam** (in-process binding in CORE; network binding deferred). WRK-004 Non-goals
 must name the owning ticket for the networked driver + wire. Reconcile with E6-F003.
 
-## E4-F003 — `SandboxProvider` port must be importable by DEP-000
+## E4-F003 — `SandboxProvider` port must be importable by DEP-000 — RESOLVED
 
-**Status:** `open` · resolve at **WRK-004** · Severity: MED-HIGH.
+**Status:** `resolved` (WRK-004, 2026-08-13) · Severity: MED-HIGH.
+
+**Resolution:** the `SandboxProvider` port type + all result/label/authority types DEP-000 needs
+are exported from `@armyofagents/worker-daemon`'s public API (`src/index.ts`); the port stays
+authoritative in worker-daemon and a future `@armyofagents/sandbox-fake-provider` (DEP-000)
+imports + implements it (documented `provider.ts:15-22`). Mirror in E6-F004.
+Original text below.
+
+---
+
+**Status (original):** `open` · resolve at **WRK-004** · Severity: MED-HIGH.
 
 DEP-000 (fake provider) must implement WRK-004's provider-driver port, but the
 port is planned as internal to `packages/worker-daemon/src/supervisor/provider.ts`.
@@ -60,9 +80,17 @@ port is planned as internal to `packages/worker-daemon/src/supervisor/provider.t
 `@armyofagents/sandbox-fake-provider` depend on it), OR relocate the port to a
 shared leaf both consume. State the choice in WRK-004 Files/Interfaces. Mirror in E6-F004.
 
-## E4-F004 — WRK-004 slice B (cleanup authority) may exceed the 3-day bound
+## E4-F004 — WRK-004 slice B (cleanup authority) may exceed the 3-day bound — RESOLVED (no split)
 
-**Status:** `open` · watch at **WRK-004** · Severity: MED (sizing).
+**Status:** `resolved` (WRK-004, 2026-08-13) · Severity: MED (sizing).
+
+**Resolution:** slice B fit within the ticket bound — full monotonic-epoch + redaction +
+cross-resource-denial + idempotency + escalation + expiry coverage landed in one ticket; **no
+split was triggered**. Original watch note below.
+
+---
+
+**Status (original):** `open` · watch at **WRK-004** · Severity: MED (sizing).
 
 The monotonic redacted cleanup authority (epoch, redacted projection, cross-resource
 denial, idempotency replay, escalation, expiry) is ~1.5–2 days alone.
