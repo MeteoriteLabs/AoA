@@ -37,6 +37,12 @@ import {
   type NewWorkerLeaseRejection,
 } from "../../schema/index.js";
 
+export interface LeaseRejectionCleanupResult {
+  readonly deleted: number;
+  readonly cardinalityObserved: number;
+  readonly cardinalitySaturated: boolean;
+}
+
 export interface TenantAdmissionRecord {
   organizationExists: boolean;
   companyInOrganization: boolean;
@@ -143,7 +149,11 @@ export interface JobControlRepository {
   upsertLeaseRejectionCertificates(
     input: StaticLeaseRejectionInput[] | { certificates: NewWorkerLeaseRejection[] },
   ): Promise<number>;
-  cleanupLeaseRejectionCertificates(input: { limit?: number }): Promise<number>;
+  cleanupLeaseRejectionCertificates(input: {
+    limit: number;
+    cardinalityLimit: number;
+    beforeStatement(phase: "select" | "delete" | "cardinality"): Promise<void>;
+  }): Promise<LeaseRejectionCleanupResult>;
   acquirePlatformTargetAuthorityShared(targetId: string): Promise<void>;
   recheckPlatformTargetAuthority(input: {
     targetId: string;
@@ -226,7 +236,7 @@ export interface JobControlRepository {
     targetId: string;
     attemptId: string;
   }>>;
-  deliverReadyOutbox(input: { claimToken: string; ids: string[]; now: Date }): Promise<number>;
+  deliverReadyOutbox(input: { claimToken: string; ids: string[] }): Promise<number>;
 }
 
 export interface LeaseWorkerAuthority {
@@ -919,40 +929,60 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     },
 
     async cleanupLeaseRejectionCertificates(input) {
-      const boundedLimit = Math.max(1, Math.min(256, Math.floor(input.limit ?? 256)));
+      // Bounds are validated before any beforeStatement wrapper or SQL runs; an invalid limit or
+      // cardinality bound rolls the tenant transaction back before select/delete/cardinality fire.
+      const isBound = (value: number) => Number.isSafeInteger(value) && value > 0;
+      if (!isBound(input.limit) || !isBound(input.cardinalityLimit)) {
+        throw new Error("lease_rejection_cleanup_bound");
+      }
+      const boundedLimit = input.limit;
+      const cardinalityLimit = input.cardinalityLimit;
       const terminal = ["succeeded", "failed", "cancelled", "dead_letter"];
-      const retired = await tx.select({
+
+      await input.beforeStatement("select");
+      // LEFT joins so a certificate whose parent job/attempt/worker/target was deleted, cascaded,
+      // or drifted still appears in the candidate set. A row is eligible only for a correctness
+      // reason (missing/terminal/retired/revoked/offline authority or placement drift), never age;
+      // updated_at is ordering only.
+      const candidates = await tx.select({
         organizationId: workerLeaseRejections.organizationId,
         workerId: workerLeaseRejections.workerId,
-        targetId: workerLeaseRejections.targetId,
         attemptId: workerLeaseRejections.attemptId,
       }).from(workerLeaseRejections)
-        .innerJoin(jobs, and(
+        .leftJoin(jobs, and(
           eq(jobs.organizationId, workerLeaseRejections.organizationId),
           eq(jobs.companyId, workerLeaseRejections.companyId),
           eq(jobs.id, workerLeaseRejections.jobId),
         ))
-        .innerJoin(jobAttempts, and(
+        .leftJoin(jobAttempts, and(
           eq(jobAttempts.organizationId, workerLeaseRejections.organizationId),
           eq(jobAttempts.companyId, workerLeaseRejections.companyId),
           eq(jobAttempts.jobId, workerLeaseRejections.jobId),
           eq(jobAttempts.id, workerLeaseRejections.attemptId),
         ))
-        .innerJoin(workers, and(
+        .leftJoin(workers, and(
           eq(workers.organizationId, workerLeaseRejections.organizationId),
           eq(workers.id, workerLeaseRejections.workerId),
-          eq(workers.targetAuthorityKey, workerLeaseRejections.targetAuthorityKey),
-          eq(workers.executionTargetId, workerLeaseRejections.targetId),
         ))
-        .innerJoin(executionTargets, and(
-          eq(executionTargets.id, workerLeaseRejections.targetId),
-          eq(executionTargets.targetAuthorityKey, workerLeaseRejections.targetAuthorityKey),
-        ))
+        .leftJoin(executionTargets, eq(executionTargets.id, workerLeaseRejections.targetId))
         .where(or(
+          isNull(jobAttempts.id),
+          ne(jobAttempts.status, "pending"),
+          isNull(jobs.id),
           inArray(jobs.status, terminal),
-          inArray(jobAttempts.status, ["offered", "leased", "running", "succeeded", "failed", "cancelled", "expired"]),
+          isNull(workers.id),
           eq(workers.status, "revoked"),
+          ne(workers.targetAuthorityKey, workerLeaseRejections.targetAuthorityKey),
+          ne(workers.executionTargetId, workerLeaseRejections.targetId),
+          isNull(executionTargets.id),
           inArray(executionTargets.status, ["offline", "disabled"]),
+          ne(executionTargets.targetAuthorityKey, workerLeaseRejections.targetAuthorityKey),
+          ne(workerLeaseRejections.placementTargetGeneration, executionTargets.deviceGeneration),
+          ne(workerLeaseRejections.placementProfileHash, executionTargets.registeredProfileHash),
+          ne(
+            workerLeaseRejections.placementProviderConstraintHash,
+            sql`${executionTargets.providerConstraintProfile} ->> 'digest'`,
+          ),
           ne(workerLeaseRejections.workloadType, jobs.workloadType),
           ne(workerLeaseRejections.placementOwner, jobAttempts.placementOwner),
           ne(workerLeaseRejections.placementTargetClass, jobAttempts.placementTargetClass),
@@ -968,17 +998,38 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           asc(workerLeaseRejections.workerId),
           asc(workerLeaseRejections.attemptId),
         )
-        .limit(256)
+        .limit(boundedLimit)
         .for("update", { of: workerLeaseRejections, skipLocked: true });
-      if (retired.length === 0) return 0;
-      const first = retired[0]!;
-      const deleted = await tx.delete(workerLeaseRejections).where(and(
-        eq(workerLeaseRejections.organizationId, first.organizationId),
-        inArray(workerLeaseRejections.workerId, retired.map((row) => row.workerId)),
-        inArray(workerLeaseRejections.targetId, retired.map((row) => row.targetId)),
-        inArray(workerLeaseRejections.attemptId, retired.map((row) => row.attemptId)),
-      )).returning({ attemptId: workerLeaseRejections.attemptId });
-      return Math.min(boundedLimit, deleted.length);
+
+      let deleted = 0;
+      if (candidates.length > 0) {
+        await input.beforeStatement("delete");
+        // Delete only the exact selected (organization_id, worker_id, attempt_id) primary-key
+        // tuples via an OR-of-AND predicate — never independent IN lists, which would expand a
+        // Cartesian set of unselected rows. The exact-tuple RETURNING is the sole affected count;
+        // a return beyond the requested bound rolls back rather than clamping with Math.min.
+        const removed = await tx.delete(workerLeaseRejections).where(or(
+          ...candidates.map((candidate) => and(
+            eq(workerLeaseRejections.organizationId, candidate.organizationId),
+            eq(workerLeaseRejections.workerId, candidate.workerId),
+            eq(workerLeaseRejections.attemptId, candidate.attemptId),
+          )),
+        )).returning({ attemptId: workerLeaseRejections.attemptId });
+        if (removed.length > boundedLimit) throw new Error("lease_rejection_cleanup_bound");
+        deleted = removed.length;
+      }
+
+      await input.beforeStatement("cardinality");
+      // Bounded truthful probe of this tenant's remaining certificates: at most
+      // cardinalityLimit + 1 keys, never a global owner scan.
+      const remaining = await tx.select({ one: sql<number>`1` })
+        .from(workerLeaseRejections)
+        .limit(cardinalityLimit + 1);
+      return {
+        deleted,
+        cardinalityObserved: Math.min(remaining.length, cardinalityLimit),
+        cardinalitySaturated: remaining.length > cardinalityLimit,
+      };
     },
 
     async acquirePlatformTargetAuthorityShared(targetId) {
@@ -1289,7 +1340,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         status: "delivered",
         claimToken: null,
         claimedAt: null,
-        updatedAt: input.now,
+        updatedAt: sql`clock_timestamp()`,
       }).where(and(
         inArray(jobOutbox.id, input.ids),
         eq(jobOutbox.status, "claimed"),
