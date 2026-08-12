@@ -543,18 +543,18 @@ if (config.databaseUrl) {
 // secret managers may instead provision the URLs' credentials ahead of startup.
 await maybeProvisionDistributedExecutionRoles(activeDatabaseConnectionString);
 
-const requiredMigrationIdentity = await loadRequiredMigrationIdentity();
-
 // Corrective E2 successor to E2-D03: flag-on boot must prove both bounded roles
 // before any E3 route/work could start. There is deliberately no owner fallback.
-// Flag-off returns null without reading URLs or allocating either new pool.
-const distributedExecutionDatabases = await openDistributedExecutionDatabases({
-  enabled: config.distributedExecutionEnabled,
-  ownerDb: db,
-  requiredMigrationIdentity,
-  appDatabaseUrl: process.env.AOA_APP_DATABASE_URL,
-  operatorDatabaseUrl: process.env.AOA_OPERATOR_DATABASE_URL,
-});
+// Flag-off skips migration identity loading, URL reads, and pool allocation.
+const distributedExecutionDatabases = config.distributedExecutionEnabled
+  ? await openDistributedExecutionDatabases({
+      enabled: true,
+      ownerDb: db,
+      requiredMigrationIdentity: await loadRequiredMigrationIdentity(),
+      appDatabaseUrl: process.env.AOA_APP_DATABASE_URL,
+      operatorDatabaseUrl: process.env.AOA_OPERATOR_DATABASE_URL,
+    })
+  : null;
 if (distributedExecutionDatabases) {
   logger.info("Verified aoa_app and aoa_operator bounded database pools");
 }

@@ -543,6 +543,29 @@ function exactBoundedDedicatedEndBefore(
     receipt.externalGoneAt <= publicReturnedAt && queriedBackendWasCaptured;
 }
 
+// b3d8 Gap-4 emergency disposal: a control/verifier session whose acquisition/query/poll runs to
+// the immutable 5,000 ms session deadline is force-disposed by production (not the harness escape
+// hatch) with end({ timeout: 0 }). The deadline is armed before acquisition, so it deterministically
+// precedes the query's own statement_timeout. Identical to the normal bound except the exact timeout.
+function boundedEmergencyEndBefore(
+  receipt: DedicatedOwnerReceipt,
+  publicReturnedAt: number | null | undefined,
+): boolean {
+  const endInput = receipt.endInput;
+  const queriedBackendWasCaptured = receipt.queryReceipts.length === 0 ||
+    (receipt.observedIdentities.length === 1 && receipt.observedIdentities.every((identity) =>
+      identity.applicationName === receipt.applicationName && Number.isSafeInteger(identity.pid) &&
+      identity.backendStart.length > 0 && identity.sessionRole.length > 0 &&
+      identity.databaseName.length > 0));
+  return typeof publicReturnedAt === "number" && !receipt.cleanupForcedEnd &&
+    receipt.endOutcome === "fulfilled" && typeof endInput === "object" && endInput !== null &&
+    (endInput as { timeout?: unknown }).timeout === 0 &&
+    receipt.endStartedAt !== null && receipt.endStartedAt <= publicReturnedAt &&
+    receipt.endSettledAt !== null && receipt.endSettledAt <= publicReturnedAt &&
+    receipt.externalGone === true && receipt.externalGoneAt !== null &&
+    receipt.externalGoneAt <= publicReturnedAt && queriedBackendWasCaptured;
+}
+
 const CANCELLATION_IDENTITY_FIELDS = [
   { field: "pid", mutant: -2_147_483_648 },
   { field: "backendStart", mutant: "2000-01-01 00:00:00+00" },
@@ -4044,7 +4067,11 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         expect.soft(harness.state.closeSettled.map(({ role: closedRole }) => closedRole).sort())
           .toEqual(expectedRoles);
         for (const attempt of harness.state.closeAttempts) {
-          expect.soft(attempt.at).toBeGreaterThanOrEqual(pending.abortObservedAt ?? Number.POSITIVE_INFINITY);
+          // b3d8 teardown ordering (supersedes the prior close-after-participant-settlement rule):
+          // the forced serving close is memo-started ON abort, before the pending query observes it,
+          // so its lower bound is the external abort trigger — not pending.abortObservedAt. The upper
+          // bound and the per-close attempt->settle ordering below are unchanged.
+          expect.soft(attempt.at).toBeGreaterThanOrEqual(externallyAbortedAt);
           expect.soft(attempt.at).toBeLessThanOrEqual(publicReturnedAt ?? -1);
           const settled = harness.state.closeSettled.find(({ role: settledRole }) =>
             settledRole === attempt.role);
@@ -4689,8 +4716,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
             typeof tag === "string" && tag.length > 0 && tag !== `${harness.token}_owner`) &&
             new Set(tags).size === tags.length,
           allDedicatedEnded: typeof returnedAt === "number" && dedicatedOwners.length > 1 &&
-            dedicatedOwners.every((receipt) =>
-              exactBoundedDedicatedEndBefore(receipt, returnedAt)),
+            dedicatedOwners.every((receipt) => receipt.id === cleanupControl?.id
+              ? boundedEmergencyEndBefore(receipt, returnedAt)
+              : exactBoundedDedicatedEndBefore(receipt, returnedAt)),
           settlement,
           logs: harness.state.logs,
         }).toEqual({
@@ -4794,8 +4822,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
             typeof tag === "string" && tag.length > 0 && tag !== `${harness.token}_owner`) &&
             new Set(tags).size === tags.length,
           allDedicatedEnded: typeof returnedAt === "number" && dedicatedOwners.length > 1 &&
-            dedicatedOwners.every((receipt) =>
-              exactBoundedDedicatedEndBefore(receipt, returnedAt)),
+            dedicatedOwners.every((receipt) => receipt.id === cleanupControl?.id
+              ? boundedEmergencyEndBefore(receipt, returnedAt)
+              : exactBoundedDedicatedEndBefore(receipt, returnedAt)),
           settlement,
         }).toEqual({
           publicKind: "rejected",

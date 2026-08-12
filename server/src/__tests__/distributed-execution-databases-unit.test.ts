@@ -776,15 +776,18 @@ function analyzeSharedStartupBudget(sourceText: string): {
   const cleanupStartDeclarations: ts.VariableDeclaration[] = [];
   const cleanupLoops: ts.DoStatement[] = [];
   if (cleanupFunction?.body) {
+    // The cleanup budget/loop may live inside a work closure passed to
+    // runWithControlSessionDeadline, so membership is proven with isWithinFunction (walk-up to the
+    // cleanup function) rather than nearestFunction (which stops at the intervening arrow).
     const collectCleanupBound = (node: ts.Node) => {
-      if (ts.isVariableDeclaration(node) && nearestFunction(node) === cleanupFunction &&
+      if (ts.isVariableDeclaration(node) && isWithinFunction(node, cleanupFunction) &&
         ts.isIdentifier(node.name) && node.name.text === "cleanupStartedAt" &&
         node.initializer && isPerformanceNow(node.initializer) &&
         ts.isVariableDeclarationList(node.parent) &&
         (node.parent.flags & ts.NodeFlags.Const) !== 0) {
         cleanupStartDeclarations.push(node);
       }
-      if (ts.isDoStatement(node) && nearestFunction(node) === cleanupFunction) {
+      if (ts.isDoStatement(node) && isWithinFunction(node, cleanupFunction)) {
         cleanupLoops.push(node);
       }
       ts.forEachChild(node, collectCleanupBound);
@@ -830,13 +833,42 @@ function analyzeSharedStartupBudget(sourceText: string): {
     cleanupFunction?.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true &&
     cleanupBudgetDeclarations.length === 1 && cleanupStartDeclarations.length === 1 &&
     hasExactCleanupDeadline && hasResolveOnlyCleanupPoll;
+  const deadlineFunctions = source.statements.filter((statement): statement is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(statement) &&
+    statement.name?.text === "runWithControlSessionDeadline");
+  const deadlineFunction = deadlineFunctions.length === 1 ? deadlineFunctions[0] : undefined;
+  const deadlineTimers = timeoutCalls.filter((call) => isWithinFunction(call, deadlineFunction));
+  const exactDeadlineTimer = deadlineTimers.length === 1 ? deadlineTimers[0] : undefined;
+  const containsDisposeNow = (node: ts.Node): boolean => {
+    let found = false;
+    const visit = (candidate: ts.Node) => {
+      if (ts.isCallExpression(candidate) &&
+        ts.isPropertyAccessExpression(candidate.expression) &&
+        candidate.expression.name.text === "disposeNow") found = true;
+      ts.forEachChild(candidate, visit);
+    };
+    visit(node);
+    return found;
+  };
+  // The structurally causal control/verifier session-deadline timer: exactly one setTimeout inside
+  // runWithControlSessionDeadline, scheduled at the immutable 5,000 ms budget, whose fired callback
+  // emergency-disposes the session (session.disposeNow() -> end({ timeout: 0 })). Any fourth timer
+  // or a session-deadline timer whose callback does not emergency-dispose fails the oracle.
+  const hasOneCausalDeadlineTimer = deadlineFunctions.length === 1 &&
+    deadlineFunction?.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true &&
+    exactDeadlineTimer !== undefined && exactDeadlineTimer.arguments.length >= 2 &&
+    (ts.isArrowFunction(unwrap(exactDeadlineTimer.arguments[0]!)) ||
+      ts.isFunctionExpression(unwrap(exactDeadlineTimer.arguments[0]!))) &&
+    numericConstValue(exactDeadlineTimer.arguments[1]!) === 5_000 &&
+    containsDisposeNow(exactDeadlineTimer.arguments[0]!);
   return {
     valid: openFunctions.length === 1 && controllerConstructions.length === 1 &&
       controllerDeclarations.length === 1 &&
       perOpenControllers.length === 1 && deadlineDeclarations.length === 1 &&
       perOpenDeadlines.length === 1 && budgetMs === 5_000 &&
       deadlineWrites.length === 0 && independentSignalTimeouts === 0 &&
-      timeoutCalls.length === 2 && hasOneOuterDeadlineTimer && hasOneBoundedCleanupPoll &&
+      timeoutCalls.length === 3 && hasOneOuterDeadlineTimer && hasOneBoundedCleanupPoll &&
+      hasOneCausalDeadlineTimer &&
       budgetedPhases.length === STARTUP_PHASES.length && negativeConcurrent && positiveConcurrent &&
       requiredBarriers.every((phase) => budgetedBarrierPhases.includes(phase)),
     openFunctions: openFunctions.length,
@@ -944,26 +976,29 @@ describe("distributed-execution database strangler", () => {
     _credentialMode,
     pass,
   ) => {
-    // Mutations caught: dropping a custom postgres.js socket or direct TLS negotiation silently
-    // moves cancellation onto a different transport/domain even when host/database strings match.
+    // Mutations caught (b3d8 stable-endpoint contract): dropping direct TLS negotiation or
+    // reinterpreting an explicitly empty owner password silently moves cancellation onto a
+    // different transport/authority even when host/database strings match, or inherits ambient
+    // PGPASSWORD. The owner is exactly one native TCP endpoint (no custom socket, no multi-host).
     // The app participant is genuinely pending; only the compiled control cancellation SQL may
     // settle it after the exact per-open controller is externally aborted.
     const dialect = new PgDialect();
+    const actualPostgres = (await vi.importActual<typeof import("postgres")>("postgres")).default;
+    const reparsedClients: Array<ReturnType<typeof actualPostgres>> = [];
+    const ambientPassword = "ambient-password-must-not-be-inherited";
+    const previousPgPassword = process.env.PGPASSWORD;
+    process.env.PGPASSWORD = ambientPassword;
     type CompiledQuery = ReturnType<PgDialect["sqlToQuery"]>;
     const compile = (statement: unknown) => dialect.sqlToQuery(statement as never);
-    const socket = vi.fn(async () => {
-      throw new Error("the hermetic socket must never be opened");
-    });
     const ownerOptions = {
-      host: ["owner-primary.internal", "owner-standby.internal"],
-      port: [5_432, 5_433],
+      host: ["owner-primary.internal"],
+      port: [5_432],
       path: undefined,
       database: "aoa_control",
       user: "owner_transport_user",
       pass,
       ssl: "require" as const,
       sslnegotiation: "direct" as const,
-      socket,
       connection: { application_name: "job003-owner-transport" },
       prepare: false,
       target_session_attrs: "primary" as const,
@@ -1054,6 +1089,7 @@ describe("distributed-execution database strangler", () => {
       statements: CompiledQuery[];
     }> = [];
     const postgresFactory = vi.fn((options: Record<string, unknown>) => {
+      reparsedClients.push(actualPostgres(options as never));
       const end = vi.fn(async () => {});
       const client = { end };
       controls.push({ options, client, end, statements: [] });
@@ -1196,8 +1232,8 @@ describe("distributed-execution database strangler", () => {
         expect(control.end).toHaveBeenCalledOnce();
         expect(control.end).toHaveBeenCalledWith({ timeout: 5 });
       }
-      expect(socket).not.toHaveBeenCalled();
       expect(JSON.stringify(logs)).not.toContain("owner-password-sentinel");
+      expect(JSON.stringify(logs)).not.toContain(ambientPassword);
       expect(logs).toEqual([[
         { code: "distributed_execution_timeout", phase: "app-authority" },
         "distributed execution startup rejected",
@@ -1212,7 +1248,6 @@ describe("distributed-execution database strangler", () => {
       const cancellationSql = cancellationQueries[0]!.sql.toLowerCase();
       const cancellationParams = cancellationQueries[0]!.params;
       expect({
-        socket: controls.every(({ options }) => options.socket === socket),
         sslnegotiation: controls.every(({ options }) => options.sslnegotiation === "direct"),
         backendStartColumn: /\bbackend_start\b/u.test(cancellationSql),
         roleColumn: /\b(?:usename|session_role|role_name|current_user|session_user)\b/u
@@ -1230,8 +1265,11 @@ describe("distributed-execution database strangler", () => {
           typeof parameter === "string" && parameter === appIdentity.database_name),
         sessionTagParameter: cancellationParams.some((parameter) =>
           typeof parameter === "string" && parameter === appIdentity.application_name),
+        reparsedPasswords: await Promise.all(reparsedClients.map(async (client) =>
+          typeof client.options.pass === "function"
+            ? await client.options.pass()
+            : client.options.pass)),
       }).toEqual({
-        socket: true,
         sslnegotiation: true,
         backendStartColumn: true,
         roleColumn: true,
@@ -1242,9 +1280,387 @@ describe("distributed-execution database strangler", () => {
         roleParameter: true,
         databaseParameter: true,
         sessionTagParameter: true,
+        reparsedPasswords: controls.map(() =>
+          typeof pass === "function" ? "owner-password-sentinel" : ""),
+      });
+    } finally {
+      await Promise.allSettled(reparsedClients.map((client) => client.end({ timeout: 1 })));
+      if (previousPgPassword === undefined) delete process.env.PGPASSWORD;
+      else process.env.PGPASSWORD = previousPgPassword;
+      globalThis.AbortController = NativeAbortController;
+      vi.doUnmock("postgres");
+      vi.doUnmock("drizzle-orm/postgres-js");
+      vi.doUnmock("@armyofagents/db");
+      vi.doUnmock("../middleware/logger.js");
+      vi.resetModules();
+    }
+  });
+
+  it("memo-starts owner end and serving close on abort before awaiting a force-close-only participant", async () => {
+    // b3d8 teardown ordering: on abort the coordinator synchronously memo-starts owner
+    // end({ timeout: 5 }) and every allocated serving close({ timeoutSeconds: 5 }) BEFORE it awaits
+    // participant settlement. Here the app participant only settles when its pool is force-closed;
+    // cancellation SQL deliberately never reaches it. A close-after-all-settled ordering would
+    // deadlock, so the pre-fix run hangs and the observed outcome is a watchdog, not a rejection.
+    const dialect = new PgDialect();
+    const compile = (statement: unknown) => dialect.sqlToQuery(statement as never);
+    const queryText = (statement: unknown) => compile(statement).sql.toLowerCase();
+    const ownerOptions = {
+      host: ["owner.internal"],
+      port: [5_432],
+      path: undefined,
+      database: "aoa_control",
+      user: "owner",
+      pass: "",
+      ssl: false as const,
+      connection: { application_name: "job003-teardown-owner" },
+      prepare: false,
+      target_session_attrs: null,
+      fetch_types: true,
+      types: {},
+    };
+    const ownerIdentity = {
+      pid: 101,
+      backend_start: "2026-08-12 00:00:00+00",
+      session_role: "owner",
+      session_user: "owner",
+      usename: "owner",
+      role_name: "owner",
+      database_name: "aoa_control",
+      datname: "aoa_control",
+      application_name: "job003-teardown-owner",
+      session_tag: "job003-teardown-owner",
+    };
+    const appIdentity = {
+      pid: 202,
+      backend_start: "2026-08-12 00:00:01+00",
+      session_role: "aoa_app",
+      usename: "aoa_app",
+      database_name: "aoa_control",
+      datname: "aoa_control",
+      application_name: "job003-teardown-app",
+    };
+    const cleanupReceipt = {
+      participant_pids_gone: true,
+      owner_out_of_transaction: true,
+      advisory_locks_gone: true,
+    };
+    const ownerExecute = async (statement: unknown) => {
+      const text = queryText(statement);
+      if (text.includes("__drizzle_migrations")) return [{ id: 1, hash: HERMETIC_MIGRATION_HASH }];
+      if (text.includes("participant_pids_gone")) return [cleanupReceipt];
+      if (text.includes("pg_backend_pid") || text.includes("backend_start")) return [ownerIdentity];
+      return [];
+    };
+    const ownerDb = {
+      execute: ownerExecute,
+      $client: { options: ownerOptions },
+      transaction: async (callback: (transaction: unknown) => unknown) =>
+        callback({ execute: ownerExecute }),
+    };
+
+    let markAppPending!: () => void;
+    const appPendingStarted = new Promise<void>((resolve) => { markAppPending = resolve; });
+    let settleAppPending!: (error: unknown) => void;
+    const appPending = new Promise<never>((_resolve, reject) => { settleAppPending = reject; });
+    let cancellationReachedApp = false;
+    const appExecute = async (statement: unknown) => {
+      const text = queryText(statement);
+      if (text.includes("session_role_name")) {
+        markAppPending();
+        return appPending;
+      }
+      if (text.includes("pg_backend_pid") || text.includes("backend_start")) return [appIdentity];
+      return [];
+    };
+    const appClose = vi.fn(async () => {
+      settleAppPending(Object.assign(new Error("app pool force-closed"), { code: "57P01" }));
+    });
+    const appDb = {
+      execute: appExecute,
+      transaction: async (callback: (transaction: unknown) => unknown) =>
+        callback({ execute: appExecute }),
+    };
+    const appFactory = vi.fn(() => ({ db: appDb, close: appClose }));
+    const operatorFactory = vi.fn(() => {
+      throw new Error("operator factory must not be reached before the app participant blackholes");
+    });
+
+    const controlEnd = vi.fn(async () => {});
+    const controls: Array<{ options: Record<string, unknown>; client: { end: typeof controlEnd } }> = [];
+    const postgresFactory = vi.fn((options: Record<string, unknown>) => {
+      const client = { end: controlEnd };
+      controls.push({ options, client });
+      return client;
+    });
+    const executeControl = async (statement: unknown) => {
+      const text = queryText(statement);
+      if (text.includes("pg_cancel_backend")) {
+        cancellationReachedApp = true;
+        return [{ cancelled: true }];
+      }
+      if (text.includes("participant_pids_gone")) return [cleanupReceipt];
+      if (text.includes("__drizzle_migrations")) return [{ id: 1, hash: HERMETIC_MIGRATION_HASH }];
+      if (text.includes("control_pid")) return [{ control_pid: 999 }];
+      if (text.includes("pg_backend_pid") || text.includes("backend_start")) return [ownerIdentity];
+      return [];
+    };
+    const NativeAbortController = globalThis.AbortController;
+    const controllers: AbortController[] = [];
+    class ObservedAbortController extends NativeAbortController {
+      constructor() {
+        super();
+        controllers.push(this);
+      }
+    }
+    const observeWithin = async <T>(promise: Promise<T>, timeoutMs: number) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise.then(
+            (value) => ({ kind: "fulfilled" as const, value }),
+            (error: unknown) => ({ kind: "rejected" as const, error }),
+          ),
+          new Promise<{ kind: "watchdog" }>((resolve) => {
+            timer = setTimeout(() => resolve({ kind: "watchdog" }), timeoutMs);
+          }),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    };
+
+    vi.resetModules();
+    vi.doMock("postgres", () => ({ default: postgresFactory }));
+    vi.doMock("drizzle-orm/postgres-js", async () => {
+      const actual = await vi.importActual<typeof import("drizzle-orm/postgres-js")>(
+        "drizzle-orm/postgres-js",
+      );
+      return { ...actual, drizzle: (client: unknown) => {
+        const control = controls.find((candidate) => candidate.client === client);
+        if (!control) throw new Error("unregistered teardown owner control");
+        const execute = (statement: unknown) => executeControl(statement);
+        return {
+          execute,
+          transaction: async (callback: (transaction: unknown) => unknown) =>
+            callback({ execute }),
+        };
+      } };
+    });
+    vi.doMock("@armyofagents/db", async () => {
+      const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
+      return {
+        ...actual,
+        createTenantAppDbConnection: appFactory,
+        createOperatorDbConnection: operatorFactory,
+      };
+    });
+    vi.doMock("../middleware/logger.js", () => ({ logger: { error: vi.fn() } }));
+    globalThis.AbortController = ObservedAbortController;
+    try {
+      const isolated = await import("../db/distributed-execution-databases.js");
+      controllers.length = 0;
+      const operation = isolated.openDistributedExecutionDatabases({
+        enabled: true,
+        ownerDb: ownerDb as never,
+        requiredMigrationIdentity: HERMETIC_MIGRATION_IDENTITY,
+        appDatabaseUrl: "postgres://app-user:app-secret@app.internal/aoa_control",
+        operatorDatabaseUrl: "postgres://operator-user:operator-secret@operator.internal/aoa_control",
+      });
+      void operation.catch(() => {});
+      expect(await observeWithin(appPendingStarted, 2_000)).toMatchObject({ kind: "fulfilled" });
+      expect(controllers).toHaveLength(1);
+      controllers[0]!.abort();
+      const outcome = await observeWithin(operation, 4_000);
+      expect({
+        kind: outcome.kind,
+        message: outcome.kind === "rejected"
+          ? (outcome.error as { message?: unknown }).message
+          : outcome.kind,
+        appClosedWithBoundedTimeout: appClose.mock.calls.length === 1 &&
+          JSON.stringify(appClose.mock.calls[0]) === JSON.stringify([{ timeoutSeconds: 5 }]),
+        ownerEndedWithBoundedTimeout: controlEnd.mock.calls.some((call) =>
+          JSON.stringify(call) === JSON.stringify([{ timeout: 5 }])),
+        cancellationReachedApp,
+      }).toEqual({
+        kind: "rejected",
+        message: "distributed_execution_timeout",
+        appClosedWithBoundedTimeout: true,
+        ownerEndedWithBoundedTimeout: true,
+        cancellationReachedApp: true,
       });
     } finally {
       globalThis.AbortController = NativeAbortController;
+      vi.doUnmock("postgres");
+      vi.doUnmock("drizzle-orm/postgres-js");
+      vi.doUnmock("@armyofagents/db");
+      vi.doUnmock("../middleware/logger.js");
+      vi.resetModules();
+    }
+  });
+
+  it("bounds the cleanup verifier with an absolute session deadline and emergency-disposes on a stall", async () => {
+    // b3d8 absolute session deadline: the final verifier's acquisition/query/poll is bounded by one
+    // immutable 5,000 ms session deadline owned by a single causal timer. When the cleanup query
+    // stalls, first-call-wins disposal calls end({ timeout: 0 }) (force-closing the session, which
+    // settles the stalled query) and the run rejects as a close failure. A verifier that only
+    // re-checks elapsed time between iterations hangs forever, so the pre-fix outcome is a watchdog.
+    const dialect = new PgDialect();
+    const queryText = (statement: unknown) => dialect.sqlToQuery(statement as never).sql.toLowerCase();
+    const ownerOptions = {
+      host: ["owner.internal"],
+      port: [5_432],
+      path: undefined,
+      database: "aoa_control",
+      user: "owner",
+      pass: "",
+      ssl: false as const,
+      connection: { application_name: "job003-deadline-owner" },
+      prepare: false,
+      target_session_attrs: null,
+      fetch_types: true,
+      types: {},
+    };
+    const ownerIdentity = {
+      pid: 101,
+      backend_start: "2026-08-12 00:00:00+00",
+      session_role: "owner",
+      session_user: "owner",
+      usename: "owner",
+      database_name: "aoa_control",
+      datname: "aoa_control",
+      application_name: "job003-deadline-owner",
+      session_tag: "job003-deadline-owner",
+    };
+    const ownerExecute = async (statement: unknown) => {
+      const text = queryText(statement);
+      if (text.includes("__drizzle_migrations")) return [{ id: 1, hash: HERMETIC_MIGRATION_HASH }];
+      if (text.includes("pg_backend_pid") || text.includes("backend_start")) return [ownerIdentity];
+      return [];
+    };
+    const ownerDb = {
+      execute: ownerExecute,
+      $client: { options: ownerOptions },
+      transaction: async (callback: (transaction: unknown) => unknown) =>
+        callback({ execute: ownerExecute }),
+    };
+    // Fail app authority synchronously so teardown runs with no blackholed participant; the only
+    // stall is the verifier cleanup query, isolating the absolute session-deadline behaviour.
+    const appFactory = vi.fn(() => { throw new Error("app authority rejected for verifier isolation"); });
+    const operatorFactory = vi.fn();
+
+    let rejectVerifierStall!: (error: unknown) => void;
+    const verifierStall = new Promise<never>((_resolve, reject) => { rejectVerifierStall = reject; });
+    void verifierStall.catch(() => {});
+    type Control = { appName: string; end: ReturnType<typeof vi.fn> };
+    const controls: Control[] = [];
+    const clientToControl = new WeakMap<object, Control>();
+    const postgresFactory = vi.fn((options: Record<string, unknown>) => {
+      const appName = String((options.connection as Record<string, unknown>)?.application_name ?? "");
+      const isVerify = appName.includes("_verify_");
+      const end = vi.fn(async () => {
+        if (isVerify) {
+          rejectVerifierStall(Object.assign(new Error("verifier session force-closed"), { code: "57P01" }));
+        }
+      });
+      const control: Control = { appName, end };
+      const client = { end };
+      controls.push(control);
+      clientToControl.set(client, control);
+      return client;
+    });
+    const executeForControl = (control: Control) => async (statement: unknown) => {
+      const text = queryText(statement);
+      if (text.includes("__drizzle_migrations")) return [{ id: 1, hash: HERMETIC_MIGRATION_HASH }];
+      if (text.includes("participant_pids_gone")) {
+        return control.appName.includes("_verify_")
+          ? verifierStall
+          : [{ participant_pids_gone: true, owner_out_of_transaction: true, advisory_locks_gone: true }];
+      }
+      if (text.includes("pg_cancel_backend")) return [{ cancelled: true }];
+      if (text.includes("control_pid")) return [{ control_pid: 999 }];
+      if (text.includes("pg_backend_pid") || text.includes("backend_start")) return [ownerIdentity];
+      return [];
+    };
+    const observeWithin = async <T>(promise: Promise<T>, timeoutMs: number) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise.then(
+            (value) => ({ kind: "fulfilled" as const, value }),
+            (error: unknown) => ({ kind: "rejected" as const, error }),
+          ),
+          new Promise<{ kind: "watchdog" }>((resolve) => {
+            timer = setTimeout(() => resolve({ kind: "watchdog" }), timeoutMs);
+          }),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+
+    vi.resetModules();
+    vi.doMock("postgres", () => ({ default: postgresFactory }));
+    vi.doMock("drizzle-orm/postgres-js", async () => {
+      const actual = await vi.importActual<typeof import("drizzle-orm/postgres-js")>(
+        "drizzle-orm/postgres-js",
+      );
+      return { ...actual, drizzle: (client: unknown) => {
+        const control = clientToControl.get(client as object);
+        if (!control) throw new Error("unregistered deadline owner control");
+        const execute = executeForControl(control);
+        return {
+          execute,
+          transaction: async (callback: (transaction: unknown) => unknown) =>
+            callback({ execute }),
+        };
+      } };
+    });
+    vi.doMock("@armyofagents/db", async () => {
+      const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
+      return {
+        ...actual,
+        createTenantAppDbConnection: appFactory,
+        createOperatorDbConnection: operatorFactory,
+      };
+    });
+    vi.doMock("../middleware/logger.js", () => ({ logger: { error: vi.fn() } }));
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const isolated = await import("../db/distributed-execution-databases.js");
+      const outcome = await observeWithin(isolated.openDistributedExecutionDatabases({
+        enabled: true,
+        ownerDb: ownerDb as never,
+        requiredMigrationIdentity: HERMETIC_MIGRATION_IDENTITY,
+        appDatabaseUrl: "postgres://app-user:app-secret@app.internal/aoa_control",
+        operatorDatabaseUrl: "postgres://operator-user:operator-secret@operator.internal/aoa_control",
+      }), 8_000);
+      // Let any deferred unhandled rejection surface before asserting.
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const verifierControls = controls.filter((control) => control.appName.includes("_verify_"));
+      expect({
+        kind: outcome.kind,
+        message: outcome.kind === "rejected"
+          ? (outcome.error as { message?: unknown }).message
+          : outcome.kind,
+        verifierEmergencyDisposed: verifierControls.length > 0 && verifierControls.every((control) =>
+          control.end.mock.calls.some((call) => JSON.stringify(call) === JSON.stringify([{ timeout: 0 }]))),
+        verifierNeverNormalEnd: verifierControls.every((control) =>
+          control.end.mock.calls.every((call) => JSON.stringify(call) !== JSON.stringify([{ timeout: 5 }]))),
+        oneMemoizedEndPerVerifier: verifierControls.every((control) => control.end.mock.calls.length === 1),
+        noUnhandledRejection: unhandled.length === 0,
+      }).toEqual({
+        kind: "rejected",
+        message: "distributed_execution_close",
+        verifierEmergencyDisposed: true,
+        verifierNeverNormalEnd: true,
+        oneMemoizedEndPerVerifier: true,
+        noUnhandledRejection: true,
+      });
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
       vi.doUnmock("postgres");
       vi.doUnmock("drizzle-orm/postgres-js");
       vi.doUnmock("@armyofagents/db");
@@ -1260,41 +1676,158 @@ describe("distributed-execution database strangler", () => {
         "postgres://app-user:app-secret@app-a.internal:5432,app-b.internal:5433/aoa_control",
       operatorDatabaseUrl:
         "postgres://operator-user:operator-secret@operator.internal/aoa_control",
-      expectedCode: "distributed_execution_app_authority",
     },
     {
       targetRole: "operator" as const,
       appDatabaseUrl: "postgres://app-user:app-secret@app.internal/aoa_control",
       operatorDatabaseUrl:
         "postgres://operator-user:operator-secret@operator-a.internal:5432,operator-b.internal:5433/aoa_control",
-      expectedCode: "distributed_execution_operator_authority",
     },
-  ])("accepts a postgres.js multi-host URL with per-host ports for the $targetRole factory", async ({
-    targetRole,
-    appDatabaseUrl,
-    operatorDatabaseUrl,
-    expectedCode,
-  }) => {
-    // postgres.js parses each authority list into two hosts/two ports without opening a socket.
-    // WHATWG URL rejects it; using URL as either serving-role validator rejects valid configs.
-    const factoryUrls = {
-      app: [] as string[],
-      operator: [] as string[],
-    };
-    const targetFailure = new Error(`multi-host URL reached the ${targetRole} factory`);
+  ])(
+    // b3d8 stable-endpoint contract: a well-formed multi-host $targetRole URL is client-side
+    // rotation, not one stable logical PostgreSQL authority. It is rejected as configuration
+    // before either serving factory or any dedicated owner client is allocated.
+    "rejects a well-formed multi-host $targetRole database URL before any allocation",
+    async ({ appDatabaseUrl, operatorDatabaseUrl }) => {
+      const appFactory = vi.fn();
+      const operatorFactory = vi.fn();
+      const postgresFactory = vi.fn(() => {
+        throw new Error("configuration rejection must precede any dedicated owner client");
+      });
+      const { ownerDb } = createHermeticOwnerDb({
+        host: ["owner.internal"],
+        port: [5_432],
+        path: undefined,
+        database: "aoa_control",
+        user: "owner",
+        pass: "",
+        ssl: false,
+        connection: {},
+        prepare: false,
+        target_session_attrs: null,
+        fetch_types: true,
+        types: {},
+      });
+      vi.resetModules();
+      vi.doMock("postgres", () => ({ default: postgresFactory }));
+      vi.doMock("@armyofagents/db", async () => {
+        const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
+        return {
+          ...actual,
+          createTenantAppDbConnection: appFactory,
+          createOperatorDbConnection: operatorFactory,
+        };
+      });
+      vi.doMock("../middleware/logger.js", () => ({ logger: { error: vi.fn() } }));
+      try {
+        const isolated = await import("../db/distributed-execution-databases.js");
+        await expect(isolated.openDistributedExecutionDatabases({
+          enabled: true,
+          ownerDb: ownerDb as never,
+          requiredMigrationIdentity: HERMETIC_MIGRATION_IDENTITY,
+          appDatabaseUrl,
+          operatorDatabaseUrl,
+        })).rejects.toMatchObject({
+          name: "DistributedExecutionStartupError",
+          message: "distributed_execution_configuration",
+        });
+        expect(appFactory).not.toHaveBeenCalled();
+        expect(operatorFactory).not.toHaveBeenCalled();
+        expect(postgresFactory).not.toHaveBeenCalled();
+      } finally {
+        vi.doUnmock("postgres");
+        vi.doUnmock("@armyofagents/db");
+        vi.doUnmock("../middleware/logger.js");
+        vi.resetModules();
+      }
+    },
+  );
+
+  it.each([
+    {
+      label: "custom socket callback",
+      ownerOverride: {
+        socket: () => {
+          throw new Error("owner socket callback must never be invoked");
+        },
+      },
+    },
+    {
+      label: "explicit multi-host transport",
+      ownerOverride: { host: ["owner-a.internal", "owner-b.internal"], port: [5_432, 5_433] },
+    },
+  ])(
+    // b3d8: an owner $label is not one stable logical endpoint. postgres.js may await a custom
+    // socket before its connect timer, or rotate later work to an unattested authority, so both
+    // fail configuration before any dedicated client, socket callback, or serving pool.
+    "rejects an owner $label before any dedicated client or serving factory allocation",
+    async ({ ownerOverride }) => {
+      const appFactory = vi.fn();
+      const operatorFactory = vi.fn();
+      const postgresFactory = vi.fn(() => {
+        throw new Error("configuration rejection must precede any dedicated owner client");
+      });
+      const { ownerDb } = createHermeticOwnerDb({
+        host: ["owner.internal"],
+        port: [5_432],
+        path: undefined,
+        database: "aoa_control",
+        user: "owner",
+        pass: "",
+        ssl: false,
+        connection: {},
+        prepare: false,
+        target_session_attrs: null,
+        fetch_types: true,
+        types: {},
+        ...ownerOverride,
+      });
+      vi.resetModules();
+      vi.doMock("postgres", () => ({ default: postgresFactory }));
+      vi.doMock("@armyofagents/db", async () => {
+        const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
+        return {
+          ...actual,
+          createTenantAppDbConnection: appFactory,
+          createOperatorDbConnection: operatorFactory,
+        };
+      });
+      vi.doMock("../middleware/logger.js", () => ({ logger: { error: vi.fn() } }));
+      try {
+        const isolated = await import("../db/distributed-execution-databases.js");
+        await expect(isolated.openDistributedExecutionDatabases({
+          enabled: true,
+          ownerDb: ownerDb as never,
+          requiredMigrationIdentity: HERMETIC_MIGRATION_IDENTITY,
+          appDatabaseUrl: "postgres://app-user:app-secret@app.internal/aoa_control",
+          operatorDatabaseUrl:
+            "postgres://operator-user:operator-secret@operator.internal/aoa_control",
+        })).rejects.toMatchObject({
+          name: "DistributedExecutionStartupError",
+          message: "distributed_execution_configuration",
+        });
+        expect(appFactory).not.toHaveBeenCalled();
+        expect(operatorFactory).not.toHaveBeenCalled();
+        expect(postgresFactory).not.toHaveBeenCalled();
+      } finally {
+        vi.doUnmock("postgres");
+        vi.doUnmock("@armyofagents/db");
+        vi.doUnmock("../middleware/logger.js");
+        vi.resetModules();
+      }
+    },
+  );
+
+  it("accepts a single native Unix-path owner transport past configuration into app authority", async () => {
+    // b3d8 positive control: one native Unix path is a stable logical endpoint. Configuration
+    // accepts it, the owner is cloned with its exact path, and the run reaches app authority
+    // (where the hermetic app factory throws so no live socket is opened).
     const dialect = new PgDialect();
     const controlEnd = vi.fn(async () => {});
     const controlOptions: Array<Record<string, unknown>> = [];
-    const controls = new WeakMap<object, {
-      execute(statement: unknown): Promise<unknown>;
-    }>();
+    const controls = new WeakMap<object, { execute(statement: unknown): Promise<unknown> }>();
     const postgresFactory = vi.fn((options: Record<string, unknown>) => {
       controlOptions.push(options);
-      const connection = options.connection as Record<string, unknown> | undefined;
-      const applicationName = connection?.application_name;
-      if (typeof applicationName !== "string" || applicationName.length === 0) {
-        throw new Error("dedicated owner fixture requires an application_name");
-      }
       const ordinal = controlOptions.length;
       const identity = {
         pid: 900 + ordinal,
@@ -1303,15 +1836,13 @@ describe("distributed-execution database strangler", () => {
         xact_start: `2026-08-12 00:01:${String(ordinal).padStart(2, "0")}+00`,
         session_role: "owner",
         database_name: "aoa_control",
-        application_name: applicationName,
+        application_name: (options.connection as Record<string, unknown>)?.application_name,
       };
       const client = { end: controlEnd };
       controls.set(client, {
         execute: async (statement: unknown) => {
           const text = dialect.sqlToQuery(statement as never).sql.toLowerCase();
-          if (text.includes("__drizzle_migrations")) {
-            return [{ id: 1, hash: HERMETIC_MIGRATION_HASH }];
-          }
+          if (text.includes("__drizzle_migrations")) return [{ id: 1, hash: HERMETIC_MIGRATION_HASH }];
           if (text.includes("participant_pids_gone")) {
             return [{
               ...identity,
@@ -1320,54 +1851,19 @@ describe("distributed-execution database strangler", () => {
               advisory_locks_gone: true,
             }];
           }
-          if (text.includes("pg_backend_pid") || text.includes("backend_start")) {
-            return [identity];
-          }
+          if (text.includes("pg_backend_pid") || text.includes("backend_start")) return [identity];
           return [];
         },
       });
       return client;
     });
-    const appExecute = async (statement: unknown) => {
-      const text = dialect.sqlToQuery(statement as never).sql.toLowerCase();
-      if (text.includes("pg_backend_pid")) {
-        return [{
-          pid: 202,
-          backend_start: "2026-08-12 00:00:01+00",
-          session_role: "aoa_app",
-          database_name: "aoa_control",
-          application_name: "job003-multihost-app",
-        }];
-      }
-      if (text.includes("session_role_name")) {
-        return [{
-          session_role_name: "aoa_app",
-          role_name: "aoa_app",
-          rolsuper: false,
-          rolbypassrls: false,
-          rolcreatedb: false,
-          rolcreaterole: false,
-          rolinherit: false,
-          rolreplication: false,
-          membership_count: 0,
-          owns_application_objects: false,
-        }];
-      }
-      return [];
-    };
-    const appClose = vi.fn(async () => {});
-    const appConnection = {
-      db: {
-        execute: appExecute,
-        transaction: async (callback: (transaction: unknown) => unknown) =>
-          callback({ execute: appExecute }),
-      },
-      close: appClose,
-    };
+    const appFailure = new Error("app factory reached after Unix-path owner accepted");
+    const appFactory = vi.fn(() => { throw appFailure; });
+    const operatorFactory = vi.fn();
     const { ownerDb } = createHermeticOwnerDb({
-      host: ["owner.internal"],
+      host: ["/var/run/postgresql"],
       port: [5_432],
-      path: undefined,
+      path: "/var/run/postgresql/.s.PGSQL.5432",
       database: "aoa_control",
       user: "owner",
       pass: "",
@@ -1378,7 +1874,6 @@ describe("distributed-execution database strangler", () => {
       fetch_types: true,
       types: {},
     });
-
     vi.resetModules();
     vi.doMock("postgres", () => ({ default: postgresFactory }));
     vi.doMock("drizzle-orm/postgres-js", async () => {
@@ -1387,7 +1882,7 @@ describe("distributed-execution database strangler", () => {
       );
       return { ...actual, drizzle: (client: object) => {
         const control = controls.get(client);
-        if (!control) throw new Error("unregistered multihost owner control");
+        if (!control) throw new Error("unregistered unix-path owner control");
         return {
           transaction: async (callback: (transaction: unknown) => unknown) =>
             callback({ execute: control.execute }),
@@ -1398,124 +1893,45 @@ describe("distributed-execution database strangler", () => {
       const actual = await vi.importActual<typeof import("@armyofagents/db")>("@armyofagents/db");
       return {
         ...actual,
-        createTenantAppDbConnection: (url: string) => {
-          factoryUrls.app.push(url);
-          if (targetRole === "app") throw targetFailure;
-          return appConnection;
-        },
-        createOperatorDbConnection: (url: string) => {
-          factoryUrls.operator.push(url);
-          throw targetFailure;
-        },
+        createTenantAppDbConnection: appFactory,
+        createOperatorDbConnection: operatorFactory,
       };
     });
-    vi.doMock("../db/job-control-legacy-grants.js", async () => {
-      const actual = await vi.importActual<typeof import("../db/job-control-legacy-grants.js")>(
-        "../db/job-control-legacy-grants.js",
-      );
-      return {
-        ...actual,
-        APP_EXECUTION_TARGET_COLUMN_GRANTS: [],
-        APP_ENROLLMENT_TARGET_SELECT_COLUMNS: [],
-        APP_ENROLLMENT_TARGET_UPDATE_COLUMNS: [],
-        APP_JOB_PLACEMENT_TARGET_SELECT_COLUMNS: [],
-        APP_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS: [],
-        APP_MCP_API_KEY_COLUMN_GRANTS: [],
-        JOB_CONTROL_LEGACY_GRANTS: {},
-        JOB_CONTROL_NEW_PATH_GRANTS: {},
-        JOB_LEASING_NEW_PATH_GRANTS: {},
-        JOB_SUBMISSION_LEGACY_GRANTS: {},
-        JOB_SUBMISSION_NEW_PATH_GRANTS: {},
-        OPERATOR_METADATA_COLUMN_GRANTS: {},
-        OPERATOR_ENROLLMENT_TARGET_SELECT_COLUMNS: [],
-        OPERATOR_ENROLLMENT_TARGET_UPDATE_COLUMNS: [],
-        OPERATOR_JOB_PLACEMENT_TARGET_SELECT_COLUMNS: [],
-        OPERATOR_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS: [],
-        APP_SERVING_RELATIONS: [],
-        COLUMN_ACL_MANIFEST: {},
-        FORCE_RLS_RELATIONS: [],
-        NON_FORCE_RLS_RELATIONS: [],
-        POLICY_COUNTS: {},
-        RELATION_ACL_MANIFEST: {},
-        RLS_POLICY_MANIFEST: [],
-        RLS_RELATIONS: [],
-        WORKER_ENROLLMENT_APP_GRANTS: {},
-        WORKER_ENROLLMENT_OPERATOR_GRANTS: {},
-      };
-    });
-    vi.doMock("../middleware/logger.js", () => ({
-      logger: { error: vi.fn() },
-    }));
+    vi.doMock("../middleware/logger.js", () => ({ logger: { error: vi.fn() } }));
     try {
       const isolated = await import("../db/distributed-execution-databases.js");
-      if (targetRole === "operator") {
-        const controlOperatorUrl =
-          "postgres://operator-user:operator-secret@operator.internal/aoa_control";
-        const controlOutcome = await isolated.openDistributedExecutionDatabases({
-          enabled: true,
-          ownerDb: ownerDb as never,
-          requiredMigrationIdentity: HERMETIC_MIGRATION_IDENTITY,
-          appDatabaseUrl,
-          operatorDatabaseUrl: controlOperatorUrl,
-        }).then(
-          () => ({ kind: "fulfilled" as const, error: null }),
-          (error: unknown) => ({ kind: "rejected" as const, error }),
-        );
-        expect({
-          kind: controlOutcome.kind,
-          message: controlOutcome.kind === "rejected"
-            ? (controlOutcome.error as { message?: unknown }).message
-            : null,
-          appFactoryUrls: factoryUrls.app,
-          operatorFactoryUrls: factoryUrls.operator,
-          appCloseCalls: appClose.mock.calls.length,
-        }).toEqual({
-          kind: "rejected",
-          message: "distributed_execution_operator_authority",
-          appFactoryUrls: [appDatabaseUrl],
-          operatorFactoryUrls: [controlOperatorUrl],
-          appCloseCalls: 1,
-        });
-        factoryUrls.app.length = 0;
-        factoryUrls.operator.length = 0;
-        controlOptions.length = 0;
-        appClose.mockClear();
-        controlEnd.mockClear();
-      }
       const outcome = await isolated.openDistributedExecutionDatabases({
         enabled: true,
         ownerDb: ownerDb as never,
         requiredMigrationIdentity: HERMETIC_MIGRATION_IDENTITY,
-        appDatabaseUrl,
-        operatorDatabaseUrl,
+        appDatabaseUrl: "postgres://app-user:app-secret@app.internal/aoa_control",
+        operatorDatabaseUrl: "postgres://operator-user:operator-secret@operator.internal/aoa_control",
       }).then(
         () => ({ kind: "fulfilled" as const, error: null }),
         (error: unknown) => ({ kind: "rejected" as const, error }),
       );
       expect({
         kind: outcome.kind,
-        error: outcome.kind === "rejected" ? {
-          name: (outcome.error as { name?: unknown }).name,
-          message: (outcome.error as { message?: unknown }).message,
-        } : null,
-        appFactoryUrls: factoryUrls.app,
-        operatorFactoryUrls: factoryUrls.operator,
-        appCloseCalls: appClose.mock.calls.length,
-        controlsDisposed: controlEnd.mock.calls.length === controlOptions.length &&
-          controlEnd.mock.calls.every((call) => JSON.stringify(call) === JSON.stringify([{ timeout: 5 }])),
+        message: outcome.kind === "rejected"
+          ? (outcome.error as { message?: unknown }).message
+          : null,
+        ownerCloned: postgresFactory.mock.calls.length > 0,
+        clonedPath: controlOptions.length > 0 &&
+          controlOptions.every((options) => options.path === "/var/run/postgresql/.s.PGSQL.5432"),
+        appReached: appFactory.mock.calls.length,
+        operatorReached: operatorFactory.mock.calls.length,
       }).toEqual({
         kind: "rejected",
-        error: { name: "DistributedExecutionStartupError", message: expectedCode },
-        appFactoryUrls: [appDatabaseUrl],
-        operatorFactoryUrls: targetRole === "operator" ? [operatorDatabaseUrl] : [],
-        appCloseCalls: targetRole === "operator" ? 1 : 0,
-        controlsDisposed: true,
+        message: "distributed_execution_app_authority",
+        ownerCloned: true,
+        clonedPath: true,
+        appReached: 1,
+        operatorReached: 0,
       });
     } finally {
       vi.doUnmock("postgres");
       vi.doUnmock("drizzle-orm/postgres-js");
       vi.doUnmock("@armyofagents/db");
-      vi.doUnmock("../db/job-control-legacy-grants.js");
       vi.doUnmock("../middleware/logger.js");
       vi.resetModules();
     }
@@ -1666,6 +2082,25 @@ describe("distributed-execution database strangler", () => {
     const strictValidFixture = `
       const STARTUP_HANDSHAKE_TIMEOUT_MS = 5_000;
       const STARTUP_CLOSE_TIMEOUT_MS = 5_000;
+      const CONTROL_SESSION_DEADLINE_MS = 5_000;
+      async function runWithControlSessionDeadline(session, work) {
+        const scopedWork = work();
+        let deadlineFired = false;
+        let emergencyDisposal;
+        const expiry = new Promise<void>((resolve) => {
+          setTimeout(() => {
+            deadlineFired = true;
+            emergencyDisposal = session.disposeNow();
+            resolve();
+          }, CONTROL_SESSION_DEADLINE_MS);
+        });
+        await Promise.race([scopedWork, expiry]);
+        if (deadlineFired) {
+          await emergencyDisposal;
+          throw new Error("control session deadline expired");
+        }
+        await session.end();
+      }
       async function assertTrackedParticipantsClosed() {
         const cleanupStartedAt = performance.now();
         do {
@@ -2208,6 +2643,46 @@ describe("distributed-execution database strangler", () => {
       }
     `;
     expect(analyzeSharedStartupBudget(independentlyResetPhaseBudget).valid).toBe(false);
+
+    // The b3d8 oracle recognizes exactly three timers: outer-startup, cleanup-poll, and the causal
+    // control/verifier session-deadline timer. Dropping the third timer, making it non-causal (no
+    // emergency disposal), or adding a fourth all fail the oracle.
+    const missingSessionDeadlineTimer = strictValidFixture.replace(
+      `          setTimeout(() => {
+            deadlineFired = true;
+            emergencyDisposal = session.disposeNow();
+            resolve();
+          }, CONTROL_SESSION_DEADLINE_MS);`,
+      "          resolve();",
+    );
+    const nonCausalSessionDeadlineTimer = strictValidFixture.replace(
+      "emergencyDisposal = session.disposeNow();",
+      "emergencyDisposal = Promise.resolve();",
+    );
+    const extraDeadlineTimer = strictValidFixture.replace(
+      "        await session.end();",
+      `        globalThis.setTimeout(() => undefined, 25);
+        await session.end();`,
+    );
+    for (const invalidDeadlineTimer of [
+      missingSessionDeadlineTimer,
+      nonCausalSessionDeadlineTimer,
+      extraDeadlineTimer,
+    ]) {
+      expect(invalidDeadlineTimer).not.toBe(strictValidFixture);
+      expect(analyzeSharedStartupBudget(invalidDeadlineTimer)).toMatchObject({
+        valid: false,
+        openFunctions: 1,
+        controllers: 1,
+        deadlines: 1,
+        budgetMs: 5_000,
+        budgetedPhases: STARTUP_PHASES,
+        causallyBoundPhases: STARTUP_PHASES,
+        negativeConcurrent: true,
+        positiveConcurrent: true,
+        budgetedBarrierPhases: ["owner-exclusive", "app-positive", "operator-positive"],
+      });
+    }
 
     const sourceText = readFileSync(
       new URL("../db/distributed-execution-databases.ts", import.meta.url),
