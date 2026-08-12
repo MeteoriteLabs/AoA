@@ -352,7 +352,14 @@
           }
         },
         "productionQueryFingerprints": { "$ref": "#/$defs/queryFingerprints" },
-        "results": { "$ref": "#/$defs/results" }
+        "results": { "$ref": "#/$defs/results" },
+        "objectVersion": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "checksumSha256": { "$ref": "#/$defs/sha256" },
+        "objectLockMode": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "retentionUntil": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "readbackSha256": { "$ref": "#/$defs/sha256" },
+        "failureCode": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "failedAttempt": { "type": "boolean" }
       }
     },
     "postSampleFailureEvidence": {
@@ -375,7 +382,14 @@
             "childOutputSha256": { "$ref": "#/$defs/sha256" }
           }
         },
-        "results": { "$ref": "#/$defs/results" }
+        "results": { "$ref": "#/$defs/results" },
+        "objectVersion": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "checksumSha256": { "$ref": "#/$defs/sha256" },
+        "objectLockMode": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "retentionUntil": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "readbackSha256": { "$ref": "#/$defs/sha256" },
+        "failureCode": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "failedAttempt": { "type": "boolean" }
       }
     }
   }

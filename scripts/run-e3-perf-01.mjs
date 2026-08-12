@@ -7,6 +7,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir, cpus, totalmem, arch, release } from "node:os";
@@ -17,13 +18,24 @@ import { isDeepStrictEqual } from "node:util";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const REPOSITORY_ROOT = resolve(dirname(SCRIPT_PATH), "..");
+// The one git call that runs before the campaign parent-environment gate (worktree discovery for
+// ajv) must not inherit config-injection vectors. Strip GIT_*/AWS_*/proxy/SSL_CERT_*/NODE_*
+// overrides while keeping PATH so git still resolves; a poisoned config/ssh-command hook cannot
+// execute at load.
+function sanitizedGitEnvironment() {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([key]) =>
+      !/^(?:GIT_|AWS_)/u.test(key) && !/_PROXY$/u.test(key) && !/^SSL_CERT_/u.test(key) &&
+      !["NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS"].includes(key)),
+  );
+}
 function loadServerAjv() {
   const candidates = [join(REPOSITORY_ROOT, "server", "package.json")];
   try {
     const commonGitDirectory = execFileSync(
       "git",
       ["--no-replace-objects", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-      { cwd: REPOSITORY_ROOT, encoding: "utf8", windowsHide: true },
+      { cwd: REPOSITORY_ROOT, encoding: "utf8", windowsHide: true, env: sanitizedGitEnvironment() },
     ).trim();
     candidates.push(join(dirname(commonGitDirectory), "server", "package.json"));
   } catch {
@@ -1037,6 +1049,546 @@ export async function runE3Perf01({ manifest, outputDirectory }, harness) {
   fail(analysis.kind === "threshold" ? "initial_threshold_miss" : analysis.failedCheck);
 }
 
+// ---------------------------------------------------------------------------
+// Executable campaign command (E3-PERF-01 / F031).
+//
+// `runCampaignCommand(argv, capabilities)` is the hermetic execution boundary.
+// It recomputes every git / provenance / executable-digest / NDJSON / archive /
+// immutable-store fact from four injected capabilities — nothing is an injectable
+// "fact." The four capability groups are exactly {process, artifact, store, clock}.
+// ---------------------------------------------------------------------------
+
+const NDJSON_MAX_LINE_BYTES = 1_048_576;
+const CAMPAIGN_OBJECT_LOCK_MODE = "COMPLIANCE";
+const CAMPAIGN_CAPABILITY_KEYS = Object.freeze(["artifact", "clock", "process", "store"]);
+const CHILD_ENVIRONMENT_ALLOWLIST = Object.freeze([
+  "AOA_E3_PERF_DATABASE_URL_FILE", "LANG", "LC_ALL", "TMPDIR", "TZ",
+]);
+const EXACT_FORBIDDEN_PARENT_ENVIRONMENT_KEYS = new Set([
+  "PATH", "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
+]);
+
+// A pinned executable / runner path must be fully qualified. Drive-rooted
+// (`C:/…`, `C:\…`), POSIX-rooted (`/…`), and UNC (`\\…`) paths are absolute;
+// `./name`, `../name`, and bare `name` (a PATH lookup) are rejected. This is
+// platform-agnostic so the Windows-style hermetic fixtures resolve identically
+// on the Linux gate.
+function isAbsolutePinPath(candidate) {
+  if (typeof candidate !== "string" || candidate.length === 0) return false;
+  if (/^[A-Za-z]:[\\/]/u.test(candidate)) return true;
+  if (candidate.startsWith("/") || candidate.startsWith("\\")) return true;
+  return false;
+}
+
+function isForbiddenParentEnvironmentKey(key) {
+  if (EXACT_FORBIDDEN_PARENT_ENVIRONMENT_KEYS.has(key)) return true;
+  if (/^GIT_/u.test(key)) return true;
+  if (/^AWS_/u.test(key)) return true;
+  if (/_PROXY$/u.test(key)) return true;
+  if (/^SSL_CERT_/u.test(key)) return true;
+  return false;
+}
+
+function assertCampaignCapabilities(capabilities) {
+  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
+    fail("campaign_capabilities");
+  }
+  if (!isDeepStrictEqual(Object.keys(capabilities).sort(), [...CAMPAIGN_CAPABILITY_KEYS])) {
+    fail("campaign_capabilities");
+  }
+  for (const key of CAMPAIGN_CAPABILITY_KEYS) {
+    const value = capabilities[key];
+    if (!value || (typeof value !== "object" && typeof value !== "function")) fail("campaign_capabilities");
+  }
+}
+
+function assertNoForbiddenParentEnvironment(environment, code) {
+  if (!environment || typeof environment !== "object" || Array.isArray(environment)) fail(code);
+  for (const key of Object.keys(environment)) {
+    if (isForbiddenParentEnvironmentKey(key)) fail(code);
+  }
+}
+
+function parseCampaignArgv(argv) {
+  if (Array.isArray(argv) && argv.length === 4 && argv[0] === "--manifest" && argv[2] === "--output") {
+    return { manifestPath: argv[1], outputPath: argv[3] };
+  }
+  fail("cli_arguments");
+}
+
+async function readCampaignManifest(artifact, manifestPath) {
+  let bytes;
+  try {
+    bytes = await artifact.readFile(manifestPath);
+  } catch {
+    fail("manifest_file");
+  }
+  try {
+    return JSON.parse(Buffer.from(bytes).toString("utf8"));
+  } catch {
+    fail("manifest_file");
+  }
+}
+
+async function assertPinnedExecutable(manifest, artifact, pathField, digestField, pathCode, digestCode) {
+  const path = manifest[pathField];
+  if (!isAbsolutePinPath(path)) fail(pathCode);
+  let bytes;
+  try {
+    bytes = await artifact.readFile(path);
+  } catch {
+    fail(digestCode);
+  }
+  if (sha256(Buffer.from(bytes)) !== manifest[digestField]) fail(digestCode);
+}
+
+async function assertBootstrapPins(manifest, artifact) {
+  const executables = [
+    ["gitExecutable", "gitSha256"],
+    ["nodeExecutable", "nodeSha256"],
+    ["pnpmExecutable", "pnpmSha256"],
+    ["containerRuntimeExecutable", "containerRuntimeSha256"],
+    ["provenanceVerifierExecutable", "provenanceVerifierSha256"],
+  ];
+  for (const [pathField, digestField] of executables) {
+    await assertPinnedExecutable(
+      manifest, artifact, pathField, digestField,
+      "bootstrap_executable_path", "bootstrap_executable_digest",
+    );
+  }
+  await assertPinnedExecutable(
+    manifest, artifact, "loadRunnerPath", "loadRunnerSha256",
+    "bootstrap_runner_path", "bootstrap_runner_digest",
+  );
+}
+
+async function assertCampaignGitFacts(processCapability, manifest, cwd, env) {
+  const runGit = (args) => processCapability.run({
+    executable: manifest.gitExecutable,
+    argv: ["--no-replace-objects", ...args],
+    cwd,
+    env: { ...env },
+    shell: false,
+  });
+  const symbolicRef = await runGit(["symbolic-ref", "-q", "HEAD"]);
+  if (symbolicRef && symbolicRef.code === 0) fail("campaign_git_detached");
+  const replaceRefs = await runGit(["for-each-ref", "--format=%(refname)", "refs/replace"]);
+  if (String(replaceRefs?.stdout ?? "").trim().length > 0) fail("campaign_git_replace");
+  const modified = await runGit(["diff", "--name-only", "HEAD"]);
+  if (String(modified?.stdout ?? "").trim().length > 0) fail("campaign_git_dirty");
+  const untracked = await runGit(["ls-files", "--others", "--exclude-standard"]);
+  if (String(untracked?.stdout ?? "").trim().length > 0) fail("campaign_git_dirty");
+  // Recomputed single-parent lineage binding: HEAD must have exactly one parent and that parent
+  // must be the reviewed evidence parent pinned in the manifest. Without this, a clean/committed
+  // checkout at ANY commit — including code never descended from the reviewed baseline — would pass
+  // the git gate and publish an immutable "pass" for unreviewed code. rev-parse HEAD / HEAD^{tree}
+  // are recomputed too so the head is a real non-zero object consistent with the lineage row.
+  const lineage = await runGit(["rev-list", "--parents", "-n1", "HEAD"]);
+  const lineageParts = String(lineage?.stdout ?? "").trim().split(/\s+/u).filter((part) => part.length > 0);
+  if (lineageParts.length !== 2) fail("campaign_git_lineage");
+  const [lineageHead, lineageParent] = lineageParts;
+  if (!SHA40_RE.test(lineageHead) || isZeroHex(lineageHead)) fail("campaign_git_lineage");
+  if (lineageParent !== manifest.evidenceParentRevision) fail("campaign_git_lineage");
+  const headTree = await runGit(["rev-parse", "HEAD^{tree}"]);
+  const headTreeRevision = String(headTree?.stdout ?? "").trim();
+  if (!SHA40_RE.test(headTreeRevision) || isZeroHex(headTreeRevision)) fail("campaign_git_tree");
+  const head = await runGit(["rev-parse", "HEAD"]);
+  if (String(head?.stdout ?? "").trim() !== lineageHead) fail("campaign_git_lineage");
+}
+
+async function assertCampaignProvenance(processCapability, manifest, cwd, env) {
+  const result = await processCapability.run({
+    executable: manifest.provenanceVerifierExecutable,
+    argv: [
+      "verify",
+      "--policy-digest", String(manifest.policyDigest ?? ""),
+      "--trust-root-digest", String(manifest.trustRootDigest ?? ""),
+    ],
+    cwd,
+    env: { ...env },
+    shell: false,
+  });
+  if (!result || result.code !== 0) fail("campaign_provenance");
+  let parsed;
+  try {
+    parsed = JSON.parse(String(result.stdout));
+  } catch {
+    fail("campaign_provenance");
+  }
+  if (!parsed || parsed.verified !== true) fail("campaign_provenance");
+}
+
+function assertCampaignChildContract(manifest) {
+  if (!isDeepStrictEqual(manifest.argv, [manifest.loadRunnerPath, "--maxWorkers=1"])) {
+    fail("campaign_child_argv");
+  }
+  const childEnvironment = manifest.childEnvironment;
+  if (!childEnvironment || typeof childEnvironment !== "object" || Array.isArray(childEnvironment)) {
+    fail("campaign_child_environment");
+  }
+  if (Object.prototype.hasOwnProperty.call(childEnvironment, "PATH")) fail("campaign_child_environment");
+  if (!isDeepStrictEqual(Object.keys(childEnvironment).sort(), [...CHILD_ENVIRONMENT_ALLOWLIST])) {
+    fail("campaign_child_environment");
+  }
+  if (childEnvironment.LANG !== "C" || childEnvironment.LC_ALL !== "C" || childEnvironment.TZ !== "UTC") {
+    fail("campaign_child_environment");
+  }
+  if (!isAbsolutePinPath(childEnvironment.TMPDIR) ||
+      !isAbsolutePinPath(childEnvironment.AOA_E3_PERF_DATABASE_URL_FILE)) {
+    fail("campaign_child_environment");
+  }
+}
+
+function assertChildOutputRedacted(stdout, stderr) {
+  for (const line of String(stdout).split(/\r?\n/u)) {
+    if (Buffer.byteLength(line, "utf8") > NDJSON_MAX_LINE_BYTES) fail("campaign_ndjson_line_bytes");
+  }
+  try {
+    scanSensitiveStrings({ stdout: String(stdout), stderr: String(stderr) });
+  } catch {
+    fail("campaign_redaction");
+  }
+}
+
+function assertArchiveRedacted(archiveBytes) {
+  try {
+    scanSensitiveStrings({ archive: Buffer.from(archiveBytes).toString("utf8") });
+  } catch {
+    fail("campaign_redaction");
+  }
+}
+
+// Independent evidence re-validation: a digest-pinned load runner that exits 0 can still emit
+// failing-threshold, wrong-cardinality, out-of-order, or structurally-invalid measurement records
+// (a child bug/misconfiguration). The campaign path must NOT trust the child exit code alone — it
+// recomputes the same structural + threshold classification the canonical engine does before any
+// archive is built, hashed, or published. parseNdjson / classifyRecordEnvelope fail closed with
+// their own codes; structural and threshold misses fail closed here.
+function assertCampaignEvidence(manifest, stdout) {
+  const records = parseNdjson(String(stdout));
+  if (classifyRecordEnvelope(records)) fail("campaign_evidence_structure");
+  for (const record of records.slice(0, 4)) {
+    if (checkClaimRecord(record, manifest)) fail("campaign_evidence_structure");
+  }
+  for (const record of records.slice(4, 7)) {
+    if (checkMutationRecord(record, manifest)) fail("campaign_evidence_structure");
+  }
+  if (checkStorageRecord(records[7], manifest)) fail("campaign_evidence_structure");
+  if (thresholdFailures(records, manifest).length > 0) fail("campaign_evidence_threshold");
+}
+
+function assertCompliantObjectRetention(retention, nowMs, code) {
+  if (!retention || typeof retention !== "object") fail(code);
+  if (String(retention.mode).toUpperCase() !== CAMPAIGN_OBJECT_LOCK_MODE) fail(code);
+  const retainMs = Date.parse(retention.retainUntil);
+  if (!Number.isFinite(retainMs) || retainMs - nowMs < MINIMUM_RETENTION_MS) fail(code);
+}
+
+// Immutable put → head → get → retention. The readback trio is pinned to the
+// version id the store RETURNS (never a manifest / caller supplied value). Any
+// broken step fails closed with its exact code; on the failed-attempt path a
+// broken store step supersedes the original cause.
+async function performImmutableUpload(store, archiveBytes, archiveSha256, objectUri, retainUntil, nowMs) {
+  let putResult;
+  try {
+    putResult = await store.putObject({
+      objectUri,
+      bytes: archiveBytes,
+      checksumSha256: archiveSha256,
+      ifNoneMatch: "*",
+      objectLockMode: CAMPAIGN_OBJECT_LOCK_MODE,
+      retainUntil,
+    });
+  } catch {
+    fail("campaign_store_upload");
+  }
+  const versionId = putResult?.versionId;
+  if (typeof versionId !== "string" || versionId.length === 0) fail("campaign_store_version");
+  if (putResult.checksumSha256 !== archiveSha256) fail("campaign_store_checksum");
+  const versionRef = { objectUri, versionId };
+  let head;
+  try {
+    head = await store.headObject({ ...versionRef });
+  } catch {
+    fail("campaign_store_readback");
+  }
+  if (!head) fail("campaign_store_readback");
+  let fetched;
+  try {
+    fetched = await store.getObject({ ...versionRef });
+  } catch {
+    fail("campaign_store_readback");
+  }
+  const fetchedBytes = Buffer.isBuffer(fetched) ? fetched : Buffer.from(fetched ?? []);
+  if (!fetchedBytes.equals(Buffer.from(archiveBytes))) fail("campaign_archive_readback");
+  const retention = await store.getObjectRetention({ ...versionRef });
+  assertCompliantObjectRetention(retention, nowMs, "campaign_store_retention");
+  return versionId;
+}
+
+export async function runCampaignCommand(argv, capabilities) {
+  try {
+    assertCampaignCapabilities(capabilities);
+    const { process: processCapability, artifact, store, clock } = capabilities;
+    const parentEnvironment = processCapability.parentEnvironment();
+    assertNoForbiddenParentEnvironment(parentEnvironment, "bootstrap_parent_environment");
+    const { manifestPath, outputPath } = parseCampaignArgv(argv);
+    const manifest = await readCampaignManifest(artifact, manifestPath);
+    validateManifestDocument(manifest);
+    await artifact.makeDirectoryExclusive();
+    await artifact.retainLocal();
+
+    const now = clock.now();
+    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) fail("campaign_clock");
+    const nowMs = now.getTime();
+    const objectUri = `${manifest.output.origin}/e3-perf-01/${manifest.attempt}/archive`;
+    const retainUntil = manifest.output.retentionUntil;
+    const checkoutCwd = dirname(manifestPath);
+    const cleanEnvironment = { ...parentEnvironment };
+
+    let archiveBytes;
+    let archiveSha256;
+    try {
+      await assertBootstrapPins(manifest, artifact);
+      await assertCampaignGitFacts(processCapability, manifest, checkoutCwd, cleanEnvironment);
+      await assertCampaignProvenance(processCapability, manifest, checkoutCwd, cleanEnvironment);
+      assertCampaignChildContract(manifest);
+      const child = await processCapability.run({
+        executable: manifest.nodeExecutable,
+        argv: [...manifest.argv],
+        cwd: checkoutCwd,
+        env: { ...manifest.childEnvironment },
+        shell: false,
+      });
+      if (!child || child.code !== 0) fail("campaign_child_exit");
+      assertChildOutputRedacted(child.stdout, child.stderr);
+      assertCampaignEvidence(manifest, child.stdout);
+      archiveBytes = Buffer.from(await artifact.archive());
+      assertArchiveRedacted(archiveBytes);
+      archiveSha256 = sha256(archiveBytes);
+    } catch (preStoreError) {
+      if (!(preStoreError instanceof GateFailure)) throw preStoreError;
+      // Retain the sanitized local attempt (already done at retainLocal), then upload
+      // the failed-attempt archive through the full immutable trace. A broken store
+      // step supersedes the original cause; an intact one preserves it.
+      const failureArchive = Buffer.from(await artifact.archive());
+      const failureSha256 = sha256(failureArchive);
+      await performImmutableUpload(store, failureArchive, failureSha256, objectUri, retainUntil, nowMs);
+      fail(preStoreError.code);
+    }
+
+    const objectVersion = await performImmutableUpload(
+      store, archiveBytes, archiveSha256, objectUri, retainUntil, nowMs,
+    );
+    const qaPath = `${String(outputPath).replace(/[\\/]+$/u, "")}/qa.json`;
+    const qaDocument = {
+      schemaVersion: 1,
+      gate: "E3-PERF-01",
+      disposition: "pass",
+      objectUri,
+      objectVersion,
+      checksumSha256: archiveSha256,
+      archiveSha256,
+      retentionUntil: retainUntil,
+      objectLockMode: CAMPAIGN_OBJECT_LOCK_MODE,
+    };
+    const wrote = await artifact.writeExclusive(qaPath, Buffer.from(JSON.stringify(qaDocument)));
+    if (wrote !== true) fail("campaign_qa_exclusive");
+    return { disposition: "pass", archiveSha256, objectVersion };
+  } catch (error) {
+    return {
+      disposition: "fail",
+      failureCode: error instanceof GateFailure ? error.code : "campaign_internal_error",
+    };
+  }
+}
+
+function projectCampaignEnvelope(outcome) {
+  const disposition = outcome && outcome.disposition === "pass" ? "pass" : "fail";
+  return {
+    kind: disposition === "pass" ? "e3_perf_01_cli_result" : "e3_perf_01_cli_failure",
+    mode: "campaign",
+    phase: "campaign-preflight",
+    disposition,
+  };
+}
+
+// Production adapters for `runCampaignCommand`. Module-private and frozen: there
+// is no CLI option, manifest key, environment variable, dynamic module path, or
+// endpoint override that can select a substitute. The load child, git, and the
+// provenance verifier are spawned with `shell:false` and the reviewed closed
+// environment; the immutable store is real S3 with checksum + object-lock.
+const CAMPAIGN_ATTEMPT_MOUNT = "/run/aoa/e3-perf-01-bootstrap.json";
+
+function resolveCampaignAttemptDirectory() {
+  const bootstrap = JSON.parse(readFileSync(CAMPAIGN_ATTEMPT_MOUNT, "utf8"));
+  const directory = bootstrap.outputDirectory;
+  if (!isAbsolutePinPath(directory)) fail("campaign_attempt_directory");
+  return directory;
+}
+
+async function loadS3Client() {
+  const aws = await import("@aws-sdk/client-s3");
+  return aws;
+}
+
+function parseObjectUri(objectUri) {
+  const match = String(objectUri).match(/^s3:\/\/([^/]+)\/(.+)$/u);
+  if (!match) fail("campaign_store_upload");
+  return { bucket: match[1], key: match[2] };
+}
+
+function createProductionCampaignCapabilities() {
+  const processCapability = Object.freeze({
+    parentEnvironment() {
+      return { ...process.env };
+    },
+    run(input) {
+      return new Promise((resolvePromise) => {
+        let child;
+        try {
+          child = spawn(input.executable, [...input.argv], {
+            cwd: input.cwd,
+            env: { ...input.env },
+            shell: input.shell === true,
+            windowsHide: true,
+          });
+        } catch {
+          resolvePromise({ code: 127, stdout: "", stderr: "spawn failed" });
+          return;
+        }
+        let stdout = "";
+        let stderr = "";
+        child.stdout?.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+        child.stderr?.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+        child.on("error", () => resolvePromise({ code: 127, stdout, stderr: stderr || "spawn error" }));
+        child.on("close", (code) => resolvePromise({ code: code ?? 1, stdout, stderr }));
+      });
+    },
+  });
+  const artifactCapability = Object.freeze({
+    async realpath(path) {
+      return realpathSync.native(path);
+    },
+    async readFile(path) {
+      return readFileSync(path);
+    },
+    async stat(path) {
+      const stats = lstatSync(path);
+      return {
+        type: stats.isDirectory() ? "directory" : "file",
+        mode: (stats.mode & 0o7777).toString(8),
+        size: stats.size,
+      };
+    },
+    async list() {
+      return [];
+    },
+    async makeDirectoryExclusive() {
+      // Exclusive create: a replayed or pre-existing attempt directory must fail closed rather than
+      // silently reuse (and immutably publish) prior contents. The parent evidence root is expected
+      // to exist; only the per-attempt directory is created here.
+      try {
+        mkdirSync(resolveCampaignAttemptDirectory(), { recursive: false });
+      } catch (error) {
+        if (error && error.code === "EEXIST") fail("campaign_attempt_directory_exists");
+        throw error;
+      }
+      return true;
+    },
+    async writeExclusive(path, bytes) {
+      try {
+        writeFileSync(path, bytes, { flag: "wx" });
+        return true;
+      } catch (error) {
+        if (error && error.code === "EEXIST") return false;
+        throw error;
+      }
+    },
+    async archive() {
+      // REAL-CAMPAIGN INTEGRATION (not exercised by the hermetic capability tests, which inject an
+      // opaque archive): the archive is built from the attempt directory. For a real run the pinned
+      // load runner's measurement evidence (and, on a pre-sample failure, a sanitized failure
+      // record) must be materialized under this directory before archival — either by the load
+      // runner writing e3-perf-01-evidence.json into the bootstrap outputDirectory, or by the
+      // orchestrator persisting the independently re-validated evidence there. Wiring that output
+      // contract is a production step to complete when the E6F-06/Linux campaign host is provisioned
+      // (the million-row campaign remains correctly unrun until then).
+      const built = await buildEvidenceArchive(resolveCampaignAttemptDirectory());
+      return built.bytes;
+    },
+    async retainLocal() {
+      // The exclusively-created attempt directory is retained in place on local disk for forensics;
+      // no failure path deletes, overwrites, or reuses it (see the archive() integration note above).
+    },
+  });
+  const storeCapability = Object.freeze({
+    async putObject(input) {
+      const { S3Client, PutObjectCommand } = await loadS3Client();
+      const { bucket, key } = parseObjectUri(input.objectUri);
+      const client = new S3Client({});
+      const response = await client.send(new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: Buffer.from(input.bytes),
+        ChecksumSHA256: Buffer.from(input.checksumSha256, "hex").toString("base64"),
+        IfNoneMatch: input.ifNoneMatch,
+        ObjectLockMode: input.objectLockMode,
+        ObjectLockRetainUntilDate: new Date(input.retainUntil),
+      }));
+      // Return the checksum S3 actually recorded (never echo the caller's), so the readback guard
+      // in performImmutableUpload is a real independent comparison, not a tautology.
+      return {
+        versionId: response.VersionId ?? "",
+        checksumSha256: response.ChecksumSHA256
+          ? Buffer.from(response.ChecksumSHA256, "base64").toString("hex")
+          : "",
+      };
+    },
+    async headObject(input) {
+      const { S3Client, HeadObjectCommand } = await loadS3Client();
+      const { bucket, key } = parseObjectUri(input.objectUri);
+      const client = new S3Client({});
+      const response = await client.send(new HeadObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        VersionId: input.versionId,
+      }));
+      return { versionId: response.VersionId ?? input.versionId, byteLength: response.ContentLength ?? 0 };
+    },
+    async getObject(input) {
+      const { S3Client, GetObjectCommand } = await loadS3Client();
+      const { bucket, key } = parseObjectUri(input.objectUri);
+      const client = new S3Client({});
+      const response = await client.send(new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        VersionId: input.versionId,
+      }));
+      return Buffer.from(await response.Body.transformToByteArray());
+    },
+    async getObjectRetention(input) {
+      const { S3Client, GetObjectRetentionCommand } = await loadS3Client();
+      const { bucket, key } = parseObjectUri(input.objectUri);
+      const client = new S3Client({});
+      const response = await client.send(new GetObjectRetentionCommand({
+        Bucket: bucket,
+        Key: key,
+        VersionId: input.versionId,
+      }));
+      const retention = response.Retention;
+      if (!retention) return null;
+      return { mode: retention.Mode, retainUntil: new Date(retention.RetainUntilDate).toISOString() };
+    },
+  });
+  return Object.freeze({
+    process: processCapability,
+    artifact: artifactCapability,
+    store: storeCapability,
+    clock: Object.freeze({ now: () => new Date() }),
+  });
+}
+
 function gitText(args, cwd = REPOSITORY_ROOT) {
   return execFileSync("git", ["--no-replace-objects", ...args], {
     cwd,
@@ -1177,32 +1729,23 @@ function parseCliArguments(argv) {
   fail("cli_arguments");
 }
 
-async function runCli(argv) {
-  let parsed;
+async function runValidateManifestCli(argv) {
   try {
-    parsed = parseCliArguments(argv);
+    const parsed = parseCliArguments(argv);
+    if (parsed.mode !== "validate-manifest") fail("cli_arguments");
     const manifest = parseManifestFile(parsed.manifestPath);
-    if (parsed.mode === "validate-manifest") {
-      validatePrecommitManifest(manifest, parsed.manifestPath, parsed.evidenceParent);
-      return {
-        kind: "e3_perf_01_cli_result",
-        mode: "validate-manifest",
-        phase: "manifest-preflight",
-        disposition: "pass",
-      };
-    }
-    validateManifestDocument(manifest);
-    // The exported orchestration API is the campaign engine. The CLI requires the
-    // approved outer launcher to supply its verified adapters; absent that binding,
-    // a direct host invocation fails before the load child can start.
-    fail("campaign_launcher_attestation");
+    validatePrecommitManifest(manifest, parsed.manifestPath, parsed.evidenceParent);
+    return {
+      kind: "e3_perf_01_cli_result",
+      mode: "validate-manifest",
+      phase: "manifest-preflight",
+      disposition: "pass",
+    };
   } catch {
     return {
       kind: "e3_perf_01_cli_failure",
-      mode: parsed?.mode ?? (argv[0] === "--validate-manifest" ? "validate-manifest" : "campaign"),
-      phase: parsed?.mode === "validate-manifest" || argv[0] === "--validate-manifest"
-        ? "manifest-preflight"
-        : "campaign-preflight",
+      mode: "validate-manifest",
+      phase: "manifest-preflight",
       disposition: "fail",
     };
   }
@@ -1218,7 +1761,14 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
-  const record = await runCli(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  let record;
+  if (argv[0] === "--validate-manifest") {
+    record = await runValidateManifestCli(argv);
+  } else {
+    const outcome = await runCampaignCommand(process.argv.slice(2), createProductionCampaignCapabilities());
+    record = projectCampaignEnvelope(outcome);
+  }
   process.stdout.write(`${JSON.stringify(record)}\n`);
   if (record.disposition !== "pass") process.exitCode = 1;
 }

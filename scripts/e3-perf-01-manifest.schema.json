@@ -213,6 +213,31 @@
         },
         "retentionUntil": { "$ref": "#/$defs/timestamp" }
       }
+    },
+    "gitExecutable": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "gitSha256": { "$ref": "#/$defs/sha256" },
+    "nodeExecutable": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "nodeSha256": { "$ref": "#/$defs/sha256" },
+    "pnpmExecutable": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "pnpmSha256": { "$ref": "#/$defs/sha256" },
+    "containerRuntimeExecutable": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "containerRuntimeSha256": { "$ref": "#/$defs/sha256" },
+    "provenanceVerifierExecutable": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "provenanceVerifierSha256": { "$ref": "#/$defs/sha256" },
+    "policyDigest": { "$ref": "#/$defs/sha256" },
+    "trustRootDigest": { "$ref": "#/$defs/sha256" },
+    "loadRunnerPath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "loadRunnerSha256": { "$ref": "#/$defs/sha256" },
+    "argv": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+    },
+    "childEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Za-z_][A-Za-z0-9_]*$": { "type": "string", "minLength": 1, "maxLength": 8192 }
+      }
     }
   },
   "$defs": {
