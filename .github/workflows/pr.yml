@@ -116,6 +116,11 @@ jobs:
           node scripts/check-worker-protocol-boundary.mjs
           node --test scripts/check-worker-protocol-boundary.test.mjs
 
+      - name: Worker daemon dependency boundary
+        run: |
+          node scripts/check-worker-daemon-boundary.mjs
+          node --test scripts/check-worker-daemon-boundary.test.mjs
+
       - name: Validate Dockerfile deps stage
         run: |
           missing=0

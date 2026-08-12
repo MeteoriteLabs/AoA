@@ -322,8 +322,10 @@ root `package.json` script `check:worker-daemon-boundary`, a new CI `policy`-job
   (path or env — never inline-logged), device-key-store mode (`mounted_secret | os_keychain`),
   target scope (`platform | organization | owner`), local concurrency limits, poll timeout,
   backoff bounds, health/metrics bind address (loopback only). Any invalid endpoint,
-  unparseable boolean/enum, or inconsistent trust/scope combination **throws before any I/O**,
-  and the entrypoint exits non-zero. It **never reads a database URL**; a present
+  unparseable boolean/enum, or non-loopback health host **throws before any I/O**,
+  and the entrypoint exits non-zero. (Per **E4-D10** custody and scope are
+  orthogonal — there is no config-load trust/scope coupling to enforce.)
+  It **never reads a database URL**; a present
   `*_DATABASE_URL` env is ignored (and a test asserts it is neither required nor used).
 - **Local health/metrics only (WRK-001).** `health/health-server.ts` binds a tiny HTTP server
   to loopback, exposing `GET /healthz` (liveness) and `GET /metrics` (payload-free bounded

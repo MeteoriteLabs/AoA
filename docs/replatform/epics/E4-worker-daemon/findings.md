@@ -55,3 +55,32 @@ denial, idempotency replay, escalation, expiry) is ~1.5–2 days alone.
 
 **Resolution:** pre-authorize splitting slice B into a follow-on ticket if it slips;
 record the split trigger so it is not an improvised scope change.
+
+## E4-F005 — WRK-001 dependency-boundary gate was blind to `require()` — RESOLVED
+
+**Status:** `resolved` (WRK-001 fix round) · Severity: HIGH (supply-chain bypass).
+
+To permit Node runtime globals (`process`/`Buffer`) for a daemon, the initial
+`worker-daemon-boundary.mjs` dropped the shared `findForbiddenGlobals` scan, which
+also silently removed CommonJS-`require` detection. A runtime source could
+`require("child_process")` or `createRequire` via `node:module` and pass the gate —
+defeating the static import allow-list the gate exists to enforce.
+
+**Resolution:** re-imported `findForbiddenGlobals`; the gate rejects any `require(`
+token and the `module`/`node:module` bridge builtins while still allowing Node
+globals. REDs B1a/B1b/B1c in `check-worker-daemon-boundary.test.mjs` lock it.
+
+## E4-F006 — WRK-001 boundary/config/metrics hardening — RESOLVED
+
+**Status:** `resolved` (WRK-001 fix round) · Severity: MED (defense-in-depth + one leak).
+
+Adversarial review of the WRK-001 bootstrap found four should-fix + three nit issues,
+all resolved except one deferred defense-in-depth nit:
+- **S1** manifest union now covers optional/peer/bundled/bundle dependencies (REDs added).
+- **S2** config error no longer echoes the raw control-plane URL (names the var + protocol only).
+- **S3** invented custody↔scope coupling removed; orthogonality ratified as **E4-D10**.
+- **S4** bare-import allow-list rejects any `..` traversal (`pino/..` RED added).
+- **N2** loopback set is numeric-only; the remappable name `localhost` is rejected.
+- **N3** metric labels validate VALUES against a bounded token, not just keys.
+- **N1 (deferred)** logger passes `Error` through untouched — a blanket message scrub is
+  deferred to WRK-002+; the one reachable instance (S2) is fixed. Tracked, not lost.
