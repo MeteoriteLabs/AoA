@@ -1,3 +1,5 @@
+import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
+
 export interface JobReadySignal {
   organizationId: string;
   targetId: string;
@@ -41,7 +43,9 @@ export function createJobReadyScheduler(input: {
   maxSignalsGlobal?: number;
   signalTtlMs?: number;
   monotonicNow?: () => number;
+  metrics?: JobControlMetrics;
 } = {}): JobReadyScheduler {
+  const metrics = input.metrics ?? NOOP_JOB_CONTROL_METRICS;
   const maxOrganizations = boundedPositiveInteger(
     "maxOrganizationShards",
     input.maxOrganizationShards,
@@ -71,14 +75,17 @@ export function createJobReadyScheduler(input: {
   let totalSignals = 0;
 
   function cleanupExpired(now: number): void {
+    let expired = 0;
     for (const [organizationId, targets] of organizations) {
       for (const [targetId, stored] of targets) {
         if (stored.expiresAt > now) continue;
         targets.delete(targetId);
         totalSignals -= 1;
+        expired += 1;
       }
       if (targets.size === 0) organizations.delete(organizationId);
     }
+    if (expired > 0) metrics.schedulerExpiry({ count: expired });
   }
 
   return {
@@ -92,9 +99,16 @@ export function createJobReadyScheduler(input: {
         // expiry, otherwise replay from an offline target could pin memory.
         return true;
       }
-      if (!existingOrganization && organizations.size >= maxOrganizations) return false;
-      if (totalSignals >= maxSignalsGlobal) return false;
+      if (!existingOrganization && organizations.size >= maxOrganizations) {
+        metrics.schedulerCapacityReject({ scope: "organization" });
+        return false;
+      }
+      if (totalSignals >= maxSignalsGlobal) {
+        metrics.schedulerCapacityReject({ scope: "global" });
+        return false;
+      }
       if (existingOrganization && existingOrganization.size >= maxTargetsPerOrganization) {
+        metrics.schedulerCapacityReject({ scope: "target" });
         return false;
       }
 
@@ -116,11 +130,13 @@ export function createJobReadyScheduler(input: {
 
     size() {
       cleanupExpired(monotonicNow());
-      return {
+      const cardinality = {
         organizations: organizations.size,
         targets: totalSignals,
         signals: totalSignals,
       };
+      metrics.schedulerCardinality(cardinality);
+      return cardinality;
     },
   };
 }
