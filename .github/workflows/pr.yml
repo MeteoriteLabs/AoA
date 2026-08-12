@@ -121,6 +121,11 @@ jobs:
           node scripts/check-worker-daemon-boundary.mjs
           node --test scripts/check-worker-daemon-boundary.test.mjs
 
+      - name: Shared device-proof canonicalization vectors
+        run: |
+          node scripts/check-device-proof-vectors.mjs
+          node --test scripts/check-device-proof-vectors.test.mjs
+
       - name: Validate Dockerfile deps stage
         run: |
           missing=0

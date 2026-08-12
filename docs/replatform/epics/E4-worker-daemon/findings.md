@@ -3,9 +3,23 @@
 Scoped discoveries and plan-review deltas for E4. Each finding names the ticket
 that must resolve it. Source: Batch A adversarial plan-review (2026-08-12).
 
-## E4-F001 — Device-proof vectors must be a shared JOB-002 (E3) deliverable — STOP for WRK-002
+## E4-F001 — Device-proof vectors must be a shared JOB-002 (E3) deliverable — RESOLVED
 
-**Status:** `open` · blocks **WRK-002** · Severity: HIGH (H-04/H-05 device-binding proof).
+**Status:** `resolved` (2026-08-12) · unblocks **WRK-002** · Severity: HIGH (H-04/H-05 device-binding proof).
+
+**Resolution:** `tests/fixtures/device-proof/v1/vectors.json` now holds the neutral shared
+canonicalization vectors (4 positive + 4 reject), derived from and verified against the SERVER
+canonicalizer (`server/src/services/worker-device-proof.ts`). The server test
+(`server/src/__tests__/worker-device-proof.test.ts`) was refactored to consume the fixture, and
+`scripts/check-device-proof-vectors.mjs` is an independent THIRD reference implementation wired
+into CI (`policy`/verify) that fails if the fixture drifts from the algorithm. WRK-002's
+sign-side test consumes the SAME file — a worker-local copy is no longer possible, so server
+compatibility (not just self-consistency) is proven. The original open text is retained below
+for provenance.
+
+---
+
+**Status (original):** `open` · blocks **WRK-002** · Severity: HIGH (H-04/H-05 device-binding proof).
 
 `server/src/services/worker-device-proof.ts` defines the `AOA-DEVICE-PROOF-V1`
 canonical tuple, but **no shared vector fixture exists in the repo** — the server
