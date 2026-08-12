@@ -4086,9 +4086,12 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
       expect.soft(pollResult.outcome).toBe("offer");
       expect.soft(revokeResult).toBe("revoked");
       const state = await snapshot(pollWinsSeed.attemptId, pollWinsSeed.jobId, pollWinsSeed.outboxId);
+      // The offer transitions the ATTEMPT to 'offered' and mints the lease; the JOB row stays
+      // 'queued' (jobs_status_check forbids 'offered', and offerLease never writes jobs.status). The
+      // accepted proof leaves exactly one anti-replay guard row for this device thumbprint.
       expect.soft(state).toMatchObject({
-        jobStatus: "offered", attemptStatus: "offered", leases: 1,
-        certificates: 0, receipts: 0, replays: 0, outboxStatus: "pending",
+        jobStatus: "queued", attemptStatus: "offered", leases: 1,
+        certificates: 0, receipts: 0, replays: 1, outboxStatus: "pending",
       });
       expect.soft(state.workerLastSeen).not.toBeNull();
     } finally {

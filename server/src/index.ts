@@ -85,6 +85,7 @@ import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js
 import { assertTestSupportFlagSafe } from "./services/test-support-safety.js";
 import { createProcessShutdownHandler } from "./services/server-shutdown.js";
 import type { JobReadyScheduler } from "./services/job-ready-scheduler.js";
+import type { JobControlMetrics } from "./services/job-control-metrics.js";
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
 import { ensureCrewAgents, ensureInfrastructureAgents, isCrewMarketplaceManaged } from "./services/internal-agent/aoa-agents/crew-seeding.js";
@@ -561,10 +562,15 @@ if (distributedExecutionDatabases) {
 
 let jobControlRuntime: { stop(): Promise<void> } | null = null;
 let scheduler: JobReadyScheduler | undefined;
+let jobControlMetrics: JobControlMetrics | undefined;
 if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
   const { createJobReadyScheduler } = await import("./services/job-ready-scheduler.js");
   const { createJobOutboxWorker } = await import("./services/job-outbox-worker.js");
-  scheduler = createJobReadyScheduler();
+  const { createPinoJobControlMetrics } = await import("./services/job-control-metrics.js");
+  // One payload-free metrics surface, built at the composition root and shared by the scheduler,
+  // the outbox worker, and (via createApp -> worker-control) the leasing service.
+  jobControlMetrics = createPinoJobControlMetrics(logger);
+  scheduler = createJobReadyScheduler({ metrics: jobControlMetrics });
   const listAdmittedOrganizationIds = async (input: {
     afterOrganizationId: string | null;
     limit: number;
@@ -598,6 +604,7 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
     scheduler,
     listAdmittedOrganizationIds,
     maxOrganizationShards: 32,
+    metrics: jobControlMetrics,
   });
   let stopped = false;
   let inFlight: Promise<void> | null = null;
@@ -809,6 +816,7 @@ const app = await createApp(db as any, {
   tenantAppDb: distributedExecutionDatabases?.appDb,
   operatorDb: distributedExecutionDatabases?.operatorDb,
   jobReadyScheduler: scheduler,
+  jobControlMetrics,
   workerSessionSigningKey: process.env.AOA_WORKER_SESSION_SIGNING_KEY,
 });
 const server = createServer(app as unknown as Parameters<typeof createServer>[0]);

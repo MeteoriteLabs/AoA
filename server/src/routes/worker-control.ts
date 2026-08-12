@@ -20,7 +20,6 @@ import {
   WorkerEnrollmentError,
 } from "../services/worker-enrollment.js";
 import { logger } from "../middleware/logger.js";
-import type { DeviceProofHeaders } from "../services/worker-device-proof.js";
 import { sendWorkerProtocolError } from "../services/worker-protocol-http.js";
 import { sendWorkerOperationProtocolError } from "../services/worker-protocol-http.js";
 import {
@@ -29,26 +28,17 @@ import {
 } from "../middleware/worker-operation-proof.js";
 import { createJobLeasingService, JobLeasingError } from "../services/job-leasing.js";
 import type { JobReadyScheduler } from "../services/job-ready-scheduler.js";
+import type { JobControlMetrics } from "../services/job-control-metrics.js";
+import { deviceProofHeaders } from "./worker-proof-headers.js";
 
 const uuid = z.string().uuid();
-
-export function deviceProofHeaders(req: Request): DeviceProofHeaders | null {
-  const proof = {
-    version: req.header(WORKER_CONTROL_HEADERS.proofVersion),
-    publicKey: req.header(WORKER_CONTROL_HEADERS.publicKey),
-    signature: req.header(WORKER_CONTROL_HEADERS.signature),
-    issuedAt: req.header(WORKER_CONTROL_HEADERS.issuedAt),
-    proofId: req.header(WORKER_CONTROL_HEADERS.proofId),
-  };
-  if (Object.values(proof).some((value) => typeof value !== "string" || value.length === 0)) return null;
-  return proof as DeviceProofHeaders;
-}
 
 export function workerControlRoutes(opts: {
   db: Db;
   appDb: Db;
   operatorDb: Db;
   jobReadyScheduler?: JobReadyScheduler;
+  jobControlMetrics?: JobControlMetrics;
   sessionSigningKey: string;
   now?: () => Date;
 }) {
@@ -64,6 +54,7 @@ export function workerControlRoutes(opts: {
     appDb: opts.appDb,
     operatorDb: opts.operatorDb,
     scheduler: opts.jobReadyScheduler,
+    metrics: opts.jobControlMetrics,
   });
 
   router.post(

@@ -31,7 +31,7 @@ import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { isUniqueViolation } from "../services/db-errors.js";
 import { z } from "zod";
-import { deviceProofHeaders } from "./worker-control.js";
+import { deviceProofHeaders } from "./worker-proof-headers.js";
 import {
   createWorkerSessionAuthenticator,
   registerProofBoundHeartbeat,

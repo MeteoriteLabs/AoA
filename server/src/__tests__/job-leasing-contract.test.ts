@@ -817,13 +817,19 @@ function namedFunctionUnexpectedCertificateCalls(source: string, name: string): 
         const callName = node.expression.name.text;
         const receiver = node.expression.expression.getText(file).replace(/\s+/g, "");
         const allowedMath = receiver === "Math" && ["min", "max", "floor"].includes(callName);
+        // Reviewed non-Drizzle helpers used only for bound validation and the statement-budget
+        // callback: receiver-scoped so a `mutateAuthority.isSafeInteger`/`authority.beforeStatement`
+        // decoy is still flagged.
+        const allowedNumericGuard = receiver === "Number" && callName === "isSafeInteger";
+        const allowedBudgetCallback = receiver === "input" && callName === "beforeStatement";
         const allowedDatabaseCall = allowedDatabaseFluent.has(callName) &&
           ((ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "tx" &&
             ["select", "selectDistinct", "insert", "delete"].includes(callName)) ||
             databaseRooted(node.expression.expression));
         const allowedCollectionCall = allowedCollectionFluent.has(callName) &&
           collectionRooted(node.expression.expression);
-        if (!allowedDatabaseCall && !allowedCollectionCall && !allowedMath) {
+        if (!allowedDatabaseCall && !allowedCollectionCall && !allowedMath &&
+            !allowedNumericGuard && !allowedBudgetCallback) {
           found.push(`${receiver}.${callName}`);
         }
       } else {
@@ -3937,7 +3943,43 @@ function leaseStaticContextPollViolations(source: string): string[] {
   const canonicalCandidateTaintNames = new Set<string>();
   if (candidateCalls.length === 1) {
     const candidate = candidateCalls[0]!;
-    const candidateBinding = directBodyBindingForCall(tenantBody, candidate);
+    // A reviewed selection binds the candidate array either directly
+    // (`const candidates = await <call>`) or via the payload-free scan-telemetry destructure
+    // (`const { candidates, certificateMetrics } = await <call>`). Only these two exact shapes pass:
+    // an array pattern, a rest element, a renamed/extra key, or a non-const/out-of-body statement is
+    // still rejected (candidateBinding stays null → the two selection violations fire).
+    let candidateBinding = directBodyBindingForCall(tenantBody, candidate);
+    let candidateArrayName = candidateBinding && ts.isIdentifier(candidateBinding.declaration.name)
+      ? candidateBinding.declaration.name.text
+      : null;
+    if (!candidateBinding) {
+      let selection: ts.Node = candidate;
+      while (selection.parent && (
+        ts.isAwaitExpression(selection.parent) || ts.isParenthesizedExpression(selection.parent) ||
+        ts.isAsExpression(selection.parent) || ts.isTypeAssertionExpression(selection.parent) ||
+        ts.isNonNullExpression(selection.parent) || ts.isSatisfiesExpression(selection.parent)
+      ) && (selection.parent as ts.AwaitExpression).expression === selection) {
+        selection = selection.parent;
+      }
+      const declaration = selection.parent;
+      if (ts.isVariableDeclaration(declaration) && declaration.initializer === selection &&
+          ts.isObjectBindingPattern(declaration.name)) {
+        const list = declaration.parent;
+        const statement = list.parent;
+        const reviewedScanKeys = new Set(["candidates", "certificateMetrics"]);
+        const reviewedOnly = declaration.name.elements.every((element) =>
+          !element.dotDotDotToken && !element.propertyName && ts.isIdentifier(element.name) &&
+          reviewedScanKeys.has(element.name.text));
+        const arrayElement = declaration.name.elements.find((element) =>
+          ts.isIdentifier(element.name) && element.name.text === "candidates");
+        if (ts.isVariableDeclarationList(list) && ts.isVariableStatement(statement) &&
+            (list.flags & ts.NodeFlags.Const) && statement.parent === tenantBody &&
+            reviewedOnly && arrayElement && ts.isIdentifier(arrayElement.name)) {
+          candidateBinding = { declaration, statement, initializer: declaration.initializer };
+          candidateArrayName = arrayElement.name.text;
+        }
+      }
+    }
     const candidateInput = candidate.arguments.length === 1
       ? closedObjectProperties(candidate.arguments[0])
       : null;
@@ -4200,7 +4242,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
       }
       const candidateName = ts.isIdentifier(candidateBinding.declaration.name)
         ? candidateBinding.declaration.name.text
-        : null;
+        : candidateArrayName;
       if (candidateName) canonicalCandidateTaintNames.add(candidateName);
       const laterStatements = tenantBody.statements.filter((statement) =>
         statement.getStart(file) > candidateBinding.statement.getStart(file));
@@ -4279,13 +4321,42 @@ function leaseStaticContextPollViolations(source: string): string[] {
         const flushBeforeOffer = statements[4] && ts.isIfStatement(statements[4])
           ? statements[4]
           : null;
-        const flushBeforeOfferCall = flushBeforeOffer ? (() => {
-          const thenStatement = flushBeforeOffer.thenStatement;
-          const statement = ts.isBlock(thenStatement) && thenStatement.statements.length === 1
-            ? thenStatement.statements[0]
-            : thenStatement;
-          return ts.isExpressionStatement(statement) ? unwrappedCall(statement.expression) : null;
-        })() : null;
+        // The guarded flush runs the certificate upsert either as a bare `await upsert(...)`
+        // statement (legacy) or as the exact payload-free telemetry pair
+        // `const upserted = await upsert(...); metrics.certificateUpsert({ count: upserted });`.
+        // Only those two shapes yield the upsert call; exactFlush still fully validates it. Any other
+        // statement in the block (or a mismatched telemetry emit) returns null → the flush fails.
+        const flushUpsertCall = (flush: ts.IfStatement): ts.CallExpression | null => {
+          const thenStatement = flush.thenStatement;
+          const bodyStatements = ts.isBlock(thenStatement)
+            ? [...thenStatement.statements]
+            : [thenStatement];
+          if (bodyStatements.length === 1) {
+            const only = bodyStatements[0]!;
+            return ts.isExpressionStatement(only) ? unwrappedCall(only.expression) : null;
+          }
+          if (bodyStatements.length === 2 && ts.isVariableStatement(bodyStatements[0]!) &&
+              (bodyStatements[0]!.declarationList.flags & ts.NodeFlags.Const) &&
+              bodyStatements[0]!.declarationList.declarations.length === 1 &&
+              ts.isExpressionStatement(bodyStatements[1]!)) {
+            const declaration = bodyStatements[0]!.declarationList.declarations[0]!;
+            const countName = ts.isIdentifier(declaration.name) ? declaration.name.text : null;
+            const upsertCall = unwrappedCall(declaration.initializer);
+            const emitCall = unwrappedCall(bodyStatements[1]!.expression);
+            const emitInput = emitCall?.arguments.length === 1
+              ? closedObjectProperties(emitCall.arguments[0])
+              : null;
+            if (countName && upsertCall && emitCall &&
+                callPath(emitCall) === "metrics.certificateUpsert" && emitInput &&
+                [...emitInput.keys()].join(",") === "count" &&
+                pathOf(emitInput.get("count"))?.join(".") === countName) {
+              return upsertCall;
+            }
+            return null;
+          }
+          return null;
+        };
+        const flushBeforeOfferCall = flushBeforeOffer ? flushUpsertCall(flushBeforeOffer) : null;
         const offeredDeclaration = statements[5] && ts.isVariableStatement(statements[5]) &&
             statements[5].declarationList.declarations.length === 1
           ? statements[5].declarationList.declarations[0]!
@@ -4316,13 +4387,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
             ts.isIfStatement(tenantBody.statements[loopIndex + 1]!)
           ? tenantBody.statements[loopIndex + 1] as ts.IfStatement
           : null;
-        const flushAfterLoopCall = flushAfterLoop ? (() => {
-          const thenStatement = flushAfterLoop.thenStatement;
-          const statement = ts.isBlock(thenStatement) && thenStatement.statements.length === 1
-            ? thenStatement.statements[0]
-            : thenStatement;
-          return ts.isExpressionStatement(statement) ? unwrappedCall(statement.expression) : null;
-        })() : null;
+        const flushAfterLoopCall = flushAfterLoop ? flushUpsertCall(flushAfterLoop) : null;
         const noWorkReturn = loopIndex >= 0 && ts.isReturnStatement(tenantBody.statements[loopIndex + 2]!)
           ? tenantBody.statements[loopIndex + 2] as ts.ReturnStatement
           : null;
@@ -4590,7 +4655,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
       .filter((value): value is string => Boolean(value)),
   );
   const allowedServiceOptionKeys = new Set([
-    "ackTimeoutMs", "appDb", "leaseDurationMs", "maxHeartbeatAgeMs", "operatorDb", "scheduler",
+    "ackTimeoutMs", "appDb", "leaseDurationMs", "maxHeartbeatAgeMs", "metrics", "operatorDb", "scheduler",
   ]);
   const rejectUnknownServiceOption = (name: string): void => {
     if (!allowedServiceOptionKeys.has(name)) violations.add("service:no-context-or-guard-injection");

@@ -31,6 +31,7 @@ import {
 } from "@armyofagents/worker-protocol";
 import { runInTenant } from "../db/tenant-context.js";
 import type { JobReadyScheduler } from "./job-ready-scheduler.js";
+import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
 import {
   normalizePlacementRegistryTarget,
   type NormalizedPlacementRegistryTarget,
@@ -368,11 +369,13 @@ export function createJobLeasingService(input: {
   ackTimeoutMs?: number;
   leaseDurationMs?: number;
   maxHeartbeatAgeMs?: number;
+  metrics?: JobControlMetrics;
 }) {
   input.operatorDb = normalizeOperatorDatabaseErrors(input.operatorDb);
   const ackTimeoutMs = Math.max(1000, input.ackTimeoutMs ?? 15000);
   const leaseDurationMs = Math.max(ackTimeoutMs + 1000, input.leaseDurationMs ?? 300000);
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300000);
+  const metrics = input.metrics ?? NOOP_JOB_CONTROL_METRICS;
 
   class HeadRestartConflict extends Error {}
   const isHeadRestartConflict = (error: unknown): error is HeadRestartConflict =>
@@ -477,22 +480,21 @@ export function createJobLeasingService(input: {
         pollInput.auth.targetId,
       ) ?? false;
       for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {
+        // A retry iteration (restartAttempt > 0) means the previous head claim rolled back; count it
+        // here so the head-conflict catch below stays the exact classifier/exhaustion/continue triple.
+        if (restartAttempt > 0) metrics.headRestart();
         try {
           return await runInTenant(input.appDb, pollInput.auth.organizationId, async (repos) => {
             const cleanupNow = await repos.jobControl.currentDatabaseTime();
             await repos.workerEnrollment.cleanupExpiredProofs(cleanupNow, 100);
             const databaseNow = await repos.jobControl.currentDatabaseTime();
             const proofRecorded = await repos.workerEnrollment.recordProof(proofContext);
-            const profileTouched = await repos.jobControl.touchWorkerLeaseProfile(touchContext);
             const lockedAuthority = await repos.jobControl.lockWorkerLeaseAuthority({
               workerId: pollInput.auth.workerId,
               targetId: pollInput.auth.targetId,
             });
-            const authorityErrorCode = !lockedAuthority || !proofRecorded
-              ? "unauthorized"
-              : "target_revoked";
-            if (!lockedAuthority || !proofRecorded || !profileTouched) {
-              throw new JobLeasingError(authorityErrorCode);
+            if (!lockedAuthority || !proofRecorded) {
+              throw new JobLeasingError("unauthorized");
             }
             const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);
             const platformPhysicalHeartbeatAt = guardedAuthority.physicalAuthorityWorker &&
@@ -512,6 +514,11 @@ export function createJobLeasingService(input: {
               platformPhysicalHeartbeatAt,
             });
             if (!currentAuthority) throw new JobLeasingError("target_revoked");
+            // Touch liveness only AFTER the target lock + authority revalidation (F033). A poll that
+            // loses the target row to an overlapping revoke throws above and never reaches here, so
+            // the worker's last_seen_at stays untouched; only a poll that keeps authority advances
+            // it. The row/generation was just revalidated, so the update cannot fail-close here.
+            await repos.jobControl.touchWorkerLeaseProfile(touchContext);
             const normalizedCurrentTarget = await normalizePlacementRegistryTarget(
               guardedAuthority.currentTarget,
             );
@@ -545,7 +552,7 @@ export function createJobLeasingService(input: {
             const staticContextHash = leaseStaticContextHash(staticContextInput);
             type LeaseCandidate = Awaited<ReturnType<
               TenantRepositories["jobControl"]["lockEligibleLeaseCandidates"]
-            >>[number];
+            >>["candidates"][number];
             const tryOffer = async (
               candidate: LeaseCandidate,
               normalized: { requirements: JobCapabilityRequirementsV1 },
@@ -600,21 +607,24 @@ export function createJobLeasingService(input: {
           });
         };
 
-            const candidates = await repos.jobControl.lockEligibleLeaseCandidates({
-              admissibleWorkloadTypes,
-              eligibilityVersion: LEASE_STATIC_ELIGIBILITY_VERSION,
-              limit: 256,
-              staticContextHash,
-              targetAuthorityKey: guardedAuthority.currentTarget.targetAuthorityKey,
-              targetClass: normalizedCurrentTarget.targetClass,
-              targetGeneration: normalizedCurrentTarget.targetGeneration,
-              targetId: normalizedCurrentTarget.targetId,
-              placementOwner: normalizedCurrentTarget.targetClass,
-              targetProfileHash: normalizedCurrentTarget.profileHash,
-              targetProviderConstraintHash: normalizedCurrentTarget.providerConstraintHash,
-              targetScope: normalizedCurrentTarget.targetScope,
-              workerId: pollInput.auth.workerId,
-            });
+            const { candidates, certificateMetrics } =
+              await repos.jobControl.lockEligibleLeaseCandidates({
+                admissibleWorkloadTypes,
+                eligibilityVersion: LEASE_STATIC_ELIGIBILITY_VERSION,
+                limit: 256,
+                staticContextHash,
+                targetAuthorityKey: guardedAuthority.currentTarget.targetAuthorityKey,
+                targetClass: normalizedCurrentTarget.targetClass,
+                targetGeneration: normalizedCurrentTarget.targetGeneration,
+                targetId: normalizedCurrentTarget.targetId,
+                placementOwner: normalizedCurrentTarget.targetClass,
+                targetProfileHash: normalizedCurrentTarget.profileHash,
+                targetProviderConstraintHash: normalizedCurrentTarget.providerConstraintHash,
+                targetScope: normalizedCurrentTarget.targetScope,
+                workerId: pollInput.auth.workerId,
+              });
+            // Certificate scan facts come only from the claim SQL, never from candidates.length.
+            metrics.certificateScan(certificateMetrics);
             const staticNegativeCertificates: Array<{
               candidate: LeaseCandidate;
               reasonCode: "static_requirements_mismatch";
@@ -641,14 +651,18 @@ export function createJobLeasingService(input: {
                 continue;
               }
               if (staticNegativeCertificates.length > 0) {
-                await repos.jobControl.upsertLeaseRejectionCertificates(staticNegativeCertificates);
+                const upserted = await repos.jobControl
+                  .upsertLeaseRejectionCertificates(staticNegativeCertificates);
+                metrics.certificateUpsert({ count: upserted });
               }
               const offered = await tryOffer(candidate, normalized);
               if (!offered) throw new HeadRestartConflict();
               return offered;
             }
             if (staticNegativeCertificates.length > 0) {
-              await repos.jobControl.upsertLeaseRejectionCertificates(staticNegativeCertificates);
+              const upserted = await repos.jobControl
+                .upsertLeaseRejectionCertificates(staticNegativeCertificates);
+              metrics.certificateUpsert({ count: upserted });
             }
             return pollResponseV1Schema.parse({
               protocolVersion: 1,

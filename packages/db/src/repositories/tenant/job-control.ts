@@ -43,6 +43,26 @@ export interface LeaseRejectionCleanupResult {
   readonly cardinalitySaturated: boolean;
 }
 
+// Payload-free certificate telemetry derived by the claim SQL itself, never inferred from the
+// returned candidate array. hits/misses count eligible-shaped attempts suppressed vs not-suppressed
+// by a correlated rejection certificate; cardinality counts this worker/target's certificate rows.
+// Every count is a bounded probe of at most 4097 rows reported as min(count, 4096) plus a saturation
+// flag, so an unbounded tenant can never widen the gauge.
+export interface LeaseCertificateScanMetrics {
+  readonly hitsObserved: number;
+  readonly hitsSaturated: boolean;
+  readonly missesObserved: number;
+  readonly missesSaturated: boolean;
+  readonly scanExhausted: boolean;
+  readonly cardinalityObserved: number;
+  readonly cardinalitySaturated: boolean;
+}
+
+export interface LeaseCandidateScanResult {
+  readonly candidates: LeaseCandidate[];
+  readonly certificateMetrics: LeaseCertificateScanMetrics;
+}
+
 export interface TenantAdmissionRecord {
   organizationExists: boolean;
   companyInOrganization: boolean;
@@ -141,7 +161,7 @@ export interface JobControlRepository {
     targetProviderConstraintHash: string;
     targetScope: string;
     workerId: string;
-  }): Promise<LeaseCandidate[]>;
+  }): Promise<LeaseCandidateScanResult>;
   snapshotLiveLeaseCapacity(input: {
     workerId: string;
     targetId: string;
@@ -723,6 +743,33 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     },
 
     async lockWorkerLeaseAuthority(input) {
+      // Lock the target BEFORE the worker so an overlapping poll and revoke acquire the two rows in
+      // the same target->worker order (revokeTargetAuthority disables the target first, then the
+      // workers); an inverted worker->target order here would let the two operations form a lock
+      // cycle and deadlock. targetAuthorityKey is immutable for a target, so an unlocked one-column
+      // probe is only used to choose the lock mode before the real, ordered lock is taken.
+      const [targetProbe] = await tx.select({
+        targetAuthorityKey: executionTargets.targetAuthorityKey,
+      }).from(executionTargets).where(eq(executionTargets.id, input.targetId)).limit(1);
+      if (!targetProbe) return null;
+
+      const targetQuery = tx.select(placementTargetColumns)
+        .from(executionTargets)
+        .where(and(
+          eq(executionTargets.id, input.targetId),
+          eq(executionTargets.targetAuthorityKey, targetProbe.targetAuthorityKey),
+        ))
+        .limit(1);
+      // aoa_app deliberately has SELECT-only visibility over null-Org platform
+      // targets. The Decision #124 shared advisory handoff supplies the cutoff
+      // guard; requesting FOR UPDATE here would require forbidden global DML.
+      const [target] = targetProbe.targetAuthorityKey === "platform"
+        ? await targetQuery
+        : await targetQuery.for("update");
+      if (!target) return null;
+
+      // Revalidate the worker against the just-locked target's authority key (and its organization
+      // via the row's own columns); a mismatch means the worker was re-homed and is not authorized.
       const [worker] = await tx.select({
         id: workers.id,
         scope: workers.scope,
@@ -741,23 +788,9 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       }).from(workers).where(and(
         eq(workers.id, input.workerId),
         eq(workers.executionTargetId, input.targetId),
+        eq(workers.targetAuthorityKey, target.targetAuthorityKey),
       )).for("update").limit(1);
       if (!worker) return null;
-
-      const targetQuery = tx.select(placementTargetColumns)
-        .from(executionTargets)
-        .where(and(
-          eq(executionTargets.id, input.targetId),
-          eq(executionTargets.targetAuthorityKey, worker.targetAuthorityKey),
-        ))
-        .limit(1);
-      // aoa_app deliberately has SELECT-only visibility over null-Org platform
-      // targets. The Decision #124 shared advisory handoff supplies the cutoff
-      // guard; requesting FOR UPDATE here would require forbidden global DML.
-      const [target] = worker.targetAuthorityKey === "platform"
-        ? await targetQuery
-        : await targetQuery.for("update");
-      if (!target) return null;
 
       let ownerMembershipActive = true;
       if (worker.scope === "owner") {
@@ -777,8 +810,23 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
 
     async lockEligibleLeaseCandidates(input) {
       if (input.limit !== 256) throw new Error("Lease candidate limit must be 256");
-      if (input.admissibleWorkloadTypes.length === 0) return [];
-      return tx.select({
+      const emptyMetrics: LeaseCertificateScanMetrics = {
+        hitsObserved: 0,
+        hitsSaturated: false,
+        missesObserved: 0,
+        missesSaturated: false,
+        scanExhausted: false,
+        cardinalityObserved: 0,
+        cardinalitySaturated: false,
+      };
+      if (input.admissibleWorkloadTypes.length === 0) {
+        return { candidates: [], certificateMetrics: emptyMetrics };
+      }
+
+      // Global-head candidate claim: exact static-certificate anti-join (notExists), one immutable
+      // ordered head, FOR UPDATE SKIP LOCKED. Written inline (no extracted where builder) so the
+      // frozen anti-join contract can read the exact conjunct set from this one .where(and(...)).
+      const candidates = await tx.select({
         job: jobs,
         attempt: jobAttempts,
         certificateWorkerId: sql<string>`${input.workerId}`,
@@ -832,6 +880,83 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         .orderBy(asc(jobs.availableAt), desc(jobs.priority), asc(jobs.createdAt), asc(jobs.id))
         .limit(256)
         .for("update", { of: jobAttempts, skipLocked: true });
+
+      // Payload-free telemetry probe. A separate read (no FOR UPDATE, never contends with the claim)
+      // over the same eligibility MINUS the certificate anti-join, tagging each of at most 4097
+      // eligible-shaped rows with whether an existing certificate would suppress it. hits + misses
+      // are counted in memory and reported as min(count, 4096) plus a saturation flag.
+      const probeRows = await tx.select({
+        suppressed: sql<boolean>`${exists(tx.select({ value: sql<number>`1` })
+          .from(workerLeaseRejections)
+          .where(and(
+            eq(workerLeaseRejections.organizationId, jobAttempts.organizationId),
+            eq(workerLeaseRejections.companyId, jobAttempts.companyId),
+            eq(workerLeaseRejections.jobId, jobAttempts.jobId),
+            eq(workerLeaseRejections.attemptId, jobAttempts.id),
+            eq(workerLeaseRejections.workerId, input.workerId),
+            eq(workerLeaseRejections.targetId, input.targetId),
+            eq(workerLeaseRejections.targetAuthorityKey, input.targetAuthorityKey),
+            eq(workerLeaseRejections.workloadType, jobs.workloadType),
+            eq(workerLeaseRejections.placementOwner, jobAttempts.placementOwner),
+            eq(workerLeaseRejections.placementTargetClass, jobAttempts.placementTargetClass),
+            eq(workerLeaseRejections.placementTargetScope, jobAttempts.placementTargetScope),
+            eq(workerLeaseRejections.placementTargetGeneration, jobAttempts.placementTargetGeneration),
+            eq(workerLeaseRejections.placementProfileHash, jobAttempts.placementProfileHash),
+            eq(workerLeaseRejections.placementProviderConstraintHash, jobAttempts.placementProviderConstraintHash),
+            eq(workerLeaseRejections.placementInputDigest, jobAttempts.placementInputDigest),
+            eq(workerLeaseRejections.placementPolicyDigest, jobAttempts.placementPolicyDigest),
+            eq(workerLeaseRejections.eligibilityVersion, input.eligibilityVersion),
+            eq(workerLeaseRejections.staticContextHash, input.staticContextHash),
+          )))}`,
+      })
+        .from(jobAttempts)
+        .innerJoin(jobs, and(
+          eq(jobs.organizationId, jobAttempts.organizationId),
+          eq(jobs.companyId, jobAttempts.companyId),
+          eq(jobs.id, jobAttempts.jobId),
+        ))
+        .where(and(
+          eq(jobAttempts.status, "pending"),
+          eq(jobAttempts.placementDisposition, "selected"),
+          eq(jobAttempts.placementMode, "active"),
+          eq(jobAttempts.placementLeaseEligible, true),
+          eq(jobAttempts.placementOwner, input.placementOwner),
+          eq(jobAttempts.placementTargetId, input.targetId),
+          eq(jobAttempts.placementTargetClass, input.targetClass),
+          eq(jobAttempts.placementTargetScope, input.targetScope),
+          eq(jobAttempts.placementTargetGeneration, input.targetGeneration),
+          eq(jobAttempts.placementProfileHash, input.targetProfileHash),
+          eq(jobAttempts.placementProviderConstraintHash, input.targetProviderConstraintHash),
+          eq(jobs.status, "queued"),
+          inArray(jobs.workloadType, input.admissibleWorkloadTypes),
+          lte(jobs.availableAt, sql`statement_timestamp()`),
+        ))
+        .limit(4097);
+      const hitsRaw = probeRows.reduce((total, row) => total + (row.suppressed === true ? 1 : 0), 0);
+      const missesRaw = probeRows.length - hitsRaw;
+
+      // Bounded cardinality probe: at most 4097 of this worker/target/authority's certificate rows.
+      const cardinalityRows = await tx.select({ one: sql<number>`1` })
+        .from(workerLeaseRejections)
+        .where(and(
+          eq(workerLeaseRejections.workerId, input.workerId),
+          eq(workerLeaseRejections.targetId, input.targetId),
+          eq(workerLeaseRejections.targetAuthorityKey, input.targetAuthorityKey),
+          eq(workerLeaseRejections.eligibilityVersion, input.eligibilityVersion),
+          eq(workerLeaseRejections.staticContextHash, input.staticContextHash),
+        ))
+        .limit(4097);
+
+      const certificateMetrics: LeaseCertificateScanMetrics = {
+        hitsObserved: Math.min(hitsRaw, 4096),
+        hitsSaturated: hitsRaw > 4096,
+        missesObserved: Math.min(missesRaw, 4096),
+        missesSaturated: missesRaw > 4096,
+        scanExhausted: candidates.length === 256,
+        cardinalityObserved: Math.min(cardinalityRows.length, 4096),
+        cardinalitySaturated: cardinalityRows.length > 4096,
+      };
+      return { candidates, certificateMetrics };
     },
 
     async snapshotLiveLeaseCapacity(input) {
@@ -931,8 +1056,8 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     async cleanupLeaseRejectionCertificates(input) {
       // Bounds are validated before any beforeStatement wrapper or SQL runs; an invalid limit or
       // cardinality bound rolls the tenant transaction back before select/delete/cardinality fire.
-      const isBound = (value: number) => Number.isSafeInteger(value) && value > 0;
-      if (!isBound(input.limit) || !isBound(input.cardinalityLimit)) {
+      if (!Number.isSafeInteger(input.limit) || input.limit <= 0 ||
+          !Number.isSafeInteger(input.cardinalityLimit) || input.cardinalityLimit <= 0) {
         throw new Error("lease_rejection_cleanup_bound");
       }
       const boundedLimit = input.limit;

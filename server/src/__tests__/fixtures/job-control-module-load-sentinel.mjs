@@ -29,7 +29,15 @@ const guardedModules = [
 ];
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    const guarded = guardedModules.find((name) => specifier.includes(name));
+    // Guarded modules are all server-side (server/src/services + server/src/routes). The
+    // @armyofagents/db barrel eagerly loads its own repositories/operator/job-leasing.ts, whose
+    // basename collides with the guarded server service services/job-leasing.ts. That db-package
+    // repository is always loaded and is NOT part of the flag-gated server graph, so exclude any
+    // db-package repository specifier before the loose basename match.
+    const normalized = specifier.replaceAll("\\", "/");
+    const guarded = normalized.includes("/repositories/")
+      ? undefined
+      : guardedModules.find((name) => normalized.includes(name));
     if (guarded) {
       process.stderr.write(`JOB_CONTROL_MODULE_LOAD:${guarded}\n`);
     }

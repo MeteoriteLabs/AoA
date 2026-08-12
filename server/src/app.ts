@@ -45,7 +45,6 @@ import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { organizationRoutes } from "./routes/organizations.js";
 import { jobControlRoutes } from "./routes/job-control.js";
-import { workerControlRoutes } from "./routes/worker-control.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
@@ -167,6 +166,7 @@ import { createHostClientHandlers } from "@armyofagents/plugin-sdk";
 import { resolveAoaInstanceId } from "./home-paths.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import type { JobReadyScheduler } from "./services/job-ready-scheduler.js";
+import type { JobControlMetrics } from "./services/job-control-metrics.js";
 
 // Host version reported to plugin workers during initialize. Read from
 // server package.json at import time; falls back to "0.0.0" if unreadable.
@@ -217,6 +217,7 @@ export async function createApp(
     tenantAppDb?: Db;
     operatorDb?: Db;
     jobReadyScheduler?: JobReadyScheduler;
+    jobControlMetrics?: JobControlMetrics;
     workerSessionSigningKey?: string;
   }
 ) {
@@ -393,11 +394,16 @@ export async function createApp(
       throw new Error("Distributed worker control requires AOA_WORKER_SESSION_SIGNING_KEY with at least 32 bytes");
     }
     api.use(jobControlRoutes(opts.tenantAppDb));
+    // Imported here (not at module top) so a flag-off startup never loads the worker-control /
+    // job-leasing / job-control-metrics graph. The same instance flows through from the composition
+    // root, so telemetry is one shared surface across scheduler, outbox, and leasing.
+    const { workerControlRoutes } = await import("./routes/worker-control.js");
     api.use(workerControlRoutes({
       db,
       appDb: opts.tenantAppDb,
       operatorDb: opts.operatorDb,
       jobReadyScheduler: opts.jobReadyScheduler,
+      jobControlMetrics: opts.jobControlMetrics,
       sessionSigningKey: opts.workerSessionSigningKey,
     }));
   }
