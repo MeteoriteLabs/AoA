@@ -35,18 +35,19 @@ export type { Env } from "./config/env.js";
 export { createWorkerLogger } from "./logging/logger.js";
 export type { Logger, WorkerLoggerOptions } from "./logging/logger.js";
 
-export { createShutdownHandler } from "./lifecycle/shutdown.js";
+export { createShutdownHandler, createLeaseLifecycleSteps } from "./lifecycle/shutdown.js";
 export type {
   ShutdownStep,
   ShutdownOptions,
   ShutdownSignal,
   ShutdownLogger,
+  LeasingLifecycle,
 } from "./lifecycle/shutdown.js";
 
 export { startHealthServer, assertLoopbackHost } from "./health/health-server.js";
 export type { HealthServerHandle, HealthServerConfig } from "./health/health-server.js";
 
-export { createMetrics, ALLOWED_LABEL_KEYS } from "./metrics/metrics.js";
+export { createMetrics, ALLOWED_LABEL_KEYS, CLOSED_LABEL_VALUES } from "./metrics/metrics.js";
 export type { Metrics } from "./metrics/metrics.js";
 
 export { bootstrapWorkerDaemon } from "./bin/worker-daemon.js";
@@ -112,3 +113,70 @@ export type {
 
 export { SessionStore, SessionStoppedError, REENROLLMENT_REQUIRED_METRIC } from "./identity/session.js";
 export type { SessionStoreDeps } from "./identity/session.js";
+
+export {
+  POLL_PATH,
+  LEASE_ACK_BASE_PATH,
+  leaseAckPath,
+} from "./transport/client.js";
+export type { WorkerOperationHttpRequest, WorkerOperationHttpResponse } from "./transport/client.js";
+
+// --- WRK-003: poll, ACK, and capability advertisement ------------------------
+
+export { ConcurrencyLimiter, WORKLOAD_CLASSES } from "./poll/concurrency.js";
+export type { ConcurrencyLimits, WorkloadClass, WorkloadSlotSnapshot } from "./poll/concurrency.js";
+
+export {
+  INITIAL_BACKOFF_STATE,
+  BACKOFF_BUCKETS,
+  nextBackoff,
+  backoffBucket,
+} from "./poll/backoff.js";
+export type { BackoffConfig, BackoffState, BackoffResult, NextBackoffOptions } from "./poll/backoff.js";
+
+export {
+  measureCapacity,
+  sumReservations,
+  offerSatisfiesWorker,
+  deriveJobRequirements,
+} from "./poll/capacity.js";
+export type {
+  CapacityReservation,
+  CapacityProbes,
+  ResourceCeiling,
+  MeasureCapacityInput,
+  WorkerSelfModel,
+} from "./poll/capacity.js";
+
+export {
+  buildPollRequest,
+  buildLeaseAckRequest,
+  pollOnce,
+  ackLease,
+  createPollLoop,
+  createSessionProvider,
+  SessionTerminalError,
+  POLL_OUTCOME_METRIC,
+  LEASE_ACK_METRIC,
+  ACTIVE_LEASES_METRIC,
+  BACKOFF_SLEEP_METRIC,
+  CAPACITY_FREE_SLOTS_METRIC,
+} from "./poll/poll-loop.js";
+export type {
+  PollRequestEnvelope,
+  BuildPollRequestInput,
+  LeaseAckRequestEnvelope,
+  BuildLeaseAckRequestInput,
+  PollAttempt,
+  AckAttempt,
+  TransientLabel,
+  OperationRandomness,
+  PollOnceDeps,
+  AckLeaseDeps,
+  SessionProvider,
+  LeaseHandoff,
+  SupervisorSeam,
+  PollLoopStopReason,
+  PollLoopController,
+  PollLoopDeps,
+} from "./poll/poll-loop.js";

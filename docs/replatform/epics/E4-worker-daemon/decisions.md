@@ -66,3 +66,29 @@ enroll contract diverges from E4-D05's "replay-based session renewal" assumption
 4. Test doubles MUST model the code-route TTL (a fake that accepts replays the real server rejects
    is a defect). The recovery test proves within-window recovery succeeds and post-window replay
    → 401 → terminal stop.
+
+## E4-D12 — Worker provider-constraint profile is a digest-verified provisioning input; the poll loop stays inert until provisioned + supervised
+
+**Date:** 2026-08-13 · **Ticket:** WRK-003 · **Status:** locked.
+
+The frozen `workerSatisfiesRequirements` capability self-check needs the worker's registered
+target profile + a BRANDED full provider-constraint profile
+(`verifyAndBrandProviderConstraintProfileV1` digest-verifies a full profile against a ref). But
+the as-built JOB-002 enroll response (`enrollmentResponseV1Schema:206`, `job.ts:141`) delivers
+`providerConstraints` only as a REF `{profileId, version, digest}`, never the full profile.
+
+The WRK-003 adversarial review (contract-fidelity dimension) examined this and raised **no
+defect** — the ref-based design is deliberate: the worker POSSESSES its full provider-constraint
+profile (operator provisioning / deployment config) and uses the enroll ref's digest to VERIFY it
+is the currently-registered one.
+
+**Decision:** WRK-003 consumes a `WorkerSelfModel` (registered target profile + branded provider
+constraints) as an explicit **provisioning input**, digest-verified against the enroll ref. It
+does NOT fabricate profiles the worker cannot possess, and it does NOT invent a fetch endpoint.
+Consequently the poll loop is **composed but not started at runtime** (dispatch stays inert,
+matching WRK-001) until the provisioning source and the WRK-004 supervisor land; rollback = omit
+the loop. **Forward concern (not a WRK-003 defect):** if the server rotates a target's
+provider-constraint digest, a statically-provisioned worker profile goes stale (brand fails →
+self-check fails → cannot ACK) until re-provisioned; profile refresh/rotation delivery is a
+JOB-002-family provisioning follow-up (relative of [[E4-F007]]), to be handled when the loop is
+wired for live dispatch.

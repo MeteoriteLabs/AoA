@@ -14,6 +14,29 @@ export interface ShutdownStep {
   stop(): Promise<void> | void;
 }
 
+/** The minimal leasing lifecycle the shutdown wiring drives (implemented by the
+ * WRK-003 poll loop): stop acquiring new leases, then drain in-flight work. */
+export interface LeasingLifecycle {
+  /** Stop leasing new work (idempotent). */
+  stopLeasing(): void;
+  /** Await all in-flight leases handed to the supervisor to settle. */
+  drain(): Promise<void>;
+}
+
+/**
+ * The ordered lease shutdown steps: lease-stop FIRST, then drain. Composing these
+ * ahead of the health-server step guarantees the worker stops accepting new work
+ * before it waits for in-flight work to finish (the WRK-003 lease-stop-before-drain
+ * invariant). The order is encoded here so it is testable independently of the
+ * entrypoint.
+ */
+export function createLeaseLifecycleSteps(lifecycle: LeasingLifecycle): readonly ShutdownStep[] {
+  return [
+    { name: "lease-stop", stop: () => lifecycle.stopLeasing() },
+    { name: "lease-drain", stop: () => lifecycle.drain() },
+  ];
+}
+
 export interface ShutdownLogger {
   info(bindings: Record<string, unknown>, message: string): void;
   error(bindings: { readonly err: unknown } | Record<string, unknown>, message: string): void;

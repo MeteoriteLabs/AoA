@@ -82,6 +82,30 @@ describe("bootstrapWorkerDaemon — signal wiring", () => {
   });
 });
 
+describe("bootstrapWorkerDaemon — lease lifecycle composition (WRK-003)", () => {
+  it("runs lease-stop then drain BEFORE the health-server stop when a loop is wired", async () => {
+    const order: string[] = [];
+    const handle: HealthServerHandle = { port: 1, close: async () => void order.push("health") };
+    const { listeners, proc } = fakeProc();
+
+    const result = await bootstrapWorkerDaemon({
+      env: baseEnv(),
+      proc,
+      createLogger: () => noopLogger(),
+      startHealth: (async () => handle) as never,
+      leasing: {
+        stopLeasing: () => order.push("lease-stop"),
+        drain: async () => void order.push("drain"),
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    listeners.get("SIGTERM")!();
+    await result.shutdown!("SIGTERM");
+    expect(order).toEqual(["lease-stop", "drain", "health"]);
+  });
+});
+
 describe("bootstrapWorkerDaemon — fail-closed on invalid config", () => {
   it("exits non-zero BEFORE opening the health server or any socket", async () => {
     const startHealth = vi.fn(async () => ({ port: 0, close: async () => {} }) as HealthServerHandle);

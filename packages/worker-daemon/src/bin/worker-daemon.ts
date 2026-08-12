@@ -20,7 +20,9 @@ import { createWorkerLogger, type Logger } from "../logging/logger.js";
 import { createMetrics, type Metrics } from "../metrics/metrics.js";
 import { startHealthServer, type HealthServerHandle } from "../health/health-server.js";
 import {
+  createLeaseLifecycleSteps,
   createShutdownHandler,
+  type LeasingLifecycle,
   type ShutdownSignal,
 } from "../lifecycle/shutdown.js";
 
@@ -36,6 +38,18 @@ export interface BootstrapDeps {
   readonly createLogger?: typeof createWorkerLogger;
   readonly createMetricsFn?: typeof createMetrics;
   readonly startHealth?: typeof startHealthServer;
+  /**
+   * The WRK-003 poll loop as a leasing lifecycle. When present, its
+   * lease-stop-before-drain steps are registered AHEAD of the health-server stop
+   * so a shutdown signal stops new leasing before draining in-flight work.
+   *
+   * It is NOT wired at runtime yet: starting a real loop needs the worker's
+   * server-assigned self-model (registered target profile + verified provider
+   * constraints), which the as-built JOB-002 enroll response does not deliver
+   * (only a provider ref). Until that provisioning lands, the daemon composes the
+   * loop's shutdown seam but dispatches no work (rollback = omit the loop).
+   */
+  readonly leasing?: LeasingLifecycle;
 }
 
 export interface BootstrapResult {
@@ -80,10 +94,12 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   const health = await startHealth({ host: config.health.host, port: config.health.port }, metrics);
   metrics.setWorkerUp(true);
 
-  // CORE has no leasing/drain subsystems yet (WRK-003 registers lease-stop
-  // ahead of the drain step); the only stop step today is the health server.
+  // WRK-003 registers lease-stop AHEAD of drain, both ahead of the health-server
+  // stop. When no loop is wired (the current default — see `leasing` above), the
+  // only stop step is the health server.
+  const leaseSteps = deps.leasing ? createLeaseLifecycleSteps(deps.leasing) : [];
   const shutdown = createShutdownHandler({
-    steps: [{ name: "health-server", stop: () => health.close() }],
+    steps: [...leaseSteps, { name: "health-server", stop: () => health.close() }],
     logger,
     exit: (code) => deps.proc.exit(code),
     flush: () => logger.flush(),
