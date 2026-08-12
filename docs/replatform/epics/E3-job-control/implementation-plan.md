@@ -1739,6 +1739,56 @@ instrument the dedicated participant/control rather than requiring a queued lite
 `input.ownerDb.transaction`. A fixture may prime a legacy idle PID as a non-vacuity control, but
 its presence or exact count is not a production postcondition.
 
+###### Accepted stable-endpoint security tightening (2026-08-12)
+
+This subsection is the controlling E3-F028 transport and teardown contract and explicitly
+supersedes the earlier clauses above that accepted custom postgres.js `socket` callbacks,
+explicit multi-host host/port lists, or participant-settlement-before-close ordering.
+
+Each configured owner, app, and operator endpoint must be one stable logical PostgreSQL
+authority. Owner transport is exactly one native TCP host/port pair or one native Unix
+`path`; an owner `options.socket` callback or explicit multi-host input fails
+`distributed_execution_configuration` before the callback, a dedicated client, or a serving
+pool is invoked or allocated. App and operator URLs likewise each name exactly one native TCP
+authority endpoint. Their endpoint text need not be equal because the advisory contention
+handshake proves their shared domain. Client-side endpoint rotation is unsupported; HA and
+failover belong behind a stable endpoint, and a host list is never silently trusted as one
+cluster. This explicit stable-endpoint trust boundary permits the startup certificate's
+migration, authority, and advisory phases to remain separate bounded transactions without
+repeating the full ledger and catalog audit in every transaction or future physical session.
+
+Supported owner authentication and transport options remain exact: native TCP or Unix path,
+database/user, TLS/`ssl`, `sslnegotiation`, target-session attributes, and passwordless,
+string-password, or password-function authentication. An explicitly empty password remains
+empty after postgres.js reparses the clone even when ambient `PGPASSWORD` is present.
+
+On abort, the coordinator synchronously memo-starts normal awaited owner-participant
+`end({ timeout: 5 })`, every allocated serving `close({ timeoutSeconds: 5 })`, and exact
+cancellation before awaiting any participant promise. It then awaits cancellation, every
+participant transaction, and every already-started close. No naked or abandoned
+`Promise.race`, and no all-settled-before-close deadlock, is permitted.
+
+Cancellation controls and the final verifier share one narrowly scoped absolute session
+deadline of `5_000 ms` covering acquisition and their complete Drizzle query/poll work. One
+structurally identified timer owns that deadline. If it fires, first-call-wins disposal calls
+and awaits public postgres.js `end({ timeout: 0 })`; if work completes first, production
+clears the timer and normal disposal calls and awaits exactly `end({ timeout: 5 })`. Both the
+scoped Drizzle work and memoized disposal settle. Emergency `timeout: 0` is invalid outside
+the timer-fired causal path. The verifier deadline bounds acquisition, query, and polling,
+not merely whether another loop iteration starts; ordinary disposal keeps its separately
+awaited five-second allowance.
+
+REDs reverse the old transport positives: owner custom socket and owner/app/operator explicit
+multi-host inputs must fail before any callback or allocation. Positive controls cover one
+native TCP endpoint, one native Unix path, TLS/`sslnegotiation`, and passwordless/string/
+password-function cloning through actual postgres.js reparsing. Teardown REDs require end/
+close initiation before a blocked participant can settle; cancellation/verifier REDs cover
+acquisition and query stalls, work/deadline races, exactly one memoized end, causal emergency
+`end({ timeout: 0 })`, normal `end({ timeout: 5 })`, no unhandled rejection, and external PID
+disappearance. The static source oracle recognizes exactly the existing outer-startup timer,
+the bounded cleanup-poll timer, and this structurally causal control/verifier session-deadline
+timer; arbitrary extra timers or unconstrained `0 | 5` disposal remain invalid.
+
 ##### 2. Exact relation, RLS, policy, and ACL certificate (E3-F029)
 
 The app expected-relation set is the exact sorted union of the keys of

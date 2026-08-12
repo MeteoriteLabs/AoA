@@ -1008,6 +1008,27 @@ session clients, and private pool state are not accepted seams. This is an autho
 clarification, not widened privilege: app/operator still receive no `drizzle` access, and no
 role, grant, schema, migration, or serving authority changes.
 
+**Accepted security tightening (2026-08-12):** This paragraph controls where it conflicts
+with the accepted disposition above. Custom owner `options.socket` callbacks and explicit
+owner/app/operator multi-host inputs are rejected before callback/client/pool allocation.
+Supported owner transport is one native TCP host/port pair or one native Unix path, with
+passwordless/string/password-function and TLS options preserved without ambient
+reinterpretation. Every configured endpoint is a stable logical PostgreSQL authority;
+client-side rotation is unsupported and HA belongs behind that endpoint. This reverses the
+prior socket/multi-host acceptance because postgres.js may await a custom socket before its
+connect timer and may rotate later work to an authority the one-time certificate never
+attest. Keeping ledger, authority, and advisory checks in separate bounded transactions is
+accepted only inside this explicit stable-endpoint trust boundary.
+
+On abort, normal owner `end({ timeout: 5 })`, every allocated serving
+`close({ timeoutSeconds: 5 })`, and exact cancellation are memo-started before participant
+settlement is awaited; all cancellation, transaction, and close tasks are awaited. Controls
+and the final verifier have one absolute five-second acquisition/query/poll deadline. Its
+single causal timer may first-call-wins invoke and await `end({ timeout: 0 })`; work-first
+completion clears the timer and invokes and awaits normal `end({ timeout: 5 })`. Emergency
+zero-time disposal is invalid elsewhere. This closes blackholed acquisition and
+all-settled-before-close hangs without changing roles, grants, schema, or serving authority.
+
 ## E3-F029 - Startup exact-authority audit omits required relations and RLS posture
 
 **Date:** 2026-08-11
