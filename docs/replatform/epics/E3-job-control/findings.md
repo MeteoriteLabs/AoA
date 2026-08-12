@@ -1248,3 +1248,29 @@ Security re-review of `b1773d6743efaead970ca5edfee0d41911e5028c` found that the 
 reused the campaign bootstrap but invoked a different hardcoded script. The distinct Security
 bootstrap/realpath/digest contract above closes that plan P1 without changing ticket status or
 claiming implementation.
+
+## E3-F028–E3-F033 — RESOLVED (JOB-003 final acceptance 2026-08-12)
+
+All six final-review-3 findings are resolved on the cumulative branch and JOB-003 is
+`complete` / `pass` (see `tickets/JOB-003-result.md` § "Final acceptance — 2026-08-12").
+
+- **E3-F028 (C-01)** — RESOLVED `d2040591f`. CSPRNG per-boot advisory key; owner-exclusive
+  `pg_advisory_xact_lock` vs all 8 serving pools failing `pg_try_advisory_xact_lock_shared`;
+  separate-database → `distributed_execution_advisory_domain` fail-closed; owner pool bound in
+  `index.ts`. Real separate-database rejection test present. Independently re-verified.
+- **E3-F029 (I-01)** — RESOLVED `d2040591f`/`820515991`. `assertExactCatalogCertificate`
+  compares exact relation inventory + `relrowsecurity`/`relforcerowsecurity` + policy
+  role/`USING`/`WITH CHECK`; disabled-RLS/disabled-FORCE-RLS/missing-relation/policy-tamper
+  negatives present. Independently re-verified.
+- **E3-F030 (I-02)** — RESOLVED `cdfa70731` (F030). Tuple-exact bounded cleanup composed per
+  admitted shard through the outbox worker; no Cartesian `IN` expansion.
+- **E3-F031 (I-03)** — RESOLVED `d24dd68a7` (F031). Executable campaign adapter + git-lineage
+  binding + NDJSON evidence validation + Security handoff verifier; 20/20.
+- **E3-F032 (I-04)** — RESOLVED `b369ae7e5`/`c4b401047`/`cdfa70731`/`d99945874` (F032).
+  Payload-free telemetry module + leasing/scheduler/outbox emission + startup threading.
+- **E3-F033 (M-01)** — RESOLVED `d99945874` (F033). Target-then-worker lock order in poll+revoke.
+
+Fresh HEAD execution (`cf03460f1`): 5 files / 141 assertions PASS, with the honestly-labeled
+Windows-local `postgres` teardown artifact recorded in the ticket ledger. Linux CI = DEC-03
+authority. This resolves the epic's JOB-003 blocker set; the E3 integration/exit gate is a
+separate step.

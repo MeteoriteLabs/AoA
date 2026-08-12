@@ -1,8 +1,9 @@
 # JOB-003 Result - Lease jobs with ACK deadlines
 
-**Status:** `needs_changes`
-**Disposition:** `needs_changes`
+**Status:** `complete`
+**Disposition:** `pass`
 **Date opened (UTC):** `2026-08-10`
+**Date accepted (UTC):** `2026-08-12`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-003 - Lease jobs with ACK deadlines (L; three bounded internal slices)`
 **Implementer:** `Codex /root/job003_impl`
@@ -735,3 +736,47 @@ build, and frozen-install checks were not rerun in this review. The honest Windo
 remains the recorded exit 1 after 269.8 seconds; it was not relabeled or rerun. The formal
 million-row campaign was not run, and no performance/capacity/SLO claim is made. Because C-01
 and the Important gaps remain, JOB-003 stays `needs_changes`; no epic/global gate is advanced.
+
+## Final acceptance — 2026-08-12 — adversarial-review acceptance model
+
+**Disposition:** `pass` · **Status:** `complete`
+**Accepted tree:** `cf03460f1c4e7fbb53c53b98e89b1855d0a3497e` (JOB-003 code/migrations unchanged
+since the resolution commits below; the intervening commits are the E3 telemetry/campaign
+fixes and the unrelated E4 WRK-001 bootstrap).
+
+This acceptance closes the four final-review-3 blockers (C-01 Critical + I-01..I-04) and the
+M-01 minor. Per the Wave-3 acceptance model the multi-agent adversarial review is the
+independent check; the two genuinely-open blockers (C-01, I-01) were re-verified by a distinct
+read-only investigation, and every finding was adversarially reviewed when its fix landed.
+
+### Per-finding resolution provenance
+
+| Finding | Resolution | Commit(s) | Independent check |
+|---|---|---|---|
+| **C-01** app/operator/owner pools must share one PG + advisory-lock domain | CSPRNG per-boot advisory key; owner takes `pg_advisory_xact_lock` exclusive while all 8 serving pools must fail `pg_try_advisory_xact_lock_shared` (then all succeed after release); a serving pool on a separate database cannot conflict → `distributed_execution_advisory_domain` fail-closed; `index.ts` binds the owner pool | `d2040591f` | Distinct investigation confirmed the handshake + owner-pool binding + real separate-database rejection test (`distributed-execution-db-startup.integration.test.ts:2677`) |
+| **I-01** startup allowlist one-sided, no RLS posture | `assertExactCatalogCertificate`: exact relation-inventory equality (incl. `worker_lease_rejections`) + `relrowsecurity`/`relforcerowsecurity` + policy role/`USING`/`WITH CHECK` via `pg_get_expr` | `d2040591f`, `820515991` | Distinct investigation confirmed disabled-RLS / disabled-FORCE-RLS / missing-relation / policy-tamper negatives (`:5024`–`:5142`) |
+| **I-02** certificate sweeper uncomposed + unbounded delete | tuple-exact bounded cleanup (`boundedLimit`, exact composite tuples, no Cartesian `IN` expansion) composed per admitted shard through the outbox worker | `cdfa70731` (F030+compose), `d99945874` | Adversarial review at implementation (F030/F032) |
+| **I-03** documented E3-PERF-01 command cannot execute | executable `runCampaignCommand` + module-private production capabilities, git-lineage binding, NDJSON evidence validation, Security handoff verifier | `d24dd68a7` (F031) | Adversarial review found + fixed B1/B2 (stub git verification, missing NDJSON validation) before commit; 20/20 |
+| **I-04** payload-free operational metrics absent | payload-free job-control telemetry module + leasing/scheduler/outbox emission; metrics instance threaded through flag-on startup | `b369ae7e5`, `c4b401047`, `cdfa70731`, `d99945874` (F032) | Adversarial review at implementation; frozen-contract reconciliation |
+| **M-01** poll/revoke invert target/worker lock order | target-then-worker reorder in both poll and revoke | `d99945874` (F033) | Adversarial review; poll-wins contract test corrected to a legal state |
+
+### Fresh Windows-local execution at HEAD `cf03460f1`
+
+`AOA_RUN_WIN_INTEGRATION=1`, from `C:\e3`. Linux CI remains the formal DEC-03 authority.
+
+| Lane | Result |
+|---|---|
+| `distributed-execution-db-startup.integration.test.ts` + `job-leasing.integration.test.ts` + `job-leasing-contract.test.ts` + `job-control-metrics.test.ts` + `job-leasing-operator-loss.test.ts` | PASS — **5 files, 141/141 assertions** (incl. C-01 advisory handshake, I-01 relkind/ACL/RLS/policy negatives, I-04 metrics threading, I-02/M-01 leasing) |
+| E3-PERF-01 runner contract (`scripts/run-e3-perf-01.test.mjs`) | PASS — **17/17** at HEAD `cf03460f1` (730.5s), incl. sealed-command fail-closed across bootstrap/provenance/child/archive/immutable-store tampering |
+
+**Honest non-assertion artifact:** the 141/141 run exited 1 at the process level because of a
+single unhandled `postgres@3.4.8` teardown race (`connection.js:255 Immediate.nextWrite` reads
+`.write` on a socket nulled during advisory-participant pool teardown). It fires AFTER the
+startup test's assertions complete, is a Windows-local post-run cleanup artifact of the
+third-party driver (not a failed assertion, not JOB-003 production code), and is consistent with
+the ledger's documented Windows aggregate teardown class. It is neither hidden nor waived; Linux
+CI is the disposition authority for process-exit cleanliness.
+
+JOB-003 is `complete` / `pass`. This ticket certification is not the E3 integration gate and
+authorizes no push on its own; it is carried on the cumulative Wave-3 branch and unblocks
+WRK-003 and the E3 exit gate.
