@@ -85,7 +85,8 @@
   "pnpm": {
     "patchedDependencies": {
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch",
-      "postgres@3.4.8": "patches/postgres@3.4.8.patch"
+      "postgres@3.4.8": "patches/postgres@3.4.8.patch",
+      "vitest@3.2.6": "patches/vitest@3.2.6.patch"
     },
     "overrides": {
       "@cursor/sdk>sqlite3": "-",

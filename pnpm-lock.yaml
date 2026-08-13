@@ -35,6 +35,9 @@ patchedDependencies:
   postgres@3.4.8:
     hash: bxuu2dmirjyj7xcwlawfg3rpny
     path: patches/postgres@3.4.8.patch
+  vitest@3.2.6:
+    hash: 2h6nzbcqsknlj7sn7jgbmgi3pa
+    path: patches/vitest@3.2.6.patch
 
 importers:
 
@@ -63,7 +66,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.6
-        version: 3.2.6(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
+        version: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
 
   cli:
     dependencies:
@@ -359,7 +362,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.6
-        version: 3.2.6(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
+        version: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
 
   packages/plugins/create-paperclip-plugin:
     dependencies:
@@ -409,7 +412,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.6
-        version: 3.2.6(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
+        version: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
 
   packages/plugins/examples/plugin-file-browser-example:
     dependencies:
@@ -552,7 +555,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.6
-        version: 3.2.6(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
+        version: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
 
   packages/sandbox-provider-contract:
     dependencies:
@@ -574,7 +577,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.6
-        version: 3.2.6(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
+        version: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
 
   packages/shared:
     dependencies:
@@ -587,7 +590,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.6
-        version: 3.2.6(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
+        version: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
 
   packages/worker-daemon:
     dependencies:
@@ -609,7 +612,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.6
-        version: 3.2.6(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
+        version: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
 
   packages/worker-protocol:
     dependencies:
@@ -631,7 +634,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.6
-        version: 3.2.6(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
+        version: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
 
   server:
     dependencies:
@@ -712,7 +715,7 @@ importers:
         version: 3.0.1(ajv@8.18.0)
       better-auth:
         specifier: 1.6.13
-        version: 1.6.13(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(kysely@0.29.3)(pg@8.18.0)(postgres@3.4.8(patch_hash=bxuu2dmirjyj7xcwlawfg3rpny)))(pg@8.18.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vitest@3.2.6(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3))
+        version: 1.6.13(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(kysely@0.29.3)(pg@8.18.0)(postgres@3.4.8(patch_hash=bxuu2dmirjyj7xcwlawfg3rpny)))(pg@8.18.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vitest@3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3))
       chokidar:
         specifier: ^5.0.0
         version: 5.0.0
@@ -845,7 +848,7 @@ importers:
         version: 6.4.3(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
       vitest:
         specifier: ^3.2.6
-        version: 3.2.6(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
+        version: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
 
   ui:
     dependencies:
@@ -1038,7 +1041,7 @@ importers:
         version: 6.4.3(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
       vitest:
         specifier: ^3.2.6
-        version: 3.2.6(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@29.0.0(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
+        version: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@29.0.0(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
       zod:
         specifier: ^3.24.2
         version: 3.25.76
@@ -13086,7 +13089,7 @@ snapshots:
 
   before-after-hook@4.0.0: {}
 
-  better-auth@1.6.13(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(kysely@0.29.3)(pg@8.18.0)(postgres@3.4.8(patch_hash=bxuu2dmirjyj7xcwlawfg3rpny)))(pg@8.18.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vitest@3.2.6(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)):
+  better-auth@1.6.13(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(kysely@0.29.3)(pg@8.18.0)(postgres@3.4.8(patch_hash=bxuu2dmirjyj7xcwlawfg3rpny)))(pg@8.18.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vitest@3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)):
     dependencies:
       '@better-auth/core': 1.6.13(@better-auth/utils@0.4.1)(@better-fetch/fetch@1.1.21)(@opentelemetry/api@1.9.1)(better-call@1.3.5(zod@3.25.76))(jose@6.2.3)(kysely@0.29.3)(nanostores@1.4.0)
       '@better-auth/drizzle-adapter': 1.6.13(@better-auth/core@1.6.13(@better-auth/utils@0.4.1)(@better-fetch/fetch@1.1.21)(@opentelemetry/api@1.9.1)(better-call@1.3.5(zod@3.25.76))(jose@6.2.3)(kysely@0.29.3)(nanostores@1.4.0))(@better-auth/utils@0.4.1)(drizzle-orm@0.45.2(@electric-sql/pglite@0.3.15)(@opentelemetry/api@1.9.1)(kysely@0.29.3)(pg@8.18.0)(postgres@3.4.8(patch_hash=bxuu2dmirjyj7xcwlawfg3rpny)))
@@ -13111,7 +13114,7 @@ snapshots:
       pg: 8.18.0
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)
-      vitest: 3.2.6(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
+      vitest: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
     transitivePeerDependencies:
       - '@cloudflare/workers-types'
       - '@opentelemetry/api'
@@ -16882,7 +16885,7 @@ snapshots:
       tsx: 4.22.4
       yaml: 2.8.3
 
-  vitest@3.2.6(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3):
+  vitest@3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.6
@@ -16925,7 +16928,7 @@ snapshots:
       - tsx
       - yaml
 
-  vitest@3.2.6(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@29.0.0(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3):
+  vitest@3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@29.0.0(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.6
@@ -16968,7 +16971,7 @@ snapshots:
       - tsx
       - yaml
 
-  vitest@3.2.6(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3):
+  vitest@3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.6
