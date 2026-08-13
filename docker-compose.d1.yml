@@ -126,6 +126,11 @@ services:
       HOST: "0.0.0.0"
       PORT: "3100"
       AOA_DEPLOYMENT_MODE: "authenticated"
+      # authenticated mode validates the request Host header against an allowlist
+      # (health/liveness bypass it, but /api/worker-control/* does not). The E6F harness +
+      # the workers reach the control plane by its in-compose service name, so allow it
+      # (plus loopback for the container healthcheck).
+      AOA_ALLOWED_HOSTNAMES: "control-plane,localhost,127.0.0.1"
       AOA_DISTRIBUTED_EXECUTION_ENABLED: "true"
       # control-plane <-> postgres is routed THROUGH toxiproxy (in-path link 1).
       # This primary connection is the app's OWNER/privileged pool: index.ts passes
