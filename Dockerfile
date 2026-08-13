@@ -57,6 +57,10 @@ COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
 COPY packages/plugins/create-paperclip-plugin/package.json packages/plugins/create-paperclip-plugin/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
+COPY packages/worker-protocol/package.json packages/worker-protocol/
+COPY packages/worker-daemon/package.json packages/worker-daemon/
+COPY packages/sandbox-fake-provider/package.json packages/sandbox-fake-provider/
+COPY packages/sandbox-provider-contract/package.json packages/sandbox-provider-contract/
 COPY patches/ patches/
 RUN pnpm install --frozen-lockfile
 

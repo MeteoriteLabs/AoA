@@ -496,6 +496,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # worker-protocol is a frozen leaf whose package.json exports only ./dist,
+      # and Typecheck/Run tests run BEFORE Build — so its consumers (server,
+      # worker-daemon, sandbox-*) cannot resolve it on a fresh checkout until it
+      # is built. Build just this leaf first; the later Build step is unchanged.
+      - name: Build worker-protocol (dist required by typecheck + tests)
+        run: pnpm --filter @armyofagents/worker-protocol build
+
       - name: Typecheck
         run: pnpm -r typecheck
 
@@ -880,6 +887,11 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # The sandbox contract suites + DEP-003 server suites import
+      # @armyofagents/worker-protocol, whose exports resolve only to ./dist.
+      - name: Build worker-protocol (dist required by the contract suites)
+        run: pnpm --filter @armyofagents/worker-protocol build
 
       - name: Distributed-execution foundation + fixture-determinism contracts
         run: node scripts/check-distributed-execution-foundation.mjs
