@@ -30,14 +30,10 @@ WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY packages/worker-daemon/package.json packages/worker-daemon/
 COPY packages/worker-protocol/package.json packages/worker-protocol/
-# worker-daemon devDepends on @armyofagents/shared (workspace:*). `pnpm deploy --prod`
-# resolves the FULL workspace graph before pruning devDeps, so shared's manifest must be
-# present for resolution or it fails ERR_PNPM_WORKSPACE_PKG_NOT_FOUND. It is pruned from
-# the /worker-app output (--prod) and its source is never copied into the build stage, so
-# the runtime boundary (worker-protocol + pino only) is unchanged. shared/worker-protocol
-# both depend only on external zod — no further workspace cascade.
-COPY packages/shared/package.json packages/shared/
 COPY patches/ patches/
+# A --prod filtered install: devDependencies (@armyofagents/shared, vitest) are NOT
+# resolved, so shared's manifest is deliberately absent here — keeping the deps stage
+# EXACTLY the worker runtime closure that scripts/check-image-deps-stages.mjs enforces.
 RUN pnpm install --frozen-lockfile --prod --filter "@armyofagents/worker-daemon..."
 
 # ---------------------------------------------------------------------------
@@ -67,6 +63,14 @@ RUN tsc -p packages/worker-protocol/tsconfig.json \
   && tsc -p packages/worker-daemon/tsconfig.json \
   && test -f packages/worker-daemon/dist/bin/worker-daemon.js \
     || (echo "ERROR: worker-daemon build output missing" && exit 1)
+# worker-daemon devDepends on @armyofagents/shared (workspace:*). `pnpm deploy --prod`
+# resolves the FULL workspace graph before pruning devDeps, so shared's MANIFEST must be
+# present for resolution or it fails ERR_PNPM_WORKSPACE_PKG_NOT_FOUND. This COPY lives in
+# the DISCARDED build stage — NOT the deps stage (which the least-privilege parity gate
+# scans) — so it never widens the runtime closure. Only the manifest is copied; shared's
+# SOURCE never enters the build, and --prod prunes shared from /worker-app, so the runtime
+# boundary (worker-protocol + pino only) is unchanged. shared depends only on external zod.
+COPY packages/shared/package.json packages/shared/
 # Produce a self-contained, prod-only deployment of just the worker daemon
 # (worker-daemon + worker-protocol + pino), nothing else.
 RUN pnpm --filter @armyofagents/worker-daemon deploy --prod /worker-app
