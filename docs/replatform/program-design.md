@@ -223,6 +223,18 @@ Expensive validation is delayed only to a merge train or nightly lane:
 | Weekly | weekly | chaos, cross-tenant adversarial suite, load, backup/restore, leaked-sandbox reconciliation |
 | Release | each candidate | all gates, image/SBOM/signature checks, migration rehearsal, rollback rehearsal |
 
+### Integration branch and PR strategy (LOCKED)
+
+The entire program is integrated on **one long-lived branch, `docs/replatform-program`**, as **a single continuous pull request** (currently **PR #323**, kept labeled *WIP — do not merge*). This is a locked operating decision; do not re-litigate it or ask whether to split it:
+
+- **No per-epic PRs and no per-epic merges to `main`.** Every epic's tickets land directly on `docs/replatform-program`. The branch is a strict linear accumulation of E0→E11 work.
+- **CI runs on the single PR.** The `pr.yml` gate suite (`verify`, `e2e`, `e2e-pgvector`, `migrations`, `policy`, `brand-check`, `distributed-contract`, `worker-protocol-contract-bytes`, aggregated by the required **`ci-required`** check) re-runs on every push to the PR. This PR *is* the enforcement surface for the "Focused", "D0 rollup", and "Merge train" lanes above — those lanes run against the branch tip, not against separate epic PRs. Each push cancels the prior run's in-flight `verify` (GitHub concurrency); `verify` is the ~25–40 min long pole.
+- **CI-green on the branch tip is the integration invariant** that preserves cross-agent attribution (the reason "merge now, test later" is banned) — because there is no second branch to reconcile, a red tip is always attributable to the last push.
+- **Manifest/grant blast-radius is expected and reconciled in-branch.** The E2/E3 security certificates are duplicated across several independent oracles (the production grant constants in `job-control-legacy-grants.ts`, the startup gate in `distributed-execution-databases.ts`, the sibling contract test `job-control-legacy-grants.contract.test.ts` with its own hand-transcribed ACL matrix + nullness fixtures, and the raw-SQL audit allowlist in `job-leasing-contract.test.ts`). Any change to a table grant, RLS policy, serving-relation inventory, or authority manifest must be mirrored across **all** of these in the same branch, and typically surfaces over **2–3 CI rounds** of blast radius (sibling certs + platform-specific tests). Budget for that; do not treat a sibling-cert failure as a regression in the change itself.
+- **Merge to `main` happens only at the program integration checkpoint** (governed by the Release/gate policy), never per epic. Until then #323 stays open and WIP.
+
+Practical note for future agents: check the vitest `Errors N` line and the *Unhandled Errors* section of the `verify` log, not just the `Tests N passed` count — a 20k-test suite plus per-test embedded-PostgreSQL surfaces tooling-scale flakes (driver teardown races, birpc RPC timeouts) that read as red despite a 100%-green suite. Those are patched via `pnpm.patchedDependencies` (see `patches/postgres@3.4.8.patch`, `patches/vitest@3.2.6.patch`).
+
 ## Agent operating model
 
 - One ticket, one branch/worktree, one implementation agent.
