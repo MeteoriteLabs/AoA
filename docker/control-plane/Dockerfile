@@ -81,7 +81,7 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 # a pruned production node_modules with the workspace deps injected as built dist.
 # No devDependencies (tsx / vite / vitest), no cli, no worker-daemon, no source
 # tree of packages/adapters/*. This is the ONLY artifact copied into production.
-RUN pnpm --filter @armyofagents/server deploy --prod --legacy /cp-app
+RUN pnpm --filter @armyofagents/server deploy --prod /cp-app
 RUN test -f /cp-app/dist/index.js || (echo "ERROR: control-plane deploy output missing" && exit 1)
 
 # ---------------------------------------------------------------------------
