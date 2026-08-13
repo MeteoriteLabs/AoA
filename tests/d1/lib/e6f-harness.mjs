@@ -535,3 +535,434 @@ report({ status: res.status, body: parsed });
 `;
   return dexecModule(service, script);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E6F-01 lease-race additions (ADDITIVE ONLY — nothing above is modified).
+//
+// Everything above is the frozen, LIVE-GREEN E6F-03 substrate. The helpers below
+// only ADD what the 100-race lease suite needs on top of it; they never change the
+// behaviour or signature of any existing export (E6F-03 keeps passing).
+//
+// ── Why a distinct "race" capacity/provider profile ──────────────────────────
+// A single dedicated worker's concurrent in-flight leases are bounded at poll time
+// by min(provider.maxConcurrentOperations, hello.capacity.batchSlots) — see
+// server/src/services/job-leasing.ts deriveAdmissibleWorkloadTypes +
+// snapshotLiveLeaseCapacity (leases in status offered|active both count). Enrollment
+// binds EXACTLY ONE worker per execution_target (worker-enrollment.ts
+// findWorkerForBinding -> worker_transfer_denied on a second worker), so a target's
+// whole job pool is drained by its one worker. To let that one worker hold an entire
+// per-target pool of leases at once (submit->placement->lease->ACK, with no job
+// COMPLETION step in this gate to free a slot), the race target's server-owned
+// provider profile advertises a high maxConcurrentOperations and the worker's hello
+// a matching batchSlots — both still schema-valid (maxConcurrentOperations<=10_000;
+// batchSlots is a non-negative int) and both fully seed-controlled. E6F-03's
+// WORKER_CAPACITY / buildWorkerHello / seedScenario are left exactly as they were.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The race worker's free-capacity report. Identical to WORKER_CAPACITY except
+ * `batchSlots` is raised to `batchSlots` so ONE dedicated worker may hold an entire
+ * per-target pool of concurrent leases. freeCpu/mem/disk stay AT the provider ceiling
+ * (never above — workerSatisfiesRequirements §7 rejects free > ceiling). */
+export function raceCapacity(batchSlots) {
+  return {
+    batchSlots,
+    browserSessionSlots: 0,
+    serviceSlots: 0,
+    freeCpuMillis: 2000,
+    freeMemoryMiB: 4096,
+    freeDiskMiB: 8192,
+  };
+}
+
+/** A workerHelloV1 for a race worker: byte-shape-identical to buildWorkerHello()
+ * except the capacity carries the raised `batchSlots`. reportedCapabilities +
+ * policyHash stay POLICY_HASH/WORKER_CAPABILITIES so the poll-time capability matcher
+ * (effective = ceiling ∩ reported, policyHash equality) is satisfied exactly as in
+ * E6F-03. */
+export function buildRaceWorkerHello({ workerId, targetId, deviceGeneration = 1, batchSlots }) {
+  return {
+    protocolVersion: 1,
+    workerId,
+    targetId,
+    deviceGeneration,
+    agentVersion: "e6f-01-harness",
+    supportedProtocol: { min: 1, max: 1 },
+    platform: { os: "linux", arch: "x64", runtime: "worker" },
+    reportedCapabilities: [...WORKER_CAPABILITIES],
+    capacity: raceCapacity(batchSlots),
+    policyHash: POLICY_HASH,
+  };
+}
+
+/** Fresh, per-run identity for the race scenario: one org/company + `targetCount`
+ * organization-scoped targets (each its own target/worker/enrollment-code) + a
+ * per-run globally-unique company issue prefix (E6F-03 hardcodes 'E6F' and never
+ * cleans up, so E6F-01 MUST NOT reuse it on the same live stack). */
+export function newRaceScenarioIds({ targetCount }) {
+  const slug = randomBytes(4).toString("hex");
+  return {
+    slug,
+    orgId: uuid(),
+    companyId: uuid(),
+    // issue_prefix is globally UNIQUE (companies_issue_prefix_idx); derive a
+    // per-run value distinct from E6F-03's 'E6F'. No format constraint on the column.
+    issuePrefix: ("E6R" + slug).slice(0, 12).toUpperCase(),
+    targets: Array.from({ length: targetCount }, (_unused, index) => ({
+      index,
+      targetId: uuid(),
+      workerId: uuid(),
+      slug: `e6r-target-${slug}-${index}`,
+      deviceKey: generateDeviceKey(),
+      code: newEnrollmentCode(),
+    })),
+  };
+}
+
+/** Seed the ENTIRE race scenario in ONE control-plane exec: one org+company, N
+ * organization-scoped registered targets (each a lease-eligible registered profile
+ * + enrollment code/route), and M queued batch jobs whose immutable attempts are
+ * placed lease-eligible to a specific target (job.targetIndex). Direct SQL under the
+ * owner/superuser DATABASE_URL exactly like seedScenario; the server READS these rows
+ * under aoa_app via the deployed RLS policies. The two load-bearing digests are the
+ * SAME worker-protocol primitives the poll re-derives (zero canonicalizer drift).
+ *
+ * `jobs` is `[{ jobId, attemptId, targetIndex }]`. Returns per-target
+ * { targetId, registeredProfileHash, providerDigest, authorityKey }. */
+export function seedRaceScenario({
+  orgId,
+  companyId,
+  slug,
+  issuePrefix,
+  targets,
+  jobs,
+  capacityCeiling,
+  policyHash = POLICY_HASH,
+  capabilityCeiling = WORKER_CAPABILITIES,
+}) {
+  const params = {
+    orgId,
+    companyId,
+    slug,
+    issuePrefix,
+    policyHash,
+    capabilityCeiling,
+    capacityCeiling,
+    targets: targets.map((target) => ({
+      targetId: target.targetId,
+      slug: target.slug,
+      locatorHash: target.code.locatorHash,
+      secretHash: target.code.secretHash,
+    })),
+    jobs,
+  };
+  const script = `
+import postgres from "postgres";
+import { createHash } from "node:crypto";
+import { canonicalizeJsonV1, canonicalProviderConstraintProfileDigestInputV1 } from "@armyofagents/worker-protocol";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sha256 = (v) => createHash("sha256").update(v).digest("hex");
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  // ONE shared provider-constraint profile (its digest is its OWN verified digest).
+  // maxConcurrentOperations is raised so one dedicated worker may hold a whole pool.
+  const providerUnsigned = {
+    profileId: "e6f-org-dedicated",
+    version: 1,
+    maxContinuousRuntimeSeconds: 3600,
+    maxIdleSeconds: 300,
+    resourceCeiling: { cpuMillis: 2000, memoryMiB: 4096, pids: 512, diskMiB: 8192 },
+    maxConcurrentOperations: P.capacityCeiling,
+    supportedOperations: ["create", "execute", "cancel", "kill", "destroy", "list", "inspect", "reconcile_cleanup"],
+    localityTags: ["transfer_allowed"],
+    checkpointMode: "none",
+    healthMode: "none",
+  };
+  const providerDigest = sha256(Buffer.from(canonicalProviderConstraintProfileDigestInputV1(providerUnsigned)));
+  const provider = { ...providerUnsigned, digest: providerDigest };
+  const authorityKey = "organization:" + P.orgId;
+
+  await sql\`INSERT INTO organizations (id, name, slug)
+    VALUES (\${P.orgId}, \${"E6F Race Org " + P.slug}, \${"e6r-" + P.slug})\`;
+  await sql\`INSERT INTO companies (id, organization_id, name, issue_prefix)
+    VALUES (\${P.companyId}, \${P.orgId}, \${"E6F Race Company " + P.slug}, \${P.issuePrefix})\`;
+
+  // Per-target registered profile (distinct targetId -> distinct registered_profile_hash;
+  // jobs are isolated per target by placement_target_id + placement_profile_hash). All
+  // organization-scoped targets in one org SHARE authority key 'organization:<org>'
+  // (execution_targets_authority_scope_check), which is correct — routing is by target id.
+  const targetFacts = [];
+  for (let i = 0; i < P.targets.length; i += 1) {
+    const t = P.targets[i];
+    const registeredProfile = {
+      protocolVersion: 1,
+      targetId: t.targetId,
+      targetClass: "organization_dedicated",
+      scope: "organization",
+      organizationId: P.orgId,
+      ownerPrincipalId: null,
+      trustCeiling: "organization_isolated",
+      credentialCeiling: "organization_brokered",
+      dataLocalityCeiling: "organization_target_only",
+      providerConstraints: { profileId: provider.profileId, version: provider.version, digest: provider.digest },
+      capabilityCeiling: P.capabilityCeiling,
+      deviceGeneration: 1,
+      revokedAt: null,
+      policyHash: P.policyHash,
+    };
+    const registeredProfileHash = sha256(canonicalizeJsonV1(registeredProfile));
+    const targetCapabilities = { providerConstraints: { profileId: provider.profileId, version: provider.version, digest: provider.digest } };
+    await sql\`INSERT INTO execution_targets
+      (id, organization_id, scope, target_authority_key, device_generation, slug, kind, trust_class,
+       status, capabilities, registered_profile, registered_profile_hash, provider_constraint_profile, last_seen_at)
+      VALUES (\${t.targetId}, \${P.orgId}, 'organization', \${authorityKey}, 1, \${t.slug},
+        'dedicated_worker', 'dedicated_tenant', 'active', \${sql.json(targetCapabilities)}, \${sql.json(registeredProfile)},
+        \${registeredProfileHash}, \${sql.json(provider)}, now())\`;
+    await sql\`INSERT INTO worker_enrollment_code_routes (locator_hash, candidate_organization_id, expires_at)
+      VALUES (\${t.locatorHash}, \${P.orgId}, now() + interval '30 minutes')\`;
+    await sql\`INSERT INTO worker_enrollment_codes
+      (organization_id, scope, execution_target_id, target_authority_key, locator_hash, secret_hash,
+       expires_at, created_by_principal_kind, created_by_principal_id)
+      VALUES (\${P.orgId}, 'organization', \${t.targetId}, \${authorityKey}, \${t.locatorHash}, \${t.secretHash},
+        now() + interval '30 minutes', 'user', 'e6f-seed')\`;
+    targetFacts.push({ targetId: t.targetId, registeredProfileHash, providerDigest, authorityKey });
+  }
+
+  // M queued batch jobs, each with an immutable lease-eligible attempt placed to its
+  // routed target. idempotency_key/authenticated_* keep their column DEFAULTS (fresh
+  // uuid idempotency key per row -> no jobs_submission_idempotency_uq collision).
+  const workload = { command: "true", args: [], stdinArtifactId: null, maxRuntimeSeconds: 600 };
+  const requirements = { workloadType: "batch", requiredCapabilities: [] };
+  const placementRequest = { policyId: "job-submission-default", policyVersion: 1, requestedTarget: null };
+  for (let j = 0; j < P.jobs.length; j += 1) {
+    const job = P.jobs[j];
+    const fact = targetFacts[job.targetIndex];
+    const sourceIntent = { kind: "one_shot", operationId: job.jobId, operationKind: "readiness_probe" };
+    await sql\`INSERT INTO jobs
+      (id, organization_id, company_id, workload_type, source_kind, source_intent, input, input_hash,
+       policy_hash, requirements, placement_request, status, available_at)
+      VALUES (\${job.jobId}, \${P.orgId}, \${P.companyId}, 'batch', 'one_shot', \${sql.json(sourceIntent)},
+        \${sql.json(workload)}, \${"b".repeat(64)}, \${P.policyHash}, \${sql.json(requirements)},
+        \${sql.json(placementRequest)}, 'queued', now())\`;
+    await sql\`INSERT INTO job_attempts
+      (id, organization_id, company_id, job_id, attempt_number, status,
+       placement_disposition, placement_owner, placement_target_id, placement_target_class,
+       placement_target_scope, placement_target_generation, placement_profile_hash,
+       placement_provider_constraint_hash, placement_fallback_disposition, placement_reason_code,
+       placement_mode, placement_lease_eligible, placement_input_digest, placement_policy_digest,
+       placement_decided_at)
+      VALUES (\${job.attemptId}, \${P.orgId}, \${P.companyId}, \${job.jobId}, 1, 'pending',
+        'selected', 'organization_dedicated', \${fact.targetId}, 'organization_dedicated',
+        'organization', 1, \${fact.registeredProfileHash}, \${fact.providerDigest}, 'primary', 'target_selected',
+        'active', true, \${"c".repeat(64)}, \${"d".repeat(64)}, now())\`;
+  }
+
+  report({ ok: true, targets: targetFacts, jobCount: P.jobs.length });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script, { timeout: 120_000 });
+}
+
+/** Batch post-enroll liveness stamp (see stampWorkerLiveness for the rationale) for
+ * MANY worker/target pairs in ONE control-plane exec. Returns totals. */
+export function stampWorkersLiveness(pairs) {
+  const script = `
+import postgres from "postgres";
+${embedParams({ pairs })}
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  let workerUpdated = 0;
+  let targetUpdated = 0;
+  for (const pair of P.pairs) {
+    const w = await sql\`UPDATE workers SET last_seen_at = now(), updated_at = now()
+      WHERE id = \${pair.workerId} AND execution_target_id = \${pair.targetId} RETURNING id\`;
+    const t = await sql\`UPDATE execution_targets SET last_seen_at = now(), updated_at = now()
+      WHERE id = \${pair.targetId} RETURNING id\`;
+    workerUpdated += w.length;
+    targetUpdated += t.length;
+  }
+  console.log("${RESULT_MARKER}" + JSON.stringify({ workerUpdated, targetUpdated, pairs: P.pairs.length }));
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script, { timeout: 60_000 });
+}
+
+// ── Concurrent lease-race runner (ALL concurrency lives INSIDE one test-runner
+//    exec; the CI host never fans out ~100 `docker exec` calls) ────────────────
+//
+// Every poll and every ack signs a FRESH single-use device proof (fresh proofId +
+// correlationId) with its worker's OWN keypair — the DEVICE_PROOF_SNIPPET's
+// randomBytes-per-call is concurrency-safe, so overlapping in-process requests never
+// reuse a proofId (the server records them single-use in worker_proof_replays).
+//
+//   focused: N concurrent polls from ONE worker at ONE seeded job. The target
+//            FOR UPDATE serialization + compare-and-set pending->offered +
+//            leases_active_per_attempt_idx guarantee EXACTLY ONE poll gets an
+//            `offer` and the other N-1 get `no_work` (200, never a 5xx/second offer).
+//   drain:   each drain worker loops waves of `waveSize` concurrent polls, acking
+//            each offer immediately (chained on its poll, well within the ack
+//            deadline), until a wave yields zero offers (pool drained). Drain workers
+//            run under one Promise.all so distinct targets truly race concurrently.
+//
+// Returns { focused, drain } with per-offer leaseId/jobId/attempt + ack status so the
+// caller can assert 100 distinct leases/jobs, one winner each, and zero anomalies.
+export function runLeaseRace({
+  pollUrl = WORKER_CONTROL.poll,
+  ackPrefix = `${CONTROL_PLANE_URL}/api/worker-control/leases/`,
+  ackSuffix = "/ack",
+  deviceGeneration = 1,
+  capacity,
+  focused,
+  drain,
+  maxWaves,
+  timeout = 300_000,
+}) {
+  const params = { pollUrl, ackPrefix, ackSuffix, deviceGeneration, capacity, focused, drain, maxWaves };
+  const script = `
+${DEVICE_PROOF_SNIPPET}
+${embedParams(params)}
+
+async function pollOnce(w) {
+  const body = {
+    protocolVersion: 1,
+    correlationId: randomUUID(),
+    issuedAt: new Date().toISOString(),
+    nonce: randomBytes(16).toString("base64url"),
+    audience: "worker_poll",
+    workerId: w.workerId,
+    targetId: w.targetId,
+    deviceGeneration: P.deviceGeneration,
+    capacity: P.capacity,
+  };
+  const bodyString = JSON.stringify(body);
+  const headers = deviceProofHeaders({
+    method: "POST", url: P.pollUrl, bodyString, correlationId: body.correlationId,
+    privateKeyPem: w.privateKeyPem, publicKeyDer: w.publicKeyDer,
+  });
+  headers["content-type"] = "application/json";
+  headers["authorization"] = "Bearer " + w.session;
+  const res = await fetch(P.pollUrl, { method: "POST", headers, body: bodyString });
+  const text = await res.text();
+  return { status: res.status, body: safeJson(text) };
+}
+
+async function ackOnce(w, offer) {
+  const url = P.ackPrefix + offer.leaseId + P.ackSuffix;
+  const body = {
+    protocolVersion: 1,
+    correlationId: randomUUID(),
+    issuedAt: new Date().toISOString(),
+    nonce: randomBytes(16).toString("base64url"),
+    audience: "worker_run",
+    idempotencyKey: randomUUID(),
+    body: {
+      protocolVersion: 1,
+      workerId: w.workerId,
+      jobId: offer.jobId,
+      attempt: offer.attempt,
+      leaseId: offer.leaseId,
+      fenceToken: offer.fenceToken,
+      ackedAt: new Date().toISOString(),
+    },
+  };
+  const bodyString = JSON.stringify(body);
+  const headers = deviceProofHeaders({
+    method: "POST", url, bodyString, correlationId: body.correlationId,
+    privateKeyPem: w.privateKeyPem, publicKeyDer: w.publicKeyDer,
+  });
+  headers["content-type"] = "application/json";
+  headers["authorization"] = "Bearer " + w.session;
+  const res = await fetch(url, { method: "POST", headers, body: bodyString });
+  const text = await res.text();
+  return { status: res.status, body: safeJson(text) };
+}
+
+function offerOf(pollRes) {
+  if (pollRes.status === 200 && pollRes.body && pollRes.body.outcome === "offer" && pollRes.body.body) {
+    const o = pollRes.body.body;
+    return {
+      leaseId: o.leaseId,
+      fenceToken: o.fenceToken,
+      workerId: o.workerId,
+      jobId: o.job && o.job.jobId,
+      attempt: o.job && o.job.attempt,
+    };
+  }
+  return null;
+}
+const isNoWork = (r) => r.status === 200 && r.body && r.body.outcome === "no_work";
+
+// Focused single-job race: N concurrent polls, exactly one winner.
+const focusedPolls = await Promise.all(
+  Array.from({ length: P.focused.concurrency }, () => pollOnce(P.focused)),
+);
+const focusedOffers = focusedPolls.map(offerOf).filter(Boolean);
+const focusedNoWork = focusedPolls.filter(isNoWork).length;
+const focusedOther = focusedPolls
+  .filter((r) => offerOf(r) === null && !isNoWork(r))
+  .map((r) => ({ status: r.status, body: r.body }));
+let focusedAck = null;
+if (focusedOffers.length === 1) {
+  focusedAck = await ackOnce(P.focused, focusedOffers[0]);
+}
+
+// Drain: each worker races its own pool; workers run concurrently.
+async function drainWorker(w) {
+  const offers = [];
+  const anomalies = [];
+  let pollCount = 0;
+  let noWorkCount = 0;
+  let waves = 0;
+  const cap = P.maxWaves;
+  while (waves < cap) {
+    waves += 1;
+    const waveResults = await Promise.all(
+      Array.from({ length: w.waveSize }, async () => {
+        const pr = await pollOnce(w);
+        pollCount += 1;
+        if (isNoWork(pr)) { noWorkCount += 1; return { kind: "no_work" }; }
+        const off = offerOf(pr);
+        if (off) {
+          const ackRes = await ackOnce(w, off);
+          return {
+            kind: "offer",
+            offer: off,
+            ackStatus: ackRes.status,
+            ackOutcome: ackRes.body && ackRes.body.outcome,
+            ackLeaseId: ackRes.body && ackRes.body.leaseId,
+            ackBody: ackRes.status === 200 ? null : ackRes.body,
+          };
+        }
+        return { kind: "anomaly", status: pr.status, body: pr.body };
+      }),
+    );
+    let waveOffers = 0;
+    for (const r of waveResults) {
+      if (r.kind === "offer") { offers.push(r); waveOffers += 1; }
+      else if (r.kind === "anomaly") { anomalies.push(r); }
+    }
+    if (waveOffers === 0) break;
+  }
+  return { workerId: w.workerId, targetId: w.targetId, offers, anomalies, pollCount, noWorkCount, waves };
+}
+const drainResults = await Promise.all(P.drain.map(drainWorker));
+
+report({
+  focused: {
+    totalPolls: focusedPolls.length,
+    offers: focusedOffers,
+    noWork: focusedNoWork,
+    other: focusedOther,
+    ack: focusedAck,
+  },
+  drain: drainResults,
+});
+`;
+  return dexecModule("test-runner", script, { timeout });
+}
