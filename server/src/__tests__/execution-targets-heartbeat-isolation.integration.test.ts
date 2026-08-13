@@ -90,11 +90,11 @@ describe.skipIf(process.platform === "win32")(
       }
       const [a] = await db
         .insert(executionTargets)
-        .values({ organizationId: null, slug: "pool-1", kind: "pooled_gvisor", trustClass: "shared_multitenant", status: "offline" })
+        .values({ organizationId: null, scope: "platform", targetAuthorityKey: "platform", slug:"pool-1", kind: "pooled_gvisor", trustClass: "shared_multitenant", status: "offline" })
         .returning();
       const [b] = await db
         .insert(executionTargets)
-        .values({ organizationId: null, slug: "pool-1-b", kind: "pooled_gvisor", trustClass: "shared_multitenant", status: "offline" })
+        .values({ organizationId: null, scope: "platform", targetAuthorityKey: "platform", slug:"pool-1-b", kind: "pooled_gvisor", trustClass: "shared_multitenant", status: "offline" })
         .returning();
 
       await registerWorkerHeartbeat(db, { targetId: a!.id, status: "active" });
