@@ -496,12 +496,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # worker-protocol is a frozen leaf whose package.json exports only ./dist,
-      # and Typecheck/Run tests run BEFORE Build — so its consumers (server,
-      # worker-daemon, sandbox-*) cannot resolve it on a fresh checkout until it
-      # is built. Build just this leaf first; the later Build step is unchanged.
-      - name: Build worker-protocol (dist required by typecheck + tests)
-        run: pnpm --filter @armyofagents/worker-protocol build
+      # worker-protocol + sandbox-fake-provider are dist-only leaves (package.json
+      # exports resolve to ./dist), and Typecheck/Run tests run BEFORE Build — so
+      # their consumers (server, worker-daemon, sandbox-provider-contract) cannot
+      # resolve them on a fresh checkout until they are built. Build the leaves
+      # first (topo order); the later Build step is unchanged.
+      - name: Build dist-only leaves (required by typecheck + tests)
+        run: |
+          pnpm --filter @armyofagents/worker-protocol build
+          pnpm --filter @armyofagents/sandbox-fake-provider build
 
       - name: Typecheck
         run: pnpm -r typecheck
@@ -888,10 +891,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # The sandbox contract suites + DEP-003 server suites import
-      # @armyofagents/worker-protocol, whose exports resolve only to ./dist.
-      - name: Build worker-protocol (dist required by the contract suites)
-        run: pnpm --filter @armyofagents/worker-protocol build
+      # The contract suites import @armyofagents/worker-protocol AND
+      # @armyofagents/sandbox-fake-provider; both are dist-only leaves.
+      - name: Build dist-only leaves (required by the contract suites)
+        run: |
+          pnpm --filter @armyofagents/worker-protocol build
+          pnpm --filter @armyofagents/sandbox-fake-provider build
 
       - name: Distributed-execution foundation + fixture-determinism contracts
         run: node scripts/check-distributed-execution-foundation.mjs
