@@ -201,7 +201,25 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(failures).toEqual([]);
       expect(elapsedMs).toBeLessThan(750);
       expect(settled[0]).toEqual({ status: "fulfilled", value: "revoked" });
-      expect(settled[1]).toEqual({ status: "fulfilled", value: null });
+      // lockWorkerLeaseAuthority is a lock+fetch primitive. Using the SAME
+      // target->worker lock order as revoke, the poll serializes safely behind the
+      // revoke (no deadlock — asserted above) and, once revoke commits, acquires the
+      // target row and observes its committed post-cutoff state. It returns the locked
+      // authority (NOT null — the rows still exist), with the target now disabled and
+      // the worker untouched. The revocation CUTOFF that refuses a lease/liveness on a
+      // disabled target is enforced one layer up by authorityCurrent/ackAuthorityCurrent
+      // (server/src/services/job-leasing.ts: target.status==='active' &&
+      // worker.revokedAt===null, else JobLeasingError('target_revoked')); demanding null
+      // from the primitive here would wrongly push that service-layer cutoff into the
+      // lock step. The "no post-cutoff EFFECT" guarantee is proven by the unchanged final
+      // state below (the poll leaves the target disabled and the worker enrolled).
+      expect(settled[1].status).toBe("fulfilled");
+      const polledAuthority = (settled[1] as PromiseFulfilledResult<
+        { target: { status: string }; worker: { status: string } } | null
+      >).value;
+      expect(polledAuthority, "poll must acquire the locked authority, not lose the rows").not.toBeNull();
+      expect(polledAuthority?.target.status).toBe("disabled");
+      expect(polledAuthority?.worker.status).toBe("enrolled");
 
       const [state] = await sql<{ targetStatus: string; workerStatus: string }[]>`
         SELECT target.status AS "targetStatus", worker.status AS "workerStatus"
