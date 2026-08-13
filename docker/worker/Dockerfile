@@ -30,6 +30,13 @@ WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY packages/worker-daemon/package.json packages/worker-daemon/
 COPY packages/worker-protocol/package.json packages/worker-protocol/
+# worker-daemon devDepends on @armyofagents/shared (workspace:*). `pnpm deploy --prod`
+# resolves the FULL workspace graph before pruning devDeps, so shared's manifest must be
+# present for resolution or it fails ERR_PNPM_WORKSPACE_PKG_NOT_FOUND. It is pruned from
+# the /worker-app output (--prod) and its source is never copied into the build stage, so
+# the runtime boundary (worker-protocol + pino only) is unchanged. shared/worker-protocol
+# both depend only on external zod — no further workspace cascade.
+COPY packages/shared/package.json packages/shared/
 COPY patches/ patches/
 RUN pnpm install --frozen-lockfile --prod --filter "@armyofagents/worker-daemon..."
 
