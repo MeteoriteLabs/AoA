@@ -7,19 +7,23 @@ no per-epic merges to `main`. CI runs on that PR; the required check is `ci-requ
 
 **Current tip:** `docs/replatform-program` is green on Linux CI (all required checks pass).
 Core execution complete on E3 (JOB-001/002/009/003), E4 (WRK-001..004), and E6
-(DEP-000..004 + the E6-D1-FOUNDATION gate assembled, pending its live campaign). The
-E6-D1-FOUNDATION gate campaign is the next critical-path step; it unblocks JOB-004..014 and
-WRK-005..007.
+(DEP-000..004). **The `E6-D1-FOUNDATION` gate campaign has PASSED live on Linux CI** — the
+`d1-merge-train.yml` lane builds the signed split images, brings up the 9-service D1 stack
+healthy, and runs the E6F conformance suite live (`AOA_D1_CAMPAIGN=foundation`, `tests 11 · pass
+11 · fail 0`) on `85599b192` (run 31749145506). See
+`E6-deployment-test-harness/qa/2026-08-14-e6-d1-foundation-campaign-pass-85599b192.md`. The gate
+**now UNBLOCKS JOB-004..014 and WRK-005..007** (and, transitively, most of E5). Next critical-path
+step: E3/E4 remaining tickets.
 
 | Epic | Status | Depends on | Ticket range | Exit gate |
 |---|---|---|---|---|
 | [E0 Foundation](E0-foundation/) | `complete` | approved program design | FND-001–FND-008 | foundation checker, current-main crosswalk, cloud-plugin exclusion, focused config tests, repository verification |
 | [E1 Worker protocol](E1-worker-protocol/) | `complete` | E0 | PRT-001–PRT-007 | package contract, transport/control semantics, frozen conformance vectors, compatibility and boundary checks |
 | [E2 Tenant kernel](E2-tenant-kernel/) | `complete` | E0 | TEN-001–TEN-006 | non-owner RLS, sentinel removal, and adversarial tenant suite |
-| [E3 Job control](E3-job-control/) | `in_progress` (core JOB-001/002/009/003 done) | E1, E2; JOB-004–JOB-008 and JOB-011–JOB-014 require `E6-D1-FOUNDATION` | JOB-001–JOB-014 | authoritative hybrid placement, fenced distributed lifecycle, and bounded legacy-control parity |
-| [E4 Worker daemon](E4-worker-daemon/) | `in_progress` (core WRK-001..004 done) | E1 plus ticket-level E3 core; WRK-005+ requires `E6-D1-FOUNDATION` | WRK-001–WRK-007 | restart-safe worker with encrypted event outbox |
+| [E3 Job control](E3-job-control/) | `in_progress` (core JOB-001/002/009/003 done; **JOB-004..014 UNBLOCKED** — `E6-D1-FOUNDATION` passed) | E1, E2; JOB-004–JOB-008 and JOB-011–JOB-014 required `E6-D1-FOUNDATION` (now satisfied) | JOB-001–JOB-014 | authoritative hybrid placement, fenced distributed lifecycle, and bounded legacy-control parity |
+| [E4 Worker daemon](E4-worker-daemon/) | `in_progress` (core WRK-001..004 done; **WRK-005..007 UNBLOCKED** — `E6-D1-FOUNDATION` passed) | E1 plus ticket-level E3 core; WRK-005+ required `E6-D1-FOUNDATION` (now satisfied) | WRK-001–WRK-007 | restart-safe worker with encrypted event outbox |
 | [E5 Workspaces and secrets](E5-workspaces-secrets/) | `backlog` | E3, E4 | DAT-001–DAT-006 | fenced artifact round trip, orphan quarantine, and lease-scoped secret tests |
-| [E6 Deployment/test harness](E6-deployment-test-harness/) | `in_progress` (DEP-000..004 done; E6-D1-FOUNDATION gate assembled, live campaign pending) | E0; partial gate consumes E2 and E3/E4 core | DEP-000–DEP-009 | D1 topology, migration-0188 snapshot/marker preflight, reusable hostile isolation conformance, and two-replica HA; E2B evidence lands in E7/D2 |
+| [E6 Deployment/test harness](E6-deployment-test-harness/) | `in_progress` (DEP-000..004 done; **E6-D1-FOUNDATION gate PASSED live** @ `85599b192`; DEP-005..009 remain) | E0; partial gate consumes E2 and E3/E4 core | DEP-000–DEP-009 | D1 topology, migration-0188 snapshot/marker preflight, reusable hostile isolation conformance, and two-replica HA; E2B evidence lands in E7/D2 |
 | [E7 Coding/E2B](E7-coding-e2b/) | `backlog` | E3–E6; CLI-006 requires MIG-008 and `E10-REALTIME-FOUNDATION` | CLI-001–CLI-006 | mandatory canary-Organization coding journey and D2 E2B lane |
 | [E8 Browser automation](E8-browser-automation/) | `backlog` | E7; BRW-006 requires `E10-REALTIME-FOUNDATION` | BRW-001–BRW-006 | mandatory D3 browser evidence/approval journey |
 | [E9 Service agents](E9-service-agents/) | `backlog` | E7; SVC-007 requires `E10-REALTIME-FOUNDATION` | SVC-001–SVC-007 | mandatory D4 72-hour continuity/reconciliation canary |
