@@ -21,22 +21,30 @@ permissions:
 on:
   merge_group:
   push:
+    # On `main` this is the merge-train lane (its trigger paths should broaden to
+    # the distributed code the live stack exercises when this workflow lands on
+    # main). On the long-lived integration branch `docs/replatform-program` it is
+    # the E6-D1-FOUNDATION gate-campaign lane: it fires whenever the D1 campaign
+    # machinery changes — which is exactly how the campaign is iterated to green —
+    # and on demand by bumping `docker/d1/campaign.env` (which also selects the
+    # E6F scope: AOA_D1_CAMPAIGN=bounded|foundation). workflow_dispatch is omitted
+    # deliberately: it requires the workflow on the default branch (main), and this
+    # program keeps everything on the one integration branch.
     branches:
       - main
-  # On-demand dispatch so the live D1 campaign can run over the long-lived
-  # integration branch (docs/replatform-program) — the E6-D1-FOUNDATION gate
-  # campaign is dispatched here, not on a merge-to-main. `campaign` selects how
-  # much of the E6F matrix to run: `bounded` = the smoke+denial subset (default,
-  # fast), `foundation` = the full E6F-01..07 gate campaign.
-  workflow_dispatch:
-    inputs:
-      campaign:
-        description: "E6F campaign scope"
-        type: choice
-        default: bounded
-        options:
-          - bounded
-          - foundation
+      - docs/replatform-program
+    paths:
+      - ".github/workflows/d1-merge-train.yml"
+      - "docker-compose.d1.yml"
+      - "docker/**"
+      - "tests/d1/**"
+      - "scripts/check-d1-compose.mjs"
+      - "scripts/collect-d1-evidence.mjs"
+      - "scripts/check-ci-lanes.mjs"
+      - "scripts/lib/d1-compose-invariants.mjs"
+      - "scripts/lib/d1-evidence-bundle.mjs"
+      - "scripts/lib/image-admission.mjs"
+      - "scripts/lib/ci-lanes.mjs"
 
 concurrency:
   group: d1-merge-train-${{ github.ref }}
@@ -81,14 +89,31 @@ jobs:
       - name: Bring up the D1 stack
         run: docker compose -f "$COMPOSE_FILE_PATH" up -d --wait --wait-timeout 300
 
-      - name: Run bounded E6F subset (live)
+      - name: Run the E6F campaign (live)
         env:
           AOA_D1_LIVE: "1"
         run: |
-          # A BOUNDED subset of the E6F campaign — the topology network-denial
-          # proofs + one fixture-driven fake-provider job — enough to exercise the
-          # full submit -> placement -> lease -> execute -> event path end to end.
-          node --test tests/d1/network-denial.test.mjs tests/d1/fake-provider-job.test.mjs
+          set -euo pipefail
+          # Scope selector (committed + path-triggered): `bounded` = the smoke +
+          # network-denial subset; `foundation` = the full E6F-01..07 gate campaign
+          # (bounded subset + every authored tests/d1/e6f-*.test.mjs). Bump
+          # docker/d1/campaign.env to switch scope and re-trigger this lane.
+          CAMPAIGN="bounded"
+          if [ -f docker/d1/campaign.env ]; then
+            # shellcheck disable=SC1091
+            . docker/d1/campaign.env
+          fi
+          CAMPAIGN="${AOA_D1_CAMPAIGN:-$CAMPAIGN}"
+          echo "E6F campaign scope: ${CAMPAIGN}"
+          # BOUNDED: the topology network-denial proofs (E6F-05) + one fixture-driven
+          # fake-provider job (E6F-03) — the full submit -> placement -> lease ->
+          # execute -> event path end to end.
+          BOUNDED="tests/d1/network-denial.test.mjs tests/d1/fake-provider-job.test.mjs"
+          if [ "${CAMPAIGN}" = "foundation" ]; then
+            node --test ${BOUNDED} tests/d1/e6f-*.test.mjs
+          else
+            node --test ${BOUNDED}
+          fi
 
       - name: Collect distributed evidence (on failure)
         if: failure()
