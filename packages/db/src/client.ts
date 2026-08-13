@@ -187,6 +187,52 @@ export async function loadRequiredMigrationIdentity(): Promise<RequiredMigration
   });
 }
 
+export interface AppliedMigrationIdentity {
+  /** sha256 (file bytes) of each APPLIED migration file that resolves to this image, in apply order. */
+  readonly orderedHashes: readonly string[];
+  /** The raw `__drizzle_migrations` row count — catches a DB migrated PAST this image (rollback). */
+  readonly rawAppliedCount: number;
+}
+
+/**
+ * DEP-003 (E6 deployment harness): the DB-side applied-migration certificate for the
+ * readiness schema-compatibility gate. `orderedHashes` mirror
+ * `loadRequiredMigrationIdentity`'s per-file sha256 for the applied subset (in apply
+ * order), and `rawAppliedCount` is the raw `__drizzle_migrations` row count. The raw
+ * count is load-bearing: a DB migrated by a NEWER image has rows whose files this
+ * image lacks (they cannot be hashed), so only the raw count reveals the "newer /
+ * incompatible" rollback case. Reads only; never mutates the database.
+ */
+export async function loadAppliedMigrationIdentity(url: string): Promise<AppliedMigrationIdentity> {
+  const state = await inspectMigrations(url);
+  const appliedTags =
+    state.status === "upToDate" ? state.appliedMigrations : state.appliedMigrations;
+
+  const orderedHashes = await Promise.all(
+    appliedTags.map(async (fileName) =>
+      createHash("sha256")
+        .update(await readFile(new URL(`./migrations/${fileName}`, import.meta.url)))
+        .digest("hex")),
+  );
+
+  const sql = postgres(url, { max: 1 });
+  try {
+    const migrationTableSchema = await discoverMigrationTableSchema(sql);
+    let rawAppliedCount = 0;
+    if (migrationTableSchema) {
+      const quotedSchema = quoteIdentifier(migrationTableSchema);
+      const qualifiedTable = `${quotedSchema}.${quoteIdentifier(DRIZZLE_MIGRATIONS_TABLE)}`;
+      const rows = await sql.unsafe<{ count: number }[]>(
+        `SELECT count(*)::int AS count FROM ${qualifiedTable}`,
+      );
+      rawAppliedCount = Number(rows[0]?.count ?? 0);
+    }
+    return { orderedHashes: Object.freeze(orderedHashes), rawAppliedCount };
+  } finally {
+    await sql.end();
+  }
+}
+
 /**
  * TEN-002 (E2-D03): assert the connection's role has the exact hardened posture:
  * non-superuser, no RLS bypass/role inheritance/cluster

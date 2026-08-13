@@ -35,10 +35,15 @@
  * audit grep used to triage C14 has the same shape.
  */
 
-import { describe, it, expect } from "vitest";
+import { afterAll, beforeAll, describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import net from "node:net";
+import postgres, { type Sql } from "postgres";
+import { applyPendingMigrations } from "../client.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -195,3 +200,96 @@ describe("migration idempotency", () => {
     ).toEqual([]);
   });
 });
+
+// DEP-003 (E6 deployment harness): prove the generated marker-table migration AND its
+// C14 custom RLS/GRANT/POLICY migration REPLAY idempotently against an already-migrated
+// database — a hard behavioral guarantee, not just the static IF-NOT-EXISTS lint above.
+type EmbeddedPostgresInstance = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
+type EmbeddedPostgresCtor = new (opts: Record<string, unknown>) => EmbeddedPostgresInstance;
+
+const DEP003_MIGRATIONS = [
+  "0232_distributed_cutover_markers.sql",
+  "0233_distributed_cutover_marker_rls.sql",
+];
+
+function splitStatements(sql: string): string[] {
+  return sql
+    .split("--> statement-breakpoint")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
+  "DEP-003 marker migrations replay idempotently",
+  () => {
+    let embedded: EmbeddedPostgresInstance | null = null;
+    let dataDir = "";
+    let admin: Sql | null = null;
+    let setupError: unknown = null;
+
+    beforeAll(async () => {
+      try {
+        dataDir = await mkdtemp(join(tmpdir(), "aoa-marker-replay-"));
+        const { default: EmbeddedPostgres } = (await import("embedded-postgres")) as { default: EmbeddedPostgresCtor };
+        const port = await new Promise<number>((resolve, reject) => {
+          const server = net.createServer();
+          server.listen(0, "127.0.0.1", () => {
+            const address = server.address();
+            server.close((error) =>
+              error || !address || typeof address === "string"
+                ? reject(error ?? new Error("port allocation failed"))
+                : resolve(address.port));
+          });
+          server.on("error", reject);
+        });
+        embedded = new EmbeddedPostgres({
+          databaseDir: join(dataDir, "db"),
+          user: "test",
+          password: "test",
+          port,
+          persistent: false,
+          initdbFlags: ["--encoding=UTF8", "--locale=C"],
+        });
+        await embedded.initialise();
+        await embedded.start();
+        const url = `postgres://test:test@127.0.0.1:${port}/postgres`;
+        await applyPendingMigrations(url);
+        admin = postgres(url, { max: 1 });
+      } catch (error) {
+        setupError = error;
+      }
+    }, 180_000);
+
+    afterAll(async () => {
+      try { await admin?.end(); } catch { /* ignore */ }
+      try { await embedded?.stop(); } catch { /* ignore */ }
+      try { if (dataDir) await rm(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }, 60_000);
+
+    it("re-executes 0232 + 0233 twice against an already-migrated DB with no error", async () => {
+      if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
+      if (!admin) throw new Error("database client unavailable");
+      // Two extra replays on top of the initial migrate() apply = three total.
+      for (let pass = 0; pass < 2; pass += 1) {
+        for (const file of DEP003_MIGRATIONS) {
+          const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf8");
+          for (const statement of splitStatements(sql)) {
+            await admin.unsafe(statement);
+          }
+        }
+      }
+      // The table, FORCE RLS, both policies, and the unique index all survive replay.
+      const rls = await admin<{ relforcerowsecurity: boolean }[]>`
+        SELECT relforcerowsecurity FROM pg_class WHERE relname = 'distributed_cutover_markers'
+      `;
+      expect(rls[0]?.relforcerowsecurity).toBe(true);
+      const policies = await admin<{ policyname: string }[]>`
+        SELECT policyname FROM pg_policies WHERE tablename = 'distributed_cutover_markers' ORDER BY policyname
+      `;
+      expect(policies.map((p) => p.policyname)).toEqual([
+        "distributed_cutover_markers_app_read",
+        "distributed_cutover_markers_operator_write",
+      ]);
+    });
+  },
+);

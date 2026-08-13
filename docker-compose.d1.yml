@@ -83,14 +83,19 @@ services:
       - control-net
       - worker-net
 
-  # --- privileged migration job (DEP-003 owns the command body) --------------
+  # --- privileged migration job (DEP-003) ------------------------------------
   migrate:
     image: ${AOA_D1_CONTROL_PLANE_IMAGE:-aoa-control-plane:d1-local-unbuilt}
-    # DEP-003 replaces this with docker/control-plane/migrate-entrypoint.sh ->
-    # packages/db/src/migrate-job.ts (privileged, idempotent, non-destructive).
-    # Placeholder keeps the service renderable until DEP-003 lands its command.
-    entrypoint: ["/bin/sh", "-c"]
-    command: ["echo 'DEP-003 owns the migrate command'; exit 0"]
+    # DEP-003: run-to-completion PRIVILEGED migration job. Overrides the control-plane
+    # image's app entrypoint to run docker/control-plane/migrate-entrypoint.sh (COPY'd
+    # to /usr/local/bin in docker/control-plane/Dockerfile): the idempotent, non-
+    # destructive schema migrate-job (packages/db/src/migrate-job.ts) THEN the
+    # operator-gated 0188 cutover preflight — both fail-closed under `set -eu`.
+    # `command: []` clears the image's inherited `node dist/index.js` CMD so NO app
+    # server starts here; control-plane is gated on this via
+    # `service_completed_successfully` below.
+    entrypoint: ["/usr/local/bin/migrate-entrypoint.sh"]
+    command: []
     environment:
       # Privileged migration role — DIRECT to postgres (NOT via toxiproxy), on
       # data-net only. Distinct from the aoa_app serving role used by control-plane.

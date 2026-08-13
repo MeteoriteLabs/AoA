@@ -8,6 +8,8 @@ export {
   type NonOwnerDbConnectionOptions,
   loadRequiredMigrationIdentity,
   type RequiredMigrationIdentity,
+  loadAppliedMigrationIdentity,
+  type AppliedMigrationIdentity,
   ensurePostgresDatabase,
   inspectMigrations,
   applyPendingMigrations,

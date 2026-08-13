@@ -114,8 +114,13 @@ WORKDIR /cp-app
 COPY --chown=node:node --from=build /cp-app /cp-app
 COPY --chown=node:node --from=build /app/ui/dist /cp-app/ui-dist
 COPY --chown=node:node docker/control-plane/entrypoint.sh /usr/local/bin/control-plane-entrypoint.sh
-RUN sed -i 's/\r$//' /usr/local/bin/control-plane-entrypoint.sh \
-  && chmod +x /usr/local/bin/control-plane-entrypoint.sh \
+# DEP-003: the PRIVILEGED migration-job command body. Consumed ONLY by the `migrate`
+# service in docker-compose.d1.yml (which overrides the entrypoint to run it) — the
+# app runtime never invokes it (application startup runs NO migrations). Ships with
+# the same non-root / read-only-root posture as the app entrypoint.
+COPY --chown=node:node docker/control-plane/migrate-entrypoint.sh /usr/local/bin/migrate-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/control-plane-entrypoint.sh /usr/local/bin/migrate-entrypoint.sh \
+  && chmod +x /usr/local/bin/control-plane-entrypoint.sh /usr/local/bin/migrate-entrypoint.sh \
   && mkdir -p /aoa \
   && chown node:node /aoa
 

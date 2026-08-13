@@ -111,6 +111,17 @@ Governed by [`distributed-execution-delivery-policy.md`](../architecture/distrib
 | `AOA_DISTRIBUTED_PUBLIC_SERVICE_INGRESS_ENABLED` | unset (excluded) | **Reserved hard-negative sentinel.** Public service ingress is excluded from this re-platform release. Any truthy value **rejects startup in every deployment mode** rather than enabling a feature; the reserved path `/api/distributed-execution/public-services` is unregistered and returns `404`. |
 | `AOA_DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENABLED` | unset (excluded) | **Reserved hard-negative sentinel.** The distributed cloud-plugin surface is excluded from this re-platform release. Any truthy value **rejects startup in every deployment mode**; the reserved path `/api/distributed-execution/cloud-plugins` is unregistered and returns `404`. FND-006/FND-008 own the actual current plugin surfaces (Decision #103). |
 
+### Migration job & 0188 populated-cutover preflight (DEP-003, default-off)
+
+These are read ONLY by the privileged migration job (`docker/control-plane/migrate-entrypoint.sh`), never at application startup. Application startup runs no migrations and can only READ the durable 0188 cutover marker — it can never write or synthesize it. The 0188 preflight is dormant unless the operator explicitly opts in; single-tenant deployments never trigger it.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AOA_0188_CUTOVER_OPT_IN` | unset (`0`) | Explicit operator opt-in for the first populated single-tenant → `cloud_auth` migration-0188 cutover preflight. The preflight runs ONLY when this equals `1`. Missing/any-other value leaves the preflight dormant (no snapshot, no marker). |
+| `AOA_0188_CANDIDATE_SHA` | unset | The exact candidate image source revision the cutover is validated against. Must EXACTLY equal the image's recorded revision (`AOA_DEPLOY_SHA`); any mismatch stops the preflight before any snapshot with no marker written. |
+| `AOA_0188_ISOLATED_RESTORE_DATABASE_URL` | unset | Required when `AOA_0188_CUTOVER_OPT_IN=1`. PostgreSQL URL of an ISOLATED pre-cutover database the checksum-validated snapshot is restored into for restore-validation. Never the live source database. |
+| `AOA_0188_SNAPSHOT_DIR` | `/aoa/cutover-snapshots` | Object-store directory (a mounted volume/bucket path) the cutover snapshot artifact is written to before checksum + restore validation. |
+
 `AOA_RUNTIME_PROCESS_OWNER_ID` prevents one replica from interpreting another
 machine's numeric PID as local. It does not turn the process-local runtime
 maps, desired-state restart, or control APIs into a distributed scheduler.

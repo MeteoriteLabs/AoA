@@ -25,6 +25,8 @@ import {
 import detectPort from "detect-port";
 import postgres from "postgres";
 import { createApp } from "./app.js";
+import { buildReadinessProbe } from "./routes/readiness.js";
+import { loadSchemaCompatibility } from "./services/schema-compatibility.js";
 import {
   OPERATOR_ROLE,
   TENANT_APP_ROLE,
@@ -798,6 +800,39 @@ if (workQuestionSnapshotBackfill.updated > 0) {
 }
 const { ensureControlPlaneExecutionTarget } = await import("./services/execution-targets.js");
 await ensureControlPlaneExecutionTarget(db as any);
+
+// DEP-003 (E6 deployment harness): compose the readiness probe from the checks the
+// readiness module defines — schema-compatibility (applied vs. required migration
+// identity for the app DB) plus a PostgreSQL ping. The 503 readiness GATE engages
+// ONLY in distributed/split mode (`config.distributedExecutionEnabled`), where a
+// separate privileged migrate job — not this process — applies migrations, so the
+// control plane must 503 tenant/app routes until the DB schema is compatible.
+// Single-binary startup applies migrations BEFORE listen (`ensureMigrations` above),
+// so the gate stays fully DORMANT (gateEnabled false) and startup behavior is
+// unchanged. The probe closures are lazy — invoked only on `/api/ready` or when the
+// gate fires — so building them adds no startup cost.
+//
+// MinIO/object-store health is NOT wired here: StorageService exposes no reachability
+// ping and object storage is a hard dependency only on cloud_auth. Leaving
+// `checkMinio` undefined makes the probe report it `not_checked` (excluded from the
+// readiness verdict) rather than faking a healthy result.
+// TODO(DEP-003 follow-up): add a real MinIO reachability check (e.g. a bucket HEAD)
+// for cloud_auth deployments once StorageService exposes a health method.
+const readinessProbe = buildReadinessProbe({
+  schemaCompatibility: () => loadSchemaCompatibility(activeDatabaseConnectionString),
+  checkPostgres: async () => {
+    const probeSql = postgres(activeDatabaseConnectionString, { max: 1 });
+    try {
+      await probeSql`SELECT 1`;
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await probeSql.end();
+    }
+  },
+  // checkMinio intentionally omitted — see the TODO above.
+});
 const app = await createApp(db as any, {
   uiMode,
   storageService,
@@ -818,6 +853,11 @@ const app = await createApp(db as any, {
   jobReadyScheduler: scheduler,
   jobControlMetrics,
   workerSessionSigningKey: process.env.AOA_WORKER_SESSION_SIGNING_KEY,
+  // DEP-003: the readiness contract. The gate is dormant unless distributed mode is on.
+  readiness: {
+    probe: readinessProbe,
+    gateEnabled: config.distributedExecutionEnabled === true,
+  },
 });
 const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 

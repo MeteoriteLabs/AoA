@@ -77,6 +77,13 @@ export {
   type JobSecretHandle,
   type NewJobSecretHandle,
 } from "./job_secret_handles.js";
+// DEP-003 (E6 deployment harness): operator-gated 0188 cutover marker (platform infra,
+// no organization_id; aoa_operator write / aoa_app read-only / tenants invisible).
+export {
+  distributedCutoverMarkers,
+  type DistributedCutoverMarker,
+  type NewDistributedCutoverMarker,
+} from "./distributed_cutover_markers.js";
 export { issues } from "./issues.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";

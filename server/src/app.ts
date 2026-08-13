@@ -26,6 +26,12 @@ import {
 import { buildHelmetOptions } from "./services/helmet-options.js";
 import { extractInlineScriptHashes } from "./services/csp-script-hashes.js";
 import { healthRoutes } from "./routes/health.js";
+import {
+  readinessRoutes,
+  readinessGate,
+  alwaysReadyProbe,
+  type ReadinessProbe,
+} from "./routes/readiness.js";
 import { onboardingJourneyRoutes } from "./routes/onboarding-journey.js";
 import { onboardingRoutes } from "./routes/onboarding.js";
 import { onboardingJoinRoutes } from "./routes/onboarding-join.js";
@@ -219,6 +225,14 @@ export async function createApp(
     jobReadyScheduler?: JobReadyScheduler;
     jobControlMetrics?: JobControlMetrics;
     workerSessionSigningKey?: string;
+    // DEP-003 (E6 deployment harness): optional readiness contract. When omitted the
+    // app is unchanged except the additive always-ready `/api/ready` + `/api/health/live`
+    // routes; the 503 readiness gate is DORMANT. When provided with `gateEnabled:true`
+    // the gate 503s tenant/app routes until the probe reports ready.
+    readiness?: {
+      probe: ReadinessProbe;
+      gateEnabled: boolean;
+    };
   }
 ) {
   // Pin the STATIC deployment-mode enforcement source once at boot, before any
@@ -319,6 +333,30 @@ export async function createApp(
   // Protect every board-session mutation, including the direct auth and
   // onboarding routers mounted before the main API router below.
   app.use("/api", boardMutationGuard());
+  // DEP-003 (E6 deployment harness): readiness route (always answers) + the optional
+  // 503 gate, mounted on `app` at /api BEFORE the ~13 pre-api DB routers below AND the
+  // main `api` Router. Registering it here (not inside `api`, which mounts last) is
+  // what makes the gate cover EVERY /api route — including the tenant-scoped
+  // /api/companies/:id/provider-credentials and the onboarding routers — instead of
+  // only the routes inside `api`. Health/liveness/readiness bypass so they always
+  // answer (they resolve later in the `api` Router / here). Default (no `readiness`
+  // opt) = always-ready probe + dormant gate, leaving flag-off startup unchanged
+  // except the additive /api/ready route.
+  const readinessProbe = opts.readiness?.probe ?? alwaysReadyProbe;
+  app.use("/api", readinessRoutes(readinessProbe));
+  if (opts.readiness?.gateEnabled) {
+    app.use(
+      "/api",
+      readinessGate({
+        probe: readinessProbe,
+        bypass: (path) =>
+          path === "/ready" ||
+          path === "/health" ||
+          path === "/health/live" ||
+          path.startsWith("/health/"),
+      })
+    );
+  }
   // Mount profile-aware auth routes (get-session with DB-loaded user, profile GET/PATCH)
   // before the betterAuthHandler catch-all so specific routes win.
   app.use("/api", authProfileRoutes(db));
@@ -379,6 +417,11 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     })
   );
+  // DEP-003: the readiness route + optional 503 gate are mounted on `app` at /api
+  // ABOVE the pre-api DB routers (before the authProfileRoutes block) so they cover
+  // EVERY /api route, not just the ones inside this `api` Router. The liveness/health
+  // routes above (mounted inside `api`) still answer because the gate bypasses
+  // /health, /health/live, /health/*, and /ready.
   api.use(
     "/companies",
     companyRoutes(db, { deploymentMode: opts.deploymentMode })
