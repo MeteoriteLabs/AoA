@@ -7,6 +7,7 @@ import {
 } from "@armyofagents/shared";
 import {
   leaseAckOperationRequestV1Schema,
+  leaseRenewOperationRequestV1Schema,
   OPERATION_DESCRIPTORS,
   pollRequestV1Schema,
 } from "@armyofagents/worker-protocol";
@@ -27,6 +28,7 @@ import {
   WorkerOperationProofError,
 } from "../middleware/worker-operation-proof.js";
 import { createJobLeasingService, JobLeasingError } from "../services/job-leasing.js";
+import { createJobLeaseRenewalService } from "../services/job-fencing.js";
 import type { JobReadyScheduler } from "../services/job-ready-scheduler.js";
 import type { JobControlMetrics } from "../services/job-control-metrics.js";
 import { deviceProofHeaders } from "./worker-proof-headers.js";
@@ -56,6 +58,7 @@ export function workerControlRoutes(opts: {
     scheduler: opts.jobReadyScheduler,
     metrics: opts.jobControlMetrics,
   });
+  const renewal = createJobLeaseRenewalService({ appDb: opts.appDb });
 
   router.post(
     "/organizations/:organizationId/execution-targets/:targetId/enrollment-codes",
@@ -238,6 +241,51 @@ export function workerControlRoutes(opts: {
         reasonCode: "worker_lease_ack_internal_unavailable",
       }, "worker lease ACK unavailable");
       sendWorkerOperationProtocolError(req, res, "lease_ack", "internal_unavailable", opts.now?.() ?? new Date());
+    }
+  });
+
+  router.post("/worker-control/leases/:leaseId/renew", async (req, res) => {
+    try {
+      const parsed = leaseRenewOperationRequestV1Schema.safeParse(req.body);
+      const leaseId = uuid.safeParse(req.params.leaseId);
+      const authorization = req.header("authorization");
+      const proof = deviceProofHeaders(req);
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      if (!parsed.success || !leaseId.success || parsed.data.body.leaseId !== leaseId.data
+        || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.lease_renew.maxRequestBytes)) {
+        sendWorkerOperationProtocolError(req, res, "lease_renew", "malformed", opts.now?.() ?? new Date());
+        return;
+      }
+      if (!authorization || !proof || !rawBody) {
+        sendWorkerOperationProtocolError(req, res, "lease_renew", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      const auth = verifyWorkerOperationProof({
+        sessionSigningKey: opts.sessionSigningKey,
+        authorization,
+        rawBody,
+        proof,
+        method: req.method,
+        path: req.originalUrl,
+        correlationId: parsed.data.correlationId,
+        now: opts.now?.(),
+      });
+      const response = await renewal.renew({ auth, request: parsed.data });
+      res.status(200).json(response);
+    } catch (error) {
+      if (error instanceof WorkerOperationProofError) {
+        sendWorkerOperationProtocolError(req, res, "lease_renew", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      if (error instanceof JobLeasingError) {
+        sendWorkerOperationProtocolError(req, res, "lease_renew", error.code, opts.now?.() ?? new Date());
+        return;
+      }
+      logger.error({
+        action: "worker.lease_renew.failed",
+        reasonCode: "worker_lease_renew_internal_unavailable",
+      }, "worker lease renew unavailable");
+      sendWorkerOperationProtocolError(req, res, "lease_renew", "internal_unavailable", opts.now?.() ?? new Date());
     }
   });
 

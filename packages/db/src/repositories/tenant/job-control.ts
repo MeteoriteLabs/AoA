@@ -26,6 +26,9 @@ import {
   workerOperationReceipts,
   workerLeaseRejections,
   services,
+  serviceInstances,
+  jobArtifacts,
+  jobSecretHandles,
   type Job,
   type JobAttempt,
   type JobOutbox,
@@ -35,7 +38,16 @@ import {
   type Lease,
   type WorkerOperationReceipt,
   type NewWorkerLeaseRejection,
+  type JobArtifact,
+  type JobSecretHandle,
+  type ServiceInstance,
 } from "../../schema/index.js";
+import {
+  isActiveFence,
+  classifyFence,
+  JobFenceError,
+  type ActiveFenceRequest,
+} from "./job-fence.js";
 
 export interface LeaseRejectionCleanupResult {
   readonly deleted: number;
@@ -211,7 +223,7 @@ export interface JobControlRepository {
     targetId: string;
     targetGeneration: number;
     profileHash: string;
-    operation: "lease_ack";
+    operation: "lease_ack" | "lease_renew";
     idempotencyKey: string;
   }): Promise<WorkerOperationReceipt | null>;
   lockLeaseAckContext(input: {
@@ -245,6 +257,42 @@ export interface JobControlRepository {
     receiptExpiresAt: Date;
     outcome: Record<string, unknown>;
   }): Promise<Lease | null>;
+  // ---------------------------------------------------------------------------
+  // JOB-004 — conditional lease renewal + the CLOSED governed-mutator surface.
+  //
+  // `renewLease` extends ONLY the active fence's expiry using a fresh SQL
+  // `clock_timestamp()` inside the conditional mutation (never a transaction-start
+  // or JavaScript time), matches the complete lease identity + fence, increments no
+  // authority (fence/generation unchanged), and stores the renewed expiry + cancel
+  // response in the operation receipt atomically. Expired/replaced → stale_fence,
+  // terminal attempt → attempt_terminal (both raised as `JobFenceError`).
+  //
+  // The seven guarded mutators below are the CLOSED governed surface; EVERY one
+  // gates on the common active-fence guard before mutating (or reading). The four
+  // that have a kernel table (`job_artifacts`, `job_secret_handles`, `job_attempts`,
+  // `service_instances`) do a thin real mutation; the three whose storage is not yet
+  // built (events, projection receipts, control commands) are stubbed BUT STILL
+  // gated — JOB-005/006/011 fill the storage behind this already-guarded interface.
+  renewLease(input: ActiveFenceRequest & {
+    leaseDurationMs: number;
+    idempotencyKey: string;
+    semanticDigest: string;
+  }): Promise<{ lease: Lease; body: Record<string, unknown> }>;
+  acceptEvent(input: ActiveFenceRequest): Promise<GuardedFenceResult>;
+  authorizeArtifactCommit(
+    input: ActiveFenceRequest & { identifier: string },
+  ): Promise<JobArtifact>;
+  readSecretHandle(
+    input: ActiveFenceRequest & { handle: string },
+  ): Promise<JobSecretHandle | null>;
+  completeAttempt(
+    input: ActiveFenceRequest & { terminalStatus: TerminalCompletionStatus },
+  ): Promise<JobAttempt>;
+  recordServiceHealth(
+    input: ActiveFenceRequest & { serviceInstanceId: string; healthStatus: ServiceHealthStatus },
+  ): Promise<ServiceInstance>;
+  applyProjectionReceipt(input: ActiveFenceRequest): Promise<GuardedFenceResult>;
+  ackControlCommand(input: ActiveFenceRequest): Promise<GuardedFenceResult>;
   claimReadyOutbox(input: {
     claimToken: string;
     now: Date;
@@ -257,6 +305,21 @@ export interface JobControlRepository {
     attemptId: string;
   }>>;
   deliverReadyOutbox(input: { claimToken: string; ids: string[] }): Promise<number>;
+}
+
+/** JOB-004 terminal attempt statuses a governed completion may drive an attempt to. */
+export type TerminalCompletionStatus = "succeeded" | "failed" | "cancelled" | "expired";
+
+/** JOB-004 non-`pending` service-instance health a governed health record may set. */
+export type ServiceHealthStatus = "healthy" | "stopped" | "lost" | "interrupted";
+
+/** The result of a governed mutator whose durable storage is not yet built
+ * (JOB-005/006/011). It proves ONLY that the active-fence guard admitted the
+ * caller; no governed row is written or read. */
+export interface GuardedFenceResult {
+  leaseId: string;
+  attemptId: string;
+  guarded: true;
 }
 
 export interface LeaseWorkerAuthority {
@@ -389,6 +452,61 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     if (role === "admin") return "team_lead";
     if (role === "member") return "team_member";
     return null;
+  }
+
+  // JOB-004 — THE common active-fence guard every governed mutator gates on.
+  //
+  // Locks the lease + its attempt by the COMPLETE presented identity + fence and
+  // evaluates expiry against a FRESH database `clock_timestamp()` in the SAME locked
+  // read (never transaction-start or JavaScript time). A superseded fence, re-homed
+  // worker/target, or bumped generation matches no row (→ stale_fence); a terminal
+  // attempt is `attempt_terminal`; a non-active or freshly-expired lease is
+  // `stale_fence`. The shared pure predicate `isActiveFence` is the final authority
+  // on admission; `classifyFence` supplies the closed refusal code.
+  async function guardActiveFence(
+    request: ActiveFenceRequest,
+  ): Promise<{ lease: Lease; attempt: JobAttempt }> {
+    const [row] = await tx
+      .select({
+        lease: leases,
+        attempt: jobAttempts,
+        expiresFresh: sql<boolean>`(${leases.expiresAt} > clock_timestamp())`,
+      })
+      .from(leases)
+      .innerJoin(jobAttempts, and(
+        eq(jobAttempts.organizationId, leases.organizationId),
+        eq(jobAttempts.companyId, leases.companyId),
+        eq(jobAttempts.jobId, leases.jobId),
+        eq(jobAttempts.id, leases.attemptId),
+      ))
+      .where(and(
+        eq(leases.organizationId, request.organizationId),
+        eq(leases.companyId, request.companyId),
+        eq(leases.jobId, request.jobId),
+        eq(leases.attemptId, request.attemptId),
+        eq(leases.attemptNumber, request.attemptNumber),
+        eq(leases.id, request.leaseId),
+        eq(leases.workerId, request.workerId),
+        eq(leases.targetId, request.targetId),
+        eq(leases.targetAuthorityKey, request.targetAuthorityKey),
+        eq(leases.targetGeneration, request.targetGeneration),
+        eq(leases.profileHash, request.profileHash),
+        eq(leases.providerConstraintHash, request.providerConstraintHash),
+        eq(leases.fence, request.fence),
+      ))
+      .for("update")
+      .limit(1);
+    if (!row) throw new JobFenceError("stale_fence");
+    const snapshot = {
+      leaseStatus: row.lease.status,
+      attemptStatus: row.attempt.status,
+      expiresFresh: row.expiresFresh === true,
+    };
+    const refusal = classifyFence(snapshot);
+    if (refusal) throw new JobFenceError(refusal);
+    // Defense in depth: the shared predicate must agree with the classification.
+    if (!isActiveFence(snapshot)) throw new JobFenceError("stale_fence");
+    return { lease: row.lease, attempt: row.attempt };
   }
 
   async function admittedUserRequester(input: {
@@ -1382,6 +1500,147 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         createdAt: sql`clock_timestamp()`,
       });
       return lease;
+    },
+
+    // ---- JOB-004 conditional renewal ---------------------------------------
+    async renewLease(input) {
+      // Gate on the common active-fence guard (locks the lease+attempt, classifies
+      // stale_fence/attempt_terminal). Then extend ONLY the expiry using a FRESH SQL
+      // clock inside the conditional mutation — never a transaction-start or
+      // JavaScript time. The WHERE re-asserts `status = 'active'` and
+      // `expires_at > clock_timestamp()` so a lease that expires WHILE the
+      // transaction runs (clock advances past a fixed stored expiry) renews zero
+      // rows → stale_fence. No authority column (fence/generation/target) is touched.
+      await guardActiveFence(input);
+      const renewInterval = Math.max(1, Math.floor(input.leaseDurationMs));
+      const [lease] = await tx.update(leases).set({
+        expiresAt: sql`clock_timestamp() + make_interval(secs => ${renewInterval}::double precision / 1000)`,
+        updatedAt: sql`clock_timestamp()`,
+      }).where(and(
+        eq(leases.organizationId, input.organizationId),
+        eq(leases.companyId, input.companyId),
+        eq(leases.jobId, input.jobId),
+        eq(leases.attemptId, input.attemptId),
+        eq(leases.attemptNumber, input.attemptNumber),
+        eq(leases.id, input.leaseId),
+        eq(leases.workerId, input.workerId),
+        eq(leases.targetId, input.targetId),
+        eq(leases.targetAuthorityKey, input.targetAuthorityKey),
+        eq(leases.targetGeneration, input.targetGeneration),
+        eq(leases.profileHash, input.profileHash),
+        eq(leases.providerConstraintHash, input.providerConstraintHash),
+        eq(leases.fence, input.fence),
+        eq(leases.status, "active"),
+        gt(leases.expiresAt, sql`clock_timestamp()`),
+      )).returning();
+      if (!lease || !lease.expiresAt) throw new JobFenceError("stale_fence");
+      // The exact renewed response body — stored in the receipt AND returned, so a
+      // lost-response replay reproduces this exact renewal and cannot extend twice.
+      const body: Record<string, unknown> = {
+        protocolVersion: 1,
+        workerId: input.workerId,
+        jobId: input.jobId,
+        attempt: input.attemptNumber,
+        leaseId: input.leaseId,
+        fenceToken: input.fence,
+        expiresAt: lease.expiresAt.toISOString(),
+        cancelRequested: false,
+        cancelReason: null,
+        extensions: [],
+      };
+      await tx.insert(workerOperationReceipts).values({
+        organizationId: input.organizationId,
+        companyId: input.companyId,
+        jobId: input.jobId,
+        attemptId: input.attemptId,
+        leaseId: input.leaseId,
+        operation: "lease_renew",
+        workerId: input.workerId,
+        targetId: input.targetId,
+        targetAuthorityKey: input.targetAuthorityKey,
+        targetGeneration: input.targetGeneration,
+        profileHash: input.profileHash,
+        idempotencyKey: input.idempotencyKey,
+        semanticDigest: input.semanticDigest,
+        outcome: body,
+        expiresAt: lease.expiresAt,
+        createdAt: sql`clock_timestamp()`,
+      });
+      return { lease, body };
+    },
+
+    // ---- JOB-004 closed governed-mutator surface ---------------------------
+    // Every method below gates on `guardActiveFence` BEFORE touching (or reading) a
+    // governed row. The four with a kernel table do a thin real mutation; the three
+    // whose storage is not yet built are stubbed but STILL gated.
+    async acceptEvent(input) {
+      const { lease, attempt } = await guardActiveFence(input);
+      // Event storage is JOB-005; JOB-004 lands only the guarded seam.
+      return { leaseId: lease.id, attemptId: attempt.id, guarded: true };
+    },
+
+    async authorizeArtifactCommit(input) {
+      await guardActiveFence(input);
+      const [row] = await tx.insert(jobArtifacts).values({
+        organizationId: input.organizationId,
+        jobId: input.jobId,
+        identifier: input.identifier,
+      }).returning();
+      return row!;
+    },
+
+    async readSecretHandle(input) {
+      // A secret-handle READ is a governed surface too: a stale fence must not read.
+      await guardActiveFence(input);
+      const [row] = await tx.select().from(jobSecretHandles).where(and(
+        eq(jobSecretHandles.organizationId, input.organizationId),
+        eq(jobSecretHandles.jobId, input.jobId),
+        eq(jobSecretHandles.handle, input.handle),
+      )).limit(1);
+      return row ?? null;
+    },
+
+    async completeAttempt(input) {
+      const { attempt } = await guardActiveFence(input);
+      // The guard proved the attempt is non-terminal and holds its row lock, so the
+      // conditional update pins the exact locked status (no double-complete race).
+      const [row] = await tx.update(jobAttempts).set({
+        status: input.terminalStatus,
+        updatedAt: sql`clock_timestamp()`,
+      }).where(and(
+        eq(jobAttempts.organizationId, input.organizationId),
+        eq(jobAttempts.companyId, input.companyId),
+        eq(jobAttempts.jobId, input.jobId),
+        eq(jobAttempts.id, input.attemptId),
+        eq(jobAttempts.status, attempt.status),
+      )).returning();
+      if (!row) throw new JobFenceError("attempt_terminal");
+      return row;
+    },
+
+    async recordServiceHealth(input) {
+      await guardActiveFence(input);
+      const [row] = await tx.update(serviceInstances).set({
+        status: input.healthStatus,
+        updatedAt: sql`clock_timestamp()`,
+      }).where(and(
+        eq(serviceInstances.organizationId, input.organizationId),
+        eq(serviceInstances.id, input.serviceInstanceId),
+      )).returning();
+      if (!row) throw new Error("service_instance_not_found");
+      return row;
+    },
+
+    async applyProjectionReceipt(input) {
+      const { lease, attempt } = await guardActiveFence(input);
+      // Projection-receipt storage is JOB-005/011; JOB-004 lands only the guard.
+      return { leaseId: lease.id, attemptId: attempt.id, guarded: true };
+    },
+
+    async ackControlCommand(input) {
+      const { lease, attempt } = await guardActiveFence(input);
+      // Control-command storage is JOB-006; JOB-004 lands only the guard.
+      return { leaseId: lease.id, attemptId: attempt.id, guarded: true };
     },
 
     async claimReadyOutbox(input) {

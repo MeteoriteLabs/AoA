@@ -47,7 +47,27 @@ export * from "./schema/index.js";
 // single `tenantRepositories` export (tenant-repository-surface.test.ts) — this
 // re-export does not add a raw unscoped reader.
 export { tenantRepositories, type TenantRepositories } from "./repositories/tenant/index.js";
-export type { LeaseWorkerAuthority, PlacementCandidateSnapshot } from "./repositories/tenant/job-control.js";
+export type {
+  LeaseWorkerAuthority,
+  PlacementCandidateSnapshot,
+  TerminalCompletionStatus,
+  ServiceHealthStatus,
+  GuardedFenceResult,
+} from "./repositories/tenant/job-control.js";
+// JOB-004: the ONE common active-fence predicate + the CLOSED governed-mutator
+// surface. Re-exported from the barrel so `server/src/services/job-fencing.ts`
+// shares the exact same seam the tenant repository's guarded mutators gate on.
+export {
+  isActiveFence,
+  classifyFence,
+  JobFenceError,
+  GUARDED_JOB_MUTATORS,
+  TERMINAL_ATTEMPT_STATUSES,
+  type ActiveFenceRequest,
+  type ActiveFenceSnapshot,
+  type GuardedJobMutator,
+  type JobFenceErrorCode,
+} from "./repositories/tenant/job-fence.js";
 export { operatorWorkerEnrollmentRepository } from "./repositories/operator/worker-enrollment.js";
 export { listPlatformPlacementCandidateSnapshots } from "./repositories/operator/job-placement.js";
 export {

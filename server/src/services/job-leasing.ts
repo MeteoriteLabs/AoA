@@ -253,7 +253,7 @@ function authorityCurrent(input: {
     && input.databaseNow.getTime() - oldestHeartbeat <= input.maxHeartbeatAgeMs;
 }
 
-function ackAuthorityCurrent(input: {
+export function ackAuthorityCurrent(input: {
   auth: VerifiedWorkerOperation;
   authority: LeaseWorkerAuthority;
   workerId: string;
