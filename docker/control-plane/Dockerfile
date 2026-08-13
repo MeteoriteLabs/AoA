@@ -82,6 +82,11 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 # No devDependencies (tsx / vite / vitest), no cli, no worker-daemon, no source
 # tree of packages/adapters/*. This is the ONLY artifact copied into production.
 RUN pnpm --filter @armyofagents/server deploy --prod /cp-app
+# pnpm 9 `deploy` does NOT apply publishConfig, so the deployed @armyofagents/*
+# manifests keep their dev ./src exports (not shipped; files:["dist"], no tsx here).
+# Promote each package's publishConfig -> manifest so plain-node resolves the built
+# ./dist (fixes ERR_MODULE_NOT_FOUND on @armyofagents/db/migrate-job and the app).
+RUN node docker/apply-workspace-publish-config.mjs /cp-app/node_modules
 RUN test -f /cp-app/dist/index.js || (echo "ERROR: control-plane deploy output missing" && exit 1)
 
 # ---------------------------------------------------------------------------
