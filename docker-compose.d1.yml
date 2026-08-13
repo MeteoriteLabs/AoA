@@ -142,6 +142,14 @@ services:
       # migrate job (AOA_D1_PROVISION_SERVING_ROLES above).
       AOA_APP_DATABASE_URL: "postgres://aoa_app:aoa_app@toxiproxy:15432/aoa"
       AOA_OPERATOR_DATABASE_URL: "postgres://aoa_operator:aoa_operator@toxiproxy:15432/aoa"
+      # authenticated mode refuses to boot without an auth provider + signing secret
+      # (better-auth.ts assertAuthProviderConfigured + resolveBetterAuthSigningSecret).
+      # THROWAWAY D1-harness values: the bounded campaign reaches the control-plane only
+      # via internal exec/health, never the OAuth sign-in flow, so these are never
+      # exercised. A real authenticated deploy sets real Google creds + a strong secret.
+      GOOGLE_CLIENT_ID: "d1-harness-google-client-id"
+      GOOGLE_CLIENT_SECRET: "d1-harness-google-client-secret"
+      BETTER_AUTH_SECRET: "d1-harness-better-auth-signing-secret-not-for-production"
       # declared provider API (fake provider), reachable directly.
       AOA_PROVIDER_API_URL: "http://fake-provider:8080"
       AOA_S3_ENDPOINT: "http://minio:9000"
