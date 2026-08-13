@@ -40,27 +40,46 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     timeout-minutes: 5
+    # DEP-004: the SINGLE change detector emits `code` (docs-only skip) PLUS the
+    # distributed path-classes (protocol/schema/fixtures/provider/compose) that
+    # drive the conditional `distributed-contract` consumer. There is DELIBERATELY
+    # no trigger-level `paths:` filter — a skipped REQUIRED check passes silently,
+    # so ALL conditional routing goes through these outputs + the ci-required
+    # verdict (enforced statically on EVERY PR by the always-on `policy` job's
+    # "CI lane routing invariants (DEP-004)" step: scripts/check-ci-lanes.mjs +
+    # its node:test suite).
     outputs:
       code: ${{ steps.detect.outputs.code }}
+      protocol: ${{ steps.detect.outputs.protocol }}
+      schema: ${{ steps.detect.outputs.schema }}
+      fixtures: ${{ steps.detect.outputs.fixtures }}
+      provider: ${{ steps.detect.outputs.provider }}
+      compose: ${{ steps.detect.outputs.compose }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Detect non-doc changes
+      - name: Detect non-doc + distributed path-class changes
         id: detect
         run: |
+          emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; echo "  $1=$2"; }
+          emit_all() {
+            emit code "$1"; emit protocol "$1"; emit schema "$1"
+            emit fixtures "$1"; emit provider "$1"; emit compose "$1"
+          }
           if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "push event -> code=true"
+            echo "push event -> all classes true"
+            emit_all true
             exit 0
           fi
           changed="$(git diff --no-renames --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           if [ -z "$changed" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "empty diff -> code=true (fail safe)"
+            echo "empty diff -> all classes true (fail safe)"
+            emit_all true
             exit 0
           fi
+          echo "changed files:"; printf '%s\n' "$changed"
           code=false
           if printf '%s\n' "$changed" | grep -qE '^\.github/'; then
             code=true        # any .github/** file (incl .github/*.md) => full CI
@@ -68,9 +87,21 @@ jobs:
             code=true        # anything not under docs/ and not a ROOT-LEVEL *.md
                              # (nested .md may be runtime assets/fixtures => code)
           fi
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "changed files:"; printf '%s\n' "$changed"
-          echo "=> code=$code"
+          emit code "$code"
+          # Distributed path-classes (independent of `code`): true iff a changed
+          # file matches the class glob set. `match` is -e/-o pipefail safe (the
+          # `|| echo false` swallows grep's exit-1 on no-match).
+          match() { printf '%s\n' "$changed" | grep -qE "$1" && echo true || echo false; }
+          # protocol: the frozen worker wire protocol + its lifecycle/authority contract.
+          emit protocol "$(match '^packages/worker-protocol/|^scripts/[^/]*worker-protocol|^docs/architecture/distributed-execution-lifecycles\.|^docs/architecture/distributed-execution-authority\.')"
+          # schema: the golden-journey schema, distributed threat register, and DB schema.
+          emit schema "$(match '^tests/fixtures/distributed-execution/schema-v1\.json$|^docs/architecture/distributed-execution-threat-|^packages/db/src/schema/')"
+          # fixtures: the golden-journey + failure fixture corpus.
+          emit fixtures "$(match '^tests/fixtures/distributed-execution/')"
+          # provider: the sandbox fake provider, provider-neutral contract, and runtime seam.
+          emit provider "$(match '^packages/sandbox-fake-provider/|^packages/sandbox-provider-contract/|^server/src/services/sandbox-provider-runtime|^docker/d1/fake-provider')"
+          # compose: the D1 topology (its static invariants run in the always-on policy job).
+          emit compose "$(match '^docker-compose\.d1\.yml$|^docker/d1/|^docker/control-plane/|^docker/worker/|^docker/images/')"
 
   policy:
     runs-on: ubuntu-latest
@@ -130,6 +161,11 @@ jobs:
         run: |
           node scripts/check-device-proof-vectors.mjs
           node --test scripts/check-device-proof-vectors.test.mjs
+
+      - name: CI lane routing invariants (DEP-004)
+        run: |
+          node scripts/check-ci-lanes.mjs
+          node --test scripts/lib/__tests__/ci-lanes.test.mjs scripts/lib/__tests__/d1-evidence-bundle.test.mjs
 
       - name: Validate Dockerfile deps stage
         run: |
@@ -810,6 +846,55 @@ jobs:
             tests/e2e/test-results/
           retention-days: 14
 
+  # DEP-004 MANDATORY CONSUMER: the focused distributed-execution contract lane.
+  # Runs ONLY when a protocol/schema/fixtures/provider path-class changed (the
+  # `changes` detector); its verdict is folded into ci-required — required for a
+  # PR that touched those classes, skipped-allowed otherwise, EXACTLY like the
+  # `code`-gated docs-only pattern. It is NEVER an independently-required
+  # branch-protection check, and there is NEVER a trigger-level `paths:` filter
+  # (both would let a skipped required check pass silently). Bundles: the DEP-000
+  # fake-provider + provider-neutral contract suites, the fixture-determinism +
+  # foundation structural checker, and the DEP-003 readiness/0188-preflight pure
+  # suites. Draft-guarded like the rest. (Live docker/compose lanes are the
+  # separate d1-merge-train.yml, not this fast unit/contract lane.)
+  distributed-contract:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ (needs.changes.outputs.protocol == 'true' || needs.changes.outputs.schema == 'true' || needs.changes.outputs.fixtures == 'true' || needs.changes.outputs.provider == 'true') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Distributed-execution foundation + fixture-determinism contracts
+        run: node scripts/check-distributed-execution-foundation.mjs
+
+      - name: DEP-000 fake sandbox provider + provider-neutral contract suites
+        run: |
+          pnpm --filter @armyofagents/sandbox-fake-provider test:run
+          pnpm --filter @armyofagents/sandbox-provider-contract test:run
+
+      - name: DEP-003 readiness + 0188 cutover preflight (pure) suites
+        run: >-
+          pnpm --filter @armyofagents/server exec vitest run
+          src/__tests__/cutover-0188-preflight.test.ts
+          src/__tests__/readiness-liveness.test.ts
+
   # Single required status check. Branch protection requires ONLY this job.
   # Runs ALWAYS (`!cancelled()`), even when upstream jobs fail or skip, and
   # computes the verdict explicitly so a `skipped` job cannot silently pass —
@@ -817,7 +902,7 @@ jobs:
   # so this gate goes RED (drafts are unmergeable; a passing required check
   # there would be the footgun). Marking ready re-runs everything for real.
   ci-required:
-    needs: [changes, policy, brand-check, worker-protocol-contract-bytes, verify, lint, e2e, e2e-pgvector, migrations]
+    needs: [changes, policy, brand-check, worker-protocol-contract-bytes, verify, lint, e2e, e2e-pgvector, migrations, distributed-contract]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -834,8 +919,15 @@ jobs:
           R_E2E: ${{ needs.e2e.result }}
           R_E2E_PGVECTOR: ${{ needs['e2e-pgvector'].result }}
           R_MIGRATIONS: ${{ needs.migrations.result }}
+          # DEP-004: the distributed-contract consumer + its four gating classes.
+          R_DC: ${{ needs['distributed-contract'].result }}
+          R_PROTOCOL: ${{ needs.changes.outputs.protocol }}
+          R_SCHEMA: ${{ needs.changes.outputs.schema }}
+          R_FIXTURES: ${{ needs.changes.outputs.fixtures }}
+          R_PROVIDER: ${{ needs.changes.outputs.provider }}
         run: |
           echo "code=$R_CODE | changes=$R_CHANGES policy=$R_POLICY brand-check=$R_BRAND worker-protocol-contract-bytes=$R_WP_BYTES verify=$R_VERIFY lint=$R_LINT e2e=$R_E2E e2e-pgvector=$R_E2E_PGVECTOR migrations=$R_MIGRATIONS"
+          echo "distributed-contract=$R_DC | protocol=$R_PROTOCOL schema=$R_SCHEMA fixtures=$R_FIXTURES provider=$R_PROVIDER"
           fail=0
           # Detector must have succeeded. Skipped (draft) => red, by design.
           if [ "$R_CHANGES" != "success" ]; then
@@ -861,6 +953,18 @@ jobs:
               name="${kv%%=*}"; res="${kv#*=}"
               [ "$res" = "success" ] || { echo "::error::$name=$res (required for code changes)"; fail=1; }
             done
+          fi
+          # DEP-004: the distributed-contract consumer is required ONLY when a
+          # protocol/schema/fixtures/provider path-class changed. On any other PR
+          # it is skipped, which is allowed — EXACTLY the code-gated docs-only
+          # pattern above (a skipped consumer is a PASS only when its class did not
+          # change). This is why there is no trigger-level paths: filter.
+          contract_changed=false
+          for c in "$R_PROTOCOL" "$R_SCHEMA" "$R_FIXTURES" "$R_PROVIDER"; do
+            [ "$c" = "true" ] && contract_changed=true
+          done
+          if [ "$contract_changed" = "true" ]; then
+            [ "$R_DC" = "success" ] || { echo "::error::distributed-contract=$R_DC (required for protocol/schema/fixtures/provider changes)"; fail=1; }
           fi
           [ "$fail" = "0" ] && echo "ci-required: PASS"
           exit $fail

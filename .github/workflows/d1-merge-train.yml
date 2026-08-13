@@ -1,0 +1,99 @@
+name: D1 Merge Train
+
+# DEP-004 — the distributed (D1) merge-train lane. It brings up the isolated
+# docker-compose.d1.yml topology (PostgreSQL, MinIO, Toxiproxy, split control-
+# plane + worker images, the fixture-driven fake provider), runs a BOUNDED E6F
+# subset against the live stack, and — on ANY failure — RETAINS the distributed
+# evidence bundle (per-service logs, worker events, DB-state dump, MinIO object
+# manifests) via actions/upload-artifact so a merge-train failure is never lost.
+#
+# It runs on the merge queue (`merge_group`) and on push to main — NOT on every
+# PR (the fast per-PR contract lane is pr.yml's `distributed-contract` job). The
+# live docker/compose bring-up has no Windows-local substitute; this workflow is
+# the Linux/CI authority. Its static shape (evidence-upload-on-failure) is
+# validated on every PR by the pr.yml `policy` job's "CI lane routing invariants
+# (DEP-004)" step (scripts/check-ci-lanes.mjs), and re-checked here belt-and-
+# suspenders in the "Static topology preflight" step below.
+
+permissions:
+  contents: read
+
+on:
+  merge_group:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: d1-merge-train-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  d1-merge-train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COMPOSE_FILE_PATH: docker-compose.d1.yml
+      EVIDENCE_DIR: ${{ github.workspace }}/d1-evidence
+      # DEP-001 admission: the compose stack pins images by digest via these vars.
+      # The build step below populates docker/d1/.env; live admission is enforced
+      # by the split-image admission verifier (DEP-001), not by this lane.
+      AOA_D1_FAKE_PROVIDER_IMAGE: aoa-d1-fake-provider:merge-train
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Static topology preflight (fail fast before bring-up)
+        run: |
+          node scripts/check-d1-compose.mjs
+          node scripts/check-ci-lanes.mjs
+
+      - name: Build split D1 images
+        run: |
+          # Least-privilege split images (DEP-001) + the fixture-driven fake
+          # provider. Digests are recorded into docker/d1/.env for compose.
+          bash docker/images/build.sh
+          docker build -f docker/d1/fake-provider.Dockerfile -t "$AOA_D1_FAKE_PROVIDER_IMAGE" .
+          mkdir -p docker/d1
+          : > docker/d1/.env
+          echo "AOA_D1_FAKE_PROVIDER_IMAGE=$AOA_D1_FAKE_PROVIDER_IMAGE" >> docker/d1/.env
+
+      - name: Bring up the D1 stack
+        run: docker compose -f "$COMPOSE_FILE_PATH" up -d --wait --wait-timeout 300
+
+      - name: Run bounded E6F subset (live)
+        env:
+          AOA_D1_LIVE: "1"
+        run: |
+          # A BOUNDED subset of the E6F campaign — the topology network-denial
+          # proofs + one fixture-driven fake-provider job — enough to exercise the
+          # full submit -> placement -> lease -> execute -> event path end to end.
+          node --test tests/d1/network-denial.test.mjs tests/d1/fake-provider-job.test.mjs
+
+      - name: Collect distributed evidence (on failure)
+        if: failure()
+        run: >-
+          node scripts/collect-d1-evidence.mjs
+          --compose "$COMPOSE_FILE_PATH"
+          --out "$EVIDENCE_DIR"
+          --run-id "${{ github.run_id }}"
+          --reason "d1-merge-train failure on ${{ github.sha }}"
+
+      - name: Upload retained evidence bundle (on failure)
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: d1-merge-train-evidence-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Tear down the D1 stack
+        if: always()
+        run: docker compose -f "$COMPOSE_FILE_PATH" down -v --remove-orphans || true
