@@ -39,6 +39,11 @@ services:
       POSTGRES_USER: "aoa"
       POSTGRES_PASSWORD: "aoa"
       POSTGRES_DB: "aoa"
+      # PostgreSQL 18's official image moved the default PGDATA to a versioned path
+      # and added a safety check that EXITS when a volume is mounted at the legacy
+      # /var/lib/postgresql/data (docker-library/postgres#1259). Pin PGDATA back to the
+      # mounted path so the d1-postgres-data volume is used and the container starts.
+      PGDATA: "/var/lib/postgresql/data"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U aoa -d aoa"]
       interval: "3s"
