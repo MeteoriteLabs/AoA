@@ -601,9 +601,6 @@ importers:
         specifier: ^9.6.0
         version: 9.14.0
     devDependencies:
-      '@armyofagents/shared':
-        specifier: workspace:*
-        version: link:../shared
       '@types/node':
         specifier: ^24.6.0
         version: 24.12.0

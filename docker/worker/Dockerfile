@@ -63,16 +63,11 @@ RUN tsc -p packages/worker-protocol/tsconfig.json \
   && tsc -p packages/worker-daemon/tsconfig.json \
   && test -f packages/worker-daemon/dist/bin/worker-daemon.js \
     || (echo "ERROR: worker-daemon build output missing" && exit 1)
-# worker-daemon devDepends on @armyofagents/shared (workspace:*). `pnpm deploy --prod`
-# resolves the FULL workspace graph before pruning devDeps, so shared's MANIFEST must be
-# present for resolution or it fails ERR_PNPM_WORKSPACE_PKG_NOT_FOUND. This COPY lives in
-# the DISCARDED build stage — NOT the deps stage (which the least-privilege parity gate
-# scans) — so it never widens the runtime closure. Only the manifest is copied; shared's
-# SOURCE never enters the build, and --prod prunes shared from /worker-app, so the runtime
-# boundary (worker-protocol + pino only) is unchanged. shared depends only on external zod.
-COPY packages/shared/package.json packages/shared/
 # Produce a self-contained, prod-only deployment of just the worker daemon
-# (worker-daemon + worker-protocol + pino), nothing else.
+# (worker-daemon + worker-protocol + pino), nothing else. worker-daemon carries NO
+# workspace devDependency, so `pnpm deploy --prod` resolves its graph without needing any
+# other package's manifest present — the image references neither shared/server/db nor any
+# non-closure workspace package (E4-D01, enforced by the split-Dockerfile static gate).
 RUN pnpm --filter @armyofagents/worker-daemon deploy --prod /worker-app
 
 # ---------------------------------------------------------------------------
