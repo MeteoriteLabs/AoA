@@ -150,6 +150,10 @@ services:
       GOOGLE_CLIENT_ID: "d1-harness-google-client-id"
       GOOGLE_CLIENT_SECRET: "d1-harness-google-client-secret"
       BETTER_AUTH_SECRET: "d1-harness-better-auth-signing-secret-not-for-production"
+      # createApp fails closed without a >=32-byte key to sign worker session tokens when
+      # distributed worker control is mounted (app.ts:439). Throwaway D1-harness value; only
+      # the control-plane signs (workers receive opaque tokens), so it is not set on workers.
+      AOA_WORKER_SESSION_SIGNING_KEY: "d1-harness-worker-session-signing-key-0123456789abcdef"
       # declared provider API (fake provider), reachable directly.
       AOA_PROVIDER_API_URL: "http://fake-provider:8080"
       AOA_S3_ENDPOINT: "http://minio:9000"
