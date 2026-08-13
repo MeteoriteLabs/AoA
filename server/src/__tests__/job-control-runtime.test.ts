@@ -949,7 +949,10 @@ describe("JOB-003 flag-on job-control runtime", () => {
     expect(indexSource).toContain("jobReadyScheduler: scheduler");
     const appSource = readFileSync(new URL("../app.ts", import.meta.url), "utf8");
     const workerRoutesSource = readFileSync(new URL("../routes/worker-control.ts", import.meta.url), "utf8");
-    expect(appSource).toContain("jobReadyScheduler?: JobReadyScheduler");
+    // The type is referenced via an inline `import(...)` annotation (not a top-level
+    // import) so the flag-off import-graph guard (tenant-app-db-startup.test.ts) stays
+    // satisfied — the E3 job-control runtime must not enter the bootstrap import graph.
+    expect(appSource).toMatch(/jobReadyScheduler\?:[^\n;]*JobReadyScheduler/);
     expect(appSource).toContain("jobReadyScheduler: opts.jobReadyScheduler");
     expect(workerRoutesSource).toContain("scheduler: opts.jobReadyScheduler");
     expect(indexSource).toContain("jobControlRuntime.stop");
