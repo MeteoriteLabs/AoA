@@ -23,6 +23,20 @@ on:
   push:
     branches:
       - main
+  # On-demand dispatch so the live D1 campaign can run over the long-lived
+  # integration branch (docs/replatform-program) — the E6-D1-FOUNDATION gate
+  # campaign is dispatched here, not on a merge-to-main. `campaign` selects how
+  # much of the E6F matrix to run: `bounded` = the smoke+denial subset (default,
+  # fast), `foundation` = the full E6F-01..07 gate campaign.
+  workflow_dispatch:
+    inputs:
+      campaign:
+        description: "E6F campaign scope"
+        type: choice
+        default: bounded
+        options:
+          - bounded
+          - foundation
 
 concurrency:
   group: d1-merge-train-${{ github.ref }}
