@@ -92,13 +92,30 @@ jobs:
 
       - name: Build split D1 images
         run: |
-          # Least-privilege split images (DEP-001) + the fixture-driven fake
-          # provider. Digests are recorded into docker/d1/.env for compose.
+          set -euo pipefail
+          # Least-privilege split images (DEP-001) + the fixture-driven fake provider.
+          # build.sh builds control-plane + worker into the local image store and records
+          # their exact tags in docker/images/digests.env.
           bash docker/images/build.sh
           docker build -f docker/d1/fake-provider.Dockerfile -t "$AOA_D1_FAKE_PROVIDER_IMAGE" .
+          # Point the compose services at the just-built LOCAL tags. Without this, compose
+          # falls back to the :d1-local-unbuilt defaults for control-plane/worker and tries
+          # to PULL images that were never pushed ("pull access denied for aoa-worker").
+          CP_TAG="$(grep -E '^CONTROL-PLANE_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          WK_TAG="$(grep -E '^WORKER_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          test -n "$CP_TAG" && test -n "$WK_TAG"
+          {
+            echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
+            echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
+          } >> "$GITHUB_ENV"
+          echo "control-plane image: ${CP_TAG}"
+          echo "worker image:        ${WK_TAG}"
           mkdir -p docker/d1
-          : > docker/d1/.env
-          echo "AOA_D1_FAKE_PROVIDER_IMAGE=$AOA_D1_FAKE_PROVIDER_IMAGE" >> docker/d1/.env
+          {
+            echo "AOA_D1_FAKE_PROVIDER_IMAGE=${AOA_D1_FAKE_PROVIDER_IMAGE}"
+            echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
+            echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
+          } > docker/d1/.env
 
       - name: Bring up the D1 stack
         run: docker compose -f "$COMPOSE_FILE_PATH" up -d --wait --wait-timeout 300
