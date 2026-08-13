@@ -76,6 +76,20 @@ jobs:
           node scripts/check-d1-compose.mjs
           node scripts/check-ci-lanes.mjs
 
+      - name: Enable Docker containerd image store (attestation + --load)
+        run: |
+          # docker/images/build.sh (DEP-001) builds with `--provenance --sbom --load`.
+          # The runner's default docker image store rejects that ("Attestation is not
+          # supported for the docker driver") and cannot --load an attestation-carrying
+          # OCI index. Enabling the containerd snapshotter lets the default builder both
+          # PRODUCE the provenance/SBOM attestations (E6F-06 evidence) AND load the
+          # result locally for docker-compose.d1.yml. No image contract is weakened.
+          sudo mkdir -p /etc/docker
+          printf '%s\n' '{ "features": { "containerd-snapshotter": true } }' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+          docker info --format 'image store driver: {{ .DriverStatus }}'
+
       - name: Build split D1 images
         run: |
           # Least-privilege split images (DEP-001) + the fixture-driven fake
