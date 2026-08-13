@@ -5337,6 +5337,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       "packages/db/src/client.ts#ensurePostgresDatabase:.unsafe:22f3c71744a5",
       "packages/db/src/client.ts#getMigrationTableColumnNames:.unsafe:c6ac6fc777f9",
       "packages/db/src/client.ts#latestMigrationCreatedAt:.unsafe:10d48ff08468",
+      "packages/db/src/client.ts#loadAppliedMigrationIdentity:.unsafe:5dcba962f76d",
       "packages/db/src/client.ts#loadAppliedMigrations:.unsafe:011cd7b63172",
       "packages/db/src/client.ts#loadAppliedMigrations:.unsafe:1b3e82512ded",
       "packages/db/src/client.ts#loadAppliedMigrations:.unsafe:d6ac42909b63",
