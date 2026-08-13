@@ -171,6 +171,28 @@ jobs:
             exit 1
           fi
 
+      - name: Validate split-image deps stages (DEP-001)
+        run: |
+          # Extends the deps-stage check to the two split images: each of
+          # docker/control-plane/Dockerfile and docker/worker/Dockerfile must COPY
+          # EXACTLY its own workspace runtime closure (no fewer, no more). The
+          # combined-Dockerfile check above is unchanged and still runs.
+          node scripts/check-image-deps-stages.mjs
+          node --test scripts/check-image-deps-stages.test.mjs
+
+      - name: Image admission verifier (DEP-001)
+        run: |
+          # Fail-closed image-admission logic: admit only allowlisted, signed,
+          # provenance-matched digests; reject tampered/unsigned/forged.
+          node --test scripts/lib/__tests__/image-admission.test.mjs
+
+      - name: Split-image Dockerfile static checks (DEP-001)
+        run: |
+          # STATIC (no-build) least-privilege assertions on the split Dockerfiles.
+          # The built-image lane (build.sh + image-contents/image-startup-smoke)
+          # is Linux/CI docker-only and is wired by DEP-004's image lane.
+          node --test docker/images/__tests__/dockerfile-static.test.mjs
+
       - name: Validate dependency resolution when manifests change
         if: github.event_name == 'pull_request'
         run: |
