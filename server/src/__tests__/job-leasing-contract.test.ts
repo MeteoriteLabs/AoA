@@ -5279,7 +5279,9 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     ]);
   });
 
-  it("enforces an exhaustive authority-writer allowlist and target-worker-exclusive lock order", () => {
+  // AST-scans the whole production source tree (server + packages/db) — ~14s locally,
+  // which tips over the 30s default under CI vitest-worker parallelism. Give it headroom.
+  it("enforces an exhaustive authority-writer allowlist and target-worker-exclusive lock order", { timeout: 120_000 }, () => {
     const dbHelper = new URL("../../../packages/db/src/platform-target-authority-lock.ts", import.meta.url);
     expect(existsSync(dbHelper), "platform-target lock helper must exist before writers can be guarded").toBe(true);
     const sourceFiles = [
@@ -7737,7 +7739,8 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     expect.soft(scheduler).toMatch(/consume\(/);
   });
 
-  it("keeps protected candidate facts immutable and certificate writers certificate-only", () => {
+  // Same whole-tree AST scan as the allowlist test above; headroom over the 30s default.
+  it("keeps protected candidate facts immutable and certificate writers certificate-only", { timeout: 120_000 }, () => {
     const production = [
       ...productionTypeScriptFiles(join(repositoryRoot, "server", "src")),
       ...productionTypeScriptFiles(join(repositoryRoot, "packages", "db", "src")),

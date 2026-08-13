@@ -325,7 +325,12 @@ function compileLeaseStaticContextTypeContract(
     strict: true,
     noEmit: true,
     skipLibCheck: true,
-    types: ["node"],
+    // The compiled contract source uses NO node globals/types, so it must not pull in
+    // ambient @types/node. Forcing `types: ["node"]` made the in-memory compiler host
+    // resolve @types/node, which fails on a fresh Linux CI checkout ("Cannot find type
+    // definition file for 'node'") — a spurious diagnostic unrelated to the type
+    // contract under test. `types: []` keeps the probe self-contained on every platform.
+    types: [],
   };
   const host = ts.createCompilerHost(options);
   const originalFileExists = host.fileExists.bind(host);
