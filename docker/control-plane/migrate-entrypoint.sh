@@ -19,6 +19,18 @@ mkdir -p "$AOA_HOME" "$TMPDIR"
 echo "migrate-job: applying schema migrations (privileged role)"
 node --input-type=module -e "import('@armyofagents/db/migrate-job').then((m) => m.main())"
 
+# 1b. D1 harness ONLY — grant the aoa_app / aoa_operator serving roles LOGIN so the
+#     split control-plane image can open its app + operator pools. The migrations
+#     create them NOLOGIN; a real cloud deploy provisions their credentials out-of-
+#     band, so this is STRICTLY gated behind AOA_D1_PROVISION_SERVING_ROLES=1 (set
+#     ONLY by docker-compose.d1.yml's migrate service) and is a no-op everywhere
+#     else. Runs as the privileged owner role (DATABASE_URL), the only role that may
+#     ALTER them. Fail-closed under `set -eu` like every other step.
+if [ "${AOA_D1_PROVISION_SERVING_ROLES:-}" = "1" ]; then
+  echo "migrate-job: [D1 harness] provisioning aoa_app / aoa_operator LOGIN"
+  node /cp-app/provision-d1-serving-roles.mjs
+fi
+
 # 2. Operator-gated 0188 populated-cutover preflight — ONLY when the operator has
 #    explicitly opted in. Dormant by default: a single-tenant / non-cutover deploy
 #    never runs it. It requires the exact candidate SHA, takes + checksum-validates

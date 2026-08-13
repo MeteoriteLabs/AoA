@@ -124,6 +124,11 @@ COPY --chown=node:node docker/control-plane/entrypoint.sh /usr/local/bin/control
 # app runtime never invokes it (application startup runs NO migrations). Ships with
 # the same non-root / read-only-root posture as the app entrypoint.
 COPY --chown=node:node docker/control-plane/migrate-entrypoint.sh /usr/local/bin/migrate-entrypoint.sh
+# DEP-002/003 D1 harness ONLY: the serving-role login provisioner invoked by
+# migrate-entrypoint.sh under AOA_D1_PROVISION_SERVING_ROLES=1. Placed in /cp-app so
+# `node /cp-app/provision-d1-serving-roles.mjs` resolves the deployed `postgres`
+# driver from /cp-app/node_modules. Inert on any non-D1 deploy path.
+COPY --chown=node:node docker/control-plane/provision-d1-serving-roles.mjs /cp-app/provision-d1-serving-roles.mjs
 RUN sed -i 's/\r$//' /usr/local/bin/control-plane-entrypoint.sh /usr/local/bin/migrate-entrypoint.sh \
   && chmod +x /usr/local/bin/control-plane-entrypoint.sh /usr/local/bin/migrate-entrypoint.sh \
   && mkdir -p /aoa \

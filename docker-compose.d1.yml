@@ -106,6 +106,11 @@ services:
       # data-net only. Distinct from the aoa_app serving role used by control-plane.
       DATABASE_URL: "postgres://aoa:aoa@postgres:5432/aoa"
       AOA_MIGRATION_ROLE: "aoa"
+      # D1 harness ONLY: after migrations, grant aoa_app / aoa_operator LOGIN (they
+      # are created NOLOGIN) so the control-plane can open its app + operator pools.
+      # Gated flag — inert on every non-D1 deploy path. Passwords MUST match the
+      # AOA_APP_DATABASE_URL / AOA_OPERATOR_DATABASE_URL on control-plane below.
+      AOA_D1_PROVISION_SERVING_ROLES: "1"
     depends_on:
       postgres:
         condition: service_healthy
@@ -124,6 +129,13 @@ services:
       AOA_DISTRIBUTED_EXECUTION_ENABLED: "true"
       # control-plane <-> postgres is routed THROUGH toxiproxy (in-path link 1).
       DATABASE_URL: "postgres://aoa_app:aoa_app@toxiproxy:15432/aoa"
+      # Distributed execution requires the app + operator pool URLs (FND-005
+      # assertHostedExecutionStartupSafe fails closed without them; the distributed
+      # path NEVER falls back to the owner pool). Both non-owner serving roles,
+      # routed through toxiproxy like the app pool; credentials provisioned by the
+      # migrate job (AOA_D1_PROVISION_SERVING_ROLES above).
+      AOA_APP_DATABASE_URL: "postgres://aoa_app:aoa_app@toxiproxy:15432/aoa"
+      AOA_OPERATOR_DATABASE_URL: "postgres://aoa_operator:aoa_operator@toxiproxy:15432/aoa"
       # declared provider API (fake provider), reachable directly.
       AOA_PROVIDER_API_URL: "http://fake-provider:8080"
       AOA_S3_ENDPOINT: "http://minio:9000"
