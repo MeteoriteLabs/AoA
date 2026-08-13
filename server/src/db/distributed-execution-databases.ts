@@ -18,6 +18,8 @@ import {
   APP_JOB_PLACEMENT_TARGET_SELECT_COLUMNS,
   APP_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS,
   APP_MCP_API_KEY_COLUMN_GRANTS,
+  CUTOVER_MARKER_APP_GRANTS,
+  CUTOVER_MARKER_OPERATOR_GRANTS,
   JOB_CONTROL_LEGACY_GRANTS,
   JOB_CONTROL_NEW_PATH_GRANTS,
   JOB_LEASING_NEW_PATH_GRANTS,
@@ -98,11 +100,12 @@ function appTablePrivileges(): Readonly<Record<string, readonly TablePrivilege[]
     ...JOB_SUBMISSION_LEGACY_GRANTS,
     ...WORKER_ENROLLMENT_APP_GRANTS,
     ...JOB_LEASING_NEW_PATH_GRANTS,
+    ...CUTOVER_MARKER_APP_GRANTS,
   };
 }
 
 function operatorTablePrivileges(): Readonly<Record<string, readonly TablePrivilege[]>> {
-  return WORKER_ENROLLMENT_OPERATOR_GRANTS;
+  return { ...WORKER_ENROLLMENT_OPERATOR_GRANTS, ...CUTOVER_MARKER_OPERATOR_GRANTS };
 }
 
 /** Fail closed unless effective ACLs are exact across every non-system table-like object. */

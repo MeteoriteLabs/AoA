@@ -176,6 +176,19 @@ export const WORKER_ENROLLMENT_OPERATOR_GRANTS = Object.freeze({
   worker_proof_replays: ["SELECT", "INSERT", "DELETE"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
+/**
+ * DEP-003 operator-gated 0188 cutover marker (migration 0233). aoa_operator writes
+ * the durable marker (no DELETE); aoa_app reads it ONLY outside a tenant transaction
+ * (RLS app-read policy). These mirror the reviewed C14 grants in 0233 exactly — a
+ * grant change there must update these constants and survive review.
+ */
+export const CUTOVER_MARKER_APP_GRANTS = Object.freeze({
+  distributed_cutover_markers: ["SELECT"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+export const CUTOVER_MARKER_OPERATOR_GRANTS = Object.freeze({
+  distributed_cutover_markers: ["SELECT", "INSERT", "UPDATE"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
 /** Tenant target metadata needed to issue/consume enrollment and retire bootstrap auth. */
 export const APP_ENROLLMENT_TARGET_SELECT_COLUMNS = Object.freeze([
   "id", "organization_id", "owner_user_id", "scope", "target_authority_key",
@@ -225,6 +238,7 @@ export const APP_SERVING_RELATIONS = sortedUnion(
   Object.keys(JOB_SUBMISSION_NEW_PATH_GRANTS),
   Object.keys(WORKER_ENROLLMENT_APP_GRANTS),
   Object.keys(JOB_LEASING_NEW_PATH_GRANTS),
+  Object.keys(CUTOVER_MARKER_APP_GRANTS),
   ["mcp_api_keys", "execution_targets"],
 );
 
@@ -232,6 +246,7 @@ export const APP_SERVING_RELATIONS = sortedUnion(
 export const OPERATOR_SERVING_RELATIONS = sortedUnion(
   Object.keys(WORKER_ENROLLMENT_OPERATOR_GRANTS),
   Object.keys(OPERATOR_METADATA_COLUMN_GRANTS),
+  Object.keys(CUTOVER_MARKER_OPERATOR_GRANTS),
   ["execution_targets"],
 );
 
@@ -239,7 +254,7 @@ export const RLS_RELATIONS = Object.freeze([
   "jobs", "job_attempts", "leases", "workers", "services", "service_instances",
   "job_artifacts", "job_secret_handles", "job_outbox", "worker_enrollment_code_routes",
   "worker_enrollment_codes", "worker_proof_replays", "execution_targets",
-  "worker_operation_receipts", "worker_lease_rejections",
+  "worker_operation_receipts", "worker_lease_rejections", "distributed_cutover_markers",
 ] as const);
 
 export const FORCE_RLS_RELATIONS = Object.freeze(
@@ -264,6 +279,7 @@ export const POLICY_COUNTS = deepFreeze({
   execution_targets: 3,
   worker_operation_receipts: 1,
   worker_lease_rejections: 1,
+  distributed_cutover_markers: 2,
 } as const);
 
 const ORGANIZATION_QUAL =
@@ -276,6 +292,9 @@ const PLATFORM_WORKER_QUAL = "((organization_id IS NULL) AND (scope = 'platform'
 const TENANT_TARGET_QUAL =
   "((organization_id IS NULL) OR (organization_id = (current_setting('aoa.organization_id'::text, true))::uuid))";
 const PLATFORM_TARGET_QUAL = "((organization_id IS NULL) AND (owner_user_id IS NULL))";
+// 0233 app-read: aoa_app sees the marker ONLY when no tenant GUC is set (control plane
+// outside a tenant transaction). PostgreSQL normalizes current_setting(...) with ::text.
+const CUTOVER_APP_READ_QUAL = "(current_setting('aoa.organization_id'::text, true) IS NULL)";
 
 function policy(
   relation: string,
@@ -311,6 +330,10 @@ export const RLS_POLICY_MANIFEST = deepFreeze([
   policy("execution_targets", "execution_targets_tenant_enrollment_update", "UPDATE", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
   policy("worker_operation_receipts", "worker_operation_receipts_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
   policy("worker_lease_rejections", "worker_lease_rejections_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  // DEP-003 0188 cutover marker (migration 0233): operator writes (USING/CHECK true),
+  // app reads only outside a tenant transaction (aoa.organization_id GUC unset).
+  policy("distributed_cutover_markers", "distributed_cutover_markers_operator_write", "ALL", "aoa_operator", "true", "true"),
+  policy("distributed_cutover_markers", "distributed_cutover_markers_app_read", "SELECT", "aoa_app", CUTOVER_APP_READ_QUAL, null),
 ] as const);
 
 /*
@@ -335,6 +358,7 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreeze({
     company_memberships: { aoa_app: ["SELECT"], aoa_operator: [] },
     cost_events: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
     discussion_entries: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
+    distributed_cutover_markers: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
     execution_targets: { aoa_app: [], aoa_operator: [] },
     execution_workspaces: { aoa_app: ["SELECT"], aoa_operator: [] },
     heartbeat_runs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
@@ -454,6 +478,7 @@ const RELATION_ACL_NULLNESS_CERTIFICATE = deepFreeze({
   company_memberships: false,
   cost_events: false,
   discussion_entries: false,
+  distributed_cutover_markers: false,
   execution_targets: false,
   execution_workspaces: false,
   heartbeat_runs: false,
