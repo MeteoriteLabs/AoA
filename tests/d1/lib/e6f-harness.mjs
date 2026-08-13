@@ -966,3 +966,170 @@ report({
 `;
   return dexecModule("test-runner", script, { timeout });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E6F-04 available-path tenancy additions (ADDITIVE ONLY — nothing above is
+// modified). Everything above is the frozen LIVE-GREEN E6F-03/E6F-01 substrate;
+// this helper only ADDS the per-org seed the tenancy matrix needs and never
+// changes the behaviour or signature of any existing export.
+//
+// ── Why a NEW org-seed instead of reusing seedScenario ───────────────────────
+// seedScenario hardcodes companies.issue_prefix = 'E6F' — a globally UNIQUE column
+// (companies_issue_prefix_idx). E6F-04 seeds TWO independent orgs AND runs on the
+// same live stack as E6F-03 (which already took 'E6F'), so it cannot call
+// seedScenario even once without a unique-violation. seedTenancyOrg is a
+// byte-faithful copy of the seedScenario org/target/code/job/attempt SQL with two
+// additions the matrix requires:
+//   1. a per-run UNIQUE `issuePrefix` (the caller mints e.g. 'E64…' per org), and
+//   2. zero-or-more EXTRA valid enrollment codes for the SAME org-scoped target
+//      (route -> this org + code -> this target). These are the A2 enroll-attack
+//      codes: a genuinely VALID Org-A code presented with a foreign/nonexistent
+//      hello.targetId. Because the code pins stored.executionTargetId = this
+//      target, worker-enrollment.ts findTargetByAuthority looks up THIS target
+//      under THIS org and then rejects on `request.hello.targetId !== target.id`
+//      with plain "unauthorized" — identical for a foreign vs a missing targetId
+//      (E4-D11: no target_revoked-vs-not_found distinction).
+// The provider/registered-profile/target/job/attempt SQL is identical to
+// seedScenario, so the two load-bearing digests (registered_profile_hash =
+// sha256(canonicalizeJsonV1(profile)); placement_provider_constraint_hash = the
+// provider profile's own verified digest) are re-derived with the SAME
+// worker-protocol primitives the poll re-derives — zero canonicalizer drift.
+//
+// Seeds under the OWNER/superuser DATABASE_URL (bypasses RLS for WRITES) exactly
+// like seedScenario; the SERVER then READS these rows under aoa_app with the
+// per-tenant GUC via the deployed RLS policies — that read path is precisely what
+// E6F-04 proves. The seed deliberately does NOT set the GUC.
+//
+// Returns { ok, registeredProfileHash, providerDigest, authorityKey }.
+export function seedTenancyOrg({
+  ids,
+  code,
+  issuePrefix,
+  extraCodes = [],
+  policyHash = POLICY_HASH,
+  capabilityCeiling = WORKER_CAPABILITIES,
+}) {
+  const params = {
+    orgId: ids.orgId,
+    companyId: ids.companyId,
+    targetId: ids.targetId,
+    jobId: ids.jobId,
+    attemptId: ids.attemptId,
+    operationId: ids.operationId,
+    slug: ids.slug,
+    issuePrefix,
+    locatorHash: code.locatorHash,
+    secretHash: code.secretHash,
+    // Only the two hashes cross the boundary; the raw code halves never leave the host.
+    extraCodes: extraCodes.map((extra) => ({ locatorHash: extra.locatorHash, secretHash: extra.secretHash })),
+    policyHash,
+    capabilityCeiling,
+  };
+  const script = `
+import postgres from "postgres";
+import { createHash } from "node:crypto";
+import { canonicalizeJsonV1, canonicalProviderConstraintProfileDigestInputV1 } from "@armyofagents/worker-protocol";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sha256 = (v) => createHash("sha256").update(v).digest("hex");
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  // Provider-constraint profile — digest is its OWN verified digest (identical to
+  // seedScenario; the server recomputes the same way at normalization).
+  const providerUnsigned = {
+    profileId: "e6f-org-dedicated",
+    version: 1,
+    maxContinuousRuntimeSeconds: 3600,
+    maxIdleSeconds: 300,
+    resourceCeiling: { cpuMillis: 2000, memoryMiB: 4096, pids: 512, diskMiB: 8192 },
+    maxConcurrentOperations: 8,
+    supportedOperations: ["create", "execute", "cancel", "kill", "destroy", "list", "inspect", "reconcile_cleanup"],
+    localityTags: ["transfer_allowed"],
+    checkpointMode: "none",
+    healthMode: "none",
+  };
+  const providerDigest = sha256(Buffer.from(canonicalProviderConstraintProfileDigestInputV1(providerUnsigned)));
+  const provider = { ...providerUnsigned, digest: providerDigest };
+  const authorityKey = "organization:" + P.orgId;
+  const registeredProfile = {
+    protocolVersion: 1,
+    targetId: P.targetId,
+    targetClass: "organization_dedicated",
+    scope: "organization",
+    organizationId: P.orgId,
+    ownerPrincipalId: null,
+    trustCeiling: "organization_isolated",
+    credentialCeiling: "organization_brokered",
+    dataLocalityCeiling: "organization_target_only",
+    providerConstraints: { profileId: provider.profileId, version: provider.version, digest: provider.digest },
+    capabilityCeiling: P.capabilityCeiling,
+    deviceGeneration: 1,
+    revokedAt: null,
+    policyHash: P.policyHash,
+  };
+  const registeredProfileHash = sha256(canonicalizeJsonV1(registeredProfile));
+
+  await sql\`INSERT INTO organizations (id, name, slug)
+    VALUES (\${P.orgId}, \${"E6F-04 Org " + P.slug}, \${"e64-" + P.slug})\`;
+  await sql\`INSERT INTO companies (id, organization_id, name, issue_prefix)
+    VALUES (\${P.companyId}, \${P.orgId}, \${"E6F-04 Company " + P.slug}, \${P.issuePrefix})\`;
+  const targetCapabilities = { providerConstraints: { profileId: provider.profileId, version: provider.version, digest: provider.digest } };
+  await sql\`INSERT INTO execution_targets
+    (id, organization_id, scope, target_authority_key, device_generation, slug, kind, trust_class,
+     status, capabilities, registered_profile, registered_profile_hash, provider_constraint_profile, last_seen_at)
+    VALUES (\${P.targetId}, \${P.orgId}, 'organization', \${authorityKey}, 1, \${"e64-target-" + P.slug},
+      'dedicated_worker', 'dedicated_tenant', 'active', \${sql.json(targetCapabilities)}, \${sql.json(registeredProfile)},
+      \${registeredProfileHash}, \${sql.json(provider)}, now())\`;
+  // Primary enrollment code: route (locator -> this org) + single-use code (secret hash).
+  await sql\`INSERT INTO worker_enrollment_code_routes (locator_hash, candidate_organization_id, expires_at)
+    VALUES (\${P.locatorHash}, \${P.orgId}, now() + interval '30 minutes')\`;
+  await sql\`INSERT INTO worker_enrollment_codes
+    (organization_id, scope, execution_target_id, target_authority_key, locator_hash, secret_hash,
+     expires_at, created_by_principal_kind, created_by_principal_id)
+    VALUES (\${P.orgId}, 'organization', \${P.targetId}, \${authorityKey}, \${P.locatorHash}, \${P.secretHash},
+      now() + interval '30 minutes', 'user', 'e6f-seed')\`;
+  // Extra VALID codes for the SAME org-scoped target (the A2 enroll-attack codes).
+  // Each is a real, routable Org-scoped code — the ONLY thing "wrong" at attack time
+  // is the worker-supplied hello.targetId, so the denial exercises the tenant-scoped
+  // findTargetByAuthority path (not a "route not found" short-circuit).
+  for (const extra of P.extraCodes) {
+    await sql\`INSERT INTO worker_enrollment_code_routes (locator_hash, candidate_organization_id, expires_at)
+      VALUES (\${extra.locatorHash}, \${P.orgId}, now() + interval '30 minutes')\`;
+    await sql\`INSERT INTO worker_enrollment_codes
+      (organization_id, scope, execution_target_id, target_authority_key, locator_hash, secret_hash,
+       expires_at, created_by_principal_kind, created_by_principal_id)
+      VALUES (\${P.orgId}, 'organization', \${P.targetId}, \${authorityKey}, \${extra.locatorHash}, \${extra.secretHash},
+        now() + interval '30 minutes', 'user', 'e6f-seed')\`;
+  }
+  // Queued batch job + immutable lease-eligible placement (identical to seedScenario).
+  const sourceIntent = { kind: "one_shot", operationId: P.operationId, operationKind: "readiness_probe" };
+  const workload = { command: "true", args: [], stdinArtifactId: null, maxRuntimeSeconds: 600 };
+  const requirements = { workloadType: "batch", requiredCapabilities: [] };
+  const placementRequest = { policyId: "job-submission-default", policyVersion: 1, requestedTarget: null };
+  await sql\`INSERT INTO jobs
+    (id, organization_id, company_id, workload_type, source_kind, source_intent, input, input_hash,
+     policy_hash, requirements, placement_request, status, available_at)
+    VALUES (\${P.jobId}, \${P.orgId}, \${P.companyId}, 'batch', 'one_shot', \${sql.json(sourceIntent)},
+      \${sql.json(workload)}, \${"b".repeat(64)}, \${P.policyHash}, \${sql.json(requirements)},
+      \${sql.json(placementRequest)}, 'queued', now())\`;
+  await sql\`INSERT INTO job_attempts
+    (id, organization_id, company_id, job_id, attempt_number, status,
+     placement_disposition, placement_owner, placement_target_id, placement_target_class,
+     placement_target_scope, placement_target_generation, placement_profile_hash,
+     placement_provider_constraint_hash, placement_fallback_disposition, placement_reason_code,
+     placement_mode, placement_lease_eligible, placement_input_digest, placement_policy_digest,
+     placement_decided_at)
+    VALUES (\${P.attemptId}, \${P.orgId}, \${P.companyId}, \${P.jobId}, 1, 'pending',
+      'selected', 'organization_dedicated', \${P.targetId}, 'organization_dedicated',
+      'organization', 1, \${registeredProfileHash}, \${providerDigest}, 'primary', 'target_selected',
+      'active', true, \${"c".repeat(64)}, \${"d".repeat(64)}, now())\`;
+
+  report({ ok: true, registeredProfileHash, providerDigest, authorityKey });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
