@@ -1,0 +1,285 @@
+name: aoa-d1
+
+# =============================================================================
+# DEP-002 — Isolated D1 distributed test harness compose topology.
+#
+# ADDITIVE + DORMANT: this stack is never brought up by any existing lane. It is
+# exercised only by the DEP-004 D1 merge-train on Linux/CI and by an operator
+# opting in locally. The existing docker-compose*.yml files are untouched.
+#
+# Network-segmentation matrix (plan §2.3; statically enforced by
+# scripts/check-d1-compose.mjs -> scripts/lib/d1-compose-invariants.mjs, and
+# live-proven by tests/d1/*.test.mjs on Linux/CI):
+#
+#   service        data-net  control-net  worker-net  provider-ctl-net
+#   postgres         X          -            -            -
+#   minio            X          X            X            -
+#   control-plane    X          X            X            X
+#   worker-a         -          X            X            X    (NOT data-net)
+#   worker-b         -          X            X            X    (NOT data-net)
+#   fake-provider    -          X            X            X
+#   toxiproxy        X          X            X            -    (in-path proxy)
+#   migrate          X          -            -            -    (privileged)
+#   test-runner      -          X            -            -
+#
+# The LOAD-BEARING invariant is: worker-a / worker-b are NOT attached to data-net,
+# so a worker's TCP connect to postgres:5432 is refused (network-denial test).
+#
+# Images: control-plane / worker / migrate consume DEP-001 admitted signed digests
+# injected via ${AOA_D1_CONTROL_PLANE_IMAGE} / ${AOA_D1_WORKER_IMAGE} (see
+# docker/d1/.env.example + docker/images/allowlist.json). They are NEVER hardcoded
+# in this file. The container build + admission verification is Linux/CI-only.
+# =============================================================================
+
+services:
+  # --- data tier -------------------------------------------------------------
+  postgres:
+    image: ${AOA_D1_POSTGRES_IMAGE:-pgvector/pgvector:pg18}
+    environment:
+      POSTGRES_USER: "aoa"
+      POSTGRES_PASSWORD: "aoa"
+      POSTGRES_DB: "aoa"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aoa -d aoa"]
+      interval: "3s"
+      timeout: "5s"
+      retries: 30
+    volumes:
+      - "d1-postgres-data:/var/lib/postgresql/data"
+    networks:
+      - data-net
+
+  minio:
+    image: ${AOA_D1_MINIO_IMAGE:-minio/minio:latest}
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: "aoa-d1"
+      MINIO_ROOT_PASSWORD: "aoa-d1-secret"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: "5s"
+      timeout: "5s"
+      retries: 30
+    volumes:
+      - "d1-minio-data:/data"
+    networks:
+      - data-net
+      - control-net
+      - worker-net
+
+  # --- proxy tier (in-path fault injection point) ----------------------------
+  toxiproxy:
+    image: ${AOA_D1_TOXIPROXY_IMAGE:-ghcr.io/shopify/toxiproxy:2.9.0}
+    command: ["-host", "0.0.0.0", "-config", "/toxiproxy.json"]
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: "5s"
+      timeout: "3s"
+      retries: 30
+    volumes:
+      - "./docker/d1/toxiproxy.json:/toxiproxy.json:ro"
+    networks:
+      - data-net
+      - control-net
+      - worker-net
+
+  # --- privileged migration job (DEP-003 owns the command body) --------------
+  migrate:
+    image: ${AOA_D1_CONTROL_PLANE_IMAGE:-aoa-control-plane:d1-local-unbuilt}
+    # DEP-003 replaces this with docker/control-plane/migrate-entrypoint.sh ->
+    # packages/db/src/migrate-job.ts (privileged, idempotent, non-destructive).
+    # Placeholder keeps the service renderable until DEP-003 lands its command.
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["echo 'DEP-003 owns the migrate command'; exit 0"]
+    environment:
+      # Privileged migration role — DIRECT to postgres (NOT via toxiproxy), on
+      # data-net only. Distinct from the aoa_app serving role used by control-plane.
+      DATABASE_URL: "postgres://aoa:aoa@postgres:5432/aoa"
+      AOA_MIGRATION_ROLE: "aoa"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - data-net
+
+  # --- control plane (1 replica) ---------------------------------------------
+  control-plane:
+    image: ${AOA_D1_CONTROL_PLANE_IMAGE:-aoa-control-plane:d1-local-unbuilt}
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3100"
+      AOA_DEPLOYMENT_MODE: "authenticated"
+      AOA_DISTRIBUTED_EXECUTION_ENABLED: "true"
+      # control-plane <-> postgres is routed THROUGH toxiproxy (in-path link 1).
+      DATABASE_URL: "postgres://aoa_app:aoa_app@toxiproxy:15432/aoa"
+      # declared provider API (fake provider), reachable directly.
+      AOA_PROVIDER_API_URL: "http://fake-provider:8080"
+      AOA_S3_ENDPOINT: "http://minio:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health >/dev/null || exit 1"]
+      interval: "10s"
+      timeout: "5s"
+      retries: 30
+    volumes:
+      - "d1-control-plane-state:/aoa"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_healthy
+    networks:
+      - data-net
+      - control-net
+      - worker-net
+      - provider-ctl-net
+
+  # --- workers (>=2, DISTINCT registered target profiles) --------------------
+  worker-a:
+    image: ${AOA_D1_WORKER_IMAGE:-aoa-worker:d1-local-unbuilt}
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      AOA_WORKER_TARGET_PROFILE_ID: "d1-worker-a"
+      AOA_WORKER_TARGET_PROFILE_PATH: "/profile.json"
+      # worker <-> control-plane routed THROUGH toxiproxy (in-path link 2).
+      AOA_WORKER_CONTROL_PLANE_URL: "http://toxiproxy:13100"
+      # worker <-> minio (S3) routed THROUGH toxiproxy (in-path link 3).
+      AOA_WORKER_S3_ENDPOINT: "http://toxiproxy:19000"
+      # declared provider execute API (fake), reachable directly.
+      AOA_WORKER_PROVIDER_URL: "http://fake-provider:8080"
+      AOA_WORKER_HEALTH_PORT: "9464"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9464/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: "10s"
+      timeout: "5s"
+      retries: 30
+    volumes:
+      - "d1-worker-a-state:/worker"
+      - "./docker/d1/worker-a.profile.json:/profile.json:ro"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      fake-provider:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_healthy
+    networks:
+      - control-net
+      - worker-net
+      - provider-ctl-net
+
+  worker-b:
+    image: ${AOA_D1_WORKER_IMAGE:-aoa-worker:d1-local-unbuilt}
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      AOA_WORKER_TARGET_PROFILE_ID: "d1-worker-b"
+      AOA_WORKER_TARGET_PROFILE_PATH: "/profile.json"
+      AOA_WORKER_CONTROL_PLANE_URL: "http://toxiproxy:13100"
+      AOA_WORKER_S3_ENDPOINT: "http://toxiproxy:19000"
+      AOA_WORKER_PROVIDER_URL: "http://fake-provider:8080"
+      AOA_WORKER_HEALTH_PORT: "9464"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9464/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: "10s"
+      timeout: "5s"
+      retries: 30
+    volumes:
+      - "d1-worker-b-state:/worker"
+      - "./docker/d1/worker-b.profile.json:/profile.json:ro"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      fake-provider:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_healthy
+    networks:
+      - control-net
+      - worker-net
+      - provider-ctl-net
+
+  # --- deterministic fake sandbox provider (DEP-000) -------------------------
+  fake-provider:
+    build:
+      context: .
+      dockerfile: docker/d1/fake-provider.Dockerfile
+    image: ${AOA_D1_FAKE_PROVIDER_IMAGE:-aoa-d1-fake-provider:local}
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      # Declared provider/execute API (reachable by control-plane + workers).
+      AOA_FAKE_PROVIDER_API_PORT: "8080"
+      # Control endpoint (/script,/reset,/invocations) — bound on a distinct port
+      # and gated by an application-layer peer allowlist so only workers + the
+      # test-runner may script fixtures, NOT the control-plane (see README §boundary).
+      AOA_FAKE_PROVIDER_CTL_PORT: "8081"
+      AOA_FAKE_PROVIDER_CTL_ALLOW: "worker-a,worker-b,test-runner"
+      AOA_FAKE_PROVIDER_FIXTURES_DIR: "/fixtures"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: "5s"
+      timeout: "5s"
+      retries: 30
+    volumes:
+      - "./tests/fixtures/distributed-execution:/fixtures:ro"
+    networks:
+      - control-net
+      - worker-net
+      - provider-ctl-net
+
+  # --- test runner (idle in-stack utility; an allowlisted control-net peer) ---
+  # Stays UP so the host-driven live lane can `docker compose exec test-runner …`
+  # to reach internal services (it is on AOA_FAKE_PROVIDER_CTL_ALLOW, so it may
+  # script fixtures on the fake control endpoint). The live E6F node --test suite
+  # runs on the CI HOST and orchestrates `docker compose exec`, not inside here.
+  test-runner:
+    image: ${AOA_D1_TEST_RUNNER_IMAGE:-node:lts-trixie-slim}
+    working_dir: /repo
+    environment:
+      AOA_D1_LIVE: "1"
+      AOA_CONTROL_PLANE_URL: "http://control-plane:3100"
+      AOA_FAKE_PROVIDER_CTL_URL: "http://fake-provider:8081"
+    command: ["sleep", "infinity"]
+    healthcheck:
+      test: ["CMD-SHELL", "true"]
+      interval: "30s"
+      timeout: "3s"
+      retries: 3
+    volumes:
+      - ".:/repo:ro"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      worker-a:
+        condition: service_healthy
+      worker-b:
+        condition: service_healthy
+      fake-provider:
+        condition: service_healthy
+    networks:
+      - control-net
+
+networks:
+  data-net:
+    internal: true
+  control-net:
+    internal: true
+  worker-net:
+    internal: true
+  provider-ctl-net:
+    internal: true
+
+volumes:
+  d1-postgres-data:
+  d1-minio-data:
+  d1-control-plane-state:
+  d1-worker-a-state:
+  d1-worker-b-state:

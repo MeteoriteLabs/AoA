@@ -91,3 +91,33 @@ the contract validates the authoritative per-op port; OR (b) add a tested
 `SandboxProvider → SandboxProviderDriver` adapter with a totality assertion over all 11 ops + their
 result shapes. The misleading "satisfies this shape" comment in `port.ts` was corrected in the
 DEP-000 fix round; this finding records the deferred reconciliation.
+
+## E6-F009 — D1 worker↔data isolation is direct-path + no-credentials + RLS; toxiproxy is a deliberate multi-homed bridge — RESOLVED
+
+**Status:** `resolved` (DEP-002 fix round, 2026-08-13) · Severity: MED (harness-claim honesty) · Source: DEP-002 adversarial review (2 confirmed: control-endpoint static coverage; toxiproxy porosity).
+
+The DEP-002 review found that the "workers cannot reach PostgreSQL" claim was porous: the plan §2.3
+specifies a SINGLE toxiproxy multi-homed on data-net + worker-net, whose control-plane→postgres
+proxy listens `0.0.0.0:15432`, so a worker can reach `toxiproxy:15432 → postgres:5432` indirectly
+even though it is off data-net. The direct-path live test passed but the indirect path was
+unprobed, so the gate would falsely advertise full network isolation.
+
+**Decision (proportionate — no plan deviation):** the D1 harness does NOT split toxiproxy (the
+plan deliberately specifies one multi-homed instance). Instead the enforced worker↔data isolation
+is defined precisely as the conjunction of:
+1. **No DIRECT worker→postgres path** — worker services are off data-net (static invariant
+   `checkWorkerNotOnDataNet`) and a direct `connect(5432,'postgres')` is refused (live test).
+2. **Workers carry NO database credentials** — a new static invariant asserts worker services
+   declare no `DATABASE_URL`/`*_DATABASE_URL`/`aoa_app` credential env, so even reaching
+   `toxiproxy:15432` a worker cannot AUTHENTICATE to postgres. (Reject fixture: a worker with a
+   `DATABASE_URL` fails the validator.)
+3. **E2 FORCE-RLS** gates any data access regardless of network path.
+
+toxiproxy's `:15432` listener being TCP-reachable from workers is documented as **by design** (a
+deliberate data-tier bridge), not a hidden port; a CI-deferred live assertion documents that a
+worker reaching it without `aoa_app` credentials cannot authenticate. The control-plane-must-not-
+script-the-fake boundary also gained a static invariant (fake `AOA_FAKE_PROVIDER_CTL_ALLOW`
+non-empty + excludes control-plane) and the fake control endpoint now fails CLOSED on an empty
+allowlist. A stricter network-layer split (dedicated cp↔pg toxiproxy on a control-plane-only net +
+interface-bound listener) is a possible E6 follow-up but is NOT required — the credential + RLS
+boundary is the meaningful guarantee.

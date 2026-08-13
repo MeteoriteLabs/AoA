@@ -1,0 +1,335 @@
+// -----------------------------------------------------------------------------
+// DEP-002 static-validator corpus (node:test).
+//
+//   node --test scripts/check-d1-compose.test.mjs
+//
+// Two layers:
+//   1. Ties the validator to the REAL committed artifacts: parses
+//      docker-compose.d1.yml with yaml-lite and asserts ZERO violations, and
+//      checks the real docker/d1/toxiproxy.json.
+//   2. NON-VACUOUSNESS: a hand-built valid compose object passes with zero
+//      violations, and each deliberately-broken clone is REJECTED — most
+//      importantly a worker wrongly attached to data-net, a shared rw volume, and
+//      a missing healthcheck (the three mandated rejection fixtures), plus more.
+// -----------------------------------------------------------------------------
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { parseYaml } from "./lib/yaml-lite.mjs";
+import {
+  evaluateComposeInvariants,
+  evaluateToxiproxyConfig,
+  EXPECTED_NETWORKS,
+} from "./lib/d1-compose-invariants.mjs";
+
+// Aggregate the fail-closed control-endpoint allowlist proofs (FIX B) onto the
+// shared node:test runner so the DEP-002 static gate covers them too.
+import "../docker/d1/__tests__/ctl-allowlist.test.mjs";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const composePath = path.join(repoRoot, "docker-compose.d1.yml");
+const toxiproxyPath = path.join(repoRoot, "docker", "d1", "toxiproxy.json");
+
+/** A complete, valid parsed-compose object mirroring the real topology. */
+function validCompose() {
+  const worker = (id, vol, profile) => ({
+    image: "${AOA_D1_WORKER_IMAGE:-aoa-worker:d1-local-unbuilt}",
+    environment: {
+      AOA_WORKER_TARGET_PROFILE_ID: id,
+      AOA_WORKER_CONTROL_PLANE_URL: "http://toxiproxy:13100",
+      AOA_WORKER_S3_ENDPOINT: "http://toxiproxy:19000",
+    },
+    healthcheck: { test: ["CMD", "node", "-e", "fetch"] },
+    volumes: [`${vol}:/worker`, `./docker/d1/${profile}:/profile.json:ro`],
+    depends_on: {
+      "control-plane": { condition: "service_healthy" },
+      "fake-provider": { condition: "service_healthy" },
+      toxiproxy: { condition: "service_healthy" },
+    },
+    networks: ["control-net", "worker-net", "provider-ctl-net"],
+  });
+  return {
+    name: "aoa-d1",
+    services: {
+      postgres: {
+        image: "pgvector/pgvector:pg18",
+        healthcheck: { test: ["CMD-SHELL", "pg_isready -U aoa -d aoa"] },
+        volumes: ["d1-postgres-data:/var/lib/postgresql/data"],
+        networks: ["data-net"],
+      },
+      minio: {
+        image: "minio/minio:latest",
+        healthcheck: { test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live"] },
+        volumes: ["d1-minio-data:/data"],
+        networks: ["data-net", "control-net", "worker-net"],
+      },
+      toxiproxy: {
+        image: "ghcr.io/shopify/toxiproxy:2.9.0",
+        healthcheck: { test: ["CMD", "/toxiproxy-cli", "list"] },
+        volumes: ["./docker/d1/toxiproxy.json:/toxiproxy.json:ro"],
+        networks: ["data-net", "control-net", "worker-net"],
+      },
+      migrate: {
+        image: "${AOA_D1_CONTROL_PLANE_IMAGE:-aoa-control-plane:d1-local-unbuilt}",
+        environment: { DATABASE_URL: "postgres://aoa:aoa@postgres:5432/aoa" },
+        depends_on: { postgres: { condition: "service_healthy" } },
+        networks: ["data-net"],
+      },
+      "control-plane": {
+        image: "${AOA_D1_CONTROL_PLANE_IMAGE:-aoa-control-plane:d1-local-unbuilt}",
+        environment: { DATABASE_URL: "postgres://aoa_app:aoa_app@toxiproxy:15432/aoa" },
+        healthcheck: { test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health"] },
+        volumes: ["d1-control-plane-state:/aoa"],
+        depends_on: {
+          postgres: { condition: "service_healthy" },
+          migrate: { condition: "service_completed_successfully" },
+          minio: { condition: "service_healthy" },
+          toxiproxy: { condition: "service_healthy" },
+        },
+        networks: ["data-net", "control-net", "worker-net", "provider-ctl-net"],
+      },
+      "worker-a": worker("d1-worker-a", "d1-worker-a-state", "worker-a.profile.json"),
+      "worker-b": worker("d1-worker-b", "d1-worker-b-state", "worker-b.profile.json"),
+      "fake-provider": {
+        image: "aoa-d1-fake-provider:local",
+        environment: { AOA_FAKE_PROVIDER_CTL_ALLOW: "worker-a,worker-b,test-runner" },
+        healthcheck: { test: ["CMD", "node", "-e", "fetch"] },
+        volumes: ["./tests/fixtures/distributed-execution:/fixtures:ro"],
+        networks: ["control-net", "worker-net", "provider-ctl-net"],
+      },
+      "test-runner": {
+        image: "node:lts-trixie-slim",
+        healthcheck: { test: ["CMD-SHELL", "true"] },
+        volumes: [".:/repo:ro"],
+        depends_on: {
+          "control-plane": { condition: "service_healthy" },
+          "worker-a": { condition: "service_healthy" },
+          "worker-b": { condition: "service_healthy" },
+          "fake-provider": { condition: "service_healthy" },
+        },
+        networks: ["control-net"],
+      },
+    },
+    networks: {
+      "data-net": { internal: true },
+      "control-net": { internal: true },
+      "worker-net": { internal: true },
+      "provider-ctl-net": { internal: true },
+    },
+    volumes: {
+      "d1-postgres-data": null,
+      "d1-minio-data": null,
+      "d1-control-plane-state": null,
+      "d1-worker-a-state": null,
+      "d1-worker-b-state": null,
+    },
+  };
+}
+
+const clone = (o) => structuredClone(o);
+const anyMatch = (violations, re) => violations.some((x) => re.test(x));
+
+// === Layer 1: real committed artifacts =======================================
+
+test("real docker-compose.d1.yml parses and satisfies every DEP-002 invariant", () => {
+  const compose = parseYaml(readFileSync(composePath, "utf8"));
+  const toxiproxyConfig = JSON.parse(readFileSync(toxiproxyPath, "utf8"));
+  const { violations } = evaluateComposeInvariants(compose, { toxiproxyConfig });
+  assert.deepEqual(violations, [], `unexpected violations:\n${violations.join("\n")}`);
+});
+
+test("real compose parses to exactly the 9 matrix services with exact network sets", () => {
+  const compose = parseYaml(readFileSync(composePath, "utf8"));
+  const names = Object.keys(compose.services).sort();
+  assert.deepEqual(names, Object.keys(EXPECTED_NETWORKS).sort());
+  for (const [name, expected] of Object.entries(EXPECTED_NETWORKS)) {
+    assert.deepEqual(
+      [...new Set(compose.services[name].networks)].sort(),
+      [...expected].sort(),
+      `service ${name} networks`,
+    );
+  }
+});
+
+test("real compose: neither worker is attached to data-net", () => {
+  const compose = parseYaml(readFileSync(composePath, "utf8"));
+  for (const w of ["worker-a", "worker-b"]) {
+    assert.ok(!compose.services[w].networks.includes("data-net"), `${w} must not be on data-net`);
+  }
+});
+
+test("real toxiproxy.json declares the three in-path proxies", () => {
+  const config = JSON.parse(readFileSync(toxiproxyPath, "utf8"));
+  assert.deepEqual(evaluateToxiproxyConfig(config), []);
+});
+
+// === Layer 2a: the hand-built valid baseline passes ==========================
+
+test("hand-built valid compose passes with zero violations", () => {
+  assert.deepEqual(evaluateComposeInvariants(validCompose()).violations, []);
+});
+
+// === Layer 2b: NON-VACUOUSNESS — each broken clone is REJECTED ================
+
+test("REJECT: a worker attached to data-net (load-bearing isolation invariant)", () => {
+  const c = clone(validCompose());
+  c.services["worker-a"].networks.push("data-net");
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(violations.length > 0);
+  assert.ok(anyMatch(violations, /worker.*data-net|ISOLATION VIOLATION/i), violations.join("\n"));
+});
+
+test("REJECT: control-plane in the fake-provider control-endpoint allowlist (FIX A boundary)", () => {
+  // The control-plane must NOT be able to script the fake provider. This is the
+  // static counterpart to the AOA_D1_LIVE-gated 403 proof in network-denial.test.mjs.
+  const c = clone(validCompose());
+  c.services["fake-provider"].environment.AOA_FAKE_PROVIDER_CTL_ALLOW =
+    "worker-a,worker-b,test-runner,control-plane";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(violations.length > 0);
+  assert.ok(
+    anyMatch(violations, /control-plane.*must not.*allowlist|AOA_FAKE_PROVIDER_CTL_ALLOW/i),
+    violations.join("\n"),
+  );
+});
+
+test("REJECT: an empty/unset fake-provider control-endpoint allowlist (FIX A non-empty)", () => {
+  const c = clone(validCompose());
+  c.services["fake-provider"].environment.AOA_FAKE_PROVIDER_CTL_ALLOW = "";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /AOA_FAKE_PROVIDER_CTL_ALLOW/i), violations.join("\n"));
+});
+
+test("REJECT: a worker carrying a PostgreSQL credential (FIX C credential boundary)", () => {
+  // Even reaching toxiproxy:15432 -> postgres:5432 indirectly, a worker with no DB
+  // credential cannot authenticate. Statically forbid any DB DSN/credential on a worker.
+  const c = clone(validCompose());
+  c.services["worker-a"].environment.DATABASE_URL =
+    "postgres://aoa_app:aoa_app@toxiproxy:15432/aoa";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(violations.length > 0);
+  assert.ok(
+    anyMatch(violations, /worker.*(DATABASE_URL|PostgreSQL credential|DB-credential)/i),
+    violations.join("\n"),
+  );
+});
+
+test("REJECT: two services sharing a read-write volume", () => {
+  const c = clone(validCompose());
+  c.services["worker-b"].volumes[0] = "d1-worker-a-state:/worker"; // same rw named volume as worker-a
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /shared read-write mount/i), violations.join("\n"));
+});
+
+test("REJECT: a long-running service missing a healthcheck", () => {
+  const c = clone(validCompose());
+  delete c.services["control-plane"].healthcheck;
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /missing a healthcheck/i), violations.join("\n"));
+});
+
+test("REJECT: control-plane<->postgres not routed through toxiproxy", () => {
+  const c = clone(validCompose());
+  c.services["control-plane"].environment.DATABASE_URL = "postgres://aoa_app:aoa_app@postgres:5432/aoa";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /not routed through toxiproxy/i), violations.join("\n"));
+});
+
+test("REJECT: the two workers registering identical target profiles", () => {
+  const c = clone(validCompose());
+  c.services["worker-b"].environment.AOA_WORKER_TARGET_PROFILE_ID = "d1-worker-a";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /DISTINCT target profiles/i), violations.join("\n"));
+});
+
+test("REJECT: an unexpected extra service", () => {
+  const c = clone(validCompose());
+  c.services["rogue"] = { image: "x", healthcheck: { test: ["CMD", "true"] }, networks: ["control-net"] };
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /unexpected service 'rogue'/), violations.join("\n"));
+});
+
+test("REJECT: an isolation network not declared internal", () => {
+  const c = clone(validCompose());
+  c.networks["data-net"].internal = false;
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /must be declared 'internal: true'/), violations.join("\n"));
+});
+
+test("REJECT: short-form (list) depends_on", () => {
+  const c = clone(validCompose());
+  c.services["control-plane"].depends_on = ["postgres", "migrate"];
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /short-form 'depends_on'/), violations.join("\n"));
+});
+
+test("REJECT: control-plane not gated on migrate completion", () => {
+  const c = clone(validCompose());
+  delete c.services["control-plane"].depends_on.migrate;
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /depends_on 'migrate'.*service_completed_successfully/), violations.join("\n"));
+});
+
+test("REJECT: depending on the one-shot migrate job with service_healthy", () => {
+  const c = clone(validCompose());
+  c.services["control-plane"].depends_on.migrate = { condition: "service_healthy" };
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /one-shot job 'migrate'.*service_completed_successfully/), violations.join("\n"));
+});
+
+test("REJECT: a hardcoded (non-injected) control-plane image digest", () => {
+  const c = clone(validCompose());
+  c.services["control-plane"].image = "ghcr.io/meteoritelabs/aoa-control-plane@sha256:deadbeef";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /control-plane 'image' must be injected/), violations.join("\n"));
+});
+
+test("REJECT: control-plane missing provider-ctl-net (wrong network set)", () => {
+  const c = clone(validCompose());
+  c.services["control-plane"].networks = ["data-net", "control-net", "worker-net"];
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /control-plane.*network set.*!=/), violations.join("\n"));
+});
+
+test("REJECT: toxiproxy config with a wrong upstream", () => {
+  const bad = [
+    { name: "control-plane-to-postgres", listen: "0.0.0.0:15432", upstream: "postgres:9999" },
+    { name: "worker-to-control-plane", listen: "0.0.0.0:13100", upstream: "control-plane:3100" },
+    { name: "worker-to-minio", listen: "0.0.0.0:19000", upstream: "minio:9000" },
+  ];
+  const v = evaluateToxiproxyConfig(bad);
+  assert.ok(anyMatch(v, /control-plane-to-postgres.*upstream/), v.join("\n"));
+});
+
+// === Layer 2c: yaml-lite parser unit tests ===================================
+
+test("yaml-lite parses nested mappings, block/flow sequences, and quoted scalars", () => {
+  const doc = parseYaml(
+    [
+      "root:",
+      "  seq:",
+      "    - a",
+      '    - "b:c"',
+      "  flow: [1, 2, 3]",
+      '  url: "http://host:3100/x"',
+      "  nested:",
+      "    condition: service_healthy",
+      "  flag: true",
+    ].join("\n"),
+  );
+  assert.deepEqual(doc.root.seq, ["a", "b:c"]);
+  assert.deepEqual(doc.root.flow, [1, 2, 3]);
+  assert.equal(doc.root.url, "http://host:3100/x");
+  assert.deepEqual(doc.root.nested, { condition: "service_healthy" });
+  assert.equal(doc.root.flag, true);
+});
+
+test("yaml-lite strips comments but preserves '#' inside quotes", () => {
+  const doc = parseYaml(['a: 1 # trailing comment', 'b: "has # hash"'].join("\n"));
+  assert.equal(doc.a, 1);
+  assert.equal(doc.b, "has # hash");
+});
