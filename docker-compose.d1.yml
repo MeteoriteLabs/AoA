@@ -128,11 +128,17 @@ services:
       AOA_DEPLOYMENT_MODE: "authenticated"
       AOA_DISTRIBUTED_EXECUTION_ENABLED: "true"
       # control-plane <-> postgres is routed THROUGH toxiproxy (in-path link 1).
-      DATABASE_URL: "postgres://aoa_app:aoa_app@toxiproxy:15432/aoa"
+      # This primary connection is the app's OWNER/privileged pool: index.ts passes
+      # it as `ownerDb: db` to openDistributedExecutionDatabases, which runs the
+      # migration-identity phase (SELECT FROM drizzle.__drizzle_migrations) and the
+      # owner-exclusive advisory lock on it as the "owner" participant. It MUST be the
+      # owner role (aoa) — the bounded aoa_app role is forbidden USAGE on the drizzle
+      # schema by assertExactServingRoleAuthority, so aoa_app here fails startup.
+      DATABASE_URL: "postgres://aoa:aoa@toxiproxy:15432/aoa"
       # Distributed execution requires the app + operator pool URLs (FND-005
       # assertHostedExecutionStartupSafe fails closed without them; the distributed
       # path NEVER falls back to the owner pool). Both non-owner serving roles,
-      # routed through toxiproxy like the app pool; credentials provisioned by the
+      # routed through toxiproxy like the owner pool; credentials provisioned by the
       # migrate job (AOA_D1_PROVISION_SERVING_ROLES above).
       AOA_APP_DATABASE_URL: "postgres://aoa_app:aoa_app@toxiproxy:15432/aoa"
       AOA_OPERATOR_DATABASE_URL: "postgres://aoa_operator:aoa_operator@toxiproxy:15432/aoa"
@@ -176,6 +182,14 @@ services:
       # declared provider execute API (fake), reachable directly.
       AOA_WORKER_PROVIDER_URL: "http://fake-provider:8080"
       AOA_WORKER_HEALTH_PORT: "9464"
+      # Required by loadWorkerConfig (packages/worker-daemon/src/config/config.ts) — the
+      # parser throws (and the daemon proc.exit(1)s before the health server binds) if any
+      # is absent. The enrollment-code file is only the SOURCE at load (not read), so this
+      # unblocks boot + /healthz even before a code is minted. Scope matches this worker's
+      # profile (worker-a.profile.json scope="platform").
+      AOA_WORKER_ENROLLMENT_CODE_FILE: "/enrollment-code"
+      AOA_WORKER_KEY_STORE_MODE: "mounted_secret"
+      AOA_WORKER_TARGET_SCOPE: "platform"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9464/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: "10s"
@@ -207,6 +221,11 @@ services:
       AOA_WORKER_S3_ENDPOINT: "http://toxiproxy:19000"
       AOA_WORKER_PROVIDER_URL: "http://fake-provider:8080"
       AOA_WORKER_HEALTH_PORT: "9464"
+      # See worker-a: required by loadWorkerConfig or the daemon exits before /healthz.
+      # Scope matches worker-b.profile.json scope="organization".
+      AOA_WORKER_ENROLLMENT_CODE_FILE: "/enrollment-code"
+      AOA_WORKER_KEY_STORE_MODE: "mounted_secret"
+      AOA_WORKER_TARGET_SCOPE: "organization"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9464/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: "10s"
