@@ -86,8 +86,12 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
 import { assertTestSupportFlagSafe } from "./services/test-support-safety.js";
 import { createProcessShutdownHandler } from "./services/server-shutdown.js";
-import type { JobReadyScheduler } from "./services/job-ready-scheduler.js";
-import type { JobControlMetrics } from "./services/job-control-metrics.js";
+// NOTE: JobReadyScheduler / JobControlMetrics are referenced ONLY as types below
+// (see the `import(...)`-type annotations at their `let` sites). They are kept out
+// of the static import list on purpose: a top-level `import`/`import type` here is
+// caught by the flag-off import-graph guard (tenant-app-db-startup.test.ts), which
+// forbids the E3 job-control runtime from entering the bootstrap import graph. The
+// real runtime load is the lazy `await import(...)` inside the flag-on branch.
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
 import { ensureCrewAgents, ensureInfrastructureAgents, isCrewMarketplaceManaged } from "./services/internal-agent/aoa-agents/crew-seeding.js";
@@ -563,8 +567,8 @@ if (distributedExecutionDatabases) {
 }
 
 let jobControlRuntime: { stop(): Promise<void> } | null = null;
-let scheduler: JobReadyScheduler | undefined;
-let jobControlMetrics: JobControlMetrics | undefined;
+let scheduler: import("./services/job-ready-scheduler.js").JobReadyScheduler | undefined;
+let jobControlMetrics: import("./services/job-control-metrics.js").JobControlMetrics | undefined;
 if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
   const { createJobReadyScheduler } = await import("./services/job-ready-scheduler.js");
   const { createJobOutboxWorker } = await import("./services/job-outbox-worker.js");

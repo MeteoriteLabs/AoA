@@ -171,8 +171,11 @@ import {
 import { createHostClientHandlers } from "@armyofagents/plugin-sdk";
 import { resolveAoaInstanceId } from "./home-paths.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
-import type { JobReadyScheduler } from "./services/job-ready-scheduler.js";
-import type { JobControlMetrics } from "./services/job-control-metrics.js";
+// JobReadyScheduler / JobControlMetrics are used ONLY as types (inline `import(...)`
+// annotations below). Keeping them out of the static import list satisfies the
+// flag-off import-graph guard (tenant-app-db-startup.test.ts) that forbids the E3
+// job-control runtime graph from loading during flag-off bootstrap; the real load
+// is the lazy `await import(...)` inside the flag-on branch.
 
 // Host version reported to plugin workers during initialize. Read from
 // server package.json at import time; falls back to "0.0.0" if unreadable.
@@ -222,8 +225,8 @@ export async function createApp(
     distributedExecutionEnabled?: boolean;
     tenantAppDb?: Db;
     operatorDb?: Db;
-    jobReadyScheduler?: JobReadyScheduler;
-    jobControlMetrics?: JobControlMetrics;
+    jobReadyScheduler?: import("./services/job-ready-scheduler.js").JobReadyScheduler;
+    jobControlMetrics?: import("./services/job-control-metrics.js").JobControlMetrics;
     workerSessionSigningKey?: string;
     // DEP-003 (E6 deployment harness): optional readiness contract. When omitted the
     // app is unchanged except the additive always-ready `/api/ready` + `/api/health/live`

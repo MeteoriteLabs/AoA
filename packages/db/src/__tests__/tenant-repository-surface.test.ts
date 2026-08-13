@@ -47,9 +47,17 @@ describe("tenant repository public surface (TEN-001a)", () => {
     expect(Object.prototype.propertyIsEnumerable.call(repos, "jobControl")).toBe(false);
     expect(typeof repos.jobControl.admission).toBe("function");
     expect(typeof repos.jobControl.insertJobOnce).toBe("function");
-    for (const group of Object.values(repos)) {
-      expect(typeof (group as { insert: unknown }).insert).toBe("function");
+    // Every accessor group exposes getById. Every group EXCEPT `workers` also
+    // exposes insert: workers are created ONLY through the device-bound
+    // enrollment path (WorkerEnrollmentRepository), never a plain tenant insert,
+    // so WorkersRepository deliberately omits `insert`. Asserting insert on
+    // workers would demand a method whose existence would itself weaken that
+    // enrollment-only boundary, so it is the one documented exemption.
+    for (const [name, group] of Object.entries(repos)) {
       expect(typeof (group as { getById: unknown }).getById).toBe("function");
+      if (name !== "workers") {
+        expect(typeof (group as { insert: unknown }).insert).toBe("function");
+      }
     }
   });
 });
