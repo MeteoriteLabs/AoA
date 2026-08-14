@@ -158,6 +158,7 @@ unsandboxed override disabled until the worker/gVisor runtime lands.
 | `AOA_STORAGE_S3_BUCKET` | — | S3 bucket name (required when provider is `s3`) |
 | `AOA_STORAGE_S3_REGION` | — | S3 region (e.g. `us-east-1`) |
 | `AOA_STORAGE_S3_ENDPOINT` | (default AWS) | Override endpoint URL for MinIO, Cloudflare R2, Backblaze B2, etc. |
+| `AOA_STORAGE_S3_PRESIGN_ENDPOINT` | (= `AOA_STORAGE_S3_ENDPOINT`) | Worker-facing **https** endpoint used only to mint presigned artifact upload/download grant URLs (distributed execution). Must be https and reachable by workers; distinct from the control-plane's internal endpoint. |
 | `AOA_STORAGE_S3_PREFIX` | (empty) | Object-key prefix for namespace isolation in shared buckets |
 | `AOA_STORAGE_S3_FORCE_PATH_STYLE` | `false` | Force path-style URLs (required for some S3-compatible services) |
 | `AOA_COMPANY_WORKSPACE_DIR` | `<AOA_HOME>/instances/<id>/data/company-workspaces` | Server-owned base dir that `authenticated`-mode company workspace-fs browse/mkdir (WS0a) is jailed under, per-company subdir. Unused in `local_trusted` mode (founder browses their real home area, unjailed). |

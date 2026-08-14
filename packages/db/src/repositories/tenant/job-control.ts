@@ -50,6 +50,7 @@ import {
   isActiveFence,
   classifyFence,
   JobFenceError,
+  ArtifactCommitRejection,
   TERMINAL_ATTEMPT_STATUSES,
   type ActiveFenceRequest,
 } from "./job-fence.js";
@@ -288,6 +289,34 @@ export interface JobControlRepository {
   ): Promise<GuardedFenceResult & { ingest?: EventIngestOutcome }>;
   authorizeArtifactCommit(
     input: ActiveFenceRequest & { identifier: string },
+  ): Promise<JobArtifact>;
+  /**
+   * DAT-002 — the fenced, verified commit of a rich artifact manifest. Runs
+   * `guardActiveFence` FIRST (a stale/terminal fence throws `JobFenceError` BEFORE
+   * any hash/size check — the documented precedence), then verifies the manifest's
+   * object-key prefix, tenant, size, and sha256 against the store-observed actuals
+   * (throwing `ArtifactCommitRejection` on mismatch), computes a per-(org,job)
+   * `versionNumber` under the fence lock, and inserts the `status='committed'` row
+   * idempotently on the partial-unique natural key (a replay returns the existing
+   * committed row unchanged). `prefixValid`/`tenantValid` are pre-evaluated by the
+   * server (which owns the frozen worker-protocol prefix helper) and re-checked here
+   * AFTER the guard to preserve fence-first precedence.
+   */
+  commitArtifactVersion(
+    input: ActiveFenceRequest & {
+      identifier: string;
+      objectKey: string;
+      contentType: string;
+      kind: string;
+      sensitivity: string;
+      retention: string;
+      declaredSizeBytes: number;
+      declaredSha256: string;
+      actualSizeBytes: number;
+      actualSha256: string;
+      prefixValid: boolean;
+      tenantValid: boolean;
+    },
   ): Promise<JobArtifact>;
   readSecretHandle(
     input: ActiveFenceRequest & { handle: string },
@@ -2277,6 +2306,65 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         identifier: input.identifier,
       }).returning();
       return row!;
+    },
+
+    async commitArtifactVersion(input) {
+      // Fence FIRST: a stale/terminal/revoked fence throws JobFenceError here,
+      // BEFORE any verification — so `stale_fence` always precedes hash/size/prefix.
+      await guardActiveFence(input);
+      // Verification (fence is active). Order is stable: prefix → tenant → size → sha.
+      if (!input.prefixValid) throw new ArtifactCommitRejection("wrong_prefix");
+      if (!input.tenantValid) throw new ArtifactCommitRejection("tenant_mismatch");
+      if (input.declaredSizeBytes !== input.actualSizeBytes) throw new ArtifactCommitRejection("size_mismatch");
+      if (input.declaredSha256 !== input.actualSha256) throw new ArtifactCommitRejection("hash_mismatch");
+
+      // Best-effort per-(org,job) ordinal, computed under the held fence lock. Not a
+      // DB uniqueness constraint (concurrent attempts of one job may share a number).
+      const [{ next } = { next: 1 }] = await tx
+        .select({ next: sql<number>`COALESCE(MAX(${jobArtifacts.versionNumber}), 0) + 1` })
+        .from(jobArtifacts)
+        .where(and(
+          eq(jobArtifacts.organizationId, input.organizationId),
+          eq(jobArtifacts.jobId, input.jobId),
+          eq(jobArtifacts.status, "committed"),
+        ));
+
+      // Idempotent committed insert on the partial-unique natural key
+      // (organization_id, job_id, attempt, identifier) WHERE status='committed'.
+      const inserted = await tx.insert(jobArtifacts).values({
+        organizationId: input.organizationId,
+        jobId: input.jobId,
+        identifier: input.identifier,
+        objectKey: input.objectKey,
+        sha256: input.actualSha256,
+        sizeBytes: input.actualSizeBytes,
+        contentType: input.contentType,
+        kind: input.kind,
+        sensitivity: input.sensitivity,
+        retention: input.retention,
+        attempt: input.attemptNumber,
+        leaseId: input.leaseId,
+        fenceToken: input.fence,
+        versionNumber: Number(next),
+        status: "committed",
+        committedAt: sql`clock_timestamp()`,
+      }).onConflictDoNothing({
+        target: [jobArtifacts.organizationId, jobArtifacts.jobId, jobArtifacts.attempt, jobArtifacts.identifier],
+        where: sql`status = 'committed'`,
+      }).returning();
+      if (inserted[0]) return inserted[0];
+
+      // Conflict → the artifact was already committed (idempotent replay): return the
+      // existing committed row unchanged (same result, no second version).
+      const [existing] = await tx.select().from(jobArtifacts).where(and(
+        eq(jobArtifacts.organizationId, input.organizationId),
+        eq(jobArtifacts.jobId, input.jobId),
+        eq(jobArtifacts.attempt, input.attemptNumber),
+        eq(jobArtifacts.identifier, input.identifier),
+        eq(jobArtifacts.status, "committed"),
+      )).limit(1);
+      if (!existing) throw new ArtifactCommitRejection("tenant_mismatch");
+      return existing;
     },
 
     async readSecretHandle(input) {

@@ -6,6 +6,8 @@ import {
   type IssueWorkerEnrollmentCodeInput,
 } from "@armyofagents/shared";
 import {
+  artifactCommitOperationRequestV1Schema,
+  artifactTransferGrantOperationRequestV1Schema,
   eventUploadOperationRequestV1Schema,
   leaseAckOperationRequestV1Schema,
   leaseRenewOperationRequestV1Schema,
@@ -31,6 +33,10 @@ import {
 import { createJobLeasingService, JobLeasingError } from "../services/job-leasing.js";
 import { createJobLeaseRenewalService } from "../services/job-fencing.js";
 import { createJobEventIngestService } from "../services/job-events.js";
+import { createArtifactTransferGrantService } from "../services/artifact-transfer-grant.js";
+import { createArtifactCommitService } from "../services/artifact-commit.js";
+import { createStorageProviderFromConfig } from "../storage/provider-registry.js";
+import { loadConfig } from "../config.js";
 import {
   createJobControlAckService,
   controlAckOperationRequestV1Schema,
@@ -75,6 +81,11 @@ export function workerControlRoutes(opts: {
   });
   const renewal = createJobLeaseRenewalService({ appDb: opts.appDb });
   const events = createJobEventIngestService({ appDb: opts.appDb });
+  // DAT-002 — the raw storage provider (full-object-key, no company prefixing) used
+  // to presign worker grants and headObject-verify commits.
+  const storage = createStorageProviderFromConfig(loadConfig());
+  const transferGrants = createArtifactTransferGrantService({ appDb: opts.appDb, storage });
+  const artifactCommits = createArtifactCommitService({ appDb: opts.appDb, storage });
   const controlAck = createJobControlAckService({ appDb: opts.appDb });
   const reconciliation = createJobReconciliationService({ appDb: opts.appDb });
 
@@ -350,6 +361,104 @@ export function workerControlRoutes(opts: {
         reasonCode: "worker_event_upload_internal_unavailable",
       }, "worker event upload unavailable");
       sendWorkerOperationProtocolError(req, res, "event_upload", "internal_unavailable", opts.now?.() ?? new Date());
+    }
+  });
+
+  // DAT-002 — worker requests a scoped presigned upload/download grant. Direct-to-
+  // store bypass: the bytes never traverse this API body path. Upload requires a
+  // live fence; download is tenant-scoped + object-existence (survives lease loss).
+  router.post("/worker-control/artifact-transfer-grants", async (req, res) => {
+    try {
+      const parsed = artifactTransferGrantOperationRequestV1Schema.safeParse(req.body);
+      const authorization = req.header("authorization");
+      const proof = deviceProofHeaders(req);
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      if (!parsed.success
+        || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.artifact_transfer_grant.maxRequestBytes)) {
+        sendWorkerOperationProtocolError(req, res, "artifact_transfer_grant",
+          rawBody && rawBody.length > OPERATION_DESCRIPTORS.artifact_transfer_grant.maxRequestBytes
+            ? "payload_too_large" : "malformed", opts.now?.() ?? new Date());
+        return;
+      }
+      if (!authorization || !proof || !rawBody) {
+        sendWorkerOperationProtocolError(req, res, "artifact_transfer_grant", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      const auth = verifyWorkerOperationProof({
+        sessionSigningKey: opts.sessionSigningKey,
+        authorization,
+        rawBody,
+        proof,
+        method: req.method,
+        path: req.originalUrl,
+        correlationId: parsed.data.correlationId,
+        now: opts.now?.(),
+      });
+      const response = await transferGrants.grant({ auth, request: parsed.data });
+      res.status(200).json(response);
+    } catch (error) {
+      if (error instanceof WorkerOperationProofError) {
+        sendWorkerOperationProtocolError(req, res, "artifact_transfer_grant", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      if (error instanceof JobLeasingError) {
+        sendWorkerOperationProtocolError(req, res, "artifact_transfer_grant", error.code, opts.now?.() ?? new Date());
+        return;
+      }
+      logger.error({
+        action: "worker.artifact_transfer_grant.failed",
+        reasonCode: "worker_artifact_transfer_grant_internal_unavailable",
+      }, "worker artifact transfer grant unavailable");
+      sendWorkerOperationProtocolError(req, res, "artifact_transfer_grant", "internal_unavailable", opts.now?.() ?? new Date());
+    }
+  });
+
+  // DAT-002 — worker commits a verified artifact manifest. One-tx, fence-first:
+  // fence staleness precedes hash/size; wrong prefix/hash/size/tenant/fence cannot
+  // commit; the commit itself is the completion event (idempotent on the natural key).
+  router.post("/worker-control/artifact-commits", async (req, res) => {
+    try {
+      const parsed = artifactCommitOperationRequestV1Schema.safeParse(req.body);
+      const authorization = req.header("authorization");
+      const proof = deviceProofHeaders(req);
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      if (!parsed.success
+        || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.artifact_commit.maxRequestBytes)) {
+        sendWorkerOperationProtocolError(req, res, "artifact_commit",
+          rawBody && rawBody.length > OPERATION_DESCRIPTORS.artifact_commit.maxRequestBytes
+            ? "payload_too_large" : "malformed", opts.now?.() ?? new Date());
+        return;
+      }
+      if (!authorization || !proof || !rawBody) {
+        sendWorkerOperationProtocolError(req, res, "artifact_commit", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      const auth = verifyWorkerOperationProof({
+        sessionSigningKey: opts.sessionSigningKey,
+        authorization,
+        rawBody,
+        proof,
+        method: req.method,
+        path: req.originalUrl,
+        correlationId: parsed.data.correlationId,
+        now: opts.now?.(),
+      });
+      const response = await artifactCommits.commit({ auth, request: parsed.data });
+      res.status(200).json(response);
+    } catch (error) {
+      if (error instanceof WorkerOperationProofError) {
+        sendWorkerOperationProtocolError(req, res, "artifact_commit", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      if (error instanceof JobLeasingError) {
+        sendWorkerOperationProtocolError(req, res, "artifact_commit", error.code, opts.now?.() ?? new Date());
+        return;
+      }
+      logger.error({
+        action: "worker.artifact_commit.failed",
+        reasonCode: "worker_artifact_commit_internal_unavailable",
+      }, "worker artifact commit unavailable");
+      sendWorkerOperationProtocolError(req, res, "artifact_commit", "internal_unavailable", opts.now?.() ?? new Date());
     }
   });
 

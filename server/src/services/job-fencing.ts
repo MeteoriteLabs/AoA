@@ -58,6 +58,8 @@ export {
 export const GOVERNED_FENCE_SURFACE = [
   "acceptEvent",
   "authorizeArtifactCommit",
+  // DAT-002 — fenced verified artifact-manifest commit (see GUARDED_JOB_MUTATORS).
+  "commitArtifactVersion",
   "readSecretHandle",
   "completeAttempt",
   "recordServiceHealth",

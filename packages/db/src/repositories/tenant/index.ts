@@ -11,7 +11,7 @@
 // types (which erase at runtime). There is deliberately NO standalone unscoped
 // reader (e.g. `getAllJobs(db)`) — a raw cross-tenant helper would sidestep the
 // tenant context and forced RLS. Enforced by tenant-repository-surface.test.ts.
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "../../client.js";
 import { jobs, type Job, type NewJob } from "../../schema/jobs.js";
 import { jobAttempts, type JobAttempt, type NewJobAttempt } from "../../schema/job_attempts.js";
@@ -77,6 +77,10 @@ export interface JobArtifactsRepository {
   insert(values: NewJobArtifact): Promise<JobArtifact>;
   getById(id: string): Promise<JobArtifact | null>;
   listForJob(jobId: string): Promise<JobArtifact[]>;
+  /** DAT-002 — the tenant-scoped committed row for a (job, attempt, identifier),
+   * used to prove object-existence when issuing a fence-independent download grant
+   * (a committed artifact stays readable after lease loss). RLS scopes to the org. */
+  findCommitted(input: { jobId: string; attempt: number; identifier: string }): Promise<JobArtifact | null>;
 }
 
 export interface JobSecretHandlesRepository {
@@ -208,6 +212,19 @@ export function tenantRepositories(tx: Db): TenantRepositories {
       },
       async listForJob(jobId) {
         return tx.select().from(jobArtifacts).where(eq(jobArtifacts.jobId, jobId));
+      },
+      async findCommitted(input) {
+        const [row] = await tx
+          .select()
+          .from(jobArtifacts)
+          .where(and(
+            eq(jobArtifacts.jobId, input.jobId),
+            eq(jobArtifacts.attempt, input.attempt),
+            eq(jobArtifacts.identifier, input.identifier),
+            eq(jobArtifacts.status, "committed"),
+          ))
+          .limit(1);
+        return row ?? null;
       },
     },
     jobSecretHandles: {

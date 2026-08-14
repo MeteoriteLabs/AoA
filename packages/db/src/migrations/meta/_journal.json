@@ -1737,6 +1737,13 @@
       "when": 1786700681825,
       "tag": "0247_job_output_projection_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 248,
+      "version": "7",
+      "when": 1786734557753,
+      "tag": "0248_petite_star_brand",
+      "breakpoints": true
     }
   ]
 }

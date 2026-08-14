@@ -35,6 +35,9 @@
 export const GUARDED_JOB_MUTATORS = [
   "acceptEvent",
   "authorizeArtifactCommit",
+  // DAT-002 — the fenced verified-commit of a rich artifact manifest (fence-first,
+  // then verify hash/size/prefix/tenant, then idempotent committed insert).
+  "commitArtifactVersion",
   "readSecretHandle",
   "completeAttempt",
   "recordServiceHealth",
@@ -61,6 +64,26 @@ export class JobFenceError extends Error {
   constructor(public readonly code: JobFenceErrorCode) {
     super(`Job fence ${code}`);
     this.name = "JobFenceError";
+  }
+}
+
+/** DAT-002 — why a fenced artifact commit was refused AFTER the fence admitted it
+ * (i.e. the fence is active but the manifest fails verification). These are the
+ * INTERNAL precise reasons; the server maps them onto the frozen closed protocol
+ * error vocabulary for the wire (`wrong_prefix`/`size_mismatch`/`tenant_mismatch`
+ * → `malformed`, `hash_mismatch` → `event_hash_mismatch`). Fence staleness always
+ * precedes these (the guard runs first), so an active-but-mismatched manifest is
+ * the only path here. */
+export type ArtifactCommitRejectionReason = "wrong_prefix" | "size_mismatch" | "hash_mismatch" | "tenant_mismatch";
+
+/** Raised by the fenced commit mutator when the active-fence guard admitted the
+ * caller but the manifest fails hash/size/prefix/tenant verification. Distinct from
+ * `JobFenceError` so the service maps it to a verification reject, never a fence
+ * reject. Discloses only the closed classification reason. */
+export class ArtifactCommitRejection extends Error {
+  constructor(public readonly reason: ArtifactCommitRejectionReason) {
+    super(`Artifact commit rejected: ${reason}`);
+    this.name = "ArtifactCommitRejection";
   }
 }
 

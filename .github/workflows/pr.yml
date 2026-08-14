@@ -167,6 +167,11 @@ jobs:
           node scripts/check-workspace-snapshot-vectors.mjs
           node --test scripts/check-workspace-snapshot-vectors.test.mjs
 
+      - name: Artifact-commit verification vectors (DAT-002)
+        run: |
+          node scripts/check-artifact-commit-vectors.mjs
+          node --test scripts/check-artifact-commit-vectors.test.mjs
+
       - name: CI lane routing invariants (DEP-004)
         run: |
           node scripts/check-ci-lanes.mjs

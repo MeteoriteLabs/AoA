@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, index, foreignKey } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, uuid, text, timestamp, integer, bigint, index, uniqueIndex, foreignKey } from "drizzle-orm/pg-core";
 import { organizations } from "./organizations.js";
 import { jobs } from "./jobs.js";
 
@@ -23,12 +24,39 @@ export const jobArtifacts = pgTable(
     // existence oracle (FK checks bypass RLS). organization_id keeps its FK.
     jobId: uuid("job_id").notNull(),
     identifier: text("identifier").notNull(),
+    // DAT-002 — the RICH artifact model (E5, additive). ALL columns are nullable:
+    // the table is empty (no backfill), and the thin `authorizeArtifactCommit`
+    // ownership path still writes only (org, job, identifier). A `committed` row's
+    // completeness is an APPLICATION invariant enforced by `commitArtifactVersion`
+    // (fence-first verify → status='committed'), not a DB NOT NULL — chosen to leave
+    // the thin callers valid until they are removed.
+    objectKey: text("object_key"),
+    sha256: text("sha256"),
+    sizeBytes: bigint("size_bytes", { mode: "number" }),
+    contentType: text("content_type"),
+    kind: text("kind"),
+    sensitivity: text("sensitivity"),
+    retention: text("retention"),
+    attempt: integer("attempt"),
+    leaseId: uuid("lease_id"),
+    fenceToken: text("fence_token"),
+    versionNumber: integer("version_number"),
+    status: text("status"),
+    committedAt: timestamp("committed_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     organizationIdx: index("job_artifacts_organization_idx").on(table.organizationId),
     jobIdx: index("job_artifacts_job_idx").on(table.jobId),
+    // DAT-002 — idempotent commit key. The natural commit identity is
+    // (organization_id, job_id, attempt, identifier); a partial unique over only
+    // committed rows makes a replayed commit a DO-NOTHING (the fence-first mutator
+    // returns the existing row). Pending/uncommitted rows are unconstrained.
+    committedIdentityUnique: uniqueIndex("job_artifacts_committed_identity_uidx")
+      .on(table.organizationId, table.jobId, table.attempt, table.identifier)
+      .where(sql`status = 'committed'`),
     // TEN-004: composite org-scoped FK — an artifact's (organization_id, job_id)
     // must exist together in jobs(organization_id, id), so an artifact cannot be
     // owned by a different tenant than its job. The redundant single-column job FK was

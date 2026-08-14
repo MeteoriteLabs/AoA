@@ -82,6 +82,7 @@ export interface Config {
   storageS3Bucket: string;
   storageS3Region: string;
   storageS3Endpoint: string | undefined;
+  storageS3PresignEndpoint: string | undefined;
   storageS3Prefix: string;
   storageS3ForcePathStyle: boolean;
   heartbeatSchedulerEnabled: boolean;
@@ -171,6 +172,10 @@ export function loadConfig(): Config {
   const storageS3Bucket = process.env.AOA_STORAGE_S3_BUCKET ?? fileStorage?.s3?.bucket ?? "paperclip";
   const storageS3Region = process.env.AOA_STORAGE_S3_REGION ?? fileStorage?.s3?.region ?? "us-east-1";
   const storageS3Endpoint = process.env.AOA_STORAGE_S3_ENDPOINT ?? fileStorage?.s3?.endpoint ?? undefined;
+  // DAT-002 — worker-facing https endpoint used ONLY to mint presigned artifact
+  // grant URLs (distinct from the internal control-plane endpoint above).
+  const storageS3PresignEndpoint =
+    process.env.AOA_STORAGE_S3_PRESIGN_ENDPOINT ?? fileStorage?.s3?.presignEndpoint ?? undefined;
   const storageS3Prefix = process.env.AOA_STORAGE_S3_PREFIX ?? fileStorage?.s3?.prefix ?? "";
   const storageS3ForcePathStyle =
     process.env.AOA_STORAGE_S3_FORCE_PATH_STYLE !== undefined
@@ -324,6 +329,7 @@ export function loadConfig(): Config {
     storageS3Bucket,
     storageS3Region,
     storageS3Endpoint,
+    storageS3PresignEndpoint,
     storageS3Prefix,
     storageS3ForcePathStyle,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",

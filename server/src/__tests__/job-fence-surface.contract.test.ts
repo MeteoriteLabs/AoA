@@ -39,10 +39,13 @@ const JOB_FENCE_PATH = fileURLToPath(
   new URL("../../../packages/db/src/repositories/tenant/job-fence.ts", import.meta.url),
 );
 
-/** The seven CLOSED governed mutators, per the ticket's enumerated surface. */
+/** The CLOSED governed mutators, per the ticket's enumerated surface. DAT-002 adds
+ * `commitArtifactVersion` (the fenced verified-commit sibling of the thin
+ * `authorizeArtifactCommit`). */
 const EXPECTED_GUARDED = [
   "acceptEvent",
   "authorizeArtifactCommit",
+  "commitArtifactVersion",
   "readSecretHandle",
   "completeAttempt",
   "recordServiceHealth",
