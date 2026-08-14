@@ -31,11 +31,24 @@ import {
 import { createJobLeasingService, JobLeasingError } from "../services/job-leasing.js";
 import { createJobLeaseRenewalService } from "../services/job-fencing.js";
 import { createJobEventIngestService } from "../services/job-events.js";
+import {
+  createJobControlAckService,
+  controlAckOperationRequestV1Schema,
+} from "../services/job-control-ack.js";
+import { createJobReconciliationService } from "../services/job-reconciliation.js";
 import type { JobReadyScheduler } from "../services/job-ready-scheduler.js";
 import type { JobControlMetrics } from "../services/job-control-metrics.js";
 import { deviceProofHeaders } from "./worker-proof-headers.js";
 
 const uuid = z.string().uuid();
+
+/** JOB-006 operator cancellation body: a bounded reason + optional graceful flag. */
+const cancelJobSchema = z
+  .object({
+    reason: z.string().min(1).max(1000),
+    graceful: z.boolean().optional(),
+  })
+  .strict();
 
 export function workerControlRoutes(opts: {
   db: Db;
@@ -62,6 +75,8 @@ export function workerControlRoutes(opts: {
   });
   const renewal = createJobLeaseRenewalService({ appDb: opts.appDb });
   const events = createJobEventIngestService({ appDb: opts.appDb });
+  const controlAck = createJobControlAckService({ appDb: opts.appDb });
+  const reconciliation = createJobReconciliationService({ appDb: opts.appDb });
 
   router.post(
     "/organizations/:organizationId/execution-targets/:targetId/enrollment-codes",
@@ -337,6 +352,102 @@ export function workerControlRoutes(opts: {
       sendWorkerOperationProtocolError(req, res, "event_upload", "internal_unavailable", opts.now?.() ?? new Date());
     }
   });
+
+  // JOB-006 — worker uploads its ACK for a delivered control command. Fence-guarded
+  // (a stale/superseded fence is rejected stale_fence), idempotent (first terminal
+  // ACK wins). No frozen v1 request envelope exists for this direction, so the
+  // service defines a thin one (the frozen ACK payload + echoed delivery identity).
+  router.post("/worker-control/control-acks", async (req, res) => {
+    try {
+      const parsed = controlAckOperationRequestV1Schema.safeParse(req.body);
+      const authorization = req.header("authorization");
+      const proof = deviceProofHeaders(req);
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      if (!parsed.success
+        || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.control_command.maxRequestBytes)) {
+        sendWorkerOperationProtocolError(req, res, "control_command",
+          rawBody && rawBody.length > OPERATION_DESCRIPTORS.control_command.maxRequestBytes
+            ? "payload_too_large" : "malformed", opts.now?.() ?? new Date());
+        return;
+      }
+      if (!authorization || !proof || !rawBody) {
+        sendWorkerOperationProtocolError(req, res, "control_command", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      const auth = verifyWorkerOperationProof({
+        sessionSigningKey: opts.sessionSigningKey,
+        authorization,
+        rawBody,
+        proof,
+        method: req.method,
+        path: req.originalUrl,
+        correlationId: parsed.data.correlationId,
+        now: opts.now?.(),
+      });
+      const response = await controlAck.ack({ auth, request: parsed.data });
+      res.status(200).json(response);
+    } catch (error) {
+      if (error instanceof WorkerOperationProofError) {
+        sendWorkerOperationProtocolError(req, res, "control_command", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      if (error instanceof JobLeasingError) {
+        sendWorkerOperationProtocolError(req, res, "control_command", error.code, opts.now?.() ?? new Date());
+        return;
+      }
+      logger.error({
+        action: "worker.control_ack.failed",
+        reasonCode: "worker_control_ack_internal_unavailable",
+      }, "worker control ack unavailable");
+      sendWorkerOperationProtocolError(req, res, "control_command", "internal_unavailable", opts.now?.() ?? new Date());
+    }
+  });
+
+  // JOB-006 — operator-initiated durable cancellation. Board-authenticated + org
+  // fleet-management scoped (owner/admin). Marks the requested state and queues a
+  // monotonically-sequenced cancel command bound to the current lease fence.
+  router.post(
+    "/organizations/:organizationId/companies/:companyId/jobs/:jobId/cancel",
+    validate(cancelJobSchema),
+    async (req, res, next) => {
+      try {
+        // rbac: paired-via-helper — organizationAccessService.canOrg below is the scoped check.
+        assertBoard(req);
+        const organizationId = uuid.parse(req.params.organizationId);
+        const companyId = uuid.parse(req.params.companyId);
+        const jobId = uuid.parse(req.params.jobId);
+        const userId = req.actor.type === "board" ? req.actor.userId : null;
+        if (!userId || !(await orgAccess.canOrg(organizationId, userId, "execution_target:manage"))) {
+          throw forbidden("You are not an owner/admin of this organization");
+        }
+        const body = req.body as { reason: string; graceful?: boolean };
+        const outcome = await reconciliation.requestCancellation({
+          organizationId,
+          companyId,
+          jobId,
+          reason: body.reason,
+          graceful: body.graceful ?? true,
+        });
+        logger.info({
+          action: "job.cancellation.requested",
+          organizationId,
+          companyId,
+          jobId,
+          operatorUserId: userId,
+          outcome: outcome.status,
+          reasonCode: "job_cancellation_requested",
+        }, "job cancellation requested");
+        res.status(202).json({
+          status: outcome.status,
+          command: outcome.command
+            ? { commandId: outcome.command.commandId, commandSeq: outcome.command.commandSeq }
+            : null,
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
 
   return router;
 }

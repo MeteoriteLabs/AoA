@@ -1,4 +1,5 @@
 import { and, asc, count, desc, eq, exists, gt, gte, inArray, isNotNull, isNull, lte, ne, notExists, notInArray, or, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import type { JobPlacementOwner } from "@armyofagents/shared";
 import type { Db } from "../../client.js";
 import {
@@ -31,6 +32,7 @@ import {
   jobSecretHandles,
   jobEvents,
   jobProjectionReceipts,
+  jobControlCommands,
   type Job,
   type JobAttempt,
   type JobOutbox,
@@ -299,7 +301,12 @@ export interface JobControlRepository {
   applyProjectionReceipt(
     input: ActiveFenceRequest & { projection?: ProjectionInput },
   ): Promise<GuardedFenceResult>;
-  ackControlCommand(input: ActiveFenceRequest): Promise<GuardedFenceResult>;
+  // JOB-006 — the worker's fence-guarded ACK of a control command. Gates on the
+  // active fence FIRST (bare-fence back-compat returns the guarded proof only); when
+  // an `ack` is supplied it records the worker's echoed status idempotently.
+  ackControlCommand(
+    input: ActiveFenceRequest & { ack?: ControlCommandAckInput },
+  ): Promise<GuardedFenceResult & { ackOutcome?: ControlCommandAckOutcome }>;
   /** The highest contiguous accepted event sequence for an attempt (0 = none).
    * A read used to build the cumulative ACK on the stale-fence/terminal paths;
    * NOT a governed mutator (no fence gate — it writes nothing). */
@@ -321,6 +328,31 @@ export interface JobControlRepository {
     attemptId: string;
   }>>;
   deliverReadyOutbox(input: { claimToken: string; ids: string[] }): Promise<number>;
+  // ---------------------------------------------------------------------------
+  // JOB-006 — cancellation + reaper/reconciliation surface. These are SERVER
+  // authority (operator/system), not worker-fenced: they lock the authoritative
+  // job/attempt/lease rows directly and PERMANENTLY revoke the fence. They never
+  // gate on `guardActiveFence` (the reaper acts precisely when a fence is stale),
+  // so they are classified UNGUARDED in the fence-surface contract.
+  //
+  // The cancellation transaction marks the requested state and queues a
+  // monotonically-sequenced E1 cancel command bound to the current lease fence
+  // (idempotent: one cancel command per lease).
+  requestCancellation(input: RequestCancellationInput): Promise<CancellationOutcome>;
+  /** Un-ACKed control commands for a lease, in monotonic sequence — the "return
+   * pending controls until ACK" read the poll/renew path surfaces. */
+  listPendingControlCommands(input: {
+    organizationId: string;
+    leaseId: string;
+  }): Promise<QueuedControlCommand[]>;
+  /** Allocate attempt N+1 for a reaped attempt under the job lock, guarded so two
+   * concurrent creators produce EXACTLY one N+1 attempt + one attempt-ready row
+   * (the loser observes it). Creates the uniquely-constrained attempt + its outbox
+   * row with an immutable backoff, or observes an already-created successor. */
+  allocateRetryAttempt(input: RetryAllocationInput): Promise<RetryAllocationResult>;
+  /** The reaper: revoke expired leases' fences and converge each to a new attempt,
+   * a terminal result, or a dead-letter. Bounded batch; idempotent per lease. */
+  reapExpiredLeases(input: ReapExpiredLeasesInput): Promise<ReapExpiredLeasesResult>;
 }
 
 /** JOB-004 terminal attempt statuses a governed completion may drive an attempt to. */
@@ -336,6 +368,128 @@ export interface GuardedFenceResult {
   leaseId: string;
   attemptId: string;
   guarded: true;
+}
+
+// ---------------------------------------------------------------------------
+// JOB-006 — cancellation, control commands, and reaper/retry types.
+
+/** The control-command kinds JOB-006 queues (a subset of the frozen E1
+ * CONTROL_COMMAND_KINDS the reaper/cancellation issue). */
+export type JobControlCommandKind = "cancel" | "drain" | "graceful_stop";
+
+/** The closed worker-ACK statuses (frozen E1 CONTROL_ACK_STATUSES). */
+export type ControlCommandAckStatus = "accepted" | "completed" | "rejected" | "stale";
+
+/** A durable control command queued for a fenced run. `command` is the
+ * reconstructable frozen wire body; the columns are the authoritative facts. */
+export interface QueuedControlCommand {
+  id: string;
+  organizationId: string;
+  companyId: string;
+  jobId: string;
+  attemptId: string;
+  attemptNumber: number;
+  leaseId: string;
+  commandId: string;
+  commandSeq: number;
+  commandKind: JobControlCommandKind;
+  fenceToken: string;
+  reason: string | null;
+  graceful: boolean | null;
+  command: Record<string, unknown>;
+  ackStatus: ControlCommandAckStatus | null;
+}
+
+/** The worker's echoed ACK for a control command, applied by `ackControlCommand`. */
+export interface ControlCommandAckInput {
+  commandId: string;
+  status: ControlCommandAckStatus;
+  observedAt: Date;
+  detail: string | null;
+}
+
+export interface ControlCommandAckOutcome {
+  applied: boolean;
+  status: ControlCommandAckStatus;
+}
+
+export interface RequestCancellationInput {
+  organizationId: string;
+  companyId: string;
+  jobId: string;
+  reason: string;
+  graceful: boolean;
+  /** Caller-supplied command id — a retried cancellation with the SAME id replays
+   * the queued command (idempotent), never a second command. */
+  commandId: string;
+  now: Date;
+}
+
+export type CancellationStatus =
+  | "queued"
+  | "already_requested"
+  | "cancelled"
+  | "no_active_lease"
+  | "job_terminal"
+  | "not_found";
+
+export interface CancellationOutcome {
+  status: CancellationStatus;
+  command: QueuedControlCommand | null;
+}
+
+export interface RetryAllocationInput {
+  organizationId: string;
+  companyId: string;
+  jobId: string;
+  /** The reaped attempt this retry succeeds. Retry allocation is a no-op unless
+   * this is still the LATEST attempt (max == reapedAttemptNumber). */
+  reapedAttemptId: string;
+  reapedAttemptNumber: number;
+  baseBackoffMs: number;
+  maxBackoffMs: number;
+  now: Date;
+}
+
+export type RetryAllocationStatus = "created" | "observed" | "not_latest" | "job_missing";
+
+export interface RetryAllocationResult {
+  status: RetryAllocationStatus;
+  attemptNumber: number | null;
+  attemptId: string | null;
+  backoffUntil: Date | null;
+}
+
+export interface ReapExpiredLeasesInput {
+  organizationId: string;
+  now: Date;
+  limit: number;
+  baseBackoffMs: number;
+  maxBackoffMs: number;
+}
+
+export interface ReapExpiredLeasesResult {
+  scanned: number;
+  revoked: number;
+  retried: number;
+  deadLettered: number;
+  cancelled: number;
+  finalized: number;
+}
+
+/** Exponential retry backoff (ms) for the Nth reaped attempt, bounded by `maxMs`. */
+export function computeRetryBackoffMs(
+  reapedAttemptNumber: number,
+  baseMs: number,
+  maxMs: number,
+): number {
+  const base = Math.max(0, Math.floor(baseMs));
+  const ceiling = Math.max(base, Math.floor(maxMs));
+  if (base === 0) return 0;
+  const exponent = Math.max(0, reapedAttemptNumber - 1);
+  // Cap the shift so 2 ** exponent never overflows before the min() clamp.
+  const factor = exponent >= 30 ? 2 ** 30 : 2 ** exponent;
+  return Math.min(ceiling, base * factor);
 }
 
 // ---------------------------------------------------------------------------
@@ -640,6 +794,151 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         jobProjectionReceipts.sourceIdentity,
       ],
     });
+  }
+
+  // JOB-006 job aggregate terminal states (distinct from attempt terminal states).
+  const JOB_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "dead_letter"] as const;
+
+  function toQueuedControlCommand(
+    row: typeof jobControlCommands.$inferSelect,
+  ): QueuedControlCommand {
+    return {
+      id: row.id,
+      organizationId: row.organizationId,
+      companyId: row.companyId,
+      jobId: row.jobId,
+      attemptId: row.attemptId,
+      attemptNumber: row.attemptNumber,
+      leaseId: row.leaseId,
+      commandId: row.commandId,
+      commandSeq: row.commandSeq,
+      commandKind: row.commandKind as JobControlCommandKind,
+      fenceToken: row.fenceToken,
+      reason: row.reason,
+      graceful: row.graceful,
+      command: row.command,
+      ackStatus: row.ackStatus as ControlCommandAckStatus | null,
+    };
+  }
+
+  // JOB-006 — allocate attempt N+1 for a reaped attempt UNDER the job lock.
+  //
+  // ONE-WINNER RACE: the job row is locked FOR UPDATE first, then `max(attempt_number)`
+  // is read under that lock. The allocation proceeds ONLY when the reaped attempt is
+  // still the latest (max == reapedAttemptNumber) — a concurrent creator that already
+  // advanced the chain leaves max > reapedAttemptNumber, so the second caller observes
+  // the successor instead of minting a spurious N+2. The unique
+  // (organization_id, company_id, job_id, attempt_number) constraint is the backstop:
+  // a losing INSERT is a no-op (ON CONFLICT DO NOTHING) and reports `observed`. The
+  // attempt-ready outbox row is created in the SAME transaction (unique per attempt),
+  // and the backoff is written once (immutable) onto the new attempt.
+  async function allocateRetry(input: RetryAllocationInput): Promise<RetryAllocationResult> {
+    const [job] = await tx.select({ id: jobs.id }).from(jobs).where(and(
+      eq(jobs.organizationId, input.organizationId),
+      eq(jobs.companyId, input.companyId),
+      eq(jobs.id, input.jobId),
+    )).for("update").limit(1);
+    if (!job) return { status: "job_missing", attemptNumber: null, attemptId: null, backoffUntil: null };
+
+    const [{ maxNum }] = await tx.select({
+      maxNum: sql<number>`COALESCE(MAX(${jobAttempts.attemptNumber}), 0)`,
+    }).from(jobAttempts).where(and(
+      eq(jobAttempts.organizationId, input.organizationId),
+      eq(jobAttempts.companyId, input.companyId),
+      eq(jobAttempts.jobId, input.jobId),
+    ));
+    const latest = Number(maxNum);
+    if (latest !== input.reapedAttemptNumber) {
+      // A successor already exists (or the reaped attempt is not the head) — observe.
+      return { status: "not_latest", attemptNumber: latest, attemptId: null, backoffUntil: null };
+    }
+
+    const [reaped] = await tx.select().from(jobAttempts).where(and(
+      eq(jobAttempts.organizationId, input.organizationId),
+      eq(jobAttempts.companyId, input.companyId),
+      eq(jobAttempts.jobId, input.jobId),
+      eq(jobAttempts.id, input.reapedAttemptId),
+    )).limit(1);
+    if (!reaped) return { status: "job_missing", attemptNumber: null, attemptId: null, backoffUntil: null };
+
+    const nextNumber = input.reapedAttemptNumber + 1;
+    const backoffMs = computeRetryBackoffMs(
+      input.reapedAttemptNumber,
+      input.baseBackoffMs,
+      input.maxBackoffMs,
+    );
+    const backoffUntil = new Date(input.now.getTime() + backoffMs);
+
+    const [insertedAttempt] = await tx.insert(jobAttempts).values({
+      organizationId: input.organizationId,
+      companyId: input.companyId,
+      jobId: input.jobId,
+      attemptNumber: nextNumber,
+      status: "pending",
+      // Copy the reaped attempt's immutable placement snapshot verbatim so N+1 is
+      // dispatchable to the same target (re-placement is JOB-009, out of scope).
+      placementDisposition: reaped.placementDisposition,
+      placementOwner: reaped.placementOwner,
+      placementTargetId: reaped.placementTargetId,
+      placementTargetClass: reaped.placementTargetClass,
+      placementTargetScope: reaped.placementTargetScope,
+      placementTargetGeneration: reaped.placementTargetGeneration,
+      placementProfileHash: reaped.placementProfileHash,
+      placementProviderConstraintHash: reaped.placementProviderConstraintHash,
+      placementFallbackDisposition: reaped.placementFallbackDisposition,
+      placementReasonCode: reaped.placementReasonCode,
+      placementMode: reaped.placementMode,
+      placementLeaseEligible: reaped.placementLeaseEligible,
+      placementInputDigest: reaped.placementInputDigest,
+      placementPolicyDigest: reaped.placementPolicyDigest,
+      placementDecidedAt: reaped.placementDecidedAt,
+      backoffUntil,
+      createdAt: input.now,
+      updatedAt: input.now,
+    }).onConflictDoNothing({
+      target: [
+        jobAttempts.organizationId,
+        jobAttempts.companyId,
+        jobAttempts.jobId,
+        jobAttempts.attemptNumber,
+      ],
+    }).returning({ id: jobAttempts.id });
+    if (!insertedAttempt) {
+      return { status: "observed", attemptNumber: nextNumber, attemptId: null, backoffUntil: null };
+    }
+
+    // Reset the job to queued at the backoff instant and enqueue the attempt-ready
+    // outbox row (unique per attempt) — both idempotent against a terminal job.
+    await tx.update(jobs).set({
+      status: "queued",
+      availableAt: backoffUntil,
+      updatedAt: sql`clock_timestamp()`,
+    }).where(and(
+      eq(jobs.organizationId, input.organizationId),
+      eq(jobs.companyId, input.companyId),
+      eq(jobs.id, input.jobId),
+      notInArray(jobs.status, [...JOB_TERMINAL_STATUSES]),
+    ));
+    await tx.insert(jobOutbox).values({
+      organizationId: input.organizationId,
+      companyId: input.companyId,
+      jobId: input.jobId,
+      attemptId: insertedAttempt.id,
+      kind: "attempt_ready",
+      status: "pending",
+      payload: {
+        organizationId: input.organizationId,
+        companyId: input.companyId,
+        jobId: input.jobId,
+        attemptId: insertedAttempt.id,
+        sourceKind: "retry",
+      },
+      availableAt: backoffUntil,
+    }).onConflictDoNothing({
+      target: [jobOutbox.organizationId, jobOutbox.attemptId, jobOutbox.kind],
+    });
+
+    return { status: "created", attemptNumber: nextNumber, attemptId: insertedAttempt.id, backoffUntil };
   }
 
   async function admittedUserRequester(input: {
@@ -1667,6 +1966,19 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         gt(leases.expiresAt, sql`clock_timestamp()`),
       )).returning();
       if (!lease || !lease.expiresAt) throw new JobFenceError("stale_fence");
+      // JOB-006 — surface a queued, un-ACKed cancel/graceful_stop control command to
+      // the worker through the frozen renew response. The worker learns of a pending
+      // control on renewal and drains gracefully; the durable command remains for the
+      // explicit control-ACK path. Only an un-ACKed cancel/graceful_stop drives the
+      // frozen `cancelRequested` flag.
+      const [pendingCancel] = await tx.select({
+        reason: jobControlCommands.reason,
+      }).from(jobControlCommands).where(and(
+        eq(jobControlCommands.organizationId, input.organizationId),
+        eq(jobControlCommands.leaseId, input.leaseId),
+        inArray(jobControlCommands.commandKind, ["cancel", "graceful_stop"]),
+        isNull(jobControlCommands.ackStatus),
+      )).orderBy(asc(jobControlCommands.commandSeq)).limit(1);
       // The exact renewed response body — stored in the receipt AND returned, so a
       // lost-response replay reproduces this exact renewal and cannot extend twice.
       const body: Record<string, unknown> = {
@@ -1677,8 +1989,8 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         leaseId: input.leaseId,
         fenceToken: input.fence,
         expiresAt: lease.expiresAt.toISOString(),
-        cancelRequested: false,
-        cancelReason: null,
+        cancelRequested: Boolean(pendingCancel),
+        cancelReason: pendingCancel?.reason ?? null,
         extensions: [],
       };
       await tx.insert(workerOperationReceipts).values({
@@ -1884,9 +2196,36 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     },
 
     async ackControlCommand(input) {
+      // Fence FIRST (throws stale_fence / attempt_terminal). A bare-fence call (no
+      // `ack`) is the JOB-004 back-compat proof that the guarded seam admitted.
       const { lease, attempt } = await guardActiveFence(input);
-      // Control-command storage is JOB-006; JOB-004 lands only the guard.
-      return { leaseId: lease.id, attemptId: attempt.id, guarded: true };
+      if (!input.ack) return { leaseId: lease.id, attemptId: attempt.id, guarded: true };
+      // Record the worker's echoed ACK idempotently. First terminal ACK wins: an
+      // 'accepted' may progress to any status, but a stored terminal
+      // (completed/rejected/stale) is never overwritten, and a replay of the same
+      // status is a no-op re-write.
+      const [row] = await tx.update(jobControlCommands).set({
+        ackStatus: input.ack.status,
+        ackObservedAt: input.ack.observedAt,
+        ackDetail: input.ack.detail,
+        ackedAt: sql`clock_timestamp()`,
+        updatedAt: sql`clock_timestamp()`,
+      }).where(and(
+        eq(jobControlCommands.organizationId, input.organizationId),
+        eq(jobControlCommands.leaseId, input.leaseId),
+        eq(jobControlCommands.commandId, input.ack.commandId),
+        or(
+          isNull(jobControlCommands.ackStatus),
+          eq(jobControlCommands.ackStatus, "accepted"),
+          eq(jobControlCommands.ackStatus, input.ack.status),
+        ),
+      )).returning({ id: jobControlCommands.id });
+      return {
+        leaseId: lease.id,
+        attemptId: attempt.id,
+        guarded: true,
+        ackOutcome: { applied: Boolean(row), status: input.ack.status },
+      };
     },
 
     async claimReadyOutbox(input) {
@@ -1977,6 +2316,318 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         eq(jobOutbox.claimToken, input.claimToken),
       )).returning({ id: jobOutbox.id });
       return delivered.length;
+    },
+
+    // ---- JOB-006 cancellation + reaper/reconciliation ----------------------
+    async requestCancellation(input) {
+      // GLOBAL lock order lease -> attempt -> job (the job is locked LAST) — identical to
+      // the reaper (reapExpiredLeases: lease -> attempt -> job) and the worker
+      // event-ingest/projection path (guardActiveFence locks lease+attempt FOR UPDATE;
+      // applyProjectionForFence then UPDATEs the job). Locking the job FIRST here would
+      // form a wait-for cycle and deadlock (40P01) with a concurrent reap or terminal-event
+      // flush on the same job. Lock the one live lease FIRST (at most one offered/active per
+      // job — leases_active_per_attempt_idx partial unique).
+      const [liveLease] = await tx.select().from(leases).where(and(
+        eq(leases.organizationId, input.organizationId),
+        eq(leases.companyId, input.companyId),
+        eq(leases.jobId, input.jobId),
+        inArray(leases.status, ["offered", "active"]),
+      )).orderBy(desc(leases.createdAt)).for("update").limit(1);
+
+      // Then the attempt: the live lease's attempt if present, else the latest attempt.
+      const [attempt] = liveLease
+        ? await tx.select().from(jobAttempts).where(and(
+          eq(jobAttempts.organizationId, input.organizationId),
+          eq(jobAttempts.companyId, input.companyId),
+          eq(jobAttempts.jobId, input.jobId),
+          eq(jobAttempts.id, liveLease.attemptId),
+        )).for("update").limit(1)
+        : await tx.select().from(jobAttempts).where(and(
+          eq(jobAttempts.organizationId, input.organizationId),
+          eq(jobAttempts.companyId, input.companyId),
+          eq(jobAttempts.jobId, input.jobId),
+        )).orderBy(desc(jobAttempts.attemptNumber)).for("update").limit(1);
+
+      // Finally the job (LAST).
+      const [job] = await tx.select().from(jobs).where(and(
+        eq(jobs.organizationId, input.organizationId),
+        eq(jobs.companyId, input.companyId),
+        eq(jobs.id, input.jobId),
+      )).for("update").limit(1);
+      if (!job) return { status: "not_found", command: null };
+      if ((JOB_TERMINAL_STATUSES as readonly string[]).includes(job.status)) {
+        return { status: "job_terminal", command: null };
+      }
+
+      const lease = liveLease;
+      if (!lease || !attempt || !lease.workerId || !lease.attemptNumber) {
+        // No fenced worker to drain: the reaper's expired-lease scan never reaches an
+        // unleased attempt (a queued/pending job, or a retry N+1 still in backoff), and
+        // claimReadyOutbox will not dispatch a cancel_requested job — so it would hang
+        // forever in cancel_requested. Finalize the cancellation DIRECTLY (all-or-nothing,
+        // notInArray-terminal so a concurrent winner is never overwritten) under the locks
+        // we already hold.
+        if (attempt) {
+          await tx.update(jobAttempts).set({
+            status: "cancelled",
+            updatedAt: sql`clock_timestamp()`,
+          }).where(and(
+            eq(jobAttempts.organizationId, input.organizationId),
+            eq(jobAttempts.companyId, input.companyId),
+            eq(jobAttempts.jobId, input.jobId),
+            eq(jobAttempts.id, attempt.id),
+            notInArray(jobAttempts.status, [...TERMINAL_ATTEMPT_STATUSES]),
+          ));
+        }
+        await tx.update(jobs).set({
+          status: "cancelled",
+          updatedAt: sql`clock_timestamp()`,
+        }).where(and(
+          eq(jobs.organizationId, input.organizationId),
+          eq(jobs.companyId, input.companyId),
+          eq(jobs.id, input.jobId),
+          notInArray(jobs.status, [...JOB_TERMINAL_STATUSES]),
+        ));
+        return { status: "cancelled", command: null };
+      }
+
+      // A fenced worker holds the lease: mark cancel_requested (conditional on non-terminal
+      // → idempotent) and queue ONE cancel command; the worker ACKs + the reaper finalizes
+      // when the lease expires or completes.
+      await tx.update(jobs).set({
+        status: "cancel_requested",
+        updatedAt: sql`clock_timestamp()`,
+      }).where(and(
+        eq(jobs.organizationId, input.organizationId),
+        eq(jobs.companyId, input.companyId),
+        eq(jobs.id, input.jobId),
+        inArray(jobs.status, ["queued", "running", "cancel_requested"]),
+      ));
+      await tx.update(jobAttempts).set({
+        status: "cancel_requested",
+        updatedAt: sql`clock_timestamp()`,
+      }).where(and(
+        eq(jobAttempts.organizationId, input.organizationId),
+        eq(jobAttempts.companyId, input.companyId),
+        eq(jobAttempts.jobId, input.jobId),
+        eq(jobAttempts.id, attempt.id),
+        inArray(jobAttempts.status, ["pending", "offered", "leased", "running", "cancel_requested"]),
+      ));
+
+      // Idempotent: one cancel command per lease. A prior cancel replays as-is.
+      const [existing] = await tx.select().from(jobControlCommands).where(and(
+        eq(jobControlCommands.organizationId, input.organizationId),
+        eq(jobControlCommands.leaseId, lease.id),
+        eq(jobControlCommands.commandKind, "cancel"),
+      )).orderBy(asc(jobControlCommands.commandSeq)).limit(1);
+      if (existing) return { status: "already_requested", command: toQueuedControlCommand(existing) };
+
+      // Allocate the next monotonic per-lease sequence under the lease lock.
+      const [{ maxSeq }] = await tx.select({
+        maxSeq: sql<number>`COALESCE(MAX(${jobControlCommands.commandSeq}), 0)`,
+      }).from(jobControlCommands).where(and(
+        eq(jobControlCommands.organizationId, input.organizationId),
+        eq(jobControlCommands.leaseId, lease.id),
+      ));
+      const commandSeq = Number(maxSeq) + 1;
+      const commandBody: Record<string, unknown> = {
+        protocolVersion: 1,
+        audience: "control_channel",
+        commandId: input.commandId,
+        commandSeq,
+        idempotencyKey: input.commandId,
+        issuedAt: input.now.toISOString(),
+        nonce: randomUUID(),
+        organizationId: input.organizationId,
+        companyId: input.companyId,
+        workerId: lease.workerId,
+        jobId: input.jobId,
+        attempt: lease.attemptNumber,
+        leaseId: lease.id,
+        fenceToken: lease.fence,
+        commandKind: "cancel",
+        reason: input.reason,
+        graceful: input.graceful,
+      };
+      const [inserted] = await tx.insert(jobControlCommands).values({
+        organizationId: input.organizationId,
+        companyId: input.companyId,
+        jobId: input.jobId,
+        attemptId: attempt.id,
+        attemptNumber: lease.attemptNumber,
+        leaseId: lease.id,
+        commandId: input.commandId,
+        commandSeq,
+        commandKind: "cancel",
+        fenceToken: lease.fence,
+        reason: input.reason,
+        graceful: input.graceful,
+        command: commandBody,
+      }).onConflictDoNothing({
+        target: [
+          jobControlCommands.organizationId,
+          jobControlCommands.leaseId,
+          jobControlCommands.commandId,
+        ],
+      }).returning();
+      if (inserted) return { status: "queued", command: toQueuedControlCommand(inserted) };
+      // Lost the (org, lease, command_id) race — re-read the winning row.
+      const [row] = await tx.select().from(jobControlCommands).where(and(
+        eq(jobControlCommands.organizationId, input.organizationId),
+        eq(jobControlCommands.leaseId, lease.id),
+        eq(jobControlCommands.commandId, input.commandId),
+      )).limit(1);
+      return { status: "already_requested", command: row ? toQueuedControlCommand(row) : null };
+    },
+
+    async listPendingControlCommands(input) {
+      const rows = await tx.select().from(jobControlCommands).where(and(
+        eq(jobControlCommands.organizationId, input.organizationId),
+        eq(jobControlCommands.leaseId, input.leaseId),
+        isNull(jobControlCommands.ackStatus),
+      )).orderBy(asc(jobControlCommands.commandSeq));
+      return rows.map(toQueuedControlCommand);
+    },
+
+    async allocateRetryAttempt(input) {
+      return allocateRetry(input);
+    },
+
+    async reapExpiredLeases(input) {
+      const bounded = Math.max(1, Math.min(128, Math.floor(input.limit)));
+      const result: ReapExpiredLeasesResult = {
+        scanned: 0, revoked: 0, retried: 0, deadLettered: 0, cancelled: 0, finalized: 0,
+      };
+      const terminalAttempt = [...TERMINAL_ATTEMPT_STATUSES];
+
+      // Claim a bounded batch of EXPIRED leases (offered past ack deadline, or any
+      // offered/active past expiry). SKIP LOCKED so a concurrent tick/worker never
+      // double-processes the same lease.
+      const expired = await tx.select({
+        id: leases.id,
+        companyId: leases.companyId,
+        jobId: leases.jobId,
+        attemptId: leases.attemptId,
+        attemptNumber: leases.attemptNumber,
+      }).from(leases).where(and(
+        eq(leases.organizationId, input.organizationId),
+        inArray(leases.status, ["offered", "active"]),
+        or(
+          lte(leases.expiresAt, sql`clock_timestamp()`),
+          and(eq(leases.status, "offered"), lte(leases.ackDeadline, sql`clock_timestamp()`)),
+        ),
+      )).orderBy(asc(leases.expiresAt), asc(leases.id))
+        .limit(bounded)
+        .for("update", { skipLocked: true });
+
+      for (const lease of expired) {
+        result.scanned += 1;
+        if (!lease.companyId || !lease.jobId) continue;
+
+        // Lock attempt THEN job (attempt→job order matches the worker projection
+        // path, so the reaper never forms a lock cycle with a governed mutation).
+        const [attempt] = await tx.select().from(jobAttempts).where(and(
+          eq(jobAttempts.organizationId, input.organizationId),
+          eq(jobAttempts.companyId, lease.companyId),
+          eq(jobAttempts.jobId, lease.jobId),
+          eq(jobAttempts.id, lease.attemptId),
+        )).for("update").limit(1);
+        if (!attempt) continue;
+        const [job] = await tx.select().from(jobs).where(and(
+          eq(jobs.organizationId, input.organizationId),
+          eq(jobs.companyId, lease.companyId),
+          eq(jobs.id, lease.jobId),
+        )).for("update").limit(1);
+        if (!job) continue;
+
+        const cancelling = job.status === "cancel_requested";
+        const succeeded = attempt.status === "succeeded";
+        const newLeaseStatus = succeeded ? "released" : cancelling ? "revoked" : "expired";
+
+        // PERMANENTLY revoke the fence (conditional → idempotent if another reaper
+        // already converged this lease). A losing update handled the outcome.
+        const [revoked] = await tx.update(leases).set({
+          status: newLeaseStatus,
+          releasedAt: sql`clock_timestamp()`,
+          updatedAt: sql`clock_timestamp()`,
+        }).where(and(
+          eq(leases.organizationId, input.organizationId),
+          eq(leases.id, lease.id),
+          inArray(leases.status, ["offered", "active"]),
+        )).returning({ id: leases.id });
+        if (!revoked) continue;
+        result.revoked += 1;
+
+        const finalizeJob = async (status: "succeeded" | "cancelled") => {
+          await tx.update(jobs).set({
+            status,
+            updatedAt: sql`clock_timestamp()`,
+          }).where(and(
+            eq(jobs.organizationId, input.organizationId),
+            eq(jobs.companyId, lease.companyId!),
+            eq(jobs.id, lease.jobId!),
+            notInArray(jobs.status, [...JOB_TERMINAL_STATUSES]),
+          ));
+        };
+
+        if (succeeded) {
+          // Worker committed a winning terminal then vanished: finalize, never retry.
+          await finalizeJob("succeeded");
+          result.finalized += 1;
+        } else if (attempt.status === "cancelled" || cancelling) {
+          await tx.update(jobAttempts).set({
+            status: "cancelled",
+            updatedAt: sql`clock_timestamp()`,
+          }).where(and(
+            eq(jobAttempts.organizationId, input.organizationId),
+            eq(jobAttempts.companyId, lease.companyId),
+            eq(jobAttempts.jobId, lease.jobId),
+            eq(jobAttempts.id, attempt.id),
+            notInArray(jobAttempts.status, terminalAttempt),
+          ));
+          await finalizeJob("cancelled");
+          result.cancelled += 1;
+        } else {
+          // Abandoned mid-flight (or a worker-reported failure): fail this attempt,
+          // then retry under the job lock or dead-letter on exhaustion.
+          await tx.update(jobAttempts).set({
+            status: "expired",
+            updatedAt: sql`clock_timestamp()`,
+          }).where(and(
+            eq(jobAttempts.organizationId, input.organizationId),
+            eq(jobAttempts.companyId, lease.companyId),
+            eq(jobAttempts.jobId, lease.jobId),
+            eq(jobAttempts.id, attempt.id),
+            notInArray(jobAttempts.status, terminalAttempt),
+          ));
+          if (attempt.attemptNumber < job.maxAttempts) {
+            const alloc = await allocateRetry({
+              organizationId: input.organizationId,
+              companyId: lease.companyId,
+              jobId: lease.jobId,
+              reapedAttemptId: attempt.id,
+              reapedAttemptNumber: attempt.attemptNumber,
+              baseBackoffMs: input.baseBackoffMs,
+              maxBackoffMs: input.maxBackoffMs,
+              now: input.now,
+            });
+            if (alloc.status === "created") result.retried += 1;
+          } else {
+            await tx.update(jobs).set({
+              status: "dead_letter",
+              deadLetterReason: "retry_exhausted",
+              updatedAt: sql`clock_timestamp()`,
+            }).where(and(
+              eq(jobs.organizationId, input.organizationId),
+              eq(jobs.companyId, lease.companyId),
+              eq(jobs.id, lease.jobId),
+              notInArray(jobs.status, [...JOB_TERMINAL_STATUSES]),
+            ));
+            result.deadLettered += 1;
+          }
+        }
+      }
+      return result;
     },
   };
 }

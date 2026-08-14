@@ -62,6 +62,13 @@ export const jobs = pgTable(
     priority: integer("priority").notNull().default(0),
     availableAt: timestamp("available_at", { withTimezone: true }).notNull().defaultNow(),
     status: text("status").notNull().default("queued"),
+    // JOB-006 server retry policy + dead-letter reason. `max_attempts` is the retry
+    // ceiling the reaper compares `max(attempt_number)` against; the default keeps
+    // pre-JOB-006 kernel rows valid (the reaper is dormant behind the distributed
+    // flag). `dead_letter_reason` is set once when retries are exhausted (or an
+    // operator dead-letters), and is NULL otherwise.
+    maxAttempts: integer("max_attempts").notNull().default(3),
+    deadLetterReason: text("dead_letter_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

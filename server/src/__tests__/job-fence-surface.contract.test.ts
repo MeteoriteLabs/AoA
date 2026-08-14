@@ -89,6 +89,13 @@ const EXPECTED_UNGUARDED = [
   "readAcceptedThroughSeq",
   "claimReadyOutbox",
   "deliverReadyOutbox",
+  // JOB-006 server-authority (operator/reaper) surface: these lock the authoritative
+  // job/attempt/lease rows directly and PERMANENTLY revoke the fence, so they are
+  // deliberately NOT worker-fence-guarded (the reaper acts when the fence is stale).
+  "requestCancellation",
+  "listPendingControlCommands",
+  "allocateRetryAttempt",
+  "reapExpiredLeases",
 ];
 
 function parse(path: string): ts.SourceFile {

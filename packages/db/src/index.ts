@@ -58,7 +58,21 @@ export type {
   EventIngestOutcome,
   ProjectionInput,
   ProjectionTransition,
+  JobControlCommandKind,
+  ControlCommandAckStatus,
+  QueuedControlCommand,
+  ControlCommandAckInput,
+  ControlCommandAckOutcome,
+  RequestCancellationInput,
+  CancellationStatus,
+  CancellationOutcome,
+  RetryAllocationInput,
+  RetryAllocationStatus,
+  RetryAllocationResult,
+  ReapExpiredLeasesInput,
+  ReapExpiredLeasesResult,
 } from "./repositories/tenant/job-control.js";
+export { computeRetryBackoffMs } from "./repositories/tenant/job-control.js";
 // JOB-004: the ONE common active-fence predicate + the CLOSED governed-mutator
 // surface. Re-exported from the barrel so `server/src/services/job-fencing.ts`
 // shares the exact same seam the tenant repository's guarded mutators gate on.

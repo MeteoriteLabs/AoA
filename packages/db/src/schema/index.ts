@@ -84,6 +84,13 @@ export {
   type JobProjectionReceipt,
   type NewJobProjectionReceipt,
 } from "./job_projection_receipts.js";
+// JOB-006 (E3 job control): durable, monotonically-sequenced control-command channel
+// (cancel / drain / graceful_stop) + worker ACK, per fenced lease.
+export {
+  jobControlCommands,
+  type JobControlCommand,
+  type NewJobControlCommand,
+} from "./job_control_commands.js";
 // DEP-003 (E6 deployment harness): operator-gated 0188 cutover marker (platform infra,
 // no organization_id; aoa_operator write / aoa_app read-only / tenants invisible).
 export {

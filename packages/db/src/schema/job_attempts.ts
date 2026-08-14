@@ -42,6 +42,12 @@ export const jobAttempts = pgTable(
     placementInputDigest: text("placement_input_digest"),
     placementPolicyDigest: text("placement_policy_digest"),
     placementDecidedAt: timestamp("placement_decided_at", { withTimezone: true }),
+    // JOB-006 immutable retry backoff. Set ONCE when the reaper allocates this
+    // attempt as a retry (N>1) — the earliest instant it may be dispatched. NULL for
+    // the initial attempt (attempt_number = 1). The reaper drives the job's
+    // available_at + attempt-ready outbox available_at from this value, so it is
+    // never mutated after creation.
+    backoffUntil: timestamp("backoff_until", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

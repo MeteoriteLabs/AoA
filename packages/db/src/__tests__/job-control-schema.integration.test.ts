@@ -179,3 +179,85 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
     });
   },
 );
+
+describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
+  "JOB-006 control command + retry schema",
+  () => {
+    it("stores the durable control-command channel columns and the additive retry columns", async () => {
+      const client = database();
+      const columns = await client<{ table_name: string; column_name: string; is_nullable: string }[]>`
+        SELECT table_name, column_name, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name IN ('job_control_commands', 'jobs', 'job_attempts')
+      `;
+      const names = new Set(columns.map((row) => `${row.table_name}.${row.column_name}`));
+      for (const name of [
+        "job_control_commands.command_id",
+        "job_control_commands.command_seq",
+        "job_control_commands.command_kind",
+        "job_control_commands.fence_token",
+        "job_control_commands.command",
+        "job_control_commands.ack_status",
+        "job_control_commands.acked_at",
+        "jobs.max_attempts",
+        "jobs.dead_letter_reason",
+        "job_attempts.backoff_until",
+      ]) expect(names, name).toContain(name);
+      // ack columns + dead_letter_reason + backoff are nullable; command identity is NOT NULL.
+      const cmd = columns.filter((row) => row.table_name === "job_control_commands");
+      const nullableCmd = new Set(
+        cmd.filter((row) => row.is_nullable === "YES").map((row) => row.column_name),
+      );
+      expect(nullableCmd).toContain("ack_status");
+      expect(nullableCmd).not.toContain("command_seq");
+      expect(nullableCmd).not.toContain("command_id");
+    });
+
+    it("pins the per-lease command uniqueness (command id and monotonic sequence)", async () => {
+      const client = database();
+      const constraints = await client<{ definition: string }[]>`
+        SELECT pg_get_constraintdef(con.oid) AS definition
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid
+        WHERE rel.relname = 'job_control_commands' AND con.contype = 'u'
+      `;
+      const defs = constraints.map((row) => row.definition);
+      expect(defs).toContain("UNIQUE (organization_id, lease_id, command_id)");
+      expect(defs).toContain("UNIQUE (organization_id, lease_id, command_seq)");
+    });
+
+    it("uses only composite tenant parent FKs (no single-column existence oracle)", async () => {
+      const client = database();
+      const fks = await client<{ definition: string }[]>`
+        SELECT pg_get_constraintdef(con.oid) AS definition
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid
+        WHERE con.contype = 'f' AND rel.relname = 'job_control_commands'
+      `;
+      const defs = fks.map((row) => row.definition);
+      expect(defs).toContain(
+        "FOREIGN KEY (organization_id, company_id, job_id, attempt_id) REFERENCES job_attempts(organization_id, company_id, job_id, id) ON DELETE CASCADE",
+      );
+      expect(defs).toContain(
+        "FOREIGN KEY (organization_id, company_id, job_id, attempt_id, lease_id) REFERENCES leases(organization_id, company_id, job_id, attempt_id, id) ON DELETE CASCADE",
+      );
+      expect(defs.some((def) => /FOREIGN KEY \((company_id|job_id|attempt_id|lease_id)\)/.test(def))).toBe(false);
+    });
+
+    it("forces tenant RLS on the control-command table with the aoa_app-scoped policy", async () => {
+      const client = database();
+      const [row] = await client<{ relrowsecurity: boolean; relforcerowsecurity: boolean }[]>`
+        SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'job_control_commands'
+      `;
+      expect(row).toEqual({ relrowsecurity: true, relforcerowsecurity: true });
+      const policies = await client<{ policyname: string; roles: string[] }[]>`
+        SELECT policyname, roles FROM pg_policies WHERE tablename = 'job_control_commands'
+      `;
+      expect(policies).toContainEqual({
+        policyname: "job_control_commands_tenant_isolation",
+        roles: ["aoa_app"],
+      });
+    });
+  },
+);
