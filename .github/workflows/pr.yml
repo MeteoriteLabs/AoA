@@ -162,6 +162,11 @@ jobs:
           node scripts/check-device-proof-vectors.mjs
           node --test scripts/check-device-proof-vectors.test.mjs
 
+      - name: Workspace-snapshot hash vectors (DAT-001)
+        run: |
+          node scripts/check-workspace-snapshot-vectors.mjs
+          node --test scripts/check-workspace-snapshot-vectors.test.mjs
+
       - name: CI lane routing invariants (DEP-004)
         run: |
           node scripts/check-ci-lanes.mjs

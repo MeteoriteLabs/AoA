@@ -422,3 +422,45 @@ export type {
 
 export { createStartupSteps, runStartupSteps } from "./lifecycle/startup-steps.js";
 export type { StartupStep, StartupReconciler, StartupLogger } from "./lifecycle/startup-steps.js";
+
+// --- DAT-001: immutable workspace snapshot producer --------------------------
+
+export {
+  buildWorkspaceManifest,
+  parseManifestFailClosed,
+  assertRepresentable,
+  assertNoCollisions,
+  normalizeRelPath,
+  WorkspaceSnapshotError,
+  DEFAULT_SNAPSHOT_LIMITS,
+  SCHEMA_MAX_ENTRIES,
+  compareUtf8,
+  sortSnapshotEntries,
+  computeContentRevision,
+  computeManifestHash,
+  AOA_BUILTIN_IGNORE_RULES,
+  classifyExplicitRule,
+  isIgnoredByExplicit,
+  computeExplicitIgnoreDigest,
+  computeGitignoreDigest,
+  createGitRunner,
+  GitRunnerError,
+  GIT_HARDENING_FLAGS,
+  captureGitBase,
+} from "./snapshot/index.js";
+export type {
+  BuildWorkspaceManifestInput,
+  BuildWorkspaceManifestResult,
+  SnapshotBudget,
+  SnapshotLimits,
+  Sha256Fn,
+  SnapshotEntry,
+  IgnorePolicyRecord,
+  InclusionRecord,
+  IgnorePolicyInput,
+  GitignoreSource,
+  GitRunner,
+  GitRunResult,
+  CaptureGitBaseInput,
+  CapturedGitBase,
+} from "./snapshot/index.js";
