@@ -1,11 +1,22 @@
 import { Router, type Request } from "express";
 import type { Db } from "@armyofagents/db";
 import { submitJobCommandSchema, type SubmitJobCommand } from "@armyofagents/shared";
+import { z } from "zod";
 import { validate } from "../middleware/validate.js";
-import { HttpError } from "../errors.js";
+import { HttpError, forbidden, notFound } from "../errors.js";
+import { assertBoard } from "./authz.js";
+import { organizationAccessService } from "../services/organization-access.js";
 import { jobSubmissionService, type AuthenticatedJobPrincipal } from "../services/job-submission.js";
+import { createJobOperationsService } from "../services/job-operations.js";
 import { TenantAdmissionDeniedError } from "../services/tenant-admission.js";
 import { logger } from "../middleware/logger.js";
+
+const uuid = z.string().uuid();
+
+/** JOB-008 operator mutation body: a bounded human-readable reason. */
+const operatorReasonSchema = z
+  .object({ reason: z.string().min(1).max(1000) })
+  .strict();
 
 function principalFor(req: Request, companyId: string, organizationId: string): AuthenticatedJobPrincipal | null {
   const actor = req.actor;
@@ -50,9 +61,30 @@ function principalFor(req: Request, companyId: string, organizationId: string): 
   return null;
 }
 
-export function jobControlRoutes(appDb: Db) {
+export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
   const router = Router();
-  const service = jobSubmissionService(appDb);
+  const service = jobSubmissionService(opts.appDb);
+  const operations = createJobOperationsService({ appDb: opts.appDb, operatorDb: opts.operatorDb });
+  const orgAccess = organizationAccessService(opts.db);
+
+  // JOB-008 authority gate — replicates execution-targets.ts assertOrgAdmin. Runs FIRST
+  // on every operator route so a caller lacking authority gets a uniform 403 whether or
+  // not the org/resource exists (no cross-tenant existence disclosure). `assertBoard`
+  // yields 401 for an unauthenticated actor and 403 for a non-board actor; the org
+  // fleet-management cap (`execution_target:manage`, owner/admin only) is the real gate.
+  async function assertOrgAdmin(req: Request, organizationId: string): Promise<void> {
+    // rbac: paired-via-helper — orgAccess.canOrg below is the scoped gate.
+    assertBoard(req);
+    const userId = req.actor.type === "board" ? (req.actor.userId ?? null) : null;
+    if (!userId) throw forbidden("Sign in to manage job operations");
+    if (!(await orgAccess.canOrg(organizationId, userId, "execution_target:manage"))) {
+      throw forbidden("You are not an owner/admin of this organization");
+    }
+  }
+
+  function operatorUserId(req: Request): string {
+    return req.actor.type === "board" ? (req.actor.userId ?? "board") : "board";
+  }
 
   router.post(
     "/organizations/:organizationId/companies/:companyId/jobs",
@@ -126,5 +158,138 @@ export function jobControlRoutes(appDb: Db) {
       }
     },
   );
+
+  // ── JOB-008 operator READ surface (redacted; manual Refresh only — no realtime) ──
+
+  // List the tenant's jobs (redacted aggregate rows).
+  router.get(
+    "/organizations/:organizationId/companies/:companyId/jobs",
+    async (req, res, next) => {
+      try {
+        const organizationId = uuid.parse(req.params.organizationId);
+        const companyId = uuid.parse(req.params.companyId);
+        await assertOrgAdmin(req, organizationId);
+        res.json(await operations.listJobs(organizationId, companyId));
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // A single job's redacted detail (job + attempts + leases + event metadata).
+  router.get(
+    "/organizations/:organizationId/companies/:companyId/jobs/:jobId",
+    async (req, res, next) => {
+      try {
+        const organizationId = uuid.parse(req.params.organizationId);
+        const companyId = uuid.parse(req.params.companyId);
+        const jobId = uuid.parse(req.params.jobId);
+        await assertOrgAdmin(req, organizationId);
+        const detail = await operations.getJobDetail(organizationId, companyId, jobId);
+        // Uniform 404 — indistinguishable from a cross-tenant-existing job (no oracle).
+        if (!detail) throw notFound("Job not found");
+        res.json(detail);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // List the tenant's workers (redacted; org-scoped, never platform/null-org rows).
+  router.get("/organizations/:organizationId/workers", async (req, res, next) => {
+    try {
+      const organizationId = uuid.parse(req.params.organizationId);
+      await assertOrgAdmin(req, organizationId);
+      res.json(await operations.listWorkers(organizationId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── JOB-008 operator MUTATION surface (delegate to JOB-006/007; audit every success) ──
+  //
+  // NOTE: the operator CANCEL route lives in worker-control.ts (JOB-006's existing
+  //   POST .../jobs/:jobId/cancel — board-auth'd, execution_target:manage scoped,
+  //   requestCancellation-delegating, audited). It is REUSED, not duplicated here, so the
+  //   same path is never double-registered across two /api routers. DRAIN below is the
+  //   job-level GRACEFUL variant (requestCancellation graceful:true) with its own audit.
+
+  router.post(
+    "/organizations/:organizationId/companies/:companyId/jobs/:jobId/drain",
+    validate(operatorReasonSchema),
+    async (req, res, next) => {
+      try {
+        const organizationId = uuid.parse(req.params.organizationId);
+        const companyId = uuid.parse(req.params.companyId);
+        const jobId = uuid.parse(req.params.jobId);
+        await assertOrgAdmin(req, organizationId);
+        const { reason } = req.body as { reason: string };
+        const outcome = await operations.drainJob(organizationId, companyId, jobId, reason);
+        if (outcome.status === "not_found") {
+          // Uniform 404, no audit line (absent === cross-tenant-existing).
+          throw notFound("Job not found");
+        }
+        logger.info(
+          {
+            action: "job.drain.requested",
+            organizationId,
+            companyId,
+            jobId,
+            operatorUserId: operatorUserId(req),
+            outcome: outcome.status,
+            reasonCode: "job_drain_requested",
+          },
+          "job drain requested",
+        );
+        res.status(202).json({
+          status: outcome.status,
+          command: outcome.command
+            ? { commandId: outcome.command.commandId, commandSeq: outcome.command.commandSeq }
+            : null,
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Worker-scoped revocation (R2): the cross-tenant execution target id is resolved
+  // server-side inside the tenant and never received from the client.
+  router.post(
+    "/organizations/:organizationId/workers/:workerId/revoke",
+    validate(operatorReasonSchema),
+    async (req, res, next) => {
+      try {
+        const organizationId = uuid.parse(req.params.organizationId);
+        const workerId = uuid.parse(req.params.workerId);
+        await assertOrgAdmin(req, organizationId);
+        const { reason } = req.body as { reason: string };
+        const result = await operations.revokeWorker(organizationId, workerId, reason);
+        if (result.reason === "not_found") {
+          // Uniform 404, no audit line, no delegate call.
+          throw notFound("Worker not found");
+        }
+        logger.info(
+          {
+            action: "worker.revoke.requested",
+            organizationId,
+            workerId,
+            operatorUserId: operatorUserId(req),
+            outcome: result.revoked ? "revoked" : (result.reason ?? "noop"),
+            reasonCode: "worker_revoke_requested",
+          },
+          "worker revocation requested",
+        );
+        res.status(200).json({
+          revoked: result.revoked,
+          reason: result.reason,
+          revokedGeneration: result.revokedGeneration,
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   return router;
 }

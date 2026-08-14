@@ -439,7 +439,7 @@ export async function createApp(
     if (!opts.workerSessionSigningKey || Buffer.byteLength(opts.workerSessionSigningKey) < 32) {
       throw new Error("Distributed worker control requires AOA_WORKER_SESSION_SIGNING_KEY with at least 32 bytes");
     }
-    api.use(jobControlRoutes(opts.tenantAppDb));
+    api.use(jobControlRoutes({ db, appDb: opts.tenantAppDb, operatorDb: opts.operatorDb }));
     // Imported here (not at module top) so a flag-off startup never loads the worker-control /
     // job-leasing / job-control-metrics graph. The same instance flows through from the composition
     // root, so telemetry is one shared surface across scheduler, outbox, and leasing.
