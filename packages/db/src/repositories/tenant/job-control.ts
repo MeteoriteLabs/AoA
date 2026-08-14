@@ -431,7 +431,11 @@ export type GovernedProjectionKind =
   // one accepted worker usage event) to the distributed attempt. Keyed for idempotency
   // by (projectionKind, sourceIdentity=`cost:{company}:{eventId}`); written `applied` in
   // the SAME tenant transaction as the charge.
-  | "authoritative_cost";
+  | "authoritative_cost"
+  // JOB-013 — links an `activity_log` row (the transactional audit for one accepted
+  // state/control/accounting mutation) to the distributed attempt; written `applied`
+  // in the SAME tenant tx as the activity insert. sourceIdentity=`activity:{company}:{eventId}`.
+  | "activity_audit";
 
 /** ONE server-authored governance projection linking an EXISTING product/runtime
  * aggregate to a distributed attempt. Keyed for idempotency by (projectionKind,

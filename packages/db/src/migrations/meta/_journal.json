@@ -1709,6 +1709,20 @@
       "when": 1786696597106,
       "tag": "0243_job_authoritative_cost_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 244,
+      "version": "7",
+      "when": 1786700681822,
+      "tag": "0244_abnormal_war_machine",
+      "breakpoints": true
+    },
+    {
+      "idx": 245,
+      "version": "7",
+      "when": 1786700681823,
+      "tag": "0245_job_activity_audit_rls",
+      "breakpoints": true
     }
   ]
 }
