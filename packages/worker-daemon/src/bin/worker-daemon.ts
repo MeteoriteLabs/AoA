@@ -28,6 +28,7 @@ import {
   type RenewalLifecycle,
   type ShutdownSignal,
 } from "../lifecycle/shutdown.js";
+import { createStartupSteps, runStartupSteps, type StartupReconciler } from "../lifecycle/startup-steps.js";
 
 /** The subset of `process` the entrypoint needs; injected for tests. */
 export interface ProcessLike {
@@ -72,6 +73,17 @@ export interface BootstrapDeps {
    * (E4-D12; rollback = omit it) — WRK-006 does not rewire the composition root.
    */
   readonly eventOutbox?: EventOutboxLifecycle;
+  /**
+   * The WRK-007 startup reconciler as a one-shot boot seam. When present it runs
+   * ONCE between the health server opening and signal registration — reconciling
+   * locally-known sandboxes + outbox streams against inferred control-plane lease
+   * authority (kill stale, abandon dead-lease streams, quarantine unknown output).
+   * Like the loop / renewal / outbox seams it is INERT until live dispatch is wired
+   * (E4-D12): the current default omits it, so the startup pass runs NOTHING and the
+   * daemon still dispatches no work (rollback = omit it). WRK-007 does not rewire the
+   * composition root to actually run at boot.
+   */
+  readonly reconciler?: StartupReconciler;
 }
 
 export interface BootstrapResult {
@@ -115,6 +127,13 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   const metrics = makeMetrics();
   const health = await startHealth({ host: config.health.host, port: config.health.port }, metrics);
   metrics.setWorkerUp(true);
+
+  // WRK-007: the one-shot startup reconciliation pass runs ONCE here — after the
+  // health server is up, BEFORE signal registration. Gated on presence: with no
+  // reconciler wired (the current default) the step list is empty and nothing runs
+  // (inert; E4-D12), exactly how the lease/renewal/outbox seams degrade to [].
+  const startupSteps = deps.reconciler ? createStartupSteps(deps.reconciler) : [];
+  await runStartupSteps(startupSteps, logger);
 
   // WRK-003 registers lease-stop AHEAD of drain, both ahead of the health-server
   // stop; WRK-005 inserts renewal-stop between them when a renewal driver is

@@ -396,3 +396,29 @@ export type {
   EventOutboxDrainTuning,
   DrainTickSummary,
 } from "./events/event-outbox-drain.js";
+
+// --- WRK-007: restart recovery + orphan reconciliation -----------------------
+
+export {
+  probeLeaseAuthority,
+  buildControlPlaneIsOrphan,
+  createStartupReconciler,
+} from "./supervisor/startup-reconcile.js";
+export type {
+  LeaseLiveness,
+  LeaseAuthorityEntry,
+  LeaseAuthorityMap,
+  ProbeLeaseAuthorityDeps,
+  SandboxDisposition,
+  SandboxOutcomeRecord,
+  StreamOutcomeRecord,
+  QuarantineOutcomeRecord,
+  StartupReconcileResult,
+  StartupReconcilerDeps,
+  StartupOutboxDeps,
+  StartupQuarantineCandidate,
+  StartupReconcilePass,
+} from "./supervisor/startup-reconcile.js";
+
+export { createStartupSteps, runStartupSteps } from "./lifecycle/startup-steps.js";
+export type { StartupStep, StartupReconciler, StartupLogger } from "./lifecycle/startup-steps.js";

@@ -163,6 +163,25 @@ export type FakeRenewDirective =
   | { readonly kind: "error"; readonly status: number; readonly code: ProtocolErrorCode; readonly retryAfterMs?: number | null }
   | { readonly kind: "socket" };
 
+/**
+ * WRK-007 (D6) — per-`leaseId` authority entry. The renew/ack handlers consult this
+ * keyed table BEFORE the global FIFO so a restart-reconciliation probe can infer
+ * lease authority PER LEASE ("lease L renewed / lease M target_revoked") rather than
+ * off arrival order. An un-seeded lease still falls through to the global FIFO.
+ */
+export interface FakeLeaseAuthorityEntry {
+  /** Live ⇒ `lease_renew` renews (extends); dead ⇒ it is rejected/revoked. */
+  readonly live: boolean;
+  /** When live: the expiry the plane returns (else the default renew window). */
+  readonly expiresAt?: string;
+  /** When live: a cooperative cancel rider on the renewed body. */
+  readonly cancelRequested?: boolean;
+  readonly cancelReason?: string | null;
+  /** When dead: how the plane rejects. `target_revoked` ⇒ 409; anything else ⇒ a
+   * 200 `rejected{reason}` (default `stale_fence`). */
+  readonly deadReason?: ProtocolErrorCode;
+}
+
 /** A programmed quarantine response (FIFO) for both the grant and finalize routes. */
 export type FakeQuarantineDirective =
   | { readonly kind: "ok" }
@@ -236,6 +255,9 @@ export interface FakeControlPlane {
   acks(): readonly FakeAckRecord[];
   // --- WRK-005 renew controls ---
   enqueueRenew(directive: FakeRenewDirective): void;
+  /** WRK-007 (D6): seed the per-`leaseId` authority the renew/ack handlers consult
+   * before the global FIFO. Re-seeding replaces the entry. */
+  seedLeaseAuthority(leaseId: string, entry: FakeLeaseAuthorityEntry): void;
   /** Force EVERY renew to respond 401 `unauthorized` (models a persistent poll/ack
    * rejection that recovery cannot clear — drives the recovery-cap trip). */
   forceRenewUnauthorized(on: boolean): void;
@@ -427,6 +449,8 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
   const ackRecords: FakeAckRecord[] = [];
   const renewDirectives: FakeRenewDirective[] = [];
   const renewRecords: FakeRenewRecord[] = [];
+  // WRK-007 (D6): per-`leaseId` authority table (keyed), consulted before the FIFO.
+  const leaseAuthority = new Map<string, FakeLeaseAuthorityEntry>();
   // Idempotency ledger: an already-seen renew key returns the SAME expiry.
   const renewExpiryByKey = new Map<string, string>();
   const quarantineGrantDirectives: FakeQuarantineDirective[] = [];
@@ -922,6 +946,32 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
       return;
     }
 
+    // WRK-007 (D6): a per-`leaseId` authority verdict wins over the global FIFO. A
+    // dead lease can never be re-acknowledged; a live lease falls through to the
+    // default acknowledge (or a programmed directive).
+    const ackAuthority = leaseAuthority.get(parsed.data.body.leaseId);
+    if (ackAuthority !== undefined && !ackAuthority.live) {
+      const deadReason: ProtocolErrorCode = ackAuthority.deadReason ?? "stale_fence";
+      if (deadReason === "target_revoked") {
+        status = 409;
+        outcome = "target_revoked";
+        operationError(res, 409, "target_revoked", correlationId);
+        finish();
+        return;
+      }
+      status = 200;
+      outcome = "rejected";
+      sendJson(res, 200, {
+        protocolVersion: 1,
+        correlationId,
+        serverTime: new Date(now()).toISOString(),
+        outcome: "rejected",
+        reason: deadReason,
+      });
+      finish();
+      return;
+    }
+
     // A programmed ACK directive overrides the default acknowledge — the request is
     // well-formed AND authenticated, so this models the SERVER rejecting an
     // otherwise-valid ACK. `acknowledged` (or an empty queue) falls through.
@@ -1041,6 +1091,65 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
 
     const body = parsed.data.body;
     const idempotencyKey = parsed.data.idempotencyKey;
+
+    // WRK-007 (D6): a per-`leaseId` authority verdict wins over the global FIFO, so a
+    // restart-reconciliation probe gets THIS lease's answer regardless of probe order.
+    const authority = leaseAuthority.get(body.leaseId);
+    if (authority !== undefined) {
+      if (!authority.live) {
+        const deadReason: ProtocolErrorCode = authority.deadReason ?? "stale_fence";
+        if (deadReason === "target_revoked") {
+          status = 409;
+          outcome = "target_revoked";
+          operationError(res, 409, "target_revoked", correlationId);
+          finish();
+          return;
+        }
+        status = 200;
+        outcome = "rejected";
+        sendJson(res, 200, {
+          protocolVersion: 1,
+          correlationId,
+          serverTime: new Date(now()).toISOString(),
+          outcome: "rejected",
+          reason: deadReason,
+        });
+        finish();
+        return;
+      }
+      // Live: renew (extend). Idempotent per key — a replay returns the SAME expiry.
+      let liveExpiresAt: string;
+      const recordedLive = renewExpiryByKey.get(idempotencyKey);
+      if (recordedLive !== undefined) {
+        liveExpiresAt = recordedLive;
+      } else {
+        liveExpiresAt = authority.expiresAt ?? new Date(now() + DEFAULT_RENEW_WINDOW_MS).toISOString();
+        renewExpiryByKey.set(idempotencyKey, liveExpiresAt);
+      }
+      renewRecords.push({ leaseId: body.leaseId, idempotencyKey, expiresAt: liveExpiresAt, deviceThumbprint: auth.thumbprint });
+      status = 200;
+      outcome = "renewed";
+      sendJson(res, 200, {
+        protocolVersion: 1,
+        correlationId,
+        serverTime: new Date(now()).toISOString(),
+        outcome: "renewed",
+        body: {
+          protocolVersion: 1,
+          workerId: body.workerId,
+          jobId: body.jobId,
+          attempt: body.attempt,
+          leaseId: body.leaseId,
+          fenceToken: body.fenceToken,
+          expiresAt: liveExpiresAt,
+          cancelRequested: authority.cancelRequested ?? false,
+          cancelReason: authority.cancelReason ?? null,
+        },
+      });
+      finish();
+      return;
+    }
+
     const directive = renewDirectives.shift();
 
     if (directive && directive.kind === "socket") {
@@ -1526,6 +1635,9 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     },
     enqueueRenew(directive: FakeRenewDirective): void {
       renewDirectives.push(directive);
+    },
+    seedLeaseAuthority(leaseId: string, entry: FakeLeaseAuthorityEntry): void {
+      leaseAuthority.set(leaseId, entry);
     },
     forceRenewUnauthorized(on: boolean): void {
       renewUnauthorizedForced = on;
