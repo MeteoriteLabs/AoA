@@ -77,6 +77,13 @@ export {
   type JobSecretHandle,
   type NewJobSecretHandle,
 } from "./job_secret_handles.js";
+// JOB-005 (E3 job control): immutable accepted-event ledger + projection idempotency ledger.
+export { jobEvents, type JobEvent, type NewJobEvent } from "./job_events.js";
+export {
+  jobProjectionReceipts,
+  type JobProjectionReceipt,
+  type NewJobProjectionReceipt,
+} from "./job_projection_receipts.js";
 // DEP-003 (E6 deployment harness): operator-gated 0188 cutover marker (platform infra,
 // no organization_id; aoa_operator write / aoa_app read-only / tenants invisible).
 export {

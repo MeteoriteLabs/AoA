@@ -117,6 +117,13 @@ export const JOB_LEASING_NEW_PATH_GRANTS = Object.freeze({
   worker_lease_rejections: ["SELECT", "INSERT", "UPDATE", "DELETE"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
+/** JOB-005-only event ledger + projection idempotency authority, versioned after
+ * the immutable JOB-003 leasing grant delta. */
+export const JOB_EVENTS_NEW_PATH_GRANTS = Object.freeze({
+  job_events: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  job_projection_receipts: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
 /**
  * Current heartbeat execution-target resolver projection for aoa_app. This is
  * column-level because the table also stores worker_token_hash and unrelated
@@ -238,6 +245,7 @@ export const APP_SERVING_RELATIONS = sortedUnion(
   Object.keys(JOB_SUBMISSION_NEW_PATH_GRANTS),
   Object.keys(WORKER_ENROLLMENT_APP_GRANTS),
   Object.keys(JOB_LEASING_NEW_PATH_GRANTS),
+  Object.keys(JOB_EVENTS_NEW_PATH_GRANTS),
   Object.keys(CUTOVER_MARKER_APP_GRANTS),
   ["mcp_api_keys", "execution_targets"],
 );
@@ -255,6 +263,7 @@ export const RLS_RELATIONS = Object.freeze([
   "job_artifacts", "job_secret_handles", "job_outbox", "worker_enrollment_code_routes",
   "worker_enrollment_codes", "worker_proof_replays", "execution_targets",
   "worker_operation_receipts", "worker_lease_rejections", "distributed_cutover_markers",
+  "job_events", "job_projection_receipts",
 ] as const);
 
 export const FORCE_RLS_RELATIONS = Object.freeze(
@@ -280,6 +289,8 @@ export const POLICY_COUNTS = deepFreeze({
   worker_operation_receipts: 1,
   worker_lease_rejections: 1,
   distributed_cutover_markers: 2,
+  job_events: 1,
+  job_projection_receipts: 1,
 } as const);
 
 const ORGANIZATION_QUAL =
@@ -334,6 +345,8 @@ export const RLS_POLICY_MANIFEST = deepFreeze([
   // app reads only outside a tenant transaction (aoa.organization_id GUC unset).
   policy("distributed_cutover_markers", "distributed_cutover_markers_operator_write", "ALL", "aoa_operator", "true", "true"),
   policy("distributed_cutover_markers", "distributed_cutover_markers_app_read", "SELECT", "aoa_app", CUTOVER_APP_READ_QUAL, null),
+  policy("job_events", "job_events_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("job_projection_receipts", "job_projection_receipts_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
 ] as const);
 
 /*
@@ -375,7 +388,9 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreeze({
     issues: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
     job_artifacts: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     job_attempts: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    job_events: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     job_outbox: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    job_projection_receipts: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     job_secret_handles: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     jobs: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     labels: { aoa_app: ["SELECT"], aoa_operator: [] },
@@ -495,7 +510,9 @@ const RELATION_ACL_NULLNESS_CERTIFICATE = deepFreeze({
   issues: false,
   job_artifacts: false,
   job_attempts: false,
+  job_events: false,
   job_outbox: false,
+  job_projection_receipts: false,
   job_secret_handles: false,
   jobs: false,
   labels: false,

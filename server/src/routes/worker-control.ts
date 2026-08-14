@@ -6,6 +6,7 @@ import {
   type IssueWorkerEnrollmentCodeInput,
 } from "@armyofagents/shared";
 import {
+  eventUploadOperationRequestV1Schema,
   leaseAckOperationRequestV1Schema,
   leaseRenewOperationRequestV1Schema,
   OPERATION_DESCRIPTORS,
@@ -29,6 +30,7 @@ import {
 } from "../middleware/worker-operation-proof.js";
 import { createJobLeasingService, JobLeasingError } from "../services/job-leasing.js";
 import { createJobLeaseRenewalService } from "../services/job-fencing.js";
+import { createJobEventIngestService } from "../services/job-events.js";
 import type { JobReadyScheduler } from "../services/job-ready-scheduler.js";
 import type { JobControlMetrics } from "../services/job-control-metrics.js";
 import { deviceProofHeaders } from "./worker-proof-headers.js";
@@ -59,6 +61,7 @@ export function workerControlRoutes(opts: {
     metrics: opts.jobControlMetrics,
   });
   const renewal = createJobLeaseRenewalService({ appDb: opts.appDb });
+  const events = createJobEventIngestService({ appDb: opts.appDb });
 
   router.post(
     "/organizations/:organizationId/execution-targets/:targetId/enrollment-codes",
@@ -286,6 +289,52 @@ export function workerControlRoutes(opts: {
         reasonCode: "worker_lease_renew_internal_unavailable",
       }, "worker lease renew unavailable");
       sendWorkerOperationProtocolError(req, res, "lease_renew", "internal_unavailable", opts.now?.() ?? new Date());
+    }
+  });
+
+  router.post("/worker-control/events", async (req, res) => {
+    try {
+      const parsed = eventUploadOperationRequestV1Schema.safeParse(req.body);
+      const authorization = req.header("authorization");
+      const proof = deviceProofHeaders(req);
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      if (!parsed.success
+        || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.event_upload.maxRequestBytes)) {
+        sendWorkerOperationProtocolError(req, res, "event_upload",
+          rawBody && rawBody.length > OPERATION_DESCRIPTORS.event_upload.maxRequestBytes
+            ? "payload_too_large" : "malformed", opts.now?.() ?? new Date());
+        return;
+      }
+      if (!authorization || !proof || !rawBody) {
+        sendWorkerOperationProtocolError(req, res, "event_upload", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      const auth = verifyWorkerOperationProof({
+        sessionSigningKey: opts.sessionSigningKey,
+        authorization,
+        rawBody,
+        proof,
+        method: req.method,
+        path: req.originalUrl,
+        correlationId: parsed.data.correlationId,
+        now: opts.now?.(),
+      });
+      const response = await events.ingest({ auth, request: parsed.data });
+      res.status(200).json(response);
+    } catch (error) {
+      if (error instanceof WorkerOperationProofError) {
+        sendWorkerOperationProtocolError(req, res, "event_upload", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      if (error instanceof JobLeasingError) {
+        sendWorkerOperationProtocolError(req, res, "event_upload", error.code, opts.now?.() ?? new Date());
+        return;
+      }
+      logger.error({
+        action: "worker.event_upload.failed",
+        reasonCode: "worker_event_upload_internal_unavailable",
+      }, "worker event upload unavailable");
+      sendWorkerOperationProtocolError(req, res, "event_upload", "internal_unavailable", opts.now?.() ?? new Date());
     }
   });
 

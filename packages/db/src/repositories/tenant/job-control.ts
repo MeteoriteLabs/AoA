@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, exists, gt, gte, inArray, isNotNull, isNull, lte, ne, notExists, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, gt, gte, inArray, isNotNull, isNull, lte, ne, notExists, notInArray, or, sql } from "drizzle-orm";
 import type { JobPlacementOwner } from "@armyofagents/shared";
 import type { Db } from "../../client.js";
 import {
@@ -29,6 +29,8 @@ import {
   serviceInstances,
   jobArtifacts,
   jobSecretHandles,
+  jobEvents,
+  jobProjectionReceipts,
   type Job,
   type JobAttempt,
   type JobOutbox,
@@ -46,6 +48,7 @@ import {
   isActiveFence,
   classifyFence,
   JobFenceError,
+  TERMINAL_ATTEMPT_STATUSES,
   type ActiveFenceRequest,
 } from "./job-fence.js";
 
@@ -278,7 +281,9 @@ export interface JobControlRepository {
     idempotencyKey: string;
     semanticDigest: string;
   }): Promise<{ lease: Lease; body: Record<string, unknown> }>;
-  acceptEvent(input: ActiveFenceRequest): Promise<GuardedFenceResult>;
+  acceptEvent(
+    input: ActiveFenceRequest & { batch?: AcceptEventBatchInput },
+  ): Promise<GuardedFenceResult & { ingest?: EventIngestOutcome }>;
   authorizeArtifactCommit(
     input: ActiveFenceRequest & { identifier: string },
   ): Promise<JobArtifact>;
@@ -291,8 +296,19 @@ export interface JobControlRepository {
   recordServiceHealth(
     input: ActiveFenceRequest & { serviceInstanceId: string; healthStatus: ServiceHealthStatus },
   ): Promise<ServiceInstance>;
-  applyProjectionReceipt(input: ActiveFenceRequest): Promise<GuardedFenceResult>;
+  applyProjectionReceipt(
+    input: ActiveFenceRequest & { projection?: ProjectionInput },
+  ): Promise<GuardedFenceResult>;
   ackControlCommand(input: ActiveFenceRequest): Promise<GuardedFenceResult>;
+  /** The highest contiguous accepted event sequence for an attempt (0 = none).
+   * A read used to build the cumulative ACK on the stale-fence/terminal paths;
+   * NOT a governed mutator (no fence gate — it writes nothing). */
+  readAcceptedThroughSeq(input: {
+    organizationId: string;
+    companyId: string;
+    jobId: string;
+    attemptId: string;
+  }): Promise<number>;
   claimReadyOutbox(input: {
     claimToken: string;
     now: Date;
@@ -320,6 +336,54 @@ export interface GuardedFenceResult {
   leaseId: string;
   attemptId: string;
   guarded: true;
+}
+
+// ---------------------------------------------------------------------------
+// JOB-005 — fenced event ingest + projection idempotency (behind acceptEvent /
+// applyProjectionReceipt, which STILL gate on the active fence first).
+
+/** ONE server-validated worker event, ready for durable append. `recomputedDigest`
+ * is the server's SHA-256 of the RFC 8785 canonical bytes (E1) — the repo never
+ * recomputes it. `terminalStatus` is set only for a `terminal` event. */
+export interface AcceptEventInput {
+  eventId: string;
+  sequence: number;
+  eventType: string;
+  fenceToken: string;
+  suppliedDigest: string;
+  recomputedDigest: string;
+  occurredAt: Date;
+  payload: Record<string, unknown>;
+  terminalStatus: TerminalCompletionStatus | null;
+}
+
+/** A contiguous, in-order batch (validated + digest-checked by the service). */
+export interface AcceptEventBatchInput {
+  events: readonly AcceptEventInput[];
+}
+
+/** The cumulative-ACK-shaped outcome of a fenced batch append. `stale_fence` and
+ * `terminal` are NOT produced here — they surface as a thrown `JobFenceError` from
+ * the guard, which the ingest service maps into the cumulative ACK. */
+export interface EventIngestOutcome {
+  status: "accepted" | "gap" | "hash_mismatch";
+  acceptedThroughSeq: number;
+  rejectedEventId?: string;
+}
+
+/** The job/attempt transition an accepted state-changing event drives. */
+export type ProjectionTransition =
+  | { kind: "attempt_started" }
+  | { kind: "attempt_terminal"; terminalStatus: TerminalCompletionStatus };
+
+/** ONE projection driven by ONE accepted event, keyed for idempotency by
+ * (projectionKind, sourceIdentity) with the driving event digest pinned. */
+export interface ProjectionInput {
+  projectionKind: "attempt_started" | "attempt_terminal";
+  sourceIdentity: string;
+  sourceDigest: string;
+  targetAggregateId: string;
+  transition: ProjectionTransition;
 }
 
 export interface LeaseWorkerAuthority {
@@ -507,6 +571,75 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     // Defense in depth: the shared predicate must agree with the classification.
     if (!isActiveFence(snapshot)) throw new JobFenceError("stale_fence");
     return { lease: row.lease, attempt: row.attempt };
+  }
+
+  // JOB-005 — apply ONE accepted event's job/attempt projection idempotently.
+  // The caller has ALREADY passed the active-fence guard (which holds the attempt
+  // row lock), so the transitions here are the legal, single-winner moves:
+  //   * attempt_started → attempt leased->running + job queued->running.
+  //   * attempt_terminal → attempt (any non-terminal) -> the terminal status.
+  // Every transition is CONDITIONAL on the current status, so a replay or an
+  // in-batch attempt_started→terminal pair is a safe no-op. The projection receipt
+  // (unique per (kind, source_identity)) records the applied projection; a replay
+  // conflicts DO NOTHING (the ingest also rejects a changed digest upstream as
+  // hash_mismatch, so a same-identity/different-digest receipt never reaches here).
+  async function applyProjectionForFence(
+    fence: ActiveFenceRequest,
+    projection: ProjectionInput,
+  ): Promise<void> {
+    if (projection.transition.kind === "attempt_started") {
+      await tx.update(jobAttempts).set({
+        status: "running",
+        updatedAt: sql`clock_timestamp()`,
+      }).where(and(
+        eq(jobAttempts.organizationId, fence.organizationId),
+        eq(jobAttempts.companyId, fence.companyId),
+        eq(jobAttempts.jobId, fence.jobId),
+        eq(jobAttempts.id, fence.attemptId),
+        eq(jobAttempts.status, "leased"),
+      ));
+      await tx.update(jobs).set({
+        status: "running",
+        updatedAt: sql`clock_timestamp()`,
+      }).where(and(
+        eq(jobs.organizationId, fence.organizationId),
+        eq(jobs.companyId, fence.companyId),
+        eq(jobs.id, fence.jobId),
+        eq(jobs.status, "queued"),
+      ));
+    } else {
+      await tx.update(jobAttempts).set({
+        status: projection.transition.terminalStatus,
+        updatedAt: sql`clock_timestamp()`,
+      }).where(and(
+        eq(jobAttempts.organizationId, fence.organizationId),
+        eq(jobAttempts.companyId, fence.companyId),
+        eq(jobAttempts.jobId, fence.jobId),
+        eq(jobAttempts.id, fence.attemptId),
+        notInArray(jobAttempts.status, [...TERMINAL_ATTEMPT_STATUSES]),
+      ));
+    }
+    await tx.insert(jobProjectionReceipts).values({
+      organizationId: fence.organizationId,
+      companyId: fence.companyId,
+      projectionKind: projection.projectionKind,
+      sourceIdentity: projection.sourceIdentity,
+      sourceDigest: projection.sourceDigest,
+      jobId: fence.jobId,
+      attemptId: fence.attemptId,
+      sourceFence: fence.fence,
+      status: "applied",
+      targetAggregateId: projection.targetAggregateId,
+      appliedAt: sql`clock_timestamp()`,
+      createdAt: sql`clock_timestamp()`,
+    }).onConflictDoNothing({
+      target: [
+        jobProjectionReceipts.organizationId,
+        jobProjectionReceipts.companyId,
+        jobProjectionReceipts.projectionKind,
+        jobProjectionReceipts.sourceIdentity,
+      ],
+    });
   }
 
   async function admittedUserRequester(input: {
@@ -1574,9 +1707,110 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     // governed row. The four with a kernel table do a thin real mutation; the three
     // whose storage is not yet built are stubbed but STILL gated.
     async acceptEvent(input) {
+      // Fence FIRST (throws stale_fence / attempt_terminal), then durable append.
+      // The ingest service maps a thrown JobFenceError into the cumulative ACK
+      // (stale_fence / terminal); this method only returns accepted/gap/hash.
       const { lease, attempt } = await guardActiveFence(input);
-      // Event storage is JOB-005; JOB-004 lands only the guarded seam.
-      return { leaseId: lease.id, attemptId: attempt.id, guarded: true };
+      if (!input.batch) return { leaseId: lease.id, attemptId: attempt.id, guarded: true };
+      const events = input.batch.events;
+      const guarded = { leaseId: lease.id, attemptId: attempt.id, guarded: true as const };
+
+      // Prior accepted state for THIS attempt, read under the guard's attempt lock
+      // (no concurrent appender can interleave: guardActiveFence holds FOR UPDATE).
+      // Stored sequences are always a contiguous 1..N (we never leave a gap), so the
+      // cumulative acceptedThroughSeq is simply MAX(sequence).
+      const priorRows = await tx.select({
+        seq: jobEvents.sequence,
+        eventId: jobEvents.eventId,
+        digest: jobEvents.eventDigest,
+      }).from(jobEvents).where(and(
+        eq(jobEvents.organizationId, input.organizationId),
+        eq(jobEvents.attemptId, input.attemptId),
+      ));
+      const acceptedThroughSeq = priorRows.reduce((max, row) => Math.max(max, row.seq), 0);
+      const storedBySeq = new Map(priorRows.map((row) => [row.seq, row]));
+
+      // (1) Per-event digest integrity: a supplied digest disagreeing with the
+      // server recomputation is hash_mismatch, before any persistence.
+      for (const event of events) {
+        if (event.suppliedDigest !== event.recomputedDigest) {
+          return { ...guarded, ingest: { status: "hash_mismatch", acceptedThroughSeq, rejectedEventId: event.eventId } };
+        }
+      }
+
+      // (2) Gap: the batch head is beyond the next contiguous sequence.
+      const firstSeq = events[0]!.sequence;
+      if (firstSeq > acceptedThroughSeq + 1) {
+        return { ...guarded, ingest: { status: "gap", acceptedThroughSeq } };
+      }
+
+      // (3) Replay-region integrity: any event overlapping an already-accepted
+      // sequence must match the stored id + digest exactly, else hash_mismatch.
+      for (const event of events) {
+        if (event.sequence > acceptedThroughSeq) break; // events are contiguous ascending
+        const stored = storedBySeq.get(event.sequence);
+        if (!stored || stored.eventId !== event.eventId || stored.digest !== event.recomputedDigest) {
+          return { ...guarded, ingest: { status: "hash_mismatch", acceptedThroughSeq, rejectedEventId: event.eventId } };
+        }
+      }
+
+      // (4) New tail (seq > acceptedThroughSeq): contiguous by batch validation and
+      // starting exactly at acceptedThroughSeq+1. Append idempotently, then project.
+      const newEvents = events.filter((event) => event.sequence > acceptedThroughSeq);
+      if (newEvents.length > 0) {
+        // Reject a REUSED eventId in the new tail BEFORE any write. The (org,event_id)
+        // unique is org-wide, and the guard's FOR UPDATE lock guarantees a genuine new
+        // event never pre-exists (a legitimate crash-replay lands in the replay region
+        // at seq <= acceptedThroughSeq, handled above) — so any existing id here is
+        // reuse. An untargeted ON CONFLICT DO NOTHING would silently drop the row while
+        // the projection loop + cumulative ACK still advanced, wedging the stream on a
+        // phantom sequence; instead fail the whole batch as hash_mismatch with no write.
+        const existingTail = await tx.select({ eventId: jobEvents.eventId }).from(jobEvents).where(and(
+          eq(jobEvents.organizationId, input.organizationId),
+          inArray(jobEvents.eventId, newEvents.map((event) => event.eventId)),
+        ));
+        if (existingTail.length > 0) {
+          return { ...guarded, ingest: { status: "hash_mismatch", acceptedThroughSeq, rejectedEventId: existingTail[0]!.eventId } };
+        }
+        await tx.insert(jobEvents).values(newEvents.map((event) => ({
+          organizationId: input.organizationId,
+          companyId: input.companyId,
+          jobId: input.jobId,
+          attemptId: input.attemptId,
+          attemptNumber: input.attemptNumber,
+          leaseId: input.leaseId,
+          eventId: event.eventId,
+          sequence: event.sequence,
+          eventType: event.eventType,
+          fenceToken: event.fenceToken,
+          eventDigest: event.recomputedDigest,
+          event: event.payload,
+          occurredAt: event.occurredAt,
+        })));
+        for (const event of newEvents) {
+          if (event.eventType === "attempt_started") {
+            await applyProjectionForFence(input, {
+              projectionKind: "attempt_started",
+              sourceIdentity: event.eventId,
+              sourceDigest: event.recomputedDigest,
+              targetAggregateId: input.attemptId,
+              transition: { kind: "attempt_started" },
+            });
+          } else if (event.eventType === "terminal" && event.terminalStatus) {
+            await applyProjectionForFence(input, {
+              projectionKind: "attempt_terminal",
+              sourceIdentity: event.eventId,
+              sourceDigest: event.recomputedDigest,
+              targetAggregateId: input.attemptId,
+              transition: { kind: "attempt_terminal", terminalStatus: event.terminalStatus },
+            });
+          }
+        }
+      }
+      const newAcceptedThroughSeq = newEvents.length > 0
+        ? events[events.length - 1]!.sequence
+        : acceptedThroughSeq;
+      return { ...guarded, ingest: { status: "accepted", acceptedThroughSeq: newAcceptedThroughSeq } };
     },
 
     async authorizeArtifactCommit(input) {
@@ -1632,9 +1866,21 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     },
 
     async applyProjectionReceipt(input) {
+      // Fence FIRST, then (when a projection is supplied) apply it idempotently.
+      // A bare fence identity (JOB-004 back-compat) just proves the guarded seam.
       const { lease, attempt } = await guardActiveFence(input);
-      // Projection-receipt storage is JOB-005/011; JOB-004 lands only the guard.
+      if (input.projection) await applyProjectionForFence(input, input.projection);
       return { leaseId: lease.id, attemptId: attempt.id, guarded: true };
+    },
+
+    async readAcceptedThroughSeq(input) {
+      const [row] = await tx.select({
+        maxSeq: sql<number>`COALESCE(MAX(${jobEvents.sequence}), 0)`,
+      }).from(jobEvents).where(and(
+        eq(jobEvents.organizationId, input.organizationId),
+        eq(jobEvents.attemptId, input.attemptId),
+      ));
+      return Number(row?.maxSeq ?? 0);
     },
 
     async ackControlCommand(input) {

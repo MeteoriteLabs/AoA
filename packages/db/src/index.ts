@@ -53,6 +53,11 @@ export type {
   TerminalCompletionStatus,
   ServiceHealthStatus,
   GuardedFenceResult,
+  AcceptEventInput,
+  AcceptEventBatchInput,
+  EventIngestOutcome,
+  ProjectionInput,
+  ProjectionTransition,
 } from "./repositories/tenant/job-control.js";
 // JOB-004: the ONE common active-fence predicate + the CLOSED governed-mutator
 // surface. Re-exported from the barrel so `server/src/services/job-fencing.ts`

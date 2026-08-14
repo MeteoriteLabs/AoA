@@ -1639,6 +1639,20 @@
       "when": 1786600863806,
       "tag": "0233_distributed_cutover_marker_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 234,
+      "version": "7",
+      "when": 1786665033454,
+      "tag": "0234_sloppy_the_watchers",
+      "breakpoints": true
+    },
+    {
+      "idx": 235,
+      "version": "7",
+      "when": 1786665071692,
+      "tag": "0235_job_events_rls",
+      "breakpoints": true
     }
   ]
 }

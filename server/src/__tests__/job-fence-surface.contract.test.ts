@@ -86,6 +86,7 @@ const EXPECTED_UNGUARDED = [
   "lockLeaseAckContext",
   "activateLeaseAck",
   "renewLease",
+  "readAcceptedThroughSeq",
   "claimReadyOutbox",
   "deliverReadyOutbox",
 ];
