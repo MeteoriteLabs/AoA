@@ -2162,7 +2162,13 @@ export function issueService(db: Db) {
     // Concurrency: Uses atomic conditional UPDATE (WHERE status = expected AND assignee conditions)
     // rather than SELECT FOR UPDATE. Two simultaneous checkout attempts will issue the same UPDATE,
     // but only one will match the WHERE clause — a valid optimistic concurrency pattern that avoids deadlocks.
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (
+      id: string,
+      agentId: string,
+      expectedStatuses: string[],
+      checkoutRunId: string | null,
+      options?: { deferPublish?: (publish: () => void) => void },
+    ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -2222,11 +2228,20 @@ export function issueService(db: Db) {
         // issueService.update (raw atomic write → in_progress). Publish
         // issue.status_changed (company-broadcast, R3) so the board reflects
         // the card going in_progress live. Best-effort — never break checkout.
-        try {
-          publishIssueStatusChanged(updated.companyId, updated.id, "in_progress");
-        } catch (publishErr) {
-          logger.warn({ err: publishErr, issueId: updated.id }, "issue.status_changed publish failed on checkout (best-effort, ignored)");
-        }
+        const runStatusPublish = () => {
+          try {
+            publishIssueStatusChanged(updated.companyId, updated.id, "in_progress");
+          } catch (publishErr) {
+            logger.warn({ err: publishErr, issueId: updated.id }, "issue.status_changed publish failed on checkout (best-effort, ignored)");
+          }
+        };
+        // JOB-010: the admission bridge drives checkout INSIDE its own authoritative
+        // tenant transaction. A live in-memory publish must never fire before that
+        // outer tx commits (and never at all on rollback), so the bridge passes a
+        // deferPublish sink that fires the publish AFTER commit. Legacy callers pass
+        // no option → publish inline after checkout's own transaction (byte-unchanged).
+        if (options?.deferPublish) options.deferPublish(runStatusPublish);
+        else runStatusPublish();
         const [enriched] = await withIssueLabels(db, [updated]);
         return enriched;
       }

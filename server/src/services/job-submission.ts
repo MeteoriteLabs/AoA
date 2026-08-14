@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Db } from "@armyofagents/db";
+import type { Db, TenantRepositories } from "@armyofagents/db";
 import type {
   SubmitJobCommand,
   SubmitJobResponse,
@@ -84,55 +84,63 @@ const SOURCE_REQUESTER_KINDS = Object.freeze({
   service_reconcile: ["system"],
 } satisfies Record<SubmitJobSource["kind"], readonly string[]>);
 
-export function jobSubmissionService(appDb: Db) {
-  return {
-    async submit(input: SubmitJobRequest): Promise<SubmitJobResponse> {
-      try {
-        assertAdmissibleOrganization(input.organizationId);
-      } catch (error) {
-        if (error instanceof ForbiddenOrganizationSentinelError) throw denial();
-        throw error;
-      }
-
-      const sourceId = sourceIdentity(input.command.source);
-      const commandDigest = digest(input.command);
-      const inputHash = digest(input.command.input);
-      const policySnapshot = {
-        policyId: "job-submission-default",
-        version: 1,
-        sourceKind: input.command.source.kind,
-      };
-      const policyHash = digest(policySnapshot);
-      const requirements = {
-        workloadType: workloadType(input.command.source),
-        requiredCapabilities: input.command.source.kind === "browser_request" ? ["browser.chromium"] : [],
-      };
-      // This is immutable policy input, not a placement decision. JOB-009 owns placement.
-      const placementRequest = {
-        policyId: "job-submission-default",
-        policyVersion: 1,
-        requestedTarget: null,
-      };
-      return runInTenant(appDb, input.organizationId, async (repos) => {
-        const admission = await repos.jobControl.admission({
-          organizationId: input.organizationId,
-          companyId: input.companyId,
-          principalKind: input.principal.kind,
-          principalId: input.principal.id,
-          principalRole: input.principal.role,
-        });
-        if (
-          !admission.organizationExists ||
-          !admission.companyInOrganization ||
-          !admission.principalAuthorized ||
-          !admission.requester ||
-          !SOURCE_REQUESTER_KINDS[input.command.source.kind].includes(admission.requester.kind)
-        ) {
-          throw denial();
-        }
-        const source = input.command.source;
-        let executionPrincipal: { kind: string; id: string } | null = null;
-        if (source.kind === "task_run") {
+/**
+ * The complete admission + per-source authority resolution + immutable persistence
+ * of ONE job submission, INSIDE an already-open tenant transaction. Extracted verbatim
+ * from `jobSubmissionService.submit`'s inner `runInTenant` callback so it can be composed
+ * into a LARGER authoritative transaction — the JOB-010 admission bridge drives the legacy
+ * assignment authority (e.g. `issueService.checkout`) and then calls this within the SAME
+ * `runInTenant` tx, so the legacy claim and the distributed submission commit atomically
+ * (one authoritative transaction, no second tx). `submit` itself is unchanged behaviour:
+ * it opens its own `runInTenant` and delegates here.
+ *
+ * The caller MUST have already validated `assertAdmissibleOrganization(input.organizationId)`
+ * (sentinel) before opening the transaction; this helper assumes the Organization context
+ * is set on `repos`.
+ */
+export async function submitJobWithinTenant(
+  repos: TenantRepositories,
+  input: SubmitJobRequest,
+): Promise<SubmitJobResponse> {
+  const sourceId = sourceIdentity(input.command.source);
+  const commandDigest = digest(input.command);
+  const inputHash = digest(input.command.input);
+  const policySnapshot = {
+    policyId: "job-submission-default",
+    version: 1,
+    sourceKind: input.command.source.kind,
+  };
+  const policyHash = digest(policySnapshot);
+  const requirements = {
+    workloadType: workloadType(input.command.source),
+    requiredCapabilities: input.command.source.kind === "browser_request" ? ["browser.chromium"] : [],
+  };
+  // This is immutable policy input, not a placement decision. JOB-009 owns placement.
+  const placementRequest = {
+    policyId: "job-submission-default",
+    policyVersion: 1,
+    requestedTarget: null,
+  };
+  {
+    const admission = await repos.jobControl.admission({
+      organizationId: input.organizationId,
+      companyId: input.companyId,
+      principalKind: input.principal.kind,
+      principalId: input.principal.id,
+      principalRole: input.principal.role,
+    });
+    if (
+      !admission.organizationExists ||
+      !admission.companyInOrganization ||
+      !admission.principalAuthorized ||
+      !admission.requester ||
+      !SOURCE_REQUESTER_KINDS[input.command.source.kind].includes(admission.requester.kind)
+    ) {
+      throw denial();
+    }
+    const source = input.command.source;
+    let executionPrincipal: { kind: string; id: string } | null = null;
+    if (source.kind === "task_run") {
           executionPrincipal = await repos.jobControl.taskSourceIsAdmitted({
             companyId: input.companyId,
             runId: source.runId,
@@ -270,7 +278,54 @@ export function jobSubmissionService(appDb: Db) {
           createdAt: now,
         }));
         return { jobId: job.id, attemptId: attempt.id, status: "queued", replayed: false };
-      });
+  }
+}
+
+/**
+ * JOB-010: resolve an already-committed idempotent replay for this submission composite
+ * WITHOUT writing anything. Returns the replayed response if a prior submission for the
+ * exact `(principal, source-identity, idempotencyKey)` composite already exists (throwing
+ * the same 409 on a digest conflict as `submitJobWithinTenant`), or `null` if this is a
+ * first-time submission. The admission bridge calls this INSIDE its authoritative tenant
+ * transaction BEFORE driving a non-idempotent legacy side effect (`issueService.checkout`,
+ * which resets `issues.startedAt` and re-broadcasts `issue.status_changed` if re-run), so a
+ * redelivery is a true no-op — honoring the bridge's `idempotencyKey` contract without
+ * changing the legacy checkout engine (parity preserved). `submitJobWithinTenant` remains
+ * the authoritative winner-vs-replay resolver on the write path; this is a read-only
+ * fast-path for the same composite.
+ */
+export async function findIdempotentReplay(
+  repos: TenantRepositories,
+  input: SubmitJobRequest,
+): Promise<SubmitJobResponse | null> {
+  const existing = await repos.jobControl.findSubmission({
+    organizationId: input.organizationId,
+    companyId: input.companyId,
+    authenticatedPrincipalKind: input.principal.kind,
+    authenticatedPrincipalId: input.principal.id,
+    authenticatedSourceKind: input.command.source.kind,
+    authenticatedSourceIdentity: sourceIdentity(input.command.source),
+    idempotencyKey: input.command.idempotencyKey,
+  });
+  if (!existing) return null;
+  if (existing.commandDigest !== digest(input.command)) {
+    throw new HttpError(409, "Idempotency key conflicts with a different command");
+  }
+  const existingAttempt = await repos.jobControl.findInitialAttempt(existing.id);
+  if (!existingAttempt) throw new Error("idempotent submission is missing its initial attempt");
+  return { jobId: existing.id, attemptId: existingAttempt.id, status: "queued", replayed: true };
+}
+
+export function jobSubmissionService(appDb: Db) {
+  return {
+    async submit(input: SubmitJobRequest): Promise<SubmitJobResponse> {
+      try {
+        assertAdmissibleOrganization(input.organizationId);
+      } catch (error) {
+        if (error instanceof ForbiddenOrganizationSentinelError) throw denial();
+        throw error;
+      }
+      return runInTenant(appDb, input.organizationId, (repos) => submitJobWithinTenant(repos, input));
     },
   };
 }

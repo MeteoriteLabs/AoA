@@ -90,3 +90,35 @@ export class TenantAdmissionDeniedError extends Error {
     this.name = "TenantAdmissionDeniedError";
   }
 }
+
+/**
+ * E3 (JOB-010) admission gate over a RESOLVED Company→Organization edge.
+ *
+ * `resolveCompanyOrganizationId` returns `null` for a company that owns no
+ * Organization edge — the "unmapped Organization" case E2 deferred to E3. This helper
+ * layers that unmapped check on top of the sentinel rejection and collapses BOTH into
+ * the single opaque {@link TenantAdmissionDeniedError} (a 403 that never leaks which
+ * check failed):
+ *   - `null`/blank Organization  → unmapped → denied.
+ *   - forbidden sentinel Org     → denied (the sentinel is a real single-tenant Org
+ *                                  that must never be admitted to distributed execution).
+ *
+ * On success it narrows the argument to a non-empty admissible `string`, so the bridge
+ * can open `runInTenant` with a proven Organization context. The sentinel-only
+ * {@link assertAdmissibleOrganization} stays unchanged (still the E2 unit contract).
+ */
+export function assertAdmissibleMappedOrganization(
+  organizationId: string | null | undefined,
+): asserts organizationId is string {
+  if (typeof organizationId !== "string" || organizationId.trim() === "") {
+    throw new TenantAdmissionDeniedError();
+  }
+  try {
+    assertAdmissibleOrganization(organizationId);
+  } catch (error) {
+    if (error instanceof ForbiddenOrganizationSentinelError) {
+      throw new TenantAdmissionDeniedError();
+    }
+    throw error;
+  }
+}

@@ -32,6 +32,16 @@ import { withTenantTx } from "./with-tenant-tx.js";
  * `appDb` is supplied by the caller (E3 will; the tests do) — this function never
  * opens its own pool, keeping the fail-closed non-owner-pool contract (E2-F007) with
  * `createTenantAppDb`.
+ *
+ * JOB-010 — callback-local tx as a legacy-composable `Db`. `fn` receives the raw
+ * transaction handle as its SECOND argument, already typed as `Db`. A legacy service
+ * factory (e.g. `issueService(tx)`) takes a `Db` and calls `.transaction()` internally;
+ * on postgres-js, opening `.transaction()` on a transaction handle nests a SAVEPOINT
+ * that commits/rolls back with THIS outer transaction. The admission bridge therefore
+ * drives the existing assignment authority (checkout/ownership) through `tx` and persists
+ * the distributed submission via the same `repos`, so both land in ONE authoritative
+ * transaction — a pre-commit throw rolls back the legacy claim atomically (nothing to
+ * release), and after-commit publications are the caller's responsibility to defer.
  */
 export async function runInTenant<T>(
   appDb: Db,
