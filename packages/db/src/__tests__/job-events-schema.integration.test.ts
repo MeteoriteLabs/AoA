@@ -19,6 +19,9 @@ const PROJECTION_COLUMNS = [
   "id", "organization_id", "company_id", "projection_kind", "source_identity",
   "source_digest", "job_id", "attempt_id", "source_fence", "status",
   "target_aggregate_id", "created_at", "applied_at",
+  // JOB-011 (migration 0240) appended aggregate_kind (nullable discriminator across
+  // approvals / agent_runtime_decisions / cost_events for the governed projection link).
+  "aggregate_kind",
 ] as const;
 
 const ORG = "e5000000-0000-4000-8000-000000000001";
