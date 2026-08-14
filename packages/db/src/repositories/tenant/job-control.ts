@@ -684,11 +684,23 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
   async function guardActiveFence(
     request: ActiveFenceRequest,
   ): Promise<{ lease: Lease; attempt: JobAttempt }> {
+    // JOB-007 — locked current-generation recheck. The lease+attempt are locked FOR
+    // UPDATE; the target is LEFT-joined (read only, NEVER locked here — the revocation
+    // authority locks the target, so locking it here would invert the target->lease
+    // order and risk a deadlock). A revocation cutoff bumps
+    // execution_targets.device_generation, so a lease whose stored target_generation no
+    // longer equals the target's LIVE generation (or whose target is disabled/gone) is
+    // refused `target_revoked` — the instant the cutoff commits, BEFORE the per-Org
+    // fanout marks the lease `revoked`. This is why a crash after the cutoff but before
+    // fanout still denies every old-generation governed effect: the recheck is the gate,
+    // the fanout is only convergence.
     const [row] = await tx
       .select({
         lease: leases,
         attempt: jobAttempts,
         expiresFresh: sql<boolean>`(${leases.expiresAt} > clock_timestamp())`,
+        targetCurrentGeneration: executionTargets.deviceGeneration,
+        targetStatus: executionTargets.status,
       })
       .from(leases)
       .innerJoin(jobAttempts, and(
@@ -696,6 +708,10 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         eq(jobAttempts.companyId, leases.companyId),
         eq(jobAttempts.jobId, leases.jobId),
         eq(jobAttempts.id, leases.attemptId),
+      ))
+      .leftJoin(executionTargets, and(
+        eq(executionTargets.id, leases.targetId),
+        eq(executionTargets.targetAuthorityKey, leases.targetAuthorityKey),
       ))
       .where(and(
         eq(leases.organizationId, request.organizationId),
@@ -712,9 +728,20 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         eq(leases.providerConstraintHash, request.providerConstraintHash),
         eq(leases.fence, request.fence),
       ))
-      .for("update")
+      .for("update", { of: [leases, jobAttempts] })
       .limit(1);
     if (!row) throw new JobFenceError("stale_fence");
+    // The generation cutoff is the dominant fact: a bumped/disabled/absent target
+    // revokes the fence immediately, regardless of attempt status. `target_generation`
+    // in the lease was matched above, so comparing the target's LIVE generation to the
+    // lease's stored one is the cutoff test.
+    if (
+      row.targetCurrentGeneration === null ||
+      row.targetCurrentGeneration !== request.targetGeneration ||
+      row.targetStatus === "disabled"
+    ) {
+      throw new JobFenceError("target_revoked");
+    }
     const snapshot = {
       leaseStatus: row.lease.status,
       attemptStatus: row.attempt.status,
@@ -798,6 +825,25 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
 
   // JOB-006 job aggregate terminal states (distinct from attempt terminal states).
   const JOB_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "dead_letter"] as const;
+
+  // JOB-007 — release the attempt's Organization capacity slot with ONE conditional
+  // 'held' -> 'released' transition. Called from every terminal convergence path
+  // (worker completion, reaper, cancellation); exactly-once because only the first
+  // caller that observes 'held' flips it. A no-op when the attempt never held a slot.
+  async function releaseAttemptCapacitySlot(input: {
+    organizationId: string;
+    attemptId: string;
+  }): Promise<void> {
+    await tx.update(jobAttempts).set({
+      capacityClaimState: "released",
+      capacityReleasedAt: sql`clock_timestamp()`,
+      updatedAt: sql`clock_timestamp()`,
+    }).where(and(
+      eq(jobAttempts.organizationId, input.organizationId),
+      eq(jobAttempts.id, input.attemptId),
+      eq(jobAttempts.capacityClaimState, "held"),
+    ));
+  }
 
   function toQueuedControlCommand(
     row: typeof jobControlCommands.$inferSelect,
@@ -2161,6 +2207,8 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         eq(jobAttempts.status, attempt.status),
       )).returning();
       if (!row) throw new JobFenceError("attempt_terminal");
+      // JOB-007: the attempt reached a terminal state — release its capacity slot.
+      await releaseAttemptCapacitySlot({ organizationId: input.organizationId, attemptId: input.attemptId });
       return row;
     },
 
@@ -2388,6 +2436,10 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           eq(jobs.id, input.jobId),
           notInArray(jobs.status, [...JOB_TERMINAL_STATUSES]),
         ));
+        // JOB-007: this directly-finalized attempt is terminal → release its slot.
+        if (attempt) {
+          await releaseAttemptCapacitySlot({ organizationId: input.organizationId, attemptId: attempt.id });
+        }
         return { status: "cancelled", command: null };
       }
 
@@ -2557,6 +2609,10 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         )).returning({ id: leases.id });
         if (!revoked) continue;
         result.revoked += 1;
+        // JOB-007: the reaped lease's attempt is terminal-bound → release its
+        // Organization capacity slot (idempotent, exactly-once across reaper/cancel/
+        // revocation/cost paths that may all race on the same attempt).
+        await releaseAttemptCapacitySlot({ organizationId: input.organizationId, attemptId: attempt.id });
 
         const finalizeJob = async (status: "succeeded" | "cancelled") => {
           await tx.update(jobs).set({

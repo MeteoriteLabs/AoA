@@ -48,6 +48,19 @@ export const jobAttempts = pgTable(
     // available_at + attempt-ready outbox available_at from this value, so it is
     // never mutated after creation.
     backoffUntil: timestamp("backoff_until", { withTimezone: true }),
+    // JOB-007 shared Organization concurrency/capacity claim, STORED ON THE ATTEMPT
+    // (not a parallel counter). The claim is the sole distributed-side occupancy fact
+    // the org-capacity authority counts alongside legacy heartbeat runs. Lifecycle:
+    //   'unclaimed' (default) -> 'held' (admitted to run under the org cap) -> 'released'.
+    // Release is ONE conditional transition ('held' -> 'released') so retry, reaper,
+    // revocation, and cost-exhaustion may all race but release EXACTLY once. Never
+    // re-claimed after release (the attempt is terminal by then).
+    capacityClaimState: text("capacity_claim_state").notNull().default("unclaimed"),
+    // The workload bucket this claim was recorded under (snapshot of the job's
+    // workload_type at claim time). NULL until claimed.
+    capacityWorkloadType: text("capacity_workload_type"),
+    capacityClaimedAt: timestamp("capacity_claimed_at", { withTimezone: true }),
+    capacityReleasedAt: timestamp("capacity_released_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -125,6 +138,19 @@ export const jobAttempts = pgTable(
       table.companyId,
       table.jobId,
       table.id,
+    ),
+    capacityClaimValid: check(
+      "job_attempts_capacity_claim_check",
+      sql`(
+        capacity_claim_state = 'unclaimed' AND capacity_workload_type IS NULL AND
+        capacity_claimed_at IS NULL AND capacity_released_at IS NULL
+      ) OR (
+        capacity_claim_state = 'held' AND capacity_workload_type IS NOT NULL AND
+        capacity_claimed_at IS NOT NULL AND capacity_released_at IS NULL
+      ) OR (
+        capacity_claim_state = 'released' AND capacity_workload_type IS NOT NULL AND
+        capacity_claimed_at IS NOT NULL AND capacity_released_at IS NOT NULL
+      )`,
     ),
     jobAttemptNumberUq: unique("job_attempts_job_number_uq").on(
       table.organizationId,

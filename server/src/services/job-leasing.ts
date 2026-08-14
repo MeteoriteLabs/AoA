@@ -30,6 +30,10 @@ import {
   type WorkerHelloV1,
 } from "@armyofagents/worker-protocol";
 import { runInTenant } from "../db/tenant-context.js";
+import {
+  admitAttemptCapacity,
+  type CapacityBudgetBridge,
+} from "./org-concurrency.js";
 import type { JobReadyScheduler } from "./job-ready-scheduler.js";
 import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
 import {
@@ -370,12 +374,21 @@ export function createJobLeasingService(input: {
   leaseDurationMs?: number;
   maxHeartbeatAgeMs?: number;
   metrics?: JobControlMetrics;
+  // JOB-007: when enabled, an offered lease first CLAIMS an Organization capacity
+  // slot on the attempt through the shared authority (legacy runs + distributed
+  // attempts counted together, budget bridge consulted). Default OFF so the legacy
+  // and flag-off distributed paths are unchanged (compatibility: "flag off excludes
+  // distributed attempts"); admission storage being unavailable FAILS CLOSED (no offer).
+  enforceOrgCapacity?: boolean;
+  capacityBudgetBridge?: CapacityBudgetBridge;
 }) {
   input.operatorDb = normalizeOperatorDatabaseErrors(input.operatorDb);
   const ackTimeoutMs = Math.max(1000, input.ackTimeoutMs ?? 15000);
   const leaseDurationMs = Math.max(ackTimeoutMs + 1000, input.leaseDurationMs ?? 300000);
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300000);
   const metrics = input.metrics ?? NOOP_JOB_CONTROL_METRICS;
+  const enforceOrgCapacity = input.enforceOrgCapacity ?? false;
+  const capacityBudgetBridge = input.capacityBudgetBridge;
 
   class HeadRestartConflict extends Error {}
   const isHeadRestartConflict = (error: unknown): error is HeadRestartConflict =>
@@ -484,7 +497,7 @@ export function createJobLeasingService(input: {
         // here so the head-conflict catch below stays the exact classifier/exhaustion/continue triple.
         if (restartAttempt > 0) metrics.headRestart();
         try {
-          return await runInTenant(input.appDb, pollInput.auth.organizationId, async (repos) => {
+          return await runInTenant(input.appDb, pollInput.auth.organizationId, async (repos, tx) => {
             const cleanupNow = await repos.jobControl.currentDatabaseTime();
             await repos.workerEnrollment.cleanupExpiredProofs(cleanupNow, 100);
             const databaseNow = await repos.jobControl.currentDatabaseTime();
@@ -654,6 +667,31 @@ export function createJobLeasingService(input: {
                 const upserted = await repos.jobControl
                   .upsertLeaseRejectionCertificates(staticNegativeCertificates);
                 metrics.certificateUpsert({ count: upserted });
+              }
+              // JOB-007: claim the shared Organization capacity slot on this attempt
+              // BEFORE offering (legacy runs + distributed attempts counted together;
+              // budget bridge consulted). A capacity/budget denial means the org is at
+              // its ceiling → return no_work rather than offer over cap. The claim + the
+              // offer are in the SAME tenant transaction, so a later head-restart
+              // rollback undoes the claim too. Admission storage unavailable throws →
+              // the poll fails closed (no offer). Default-off keeps legacy behavior.
+              if (enforceOrgCapacity) {
+                const admission = await admitAttemptCapacity(tx, {
+                  organizationId: candidate.job.organizationId,
+                  companyId: candidate.job.companyId,
+                  workloadType: candidate.job.workloadType,
+                  attemptId: candidate.attempt.id,
+                  budgetBridge: capacityBudgetBridge,
+                });
+                if (!admission.admitted) {
+                  return pollResponseV1Schema.parse({
+                    protocolVersion: 1,
+                    correlationId: parsedRequest.correlationId,
+                    serverTime: databaseNow.toISOString(),
+                    outcome: "no_work",
+                    retryAfterMs: readySignaled ? 100 : 750,
+                  });
+                }
               }
               const offered = await tryOffer(candidate, normalized);
               if (!offered) throw new HeadRestartConflict();

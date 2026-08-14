@@ -1,9 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, isNotNull, isNull, ne, notExists } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, ne, notExists, sql } from "drizzle-orm";
 import {
   acquirePlatformTargetAuthorityExclusive,
   configurePlatformTargetAuthorityLockTimeout,
   executionTargets,
+  executionTargetRevocations,
   operatorJobLeasingRepository,
   workers,
   type Db,
@@ -200,6 +201,167 @@ export async function rotateExecutionTargetWorkerToken(
 
   if (!row) return null;
   return { target: stripWorkerSecret(row), workerToken };
+}
+
+// ---------------------------------------------------------------------------
+// JOB-007 — worker/target revocation via generation cutoff.
+//
+// A committed cutoff bumps `execution_targets.device_generation` and disables the
+// target. The fence guard's locked current-generation recheck (job-control.ts
+// guardActiveFence) then refuses EVERY governed effect on the old generation as
+// `target_revoked` — refresh/new leases, event ingest, secret read, artifact
+// upload, projection apply, health, control-ACK, and completion — the instant the
+// cutoff commits, BEFORE any per-Organization fanout runs. The durable operator
+// record (`execution_target_revocations`) drives idempotent, resumable convergence
+// of already-stale leases; it is NOT lease authority.
+
+export interface RevokeExecutionTargetInput {
+  appDb: Db;
+  operatorDb: Db;
+  targetId: string;
+  /** The owning Organization for an organization/owner-scoped target; NULL for a
+   * platform (system/shared) target. */
+  organizationId: string | null;
+  reason?: string;
+}
+
+export interface RevokeExecutionTargetResult {
+  revoked: boolean;
+  reason?: "not_found" | "already_disabled";
+  revokedGeneration?: number;
+  targetScope?: string;
+  organizationId?: string | null;
+}
+
+/**
+ * Idempotently COMMIT the generation cutoff: bump `device_generation` to
+ * `revokedGeneration + 1` and disable the target, conditional on the target still
+ * being at `revokedGeneration`. Reused by the fanout worker for crash recovery
+ * (durable record written but the bump not yet committed), so it is safe to call
+ * repeatedly. An organization/owner target is bumped under `runInTenant` (the only
+ * authority that can write the target's own-Org row); a platform target is bumped
+ * on the operator connection (the null-Org platform-operator authority).
+ */
+export async function ensureExecutionTargetCutoff(input: {
+  appDb: Db;
+  operatorDb: Db;
+  targetId: string;
+  organizationId: string | null;
+  revokedGeneration: number;
+}): Promise<void> {
+  const bump = async (tx: Db) => {
+    await tx
+      .update(executionTargets)
+      .set({
+        deviceGeneration: input.revokedGeneration + 1,
+        status: "disabled",
+        updatedAt: sql`clock_timestamp()`,
+      })
+      .where(and(
+        eq(executionTargets.id, input.targetId),
+        eq(executionTargets.deviceGeneration, input.revokedGeneration),
+        input.organizationId
+          ? eq(executionTargets.organizationId, input.organizationId)
+          : isNull(executionTargets.organizationId),
+      ));
+  };
+  if (input.organizationId) {
+    await runInTenant(input.appDb, input.organizationId, async (_repos, tx) => {
+      await bump(tx);
+    });
+  } else {
+    await input.operatorDb.transaction(async (tx) => {
+      await bump(tx as unknown as Db);
+    });
+  }
+}
+
+/**
+ * Revoke an execution target. Writes the durable operator record FIRST (crash-safe:
+ * the fanout re-ensures the cutoff), then commits the generation cutoff. The record
+ * is keyed by `(target_id, revoked_generation)`, so a re-invocation for a target
+ * already at a disabled/bumped generation is a no-op. This authority NEVER runs a
+ * cross-Organization lease transaction — it only touches the target and the durable
+ * record; per-Organization lease convergence is the fanout worker's job.
+ */
+export async function revokeExecutionTarget(
+  input: RevokeExecutionTargetInput,
+): Promise<RevokeExecutionTargetResult> {
+  const targetColumns = {
+    scope: executionTargets.scope,
+    organizationId: executionTargets.organizationId,
+    deviceGeneration: executionTargets.deviceGeneration,
+    status: executionTargets.status,
+  };
+  // Resolve + lock the target to read its current generation/scope/status. An
+  // org/owner target is visible only inside its own tenant; a platform target only
+  // to the operator (null-Org platform-operator RLS).
+  const resolved = input.organizationId
+    ? await runInTenant(input.appDb, input.organizationId, async (_repos, tx) => {
+        const [row] = await tx
+          .select(targetColumns)
+          .from(executionTargets)
+          .where(and(
+            eq(executionTargets.id, input.targetId),
+            eq(executionTargets.organizationId, input.organizationId!),
+          ))
+          .for("update")
+          .limit(1);
+        return row ?? null;
+      })
+    : await input.operatorDb.transaction(async (tx) => {
+        const [row] = await (tx as unknown as Db)
+          .select(targetColumns)
+          .from(executionTargets)
+          .where(and(
+            eq(executionTargets.id, input.targetId),
+            isNull(executionTargets.organizationId),
+            eq(executionTargets.scope, "platform"),
+          ))
+          .for("update")
+          .limit(1);
+        return row ?? null;
+      });
+  if (!resolved) return { revoked: false, reason: "not_found" };
+  if (resolved.status === "disabled") {
+    return {
+      revoked: false,
+      reason: "already_disabled",
+      revokedGeneration: resolved.deviceGeneration,
+      targetScope: resolved.scope,
+      organizationId: resolved.organizationId,
+    };
+  }
+  const revokedGeneration = resolved.deviceGeneration;
+  // Durable operator record FIRST. If a crash lands here before the cutoff commits,
+  // the fanout worker sees the pending record and re-ensures the cutoff.
+  await input.operatorDb
+    .insert(executionTargetRevocations)
+    .values({
+      targetId: input.targetId,
+      revokedGeneration,
+      targetScope: resolved.scope,
+      organizationId: input.organizationId,
+      reason: input.reason ?? null,
+      status: "pending",
+    })
+    .onConflictDoNothing({
+      target: [executionTargetRevocations.targetId, executionTargetRevocations.revokedGeneration],
+    });
+  // Commit the cutoff (idempotent).
+  await ensureExecutionTargetCutoff({
+    appDb: input.appDb,
+    operatorDb: input.operatorDb,
+    targetId: input.targetId,
+    organizationId: input.organizationId,
+    revokedGeneration,
+  });
+  return {
+    revoked: true,
+    revokedGeneration,
+    targetScope: resolved.scope,
+    organizationId: input.organizationId,
+  };
 }
 
 export async function revokeExecutionTargetWorkerToken(

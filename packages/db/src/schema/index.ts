@@ -98,6 +98,14 @@ export {
   type DistributedCutoverMarker,
   type NewDistributedCutoverMarker,
 } from "./distributed_cutover_markers.js";
+// JOB-007: durable operator-metadata fanout record for a committed target
+// generation cutoff (worker/target revocation). Operator write / app read-only
+// outside a tenant transaction / tenants invisible — mirrors the marker shape.
+export {
+  executionTargetRevocations,
+  type ExecutionTargetRevocation,
+  type NewExecutionTargetRevocation,
+} from "./execution_target_revocations.js";
 export { issues } from "./issues.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";

@@ -48,6 +48,7 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreezeFixture({
     cost_events: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
     discussion_entries: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
     distributed_cutover_markers: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
+    execution_target_revocations: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
     execution_targets: { aoa_app: [], aoa_operator: [] },
     execution_workspaces: { aoa_app: ["SELECT"], aoa_operator: [] },
     heartbeat_runs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
@@ -177,6 +178,7 @@ const PLAN_DERIVED_RELATION_ACL_NULLNESS = deepFreezeFixture({
   cost_events: false,
   discussion_entries: false,
   distributed_cutover_markers: false,
+  execution_target_revocations: false,
   execution_targets: false,
   execution_workspaces: false,
   heartbeat_runs: false,
@@ -320,6 +322,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       ...Object.keys(grants.JOB_EVENTS_NEW_PATH_GRANTS),
       ...Object.keys(grants.JOB_CONTROL_COMMANDS_NEW_PATH_GRANTS),
       ...Object.keys(grants.CUTOVER_MARKER_APP_GRANTS),
+      ...Object.keys(grants.EXECUTION_TARGET_REVOCATION_APP_GRANTS),
       "mcp_api_keys",
       "execution_targets",
     ])].sort();
@@ -327,6 +330,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       ...Object.keys(grants.WORKER_ENROLLMENT_OPERATOR_GRANTS),
       ...Object.keys(grants.OPERATOR_METADATA_COLUMN_GRANTS),
       ...Object.keys(grants.CUTOVER_MARKER_OPERATOR_GRANTS),
+      ...Object.keys(grants.EXECUTION_TARGET_REVOCATION_OPERATOR_GRANTS),
       "execution_targets",
     ])].sort();
     expect(manifest.APP_SERVING_RELATIONS).toEqual(appExpected);
@@ -335,7 +339,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
     expect(Object.isFrozen(manifest.OPERATOR_SERVING_RELATIONS)).toBe(true);
   });
 
-  it("pins the exact 19-table RLS, 18-table FORCE, and 27-row permissive policy certificate", () => {
+  it("pins the exact 20-table RLS, 19-table FORCE, and 29-row permissive policy certificate", () => {
     const manifest = grants as typeof grants & {
       RLS_RELATIONS?: readonly string[];
       FORCE_RLS_RELATIONS?: readonly string[];
@@ -357,6 +361,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       "worker_enrollment_codes", "worker_proof_replays", "execution_targets",
       "worker_operation_receipts", "worker_lease_rejections", "distributed_cutover_markers",
       "job_events", "job_projection_receipts", "job_control_commands",
+      "execution_target_revocations",
     ];
     const counts = {
       jobs: 1, job_attempts: 1, leases: 1, workers: 2, services: 1,
@@ -365,6 +370,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       worker_proof_replays: 2, execution_targets: 3, worker_operation_receipts: 1,
       worker_lease_rejections: 1, distributed_cutover_markers: 2,
       job_events: 1, job_projection_receipts: 1, job_control_commands: 1,
+      execution_target_revocations: 2,
     };
     const ORG = "(organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
     const CANDIDATE_ORG = "(candidate_organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
@@ -409,6 +415,8 @@ describe("JOB-003 bounded aoa_app authority", () => {
       policy("job_events", "job_events_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
       policy("job_projection_receipts", "job_projection_receipts_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
       policy("job_control_commands", "job_control_commands_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("execution_target_revocations", "execution_target_revocations_operator_write", "ALL", "aoa_operator", "true", "true"),
+      policy("execution_target_revocations", "execution_target_revocations_app_read", "SELECT", "aoa_app", "(current_setting('aoa.organization_id'::text, true) IS NULL)", null),
     ];
     expect(manifest.RLS_RELATIONS).toEqual(rls);
     expect(manifest.FORCE_RLS_RELATIONS).toEqual(rls.filter((relation) => relation !== "execution_targets"));
@@ -468,6 +476,8 @@ describe("JOB-003 bounded aoa_app authority", () => {
       ...Object.keys(grants.WORKER_ENROLLMENT_OPERATOR_GRANTS),
       ...Object.keys(grants.OPERATOR_METADATA_COLUMN_GRANTS),
       ...Object.keys(grants.CUTOVER_MARKER_APP_GRANTS),
+      ...Object.keys(grants.EXECUTION_TARGET_REVOCATION_APP_GRANTS),
+      ...Object.keys(grants.EXECUTION_TARGET_REVOCATION_OPERATOR_GRANTS),
       "mcp_api_keys",
       "execution_targets",
     ])].sort();

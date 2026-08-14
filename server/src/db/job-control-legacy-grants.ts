@@ -202,6 +202,22 @@ export const CUTOVER_MARKER_OPERATOR_GRANTS = Object.freeze({
   distributed_cutover_markers: ["SELECT", "INSERT", "UPDATE"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
+/**
+ * JOB-007 operator-metadata target-generation-cutoff fanout record (migration 0239).
+ * aoa_operator writes the durable record (no DELETE — records are durable) + advances
+ * the bounded scan/cursor/retry state; aoa_app reads it ONLY outside a tenant
+ * transaction (RLS app-read policy) so the fanout driver can converge each admitted
+ * Organization separately. These mirror the reviewed C14 grants in 0239 exactly — a
+ * grant change there must update these constants and survive review. Same
+ * operator-metadata shape as CUTOVER_MARKER_* above.
+ */
+export const EXECUTION_TARGET_REVOCATION_APP_GRANTS = Object.freeze({
+  execution_target_revocations: ["SELECT"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+export const EXECUTION_TARGET_REVOCATION_OPERATOR_GRANTS = Object.freeze({
+  execution_target_revocations: ["SELECT", "INSERT", "UPDATE"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
 /** Tenant target metadata needed to issue/consume enrollment and retire bootstrap auth. */
 export const APP_ENROLLMENT_TARGET_SELECT_COLUMNS = Object.freeze([
   "id", "organization_id", "owner_user_id", "scope", "target_authority_key",
@@ -254,6 +270,7 @@ export const APP_SERVING_RELATIONS = sortedUnion(
   Object.keys(JOB_EVENTS_NEW_PATH_GRANTS),
   Object.keys(JOB_CONTROL_COMMANDS_NEW_PATH_GRANTS),
   Object.keys(CUTOVER_MARKER_APP_GRANTS),
+  Object.keys(EXECUTION_TARGET_REVOCATION_APP_GRANTS),
   ["mcp_api_keys", "execution_targets"],
 );
 
@@ -262,6 +279,7 @@ export const OPERATOR_SERVING_RELATIONS = sortedUnion(
   Object.keys(WORKER_ENROLLMENT_OPERATOR_GRANTS),
   Object.keys(OPERATOR_METADATA_COLUMN_GRANTS),
   Object.keys(CUTOVER_MARKER_OPERATOR_GRANTS),
+  Object.keys(EXECUTION_TARGET_REVOCATION_OPERATOR_GRANTS),
   ["execution_targets"],
 );
 
@@ -271,6 +289,7 @@ export const RLS_RELATIONS = Object.freeze([
   "worker_enrollment_codes", "worker_proof_replays", "execution_targets",
   "worker_operation_receipts", "worker_lease_rejections", "distributed_cutover_markers",
   "job_events", "job_projection_receipts", "job_control_commands",
+  "execution_target_revocations",
 ] as const);
 
 export const FORCE_RLS_RELATIONS = Object.freeze(
@@ -299,6 +318,7 @@ export const POLICY_COUNTS = deepFreeze({
   job_events: 1,
   job_projection_receipts: 1,
   job_control_commands: 1,
+  execution_target_revocations: 2,
 } as const);
 
 const ORGANIZATION_QUAL =
@@ -356,6 +376,11 @@ export const RLS_POLICY_MANIFEST = deepFreeze([
   policy("job_events", "job_events_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
   policy("job_projection_receipts", "job_projection_receipts_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
   policy("job_control_commands", "job_control_commands_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  // JOB-007 target-revocation fanout record (migration 0239): operator writes
+  // (USING/CHECK true), app reads only outside a tenant transaction (aoa.organization_id
+  // GUC unset). Same operator-metadata shape as the 0188 cutover marker above.
+  policy("execution_target_revocations", "execution_target_revocations_operator_write", "ALL", "aoa_operator", "true", "true"),
+  policy("execution_target_revocations", "execution_target_revocations_app_read", "SELECT", "aoa_app", CUTOVER_APP_READ_QUAL, null),
 ] as const);
 
 /*
@@ -381,6 +406,7 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreeze({
     cost_events: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
     discussion_entries: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
     distributed_cutover_markers: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
+    execution_target_revocations: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
     execution_targets: { aoa_app: [], aoa_operator: [] },
     execution_workspaces: { aoa_app: ["SELECT"], aoa_operator: [] },
     heartbeat_runs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
@@ -504,6 +530,7 @@ const RELATION_ACL_NULLNESS_CERTIFICATE = deepFreeze({
   cost_events: false,
   discussion_entries: false,
   distributed_cutover_markers: false,
+  execution_target_revocations: false,
   execution_targets: false,
   execution_workspaces: false,
   heartbeat_runs: false,

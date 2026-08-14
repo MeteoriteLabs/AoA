@@ -8047,6 +8047,12 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     }
 
     expect.soft(scan(production)).toEqual([
+      // JOB-006 retry: the reaper reschedules the job's next-availability to the immutable
+      // backoff instant (jobs.availableAt = backoffUntil) when it re-queues attempt N+1.
+      // availableAt is the field lockEligibleLeaseCandidates + the outbox claim gate on, so
+      // the backoff MUST land here; this is server/reaper authority (never a worker path), so
+      // it is an admitted certificate-only writer of this candidate fact, not tampering.
+      "packages/db/src/repositories/tenant/job-control.ts#allocateRetry:jobs:availableAt",
       "packages/db/src/repositories/tenant/job-control.ts#persistPlacementDecision:jobAttempts:placementDecidedAt,placementDisposition,placementInputDigest,placementLeaseEligible,placementMode,placementOwner,placementPolicyDigest,placementProfileHash,placementProviderConstraintHash,placementTargetClass,placementTargetGeneration,placementTargetId,placementTargetScope",
     ]);
     const injected = scan([...production, {
