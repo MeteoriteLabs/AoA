@@ -33,6 +33,13 @@ export const QUARANTINE_GRANT_PATH = "/api/worker-control/quarantine/grant";
 export const QUARANTINE_FINALIZE_PATH = "/api/worker-control/quarantine/finalize";
 
 /**
+ * The mounted event-upload route path (audience `worker_run`, WRK-006). Fixed
+ * (no id-in-path), so the device proof is signed over this EXACT `/api/...`
+ * pathname. The daemon is a PURE CONSUMER of the frozen `event_upload` op.
+ */
+export const EVENT_UPLOAD_PATH = "/api/worker-control/events";
+
+/**
  * The lease-ack route path for `leaseId`. The device proof MUST be signed over
  * this EXACT string — it is the request path the server verifies against
  * (`req.originalUrl`). `leaseId` is a UUID, so encoding is a no-op, but we encode
@@ -112,6 +119,8 @@ export interface ControlPlaneClient {
   readonly quarantineGrantPath: string;
   /** The quarantine finalize path (audience `device_session`; PROVISIONAL, WRK-005). */
   readonly quarantineFinalizePath: string;
+  /** The event-upload path the proof must be signed over (equals the request path, WRK-006). */
+  readonly eventUploadPath: string;
   /** The lease-ack path for `leaseId` (the proof must be signed over it). */
   leaseAckPath(leaseId: string): string;
   /** The lease-renew path for `leaseId` (the proof must be signed over it, WRK-005). */
@@ -129,6 +138,8 @@ export interface ControlPlaneClient {
   /** POST a device-authenticated quarantine finalize (audience `device_session`,
    * 256 KiB / 15s, WRK-005). */
   quarantineFinalize(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
+  /** POST a signed event batch (audience `worker_run`, 4 MiB / 30s, WRK-006). */
+  eventUpload(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
 }
 
 export interface ControlPlaneClientOptions {
@@ -148,6 +159,8 @@ export interface ControlPlaneClientOptions {
   readonly quarantineGrantTimeoutMs?: number;
   /** Client timeout for quarantine_finalize; defaults to the descriptor's 15s. */
   readonly quarantineFinalizeTimeoutMs?: number;
+  /** Client timeout for event_upload; defaults to the event_upload descriptor's 30s. */
+  readonly eventUploadTimeoutMs?: number;
 }
 
 export function createControlPlaneClient(opts: ControlPlaneClientOptions): ControlPlaneClient {
@@ -162,6 +175,7 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
   const quarantineGrantTimeoutMs = opts.quarantineGrantTimeoutMs ?? OPERATION_DESCRIPTORS.quarantine_grant.timeoutMs;
   const quarantineFinalizeTimeoutMs =
     opts.quarantineFinalizeTimeoutMs ?? OPERATION_DESCRIPTORS.quarantine_finalize.timeoutMs;
+  const eventUploadTimeoutMs = opts.eventUploadTimeoutMs ?? OPERATION_DESCRIPTORS.event_upload.timeoutMs;
 
   /** POST a dual-authed worker operation (poll / lease_ack / lease_renew /
    * quarantine_*); classify transport failures the same way the enroll path does
@@ -169,7 +183,7 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
    * signed-bytes + proof-header path; only the audience literal + auth binding
    * differ (server-side, E5/DAT). */
   async function postOperation(
-    operation: "poll" | "lease_ack" | "lease_renew" | "quarantine_grant" | "quarantine_finalize",
+    operation: "poll" | "lease_ack" | "lease_renew" | "quarantine_grant" | "quarantine_finalize" | "event_upload",
     targetPath: string,
     perOpTimeoutMs: number,
     maxBytes: number,
@@ -221,6 +235,7 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
     pollPath: POLL_PATH,
     quarantineGrantPath: QUARANTINE_GRANT_PATH,
     quarantineFinalizePath: QUARANTINE_FINALIZE_PATH,
+    eventUploadPath: EVENT_UPLOAD_PATH,
     leaseAckPath,
     leaseRenewPath,
     poll(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
@@ -259,6 +274,15 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
         QUARANTINE_FINALIZE_PATH,
         quarantineFinalizeTimeoutMs,
         OPERATION_DESCRIPTORS.quarantine_finalize.maxRequestBytes,
+        request,
+      );
+    },
+    eventUpload(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
+      return postOperation(
+        "event_upload",
+        EVENT_UPLOAD_PATH,
+        eventUploadTimeoutMs,
+        OPERATION_DESCRIPTORS.event_upload.maxRequestBytes,
         request,
       );
     },

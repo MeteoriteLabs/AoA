@@ -35,7 +35,11 @@ export type { Env } from "./config/env.js";
 export { createWorkerLogger } from "./logging/logger.js";
 export type { Logger, WorkerLoggerOptions } from "./logging/logger.js";
 
-export { createShutdownHandler, createLeaseLifecycleSteps } from "./lifecycle/shutdown.js";
+export {
+  createShutdownHandler,
+  createLeaseLifecycleSteps,
+  createEventOutboxShutdownSteps,
+} from "./lifecycle/shutdown.js";
 export type {
   ShutdownStep,
   ShutdownOptions,
@@ -43,6 +47,7 @@ export type {
   ShutdownLogger,
   LeasingLifecycle,
   RenewalLifecycle,
+  EventOutboxLifecycle,
 } from "./lifecycle/shutdown.js";
 
 export { startHealthServer, assertLoopbackHost } from "./health/health-server.js";
@@ -334,3 +339,60 @@ export type {
   QuarantineGrantRequestEnvelope,
   QuarantineFinalizeRequestEnvelope,
 } from "./lease/quarantine.js";
+
+// --- WRK-006: durable, encrypted event outbox + event_upload wiring ----------
+
+export { EVENT_UPLOAD_PATH } from "./transport/client.js";
+
+export { KEK_BYTES, RowDecryptError, encryptEventRow, decryptEventRow } from "./events/event-row-codec.js";
+export type { EncryptedEventRow } from "./events/event-row-codec.js";
+
+export {
+  EventOutboxKekError,
+  MountedSecretKekStore,
+  StaticKek,
+  deriveKekFromDeviceKey,
+} from "./events/event-outbox-kek.js";
+export type { EventOutboxKekStore } from "./events/event-outbox-kek.js";
+
+export {
+  SeqCollisionError,
+  OutboxFullError,
+  SqliteEventOutboxStore,
+  deriveStreamKey,
+  loadDatabaseSync,
+  openEventOutboxStore,
+} from "./events/event-outbox-store.js";
+export type {
+  DurableEventStore,
+  EventStreamIdentity,
+  EventRowStatus,
+  StoredEventRow,
+  StreamCursor,
+  AppendEventInput,
+  EventOutboxLimits,
+  SqliteEventOutboxStoreOptions,
+} from "./events/event-outbox-store.js";
+
+export { DurableWorkerEventSink, toStreamKey } from "./events/durable-event-sink.js";
+export type { DurableWorkerEventSinkDeps } from "./events/durable-event-sink.js";
+
+export {
+  buildEventUploadRequest,
+  uploadEventBatchOnce,
+  classifyEventUploadResponse,
+} from "./events/event-upload.js";
+export type {
+  EventUploadAttempt,
+  EventUploadRequestEnvelope,
+  BuildEventUploadRequestInput,
+  UploadEventBatchOnceDeps,
+} from "./events/event-upload.js";
+
+export { createEventOutboxDrain } from "./events/event-outbox-drain.js";
+export type {
+  EventOutboxDrain,
+  EventOutboxDrainDeps,
+  EventOutboxDrainTuning,
+  DrainTickSummary,
+} from "./events/event-outbox-drain.js";

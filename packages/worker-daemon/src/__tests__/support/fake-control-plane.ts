@@ -37,8 +37,10 @@ import type { AddressInfo } from "node:net";
 
 import {
   OPERATION_DESCRIPTORS,
+  canonicalEventDigestInputV1,
   enrollmentRequestV1Schema,
   enrollmentResponseV1Schema,
+  eventUploadOperationRequestV1Schema,
   isRetryableProtocolErrorCode,
   leaseAckOperationRequestV1Schema,
   leaseOfferV1Schema,
@@ -70,6 +72,8 @@ const LEASE_RENEW_RE = /^\/api\/worker-control\/leases\/([^/]+)\/renew$/;
 // WRK-005: device-session quarantine routes (PROVISIONAL paths; mirror the client).
 const QUARANTINE_GRANT_PATH = "/api/worker-control/quarantine/grant";
 const QUARANTINE_FINALIZE_PATH = "/api/worker-control/quarantine/finalize";
+// WRK-006: the event-upload route (audience worker_run; mirrors the client).
+const EVENT_UPLOAD_PATH = "/api/worker-control/events";
 
 /** The lease-renew window the fake selects on a `renewed` outcome. */
 const DEFAULT_RENEW_WINDOW_MS = 60_000;
@@ -166,6 +170,33 @@ export type FakeQuarantineDirective =
   | { readonly kind: "error"; readonly status: number; readonly code: ProtocolErrorCode; readonly retryAfterMs?: number | null }
   | { readonly kind: "socket" };
 
+/**
+ * A programmed event-upload response (FIFO), consumed AFTER the request is
+ * well-formed + dual-authenticated. The default (no directive) INDEPENDENTLY
+ * recomputes each event's `eventDigest` (a re-stamp bug fails here) and applies
+ * cumulative-ACK semantics: a batch contiguous with the stream watermark is
+ * `accepted` (dedup makes a replayed batch idempotent); a batch that skips ahead
+ * is a `gap`. Directives force each classification for hermetic drain tests. */
+export type FakeEventUploadDirective =
+  | { readonly kind: "accepted"; readonly acceptedThroughSeq?: number }
+  | { readonly kind: "gap"; readonly acceptedThroughSeq: number }
+  | { readonly kind: "hash_mismatch"; readonly rejectedEventId?: string }
+  | { readonly kind: "stale_fence" }
+  | { readonly kind: "target_revoked" }
+  | { readonly kind: "terminal" }
+  | { readonly kind: "error"; readonly status: number; readonly code: ProtocolErrorCode; readonly retryAfterMs?: number | null }
+  | { readonly kind: "socket" };
+
+export interface FakeEventUploadRecord {
+  readonly streamKey: string;
+  readonly firstSeq: number;
+  readonly lastSeq: number;
+  readonly count: number;
+  readonly eventIds: readonly string[];
+  readonly idempotencyKey: string;
+  readonly deviceThumbprint: string;
+}
+
 export interface FakeRenewRecord {
   readonly leaseId: string;
   readonly idempotencyKey: string;
@@ -221,6 +252,17 @@ export interface FakeControlPlane {
   quarantineGrantCount(): number;
   quarantineFinalizeCount(): number;
   quarantineRecords(): readonly FakeQuarantineRecord[];
+  // --- WRK-006 event-upload controls ---
+  enqueueEventUpload(directive: FakeEventUploadDirective): void;
+  /** Force EVERY event upload to respond 401 `unauthorized` (drives the drain's
+   * per-stream recovery-cap trip). */
+  forceEventUploadUnauthorized(on: boolean): void;
+  eventUploadCount(): number;
+  eventUploads(): readonly FakeEventUploadRecord[];
+  /** Distinct idempotency keys seen across all uploads (order-preserved). */
+  eventUploadKeys(): readonly string[];
+  /** The cumulative acceptedThroughSeq the plane recorded for a stream. */
+  eventStreamAcceptedThrough(streamKey: string): number;
   expireSession(token: string): void;
   expireCode(code: string): void;
   revokeTarget(): void;
@@ -390,6 +432,12 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
   const quarantineGrantDirectives: FakeQuarantineDirective[] = [];
   const quarantineFinalizeDirectives: FakeQuarantineDirective[] = [];
   const quarantineRecordList: FakeQuarantineRecord[] = [];
+  const eventUploadDirectives: FakeEventUploadDirective[] = [];
+  const eventUploadRecordList: FakeEventUploadRecord[] = [];
+  // Cumulative per-stream watermark the plane has accepted through.
+  const eventStreamAccepted = new Map<string, number>();
+  let eventUploadRequestCount = 0;
+  let eventUploadUnauthorizedForced = false;
   const hanging = new Set<ServerResponse>();
   let pollRequestCount = 0;
   let renewRequestCount = 0;
@@ -525,6 +573,10 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     }
     if (method === "POST" && pathname === QUARANTINE_FINALIZE_PATH) {
       await handleQuarantine(req, res, url, method, "finalize");
+      return;
+    }
+    if (method === "POST" && pathname === EVENT_UPLOAD_PATH) {
+      await handleEventUpload(req, res, url, method);
       return;
     }
     record(method, url, 404, "not_found", null, null);
@@ -1218,6 +1270,207 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     finish();
   }
 
+  function eventStreamKey(batch: {
+    organizationId: string;
+    companyId: string;
+    workerId: string;
+    jobId: string;
+    attempt: number;
+    leaseId: string;
+    fenceToken: string;
+  }): string {
+    return [
+      batch.organizationId,
+      batch.companyId,
+      batch.workerId,
+      batch.jobId,
+      String(batch.attempt),
+      batch.leaseId,
+      batch.fenceToken,
+    ].join("|");
+  }
+
+  function sendAck(
+    res: ServerResponse,
+    correlationId: string,
+    batch: Record<string, unknown>,
+    status: string,
+    acceptedThroughSeq: number,
+    rejectedEventId?: string,
+  ): void {
+    sendJson(res, 200, {
+      protocolVersion: 1,
+      correlationId,
+      serverTime: new Date(now()).toISOString(),
+      ack: {
+        protocolVersion: 1,
+        organizationId: batch.organizationId,
+        companyId: batch.companyId,
+        workerId: batch.workerId,
+        jobId: batch.jobId,
+        attempt: batch.attempt,
+        leaseId: batch.leaseId,
+        fenceToken: batch.fenceToken,
+        acceptedThroughSeq,
+        expectedNextSeq: acceptedThroughSeq + 1,
+        status,
+        ...(rejectedEventId !== undefined ? { rejectedEventId } : {}),
+      },
+    });
+  }
+
+  /**
+   * WRK-006 event upload: dual-auth (Bearer session + device proof over `/events`),
+   * then a FIFO directive OR the default cumulative-ACK path. The default path
+   * INDEPENDENTLY recomputes every event's `eventDigest` (mirror of the server
+   * verifier) so a re-stamp/corruption bug in the worker fails as `hash_mismatch`
+   * here, and applies dedup-safe cumulative semantics (a replayed batch that is
+   * fully below the watermark still returns `accepted` without regressing it). */
+  async function handleEventUpload(req: IncomingMessage, res: ServerResponse, url: string, method: string): Promise<void> {
+    let status = 200;
+    let outcome = "accepted";
+    let recordedProofId: string | null = null;
+    let recordedThumbprint: string | null = null;
+    const finish = (): void => record(method, url, status, outcome, recordedProofId, recordedThumbprint);
+
+    const rawBody = await readBody(req);
+    const proof = readProofHeaders(req);
+    recordedProofId = proof?.proofId ?? null;
+    const parsed = eventUploadOperationRequestV1Schema.safeParse(safeJson(rawBody));
+    if (!parsed.success || rawBody.byteLength > OPERATION_DESCRIPTORS.event_upload.maxRequestBytes) {
+      status = 400;
+      outcome = "malformed";
+      operationError(res, 400, "malformed", null);
+      finish();
+      return;
+    }
+    const correlationId = parsed.data.correlationId;
+    eventUploadRequestCount += 1;
+    if (eventUploadUnauthorizedForced) {
+      status = 401;
+      outcome = "unauthorized";
+      operationError(res, 401, "unauthorized", correlationId);
+      finish();
+      return;
+    }
+    const auth = authenticateOperation(req, method, url, rawBody, correlationId, proof);
+    if (!auth.ok) {
+      recordedThumbprint = auth.thumbprint;
+      status = auth.status;
+      outcome = "unauthorized";
+      operationError(res, auth.status, auth.code, correlationId);
+      finish();
+      return;
+    }
+    recordedThumbprint = auth.thumbprint;
+
+    if (targetRevoked) {
+      status = 409;
+      outcome = "target_revoked";
+      operationError(res, 409, "target_revoked", correlationId);
+      finish();
+      return;
+    }
+
+    const batch = parsed.data.body as unknown as Record<string, unknown> & {
+      events: Array<Record<string, unknown> & { eventId: string; seq: number; eventDigest: string }>;
+    };
+    const streamKey = eventStreamKey(batch as never);
+    const events = batch.events;
+    const firstSeq = Number(events[0]!.seq);
+    const lastSeq = Number(events[events.length - 1]!.seq);
+    eventUploadRecordList.push({
+      streamKey,
+      firstSeq,
+      lastSeq,
+      count: events.length,
+      eventIds: events.map((e) => e.eventId),
+      idempotencyKey: parsed.data.idempotencyKey,
+      deviceThumbprint: auth.thumbprint,
+    });
+
+    const directive = eventUploadDirectives.shift();
+    if (directive && directive.kind === "socket") {
+      outcome = "socket";
+      status = 0;
+      finish();
+      req.socket.destroy();
+      return;
+    }
+    if (directive && directive.kind === "error") {
+      status = directive.status;
+      outcome = directive.code;
+      operationError(res, directive.status, directive.code, correlationId, directive.retryAfterMs ?? null);
+      finish();
+      return;
+    }
+    const accepted = eventStreamAccepted.get(streamKey) ?? 0;
+    if (directive && directive.kind === "gap") {
+      // A `gap` ACK reports what the server HAS accepted — advance the internal
+      // watermark to it so a subsequent resend from expectedNextSeq is contiguous.
+      eventStreamAccepted.set(streamKey, directive.acceptedThroughSeq);
+      status = 200;
+      outcome = "gap";
+      sendAck(res, correlationId, batch, "gap", directive.acceptedThroughSeq);
+      finish();
+      return;
+    }
+    if (directive && (directive.kind === "stale_fence" || directive.kind === "target_revoked" || directive.kind === "terminal")) {
+      status = 200;
+      outcome = directive.kind;
+      sendAck(res, correlationId, batch, directive.kind, accepted);
+      finish();
+      return;
+    }
+    if (directive && directive.kind === "hash_mismatch") {
+      status = 200;
+      outcome = "hash_mismatch";
+      sendAck(res, correlationId, batch, "hash_mismatch", accepted, directive.rejectedEventId ?? events[0]!.eventId);
+      finish();
+      return;
+    }
+
+    // Default (or an `accepted` override): independently verify each digest, then
+    // apply cumulative-ACK semantics.
+    if (!directive || directive.kind === "accepted") {
+      for (const event of events) {
+        const { eventDigest, ...withoutDigest } = event;
+        const recomputed = sha256Hex(Buffer.from(canonicalEventDigestInputV1(withoutDigest as never)));
+        if (recomputed !== eventDigest) {
+          status = 200;
+          outcome = "hash_mismatch";
+          sendAck(res, correlationId, batch, "hash_mismatch", accepted, event.eventId);
+          finish();
+          return;
+        }
+      }
+      if (directive && directive.kind === "accepted" && directive.acceptedThroughSeq !== undefined) {
+        eventStreamAccepted.set(streamKey, directive.acceptedThroughSeq);
+        status = 200;
+        outcome = "accepted";
+        sendAck(res, correlationId, batch, "accepted", directive.acceptedThroughSeq);
+        finish();
+        return;
+      }
+      // A batch that skips ahead of the watermark is a gap; otherwise accept and
+      // advance to max(watermark, lastSeq) — a replay fully below stays accepted.
+      if (firstSeq > accepted + 1) {
+        status = 200;
+        outcome = "gap";
+        sendAck(res, correlationId, batch, "gap", accepted);
+        finish();
+        return;
+      }
+      const newAccepted = Math.max(accepted, lastSeq);
+      eventStreamAccepted.set(streamKey, newAccepted);
+      status = 200;
+      outcome = "accepted";
+      sendAck(res, correlationId, batch, "accepted", newAccepted);
+      finish();
+      return;
+    }
+  }
+
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${address.port}`;
@@ -1308,6 +1561,26 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     },
     quarantineRecords(): readonly FakeQuarantineRecord[] {
       return quarantineRecordList;
+    },
+    enqueueEventUpload(directive: FakeEventUploadDirective): void {
+      eventUploadDirectives.push(directive);
+    },
+    forceEventUploadUnauthorized(on: boolean): void {
+      eventUploadUnauthorizedForced = on;
+    },
+    eventUploadCount(): number {
+      return eventUploadRequestCount;
+    },
+    eventUploads(): readonly FakeEventUploadRecord[] {
+      return eventUploadRecordList;
+    },
+    eventUploadKeys(): readonly string[] {
+      const seen: string[] = [];
+      for (const r of eventUploadRecordList) if (!seen.includes(r.idempotencyKey)) seen.push(r.idempotencyKey);
+      return seen;
+    },
+    eventStreamAcceptedThrough(streamKey: string): number {
+      return eventStreamAccepted.get(streamKey) ?? 0;
     },
     expireSession(token: string): void {
       const session = sessions.get(token);

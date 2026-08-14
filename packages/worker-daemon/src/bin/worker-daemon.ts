@@ -20,8 +20,10 @@ import { createWorkerLogger, type Logger } from "../logging/logger.js";
 import { createMetrics, type Metrics } from "../metrics/metrics.js";
 import { startHealthServer, type HealthServerHandle } from "../health/health-server.js";
 import {
+  createEventOutboxShutdownSteps,
   createLeaseLifecycleSteps,
   createShutdownHandler,
+  type EventOutboxLifecycle,
   type LeasingLifecycle,
   type RenewalLifecycle,
   type ShutdownSignal,
@@ -61,6 +63,15 @@ export interface BootstrapDeps {
    * loop it is inert until live dispatch is wired (E4-D12; rollback = omit it).
    */
   readonly renewal?: RenewalLifecycle;
+  /**
+   * The WRK-006 durable event outbox as a shutdown lifecycle. When present, its
+   * ordered `event-outbox-stop → event-outbox-flush → event-outbox-close` steps are
+   * registered after the lease steps and before the health-server stop, so on a
+   * signal the daemon stops the drain, attempts a final flush, then closes the
+   * store. Like the loop + renewal driver it is INERT until live dispatch is wired
+   * (E4-D12; rollback = omit it) — WRK-006 does not rewire the composition root.
+   */
+  readonly eventOutbox?: EventOutboxLifecycle;
 }
 
 export interface BootstrapResult {
@@ -110,8 +121,9 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   // composed. When no loop is wired (the current default — see `leasing` above),
   // the only stop step is the health server.
   const leaseSteps = deps.leasing ? createLeaseLifecycleSteps(deps.leasing, deps.renewal) : [];
+  const outboxSteps = deps.eventOutbox ? createEventOutboxShutdownSteps(deps.eventOutbox) : [];
   const shutdown = createShutdownHandler({
-    steps: [...leaseSteps, { name: "health-server", stop: () => health.close() }],
+    steps: [...leaseSteps, ...outboxSteps, { name: "health-server", stop: () => health.close() }],
     logger,
     exit: (code) => deps.proc.exit(code),
     flush: () => logger.flush(),

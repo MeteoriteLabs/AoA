@@ -30,6 +30,32 @@ export interface RenewalLifecycle {
   stop(): void;
 }
 
+/** The minimal event-outbox lifecycle the shutdown wiring drives (WRK-006 durable
+ * event outbox): stop the drain loop, attempt a final flush, then close the store. */
+export interface EventOutboxLifecycle {
+  /** Stop the background drain loop (idempotent). */
+  stopDrain(): void;
+  /** A best-effort final flush attempt (one drain pass). */
+  flush(): Promise<void> | void;
+  /** Close the durable store handle. */
+  closeStore(): void;
+}
+
+/**
+ * The ordered event-outbox shutdown steps (WRK-006): stop the drain FIRST, then a
+ * final flush attempt, then close the store — mirroring the design's
+ * "stop drain → final flush attempt → close store". Each is a distinct
+ * {@link ShutdownStep} so a failing step never aborts the sequence (the handler
+ * swallows step errors) and the order is testable independently of the entrypoint.
+ */
+export function createEventOutboxShutdownSteps(outbox: EventOutboxLifecycle): readonly ShutdownStep[] {
+  return [
+    { name: "event-outbox-stop", stop: () => outbox.stopDrain() },
+    { name: "event-outbox-flush", stop: () => outbox.flush() },
+    { name: "event-outbox-close", stop: () => outbox.closeStore() },
+  ];
+}
+
 /**
  * The ordered lease shutdown steps: lease-stop FIRST, then — when a WRK-005
  * renewal driver is present — `renewal-stop`, then drain. Composing these ahead of
