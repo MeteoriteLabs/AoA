@@ -423,7 +423,15 @@ export type JobControlCommandKind =
  * links an `approvals` row, a `runtime_decision` links an `agent_runtime_decisions`
  * row, and a `completion_policy` links the issue completion-policy snapshot. Distinct
  * from the JOB-005 worker projection kinds (attempt_started/attempt_terminal). */
-export type GovernedProjectionKind = "product_approval" | "runtime_decision" | "completion_policy";
+export type GovernedProjectionKind =
+  | "product_approval"
+  | "runtime_decision"
+  | "completion_policy"
+  // JOB-012 — links a `cost_events` row (the authoritative, server-priced charge for
+  // one accepted worker usage event) to the distributed attempt. Keyed for idempotency
+  // by (projectionKind, sourceIdentity=`cost:{company}:{eventId}`); written `applied` in
+  // the SAME tenant transaction as the charge.
+  | "authoritative_cost";
 
 /** ONE server-authored governance projection linking an EXISTING product/runtime
  * aggregate to a distributed attempt. Keyed for idempotency by (projectionKind,

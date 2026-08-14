@@ -1695,6 +1695,20 @@
       "when": 1786689947504,
       "tag": "0241_job_governance_projections_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 242,
+      "version": "7",
+      "when": 1786696597105,
+      "tag": "0242_tricky_network",
+      "breakpoints": true
+    },
+    {
+      "idx": 243,
+      "version": "7",
+      "when": 1786696597106,
+      "tag": "0243_job_authoritative_cost_rls",
+      "breakpoints": true
     }
   ]
 }

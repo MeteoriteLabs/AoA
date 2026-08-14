@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { agents, companies, heartbeatRuns, jobAttempts, organizations } from "@armyofagents/db";
 import { ORG_MAX_CONCURRENT_RUNS_DEFAULT, ORG_MAX_CONCURRENT_RUNS_MAX } from "@armyofagents/shared";
 import { preflightOneShotCliSpend } from "./one-shot-cli-budget.js";
+import { budgetService } from "./budgets.js";
 
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
@@ -148,13 +149,41 @@ export async function resolveOrgCapacityUsage(
  * unavailable dependency without seeding budget rows.
  */
 export interface CapacityBudgetBridge {
-  checkAdmission(db: Db, input: { companyId: string }): Promise<{ allowed: boolean; reason?: string }>;
+  checkAdmission(
+    db: Db,
+    // `agentId`/`projectId` are OPTIONAL: the `admitAttemptCapacity` call site knows
+    // only the company (it does not carry a resolved agent/project), so at that seam
+    // the check is company-scoped. Direct callers that DO know the agent/project pass
+    // them for the richer per-scope hard-stop check (JOB-012).
+    input: { companyId: string; agentId?: string | null; projectId?: string | null },
+  ): Promise<{ allowed: boolean; reason?: string }>;
 }
 
 export const defaultCapacityBudgetBridge: CapacityBudgetBridge = {
   async checkAdmission(db, input) {
     const result = await preflightOneShotCliSpend(db, { companyId: input.companyId });
     return result.allowed ? { allowed: true } : { allowed: false, reason: result.reason };
+  },
+};
+
+/**
+ * JOB-012 — the budget-aware admission bridge. Consults the FULL policy set (agent +
+ * company + department hard-stops) via `budgetService.getInvocationBlock` before the
+ * existing company one-shot preflight. A reached hard-stop at any applicable scope
+ * denies admission. At the `admitAttemptCapacity` seam only `companyId` is supplied,
+ * so it degrades to the company gate (identical safety to the default bridge); direct
+ * callers passing `agentId`/`projectId` get the richer per-scope check. Any thrown
+ * dependency propagates so the admit path FAILS CLOSED (never a silent admit).
+ */
+export const budgetAwareCapacityBridge: CapacityBudgetBridge = {
+  async checkAdmission(db, input) {
+    const block = await budgetService(db).getInvocationBlock(
+      input.agentId ?? null,
+      input.companyId,
+      { projectId: input.projectId ?? null },
+    );
+    if (block) return { allowed: false, reason: block };
+    return defaultCapacityBudgetBridge.checkAdmission(db, { companyId: input.companyId });
   },
 };
 
