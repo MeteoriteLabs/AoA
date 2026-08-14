@@ -63,6 +63,8 @@ export const GOVERNED_FENCE_SURFACE = [
   // DAT-003 — fenced workspace-patch apply/review disposition (see GUARDED_JOB_MUTATORS).
   "recordPatchApplyState",
   "readSecretHandle",
+  // DAT-004 — fenced lease-scoped secret-handle resolve authorization (see GUARDED_JOB_MUTATORS).
+  "resolveExecutionSecret",
   "completeAttempt",
   "recordServiceHealth",
   "applyProjectionReceipt",

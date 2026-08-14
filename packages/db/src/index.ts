@@ -76,6 +76,8 @@ export type {
   RetryAllocationResult,
   ReapExpiredLeasesInput,
   ReapExpiredLeasesResult,
+  PatchApplyStateResult,
+  AuthorizedSecretResolution,
 } from "./repositories/tenant/job-control.js";
 export { computeRetryBackoffMs } from "./repositories/tenant/job-control.js";
 // JOB-004: the ONE common active-fence predicate + the CLOSED governed-mutator
@@ -87,6 +89,9 @@ export {
   JobFenceError,
   ArtifactCommitRejection,
   PatchApplyRejection,
+  SecretResolveRejection,
+  authorizeSecretResolve,
+  SECRET_REF_KINDS,
   GUARDED_JOB_MUTATORS,
   TERMINAL_ATTEMPT_STATUSES,
   type ActiveFenceRequest,
@@ -95,6 +100,12 @@ export {
   type JobFenceErrorCode,
   type ArtifactCommitRejectionReason,
   type PatchApplyRejectionReason,
+  type SecretResolveRejectionReason,
+  type SecretResolveDecision,
+  type SecretResolveAuthzInput,
+  type SecretResolveHandleFacts,
+  type SecretResolveJobOwner,
+  type SecretRefKind,
 } from "./repositories/tenant/job-fence.js";
 export { operatorWorkerEnrollmentRepository } from "./repositories/operator/worker-enrollment.js";
 export { listPlatformPlacementCandidateSnapshots } from "./repositories/operator/job-placement.js";

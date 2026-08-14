@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, index, foreignKey } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, index, foreignKey } from "drizzle-orm/pg-core";
 import { organizations } from "./organizations.js";
 import { jobs } from "./jobs.js";
 
@@ -24,6 +24,38 @@ export const jobSecretHandles = pgTable(
     // existence oracle (FK checks bypass RLS). organization_id keeps its FK.
     jobId: uuid("job_id").notNull(),
     handle: text("handle").notNull(),
+    // DAT-004 — the RICH secret-handle model (E5, additive). Every column below is
+    // NULLABLE and NON-SECRET: the resolver maps an opaque handle onto one of the four
+    // existing value stores and resolves the value BEHIND the fence — NO materialized
+    // secret value ever lands in this table (invariant #3/#4). Nullable additions
+    // inherit the whole-table `aoa_app` grant + FORCE-RLS policy (0211) with zero
+    // keystone reconciliation (DAT-004-D1).
+    //
+    // `ref_kind` — the non-secret discriminator selecting the legacy broker:
+    //   company_secret | connector_oauth | provider_key | device_local.
+    refKind: text("ref_kind"),
+    // `ref_id` — the non-secret pointer into the chosen broker (company_secrets.id /
+    //   mcp:oauth:<id> name / provider:<id> name / provider_credentials.id-or-slug).
+    //   NEVER a value.
+    refId: text("ref_id"),
+    // Denormalized owner (from the job at mint) for device_local / owner-bound handles.
+    ownerPrincipalKind: text("owner_principal_kind"),
+    ownerPrincipalId: text("owner_principal_id"),
+    // Mirror the frozen wire ref so the resolver RE-CHECKS the sandbox-vs-proxy
+    // invariant server-side (defense in depth against a hand-built envelope).
+    materialization: text("materialization"), // proxy | env | file
+    usePolicy: text("use_policy"), // fence_proxy | remote_server_fenced | sandbox_local_only
+    // The bound egress destination / networkPolicyRef — DAT-004 BINDS; DAT-005 ENFORCES.
+    destination: text("destination"),
+    // D5 — pin the handle to its placed target generation (defense in depth over the
+    // lease-level generation cutoff in guardActiveFence). Null = unpinned.
+    boundTargetGeneration: integer("bound_target_generation"),
+    // Audit-as-columns (DAT-004-D4): control-plane status + resolve audit, never a
+    // value. `status` defaults to 'active' at mint (nullable for the additive widen).
+    status: text("status"),
+    lastResolvedAt: timestamp("last_resolved_at", { withTimezone: true }),
+    resolveCount: integer("resolve_count"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

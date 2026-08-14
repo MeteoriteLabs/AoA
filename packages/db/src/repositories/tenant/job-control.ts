@@ -52,8 +52,11 @@ import {
   JobFenceError,
   ArtifactCommitRejection,
   PatchApplyRejection,
+  SecretResolveRejection,
+  authorizeSecretResolve,
   TERMINAL_ATTEMPT_STATUSES,
   type ActiveFenceRequest,
+  type SecretRefKind,
 } from "./job-fence.js";
 
 export interface LeaseRejectionCleanupResult {
@@ -353,6 +356,28 @@ export interface JobControlRepository {
   readSecretHandle(
     input: ActiveFenceRequest & { handle: string },
   ): Promise<JobSecretHandle | null>;
+  /**
+   * DAT-004 — the fenced, lease-scoped RESOLVE authorization of an opaque execution
+   * secret handle. Runs `guardActiveFence` FIRST (a stale/terminal/revoked fence
+   * throws `JobFenceError` BEFORE any handle row is read — the documented precedence).
+   * Then, under the held fence lock:
+   *   1. Load the WIDENED handle row for (org, job, handle); throw
+   *      `SecretResolveRejection('unknown_ref_kind')` (coarse, non-disclosing) if absent.
+   *   2. Re-derive the dispatching owner from the LOCKED `jobs` row
+   *      (`executorPrincipalKind/Id`) — the `ActiveFenceRequest` carries NO owner.
+   *   3. For an owner-bound handle, re-check the owner's ACTIVE `company_memberships`
+   *      in the SAME tx (membership loss DENIES).
+   *   4. `authorizeSecretResolve` re-verifies the materialization×use_policy invariant,
+   *      the sandbox-local-vs-network-destination invariant, the `bound_target_generation`
+   *      pin (D5) against the LIVE lease generation, and the owner binding.
+   *   5. Write the audit-as-columns (last_resolved_at + resolve_count++) in the SAME tx.
+   * Returns the AUTHORIZED non-secret binding ONLY — NEVER a secret value (the value is
+   * resolved behind the fence by the server broker dispatch). Throws `JobFenceError`
+   * (guard) or `SecretResolveRejection` (authorization).
+   */
+  resolveExecutionSecret(
+    input: ActiveFenceRequest & { handle: string },
+  ): Promise<AuthorizedSecretResolution>;
   completeAttempt(
     input: ActiveFenceRequest & { terminalStatus: TerminalCompletionStatus },
   ): Promise<JobAttempt>;
@@ -476,6 +501,27 @@ export interface PatchApplyStateResult {
   resolvedBaseManifestHash: string | null;
   resultManifestHash: string;
   alreadyApplied: boolean;
+}
+
+/** DAT-004 — the AUTHORIZED non-secret resolution the guarded mutator returns to the
+ * server broker dispatch. It carries the handle's non-secret binding + the LOCKED
+ * lease's company (the broker dispatch scope) + the post-increment audit count.
+ * There is NO value field — a secret value is NEVER returned by the control plane;
+ * the server resolves it behind the fence via the legacy brokers (invariants #1/#3/#4). */
+export interface AuthorizedSecretResolution {
+  handleId: string;
+  refKind: SecretRefKind;
+  refId: string;
+  materialization: "proxy" | "env" | "file";
+  usePolicy: "fence_proxy" | "remote_server_fenced" | "sandbox_local_only";
+  destination: string | null;
+  ownerPrincipalKind: string | null;
+  ownerPrincipalId: string | null;
+  boundTargetGeneration: number | null;
+  /** The LOCKED lease's company — the scope the broker dispatch resolves the value in. */
+  companyId: string;
+  /** Post-increment resolve audit count (control-plane metadata only). */
+  resolveCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -2534,6 +2580,118 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         eq(jobSecretHandles.handle, input.handle),
       )).limit(1);
       return row ?? null;
+    },
+
+    async resolveExecutionSecret(input) {
+      // Fence FIRST: a stale/terminal/revoked fence throws JobFenceError here, BEFORE
+      // any handle row is read or any owner/membership/broker access — so `stale_fence`/
+      // `target_revoked`/`attempt_terminal` always precede the resolve decision (the
+      // DAT-002 no-early-probe + fence-first precedence). The guard proves the LIVE
+      // target generation (equal to the lease's stored one) and holds the lease lock.
+      // Every tenant field (org/company/job/attempt/target-generation) is proven by the
+      // guard's locking identity match, so `input.*` are authoritative below.
+      await guardActiveFence(input);
+
+      // Load the WIDENED handle row for (org, job, handle). company + attempt are proven
+      // solely by the fence guard (matches readSecretHandle — do not loosen).
+      const [row] = await tx.select().from(jobSecretHandles).where(and(
+        eq(jobSecretHandles.organizationId, input.organizationId),
+        eq(jobSecretHandles.jobId, input.jobId),
+        eq(jobSecretHandles.handle, input.handle),
+      )).limit(1);
+      // A missing handle is a coarse, NON-DISCLOSING refusal (never reveals whether a
+      // foreign handle exists) — mapped to `malformed` at the wire, like every reject.
+      if (!row) throw new SecretResolveRejection("unknown_ref_kind");
+
+      // Re-derive the dispatching owner from the LOCKED `jobs` row — the ActiveFenceRequest
+      // carries NO owner. Scoped to the fence's org + the LOCKED lease's company (the
+      // company↔org seam: job_secret_handles is org-scoped, provider_credentials is
+      // company-scoped; the job binds them, resolved here, never trusted from the wire).
+      const [jobRow] = await tx
+        .select({
+          executorPrincipalKind: jobs.executorPrincipalKind,
+          executorPrincipalId: jobs.executorPrincipalId,
+        })
+        .from(jobs)
+        .where(and(
+          eq(jobs.organizationId, input.organizationId),
+          eq(jobs.companyId, input.companyId),
+          eq(jobs.id, input.jobId),
+        ))
+        .limit(1);
+      // The fence guard already proved the lease's (org, company, job) identity, so the
+      // job row must exist; a missing row is a non-disclosing refusal, never an oracle.
+      if (!jobRow) throw new SecretResolveRejection("unknown_ref_kind");
+
+      // For an owner-bound handle, re-check the owner's ACTIVE company membership in the
+      // SAME tx (membership loss DENIES — re-check-at-resolve, invariant #5). `null` when
+      // the handle is not owner-bound (no membership query needed).
+      const ownerBound = !!(row.ownerPrincipalKind && row.ownerPrincipalId);
+      let ownerMembershipActive: boolean | null = null;
+      if (ownerBound) {
+        const [membership] = await tx
+          .select({ id: companyMemberships.id })
+          .from(companyMemberships)
+          .where(and(
+            eq(companyMemberships.companyId, input.companyId),
+            eq(companyMemberships.principalType, row.ownerPrincipalKind!),
+            eq(companyMemberships.principalId, row.ownerPrincipalId!),
+            eq(companyMemberships.status, "active"),
+          ))
+          .limit(1);
+        ownerMembershipActive = membership != null;
+      }
+
+      // The PURE decision (D6): re-verify the materialization×use_policy invariant, the
+      // sandbox-local-vs-network-destination invariant, the bound_target_generation pin
+      // (D5) against the LIVE lease generation, revocation, and the owner binding.
+      const decision = authorizeSecretResolve({
+        handle: {
+          status: row.status ?? "",
+          refKind: row.refKind,
+          refId: row.refId,
+          materialization: row.materialization,
+          usePolicy: row.usePolicy,
+          destination: row.destination,
+          boundTargetGeneration: row.boundTargetGeneration,
+          ownerPrincipalKind: row.ownerPrincipalKind,
+          ownerPrincipalId: row.ownerPrincipalId,
+        },
+        jobOwner: {
+          executorPrincipalKind: jobRow.executorPrincipalKind,
+          executorPrincipalId: jobRow.executorPrincipalId,
+        },
+        // The guard proved lease.targetGeneration === input.targetGeneration === the
+        // LIVE execution_targets.device_generation (else target_revoked), so the
+        // request's generation IS the live one (and is non-null typed).
+        ownerMembershipActive,
+        liveTargetGeneration: input.targetGeneration,
+      });
+      if (decision !== "admit") throw new SecretResolveRejection(decision);
+
+      // Audit-as-columns (D4): record the authorized resolution in the SAME tx — NEVER a
+      // value. resolve_count is a monotonic control-plane counter (COALESCE for the
+      // additive-widen null seam); last_resolved_at is a fresh DB clock.
+      const [audited] = await tx.update(jobSecretHandles).set({
+        lastResolvedAt: sql`clock_timestamp()`,
+        resolveCount: sql`COALESCE(${jobSecretHandles.resolveCount}, 0) + 1`,
+        updatedAt: sql`clock_timestamp()`,
+      }).where(eq(jobSecretHandles.id, row.id)).returning({ resolveCount: jobSecretHandles.resolveCount });
+
+      // `authorizeSecretResolve` proved these enum/ref fields non-null + in-range.
+      return {
+        handleId: row.handle,
+        refKind: row.refKind as SecretRefKind,
+        refId: row.refId ?? "",
+        materialization: row.materialization as "proxy" | "env" | "file",
+        usePolicy: row.usePolicy as "fence_proxy" | "remote_server_fenced" | "sandbox_local_only",
+        destination: row.destination,
+        ownerPrincipalKind: row.ownerPrincipalKind,
+        ownerPrincipalId: row.ownerPrincipalId,
+        boundTargetGeneration: row.boundTargetGeneration,
+        companyId: input.companyId,
+        resolveCount: Number(audited?.resolveCount ?? 0),
+      };
     },
 
     async completeAttempt(input) {

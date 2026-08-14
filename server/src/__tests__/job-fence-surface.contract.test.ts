@@ -49,6 +49,8 @@ const EXPECTED_GUARDED = [
   // DAT-003 — the fenced workspace-patch apply/review disposition mutator.
   "recordPatchApplyState",
   "readSecretHandle",
+  // DAT-004 — the fenced lease-scoped secret-handle resolve authorization mutator.
+  "resolveExecutionSecret",
   "completeAttempt",
   "recordServiceHealth",
   "applyProjectionReceipt",
