@@ -172,6 +172,11 @@ jobs:
           node scripts/check-artifact-commit-vectors.mjs
           node --test scripts/check-artifact-commit-vectors.test.mjs
 
+      - name: Workspace-patch diff + apply vectors (DAT-003)
+        run: |
+          node scripts/check-workspace-patch-vectors.mjs
+          node --test scripts/check-workspace-patch-vectors.test.mjs
+
       - name: CI lane routing invariants (DEP-004)
         run: |
           node scripts/check-ci-lanes.mjs

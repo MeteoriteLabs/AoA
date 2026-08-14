@@ -464,3 +464,8 @@ export type {
   CaptureGitBaseInput,
   CapturedGitBase,
 } from "./snapshot/index.js";
+
+// --- DAT-003: workspace patch (base→result set-diff) producer ----------------
+
+export { buildWorkspacePatch, WorkspacePatchError } from "./patch/index.js";
+export type { BuildWorkspacePatchInput, BuildWorkspacePatchResult } from "./patch/index.js";

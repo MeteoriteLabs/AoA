@@ -51,6 +51,7 @@ import {
   classifyFence,
   JobFenceError,
   ArtifactCommitRejection,
+  PatchApplyRejection,
   TERMINAL_ATTEMPT_STATUSES,
   type ActiveFenceRequest,
 } from "./job-fence.js";
@@ -318,6 +319,37 @@ export interface JobControlRepository {
       tenantValid: boolean;
     },
   ): Promise<JobArtifact>;
+  /**
+   * DAT-003 — the fenced apply/review of a COMMITTED `workspace_patch`. Runs
+   * `guardActiveFence` FIRST (a stale/terminal/revoked fence throws `JobFenceError`
+   * BEFORE any patch-row read — the documented precedence). Then, under the held
+   * fence lock:
+   *   1. Load the committed `workspace_patch` row for (org, job, attempt, identifier);
+   *      throw `PatchApplyRejection('patch_not_committed')` if absent, or
+   *      `PatchApplyRejection('object_key_mismatch')` if the presented `patchObjectKey`
+   *      does not equal the committed row's object key (so the parsed base/result
+   *      digests are bound to the immutable committed object).
+   *   2. If it is already `apply_status='applied'`, return `applied` unchanged
+   *      (idempotent no-op).
+   *   3. Resolve the job's currently-accepted base manifest hash (D3): the
+   *      `result_manifest_hash` of the most-recent OTHER `apply_status='applied'`
+   *      workspace_patch, else the committed `workspace_snapshot`'s `sha256`
+   *      (== manifestHash by the canonical-upload convention), else null.
+   *   4. `applied` iff the accepted base is non-null AND equals the patch's declared
+   *      `patchBaseManifestHash`; otherwise `conflict_quarantined` (NEVER auto-applies).
+   *      Persist `base_manifest_hash` / `result_manifest_hash` / `apply_status` on the
+   *      row. On `applied`, the accepted base advances to `result_manifest_hash`.
+   * The fence lock serializes concurrent applies against the same lease, so a loser
+   * observing an advanced base is quarantined.
+   */
+  recordPatchApplyState(
+    input: ActiveFenceRequest & {
+      identifier: string;
+      patchObjectKey: string;
+      patchBaseManifestHash: string;
+      patchResultManifestHash: string;
+    },
+  ): Promise<PatchApplyStateResult>;
   readSecretHandle(
     input: ActiveFenceRequest & { handle: string },
   ): Promise<JobSecretHandle | null>;
@@ -432,6 +464,18 @@ export interface GuardedFenceResult {
   leaseId: string;
   attemptId: string;
   guarded: true;
+}
+
+/** DAT-003 — the disposition of a fenced `recordPatchApplyState`. `applyStatus` is
+ * the control-plane outcome; `resolvedBaseManifestHash` is the job's accepted base
+ * the patch was revalidated against (null when the job has no committed base yet);
+ * `resultManifestHash` is the base the accepted chain advances to on `applied`;
+ * `alreadyApplied` marks an idempotent no-op re-apply. */
+export interface PatchApplyStateResult {
+  applyStatus: "applied" | "conflict_quarantined";
+  resolvedBaseManifestHash: string | null;
+  resultManifestHash: string;
+  alreadyApplied: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -2365,6 +2409,120 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       )).limit(1);
       if (!existing) throw new ArtifactCommitRejection("tenant_mismatch");
       return existing;
+    },
+
+    async recordPatchApplyState(input) {
+      // Fence FIRST: a stale/terminal/revoked fence throws JobFenceError here,
+      // BEFORE any patch-row read — so `stale_fence` always precedes the apply
+      // decision, and no content is probed against a dead fence.
+      await guardActiveFence(input);
+
+      // Load the target committed workspace_patch row under the held fence lock.
+      const [target] = await tx.select().from(jobArtifacts).where(and(
+        eq(jobArtifacts.organizationId, input.organizationId),
+        eq(jobArtifacts.jobId, input.jobId),
+        eq(jobArtifacts.attempt, input.attemptNumber),
+        eq(jobArtifacts.identifier, input.identifier),
+        eq(jobArtifacts.kind, "workspace_patch"),
+        eq(jobArtifacts.status, "committed"),
+      )).limit(1);
+      if (!target) throw new PatchApplyRejection("patch_not_committed");
+      // Bind the parsed base/result digests to the immutable committed object: the
+      // presented object key MUST equal the committed row's key.
+      if (target.objectKey !== input.patchObjectKey) throw new PatchApplyRejection("object_key_mismatch");
+
+      // Idempotent no-op: an already-applied patch returns `applied` unchanged.
+      if (target.applyStatus === "applied") {
+        return {
+          applyStatus: "applied",
+          resolvedBaseManifestHash: target.baseManifestHash,
+          resultManifestHash: target.resultManifestHash ?? input.patchResultManifestHash,
+          alreadyApplied: true,
+        };
+      }
+      // Sticky quarantine: a conflict-quarantined patch NEVER auto-flips to applied
+      // on re-invocation — "mismatched base never auto-applies" means it requires an
+      // explicit review/re-submission, not a silent re-decision if the accepted base
+      // later happens to coincide with its declared base.
+      if (target.applyStatus === "conflict_quarantined") {
+        return {
+          applyStatus: "conflict_quarantined",
+          resolvedBaseManifestHash: null,
+          resultManifestHash: target.resultManifestHash ?? input.patchResultManifestHash,
+          alreadyApplied: false,
+        };
+      }
+
+      // Resolve the job's currently-accepted base manifest hash (D3): the
+      // result_manifest_hash of the most-recent OTHER applied workspace_patch, else
+      // the committed workspace_snapshot's sha256 (== manifestHash by the canonical
+      // upload convention). Job-scoped (the base chain spans attempts).
+      const [appliedBase] = await tx
+        .select({ hash: jobArtifacts.resultManifestHash })
+        .from(jobArtifacts)
+        .where(and(
+          eq(jobArtifacts.organizationId, input.organizationId),
+          eq(jobArtifacts.jobId, input.jobId),
+          eq(jobArtifacts.kind, "workspace_patch"),
+          eq(jobArtifacts.applyStatus, "applied"),
+          ne(jobArtifacts.identifier, input.identifier),
+        ))
+        .orderBy(desc(jobArtifacts.committedAt), desc(jobArtifacts.versionNumber))
+        .limit(1);
+
+      // `resolvedBaseManifestHash` is the INFORMATIVE current accepted base surfaced on
+      // a quarantine (latest applied patch result, else the most-recent committed
+      // snapshot). The apply DECISION is computed separately: in the applied-chain it
+      // is equality with that head; at bootstrap it is EXISTENCE of the DECLARED base
+      // among the job's committed snapshots — a job may commit >1 snapshot (a retry
+      // re-captures a base), so a "most-recent snapshot" decision would wrongly
+      // over-reject a clean apply whose base is an earlier committed snapshot.
+      let resolvedBaseManifestHash: string | null = appliedBase?.hash ?? null;
+      let applyMatch = resolvedBaseManifestHash !== null && input.patchBaseManifestHash === resolvedBaseManifestHash;
+      if (appliedBase?.hash == null) {
+        const [mostRecentSnapshot] = await tx
+          .select({ hash: jobArtifacts.sha256 })
+          .from(jobArtifacts)
+          .where(and(
+            eq(jobArtifacts.organizationId, input.organizationId),
+            eq(jobArtifacts.jobId, input.jobId),
+            eq(jobArtifacts.kind, "workspace_snapshot"),
+            eq(jobArtifacts.status, "committed"),
+          ))
+          .orderBy(desc(jobArtifacts.committedAt), desc(jobArtifacts.versionNumber))
+          .limit(1);
+        resolvedBaseManifestHash = mostRecentSnapshot?.hash ?? null;
+        const [declaredSnapshot] = await tx
+          .select({ hash: jobArtifacts.sha256 })
+          .from(jobArtifacts)
+          .where(and(
+            eq(jobArtifacts.organizationId, input.organizationId),
+            eq(jobArtifacts.jobId, input.jobId),
+            eq(jobArtifacts.kind, "workspace_snapshot"),
+            eq(jobArtifacts.status, "committed"),
+            eq(jobArtifacts.sha256, input.patchBaseManifestHash),
+          ))
+          .limit(1);
+        applyMatch = declaredSnapshot != null;
+      }
+
+      // decideApply: a matched base applies; a mismatched (or absent) base is
+      // conflict-quarantined and NEVER auto-applies.
+      const applyStatus: "applied" | "conflict_quarantined" = applyMatch ? "applied" : "conflict_quarantined";
+
+      await tx.update(jobArtifacts).set({
+        baseManifestHash: input.patchBaseManifestHash,
+        resultManifestHash: input.patchResultManifestHash,
+        applyStatus,
+        updatedAt: sql`clock_timestamp()`,
+      }).where(eq(jobArtifacts.id, target.id));
+
+      return {
+        applyStatus,
+        resolvedBaseManifestHash,
+        resultManifestHash: input.patchResultManifestHash,
+        alreadyApplied: false,
+      };
     },
 
     async readSecretHandle(input) {

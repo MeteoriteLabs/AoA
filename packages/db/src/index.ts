@@ -86,6 +86,7 @@ export {
   classifyFence,
   JobFenceError,
   ArtifactCommitRejection,
+  PatchApplyRejection,
   GUARDED_JOB_MUTATORS,
   TERMINAL_ATTEMPT_STATUSES,
   type ActiveFenceRequest,
@@ -93,6 +94,7 @@ export {
   type GuardedJobMutator,
   type JobFenceErrorCode,
   type ArtifactCommitRejectionReason,
+  type PatchApplyRejectionReason,
 } from "./repositories/tenant/job-fence.js";
 export { operatorWorkerEnrollmentRepository } from "./repositories/operator/worker-enrollment.js";
 export { listPlatformPlacementCandidateSnapshots } from "./repositories/operator/job-placement.js";

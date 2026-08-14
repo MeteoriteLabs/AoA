@@ -42,6 +42,20 @@ export const jobArtifacts = pgTable(
     fenceToken: text("fence_token"),
     versionNumber: integer("version_number"),
     status: text("status"),
+    // DAT-003 — the workspace-PATCH apply/review disposition (E5, additive,
+    // nullable). Populated ONLY on `kind='workspace_patch'` rows at apply time by
+    // the fence-guarded `recordPatchApplyState` mutator: `base_manifest_hash` /
+    // `result_manifest_hash` are the patch's declared base→result manifest digests
+    // (parsed from the committed, integrity-verified patch object), and
+    // `apply_status` is the control-plane disposition
+    // (`'pending' | 'applied' | 'conflict_quarantined'`, null until an apply runs).
+    // A matching base advances the accepted base to `result_manifest_hash`; a
+    // mismatched base is `conflict_quarantined` and NEVER auto-applies. This is NOT
+    // the frozen device-auth `quarantine/` object prefix (DAT-006) — it is an
+    // apply-time disposition on the committed patch row.
+    baseManifestHash: text("base_manifest_hash"),
+    resultManifestHash: text("result_manifest_hash"),
+    applyStatus: text("apply_status"),
     committedAt: timestamp("committed_at", { withTimezone: true }),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

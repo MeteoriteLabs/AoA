@@ -38,6 +38,10 @@ export const GUARDED_JOB_MUTATORS = [
   // DAT-002 — the fenced verified-commit of a rich artifact manifest (fence-first,
   // then verify hash/size/prefix/tenant, then idempotent committed insert).
   "commitArtifactVersion",
+  // DAT-003 — the fenced apply/review of a committed workspace_patch (fence-first,
+  // then base revalidation → advance the accepted base (applied) OR conflict
+  // quarantine; NEVER auto-applies a mismatched base; idempotent).
+  "recordPatchApplyState",
   "readSecretHandle",
   "completeAttempt",
   "recordServiceHealth",
@@ -84,6 +88,25 @@ export class ArtifactCommitRejection extends Error {
   constructor(public readonly reason: ArtifactCommitRejectionReason) {
     super(`Artifact commit rejected: ${reason}`);
     this.name = "ArtifactCommitRejection";
+  }
+}
+
+/** DAT-003 — why a fenced patch APPLY was refused AFTER the fence admitted it.
+ * `patch_not_committed` = no committed `workspace_patch` row for the identity;
+ * `object_key_mismatch` = the caller-presented object key does not equal the
+ * committed row's object key (the parsed content is not bound to the committed,
+ * immutable object). A base MISMATCH is NOT a rejection — it is an
+ * `apply_status='conflict_quarantined'` disposition, surfaced for review. */
+export type PatchApplyRejectionReason = "patch_not_committed" | "object_key_mismatch";
+
+/** Raised by the fenced apply mutator when the active-fence guard admitted the
+ * caller but the target patch row is missing/uncommitted or the presented object
+ * key does not match the committed row. Distinct from `JobFenceError` so the
+ * service maps it to a coarse, non-disclosing reject, never a fence reject. */
+export class PatchApplyRejection extends Error {
+  constructor(public readonly reason: PatchApplyRejectionReason) {
+    super(`Patch apply rejected: ${reason}`);
+    this.name = "PatchApplyRejection";
   }
 }
 

@@ -60,6 +60,8 @@ export const GOVERNED_FENCE_SURFACE = [
   "authorizeArtifactCommit",
   // DAT-002 — fenced verified artifact-manifest commit (see GUARDED_JOB_MUTATORS).
   "commitArtifactVersion",
+  // DAT-003 — fenced workspace-patch apply/review disposition (see GUARDED_JOB_MUTATORS).
+  "recordPatchApplyState",
   "readSecretHandle",
   "completeAttempt",
   "recordServiceHealth",

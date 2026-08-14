@@ -46,6 +46,8 @@ const EXPECTED_GUARDED = [
   "acceptEvent",
   "authorizeArtifactCommit",
   "commitArtifactVersion",
+  // DAT-003 — the fenced workspace-patch apply/review disposition mutator.
+  "recordPatchApplyState",
   "readSecretHandle",
   "completeAttempt",
   "recordServiceHealth",
