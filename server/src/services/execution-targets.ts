@@ -242,36 +242,72 @@ export interface RevokeExecutionTargetResult {
  * authority that can write the target's own-Org row); a platform target is bumped
  * on the operator connection (the null-Org platform-operator authority).
  */
+/**
+ * JOB-007 operator generation-cutoff (narrow service-guarded delegate). DISABLES the
+ * target and bumps `deviceGeneration` by one, gated ONLY by `status != 'disabled'`.
+ *
+ * The `status != 'disabled'` guard (not an exact-generation CAS) is deliberate and makes
+ * the cutoff BOTH idempotent AND correct under a concurrent generation advance:
+ *   - idempotent: once the target is `disabled`, a re-invocation matches no row and
+ *     no-ops (the fanout re-ensures this cutoff on crash recovery, possibly many times);
+ *   - race-correct: whatever the live generation is when this runs, the target ends
+ *     `disabled` with a strictly-greater generation. An exact-generation CAS
+ *     (`WHERE device_generation = revokedGeneration`) would silently match zero rows if a
+ *     racing re-enrollment (`advanceTargetGeneration`, which bumps the generation while
+ *     leaving status active) advanced the generation in the gap between the revoke's
+ *     FOR-UPDATE generation read and this cutoff — leaving the target ACTIVE while the
+ *     revoke returned success (lost revocation). See worker-revocation.integration.test.ts
+ *     "the cutoff disables the target even when the live generation advanced ...".
+ * It serializes against `advanceTargetGeneration` (also `WHERE status != 'disabled'`) on
+ * the row lock, so exactly one of {disable, re-enrollment advance} wins per contention and
+ * the target always ends disabled.
+ *
+ * This is NOT a lease transaction and never opens its own transaction/`runInTenant`: its
+ * scope is the caller's — `ensureExecutionTargetCutoff` runs the org path inside
+ * `runInTenant` (tenant RLS) and the platform (null-Org) path on `operatorDb` (platform
+ * authority). Kept a top-level named delegate so the authority-writer allowlist auditor
+ * can re-find and lock-order-exempt it (see job-leasing-contract.test.ts).
+ */
+async function bumpExecutionTargetGeneration(
+  tx: Db,
+  input: { targetId: string; organizationId: string | null },
+): Promise<void> {
+  await tx
+    .update(executionTargets)
+    .set({
+      deviceGeneration: sql`${executionTargets.deviceGeneration} + 1`,
+      status: "disabled",
+      updatedAt: sql`clock_timestamp()`,
+    })
+    .where(and(
+      eq(executionTargets.id, input.targetId),
+      ne(executionTargets.status, "disabled"),
+      input.organizationId
+        ? eq(executionTargets.organizationId, input.organizationId)
+        : isNull(executionTargets.organizationId),
+    ));
+}
+
 export async function ensureExecutionTargetCutoff(input: {
   appDb: Db;
   operatorDb: Db;
   targetId: string;
   organizationId: string | null;
+  // Retained as part of the durable record identity + lease-convergence bound. The cutoff
+  // itself is generation-AGNOSTIC (disable-if-active), so it is not forwarded to the bump.
   revokedGeneration: number;
 }): Promise<void> {
-  const bump = async (tx: Db) => {
-    await tx
-      .update(executionTargets)
-      .set({
-        deviceGeneration: input.revokedGeneration + 1,
-        status: "disabled",
-        updatedAt: sql`clock_timestamp()`,
-      })
-      .where(and(
-        eq(executionTargets.id, input.targetId),
-        eq(executionTargets.deviceGeneration, input.revokedGeneration),
-        input.organizationId
-          ? eq(executionTargets.organizationId, input.organizationId)
-          : isNull(executionTargets.organizationId),
-      ));
+  const cutoff = {
+    targetId: input.targetId,
+    organizationId: input.organizationId,
   };
   if (input.organizationId) {
     await runInTenant(input.appDb, input.organizationId, async (_repos, tx) => {
-      await bump(tx);
+      await bumpExecutionTargetGeneration(tx, cutoff);
     });
   } else {
     await input.operatorDb.transaction(async (tx) => {
-      await bump(tx as unknown as Db);
+      await bumpExecutionTargetGeneration(tx as unknown as Db, cutoff);
     });
   }
 }

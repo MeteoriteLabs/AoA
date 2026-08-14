@@ -16,7 +16,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { createExecutionTargetRevocationFanout } from "../services/execution-target-revocation-fanout.js";
-import { revokeExecutionTarget } from "../services/execution-targets.js";
+import { ensureExecutionTargetCutoff, revokeExecutionTarget } from "../services/execution-targets.js";
 import { createJobReconciliationService } from "../services/job-reconciliation.js";
 import { admitAttemptCapacity } from "../services/org-concurrency.js";
 import { runInTenant } from "../db/tenant-context.js";
@@ -145,6 +145,7 @@ integration("JOB-007 worker/target revocation via generation cutoff", () => {
       }), identity),
       guardCode("events", (id, repos) => repos.jobControl.acceptEvent({ ...id }), identity),
       guardCode("secrets", (id, repos) => repos.jobControl.readSecretHandle({ ...id, handle: "h" }), identity),
+      guardCode("upload", (id, repos) => repos.jobControl.authorizeArtifactCommit({ ...id, identifier: "artifact-1" }), identity),
       guardCode("complete", (id, repos) => repos.jobControl.completeAttempt({ ...id, terminalStatus: "succeeded" }), identity),
       guardCode("projection", (id, repos) => repos.jobControl.applyProjectionReceipt({ ...id }), identity),
       guardCode("health", (id, repos) => repos.jobControl.recordServiceHealth({
@@ -154,7 +155,7 @@ integration("JOB-007 worker/target revocation via generation cutoff", () => {
     ]);
     expect(codes).toEqual([
       "target_revoked", "target_revoked", "target_revoked", "target_revoked",
-      "target_revoked", "target_revoked", "target_revoked",
+      "target_revoked", "target_revoked", "target_revoked", "target_revoked",
     ]);
 
     // The lease is still 'active' in the row (fanout has not run) — denial came purely
@@ -224,5 +225,69 @@ integration("JOB-007 worker/target revocation via generation cutoff", () => {
     expect(await leaseStatus(offer.leaseId)).toBe("revoked");
     const [job] = await f.admin<{ status: string }[]>`SELECT status FROM jobs WHERE id = ${seeded.jobId}`;
     expect(job?.status).toBe("cancelled");
+  }, 60_000);
+
+  it("the cutoff disables the target even when the live generation advanced past the revoked generation (finding-1 race)", async () => {
+    const f = ctx();
+    await clearRevocations();
+    await f.activateLease(7_205);
+    expect(await targetGeneration()).toBe(1);
+
+    // Simulate a concurrent re-enrollment (advanceTargetGeneration) that slipped in AFTER
+    // the revoke read generation=1 but BEFORE the cutoff runs: the live generation is now 2
+    // and the target is STILL active.
+    await f.admin`UPDATE execution_targets SET device_generation = 2 WHERE id = ${TARGET}`;
+    const [mid] = await f.admin<{ status: string; g: number }[]>`
+      SELECT status, device_generation AS g FROM execution_targets WHERE id = ${TARGET}`;
+    expect(mid).toMatchObject({ status: "active" });
+    expect(Number(mid!.g)).toBe(2);
+
+    // The cutoff (called by the revoke with the now-STALE revokedGeneration=1) must STILL
+    // disable the target. An exact-generation CAS (WHERE device_generation = 1) would match
+    // no row here and silently no-op, leaving the target ACTIVE at generation 2 — the
+    // lost-revocation / false-success defect.
+    await ensureExecutionTargetCutoff({
+      appDb: f.app.db, operatorDb: f.operator.db, targetId: TARGET, organizationId: ORG, revokedGeneration: 1,
+    });
+    const [after] = await f.admin<{ status: string; g: number }[]>`
+      SELECT status, device_generation AS g FROM execution_targets WHERE id = ${TARGET}`;
+    expect(after?.status).toBe("disabled");
+    expect(Number(after!.g)).toBe(3);
+
+    // Idempotent: a re-ensure once disabled does NOT bump again (no runaway self-increment).
+    await ensureExecutionTargetCutoff({
+      appDb: f.app.db, operatorDb: f.operator.db, targetId: TARGET, organizationId: ORG, revokedGeneration: 1,
+    });
+    expect(await targetGeneration()).toBe(3);
+  }, 60_000);
+
+  it("a resumed tick cancels a job whose lease was already revoked before a Phase-2 crash (finding-2)", async () => {
+    const f = ctx();
+    await clearRevocations();
+    const { seeded, offer } = await f.activateLease(7_206);
+
+    await revokeExecutionTarget({
+      appDb: f.app.db, operatorDb: f.operator.db, targetId: TARGET, organizationId: ORG,
+    });
+
+    // Simulate: the fanout's Phase 1 committed (the lease was flipped to `revoked` and the
+    // record set `converging`), then the process CRASHED before Phase 2 requested job
+    // cancellation. The job is still non-terminal.
+    await f.admin`UPDATE leases SET status = 'revoked', released_at = clock_timestamp() WHERE id = ${offer.leaseId}`;
+    await f.admin`UPDATE execution_target_revocations SET status = 'converging' WHERE target_id = ${TARGET}`;
+    const [beforeJob] = await f.admin<{ status: string }[]>`SELECT status FROM jobs WHERE id = ${seeded.jobId}`;
+    expect(beforeJob?.status).not.toBe("cancelled");
+
+    // The resumed tick must re-derive the cancellation from the already-`revoked` lease and
+    // finalize the job. If convergence only collects freshly-flipped offered/active leases,
+    // the already-revoked lease is skipped, Phase 2 never runs, and the job strands
+    // non-terminal forever (the reaper only scans offered/active leases).
+    const resumed = await fanout().tick();
+    expect(resumed.cancellations).toBeGreaterThanOrEqual(1);
+    const [job] = await f.admin<{ status: string }[]>`SELECT status FROM jobs WHERE id = ${seeded.jobId}`;
+    expect(job?.status).toBe("cancelled");
+    const [rec] = await f.admin<{ status: string }[]>`
+      SELECT status FROM execution_target_revocations WHERE target_id = ${TARGET}`;
+    expect(rec?.status).toBe("completed");
   }, 60_000);
 });

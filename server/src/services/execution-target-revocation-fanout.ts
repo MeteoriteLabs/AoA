@@ -63,6 +63,18 @@ export function createExecutionTargetRevocationFanout(input: {
     // Phase 1 (in the owning tenant): mark every matching old-generation live lease
     // `revoked`, release its capacity claim (one conditional held->released), and
     // collect the affected (company, job) tuples to cancel.
+    //
+    // The selection INCLUDES leases already in `revoked` (not just offered/active) so a
+    // crash-resumed tick — where a prior tick's Phase 1 committed the lease flip but the
+    // process died before Phase 2 requested job cancellation — STILL re-derives the
+    // cancellation intent from durable lease state. Without this, the resumed tick would
+    // no longer see the already-`revoked` lease, never call requestCancellation, and mark
+    // the record `completed` with the job stranded non-terminal forever (the reaper only
+    // scans offered/active leases). requestCancellation is idempotent, so re-collecting a
+    // job whose cancellation already finalized is a safe no-op. A freshly-flipped lease
+    // (offered/active -> revoked) is counted + capacity-released exactly once; an
+    // already-`revoked` lease is only re-collected for cancellation (no re-flip, no
+    // double-release).
     const marked = await runInTenant(input.appDb, input2.organizationId, async (_repos, tx) => {
       const stale = await tx
         .select({
@@ -70,34 +82,39 @@ export function createExecutionTargetRevocationFanout(input: {
           companyId: leases.companyId,
           jobId: leases.jobId,
           attemptId: leases.attemptId,
+          status: leases.status,
         })
         .from(leases)
         .where(and(
           eq(leases.targetId, input2.targetId),
           lte(leases.targetGeneration, input2.revokedGeneration),
-          inArray(leases.status, ["offered", "active"]),
+          inArray(leases.status, ["offered", "active", "revoked"]),
         ))
         .for("update", { skipLocked: true });
       const jobs: Array<{ companyId: string; jobId: string }> = [];
       let revoked = 0;
       for (const lease of stale) {
-        const [flipped] = await tx
-          .update(leases)
-          .set({
-            status: "revoked",
-            releasedAt: sql`clock_timestamp()`,
-            updatedAt: sql`clock_timestamp()`,
-          })
-          .where(and(eq(leases.id, lease.id), inArray(leases.status, ["offered", "active"])))
-          .returning({ id: leases.id });
-        if (!flipped) continue;
-        revoked += 1;
-        if (lease.attemptId) {
-          await releaseAttemptCapacity(tx, {
-            attemptId: lease.attemptId,
-            organizationId: input2.organizationId,
-          });
+        if (lease.status !== "revoked") {
+          const [flipped] = await tx
+            .update(leases)
+            .set({
+              status: "revoked",
+              releasedAt: sql`clock_timestamp()`,
+              updatedAt: sql`clock_timestamp()`,
+            })
+            .where(and(eq(leases.id, lease.id), inArray(leases.status, ["offered", "active"])))
+            .returning({ id: leases.id });
+          if (!flipped) continue;
+          revoked += 1;
+          if (lease.attemptId) {
+            await releaseAttemptCapacity(tx, {
+              attemptId: lease.attemptId,
+              organizationId: input2.organizationId,
+            });
+          }
         }
+        // Collect the job for cancellation for BOTH the freshly-flipped lease and an
+        // already-`revoked` lease resumed after a Phase-2 crash.
         if (lease.companyId && lease.jobId) {
           jobs.push({ companyId: lease.companyId, jobId: lease.jobId });
         }

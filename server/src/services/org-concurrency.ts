@@ -191,7 +191,7 @@ export async function admitAttemptCapacity(
     // One advisory xact lock per Organization: count-then-claim is serialized and
     // the lock is released at commit, so a concurrent admit sees this claim first.
     await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtext('aoa:org-capacity-admit'), hashtext(${input.organizationId}))`,
+      sql`SELECT pg_advisory_xact_lock(hashtext('aoa:org-capacity'), hashtext(${input.organizationId}))`,
     );
     const cap = input.cap ?? await resolveOrgConcurrencyCap(txDb, input.organizationId);
 
@@ -316,7 +316,7 @@ export async function claimQueuedRunsWithOrgCapacity(
   return db.transaction(async (tx) => {
     const txDb = tx as unknown as Db;
     await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtext('aoa:heartbeat-org-start'), hashtext(${input.organizationId}))`,
+      sql`SELECT pg_advisory_xact_lock(hashtext('aoa:org-capacity'), hashtext(${input.organizationId}))`,
     );
 
     // Re-read Organization occupancy only after acquiring the lock. Counting

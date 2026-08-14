@@ -5314,6 +5314,11 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       "server/src/services/execution-targets.ts#revokeExecutionTargetWorkerToken:executionTargets:status,updatedAt,workerTokenHash:authority",
       "server/src/services/execution-targets.ts#rotateExecutionTargetWorkerToken:executionTargets:updatedAt,workerTokenHash:authority",
       "server/src/routes/execution-targets.ts#executionTargetRoutes:executionTargets:<insert>:authority",
+      // JOB-007 revocation: the operator generation-cutoff — it increments the target's
+      // deviceGeneration + disables it (status), the immutable authority write the fence
+      // guard's generation recheck denies against. A narrow service-guarded delegate whose
+      // transaction/scope is established by ensureExecutionTargetCutoff (see exception below).
+      "server/src/services/execution-targets.ts#bumpExecutionTargetGeneration:executionTargets:deviceGeneration,status,updatedAt:authority",
       "server/src/services/execution-targets.ts#ensureControlPlaneExecutionTarget:executionTargets:<insert>:authority",
     ].sort();
     expect.soft(inventory).toEqual(expected);
@@ -5663,6 +5668,16 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       "packages/db/src/repositories/tenant/worker-enrollment.ts#retireBootstrapCredential",
       "packages/db/src/repositories/tenant/worker-enrollment.ts#rotateWorker",
     ]);
+    // JOB-007 operator generation-cutoff: a narrow write helper living in a service file
+    // (execution-targets.ts) that also imports runInTenant/operatorJobLeasingRepository for
+    // OTHER functions — so the import-prepended audit source can't use the generic
+    // service-delegate negative match. Verify its OWN body instead: it must never open a
+    // transaction, and must gate on the exact (targetId, revokedGeneration) predicate so the
+    // bump stays monotonic + idempotent. Scope is the caller's (org: runInTenant/tenant RLS,
+    // platform: operatorDb), exactly like the enrollment generation writers above.
+    const exactGenerationCutoffDelegates = new Set([
+      "server/src/services/execution-targets.ts#bumpExecutionTargetGeneration",
+    ]);
     const reviewedCreateOnlyOrDelegatedInserts = new Set([
       "packages/db/src/repositories/tenant/worker-enrollment.ts#insertWorker",
       "server/src/routes/execution-targets.ts#executionTargetRoutes",
@@ -5684,6 +5699,26 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       if (exactServiceGuardedDelegates.has(key)) {
         expect.soft(functionSource, `${key} must remain a narrow repository delegate`).not.toMatch(
           /(?:\.transaction\(|runInTenant\(|operatorJobLeasingRepository)/,
+        );
+        continue;
+      }
+      if (exactGenerationCutoffDelegates.has(key)) {
+        const body = namedFunctionSource(sourceByFile.get(writer.file)!, writer.functionName);
+        expect.soft(body, `${key} must never open its own transaction`).not.toMatch(
+          /\.transaction\(|runInTenant\(/,
+        );
+        // The cutoff must DISABLE the target under an idempotent `status != 'disabled'`
+        // guard (not an exact-generation CAS, which silently no-ops if a racing
+        // re-enrollment advanced the generation — see finding-1). Together: it always
+        // disables + strictly advances the generation, exactly once per contention.
+        expect.soft(body, `${key} must set status disabled`).toMatch(
+          /status:\s*["']disabled["']/,
+        );
+        expect.soft(body, `${key} must gate idempotently on status != disabled`).toMatch(
+          /ne\(executionTargets\.status,\s*["']disabled["']\)/,
+        );
+        expect.soft(body, `${key} must target exactly one row by id`).toMatch(
+          /eq\(executionTargets\.id,\s*input\.targetId\)/,
         );
         continue;
       }
