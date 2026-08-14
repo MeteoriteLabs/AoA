@@ -152,3 +152,26 @@ observe session expiry as a 401 requiring re-enrollment.
 
 **Does NOT block:** WRK-002 CORE acceptance (per [[E4-D11]]). **Blocks:** any claim that workers
 run sustained/long jobs (relevant to WRK-005 lease renewal, DEP journeys, E7+ coding runs).
+
+**WRK-005 addendum (2026-08-14 — resolved-for-now as the session-bound dependency).** WRK-005 built
+the client-side lease-renewal driver **bounded by session lifetime** (the E4-F007-recommended scope):
+a lease cannot outlive its session, so a `session.get()`/`recover()` that surfaces `SessionTerminalError`
+(the lapsed 10-min code route / cap-tripped recovery) is treated as a **lease loss → fence close →
+`onLeaseLost` → orphan-output quarantine**, NEVER a session extension. The renewal client behavior is
+CORRECT regardless of the server fix. **This finding remains OPEN as the dependency for sustained/long
+jobs:** until the E3/JOB-002 fix lands (slide-on-poll / device-proof-only reauth / unbind replay from
+the code TTL), a worker whose 15-min session nears expiry has no path to renew a lease beyond it, so
+any job longer than the session window will lose its lease and quarantine late output rather than run
+to completion. WRK-005 did NOT design around F007 client-side (per the finding's directive).
+
+## E4-F008 — WRK-005 inherits the E4-D12 provisioning-refresh concern (loop-toward-live-dispatch)
+
+**Status:** `open` · resolve at **the live-dispatch wiring ticket (post-WRK-005)** · Severity: LOW
+(inert today) · Source: WRK-005.
+
+WRK-005 is "wiring the loop toward live dispatch," so it inherits the E4-D12 provisioning-refresh
+concern: a rotated provider-constraint digest can go stale on a long-lived worker. WRK-005 itself adds
+no provisioning path (it is inert until the loop is wired for live dispatch), but the renewal driver +
+fence-close proxy are the first modules composed at that seam. When live dispatch is wired, the owning
+ticket MUST reconcile a rotated provider-constraint digest against in-flight leases. Recorded here so
+it is not lost.

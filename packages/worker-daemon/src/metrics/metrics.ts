@@ -20,6 +20,9 @@ export const ALLOWED_LABEL_KEYS = new Set([
   "escalation_stage",
   // WRK-003: backoff-sleep histogram bucket (a CLOSED token set, below).
   "bucket",
+  // WRK-005: the governed-effect a fence-close proxy denied (a CLOSED token set,
+  // below) — the four exit-gate governed effects, never a free-form string.
+  "effect",
 ]);
 
 // -----------------------------------------------------------------------------
@@ -41,6 +44,22 @@ export const SANDBOX_OP_METRIC = "sandbox_op";
 export const CLEANUP_OUTCOME_METRIC = "cleanup_outcome";
 export const CLEANUP_ESCALATION_METRIC = "cleanup_escalation";
 export const RECONCILE_ORPHANS_METRIC = "reconcile_orphans_total";
+
+// -----------------------------------------------------------------------------
+// WRK-005 lease-renewal / fence-close-proxy / quarantine metric NAMES.
+//
+// `lease_renew{outcome}` (renewed/cancel_requested/rejected/recovered + shared
+// error tokens), `lease_loss{reason}` and `fence_close{reason}` (local reason
+// tokens via the `reason` floor), `governed_effect_denied{effect}` (the CLOSED
+// four-effect set), and `quarantine{outcome}` (granted/quarantined/dropped/
+// rejected + shared error tokens). Every label value stays inside the closed
+// per-key allow-lists below — no id/lease/secret byte can enter as a label.
+// -----------------------------------------------------------------------------
+export const LEASE_RENEW_METRIC = "lease_renew";
+export const LEASE_LOSS_METRIC = "lease_loss";
+export const FENCE_CLOSE_METRIC = "fence_close";
+export const GOVERNED_EFFECT_DENIED_METRIC = "governed_effect_denied";
+export const QUARANTINE_METRIC = "quarantine";
 
 /**
  * A bounded low-cardinality enum token: lowercase, starts with a letter, at most
@@ -81,6 +100,12 @@ export const CLOSED_LABEL_VALUES: Readonly<Record<string, ReadonlySet<string>>> 
     "incompatible",
     "backpressure",
     "recovered",
+    // WRK-005 lease_renew + quarantine outcomes.
+    "renewed",
+    "cancel_requested",
+    "granted",
+    "quarantined",
+    "dropped",
     // an offer that arrived after lease-stop began (drain-before-lease-stop) →
     // dropped un-ACKed rather than abandoned in flight at exit.
     "offer_dropped",
@@ -110,6 +135,8 @@ export const CLOSED_LABEL_VALUES: Readonly<Record<string, ReadonlySet<string>>> 
   bucket: new Set(["lt_1s", "lt_5s", "lt_30s", "gte_30s"]),
   // WRK-004 escalation ladder rungs.
   escalation_stage: new Set(["none", "cancel", "kill", "destroy"]),
+  // WRK-005 governed-effect surface (mirror of the server GOVERNED_FENCE_SURFACE).
+  effect: new Set(["artifact_commit", "secret_materialization", "task_completion", "governed_egress"]),
 };
 
 export interface Metrics {

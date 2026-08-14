@@ -23,18 +23,32 @@ export interface LeasingLifecycle {
   drain(): Promise<void>;
 }
 
+/** The minimal renewal lifecycle the shutdown wiring drives (WRK-005 lease-renewal
+ * driver): stop all renewal timers so no renew fires during drain. */
+export interface RenewalLifecycle {
+  /** Stop all renewal timers (idempotent). */
+  stop(): void;
+}
+
 /**
- * The ordered lease shutdown steps: lease-stop FIRST, then drain. Composing these
- * ahead of the health-server step guarantees the worker stops accepting new work
- * before it waits for in-flight work to finish (the WRK-003 lease-stop-before-drain
- * invariant). The order is encoded here so it is testable independently of the
- * entrypoint.
+ * The ordered lease shutdown steps: lease-stop FIRST, then — when a WRK-005
+ * renewal driver is present — `renewal-stop`, then drain. Composing these ahead of
+ * the health-server step guarantees the worker stops accepting new work AND stops
+ * renewing existing leases before it waits for in-flight work to finish
+ * (lease-stop-before-drain, with no renew firing during drain). The order is
+ * encoded here so it is testable independently of the entrypoint. When no renewal
+ * driver is wired the steps are exactly the WRK-003 `[lease-stop, lease-drain]`.
  */
-export function createLeaseLifecycleSteps(lifecycle: LeasingLifecycle): readonly ShutdownStep[] {
-  return [
-    { name: "lease-stop", stop: () => lifecycle.stopLeasing() },
-    { name: "lease-drain", stop: () => lifecycle.drain() },
-  ];
+export function createLeaseLifecycleSteps(
+  lifecycle: LeasingLifecycle,
+  renewal?: RenewalLifecycle,
+): readonly ShutdownStep[] {
+  const steps: ShutdownStep[] = [{ name: "lease-stop", stop: () => lifecycle.stopLeasing() }];
+  if (renewal !== undefined) {
+    steps.push({ name: "renewal-stop", stop: () => renewal.stop() });
+  }
+  steps.push({ name: "lease-drain", stop: () => lifecycle.drain() });
+  return steps;
 }
 
 export interface ShutdownLogger {

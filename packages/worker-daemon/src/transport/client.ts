@@ -18,8 +18,19 @@ import { WORKER_CONTROL_HEADERS } from "./headers.js";
 export const ENROLL_PATH = "/api/worker-control/enroll";
 /** The mounted poll route path (audience `worker_poll`). */
 export const POLL_PATH = "/api/worker-control/poll";
-/** The mounted lease-ack route base (audience `worker_run`). */
+/** The mounted lease-ack route base (audience `worker_run`). Both the ack and the
+ * WRK-005 renew route hang off this base (`…/leases/:id/ack`, `…/leases/:id/renew`). */
 export const LEASE_ACK_BASE_PATH = "/api/worker-control/leases";
+
+/**
+ * The mounted quarantine route paths (audience `device_session`, WRK-005). These
+ * path strings are PROVISIONAL: the concrete E5/DAT server contract (route strings
+ * + the exact device-session header binding) is not built yet. WRK-005 shapes the
+ * client to the frozen `quarantine_*` v1 schemas and tests against the fake plane's
+ * chosen binding; the live round-trip is E5/DAT.
+ */
+export const QUARANTINE_GRANT_PATH = "/api/worker-control/quarantine/grant";
+export const QUARANTINE_FINALIZE_PATH = "/api/worker-control/quarantine/finalize";
 
 /**
  * The lease-ack route path for `leaseId`. The device proof MUST be signed over
@@ -29,6 +40,16 @@ export const LEASE_ACK_BASE_PATH = "/api/worker-control/leases";
  */
 export function leaseAckPath(leaseId: string): string {
   return `${LEASE_ACK_BASE_PATH}/${encodeURIComponent(leaseId)}/ack`;
+}
+
+/**
+ * The lease-RENEW route path for `leaseId` (audience `worker_run`, WRK-005). The
+ * device proof is signed over this EXACT string, exactly as `leaseAckPath`. It
+ * shares the ack base but a distinct `/renew` action so the server can route the
+ * frozen `lease_renew` op separately from `lease_ack`.
+ */
+export function leaseRenewPath(leaseId: string): string {
+  return `${LEASE_ACK_BASE_PATH}/${encodeURIComponent(leaseId)}/renew`;
 }
 
 export type ControlPlaneTransportErrorKind = "timeout" | "network" | "request_too_large";
@@ -87,13 +108,27 @@ export interface ControlPlaneClient {
   readonly path: string;
   /** The poll path the proof must be signed over (equals the request path). */
   readonly pollPath: string;
+  /** The quarantine grant path (audience `device_session`; PROVISIONAL, WRK-005). */
+  readonly quarantineGrantPath: string;
+  /** The quarantine finalize path (audience `device_session`; PROVISIONAL, WRK-005). */
+  readonly quarantineFinalizePath: string;
   /** The lease-ack path for `leaseId` (the proof must be signed over it). */
   leaseAckPath(leaseId: string): string;
+  /** The lease-renew path for `leaseId` (the proof must be signed over it, WRK-005). */
+  leaseRenewPath(leaseId: string): string;
   enroll(request: EnrollHttpRequest): Promise<EnrollHttpResponse>;
   /** POST a signed poll request (audience `worker_poll`, 64 KiB / 30s). */
   poll(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
   /** POST a signed lease ACK to `:leaseId` (audience `worker_run`, 64 KiB / 15s). */
   leaseAck(leaseId: string, request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
+  /** POST a signed lease RENEW to `:leaseId` (audience `worker_run`, 64 KiB / 15s, WRK-005). */
+  leaseRenew(leaseId: string, request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
+  /** POST a device-authenticated quarantine grant request (audience `device_session`,
+   * 64 KiB / 15s, WRK-005). Survives lease loss — it is NOT a lease grant. */
+  quarantineGrant(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
+  /** POST a device-authenticated quarantine finalize (audience `device_session`,
+   * 256 KiB / 15s, WRK-005). */
+  quarantineFinalize(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
 }
 
 export interface ControlPlaneClientOptions {
@@ -107,6 +142,12 @@ export interface ControlPlaneClientOptions {
   readonly pollTimeoutMs?: number;
   /** Client timeout for lease_ack; defaults to the lease_ack descriptor's 15s. */
   readonly leaseAckTimeoutMs?: number;
+  /** Client timeout for lease_renew; defaults to the lease_renew descriptor's 15s. */
+  readonly leaseRenewTimeoutMs?: number;
+  /** Client timeout for quarantine_grant; defaults to the descriptor's 15s. */
+  readonly quarantineGrantTimeoutMs?: number;
+  /** Client timeout for quarantine_finalize; defaults to the descriptor's 15s. */
+  readonly quarantineFinalizeTimeoutMs?: number;
 }
 
 export function createControlPlaneClient(opts: ControlPlaneClientOptions): ControlPlaneClient {
@@ -117,11 +158,18 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
   const endpoint = new URL(path, opts.baseUrl).toString();
   const pollTimeoutMs = opts.pollTimeoutMs ?? OPERATION_DESCRIPTORS.poll.timeoutMs;
   const leaseAckTimeoutMs = opts.leaseAckTimeoutMs ?? OPERATION_DESCRIPTORS.lease_ack.timeoutMs;
+  const leaseRenewTimeoutMs = opts.leaseRenewTimeoutMs ?? OPERATION_DESCRIPTORS.lease_renew.timeoutMs;
+  const quarantineGrantTimeoutMs = opts.quarantineGrantTimeoutMs ?? OPERATION_DESCRIPTORS.quarantine_grant.timeoutMs;
+  const quarantineFinalizeTimeoutMs =
+    opts.quarantineFinalizeTimeoutMs ?? OPERATION_DESCRIPTORS.quarantine_finalize.timeoutMs;
 
-  /** POST a dual-authed worker operation (poll / lease_ack); classify transport
-   * failures the same way the enroll path does (timeout vs network). */
+  /** POST a dual-authed worker operation (poll / lease_ack / lease_renew /
+   * quarantine_*); classify transport failures the same way the enroll path does
+   * (timeout vs network). The device-session quarantine ops reuse this exact
+   * signed-bytes + proof-header path; only the audience literal + auth binding
+   * differ (server-side, E5/DAT). */
   async function postOperation(
-    operation: "poll" | "lease_ack",
+    operation: "poll" | "lease_ack" | "lease_renew" | "quarantine_grant" | "quarantine_finalize",
     targetPath: string,
     perOpTimeoutMs: number,
     maxBytes: number,
@@ -171,7 +219,10 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
   return {
     path,
     pollPath: POLL_PATH,
+    quarantineGrantPath: QUARANTINE_GRANT_PATH,
+    quarantineFinalizePath: QUARANTINE_FINALIZE_PATH,
     leaseAckPath,
+    leaseRenewPath,
     poll(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
       return postOperation("poll", POLL_PATH, pollTimeoutMs, OPERATION_DESCRIPTORS.poll.maxRequestBytes, request);
     },
@@ -181,6 +232,33 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
         leaseAckPath(leaseId),
         leaseAckTimeoutMs,
         OPERATION_DESCRIPTORS.lease_ack.maxRequestBytes,
+        request,
+      );
+    },
+    leaseRenew(leaseId: string, request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
+      return postOperation(
+        "lease_renew",
+        leaseRenewPath(leaseId),
+        leaseRenewTimeoutMs,
+        OPERATION_DESCRIPTORS.lease_renew.maxRequestBytes,
+        request,
+      );
+    },
+    quarantineGrant(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
+      return postOperation(
+        "quarantine_grant",
+        QUARANTINE_GRANT_PATH,
+        quarantineGrantTimeoutMs,
+        OPERATION_DESCRIPTORS.quarantine_grant.maxRequestBytes,
+        request,
+      );
+    },
+    quarantineFinalize(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
+      return postOperation(
+        "quarantine_finalize",
+        QUARANTINE_FINALIZE_PATH,
+        quarantineFinalizeTimeoutMs,
+        OPERATION_DESCRIPTORS.quarantine_finalize.maxRequestBytes,
         request,
       );
     },

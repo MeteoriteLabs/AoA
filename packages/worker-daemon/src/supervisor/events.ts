@@ -20,10 +20,14 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   canonicalEventDigestInputV1,
   workerEventV1Schema,
+  type NetworkDeniedPayloadV1,
   type TerminalEventStatus,
   type WorkerEventType,
   type WorkerEventV1,
 } from "@armyofagents/worker-protocol";
+
+/** The four frozen network-denial destination classes (`NETWORK_DENIAL_CLASSES`). */
+export type NetworkDenialClass = NetworkDeniedPayloadV1["destinationClass"];
 
 /** The delivery identity every event under a lease repeats verbatim. */
 export interface EventDeliveryIdentity {
@@ -107,6 +111,14 @@ export class EventSequencer {
    * inside it. */
   attemptStarted(sandboxId: string): Promise<WorkerEventV1> {
     return this.#emit("attempt_started", { sandboxId });
+  }
+
+  /** `network_denied` — a governed egress attempt was refused. WRK-005's
+   * fence-close proxy emits this (the positive counterpart of the
+   * `CleanupAuthority.openEgress` hard denial) when an egress is attempted after
+   * the fence has closed. */
+  networkDenied(input: { destinationClass: NetworkDenialClass; reason: string }): Promise<WorkerEventV1> {
+    return this.#emit("network_denied", { destinationClass: input.destinationClass, reason: input.reason });
   }
 
   /** The terminal attempt event (succeeded/failed/cancelled/expired). */

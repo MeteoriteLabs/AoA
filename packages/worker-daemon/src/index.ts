@@ -42,6 +42,7 @@ export type {
   ShutdownSignal,
   ShutdownLogger,
   LeasingLifecycle,
+  RenewalLifecycle,
 } from "./lifecycle/shutdown.js";
 
 export { startHealthServer, assertLoopbackHost } from "./health/health-server.js";
@@ -117,7 +118,10 @@ export type { SessionStoreDeps } from "./identity/session.js";
 export {
   POLL_PATH,
   LEASE_ACK_BASE_PATH,
+  QUARANTINE_GRANT_PATH,
+  QUARANTINE_FINALIZE_PATH,
   leaseAckPath,
+  leaseRenewPath,
 } from "./transport/client.js";
 export type { WorkerOperationHttpRequest, WorkerOperationHttpResponse } from "./transport/client.js";
 
@@ -270,3 +274,63 @@ export type {
   WorkerSupervisionIdentity,
   SupervisorRunStatus,
 } from "./supervisor/supervisor.js";
+
+export type { NetworkDenialClass } from "./supervisor/events.js";
+
+// --- WRK-005: lease renewal, fence-close proxy, and orphan-output quarantine --
+
+export {
+  LEASE_RENEW_METRIC,
+  LEASE_LOSS_METRIC,
+  FENCE_CLOSE_METRIC,
+  GOVERNED_EFFECT_DENIED_METRIC,
+  QUARANTINE_METRIC,
+} from "./metrics/metrics.js";
+
+export {
+  createLeaseRenewalDriver,
+  createRealRenewalSchedule,
+  renewLeaseOnce,
+  buildLeaseRenewRequest,
+} from "./lease/lease-renewal.js";
+export type {
+  LeaseRenewalDriver,
+  LeaseRenewalDriverDeps,
+  RenewAttempt,
+  RenewalSchedule,
+  RenewalTimer,
+  RenewalSupervisor,
+  RenewalIdentity,
+  RenewalTuning,
+  RenewLeaseOnceDeps,
+  BuildLeaseRenewRequestInput,
+  LeaseRenewRequestEnvelope,
+} from "./lease/lease-renewal.js";
+
+export { FenceCloseProxy, FenceClosedError, GOVERNED_EFFECTS } from "./lease/fence-close-proxy.js";
+export type {
+  GovernedEffect,
+  GovernedEffectAuthority,
+  FenceCloseReason,
+  FenceCloseProxyDeps,
+  EgressAttempt,
+} from "./lease/fence-close-proxy.js";
+
+export {
+  classifyOrphanOutput,
+  buildQuarantineGrantRequest,
+  buildQuarantineFinalizeRequest,
+  quarantineObjectKey,
+  runOrphanQuarantine,
+} from "./lease/quarantine.js";
+export type {
+  OrphanOutputCondition,
+  QuarantineIdentity,
+  QuarantineArtifact,
+  QuarantineOutcome,
+  RunOrphanQuarantineDeps,
+  BuildQuarantineGrantInput,
+  BuildQuarantineFinalizeInput,
+  QuarantineGrantRequestEnvelope,
+  QuarantineFinalizeRequestEnvelope,
+} from "./lease/quarantine.js";

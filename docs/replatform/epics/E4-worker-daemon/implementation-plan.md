@@ -416,6 +416,7 @@ identical command GREEN; append the protocol build + worker typecheck/build abov
 | WRK-002 | `Invoke-NativeGate 'WRK-002 worker' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/transport-headers.contract.test.ts src/__tests__/device-key.test.ts src/__tests__/device-proof-vectors.test.ts src/__tests__/key-store.test.ts src/__tests__/key-store-corrupt.test.ts src/__tests__/enrollment.component.test.ts src/__tests__/session-renewal.test.ts src/__tests__/session-revocation.test.ts }` |
 | WRK-003 | `Invoke-NativeGate 'WRK-003 worker' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/capacity.test.ts src/__tests__/backoff.test.ts src/__tests__/concurrency.test.ts src/__tests__/poll-empty.component.test.ts src/__tests__/poll-offer-ack.component.test.ts src/__tests__/poll-incompatible.test.ts src/__tests__/poll-backpressure.test.ts src/__tests__/poll-outage.component.test.ts src/__tests__/poll-drain.component.test.ts } ` |
 | WRK-004 | `Invoke-NativeGate 'WRK-004 worker' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/provider-contract.test.ts src/__tests__/supervisor-happy.component.test.ts src/__tests__/capability-negotiation.test.ts src/__tests__/optional-ops-unsupported.test.ts src/__tests__/supervisor-hung-create.test.ts src/__tests__/supervisor-cancel-escalation.test.ts src/__tests__/cleanup-authority-denial.test.ts src/__tests__/cleanup-cross-resource-denial.test.ts src/__tests__/cleanup-redaction.test.ts src/__tests__/provider-idempotency-replay.test.ts src/__tests__/list-inspect-pagination.test.ts src/__tests__/cleanup-idempotent.test.ts src/__tests__/cleanup-expiry-escalation.test.ts src/__tests__/destroy-failure.test.ts src/__tests__/checkpoint-restore-health.test.ts src/__tests__/reconcile-leaked.test.ts src/__tests__/no-local-tenant-spawn.test.ts src/__tests__/supervisor-shutdown.test.ts }` |
+| WRK-005 | `Invoke-NativeGate 'WRK-005 worker' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/lease-renewal-schedule.test.ts src/__tests__/lease-renewal-happy.component.test.ts src/__tests__/lease-renewal-cancel-requested.test.ts src/__tests__/lease-renewal-rejected.test.ts src/__tests__/lease-renewal-deadline-lapse.test.ts src/__tests__/lease-renewal-401-recovery.test.ts src/__tests__/lease-renewal-idempotent-replay.test.ts src/__tests__/lease-renewal-clock-bounds.test.ts src/__tests__/lease-renewal-shutdown.test.ts src/__tests__/fence-close-proxy-permit.test.ts src/__tests__/fence-close-proxy-deny.test.ts src/__tests__/fence-close-idempotent-terminal.test.ts src/__tests__/governed-egress-denied-emits-event.test.ts src/__tests__/quarantine-routing-decision.test.ts src/__tests__/quarantine-grant-finalize.component.test.ts src/__tests__/quarantine-requires-device-session.test.ts }` |
 
 ---
 
@@ -806,6 +807,115 @@ projection, cross-resource denial, idempotency-key replay) and escalation; C—r
 optional-op negotiation, no-local-spawn, and shutdown. Each slice ≤1 agent-day and independently
 green; the distinct reviewer reruns the full acceptance matrix — including every H-05 denial and
 the redaction/no-spawn proofs — and alone marks the ticket `complete`.
+
+### WRK-005 — Lease renewal / local fence-close proxy / governed egress (M, ≤3 agent-days, POST-D1)
+
+**Depends on:** WRK-003, WRK-004; **PRT-003/PRT-004 frozen** (the `lease_renew` + `quarantine_*` v1
+schemas are consumed unmodified); **E6-D1-FOUNDATION `complete`** (first post-D1 worker ticket —
+it wires the loop toward live dispatch). Records the consumed WRK-004 reviewed SHA and the
+frozen-protocol source SHA `b7a842870ce7509d8baa75409e0ab19da375c88a`.
+
+**Outcome:** A per-lease **renewal driver** that captures `offer.expiresAt` at handoff and renews
+the lease before expiry through the frozen `lease_renew` op; a **local fence-close proxy** — a
+governed-effect authority bound to the same `EffectFence` and the driver's tracked lease-liveness —
+that permits the four exit-gate governed effects (ordinary artifact commit, secret materialization,
+task completion, governed network egress) ONLY while the fence is live and denies them the instant
+the lease is lost / a renew is rejected / the server orders a cooperative cancel; and an
+**orphan-output quarantine** module that, after fence close, routes any output ONLY through the
+device-session `quarantine_grant`/`quarantine_finalize` path (which survives lease loss) and never
+through the disabled ordinary-commit path. On loss the driver closes the proxy, then escalates
+through the existing `Supervisor.onLeaseLost`. The worker holds no authority: the lease + fence is a
+revocable grant, the server `isActiveFence` predicate is the real gate, and this proxy is
+defense-in-depth.
+
+**Ticket non-goals:** the **live** artifact-commit / secret-materialization / completion /
+governed-egress **transport ops and their server routes** (no `artifact_commit`,
+`artifact_transfer_grant`, `completeAttempt`, egress-proxy, or `quarantine_*` server route exists —
+E5/DAT owns them); the **live** quarantine upload round-trip (built against the extended fake
+control-plane only, exactly as WRK-004 supervised against the fake provider); the durable event
+outbox (WRK-006); live-control-plane reconciliation (WRK-007); **any server-side session-renewal fix
+(E4-F007 / E3-JOB-002)** — WRK-005 renewal is bounded by session lifetime and MUST NOT attempt to
+extend a session; and starting the loop for real dispatch (the provisioning self-model is still
+absent — E4-D12). WRK-005 stays **additive and inert-until-wired**.
+
+**Files:** create `packages/worker-daemon/src/lease/lease-renewal.ts` (renewal scheduler +
+fence-loss classifier + per-lease liveness registry + the single-op `renewLeaseOnce`),
+`lease/fence-close-proxy.ts` (governed-effect authority + governed-egress `network_denied`; the
+`FenceClosedError`), `lease/quarantine.ts` (orphan-output routing decision + quarantine grant/finalize
+request builders + reason classifier + `runOrphanQuarantine`); modify `transport/client.ts` (add
+`leaseRenew` + `leaseRenewPath`, and `quarantineGrant`/`quarantineFinalize` + their paths — a NEW
+`device_session` posting mode; widen the `postOperation` operation union), `metrics/metrics.ts`
+(bounded counters + the closed `effect` label), `supervisor/events.ts` (a `networkDenied` emitter on
+`EventSequencer`), `lifecycle/shutdown.ts` (`createLeaseLifecycleSteps` inserts `renewal-stop`
+between `lease-stop` and `lease-drain`), `bin/worker-daemon.ts` (compose the driver's shutdown seam +
+document the wrapped `SupervisorSeam`), and `index.ts` (barrel the new public types); extend
+`src/__tests__/support/fake-control-plane.ts` with a `/worker-control/leases/:id/renew` handler
+(worker_run) and `/worker-control/quarantine/*` handlers (device_session). Tests as in the focused
+row above (16 files).
+
+**Interfaces:** `createLeaseRenewalDriver({client, session, key, identity, supervisor, schedule,
+tuning, metrics, eventSink, makeFenceProxy})` — returns a `SupervisorSeam` decorator over the WRK-004
+supervisor plus `stop()`. On `accept(handoff)` it registers the lease from `handoff.offer.expiresAt`,
+starts a renewal timer at `expiresAt − leadMs`, delegates to the real `supervisor.accept`, and stops
+that lease's renewal when the delegate settles. Each real renewal builds a `leaseRenewOperationRequestV1`
+under a **fresh `idempotencyKey`**, signs the device proof over `client.leaseRenewPath(leaseId)`, and
+POSTs it. On `renewed` it reschedules to the server-selected `expiresAt` and, if `cancelRequested`,
+does a cooperative cancel; on `rejected`/`stale_fence`/`target_revoked`/`attempt_terminal`, a renew
+whose deadline lapses past `expiresAt`, or a clock-skewed past expiry, it declares **lease loss**.
+`FenceCloseProxy` (a `GovernedEffectAuthority`) bound to an `EffectFence`, cloned from `EffectAuthority`:
+`commit()`/`readSecret()`/`complete()`/`openEgress()` pass through a `#guard` while active; `close()`
+is terminal + idempotent; after close every seam rejects `FenceClosedError`, and `openEgress()`
+additionally emits a `network_denied` worker event into the injected sink — the positive counterpart
+of `CleanupAuthority.openEgress()`. `classifyOrphanOutput(...) → QuarantineReason` +
+`buildQuarantineGrantRequest`/`buildQuarantineFinalizeRequest` construct the frozen
+`quarantineGrantPayloadV1`/`quarantineFinalizePayloadV1` authenticated by `targetId` +
+`deviceGeneration` (NOT a live lease), under the distinct `quarantine/…` prefix, with a ≤5-minute
+grant ceiling and **no apply/promote/select field** (CAV-004). `ControlPlaneClient` additions:
+`leaseRenewPath(leaseId)` + `leaseRenew` (worker_run) and `quarantineGrant`/`quarantineFinalize`
+(device_session, PROVISIONAL binding pending E5/DAT), all reusing the shared `postOperation`.
+
+**Acceptance (verbatim, honored fully):** lease loss disables ordinary commit, secrets, completion,
+and governed egress; only the explicit quarantine operation may carry orphan output. Renewal
+re-asserts a revocable grant, never extends the worker's own authority; the worker follows
+generation/revocation and never resurrects a lost grant. A renewed lease with `cancelRequested` still
+stops cooperatively. A replayed renewal never double-extends (fresh key per real renewal). Renewal is
+bounded by session lifetime; a session-terminal condition forces re-enrollment + orphan-output
+quarantine, not renewal (E4-F007). The quarantine path uses `device_session` auth, a distinct prefix,
+a ≤5-minute non-promotable grant, and never carries lease authority.
+
+**Failure behavior:** a renew transport timeout retries with the SAME `idempotencyKey` and never
+busy-spins; a renew `401` routes through `session.recover()` under `MAX_CONSECUTIVE_RECOVERIES` and,
+if the code route has lapsed, surfaces `SessionTerminalError` → lease loss; a
+`rejected`/`stale_fence`/`target_revoked`/`attempt_terminal` is terminal lease loss; a renew deadline
+lapsing past `expiresAt` fails **closed locally** (the proxy closes without trusting any later renew);
+a clock-skewed `expiresAt` already past is a loss; a **late-firing timer** (sleep/resume) is caught by
+a pre-POST monotonic expiry check; a governed effect attempted after fence close is refused
+(`FenceClosedError`; egress additionally emits `network_denied`); orphan output produced after close
+is diverted to quarantine (device_session), never the disabled `artifact_commit` — but if the session
+is already terminal, even quarantine cannot run and the output is dropped with a redacted terminal log
+(the F007 bound). On loss the driver closes the proxy FIRST, then calls `supervisor.onLeaseLost`.
+
+**Compatibility / rollback:** additive worker-only modules; runtime deps stay EXACTLY
+`@armyofagents/worker-protocol` + `pino`; no server/db/migration/route change (E4-D09). The driver
+wraps the `SupervisorSeam` at composition and is inert until the loop is wired for live dispatch
+(E4-D12); rollback = compose the bare supervisor without the renewal wrapper (poll-loop.ts is not
+edited, so WRK-003/WRK-004 stay green).
+
+**Observable signals:** metrics `lease_renew{outcome}`, `lease_loss{reason}`, `fence_close{reason}`,
+`governed_effect_denied{effect}`, `quarantine{outcome}` — bounded labels only (the `effect` label is a
+new CLOSED four-value set); logs carry only opaque IDs; no DB URL is ever read.
+
+**Evidence / commit:** `tickets/WRK-005-result.md`; one commit `feat(worker-daemon): lease renewal,
+fence-close proxy, and orphan-output quarantine`. Maps D0-T01/T02, H-05, **H-06** (the fence-close
+egress proxy), CAV-004.
+
+**Internal TDD/commit slices (one ticket, one final reviewer):** A—renewal driver (schedule,
+fresh-key renewal, reschedule, cancelRequested, rejected/loss, 401-recovery, idempotent replay, clock
+bounds, shutdown) + client `leaseRenew`; B—fence-close proxy (permit/deny/terminal/idempotent,
+governed-egress `network_denied`); C—quarantine routing + `quarantineGrant/Finalize` client +
+device_session fake-plane routes. Each slice ≤1 agent-day and independently green; the distinct
+reviewer reruns the full acceptance matrix — including every fence-close denial, the non-promotion
+(CAV-004) proof, and the F007-bound quarantine proof — and alone marks the ticket `complete`.
 
 ---
 

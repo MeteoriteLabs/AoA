@@ -23,6 +23,7 @@ import {
   createLeaseLifecycleSteps,
   createShutdownHandler,
   type LeasingLifecycle,
+  type RenewalLifecycle,
   type ShutdownSignal,
 } from "../lifecycle/shutdown.js";
 
@@ -50,6 +51,16 @@ export interface BootstrapDeps {
    * loop's shutdown seam but dispatches no work (rollback = omit the loop).
    */
   readonly leasing?: LeasingLifecycle;
+  /**
+   * The WRK-005 lease-renewal driver as a renewal lifecycle. When present (with a
+   * loop), its `renewal-stop` step is registered between `lease-stop` and
+   * `lease-drain` so no renew fires during drain. In the wired composition the
+   * driver DECORATES the supervisor seam (it is itself a `SupervisorSeam`), so the
+   * poll loop hands ACKed leases to the driver, which renews them and — on lease
+   * loss — closes the local fence-close proxy before escalating cleanup. Like the
+   * loop it is inert until live dispatch is wired (E4-D12; rollback = omit it).
+   */
+  readonly renewal?: RenewalLifecycle;
 }
 
 export interface BootstrapResult {
@@ -95,9 +106,10 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   metrics.setWorkerUp(true);
 
   // WRK-003 registers lease-stop AHEAD of drain, both ahead of the health-server
-  // stop. When no loop is wired (the current default — see `leasing` above), the
-  // only stop step is the health server.
-  const leaseSteps = deps.leasing ? createLeaseLifecycleSteps(deps.leasing) : [];
+  // stop; WRK-005 inserts renewal-stop between them when a renewal driver is
+  // composed. When no loop is wired (the current default — see `leasing` above),
+  // the only stop step is the health server.
+  const leaseSteps = deps.leasing ? createLeaseLifecycleSteps(deps.leasing, deps.renewal) : [];
   const shutdown = createShutdownHandler({
     steps: [...leaseSteps, { name: "health-server", stop: () => health.close() }],
     logger,

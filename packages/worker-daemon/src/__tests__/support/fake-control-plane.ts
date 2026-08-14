@@ -42,7 +42,12 @@ import {
   isRetryableProtocolErrorCode,
   leaseAckOperationRequestV1Schema,
   leaseOfferV1Schema,
+  leaseRenewOperationRequestV1Schema,
   pollRequestV1Schema,
+  quarantineFinalizeOperationRequestV1Schema,
+  quarantineGrantOperationRequestV1Schema,
+  quarantineUploadGrantV1Schema,
+  quarantineUploadReceiptV1Schema,
   type LeaseOfferV1,
   type ProtocolErrorCode,
   type ProviderConstraintRefV1,
@@ -60,6 +65,16 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 export const DEFAULT_ENROLL_PATH = "/api/worker-control/enroll";
 export const POLL_PATH = "/api/worker-control/poll";
 const LEASE_ACK_RE = /^\/api\/worker-control\/leases\/([^/]+)\/ack$/;
+// WRK-005: the renew action hangs off the same lease base as ack.
+const LEASE_RENEW_RE = /^\/api\/worker-control\/leases\/([^/]+)\/renew$/;
+// WRK-005: device-session quarantine routes (PROVISIONAL paths; mirror the client).
+const QUARANTINE_GRANT_PATH = "/api/worker-control/quarantine/grant";
+const QUARANTINE_FINALIZE_PATH = "/api/worker-control/quarantine/finalize";
+
+/** The lease-renew window the fake selects on a `renewed` outcome. */
+const DEFAULT_RENEW_WINDOW_MS = 60_000;
+/** The quarantine PUT-grant TTL the fake issues (≤5-min ceiling; the schema caps it). */
+const QUARANTINE_GRANT_TTL_MS = 5 * 60_000;
 
 /**
  * The enrollment CODE ROUTE TTL, mirroring the real server's `CODE_TTL_MS`
@@ -126,6 +141,46 @@ export type FakeAckDirective =
   | { readonly kind: "error"; readonly status: number; readonly code: ProtocolErrorCode; readonly retryAfterMs?: number | null }
   | { readonly kind: "socket" };
 
+/**
+ * A programmed RENEW response (FIFO), consumed AFTER the request is well-formed +
+ * dual-authenticated. `renewed` models the server extending the lease (optionally
+ * with `cancelRequested`/`cancelReason` to order a cooperative cancel, or an
+ * explicit `expiresAt` to inject clock skew); the rest mirror the ack/poll
+ * directives. When the queue is empty the plane renews idempotently (a key it has
+ * already recorded returns the SAME expiry — no double-extend). */
+export type FakeRenewDirective =
+  | {
+      readonly kind: "renewed";
+      readonly expiresAt?: string;
+      readonly cancelRequested?: boolean;
+      readonly cancelReason?: string | null;
+    }
+  | { readonly kind: "rejected"; readonly reason: ProtocolErrorCode }
+  | { readonly kind: "error"; readonly status: number; readonly code: ProtocolErrorCode; readonly retryAfterMs?: number | null }
+  | { readonly kind: "socket" };
+
+/** A programmed quarantine response (FIFO) for both the grant and finalize routes. */
+export type FakeQuarantineDirective =
+  | { readonly kind: "ok" }
+  | { readonly kind: "rejected"; readonly reason: ProtocolErrorCode }
+  | { readonly kind: "error"; readonly status: number; readonly code: ProtocolErrorCode; readonly retryAfterMs?: number | null }
+  | { readonly kind: "socket" };
+
+export interface FakeRenewRecord {
+  readonly leaseId: string;
+  readonly idempotencyKey: string;
+  readonly expiresAt: string;
+  readonly deviceThumbprint: string;
+}
+
+export interface FakeQuarantineRecord {
+  readonly kind: "grant" | "finalize";
+  readonly idempotencyKey: string;
+  readonly artifactId: string;
+  readonly quarantineObjectKey: string;
+  readonly deviceThumbprint: string;
+}
+
 export interface FakeControlPlane {
   readonly baseUrl: string;
   readonly enrollPath: string;
@@ -148,6 +203,24 @@ export interface FakeControlPlane {
   pollCount(): number;
   ackCountFor(leaseId: string): number;
   acks(): readonly FakeAckRecord[];
+  // --- WRK-005 renew controls ---
+  enqueueRenew(directive: FakeRenewDirective): void;
+  /** Force EVERY renew to respond 401 `unauthorized` (models a persistent poll/ack
+   * rejection that recovery cannot clear — drives the recovery-cap trip). */
+  forceRenewUnauthorized(on: boolean): void;
+  renewCount(): number;
+  renewCountFor(leaseId: string): number;
+  renews(): readonly FakeRenewRecord[];
+  /** Distinct idempotency keys the plane has seen across all renews (order-preserved). */
+  renewKeys(): readonly string[];
+  /** The expiry the plane recorded for a renew idempotency key (idempotent replay). */
+  renewExpiryForKey(idempotencyKey: string): string | null;
+  // --- WRK-005 device-session quarantine controls ---
+  enqueueQuarantineGrant(directive: FakeQuarantineDirective): void;
+  enqueueQuarantineFinalize(directive: FakeQuarantineDirective): void;
+  quarantineGrantCount(): number;
+  quarantineFinalizeCount(): number;
+  quarantineRecords(): readonly FakeQuarantineRecord[];
   expireSession(token: string): void;
   expireCode(code: string): void;
   revokeTarget(): void;
@@ -310,12 +383,23 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
   const pollDirectives: FakePollDirective[] = [];
   const ackDirectives: FakeAckDirective[] = [];
   const ackRecords: FakeAckRecord[] = [];
+  const renewDirectives: FakeRenewDirective[] = [];
+  const renewRecords: FakeRenewRecord[] = [];
+  // Idempotency ledger: an already-seen renew key returns the SAME expiry.
+  const renewExpiryByKey = new Map<string, string>();
+  const quarantineGrantDirectives: FakeQuarantineDirective[] = [];
+  const quarantineFinalizeDirectives: FakeQuarantineDirective[] = [];
+  const quarantineRecordList: FakeQuarantineRecord[] = [];
   const hanging = new Set<ServerResponse>();
   let pollRequestCount = 0;
+  let renewRequestCount = 0;
+  let quarantineGrantRequestCount = 0;
+  let quarantineFinalizeRequestCount = 0;
   let totalSessionsIssued = 0;
   let lastSession: string | null = null;
   let targetRevoked = false;
   let pollUnauthorizedForced = false;
+  let renewUnauthorizedForced = false;
 
   function freshState(config: FakeEnrollmentCodeConfig): CodeState {
     return {
@@ -428,6 +512,19 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     const ackMatch = LEASE_ACK_RE.exec(pathname);
     if (method === "POST" && ackMatch) {
       await handleAck(req, res, url, method, ackMatch[1]!);
+      return;
+    }
+    const renewMatch = LEASE_RENEW_RE.exec(pathname);
+    if (method === "POST" && renewMatch) {
+      await handleRenew(req, res, url, method, renewMatch[1]!);
+      return;
+    }
+    if (method === "POST" && pathname === QUARANTINE_GRANT_PATH) {
+      await handleQuarantine(req, res, url, method, "grant");
+      return;
+    }
+    if (method === "POST" && pathname === QUARANTINE_FINALIZE_PATH) {
+      await handleQuarantine(req, res, url, method, "finalize");
       return;
     }
     record(method, url, 404, "not_found", null, null);
@@ -826,6 +923,301 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     finish();
   }
 
+  /**
+   * WRK-005 renew: dual-auth (Bearer session + device proof over `…/renew`),
+   * body `leaseId` must equal the URL param, then FIFO directive or an idempotent
+   * default extension. A key already recorded returns the SAME expiry so a replayed
+   * renewal never double-extends. */
+  async function handleRenew(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: string,
+    method: string,
+    leaseIdParam: string,
+  ): Promise<void> {
+    let status = 200;
+    let outcome = "renewed";
+    let recordedProofId: string | null = null;
+    let recordedThumbprint: string | null = null;
+    const finish = (): void => record(method, url, status, outcome, recordedProofId, recordedThumbprint);
+
+    const rawBody = await readBody(req);
+    const proof = readProofHeaders(req);
+    recordedProofId = proof?.proofId ?? null;
+    const parsed = leaseRenewOperationRequestV1Schema.safeParse(safeJson(rawBody));
+    if (
+      !parsed.success ||
+      !UUID.test(leaseIdParam) ||
+      parsed.data.body.leaseId !== leaseIdParam ||
+      rawBody.byteLength > OPERATION_DESCRIPTORS.lease_renew.maxRequestBytes
+    ) {
+      status = 400;
+      outcome = "malformed";
+      operationError(res, 400, "malformed", null);
+      finish();
+      return;
+    }
+    const correlationId = parsed.data.correlationId;
+    // Every well-formed renew REQUEST counts as an attempt (so a "no busy-spin"
+    // assertion sees the real renew count, exactly like poll).
+    renewRequestCount += 1;
+    if (renewUnauthorizedForced) {
+      status = 401;
+      outcome = "unauthorized";
+      operationError(res, 401, "unauthorized", correlationId);
+      finish();
+      return;
+    }
+    const auth = authenticateOperation(req, method, url, rawBody, correlationId, proof);
+    if (!auth.ok) {
+      recordedThumbprint = auth.thumbprint;
+      status = auth.status;
+      outcome = "unauthorized";
+      operationError(res, auth.status, auth.code, correlationId);
+      finish();
+      return;
+    }
+    recordedThumbprint = auth.thumbprint;
+
+    if (targetRevoked) {
+      status = 409;
+      outcome = "target_revoked";
+      operationError(res, 409, "target_revoked", correlationId);
+      finish();
+      return;
+    }
+
+    const body = parsed.data.body;
+    const idempotencyKey = parsed.data.idempotencyKey;
+    const directive = renewDirectives.shift();
+
+    if (directive && directive.kind === "socket") {
+      outcome = "socket";
+      status = 0;
+      finish();
+      req.socket.destroy();
+      return;
+    }
+    if (directive && directive.kind === "error") {
+      status = directive.status;
+      outcome = directive.code;
+      operationError(res, directive.status, directive.code, correlationId, directive.retryAfterMs ?? null);
+      finish();
+      return;
+    }
+    if (directive && directive.kind === "rejected") {
+      status = 200;
+      outcome = "rejected";
+      sendJson(res, 200, {
+        protocolVersion: 1,
+        correlationId,
+        serverTime: new Date(now()).toISOString(),
+        outcome: "rejected",
+        reason: directive.reason,
+      });
+      finish();
+      return;
+    }
+
+    // renewed (directive override) or the idempotent default. A previously-seen
+    // idempotency key returns the recorded expiry — no double-extend.
+    let expiresAt: string;
+    const recorded = renewExpiryByKey.get(idempotencyKey);
+    if (recorded !== undefined) {
+      expiresAt = recorded;
+    } else {
+      expiresAt =
+        directive && directive.kind === "renewed" && directive.expiresAt !== undefined
+          ? directive.expiresAt
+          : new Date(now() + DEFAULT_RENEW_WINDOW_MS).toISOString();
+      renewExpiryByKey.set(idempotencyKey, expiresAt);
+    }
+    const cancelRequested = directive && directive.kind === "renewed" ? directive.cancelRequested ?? false : false;
+    const cancelReason =
+      directive && directive.kind === "renewed" ? directive.cancelReason ?? null : null;
+
+    renewRecords.push({ leaseId: body.leaseId, idempotencyKey, expiresAt, deviceThumbprint: auth.thumbprint });
+    status = 200;
+    outcome = "renewed";
+    sendJson(res, 200, {
+      protocolVersion: 1,
+      correlationId,
+      serverTime: new Date(now()).toISOString(),
+      outcome: "renewed",
+      body: {
+        protocolVersion: 1,
+        workerId: body.workerId,
+        jobId: body.jobId,
+        attempt: body.attempt,
+        leaseId: body.leaseId,
+        fenceToken: body.fenceToken,
+        expiresAt,
+        cancelRequested,
+        cancelReason,
+      },
+    });
+    finish();
+  }
+
+  /**
+   * WRK-005 device-session quarantine (grant + finalize). Authenticated by the
+   * SAME dual-auth binding the worker_run ops use (the PROVISIONAL device-session
+   * binding pending E5/DAT). It validates the frozen payload, enforces the distinct
+   * `quarantine/` prefix + ≤5-min grant via the frozen response schemas, and NEVER
+   * carries a promote/apply disposition (the CAV-004 non-promotion invariant). */
+  async function handleQuarantine(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: string,
+    method: string,
+    kind: "grant" | "finalize",
+  ): Promise<void> {
+    let status = 200;
+    let outcome = kind === "grant" ? "quarantine_upload_granted" : "quarantined";
+    let recordedProofId: string | null = null;
+    let recordedThumbprint: string | null = null;
+    const finish = (): void => record(method, url, status, outcome, recordedProofId, recordedThumbprint);
+
+    const rawBody = await readBody(req);
+    const proof = readProofHeaders(req);
+    recordedProofId = proof?.proofId ?? null;
+    const schema = kind === "grant" ? quarantineGrantOperationRequestV1Schema : quarantineFinalizeOperationRequestV1Schema;
+    const maxBytes = kind === "grant" ? OPERATION_DESCRIPTORS.quarantine_grant.maxRequestBytes : OPERATION_DESCRIPTORS.quarantine_finalize.maxRequestBytes;
+    const parsed = schema.safeParse(safeJson(rawBody));
+    if (!parsed.success || rawBody.byteLength > maxBytes) {
+      status = 400;
+      outcome = "malformed";
+      operationError(res, 400, "malformed", null);
+      finish();
+      return;
+    }
+    const correlationId = parsed.data.correlationId;
+    if (kind === "grant") quarantineGrantRequestCount += 1;
+    else quarantineFinalizeRequestCount += 1;
+
+    const auth = authenticateOperation(req, method, url, rawBody, correlationId, proof);
+    if (!auth.ok) {
+      recordedThumbprint = auth.thumbprint;
+      status = auth.status;
+      outcome = "unauthorized";
+      operationError(res, auth.status, auth.code, correlationId);
+      finish();
+      return;
+    }
+    recordedThumbprint = auth.thumbprint;
+
+    const directives = kind === "grant" ? quarantineGrantDirectives : quarantineFinalizeDirectives;
+    const directive = directives.shift();
+    if (directive && directive.kind === "socket") {
+      outcome = "socket";
+      status = 0;
+      finish();
+      req.socket.destroy();
+      return;
+    }
+    if (directive && directive.kind === "error") {
+      status = directive.status;
+      outcome = directive.code;
+      operationError(res, directive.status, directive.code, correlationId, directive.retryAfterMs ?? null);
+      finish();
+      return;
+    }
+    if (directive && directive.kind === "rejected") {
+      status = 200;
+      outcome = "rejected";
+      sendJson(res, 200, {
+        protocolVersion: 1,
+        correlationId,
+        serverTime: new Date(now()).toISOString(),
+        outcome: "rejected",
+        reason: directive.reason,
+      });
+      finish();
+      return;
+    }
+
+    if (kind === "grant") {
+      const g = parsed.data.body;
+      const issuedAt = new Date(now()).toISOString();
+      const grant = quarantineUploadGrantV1Schema.parse({
+        protocolVersion: 1,
+        operation: "quarantine_upload",
+        artifactId: g.artifactId,
+        method: "PUT",
+        url: "https://quarantine.aoa.invalid/put",
+        headers: {},
+        issuedAt,
+        expiresAt: new Date(now() + QUARANTINE_GRANT_TTL_MS).toISOString(),
+        maxBytes: g.sizeBytes,
+        expectedSha256: g.expectedSha256,
+        quarantineObjectKey: g.expectedObjectKey,
+        redaction: "secret",
+      });
+      quarantineRecordList.push({
+        kind: "grant",
+        idempotencyKey: parsed.data.idempotencyKey,
+        artifactId: String(g.artifactId),
+        quarantineObjectKey: g.expectedObjectKey,
+        deviceThumbprint: auth.thumbprint,
+      });
+      status = 200;
+      outcome = "quarantine_upload_granted";
+      sendJson(res, 200, {
+        protocolVersion: 1,
+        correlationId,
+        serverTime: new Date(now()).toISOString(),
+        outcome: "quarantine_upload_granted",
+        grant,
+      });
+      finish();
+      return;
+    }
+
+    // finalize
+    const f = parsed.data.body;
+    const receipt = quarantineUploadReceiptV1Schema.parse({
+      protocolVersion: 1,
+      receiptId: "00000000-0000-4000-8000-00000000f001",
+      quarantineObjectKey: f.quarantineObjectKey,
+      observed: {
+        workerId: f.workerId,
+        targetId: f.targetId,
+        deviceGeneration: f.deviceGeneration,
+        jobId: f.jobId,
+        attempt: f.attempt,
+        leaseId: f.observedLeaseId,
+        fenceToken: f.observedFenceToken,
+      },
+      artifact: {
+        artifactId: f.artifactId,
+        sha256: f.expectedSha256,
+        sizeBytes: f.sizeBytes,
+        sensitivity: f.manifest.sensitivity,
+        provenance: "generated",
+      },
+      reason: f.reason,
+      receivedAt: new Date(now()).toISOString(),
+      disposition: "quarantined",
+    });
+    quarantineRecordList.push({
+      kind: "finalize",
+      idempotencyKey: parsed.data.idempotencyKey,
+      artifactId: String(f.artifactId),
+      quarantineObjectKey: f.quarantineObjectKey,
+      deviceThumbprint: auth.thumbprint,
+    });
+    status = 200;
+    outcome = "quarantined";
+    sendJson(res, 200, {
+      protocolVersion: 1,
+      correlationId,
+      serverTime: new Date(now()).toISOString(),
+      outcome: "quarantined",
+      receipt,
+    });
+    finish();
+  }
+
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${address.port}`;
@@ -878,6 +1270,44 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     },
     acks(): readonly FakeAckRecord[] {
       return ackRecords;
+    },
+    enqueueRenew(directive: FakeRenewDirective): void {
+      renewDirectives.push(directive);
+    },
+    forceRenewUnauthorized(on: boolean): void {
+      renewUnauthorizedForced = on;
+    },
+    renewCount(): number {
+      return renewRequestCount;
+    },
+    renewCountFor(leaseId: string): number {
+      return renewRecords.filter((r) => r.leaseId === leaseId).length;
+    },
+    renews(): readonly FakeRenewRecord[] {
+      return renewRecords;
+    },
+    renewKeys(): readonly string[] {
+      const seen: string[] = [];
+      for (const r of renewRecords) if (!seen.includes(r.idempotencyKey)) seen.push(r.idempotencyKey);
+      return seen;
+    },
+    renewExpiryForKey(idempotencyKey: string): string | null {
+      return renewExpiryByKey.get(idempotencyKey) ?? null;
+    },
+    enqueueQuarantineGrant(directive: FakeQuarantineDirective): void {
+      quarantineGrantDirectives.push(directive);
+    },
+    enqueueQuarantineFinalize(directive: FakeQuarantineDirective): void {
+      quarantineFinalizeDirectives.push(directive);
+    },
+    quarantineGrantCount(): number {
+      return quarantineGrantRequestCount;
+    },
+    quarantineFinalizeCount(): number {
+      return quarantineFinalizeRequestCount;
+    },
+    quarantineRecords(): readonly FakeQuarantineRecord[] {
+      return quarantineRecordList;
     },
     expireSession(token: string): void {
       const session = sessions.get(token);
