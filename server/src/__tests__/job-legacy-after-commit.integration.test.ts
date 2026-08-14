@@ -21,14 +21,18 @@ import {
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import { provisionTenantAppRoleLoginSql, TENANT_APP_ROLE } from "../db/rls-tenant.js";
 
-// Spy on the ONLY live-event checkout publishes, preserving every other export.
-const { publishSpy } = vi.hoisted(() => ({ publishSpy: vi.fn() }));
+// Spy on the ONLY live-event checkout publishes, preserving every other export. The
+// JOB-011 approval bridge stages a generic `publishLiveEvent` poke into its own
+// after-commit sink; a second spy proves that sink fires once on commit / zero on rollback.
+const { publishSpy, liveEventSpy } = vi.hoisted(() => ({ publishSpy: vi.fn(), liveEventSpy: vi.fn() }));
 vi.mock("../services/live-events.js", async (importActual) => {
   const actual = await importActual<typeof import("../services/live-events.js")>();
   return {
     ...actual,
     publishIssueStatusChanged: (...args: unknown[]) =>
       (publishSpy as (...a: unknown[]) => void)(...args),
+    publishLiveEvent: (...args: unknown[]) =>
+      (liveEventSpy as (...a: unknown[]) => void)(...args),
   };
 });
 
@@ -213,6 +217,96 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(result.replayed).toBe(false);
       expect(await jobCount("ac-crew")).toBe(1);
       expect(publishSpy).not.toHaveBeenCalled();
+    });
+  },
+);
+
+// JOB-011 — the approval bridge's after-commit sink fires its live poke ONLY after the
+// authoritative tenant transaction commits, and fires NOTHING on rollback. Uses its own
+// job-control fixture (an active fence is required to link a governance receipt).
+describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
+  "JOB-011 approval bridge after-commit + rollback",
+  () => {
+    let f: import("./helpers/job-control-fixture.js").JobControlFixture | null = null;
+    let fErr: unknown = null;
+    const J11_AGENT = "a6000000-0000-4000-8000-0000000000b1";
+    const J11_USER = "job011-ac-user";
+
+    beforeAll(async () => {
+      try {
+        const { setupJobControlFixture, COMPANY: FCO } = await import("./helpers/job-control-fixture.js");
+        f = await setupJobControlFixture("job011-aftercommit");
+        await f.admin`INSERT INTO agents (id, company_id, name, kind, status, adapter_type, adapter_config)
+          VALUES (${J11_AGENT}, ${FCO}, 'J011 AC Agent', 'org', 'idle', 'claude_local', ${f.admin.json({})})`;
+        await f.admin`INSERT INTO "user" (id, name, email, email_verified, created_at, updated_at)
+          VALUES (${J11_USER}, 'J011 AC User', 'j011ac@example.test', true, now(), now())`;
+        await f.admin`INSERT INTO company_memberships (company_id, principal_type, principal_id, status, membership_role)
+          VALUES (${FCO}, 'user', ${J11_USER}, 'active', 'owner')`;
+      } catch (error) {
+        fErr = error;
+      }
+    }, 180_000);
+
+    afterAll(async () => { await f?.teardown().catch(() => {}); }, 60_000);
+
+    beforeEach(() => { liveEventSpy.mockClear(); });
+
+    it("fires the live poke exactly once AFTER the governance transaction commits", async () => {
+      if (fErr) throw new Error(`fixture setup failed: ${String(fErr)}`);
+      const { jobApprovalBridge } = await import("../services/job-approval-bridge.js");
+      const { COMPANY: FCO } = await import("./helpers/job-control-fixture.js");
+      const { identity: fence } = await f!.activateLease(1);
+      const runId = randomUUID();
+      await f!.admin`INSERT INTO heartbeat_runs (id, company_id, agent_id, status, started_at)
+        VALUES (${runId}, ${FCO}, ${J11_AGENT}, 'running', now())`;
+      const bridge = jobApprovalBridge(f!.app.db, { env: { AOA_DISTRIBUTED_EXECUTION_ENABLED: "true" } });
+      const out = await bridge.openGovernedDecision({
+        source: { kind: "task_run", runId: "seed", issueId: "seed", assigneeAgentId: J11_AGENT },
+        actor: { kind: "user", id: J11_USER, companyId: FCO },
+        fence, idempotencyKey: randomUUID(),
+        runtimeDecision: {
+          agentId: J11_AGENT, runId, adapterType: "claude_local", kind: "work_question",
+          nonce: randomUUID(), title: "AC?", promptText: "?", options: [], timeoutPolicy: "cancel_run",
+        },
+      });
+      expect(out.status).toBe("created");
+      expect(liveEventSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("fires NOTHING when the governance transaction rolls back", async () => {
+      if (fErr) throw new Error(`fixture setup failed: ${String(fErr)}`);
+      const { jobApprovalBridge } = await import("../services/job-approval-bridge.js");
+      const { COMPANY: FCO } = await import("./helpers/job-control-fixture.js");
+      const { identity: fence } = await f!.activateLease(2);
+      const runId = randomUUID();
+      await f!.admin`INSERT INTO heartbeat_runs (id, company_id, agent_id, status, started_at)
+        VALUES (${runId}, ${FCO}, ${J11_AGENT}, 'running', now())`;
+      await f!.admin.unsafe(`
+        CREATE OR REPLACE FUNCTION j011ac_fail() RETURNS trigger LANGUAGE plpgsql AS
+        $$ BEGIN RAISE EXCEPTION 'forced receipt failure'; END $$;
+        DROP TRIGGER IF EXISTS j011ac_fail_trg ON job_projection_receipts;
+        CREATE TRIGGER j011ac_fail_trg BEFORE INSERT ON job_projection_receipts
+          FOR EACH ROW EXECUTE FUNCTION j011ac_fail();
+      `);
+      const bridge = jobApprovalBridge(f!.app.db, { env: { AOA_DISTRIBUTED_EXECUTION_ENABLED: "true" } });
+      try {
+        await expect(
+          bridge.openGovernedDecision({
+            source: { kind: "task_run", runId: "seed", issueId: "seed", assigneeAgentId: J11_AGENT },
+            actor: { kind: "user", id: J11_USER, companyId: FCO },
+            fence, idempotencyKey: randomUUID(),
+            runtimeDecision: {
+              agentId: J11_AGENT, runId, adapterType: "claude_local", kind: "work_question",
+              nonce: randomUUID(), title: "AC rollback", promptText: "?", options: [], timeoutPolicy: "cancel_run",
+            },
+          }),
+        ).rejects.toThrow();
+      } finally {
+        await f!.admin.unsafe(`DROP TRIGGER IF EXISTS j011ac_fail_trg ON job_projection_receipts`);
+      }
+      // The deferred poke is staged INSIDE the tx callback but drained only after commit;
+      // the throw aborts before the drain, so nothing fires.
+      expect(liveEventSpy).not.toHaveBeenCalled();
     });
   },
 );

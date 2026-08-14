@@ -49,6 +49,11 @@ export const jobProjectionReceipts = pgTable(
     sourceFence: text("source_fence").notNull(),
     status: text("status").notNull(),
     targetAggregateId: uuid("target_aggregate_id").notNull(),
+    // JOB-011 — disambiguates which aggregate table `target_aggregate_id` points at
+    // (`approvals` / `agent_runtime_decisions` / `internal_agent_runtime_approvals`).
+    // Nullable: JOB-005 attempt_started/attempt_terminal rows leave it NULL (the
+    // target is always the attempt they already name via the composite FK).
+    aggregateKind: text("aggregate_kind"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     appliedAt: timestamp("applied_at", { withTimezone: true }),
   },
@@ -67,7 +72,7 @@ export const jobProjectionReceipts = pgTable(
     ),
     projectionKindValid: check(
       "job_projection_receipts_projection_kind_check",
-      sql`projection_kind IN ('attempt_started', 'attempt_terminal')`,
+      sql`projection_kind IN ('attempt_started', 'attempt_terminal', 'product_approval', 'runtime_decision', 'completion_policy')`,
     ),
     statusValid: check(
       "job_projection_receipts_status_check",

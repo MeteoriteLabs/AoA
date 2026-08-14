@@ -353,6 +353,41 @@ export interface JobControlRepository {
   /** The reaper: revoke expired leases' fences and converge each to a new attempt,
    * a terminal result, or a dead-letter. Bounded batch; idempotent per lease. */
   reapExpiredLeases(input: ReapExpiredLeasesInput): Promise<ReapExpiredLeasesResult>;
+  // ---------------------------------------------------------------------------
+  // JOB-011 — SERVER-authored governance projections (approvals / runtime
+  // decisions / completion policy). These gate on `guardActiveFence` FIRST (a
+  // stale or old-generation fence throws before any effect), then write ONLY the
+  // projection receipt / control-command row — never the aggregate (the existing
+  // product/runtime authority owns that, driven by the server-side bridge). The
+  // WORKER cannot reach these: they are invoked from the control-plane bridge, not
+  // from any worker route, and the E1 control audience stays `control_channel`.
+  /** Write ONE governance receipt linking an EXISTING aggregate to this attempt,
+   * guarded by the active fence. Idempotent on the (org, company, kind, identity)
+   * unique — a replay for the same identity is a DO-NOTHING no-op. */
+  recordGovernedProjection(
+    input: ActiveFenceRequest & { projection: GovernedProjectionInput },
+  ): Promise<GovernedProjectionRecordResult>;
+  /** Flip a pending governance receipt to `applied` (idempotent double-resolve safe),
+   * guarded by the active fence. */
+  markGovernedProjectionApplied(
+    input: ActiveFenceRequest & {
+      projectionKind: GovernedProjectionKind;
+      sourceIdentity: string;
+    },
+  ): Promise<{ applied: boolean }>;
+  /** Queue ONE server-authored E1 governance result control on the active fence.
+   * Reuses the JOB-006 monotonic-sequence + (org, lease, command id) idempotency;
+   * NEVER drives a status transition (that is the aggregate authority's job). */
+  queueGovernedControlCommand(
+    input: ActiveFenceRequest & { control: GovernedControlCommandInput },
+  ): Promise<GovernedControlQueueResult>;
+  /** Acquire the FOR UPDATE lock on the active fence's lease+attempt (via the shared
+   * `guardActiveFence`) and validate the fence, WITHOUT writing anything. A guard-only
+   * lock: it lets a caller serialize two concurrent same-fence critical sections whose
+   * aggregate authority has no native create-dedup (the product-approval bridge uses it
+   * to close a create TOCTOU before its receipt fast-path). Throws JobFenceError on a
+   * stale/old-generation/terminal fence, exactly like every governed mutator. */
+  lockActiveFence(input: ActiveFenceRequest): Promise<{ lease: Lease; attempt: JobAttempt }>;
 }
 
 /** JOB-004 terminal attempt statuses a governed completion may drive an attempt to. */
@@ -373,9 +408,49 @@ export interface GuardedFenceResult {
 // ---------------------------------------------------------------------------
 // JOB-006 — cancellation, control commands, and reaper/retry types.
 
-/** The control-command kinds JOB-006 queues (a subset of the frozen E1
- * CONTROL_COMMAND_KINDS the reaper/cancellation issue). */
-export type JobControlCommandKind = "cancel" | "drain" | "graceful_stop";
+/** The control-command kinds JOB-006/JOB-011 queue (a subset of the frozen E1
+ * CONTROL_COMMAND_KINDS). JOB-006 issues `cancel`/`drain`/`graceful_stop` from the
+ * reaper/cancellation; JOB-011 queues the SERVER-authored `product_approval_result`
+ * / `runtime_decision_result` when the existing product/runtime authority resolves. */
+export type JobControlCommandKind =
+  | "cancel"
+  | "drain"
+  | "graceful_stop"
+  | "product_approval_result"
+  | "runtime_decision_result";
+
+/** JOB-011 — the SERVER-authored governance projection kinds. A `product_approval`
+ * links an `approvals` row, a `runtime_decision` links an `agent_runtime_decisions`
+ * row, and a `completion_policy` links the issue completion-policy snapshot. Distinct
+ * from the JOB-005 worker projection kinds (attempt_started/attempt_terminal). */
+export type GovernedProjectionKind = "product_approval" | "runtime_decision" | "completion_policy";
+
+/** ONE server-authored governance projection linking an EXISTING product/runtime
+ * aggregate to a distributed attempt. Keyed for idempotency by (projectionKind,
+ * sourceIdentity); `status` is `pending` until the authority resolves (then
+ * `markGovernedProjectionApplied` flips it), or `applied` directly for a
+ * synchronously-resolved decision. `aggregateKind` names the linked aggregate table. */
+export interface GovernedProjectionInput {
+  projectionKind: GovernedProjectionKind;
+  aggregateKind: string;
+  sourceIdentity: string;
+  sourceDigest: string;
+  targetAggregateId: string;
+  status: "pending" | "applied";
+}
+
+/** The E1 result a JOB-011 governance control carries. The body is validated with
+ * the frozen `controlCommandV1Schema` BEFORE insert (fail-closed) by the caller. */
+export interface GovernedControlCommandInput {
+  commandId: string;
+  commandKind: "product_approval_result" | "runtime_decision_result";
+  /** The already-validated, reconstructable E1 control command body. */
+  commandBody: Record<string, unknown>;
+  now: Date;
+}
+
+export type GovernedProjectionRecordResult = { receiptId: string | null; applied: boolean };
+export type GovernedControlQueueResult = { command: QueuedControlCommand | null; queued: boolean };
 
 /** The closed worker-ACK statuses (frozen E1 CONTROL_ACK_STATUSES). */
 export type ControlCommandAckStatus = "accepted" | "completed" | "rejected" | "stale";
@@ -2684,6 +2759,146 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         }
       }
       return result;
+    },
+
+    async recordGovernedProjection(input) {
+      // Fence FIRST — a stale/old-generation fence throws before ANY effect, so the
+      // server never links a governance aggregate to a dead attempt. Then write ONLY
+      // the receipt (never a job/attempt transition — the aggregate authority owns
+      // status). The (org, company, kind, source_identity) unique makes a replay a
+      // DO-NOTHING no-op: on a redelivery the SAME aggregate is re-linked, never a
+      // second one. This is the sole dedup guard for a non-idempotent aggregate
+      // create (approvals.create has none), so the bridge reads the receipt BEFORE
+      // driving the authority.
+      await guardActiveFence(input);
+      const { projection } = input;
+      const [inserted] = await tx.insert(jobProjectionReceipts).values({
+        organizationId: input.organizationId,
+        companyId: input.companyId,
+        projectionKind: projection.projectionKind,
+        sourceIdentity: projection.sourceIdentity,
+        sourceDigest: projection.sourceDigest,
+        jobId: input.jobId,
+        attemptId: input.attemptId,
+        sourceFence: input.fence,
+        status: projection.status,
+        targetAggregateId: projection.targetAggregateId,
+        aggregateKind: projection.aggregateKind,
+        appliedAt: projection.status === "applied" ? sql`clock_timestamp()` : null,
+        createdAt: sql`clock_timestamp()`,
+      }).onConflictDoNothing({
+        target: [
+          jobProjectionReceipts.organizationId,
+          jobProjectionReceipts.companyId,
+          jobProjectionReceipts.projectionKind,
+          jobProjectionReceipts.sourceIdentity,
+        ],
+      }).returning({ id: jobProjectionReceipts.id });
+      if (inserted) return { receiptId: inserted.id, applied: projection.status === "applied" };
+      // Conflict — the receipt already exists (idempotent replay). Re-read it so the
+      // caller can reconcile to the ALREADY-linked aggregate without a second create.
+      const [existing] = await tx.select({
+        id: jobProjectionReceipts.id,
+        status: jobProjectionReceipts.status,
+      }).from(jobProjectionReceipts).where(and(
+        eq(jobProjectionReceipts.organizationId, input.organizationId),
+        eq(jobProjectionReceipts.companyId, input.companyId),
+        eq(jobProjectionReceipts.projectionKind, projection.projectionKind),
+        eq(jobProjectionReceipts.sourceIdentity, projection.sourceIdentity),
+      )).limit(1);
+      return {
+        receiptId: existing?.id ?? null,
+        applied: existing?.status === "applied",
+      };
+    },
+
+    async markGovernedProjectionApplied(input) {
+      await guardActiveFence(input);
+      const [row] = await tx.update(jobProjectionReceipts).set({
+        status: "applied",
+        appliedAt: sql`clock_timestamp()`,
+      }).where(and(
+        eq(jobProjectionReceipts.organizationId, input.organizationId),
+        eq(jobProjectionReceipts.companyId, input.companyId),
+        eq(jobProjectionReceipts.projectionKind, input.projectionKind),
+        eq(jobProjectionReceipts.sourceIdentity, input.sourceIdentity),
+        eq(jobProjectionReceipts.status, "pending"),
+      )).returning({ id: jobProjectionReceipts.id });
+      if (row) return { applied: true };
+      // Idempotent double-resolve: a receipt already `applied` is still success.
+      const [existing] = await tx.select({ status: jobProjectionReceipts.status })
+        .from(jobProjectionReceipts).where(and(
+          eq(jobProjectionReceipts.organizationId, input.organizationId),
+          eq(jobProjectionReceipts.companyId, input.companyId),
+          eq(jobProjectionReceipts.projectionKind, input.projectionKind),
+          eq(jobProjectionReceipts.sourceIdentity, input.sourceIdentity),
+        )).limit(1);
+      return { applied: existing?.status === "applied" };
+    },
+
+    async queueGovernedControlCommand(input) {
+      // Fence FIRST (throws stale_fence / attempt_terminal / target_revoked). The
+      // guard returns the LOCKED lease + attempt, so the monotonic sequence below is
+      // allocated under the lease lock — identical to `requestCancellation`, minus
+      // the cancel status transitions (this control carries a resolved decision, it
+      // does not itself change job/attempt state).
+      const { lease } = await guardActiveFence(input);
+      const { control } = input;
+      // Idempotent: at most one command per (org, lease, command id). A retried queue
+      // with the SAME command id replays the queued row, never a second command.
+      const [existing] = await tx.select().from(jobControlCommands).where(and(
+        eq(jobControlCommands.organizationId, input.organizationId),
+        eq(jobControlCommands.leaseId, input.leaseId),
+        eq(jobControlCommands.commandId, control.commandId),
+      )).limit(1);
+      if (existing) return { command: toQueuedControlCommand(existing), queued: false };
+
+      const [{ maxSeq }] = await tx.select({
+        maxSeq: sql<number>`COALESCE(MAX(${jobControlCommands.commandSeq}), 0)`,
+      }).from(jobControlCommands).where(and(
+        eq(jobControlCommands.organizationId, input.organizationId),
+        eq(jobControlCommands.leaseId, input.leaseId),
+      ));
+      const commandSeq = Number(maxSeq) + 1;
+      // Stamp the lease-allocated sequence into the already-validated E1 body so the
+      // stored jsonb agrees with the command_seq column (any positive seq still
+      // satisfies the frozen schema the bridge validated against).
+      const commandBody = { ...control.commandBody, commandSeq };
+      const [inserted] = await tx.insert(jobControlCommands).values({
+        organizationId: input.organizationId,
+        companyId: input.companyId,
+        jobId: input.jobId,
+        attemptId: input.attemptId,
+        attemptNumber: input.attemptNumber,
+        leaseId: input.leaseId,
+        commandId: control.commandId,
+        commandSeq,
+        commandKind: control.commandKind,
+        fenceToken: input.fence,
+        command: commandBody,
+      }).onConflictDoNothing({
+        target: [
+          jobControlCommands.organizationId,
+          jobControlCommands.leaseId,
+          jobControlCommands.commandId,
+        ],
+      }).returning();
+      if (inserted) return { command: toQueuedControlCommand(inserted), queued: true };
+      // Lost the (org, lease, command id) race — re-read the winning row.
+      const [row] = await tx.select().from(jobControlCommands).where(and(
+        eq(jobControlCommands.organizationId, input.organizationId),
+        eq(jobControlCommands.leaseId, input.leaseId),
+        eq(jobControlCommands.commandId, control.commandId),
+      )).limit(1);
+      return { command: row ? toQueuedControlCommand(row) : null, queued: false };
+    },
+
+    async lockActiveFence(input) {
+      // Read-only guard: acquire the lease+attempt FOR UPDATE lock and validate the fence
+      // (throws JobFenceError on stale/old-generation/terminal), writing NOTHING. Callers
+      // use it to serialize concurrent same-fence critical sections (e.g. the
+      // product-approval create TOCTOU) before a non-idempotent aggregate authority runs.
+      return guardActiveFence(input);
     },
   };
 }

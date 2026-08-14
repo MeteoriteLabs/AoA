@@ -88,7 +88,7 @@ export const jobControlCommands = pgTable(
     ),
     commandKindValid: check(
       "job_control_commands_kind_check",
-      sql`command_kind IN ('cancel', 'drain', 'graceful_stop')`,
+      sql`command_kind IN ('cancel', 'drain', 'graceful_stop', 'product_approval_result', 'runtime_decision_result')`,
     ),
     ackStatusValid: check(
       "job_control_commands_ack_status_check",

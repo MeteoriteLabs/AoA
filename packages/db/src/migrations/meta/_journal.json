@@ -1681,6 +1681,20 @@
       "when": 1786671720596,
       "tag": "0239_execution_target_revocations_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 240,
+      "version": "7",
+      "when": 1786689947503,
+      "tag": "0240_familiar_magneto",
+      "breakpoints": true
+    },
+    {
+      "idx": 241,
+      "version": "7",
+      "when": 1786689947504,
+      "tag": "0241_job_governance_projections_rls",
+      "breakpoints": true
     }
   ]
 }

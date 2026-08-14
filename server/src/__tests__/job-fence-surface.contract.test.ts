@@ -96,6 +96,19 @@ const EXPECTED_UNGUARDED = [
   "listPendingControlCommands",
   "allocateRetryAttempt",
   "reapExpiredLeases",
+  // JOB-011 SERVER-authored governance-projection surface: invoked ONLY from the
+  // control-plane approval bridge (never a worker route), so they are outside the
+  // worker-fenced closed set. They still gate on guardActiveFence internally
+  // (defense in depth — a governance moment must act on a LIVE distributed attempt),
+  // but they are classified here because they are not worker-reachable mutators.
+  "recordGovernedProjection",
+  "markGovernedProjectionApplied",
+  "queueGovernedControlCommand",
+  // JOB-011 guard-only lock: `lockActiveFence` calls guardActiveFence and returns its
+  // locked lease+attempt WITHOUT writing anything (a read-only serialization primitive
+  // the approval bridge uses to close a create TOCTOU). It is not a worker-reachable
+  // governed mutator, so it is classified here like the other control-plane methods.
+  "lockActiveFence",
 ];
 
 function parse(path: string): ts.SourceFile {
