@@ -435,7 +435,18 @@ export type GovernedProjectionKind =
   // JOB-013 — links an `activity_log` row (the transactional audit for one accepted
   // state/control/accounting mutation) to the distributed attempt; written `applied`
   // in the SAME tenant tx as the activity insert. sourceIdentity=`activity:{company}:{eventId}`.
-  | "activity_audit";
+  | "activity_audit"
+  // JOB-014 — links a `task_outputs` row (the EXISTING task-output projection for one
+  // accepted artifact/result event) to the distributed attempt; written `applied` in the
+  // SAME tenant tx as the upsert. sourceIdentity=`output:{company}:{acceptedEventId}`.
+  | "output_projection"
+  // JOB-014 — the terminal-winner-once guard. Links the run-summary `issue_comments` row
+  // when a summary is posted (aggregateKind `issue_comments`), else the attempt itself
+  // (aggregateKind `job_attempts`, targetAggregateId=attemptId) for a null-issue/opt-out
+  // winner. It is the REPLAY guard consulted BEFORE completeAttempt (which makes the
+  // attempt terminal, so a legitimate winner-retry can no longer pass the fence).
+  // sourceIdentity=`task_terminal:{company}:{terminalEventId}`.
+  | "task_terminal";
 
 /** ONE server-authored governance projection linking an EXISTING product/runtime
  * aggregate to a distributed attempt. Keyed for idempotency by (projectionKind,

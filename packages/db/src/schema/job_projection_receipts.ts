@@ -72,7 +72,7 @@ export const jobProjectionReceipts = pgTable(
     ),
     projectionKindValid: check(
       "job_projection_receipts_projection_kind_check",
-      sql`projection_kind IN ('attempt_started', 'attempt_terminal', 'product_approval', 'runtime_decision', 'completion_policy', 'authoritative_cost', 'activity_audit')`,
+      sql`projection_kind IN ('attempt_started', 'attempt_terminal', 'product_approval', 'runtime_decision', 'completion_policy', 'authoritative_cost', 'activity_audit', 'output_projection', 'task_terminal')`,
     ),
     statusValid: check(
       "job_projection_receipts_status_check",
