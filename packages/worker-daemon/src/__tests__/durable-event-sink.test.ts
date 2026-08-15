@@ -42,7 +42,7 @@ afterEach(() => {
 
 describe("durable-event-sink — verbatim persist + fsync-before-return (D3/D4)", () => {
   it("persists seq + eventDigest VERBATIM — never recomputed / re-stamped", async () => {
-    const seq = new EventSequencer({ identity: IDENTITY, sink });
+    const seq = new EventSequencer({ identity: IDENTITY, sink, redactionCanaries: [] });
     const event = await seq.attemptStarted(POLL_FIXTURE_IDS.runId);
 
     const row = store.getRow(STREAM_KEY, event.seq)!;

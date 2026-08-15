@@ -102,6 +102,10 @@ export interface FenceCloseProxyDeps {
   readonly metrics?: Metrics;
   readonly newEventId?: () => string;
   readonly now?: () => string;
+  /** DAT-005 D4 — per-run secret canaries scrubbed from the proxy's `network_denied`
+   * denial stream before the digest (defense in depth; a denial reason is
+   * daemon-authored but the redaction chokepoint stays uniform across every sink). */
+  readonly redactionCanaries?: readonly string[];
 }
 
 export class FenceCloseProxy implements GovernedEffectAuthority {
@@ -121,6 +125,7 @@ export class FenceCloseProxy implements GovernedEffectAuthority {
       sink: deps.eventSink,
       newEventId: deps.newEventId,
       now: deps.now,
+      redactionCanaries: deps.redactionCanaries ?? [],
     });
   }
 

@@ -70,6 +70,12 @@ export interface SupervisorDeps {
   /** Injectable timer for the create-deadline race (default node timers). */
   readonly setTimeoutFn?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   readonly clearTimeoutFn?: (handle: ReturnType<typeof setTimeout>) => void;
+  /** DAT-005 D4 — per-run secret canaries scrubbed from EVERY event this supervisor's
+   * lifecycle sequencer emits (attempt_started / terminal / op stream), BEFORE the
+   * digest + durable outbox. The canary-seeding channel that populates this is the
+   * inert E4-D12 seam; until then it is `[]` (verbatim emit, no secret-bearing
+   * supervisor string exists yet — every terminal errorMessage is hardcoded null). */
+  readonly redactionCanaries?: readonly string[];
 }
 
 export type SupervisorRunStatus = "succeeded" | "failed" | "cancelled" | "create_timeout";
@@ -229,6 +235,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       sink: deps.eventSink,
       newEventId,
       now: nowIso,
+      // Scrub per-run secret canaries from the PRIMARY lifecycle stream too — not
+      // only the fence-close denial stream — so redaction is uniform across every
+      // sink that feeds the durable outbox (E4-D12 seeds the canaries; [] until then).
+      redactionCanaries: deps.redactionCanaries ?? [],
     });
     const spec = createSpecFor(handoff, run.labels);
 

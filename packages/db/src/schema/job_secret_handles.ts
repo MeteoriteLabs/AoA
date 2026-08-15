@@ -50,6 +50,13 @@ export const jobSecretHandles = pgTable(
     // D5 — pin the handle to its placed target generation (defense in depth over the
     // lease-level generation cutoff in guardActiveFence). Null = unpinned.
     boundTargetGeneration: integer("bound_target_generation"),
+    // DAT-005-D3 — the network-policy version applied at the last governed egress
+    // resolve. `network_denied` cannot carry a version (frozen wire) and the version
+    // is a frozen job-side concept (`networkPolicyRef.version`), so it is recorded
+    // here server-side, written by `resolveExecutionSecret` in the SAME audit UPDATE
+    // as last_resolved_at/resolve_count. Nullable additive (no keystone
+    // reconciliation) — never a secret value.
+    appliedPolicyVersion: integer("applied_policy_version"),
     // Audit-as-columns (DAT-004-D4): control-plane status + resolve audit, never a
     // value. `status` defaults to 'active' at mint (nullable for the additive widen).
     status: text("status"),

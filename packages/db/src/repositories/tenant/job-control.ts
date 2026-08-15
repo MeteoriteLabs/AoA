@@ -376,7 +376,7 @@ export interface JobControlRepository {
    * (guard) or `SecretResolveRejection` (authorization).
    */
   resolveExecutionSecret(
-    input: ActiveFenceRequest & { handle: string },
+    input: ActiveFenceRequest & { handle: string; appliedPolicyVersion?: number | null },
   ): Promise<AuthorizedSecretResolution>;
   completeAttempt(
     input: ActiveFenceRequest & { terminalStatus: TerminalCompletionStatus },
@@ -2671,12 +2671,22 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
 
       // Audit-as-columns (D4): record the authorized resolution in the SAME tx — NEVER a
       // value. resolve_count is a monotonic control-plane counter (COALESCE for the
-      // additive-widen null seam); last_resolved_at is a fresh DB clock.
-      const [audited] = await tx.update(jobSecretHandles).set({
+      // additive-widen null seam); last_resolved_at is a fresh DB clock. DAT-005-D3:
+      // when a governed egress resolve supplies the network-policy version, persist it in
+      // the SAME audit UPDATE (`applied_policy_version`) — an unrecordable version fails
+      // the tx and DENIES the egress (fail-closed). A non-egress resolve omits it and the
+      // column is left unchanged.
+      const auditSet: Record<string, unknown> = {
         lastResolvedAt: sql`clock_timestamp()`,
         resolveCount: sql`COALESCE(${jobSecretHandles.resolveCount}, 0) + 1`,
         updatedAt: sql`clock_timestamp()`,
-      }).where(eq(jobSecretHandles.id, row.id)).returning({ resolveCount: jobSecretHandles.resolveCount });
+      };
+      if (input.appliedPolicyVersion !== undefined && input.appliedPolicyVersion !== null) {
+        auditSet.appliedPolicyVersion = input.appliedPolicyVersion;
+      }
+      const [audited] = await tx.update(jobSecretHandles).set(auditSet)
+        .where(eq(jobSecretHandles.id, row.id))
+        .returning({ resolveCount: jobSecretHandles.resolveCount });
 
       // `authorizeSecretResolve` proved these enum/ref fields non-null + in-range.
       return {

@@ -54,6 +54,9 @@ export interface SecretResolveRequestV1 {
   fenceToken: string;
   /** The opaque execution-secret handle id (the `handle` column value). */
   handleId: string;
+  /** DAT-005-D3 — the network-policy version to persist in the audit UPDATE for a
+   * governed egress resolve. Omitted for a non-egress resolve (column untouched). */
+  appliedPolicyVersion?: number | null;
 }
 
 export type SecretDeliverySeam = "fence_proxy" | "remote_server_fenced" | "sandbox_local_only";
@@ -198,6 +201,7 @@ export function createSecretBrokerService(input: {
           return await repos.jobControl.resolveExecutionSecret({
             ...ctx.fenceIdentity,
             handle: request.handleId,
+            appliedPolicyVersion: request.appliedPolicyVersion,
           });
         } catch (error) {
           if (error instanceof DbJobFenceError) {

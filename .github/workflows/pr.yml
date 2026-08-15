@@ -182,6 +182,11 @@ jobs:
           node scripts/check-secret-resolve-vectors.mjs
           node --test scripts/check-secret-resolve-vectors.test.mjs
 
+      - name: Egress-policy destination vectors (DAT-005)
+        run: |
+          node scripts/check-egress-policy-vectors.mjs
+          node --test scripts/check-egress-policy-vectors.test.mjs
+
       - name: CI lane routing invariants (DEP-004)
         run: |
           node scripts/check-ci-lanes.mjs

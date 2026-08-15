@@ -26,6 +26,8 @@ import {
   type WorkerEventV1,
 } from "@armyofagents/worker-protocol";
 
+import { scrubEventStrings } from "./redaction.js";
+
 /** The four frozen network-denial destination classes (`NETWORK_DENIAL_CLASSES`). */
 export type NetworkDenialClass = NetworkDeniedPayloadV1["destinationClass"];
 
@@ -51,6 +53,16 @@ export interface EventSequencerDeps {
   /** Injectable id/clock for deterministic tests. */
   readonly newEventId?: () => string;
   readonly now?: () => string;
+  /** DAT-005 D4 — the PER-RUN secret canaries. Every string in every emitted event
+   * is scrubbed of these substrings BEFORE the digest (so the durable outbox can
+   * never seal a value). Passed explicitly per run — never a module singleton — to
+   * avoid cross-run bleed. An empty array = no redaction (verbatim emit).
+   *
+   * REQUIRED (never optional): every construction site must make a deliberate choice
+   * so a sequencer can never be built unscrubbed by omission — the exact defect that
+   * left the supervisor's primary lifecycle stream unredacted while only the
+   * fence-close denial stream was scrubbed. Pass `[]` to opt out explicitly. */
+  readonly redactionCanaries: readonly string[];
 }
 
 /** lowercase-hex SHA-256 over the canonical event bytes. */
@@ -67,6 +79,7 @@ export class EventSequencer {
   readonly #sink: WorkerEventSink;
   readonly #newEventId: () => string;
   readonly #now: () => string;
+  readonly #canaries: readonly string[];
   #seq = 0;
 
   constructor(deps: EventSequencerDeps) {
@@ -74,6 +87,7 @@ export class EventSequencer {
     this.#sink = deps.sink;
     this.#newEventId = deps.newEventId ?? randomUUID;
     this.#now = deps.now ?? (() => new Date().toISOString());
+    this.#canaries = deps.redactionCanaries ?? [];
   }
 
   /** The seq the NEXT emitted event will carry. */
@@ -99,10 +113,14 @@ export class EventSequencer {
       eventType,
       payload,
     };
-    const eventDigest = sha256Hex(canonicalEventDigestInputV1(withoutDigest));
+    // DAT-005 D4 — scrub per-run secret canaries from EVERY string BEFORE the digest,
+    // so the digest + parse below cover the scrubbed bytes and the durable outbox
+    // (which seals verbatim + never re-digests) can never persist a value.
+    const scrubbed = scrubEventStrings(withoutDigest, this.#canaries);
+    const eventDigest = sha256Hex(canonicalEventDigestInputV1(scrubbed));
     // Parse the COMPLETE event (contiguity + shape + forbidden-key scan) before
     // it leaves — a contract failure surfaces here, not on the wire.
-    const event = workerEventV1Schema.parse({ ...withoutDigest, eventDigest });
+    const event = workerEventV1Schema.parse({ ...scrubbed, eventDigest });
     await this.#sink.emit(event);
     return event;
   }
