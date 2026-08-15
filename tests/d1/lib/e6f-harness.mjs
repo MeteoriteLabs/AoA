@@ -338,10 +338,15 @@ try {
   };
   const registeredProfileHash = sha256(canonicalizeJsonV1(registeredProfile));
 
+  // companies.issue_prefix is GLOBALLY UNIQUE (companies_issue_prefix_idx), so it
+  // must be derived per-scenario, not hardcoded — otherwise two seedScenario callers
+  // in the SAME campaign (e.g. E6F-03 + E6F-05, one shared DB) collide on the second
+  // insert. Mirror the seedRaceOrg pattern: a slug-derived, length-bounded prefix.
+  const issuePrefix = ("E6F" + P.slug).slice(0, 12).toUpperCase();
   await sql\`INSERT INTO organizations (id, name, slug)
     VALUES (\${P.orgId}, \${"E6F Org " + P.slug}, \${"e6f-" + P.slug})\`;
   await sql\`INSERT INTO companies (id, organization_id, name, issue_prefix)
-    VALUES (\${P.companyId}, \${P.orgId}, \${"E6F Company " + P.slug}, 'E6F')\`;
+    VALUES (\${P.companyId}, \${P.orgId}, \${"E6F Company " + P.slug}, \${issuePrefix})\`;
   // Organization-scoped registered target (kind/trust must map to targetClass in the
   // resolver: dedicated_worker + dedicated_tenant -> organization_dedicated).
   // capabilities carries the providerConstraints ref the ENROLL RESPONSE builder reads
