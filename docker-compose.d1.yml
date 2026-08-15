@@ -217,6 +217,77 @@ services:
       - worker-net
       - provider-ctl-net
 
+  # --- control plane replica B (DEP-009 two-replica HA) ----------------------
+  # An INTERCHANGEABLE second replica over the SAME PostgreSQL + object store. It is a
+  # byte-faithful clone of `control-plane` that differs in EXACTLY two ways:
+  #   1. its OWN state volume `d1-control-plane-b-state` (a shared rw mount is rejected
+  #      by checkNoSharedRwVolume; the container-local /aoa scratch is never shared), and
+  #   2. `AOA_ALLOWED_HOSTNAMES` adds `control-plane-b` so worker-control requests reaching
+  #      it by its own service name pass the authenticated-mode Host check (health bypasses
+  #      it, so a missing entry is a silent live-only failure).
+  # EVERYTHING ELSE is identical: same image, same env (incl. the SAME
+  # AOA_WORKER_SESSION_SIGNING_KEY — the cross-replica session-portability premise: a
+  # session minted at one replica verifies at the other), the same 4 networks, the same
+  # migrate gate (migrate is a dedicated one-shot; control-plane-b runs NO migrations), the
+  # same DB proxy (both dial control-plane-to-postgres via toxiproxy:15432), and its own
+  # healthcheck. It DELIBERATELY does NOT `depends_on control-plane` — the replicas are
+  # independent, so cutting/stopping one must never gate the other (replica-loss correctness).
+  # Its worker link is independently cuttable via the per-replica toxiproxy proxy
+  # `worker-to-control-plane-b` (listen :13101 -> control-plane-b:3100).
+  control-plane-b:
+    image: ${AOA_D1_CONTROL_PLANE_IMAGE:-aoa-control-plane:d1-local-unbuilt}
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3100"
+      AOA_DEPLOYMENT_MODE: "authenticated"
+      # Adds `control-plane-b` to the base allowlist so worker-control requests that reach
+      # THIS replica by its own service name pass the authenticated-mode Host check.
+      AOA_ALLOWED_HOSTNAMES: "control-plane,control-plane-b,localhost,127.0.0.1"
+      AOA_DISTRIBUTED_EXECUTION_ENABLED: "true"
+      AOA_D1_TEST_REAP_ENABLED: "1"
+      DATABASE_URL: "postgres://aoa:aoa@toxiproxy:15432/aoa"
+      AOA_APP_DATABASE_URL: "postgres://aoa_app:aoa_app@toxiproxy:15432/aoa"
+      AOA_OPERATOR_DATABASE_URL: "postgres://aoa_operator:aoa_operator@toxiproxy:15432/aoa"
+      GOOGLE_CLIENT_ID: "d1-harness-google-client-id"
+      GOOGLE_CLIENT_SECRET: "d1-harness-google-client-secret"
+      BETTER_AUTH_SECRET: "d1-harness-better-auth-signing-secret-not-for-production"
+      # MUST match control-plane exactly — the cross-replica session-portability premise.
+      AOA_WORKER_SESSION_SIGNING_KEY: "d1-harness-worker-session-signing-key-0123456789abcdef"
+      AOA_PROVIDER_API_URL: "http://fake-provider:8080"
+      AOA_STORAGE_PROVIDER: "s3"
+      AOA_STORAGE_S3_ENDPOINT: "https://minio:9000"
+      AOA_STORAGE_S3_PRESIGN_ENDPOINT: "https://toxiproxy:19000"
+      AOA_STORAGE_S3_BUCKET: "aoa-artifacts"
+      AOA_STORAGE_S3_REGION: "us-east-1"
+      AOA_STORAGE_S3_FORCE_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: "aoa-d1"
+      AWS_SECRET_ACCESS_KEY: "aoa-d1-secret"
+      NODE_EXTRA_CA_CERTS: "/certs/ca.crt"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health >/dev/null || exit 1"]
+      interval: "10s"
+      timeout: "5s"
+      retries: 30
+    volumes:
+      - "d1-control-plane-b-state:/aoa"
+      - "./docker/d1/certs/public.crt:/certs/ca.crt:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_healthy
+    networks:
+      - data-net
+      - control-net
+      - worker-net
+      - provider-ctl-net
+
   # --- workers (>=2, DISTINCT registered target profiles) --------------------
   worker-a:
     image: ${AOA_D1_WORKER_IMAGE:-aoa-worker:d1-local-unbuilt}
@@ -354,6 +425,10 @@ services:
     depends_on:
       control-plane:
         condition: service_healthy
+      # DEP-009 — the live 2-replica lane needs BOTH replicas healthy before it drives
+      # concurrent A/B traffic; gating test-runner on control-plane-b makes the wait explicit.
+      control-plane-b:
+        condition: service_healthy
       worker-a:
         condition: service_healthy
       worker-b:
@@ -377,5 +452,8 @@ volumes:
   d1-postgres-data:
   d1-minio-data:
   d1-control-plane-state:
+  # DEP-009 — control-plane-b's OWN container-local state scratch. A dedicated volume
+  # (never shared rw with control-plane) keeps the two replicas' /aoa isolated.
+  d1-control-plane-b-state:
   d1-worker-a-state:
   d1-worker-b-state:

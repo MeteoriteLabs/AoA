@@ -100,6 +100,14 @@ export {
   type DistributedCutoverMarker,
   type NewDistributedCutoverMarker,
 } from "./distributed_cutover_markers.js";
+// DEP-009 (E6 deployment harness): PG-backed SHARED admission rate limiter — per-org
+// fixed-window counter both control-plane replicas increment (aoa_app tenant-scoped
+// read+write under FORCE RLS; the atomic upsert-increment is the shared-authority seam).
+export {
+  workerAdmissionRateLimits,
+  type WorkerAdmissionRateLimit,
+  type NewWorkerAdmissionRateLimit,
+} from "./worker_admission_rate_limits.js";
 // JOB-007: durable operator-metadata fanout record for a committed target
 // generation cutoff (worker/target revocation). Operator write / app read-only
 // outside a tenant transaction / tenants invisible — mirrors the marker shape.

@@ -1,0 +1,74 @@
+# DEP-009 Result — Two-replica control-plane HA and shared admission
+
+**Status:** `complete` (server-lane + static + embedded-PG local green; the 2-replica boot + live `e6f-11` concurrency = Docker/Linux-CI only via `d1-merge-train`, and the serving-role startup gate is role-provisioned CI only)
+**Disposition:** `pass` (all locally-runnable gates green incl. both HIGH fixes; the live 2-replica correctness lane is DEC-03 Linux-CI authority)
+**Date opened (UTC):** `2026-08-16`
+**Epic:** `E6-deployment-test-harness` (remainder; LAST DEP before DEP-006). **Scope: FULL acceptance** (operator-directed).
+**Plan task:** `DEP-009 — Two-replica control-plane HA + shared admission (program-design.md:746-751)`
+**Implementer:** `Claude subagent (opus) — worktree C:\e3`
+**Reviewer:** `Claude adversarial-review Workflow (6 dimensions → refute-by-default verify, 13 agents) + controller re-verification + fix round`
+**Start SHA:** ae491e139 (design-doc commit; see git)
+
+## Acceptance model + CI caveat
+
+Two interchangeable control-plane replicas over one PostgreSQL: ~90% of correctness is free (the control plane is DB-atomic — `FOR UPDATE SKIP LOCKED`, partial-unique indexes, `pg_advisory_xact_lock`), so DEP-009 adds the 2nd replica + the two admission gaps the acceptance names (a shared limiter + org-capacity). The 13-agent adversarial review found **2 HIGH + 4 MEDIUM + LOWs**, **all fixed** — including a **boot-blocker** (HIGH-1) and a **real capacity-correctness hole under retry** (HIGH-2) that all the green implementation gates had missed. The 2-replica boot + live concurrency proofs run on the `d1-merge-train` lane; the serving-role startup gate is role-provisioned CI only.
+
+## Delivered scope
+
+- **`control-plane-b`** — a 2nd interchangeable replica (clone; own state volume + hostname allowlist entry, SAME session signing key, migrate-gated, no replica affinity) + a per-replica `worker-to-control-plane-b` toxiproxy (`:13101`); the DB proxy stays shared. All `d1-compose-invariants.mjs` `EXPECTED_*` pins + `check-d1-compose.test.mjs` (10 services + reject-clones) + `collect-d1-evidence.mjs` updated **in lockstep**.
+- **PostgreSQL-backed shared rate limiter** (`worker_admission_rate_limits`, RLS via C14) — an atomic `INSERT … ON CONFLICT DO UPDATE … RETURNING` per-`(org, window)` counter both replicas increment; **fail-CLOSED** (a store error denies, no per-process fallback); dormant behind the flag; wired on the worker poll. **HIGH-1 fix:** the new table is registered across every distributed-startup keystone manifest (`job-control-legacy-grants.ts`, mirroring `folder_grants`) so the serving-role/RLS startup gate accepts it — without it, both replicas crash-loop.
+- **Submit-time org-capacity admission** — `admitAttemptCapacity` wired into `submitJobWithinTenant` (shared org advisory lock, idempotent). **HIGH-2 fix:** the capacity claim now **transfers across the reap→retry boundary** (a reaped `held` attempt's successor inherits `held` within the one reaper txn), so a retried attempt is never uncounted — closing the "org cap exceeded by retries even on one replica" hole.
+- **`e6f-11` 2-replica concurrency test** (`runReplicaRace`, serial single-exec) — single-winner lease race A/B, capacity-under-concurrency, consistent terminal, replica-agnostic session, **replica-loss now genuinely observable** (probes `:13101` unreachable while cut), shared-rate-limit one-counter.
+- **Non-goals preserved:** frozen worker-protocol + threat register untouched; DB via `db:generate` (0254) + C14 RLS (0255); dormant behind `AOA_DISTRIBUTED_EXECUTION_ENABLED`; no process-local admission; no trigger-level `paths:` filter.
+
+## Findings (adversarial review — 2 HIGH + 4 MEDIUM + LOWs, all addressed)
+
+- **HIGH-1 (boot-blocker) — the new RLS table was in no keystone manifest.** `worker_admission_rate_limits` had grants + FORCE RLS but was absent from `RLS_RELATIONS`/`FORCE_RLS_RELATIONS`/`POLICY_COUNTS`/`RLS_POLICY_MANIFEST`/`appTablePrivileges`, so `openDistributedExecutionDatabases`' serving-role + catalog-certificate assertions would throw drift and crash both replicas. **Fixed:** registered it mirroring the `folder_grants`/DAT-006 precedent + bumped the contract-test count pins (RLS 21→22, FORCE 20→21, policies 30→31). The DAT-006 keystone-reconciliation class: a *new* distributed-plane table forces manifest registration.
+- **HIGH-2 (correctness) — retried attempts ran uncounted, exceeding org capacity.** Capacity was claimed only at submit (attempt #1); the reaper released the slot unconditionally and `allocateRetry` minted N+1 `unclaimed`, and offer-time capacity is deferred, so the retry ran uncounted. **Fixed:** the reaper captures the reaped attempt's `held` state before release and passes `inheritCapacityHeld` to `allocateRetry` on the retry branch only, so N+1 inherits `held` (transfer). Race-safe: release + re-claim commit atomically in one reaper txn, so a concurrent admit under the org advisory lock never sees the occupancy gap. New RED→GREEN test: submit to cap → reap+retry → a concurrent submit of another job is denied 429.
+- **MEDIUM-1 (fixed):** the limiter's fail-closed `catch {}` was a silent 429 — now logs `worker_admission_internal_unavailable` (deny unchanged; kept minimal, no 503 protocol code, to avoid the frozen worker-protocol error surface — see residual).
+- **MEDIUM-2 (fixed):** `e6f-11` Case 5 "replica loss" cut a proxy no traffic flowed through (cosmetic) — now probes `:13101` reachable-then-unreachable across the cut, making the loss genuinely observable.
+- **MEDIUM-3 (fixed):** no static lockstep on the shared session key — added a compose invariant asserting `AOA_WORKER_SESSION_SIGNING_KEY` + `AOA_DISTRIBUTED_EXECUTION_ENABLED` identical across `CONTROL_PLANE_SERVICES` + reject-clones.
+- **LOW (fixed):** `worker_admission_rate_limits` grew unbounded — added a best-effort retention sweep (1h) folded into `reapOrganization` (own txn, swallowed error, RLS-scoped).
+
+**Refuted / accepted-by-design:** the fixed-window limiter admits ~2× at the window edge — a per-org poll *safety valve* (default 100k), completely separate from the advisory-lock capacity gate, so it cannot cause capacity double-admit (documented tolerance). The e6f-11 capacity case uses a faithful DB-advisory-lock proxy (the harness has no authenticated submit); the full submit→admit wiring is proven by the Slice C integration test.
+
+## Commands (verbatim, re-run by the controller)
+
+| Command | Exit | Result |
+|---|---:|---|
+| `…vitest run job-control-legacy-grants.contract.test.ts` (HIGH-1) | `0` | **7 passed** (manifest self-consistent) |
+| `AOA_RUN_WIN_INTEGRATION=1 …vitest run job-retry-capacity-transfer + job-submit-capacity-admission` (HIGH-2) | `0` | **5 passed** (retry-hole RED→GREEN) |
+| `node --test scripts/check-d1-compose.test.mjs` | `0` | **44 passed** (10 services + reject-clones + key-lockstep) |
+| dormancy: `…distributed-execution-db-startup … -t "loads none of the flag-on job-control graph while disabled"` | `0` | **1 passed** |
+| broad sweep: reconciliation + leasing + serving-role + tenant-rls + limiter (8 files) | `0` | **125 passed** (no regression) |
+| `…typecheck` + `…db build` + `pnpm db:generate` | `0` | clean; **no pending diff** |
+| `node --check tests/d1/e6f-11-two-replica.test.mjs` | `0` | parse OK; SKIP off `AOA_D1_LIVE` |
+| live 2-replica correctness | — | `d1-merge-train` foundation (CI-only, DEC-03) |
+
+## Residual risk / scope-honesty
+
+1. **2-replica boot + the serving-role startup gate are CI-only-verified.** The keystone manifest is self-consistent locally (contract test), but the actual `assertExactServingRoleAuthority` runs against the role-provisioned DB on `d1-merge-train`/CI. Both replicas reaching healthy is confirmed there, not locally.
+2. **`e6f-11` capacity case is a DB-advisory-lock proxy**, not the full authenticated submit path (harness limitation); the submit→admit correctness is proven by the Slice C integration test.
+3. **Limiter unavailable surfaces as `throttled` (429), not `internal_unavailable` (503)** — worker behavior is identical (both retryable) and a log line now fires; surfacing a distinct 503 would touch the frozen worker-protocol error kinds, deferred.
+4. **Fixed-window poll valve** admits ~2× at the window edge under clock skew — by design for a safety valve far above legitimate burst; it does not affect the advisory-lock capacity gate. Live proof is CI-only.
+
+## Follow-up tickets
+
+`None` blocking. DEP-006 (staging manifests) consumes this 2-replica + shared-admission substrate. A 503-vs-429 split for the limiter and a tighter (sliding-window) valve are optional future hardening.
+
+## Gate recommendation
+
+`ready for independent review` — all locally-runnable gates green incl. both HIGH fixes re-verified; the 2-replica boot + live concurrency are Docker/CI-only under DEC-03.
+
+## Independent review
+
+**Reviewer:** `Claude adversarial-review Workflow (6 dimensions → refute-by-default verify, 13 agents) + controller re-verification`
+**Reviewed revision:** implementer working tree → fixes re-verified against source (`job-control-legacy-grants.ts`, `job-control.ts:3206,3267,1204`, `worker-admission-rate-limit.ts`)
+**Disposition:** `approved`
+**Review evidence:** 2 HIGH (boot-keystone + retry-capacity) + 4 MEDIUM + LOWs, all fixed and re-verified; the reaper transfer race-safety independently traced; keystone contract test + retry-capacity RED→GREEN + 125-test broad sweep green post-fix.
+
+## Review attempt history
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | Claude adversarial-review Workflow (13 agents) + controller | implementer working tree | `approved` | HIGH-1 (keystone boot-blocker) + HIGH-2 (uncounted-retry capacity) fixed + re-verified; MEDIUM-1/2/3 + LOW fixed; capacity-transfer race-safety traced; contract + retry-capacity + 125-test sweep green; live 2-replica proof on d1-merge-train |

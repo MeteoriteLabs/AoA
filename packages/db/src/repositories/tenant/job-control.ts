@@ -687,6 +687,18 @@ export interface RetryAllocationInput {
   baseBackoffMs: number;
   maxBackoffMs: number;
   now: Date;
+  /**
+   * DEP-009 capacity-claim TRANSFER. When the reaped attempt HELD an Organization
+   * capacity slot, the successor attempt N+1 must inherit `capacity_claim_state='held'`
+   * so `resolveOrgCapacityUsage` (which counts only 'held' attempts) preserves org
+   * occupancy across the reap→retry boundary — otherwise N+1 is minted 'unclaimed'
+   * (schema default) and, because offer-time capacity enforcement is DEFERRED, leases
+   * and runs UNCOUNTED, exceeding the org cap. Race-safe: the reaper releases attempt N
+   * and re-claims on N+1 in ONE txn under `pg_advisory_xact_lock('aoa:org-capacity')`,
+   * so a concurrent admit never observes the gap. Omitted/false ⇒ N+1 stays 'unclaimed'
+   * (flag-off submits and the public allocateRetryAttempt path preserve prior behavior).
+   */
+  inheritCapacityHeld?: boolean;
 }
 
 export type RetryAllocationStatus = "created" | "observed" | "not_latest" | "job_missing";
@@ -1181,12 +1193,29 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     );
     const backoffUntil = new Date(input.now.getTime() + backoffMs);
 
+    // DEP-009 capacity-claim TRANSFER. If the reaped attempt held an Organization
+    // capacity slot, mint N+1 already 'held' so org occupancy is conserved across the
+    // reap→retry boundary. The `job_attempts_capacity_claim_check` CHECK requires a
+    // 'held' row to carry a non-null workload type + claimed_at (and null released_at),
+    // so copy the reaped attempt's workload type (guaranteed non-null when it was held —
+    // release keeps the workload type) and stamp a fresh claim instant. When the reaped
+    // attempt was 'unclaimed' (flag-off submit), leave N+1 at the schema default so a
+    // never-counted slot is not over-counted.
+    const capacityTransfer = input.inheritCapacityHeld
+      ? {
+          capacityClaimState: "held" as const,
+          capacityWorkloadType: reaped.capacityWorkloadType,
+          capacityClaimedAt: input.now,
+        }
+      : {};
+
     const [insertedAttempt] = await tx.insert(jobAttempts).values({
       organizationId: input.organizationId,
       companyId: input.companyId,
       jobId: input.jobId,
       attemptNumber: nextNumber,
       status: "pending",
+      ...capacityTransfer,
       // Copy the reaped attempt's immutable placement snapshot verbatim so N+1 is
       // dispatchable to the same target (re-placement is JOB-009, out of scope).
       placementDisposition: reaped.placementDisposition,
@@ -3170,6 +3199,11 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         )).returning({ id: leases.id });
         if (!revoked) continue;
         result.revoked += 1;
+        // DEP-009: capture whether this attempt HELD an Organization capacity slot
+        // BEFORE the release flips it to 'released'. Only a genuinely-held slot is
+        // transferred to the retry successor (below) — a never-claimed ('unclaimed')
+        // attempt must not mint a counted slot on N+1.
+        const reapedHeldCapacity = attempt.capacityClaimState === "held";
         // JOB-007: the reaped lease's attempt is terminal-bound → release its
         // Organization capacity slot (idempotent, exactly-once across reaper/cancel/
         // revocation/cost paths that may all race on the same attempt).
@@ -3227,6 +3261,10 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
               baseBackoffMs: input.baseBackoffMs,
               maxBackoffMs: input.maxBackoffMs,
               now: input.now,
+              // DEP-009: transfer the released capacity slot to the successor so the
+              // reap→retry boundary conserves org occupancy (release + re-claim commit
+              // atomically in this one reaper txn under the org-capacity advisory lock).
+              inheritCapacityHeld: reapedHeldCapacity,
             });
             if (alloc.status === "created") result.retried += 1;
           } else {

@@ -36,6 +36,7 @@ const D1_SERVICES = [
   "toxiproxy",
   "migrate",
   "control-plane",
+  "control-plane-b",
   "worker-a",
   "worker-b",
   "fake-provider",

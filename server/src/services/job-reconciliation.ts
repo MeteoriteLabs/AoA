@@ -30,7 +30,32 @@ import type {
   Db,
   ReapExpiredLeasesResult,
 } from "@armyofagents/db";
+// Passive table descriptor from the always-loaded db barrel — importing it does NOT pull
+// the (dormant) DEP-009 admission service/route into any module graph; it only names the
+// counter table the retention sweep prunes.
+import { workerAdmissionRateLimits } from "@armyofagents/db";
+import { lt, sql } from "drizzle-orm";
 import { runInTenant } from "../db/tenant-context.js";
+
+// LOW (DEP-009) retention: the shared admission rate-limit counter mints one row per
+// (org, 60s window). Old windows are inert (no lifecycle depends on them) but would grow
+// unbounded. Prune windows older than this on the org's periodic reconciliation tick.
+export const ADMISSION_RATE_WINDOW_RETENTION = sql`interval '1 hour'`;
+
+/**
+ * Best-effort retention sweep of `worker_admission_rate_limits` for ONE org, in its OWN
+ * tenant transaction so a sweep error can never poison/roll back the reap. Under aoa_app
+ * the org-scoped RLS policy restricts the DELETE to this org's rows; the retention window
+ * (1h) is far beyond the 60s counter window, so no live counter is ever pruned. No-ops when
+ * the flag is off (the table only accumulates rows on the flag-on worker-control path).
+ */
+async function sweepAdmissionRateWindows(appDb: Db, organizationId: string): Promise<void> {
+  await runInTenant(appDb, organizationId, async (_repos, tx) => {
+    await tx
+      .delete(workerAdmissionRateLimits)
+      .where(lt(workerAdmissionRateLimits.windowStart, sql`now() - ${ADMISSION_RATE_WINDOW_RETENTION}`));
+  });
+}
 
 /** Server retry backoff policy. The reaper writes an immutable per-attempt backoff
  * (exponential: base * 2^(N-1), capped at max) so retry N+1 is not dispatched before
@@ -89,7 +114,7 @@ export function createJobReconciliationService(input: {
 
     async reapOrganization(organizationId, options) {
       const limit = Math.max(1, Math.min(128, Math.floor(options?.limit ?? reapBatchLimit)));
-      return runInTenant(input.appDb, organizationId, async (repos) => {
+      const result = await runInTenant(input.appDb, organizationId, async (repos) => {
         // A FRESH database clock anchors the immutable backoff (never JavaScript time).
         const now = await repos.jobControl.currentDatabaseTime();
         return repos.jobControl.reapExpiredLeases({
@@ -100,6 +125,10 @@ export function createJobReconciliationService(input: {
           maxBackoffMs,
         });
       });
+      // LOW (DEP-009): best-effort admission-rate-window retention sweep on this org's
+      // periodic tick. Its OWN txn + swallowed error so it never fails/rolls back the reap.
+      await sweepAdmissionRateWindows(input.appDb, organizationId).catch(() => {});
+      return result;
     },
   };
 }

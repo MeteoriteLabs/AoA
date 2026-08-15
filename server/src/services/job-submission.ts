@@ -13,6 +13,15 @@ import {
   TenantAdmissionDeniedError,
 } from "./tenant-admission.js";
 import { attemptReadyOutbox } from "./job-outbox.js";
+// DEP-009 — submit-time org-capacity admission. The deployment-flag reader is imported
+// statically because `config/distributed-execution.ts` is logger-free (a single type
+// import). `admitAttemptCapacity` (org-concurrency) is DYNAMICALLY imported inside the
+// flag-gated block below: org-concurrency → budgets.ts → middleware/logger.js, and a
+// STATIC import would pull the logger into every early importer of this module (a test
+// that statically imports job-submission before setting AOA_LOG_DIR would bind the logger
+// to the wrong sink). The dynamic import keeps this module's static graph logger-free and
+// keeps the admission code dormant (loaded only when the flag is on at runtime).
+import { readDistributedExecutionDeploymentFlag } from "../config/distributed-execution.js";
 
 export interface AuthenticatedJobPrincipal {
   kind: "user" | "agent" | "mcp" | "commander" | "local_board" | "system";
@@ -101,6 +110,12 @@ const SOURCE_REQUESTER_KINDS = Object.freeze({
 export async function submitJobWithinTenant(
   repos: TenantRepositories,
   input: SubmitJobRequest,
+  // DEP-009 — the SAME tenant transaction handle `runInTenant` already yields alongside
+  // `repos`. It composes the submit-time org-capacity admission (`admitAttemptCapacity`)
+  // into ONE authoritative transaction, so a denied/over-cap admit rolls the whole
+  // submission back (no orphan job/attempt). Optional so existing behaviour is unchanged
+  // when a caller does not opt into capacity admission (the two production call sites pass it).
+  tx?: Db,
 ): Promise<SubmitJobResponse> {
   const sourceId = sourceIdentity(input.command.source);
   const commandDigest = digest(input.command);
@@ -267,6 +282,35 @@ export async function submitJobWithinTenant(
           createdAt: now,
           updatedAt: now,
         });
+        // DEP-009 — SUBMIT-TIME org-capacity admission. The FIRST attempt was just created
+        // (the point at which the job first becomes leasable — §7 Q2), so claim its
+        // Organization capacity slot NOW, inside the SAME tenant transaction, BEFORE the
+        // attempt-ready outbox makes it pollable. admitAttemptCapacity serializes
+        // count-then-claim under one shared advisory lock per Organization, so concurrent
+        // submits across BOTH control-plane replicas cannot exceed the cap. An over-cap /
+        // budget denial throws (429) → the whole submission rolls back (no leasable orphan);
+        // a shared-store error propagates so the submit FAILS CLOSED (never a silent admit).
+        // The claim is balanced by the existing releaseAttemptCapacity on terminal/revoke.
+        // Idempotent by construction: a redelivered submission returns on the replay path
+        // above and never reaches this claim, so no attempt is ever double-claimed.
+        // Dormant behind the deployment flag — off, the legacy poll-time behaviour is exactly as before.
+        if (tx && readDistributedExecutionDeploymentFlag(process.env)) {
+          const { admitAttemptCapacity } = await import("./org-concurrency.js");
+          const admission = await admitAttemptCapacity(tx, {
+            organizationId: input.organizationId,
+            companyId: input.companyId,
+            workloadType: workloadType(input.command.source),
+            attemptId: attempt.id,
+          });
+          if (!admission.admitted) {
+            throw new HttpError(
+              429,
+              admission.reason === "budget"
+                ? "Organization budget hard-stop reached"
+                : "Organization concurrency capacity exceeded",
+            );
+          }
+        }
         await repos.jobControl.insertOutbox(attemptReadyOutbox({
           id: outboxId,
           organizationId: input.organizationId,
@@ -325,7 +369,7 @@ export function jobSubmissionService(appDb: Db) {
         if (error instanceof ForbiddenOrganizationSentinelError) throw denial();
         throw error;
       }
-      return runInTenant(appDb, input.organizationId, (repos) => submitJobWithinTenant(repos, input));
+      return runInTenant(appDb, input.organizationId, (repos, tx) => submitJobWithinTenant(repos, input, tx));
     },
   };
 }

@@ -304,7 +304,7 @@ export function jobAdmissionBridge(
         // checkoutRunId = executionRunId = runId. For every other source this is the
         // unchanged `submit` control flow (reuse-existing `*IsAdmitted`, no fabricated
         // task). All admission denials surface as one opaque `TenantAdmissionDeniedError`.
-        return submitJobWithinTenant(repos, request);
+        return submitJobWithinTenant(repos, request, tx);
       });
 
       // After commit ONLY. A rollback threw above and never reached here → no publication

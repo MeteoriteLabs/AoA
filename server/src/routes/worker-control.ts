@@ -50,6 +50,7 @@ import { createJobReconciliationService } from "../services/job-reconciliation.j
 import type { JobReadyScheduler } from "../services/job-ready-scheduler.js";
 import type { JobControlMetrics } from "../services/job-control-metrics.js";
 import { readDistributedExecutionDeploymentFlag } from "../config/distributed-execution.js";
+import { createWorkerAdmissionRateLimiter } from "../services/worker-admission-rate-limit.js";
 import { deviceProofHeaders } from "./worker-proof-headers.js";
 
 const uuid = z.string().uuid();
@@ -107,6 +108,11 @@ export function workerControlRoutes(opts: {
   const quarantineFinalize = createQuarantineFinalizeService({ appDb: opts.appDb, storage });
   const controlAck = createJobControlAckService({ appDb: opts.appDb });
   const reconciliation = createJobReconciliationService({ appDb: opts.appDb });
+  // DEP-009 — the SHARED, DB-backed admission rate limiter for the worker poll. Both
+  // control-plane replicas increment ONE per-org fixed-window counter, so a burst split
+  // across replicas observes one limit. Fail-CLOSED (a shared-store error denies). This
+  // route is mounted only under AOA_DISTRIBUTED_EXECUTION_ENABLED, so the limiter is dormant.
+  const pollRateLimiter = createWorkerAdmissionRateLimiter({ appDb: opts.appDb });
 
   router.post(
     "/organizations/:organizationId/execution-targets/:targetId/enrollment-codes",
@@ -228,6 +234,15 @@ export function workerControlRoutes(opts: {
         correlationId: parsed.data.correlationId,
         now: opts.now?.(),
       });
+      // DEP-009 — SHARED admission rate limit BEFORE the (frozen) poll authority. Over the
+      // per-org window cap, or on a shared-store error (fail-closed), deny with `throttled`
+      // (429, retryable) — never a per-process fallback. The DB counter is the sole authority
+      // both replicas share, so this is not process-local admission state.
+      const admission = await pollRateLimiter.admit(auth.organizationId);
+      if (!admission.allowed) {
+        sendWorkerOperationProtocolError(req, res, "poll", "throttled", opts.now?.() ?? new Date());
+        return;
+      }
       const response = await leasing.poll({ auth, request: parsed.data });
       // DEP-007 — bind the trace spine on the offer hop so the poll line is join-able on
       // `jobId` with the ingest/ack hops. Ids go to the operator-only log sink only.

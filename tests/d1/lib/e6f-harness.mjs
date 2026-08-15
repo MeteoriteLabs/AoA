@@ -106,14 +106,29 @@ export const CONTROL_PLANE_URL = "http://control-plane:3100";
 export const FAKE_PROVIDER_API_URL = "http://fake-provider:8080";
 export const FAKE_PROVIDER_CTL_URL = "http://fake-provider:8081";
 
-export const WORKER_CONTROL = {
-  enroll: `${CONTROL_PLANE_URL}/api/worker-control/enroll`,
-  poll: `${CONTROL_PLANE_URL}/api/worker-control/poll`,
-  ack: (leaseId) => `${CONTROL_PLANE_URL}/api/worker-control/leases/${leaseId}/ack`,
-  // DAT-002 slice-7 — the two frozen artifact ops (upload/download grant + commit).
-  artifactTransferGrant: `${CONTROL_PLANE_URL}/api/worker-control/artifact-transfer-grants`,
-  artifactCommit: `${CONTROL_PLANE_URL}/api/worker-control/artifact-commits`,
-};
+// DEP-009 — the second interchangeable control-plane replica's in-stack base URL. The
+// device proof is host-agnostic (it signs `new URL(url).pathname` only) and both replicas
+// share AOA_WORKER_SESSION_SIGNING_KEY, so a session minted at one replica verifies at the
+// other — enroll@A / poll@B is a single portable session (replica-agnostic acceptance).
+export const CONTROL_PLANE_B_URL = "http://control-plane-b:3100";
+
+/** The worker-control endpoint set for a given control-plane base URL. Parameterizes what
+ * WORKER_CONTROL hardcodes to CONTROL_PLANE_URL, so a test can address replica A or B. The
+ * enroll/poll/ack/events HTTP clients already accept a `url` param, so no client changes. */
+export function workerControlFor(base) {
+  return {
+    enroll: `${base}/api/worker-control/enroll`,
+    poll: `${base}/api/worker-control/poll`,
+    ack: (leaseId) => `${base}/api/worker-control/leases/${leaseId}/ack`,
+    events: `${base}/api/worker-control/events`,
+    artifactTransferGrant: `${base}/api/worker-control/artifact-transfer-grants`,
+    artifactCommit: `${base}/api/worker-control/artifact-commits`,
+  };
+}
+
+export const WORKER_CONTROL = workerControlFor(CONTROL_PLANE_URL);
+// DEP-009 — the replica-B endpoint set (same shape, control-plane-b base).
+export const WORKER_CONTROL_B = workerControlFor(CONTROL_PLANE_B_URL);
 
 // Single source of truth for the seeded target/worker capability + policy facts.
 // The seed embeds POLICY_HASH + WORKER_CAPABILITIES into the registered target
@@ -996,6 +1011,141 @@ report({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DEP-009 two-replica concurrency runner (ADDITIVE ONLY — nothing above is modified).
+//
+// runReplicaRace is a clone of runLeaseRace whose poll/ack requests each carry their OWN
+// control-plane base (replica A `http://control-plane:3100` or B `http://control-plane-b:3100`),
+// so a single test-runner exec can race concurrent traffic across BOTH replicas over the one
+// shared PostgreSQL. ALL concurrency lives INSIDE this one `dexecModule("test-runner")` exec —
+// the campaign is `--test-concurrency=1` serial, so a test must not fan out its own
+// `docker exec` calls. Every poll and every ack signs a FRESH single-use device proof
+// (randomBytes-per-call is concurrency-safe), so overlapping in-process requests never reuse
+// a proofId. `requests` is an array of poll specs, each:
+//   { replica, pollUrl, ackPrefix, ackSuffix?, session, workerId, targetId, privateKeyPem,
+//     publicKeyDer }
+// Each spec polls ONCE (honoring the E1 retryable-backpressure contract with a fresh proof);
+// on an `offer` it immediately acks via ITS replica's ackPrefix. Returns { results: [...] }
+// with per-request { replica, outcome: "offer"|"no_work"|"other", offer?, ackStatus?,
+// ackOutcome?, status?, body? } so the caller can assert exactly-one-winner across replicas,
+// a shared cap, and a shared rate-limit window.
+export function runReplicaRace({ requests, deviceGeneration = 1, capacity, timeout = 180_000 }) {
+  const params = { requests, deviceGeneration, capacity };
+  const script = `
+${DEVICE_PROOF_SNIPPET}
+${embedParams(params)}
+
+async function pollOnce(spec) {
+  // Same retryable-backpressure handling as runLeaseRace: a 5xx internal_unavailable/throttled
+  // carrying retryAfterMs is the control-plane shedding load, not an anomaly — retry with a
+  // fresh nonce + device proof (both single-use). The compare-and-set offerLease keeps the
+  // exactly-one-winner invariant across the retry.
+  const RETRYABLE = new Set(["internal_unavailable", "throttled"]);
+  const MAX_ATTEMPTS = 4;
+  let last = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    const body = {
+      protocolVersion: 1,
+      correlationId: randomUUID(),
+      issuedAt: new Date().toISOString(),
+      nonce: randomBytes(16).toString("base64url"),
+      audience: "worker_poll",
+      workerId: spec.workerId,
+      targetId: spec.targetId,
+      deviceGeneration: P.deviceGeneration,
+      capacity: P.capacity,
+    };
+    const bodyString = JSON.stringify(body);
+    const headers = deviceProofHeaders({
+      method: "POST", url: spec.pollUrl, bodyString, correlationId: body.correlationId,
+      privateKeyPem: spec.privateKeyPem, publicKeyDer: spec.publicKeyDer,
+    });
+    headers["content-type"] = "application/json";
+    headers["authorization"] = "Bearer " + spec.session;
+    const res = await fetch(spec.pollUrl, { method: "POST", headers, body: bodyString });
+    const text = await res.text();
+    last = { status: res.status, body: safeJson(text) };
+    const code = last.body && last.body.code;
+    if (last.status < 500 || !RETRYABLE.has(code)) return last;
+    if (attempt < MAX_ATTEMPTS - 1) {
+      const retryAfterMs = Number(last.body && last.body.retryAfterMs);
+      await new Promise((r) => setTimeout(r, Math.min(Number.isFinite(retryAfterMs) ? retryAfterMs : 200, 500)));
+    }
+  }
+  return last;
+}
+
+async function ackOnce(spec, offer) {
+  const url = spec.ackPrefix + offer.leaseId + (spec.ackSuffix || "/ack");
+  const body = {
+    protocolVersion: 1,
+    correlationId: randomUUID(),
+    issuedAt: new Date().toISOString(),
+    nonce: randomBytes(16).toString("base64url"),
+    audience: "worker_run",
+    idempotencyKey: randomUUID(),
+    body: {
+      protocolVersion: 1,
+      workerId: spec.workerId,
+      jobId: offer.jobId,
+      attempt: offer.attempt,
+      leaseId: offer.leaseId,
+      fenceToken: offer.fenceToken,
+      ackedAt: new Date().toISOString(),
+    },
+  };
+  const bodyString = JSON.stringify(body);
+  const headers = deviceProofHeaders({
+    method: "POST", url, bodyString, correlationId: body.correlationId,
+    privateKeyPem: spec.privateKeyPem, publicKeyDer: spec.publicKeyDer,
+  });
+  headers["content-type"] = "application/json";
+  headers["authorization"] = "Bearer " + spec.session;
+  const res = await fetch(url, { method: "POST", headers, body: bodyString });
+  const text = await res.text();
+  return { status: res.status, body: safeJson(text) };
+}
+
+function offerOf(pollRes) {
+  if (pollRes.status === 200 && pollRes.body && pollRes.body.outcome === "offer" && pollRes.body.body) {
+    const o = pollRes.body.body;
+    return {
+      leaseId: o.leaseId,
+      fenceToken: o.fenceToken,
+      workerId: o.workerId,
+      jobId: o.job && o.job.jobId,
+      attempt: o.job && o.job.attempt,
+    };
+  }
+  return null;
+}
+const isNoWork = (r) => r.status === 200 && r.body && r.body.outcome === "no_work";
+
+// Race EVERY request concurrently across the two replicas inside this ONE exec.
+const results = await Promise.all(P.requests.map(async (spec) => {
+  const pr = await pollOnce(spec);
+  if (isNoWork(pr)) return { replica: spec.replica, outcome: "no_work" };
+  const off = offerOf(pr);
+  if (off) {
+    const ackRes = await ackOnce(spec, off);
+    return {
+      replica: spec.replica,
+      outcome: "offer",
+      offer: off,
+      ackStatus: ackRes.status,
+      ackOutcome: ackRes.body && ackRes.body.outcome,
+      ackLeaseId: ackRes.body && ackRes.body.leaseId,
+      ackBody: ackRes.status === 200 ? null : ackRes.body,
+    };
+  }
+  return { replica: spec.replica, outcome: "other", status: pr.status, body: pr.body };
+}));
+
+report({ results });
+`;
+  return dexecModule("test-runner", script, { timeout });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // E6F-04 available-path tenancy additions (ADDITIVE ONLY — nothing above is
 // modified). Everything above is the frozen LIVE-GREEN E6F-03/E6F-01 substrate;
 // this helper only ADDS the per-org seed the tenancy matrix needs and never
@@ -1658,6 +1808,9 @@ try {
  * from test-runner). Lets a test OBSERVE a link cut, not merely toggle it. */
 export const TOXIPROXY_LISTEN = {
   "worker-to-control-plane": "toxiproxy:13100",
+  // DEP-009 — the per-replica worker→control-plane-b link, so a replica-loss cut is
+  // OBSERVABLE via a poll THROUGH this listen port (not merely toggled).
+  "worker-to-control-plane-b": "toxiproxy:13101",
   "worker-to-minio": "toxiproxy:19000",
   "control-plane-to-postgres": "toxiproxy:15432",
 };
@@ -1777,6 +1930,83 @@ try {
       count(*) FILTER (WHERE projection_kind = 'attempt_terminal')::int AS terminal
     FROM job_projection_receipts WHERE organization_id = \${P.organizationId} AND job_id = \${P.jobId}\`;
   report({ ok: true, job: job ?? null, attempts, leases, events, projections });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** DEP-009 — race the SHARED Organization-capacity claim across concurrent contenders to
+ * prove the advisory lock serializes count-then-claim so the cap is never exceeded. Uses the
+ * EXACT authority admitAttemptCapacity composes into submitJobWithinTenant: one
+ * `pg_advisory_xact_lock(hashtext('aoa:org-capacity'), hashtext(org))` per tx, count the
+ * 'held' attempts, and claim (unclaimed->held) only if under the cap. The claims run
+ * concurrently over DISTINCT connections in ONE control-plane exec — the advisory lock is
+ * process-agnostic (it serializes at PostgreSQL), so N connections contend exactly as N
+ * replicas would. The production wiring (submit → admitAttemptCapacity) is proven separately
+ * by job-submit-capacity-admission.integration; this demonstrates the cross-replica
+ * serialization live. `attemptIds` must be pre-seeded 'unclaimed' attempts for the org.
+ * Sets organizations.concurrency_cap = `cap` first. Returns { ok, admitted, held } — how many
+ * claims won and how many attempts ended 'held' (must both equal `cap` when attemptIds > cap). */
+export function raceOrgCapacityClaims({ organizationId, attemptIds, cap, workloadType = "batch" }) {
+  const params = { organizationId, attemptIds, cap, workloadType };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+// One connection per contender so the claims truly race under the shared advisory lock.
+const conns = P.attemptIds.map(() => postgres(process.env.DATABASE_URL, { max: 1 }));
+const owner = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  await owner\`UPDATE organizations SET concurrency_cap = \${P.cap} WHERE id = \${P.organizationId}\`;
+  const claimOne = async (sql, attemptId) => sql.begin(async (tx) => {
+    // Same key + shape as org-concurrency.admitAttemptCapacity (count-then-claim).
+    await tx\`SELECT pg_advisory_xact_lock(hashtext('aoa:org-capacity'), hashtext(\${P.organizationId}))\`;
+    const [{ held }] = await tx\`SELECT count(*)::int AS held FROM job_attempts
+      WHERE organization_id = \${P.organizationId} AND capacity_claim_state = 'held'\`;
+    if (held >= P.cap) return { admitted: false };
+    const rows = await tx\`UPDATE job_attempts SET capacity_claim_state = 'held',
+        capacity_workload_type = \${P.workloadType}, capacity_claimed_at = clock_timestamp(),
+        updated_at = clock_timestamp()
+      WHERE id = \${attemptId} AND organization_id = \${P.organizationId}
+        AND capacity_claim_state = 'unclaimed' RETURNING id\`;
+    return { admitted: rows.length === 1 };
+  });
+  const outcomes = await Promise.all(P.attemptIds.map((id, i) => claimOne(conns[i], id)));
+  const admitted = outcomes.filter((o) => o.admitted).length;
+  const [{ held }] = await owner\`SELECT count(*)::int AS held FROM job_attempts
+    WHERE organization_id = \${P.organizationId} AND capacity_claim_state = 'held'\`;
+  report({ ok: true, admitted, held });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await Promise.all([...conns, owner].map((c) => c.end({ timeout: 5 }).catch(() => {})));
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** DEP-009 — owner-DB probe (bypasses RLS, like queryLeaseFaultState) of the SHARED
+ * worker-poll admission rate-limit counter for one org. Returns every fixed-window row
+ * (there is ONE per window across BOTH replicas), so a test can assert that concurrent A+B
+ * polls landed in ONE window row (shared, not process-local). Runs in control-plane.
+ * Returns { ok, windows: [{ windowStart, requestCount }], totalRows, totalRequests }. */
+export function queryAdmissionRateWindows({ organizationId }) {
+  const params = { organizationId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const rows = await sql\`SELECT window_start AS "windowStart", request_count AS "requestCount"
+    FROM worker_admission_rate_limits WHERE organization_id = \${P.organizationId}
+    ORDER BY window_start\`;
+  const totalRequests = rows.reduce((sum, r) => sum + Number(r.requestCount), 0);
+  report({ ok: true, windows: rows, totalRows: rows.length, totalRequests });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });
 } finally {

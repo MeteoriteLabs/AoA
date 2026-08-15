@@ -13,6 +13,7 @@ untouched.
 | `postgres` | ✅ | — | — | — |
 | `minio` | ✅ | ✅ | ✅ | — |
 | `control-plane` | ✅ | ✅ | ✅ | ✅ |
+| `control-plane-b` | ✅ | ✅ | ✅ | ✅ |
 | `worker-a` | **—** | ✅ | ✅ | ✅ |
 | `worker-b` | **—** | ✅ | ✅ | ✅ |
 | `fake-provider` | — | ✅ | ✅ | ✅ |
@@ -56,7 +57,22 @@ address the proxy, never the upstream directly:
 |---|---|---|---|
 | `control-plane-to-postgres` | `:15432` | `postgres:5432` | control-plane `DATABASE_URL` |
 | `worker-to-control-plane` | `:13100` | `control-plane:3100` | worker `AOA_WORKER_CONTROL_PLANE_URL` |
+| `worker-to-control-plane-b` | `:13101` | `control-plane-b:3100` | DEP-009 per-replica worker link (independently cuttable) |
 | `worker-to-minio` | `:19000` | `minio:9000` | worker `AOA_WORKER_S3_ENDPOINT` |
+
+**DEP-009 — two-replica control-plane HA.** `control-plane-b` is an interchangeable
+second replica over the SAME PostgreSQL + object store. It is a byte-faithful clone of
+`control-plane` differing only by its own state volume (`d1-control-plane-b-state`) and by
+adding `control-plane-b` to `AOA_ALLOWED_HOSTNAMES`. It shares the SAME
+`AOA_WORKER_SESSION_SIGNING_KEY` (cross-replica session portability) and is gated on the
+same one-shot `migrate` job (it runs no migrations). It deliberately does **not**
+`depends_on control-plane` — the replicas are independent so cutting one (via the
+`worker-to-control-plane-b` proxy) never gates the other. Correctness is 2-replica-free:
+every control-plane mutation runs inside one `runInTenant` PostgreSQL transaction over
+`FOR UPDATE [SKIP LOCKED]` / partial-unique indexes / advisory locks, so PostgreSQL is the
+single writer and two replicas racing the same job yield exactly one winner. The genuine
+process-local gaps DEP-009 closes are the PG-backed shared rate limiter (per-org fixed
+window) and submit-time org-capacity admission — both DB-backed and fail-closed.
 
 The privileged `migrate` job talks to `postgres` **directly** (data-net, not via
 toxiproxy).

@@ -87,6 +87,10 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreezeFixture({
     task_outputs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
     thread_orchestration_state: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
     user_roles: { aoa_app: ["SELECT"], aoa_operator: [] },
+    worker_admission_rate_limits: {
+      aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+      aoa_operator: [],
+    },
     worker_enrollment_code_routes: {
       aoa_app: ["SELECT", "INSERT", "DELETE"],
       aoa_operator: ["SELECT", "INSERT", "DELETE"],
@@ -218,6 +222,7 @@ const PLAN_DERIVED_RELATION_ACL_NULLNESS = deepFreezeFixture({
   task_outputs: false,
   thread_orchestration_state: false,
   user_roles: false,
+  worker_admission_rate_limits: false,
   worker_enrollment_code_routes: false,
   worker_enrollment_codes: false,
   worker_lease_rejections: false,
@@ -324,6 +329,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       ...Object.keys(grants.JOB_EVENTS_NEW_PATH_GRANTS),
       ...Object.keys(grants.JOB_CONTROL_COMMANDS_NEW_PATH_GRANTS),
       ...Object.keys(grants.FOLDER_GRANTS_NEW_PATH_GRANTS),
+      ...Object.keys(grants.WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS),
       ...Object.keys(grants.CUTOVER_MARKER_APP_GRANTS),
       ...Object.keys(grants.EXECUTION_TARGET_REVOCATION_APP_GRANTS),
       "mcp_api_keys",
@@ -342,7 +348,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
     expect(Object.isFrozen(manifest.OPERATOR_SERVING_RELATIONS)).toBe(true);
   });
 
-  it("pins the exact 21-table RLS, 20-table FORCE, and 30-row permissive policy certificate", () => {
+  it("pins the exact 22-table RLS, 21-table FORCE, and 31-row permissive policy certificate", () => {
     const manifest = grants as typeof grants & {
       RLS_RELATIONS?: readonly string[];
       FORCE_RLS_RELATIONS?: readonly string[];
@@ -364,7 +370,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       "worker_enrollment_codes", "worker_proof_replays", "execution_targets",
       "worker_operation_receipts", "worker_lease_rejections", "distributed_cutover_markers",
       "job_events", "job_projection_receipts", "job_control_commands",
-      "execution_target_revocations", "folder_grants",
+      "execution_target_revocations", "folder_grants", "worker_admission_rate_limits",
     ];
     const counts = {
       jobs: 1, job_attempts: 1, leases: 1, workers: 2, services: 1,
@@ -374,6 +380,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       worker_lease_rejections: 1, distributed_cutover_markers: 2,
       job_events: 1, job_projection_receipts: 1, job_control_commands: 1,
       execution_target_revocations: 2, folder_grants: 1,
+      worker_admission_rate_limits: 1,
     };
     const ORG = "(organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
     const CANDIDATE_ORG = "(candidate_organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
@@ -421,6 +428,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       policy("execution_target_revocations", "execution_target_revocations_operator_write", "ALL", "aoa_operator", "true", "true"),
       policy("execution_target_revocations", "execution_target_revocations_app_read", "SELECT", "aoa_app", "(current_setting('aoa.organization_id'::text, true) IS NULL)", null),
       policy("folder_grants", "folder_grants_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("worker_admission_rate_limits", "worker_admission_rate_limits_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
     ];
     expect(manifest.RLS_RELATIONS).toEqual(rls);
     expect(manifest.FORCE_RLS_RELATIONS).toEqual(rls.filter((relation) => relation !== "execution_targets"));
@@ -478,6 +486,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       ...Object.keys(grants.JOB_EVENTS_NEW_PATH_GRANTS),
       ...Object.keys(grants.JOB_CONTROL_COMMANDS_NEW_PATH_GRANTS),
       ...Object.keys(grants.FOLDER_GRANTS_NEW_PATH_GRANTS),
+      ...Object.keys(grants.WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS),
       ...Object.keys(grants.WORKER_ENROLLMENT_OPERATOR_GRANTS),
       ...Object.keys(grants.OPERATOR_METADATA_COLUMN_GRANTS),
       ...Object.keys(grants.CUTOVER_MARKER_APP_GRANTS),

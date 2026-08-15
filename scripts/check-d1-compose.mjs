@@ -51,10 +51,10 @@ function main() {
   }
 
   console.log("OK: docker-compose.d1.yml satisfies the DEP-002 network-segmentation matrix");
-  console.log("    (9 services, exact per-service networks, no shared rw volume,");
-  console.log("     healthchecks, service_healthy startup, 2 distinct worker profiles,");
-  console.log("     toxiproxy in-path on 3 links, control-plane NOT in the fake");
-  console.log("     control-endpoint allowlist).");
+  console.log("    (10 services incl. the DEP-009 control-plane-b replica, exact per-service");
+  console.log("     networks, no shared rw volume, healthchecks, service_healthy startup,");
+  console.log("     2 distinct worker profiles, toxiproxy in-path on 4 links, neither");
+  console.log("     control-plane replica in the fake control-endpoint allowlist).");
   console.log("");
   console.log("    Worker<->data isolation is NOT 'full network isolation'. It is:");
   console.log("      (a) no DIRECT worker->postgres:5432 path (worker not on data-net),");

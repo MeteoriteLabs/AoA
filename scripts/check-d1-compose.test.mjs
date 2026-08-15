@@ -52,6 +52,35 @@ function validCompose() {
     },
     networks: ["control-net", "worker-net", "provider-ctl-net"],
   });
+  // DEP-009 — a control-plane replica factory (both replicas are byte-identical except
+  // their state volume). checkMigrateGate / checkToxiproxyInPath / checkPresignEndpoint /
+  // checkAdmittedImageRefs all iterate CONTROL_PLANE_SERVICES, so each replica must carry
+  // the full env.
+  const controlPlane = (vol) => ({
+    image: "${AOA_D1_CONTROL_PLANE_IMAGE:-aoa-control-plane:d1-local-unbuilt}",
+    environment: {
+      DATABASE_URL: "postgres://aoa_app:aoa_app@toxiproxy:15432/aoa",
+      // DAT-002 slice-7 — the live-MinIO object-storage env (checkPresignEndpoint).
+      AOA_STORAGE_PROVIDER: "s3",
+      AOA_STORAGE_S3_ENDPOINT: "https://minio:9000",
+      AOA_STORAGE_S3_PRESIGN_ENDPOINT: "https://toxiproxy:19000",
+      AOA_STORAGE_S3_FORCE_PATH_STYLE: "true",
+      // DEP-009 — the cross-replica lockstep env (checkControlPlaneEnvLockstep): the
+      // shared worker-session signing key + the distributed-execution flag must be
+      // IDENTICAL on both replicas for session portability + a matching worker path.
+      AOA_DISTRIBUTED_EXECUTION_ENABLED: "true",
+      AOA_WORKER_SESSION_SIGNING_KEY: "d1-harness-worker-session-signing-key-0123456789abcdef",
+    },
+    healthcheck: { test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health"] },
+    volumes: [`${vol}:/aoa`],
+    depends_on: {
+      postgres: { condition: "service_healthy" },
+      migrate: { condition: "service_completed_successfully" },
+      minio: { condition: "service_healthy" },
+      toxiproxy: { condition: "service_healthy" },
+    },
+    networks: ["data-net", "control-net", "worker-net", "provider-ctl-net"],
+  });
   return {
     name: "aoa-d1",
     services: {
@@ -79,26 +108,10 @@ function validCompose() {
         depends_on: { postgres: { condition: "service_healthy" } },
         networks: ["data-net"],
       },
-      "control-plane": {
-        image: "${AOA_D1_CONTROL_PLANE_IMAGE:-aoa-control-plane:d1-local-unbuilt}",
-        environment: {
-          DATABASE_URL: "postgres://aoa_app:aoa_app@toxiproxy:15432/aoa",
-          // DAT-002 slice-7 — the live-MinIO object-storage env (checkPresignEndpoint).
-          AOA_STORAGE_PROVIDER: "s3",
-          AOA_STORAGE_S3_ENDPOINT: "https://minio:9000",
-          AOA_STORAGE_S3_PRESIGN_ENDPOINT: "https://toxiproxy:19000",
-          AOA_STORAGE_S3_FORCE_PATH_STYLE: "true",
-        },
-        healthcheck: { test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health"] },
-        volumes: ["d1-control-plane-state:/aoa"],
-        depends_on: {
-          postgres: { condition: "service_healthy" },
-          migrate: { condition: "service_completed_successfully" },
-          minio: { condition: "service_healthy" },
-          toxiproxy: { condition: "service_healthy" },
-        },
-        networks: ["data-net", "control-net", "worker-net", "provider-ctl-net"],
-      },
+      "control-plane": controlPlane("d1-control-plane-state"),
+      // DEP-009 — the interchangeable replica: same env/networks/migrate-gate, its OWN
+      // state volume (no shared rw mount).
+      "control-plane-b": controlPlane("d1-control-plane-b-state"),
       "worker-a": worker("d1-worker-a", "d1-worker-a-state", "worker-a.profile.json"),
       "worker-b": worker("d1-worker-b", "d1-worker-b-state", "worker-b.profile.json"),
       "fake-provider": {
@@ -131,6 +144,7 @@ function validCompose() {
       "d1-postgres-data": null,
       "d1-minio-data": null,
       "d1-control-plane-state": null,
+      "d1-control-plane-b-state": null,
       "d1-worker-a-state": null,
       "d1-worker-b-state": null,
     },
@@ -149,7 +163,7 @@ test("real docker-compose.d1.yml parses and satisfies every DEP-002 invariant", 
   assert.deepEqual(violations, [], `unexpected violations:\n${violations.join("\n")}`);
 });
 
-test("real compose parses to exactly the 9 matrix services with exact network sets", () => {
+test("real compose parses to exactly the 10 matrix services with exact network sets", () => {
   const compose = parseYaml(readFileSync(composePath, "utf8"));
   const names = Object.keys(compose.services).sort();
   assert.deepEqual(names, Object.keys(EXPECTED_NETWORKS).sort());
@@ -327,6 +341,115 @@ test("REJECT: control-plane object storage without path-style (SigV4 host match)
   c.services["control-plane"].environment.AOA_STORAGE_S3_FORCE_PATH_STYLE = "false";
   const { violations } = evaluateComposeInvariants(c);
   assert.ok(anyMatch(violations, /AOA_STORAGE_S3_FORCE_PATH_STYLE.*must be 'true'/i), violations.join("\n"));
+});
+
+// === Layer 2b (DEP-009): the replica's lockstep invariants are non-vacuous =====
+// Each broken control-plane-b clone must be REJECTED by the SAME per-replica check that
+// guards control-plane — proving the two-replica invariants are real, not decorative.
+
+test("REJECT (DEP-009): control-plane-b with a wrong network set", () => {
+  const c = clone(validCompose());
+  c.services["control-plane-b"].networks = ["data-net", "control-net", "worker-net"];
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /control-plane-b.*network set.*!=/), violations.join("\n"));
+});
+
+test("REJECT (DEP-009): control-plane-b not gated on migrate completion", () => {
+  const c = clone(validCompose());
+  delete c.services["control-plane-b"].depends_on.migrate;
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /'control-plane-b' must depends_on 'migrate'.*service_completed_successfully/), violations.join("\n"));
+});
+
+test("REJECT (DEP-009): control-plane-b sharing control-plane's read-write state volume", () => {
+  const c = clone(validCompose());
+  c.services["control-plane-b"].volumes[0] = "d1-control-plane-state:/aoa"; // same rw named volume as control-plane
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /shared read-write mount/i), violations.join("\n"));
+});
+
+test("REJECT (DEP-009): control-plane-b<->postgres not routed through toxiproxy", () => {
+  const c = clone(validCompose());
+  c.services["control-plane-b"].environment.DATABASE_URL = "postgres://aoa_app:aoa_app@postgres:5432/aoa";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /control-plane-b.*not routed through toxiproxy/i), violations.join("\n"));
+});
+
+test("REJECT (DEP-009): a hardcoded (non-injected) control-plane-b image digest", () => {
+  const c = clone(validCompose());
+  c.services["control-plane-b"].image = "ghcr.io/meteoritelabs/aoa-control-plane@sha256:deadbeef";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /control-plane-b 'image' must be injected/), violations.join("\n"));
+});
+
+test("REJECT (DEP-009): control-plane-b missing the https presign endpoint", () => {
+  const c = clone(validCompose());
+  c.services["control-plane-b"].environment.AOA_STORAGE_S3_PRESIGN_ENDPOINT = "http://toxiproxy:19000";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(
+    anyMatch(violations, /control-plane-b.*AOA_STORAGE_S3_PRESIGN_ENDPOINT.*must be https/i),
+    violations.join("\n"),
+  );
+});
+
+test("REJECT (DEP-009): control-plane-b in the fake-provider control-endpoint allowlist", () => {
+  const c = clone(validCompose());
+  c.services["fake-provider"].environment.AOA_FAKE_PROVIDER_CTL_ALLOW =
+    "worker-a,worker-b,test-runner,control-plane-b";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(
+    anyMatch(violations, /control-plane-b.*must not appear in.*AOA_FAKE_PROVIDER_CTL_ALLOW/i),
+    violations.join("\n"),
+  );
+});
+
+test("REJECT (DEP-009): control-plane-b with a DIVERGENT worker-session signing key", () => {
+  // The cross-replica session-portability premise: a session signed at one replica must
+  // verify at the other, which holds ONLY if the signing key is identical. A divergent key
+  // silently breaks failover — caught statically here.
+  const c = clone(validCompose());
+  c.services["control-plane-b"].environment.AOA_WORKER_SESSION_SIGNING_KEY =
+    "d1-harness-DIVERGENT-key-0000000000000000";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(
+    anyMatch(violations, /disagree on 'AOA_WORKER_SESSION_SIGNING_KEY'.*IDENTICAL/i),
+    violations.join("\n"),
+  );
+});
+
+test("REJECT (DEP-009): control-plane-b with a DIVERGENT distributed-execution flag", () => {
+  const c = clone(validCompose());
+  c.services["control-plane-b"].environment.AOA_DISTRIBUTED_EXECUTION_ENABLED = "false";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(
+    anyMatch(violations, /disagree on 'AOA_DISTRIBUTED_EXECUTION_ENABLED'.*IDENTICAL/i),
+    violations.join("\n"),
+  );
+});
+
+test("REJECT (DEP-009): a control-plane replica missing the shared session signing key", () => {
+  const c = clone(validCompose());
+  delete c.services["control-plane-b"].environment.AOA_WORKER_SESSION_SIGNING_KEY;
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(
+    anyMatch(violations, /'control-plane-b' must declare a non-empty 'AOA_WORKER_SESSION_SIGNING_KEY'/),
+    violations.join("\n"),
+  );
+});
+
+test("REJECT (DEP-009): a lone control-plane with no replica (missing control-plane-b)", () => {
+  // A replica added to EXPECTED_NETWORKS but dropped from compose fails checkServiceSet —
+  // the lockstep tripwire (adding the pin without the service reddens the gate).
+  const c = clone(validCompose());
+  delete c.services["control-plane-b"];
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /missing required service 'control-plane-b'/), violations.join("\n"));
+});
+
+test("real toxiproxy.json declares the per-replica worker-to-control-plane-b proxy", () => {
+  const config = JSON.parse(readFileSync(toxiproxyPath, "utf8"));
+  const names = config.map((p) => p.name);
+  assert.ok(names.includes("worker-to-control-plane-b"), `missing worker-to-control-plane-b: ${names.join(",")}`);
 });
 
 test("REJECT: toxiproxy config with a wrong upstream", () => {

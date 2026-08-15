@@ -27,6 +27,9 @@ export const EXPECTED_NETWORKS = {
   postgres: [DATA_NET],
   minio: [DATA_NET, CONTROL_NET, WORKER_NET],
   "control-plane": [DATA_NET, CONTROL_NET, WORKER_NET, PROVIDER_CTL_NET],
+  // DEP-009 — the second interchangeable control-plane replica shares the EXACT same
+  // network set (both dial postgres/minio via toxiproxy and reach the fake provider).
+  "control-plane-b": [DATA_NET, CONTROL_NET, WORKER_NET, PROVIDER_CTL_NET],
   "worker-a": [CONTROL_NET, WORKER_NET, PROVIDER_CTL_NET],
   "worker-b": [CONTROL_NET, WORKER_NET, PROVIDER_CTL_NET],
   "fake-provider": [CONTROL_NET, WORKER_NET, PROVIDER_CTL_NET],
@@ -41,6 +44,13 @@ export const EXPECTED_NETWORKS = {
 export const WORKER_SERVICES = ["worker-a", "worker-b"];
 
 export const FAKE_PROVIDER_SERVICE = "fake-provider";
+// DEP-009 — BOTH interchangeable control-plane replicas. Every control-plane invariant
+// (migrate gate, toxiproxy-in-path DB link, https presign, admitted image ref, and the
+// fake-provider-allowlist exclusion) is enforced for EACH of these in lockstep, so a
+// replica added without the matching env is caught by the static gate, not only live.
+export const CONTROL_PLANE_SERVICES = ["control-plane", "control-plane-b"];
+// Back-compat alias (the primary replica); prefer CONTROL_PLANE_SERVICES for per-replica
+// iteration. Still used as the fake-provider allowlist exclusion's primary name.
 export const CONTROL_PLANE_SERVICE = "control-plane";
 
 // FIX A — the control-endpoint peer allowlist that gates who may SCRIPT the fake
@@ -195,8 +205,12 @@ function checkFakeProviderCtlAllowlist(services, v) {
     v.push(`'${FAKE_PROVIDER_SERVICE}' '${FAKE_PROVIDER_CTL_ALLOW_ENV}' is empty; it must list the allowlisted control-endpoint peers`);
     return;
   }
-  if (peers.includes(CONTROL_PLANE_SERVICE)) {
-    v.push(`ISOLATION VIOLATION: '${CONTROL_PLANE_SERVICE}' must not appear in '${FAKE_PROVIDER_SERVICE}' '${FAKE_PROVIDER_CTL_ALLOW_ENV}' (the control-plane may not script the fake provider)`);
+  // Neither control-plane replica may script the fake provider (DEP-009: both are
+  // control-plane trust-tier and must stay off the fake control-endpoint allowlist).
+  for (const cpName of CONTROL_PLANE_SERVICES) {
+    if (peers.includes(cpName)) {
+      v.push(`ISOLATION VIOLATION: '${cpName}' must not appear in '${FAKE_PROVIDER_SERVICE}' '${FAKE_PROVIDER_CTL_ALLOW_ENV}' (the control-plane may not script the fake provider)`);
+    }
   }
   if (!setsEqual(peers, EXPECTED_CTL_ALLOW_PEERS)) {
     v.push(`'${FAKE_PROVIDER_SERVICE}' '${FAKE_PROVIDER_CTL_ALLOW_ENV}' peer set {${[...new Set(peers)].sort().join(", ")}} != required {${[...EXPECTED_CTL_ALLOW_PEERS].sort().join(", ")}}`);
@@ -287,13 +301,17 @@ function checkDependsOn(services, v) {
   }
 }
 
-/** Deterministic startup: control-plane must wait for the migration job to finish. */
+/** Deterministic startup: EACH control-plane replica must wait for the migration job to
+ * finish (migrate is the sole one-shot that runs migrations; the replicas run none). */
 function checkMigrateGate(services, v) {
-  const cp = services["control-plane"];
-  const deps = cp?.depends_on;
-  const migrate = deps && !Array.isArray(deps) ? deps.migrate : undefined;
-  if (!migrate || migrate.condition !== "service_completed_successfully") {
-    v.push("'control-plane' must depends_on 'migrate' with condition 'service_completed_successfully' (migrate completes before control-plane serves)");
+  for (const name of CONTROL_PLANE_SERVICES) {
+    const cp = services[name];
+    if (!cp) continue; // absence reported by checkServiceSet
+    const deps = cp.depends_on;
+    const migrate = deps && !Array.isArray(deps) ? deps.migrate : undefined;
+    if (!migrate || migrate.condition !== "service_completed_successfully") {
+      v.push(`'${name}' must depends_on 'migrate' with condition 'service_completed_successfully' (migrate completes before ${name} serves)`);
+    }
   }
 }
 
@@ -359,9 +377,12 @@ function checkDistinctWorkerProfiles(services, v) {
 
 /** Toxiproxy is provably in-path on the three declared links (env host routing). */
 function checkToxiproxyInPath(services, v) {
-  const cpDb = extractHost(envValue(services["control-plane"], CONTROL_PLANE_DB_ENV));
-  if (cpDb !== "toxiproxy") {
-    v.push(`control-plane<->postgres is not routed through toxiproxy: '${CONTROL_PLANE_DB_ENV}' host is '${cpDb ?? "(unset)"}', expected 'toxiproxy'`);
+  for (const name of CONTROL_PLANE_SERVICES) {
+    if (!services[name]) continue; // absence reported by checkServiceSet
+    const cpDb = extractHost(envValue(services[name], CONTROL_PLANE_DB_ENV));
+    if (cpDb !== "toxiproxy") {
+      v.push(`${name}<->postgres is not routed through toxiproxy: '${CONTROL_PLANE_DB_ENV}' host is '${cpDb ?? "(unset)"}', expected 'toxiproxy'`);
+    }
   }
   for (const w of WORKER_SERVICES) {
     if (!services[w]) continue;
@@ -389,37 +410,73 @@ const STORAGE_S3_PRESIGN_ENDPOINT_ENV = "AOA_STORAGE_S3_PRESIGN_ENDPOINT";
 const STORAGE_S3_FORCE_PATH_STYLE_ENV = "AOA_STORAGE_S3_FORCE_PATH_STYLE";
 
 function checkPresignEndpoint(services, v) {
-  const cp = services[CONTROL_PLANE_SERVICE];
-  if (!cp) return; // absence reported by checkServiceSet
-  const provider = envValue(cp, STORAGE_PROVIDER_ENV);
-  if (provider !== "s3") {
-    v.push(`'${CONTROL_PLANE_SERVICE}' must set '${STORAGE_PROVIDER_ENV}=s3' for the live-MinIO artifact tier (got '${provider ?? "(unset)"}')`);
-  }
-  const endpoint = envValue(cp, STORAGE_S3_ENDPOINT_ENV);
-  if (typeof endpoint !== "string" || !endpoint.startsWith("https://")) {
-    v.push(`'${CONTROL_PLANE_SERVICE}' '${STORAGE_S3_ENDPOINT_ENV}' must be https (the internal S3 endpoint over TLS); got '${endpoint ?? "(unset)"}'`);
-  }
-  const presign = envValue(cp, STORAGE_S3_PRESIGN_ENDPOINT_ENV);
-  if (typeof presign !== "string" || !presign.startsWith("https://")) {
-    v.push(`'${CONTROL_PLANE_SERVICE}' '${STORAGE_S3_PRESIGN_ENDPOINT_ENV}' must be https (the frozen grant url is strictly https); got '${presign ?? "(unset)"}'`);
-  }
-  const pathStyle = envValue(cp, STORAGE_S3_FORCE_PATH_STYLE_ENV);
-  if (String(pathStyle) !== "true") {
-    v.push(`'${CONTROL_PLANE_SERVICE}' '${STORAGE_S3_FORCE_PATH_STYLE_ENV}' must be 'true' so the SigV4 Host matches the presign endpoint host; got '${pathStyle ?? "(unset)"}'`);
+  for (const name of CONTROL_PLANE_SERVICES) {
+    const cp = services[name];
+    if (!cp) continue; // absence reported by checkServiceSet
+    const provider = envValue(cp, STORAGE_PROVIDER_ENV);
+    if (provider !== "s3") {
+      v.push(`'${name}' must set '${STORAGE_PROVIDER_ENV}=s3' for the live-MinIO artifact tier (got '${provider ?? "(unset)"}')`);
+    }
+    const endpoint = envValue(cp, STORAGE_S3_ENDPOINT_ENV);
+    if (typeof endpoint !== "string" || !endpoint.startsWith("https://")) {
+      v.push(`'${name}' '${STORAGE_S3_ENDPOINT_ENV}' must be https (the internal S3 endpoint over TLS); got '${endpoint ?? "(unset)"}'`);
+    }
+    const presign = envValue(cp, STORAGE_S3_PRESIGN_ENDPOINT_ENV);
+    if (typeof presign !== "string" || !presign.startsWith("https://")) {
+      v.push(`'${name}' '${STORAGE_S3_PRESIGN_ENDPOINT_ENV}' must be https (the frozen grant url is strictly https); got '${presign ?? "(unset)"}'`);
+    }
+    const pathStyle = envValue(cp, STORAGE_S3_FORCE_PATH_STYLE_ENV);
+    if (String(pathStyle) !== "true") {
+      v.push(`'${name}' '${STORAGE_S3_FORCE_PATH_STYLE_ENV}' must be 'true' so the SigV4 Host matches the presign endpoint host; got '${pathStyle ?? "(unset)"}'`);
+    }
   }
 }
 
 /** control-plane / worker images must be injected from the DEP-001 admitted-digest
  * env vars — never a hardcoded (unadmitted) digest or tag in the committed file. */
 function checkAdmittedImageRefs(services, v) {
-  const cpImage = services["control-plane"]?.image;
-  if (typeof cpImage !== "string" || !cpImage.includes("AOA_D1_CONTROL_PLANE_IMAGE")) {
-    v.push("control-plane 'image' must be injected via ${AOA_D1_CONTROL_PLANE_IMAGE} (a DEP-001 admitted digest), not hardcoded");
+  for (const name of CONTROL_PLANE_SERVICES) {
+    if (!services[name]) continue; // absence reported by checkServiceSet
+    const cpImage = services[name].image;
+    if (typeof cpImage !== "string" || !cpImage.includes("AOA_D1_CONTROL_PLANE_IMAGE")) {
+      v.push(`${name} 'image' must be injected via \${AOA_D1_CONTROL_PLANE_IMAGE} (a DEP-001 admitted digest), not hardcoded`);
+    }
   }
   for (const w of WORKER_SERVICES) {
     const img = services[w]?.image;
     if (typeof img !== "string" || !img.includes("AOA_D1_WORKER_IMAGE")) {
       v.push(`worker '${w}' 'image' must be injected via \${AOA_D1_WORKER_IMAGE} (a DEP-001 admitted digest), not hardcoded`);
+    }
+  }
+}
+
+// DEP-009 — the cross-replica session-portability premise: BOTH control-plane replicas
+// are interchangeable, so a worker session signed by one must verify at the other. That
+// holds ONLY if they share the SAME signing key. And both must agree on the distributed
+// execution flag, or one replica would mount the worker-control path while the other did
+// not. These env values must be IDENTICAL across every control-plane replica; this static
+// check catches a replica added (or edited) with a divergent key/flag before it ships.
+const WORKER_SESSION_SIGNING_KEY_ENV = "AOA_WORKER_SESSION_SIGNING_KEY";
+const DISTRIBUTED_EXECUTION_ENABLED_ENV = "AOA_DISTRIBUTED_EXECUTION_ENABLED";
+export const CONTROL_PLANE_LOCKSTEP_ENVS = [
+  WORKER_SESSION_SIGNING_KEY_ENV,
+  DISTRIBUTED_EXECUTION_ENABLED_ENV,
+];
+
+function checkControlPlaneEnvLockstep(services, v) {
+  const present = CONTROL_PLANE_SERVICES.filter((name) => services[name]);
+  if (present.length < 2) return; // a single/absent replica is reported by checkServiceSet
+  for (const key of CONTROL_PLANE_LOCKSTEP_ENVS) {
+    const values = present.map((name) => envValue(services[name], key));
+    for (let i = 0; i < present.length; i += 1) {
+      const raw = values[i];
+      if (raw === undefined || raw === null || String(raw).trim() === "") {
+        v.push(`'${present[i]}' must declare a non-empty '${key}' (identical across all control-plane replicas)`);
+      }
+    }
+    const nonEmpty = values.filter((x) => x !== undefined && x !== null && String(x).trim() !== "");
+    if (nonEmpty.length === present.length && new Set(nonEmpty.map(String)).size !== 1) {
+      v.push(`control-plane replicas disagree on '${key}': ${JSON.stringify(values)} (it must be IDENTICAL across ${CONTROL_PLANE_SERVICES.join(", ")})`);
     }
   }
 }
@@ -450,6 +507,7 @@ export function evaluateComposeInvariants(compose, options = {}) {
   checkToxiproxyInPath(services, v);
   checkAdmittedImageRefs(services, v);
   checkPresignEndpoint(services, v);
+  checkControlPlaneEnvLockstep(services, v);
 
   if (options.toxiproxyConfig !== undefined) {
     v.push(...evaluateToxiproxyConfig(options.toxiproxyConfig));
@@ -462,6 +520,9 @@ export function evaluateComposeInvariants(compose, options = {}) {
 export const EXPECTED_TOXIPROXY_UPSTREAMS = {
   "control-plane-to-postgres": "postgres:5432",
   "worker-to-control-plane": "control-plane:3100",
+  // DEP-009 — the per-replica worker link so control-plane-b's worker path is
+  // independently cuttable (the replica-loss fault: sever B without touching A).
+  "worker-to-control-plane-b": "control-plane-b:3100",
   "worker-to-minio": "minio:9000",
 };
 
