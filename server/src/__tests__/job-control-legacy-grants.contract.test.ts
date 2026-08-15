@@ -6,6 +6,10 @@ import {
   JOB_LEASING_NEW_PATH_GRANTS,
 } from "../db/job-control-legacy-grants.js";
 import * as grants from "../db/job-control-legacy-grants.js";
+import {
+  appTablePrivileges,
+  operatorTablePrivileges,
+} from "../db/distributed-execution-databases.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getTableColumns, getTableName, type Table } from "drizzle-orm";
@@ -598,5 +602,42 @@ describe("JOB-003 bounded aoa_app authority", () => {
     expect(actualColumns).toEqual(expectedColumns);
     expect(Object.isFrozen(manifest.RELATION_ACL_MANIFEST)).toBe(true);
     expect(Object.isFrozen(manifest.COLUMN_ACL_MANIFEST)).toBe(true);
+  });
+});
+
+describe("startup serving-role authority table map matches the plan-derived matrix", () => {
+  // DEP-009 regression guard. `assertExactServingRoleAuthority` compares the LIVE aoa_app /
+  // aoa_operator table privileges against `appTablePrivileges()` / `operatorTablePrivileges()`
+  // in distributed-execution-databases.ts — a SECOND registration surface, hand-composed by
+  // spreading the grant constants. The keystone manifests (APP_SERVING_RELATIONS, RLS_*, the ACL
+  // matrix) are one surface; this spread is another. A new distributed-plane table registered in
+  // the manifests but NOT spread here makes `expectedTables[table] ?? []` empty while the live
+  // role holds the migration's grant, so BOTH replicas throw `distributed_execution_app_authority`
+  // at boot — a crash the manifest contract tests above cannot see. This pins the startup spread
+  // to the same independent plan fixture, so the omission fails locally instead of only in CI.
+  const nonEmpty = (
+    role: "aoa_app" | "aoa_operator",
+  ): Record<string, PlanGrantedPrivilege[]> => {
+    const expected: Record<string, PlanGrantedPrivilege[]> = {};
+    for (const [relation, privileges] of Object.entries(PLAN_DERIVED_ACL_MATRIX.relations)) {
+      const forRole = privileges[role];
+      if (forRole.length > 0) expected[relation] = [...forRole].sort();
+    }
+    return expected;
+  };
+  const normalize = (
+    map: Readonly<Record<string, readonly string[]>>,
+  ): Record<string, string[]> =>
+    Object.fromEntries(Object.entries(map).map(([relation, privileges]) => [
+      relation,
+      [...privileges].sort(),
+    ]));
+
+  it("registers exactly the app table-level grants the plan assigns aoa_app", () => {
+    expect(normalize(appTablePrivileges())).toEqual(nonEmpty("aoa_app"));
+  });
+
+  it("registers exactly the operator table-level grants the plan assigns aoa_operator", () => {
+    expect(normalize(operatorTablePrivileges())).toEqual(nonEmpty("aoa_operator"));
   });
 });

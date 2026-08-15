@@ -43,6 +43,7 @@ import {
   RELATION_ACL_MANIFEST,
   RLS_POLICY_MANIFEST,
   RLS_RELATIONS,
+  WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS,
   WORKER_ENROLLMENT_APP_GRANTS,
   WORKER_ENROLLMENT_OPERATOR_GRANTS,
   type TablePrivilege,
@@ -97,7 +98,7 @@ function rowsOf<T>(result: unknown): T[] {
   return (Array.isArray(result) ? result : (result as { rows: T[] }).rows) as T[];
 }
 
-function appTablePrivileges(): Readonly<Record<string, readonly TablePrivilege[]>> {
+export function appTablePrivileges(): Readonly<Record<string, readonly TablePrivilege[]>> {
   return {
     ...JOB_CONTROL_NEW_PATH_GRANTS,
     ...JOB_CONTROL_LEGACY_GRANTS,
@@ -110,10 +111,11 @@ function appTablePrivileges(): Readonly<Record<string, readonly TablePrivilege[]
     ...FOLDER_GRANTS_NEW_PATH_GRANTS,
     ...CUTOVER_MARKER_APP_GRANTS,
     ...EXECUTION_TARGET_REVOCATION_APP_GRANTS,
+    ...WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS,
   };
 }
 
-function operatorTablePrivileges(): Readonly<Record<string, readonly TablePrivilege[]>> {
+export function operatorTablePrivileges(): Readonly<Record<string, readonly TablePrivilege[]>> {
   return {
     ...WORKER_ENROLLMENT_OPERATOR_GRANTS,
     ...CUTOVER_MARKER_OPERATOR_GRANTS,
