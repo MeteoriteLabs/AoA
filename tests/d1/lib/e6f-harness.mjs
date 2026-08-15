@@ -110,6 +110,9 @@ export const WORKER_CONTROL = {
   enroll: `${CONTROL_PLANE_URL}/api/worker-control/enroll`,
   poll: `${CONTROL_PLANE_URL}/api/worker-control/poll`,
   ack: (leaseId) => `${CONTROL_PLANE_URL}/api/worker-control/leases/${leaseId}/ack`,
+  // DAT-002 slice-7 — the two frozen artifact ops (upload/download grant + commit).
+  artifactTransferGrant: `${CONTROL_PLANE_URL}/api/worker-control/artifact-transfer-grants`,
+  artifactCommit: `${CONTROL_PLANE_URL}/api/worker-control/artifact-commits`,
 };
 
 // Single source of truth for the seeded target/worker capability + policy facts.
@@ -1127,6 +1130,251 @@ try {
   report({ ok: true, registeredProfileHash, providerDigest, authorityKey });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DAT-002 slice-7 — live-MinIO artifact round-trip additions (ADDITIVE ONLY —
+// nothing above is modified). These ADD the two frozen artifact ops
+// (artifact_transfer_grant + artifact_commit) as e6f HTTP clients (clones of ack()
+// with the new route + inner body + device proof), a control-plane bucket
+// self-provisioner, a test-runner raw-bytes PUT/GET pair that talks DIRECTLY to the
+// presigned https URL, and a control-plane owner-DB job_artifacts probe. They never
+// change the behaviour or signature of any existing export.
+//
+// ── The checksum header (the #1 live-run risk) ───────────────────────────────
+// s3-provider.presign binds `ChecksumAlgorithm:"SHA256"` into the signed PUT but
+// returns `headers:{}` — so the presigned PUT URL carries
+// `x-amz-sdk-checksum-algorithm=SHA256` in its query and the raw PUT MUST send the
+// actual checksum as request headers or MinIO 400s the PUT. `putPresignedBytes`
+// computes `x-amz-checksum-sha256 = base64(sha256(body))` INSIDE the step-script
+// (from the exact bytes it is about to send) and sends BOTH
+// `x-amz-checksum-sha256` and `x-amz-sdk-checksum-algorithm: SHA256`. It also
+// returns the hex digest so the caller uses the SAME hash for the grant request +
+// the commit manifest (manifest.sha256 is hex; headObject's stored base64 checksum
+// is converted back to hex server-side and compared).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The ordinary attempt object-key prefix (mirrors worker-protocol
+ * expectedAttemptObjectPrefix). objectKey = prefix + a safe non-empty suffix. */
+export function attemptObjectKey({ organizationId, jobId, attempt, suffix }) {
+  return `organizations/${organizationId}/jobs/${jobId}/attempts/${attempt}/${suffix}`;
+}
+
+/** Request an artifact transfer grant (operation: "upload" | "download"). Bearer
+ * session JWT + a fresh device proof over the exact body bytes; runs in test-runner.
+ * Returns { status, body } where body is the artifactTransferGrantOperationResponseV1
+ * (outcome upload_granted | download_granted | rejected). */
+export function artifactTransferGrant({
+  url = WORKER_CONTROL.artifactTransferGrant,
+  session,
+  operation,
+  workerId,
+  jobId,
+  attempt,
+  leaseId,
+  fenceToken,
+  artifactId,
+  expectedObjectKey,
+  expectedSha256,
+  maxBytes,
+  deviceKey,
+}) {
+  const params = {
+    url, session, operation, workerId, jobId, attempt, leaseId, fenceToken, artifactId,
+    expectedObjectKey, expectedSha256, maxBytes,
+    privateKeyPem: deviceKey.privateKeyPem, publicKeyDer: deviceKey.publicKeyDer,
+  };
+  const script = `
+${DEVICE_PROOF_SNIPPET}
+${embedParams(params)}
+const body = {
+  protocolVersion: 1,
+  correlationId: randomUUID(),
+  issuedAt: new Date().toISOString(),
+  nonce: randomBytes(16).toString("base64url"),
+  audience: "worker_run",
+  idempotencyKey: randomUUID(),
+  body: {
+    protocolVersion: 1,
+    operation: P.operation,
+    workerId: P.workerId,
+    jobId: P.jobId,
+    attempt: P.attempt,
+    leaseId: P.leaseId,
+    fenceToken: P.fenceToken,
+    artifactId: P.artifactId,
+    expectedObjectKey: P.expectedObjectKey,
+    expectedSha256: P.expectedSha256,
+    maxBytes: P.maxBytes,
+  },
+};
+const bodyString = JSON.stringify(body);
+const headers = deviceProofHeaders({
+  method: "POST", url: P.url, bodyString, correlationId: body.correlationId,
+  privateKeyPem: P.privateKeyPem, publicKeyDer: P.publicKeyDer,
+});
+headers["content-type"] = "application/json";
+headers["authorization"] = "Bearer " + P.session;
+const res = await fetch(P.url, { method: "POST", headers, body: bodyString });
+const text = await res.text();
+report({ status: res.status, body: safeJson(text) });
+`;
+  return dexecModule("test-runner", script);
+}
+
+/** Commit a verified artifact manifest. Bearer session JWT + a fresh device proof;
+ * runs in test-runner. `manifest` is the FULL frozen artifactManifestV1 object.
+ * Returns { status, body } (artifactCommitOperationResponseV1: committed | rejected). */
+export function artifactCommit({
+  url = WORKER_CONTROL.artifactCommit,
+  session,
+  workerId,
+  jobId,
+  attempt,
+  leaseId,
+  fenceToken,
+  manifest,
+  deviceKey,
+}) {
+  const params = {
+    url, session, workerId, jobId, attempt, leaseId, fenceToken, manifest,
+    privateKeyPem: deviceKey.privateKeyPem, publicKeyDer: deviceKey.publicKeyDer,
+  };
+  const script = `
+${DEVICE_PROOF_SNIPPET}
+${embedParams(params)}
+const body = {
+  protocolVersion: 1,
+  correlationId: randomUUID(),
+  issuedAt: new Date().toISOString(),
+  nonce: randomBytes(16).toString("base64url"),
+  audience: "worker_run",
+  idempotencyKey: randomUUID(),
+  body: {
+    protocolVersion: 1,
+    workerId: P.workerId,
+    jobId: P.jobId,
+    attempt: P.attempt,
+    leaseId: P.leaseId,
+    fenceToken: P.fenceToken,
+    manifest: P.manifest,
+  },
+};
+const bodyString = JSON.stringify(body);
+const headers = deviceProofHeaders({
+  method: "POST", url: P.url, bodyString, correlationId: body.correlationId,
+  privateKeyPem: P.privateKeyPem, publicKeyDer: P.publicKeyDer,
+});
+headers["content-type"] = "application/json";
+headers["authorization"] = "Bearer " + P.session;
+const res = await fetch(P.url, { method: "POST", headers, body: bodyString });
+const text = await res.text();
+report({ status: res.status, body: safeJson(text) });
+`;
+  return dexecModule("test-runner", script);
+}
+
+/** Self-provision the artifact bucket using the control-plane's OWN S3 client (the
+ * same @aws-sdk/client-s3 the server uses, resolving the internal https endpoint +
+ * the AWS_* env creds + NODE_EXTRA_CA_CERTS). Idempotent (an already-owned bucket is
+ * a success). Runs in control-plane. Returns { ok, created }. */
+export function provisionArtifactBucket({ bucket = "aoa-artifacts" } = {}) {
+  const params = { bucket };
+  const script = `
+import { S3Client, CreateBucketCommand, HeadBucketCommand } from "@aws-sdk/client-s3";
+${embedParams(params)}
+function report(value) { console.log("${RESULT_MARKER}" + JSON.stringify(value)); }
+const client = new S3Client({
+  region: process.env.AOA_STORAGE_S3_REGION || "us-east-1",
+  endpoint: process.env.AOA_STORAGE_S3_ENDPOINT,
+  forcePathStyle: true,
+});
+try {
+  try {
+    await client.send(new HeadBucketCommand({ Bucket: P.bucket }));
+    report({ ok: true, created: false });
+  } catch {
+    try {
+      await client.send(new CreateBucketCommand({ Bucket: P.bucket }));
+      report({ ok: true, created: true });
+    } catch (error) {
+      const name = error && error.name ? error.name : String(error);
+      if (name === "BucketAlreadyOwnedByYou" || name === "BucketAlreadyExists") {
+        report({ ok: true, created: false });
+      } else {
+        report({ ok: false, error: String(error && error.message ? error.message : error) });
+      }
+    }
+  }
+} finally {
+  client.destroy();
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** Direct raw-bytes PUT to a presigned upload URL (the direct-to-store bypass — the
+ * bytes NEVER traverse the control-plane API). Computes the SHA256 checksum INSIDE the
+ * step-script from the exact bytes it sends and sets both the
+ * `x-amz-checksum-sha256` (base64) and `x-amz-sdk-checksum-algorithm: SHA256` headers
+ * the signed PUT's query demands. `bodyBase64` is the exact object body (base64 so the
+ * bytes survive JSON embedding). Runs in test-runner. Returns
+ * { status, sha256Hex, sha256B64, sizeBytes, body }. */
+export function putPresignedBytes({ url, bodyBase64 }) {
+  const params = { url, bodyBase64 };
+  const script = `
+import { createHash } from "node:crypto";
+${embedParams(params)}
+function report(value) { console.log("${RESULT_MARKER}" + JSON.stringify(value)); }
+const bodyBytes = Buffer.from(P.bodyBase64, "base64");
+const sha256Hex = createHash("sha256").update(bodyBytes).digest("hex");
+const sha256B64 = createHash("sha256").update(bodyBytes).digest("base64");
+const headers = {
+  "x-amz-checksum-sha256": sha256B64,
+  "x-amz-sdk-checksum-algorithm": "SHA256",
+};
+const res = await fetch(P.url, { method: "PUT", headers, body: bodyBytes });
+const text = await res.text();
+report({ status: res.status, sha256Hex, sha256B64, sizeBytes: bodyBytes.length, body: text.slice(0, 2000) });
+`;
+  return dexecModule("test-runner", script);
+}
+
+/** Direct GET from a presigned download URL. Runs in test-runner. Returns
+ * { status, bodyBase64, sizeBytes } (the received bytes, base64-encoded, so the caller
+ * can assert byte-identity against what was PUT). */
+export function getPresignedBytes({ url }) {
+  const params = { url };
+  const script = `
+${embedParams(params)}
+function report(value) { console.log("${RESULT_MARKER}" + JSON.stringify(value)); }
+const res = await fetch(P.url, { method: "GET" });
+const buf = Buffer.from(await res.arrayBuffer());
+report({ status: res.status, bodyBase64: buf.toString("base64"), sizeBytes: buf.length });
+`;
+  return dexecModule("test-runner", script);
+}
+
+/** Read the committed job_artifacts row back under the OWNER DB (control-plane), to
+ * assert the commit PERSISTED a row (assertion 1). Returns { rows: [...] }. */
+export function queryJobArtifact({ organizationId, jobId, identifier }) {
+  const params = { organizationId, jobId, identifier };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const rows = await sql\`SELECT id, identifier, object_key, size_bytes, sha256, version_number, status, attempt
+    FROM job_artifacts
+    WHERE organization_id = \${P.organizationId} AND job_id = \${P.jobId} AND identifier = \${P.identifier}\`;
+  console.log("${RESULT_MARKER}" + JSON.stringify({ rows: rows.map((r) => ({ ...r })) }));
+} catch (error) {
+  console.log("${RESULT_MARKER}" + JSON.stringify({ rows: [], error: String(error && error.message ? error.message : error) }));
 } finally {
   await sql.end({ timeout: 5 });
 }

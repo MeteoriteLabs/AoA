@@ -81,7 +81,14 @@ function validCompose() {
       },
       "control-plane": {
         image: "${AOA_D1_CONTROL_PLANE_IMAGE:-aoa-control-plane:d1-local-unbuilt}",
-        environment: { DATABASE_URL: "postgres://aoa_app:aoa_app@toxiproxy:15432/aoa" },
+        environment: {
+          DATABASE_URL: "postgres://aoa_app:aoa_app@toxiproxy:15432/aoa",
+          // DAT-002 slice-7 — the live-MinIO object-storage env (checkPresignEndpoint).
+          AOA_STORAGE_PROVIDER: "s3",
+          AOA_STORAGE_S3_ENDPOINT: "https://minio:9000",
+          AOA_STORAGE_S3_PRESIGN_ENDPOINT: "https://toxiproxy:19000",
+          AOA_STORAGE_S3_FORCE_PATH_STYLE: "true",
+        },
         healthcheck: { test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health"] },
         volumes: ["d1-control-plane-state:/aoa"],
         depends_on: {
@@ -293,6 +300,33 @@ test("REJECT: control-plane missing provider-ctl-net (wrong network set)", () =>
   c.services["control-plane"].networks = ["data-net", "control-net", "worker-net"];
   const { violations } = evaluateComposeInvariants(c);
   assert.ok(anyMatch(violations, /control-plane.*network set.*!=/), violations.join("\n"));
+});
+
+test("REJECT: a non-https control-plane presign endpoint (DAT-002 https grant constraint)", () => {
+  // The frozen artifact grant `url` is strictly https and presign fails closed on
+  // non-https, so a http:// presign endpoint can never mint a conformant grant.
+  const c = clone(validCompose());
+  c.services["control-plane"].environment.AOA_STORAGE_S3_PRESIGN_ENDPOINT = "http://toxiproxy:19000";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(violations.length > 0);
+  assert.ok(
+    anyMatch(violations, /AOA_STORAGE_S3_PRESIGN_ENDPOINT.*must be https/i),
+    violations.join("\n"),
+  );
+});
+
+test("REJECT: control-plane missing the s3 storage provider (DAT-002 live tier)", () => {
+  const c = clone(validCompose());
+  delete c.services["control-plane"].environment.AOA_STORAGE_PROVIDER;
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /AOA_STORAGE_PROVIDER=s3/), violations.join("\n"));
+});
+
+test("REJECT: control-plane object storage without path-style (SigV4 host match)", () => {
+  const c = clone(validCompose());
+  c.services["control-plane"].environment.AOA_STORAGE_S3_FORCE_PATH_STYLE = "false";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /AOA_STORAGE_S3_FORCE_PATH_STYLE.*must be 'true'/i), violations.join("\n"));
 });
 
 test("REJECT: toxiproxy config with a wrong upstream", () => {

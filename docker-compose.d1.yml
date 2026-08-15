@@ -60,13 +60,22 @@ services:
     environment:
       MINIO_ROOT_USER: "aoa-d1"
       MINIO_ROOT_PASSWORD: "aoa-d1-secret"
+    # DAT-002 slice-7 — MinIO serves HTTPS on :9000 when public.crt + private.key sit
+    # in /root/.minio/certs (MinIO auto-enables TLS). The frozen artifact grant `url`
+    # is strictly https (httpsUrlSchema), so the live presigned-PUT/GET round-trip
+    # REQUIRES MinIO-over-TLS. The cert is a COMMITTED throwaway CI-only self-signed
+    # cert (SAN=minio,toxiproxy,localhost,127.0.0.1); toxiproxy is L4 and forwards the
+    # opaque TLS bytes to minio:9000 unchanged. The bind is `:ro` (a named volume for
+    # certs is rejected by checkNoSharedRwVolume; a `.`-prefixed ro bind is allowed).
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live || exit 1"]
+      # `-k` skips verification of the self-signed cert on the loopback health probe.
+      test: ["CMD-SHELL", "curl -fsSk https://127.0.0.1:9000/minio/health/live || exit 1"]
       interval: "5s"
       timeout: "5s"
       retries: 30
     volumes:
       - "d1-minio-data:/data"
+      - "./docker/d1/certs:/root/.minio/certs:ro"
     networks:
       - data-net
       - control-net
@@ -161,7 +170,24 @@ services:
       AOA_WORKER_SESSION_SIGNING_KEY: "d1-harness-worker-session-signing-key-0123456789abcdef"
       # declared provider API (fake provider), reachable directly.
       AOA_PROVIDER_API_URL: "http://fake-provider:8080"
-      AOA_S3_ENDPOINT: "http://minio:9000"
+      # DAT-002 slice-7 — object-storage config. The control-plane reads AOA_STORAGE_S3_*
+      # (config.ts:158-183); the former AOA_S3_ENDPOINT was UNREAD and is renamed here.
+      # The INTERNAL endpoint (headObject/get/put) is https://minio:9000 (direct, cert
+      # SAN includes DNS:minio). The PRESIGN endpoint is the worker-facing https host the
+      # PUT/GET actually dials — toxiproxy:19000 — so the SigV4 signed Host matches the
+      # connected host; path-style keeps the Host literally `toxiproxy:19000`. Credentials
+      # flow via the SDK env chain (provider-registry passes none), so AWS_* = the MinIO
+      # root creds. NODE_EXTRA_CA_CERTS trusts the committed self-signed CA for the direct
+      # https client.
+      AOA_STORAGE_PROVIDER: "s3"
+      AOA_STORAGE_S3_ENDPOINT: "https://minio:9000"
+      AOA_STORAGE_S3_PRESIGN_ENDPOINT: "https://toxiproxy:19000"
+      AOA_STORAGE_S3_BUCKET: "aoa-artifacts"
+      AOA_STORAGE_S3_REGION: "us-east-1"
+      AOA_STORAGE_S3_FORCE_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: "aoa-d1"
+      AWS_SECRET_ACCESS_KEY: "aoa-d1-secret"
+      NODE_EXTRA_CA_CERTS: "/certs/ca.crt"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health >/dev/null || exit 1"]
       interval: "10s"
@@ -169,6 +195,8 @@ services:
       retries: 30
     volumes:
       - "d1-control-plane-state:/aoa"
+      # Trust the committed throwaway CA for the direct https S3 client (headObject/get/put).
+      - "./docker/d1/certs/public.crt:/certs/ca.crt:ro"
     depends_on:
       postgres:
         condition: service_healthy
@@ -305,6 +333,11 @@ services:
       AOA_D1_LIVE: "1"
       AOA_CONTROL_PLANE_URL: "http://control-plane:3100"
       AOA_FAKE_PROVIDER_CTL_URL: "http://fake-provider:8081"
+      # DAT-002 slice-7 — the live artifact round-trip PUTs/GETs raw bytes DIRECTLY to
+      # the presigned https URL (host toxiproxy:19000, TLS-terminated at minio). node's
+      # fetch (undici) trusts this committed self-signed CA via NODE_EXTRA_CA_CERTS. The
+      # cert is already visible under /repo (the `.:/repo:ro` bind), so no new mount.
+      NODE_EXTRA_CA_CERTS: "/repo/docker/d1/certs/public.crt"
     command: ["sleep", "infinity"]
     healthcheck:
       test: ["CMD-SHELL", "true"]

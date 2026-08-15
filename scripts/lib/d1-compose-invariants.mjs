@@ -376,6 +376,39 @@ function checkToxiproxyInPath(services, v) {
   }
 }
 
+// DAT-002 slice-7 — the control-plane's object-storage env for the live-MinIO tier.
+// The frozen artifact grant `url` is strictly https (httpsUrlSchema) and the presign
+// must fail closed on non-https, so the compose MUST wire an https PRESIGN endpoint;
+// SigV4 requires the signed Host to equal the connected host, so path-style is forced
+// (Host stays literally `toxiproxy:19000`). This static check guards those facts so a
+// regression that reverts to http (or drops path-style / the s3 provider) is caught by
+// every gate, not only the AOA_D1_LIVE round-trip.
+const STORAGE_PROVIDER_ENV = "AOA_STORAGE_PROVIDER";
+const STORAGE_S3_ENDPOINT_ENV = "AOA_STORAGE_S3_ENDPOINT";
+const STORAGE_S3_PRESIGN_ENDPOINT_ENV = "AOA_STORAGE_S3_PRESIGN_ENDPOINT";
+const STORAGE_S3_FORCE_PATH_STYLE_ENV = "AOA_STORAGE_S3_FORCE_PATH_STYLE";
+
+function checkPresignEndpoint(services, v) {
+  const cp = services[CONTROL_PLANE_SERVICE];
+  if (!cp) return; // absence reported by checkServiceSet
+  const provider = envValue(cp, STORAGE_PROVIDER_ENV);
+  if (provider !== "s3") {
+    v.push(`'${CONTROL_PLANE_SERVICE}' must set '${STORAGE_PROVIDER_ENV}=s3' for the live-MinIO artifact tier (got '${provider ?? "(unset)"}')`);
+  }
+  const endpoint = envValue(cp, STORAGE_S3_ENDPOINT_ENV);
+  if (typeof endpoint !== "string" || !endpoint.startsWith("https://")) {
+    v.push(`'${CONTROL_PLANE_SERVICE}' '${STORAGE_S3_ENDPOINT_ENV}' must be https (the internal S3 endpoint over TLS); got '${endpoint ?? "(unset)"}'`);
+  }
+  const presign = envValue(cp, STORAGE_S3_PRESIGN_ENDPOINT_ENV);
+  if (typeof presign !== "string" || !presign.startsWith("https://")) {
+    v.push(`'${CONTROL_PLANE_SERVICE}' '${STORAGE_S3_PRESIGN_ENDPOINT_ENV}' must be https (the frozen grant url is strictly https); got '${presign ?? "(unset)"}'`);
+  }
+  const pathStyle = envValue(cp, STORAGE_S3_FORCE_PATH_STYLE_ENV);
+  if (String(pathStyle) !== "true") {
+    v.push(`'${CONTROL_PLANE_SERVICE}' '${STORAGE_S3_FORCE_PATH_STYLE_ENV}' must be 'true' so the SigV4 Host matches the presign endpoint host; got '${pathStyle ?? "(unset)"}'`);
+  }
+}
+
 /** control-plane / worker images must be injected from the DEP-001 admitted-digest
  * env vars — never a hardcoded (unadmitted) digest or tag in the committed file. */
 function checkAdmittedImageRefs(services, v) {
@@ -416,6 +449,7 @@ export function evaluateComposeInvariants(compose, options = {}) {
   checkDistinctWorkerProfiles(services, v);
   checkToxiproxyInPath(services, v);
   checkAdmittedImageRefs(services, v);
+  checkPresignEndpoint(services, v);
 
   if (options.toxiproxyConfig !== undefined) {
     v.push(...evaluateToxiproxyConfig(options.toxiproxyConfig));
