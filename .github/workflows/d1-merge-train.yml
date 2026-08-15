@@ -140,10 +140,18 @@ jobs:
           # fake-provider job (E6F-03) — the full submit -> placement -> lease ->
           # execute -> event path end to end.
           BOUNDED="tests/d1/network-denial.test.mjs tests/d1/fake-provider-job.test.mjs"
+          # --test-concurrency=1: the E6F files all drive the SAME live control-plane +
+          # DB, so running them in parallel (node --test's default) makes them compete
+          # for the shared stack. E6F-01's 100-race drain asserts "never 5xx", but a
+          # concurrent file's load can push the control-plane into a retryable 503
+          # (internal_unavailable) backpressure response — a cross-test contention flake,
+          # not a lease-race defect. Serial execution makes the live campaign deterministic
+          # (each scenario gets the stack to itself); the per-file docker-exec cost already
+          # dominates, so the wall-clock impact is small.
           if [ "${CAMPAIGN}" = "foundation" ]; then
-            node --test ${BOUNDED} tests/d1/e6f-*.test.mjs
+            node --test --test-concurrency=1 ${BOUNDED} tests/d1/e6f-*.test.mjs
           else
-            node --test ${BOUNDED}
+            node --test --test-concurrency=1 ${BOUNDED}
           fi
 
       - name: Collect distributed evidence (on failure)
