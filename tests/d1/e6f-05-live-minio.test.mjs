@@ -22,7 +22,16 @@
 //     toxiproxy:19000 -> minio, bypassing the API) -> commit -> `committed`
 //     {artifactId, versionNumber>=1} + a persisted job_artifacts row.
 //   Assertion 3: grant(download) -> raw GET -> byte-identical bytes.
-// (Assertion 2 — toxiproxy incomplete-upload — is DAT-002 slice-7 Increment 2.)
+//
+// ── Increment 2 (this file's SECOND test): toxiproxy incomplete-upload ────────
+// A RUNTIME `limit_data` toxic on the in-path `worker-to-minio` proxy (injected via
+// the toxiproxy admin API from a test-runner step-script — NO compose/json change)
+// truncates the presigned PUT, so the store holds a missing/short object. The
+// subsequent fenced `artifactCommit` — carrying the manifest's FULL sha256/size —
+// MUST reject fail-closed (`malformed` for a missing/short object, or
+// `event_hash_mismatch` for an unverifiable/short hash; the frozen 13-code vocab has
+// no `upload_incomplete`) and persist NO `job_artifacts` row. The toxic is ALWAYS
+// removed in a `finally` so it never leaks into a later serial-campaign test.
 //
 // ── The checksum header (the #1 risk; see e6f-harness.mjs) ────────────────────
 // The presigned PUT URL carries `x-amz-sdk-checksum-algorithm=SHA256` in its query,
@@ -51,9 +60,12 @@ import {
   provisionArtifactBucket,
   artifactTransferGrant,
   putPresignedBytes,
+  putPresignedBytesAllowError,
   artifactCommit,
   getPresignedBytes,
   queryJobArtifact,
+  setToxiproxyToxic,
+  removeToxiproxyToxic,
 } from "./lib/e6f-harness.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -243,4 +255,176 @@ test("E6F-05 live MinIO: grant(upload) -> PUT -> commit -> grant(download) -> GE
   assert.equal(got.status, 200, `presigned GET expected 200, got ${got.status}`);
   assert.equal(got.sizeBytes, sizeBytes, "downloaded size matches the uploaded size");
   assert.equal(got.bodyBase64, bodyBase64, "downloaded bytes are byte-identical to the uploaded bytes");
+});
+
+// ── ASSERTION 2: toxiproxy incomplete-upload -> commit rejects fail-closed ────
+// A truncated PUT (a runtime `limit_data` toxic on `worker-to-minio`) leaves the
+// store with a missing/short object; the fenced commit carrying the FULL manifest
+// hash/size MUST reject (`malformed` | `event_hash_mismatch`) and persist NO row.
+// The toxic is injected + torn down at runtime via the toxiproxy ADMIN API — no
+// compose / toxiproxy.json / server change — and is ALWAYS removed in a `finally`
+// so it can never leak into a later serial-campaign test (--test-concurrency=1).
+const PROXY = "worker-to-minio";
+const TOXIC_NAME = "e6f05-truncate-upload";
+
+test("E6F-05 live MinIO: toxiproxy-truncated upload never commits (fail-closed on hash/size)", { skip: SKIP }, () => {
+  const ids = newScenarioIds();
+  const deviceKey = generateDeviceKey();
+  const code = newEnrollmentCode();
+  const hello = buildWorkerHello({ workerId: ids.workerId, targetId: ids.targetId });
+
+  // 0. Bucket (idempotent — the increment-1 test may have already created it).
+  const provisioned = stepResult(provisionArtifactBucket({ bucket: BUCKET }), "provision-bucket");
+  assert.equal(provisioned.ok, true, `bucket provisioning failed: ${JSON.stringify(provisioned)}`);
+
+  // 1-5. A FRESH fenced worker identity (own org/company/target/job) so this test is
+  //      hermetic and order-independent from the round-trip test above.
+  const seed = stepResult(seedScenario({ ids, code }), "seed");
+  assert.equal(seed.ok, true, `seed failed: ${JSON.stringify(seed)}`);
+
+  const enrolled = stepResult(enroll({ code: code.code, hello, deviceKey }), "enroll");
+  assert.equal(enrolled.status, 200, `enroll expected 200, got ${enrolled.status}: ${JSON.stringify(enrolled.body)}`);
+  assert.ok(typeof enrolled.session === "string" && enrolled.session.length > 0, "enroll must return an aoa-worker-session header");
+
+  const liveness = stepResult(stampWorkerLiveness({ workerId: ids.workerId, targetId: ids.targetId }), "liveness");
+  assert.equal(liveness.workerUpdated, 1, `expected the enrolled worker row to be stamped: ${JSON.stringify(liveness)}`);
+
+  const polled = stepResult(
+    poll({ session: enrolled.session, workerId: ids.workerId, targetId: ids.targetId, deviceKey }),
+    "poll",
+  );
+  assert.equal(polled.status, 200, `poll expected 200, got ${polled.status}: ${JSON.stringify(polled.body)}`);
+  assert.equal(polled.body.outcome, "offer", `poll must return an offer, got: ${JSON.stringify(polled.body)}`);
+  const offer = polled.body.body;
+  const attempt = offer.job.attempt;
+
+  const acked = stepResult(
+    ack({
+      session: enrolled.session,
+      workerId: ids.workerId,
+      jobId: ids.jobId,
+      attempt,
+      leaseId: offer.leaseId,
+      fenceToken: offer.fenceToken,
+      deviceKey,
+    }),
+    "ack",
+  );
+  assert.equal(acked.status, 200, `ack expected 200, got ${acked.status}: ${JSON.stringify(acked.body)}`);
+  assert.equal(acked.body.outcome, "acknowledged", `ack outcome: ${JSON.stringify(acked.body)}`);
+
+  // ── The payload: a fixed 256-byte body; the toxic caps the upstream at 64 bytes ──
+  const artifactId = randomUUID();
+  const objectKey = attemptObjectKey({
+    organizationId: ids.orgId,
+    jobId: ids.jobId,
+    attempt,
+    suffix: `output/truncated-${randomBytes(4).toString("hex")}.bin`,
+  });
+  // Exactly 256 bytes (128 hex bytes -> 256 hex chars). The manifest declares this
+  // FULL size/sha; the store never receives all of it, so the commit must fail closed.
+  const bodyBytes = Buffer.from(randomBytes(128).toString("hex"), "utf8");
+  const bodyBase64 = bodyBytes.toString("base64");
+  const sha256Hex = createHash("sha256").update(bodyBytes).digest("hex");
+  const sizeBytes = bodyBytes.length;
+  assert.equal(sizeBytes, 256, "truncation body must be exactly 256 bytes");
+  assert.match(sha256Hex, HEX64, "computed manifest sha256 must be 64 hex chars");
+
+  const fence = {
+    workerId: ids.workerId,
+    jobId: ids.jobId,
+    attempt,
+    leaseId: offer.leaseId,
+    fenceToken: offer.fenceToken,
+  };
+
+  // 6. UPLOAD grant (valid prefix + tenant, so the ONLY thing wrong is the truncated
+  //    bytes — the rejection isolates to hash/size, never wrong_prefix/tenant_mismatch).
+  const uploadGrant = stepResult(
+    artifactTransferGrant({
+      session: enrolled.session,
+      operation: "upload",
+      ...fence,
+      artifactId,
+      expectedObjectKey: objectKey,
+      expectedSha256: sha256Hex,
+      maxBytes: sizeBytes,
+      deviceKey,
+    }),
+    "upload-grant",
+  );
+  assert.equal(uploadGrant.status, 200, `upload grant expected 200, got ${uploadGrant.status}: ${JSON.stringify(uploadGrant.body)}`);
+  assert.equal(uploadGrant.body.outcome, "upload_granted", `upload grant outcome: ${JSON.stringify(uploadGrant.body)}`);
+  const putUrl = uploadGrant.body.grant.url;
+  assert.ok(putUrl.startsWith("https://"), `presigned PUT url must be https: ${putUrl}`);
+
+  // 7. Inject the truncating toxic, do the (doomed) PUT, and ALWAYS remove the toxic.
+  //    limit_data / upstream / bytes:64 severs the worker->minio write well below the
+  //    256-byte body (over TLS it typically breaks the handshake, so the PUT fails at
+  //    the network layer and no object is stored; either way the store has no
+  //    committable object). The finally guarantees the toxic never leaks.
+  const toxicSet = stepResult(
+    setToxiproxyToxic({
+      proxy: PROXY,
+      toxic: { name: TOXIC_NAME, type: "limit_data", stream: "upstream", attributes: { bytes: 64 } },
+    }),
+    "set-toxic",
+  );
+  assert.equal(toxicSet.ok, true, `toxic injection must succeed: ${JSON.stringify(toxicSet)}`);
+
+  let removeRes;
+  try {
+    // Fault-tolerant PUT: a truncating toxic frequently makes fetch itself reject.
+    // A thrown PUT (put.threw) OR a non-2xx PUT are BOTH acceptable here — the point
+    // is only that no complete, committable object reaches the store.
+    const put = stepResult(putPresignedBytesAllowError({ url: putUrl, bodyBase64 }), "put-truncated");
+    assert.equal(put.sha256Hex, sha256Hex, "the PUT step-script hashed the SAME bytes the manifest declares");
+    assert.ok(
+      put.threw === true || put.status !== 200,
+      `a truncated upload must NOT report a clean 200 PUT: ${JSON.stringify(put)}`,
+    );
+  } finally {
+    // CRITICAL: remove the toxic no matter what — a leaked toxic on the shared
+    // worker-to-minio proxy would corrupt every later serial-campaign test's S3 path.
+    removeRes = stepResult(removeToxiproxyToxic({ proxy: PROXY, name: TOXIC_NAME }), "remove-toxic");
+  }
+  assert.equal(removeRes.ok, true, `the toxic MUST be removed (204/404) so it never leaks: ${JSON.stringify(removeRes)}`);
+
+  // 8. COMMIT the FULL manifest against the missing/short stored object. The commit's
+  //    headObject uses the control-plane's INTERNAL minio endpoint (not toxiproxy), so
+  //    the now-removed toxic never affected it. It must reject fail-closed.
+  const manifest = {
+    protocolVersion: 1,
+    organizationId: ids.orgId,
+    companyId: ids.companyId,
+    jobId: ids.jobId,
+    attempt,
+    artifactId,
+    kind: "other",
+    sensitivity: "restricted",
+    retention: "run",
+    objectKey,
+    sizeBytes,
+    sha256: sha256Hex,
+    contentType: "application/octet-stream",
+    createdAt: new Date().toISOString(),
+  };
+  const committed = stepResult(
+    artifactCommit({ session: enrolled.session, ...fence, manifest, deviceKey }),
+    "commit-after-truncation",
+  );
+  assert.equal(committed.status, 200, `commit expected 200 (a fail-closed rejection is still a 200), got ${committed.status}: ${JSON.stringify(committed.body)}`);
+  assert.equal(committed.body.outcome, "rejected", `an incomplete upload must NEVER commit: ${JSON.stringify(committed.body)}`);
+  // Accept EITHER reason: a missing/short object -> `malformed` (headObject !exists,
+  // or declared-vs-actual size mismatch); an unverifiable/short-hash object ->
+  // `event_hash_mismatch`. MinIO's exact behavior on a TLS-truncated presigned PUT is
+  // not knowable locally (Linux-CI-only), so both fail-closed reasons are valid.
+  assert.ok(
+    committed.body.reason === "malformed" || committed.body.reason === "event_hash_mismatch",
+    `reject reason must be malformed or event_hash_mismatch (fail-closed on hash/size); got ${JSON.stringify(committed.body)}`,
+  );
+
+  // 9. NO job_artifacts row was persisted (every reject path throws BEFORE the insert).
+  const persisted = stepResult(queryJobArtifact({ organizationId: ids.orgId, jobId: ids.jobId, identifier: artifactId }), "query-row");
+  assert.equal(persisted.rows.length, 0, `an incomplete upload must persist NO job_artifacts row: ${JSON.stringify(persisted)}`);
 });

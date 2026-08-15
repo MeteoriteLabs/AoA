@@ -1386,3 +1386,113 @@ try {
 `;
   return dexecModule("control-plane", script);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DAT-002 slice-7 — Increment 2: toxiproxy incomplete-upload additions (ADDITIVE
+// ONLY — nothing above is modified). These ADD a RUNTIME toxiproxy-admin client
+// (set/remove a toxic on the in-path `worker-to-minio` proxy) and a fault-tolerant
+// raw-bytes PUT so the caller can prove that a TRUNCATED upload never commits. No
+// compose / toxiproxy.json / server change: the toxic is injected + removed at
+// RUNTIME via the toxiproxy admin API from a test-runner step-script.
+//
+// ── Why `limit_data`, `upstream`, and a small byte cap ───────────────────────
+// The presigned PUT body flows worker(client) -> minio(upstream server), so the
+// data being written to the store travels on the proxy's `upstream` stream. The
+// `limit_data` toxic closes the connection once `attributes.bytes` have crossed
+// that stream, so a cap well below the object size truncates the write. toxiproxy
+// is L4 and forwards OPAQUE TLS bytes, so the cap counts TLS-record bytes, not
+// plaintext body bytes — a very small cap (e.g. 64) severs the connection during
+// the TLS handshake, so the PUT typically fails at the network layer and NO object
+// is stored; a cap that lands after the handshake would instead leave a short
+// object. BOTH outcomes make the subsequent fenced commit fail closed (a missing
+// or short object → `malformed`; an unverifiable/short-hash object →
+// `event_hash_mismatch`), which is exactly the invariant under test. The admin
+// port is toxiproxy's default 8474 (the compose command sets no `-port`); the
+// test-runner reaches it as a control-net peer.
+//
+// ── The toxic MUST be removed (the campaign is serial) ───────────────────────
+// The d1 campaign runs `--test-concurrency=1`, so a LEAKED toxic on
+// `worker-to-minio` would truncate every later test's presigned PUT/GET and break
+// the shared stack. Callers therefore ALWAYS remove the toxic in a `finally`.
+// `removeToxiproxyToxic` treats a 404 as success (idempotent removal — an
+// already-absent toxic is a satisfied post-condition).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TOXIPROXY_ADMIN_URL = "http://toxiproxy:8474";
+
+/** Inject a runtime toxic on a toxiproxy proxy via the admin API (POST
+ * /proxies/<proxy>/toxics). `toxic` is the full admin-API body, e.g.
+ * `{ name, type: "limit_data", stream: "upstream", attributes: { bytes: 64 } }`.
+ * Runs in test-runner (a control-net peer that can reach toxiproxy:8474). Returns
+ * { ok, status, body } — `ok` is true only for a 2xx create. */
+export function setToxiproxyToxic({ proxy, toxic, adminUrl = TOXIPROXY_ADMIN_URL }) {
+  const params = { url: `${adminUrl}/proxies/${proxy}/toxics`, toxic };
+  const script = `
+${embedParams(params)}
+function report(value) { console.log("${RESULT_MARKER}" + JSON.stringify(value)); }
+function safeJson(text) { try { return JSON.parse(text); } catch { return text; } }
+try {
+  const res = await fetch(P.url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(P.toxic),
+  });
+  const text = await res.text();
+  report({ ok: res.ok, status: res.status, body: safeJson(text) });
+} catch (error) {
+  report({ ok: false, status: 0, body: String(error && error.message ? error.message : error) });
+}
+`;
+  return dexecModule("test-runner", script);
+}
+
+/** Remove a runtime toxic (DELETE /proxies/<proxy>/toxics/<name>). Idempotent: a
+ * 204 (removed) OR a 404 (already absent) both satisfy the "no leaked toxic"
+ * post-condition. Runs in test-runner. Returns { ok, status }. */
+export function removeToxiproxyToxic({ proxy, name, adminUrl = TOXIPROXY_ADMIN_URL }) {
+  const params = { url: `${adminUrl}/proxies/${proxy}/toxics/${name}` };
+  const script = `
+${embedParams(params)}
+function report(value) { console.log("${RESULT_MARKER}" + JSON.stringify(value)); }
+try {
+  const res = await fetch(P.url, { method: "DELETE" });
+  await res.text();
+  report({ ok: res.status === 204 || res.status === 404, status: res.status });
+} catch (error) {
+  report({ ok: false, status: 0, error: String(error && error.message ? error.message : error) });
+}
+`;
+  return dexecModule("test-runner", script);
+}
+
+/** Fault-tolerant raw-bytes PUT to a presigned upload URL. Identical wire shape to
+ * `putPresignedBytes` (computes + sends the x-amz-checksum-sha256 / -sdk-checksum-
+ * algorithm headers the signed PUT's query demands), but CATCHES a network-level
+ * failure instead of crashing the step-script — a truncating toxic frequently
+ * severs the TLS connection so `fetch` itself rejects. Runs in test-runner. Returns
+ * { threw, error?, status?, sha256Hex, sha256B64, sizeBytes, body? } — the caller
+ * accepts EITHER a thrown PUT or a non-2xx PUT, since both leave the store without a
+ * committable object. */
+export function putPresignedBytesAllowError({ url, bodyBase64 }) {
+  const params = { url, bodyBase64 };
+  const script = `
+import { createHash } from "node:crypto";
+${embedParams(params)}
+function report(value) { console.log("${RESULT_MARKER}" + JSON.stringify(value)); }
+const bodyBytes = Buffer.from(P.bodyBase64, "base64");
+const sha256Hex = createHash("sha256").update(bodyBytes).digest("hex");
+const sha256B64 = createHash("sha256").update(bodyBytes).digest("base64");
+const headers = {
+  "x-amz-checksum-sha256": sha256B64,
+  "x-amz-sdk-checksum-algorithm": "SHA256",
+};
+try {
+  const res = await fetch(P.url, { method: "PUT", headers, body: bodyBytes });
+  const text = await res.text();
+  report({ threw: false, status: res.status, sha256Hex, sha256B64, sizeBytes: bodyBytes.length, body: text.slice(0, 2000) });
+} catch (error) {
+  report({ threw: true, error: String(error && error.message ? error.message : error), sha256Hex, sha256B64, sizeBytes: bodyBytes.length });
+}
+`;
+  return dexecModule("test-runner", script);
+}
