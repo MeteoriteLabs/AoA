@@ -8,6 +8,7 @@ export {
   PROVIDER_OPERATIONS,
   PROVIDER_PROJECTION_KEYS,
   UnsupportedProviderOperation,
+  projectionLeakKeys,
 } from "./port.js";
 export type {
   ProviderOperation,
@@ -28,5 +29,9 @@ export type { LifecycleCheckpoint, FailureInjection } from "./checkpoints.js";
 export { GOLDEN_JOURNEY_FIXTURES, loadGoldenFixture } from "./vectors.js";
 export type { GoldenJourneyFixtureName } from "./vectors.js";
 
-export { runSandboxProviderContract, assertContractReport } from "./contract.js";
-export type { ContractCheckResult, ContractReport, ContractOptions } from "./contract.js";
+export { runSandboxProviderContract, assertContractReport, runCheck } from "./contract.js";
+export type { ContractCheckResult, ContractReport, ContractOptions, CheckFn } from "./contract.js";
+
+// DEP-008 — the provider-neutral HOSTILE isolation/cleanup conformance suite.
+export { runSandboxIsolationConformance, assertIsolationReport } from "./isolation-contract.js";
+export type { IsolationOptions } from "./isolation-contract.js";

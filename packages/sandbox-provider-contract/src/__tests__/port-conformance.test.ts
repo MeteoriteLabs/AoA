@@ -20,7 +20,7 @@
 // `satisfies`/assignability assertions below FAIL `tsc`.
 // -----------------------------------------------------------------------------
 
-import type { FakeSandboxDriver } from "@armyofagents/sandbox-fake-provider";
+import type { FakeSandboxDriver, HostileSandboxProvider } from "@armyofagents/sandbox-fake-provider";
 import type {
   SandboxProviderDriver,
   SandboxProviderDriverFactory,
@@ -32,10 +32,18 @@ import type {
 // A factory that produces a fake driver is assignable to the contract factory.
 (null as unknown as () => FakeSandboxDriver) satisfies SandboxProviderDriverFactory;
 
-// Type-level, redundant belt-and-suspenders: FakeSandboxDriver extends the port.
+// DEP-008 — the HOSTILE reference driver (a distinct SandboxProviderDriver) must
+// ALSO structurally satisfy the contract port; mechanically enforced here so a
+// signature drift FAILS `tsc` (the isolation suite consumes it as this port).
+type HostileDriver = ReturnType<HostileSandboxProvider["makeDriver"]>;
+(null as unknown as HostileDriver) satisfies SandboxProviderDriver;
+(null as unknown as () => HostileDriver) satisfies SandboxProviderDriverFactory;
+
+// Type-level, redundant belt-and-suspenders: both drivers extend the port.
 type Expect<T extends true> = T;
 type Extends<A, B> = A extends B ? true : false;
 type _FakeDriverExtendsPort = Expect<Extends<FakeSandboxDriver, SandboxProviderDriver>>;
+type _HostileDriverExtendsPort = Expect<Extends<HostileDriver, SandboxProviderDriver>>;
 
 // `export {}` keeps this an ES module under `isolatedModules`.
-export type { _FakeDriverExtendsPort };
+export type { _FakeDriverExtendsPort, _HostileDriverExtendsPort };

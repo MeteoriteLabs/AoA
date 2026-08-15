@@ -19,11 +19,10 @@
 import {
   CORE_PROVIDER_OPERATIONS,
   OPTIONAL_PROVIDER_OPERATIONS,
-  PROVIDER_PROJECTION_KEYS,
   UnsupportedProviderOperation,
+  projectionLeakKeys,
   type ProviderOpArgs,
   type ProviderOpResult,
-  type ProviderResourceProjection,
   type SandboxProviderDriver,
   type SandboxProviderDriverFactory,
 } from "./port.js";
@@ -45,8 +44,6 @@ export interface ContractOptions {
    * fixtures from this directory. Omitted → the corpus check is skipped. */
   readonly fixturesDir?: string;
 }
-
-const PROJECTION_KEY_SET: ReadonlySet<string> = new Set(PROVIDER_PROJECTION_KEYS);
 
 /** True iff `err` is an UnsupportedProviderOperation for `op` — matched by class
  * OR duck-typed (`name` + `operation`), so a provider that throws its own
@@ -76,14 +73,12 @@ async function createResource(
   return result.resource.resourceId;
 }
 
-/** Assert a projection carries ONLY provider-neutral keys (no tenant/E2B leak). */
-function projectionLeakKeys(projection: ProviderResourceProjection): string[] {
-  return Object.keys(projection).filter((key) => !PROJECTION_KEY_SET.has(key));
-}
+export type CheckFn = () => Promise<{ ok: boolean; detail: string }>;
 
-type CheckFn = () => Promise<{ ok: boolean; detail: string }>;
-
-async function runCheck(name: string, fn: CheckFn): Promise<ContractCheckResult> {
+/** Run a single named check, converting an unexpected throw into a failed result.
+ * Exported so the sibling DEP-008 isolation suite reuses the EXACT accumulator
+ * shape (no forked runner). */
+export async function runCheck(name: string, fn: CheckFn): Promise<ContractCheckResult> {
   try {
     const { ok, detail } = await fn();
     return { name, ok, detail };

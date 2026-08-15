@@ -83,6 +83,22 @@ export interface ProviderResourceProjection {
   readonly checkpoint: string;
 }
 
+/** The frozen allowlist as a set, for O(1) membership. */
+const PROJECTION_KEY_SET: ReadonlySet<string> = new Set(PROVIDER_PROJECTION_KEYS);
+
+/**
+ * Return the keys of `projection` that are NOT in the provider-neutral allowlist
+ * (`PROVIDER_PROJECTION_KEYS`) — every such key is a tenant/E2B disclosure
+ * (E6F-05 no-tenant-leak). This is the SINGLE shared allowlist gate both the
+ * happy-path contract suite AND the DEP-008 hostile isolation suite use, so no
+ * forked copy can silently drift (DEP-008 D1). `Object.keys` sees the real runtime
+ * key-set, so a sabotaged driver that widens the projection with an extra field is
+ * caught even though the static `ProviderResourceProjection` type has none.
+ */
+export function projectionLeakKeys(projection: ProviderResourceProjection): string[] {
+  return Object.keys(projection).filter((key) => !PROJECTION_KEY_SET.has(key));
+}
+
 export interface ProviderListResult {
   readonly resources: readonly ProviderResourceProjection[];
   readonly nextCursor: string | null;

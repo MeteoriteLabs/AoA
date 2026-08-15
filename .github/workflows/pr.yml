@@ -187,6 +187,11 @@ jobs:
           node scripts/check-egress-policy-vectors.mjs
           node --test scripts/check-egress-policy-vectors.test.mjs
 
+      - name: Egress-policy destination-BYPASS vectors (DEP-008)
+        run: |
+          node scripts/check-egress-bypass-vectors.mjs
+          node --test scripts/check-egress-bypass-vectors.test.mjs
+
       - name: CI lane routing invariants (DEP-004)
         run: |
           node scripts/check-ci-lanes.mjs
