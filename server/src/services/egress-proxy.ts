@@ -36,7 +36,7 @@ import {
   type SecretBrokerSet,
   type SecretResolveOutcome,
 } from "./secret-broker.js";
-import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
+import type { JobControlMetrics } from "./job-control-metrics.js";
 import type { VerifiedWorkerOperation } from "./job-leasing.js";
 import {
   classifyEgressDestination,
@@ -144,7 +144,9 @@ function originOf(url: string): { host: string; port: number; href: URL } | null
 }
 
 export function createFenceAwareEgressProxy(deps: FenceAwareEgressProxyDeps) {
-  const metrics = deps.metrics ?? NOOP_JOB_CONTROL_METRICS;
+  // Optional-chained (no NOOP VALUE import) so this inert-seam module carries no
+  // runtime dependency on job-control-metrics on any load path (dormancy gate).
+  const metrics = deps.metrics;
   const broker = createSecretBrokerService({
     appDb: deps.appDb,
     brokers: deps.brokers,
@@ -162,7 +164,7 @@ export function createFenceAwareEgressProxy(deps: FenceAwareEgressProxyDeps) {
       // the requested URL/host/handle. Best-effort so it never alters the deny path.
       const deny = (reason: EgressDenyReason): EgressOutcome => {
         try {
-          metrics.egressDenied({ reason, count: 1 });
+          metrics?.egressDenied({ reason, count: 1 });
         } catch {
           /* best-effort telemetry */
         }

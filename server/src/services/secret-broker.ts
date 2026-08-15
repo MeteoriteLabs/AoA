@@ -38,7 +38,7 @@ import {
 import { runInTenant } from "../db/tenant-context.js";
 import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js";
 import { resolveWorkerFenceContext } from "./worker-fence-context.js";
-import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
+import type { JobControlMetrics } from "./job-control-metrics.js";
 
 /** A guarded-fence refusal → the frozen protocol reason vocabulary. */
 function fenceReason(code: JobFenceErrorCode): "stale_fence" | "attempt_terminal" | "target_revoked" {
@@ -184,7 +184,9 @@ export function createSecretBrokerService(input: {
 }) {
   const brokers = input.brokers ?? failClosedSecretBrokers;
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300_000);
-  const metrics = input.metrics ?? NOOP_JOB_CONTROL_METRICS;
+  // Optional-chained (no NOOP VALUE import) so this inert-seam module carries no
+  // runtime dependency on job-control-metrics on any load path (dormancy gate).
+  const metrics = input.metrics;
 
   return {
     async resolve(resolveInput: {
@@ -239,7 +241,7 @@ export function createSecretBrokerService(input: {
       // DEP-007 — count-only secret-read telemetry: the OUTCOME discriminant only, never
       // the value/ref/destination. Best-effort so a failing metric never alters resolve.
       try {
-        metrics.secretRead({ outcome: outcome.outcome, count: 1 });
+        metrics?.secretRead({ outcome: outcome.outcome, count: 1 });
       } catch {
         /* best-effort telemetry */
       }

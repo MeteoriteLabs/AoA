@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { logger } from "../middleware/logger.js";
 import { createGvisorSandboxRuntimeProvider } from "./gvisor-sandbox-provider.js";
-import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
+import type { JobControlMetrics } from "./job-control-metrics.js";
 
 export interface SandboxProviderAcquireInput {
   companyId: string;
@@ -1036,7 +1036,11 @@ export function sandboxProviderRuntime(
     metrics?: JobControlMetrics;
   } = {},
 ) {
-  const metrics = options.metrics ?? NOOP_JOB_CONTROL_METRICS;
+  // Optional-chained at every call site (never a NOOP VALUE import) so this module —
+  // which loads on the flag-OFF legacy path — carries no runtime dependency on
+  // job-control-metrics (the distributed-execution dormancy gate, verified by
+  // distributed-execution-db-startup.integration.test.ts).
+  const metrics = options.metrics;
   const providers = new Map<string, SandboxRuntimeProvider>();
   for (const provider of options.providers ?? [
     createFakeSandboxRuntimeProvider(),
@@ -1068,7 +1072,7 @@ export function sandboxProviderRuntime(
     acquireLease(providerKey: string, input: SandboxProviderAcquireInput) {
       return requireProvider(providerKey).acquireLease(input).then((lease) => {
         try {
-          metrics.providerLifecycle({ operation: "acquire", outcome: "succeeded", count: 1 });
+          metrics?.providerLifecycle({ operation: "acquire", outcome: "succeeded", count: 1 });
         } catch {
           /* best-effort telemetry */
         }
@@ -1079,7 +1083,7 @@ export function sandboxProviderRuntime(
     releaseLease(providerKey: string, input: SandboxProviderReleaseInput) {
       return requireProvider(providerKey).releaseLease(input).then((result) => {
         try {
-          metrics.providerLifecycle({
+          metrics?.providerLifecycle({
             operation: "release",
             outcome: result.cleanupStatus === "success" ? "succeeded" : "failed",
             count: 1,
@@ -1101,7 +1105,7 @@ export function sandboxProviderRuntime(
       }
       return provider.resumeLease(input).then((result) => {
         try {
-          metrics.providerLifecycle({ operation: "resume", outcome: "succeeded", count: 1 });
+          metrics?.providerLifecycle({ operation: "resume", outcome: "succeeded", count: 1 });
         } catch {
           /* best-effort telemetry */
         }

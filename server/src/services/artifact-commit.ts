@@ -40,7 +40,7 @@ import { runInTenant } from "../db/tenant-context.js";
 import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js";
 import { resolveWorkerFenceContext } from "./worker-fence-context.js";
 import type { StorageProvider } from "../storage/types.js";
-import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
+import type { JobControlMetrics } from "./job-control-metrics.js";
 
 /** A guarded-fence refusal → the frozen protocol reason vocabulary. */
 function fenceReason(code: JobFenceErrorCode): "stale_fence" | "attempt_terminal" | "target_revoked" {
@@ -69,7 +69,9 @@ export function createArtifactCommitService(input: {
 }) {
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300_000);
   const maxArtifactBytes = Math.max(1, input.maxArtifactBytes ?? 5 * 1024 ** 3);
-  const metrics = input.metrics ?? NOOP_JOB_CONTROL_METRICS;
+  // Optional-chained (no NOOP VALUE import) so this module carries no runtime
+  // dependency on job-control-metrics unless a live instance is passed (dormancy gate).
+  const metrics = input.metrics;
 
   return {
     async commit(commitInput: {
@@ -169,7 +171,7 @@ export function createArtifactCommitService(input: {
       // AFTER the authoritative response is resolved so it can never alter the commit
       // path. Best-effort: a failing metric surface is swallowed.
       try {
-        metrics.artifactOp({
+        metrics?.artifactOp({
           operation: "commit",
           outcome: response.outcome === "committed" ? "committed" : "rejected",
           count: 1,
