@@ -64,6 +64,10 @@ Residuals (all tied to wiring the promotion channel — spawned/tracked):
 
 ---
 
-## 5. Doc drift to surface (not self-fixed)
+## 5. Post-merge CI fix (honest record)
+
+The initial DAT-006 push (`0569bdcca`) FAILED Linux CI: 32 tests red in `distributed-execution-db-startup.integration.test.ts` (the `verify` job only — migrations/policy/distributed-contract all green). The local gate set above did NOT include that subprocess-heavy suite, and the manifest CONTRACT tests (legacy-grants/e2-serving-role, which passed) validate the manifest internally and never exercise the startup gate's `appTablePrivileges()` consumer. **Root cause:** the widen registered `folder_grants` in the manifest (`APP_SERVING_RELATIONS`/`RLS_RELATIONS`/`POLICY_COUNTS`/ACL manifests) but not in `appTablePrivileges()` (`server/src/db/distributed-execution-databases.ts:99`), which spreads each `*_NEW_PATH_GRANTS` and omitted `FOLDER_GRANTS_NEW_PATH_GRANTS` — so the gate expected aoa_app to have zero folder_grants privileges while migration 0253 grants four, and every full-gate boot threw an authority-drift error. **Fix `13d462f66`:** import + spread `FOLDER_GRANTS_NEW_PATH_GRANTS` into `appTablePrivileges()`. CI re-run (`13d462f66`) = `success`, all required checks green. **New rule:** any ticket touching a serving-role/RLS table must run `distributed-execution-db-startup.integration.test.ts` locally.
+
+## 6. Doc drift to surface (not self-fixed)
 
 `epics/README.md` says E5 = DAT-001–006; `program-design.md` defines DAT-001–007. Integration Gate Owner's reconciliation.
