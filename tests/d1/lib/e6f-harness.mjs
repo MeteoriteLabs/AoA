@@ -837,27 +837,47 @@ ${DEVICE_PROOF_SNIPPET}
 ${embedParams(params)}
 
 async function pollOnce(w) {
-  const body = {
-    protocolVersion: 1,
-    correlationId: randomUUID(),
-    issuedAt: new Date().toISOString(),
-    nonce: randomBytes(16).toString("base64url"),
-    audience: "worker_poll",
-    workerId: w.workerId,
-    targetId: w.targetId,
-    deviceGeneration: P.deviceGeneration,
-    capacity: P.capacity,
-  };
-  const bodyString = JSON.stringify(body);
-  const headers = deviceProofHeaders({
-    method: "POST", url: P.pollUrl, bodyString, correlationId: body.correlationId,
-    privateKeyPem: w.privateKeyPem, publicKeyDer: w.publicKeyDer,
-  });
-  headers["content-type"] = "application/json";
-  headers["authorization"] = "Bearer " + w.session;
-  const res = await fetch(P.pollUrl, { method: "POST", headers, body: bodyString });
-  const text = await res.text();
-  return { status: res.status, body: safeJson(text) };
+  // Honor the E1 retry contract: a RETRYABLE backpressure response
+  // (internal_unavailable / throttled, carrying retryAfterMs) is NOT an anomaly —
+  // it is the control-plane shedding load under the 100-race burst, and a real
+  // worker waits retryAfterMs and re-polls. Surfacing it as an anomaly is stricter
+  // than the protocol guarantees (a runner-load flake). Retry a bounded number of
+  // times with a fresh nonce + device proof each attempt (both are single-use); the
+  // compare-and-set offerLease means a retry can only win a still-pending job or get
+  // no_work, so the "exactly one winner" race invariant is preserved.
+  const RETRYABLE = new Set(["internal_unavailable", "throttled"]);
+  const MAX_ATTEMPTS = 4;
+  let last = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    const body = {
+      protocolVersion: 1,
+      correlationId: randomUUID(),
+      issuedAt: new Date().toISOString(),
+      nonce: randomBytes(16).toString("base64url"),
+      audience: "worker_poll",
+      workerId: w.workerId,
+      targetId: w.targetId,
+      deviceGeneration: P.deviceGeneration,
+      capacity: P.capacity,
+    };
+    const bodyString = JSON.stringify(body);
+    const headers = deviceProofHeaders({
+      method: "POST", url: P.pollUrl, bodyString, correlationId: body.correlationId,
+      privateKeyPem: w.privateKeyPem, publicKeyDer: w.publicKeyDer,
+    });
+    headers["content-type"] = "application/json";
+    headers["authorization"] = "Bearer " + w.session;
+    const res = await fetch(P.pollUrl, { method: "POST", headers, body: bodyString });
+    const text = await res.text();
+    last = { status: res.status, body: safeJson(text) };
+    const code = last.body && last.body.code;
+    if (last.status < 500 || !RETRYABLE.has(code)) return last;
+    if (attempt < MAX_ATTEMPTS - 1) {
+      const retryAfterMs = Number(last.body && last.body.retryAfterMs);
+      await new Promise((r) => setTimeout(r, Math.min(Number.isFinite(retryAfterMs) ? retryAfterMs : 200, 500)));
+    }
+  }
+  return last;
 }
 
 async function ackOnce(w, offer) {
