@@ -30,6 +30,17 @@ export interface ResolvedFenceContext {
   authorityNow: Date;
 }
 
+/** DAT-006 — the DEVICE-only authority context (no lease, no fence). Proves the worker's
+ * device authority is CURRENT (proof replay, authority lock, generation cutoff, active
+ * target, profile) and returns the verified target identity — but stops BEFORE the lease
+ * resolution, because an orphan is a dead-fence output with no live lease. */
+export interface ResolvedDeviceContext {
+  organizationId: string;
+  targetId: string;
+  targetGeneration: number;
+  authorityNow: Date;
+}
+
 /**
  * Authenticate the worker operation and resolve the presented fence identity from
  * the lease row. Throws `JobLeasingError` on any auth failure:
@@ -122,4 +133,62 @@ export async function resolveWorkerFenceContext(
     fence: presented.fenceToken,
   };
   return { fenceIdentity, companyId: context.lease.companyId, authorityNow };
+}
+
+/**
+ * DAT-006 — authenticate a DEVICE-scoped worker operation WITHOUT a lease/fence. It runs
+ * the same CURRENT-authority recheck `resolveWorkerFenceContext` runs (proof record →
+ * authority lock under a fresh DB clock → active target → profile touch) but STOPS before
+ * `lockLeaseAckContext`: an orphan quarantine has no live lease, so there is nothing to
+ * resolve a fence tuple against. Throws `JobLeasingError` on any auth failure —
+ * `unauthorized` (replayed/duplicate proof, missing authority) or `target_revoked`
+ * (authority not current / target inactive / profile drift / bumped generation). It NEVER
+ * throws `stale_fence` (there is no fence): staleness is precisely why an orphan is
+ * quarantined, so it can never be a refusal here.
+ */
+export async function resolveWorkerDeviceContext(
+  repos: TenantRepositories,
+  auth: VerifiedWorkerOperation,
+  maxHeartbeatAgeMs: number,
+): Promise<ResolvedDeviceContext> {
+  const databaseNow = await repos.jobControl.currentDatabaseTime();
+  await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);
+  await repos.jobControl.cleanupExpiredOperationReceipts(databaseNow, 100);
+  const proofRecorded = await repos.workerEnrollment.recordProof({
+    organizationId: auth.organizationId,
+    deviceThumbprint: auth.deviceThumbprint,
+    proofId: auth.proofId,
+    issuedAt: auth.proofIssuedAt,
+    expiresAt: auth.sessionExpiresAt,
+  });
+  if (!proofRecorded) throw new JobLeasingError("unauthorized");
+
+  const authority = await repos.jobControl.lockWorkerLeaseAuthority({
+    workerId: auth.workerId,
+    targetId: auth.targetId,
+  });
+  const authorityNow = await repos.jobControl.currentDatabaseTime();
+  if (!authority || !ackAuthorityCurrent({
+    auth,
+    authority,
+    workerId: auth.workerId,
+    databaseNow: authorityNow,
+    maxHeartbeatAgeMs,
+    platformPhysicalHeartbeatAt: null,
+  })) throw new JobLeasingError(authority ? "target_revoked" : "unauthorized");
+
+  const target = await normalizePlacementRegistryTarget(authority.target);
+  if (!target || target.status !== "active") throw new JobLeasingError("target_revoked");
+  if (!await repos.jobControl.touchWorkerLeaseProfile({
+    workerId: auth.workerId,
+    targetId: auth.targetId,
+    targetGeneration: auth.targetGeneration,
+  })) throw new JobLeasingError("target_revoked");
+
+  return {
+    organizationId: auth.organizationId,
+    targetId: target.targetId,
+    targetGeneration: target.targetGeneration,
+    authorityNow,
+  };
 }

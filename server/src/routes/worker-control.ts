@@ -13,6 +13,8 @@ import {
   leaseRenewOperationRequestV1Schema,
   OPERATION_DESCRIPTORS,
   pollRequestV1Schema,
+  quarantineGrantOperationRequestV1Schema,
+  quarantineFinalizeOperationRequestV1Schema,
 } from "@armyofagents/worker-protocol";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
@@ -35,6 +37,8 @@ import { createJobLeaseRenewalService } from "../services/job-fencing.js";
 import { createJobEventIngestService } from "../services/job-events.js";
 import { createArtifactTransferGrantService } from "../services/artifact-transfer-grant.js";
 import { createArtifactCommitService } from "../services/artifact-commit.js";
+import { createQuarantineGrantService } from "../services/quarantine-grant.js";
+import { createQuarantineFinalizeService } from "../services/quarantine-finalize.js";
 import { createStorageProviderFromConfig } from "../storage/provider-registry.js";
 import { loadConfig } from "../config.js";
 import {
@@ -86,6 +90,11 @@ export function workerControlRoutes(opts: {
   const storage = createStorageProviderFromConfig(loadConfig());
   const transferGrants = createArtifactTransferGrantService({ appDb: opts.appDb, storage });
   const artifactCommits = createArtifactCommitService({ appDb: opts.appDb, storage });
+  // DAT-006 — device-authenticated orphan quarantine (distinct `quarantine/` prefix,
+  // no live fence). The daemon already builds/signs/POSTs both ops (worker-daemon
+  // WRK-007); these stand up the server end.
+  const quarantineGrants = createQuarantineGrantService({ appDb: opts.appDb, storage });
+  const quarantineFinalize = createQuarantineFinalizeService({ appDb: opts.appDb, storage });
   const controlAck = createJobControlAckService({ appDb: opts.appDb });
   const reconciliation = createJobReconciliationService({ appDb: opts.appDb });
 
@@ -459,6 +468,106 @@ export function workerControlRoutes(opts: {
         reasonCode: "worker_artifact_commit_internal_unavailable",
       }, "worker artifact commit unavailable");
       sendWorkerOperationProtocolError(req, res, "artifact_commit", "internal_unavailable", opts.now?.() ?? new Date());
+    }
+  });
+
+  // DAT-006 — device-authenticated request for a scoped presigned PUT grant to the
+  // DISTINCT `quarantine/` prefix (a dead-fence orphan; no live fence). ≤5-minute grant.
+  // The path mirrors the frozen daemon's `/api/worker-control/quarantine/grant`.
+  router.post("/worker-control/quarantine/grant", async (req, res) => {
+    try {
+      const parsed = quarantineGrantOperationRequestV1Schema.safeParse(req.body);
+      const authorization = req.header("authorization");
+      const proof = deviceProofHeaders(req);
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      if (!parsed.success
+        || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.quarantine_grant.maxRequestBytes)) {
+        sendWorkerOperationProtocolError(req, res, "quarantine_grant",
+          rawBody && rawBody.length > OPERATION_DESCRIPTORS.quarantine_grant.maxRequestBytes
+            ? "payload_too_large" : "malformed", opts.now?.() ?? new Date());
+        return;
+      }
+      if (!authorization || !proof || !rawBody) {
+        sendWorkerOperationProtocolError(req, res, "quarantine_grant", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      const auth = verifyWorkerOperationProof({
+        sessionSigningKey: opts.sessionSigningKey,
+        authorization,
+        rawBody,
+        proof,
+        method: req.method,
+        path: req.originalUrl,
+        correlationId: parsed.data.correlationId,
+        now: opts.now?.(),
+      });
+      const response = await quarantineGrants.grant({ auth, request: parsed.data });
+      res.status(200).json(response);
+    } catch (error) {
+      if (error instanceof WorkerOperationProofError) {
+        sendWorkerOperationProtocolError(req, res, "quarantine_grant", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      if (error instanceof JobLeasingError) {
+        // Device-auth surface: only unauthorized/target_revoked/malformed reach here —
+        // `stale_fence` is not even in the frozen quarantine_grant error set.
+        sendWorkerOperationProtocolError(req, res, "quarantine_grant", error.code, opts.now?.() ?? new Date());
+        return;
+      }
+      logger.error({
+        action: "worker.quarantine_grant.failed",
+        reasonCode: "worker_quarantine_grant_internal_unavailable",
+      }, "worker quarantine grant unavailable");
+      sendWorkerOperationProtocolError(req, res, "quarantine_grant", "internal_unavailable", opts.now?.() ?? new Date());
+    }
+  });
+
+  // DAT-006 — device-authenticated finalize of an uploaded orphan: headObject integrity
+  // (fail-closed), then record the `status='quarantined'` orphan row. Structurally cannot
+  // touch a committed attempt. Mirrors `/api/worker-control/quarantine/finalize`.
+  router.post("/worker-control/quarantine/finalize", async (req, res) => {
+    try {
+      const parsed = quarantineFinalizeOperationRequestV1Schema.safeParse(req.body);
+      const authorization = req.header("authorization");
+      const proof = deviceProofHeaders(req);
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      if (!parsed.success
+        || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.quarantine_finalize.maxRequestBytes)) {
+        sendWorkerOperationProtocolError(req, res, "quarantine_finalize",
+          rawBody && rawBody.length > OPERATION_DESCRIPTORS.quarantine_finalize.maxRequestBytes
+            ? "payload_too_large" : "malformed", opts.now?.() ?? new Date());
+        return;
+      }
+      if (!authorization || !proof || !rawBody) {
+        sendWorkerOperationProtocolError(req, res, "quarantine_finalize", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      const auth = verifyWorkerOperationProof({
+        sessionSigningKey: opts.sessionSigningKey,
+        authorization,
+        rawBody,
+        proof,
+        method: req.method,
+        path: req.originalUrl,
+        correlationId: parsed.data.correlationId,
+        now: opts.now?.(),
+      });
+      const response = await quarantineFinalize.finalize({ auth, request: parsed.data });
+      res.status(200).json(response);
+    } catch (error) {
+      if (error instanceof WorkerOperationProofError) {
+        sendWorkerOperationProtocolError(req, res, "quarantine_finalize", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      if (error instanceof JobLeasingError) {
+        sendWorkerOperationProtocolError(req, res, "quarantine_finalize", error.code, opts.now?.() ?? new Date());
+        return;
+      }
+      logger.error({
+        action: "worker.quarantine_finalize.failed",
+        reasonCode: "worker_quarantine_finalize_internal_unavailable",
+      }, "worker quarantine finalize unavailable");
+      sendWorkerOperationProtocolError(req, res, "quarantine_finalize", "internal_unavailable", opts.now?.() ?? new Date());
     }
   });
 

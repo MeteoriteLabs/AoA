@@ -116,6 +116,24 @@ export class PatchApplyRejection extends Error {
 }
 
 // -----------------------------------------------------------------------------
+// DAT-006 — device-authenticated ORPHAN quarantine rejection vocabulary. An orphan
+// is a DEAD-FENCE output, so this path is device-authed (targetId + deviceGeneration),
+// never fence-guarded. Refusals are `target_revoked` (a bumped/disabled/absent target
+// authority) or `unknown_job` (the (org, job) does not exist in this tenant — folded to
+// a coarse, non-disclosing `malformed` by the service). There is NO `stale_fence`
+// reason: staleness is precisely why an orphan is quarantined, so it can never be a
+// refusal. Distinct from `JobFenceError` so the finalize service maps it to the
+// device-auth vocabulary (`target_revoked`/`malformed`), never a fence code.
+export type OrphanQuarantineRejectionReason = "target_revoked" | "unknown_job";
+
+export class OrphanQuarantineRejection extends Error {
+  constructor(public readonly reason: OrphanQuarantineRejectionReason) {
+    super(`Orphan quarantine rejected: ${reason}`);
+    this.name = "OrphanQuarantineRejection";
+  }
+}
+
+// -----------------------------------------------------------------------------
 // DAT-004 — lease-scoped secret-resolve authorization vocabulary + pure decision.
 //
 // `resolveExecutionSecret` (the guarded mutator) runs `guardActiveFence` FIRST, then

@@ -103,6 +103,12 @@ const EXPECTED_UNGUARDED = [
   "listPendingControlCommands",
   "allocateRetryAttempt",
   "reapExpiredLeases",
+  // DAT-006 device-authed orphan quarantine: an orphan is a DEAD-FENCE output, so this
+  // mutator is DEVICE-authed (targetId + deviceGeneration recheck) and deliberately does
+  // NOT gate on guardActiveFence — same species as the reaper methods above. It writes
+  // only the `status='quarantined'` orphan row (structurally cannot touch a committed
+  // attempt), so it stays outside the guarded surface (EXPECTED_GUARDED stays 10).
+  "recordOrphanQuarantine",
   // JOB-011 SERVER-authored governance-projection surface: invoked ONLY from the
   // control-plane approval bridge (never a worker route), so they are outside the
   // worker-fenced closed set. They still gate on guardActiveFence internally

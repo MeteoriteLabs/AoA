@@ -56,6 +56,27 @@ export const jobArtifacts = pgTable(
     baseManifestHash: text("base_manifest_hash"),
     resultManifestHash: text("result_manifest_hash"),
     applyStatus: text("apply_status"),
+    // DAT-006 — the device-authenticated orphan/quarantine disposition (E5, additive,
+    // nullable). Populated ONLY on the DAT-006 orphan row, which carries
+    // `status='quarantined'` (a value `findCommitted` never returns, so the
+    // `job_artifacts_committed_identity_uidx WHERE status='committed'` partial-unique
+    // STRUCTURALLY cannot let an orphan collide-update a committed attempt). This is the
+    // frozen device-auth `quarantine/` object prefix path (distinct from the DAT-003
+    // in-band `apply_status='conflict_quarantined'` disposition above):
+    //   * `orphan_disposition` is the frozen receipt disposition literal — always
+    //     `'quarantined'` (`quarantineUploadReceiptV1Schema.disposition`); null otherwise.
+    //   * `quarantine_reason` is a member of the frozen `QUARANTINE_REASONS`
+    //     (`stale_fence|late_output|hash_mismatch|wrong_prefix|size_mismatch|
+    //     unknown_artifact|corrupt_checkpoint`).
+    //   * `observed_lease_id` / `observed_fence_token` are NON-AUTHORITATIVE observed
+    //     provenance recorded from the orphan payload (NEVER used for authorization —
+    //     an orphan is a dead-fence output, authorized by device targetId+generation).
+    // `object_key` MUST start `quarantine/`, and `sha256`/`size_bytes`/`sensitivity`/
+    // `kind` are reused from the existing columns.
+    orphanDisposition: text("orphan_disposition"),
+    quarantineReason: text("quarantine_reason"),
+    observedLeaseId: uuid("observed_lease_id"),
+    observedFenceToken: text("observed_fence_token"),
     committedAt: timestamp("committed_at", { withTimezone: true }),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -71,6 +92,15 @@ export const jobArtifacts = pgTable(
     committedIdentityUnique: uniqueIndex("job_artifacts_committed_identity_uidx")
       .on(table.organizationId, table.jobId, table.attempt, table.identifier)
       .where(sql`status = 'committed'`),
+    // DAT-006 — idempotent ORPHAN quarantine key. The natural quarantine identity is
+    // (organization_id, job_id, attempt, identifier) over ONLY `status='quarantined'`
+    // rows, so a replayed device-auth finalize is a DO-NOTHING (the mutator returns the
+    // existing quarantined row). This partial-unique is DISJOINT from the committed one
+    // above (different WHERE) — an orphan row and a committed attempt row for the same
+    // natural key coexist as separate rows, and neither collide-updates the other.
+    quarantinedIdentityUnique: uniqueIndex("job_artifacts_quarantined_identity_uidx")
+      .on(table.organizationId, table.jobId, table.attempt, table.identifier)
+      .where(sql`status = 'quarantined'`),
     // TEN-004: composite org-scoped FK — an artifact's (organization_id, job_id)
     // must exist together in jobs(organization_id, id), so an artifact cannot be
     // owned by a different tenant than its job. The redundant single-column job FK was

@@ -130,6 +130,14 @@ export const JOB_CONTROL_COMMANDS_NEW_PATH_GRANTS = Object.freeze({
   job_control_commands: ["SELECT", "INSERT", "UPDATE", "DELETE"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
+/** DAT-006-only local-folder-grant admission authority, versioned after the immutable
+ * JOB-006 control-command grant delta. The NEW `folder_grants` table (TEN-006 per-table
+ * RLS, migration 0253) is aoa_app-only tenant DML with no operator authority — mirrors
+ * job_control_commands. This is the ONE keystone reconciliation DAT-006 forces. */
+export const FOLDER_GRANTS_NEW_PATH_GRANTS = Object.freeze({
+  folder_grants: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
 /**
  * Current heartbeat execution-target resolver projection for aoa_app. This is
  * column-level because the table also stores worker_token_hash and unrelated
@@ -269,6 +277,7 @@ export const APP_SERVING_RELATIONS = sortedUnion(
   Object.keys(JOB_LEASING_NEW_PATH_GRANTS),
   Object.keys(JOB_EVENTS_NEW_PATH_GRANTS),
   Object.keys(JOB_CONTROL_COMMANDS_NEW_PATH_GRANTS),
+  Object.keys(FOLDER_GRANTS_NEW_PATH_GRANTS),
   Object.keys(CUTOVER_MARKER_APP_GRANTS),
   Object.keys(EXECUTION_TARGET_REVOCATION_APP_GRANTS),
   ["mcp_api_keys", "execution_targets"],
@@ -290,6 +299,8 @@ export const RLS_RELATIONS = Object.freeze([
   "worker_operation_receipts", "worker_lease_rejections", "distributed_cutover_markers",
   "job_events", "job_projection_receipts", "job_control_commands",
   "execution_target_revocations",
+  // DAT-006 (TEN-006 per-table RLS): the new local-folder-grant admission table.
+  "folder_grants",
 ] as const);
 
 export const FORCE_RLS_RELATIONS = Object.freeze(
@@ -319,6 +330,8 @@ export const POLICY_COUNTS = deepFreeze({
   job_projection_receipts: 1,
   job_control_commands: 1,
   execution_target_revocations: 2,
+  // DAT-006: one aoa_app org-scoped tenant-isolation policy (migration 0253).
+  folder_grants: 1,
 } as const);
 
 const ORGANIZATION_QUAL =
@@ -381,6 +394,9 @@ export const RLS_POLICY_MANIFEST = deepFreeze([
   // GUC unset). Same operator-metadata shape as the 0188 cutover marker above.
   policy("execution_target_revocations", "execution_target_revocations_operator_write", "ALL", "aoa_operator", "true", "true"),
   policy("execution_target_revocations", "execution_target_revocations_app_read", "SELECT", "aoa_app", CUTOVER_APP_READ_QUAL, null),
+  // DAT-006 folder-grant admission (migration 0253): aoa_app-only org-scoped tenant
+  // isolation, FORCE RLS, no operator authority. Same shape as job_control_commands.
+  policy("folder_grants", "folder_grants_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
 ] as const);
 
 /*
@@ -409,6 +425,7 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreeze({
     execution_target_revocations: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
     execution_targets: { aoa_app: [], aoa_operator: [] },
     execution_workspaces: { aoa_app: ["SELECT"], aoa_operator: [] },
+    folder_grants: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     heartbeat_runs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
     hub_audit: { aoa_app: ["INSERT"], aoa_operator: [] },
     hub_counter_snapshots: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
@@ -533,6 +550,7 @@ const RELATION_ACL_NULLNESS_CERTIFICATE = deepFreeze({
   execution_target_revocations: false,
   execution_targets: false,
   execution_workspaces: false,
+  folder_grants: false,
   heartbeat_runs: false,
   hub_audit: false,
   hub_counter_snapshots: false,

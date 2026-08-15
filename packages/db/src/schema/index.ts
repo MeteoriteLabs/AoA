@@ -72,6 +72,8 @@ export {
   type NewServiceInstance,
 } from "./service_instances.js";
 export { jobArtifacts, type JobArtifact, type NewJobArtifact } from "./job_artifacts.js";
+// DAT-006 (E5 workspaces): explicit local-folder grant admission (TEN-006 per-table RLS).
+export { folderGrants, type FolderGrant, type NewFolderGrant } from "./folder_grants.js";
 export {
   jobSecretHandles,
   type JobSecretHandle,

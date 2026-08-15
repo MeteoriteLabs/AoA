@@ -52,6 +52,7 @@ import {
   JobFenceError,
   ArtifactCommitRejection,
   PatchApplyRejection,
+  OrphanQuarantineRejection,
   SecretResolveRejection,
   authorizeSecretResolve,
   TERMINAL_ATTEMPT_STATUSES,
@@ -439,6 +440,26 @@ export interface JobControlRepository {
   /** The reaper: revoke expired leases' fences and converge each to a new attempt,
    * a terminal result, or a dead-letter. Bounded batch; idempotent per lease. */
   reapExpiredLeases(input: ReapExpiredLeasesInput): Promise<ReapExpiredLeasesResult>;
+  /**
+   * DAT-006 — record a device-authenticated ORPHAN quarantine row. UNGUARDED by
+   * design: an orphan is precisely a DEAD-FENCE output, so calling `guardActiveFence`
+   * (or `resolveWorkerFenceContext`) would throw `stale_fence` and defeat the purpose —
+   * same species as the reaper methods above, which "act when the fence is stale".
+   * Authorization is DEVICE-ONLY: an in-tx recheck of `targetId` + `deviceGeneration`
+   * against the CURRENT execution-target authority (a bumped/disabled/absent target →
+   * `OrphanQuarantineRejection('target_revoked')`), mirroring `guardActiveFence`'s
+   * generation cutoff WITHOUT the lease/fence step. It NEVER raises `stale_fence`.
+   *
+   * The row carries `status='quarantined'` (excluded from the committed partial-unique,
+   * so it STRUCTURALLY cannot collide-update a committed attempt) + the frozen
+   * `quarantine/` object key + retained sha256/size/sensitivity/kind + the observed
+   * (non-authoritative) lease/fence provenance + the frozen `QUARANTINE_REASONS` reason.
+   * Idempotent on the quarantined partial-unique natural key
+   * (org, job, attempt, identifier): a replayed finalize is a DO-NOTHING that returns
+   * the existing quarantined row (`alreadyQuarantined:true`). `observedLeaseId` /
+   * `observedFenceToken` are recorded, NEVER used for authorization.
+   */
+  recordOrphanQuarantine(input: OrphanQuarantineInput): Promise<OrphanQuarantineResult>;
   // ---------------------------------------------------------------------------
   // JOB-011 — SERVER-authored governance projections (approvals / runtime
   // decisions / completion policy). These gate on `guardActiveFence` FIRST (a
@@ -692,6 +713,34 @@ export interface ReapExpiredLeasesResult {
   deadLettered: number;
   cancelled: number;
   finalized: number;
+}
+
+/** DAT-006 — the device-authenticated orphan quarantine record input. All identity is
+ * device-scoped (targetId + deviceGeneration re-derived from the current authority);
+ * `observedLeaseId`/`observedFenceToken` are recorded as observed provenance only. */
+export interface OrphanQuarantineInput {
+  organizationId: string;
+  targetId: string;
+  deviceGeneration: number;
+  jobId: string;
+  attemptNumber: number;
+  identifier: string;
+  quarantineObjectKey: string;
+  sha256: string;
+  sizeBytes: number;
+  sensitivity: string;
+  kind: string;
+  /** A member of the frozen `QUARANTINE_REASONS`. */
+  reason: string;
+  observedLeaseId: string;
+  observedFenceToken: string;
+}
+
+/** DAT-006 — the outcome of recording an orphan quarantine row. `alreadyQuarantined`
+ * marks an idempotent DO-NOTHING replay (the existing row is returned unchanged). */
+export interface OrphanQuarantineResult {
+  artifact: JobArtifact;
+  alreadyQuarantined: boolean;
 }
 
 /** Exponential retry backoff (ms) for the Nth reaped attempt, bounded by `maxMs`. */
@@ -3196,6 +3245,114 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         }
       }
       return result;
+    },
+
+    async recordOrphanQuarantine(input) {
+      // DEVICE-ONLY authority recheck (NO guardActiveFence — an orphan is a dead-fence
+      // output; guarding would throw stale_fence and defeat the purpose). Mirror the
+      // generation-cutoff test in guardActiveFence, but WITHOUT the lease/fence join:
+      // read the CURRENT execution-target authority and refuse if the target is gone,
+      // disabled, or its live device_generation no longer equals the presented one.
+      // NEVER stale_fence — refusals are target_revoked.
+      const [target] = await tx
+        .select({
+          deviceGeneration: executionTargets.deviceGeneration,
+          status: executionTargets.status,
+        })
+        .from(executionTargets)
+        .where(eq(executionTargets.id, input.targetId))
+        .limit(1);
+      if (
+        !target
+        || target.deviceGeneration === null
+        || target.deviceGeneration !== input.deviceGeneration
+        || target.status === "disabled"
+      ) {
+        throw new OrphanQuarantineRejection("target_revoked");
+      }
+
+      // The (org, job) must exist in THIS tenant (RLS-scoped). The composite
+      // job_artifacts_org_job_fk would otherwise raise a raw FK error; pre-checking
+      // keeps the refusal coarse + non-disclosing (a foreign/absent job reads the same
+      // as missing → unknown_job → the service maps it to `malformed`).
+      const [job] = await tx
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(and(
+          eq(jobs.organizationId, input.organizationId),
+          eq(jobs.id, input.jobId),
+        ))
+        .limit(1);
+      if (!job) throw new OrphanQuarantineRejection("unknown_job");
+
+      // Bind the orphan to the caller's OWN target: the presented attempt must have been
+      // PLACED on this device's target (jobAttempts.placementTargetId === the verified
+      // device target). RLS is org-grain, but DAT-006 desktop/dedicated targets are
+      // OWNER-scoped, so without this a fully-enrolled worker T_b could fabricate
+      // dead-fence "orphan output" against ANOTHER owner's job/attempt in the same org.
+      // A missing attempt or a foreign placement reads the SAME as an absent job →
+      // coarse, non-disclosing unknown_job (the service maps it to `malformed`), never
+      // revealing whether the foreign attempt exists.
+      const [attempt] = await tx
+        .select({ placementTargetId: jobAttempts.placementTargetId })
+        .from(jobAttempts)
+        .where(and(
+          eq(jobAttempts.organizationId, input.organizationId),
+          eq(jobAttempts.jobId, input.jobId),
+          eq(jobAttempts.attemptNumber, input.attemptNumber),
+        ))
+        .limit(1);
+      if (!attempt || attempt.placementTargetId !== input.targetId) {
+        throw new OrphanQuarantineRejection("unknown_job");
+      }
+
+      // Idempotent orphan insert on the quarantined partial-unique natural key
+      // (org, job, attempt, identifier) WHERE status='quarantined'. This index is
+      // DISJOINT from the committed one, so an orphan NEVER collide-updates a committed
+      // attempt row (Rule #7 / immutable-artifact invariant); a replayed finalize is a
+      // DO-NOTHING that returns the existing quarantined row. A concurrent same-tenant
+      // job delete can race the (org, job) precheck → the composite FK raises 23503;
+      // normalize it to the coarse rejection (never a raw 500 / disclosing error).
+      let inserted: Array<typeof jobArtifacts.$inferSelect>;
+      try {
+        inserted = await tx.insert(jobArtifacts).values({
+          organizationId: input.organizationId,
+          jobId: input.jobId,
+          identifier: input.identifier,
+          objectKey: input.quarantineObjectKey,
+          sha256: input.sha256,
+          sizeBytes: input.sizeBytes,
+          sensitivity: input.sensitivity,
+          kind: input.kind,
+          attempt: input.attemptNumber,
+          status: "quarantined",
+          orphanDisposition: "quarantined",
+          quarantineReason: input.reason,
+          observedLeaseId: input.observedLeaseId,
+          observedFenceToken: input.observedFenceToken,
+        }).onConflictDoNothing({
+          target: [jobArtifacts.organizationId, jobArtifacts.jobId, jobArtifacts.attempt, jobArtifacts.identifier],
+          where: sql`status = 'quarantined'`,
+        }).returning();
+      } catch (error) {
+        if (error && typeof error === "object" && (error as { code?: string }).code === "23503") {
+          throw new OrphanQuarantineRejection("unknown_job");
+        }
+        throw error;
+      }
+      if (inserted[0]) return { artifact: inserted[0], alreadyQuarantined: false };
+
+      // Conflict → the orphan was already quarantined (idempotent replay): return the
+      // existing quarantined row unchanged (no second row, no committed-row mutation).
+      const [existing] = await tx.select().from(jobArtifacts).where(and(
+        eq(jobArtifacts.organizationId, input.organizationId),
+        eq(jobArtifacts.jobId, input.jobId),
+        eq(jobArtifacts.attempt, input.attemptNumber),
+        eq(jobArtifacts.identifier, input.identifier),
+        eq(jobArtifacts.status, "quarantined"),
+      )).limit(1);
+      if (!existing) throw new OrphanQuarantineRejection("unknown_job");
+      return { artifact: existing, alreadyQuarantined: true };
     },
 
     async recordGovernedProjection(input) {
