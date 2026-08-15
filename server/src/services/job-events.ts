@@ -47,6 +47,8 @@ import {
   type VerifiedWorkerOperation,
 } from "./job-leasing.js";
 import { normalizePlacementRegistryTarget } from "./execution-target-resolver.js";
+import { logger } from "../middleware/logger.js";
+import { bindJobTraceLogger } from "./job-trace-log.js";
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -204,6 +206,28 @@ export function createJobEventIngestService(input: {
             attemptId: context.lease.attemptId,
           });
           status = error.code === "attempt_terminal" ? "terminal" : "stale_fence";
+        }
+
+        // DEP-007 — the JOB-005 ingest hop binds the durable trace spine (already
+        // assembled as `fenceIdentity`) onto a child logger so this hop's structured
+        // line is join-able on `jobId` with the poll/ack hops and the durable
+        // `job_events` rows. Ids live only in the operator-only log sink (never a
+        // metric label); best-effort, never alters the ack path.
+        try {
+          bindJobTraceLogger(logger, {
+            organizationId: fenceIdentity.organizationId,
+            companyId: fenceIdentity.companyId,
+            jobId: fenceIdentity.jobId,
+            attemptId: fenceIdentity.attemptId,
+            attemptNumber: fenceIdentity.attemptNumber,
+            leaseId: fenceIdentity.leaseId,
+            fence: fenceIdentity.fence,
+            sequence: acceptedThroughSeq,
+            executionSourceKind: "distributed_worker",
+          }).debug({ status }, "job_events ingest");
+        } catch {
+          // Best-effort trace binding INSIDE the tenant tx: a logger throw must NEVER
+          // propagate and roll back the committed acceptEvent append (invariant #8).
         }
 
         return eventUploadOperationResponseV1Schema.parse({

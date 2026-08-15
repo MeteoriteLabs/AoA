@@ -26,6 +26,7 @@ import {
   WorkerEnrollmentError,
 } from "../services/worker-enrollment.js";
 import { logger } from "../middleware/logger.js";
+import { bindJobTraceLogger } from "../services/job-trace-log.js";
 import { sendWorkerProtocolError } from "../services/worker-protocol-http.js";
 import { sendWorkerOperationProtocolError } from "../services/worker-protocol-http.js";
 import {
@@ -98,7 +99,7 @@ export function workerControlRoutes(opts: {
   // to presign worker grants and headObject-verify commits.
   const storage = createStorageProviderFromConfig(loadConfig());
   const transferGrants = createArtifactTransferGrantService({ appDb: opts.appDb, storage });
-  const artifactCommits = createArtifactCommitService({ appDb: opts.appDb, storage });
+  const artifactCommits = createArtifactCommitService({ appDb: opts.appDb, storage, metrics: opts.jobControlMetrics });
   // DAT-006 — device-authenticated orphan quarantine (distinct `quarantine/` prefix,
   // no live fence). The daemon already builds/signs/POSTs both ops (worker-daemon
   // WRK-007); these stand up the server end.
@@ -228,6 +229,22 @@ export function workerControlRoutes(opts: {
         now: opts.now?.(),
       });
       const response = await leasing.poll({ auth, request: parsed.data });
+      // DEP-007 — bind the trace spine on the offer hop so the poll line is join-able on
+      // `jobId` with the ingest/ack hops. Ids go to the operator-only log sink only.
+      if (response.outcome === "offer") {
+        try {
+          bindJobTraceLogger(logger, {
+            organizationId: auth.organizationId,
+            jobId: response.body.job.jobId,
+            attemptNumber: response.body.job.attempt,
+            leaseId: response.body.leaseId,
+            fence: response.body.fenceToken,
+            executionSourceKind: "distributed_worker",
+          }).debug("worker poll lease offered");
+        } catch {
+          // Best-effort trace binding: never alter the poll path (invariant #8).
+        }
+      }
       res.status(200).json(response);
     } catch (error) {
       if (error instanceof WorkerOperationProofError) {
@@ -273,6 +290,20 @@ export function workerControlRoutes(opts: {
         now: opts.now?.(),
       });
       const response = await leasing.ack({ auth, request: parsed.data });
+      // DEP-007 — bind the trace spine on the ack hop (from the acked delivery identity)
+      // so the ack line joins the ingest/poll hops on `jobId`.
+      try {
+        bindJobTraceLogger(logger, {
+          organizationId: auth.organizationId,
+          jobId: parsed.data.body.jobId,
+          attemptNumber: parsed.data.body.attempt,
+          leaseId: parsed.data.body.leaseId,
+          fence: parsed.data.body.fenceToken,
+          executionSourceKind: "distributed_worker",
+        }).debug("worker lease ack");
+      } catch {
+        // Best-effort trace binding: never alter the ack path (invariant #8).
+      }
       res.status(200).json(response);
     } catch (error) {
       if (error instanceof WorkerOperationProofError) {

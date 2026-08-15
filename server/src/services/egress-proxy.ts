@@ -36,6 +36,7 @@ import {
   type SecretBrokerSet,
   type SecretResolveOutcome,
 } from "./secret-broker.js";
+import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
 import type { VerifiedWorkerOperation } from "./job-leasing.js";
 import {
   classifyEgressDestination,
@@ -110,6 +111,10 @@ export interface FenceAwareEgressProxyDeps {
   /** The config-sourced control-plane deny set (default: env). */
   readonly controlPlane?: ControlPlaneDenySet;
   readonly maxHeartbeatAgeMs?: number;
+  /** DEP-007 — count-only, id-free egress-deny telemetry. Emits ONLY the closed
+   * deny-reason enum (never the requested URL, host, or handle). Defaults to no-op;
+   * threaded into the embedded secret broker; best-effort, never alters the deny path. */
+  readonly metrics?: JobControlMetrics;
 }
 
 const denied = (reason: EgressDenyReason): EgressOutcome => ({ outcome: "denied", reason });
@@ -139,10 +144,12 @@ function originOf(url: string): { host: string; port: number; href: URL } | null
 }
 
 export function createFenceAwareEgressProxy(deps: FenceAwareEgressProxyDeps) {
+  const metrics = deps.metrics ?? NOOP_JOB_CONTROL_METRICS;
   const broker = createSecretBrokerService({
     appDb: deps.appDb,
     brokers: deps.brokers,
     maxHeartbeatAgeMs: deps.maxHeartbeatAgeMs,
+    metrics,
   });
   const resolveAddresses = deps.resolveAddresses ?? defaultResolveAddresses;
   const dispatch = deps.dispatch ?? failClosedEgressDispatcher;
@@ -151,6 +158,16 @@ export function createFenceAwareEgressProxy(deps: FenceAwareEgressProxyDeps) {
   return {
     async egress(input: { auth: VerifiedWorkerOperation; request: EgressRequestV1 }): Promise<EgressOutcome> {
       const { auth, request } = input;
+      // DEP-007 — count-only egress-deny telemetry: the closed reason enum only, never
+      // the requested URL/host/handle. Best-effort so it never alters the deny path.
+      const deny = (reason: EgressDenyReason): EgressOutcome => {
+        try {
+          metrics.egressDenied({ reason, count: 1 });
+        } catch {
+          /* best-effort telemetry */
+        }
+        return denied(reason);
+      };
 
       // 1. Load the network policy FIRST — a missing/unrecordable version fails
       //    closed (invariant #5). The version is a job-level fact, so it is known
@@ -166,9 +183,9 @@ export function createFenceAwareEgressProxy(deps: FenceAwareEgressProxyDeps) {
           fenceToken: request.fenceToken,
         });
       } catch {
-        return denied("malformed");
+        return deny("malformed");
       }
-      if (!policy) return denied("malformed");
+      if (!policy) return deny("malformed");
 
       // 2. Per-request fence reauth via the DAT-004 broker, persisting the applied
       //    policy version in the SAME audit UPDATE (D3). Auth-layer fence failures
@@ -190,35 +207,35 @@ export function createFenceAwareEgressProxy(deps: FenceAwareEgressProxyDeps) {
         });
       } catch {
         // A broker/tx fault (incl. an unrecordable version) is fail-closed malformed.
-        return denied("malformed");
+        return deny("malformed");
       }
 
-      if (resolved.outcome === "denied") return denied(resolved.reason);
+      if (resolved.outcome === "denied") return deny(resolved.reason);
       // A non-network (device-local) handle can never authorize egress.
-      if (resolved.outcome !== "resolved") return denied("malformed");
+      if (resolved.outcome !== "resolved") return deny("malformed");
       const material = resolved.material;
       // Only a network-use seam with a bound destination may egress (defense in depth
       // over authorizeSecretResolve, which already enforces this).
-      if (resolved.seam === "sandbox_local_only" || !material.destination) return denied("malformed");
+      if (resolved.seam === "sandbox_local_only" || !material.destination) return deny("malformed");
 
       // 4. Bind the requested URL to the handle's per-request destination: both must
       //    parse to the SAME allowlisted origin. A handle bound to destination X can
       //    never reach host Y (non-disclosing not_allowlisted on a mismatch).
       const dest = originOf(material.destination);
       const req = originOf(request.requestedUrl);
-      if (!dest) return denied("malformed");
-      if (!req || req.host !== dest.host || req.port !== dest.port) return denied("not_allowlisted");
+      if (!dest) return deny("malformed");
+      if (!req || req.host !== dest.host || req.port !== dest.port) return deny("not_allowlisted");
       // The bound destination itself must be a member of the policy allowlist.
       const destAllowed = policy.allow.some(
         (rule) => rule.scheme === "https" && rule.host === dest.host && rule.port === dest.port,
       );
-      if (!destAllowed) return denied("not_allowlisted");
+      if (!destAllowed) return deny("not_allowlisted");
 
       // 3. Resolve + classify (default-deny allowlist + IP-range + control-plane +
       //    DNS-rebind). A non-allow verdict denies with the exact frozen class.
       const resolvedAddrs = await resolveAddresses(req.host);
       const verdict = classifyEgressDestination(request.requestedUrl, resolvedAddrs, policy, controlPlane);
-      if (verdict !== "allow") return denied(verdict);
+      if (verdict !== "allow") return deny(verdict);
 
       // 5. Materialize the value into request HEADERS at delivery, pin the socket to
       //    a resolved (already-cleared) address, and dispatch. A dispatch fault is a
@@ -244,7 +261,7 @@ export function createFenceAwareEgressProxy(deps: FenceAwareEgressProxyDeps) {
           destination: `https://${dest.host}:${dest.port}`,
         };
       } catch {
-        return denied("malformed");
+        return deny("malformed");
       }
     },
   };

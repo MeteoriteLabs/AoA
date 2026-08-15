@@ -8,6 +8,28 @@
 
 export type SchedulerCapacityScope = "organization" | "target" | "global";
 
+// DEP-007 — four additional count-only, id-free metric families for the (previously
+// telemetry-silent) provider-lifecycle, egress-deny, secret-read, and artifact-commit
+// chokepoints. Every label below is a CLOSED low-cardinality enum or a clampCount
+// integer — NEVER a high-cardinality id (org/company/job/attempt/lease/worker/target).
+// High-cardinality correlation ids ride the LOGGER spine (job-events.ts + worker-control
+// routes), never a metric label. Adding an id field breaks the compile-closed guard in
+// job-control-metrics.test.ts (the id-rejection mirror).
+export type ProviderLifecycleOperation = "acquire" | "release" | "resume";
+export type ProviderLifecycleOutcome = "succeeded" | "failed";
+export type EgressDeniedReason =
+  | "metadata"
+  | "private"
+  | "control_plane"
+  | "not_allowlisted"
+  | "malformed"
+  | "stale_fence"
+  | "attempt_terminal"
+  | "target_revoked";
+export type SecretReadOutcome = "resolved" | "device_handoff" | "denied";
+export type ArtifactOpOperation = "commit" | "transfer_grant";
+export type ArtifactOpOutcome = "committed" | "rejected";
+
 export interface JobControlMetrics {
   certificateScan(value: {
     readonly hitsObserved: number;
@@ -41,6 +63,24 @@ export interface JobControlMetrics {
     readonly delivered: number;
     readonly cleaned: number;
   }): void;
+  providerLifecycle(value: {
+    readonly operation: ProviderLifecycleOperation;
+    readonly outcome: ProviderLifecycleOutcome;
+    readonly count: number;
+  }): void;
+  egressDenied(value: {
+    readonly reason: EgressDeniedReason;
+    readonly count: number;
+  }): void;
+  secretRead(value: {
+    readonly outcome: SecretReadOutcome;
+    readonly count: number;
+  }): void;
+  artifactOp(value: {
+    readonly operation: ArtifactOpOperation;
+    readonly outcome: ArtifactOpOutcome;
+    readonly count: number;
+  }): void;
 }
 
 /** Clamp any observed count to a non-negative floored safe integer; non-finite becomes zero. */
@@ -53,6 +93,41 @@ function clampCount(value: number): number {
 /** Clamp an out-of-union scope down to the safe default so telemetry never widens the contract. */
 function clampScope(value: SchedulerCapacityScope): SchedulerCapacityScope {
   return value === "organization" || value === "target" || value === "global" ? value : "global";
+}
+
+// DEP-007 — each closed-enum clamp folds an out-of-union value to the SAFE (most
+// conservative) default so a caller can never widen the metric contract, exactly like
+// clampScope. The defaults bias toward the failure/denied end so a misuse under-reports
+// success rather than fabricating it.
+function clampProviderOperation(value: ProviderLifecycleOperation): ProviderLifecycleOperation {
+  return value === "acquire" || value === "release" || value === "resume" ? value : "acquire";
+}
+function clampProviderOutcome(value: ProviderLifecycleOutcome): ProviderLifecycleOutcome {
+  return value === "succeeded" || value === "failed" ? value : "failed";
+}
+function clampEgressDeniedReason(value: EgressDeniedReason): EgressDeniedReason {
+  switch (value) {
+    case "metadata":
+    case "private":
+    case "control_plane":
+    case "not_allowlisted":
+    case "malformed":
+    case "stale_fence":
+    case "attempt_terminal":
+    case "target_revoked":
+      return value;
+    default:
+      return "malformed";
+  }
+}
+function clampSecretReadOutcome(value: SecretReadOutcome): SecretReadOutcome {
+  return value === "resolved" || value === "device_handoff" || value === "denied" ? value : "denied";
+}
+function clampArtifactOperation(value: ArtifactOpOperation): ArtifactOpOperation {
+  return value === "commit" || value === "transfer_grant" ? value : "commit";
+}
+function clampArtifactOutcome(value: ArtifactOpOutcome): ArtifactOpOutcome {
+  return value === "committed" || value === "rejected" ? value : "rejected";
 }
 
 /**
@@ -68,6 +143,10 @@ export const NOOP_JOB_CONTROL_METRICS: JobControlMetrics = Object.freeze({
   schedulerExpiry: () => {},
   schedulerCardinality: () => {},
   outboxTick: () => {},
+  providerLifecycle: () => {},
+  egressDenied: () => {},
+  secretRead: () => {},
+  artifactOp: () => {},
 });
 
 /**
@@ -129,6 +208,28 @@ export function createPinoJobControlMetrics(
       claimed: clampCount(value.claimed),
       delivered: clampCount(value.delivered),
       cleaned: clampCount(value.cleaned),
+    }),
+    providerLifecycle: (value) => emit({
+      event: "job_control.provider_lifecycle",
+      operation: clampProviderOperation(value.operation),
+      outcome: clampProviderOutcome(value.outcome),
+      count: clampCount(value.count),
+    }),
+    egressDenied: (value) => emit({
+      event: "job_control.egress_denied",
+      reason: clampEgressDeniedReason(value.reason),
+      count: clampCount(value.count),
+    }),
+    secretRead: (value) => emit({
+      event: "job_control.secret_read",
+      outcome: clampSecretReadOutcome(value.outcome),
+      count: clampCount(value.count),
+    }),
+    artifactOp: (value) => emit({
+      event: "job_control.artifact_op",
+      operation: clampArtifactOperation(value.operation),
+      outcome: clampArtifactOutcome(value.outcome),
+      count: clampCount(value.count),
     }),
   };
 }

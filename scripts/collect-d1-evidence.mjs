@@ -23,7 +23,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { buildEvidenceBundle, validateEvidenceBundle, REQUIRED_SECTIONS } from "./lib/d1-evidence-bundle.mjs";
 
@@ -79,14 +79,22 @@ function gatherLogs(composeFile) {
   return logs;
 }
 
-/** Section 2 — worker event stream (control-plane events table, best-effort). */
-function gatherEvents(composeFile) {
-  const q =
-    "SELECT COALESCE(json_agg(row_to_json(e) ORDER BY e.seq), '[]') " +
-    "FROM (SELECT * FROM worker_events ORDER BY seq DESC LIMIT 500) e;";
+// Section 2 — the durable worker event stream. DEP-007 repoint: the real JOB-005 ledger
+// is `job_events` (there is NO `worker_events` table and no `seq` column — the pre-DEP-007
+// query silently returned an empty events section on every retained failure bundle). The
+// trace the telemetry-contract test reconstructs (exec-source→job→attempt→lease→sandbox)
+// lives in these rows. Retain the MOST-RECENT 500 rows CHRONOLOGICALLY by `occurred_at`
+// (tie-broken by the per-attempt `sequence`) — NOT by `sequence` alone, which is a
+// per-attempt ordinal that would evict a job's low-sequence rows under campaign load.
+export const EVENTS_QUERY =
+  "SELECT COALESCE(json_agg(row_to_json(e) ORDER BY e.occurred_at, e.sequence), '[]') " +
+  "FROM (SELECT * FROM job_events ORDER BY occurred_at DESC, sequence DESC LIMIT 500) e;";
+
+/** Section 2 — worker event stream (control-plane `job_events` table, best-effort). */
+export function gatherEvents(composeFile) {
   const { ok, out } = dc(composeFile, [
     "exec", "-T", "postgres",
-    "psql", "-U", "aoa", "-d", "aoa", "-t", "-A", "-c", q,
+    "psql", "-U", "aoa", "-d", "aoa", "-t", "-A", "-c", EVENTS_QUERY,
   ]);
   if (!ok) return [];
   try {
@@ -171,4 +179,9 @@ function main() {
   console.log(`[collect-d1-evidence] wrote bundle + ${REQUIRED_SECTIONS.length} section files to ${outDir}`);
 }
 
-main();
+// Run as a CLI entry point only. When imported (e.g. by the DEP-007 telemetry-contract
+// D1 test, which calls gatherEvents directly, or by the collector unit test) main() must
+// NOT execute — importing the module has zero side effects.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}

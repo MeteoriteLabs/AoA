@@ -1785,3 +1785,73 @@ try {
 `;
   return dexecModule("control-plane", script);
 }
+
+/** DEP-007 — owner-DB probe (bypasses RLS, like queryLeaseFaultState) that reconstructs
+ * the DURABLE end-to-end trace for one job: the job's execution SOURCE (jobs.source_kind
+ * = the exec-source end of exec-source→job→attempt→lease→sandbox) plus every job_events
+ * row ORDERED BY the contiguous `sequence`, each carrying its attempt/lease and — for the
+ * attempt_started event — the terminal `sandboxId` parsed from the event jsonb payload
+ * (sandboxId is payload-only; there is no column/FK for it, D1/§7.7). Runs in
+ * control-plane. Returns { ok, job:{sourceKind,companyId,status}, events:[...] }. */
+export function queryJobEventTrace({ organizationId, jobId }) {
+  const params = { organizationId, jobId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const [job] = await sql\`SELECT source_kind AS "sourceKind", company_id AS "companyId", status
+    FROM jobs WHERE organization_id = \${P.organizationId} AND id = \${P.jobId}\`;
+  const events = await sql\`SELECT
+      sequence,
+      event_type AS "eventType",
+      attempt_id AS "attemptId",
+      attempt_number AS "attemptNumber",
+      lease_id AS "leaseId",
+      company_id AS "companyId",
+      organization_id AS "organizationId",
+      job_id AS "jobId",
+      event->'payload'->>'sandboxId' AS "sandboxId"
+    FROM job_events
+    WHERE organization_id = \${P.organizationId} AND job_id = \${P.jobId}
+    ORDER BY sequence\`;
+  report({ ok: true, job: job ?? null, events });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** DEP-007 — a NON-OWNER read of `job_events` under the bounded `aoa_app` serving role
+ * (AOA_APP_DATABASE_URL: NOSUPERUSER/NOBYPASSRLS), scoped to `scopeOrganizationId` via
+ * the transaction-local `aoa.organization_id` GUC — the SAME isolation filter
+ * runInTenant writes (with_tenant_tx). A scope that is NOT the job's owning org returns
+ * ZERO rows under FORCE RLS even though the job_id matches (tenant ids never leak to a
+ * foreign reader); scoping to the owning org returns the real count (positive control).
+ * Runs in control-plane (the only container with the aoa_app DSN). Returns { ok, total }. */
+export function queryJobEventsAsApp({ jobId, scopeOrganizationId }) {
+  const params = { jobId, scopeOrganizationId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.AOA_APP_DATABASE_URL, { max: 1 });
+try {
+  const rows = await sql.begin(async (tx) => {
+    // is_local => true: scoped to THIS transaction, cannot leak across pooled conns.
+    await tx\`select set_config('aoa.organization_id', \${P.scopeOrganizationId}, true)\`;
+    return tx\`SELECT count(*)::int AS total FROM job_events WHERE job_id = \${P.jobId}\`;
+  });
+  report({ ok: true, total: rows[0].total });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}

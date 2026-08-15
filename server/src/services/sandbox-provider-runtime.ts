@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { logger } from "../middleware/logger.js";
 import { createGvisorSandboxRuntimeProvider } from "./gvisor-sandbox-provider.js";
+import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
 
 export interface SandboxProviderAcquireInput {
   companyId: string;
@@ -1028,8 +1029,14 @@ export function createE2bSandboxRuntimeProvider(
 export function sandboxProviderRuntime(
   options: {
     providers?: SandboxRuntimeProvider[];
+    /** DEP-007 — count-only, id-free provider-lifecycle telemetry (acquire | release |
+     * resume × succeeded | failed). Defaults to no-op; the composition root threads the
+     * shared pino instance when distributed execution is enabled. Emitted AFTER the
+     * provider call resolves so it never alters the lifecycle path; best-effort. */
+    metrics?: JobControlMetrics;
   } = {},
 ) {
+  const metrics = options.metrics ?? NOOP_JOB_CONTROL_METRICS;
   const providers = new Map<string, SandboxRuntimeProvider>();
   for (const provider of options.providers ?? [
     createFakeSandboxRuntimeProvider(),
@@ -1054,12 +1061,34 @@ export function sandboxProviderRuntime(
   return {
     getProvider,
 
+    // DEP-007 — count-only provider-lifecycle telemetry is emitted in a `.then()` AFTER
+    // the provider call resolves (never `async`), so the synchronous `requireProvider`
+    // (and resume-support) guards keep throwing SYNCHRONOUSLY, exactly as before. The
+    // emit is best-effort and can never alter the lifecycle path.
     acquireLease(providerKey: string, input: SandboxProviderAcquireInput) {
-      return requireProvider(providerKey).acquireLease(input);
+      return requireProvider(providerKey).acquireLease(input).then((lease) => {
+        try {
+          metrics.providerLifecycle({ operation: "acquire", outcome: "succeeded", count: 1 });
+        } catch {
+          /* best-effort telemetry */
+        }
+        return lease;
+      });
     },
 
     releaseLease(providerKey: string, input: SandboxProviderReleaseInput) {
-      return requireProvider(providerKey).releaseLease(input);
+      return requireProvider(providerKey).releaseLease(input).then((result) => {
+        try {
+          metrics.providerLifecycle({
+            operation: "release",
+            outcome: result.cleanupStatus === "success" ? "succeeded" : "failed",
+            count: 1,
+          });
+        } catch {
+          /* best-effort telemetry */
+        }
+        return result;
+      });
     },
 
     // U7.4 — mirrors releaseLease's passthrough; guarded (like writeFiles/
@@ -1070,7 +1099,14 @@ export function sandboxProviderRuntime(
       if (typeof provider.resumeLease !== "function") {
         throw new Error(`Sandbox provider "${providerKey}" does not support resume.`);
       }
-      return provider.resumeLease(input);
+      return provider.resumeLease(input).then((result) => {
+        try {
+          metrics.providerLifecycle({ operation: "resume", outcome: "succeeded", count: 1 });
+        } catch {
+          /* best-effort telemetry */
+        }
+        return result;
+      });
     },
 
     execute(providerKey: string, input: SandboxProviderExecuteInput) {

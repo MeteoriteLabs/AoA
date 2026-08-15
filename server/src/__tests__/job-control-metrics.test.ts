@@ -54,6 +54,25 @@ type PlanJobControlMetrics = {
     delivered: number;
     cleaned: number;
   }>): void;
+  providerLifecycle(value: Readonly<{
+    operation: "acquire" | "release" | "resume";
+    outcome: "succeeded" | "failed";
+    count: number;
+  }>): void;
+  egressDenied(value: Readonly<{
+    reason: "metadata" | "private" | "control_plane" | "not_allowlisted" | "malformed"
+      | "stale_fence" | "attempt_terminal" | "target_revoked";
+    count: number;
+  }>): void;
+  secretRead(value: Readonly<{
+    outcome: "resolved" | "device_handoff" | "denied";
+    count: number;
+  }>): void;
+  artifactOp(value: Readonly<{
+    operation: "commit" | "transfer_grant";
+    outcome: "committed" | "rejected";
+    count: number;
+  }>): void;
 };
 
 type _MetricsAreBidirectionallyExact = Assert<Equal<JobControlMetrics, PlanJobControlMetrics>>;
@@ -75,6 +94,10 @@ metrics.certificateScan({
   cardinalitySaturated: false,
 });
 metrics.schedulerCapacityReject({ scope: "organization" });
+metrics.providerLifecycle({ operation: "acquire", outcome: "succeeded", count: 1 });
+metrics.egressDenied({ reason: "not_allowlisted", count: 1 });
+metrics.secretRead({ outcome: "resolved", count: 1 });
+metrics.artifactOp({ operation: "commit", outcome: "committed", count: 1 });
 
 // @ts-expect-error The exact upsert payload is closed to caller-defined fields.
 metrics.certificateUpsert({ count: 1, organizationId: "forbidden" });
@@ -82,12 +105,28 @@ metrics.certificateUpsert({ count: 1, organizationId: "forbidden" });
 metrics.certificateScan(openRecord);
 // @ts-expect-error Scheduler scope is the exact three-value plan union.
 const invalidScope: SchedulerCapacityScope = "tenant";
+// @ts-expect-error provider-lifecycle telemetry is count-only: a high-cardinality id is rejected.
+metrics.providerLifecycle({ operation: "acquire", outcome: "succeeded", count: 1, jobId: "forbidden" });
+// @ts-expect-error egress-denied telemetry is count-only: a high-cardinality id is rejected.
+metrics.egressDenied({ reason: "not_allowlisted", count: 1, organizationId: "forbidden" });
+// @ts-expect-error secret-read telemetry is count-only: a high-cardinality id is rejected.
+metrics.secretRead({ outcome: "resolved", count: 1, leaseId: "forbidden" });
+// @ts-expect-error artifact-op telemetry is count-only: a high-cardinality id is rejected.
+metrics.artifactOp({ operation: "commit", outcome: "committed", count: 1, attemptId: "forbidden" });
 
 void invalidScope;
 `;
 
 const METRICS_TYPES_EXPECTED_MODULE = String.raw`
 export type SchedulerCapacityScope = "organization" | "target" | "global";
+export type ProviderLifecycleOperation = "acquire" | "release" | "resume";
+export type ProviderLifecycleOutcome = "succeeded" | "failed";
+export type EgressDeniedReason =
+  | "metadata" | "private" | "control_plane" | "not_allowlisted"
+  | "malformed" | "stale_fence" | "attempt_terminal" | "target_revoked";
+export type SecretReadOutcome = "resolved" | "device_handoff" | "denied";
+export type ArtifactOpOperation = "commit" | "transfer_grant";
+export type ArtifactOpOutcome = "committed" | "rejected";
 export interface JobControlMetrics {
   certificateScan(value: Readonly<{
     hitsObserved: number;
@@ -121,6 +160,18 @@ export interface JobControlMetrics {
     delivered: number;
     cleaned: number;
   }>): void;
+  providerLifecycle(value: Readonly<{
+    operation: ProviderLifecycleOperation;
+    outcome: ProviderLifecycleOutcome;
+    count: number;
+  }>): void;
+  egressDenied(value: Readonly<{ reason: EgressDeniedReason; count: number }>): void;
+  secretRead(value: Readonly<{ outcome: SecretReadOutcome; count: number }>): void;
+  artifactOp(value: Readonly<{
+    operation: ArtifactOpOperation;
+    outcome: ArtifactOpOutcome;
+    count: number;
+  }>): void;
 }
 `;
 
@@ -151,6 +202,22 @@ type OutboxTickMetrics = Readonly<{
   delivered: number;
   cleaned: number;
 }>;
+type ProviderLifecycleMetrics = Readonly<{
+  operation: "acquire" | "release" | "resume";
+  outcome: "succeeded" | "failed";
+  count: number;
+}>;
+type EgressDeniedMetrics = Readonly<{
+  reason: "metadata" | "private" | "control_plane" | "not_allowlisted"
+    | "malformed" | "stale_fence" | "attempt_terminal" | "target_revoked";
+  count: number;
+}>;
+type SecretReadMetrics = Readonly<{ outcome: "resolved" | "device_handoff" | "denied"; count: number }>;
+type ArtifactOpMetrics = Readonly<{
+  operation: "commit" | "transfer_grant";
+  outcome: "committed" | "rejected";
+  count: number;
+}>;
 
 type RuntimeMetrics = {
   certificateScan(value: CertificateScanMetrics): void;
@@ -161,6 +228,10 @@ type RuntimeMetrics = {
   schedulerExpiry(value: SchedulerExpiryMetrics): void;
   schedulerCardinality(value: SchedulerCardinalityMetrics): void;
   outboxTick(value: OutboxTickMetrics): void;
+  providerLifecycle(value: ProviderLifecycleMetrics): void;
+  egressDenied(value: EgressDeniedMetrics): void;
+  secretRead(value: SecretReadMetrics): void;
+  artifactOp(value: ArtifactOpMetrics): void;
 };
 
 type RuntimeMetricsModule = {
@@ -290,6 +361,10 @@ describe("JOB-003 closed payload-free metrics", () => {
       cleaned: 41,
       credential: forbidden,
     } as OutboxTickMetrics);
+    metrics.providerLifecycle({ operation: "acquire", outcome: "succeeded", count: 43, jobId: forbidden } as unknown as ProviderLifecycleMetrics);
+    metrics.egressDenied({ reason: "not_allowlisted", count: 47, url: forbidden } as unknown as EgressDeniedMetrics);
+    metrics.secretRead({ outcome: "denied", count: 53, leaseId: forbidden } as unknown as SecretReadMetrics);
+    metrics.artifactOp({ operation: "commit", outcome: "rejected", count: 59, hash: forbidden } as unknown as ArtifactOpMetrics);
 
     expect(records).toEqual([
       [{ event: "job_control.certificate_scan", hitsObserved: 3, hitsSaturated: false,
@@ -304,6 +379,10 @@ describe("JOB-003 closed payload-free metrics", () => {
       [{ event: "job_control.scheduler_cardinality", organizations: 2, targets: 23, signals: 29 }],
       [{ event: "job_control.outbox_tick", budgetMs: 600, elapsedMs: 650, overshootMs: 50,
         organizations: 3, claimed: 31, delivered: 37, cleaned: 41 }],
+      [{ event: "job_control.provider_lifecycle", operation: "acquire", outcome: "succeeded", count: 43 }],
+      [{ event: "job_control.egress_denied", reason: "not_allowlisted", count: 47 }],
+      [{ event: "job_control.secret_read", outcome: "denied", count: 53 }],
+      [{ event: "job_control.artifact_op", operation: "commit", outcome: "rejected", count: 59 }],
     ]);
     expect(JSON.stringify(records)).not.toContain(forbidden);
   });
@@ -350,6 +429,12 @@ describe("JOB-003 closed payload-free metrics", () => {
     metrics.outboxTick({ budgetMs: -1, elapsedMs: Number.MAX_SAFE_INTEGER + 1,
       overshootMs: Number.NaN, organizations: -2, claimed: 1.5,
       delivered: Number.NEGATIVE_INFINITY, cleaned: 3 });
+    // DEP-007 closed enums: an out-of-union operation/outcome/reason is clamped to the
+    // safe default so telemetry can never widen the contract, and counts are clamped.
+    metrics.providerLifecycle({ operation: "boom", outcome: "kaput", count: -5 } as unknown as ProviderLifecycleMetrics);
+    metrics.egressDenied({ reason: "wide_open", count: 1.9 } as unknown as EgressDeniedMetrics);
+    metrics.secretRead({ outcome: "leaked", count: Number.NaN } as unknown as SecretReadMetrics);
+    metrics.artifactOp({ operation: "exfil", outcome: "sneaky", count: Number.POSITIVE_INFINITY } as unknown as ArtifactOpMetrics);
 
     expect(records).toEqual([
       [{ event: "job_control.scheduler_capacity_reject", scope: "global" }],
@@ -357,6 +442,10 @@ describe("JOB-003 closed payload-free metrics", () => {
       [{ event: "job_control.scheduler_cardinality", organizations: 0, targets: 1, signals: 0 }],
       [{ event: "job_control.outbox_tick", budgetMs: 0, elapsedMs: Number.MAX_SAFE_INTEGER,
         overshootMs: 0, organizations: 0, claimed: 1, delivered: 0, cleaned: 3 }],
+      [{ event: "job_control.provider_lifecycle", operation: "acquire", outcome: "failed", count: 0 }],
+      [{ event: "job_control.egress_denied", reason: "malformed", count: 1 }],
+      [{ event: "job_control.secret_read", outcome: "denied", count: 0 }],
+      [{ event: "job_control.artifact_op", operation: "commit", outcome: "rejected", count: 0 }],
     ]);
   });
 
@@ -366,9 +455,15 @@ describe("JOB-003 closed payload-free metrics", () => {
     try { source = readFileSync(sourceUrl, "utf8"); } catch { /* assertion below owns RED */ }
     expect(source).not.toBeNull();
     if (source === null) return;
+    // DEP-007: "reason" is intentionally NOT in this free-form-vocabulary scan — the
+    // egressDenied family names its label `reason`, but it is a CLOSED low-cardinality
+    // enum (EgressDeniedReason), pinned to that exact union by the compiler fixture
+    // (bidirectional Equal) and the AST argument-type assertion below. Those two closed
+    // guards forbid a free-form reason string reaching the metric surface; the identity
+    // vocabulary below stays banned outright.
     for (const forbidden of [
       "organizationId", "companyId", "workerId", "targetId", "jobId", "attemptId",
-      "leaseId", "hash", "reason", "error", "stack", "sql", "credential", "url", "input",
+      "leaseId", "hash", "error", "stack", "sql", "credential", "url", "input",
     ]) {
       expect(source).not.toMatch(new RegExp(`\\b${forbidden}\\b`, "i"));
     }
@@ -401,6 +496,10 @@ describe("JOB-003 closed payload-free metrics", () => {
       schedulerCardinality: ["organizations:number", "targets:number", "signals:number"],
       outboxTick: ["budgetMs:number", "elapsedMs:number", "overshootMs:number", "organizations:number",
         "claimed:number", "delivered:number", "cleaned:number"],
+      providerLifecycle: ["operation:ProviderLifecycleOperation", "outcome:ProviderLifecycleOutcome", "count:number"],
+      egressDenied: ["reason:EgressDeniedReason", "count:number"],
+      secretRead: ["outcome:SecretReadOutcome", "count:number"],
+      artifactOp: ["operation:ArtifactOpOperation", "outcome:ArtifactOpOutcome", "count:number"],
     };
     expect(interfaceNode.members).toHaveLength(Object.keys(expectedParameters).length);
     for (const member of interfaceNode.members) {

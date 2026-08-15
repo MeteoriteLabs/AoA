@@ -38,6 +38,7 @@ import {
 import { runInTenant } from "../db/tenant-context.js";
 import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js";
 import { resolveWorkerFenceContext } from "./worker-fence-context.js";
+import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
 
 /** A guarded-fence refusal → the frozen protocol reason vocabulary. */
 function fenceReason(code: JobFenceErrorCode): "stale_fence" | "attempt_terminal" | "target_revoked" {
@@ -176,9 +177,14 @@ export function createSecretBrokerService(input: {
   appDb: Db;
   brokers?: SecretBrokerSet;
   maxHeartbeatAgeMs?: number;
+  /** DEP-007 — count-only, id-free secret-read telemetry. Emits ONLY the resolve
+   * OUTCOME token (resolved | device_handoff | denied) — never a value, ref, host, or
+   * destination (invariant #7). Defaults to no-op; best-effort, never alters resolve. */
+  metrics?: JobControlMetrics;
 }) {
   const brokers = input.brokers ?? failClosedSecretBrokers;
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300_000);
+  const metrics = input.metrics ?? NOOP_JOB_CONTROL_METRICS;
 
   return {
     async resolve(resolveInput: {
@@ -215,16 +221,29 @@ export function createSecretBrokerService(input: {
         }
       });
 
-      if ("denied" in authorized) return authorized.denied;
-
-      // ONLY AFTER the fence + authorization: dispatch to the legacy broker for the value.
-      // A broker fetch failure is a coarse, non-disclosing `malformed` (never a value leak,
-      // never a disclosing error) — e.g. an unwired seam or a broker-side revocation.
-      try {
-        return await dispatchResolvedSecret(authorized, brokers);
-      } catch {
-        return { outcome: "denied", reason: "malformed" };
+      // Resolve to the final control-plane outcome, THEN emit the count-only outcome
+      // token. A broker fetch failure is a coarse, non-disclosing `malformed` (never a
+      // value leak, never a disclosing error) — e.g. an unwired seam or a broker-side
+      // revocation.
+      let outcome: SecretResolveOutcome;
+      if ("denied" in authorized) {
+        outcome = authorized.denied;
+      } else {
+        try {
+          outcome = await dispatchResolvedSecret(authorized, brokers);
+        } catch {
+          outcome = { outcome: "denied", reason: "malformed" };
+        }
       }
+
+      // DEP-007 — count-only secret-read telemetry: the OUTCOME discriminant only, never
+      // the value/ref/destination. Best-effort so a failing metric never alters resolve.
+      try {
+        metrics.secretRead({ outcome: outcome.outcome, count: 1 });
+      } catch {
+        /* best-effort telemetry */
+      }
+      return outcome;
     },
   };
 }

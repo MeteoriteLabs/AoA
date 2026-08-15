@@ -40,6 +40,7 @@ import { runInTenant } from "../db/tenant-context.js";
 import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js";
 import { resolveWorkerFenceContext } from "./worker-fence-context.js";
 import type { StorageProvider } from "../storage/types.js";
+import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
 
 /** A guarded-fence refusal → the frozen protocol reason vocabulary. */
 function fenceReason(code: JobFenceErrorCode): "stale_fence" | "attempt_terminal" | "target_revoked" {
@@ -61,9 +62,14 @@ export function createArtifactCommitService(input: {
   /** Server-authoritative absolute per-object ceiling (the grant's maxBytes is
    * advisory + unpersisted, and a presigned PUT imposes no size bound). */
   maxArtifactBytes?: number;
+  /** DEP-007 — count-only, id-free artifact-commit telemetry. Defaults to the no-op
+   * surface; the composition root threads the shared pino instance when distributed
+   * execution is enabled. Emission is best-effort and never alters the commit path. */
+  metrics?: JobControlMetrics;
 }) {
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300_000);
   const maxArtifactBytes = Math.max(1, input.maxArtifactBytes ?? 5 * 1024 ** 3);
+  const metrics = input.metrics ?? NOOP_JOB_CONTROL_METRICS;
 
   return {
     async commit(commitInput: {
@@ -87,7 +93,7 @@ export function createArtifactCommitService(input: {
           reason,
         });
 
-      return runInTenant(input.appDb, auth.organizationId, async (repos) => {
+      const response = await runInTenant(input.appDb, auth.organizationId, async (repos) => {
         const ctx = await resolveWorkerFenceContext(repos, auth, {
           leaseId: payload.leaseId,
           jobId: payload.jobId,
@@ -158,6 +164,20 @@ export function createArtifactCommitService(input: {
           committedAt: (row.committedAt ?? new Date()).toISOString(),
         });
       });
+
+      // DEP-007 — count-only artifact-commit telemetry (committed | rejected), emitted
+      // AFTER the authoritative response is resolved so it can never alter the commit
+      // path. Best-effort: a failing metric surface is swallowed.
+      try {
+        metrics.artifactOp({
+          operation: "commit",
+          outcome: response.outcome === "committed" ? "committed" : "rejected",
+          count: 1,
+        });
+      } catch {
+        /* best-effort telemetry */
+      }
+      return response;
     },
   };
 }
