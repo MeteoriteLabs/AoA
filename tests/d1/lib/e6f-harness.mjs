@@ -1516,3 +1516,272 @@ try {
 `;
   return dexecModule("test-runner", script);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEP-005 — network-failure + clock-control additions (ADDITIVE ONLY — nothing
+// above is modified). These ADD the four primitives the three lease-fault demos
+// (e6f-09) need on top of the frozen E6F substrate: a SQL clock helper that back-
+// dates the durable lease deadline columns, a client for the DORMANT flag-gated
+// reaper trigger, a Toxiproxy proxy-toggle (a clean bidirectional link sever the
+// latency/limit toxics cannot do), a stable-idempotencyKey terminal-event upload
+// client (+ its worker-protocol digest builder), and a one-shot owner-DB probe of
+// the whole convergence picture for a job. They never change the behaviour or
+// signature of any existing export.
+//
+// ── Clock control: back-date the durable lease deadline row (D1) ──────────────
+// The control plane's ONLY time source is the Postgres clock_timestamp() re-read
+// per locked mutation; there is no injectable clock / shortenable-deadline config
+// in the running stack, and the reaper has no live trigger — so a back-dated lease
+// never converges on its own. The sole deterministic, sleep-free lever is to rewrite
+// the row (the proven idiom from job-reconciliation.integration.test.ts). Column
+// subtlety (load-bearing): back-date ack_deadline for the pre-ACK/offered case (leave
+// expires_at future), expires_at for the expired/active case, and ALWAYS keep
+// ack_deadline < expires_at (leases_authority_atomic_check). The back-date is ALWAYS
+// clock_timestamp()-relative (server clock), NEVER a host Date.
+//
+// ── Reaper trigger + partition (D2/D4) ───────────────────────────────────────
+// reapOrganization() drives the dormant POST /api/worker-control/_test/reap (gated on
+// AOA_DISTRIBUTED_EXECUTION_ENABLED, which is true on the D1 control plane). It is
+// device/board-auth-free and reaches control-plane:3100 DIRECTLY (not through
+// toxiproxy:13100), so cutting worker-to-control-plane never blocks the reap the demo
+// fires. setProxyEnabled() severs/restores a whole link via the Toxiproxy 2.x proxy-
+// update endpoint (POST /proxies/<name> {enabled}); for degraded/latency cuts use the
+// existing setToxiproxyToxic (timeout/reset_peer) instead.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const EVENTS_URL = `${CONTROL_PLANE_URL}/api/worker-control/events`;
+const REAP_URL = `${CONTROL_PLANE_URL}/api/worker-control/_test/reap`;
+
+/** Back-date the durable lease deadline column(s) so the reaper treats the worker as
+ * gone. Runs in control-plane under the OWNER DSN (seeding channel). Back-dates ONLY
+ * the column(s) whose interval is supplied — `ackDeadlineIntervalSec` (the pre-ACK /
+ * offered case) and/or `expiresAtIntervalSec` (the expired / active case) — ALWAYS via
+ * clock_timestamp() (server-relative), NEVER a host Date. The caller MUST keep
+ * ack_deadline < expires_at: for the expired/active case pass BOTH with
+ * ackDeadlineIntervalSec > expiresAtIntervalSec (e.g. 2 and 1, as the proven idiom
+ * does). Returns { updated } — the row count touched. */
+export function expireLeaseDeadlines({ leaseId, ackDeadlineIntervalSec, expiresAtIntervalSec }) {
+  const setAck = ackDeadlineIntervalSec !== undefined && ackDeadlineIntervalSec !== null;
+  const setExpires = expiresAtIntervalSec !== undefined && expiresAtIntervalSec !== null;
+  if (!setAck && !setExpires) {
+    throw new Error("expireLeaseDeadlines: supply ackDeadlineIntervalSec and/or expiresAtIntervalSec");
+  }
+  // Coerce to positive integers before embedding as an interval literal (no untrusted
+  // value ever reaches SQL as text — the leaseId binds as a parameter, the interval is
+  // a validated integer).
+  const ackSec = setAck ? Math.max(1, Math.floor(Number(ackDeadlineIntervalSec))) : null;
+  const expiresSec = setExpires ? Math.max(1, Math.floor(Number(expiresAtIntervalSec))) : null;
+  const params = { leaseId, ackSec, expiresSec };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  // postgres.js cannot compose interval literals via fragments cleanly, so build the
+  // whole UPDATE with make_interval(secs => $n) — a parameterized, injection-safe
+  // interval. Back-date ONLY the requested column(s); always stamp updated_at.
+  let row;
+  if (P.ackSec !== null && P.expiresSec !== null) {
+    row = await sql\`UPDATE leases SET
+      ack_deadline = clock_timestamp() - make_interval(secs => \${P.ackSec}),
+      expires_at = clock_timestamp() - make_interval(secs => \${P.expiresSec}),
+      updated_at = clock_timestamp() WHERE id = \${P.leaseId} RETURNING id\`;
+  } else if (P.ackSec !== null) {
+    row = await sql\`UPDATE leases SET
+      ack_deadline = clock_timestamp() - make_interval(secs => \${P.ackSec}),
+      updated_at = clock_timestamp() WHERE id = \${P.leaseId} RETURNING id\`;
+  } else {
+    row = await sql\`UPDATE leases SET
+      expires_at = clock_timestamp() - make_interval(secs => \${P.expiresSec}),
+      updated_at = clock_timestamp() WHERE id = \${P.leaseId} RETURNING id\`;
+  }
+  report({ ok: true, updated: row.length });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** Fire ONE synchronous reap for an org via the dormant flag-gated trigger. Runs in
+ * test-runner (a control-net peer reaching control-plane:3100 DIRECTLY — not through
+ * toxiproxy:13100 — so a worker-to-control-plane cut never blocks it). Returns
+ * { status, body } where body is the ReapExpiredLeasesResult (200) or a 404 if the
+ * distributed-execution flag is off (dormant). */
+export function reapOrganization({ organizationId, limit }) {
+  const params = { url: REAP_URL, body: limit !== undefined ? { organizationId, limit } : { organizationId } };
+  const script = `
+${embedParams(params)}
+function report(value) { console.log("${RESULT_MARKER}" + JSON.stringify(value)); }
+function safeJson(text) { try { return JSON.parse(text); } catch { return text; } }
+const res = await fetch(P.url, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify(P.body),
+});
+const text = await res.text();
+report({ status: res.status, body: safeJson(text) });
+`;
+  return dexecModule("test-runner", script);
+}
+
+/** Enable/disable a whole Toxiproxy proxy (clean bidirectional link sever/restore) via
+ * the 2.x proxy-update endpoint (POST /proxies/<name> {enabled}). Confirmed against the
+ * pinned image ghcr.io/shopify/toxiproxy:2.9.0. Runs in test-runner. Returns
+ * { ok, status, body }. Callers ALWAYS restore (enabled:true) in a finally — the
+ * campaign is serial (--test-concurrency=1) so a leaked disable would break the stack. */
+export function setProxyEnabled({ proxy, enabled, adminUrl = TOXIPROXY_ADMIN_URL }) {
+  const params = { url: `${adminUrl}/proxies/${proxy}`, enabled: Boolean(enabled) };
+  const script = `
+${embedParams(params)}
+function report(value) { console.log("${RESULT_MARKER}" + JSON.stringify(value)); }
+function safeJson(text) { try { return JSON.parse(text); } catch { return text; } }
+try {
+  const res = await fetch(P.url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled: P.enabled }),
+  });
+  const text = await res.text();
+  report({ ok: res.ok, status: res.status, body: safeJson(text) });
+} catch (error) {
+  report({ ok: false, status: 0, body: String(error && error.message ? error.message : error) });
+}
+`;
+  return dexecModule("test-runner", script);
+}
+
+/** The in-compose LISTEN address of each Toxiproxy-fronted link (host:port reachable
+ * from test-runner). Lets a test OBSERVE a link cut, not merely toggle it. */
+export const TOXIPROXY_LISTEN = {
+  "worker-to-control-plane": "toxiproxy:13100",
+  "worker-to-minio": "toxiproxy:19000",
+  "control-plane-to-postgres": "toxiproxy:15432",
+};
+
+/** Probe whether a Toxiproxy-fronted link is reachable FROM test-runner by issuing a
+ * short HTTP GET through the proxy's LISTEN port (NOT the direct upstream). When the
+ * proxy is disabled the TCP connect is refused → { reachable:false }; when enabled the
+ * upstream answers with any HTTP status → { reachable:true, status }. This makes a link
+ * cut genuinely OBSERVABLE (invariant 1) rather than a decorative toggle. HTTP upstreams
+ * only (worker-to-control-plane). Runs in test-runner. */
+export function probeProxyReachable({ proxy, path = "/health", timeoutMs = 3000 }) {
+  const hostPort = TOXIPROXY_LISTEN[proxy];
+  if (!hostPort) throw new Error(`probeProxyReachable: unknown proxy "${proxy}"`);
+  const params = { url: `http://${hostPort}${path}`, timeoutMs };
+  const script = `
+${embedParams(params)}
+function report(value) { console.log("${RESULT_MARKER}" + JSON.stringify(value)); }
+const ctl = new AbortController();
+const timer = setTimeout(() => ctl.abort(), P.timeoutMs);
+try {
+  const res = await fetch(P.url, { method: "GET", signal: ctl.signal });
+  report({ reachable: true, status: res.status });
+} catch (error) {
+  report({ reachable: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  clearTimeout(timer);
+}
+`;
+  return dexecModule("test-runner", script);
+}
+
+/** Fill each event's `eventDigest` = sha256hex(canonicalEventDigestInputV1(event))
+ * using the FROZEN worker-protocol canonicalizer (available in control-plane, NOT in
+ * test-runner — so the digest is never hand-rolled). `events` is an array of complete
+ * wire events WITHOUT eventDigest (the digest input strips eventDigest anyway). Runs in
+ * control-plane. Returns { ok, events: [...with eventDigest] }. */
+export function computeEventDigests({ events }) {
+  const params = { events };
+  const script = `
+import { createHash } from "node:crypto";
+import { canonicalEventDigestInputV1 } from "@armyofagents/worker-protocol";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+try {
+  const withDigest = P.events.map((event) => ({
+    ...event,
+    eventDigest: createHash("sha256").update(canonicalEventDigestInputV1(event)).digest("hex"),
+  }));
+  report({ ok: true, events: withDigest });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** Upload a terminal/attempt event batch over the real fenced /worker-control/events
+ * path (Bearer session JWT + a fresh device proof), matching the frozen
+ * eventUploadOperationRequestV1 envelope. `batch` is the FULL workerEventBatchV1
+ * (delivery identity + events each carrying eventDigest, from computeEventDigests).
+ * `idempotencyKey` is optional but STABLE across calls for the lost-ACK replay demo
+ * (pass the same key twice → the idempotency-replay path). Runs in test-runner.
+ * Returns { status, body } (eventUploadOperationResponseV1 with the cumulative ack). */
+export function uploadEvents({ url = EVENTS_URL, session, batch, idempotencyKey = null, deviceKey }) {
+  const params = { url, session, batch, idempotencyKey, privateKeyPem: deviceKey.privateKeyPem, publicKeyDer: deviceKey.publicKeyDer };
+  const script = `
+${DEVICE_PROOF_SNIPPET}
+${embedParams(params)}
+const body = {
+  protocolVersion: 1,
+  correlationId: randomUUID(),
+  issuedAt: new Date().toISOString(),
+  nonce: randomBytes(16).toString("base64url"),
+  audience: "worker_run",
+  idempotencyKey: P.idempotencyKey !== null ? P.idempotencyKey : randomUUID(),
+  body: P.batch,
+};
+const bodyString = JSON.stringify(body);
+const headers = deviceProofHeaders({
+  method: "POST", url: P.url, bodyString, correlationId: body.correlationId,
+  privateKeyPem: P.privateKeyPem, publicKeyDer: P.publicKeyDer,
+});
+headers["content-type"] = "application/json";
+headers["authorization"] = "Bearer " + P.session;
+const res = await fetch(P.url, { method: "POST", headers, body: bodyString });
+const text = await res.text();
+report({ status: res.status, body: safeJson(text) });
+`;
+  return dexecModule("test-runner", script);
+}
+
+/** One-shot owner-DB probe of the WHOLE convergence picture for a job: its lease rows,
+ * attempt rows, job status/dead-letter reason, and the job_events + projection-receipt
+ * counts. Runs in control-plane under the owner DSN (bypasses RLS like the seed). One
+ * probe drives all three e6f-09 demos' assertions. Returns
+ * { ok, job, attempts, leases, events, projections }. */
+export function queryLeaseFaultState({ organizationId, jobId }) {
+  const params = { organizationId, jobId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const leases = await sql\`SELECT id, status FROM leases
+    WHERE organization_id = \${P.organizationId} AND job_id = \${P.jobId}
+    ORDER BY created_at, id\`;
+  const attempts = await sql\`SELECT attempt_number AS "attemptNumber", status FROM job_attempts
+    WHERE organization_id = \${P.organizationId} AND job_id = \${P.jobId}
+    ORDER BY attempt_number\`;
+  const [job] = await sql\`SELECT status, dead_letter_reason AS "deadLetterReason" FROM jobs
+    WHERE organization_id = \${P.organizationId} AND id = \${P.jobId}\`;
+  const [events] = await sql\`SELECT count(*)::int AS total,
+      count(*) FILTER (WHERE event_type = 'terminal')::int AS terminal
+    FROM job_events WHERE organization_id = \${P.organizationId} AND job_id = \${P.jobId}\`;
+  const [projections] = await sql\`SELECT count(*)::int AS total,
+      count(*) FILTER (WHERE projection_kind = 'attempt_terminal')::int AS terminal
+    FROM job_projection_receipts WHERE organization_id = \${P.organizationId} AND job_id = \${P.jobId}\`;
+  report({ ok: true, job: job ?? null, attempts, leases, events, projections });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}

@@ -141,6 +141,11 @@ services:
       # (plus loopback for the container healthcheck).
       AOA_ALLOWED_HOSTNAMES: "control-plane,localhost,127.0.0.1"
       AOA_DISTRIBUTED_EXECUTION_ENABLED: "true"
+      # DEP-005 — enables the dormant, unauthenticated test-only reaper trigger
+      # (POST /api/worker-control/_test/reap). Decoupled from the distributed-execution
+      # flag on purpose: it is set ONLY here in the D1 harness, never in any real
+      # deployment, so flipping distributed execution on in cloud_auth does not expose it.
+      AOA_D1_TEST_REAP_ENABLED: "1"
       # control-plane <-> postgres is routed THROUGH toxiproxy (in-path link 1).
       # This primary connection is the app's OWNER/privileged pool: index.ts passes
       # it as `ownerDb: db` to openDistributedExecutionDatabases, which runs the

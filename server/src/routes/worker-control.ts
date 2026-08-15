@@ -48,6 +48,7 @@ import {
 import { createJobReconciliationService } from "../services/job-reconciliation.js";
 import type { JobReadyScheduler } from "../services/job-ready-scheduler.js";
 import type { JobControlMetrics } from "../services/job-control-metrics.js";
+import { readDistributedExecutionDeploymentFlag } from "../config/distributed-execution.js";
 import { deviceProofHeaders } from "./worker-proof-headers.js";
 
 const uuid = z.string().uuid();
@@ -57,6 +58,14 @@ const cancelJobSchema = z
   .object({
     reason: z.string().min(1).max(1000),
     graceful: z.boolean().optional(),
+  })
+  .strict();
+
+/** DEP-005 dormant reaper-trigger body: the org to reap + an optional bounded batch. */
+const reapTestSchema = z
+  .object({
+    organizationId: z.string().uuid(),
+    limit: z.number().int().positive().max(128).optional(),
   })
   .strict();
 
@@ -620,6 +629,50 @@ export function workerControlRoutes(opts: {
       sendWorkerOperationProtocolError(req, res, "control_command", "internal_unavailable", opts.now?.() ?? new Date());
     }
   });
+
+  // DEP-005 — DORMANT, flag-gated test-only reaper trigger. The lease reaper
+  // (reconciliation.reapOrganization) has NO live trigger in the running stack
+  // (index.ts schedules only outbox.tick; the `reconciliation` instance above is used
+  // only for operator cancellation), so a back-dated lease never converges on its own.
+  // The D1 network/clock fault harness needs to cross a lease deadline SYNCHRONOUSLY:
+  // back-date the durable lease row, then fire exactly one reap. This route is that
+  // trigger. It adds NO new authority, table, or migration — it calls the already-
+  // instantiated reconciliation service (proper runInTenant/RLS + a fresh DB clock).
+  //
+  // Dormancy: DOUBLE-gated at request time on BOTH the distributed-execution flag AND a
+  // dedicated test-only flag AOA_D1_TEST_REAP_ENABLED. These are intentionally decoupled:
+  // this route has NO authentication (the D1 harness calls it as an unauthenticated
+  // control-net peer), so it must NOT become reachable merely because a real deployment
+  // turns AOA_DISTRIBUTED_EXECUTION_ENABLED on — only the D1 compose (docker-compose.d1.yml)
+  // also sets AOA_D1_TEST_REAP_ENABLED=1. With EITHER flag off the route 404s as if it does
+  // not exist. Belt-and-suspenders: app.ts only mounts workerControlRoutes inside the
+  // distributed-execution block, and the gate runs BEFORE validation so a dormant route is
+  // indistinguishable from an absent one for any body. `_test/`-namespaced so it can never
+  // be mistaken for a worker/operator surface. (If this ever needs to run in a real
+  // distributed deployment, add assertBoard + orgAccess.canOrg like the cancel route below.)
+  router.post(
+    "/worker-control/_test/reap",
+    (_req, res, next) => {
+      if (!readDistributedExecutionDeploymentFlag(process.env) || process.env.AOA_D1_TEST_REAP_ENABLED !== "1") {
+        res.status(404).json({ error: "Not found" });
+        return;
+      }
+      next();
+    },
+    validate(reapTestSchema),
+    async (req, res, next) => {
+      try {
+        const body = req.body as { organizationId: string; limit?: number };
+        const result = await reconciliation.reapOrganization(
+          body.organizationId,
+          body.limit !== undefined ? { limit: body.limit } : undefined,
+        );
+        res.status(200).json(result);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
 
   // JOB-006 — operator-initiated durable cancellation. Board-authenticated + org
   // fleet-management scoped (owner/admin). Marks the requested state and queues a
