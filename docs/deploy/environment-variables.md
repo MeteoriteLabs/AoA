@@ -115,6 +115,38 @@ Governed by [`distributed-execution-delivery-policy.md`](../architecture/distrib
 | `AOA_DISTRIBUTED_PUBLIC_SERVICE_INGRESS_ENABLED` | unset (excluded) | **Reserved hard-negative sentinel.** Public service ingress is excluded from this re-platform release. Any truthy value **rejects startup in every deployment mode** rather than enabling a feature; the reserved path `/api/distributed-execution/public-services` is unregistered and returns `404`. |
 | `AOA_DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENABLED` | unset (excluded) | **Reserved hard-negative sentinel.** The distributed cloud-plugin surface is excluded from this re-platform release. Any truthy value **rejects startup in every deployment mode**; the reserved path `/api/distributed-execution/cloud-plugins` is unregistered and returns `404`. FND-006/FND-008 own the actual current plugin surfaces (Decision #103). |
 
+### Distributed worker daemon (staging, DEP-006)
+
+Read by the separately-deployed worker daemon (`packages/worker-daemon`). A worker
+carries **no** database credential and **no** provider-control credential; it reaches
+the control plane and the object store over egress and brokers all provider lifecycle
+through the adapter-management surface. Rendered in `docker-compose.staging.yml`.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AOA_WORKER_TARGET_PROFILE_ID` | (required) | Stable identifier of the execution-target profile this worker enrolls as. Distinct per worker service in the staging fleet. |
+| `AOA_WORKER_TARGET_SCOPE` | (required) | Trust scope of the worker's target (`platform` / `organization` / …); must match the registered target profile's scope. |
+| `AOA_WORKER_CONTROL_PLANE_URL` | (required) | Base URL the worker dials for `/worker-control/*` (enroll/poll/ack). In staging this points at the shared control-plane ingress; a session minted at either replica is portable (shared `AOA_WORKER_SESSION_SIGNING_KEY`). |
+| `AOA_WORKER_S3_ENDPOINT` | (required) | Worker-facing object-store endpoint the worker dials for presigned artifact PUT/GET. Points at the external object store's presign host; carries no credential (the presigned URL is the authority). |
+| `AOA_WORKER_KEY_STORE_MODE` | `mounted_secret` | How the worker sources its device/enrollment key material (`mounted_secret` = an orchestrator-mounted secret file). |
+| `AOA_WORKER_HEALTH_PORT` | `9464` | Port the worker binds its `/healthz` liveness endpoint on. |
+| `AOA_WORKER_ENROLLMENT_CODE_FILE` | (required) | Path to the mounted single-use worker enrollment code file, presented once at enroll. |
+
+### Provider-control credential (staging adapter-management surface, DEP-006)
+
+Read **only** by the adapter-management surface (`adapter-manager` in
+`docker-compose.staging.yml`), the sole surface on `provider-ctl-net`. These are
+**injected** from the orchestrator secret store (rotatable without an image rebuild),
+never baked into an image, and **absent** from every control-plane / worker / migrate
+surface, from protocol/metadata, and from logs/support bundles. Rotation, old-key
+denial, and revocation rehearsal against a real provider is contracted against DEP-008
+and deferred to CLI-001 (crosswalk rows CM-010 / CM-012).
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `E2B_API_KEY` | (required on the adapter surface) | Provider-control (E2B) account/audience-scoped credential used by `sandbox-provider-runtime.ts` to create/connect/execute/pause/kill/destroy provider sandboxes. Injected only into the adapter-management surface; rotatable via the secret store; never placed on a control-plane, worker, tenant sandbox, protocol field, log line, or support bundle. |
+| `E2B_DOMAIN` | (unset) | Optional provider-control API domain override for the adapter-management surface (self-hosted / regional E2B endpoint). |
+
 ### Migration job & 0188 populated-cutover preflight (DEP-003, default-off)
 
 These are read ONLY by the privileged migration job (`docker/control-plane/migrate-entrypoint.sh`), never at application startup. Application startup runs no migrations and can only READ the durable 0188 cutover marker — it can never write or synthesize it. The 0188 preflight is dormant unless the operator explicitly opts in; single-tenant deployments never trigger it.

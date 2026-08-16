@@ -36,6 +36,12 @@ on:
     paths:
       - ".github/workflows/d1-merge-train.yml"
       - "docker-compose.d1.yml"
+      # DEP-006 staging render + its config-contract validator: the live e6f-12
+      # compose-engine render/parity proof runs ONLY in this lane, so a staging-only
+      # edit must re-trigger it (mirrors docker-compose.d1.yml being listed).
+      - "docker-compose.staging.yml"
+      - "scripts/check-staging-manifest.mjs"
+      - "scripts/lib/staging-manifest-invariants.mjs"
       - "docker/**"
       - "tests/d1/**"
       - "scripts/check-d1-compose.mjs"

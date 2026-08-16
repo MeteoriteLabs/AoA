@@ -192,6 +192,11 @@ jobs:
           node scripts/check-egress-bypass-vectors.mjs
           node --test scripts/check-egress-bypass-vectors.test.mjs
 
+      - name: Staging manifest config contract (DEP-006)
+        run: |
+          node scripts/check-staging-manifest.mjs
+          node --test scripts/check-staging-manifest.test.mjs
+
       - name: CI lane routing invariants (DEP-004)
         run: |
           node scripts/check-ci-lanes.mjs
