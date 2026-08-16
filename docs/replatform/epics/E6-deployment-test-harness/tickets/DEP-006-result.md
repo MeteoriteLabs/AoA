@@ -1,6 +1,6 @@
 # DEP-006 Result — Staging manifests and configuration contract
 
-**Status:** `complete` (static gate green locally + wired into `pr.yml` `policy`; the live `e6f-12` compose-render proof runs on `d1-merge-train` — and was ALSO run locally here because `docker compose config` needs no running stack: **5/5 live**). **LAST ticket of E6.**
+**Status:** `complete + CI-GREEN` — both lanes green at landed SHA `845e81811`: PR gate suite (incl. the `policy` staging-manifest check) **and** `d1-merge-train` (live `e6f-12` **5/5** on the real CI compose engine). Also proven locally (`docker compose config` needs no running stack). **LAST ticket of E6 — E6 is now COMPLETE.**
 **Disposition:** `pass` (all locally-runnable gates green incl. every adversarial-review fix; live render proven with the real compose engine).
 **Date opened (UTC):** `2026-08-16`
 **Epic:** `E6-deployment-test-harness` (remainder; LAST DEP). **Plan task:** `DEP-006 — Staging manifests and configuration contract (program-design.md:725-731)`.
