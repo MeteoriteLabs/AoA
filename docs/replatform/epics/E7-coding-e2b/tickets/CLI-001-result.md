@@ -1,6 +1,6 @@
 # CLI-001 Result — E2B provider implementation
 
-**Status:** `complete (no-key core) + keyed-lane authored` — the no-key core is green in the local `verify` lane + the `distributed-contract` job; the real-E2B cases are authored, `node --check` parse-verified, and run when the operator supplies `E2B_API_KEY` (repo secret) + a template id and dispatches `keyed-e2b-conformance.yml`.
+**Status:** `complete (no-key core) + CI-GREEN + keyed-lane authored` — the no-key core is green in the PR gate suite at landed SHA `bce3314c1` (verify builds+tests the package; distributed-contract via the provider glob; policy incl. the new boundary checker + the Dockerfile deps-stage COPY). The real-E2B cases are authored, `node --check` parse-verified, and run when the operator supplies `E2B_API_KEY` (repo secret) + a template id and dispatches `keyed-e2b-conformance.yml`. (A post-push `policy` failure — the new package missing from the Dockerfile deps stage — was fixed in `bce3314c1`; a one-off `verify` flake in the unrelated DEP-009 `job-retry-capacity-transfer.integration.test.ts` under CI-DB contention passed on re-run and locally.)
 **Disposition:** `pass` (scope-honest, on in-process + static + Linux-CI evidence for the no-key core; the real-E2B rerun is runnable the moment the operator supplies the key — the DEP-008/DEP-006 precedent). **FIRST ticket of E7.**
 **Date opened (UTC):** `2026-08-16`
 **Epic:** `E7 — Coding/CLI workload on E2B`. **Plan task:** `CLI-001 (program-design.md:755-761)`. **Scope: FULL** (operator-directed — no-key core + keyed real-E2B lane).
