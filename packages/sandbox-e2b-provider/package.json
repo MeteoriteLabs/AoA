@@ -1,0 +1,36 @@
+{
+  "name": "@armyofagents/sandbox-e2b-provider",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run"
+  },
+  "dependencies": {
+    "@armyofagents/sandbox-provider-contract": "workspace:*",
+    "@armyofagents/worker-daemon": "workspace:*",
+    "@armyofagents/worker-protocol": "workspace:*",
+    "e2b": "^2.30.5",
+    "zod": "3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.6"
+  }
+}
