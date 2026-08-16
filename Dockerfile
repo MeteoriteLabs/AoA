@@ -61,6 +61,7 @@ COPY packages/worker-protocol/package.json packages/worker-protocol/
 COPY packages/worker-daemon/package.json packages/worker-daemon/
 COPY packages/sandbox-fake-provider/package.json packages/sandbox-fake-provider/
 COPY packages/sandbox-provider-contract/package.json packages/sandbox-provider-contract/
+COPY packages/sandbox-e2b-provider/package.json packages/sandbox-e2b-provider/
 COPY patches/ patches/
 RUN pnpm install --frozen-lockfile
 
