@@ -46,6 +46,7 @@ import {
   queryLeaseFaultState,
   queryJobEventTrace,
   expireLeaseDeadlines,
+  advanceJobAvailableAt,
   reapOrganization,
   setProxyEnabled,
   probeProxyReachable,
@@ -108,6 +109,44 @@ function seedAndEnroll({ jobCount = 1, enrollBase = WORKER_CONTROL.enroll } = {}
   assert.ok(typeof enrolled.session === "string" && enrolled.session.length > 0, "enroll must mint a session");
   stepResult(stampWorkersLiveness([{ workerId: target.workerId, targetId: target.targetId }]), "liveness");
   return { ids, target, jobs, session: enrolled.session };
+}
+
+/** Build a fully-formed worker event for the FROZEN worker-protocol v1 schema. Every base field
+ * (org/company/worker/job/attempt/lease/fence + `seq` + `extensions`) lives on EACH event — the
+ * strict schema rejects a hand-rolled subset as 400 malformed. `jobId` comes from the live offer.
+ * Mirrors e6f-09's makeEvent; computeEventDigests adds the canonical eventDigest afterward. */
+function makeEvent(s, offer, { eventType, seq, payload, eventId }) {
+  return {
+    protocolVersion: 1,
+    eventId: eventId ?? randomUUID(),
+    organizationId: s.ids.orgId,
+    companyId: s.ids.companyId,
+    workerId: s.target.workerId,
+    jobId: offer.job.jobId,
+    attempt: offer.job.attempt,
+    leaseId: offer.leaseId,
+    fenceToken: offer.fenceToken,
+    seq,
+    occurredAt: new Date().toISOString(),
+    extensions: [],
+    eventType,
+    payload,
+  };
+}
+
+/** The event-batch envelope carrying the digested events (same base identity as each event). */
+function batchFromEvents(s, offer, events) {
+  return {
+    protocolVersion: 1,
+    organizationId: s.ids.orgId,
+    companyId: s.ids.companyId,
+    workerId: s.target.workerId,
+    jobId: offer.job.jobId,
+    attempt: offer.job.attempt,
+    leaseId: offer.leaseId,
+    fenceToken: offer.fenceToken,
+    events,
+  };
 }
 
 /** A poll spec for `runReplicaRace` addressed at a specific replica (A or B). */
@@ -181,26 +220,18 @@ test("E6F-11: consistent terminal across replicas (ack@A, terminal@B)", { skip: 
   );
   assert.equal(acked.status, 200, `ack@A expected 200: ${truncate(acked.body)}`);
 
-  // Upload the attempt's terminal event stream through replica B (events endpoint on B).
+  // Upload the attempt's terminal event stream through replica B (events endpoint on B). Events
+  // use the FROZEN worker-protocol v1 shape — `seq` (not `sequence`), the full base identity on
+  // each event, and the terminal payload {status, exitCode, errorCode, errorMessage} — via the
+  // same makeEvent→computeEventDigests→batchFromEvents path e6f-09/e6f-10 use; a hand-rolled
+  // subset is rejected 400 malformed by the strict schema.
   const events = [
-    {
-      protocolVersion: 1, eventId: randomUUID(), sequence: 1, eventType: "attempt_started",
-      occurredAt: new Date().toISOString(), fenceToken: offer.fenceToken,
-      payload: { sandboxId: randomUUID() },
-    },
-    {
-      protocolVersion: 1, eventId: randomUUID(), sequence: 2, eventType: "terminal",
-      occurredAt: new Date().toISOString(), fenceToken: offer.fenceToken,
-      payload: { outcome: "succeeded" },
-    },
+    makeEvent(s, offer, { eventType: "attempt_started", seq: 1, payload: { sandboxId: `sbx-${randomUUID()}` } }),
+    makeEvent(s, offer, { eventType: "terminal", seq: 2, payload: { status: "succeeded", exitCode: 0, errorCode: null, errorMessage: null } }),
   ];
   const withDigests = stepResult(computeEventDigests({ events }), "event-digests");
   assert.equal(withDigests.ok, true, `digest compute failed: ${truncate(withDigests)}`);
-  const batch = {
-    protocolVersion: 1, workerId: s.target.workerId, jobId: offer.job.jobId,
-    attempt: offer.job.attempt, leaseId: offer.leaseId, fenceToken: offer.fenceToken,
-    events: withDigests.events,
-  };
+  const batch = batchFromEvents(s, offer, withDigests.events);
   const uploaded = stepResult(
     uploadEvents({ url: WORKER_CONTROL_B.events, session: s.session, batch, deviceKey: s.target.deviceKey }),
     "events@B",
@@ -275,6 +306,15 @@ test("E6F-11: replica loss (cut worker-to-control-plane-b) converges via A", { s
     // double-retry defect cannot hide), and the reaped lease is expired.
     assert.equal(state.attempts.length, 2, `exactly one retry attempt after reap: ${truncate(state.attempts)}`);
     assert.ok(state.leases.some((l) => l.status === "expired"), `the offered lease must be expired: ${truncate(state.leases)}`);
+
+    // Clear the retry backoff. allocateRetry stamps jobs.available_at = now + an exponential
+    // backoff and copies the placement snapshot verbatim, so the retry attempt is placement-
+    // eligible but the offer predicate (jobs.available_at <= now) holds it until the backoff
+    // elapses — an immediate poll@A would (correctly) return no_work. Back-date available_at
+    // (deterministic clock control, same as expireLeaseDeadlines) so the retry is offerable now.
+    const cleared = stepResult(advanceJobAvailableAt({ jobId: offer.job.jobId }), "clear-backoff@A");
+    assert.equal(cleared.ok, true, `clearing the retry backoff failed: ${truncate(cleared)}`);
+    assert.equal(cleared.updated, 1, `exactly one job's backoff cleared: ${truncate(cleared)}`);
 
     // The surviving replica A converges the work: poll@A offers the retry.
     const retry = stepResult(

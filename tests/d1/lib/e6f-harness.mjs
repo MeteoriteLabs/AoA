@@ -1756,6 +1756,35 @@ try {
   return dexecModule("control-plane", script);
 }
 
+/** Clear a retried job's backoff so its next attempt is immediately offerable. allocateRetry
+ * stamps jobs.available_at = now + an exponential backoff, and the poll/offer predicate selects
+ * only jobs with available_at <= now (job-control.ts), so an immediate poll after a reap
+ * correctly returns no_work. Back-date jobs.available_at (deterministic clock control, the same
+ * approach as expireLeaseDeadlines) so a retry converges under a poll without a sleep. Runs in
+ * control-plane. Returns { ok, updated }. */
+export function advanceJobAvailableAt({ jobId, secondsAgo = 1 }) {
+  // secondsAgo coerces to a positive integer before embedding as an interval literal (the jobId
+  // binds as a parameter; the interval is a validated integer — injection-safe).
+  const params = { jobId, secs: Math.max(1, Math.floor(Number(secondsAgo))) };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const row = await sql\`UPDATE jobs SET
+    available_at = clock_timestamp() - make_interval(secs => \${P.secs}),
+    updated_at = clock_timestamp() WHERE id = \${P.jobId} RETURNING id\`;
+  report({ ok: true, updated: row.length });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
 /** Fire ONE synchronous reap for an org via the dormant flag-gated trigger. Runs in
  * test-runner (a control-net peer reaching control-plane:3100 DIRECTLY — not through
  * toxiproxy:13100 — so a worker-to-control-plane cut never blocks it). Returns
