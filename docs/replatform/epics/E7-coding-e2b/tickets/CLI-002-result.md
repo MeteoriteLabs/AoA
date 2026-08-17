@@ -1,6 +1,6 @@
 # CLI-002 Result — Full workspace staging and adapter execution
 
-**Status:** `complete (no-key core) + keyed-lane authored` — the no-key core is green (package + server units + disposition checker); the real-E2B fake-CLI-file-mutation + W8 live-validation ride the operator-dispatched `keyed-e2b-conformance.yml`.
+**Status:** `complete (no-key core) + CI-GREEN + keyed-lane authored` — the no-key core is green in the PR gate suite at landed SHA `cb1a6c972` (verify runs the server units; policy runs the disposition checker). The real-E2B fake-CLI-file-mutation + W8 live-validation ride the operator-dispatched `keyed-e2b-conformance.yml`. (A one-off `verify` flake in the unrelated DEP-009 `job-retry-capacity-transfer.integration.test.ts` under CI-DB contention — the same flake as CLI-001's landing — passed on re-run; a hardening task is filed.)
 **Disposition:** `pass` (scope-honest: in-process + static evidence for the no-key core; the real-E2B rerun runs on operator key). **Second ticket of E7.**
 **Date opened (UTC):** `2026-08-17`
 **Epic:** `E7 — Coding/CLI workload on E2B`. **Plan task:** `CLI-002 (program-design.md:762-767)`.
