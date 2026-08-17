@@ -33,6 +33,7 @@ import {
   type E2bSandboxRecord,
   type E2bSignalResult,
   type E2bStagedFile,
+  type E2bStreamHandlers,
   type E2bTransport,
 } from "./transport.js";
 
@@ -102,13 +103,18 @@ export class RealE2bTransport implements E2bTransport {
     return { sandboxId: String(sandbox?.sandboxId ?? "") };
   }
 
-  async runCommand(req: E2bRunCommandRequest): Promise<E2bCommandResult> {
+  async runCommand(req: E2bRunCommandRequest, handlers?: E2bStreamHandlers): Promise<E2bCommandResult> {
     const sandbox = await this.#sdk.connect(req.sandboxId, { apiKey: this.#apiKey });
     const full = [req.command, ...req.args].join(" ");
     try {
+      // CLI-003/D1 — bind the `e2b` SDK command stream to the streaming callbacks.
+      // The SDK invokes `onStdout`/`onStderr` with each output chunk as it is
+      // produced; they are best-effort observation and never alter the result.
       const result = await sandbox.commands.run(full, {
         envs: req.envVars,
         timeoutMs: req.timeoutMs,
+        onStdout: handlers?.onStdout ? (data: unknown) => handlers.onStdout?.(String(data)) : undefined,
+        onStderr: handlers?.onStderr ? (data: unknown) => handlers.onStderr?.(String(data)) : undefined,
       });
       const exitCode = typeof result?.exitCode === "number" ? result.exitCode : 0;
       return { exitCode, signal: null, timedOut: false, crashed: exitCode !== 0 };

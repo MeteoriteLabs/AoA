@@ -83,6 +83,11 @@ export interface FakeProviderScript {
   readonly healthStatus?: "healthy" | "unhealthy";
   readonly restoreResumed?: boolean;
   readonly exitCode?: number;
+  /** CLI-003 — inject the execute result's `signal` (default null) so the terminal
+   * enrichment (signal → errorCode/errorMessage) is exercisable no-key. */
+  readonly execSignal?: string | null;
+  /** CLI-003 — inject the execute result's `timedOut` (default false). */
+  readonly execTimedOut?: boolean;
   readonly idPrefix?: string;
   readonly seededResources?: readonly SeededResource[];
   /** Test control: `execute` awaits this before resolving, so a run can be held
@@ -302,8 +307,8 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
       const result: ExecuteResult = {
         providerOpId: nextOpId(),
         exitCode: script.exitCode ?? 0,
-        signal: null,
-        timedOut: false,
+        signal: script.execSignal ?? null,
+        timedOut: script.execTimedOut ?? false,
         stdoutRef: `sandbox://${input.sandboxId}/stdout`,
         stderrRef: `sandbox://${input.sandboxId}/stderr`,
       };

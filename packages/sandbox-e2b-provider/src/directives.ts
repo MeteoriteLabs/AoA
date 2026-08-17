@@ -29,6 +29,13 @@ export const DIRECTIVE_KEYS = {
   // the sandbox. A REAL transport ignores it — the keyed lane runs a real shell
   // command against real E2B instead.
   fsWrite: "__aoa_fs_write",
+  // CLI-003/D1 — the deterministic stdout/stderr streaming directive (mock transport
+  // ONLY). Its value is a JSON array of `{ stream: "stdout"|"stderr", data: string }`
+  // the mock replays to the `onStdout`/`onStderr` streaming callbacks during
+  // runCommand, modeling a real CLI emitting output as it runs so log capture is
+  // no-key-testable. A REAL transport ignores it — the keyed lane binds the `e2b`
+  // SDK command stream instead.
+  streamChunks: "__aoa_stream_chunks",
 } as const;
 
 /** Metadata keys the provider round-trips through the transport to reconstruct a
@@ -63,11 +70,20 @@ export interface FsWriteDirective {
   readonly content: string;
 }
 
+/** CLI-003/D1 — a single deterministic output chunk a fake CLI emits during a run
+ * (mock transport only). `stream` selects the `onStdout`/`onStderr` callback. */
+export interface StreamChunkDirective {
+  readonly stream: "stdout" | "stderr";
+  readonly data: string;
+}
+
 export interface ExecuteFaultDirectives {
   readonly egressClass: string | null;
   readonly lifecycleFault: "crash" | "ttl" | null;
   /** CLI-002/D1 — files a fake CLI mutates during this run (mock transport only). */
   readonly fsWrites: readonly FsWriteDirective[];
+  /** CLI-003/D1 — stdout/stderr chunks a fake CLI streams during this run (mock only). */
+  readonly streamChunks: readonly StreamChunkDirective[];
 }
 
 /** Decode the execute-time fault directives from the command env bag (mock
@@ -79,7 +95,32 @@ export function decodeExecuteFaults(env: Readonly<Record<string, string>>): Exec
     egressClass: typeof egress === "string" && egress.length > 0 ? egress : null,
     lifecycleFault: life === "crash" || life === "ttl" ? life : null,
     fsWrites: decodeFsWrites(env[DIRECTIVE_KEYS.fsWrite]),
+    streamChunks: decodeStreamChunks(env[DIRECTIVE_KEYS.streamChunks]),
   };
+}
+
+/** Decode the reserved stream-chunk directive (mock transport only). Absent/garbage →
+ * no chunks (benign default); a non-`stdout`/`stderr` stream or non-string `data`
+ * entry is dropped so a malformed directive can never crash the run. */
+export function decodeStreamChunks(raw: string | undefined): readonly StreamChunkDirective[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: StreamChunkDirective[] = [];
+    for (const entry of parsed) {
+      if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+        const stream = (entry as Record<string, unknown>).stream;
+        const data = (entry as Record<string, unknown>).data;
+        if ((stream === "stdout" || stream === "stderr") && typeof data === "string") {
+          out.push({ stream, data });
+        }
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }
 
 /** Decode the reserved fs-write directive (mock transport only). Absent/garbage →

@@ -153,6 +153,109 @@ describeKeyed("CLI-001/D4 — real E2B (keyed) — real TTL enforcement", () => 
   });
 });
 
+describeKeyed("CLI-003/D4 — real E2B (keyed) — streaming, cancel, forced-timeout, lost-ACK", () => {
+  // The four program-design.md:774 real-E2B cases for CLI-003. They run ONLY with
+  // `E2B_API_KEY` (SKIP otherwise) and `e2b` is dynamically imported inside each case
+  // so the no-key vitest run never loads the SDK. Authored + `node --check`
+  // parse-verified by the controller; the operator dispatches the keyed lane.
+
+  it("success: a real command streams stdout/stderr chunks and exits 0", async () => {
+    const { RealE2bTransport } = await import("../real-transport.js");
+    const transport = new RealE2bTransport();
+    const { sandboxId } = await transport.create({ templateId: TEMPLATE, timeoutMs: 60_000, metadata: {}, envVars: {} });
+    try {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      // A real shell command that writes to BOTH streams; the D1 streaming seam
+      // delivers each chunk to the callbacks as REAL E2B produces it.
+      const result = await transport.runCommand(
+        {
+          sandboxId,
+          command: "sh",
+          args: ["-c", "printf 'out-line\\n'; printf 'err-line\\n' 1>&2"],
+          envVars: {},
+          timeoutMs: 30_000,
+        },
+        { onStdout: (c) => stdout.push(c), onStderr: (c) => stderr.push(c) },
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.timedOut).toBe(false);
+      expect(stdout.join("")).toContain("out-line");
+      expect(stderr.join("")).toContain("err-line");
+    } finally {
+      await transport.terminate(sandboxId).catch(() => {});
+    }
+  });
+
+  it("cancel: terminating a sandbox mid-run stops it (isRunning → false), idempotently", async () => {
+    const { RealE2bTransport } = await import("../real-transport.js");
+    const transport = new RealE2bTransport();
+    const { sandboxId } = await transport.create({ templateId: TEMPLATE, timeoutMs: 60_000, metadata: {}, envVars: {} });
+    // A cancel (graceful) is best-effort; the forced terminate reclaims the tree.
+    await transport.signal(sandboxId, "cancel");
+    await transport.terminate(sandboxId);
+    expect(await transport.isRunning(sandboxId)).toBe(false);
+    // Idempotent: a second terminate of the now-gone sandbox surfaces not-found (no hang).
+    const { E2bTransportNotFoundError } = await import("../transport.js");
+    let raised: unknown;
+    try {
+      await transport.terminate(sandboxId);
+    } catch (err) {
+      raised = err;
+    }
+    expect(raised).toBeInstanceOf(E2bTransportNotFoundError);
+  });
+
+  it("forced-timeout: a long command hits its positive budget and returns timedOut (never hangs)", async () => {
+    const { RealE2bTransport } = await import("../real-transport.js");
+    const transport = new RealE2bTransport();
+    const { sandboxId } = await transport.create({ templateId: TEMPLATE, timeoutMs: 60_000, metadata: {}, envVars: {} });
+    try {
+      // A POSITIVE command budget the sleep exceeds — only truly exercised with the
+      // key (real E2B enforces the timeoutMs; the mock never authors a positive-budget
+      // timeout). The seam guarantees "always bounded, never hangs".
+      const result = await transport.runCommand({
+        sandboxId,
+        command: "sh",
+        args: ["-c", "sleep 30"],
+        envVars: {},
+        timeoutMs: 2_000,
+      });
+      expect(result.timedOut).toBe(true);
+    } finally {
+      await transport.terminate(sandboxId).catch(() => {});
+    }
+  });
+
+  it("lost-ACK: a re-delivered create with the same idempotency key returns the SAME sandbox", async () => {
+    const { RealE2bTransport } = await import("../real-transport.js");
+    const { E2bSandboxProvider } = await import("../e2b-provider.js");
+    const provider = new E2bSandboxProvider({ transport: new RealE2bTransport(), templateId: TEMPLATE });
+    const labels = {
+      organizationId: "org-keyed",
+      targetId: "target-keyed",
+      workerId: "worker-keyed",
+      jobId: "job-keyed",
+      attempt: 1,
+      leaseId: "lease-keyed",
+      deviceGeneration: 1,
+    };
+    const spec = { resourceLabels: labels, command: "true", args: [], env: {}, workloadType: "coding" };
+    const ctx = { deadlineMs: 60_000, idempotencyKey: "keyed-lost-ack-1" };
+    let created;
+    try {
+      const first = await provider.create(spec, ctx);
+      // A lost ACK re-delivers the SAME idempotency-keyed create — it must NOT
+      // provision a second sandbox; the recorded id is returned (harmless duplicate).
+      const replay = await provider.create(spec, ctx);
+      expect(replay.sandboxId).toBe(first.sandboxId);
+      created = first.sandboxId;
+    } finally {
+      if (created) await provider.destroy(created, ctx).catch(() => {});
+    }
+  });
+});
+
 describeKeyed("CLI-001/D4 — managed-secret rehearsal (DEP-006/CM-012)", () => {
   const OLD_KEY = process.env.E2B_API_KEY_OLD;
   const hasOld = typeof OLD_KEY === "string" && OLD_KEY.length > 0;

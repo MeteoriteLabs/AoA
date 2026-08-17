@@ -278,6 +278,9 @@ export type {
   SupervisorDeps,
   WorkerSupervisionIdentity,
   SupervisorRunStatus,
+  RunObservation,
+  RunObservationLogEntry,
+  RunObservationProgressEntry,
 } from "./supervisor/supervisor.js";
 
 export type { NetworkDenialClass } from "./supervisor/events.js";
@@ -342,7 +345,7 @@ export type {
 
 // --- WRK-006: durable, encrypted event outbox + event_upload wiring ----------
 
-export { EVENT_UPLOAD_PATH } from "./transport/client.js";
+export { EVENT_UPLOAD_PATH, ARTIFACT_COMMIT_PATH, ARTIFACT_TRANSFER_GRANT_PATH } from "./transport/client.js";
 
 export { KEK_BYTES, RowDecryptError, encryptEventRow, decryptEventRow } from "./events/event-row-codec.js";
 export type { EncryptedEventRow } from "./events/event-row-codec.js";

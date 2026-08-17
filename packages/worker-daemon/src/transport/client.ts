@@ -40,6 +40,24 @@ export const QUARANTINE_FINALIZE_PATH = "/api/worker-control/quarantine/finalize
 export const EVENT_UPLOAD_PATH = "/api/worker-control/events";
 
 /**
+ * The mounted artifact-commit route path (audience `worker_run`, DAT-002/CLI-003).
+ * The daemon is a PURE CONSUMER of the frozen `artifact_commit` op — the server
+ * half (`server/src/services/artifact-commit.ts`) is `guardActiveFence`-first and
+ * idempotent. Fixed (no id-in-path), so the device proof is signed over this EXACT
+ * pathname. Mirrors the mounted route `/api/worker-control/artifact-commits`.
+ */
+export const ARTIFACT_COMMIT_PATH = "/api/worker-control/artifact-commits";
+
+/**
+ * The mounted artifact-transfer-grant route path (audience `worker_run`,
+ * DAT-002/CLI-003). Consumes the frozen `artifact_transfer_grant` op. The live
+ * presigned-upload round-trip (grant → PUT → commit) is DAT-002 slice 7 (a
+ * documented CLI-003 non-goal); this surface is provided for completeness so the
+ * commit path has its paired grant op on the client.
+ */
+export const ARTIFACT_TRANSFER_GRANT_PATH = "/api/worker-control/artifact-transfer-grants";
+
+/**
  * The lease-ack route path for `leaseId`. The device proof MUST be signed over
  * this EXACT string — it is the request path the server verifies against
  * (`req.originalUrl`). `leaseId` is a UUID, so encoding is a no-op, but we encode
@@ -121,6 +139,10 @@ export interface ControlPlaneClient {
   readonly quarantineFinalizePath: string;
   /** The event-upload path the proof must be signed over (equals the request path, WRK-006). */
   readonly eventUploadPath: string;
+  /** The artifact-commit path the proof must be signed over (CLI-003/D4). */
+  readonly artifactCommitPath: string;
+  /** The artifact-transfer-grant path the proof must be signed over (CLI-003/D4). */
+  readonly artifactTransferGrantPath: string;
   /** The lease-ack path for `leaseId` (the proof must be signed over it). */
   leaseAckPath(leaseId: string): string;
   /** The lease-renew path for `leaseId` (the proof must be signed over it, WRK-005). */
@@ -140,6 +162,10 @@ export interface ControlPlaneClient {
   quarantineFinalize(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
   /** POST a signed event batch (audience `worker_run`, 4 MiB / 30s, WRK-006). */
   eventUpload(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
+  /** POST a signed artifact commit (audience `worker_run`, 256 KiB / 15s, CLI-003/D4). */
+  artifactCommit(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
+  /** POST a signed artifact transfer grant (audience `worker_run`, 64 KiB / 15s, CLI-003/D4). */
+  artifactTransferGrant(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
 }
 
 export interface ControlPlaneClientOptions {
@@ -161,6 +187,10 @@ export interface ControlPlaneClientOptions {
   readonly quarantineFinalizeTimeoutMs?: number;
   /** Client timeout for event_upload; defaults to the event_upload descriptor's 30s. */
   readonly eventUploadTimeoutMs?: number;
+  /** Client timeout for artifact_commit; defaults to the descriptor's 15s. */
+  readonly artifactCommitTimeoutMs?: number;
+  /** Client timeout for artifact_transfer_grant; defaults to the descriptor's 15s. */
+  readonly artifactTransferGrantTimeoutMs?: number;
 }
 
 export function createControlPlaneClient(opts: ControlPlaneClientOptions): ControlPlaneClient {
@@ -176,6 +206,9 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
   const quarantineFinalizeTimeoutMs =
     opts.quarantineFinalizeTimeoutMs ?? OPERATION_DESCRIPTORS.quarantine_finalize.timeoutMs;
   const eventUploadTimeoutMs = opts.eventUploadTimeoutMs ?? OPERATION_DESCRIPTORS.event_upload.timeoutMs;
+  const artifactCommitTimeoutMs = opts.artifactCommitTimeoutMs ?? OPERATION_DESCRIPTORS.artifact_commit.timeoutMs;
+  const artifactTransferGrantTimeoutMs =
+    opts.artifactTransferGrantTimeoutMs ?? OPERATION_DESCRIPTORS.artifact_transfer_grant.timeoutMs;
 
   /** POST a dual-authed worker operation (poll / lease_ack / lease_renew /
    * quarantine_*); classify transport failures the same way the enroll path does
@@ -183,7 +216,15 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
    * signed-bytes + proof-header path; only the audience literal + auth binding
    * differ (server-side, E5/DAT). */
   async function postOperation(
-    operation: "poll" | "lease_ack" | "lease_renew" | "quarantine_grant" | "quarantine_finalize" | "event_upload",
+    operation:
+      | "poll"
+      | "lease_ack"
+      | "lease_renew"
+      | "quarantine_grant"
+      | "quarantine_finalize"
+      | "event_upload"
+      | "artifact_commit"
+      | "artifact_transfer_grant",
     targetPath: string,
     perOpTimeoutMs: number,
     maxBytes: number,
@@ -236,6 +277,8 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
     quarantineGrantPath: QUARANTINE_GRANT_PATH,
     quarantineFinalizePath: QUARANTINE_FINALIZE_PATH,
     eventUploadPath: EVENT_UPLOAD_PATH,
+    artifactCommitPath: ARTIFACT_COMMIT_PATH,
+    artifactTransferGrantPath: ARTIFACT_TRANSFER_GRANT_PATH,
     leaseAckPath,
     leaseRenewPath,
     poll(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
@@ -283,6 +326,24 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
         EVENT_UPLOAD_PATH,
         eventUploadTimeoutMs,
         OPERATION_DESCRIPTORS.event_upload.maxRequestBytes,
+        request,
+      );
+    },
+    artifactCommit(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
+      return postOperation(
+        "artifact_commit",
+        ARTIFACT_COMMIT_PATH,
+        artifactCommitTimeoutMs,
+        OPERATION_DESCRIPTORS.artifact_commit.maxRequestBytes,
+        request,
+      );
+    },
+    artifactTransferGrant(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
+      return postOperation(
+        "artifact_transfer_grant",
+        ARTIFACT_TRANSFER_GRANT_PATH,
+        artifactTransferGrantTimeoutMs,
+        OPERATION_DESCRIPTORS.artifact_transfer_grant.maxRequestBytes,
         request,
       );
     },

@@ -28,6 +28,7 @@ import {
   type E2bSandboxRecord,
   type E2bSignalResult,
   type E2bStagedFile,
+  type E2bStreamHandlers,
   type E2bTransport,
 } from "./transport.js";
 
@@ -94,7 +95,7 @@ export class MockE2bTransport implements E2bTransport {
     return { sandboxId };
   }
 
-  async runCommand(req: E2bRunCommandRequest): Promise<E2bCommandResult> {
+  async runCommand(req: E2bRunCommandRequest, handlers?: E2bStreamHandlers): Promise<E2bCommandResult> {
     const record = this.#requireRecord(req.sandboxId);
     const faults = decodeExecuteFaults(req.envVars);
     if (faults.egressClass && faults.egressClass !== "allow") {
@@ -103,9 +104,18 @@ export class MockE2bTransport implements E2bTransport {
     // CLI-002/D1 — the fake CLI's file mutations: apply the reserved fs-write
     // directive to the in-memory fs BEFORE reporting a terminal, modeling a real
     // CLI writing a KNOWN file inside the sandbox. Skipped on a crash/timeout run.
+    // CLI-003/D1 — the fake CLI's streamed output: replay the reserved stream-chunk
+    // directive to the onStdout/onStderr callbacks in order, modeling a real CLI
+    // emitting output as it runs. Skipped on a crash/timeout run (no clean stream).
     if (faults.lifecycleFault === null) {
       for (const write of faults.fsWrites) {
         record.fs.set(write.path, new TextEncoder().encode(write.content));
+      }
+      if (handlers) {
+        for (const chunk of faults.streamChunks) {
+          if (chunk.stream === "stdout") handlers.onStdout?.(chunk.data);
+          else handlers.onStderr?.(chunk.data);
+        }
       }
     }
     // HONEST transport semantics: a zero/positive command budget does NOT itself

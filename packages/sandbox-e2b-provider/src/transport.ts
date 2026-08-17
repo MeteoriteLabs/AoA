@@ -102,6 +102,20 @@ export interface E2bRunCommandRequest {
   readonly timeoutMs: number;
 }
 
+/**
+ * CLI-003/D1 — optional streaming callbacks for a `runCommand`. A coding run's
+ * stdout/stderr is delivered chunk-by-chunk as it is produced so the caller can turn
+ * it into durable `log` events. Callbacks are BEST-EFFORT observation only: they
+ * carry NO authority and never change the `E2bCommandResult` (whose shape is
+ * unchanged). Absent handlers = the pre-CLI-003 behaviour (no streaming). The real
+ * binding wires the `e2b` SDK command stream; the mock replays deterministic chunks
+ * from the reserved `__aoa_stream_chunks` directive.
+ */
+export interface E2bStreamHandlers {
+  readonly onStdout?: (chunk: string) => void;
+  readonly onStderr?: (chunk: string) => void;
+}
+
 export interface E2bListRequest {
   readonly pageSize: number;
   readonly pageToken?: string | null;
@@ -123,7 +137,10 @@ export interface E2bStagedFile {
  */
 export interface E2bTransport {
   create(req: E2bCreateRequest): Promise<{ readonly sandboxId: string }>;
-  runCommand(req: E2bRunCommandRequest): Promise<E2bCommandResult>;
+  /** Run a command inside the sandbox. `handlers` (CLI-003/D1) optionally receive
+   * stdout/stderr chunks as they are produced — best-effort observation that never
+   * alters the returned {@link E2bCommandResult}. */
+  runCommand(req: E2bRunCommandRequest, handlers?: E2bStreamHandlers): Promise<E2bCommandResult>;
   /**
    * CLI-002/D1 — stage `files` (declared snapshot + `## Context` bundle + approved
    * inputs) into a live sandbox before execution. The real binding uses the `e2b`

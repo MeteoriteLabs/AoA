@@ -9,3 +9,11 @@
 export { buildWorkspacePatch } from "./build-patch.js";
 export type { BuildWorkspacePatchInput, BuildWorkspacePatchResult } from "./build-patch.js";
 export { WorkspacePatchError } from "./errors.js";
+
+// CLI-003/D4 — the fenced, idempotent result committer (the producer's consumer).
+export { createResultCommitter } from "./result-commit.js";
+export type {
+  ArtifactCommitOutcome,
+  CommitRunResultInput,
+  ResultCommitter,
+} from "./result-commit.js";

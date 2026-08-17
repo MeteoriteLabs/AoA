@@ -20,8 +20,11 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   canonicalEventDigestInputV1,
   workerEventV1Schema,
+  type LogPayloadV1,
   type NetworkDeniedPayloadV1,
+  type ProgressPayloadV1,
   type TerminalEventStatus,
+  type UsagePayloadV1,
   type WorkerEventType,
   type WorkerEventV1,
 } from "@armyofagents/worker-protocol";
@@ -68,6 +71,20 @@ export interface EventSequencerDeps {
 /** lowercase-hex SHA-256 over the canonical event bytes. */
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+/**
+ * Truncate to at most `max` UTF-16 code units WITHOUT bisecting a surrogate pair.
+ * A raw `slice(0, max)` can leave a trailing lone high surrogate, which the canonical
+ * digest (`canonicalizeString`) rejects BEFORE the schema parse — dropping the event
+ * (and, because the supervisor emits log/progress/usage under one try, the run's
+ * trailing usage evidence too). If truncation lands on a high surrogate, drop it.
+ */
+function truncateUtf16Safe(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const sliced = text.slice(0, max);
+  const last = sliced.charCodeAt(sliced.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? sliced.slice(0, -1) : sliced;
 }
 
 /**
@@ -137,6 +154,34 @@ export class EventSequencer {
    * the fence has closed. */
   networkDenied(input: { destinationClass: NetworkDenialClass; reason: string }): Promise<WorkerEventV1> {
     return this.#emit("network_denied", { destinationClass: input.destinationClass, reason: input.reason });
+  }
+
+  /** `log` — a captured stdout/stderr/system output chunk from the sandbox run
+   * (CLI-003/D2). The message is TRUNCATED to the frozen 65536-char ceiling so an
+   * over-long chunk can never fail the parse; scrubbing + digest run in `#emit`. */
+  log(input: { stream: LogPayloadV1["stream"]; level: LogPayloadV1["level"]; message: string }): Promise<WorkerEventV1> {
+    const message = truncateUtf16Safe(input.message, 65_536);
+    return this.#emit("log", { stream: input.stream, level: input.level, message });
+  }
+
+  /** `progress` — a bounded progress tick (CLI-003/D2). `percent` is an INTEGER
+   * 0–100 or null (indeterminate); `message` is truncated to the frozen 2000-char
+   * ceiling. */
+  progress(input: { message: string; percent: ProgressPayloadV1["percent"] }): Promise<WorkerEventV1> {
+    const message = truncateUtf16Safe(input.message, 2000);
+    return this.#emit("progress", { message, percent: input.percent });
+  }
+
+  /** `usage` — bounded, EVIDENTIARY-ONLY token/runtime metering (CLI-003/D2/D5).
+   * The FROZEN `usagePayloadV1Schema` is `.strict()`, so a cost/price/provider/model
+   * field would fail the parse in `#emit`: CLI-003 emits evidence, JOB-012 prices. */
+  usage(input: UsagePayloadV1): Promise<WorkerEventV1> {
+    return this.#emit("usage", {
+      inputTokens: input.inputTokens,
+      outputTokens: input.outputTokens,
+      cachedInputTokens: input.cachedInputTokens,
+      runtimeMillis: input.runtimeMillis,
+    });
   }
 
   /** The terminal attempt event (succeeded/failed/cancelled/expired). */

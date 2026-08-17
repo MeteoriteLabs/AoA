@@ -23,6 +23,8 @@
 
 import { randomUUID } from "node:crypto";
 
+import type { LogPayloadV1, ProgressPayloadV1, UsagePayloadV1 } from "@armyofagents/worker-protocol";
+
 import type { LeaseHandoff, SupervisorSeam } from "../poll/poll-loop.js";
 import type { Logger } from "../logging/logger.js";
 import {
@@ -37,10 +39,43 @@ import { EventSequencer, type EventDeliveryIdentity, type WorkerEventSink } from
 import {
   hashResourceLabels,
   type CreateSandboxSpec,
+  type ExecuteResult,
   type ProviderOpContext,
   type ResourceLabels,
   type SandboxProvider,
 } from "./provider.js";
+
+/** CLI-003/D3 — a captured stdout/stderr/system log line to turn into a `log` event. */
+export interface RunObservationLogEntry {
+  readonly stream: LogPayloadV1["stream"];
+  readonly level?: LogPayloadV1["level"];
+  readonly message: string;
+}
+
+/** CLI-003/D3 — a progress tick to turn into a `progress` event. */
+export interface RunObservationProgressEntry {
+  readonly message: string;
+  readonly percent: ProgressPayloadV1["percent"];
+}
+
+/**
+ * CLI-003/D3+D5 — the bounded observation captured from a completed sandbox run:
+ * log output (stdout/stderr/system), progress ticks, and EVIDENTIARY-ONLY usage.
+ * In the wired world this is populated from the D1 transport streaming callbacks +
+ * the adapter's token/runtime accounting; the live population channel is the inert
+ * E4-D12 seam, so CLI-003 wires the seam + unit-tests it. Usage never carries a
+ * price — JOB-012 prices server-side.
+ */
+export interface RunObservation {
+  readonly logs?: readonly RunObservationLogEntry[];
+  readonly progress?: readonly RunObservationProgressEntry[];
+  readonly usage?: UsagePayloadV1 | null;
+}
+
+/** The max number of captured `log` events a single run may emit, leaving headroom
+ * under the frozen 500-event batch cap for attempt_started/progress/usage/terminal.
+ * Envelope-level (≤500-event / ≤3.75 MiB) batching itself is the durable sink's job. */
+const MAX_LOG_EVENTS = 480;
 
 /** The worker's stable identity (targetId + deviceGeneration) — not carried on a
  * per-lease handoff, so it is bound once at supervisor construction. */
@@ -76,6 +111,14 @@ export interface SupervisorDeps {
    * inert E4-D12 seam; until then it is `[]` (verbatim emit, no secret-bearing
    * supervisor string exists yet — every terminal errorMessage is hardcoded null). */
   readonly redactionCanaries?: readonly string[];
+  /**
+   * CLI-003/D3 — an OPTIONAL run-observation source. When present, the supervisor
+   * resolves it AFTER `execute` (with the exec result) and emits the captured
+   * log/progress/usage producer events between `attempt_started` and `terminal`.
+   * Absent (the default) leaves the lifecycle event stream unchanged. Best-effort:
+   * a throw is logged and never fails the run.
+   */
+  readonly observeRun?: (input: { handoff: LeaseHandoff; exec: ExecuteResult }) => RunObservation | Promise<RunObservation>;
 }
 
 export type SupervisorRunStatus = "succeeded" | "failed" | "cancelled" | "create_timeout";
@@ -156,10 +199,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     return { resourceLabels: labels, command, args, env: {}, workloadType: handoff.offer.job.workloadType };
   }
 
-  async function withCreateDeadline<T>(op: Promise<T>): Promise<T | typeof TIMEOUT> {
+  async function withDeadline<T>(op: Promise<T>, deadlineMs: number): Promise<T | typeof TIMEOUT> {
     let handle: ReturnType<typeof setTimeout> | null = null;
     const timeout = new Promise<typeof TIMEOUT>((resolve) => {
-      handle = schedule(() => resolve(TIMEOUT), createDeadlineMs);
+      handle = schedule(() => resolve(TIMEOUT), deadlineMs);
     });
     try {
       return await Promise.race([op, timeout]);
@@ -245,7 +288,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     // 1. create — raced against its deadline (a hung create escalates cleanup).
     let created;
     try {
-      created = await withCreateDeadline(run.effect.create(spec, ctx()));
+      created = await withDeadline(run.effect.create(spec, ctx()), createDeadlineMs);
     } catch (err) {
       emitOp("create", "failed");
       await events.terminal({ status: "failed", exitCode: null, errorCode: "create_failed", errorMessage: null });
@@ -266,6 +309,9 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     emitOp("create", "success");
 
     if (run.cancelled) {
+      // CLI-003/D3 — a cancel that arrives after create but before the tenant command
+      // still reaches a durable cancelled terminal, then escalates cleanup.
+      await events.terminal({ status: "cancelled", exitCode: null, errorCode: "cancelled", errorMessage: null });
       await escalateCleanup(run, "cancelled_during_create");
       return;
     }
@@ -273,30 +319,86 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     // 2. attempt_started — the tenant command is running INSIDE the sandbox.
     await events.attemptStarted(created.sandboxId);
 
-    // 3. execute (in sandbox).
+    // 3. execute (in sandbox) — raced against a supervisor-side op deadline so a
+    // provider that hangs (ignoring the opDeadlineMs it also carries on ctx) still
+    // reaches a durable terminal within a bound (§2.1 within-policy). A well-behaved
+    // provider returns before the race fires (with its own timedOut verdict), so the
+    // op wins; the backstop only bites a hung/misbehaving provider.
     let exec;
     try {
-      exec = await run.effect.execute(
-        { sandboxId: created.sandboxId, command: spec.command, args: spec.args, env: spec.env },
-        ctx(),
+      const raced = await withDeadline(
+        run.effect.execute(
+          { sandboxId: created.sandboxId, command: spec.command, args: spec.args, env: spec.env },
+          ctx(),
+        ),
+        opDeadlineMs,
       );
+      if (raced === TIMEOUT) {
+        emitOp("execute", "timed_out");
+        const cancelled = run.cancelled;
+        await events.terminal({
+          status: cancelled ? "cancelled" : "failed",
+          exitCode: null,
+          errorCode: cancelled ? "cancelled" : "execute_timeout",
+          errorMessage: null,
+        });
+        await escalateCleanup(run, "execute_deadline");
+        return;
+      }
+      exec = raced;
     } catch (err) {
       emitOp("execute", "failed");
+      // §2.1 — this is the ONLY lifecycle exit and it MUST still reach a durable
+      // terminal. The common cancel/lease-loss path tears down the sandbox
+      // (escalateCleanup) which makes the in-flight execute REJECT here; without a
+      // terminal the attempt is stranded non-terminal until the JOB-006 reaper. A
+      // cancelled run reaches `cancelled`; a genuine execute failure reaches `failed`.
+      const cancelled = run.cancelled;
+      await events.terminal({
+        status: cancelled ? "cancelled" : "failed",
+        exitCode: null,
+        errorCode: cancelled ? "cancelled" : "execute_failed",
+        errorMessage: null,
+      });
       await escalateCleanup(run, "execute_error");
       return;
     }
     emitOp("execute", "success");
 
     if (run.cancelled) {
-      // Cancelled while executing — cleanup already ran (or runs now); no terminal
-      // success, no double destroy.
+      // Cancelled while executing — emit a durable cancelled terminal (CLI-003/D3),
+      // then escalate; no terminal success, no double destroy.
+      await events.terminal({ status: "cancelled", exitCode: null, errorCode: "cancelled", errorMessage: null });
       await escalateCleanup(run, "cancelled_during_execute");
       return;
     }
 
-    // 4. terminal event.
-    const status = exec.exitCode === 0 ? "succeeded" : "failed";
-    await events.terminal({ status, exitCode: exec.exitCode, errorCode: null, errorMessage: null });
+    // 3b. Producers (CLI-003/D3+D5): best-effort log/progress/usage captured from
+    // the run, emitted between attempt_started and terminal. Instrumentation must
+    // NEVER fail the run — a throw is logged and swallowed. Usage is evidentiary-only
+    // (the frozen `.strict()` schema rejects any price field — JOB-012 prices).
+    if (deps.observeRun) {
+      try {
+        const obs = await deps.observeRun({ handoff, exec });
+        for (const entry of (obs.logs ?? []).slice(0, MAX_LOG_EVENTS)) {
+          await events.log({ stream: entry.stream, level: entry.level ?? "info", message: entry.message });
+        }
+        for (const tick of obs.progress ?? []) {
+          await events.progress({ message: tick.message, percent: tick.percent });
+        }
+        if (obs.usage) await events.usage(obs.usage);
+      } catch (err) {
+        deps.logger?.warn({ leaseId: run.leaseId, err }, "supervisor: run observation failed (best-effort)");
+      }
+    }
+
+    // 4. terminal event — ENRICHED with exec.signal/timedOut (CLI-003/D3). The frozen
+    // terminal payload has no signal/timedOut field, so they fold into the free
+    // errorCode/errorMessage strings; a timed-out or signalled exec is `failed`.
+    const status = exec.exitCode === 0 && !exec.timedOut ? "succeeded" : "failed";
+    const errorCode = exec.timedOut ? "exec_timeout" : exec.signal !== null ? "exec_signalled" : null;
+    const errorMessage = exec.signal !== null ? `signal:${exec.signal}` : null;
+    await events.terminal({ status, exitCode: exec.exitCode, errorCode, errorMessage });
 
     // 5. destroy UNDER EFFECT AUTHORITY (happy-path reclaim).
     try {
