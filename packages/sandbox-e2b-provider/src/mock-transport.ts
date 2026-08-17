@@ -27,6 +27,7 @@ import {
   type E2bRunCommandRequest,
   type E2bSandboxRecord,
   type E2bSignalResult,
+  type E2bStagedFile,
   type E2bTransport,
 } from "./transport.js";
 
@@ -38,6 +39,8 @@ interface MockRecord {
   ignoreKill: boolean;
   /** Remaining teardown attempts that FAIL transiently before reclamation. */
   destroyFailuresRemaining: number;
+  /** CLI-002/D1 — deterministic in-memory filesystem: absolute path → bytes. */
+  fs: Map<string, Uint8Array>;
 }
 
 export interface MockE2bTransportOptions {
@@ -86,15 +89,24 @@ export class MockE2bTransport implements E2bTransport {
       ignoreCancel: faults.ignoreCancel,
       ignoreKill: faults.ignoreKill,
       destroyFailuresRemaining: faults.destroyFailures,
+      fs: new Map<string, Uint8Array>(),
     });
     return { sandboxId };
   }
 
   async runCommand(req: E2bRunCommandRequest): Promise<E2bCommandResult> {
-    this.#requireRecord(req.sandboxId);
+    const record = this.#requireRecord(req.sandboxId);
     const faults = decodeExecuteFaults(req.envVars);
     if (faults.egressClass && faults.egressClass !== "allow") {
       throw new E2bTransportEgressBlockedError(faults.egressClass);
+    }
+    // CLI-002/D1 — the fake CLI's file mutations: apply the reserved fs-write
+    // directive to the in-memory fs BEFORE reporting a terminal, modeling a real
+    // CLI writing a KNOWN file inside the sandbox. Skipped on a crash/timeout run.
+    if (faults.lifecycleFault === null) {
+      for (const write of faults.fsWrites) {
+        record.fs.set(write.path, new TextEncoder().encode(write.content));
+      }
     }
     // HONEST transport semantics: a zero/positive command budget does NOT itself
     // decide the timeout — the driver owns the zero-budget verdict (e2b-provider
@@ -158,6 +170,30 @@ export class MockE2bTransport implements E2bTransport {
   async isRunning(sandboxId: string): Promise<boolean> {
     const record = this.#records.get(sandboxId);
     return record !== undefined && record.state === "running";
+  }
+
+  // --- CLI-002/D1 staging fs primitives -------------------------------------
+
+  async writeFiles(sandboxId: string, files: readonly E2bStagedFile[]): Promise<void> {
+    const record = this.#requireRecord(sandboxId);
+    for (const file of files) {
+      // Copy the bytes so a later caller mutation of the source buffer can't
+      // retroactively alter staged content (deterministic isolation).
+      record.fs.set(file.path, Uint8Array.from(file.bytes));
+    }
+  }
+
+  async readFile(sandboxId: string, path: string): Promise<Uint8Array> {
+    const record = this.#requireRecord(sandboxId);
+    const bytes = record.fs.get(path);
+    if (bytes === undefined) throw new E2bTransportNotFoundError(`${sandboxId}:${path}`);
+    return Uint8Array.from(bytes);
+  }
+
+  async listDir(sandboxId: string, path: string): Promise<readonly string[]> {
+    const record = this.#requireRecord(sandboxId);
+    const prefix = path.endsWith("/") ? path : `${path}/`;
+    return [...record.fs.keys()].filter((p) => p === path || p.startsWith(prefix)).sort();
   }
 
   /** Test-only: current live sandbox count (zero after a full converge). */

@@ -107,6 +107,15 @@ export interface E2bListRequest {
   readonly pageToken?: string | null;
 }
 
+/** A file to stage into a sandbox: an absolute in-sandbox path + its raw bytes.
+ * CLI-002/D1 — the ONLY primitive that puts host-assembled bytes (the declared
+ * snapshot, the actor-gated `## Context` block, approved runtime inputs) into a
+ * sandbox. Provider-neutral: no tenant/E2B field, just path + bytes. */
+export interface E2bStagedFile {
+  readonly path: string;
+  readonly bytes: Uint8Array;
+}
+
 /**
  * The injectable E2B transport. Optional capabilities (`pause`/`resume`) may be
  * absent — the provider gates the optional `checkpoint`/`restore` ops on their
@@ -115,6 +124,20 @@ export interface E2bListRequest {
 export interface E2bTransport {
   create(req: E2bCreateRequest): Promise<{ readonly sandboxId: string }>;
   runCommand(req: E2bRunCommandRequest): Promise<E2bCommandResult>;
+  /**
+   * CLI-002/D1 — stage `files` (declared snapshot + `## Context` bundle + approved
+   * inputs) into a live sandbox before execution. The real binding uses the `e2b`
+   * SDK filesystem API; the mock models an in-memory fs so staging + a fake CLI's
+   * file mutation are no-key-testable. An unknown sandbox throws
+   * {@link E2bTransportNotFoundError}. It carries NO tenant field (CAV-002).
+   */
+  writeFiles(sandboxId: string, files: readonly E2bStagedFile[]): Promise<void>;
+  /** CLI-002/D1 — read a staged/mutated file's bytes back (assertions + result
+   * collection). Missing sandbox OR path throws {@link E2bTransportNotFoundError}. */
+  readFile(sandboxId: string, path: string): Promise<Uint8Array>;
+  /** CLI-002/D1 — enumerate the absolute paths of files under a directory prefix
+   * (assertions). Missing sandbox throws {@link E2bTransportNotFoundError}. */
+  listDir(sandboxId: string, path: string): Promise<readonly string[]>;
   /** Deliver a graceful-cancel or forced-kill signal to a live sandbox. */
   signal(sandboxId: string, kind: "cancel" | "kill"): Promise<E2bSignalResult>;
   /** Terminate + reclaim a sandbox. May throw {@link E2bTransportTransientError}. */

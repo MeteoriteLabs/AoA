@@ -32,6 +32,7 @@ import {
   type E2bRunCommandRequest,
   type E2bSandboxRecord,
   type E2bSignalResult,
+  type E2bStagedFile,
   type E2bTransport,
 } from "./transport.js";
 
@@ -164,6 +165,42 @@ export class RealE2bTransport implements E2bTransport {
 
   async setTimeout(sandboxId: string, timeoutMs: number): Promise<void> {
     await this.#sdk.setTimeout(sandboxId, timeoutMs, { apiKey: this.#apiKey });
+  }
+
+  // --- CLI-002/D1 staging fs primitives (keyed lane only) --------------------
+
+  async writeFiles(sandboxId: string, files: readonly E2bStagedFile[]): Promise<void> {
+    const sandbox = await this.#sdk.connect(sandboxId, { apiKey: this.#apiKey });
+    for (const file of files) {
+      // `sandbox.files.write(path, data)` accepts bytes; a Buffer view keeps the
+      // e2b SDK's Node upload path happy without copying the underlying data.
+      await sandbox.files.write(file.path, Buffer.from(file.bytes));
+    }
+  }
+
+  async readFile(sandboxId: string, path: string): Promise<Uint8Array> {
+    try {
+      const sandbox = await this.#sdk.connect(sandboxId, { apiKey: this.#apiKey });
+      const data = await sandbox.files.read(path, { format: "bytes" });
+      if (data instanceof Uint8Array) return data;
+      if (typeof data === "string") return new TextEncoder().encode(data);
+      return new Uint8Array(data as ArrayBufferLike);
+    } catch (err) {
+      if (this.#isNotFound(err)) throw new E2bTransportNotFoundError(`${sandboxId}:${path}`);
+      throw err;
+    }
+  }
+
+  async listDir(sandboxId: string, path: string): Promise<readonly string[]> {
+    try {
+      const sandbox = await this.#sdk.connect(sandboxId, { apiKey: this.#apiKey });
+      const entries = await sandbox.files.list(path);
+      const arr = Array.isArray(entries) ? entries : [];
+      return arr.map((e: SandboxSdk) => String(e?.path ?? e?.name ?? ""));
+    } catch (err) {
+      if (this.#isNotFound(err)) throw new E2bTransportNotFoundError(`${sandboxId}:${path}`);
+      throw err;
+    }
   }
 
   async isRunning(sandboxId: string): Promise<boolean> {

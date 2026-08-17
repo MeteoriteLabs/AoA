@@ -18,6 +18,7 @@ export type {
   E2bListPage,
   E2bSandboxRecord,
   E2bRecordState,
+  E2bStagedFile,
 } from "./transport.js";
 export {
   E2bTransportNotFoundError,

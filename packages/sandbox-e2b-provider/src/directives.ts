@@ -23,6 +23,12 @@ export const DIRECTIVE_KEYS = {
   destroyFailures: "__aoa_fault_destroy_failures",
   egressClass: "__aoa_egress_class",
   lifecycleFault: "__aoa_lifecycle_fault",
+  // CLI-002/D1 — the deterministic fake-CLI file-mutation directive (mock transport
+  // ONLY). Its value is a JSON array of `{ path, content }` the mock applies to its
+  // in-memory fs during runCommand, modeling a real CLI writing a KNOWN file inside
+  // the sandbox. A REAL transport ignores it — the keyed lane runs a real shell
+  // command against real E2B instead.
+  fsWrite: "__aoa_fs_write",
 } as const;
 
 /** Metadata keys the provider round-trips through the transport to reconstruct a
@@ -52,9 +58,16 @@ export function decodeCreateFaults(env: Readonly<Record<string, string>>): Creat
   };
 }
 
+export interface FsWriteDirective {
+  readonly path: string;
+  readonly content: string;
+}
+
 export interface ExecuteFaultDirectives {
   readonly egressClass: string | null;
   readonly lifecycleFault: "crash" | "ttl" | null;
+  /** CLI-002/D1 — files a fake CLI mutates during this run (mock transport only). */
+  readonly fsWrites: readonly FsWriteDirective[];
 }
 
 /** Decode the execute-time fault directives from the command env bag (mock
@@ -65,5 +78,29 @@ export function decodeExecuteFaults(env: Readonly<Record<string, string>>): Exec
   return {
     egressClass: typeof egress === "string" && egress.length > 0 ? egress : null,
     lifecycleFault: life === "crash" || life === "ttl" ? life : null,
+    fsWrites: decodeFsWrites(env[DIRECTIVE_KEYS.fsWrite]),
   };
+}
+
+/** Decode the reserved fs-write directive (mock transport only). Absent/garbage →
+ * no writes (benign default). */
+export function decodeFsWrites(raw: string | undefined): readonly FsWriteDirective[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: FsWriteDirective[] = [];
+    for (const entry of parsed) {
+      if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+        const p = (entry as Record<string, unknown>).path;
+        const c = (entry as Record<string, unknown>).content;
+        if (typeof p === "string" && p.length > 0 && typeof c === "string") {
+          out.push({ path: p, content: c });
+        }
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }

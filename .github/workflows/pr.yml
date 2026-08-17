@@ -99,7 +99,7 @@ jobs:
           # fixtures: the golden-journey + failure fixture corpus.
           emit fixtures "$(match '^tests/fixtures/distributed-execution/')"
           # provider: the sandbox fake + e2b providers, provider-neutral contract, and runtime seam.
-          emit provider "$(match '^packages/sandbox-fake-provider/|^packages/sandbox-e2b-provider/|^packages/sandbox-provider-contract/|^server/src/services/sandbox-provider-runtime|^docker/d1/fake-provider')"
+          emit provider "$(match '^packages/sandbox-fake-provider/|^packages/sandbox-e2b-provider/|^packages/sandbox-provider-contract/|^server/src/services/sandbox-provider-runtime|^server/src/services/sandbox-coding-|^docker/d1/fake-provider')"
           # compose: the D1 topology (its static invariants run in the always-on policy job).
           emit compose "$(match '^docker-compose\.d1\.yml$|^docker/d1/|^docker/control-plane/|^docker/worker/|^docker/images/')"
 
@@ -161,6 +161,11 @@ jobs:
         run: |
           node scripts/check-sandbox-e2b-provider-boundary.mjs
           node --test scripts/check-sandbox-e2b-provider-boundary.test.mjs
+
+      - name: Sandbox coding adapter disposition coverage (CLI-002)
+        run: |
+          node scripts/check-sandbox-coding-disposition.mjs
+          node --test scripts/check-sandbox-coding-disposition.test.mjs
 
       - name: Shared device-proof canonicalization vectors
         run: |

@@ -100,6 +100,42 @@ describeKeyed("CLI-001/D4 — real E2B (keyed) — happy path + adapter-enforced
   });
 });
 
+describeKeyed("CLI-002/D6 — real E2B (keyed) — a fake CLI modifies a KNOWN file", () => {
+  it("stage a file → run a real shell command that mutates it → read the mutation back", async () => {
+    const { RealE2bTransport } = await import("../real-transport.js");
+    const transport = new RealE2bTransport();
+    const { sandboxId } = await transport.create({
+      templateId: TEMPLATE,
+      timeoutMs: 60_000,
+      metadata: {},
+      envVars: {},
+    });
+    try {
+      const target = "/home/user/output.txt";
+      // Stage a KNOWN file with known contents via the D1 staging primitive.
+      await transport.writeFiles(sandboxId, [{ path: target, bytes: new TextEncoder().encode("original") }]);
+      expect(new TextDecoder().decode(await transport.readFile(sandboxId, target))).toBe("original");
+
+      // The deterministic "fake CLI": a real shell command inside REAL E2B that
+      // overwrites the known file (no synthetic directive — this is real infra).
+      const result = await transport.runCommand({
+        sandboxId,
+        command: "sh",
+        args: ["-c", "printf 'MUTATED-BY-CLI' > /home/user/output.txt"],
+        envVars: {},
+        timeoutMs: 30_000,
+      });
+      expect(result.timedOut).toBe(false);
+
+      // The mutation is visible through the D1 read primitive — the CLI-002
+      // acceptance test ("deterministic fake CLI modifies a known file inside E2B").
+      expect(new TextDecoder().decode(await transport.readFile(sandboxId, target))).toBe("MUTATED-BY-CLI");
+    } finally {
+      await transport.terminate(sandboxId).catch(() => {});
+    }
+  });
+});
+
 describeKeyed("CLI-001/D4 — real E2B (keyed) — real TTL enforcement", () => {
   it("a short-TTL sandbox actually expires (never hangs)", async () => {
     const { RealE2bTransport } = await import("../real-transport.js");
