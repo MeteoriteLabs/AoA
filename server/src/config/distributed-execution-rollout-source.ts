@@ -17,8 +17,9 @@
 //     }
 //   }
 // An Organization absent from the map is disabled. A workload absent from an enabled
-// Organization's `workloads` list (and no "*") is disabled. `mode` selects shadow vs
-// active for that Organization's enabled workloads.
+// Organization's `workloads` list (and no "*") is disabled. `mode` is one of
+// `shadow` | `active` | `canary` for that Organization's enabled workloads
+// (CLI-006 added `canary`; see the `RolloutMode` doc comment below).
 //
 // The deployment gate (`AOA_DISTRIBUTED_EXECUTION_ENABLED`, default-off) is checked
 // FIRST by `resolveRunRolloutState`, so this source can never enable distributed
@@ -34,9 +35,23 @@ export const DISTRIBUTED_EXECUTION_ROLLOUT_ENV = "AOA_DISTRIBUTED_EXECUTION_ROLL
 
 type Env = Record<string, string | undefined>;
 
-export type RolloutMode = "shadow" | "active";
+/**
+ * CLI-006 (D1) adds `canary` as a strict superset of `active`: everything `active`
+ * does (durable convert + the ONE checkout), PLUS placement (making the attempt
+ * leasable) and suppression of the legacy `adapter.execute`. It is a distinct mode
+ * rather than an overload so CLI-005's landed `active` semantics keep their exact
+ * meaning and rollback stays unambiguous (delete the key, or set `active`).
+ */
+export type RolloutMode = "shadow" | "active" | "canary";
+/**
+ * The vocabulary the PLACEMENT boundary accepts. `job-placement.ts` validates
+ * `["active","shadow"].includes(rollout.mode)` (`:589`) and gates leasability on
+ * `mode === "active"` (`:663`), so `canary` is presented there as `active`
+ * (see `resolveOrganizationPolicy`). Placement is E3-owned and is not edited.
+ */
+export type PlacementRolloutMode = "shadow" | "active";
 /** The resolved per-run rollout state a caller acts on. */
-export type RunRolloutState = "off" | "shadow" | "active";
+export type RunRolloutState = "off" | "shadow" | "active" | "canary";
 
 export interface OrganizationRolloutPolicy {
   readonly mode: RolloutMode;
@@ -45,10 +60,14 @@ export interface OrganizationRolloutPolicy {
 }
 
 export interface DistributedExecutionRolloutSource {
-  /** Placement-service-compatible org resolver (default `{ enabled:false }`). */
+  /**
+   * Placement-service-compatible org resolver (default `{ enabled:false }`).
+   * Returns placement's vocabulary, so a `canary` Organization is reported here
+   * as `active` — that is what makes its attempt lease-eligible.
+   */
   resolveOrganizationPolicy(input: {
     organizationId: string;
-  }): { enabled: boolean; mode: RolloutMode };
+  }): { enabled: boolean; mode: PlacementRolloutMode };
   /** Placement-service-compatible workload resolver (default `false`). */
   resolveWorkloadPolicy(input: { organizationId: string; workloadType: string }): boolean;
   /**
@@ -106,9 +125,9 @@ export function parseDistributedExecutionRolloutMap(
     }
     const record = value as Record<string, unknown>;
     const mode = record.mode;
-    if (mode !== "shadow" && mode !== "active") {
+    if (mode !== "shadow" && mode !== "active" && mode !== "canary") {
       throw new DistributedExecutionRolloutSourceConfigError(
-        `organization ${organizationId} mode must be "shadow" or "active"`,
+        `organization ${organizationId} mode must be "shadow", "active", or "canary"`,
       );
     }
     const workloadsRaw = record.workloads ?? [];
@@ -152,7 +171,12 @@ export function createDistributedExecutionRolloutSource(
   return {
     resolveOrganizationPolicy({ organizationId }) {
       const policy = organizationPolicy(organizationId);
-      return policy ? { enabled: true, mode: policy.mode } : { enabled: false, mode: "shadow" };
+      if (!policy) return { enabled: false, mode: "shadow" };
+      // CLI-006 (D1): `canary` is presented to placement as `active` — that is the
+      // whole mechanism by which a canary attempt becomes lease-eligible without
+      // touching the E3-owned placement module. The canary DISTINCTION is carried
+      // on the ownership decision + job provenance, not on the placement mode.
+      return { enabled: true, mode: policy.mode === "canary" ? "active" : policy.mode };
     },
     resolveWorkloadPolicy({ organizationId, workloadType }) {
       return workloadEnabled(organizationPolicy(organizationId), workloadType);
