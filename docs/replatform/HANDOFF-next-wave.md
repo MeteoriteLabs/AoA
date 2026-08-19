@@ -3,6 +3,21 @@
 **As of:** branch `docs/replatform-program` tip `9a6910aed` (ONE PR #323, worktree `C:\e3`).
 **Overall: 66 / 95 tickets landed CI-green.** Epics E0–E6 complete; E7 complete except its gate (CLI-006); E10's realtime-foundation gate closed; E8/E9/E11 not started.
 
+> ### Wave update — 2026-08-19 (tip `b9c7b689e`)
+>
+> **Scope is now locked at maximum.** Desktop **and** cross-target mobility are both advertised, on **both Windows and macOS**. Nothing is deferred to post-beta. That fixes the remaining count at **29 tickets** and carries three consequences the body of this document treats as optional:
+> - DSK-001..004 are **mandatory**, and their release join to E11 is unconditional.
+> - MIG-004 is **mandatory including desktop directions** — so D6-05's per-direction load (≥10 successful handoffs + 3 partition/destination-failure cases each) applies across roughly four directions, and desktop directions additionally require DSK-004 closure.
+> - Two advertised OS rows means two D6-04 support-matrix rows (≥200 probes + 3 fail-closed samples each), a desktop beta gate per OS, and REL-001/003/004 re-run with desktop covering both.
+>
+> **The D1 merge train had been red since the MIG-003 landing, and this document's "documented residual" framing was wrong.** Run `32245341173` was 37/40 with all three failures in E6F-13 — the realtime proof. The cause was a test bug, not MIG-003: `seq` is a Postgres bigint that the append/NOTIFY path reports as a JSON **string** while the `since()` read path yields numbers, and `tests/d1/e6f-13-realtime-fanout.test.mjs` imports `node:assert/strict`, so `'1' !== 1`. Fixed in `081a013cf`; **the lane is now 40/40 green**. `E10-REALTIME-FOUNDATION` therefore rests on real live two-replica evidence, including the cross-container convergence case §5 listed as unproven. *Lesson: a "documented residual" may just be an unread red lane — check the lane before trusting the prose.*
+>
+> **CLI-006 is in progress** (7 commits, all pushed and CI-green; PR gate 12/12). Landed: the `canary` rollout mode, the MIG-008 preflight, the single ownership decision, the transfer hook, the D3a bridge bypass, and the run-experience projector — 54 unit tests + 2 integration cases. **Remaining: the suppression seam**, then cancel/retry routing, JOB-008 inspection assertions, the journey matrix, adversarial review, and the result doc.
+>
+> **Design correction D3a** (`61019a8fe`) supersedes the "extend the CLI-005 seam" assumption: the frozen batch envelope carries the run's context as artifacts and is fixed at submission, so the job cannot be submitted at the CLI-005 seam — the convert must run **late**, just before `adapter.execute`. See `epics/E7-coding-e2b/tickets/CLI-006-design.md` §D3a.
+>
+> **Scheduling note:** DSK-001 is unblocked **today** and DSK-001→002→003→004 is a strictly serial 4-chain that never touches CLI-006. It is the longest unblocked chain in the program and should run as its own parallel track, or it becomes the end-game critical path.
+
 ---
 
 ## 1. Status by epic
