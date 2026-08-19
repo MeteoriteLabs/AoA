@@ -17,6 +17,17 @@ on:
         required: false
         default: ""
         type: string
+  # On-demand re-trigger from the integration branch. `workflow_dispatch` only
+  # registers from the DEFAULT branch (main), and this lane lives only on
+  # `docs/replatform-program`, so — mirroring the d1-merge-train `campaign.env`
+  # pattern — bump `.github/keyed-e2b-trigger` to fire the real-E2B lane here. A push
+  # run carries no `inputs`, so `E2B_TEMPLATE` resolves to "" → the bare `base`
+  # template; `secrets.E2B_API_KEY` is a repo secret available on any branch.
+  push:
+    branches:
+      - docs/replatform-program
+    paths:
+      - ".github/keyed-e2b-trigger"
 
 permissions:
   contents: read
