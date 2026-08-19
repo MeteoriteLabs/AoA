@@ -11,23 +11,46 @@
 1. **Work in `C:\e3`**, not the OneDrive worktree — embedded Postgres cannot initdb from the deep OneDrive path (MAX_PATH).
 2. **Read the plan first:** [`epics/E7-coding-e2b/tickets/CLI-006-seam-plan.md`](epics/E7-coding-e2b/tickets/CLI-006-seam-plan.md). Tasks 2b–8 are fully specified with exact file:line insertion points.
 3. **Read the design:** [`epics/E7-coding-e2b/tickets/CLI-006-design.md`](epics/E7-coding-e2b/tickets/CLI-006-design.md), especially **§D3a** (why the convert must run late) and the Invariants.
-4. **Skills to use:** `superpowers:writing-plans` before touching code on a new ticket; `superpowers:test-driven-development` while implementing; `superpowers:verification-before-completion` before claiming anything is done. The plan document's header names the execution sub-skill.
+### The per-ticket process — EVERY ticket in §3, no exceptions
 
-### The per-ticket process (proven on ~15 tickets; caught a real, often-HIGH defect on essentially every one)
+This is not a description of how the last session happened to work. It is the required cycle for **each of the 14 tickets**, including the small ones (REL-004) and the ones that look like pure wiring (MIG-005/006/007). It has been run on ~15 tickets and caught a real, often-HIGH defect on essentially every one — including tickets that looked trivial going in.
 
 ```
-terrain-map (parallel readers → adversarial verify → synth)
-  → re-verify the load-bearing claims YOURSELF
-  → design doc (commit)
-  → fail-first implement
-  → adversarial review (refute-by-default)
-  → controller re-verification + fix confirmed defects fail-first
-  → result doc → commit-by-path → FF-push → CI-watch
+1. terrain-map        parallel readers → adversarial verify → synthesis
+2. re-verify          the load-bearing claims YOURSELF, in the code
+3. plan               superpowers:writing-plans → design doc → COMMIT before code
+4. implement          superpowers:test-driven-development, fail-first
+5. review             adversarial, refute-by-default
+6. re-verify + fix    controller re-traces each finding; fixes land fail-first
+7. verify             superpowers:verification-before-completion
+8. result doc         honest deferrals → commit-by-path → FF-push → CI-watch
 ```
 
-**Never trust a subagent's green, and never trust your own first read.** Every defect listed in §5 was found by that layered net, and several were in code that had already passed review or already landed.
+**Skills, and when:** `superpowers:writing-plans` at step 3 — before touching code, on every ticket. `superpowers:test-driven-development` at step 4. `superpowers:verification-before-completion` at step 7, before claiming anything is done. The plan document's header names the execution sub-skill (`subagent-driven-development` or `executing-plans`).
 
-**Mutation-test every guard.** A guard whose removal leaves the suite green is not a guard. This session found two vacuous tests that way.
+**Steps 3 and 8 produce committed artifacts**, per the established convention:
+- design → `docs/replatform/epics/<EPIC>/tickets/<TICKET>-design.md`
+- plan (when the ticket is large enough to warrant one) → `…/<TICKET>-plan.md`
+- result → `…/<TICKET>-result.md`
+
+The design doc is committed **before** implementation and its SHA becomes the ticket's Start SHA. That is what makes the design reviewable rather than a post-hoc rationalisation.
+
+### Definition of done — a ticket is not done until all of these hold
+
+- [ ] Design doc committed **before** implementation; its load-bearing facts re-verified by you, not inherited
+- [ ] Every acceptance clause from `program-design.md` mapped to evidence, or explicitly deferred with a reason
+- [ ] Fail-first: every guard proven RED before GREEN
+- [ ] **Every guard mutation-tested** — remove it and the suite must go RED
+- [ ] Adversarial review run; each finding either fixed fail-first or refuted in writing
+- [ ] Result doc committed, including honest deferrals and residual risk
+- [ ] Pushed, **CI watched to green** (not assumed — `ci-required` is the verdict)
+- [ ] If it touches `server/src` and needs the live lane: `docker/d1/campaign.env` bumped
+
+### Two rules that produced every defect found
+
+**Never trust a subagent's green, and never trust your own first read.** Every trap in §5 came from that layered net. Several were in code that had already passed review, and two were in code that had already landed and gone green in CI.
+
+**Mutation-test every guard.** A guard whose removal leaves the suite green is not a guard. This session found two vacuous tests that way — one where the mock had never modelled the case the guard protects.
 
 ---
 
@@ -50,6 +73,8 @@ Then Tasks 3 (the seam) → 4 (cancel routing, five writers) → 5 → 6 → 7 (
 ## 3. The wave: 14 tickets
 
 Dependencies computed against the 66 landed. Three tracks run genuinely in parallel.
+
+**Each row below runs the full §1 cycle** — terrain-map → re-verify → plan/design doc → fail-first implement → adversarial review → re-verify + fix → result doc → CI-green — and is not done until every box in the §1 Definition of Done is ticked. That applies to REL-004 (small) and to MIG-005/006/007 (mostly wiring) exactly as it applies to CLI-006. The cutover tickets in particular are wiring over existing engines, which is precisely the shape that reads as safe and is not: they move live execution sinks.
 
 | # | Ticket | Track | Unblocked by |
 |---|---|---|---|
