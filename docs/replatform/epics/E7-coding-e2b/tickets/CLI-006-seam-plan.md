@@ -143,13 +143,16 @@ A new `server/src/services/canary-terminal-projection.ts` holding two pieces, so
 
 **The insertion point is load-bearing and verified.** The `return` must be **inside** the inner `try`, not before it. `heartbeatMcpDelivery.cleanup()` has exactly one call site (`:5192`, in that inner `finally`) and `deregisterRuntimeHook` one (`:5190`). Returning before `try {` skips both, leaking a 24h-valid runtime-permission token and a tmpdir MCP config file that, for non-brokered `claude_local`, **embeds `DATABASE_URL`** — no TTL, no sweeper.
 
-- [ ] **Step 1: Write the failing test** — on a suppressed run assert `adapter.execute` is NOT called, and `deregisterRuntimeHook` + `heartbeatMcpDelivery.cleanup` are each called exactly once.
-- [ ] **Step 2: Run it, expect FAIL.**
-- [ ] **Step 3: Add the ownership call** before `:5145`, guarded on `distributedRolloutHook && distributedRolloutState === "canary" && distributedRolloutOrganizationId && issueId && issueContext && issueContext.assigneeAgentId === agent.id`, storing the single result.
-- [ ] **Step 4: Add the suppression guard** as the first statement inside the inner `try` — mark the run handed off (`execution_owner`, job/attempt ids, `updatedAt`), append one lifecycle run event, `return`.
-- [ ] **Step 5: Run tests + typecheck.** Confirm TS definite-assignment on `adapterResult` survives an early return inside the try — assert with `tsc`, not inspection.
-- [ ] **Step 6: Mutation-check** — move the `return` one line up (before `try {`); the cleanup test must go RED. Restore.
-- [ ] **Step 7: Commit.**
+- [x] **Step 1-2: failing test, RED** — 9 cases. `executeRun` is impractical to unit-test (Risk #2), so the test proves what can be proven: the decision and the marker write are pure functions, and the RETURN'S POSITION is asserted **structurally** against `heartbeat.ts` source.
+- [x] **Step 3: ownership call added** on exactly the planned predicate. `tsc` confirms `issueContext`, `distributedRolloutOrganizationId` and the `"canary"` state are in scope and well-typed there — the plan's claim re-verified by the compiler, not by reading.
+- [x] **Step 4: suppression guard** as the first statement inside the inner `try`; `markRunHandedOffToDistributed` writes the marker (no `status` — the attempt is the terminal authority now) and appends one lifecycle event.
+- [x] **Step 5: `tsc` exit 0** — definite-assignment on `adapterResult` survives the early return, asserted by the compiler as required.
+- [x] **Step 6: mutation-checked** — hoisting the `return` above `try {` turns the structural test RED. Restored green.
+- [x] **Step 7: committed `3799c8048`.** 350 green across the CLI-006, heartbeat and reaper suites.
+
+**D3a's checkout bypass was verified present, not assumed.** A canary run reaching a late `admitAndSubmit` without it is checked out twice — the exact Invariant 3 break CLI-005's review caught. It is present at `job-admission-bridge.ts:292-308`, keyed on `taskSourceIsAdmitted`, and active mode is unaffected because there the harness suppresses its own checkout.
+
+**Why a structural test earns its place here.** One line earlier the `return` typechecks, passes every behavioural test, and leaks a 24h-valid runtime-permission token plus a `DATABASE_URL`-bearing tmpdir MCP config. Nothing else in this repo catches that; the mutation proves the assertion is live.
 
 ---
 
