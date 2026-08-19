@@ -117,13 +117,21 @@ A new `server/src/services/canary-terminal-projection.ts` holding two pieces, so
 - `foldAttemptEvidence(rows, terminalStatus)` — **pure**; `job_events` rows → `CanaryAttemptEvidence`, including the 2b-D2 mapping, sequence ordering, and `eventId` dedupe.
 - `createAttemptTerminalProjectionHandler(deps)` — resolve the run by `(distributedJobId, distributedAttemptId)` **and** `executionOwner = "distributed"`, read the attempt's events under `runInTenant`, fold, project. No matching run → return silently: that is a non-canary attempt, or one whose run fell back to legacy.
 
-- [ ] **Step 1: Write the ordering decision into this task** (done, above), then the failing test asserting a terminal signal reaches `projectTerminal` with the run resolved by `distributed_job_id`/`distributed_attempt_id`.
-- [ ] **Step 2: Run it, expect FAIL.**
-- [ ] **Step 3: Build `canary-terminal-projection.ts`** — pure fold + handler.
-- [ ] **Step 4: Add `onAttemptTerminal` to `workerControlRoutes` opts and pass it to `createJobEventIngestService`; thread through `app.ts` opts.**
-- [ ] **Step 5: Compose the callback in `index.ts` before `createApp`**, per 2b-D1.
-- [ ] **Step 6: Mutation-check** — the `executionOwner` predicate and the `expired` mapping each removed in turn; the suite must go RED for both.
-- [ ] **Step 7: Run tests + typecheck. Commit.**
+- [x] **Step 1: ordering decision written** (above), then the failing test.
+- [x] **Step 2: Ran it — RED** (module absent).
+- [x] **Step 3: Built `canary-terminal-projection.ts`** — pure fold + handler + two adapters.
+- [x] **Step 4: `onAttemptTerminal` threaded** through `workerControlRoutes` and `app.ts`, under one named `JobEventIngestTerminalHook` type so the three hops cannot drift.
+- [x] **Step 5: Composed in `index.ts` before `createApp`**, per 2b-D1.
+- [x] **Step 6: Mutation-checked** — ownership predicate removed → RED; `expired`→`failed` → RED; a dep demanding an extra required field → `tsc` TS2322. All three restored green.
+- [x] **Step 7: 21 new tests; 123 green across the CLI-006 family; server suite shows no regression** (the 6 Windows-local failures are byte-identical with and without the change).
+
+### What Task 2b actually landed, beyond the plan
+
+- **`heartbeatService.projectDistributedAttemptTerminal`** — the projector needs `setRunStatus` (the terminal latch) and `appendRunEvent`, both private closures over the service's `db`. Publishing them would hand any caller the ability to terminalize a run, which is the second authority Invariant 8 forbids. So one narrow capability is exposed and the latch stays private — the `finalizeDistributedRun` precedent. Its single injected port is `listAttemptEvents`, the one read heartbeat's `db` cannot do (tenant-scoped `job_events` behind RLS, reachable only via `runInTenant` over `aoa_app`).
+- **`finalizeDistributedRunImpl` extracted** to a private closure, so the exposed method and the projector's `finalizeRun` share one implementation instead of the object literal referencing itself.
+- **`toProjectorTerminalWriter`** — `setRunStatus` resolves `row | null`; the projector's dep resolves `won: boolean`. Inverting that polarity is invisible to the compiler and fails in the worst direction: every projection believes it LOST the latch, skips finalization, and pins the agent at `running` (R7). Named and tested, per the `toRunExecutionPlacement` precedent.
+- **`projectionSeqBase`** — the Task 3 handoff lifecycle event writes seq 1 and the attempt's own sequence also starts at 1. `heartbeat_run_events` has only a NON-unique `(run_id, seq)` index, so the collision does not error; it silently interleaves the distributed log with the handoff notice. Projected seqs are offset above the run's existing max.
+- **Every port on `AttemptTerminalProjectionDeps` uses arrow-property syntax, not method shorthand** — proven by mutation to reject a dependency that demands an extra required field (TS2322), which is precisely the hole `placement: placementService` slipped through in Task 2a.
 
 ---
 

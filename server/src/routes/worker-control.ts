@@ -35,7 +35,7 @@ import {
 } from "../middleware/worker-operation-proof.js";
 import { createJobLeasingService, JobLeasingError } from "../services/job-leasing.js";
 import { createJobLeaseRenewalService } from "../services/job-fencing.js";
-import { createJobEventIngestService } from "../services/job-events.js";
+import { createJobEventIngestService, type JobEventIngestTerminalHook } from "../services/job-events.js";
 import { createArtifactTransferGrantService } from "../services/artifact-transfer-grant.js";
 import { createArtifactCommitService } from "../services/artifact-commit.js";
 import { createQuarantineGrantService } from "../services/quarantine-grant.js";
@@ -79,6 +79,8 @@ export function workerControlRoutes(opts: {
   jobControlMetrics?: JobControlMetrics;
   sessionSigningKey: string;
   now?: () => Date;
+  /** CLI-006 (2b) — see the note on the same field in `createApp`'s opts. */
+  onAttemptTerminal?: JobEventIngestTerminalHook;
 }) {
   const router = Router();
   const orgAccess = organizationAccessService(opts.db);
@@ -95,7 +97,7 @@ export function workerControlRoutes(opts: {
     metrics: opts.jobControlMetrics,
   });
   const renewal = createJobLeaseRenewalService({ appDb: opts.appDb });
-  const events = createJobEventIngestService({ appDb: opts.appDb });
+  const events = createJobEventIngestService({ appDb: opts.appDb, onAttemptTerminal: opts.onAttemptTerminal });
   // DAT-002 — the raw storage provider (full-object-key, no company prefixing) used
   // to presign worker grants and headObject-verify commits.
   const storage = createStorageProviderFromConfig(loadConfig());

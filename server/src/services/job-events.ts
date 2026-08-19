@@ -122,6 +122,13 @@ export function resolveAttemptTerminalSignal(input: {
   };
 }
 
+/**
+ * CLI-006 (2b) — the after-commit terminal projection hook. Named so the three
+ * composition hops (index.ts -> createApp -> workerControlRoutes) declare ONE
+ * type instead of three structural copies that can drift apart silently.
+ */
+export type JobEventIngestTerminalHook = (signal: AttemptTerminalSignal) => void | Promise<void>;
+
 export function createJobEventIngestService(input: {
   appDb: Db;
   maxHeartbeatAgeMs?: number;
@@ -133,7 +140,7 @@ export function createJobEventIngestService(input: {
    * invariant the trace-logger binding respects below), and its own failure is
    * swallowed so the worker's ACK is never lost to a projection error.
    */
-  onAttemptTerminal?: (signal: AttemptTerminalSignal) => void | Promise<void>;
+  onAttemptTerminal?: JobEventIngestTerminalHook;
 }) {
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300_000);
   return {

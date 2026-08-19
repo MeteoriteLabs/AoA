@@ -157,6 +157,14 @@ import {
   resolveAgentSubscriptionEnvironment,
 } from "./provider-credential-bindings.js";
 import { postRunSummaryComment } from "./run-summary-comment.js";
+import { createCanaryRunProjector } from "./canary-run-projector.js";
+import {
+  createAttemptTerminalProjectionHandler,
+  projectionSeqBase,
+  toProjectorTerminalWriter,
+  type AttemptEventRow,
+} from "./canary-terminal-projection.js";
+import type { AttemptTerminalSignal } from "./job-events.js";
 import { emitSandboxPreviewTaskOutput } from "./task-output-emitters.js";
 import {
   buildWorkspaceReadyComment,
@@ -6578,6 +6586,34 @@ export function heartbeatService(
     return newRun;
   }
 
+  async function finalizeDistributedRunImpl(input: {
+    runId: string;
+    outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+    errorMessage: string | null;
+  }): Promise<void> {
+    const run = await getRun(input.runId);
+    if (!run) return;
+    const wakeupStatus = input.outcome === "succeeded" ? "completed" : input.outcome;
+    try {
+      await setWakeupStatus(run.wakeupRequestId, wakeupStatus, {
+        finishedAt: new Date(),
+        error: input.errorMessage,
+      });
+    } catch (err) {
+      logger.warn({ err, runId: run.id }, "[CLI-006] distributed finalize: wakeup status failed");
+    }
+    try {
+      await releaseIssueExecutionAndPromote(run);
+    } catch (err) {
+      logger.warn({ err, runId: run.id }, "[CLI-006] distributed finalize: issue release failed");
+    }
+    try {
+      await finalizeAgentStatus(run.agentId, input.outcome);
+    } catch (err) {
+      logger.warn({ err, runId: run.id }, "[CLI-006] distributed finalize: agent status failed");
+    }
+  }
+
   return {
     list: (companyId: string, agentId?: string, limit?: number) => {
       const query = db
@@ -6620,31 +6656,108 @@ export function heartbeatService(
      * recoverable, and this is invoked from an after-commit projection hook whose
      * failure must not cost the worker's ACK.
      */
-    async finalizeDistributedRun(input: {
-      runId: string;
-      outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
-      errorMessage: string | null;
+    finalizeDistributedRun: finalizeDistributedRunImpl,
+
+    /**
+     * CLI-006 (2b) — project a distributed attempt's durable terminal onto the
+     * canary-owned heartbeat run it was handed off from.
+     *
+     * Exposed here for the same reason `finalizeDistributedRun` is: the writes it
+     * needs — `setRunStatus` (the terminal latch) and `appendRunEvent` — are
+     * closures over this service's `db` and are deliberately NOT on the public
+     * surface. Publishing `setRunStatus` would hand any caller the ability to
+     * terminalize a run, which is precisely the second authority Invariant 8
+     * forbids. So the narrow capability is exposed and the latch stays private.
+     *
+     * The ONE thing this service cannot do is read the attempt's events: they live
+     * in the tenant-scoped `job_events` table behind RLS, reachable only through
+     * `runInTenant` over the `aoa_app` pool. That is the single injected port.
+     *
+     * Never throws: it is driven from JOB-005's after-commit hook, whose failure
+     * would otherwise cost the worker its ACK and make it replay the terminal.
+     */
+    async projectDistributedAttemptTerminal(input: {
+      signal: AttemptTerminalSignal;
+      listAttemptEvents: (query: {
+        organizationId: string;
+        companyId: string;
+        jobId: string;
+        attemptId: string;
+      }) => Promise<readonly AttemptEventRow[]>;
     }): Promise<void> {
-      const run = await getRun(input.runId);
-      if (!run) return;
-      const wakeupStatus = input.outcome === "succeeded" ? "completed" : input.outcome;
+      const handler = createAttemptTerminalProjectionHandler({
+        findRunForAttempt: async ({ jobId, attemptId, companyId }) =>
+          db
+            .select({
+              id: heartbeatRuns.id,
+              companyId: heartbeatRuns.companyId,
+              agentId: heartbeatRuns.agentId,
+              executionOwner: heartbeatRuns.executionOwner,
+              startedAt: heartbeatRuns.startedAt,
+            })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, companyId),
+                eq(heartbeatRuns.distributedJobId, jobId),
+                eq(heartbeatRuns.distributedAttemptId, attemptId),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null),
+
+        listAttemptEvents: input.listAttemptEvents,
+
+        // Resolved BEFORE projection, because the projector's `finalizeRun` step
+        // releases the very execution lock this issue lookup reads.
+        resolveTarget: async ({ run }) => {
+          const agent = await getAgent(run.agentId);
+          if (!agent) return null;
+          const issue = await db
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          return {
+            issueId: issue?.id ?? null,
+            agentName: agent.name,
+            runtimeConfig: agent.runtimeConfig as Record<string, unknown> | null | undefined,
+          };
+        },
+
+        projector: createCanaryRunProjector({
+          appendRunEvent: async (event) => {
+            const run = await getRun(event.runId);
+            if (!run) return;
+            const maxSeq = await db
+              .select({ value: sql<number | null>`max(${heartbeatRunEvents.seq})` })
+              .from(heartbeatRunEvents)
+              .where(eq(heartbeatRunEvents.runId, run.id))
+              .then((rows) => rows[0]?.value ?? null);
+            await appendRunEvent(run, projectionSeqBase(maxSeq) + event.seq, {
+              eventType: event.eventType,
+              stream: event.stream,
+              message: event.message,
+              payload: event.payload,
+            });
+          },
+          setRunStatus: toProjectorTerminalWriter((runId, status, patch) =>
+            setRunStatus(runId, status, patch as Partial<typeof heartbeatRuns.$inferInsert>),
+          ),
+          finalizeRun: ({ runId, outcome, errorMessage }) =>
+            finalizeDistributedRunImpl({ runId, outcome, errorMessage }),
+          postRunSummary: (summary) => postRunSummaryComment(db, summary),
+        }),
+      });
+
       try {
-        await setWakeupStatus(run.wakeupRequestId, wakeupStatus, {
-          finishedAt: new Date(),
-          error: input.errorMessage,
-        });
+        await handler(input.signal);
       } catch (err) {
-        logger.warn({ err, runId: run.id }, "[CLI-006] distributed finalize: wakeup status failed");
-      }
-      try {
-        await releaseIssueExecutionAndPromote(run);
-      } catch (err) {
-        logger.warn({ err, runId: run.id }, "[CLI-006] distributed finalize: issue release failed");
-      }
-      try {
-        await finalizeAgentStatus(run.agentId, input.outcome);
-      } catch (err) {
-        logger.warn({ err, runId: run.id }, "[CLI-006] distributed finalize: agent status failed");
+        logger.warn(
+          { err, signal: input.signal },
+          "[CLI-006] distributed attempt terminal projection failed",
+        );
       }
     },
 

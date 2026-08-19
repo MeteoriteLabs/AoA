@@ -843,6 +843,63 @@ const readinessProbe = buildReadinessProbe({
   },
   // checkMinio intentionally omitted — see the TODO above.
 });
+// ── CLI-006 (2b) — the after-commit terminal projection callback ─────────────
+//
+// 2b-D1: composed HERE, eagerly, and self-contained. It must precede `createApp`
+// because `createApp` -> `workerControlRoutes` is what builds the JOB-005 ingest
+// service this hook lands on — and BOTH the distributed rollout block (~:1055)
+// and the heartbeat scheduler block (~:1146) run AFTER `createApp`. A lazy holder
+// resolved at call time would be observably safe (nothing can reach the ingest
+// route before `server.listen`), but it would rest correctness on a startup
+// ordering invariant that nothing enforces and no test can see.
+//
+// Instead the callback owns its whole dependency graph: `db` and the tenant
+// `appDb` are both already in scope. `heartbeatService` is a plain factory whose
+// `projectDistributedAttemptTerminal` closes over `db` alone — it needs neither
+// the scheduler nor the rollout hook. So there is no "distributed on, scheduler
+// off" degraded mode to fail closed against: it is unreachable by construction.
+//
+// Construction is lazy + memoized because the factory registers a module-global
+// secret resolver; a deployment that never canaries should not pay for that at
+// startup. Inert until a run actually carries the `execution_owner` marker.
+let canaryProjectionHeartbeat: ReturnType<typeof heartbeatService> | undefined;
+const onAttemptTerminal =
+  config.distributedExecutionEnabled && distributedExecutionDatabases
+    ? async (signal: import("./services/job-events.js").AttemptTerminalSignal) => {
+        const tenantAppDb = distributedExecutionDatabases.appDb;
+        canaryProjectionHeartbeat ??= heartbeatService(db as any);
+        const { runInTenant } = await import("./db/tenant-context.js");
+        const { jobEvents } = await import("@armyofagents/db");
+        const { and: andOp, eq: eqOp } = await import("drizzle-orm");
+        await canaryProjectionHeartbeat.projectDistributedAttemptTerminal({
+          signal,
+          // The ONE thing the heartbeat service cannot do for itself: `job_events`
+          // is tenant-scoped behind RLS and reachable only through `runInTenant`
+          // over the `aoa_app` pool.
+          listAttemptEvents: async ({ organizationId, companyId, jobId, attemptId }) =>
+            runInTenant(tenantAppDb, organizationId, async (_repos, tx: typeof tenantAppDb) =>
+              tx
+                .select({
+                  eventId: jobEvents.eventId,
+                  sequence: jobEvents.sequence,
+                  eventType: jobEvents.eventType,
+                  event: jobEvents.event,
+                  occurredAt: jobEvents.occurredAt,
+                })
+                .from(jobEvents)
+                .where(
+                  andOp(
+                    eqOp(jobEvents.organizationId, organizationId),
+                    eqOp(jobEvents.companyId, companyId),
+                    eqOp(jobEvents.jobId, jobId),
+                    eqOp(jobEvents.attemptId, attemptId),
+                  ),
+                ),
+            ),
+        });
+      }
+    : undefined;
+
 const app = await createApp(db as any, {
   uiMode,
   storageService,
@@ -863,6 +920,7 @@ const app = await createApp(db as any, {
   jobReadyScheduler: scheduler,
   jobControlMetrics,
   workerSessionSigningKey: process.env.AOA_WORKER_SESSION_SIGNING_KEY,
+  onAttemptTerminal,
   // DEP-003: the readiness contract. The gate is dormant unless distributed mode is on.
   readiness: {
     probe: readinessProbe,

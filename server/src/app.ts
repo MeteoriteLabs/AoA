@@ -228,6 +228,11 @@ export async function createApp(
     jobReadyScheduler?: import("./services/job-ready-scheduler.js").JobReadyScheduler;
     jobControlMetrics?: import("./services/job-control-metrics.js").JobControlMetrics;
     workerSessionSigningKey?: string;
+    /** CLI-006 (2b) — after-commit projection of a distributed attempt's terminal
+     * onto its canary-owned heartbeat run. Composed at the root BEFORE createApp
+     * (2b-D1) because the ingest service is built here, three hops down. Absent
+     * (the default) leaves ingest behaving exactly as it did pre-CLI-006. */
+    onAttemptTerminal?: import("./services/job-events.js").JobEventIngestTerminalHook;
     // DEP-003 (E6 deployment harness): optional readiness contract. When omitted the
     // app is unchanged except the additive always-ready `/api/ready` + `/api/health/live`
     // routes; the 503 readiness gate is DORMANT. When provided with `gateEnabled:true`
@@ -451,6 +456,7 @@ export async function createApp(
       jobReadyScheduler: opts.jobReadyScheduler,
       jobControlMetrics: opts.jobControlMetrics,
       sessionSigningKey: opts.workerSessionSigningKey,
+      onAttemptTerminal: opts.onAttemptTerminal,
     }));
   }
   // Settings -> Providers. Path-mounted (mergeParams) so the provider endpoints
