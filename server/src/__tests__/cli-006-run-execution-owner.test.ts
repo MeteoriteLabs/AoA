@@ -248,6 +248,28 @@ describe("CLI-006 D3 — resolveRunExecutionOwner (one decision, fail-safe to le
     expect(result.owner).toBe("distributed");
   });
 
+  // The heartbeat seam resolves the rollout state once (to choose between
+  // CLI-005's inert convert and the canary transfer) and hands it in, so the
+  // predicate is derived exactly once per run and cannot drift mid-decision.
+  it("honors a caller-supplied rollout state instead of re-deriving it", async () => {
+    const resolveRunRolloutState = vi.fn(() => "canary" as const);
+    const result = await createRunExecutionOwnerResolver(
+      deps({ resolveRunRolloutState }),
+    ).resolve({ ...input, rolloutState: "canary" });
+    expect(result.owner).toBe("distributed");
+    expect(resolveRunRolloutState).not.toHaveBeenCalled();
+  });
+
+  it("stays legacy when the caller supplies a non-canary state, whatever the source says", async () => {
+    const result = await createRunExecutionOwnerResolver(
+      // A source that would say `canary` must not override the caller's resolution.
+      deps({ resolveRunRolloutState: () => "canary" }),
+    ).resolve({ ...input, rolloutState: "active" });
+    expect(result.owner).toBe("legacy");
+    if (result.owner !== "legacy") throw new Error("unreachable");
+    expect(result.reason).toBe("rollout_not_canary");
+  });
+
   it("falls back to legacy when the convert reports success without a job identity", async () => {
     const result = await createRunExecutionOwnerResolver(
       deps({

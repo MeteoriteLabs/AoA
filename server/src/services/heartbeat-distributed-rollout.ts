@@ -23,6 +23,7 @@ import type {
 import type { BridgeActor } from "./job-admission-bridge.js";
 import type { JobConvertOrchestrator, JobConvertResult } from "./job-convert-orchestrator.js";
 import type { JobShadowComparator, LegacyRunExecutionSnapshot } from "./job-shadow-comparator.js";
+import type { RunExecutionOwner, RunExecutionOwnerResolver } from "./run-execution-owner.js";
 
 /** task_run maps to the distributed "batch" workload class (job-submission workloadType). */
 export const HEARTBEAT_TASK_RUN_WORKLOAD_TYPE = "batch";
@@ -55,6 +56,24 @@ export interface HeartbeatDistributedRolloutHook {
     idempotencyKey: string;
     input?: Record<string, unknown>;
   }): Promise<JobConvertResult>;
+  /**
+   * CLI-006 (D3) canary transfer: resolve WHO executes this run. Delegates to the
+   * single ownership decision, which converts, places, and returns either
+   * `{owner:"distributed"}` (the attempt is leasable — the legacy adapter MUST be
+   * suppressed) or `{owner:"legacy", reason}`. Best-effort: never throws, and every
+   * failure direction is legacy.
+   *
+   * `rolloutState` is passed through because the seam has already resolved it, so
+   * the canary predicate is derived exactly once per run.
+   */
+  resolveExecutionOwner(input: {
+    source: SubmitJobSource;
+    actor: BridgeActor;
+    organizationId: string;
+    idempotencyKey: string;
+    rolloutState: RunRolloutState;
+    input?: Record<string, unknown>;
+  }): Promise<RunExecutionOwner>;
   /** Shadow comparison (D2): delegate to the effect-free comparator. Never throws. */
   runShadowComparison(snapshot: LegacyRunExecutionSnapshot): void;
 }
@@ -67,6 +86,12 @@ export function createHeartbeatDistributedRolloutHook(deps: {
   resolveOrganizationId(companyId: string): Promise<string | null>;
   convertOrchestrator: JobConvertOrchestrator;
   comparator: JobShadowComparator;
+  /**
+   * CLI-006: the single ownership decision. Optional so a deployment that has not
+   * wired the canary path at all composes exactly the CLI-005 hook — absent
+   * resolver ⇒ every run stays legacy, which is the safe default.
+   */
+  ownerResolver?: RunExecutionOwnerResolver;
 }): HeartbeatDistributedRolloutHook {
   const env = deps.env ?? process.env;
 
@@ -96,6 +121,32 @@ export function createHeartbeatDistributedRolloutHook(deps: {
         // The orchestrator already swallows submit failures; this guards the delegation
         // boundary itself so the legacy run can never be failed by the convert path.
         return { converted: false, reason: "submit_failed", error };
+      }
+    },
+
+    async resolveExecutionOwner({ source, actor, organizationId, idempotencyKey, rolloutState, input }) {
+      // An unwired resolver is a legacy deployment. Never guess.
+      if (!deps.ownerResolver) {
+        return { owner: "legacy", reason: "rollout_not_canary", detail: "owner resolver not composed" };
+      }
+      try {
+        return await deps.ownerResolver.resolve({
+          source,
+          actor,
+          organizationId,
+          workloadType: HEARTBEAT_TASK_RUN_WORKLOAD_TYPE,
+          idempotencyKey,
+          jobInput: input,
+          rolloutState,
+        });
+      } catch (error) {
+        // The resolver already fails safe internally; this guards the delegation
+        // boundary itself so the legacy run can never be failed by the transfer path.
+        return {
+          owner: "legacy",
+          reason: "transfer_error",
+          detail: error instanceof Error ? error.message : String(error),
+        };
       }
     },
 

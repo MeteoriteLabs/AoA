@@ -76,6 +76,13 @@ export interface RunExecutionOwnerResolver {
     workloadType: string;
     idempotencyKey: string;
     jobInput?: Record<string, unknown>;
+    /**
+     * The rollout state, when the caller has ALREADY resolved it for this run.
+     * The heartbeat seam resolves it once (to choose between CLI-005's inert
+     * convert and the canary transfer) and passes it here, so the predicate is
+     * derived exactly once per run rather than twice. Omitted → derived here.
+     */
+    rolloutState?: RunRolloutState;
   }): Promise<RunExecutionOwner>;
 }
 
@@ -89,11 +96,21 @@ export function createRunExecutionOwnerResolver(
   const { resolveRunRolloutState, preflight, convert, placement } = deps;
 
   return {
-    async resolve({ source, actor, organizationId, workloadType, idempotencyKey, jobInput }) {
+    async resolve({
+      source,
+      actor,
+      organizationId,
+      workloadType,
+      idempotencyKey,
+      jobInput,
+      rolloutState,
+    }) {
       try {
         // 1. Canary only. A non-canary run does not even consult the gate — no
-        //    extra query, no behavioral difference (Invariant 4).
-        const state = resolveRunRolloutState({ organizationId, workloadType });
+        //    extra query, no behavioral difference (Invariant 4). The caller may
+        //    hand in the state it already resolved so the predicate is derived
+        //    exactly once per run.
+        const state = rolloutState ?? resolveRunRolloutState({ organizationId, workloadType });
         if (state !== "canary") {
           return legacy("rollout_not_canary", `rollout state is ${state}`);
         }
