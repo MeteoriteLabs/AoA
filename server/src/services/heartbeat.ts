@@ -54,6 +54,15 @@ import {
 import type { EnvironmentAcquisitionResult } from "./environment-run-orchestrator.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { acquireExecutionContext } from "./acquire-execution-context.js";
+// CLI-005 — the dormant-by-default distributed-execution rollout hook. The type-only
+// import keeps this module's static graph unchanged; the hook is injected by the
+// composition root ONLY when distributed execution is enabled, and is otherwise absent
+// (the seam skips it entirely → byte-identical legacy path).
+import {
+  HEARTBEAT_TASK_RUN_WORKLOAD_TYPE,
+  type HeartbeatDistributedRolloutHook,
+} from "./heartbeat-distributed-rollout.js";
+import type { RunRolloutState } from "../config/distributed-execution-rollout-source.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { resolveWarmSandboxPreference, readAgentWarmOverride } from "./warm-sandbox-policy.js";
 import { conflict, notFound, HttpError } from "../errors.js";
@@ -1423,7 +1432,15 @@ export async function buildTeamCoordinationSkillEntries(
   });
 }
 
-export function heartbeatService(db: Db) {
+export function heartbeatService(
+  db: Db,
+  options?: {
+    /** CLI-005: injected ONLY by the composition root when distributed execution is
+     * enabled. Absent (default) → the org-heartbeat seam runs the legacy path unchanged. */
+    distributedRollout?: HeartbeatDistributedRolloutHook;
+  },
+) {
+  const distributedRolloutHook = options?.distributedRollout;
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const outputDetector = outputDetectionService(db);
@@ -3100,27 +3117,52 @@ export function heartbeatService(db: Db) {
       };
       context.currentTaskMarkdown = currentTaskMarkdown;
     }
+    // ── CLI-005 distributed-execution rollout resolution ───────────────────
+    // DORMANT unless the deployment flag is on AND this run's org+workload is opted
+    // in. The hook reads the flag FIRST and resolves "off" with no DB effect when off,
+    // so with the hook absent (default) or flag off this whole block is a no-op and the
+    // legacy path below is byte-identical. Best-effort — never fails the run.
+    let distributedRolloutState: RunRolloutState = "off";
+    let distributedRolloutOrganizationId: string | null = null;
+    if (distributedRolloutHook && issueId && issueContext) {
+      try {
+        const resolution = await distributedRolloutHook.resolveRunRolloutState({
+          companyId: agent.companyId,
+        });
+        distributedRolloutState = resolution.state;
+        distributedRolloutOrganizationId = resolution.organizationId;
+      } catch (err) {
+        logger.warn({ runId: run.id, issueId, err }, "[heartbeat] CLI-005 rollout resolution failed — legacy path");
+        distributedRolloutState = "off";
+      }
+    }
+
     // ── Auto-checkout for scoped wakes (T22 / PR #3538 upstream) ────────────
     // When the wake is scoped to an issue and the wake reason is comment-driven,
     // pre-claim the issue server-side before the adapter runs so the agent
     // prompt can skip the redundant /api/issues/{id}/checkout round-trip.
     // Best-effort: any failure (conflict or other) is caught and logged.
+    // CLI-005 (D3): for an ACTIVE run, checkout ownership moves harness→bridge, so the
+    // harness checkout is SUPPRESSED here and the active-convert block below drives the
+    // ONE run-guarded checkout via `admitAndSubmit` (checkout parity).
+    // CLI-005 (D3 parity): the bridge owns the checkout ONLY on the exact wakes the harness
+    // itself would have checked out (comment-driven + assigned). BOTH the harness block and
+    // the active-convert block gate on this ONE predicate — otherwise active mode would
+    // check out (flip status → in_progress, reset startedAt, re-broadcast) on
+    // mention/execution_/null wakes that legacy leaves to the agent's self-checkout.
+    const shouldAutoCheckoutForWake = (() => {
+      if (!issueId || !issueContext || issueContext.assigneeAgentId !== agent.id) return false;
+      const wr = readNonEmptyString(context.wakeReason);
+      return wr !== null && wr !== "issue_comment_mentioned" && !wr.startsWith("execution_");
+    })();
     if (
       issueId &&
       issueContext &&
       issueContext.assigneeAgentId === agent.id
     ) {
-      const wakeReason = readNonEmptyString(context.wakeReason);
-      // Mirror Paperclip's shouldAutoCheckoutIssueForWake: only fire for
-      // comment-driven wakes; skip execution_* and issue_comment_mentioned.
-      const shouldAutoCheckout =
-        wakeReason !== null &&
-        wakeReason !== "issue_comment_mentioned" &&
-        !wakeReason.startsWith("execution_") &&
-        (
-          issueContext.assigneeAgentId === agent.id
-        );
-      if (shouldAutoCheckout) {
+      // CLI-005 (D3): suppress the harness checkout for an active run — the active-convert
+      // block below owns the ONE run-guarded checkout via the bridge (same predicate).
+      if (shouldAutoCheckoutForWake && distributedRolloutState !== "active") {
         try {
           const issueSvc = createIssueService(db);
           await issueSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked", "in_progress"], run.id);
@@ -3144,6 +3186,45 @@ export function heartbeatService(db: Db) {
           context[AOA_HARNESS_CHECKOUT_KEY] = false;
         }
         context.checkedOutByHarness = context[AOA_HARNESS_CHECKOUT_KEY] === true;
+      }
+    }
+
+    // ── CLI-005 (D3) active convert: durable NON-LEASABLE job + the ONE checkout ──
+    // For an active run, the bridge drives the SAME run-guarded checkout in-transaction,
+    // establishing run↔job identity + provenance. The job is non-leasable and never
+    // placed (O1), so the legacy adapter below stays the sole authoritative executor.
+    // Gated on `shouldAutoCheckoutForWake` so the bridge only owns the checkout on the
+    // exact wakes the harness would have — no extra checkout on non-comment wakes (parity).
+    // Best-effort: a failed convert rolls back the whole tx (no job row, checkout undone),
+    // leaving the issue's legacy claim INTACT (executionRunId from the wakeup) — the legacy
+    // run proceeds unchanged and the agent self-checks-out. It never fails the run.
+    if (
+      distributedRolloutHook &&
+      distributedRolloutState === "active" &&
+      shouldAutoCheckoutForWake &&
+      issueId &&
+      issueContext &&
+      issueContext.assigneeAgentId === agent.id
+    ) {
+      const convert = await distributedRolloutHook.convertActiveRun({
+        source: { kind: "task_run", runId: run.id, issueId, assigneeAgentId: agent.id },
+        actor: { kind: "agent", id: agent.id, companyId: agent.companyId },
+        idempotencyKey: run.id,
+      });
+      if (convert.converted) {
+        // The bridge owns the ONE checkout (ownership moved harness→bridge). Mirror the
+        // harness context flags so the wake prompt skips the redundant self-checkout.
+        context[AOA_HARNESS_CHECKOUT_KEY] = true;
+        context.checkedOutByHarness = true;
+        logger.info(
+          { runId: run.id, issueId, jobId: convert.response?.jobId, replayed: convert.reason === "replayed" },
+          "[heartbeat] CLI-005 active convert — bridge owns checkout (non-leasable job)",
+        );
+      } else {
+        logger.warn(
+          { runId: run.id, issueId, reason: convert.reason },
+          "[heartbeat] CLI-005 active convert skipped/failed — legacy path continues",
+        );
       }
     }
     // ────────────────────────────────────────────────────────────────────────
@@ -5024,6 +5105,40 @@ export function heartbeatService(db: Db) {
           agentId: agent.id,
           runId: run.id,
           expiresAt: new Date(Date.now() + RUNTIME_HOOK_REGISTRY_MAX_TTL_SEC * 1000),
+        });
+      }
+
+      // ── CLI-005 (D2) shadow comparison ────────────────────────────────────
+      // EFFECT-FREE diff of the resolved routing/provenance/policy vs the would-be
+      // distributed intent, recorded to the observability sink. No jobs row, no
+      // checkout, no capacity, no lease — the hook's comparator holds no Db handle.
+      // Best-effort (never throws into the run). O7: workload synthesis is a
+      // diff-stable characterization refined at MIG-002.
+      if (distributedRolloutHook && distributedRolloutState === "shadow" && issueId) {
+        const runScopedModel =
+          typeof (runScopedConfig as Record<string, unknown>).model === "string"
+            ? ((runScopedConfig as Record<string, unknown>).model as string)
+            : null;
+        distributedRolloutHook.runShadowComparison({
+          organizationId: distributedRolloutOrganizationId ?? agent.companyId,
+          companyId: agent.companyId,
+          runId: run.id,
+          issueId,
+          assigneeAgentId: agent.id,
+          workloadType: HEARTBEAT_TASK_RUN_WORKLOAD_TYPE,
+          routing: { executionTargetType: executionTarget.type },
+          provenance: { executionPrincipalKind: "agent", credentialKind: null },
+          policy: {
+            model: runScopedModel,
+            budgetPolicyId: null,
+            effectiveCompletionPolicy: "review_required",
+          },
+          workloadCharacterization: {
+            command: agent.adapterType,
+            args: [],
+            maxRuntimeSeconds: 600,
+            stdinArtifactId: null,
+          },
         });
       }
 

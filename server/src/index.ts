@@ -982,8 +982,62 @@ if (
   );
 }
 
+// CLI-005 — compose the distributed-execution rollout hook ONLY when distributed
+// execution is enabled (default-off). When absent, the org-heartbeat seam runs the
+// legacy path unchanged (byte-identical). Dynamic imports keep the modules dormant.
+let distributedRolloutHook:
+  | import("./services/heartbeat-distributed-rollout.js").HeartbeatDistributedRolloutHook
+  | undefined;
+if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
+  const appDb = distributedExecutionDatabases.appDb;
+  const [
+    { createHeartbeatDistributedRolloutHook },
+    { createDistributedExecutionRolloutSource },
+    { resolveCompanyOrganizationId },
+    { jobAdmissionBridge },
+    { createJobConvertOrchestrator },
+    { createJobShadowComparator },
+  ] = await Promise.all([
+    import("./services/heartbeat-distributed-rollout.js"),
+    import("./config/distributed-execution-rollout-source.js"),
+    import("./services/org-concurrency.js"),
+    import("./services/job-admission-bridge.js"),
+    import("./services/job-convert-orchestrator.js"),
+    import("./services/job-shadow-comparator.js"),
+  ]);
+  const bridge = jobAdmissionBridge(appDb);
+  distributedRolloutHook = createHeartbeatDistributedRolloutHook({
+    env: process.env,
+    deploymentMode: config.deploymentMode,
+    rolloutSource: createDistributedExecutionRolloutSource(process.env),
+    resolveOrganizationId: (companyId: string) => resolveCompanyOrganizationId(appDb, companyId),
+    convertOrchestrator: createJobConvertOrchestrator({ bridge }),
+    comparator: createJobShadowComparator({
+      sink: {
+        record: (result) =>
+          logger.info(
+            {
+              runId: result.runId,
+              issueId: result.issueId,
+              organizationId: result.organizationId,
+              companyId: result.companyId,
+              mode: result.mode,
+              match: result.match,
+              mismatchedFields: result.mismatchedFields,
+              placementLeaseEligible: result.placementLeaseEligible,
+              placementReasonCode: result.placementReasonCode,
+              workloadValid: result.workloadValid,
+              errored: result.errored,
+            },
+            "[cli-005] distributed-execution shadow comparison",
+          ),
+      },
+    }),
+  });
+}
+
 if (config.heartbeatSchedulerEnabled) {
-  const heartbeat = heartbeatService(db as any);
+  const heartbeat = heartbeatService(db as any, { distributedRollout: distributedRolloutHook });
   const productivityReviews = productivityReviewService(db as any);
   const monitorScheduler = issueMonitorSchedulerService(db as any);
   const PRODUCTIVITY_REVIEW_RECONCILIATION_INTERVAL_MS = 60 * 60 * 1000;

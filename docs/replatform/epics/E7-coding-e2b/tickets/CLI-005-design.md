@@ -48,7 +48,7 @@
 2. **Shadow is effect-free.** Shadow writes NO `jobs`/`job_attempts` row, drives NO checkout, claims NO capacity, holds NO lease, emits NO `cost_events`/`activity_log`/run-summary, and NEVER fails the legacy run. Its only output is a comparison record on an observable sink.
 3. **Checkout / single-assignee parity.** In `off`/`shadow`, checkout behaves byte-identically to today. In `active`, exactly ONE checkout fires per run (ownership moved harness→bridge) — same `checkoutRunId`/`executionRunId`/`startedAt`/single broadcast, no double.
 4. **Approvals/completion, budget & cost hard-stop, transactional activity, output/run-summary parity.** Composed bridge behavior equals the legacy path; the budget/cost + output bridges fire only on ACCEPTED worker usage/output — of which shadow and non-leasable-active have none, so they stay silent.
-5. **Failure release.** A failed submit (any pre-commit throw) rolls back leaving no job row and releases the task claim run-guarded (`releaseTaskClaim`), matching legacy `releaseIssueExecutionAndPromote`.
+5. **Failure retains the legacy claim (amended post-review).** A failed submit (any throw) rolls back the whole tenant-tx leaving no job row and the checkout undone → the issue's legacy claim (executionRunId from the wakeup) is already intact. In CLI-005's INERT model the legacy adapter still executes this issue, so a failed convert is a **no-op on issue state** — it MUST NOT call `releaseTaskClaim` (which resets the issue to todo/unassigned out from under the legacy run). *(The original design said "releases the task claim"; that was a flaw — releasing is correct only at the MIG-002 cutover when the job replaces execution, not in the inert phase where legacy continues.)*
 6. **Flag disablement + drain.** Disabling stops new distributed jobs AND drains active (non-terminal) attempts per admitted org via fence-revoking `requestCancellation`; a late worker result is rejected `stale_fence`. Refused while an authoritative-cost receipt is pending (`assertRollbackSafe`).
 7. **Rollback safety.** Disabling/rolling back creates no second executor and erases no authoritative charge/output.
 8. **Envelope/provenance equivalence.** The job envelope + provenance CONVERTED from a run is a faithful, diff-clean mapping of the legacy run's intent (the shadow comparator's core assertion).
@@ -94,8 +94,9 @@ Shadow comparisons + drain actions record to the existing `job_trace_log` (`job-
 | one run has exactly one authoritative executor | legacy adapter sole executor; jobs non-leasable + never placed | `verify` (double-execution-prevention test) |
 | shadow cannot lease or cause external effects | D2 compute-and-compare, no writes/checkout/capacity/lease | `verify` |
 | checkout/single-assignee/approval/budget/cost/activity/output parity | D3 one-checkout + composed bridges vs legacy | `verify` (parity equivalence) |
-| failure release | pre-commit rollback + `releaseTaskClaim` | `verify` |
-| flag disablement + drain active attempts | D4 per-org iterator + `requestCancellation` | `verify` (flag-disable + drain) |
+| failure retains legacy claim | rollback + **NO** release (amended Invariant 5) | `verify` |
+| flag disablement — **stops new distributed jobs** | flag-off → `resolveRunRolloutState`→`off` (runtime-dynamic, no restart) | `verify` |
+| flag disablement — **drain active attempts** | D4 drain service + rollback-safety + abort-resistance, unit-tested; ships as **dormant forward-infrastructure** — the live enumerator query + auto-trigger are deferred to MIG-002 (§7), since CLI-005 attempts are non-leasable + never-placed (nothing to drain yet) | `verify` (service unit) |
 | rollback safety | D5 no second executor / no erased charge-output | `verify` |
 | legacy/new envelope equivalence | D2 comparator diff-clean | `verify` |
 
