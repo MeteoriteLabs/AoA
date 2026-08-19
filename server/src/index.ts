@@ -1061,6 +1061,11 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
     { jobAdmissionBridge },
     { createJobConvertOrchestrator },
     { createJobShadowComparator },
+    { createRunExecutionOwnerResolver, toRunExecutionPlacement },
+    { createCanaryPreflight },
+    { createDrizzleCanaryPreflightStore },
+    { resolveCanaryCredentialBinding },
+    { createJobPlacementService },
   ] = await Promise.all([
     import("./services/heartbeat-distributed-rollout.js"),
     import("./config/distributed-execution-rollout-source.js"),
@@ -1068,14 +1073,52 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
     import("./services/job-admission-bridge.js"),
     import("./services/job-convert-orchestrator.js"),
     import("./services/job-shadow-comparator.js"),
+    import("./services/run-execution-owner.js"),
+    import("./services/canary-preflight.js"),
+    import("./services/canary-preflight-store.js"),
+    import("./services/canary-credential-binding.js"),
+    import("./services/job-placement.js"),
   ]);
   const bridge = jobAdmissionBridge(appDb);
+  const convertOrchestrator = createJobConvertOrchestrator({ bridge });
+  const rolloutSource = createDistributedExecutionRolloutSource(process.env);
+
+  // ── CLI-006: the canary execution-ownership path ────────────────────────────
+  // Placement is what makes an attempt lease-eligible, so composing it is what
+  // arms the canary. Everything here stays inert until an Organization is set to
+  // `mode: "canary"` in AOA_DISTRIBUTED_EXECUTION_ROLLOUT.
+  const placementService = createJobPlacementService({
+    appDb,
+    operatorDb: distributedExecutionDatabases.operatorDb,
+    deploymentMode: config.deploymentMode,
+    // The already-resolved config flag, NOT a second read of process.env — two
+    // reads of the deployment gate can disagree after a config reload.
+    deploymentEnabled: config.distributedExecutionEnabled,
+    // The SAME default-off source the run seam uses, so placement and the seam
+    // cannot disagree about which Organizations are enabled. Never a
+    // permissive test closure.
+    resolveOrganizationPolicy: rolloutSource.resolveOrganizationPolicy,
+    resolveWorkloadPolicy: rolloutSource.resolveWorkloadPolicy,
+    resolveCredentialBinding: resolveCanaryCredentialBinding,
+  });
+  const ownerResolver = createRunExecutionOwnerResolver({
+    resolveRunRolloutState: ({ organizationId, workloadType }) =>
+      rolloutSource.resolveRunRolloutState({
+        deploymentMode: config.deploymentMode,
+        organizationId,
+        workloadType,
+      }),
+    preflight: createCanaryPreflight({ store: createDrizzleCanaryPreflightStore(appDb) }),
+    convert: convertOrchestrator,
+    placement: toRunExecutionPlacement(placementService),
+  });
   distributedRolloutHook = createHeartbeatDistributedRolloutHook({
     env: process.env,
     deploymentMode: config.deploymentMode,
-    rolloutSource: createDistributedExecutionRolloutSource(process.env),
+    rolloutSource,
     resolveOrganizationId: (companyId: string) => resolveCompanyOrganizationId(appDb, companyId),
-    convertOrchestrator: createJobConvertOrchestrator({ bridge }),
+    convertOrchestrator,
+    ownerResolver,
     comparator: createJobShadowComparator({
       sink: {
         record: (result) =>

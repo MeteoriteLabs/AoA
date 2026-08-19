@@ -18,6 +18,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createRunExecutionOwnerResolver,
+  toRunExecutionPlacement,
+  DEFAULT_PLACEMENT_MAX_HEARTBEAT_AGE_MS,
   type RunExecutionOwnerDeps,
 } from "../services/run-execution-owner.js";
 
@@ -281,5 +283,68 @@ describe("CLI-006 D3 — resolveRunExecutionOwner (one decision, fail-safe to le
     expect(result.owner).toBe("legacy");
     if (result.owner !== "legacy") throw new Error("unreachable");
     expect(result.reason).toBe("convert_failed");
+  });
+});
+
+// ── The placement adapter (CLI-006 Task 2) ──────────────────────────────────
+//
+// `JobPlacementServiceInput` requires `now` and `maxHeartbeatAgeMs`, which
+// `RunExecutionPlacement.place` does not supply. Because `place` is declared with
+// method-shorthand syntax, TypeScript's parameter bivariance lets a DIRECT
+// assignment compile with NO error — verified against the real composition root —
+// and then hands `decideJobPlacement` `now: undefined`, which fails its
+// `input.now instanceof Date` validation and returns `invalid_placement_input`.
+// Every canary transfer would silently fall back to legacy, with no type error.
+//
+// So the adapter cannot be guarded by the compiler; it is guarded here.
+describe("CLI-006 — toRunExecutionPlacement", () => {
+  it("supplies `now` as a Date — the field bivariance lets a direct assignment omit", async () => {
+    const place = vi.fn(async () => ({ disposition: "selected", leaseEligible: true }));
+    await toRunExecutionPlacement({ place }).place({
+      jobId: JOB,
+      attemptId: ATTEMPT,
+      organizationId: ORG,
+      companyId: COMPANY,
+    });
+    expect(place.mock.calls[0][0].now).toBeInstanceOf(Date);
+  });
+
+  it("supplies the sibling-default maxHeartbeatAgeMs", async () => {
+    const place = vi.fn(async () => ({ disposition: "selected", leaseEligible: true }));
+    await toRunExecutionPlacement({ place }).place({
+      jobId: JOB,
+      attemptId: ATTEMPT,
+      organizationId: ORG,
+      companyId: COMPANY,
+    });
+    expect(place.mock.calls[0][0].maxHeartbeatAgeMs).toBe(DEFAULT_PLACEMENT_MAX_HEARTBEAT_AGE_MS);
+    expect(DEFAULT_PLACEMENT_MAX_HEARTBEAT_AGE_MS).toBe(300_000);
+  });
+
+  it("passes the caller's placement identity through unchanged", async () => {
+    const place = vi.fn(async () => ({ disposition: "selected", leaseEligible: true }));
+    await toRunExecutionPlacement({ place }).place({
+      jobId: JOB,
+      attemptId: ATTEMPT,
+      organizationId: ORG,
+      companyId: COMPANY,
+    });
+    expect(place.mock.calls[0][0]).toMatchObject({
+      jobId: JOB,
+      attemptId: ATTEMPT,
+      organizationId: ORG,
+      companyId: COMPANY,
+    });
+  });
+
+  it("returns the service's decision unchanged, so a non-leasable placement still reads as such", async () => {
+    const place = vi.fn(async () => ({ disposition: "selected", leaseEligible: false }));
+    const decision = await toRunExecutionPlacement({ place }).place({
+      jobId: JOB,
+      attemptId: ATTEMPT,
+      organizationId: ORG,
+      companyId: COMPANY,
+    });
+    expect(decision).toEqual({ disposition: "selected", leaseEligible: false });
   });
 });

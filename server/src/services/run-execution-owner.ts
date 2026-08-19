@@ -42,6 +42,40 @@ export interface RunExecutionPlacement {
   }): Promise<{ disposition: string; leaseEligible?: boolean }>;
 }
 
+/**
+ * Adapt the E3 placement SERVICE to {@link RunExecutionPlacement}.
+ *
+ * This adapter is MANDATORY, not stylistic. `JobPlacementServiceInput` additionally
+ * requires `now` and `maxHeartbeatAgeMs`, which `RunExecutionPlacement.place` does
+ * not supply. Because `place` is declared with method-shorthand syntax, TypeScript's
+ * parameter bivariance lets a DIRECT assignment (`placement: placementService`)
+ * compile with no error — and then hand `decideJobPlacement` `now: undefined` at
+ * runtime, where it fails the `input.now instanceof Date` validation and returns
+ * `invalid_placement_input`. Every canary transfer would silently fall back to
+ * legacy with no type error anywhere.
+ *
+ * Verified: substituting the direct assignment in the composition root typechecks
+ * clean. That is why this exists as a named, tested function rather than an inline
+ * object literal a future refactor could "simplify" away.
+ *
+ * `DEFAULT_PLACEMENT_MAX_HEARTBEAT_AGE_MS` matches the established sibling default
+ * (`job-control-ack.ts`, `artifact-commit.ts`, `artifact-transfer-grant.ts`).
+ */
+export const DEFAULT_PLACEMENT_MAX_HEARTBEAT_AGE_MS = 300_000;
+
+export function toRunExecutionPlacement(
+  service: {
+    place(input: Record<string, unknown>): Promise<{ disposition: string; leaseEligible?: boolean }>;
+  },
+  options?: { now?: () => Date; maxHeartbeatAgeMs?: number },
+): RunExecutionPlacement {
+  const now = options?.now ?? (() => new Date());
+  const maxHeartbeatAgeMs = options?.maxHeartbeatAgeMs ?? DEFAULT_PLACEMENT_MAX_HEARTBEAT_AGE_MS;
+  return {
+    place: (input) => service.place({ ...input, now: now(), maxHeartbeatAgeMs }),
+  };
+}
+
 export interface RunExecutionOwnerDeps {
   resolveRunRolloutState(input: {
     organizationId: string;
