@@ -105,7 +105,14 @@ export interface CanaryRunProjector {
 function runStatusForOutcome(outcome: CanaryAttemptOutcome): string {
   switch (outcome) {
     case "succeeded":
-      return "completed";
+      // "succeeded", NOT "completed". The run-status vocabulary is
+      // `TERMINAL_RUN_STATUSES` (heartbeat.ts:292) = succeeded|failed|cancelled|
+      // timed_out. "completed" belongs to the WAKEUP status vocabulary
+      // (heartbeat.ts:5452) and is not a terminal run status — writing it would
+      // leave a successfully projected run permanently un-latched: never terminal,
+      // no terminal hub emit, skipped by the work-question continuation gate, and
+      // invisible to reapOrphanedRuns (which selects queued|running).
+      return "succeeded";
     case "cancelled":
       return "cancelled";
     case "failed":

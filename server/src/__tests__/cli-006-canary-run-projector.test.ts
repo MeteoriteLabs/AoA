@@ -97,8 +97,13 @@ describe("CLI-006 D5 — canary run projector", () => {
     expect((d.appendRunEvent as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
   });
 
+  // The run-status vocabulary is `TERMINAL_RUN_STATUSES` in heartbeat.ts:292 —
+  // ["succeeded","failed","cancelled","timed_out"]. It is NOT the wakeup-status
+  // vocabulary (heartbeat.ts:5452), where success IS spelled "completed". Writing
+  // "completed" here would leave a successfully projected run permanently
+  // un-latched: never terminal, no terminal hub emit, invisible to the reaper.
   it.each([
-    ["succeeded", "completed"],
+    ["succeeded", "succeeded"],
     ["failed", "failed"],
     ["cancelled", "cancelled"],
     ["timed_out", "failed"],
