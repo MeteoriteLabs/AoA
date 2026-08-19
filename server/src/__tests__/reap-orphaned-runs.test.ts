@@ -262,6 +262,70 @@ describe("reapOrphanedRuns — A-H6 concurrency-clamp queued runs", () => {
     expect(processLostCalls(updateCalls).length).toBeGreaterThanOrEqual(1);
   });
 
+  // ── CLI-006 (R1) — the reaper must not reap a distributed-owned run ────────
+  //
+  // A canary run hands execution to a worker attempt and suppresses its own
+  // adapter, so it has NO child process and never appears in `runningProcesses`
+  // — the map guard above cannot protect it. Left unguarded, the reaper marks it
+  // `process_lost` after the staleness window, releases the issue lock, and
+  // PROMOTES A DEFERRED WAKE INTO A NEW RUN — a second executor on the same issue
+  // while the attempt is still running. Any attempt longer than the window (i.e.
+  // essentially every real agent run) would be double-executed.
+  //
+  // The attempt is the terminal authority for these runs; the projector
+  // terminalizes them. The reaper must stand down.
+  it("does NOT reap a stale distributed-owned run in the periodic path (R1)", async () => {
+    const run = staleRun({
+      id: "run_distributed",
+      status: "running",
+      executionOwner: "distributed",
+      distributedJobId: "job_1",
+      distributedAttemptId: "attempt_1",
+    });
+    const { db, updateCalls } = createMockDb();
+    const svc = createServiceWithRuns(db, [run]);
+
+    await svc.reapOrphanedRuns({ staleThresholdMs: PERIODIC_THRESHOLD });
+
+    expect(processLostCalls(updateCalls)).toHaveLength(0);
+  });
+
+  // The startup path is the MORE dangerous one: it runs with staleThresholdMs = 0,
+  // so without this guard a control-plane restart fails EVERY in-flight handed-off
+  // run at once — precisely the case surviving a restart is supposed to cover.
+  it("does NOT reap a distributed-owned run on startup either (R1)", async () => {
+    const run = staleRun({
+      id: "run_distributed_boot",
+      status: "running",
+      executionOwner: "distributed",
+      distributedJobId: "job_2",
+      distributedAttemptId: "attempt_2",
+    });
+    const { db, updateCalls } = createMockDb();
+    const svc = createServiceWithRuns(db, [run]);
+
+    await svc.reapOrphanedRuns({ staleThresholdMs: 0 });
+
+    expect(processLostCalls(updateCalls)).toHaveLength(0);
+  });
+
+  // The guard must be narrow: a legacy run is unaffected by its existence.
+  it("STILL reaps a stale legacy run when a distributed run is also present", async () => {
+    const distributed = staleRun({
+      id: "run_distributed_mixed",
+      status: "running",
+      executionOwner: "distributed",
+    });
+    const legacy = staleRun({ id: "run_legacy_mixed", status: "running" });
+    const { db, updateCalls } = createMockDb();
+    const svc = createServiceWithRuns(db, [distributed, legacy]);
+
+    await svc.reapOrphanedRuns({ staleThresholdMs: PERIODIC_THRESHOLD });
+
+    const reaped = processLostCalls(updateCalls);
+    expect(reaped.length).toBeGreaterThanOrEqual(1);
+  });
+
   it("does NOT reap a `queued` run that IS in runningProcesses (periodic)", async () => {
     const run = staleRun({ id: "run_queued_live", status: "queued" });
     runningProcesses.set(run.id, { fake: true });

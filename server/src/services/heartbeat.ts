@@ -2449,6 +2449,21 @@ export function heartbeatService(
     for (const run of activeRuns) {
       if (runningProcesses.has(run.id)) continue;
 
+      // CLI-006 (R1): a distributed-owned run has NO child process by design — it
+      // handed execution to a worker attempt and suppressed its own adapter — so
+      // the `runningProcesses` guard above can never protect it. Reaping it would
+      // not merely mislabel it: the recovery chain below releases the issue lock
+      // and PROMOTES A DEFERRED WAKE INTO A NEW RUN, putting a second executor on
+      // an issue whose attempt is still live. Any attempt outliving the staleness
+      // window — essentially every real agent run — would be double-executed.
+      //
+      // The attempt is the terminal authority for these runs; the projector
+      // terminalizes them from its durable evidence. This applies to the STARTUP
+      // path too (staleThresholdMs === 0): surviving a control-plane restart is
+      // exactly what the durable marker exists for, so a boot sweep must not fail
+      // every in-flight handed-off run.
+      if (run.executionOwner === "distributed") continue;
+
       // A-H6: In the periodic path, never reap a "queued" run. A queued run has
       // no child process to lose — it is legitimately waiting behind the
       // per-agent concurrency clamp (HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1),
