@@ -165,7 +165,27 @@ A new `server/src/services/canary-terminal-projection.ts` holding two pieces, so
 
 **Today cancel is a lie for these runs.** Every writer's only stop mechanism is `runningProcesses.get(run.id)`, which misses; `grep requestCancellation server/src/services/heartbeat.ts` returns zero hits. Worse, the writer latches the run `cancelled`, so the projector's later terminal is discarded and the distributed evidence is lost.
 
-**`issues.ts:177-197` is the trap:** it writes `cancelled` with a raw `tx.update`, bypassing `setRunStatus` entirely — so a guard placed only in `setRunStatus`/`cancelRun` does not cover it.
+**Three corrections to this task, found by re-verifying the terrain at `a78e6013f` before writing code. The plan as written cannot work.**
+
+**(1) The trap is in a different file, and it is a BULK writer.** It is `server/src/services/issues.ts:176-187`, not `routes/issues.ts`. The line number carried over correctly; the path did not. It matters more than a typo, because the writer is not per-run: it `tx.update`s **every** id in `activeRunIds` in one statement, bypassing `setRunStatus` entirely, and in the same transaction nulls `issues.executionRunId`. Routing it means partitioning that id set by `execution_owner`, not adding a guard to a single-run path.
+
+**(2) Constructor injection cannot reach the cancel writers — verified.** `cancelRun` has exactly three non-test callers, and **none of them holds an instance built with options**:
+
+| Caller | Instance | Constructed |
+|---|---|---|
+| `routes/agents.ts:2161` | `agents.ts:198` | `heartbeatService(db)` — no options |
+| `routes/issues.ts:386` | `issues.ts:99` | `heartbeatService(db)` — no options |
+| `index.ts:1835` | `index.ts:1828` | `heartbeatService(db)` — no options |
+
+Only the scheduler instance (`index.ts:1205`) receives `distributedRollout`. So a `requestCancellation` port added to `heartbeatService`'s options would be `undefined` at **every** real cancel — the code would look wired, typecheck, and never fire. This is the same shape as the Task 2a bivariance defect: a composition that reads as correct and is inert.
+
+The port is genuinely needed, because `requestCancellation` lives on `createJobReconciliationService({appDb})` and runs under `runInTenant` over `aoa_app`, which heartbeat's owner-pool `db` cannot reach.
+
+**Two viable shapes; recommend the first.**
+- **Module-level registration** — `setDistributedCancellationPort(port)` called once from the `index.ts` distributed block, read lazily at cancel time. This is an idiom heartbeat.ts already uses twice (`setSecretResolver` at `:1453`, `registerRuntimeHook`), it keeps the blast radius at the seam, and it is instance-independent by construction, which is exactly the property that failed above.
+- Re-compose the three route factories to receive the port. Correct but a wider blast radius through route signatures, for no additional safety.
+
+**(3) The unset-port fail-safe is a real decision, not a default.** A marked run can only exist because the seam ran, which requires distributed execution enabled — but a control-plane **restart with the flag off** leaves marked runs behind and no port. Refusing to write a terminal then strands them forever; falling through to the legacy cancel converges, because with the subsystem disabled no worker will ever terminalize that attempt. **Fall through to the legacy cancel, and log loudly.** The cost is losing distributed evidence for a run the operator has already disabled the subsystem for; the alternative is an unkillable run. This is the opposite direction from the seam's own fail-safe and that asymmetry is deliberate: suppression must never strand a run, and cancel must never leave one unkillable.
 
 - [ ] **Step 1: Write the failing test** — for each of the five writers, with a distributed-marked run, assert `requestCancellation` is called with the stored `jobId` and the heartbeat side does NOT write a terminal status.
 - [ ] **Step 2: Run it, expect FAIL** on all five.
