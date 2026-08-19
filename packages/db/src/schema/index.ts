@@ -81,6 +81,15 @@ export {
 } from "./job_secret_handles.js";
 // JOB-005 (E3 job control): immutable accepted-event ledger + projection idempotency ledger.
 export { jobEvents, type JobEvent, type NewJobEvent } from "./job_events.js";
+// MIG-003 (E10 realtime foundation): durable company-scoped realtime event log +
+// per-company atomic sequence source for cross-replica fan-out and sinceSeq catch-up.
+export {
+  liveEventLog,
+  liveEventSequences,
+  type LiveEventLogRow,
+  type NewLiveEventLogRow,
+  type LiveEventSequenceRow,
+} from "./live_event_log.js";
 export {
   jobProjectionReceipts,
   type JobProjectionReceipt,

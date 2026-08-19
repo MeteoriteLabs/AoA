@@ -147,6 +147,17 @@ export const WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS = Object.freeze({
   worker_admission_rate_limits: ["SELECT", "INSERT", "UPDATE", "DELETE"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
+/** MIG-003 (E10 realtime foundation) durable realtime event-log authority, versioned after the
+ * immutable DEP-009 rate-limit delta. The NEW `live_event_log` + `live_event_sequences` tables
+ * (migration 0257) are aoa_app-only tenant DML with no operator authority — mirror job_events.
+ * aoa_app needs SELECT/INSERT/UPDATE/DELETE on the log (append + read + bounded retention trim)
+ * and SELECT/INSERT/UPDATE on the per-company sequence counter (atomic UPDATE ... RETURNING
+ * upsert; the row is never deleted). These mirror the reviewed C14 grants in 0257 exactly. */
+export const LIVE_EVENT_LOG_NEW_PATH_GRANTS = Object.freeze({
+  live_event_log: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  live_event_sequences: ["SELECT", "INSERT", "UPDATE"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
 /**
  * Current heartbeat execution-target resolver projection for aoa_app. This is
  * column-level because the table also stores worker_token_hash and unrelated
@@ -303,6 +314,7 @@ export const APP_SERVING_RELATIONS = sortedUnion(
   Object.keys(JOB_CONTROL_COMMANDS_NEW_PATH_GRANTS),
   Object.keys(FOLDER_GRANTS_NEW_PATH_GRANTS),
   Object.keys(WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS),
+  Object.keys(LIVE_EVENT_LOG_NEW_PATH_GRANTS),
   Object.keys(CUTOVER_MARKER_APP_GRANTS),
   Object.keys(EXECUTION_TARGET_REVOCATION_APP_GRANTS),
   Object.keys(LEGACY_RESOURCE_RECONCILIATION_APP_GRANTS),
@@ -332,6 +344,9 @@ export const RLS_RELATIONS = Object.freeze([
   "worker_admission_rate_limits",
   // MIG-008: the append-only legacy-lease/resource reconciliation crosswalk (migration 0256).
   "legacy_resource_reconciliation",
+  // MIG-003: the durable realtime event log + per-company sequence counter (migration 0257).
+  "live_event_log",
+  "live_event_sequences",
 ] as const);
 
 export const FORCE_RLS_RELATIONS = Object.freeze(
@@ -367,6 +382,9 @@ export const POLICY_COUNTS = deepFreeze({
   worker_admission_rate_limits: 1,
   // MIG-008: operator-write + app-read (mirrors distributed_cutover_markers, migration 0256).
   legacy_resource_reconciliation: 2,
+  // MIG-003: one aoa_app org-scoped tenant-isolation policy per table (migration 0257).
+  live_event_log: 1,
+  live_event_sequences: 1,
 } as const);
 
 const ORGANIZATION_QUAL =
@@ -440,6 +458,10 @@ export const RLS_POLICY_MANIFEST = deepFreeze([
   // (aoa.organization_id GUC unset). Same operator-metadata shape as the 0188 cutover marker.
   policy("legacy_resource_reconciliation", "legacy_resource_reconciliation_operator_write", "ALL", "aoa_operator", "true", "true"),
   policy("legacy_resource_reconciliation", "legacy_resource_reconciliation_app_read", "SELECT", "aoa_app", CUTOVER_APP_READ_QUAL, null),
+  // MIG-003 durable realtime event log (migration 0257): aoa_app-only org-scoped tenant
+  // isolation, FORCE RLS, no operator authority. Same shape as job_events / folder_grants.
+  policy("live_event_log", "live_event_log_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("live_event_sequences", "live_event_sequences_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
 ] as const);
 
 /*
@@ -492,6 +514,8 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreeze({
     labels: { aoa_app: ["SELECT"], aoa_operator: [] },
     leases: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     legacy_resource_reconciliation: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
+    live_event_log: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    live_event_sequences: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
     mcp_api_keys: { aoa_app: [], aoa_operator: [] },
     notification_digest_items: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
     notification_preferences: { aoa_app: ["SELECT"], aoa_operator: [] },
@@ -619,6 +643,8 @@ const RELATION_ACL_NULLNESS_CERTIFICATE = deepFreeze({
   labels: false,
   leases: false,
   legacy_resource_reconciliation: false,
+  live_event_log: false,
+  live_event_sequences: false,
   mcp_api_keys: false,
   notification_digest_items: false,
   notification_preferences: false,

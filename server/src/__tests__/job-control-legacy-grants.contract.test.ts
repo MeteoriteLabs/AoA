@@ -79,6 +79,8 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreezeFixture({
     labels: { aoa_app: ["SELECT"], aoa_operator: [] },
     leases: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     legacy_resource_reconciliation: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
+    live_event_log: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    live_event_sequences: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
     mcp_api_keys: { aoa_app: [], aoa_operator: [] },
     notification_digest_items: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
     notification_preferences: { aoa_app: ["SELECT"], aoa_operator: [] },
@@ -215,6 +217,8 @@ const PLAN_DERIVED_RELATION_ACL_NULLNESS = deepFreezeFixture({
   labels: false,
   leases: false,
   legacy_resource_reconciliation: false,
+  live_event_log: false,
+  live_event_sequences: false,
   mcp_api_keys: false,
   notification_digest_items: false,
   notification_preferences: false,
@@ -336,6 +340,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       ...Object.keys(grants.JOB_CONTROL_COMMANDS_NEW_PATH_GRANTS),
       ...Object.keys(grants.FOLDER_GRANTS_NEW_PATH_GRANTS),
       ...Object.keys(grants.WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS),
+      ...Object.keys(grants.LIVE_EVENT_LOG_NEW_PATH_GRANTS),
       ...Object.keys(grants.CUTOVER_MARKER_APP_GRANTS),
       ...Object.keys(grants.EXECUTION_TARGET_REVOCATION_APP_GRANTS),
       ...Object.keys(grants.LEGACY_RESOURCE_RECONCILIATION_APP_GRANTS),
@@ -356,7 +361,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
     expect(Object.isFrozen(manifest.OPERATOR_SERVING_RELATIONS)).toBe(true);
   });
 
-  it("pins the exact 23-table RLS, 22-table FORCE, and 33-row permissive policy certificate", () => {
+  it("pins the exact 25-table RLS, 24-table FORCE, and 35-row permissive policy certificate", () => {
     const manifest = grants as typeof grants & {
       RLS_RELATIONS?: readonly string[];
       FORCE_RLS_RELATIONS?: readonly string[];
@@ -379,7 +384,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       "worker_operation_receipts", "worker_lease_rejections", "distributed_cutover_markers",
       "job_events", "job_projection_receipts", "job_control_commands",
       "execution_target_revocations", "folder_grants", "worker_admission_rate_limits",
-      "legacy_resource_reconciliation",
+      "legacy_resource_reconciliation", "live_event_log", "live_event_sequences",
     ];
     const counts = {
       jobs: 1, job_attempts: 1, leases: 1, workers: 2, services: 1,
@@ -391,6 +396,8 @@ describe("JOB-003 bounded aoa_app authority", () => {
       execution_target_revocations: 2, folder_grants: 1,
       worker_admission_rate_limits: 1,
       legacy_resource_reconciliation: 2,
+      live_event_log: 1,
+      live_event_sequences: 1,
     };
     const ORG = "(organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
     const CANDIDATE_ORG = "(candidate_organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
@@ -441,6 +448,8 @@ describe("JOB-003 bounded aoa_app authority", () => {
       policy("worker_admission_rate_limits", "worker_admission_rate_limits_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
       policy("legacy_resource_reconciliation", "legacy_resource_reconciliation_operator_write", "ALL", "aoa_operator", "true", "true"),
       policy("legacy_resource_reconciliation", "legacy_resource_reconciliation_app_read", "SELECT", "aoa_app", "(current_setting('aoa.organization_id'::text, true) IS NULL)", null),
+      policy("live_event_log", "live_event_log_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("live_event_sequences", "live_event_sequences_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
     ];
     expect(manifest.RLS_RELATIONS).toEqual(rls);
     expect(manifest.FORCE_RLS_RELATIONS).toEqual(rls.filter((relation) => relation !== "execution_targets"));
@@ -499,6 +508,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       ...Object.keys(grants.JOB_CONTROL_COMMANDS_NEW_PATH_GRANTS),
       ...Object.keys(grants.FOLDER_GRANTS_NEW_PATH_GRANTS),
       ...Object.keys(grants.WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS),
+      ...Object.keys(grants.LIVE_EVENT_LOG_NEW_PATH_GRANTS),
       ...Object.keys(grants.WORKER_ENROLLMENT_OPERATOR_GRANTS),
       ...Object.keys(grants.OPERATOR_METADATA_COLUMN_GRANTS),
       ...Object.keys(grants.CUTOVER_MARKER_APP_GRANTS),

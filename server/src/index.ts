@@ -38,6 +38,12 @@ import { reconcileCloudBlockedPlugins } from "./services/plugin-lifecycle.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { setLiveEventLogStore, wasLocallyPublished } from "./services/live-events.js";
+import { createLiveEventLogStore } from "./services/live-event-log-store.js";
+import {
+  createBrokerDrainer,
+  attachLiveEventBrokerListener,
+} from "./services/live-event-broker-listener.js";
 import {
   heartbeatService,
   agentRuntimeDecisionService,
@@ -896,11 +902,69 @@ server.on("upgrade", (req, socket, head) => {
   });
 });
 
-setupLiveEventsWebSocketServer(server, db as any, {
+// MIG-003: durable realtime broker. The log store is wired at the publish
+// chokepoint (best-effort appends + data-free NOTIFY); the WS server exposes the
+// per-replica durable fan-out entry point + its active-company set; the broker
+// listener LISTENs `live_events` + safety-polls to pull the tail cross-replica.
+// Serve the durable store through the enforcing aoa_app pool when distributed
+// execution is on (the store opens its own withTenantTx setting aoa.organization_id,
+// so FORCE-RLS is satisfied and the tenant-isolation policy is actually exercised);
+// embedded/self-host stays on the owner `db`. Mirrors how job_events is served.
+const liveEventLogStore = createLiveEventLogStore(
+  (distributedExecutionDatabases?.appDb ?? db) as any
+);
+setLiveEventLogStore(liveEventLogStore);
+const liveEventsWss = setupLiveEventsWebSocketServer(server, db as any, {
   deploymentMode: config.deploymentMode,
   resolveSessionFromHeaders,
   trustedOrigins: effectiveTrustedOrigins,
-});
+}) as ReturnType<typeof setupLiveEventsWebSocketServer> & {
+  deliverDurableEvent?: (companyId: string, event: import("@armyofagents/shared").LiveEvent) => void;
+  activeCompanies?: () => Iterable<string>;
+};
+{
+  const deliverDurableEvent = liveEventsWss.deliverDurableEvent;
+  const activeCompanies = liveEventsWss.activeCompanies;
+  if (deliverDurableEvent && activeCompanies) {
+    const drainer = createBrokerDrainer({
+      store: liveEventLogStore,
+      fanout: (companyId, event) => deliverDurableEvent(companyId, event),
+      // Robust-model same-replica dedup: never re-fan an event THIS replica
+      // published (it was already delivered seq-less by the local emit).
+      isLocallyPublished: wasLocallyPublished,
+    });
+    void attachLiveEventBrokerListener({
+      db: db as any,
+      drainer,
+      activeCompanies: () => activeCompanies(),
+    }).catch((err) => {
+      logger.warn({ err }, "failed to attach live event broker listener");
+    });
+
+    // Defect #8: bounded-retention trim. A low-frequency sweeper deletes log rows
+    // older than the retained window per company so the durable log cannot grow
+    // unbounded. Runs over the active-company set (and, on an owner/superuser
+    // deployment, every retained company — see store.trimRetention). Best-effort;
+    // a trim failure never affects realtime delivery.
+    const LIVE_EVENT_RETENTION_WINDOW = 5_000;
+    const LIVE_EVENT_TRIM_INTERVAL_MS = 5 * 60_000;
+    let liveEventTrimInFlight = false;
+    const liveEventTrimTimer = setInterval(() => {
+      if (liveEventTrimInFlight) return;
+      if (typeof liveEventLogStore.trimRetention !== "function") return;
+      liveEventTrimInFlight = true;
+      void liveEventLogStore
+        .trimRetention(LIVE_EVENT_RETENTION_WINDOW, activeCompanies())
+        .catch((err) => {
+          logger.warn({ err }, "live event retention trim failed");
+        })
+        .finally(() => {
+          liveEventTrimInFlight = false;
+        });
+    }, LIVE_EVENT_TRIM_INTERVAL_MS);
+    (liveEventTrimTimer as unknown as { unref?: () => void }).unref?.();
+  }
+}
 
 // Work-question continuation and SLA processing are durable workflow workers,
 // not heartbeat workers. They must keep running when heartbeat execution is

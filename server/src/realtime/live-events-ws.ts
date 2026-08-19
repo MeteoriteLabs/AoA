@@ -23,7 +23,20 @@ import {
   threadPresence,
   PRESENCE_TTL_MS,
   broadcastThreadPresence,
+  getLiveEventLogStore,
 } from "../services/live-events.js";
+import {
+  SocketSeqCursor,
+  filterAuthorizedReplay,
+  needsSnapshotFallback,
+  resolveBackpressure,
+  orderReplayBuffer,
+  replayTruncatedBeyondPage,
+  parseSinceSeq,
+  buildSnapshotResumeFrame,
+  DEFAULT_REPLAY_LIMIT,
+  DEFAULT_REPLAY_BUFFER_CAP,
+} from "./live-event-catchup.js";
 import { threadService } from "../services/threads.js";
 import { permissionService } from "../services/permissions.js";
 import { hubItemsService } from "../services/hub-items.js";
@@ -37,6 +50,8 @@ export { hasActiveCloudMembership } from "../services/upgrade-socket-authorizati
 
 interface WsSocket {
   readyState: number;
+  /** ws-native outbound buffer depth (bytes) — MIG-003 backpressure high-water-mark. */
+  bufferedAmount?: number;
   ping(): void;
   send(data: string): void;
   terminate(): void;
@@ -430,6 +445,22 @@ export function setupLiveEventsWebSocketServer(
   const contextByClient = new Map<WsSocket, UpgradeContext>();
   const authorizationCheckInFlight = new Set<WsSocket>();
 
+  // MIG-003: per-company socket index + per-socket monotonic delivery cursor, so
+  // the durable-log reader (cross-replica NOTIFY/poll fan-out + `?sinceSeq=N`
+  // catch-up) can reach this replica's sockets and suppress duplicate seqs.
+  const companySockets = new Map<string, Set<WsSocket>>();
+  const cursorByClient = new Map<WsSocket, SocketSeqCursor>();
+  // Defect #2: while a `?sinceSeq=N` replay is in flight for a socket, live
+  // durable events are BUFFERED here instead of sent inline (so they cannot
+  // advance the client cursor past the replayed range and hide lower-seq replay
+  // events). Drained in ascending seq after the replay completes. Overflow →
+  // bounded snapshot fallback.
+  const replayBufferByClient = new Map<WsSocket, { buffer: LiveEvent[]; overflow: boolean }>();
+  // Defect #6: per-socket backpressure hysteresis latch — true while the socket's
+  // outbound buffer is congested, so we emit exactly ONE `__resume` (not one per
+  // dropped event) until it drains below the low-water mark.
+  const backpressureLatched = new Set<WsSocket>();
+
   // Plan 7: per-thread subscription registry. A connection only receives
   // thread.* events for threads it has explicitly subscribed to (via a
   // { subscribe: threadId } client message) AND that pass envelope RBAC.
@@ -561,6 +592,204 @@ export function setupLiveEventsWebSocketServer(
     return Boolean(item);
   }
 
+  // ── MIG-003: durable cross-replica fan-out + sinceSeq catch-up ───────────────
+  //
+  // A durable event (carrying a per-company `seq`) reaches a socket through this
+  // path — NOT the raw emitter — whenever a log store is wired, so delivery is
+  // uniform (one seq-carrying, deduped, RBAC-re-run path) and gap/dup-free across
+  // replicas. Per-event RBAC is the SAME live company/thread/hub visibility as
+  // the emitter path (hide-don't-403); thread events are visibility-gated (a
+  // viewer who can SEE the thread gets the hint — the client drops pokes it isn't
+  // rendering). Without a store, durable events fall back to the emitter path
+  // (today's single-node behavior).
+
+  async function authorizeDurableEvent(
+    context: UpgradeContext,
+    event: LiveEvent
+  ): Promise<boolean> {
+    if (isHubEvent(event)) return mayReceiveHubEvent(context, event);
+    if (isThreadEvent(event)) {
+      const threadId = threadIdOf(event);
+      if (!threadId) return false; // malformed thread event — fail closed
+      return mayContextAccessThread(context, threadId);
+    }
+    return true; // company-wide invalidation hint
+  }
+
+  /**
+   * Deliver ONE durable event to ONE socket. Order of concerns:
+   *  1. Replay latch (defect #2): while a `?sinceSeq=N` replay is in flight for
+   *     this socket, BUFFER the event (do NOT advance the cursor) — the buffer is
+   *     drained in ascending seq once the replay finishes, so a live event can't
+   *     hide the replayed range.
+   *  2. Dedup: suppress duplicate seqs via the per-socket cursor (this ADVANCES
+   *     the cursor, keeping catch-up consistent even when a payload is skipped).
+   *  3. Backpressure (defect #6): a hysteresis latch bounds a slow socket — emit
+   *     ONE `__resume` on the latching edge, then skip payloads (cursor already
+   *     advanced) until the buffer drains below the low-water mark.
+   *  4. Re-run per-event RBAC (hide-don't-403) before sending.
+   */
+  async function deliverDurableEventToSocket(
+    socket: WsSocket,
+    context: UpgradeContext,
+    event: LiveEvent
+  ): Promise<void> {
+    if (socket.readyState !== WebSocket.OPEN) return;
+
+    // (1) Replay latch — buffer live events until the replay drains (defect #2).
+    const replay = replayBufferByClient.get(socket);
+    if (replay) {
+      if (replay.overflow) return; // already destined for snapshot fallback
+      if (replay.buffer.length >= DEFAULT_REPLAY_BUFFER_CAP) {
+        replay.overflow = true;
+        replay.buffer.length = 0;
+        return;
+      }
+      replay.buffer.push(event);
+      return;
+    }
+
+    // (2) Dedup — advances the cursor even when the send is later skipped.
+    const cursor = cursorByClient.get(socket);
+    if (cursor && !cursor.accept(event.seq)) return;
+
+    // (3) Backpressure hysteresis latch (defect #6).
+    const decision = resolveBackpressure(
+      backpressureLatched.has(socket),
+      socket.bufferedAmount ?? 0
+    );
+    if (decision.latched) backpressureLatched.add(socket);
+    else backpressureLatched.delete(socket);
+    if (decision.signalResume) {
+      try {
+        socket.send(buildSnapshotResumeFrame());
+      } catch {
+        /* socket is going away */
+      }
+    }
+    if (!decision.deliver) return;
+
+    // (4) Per-event RBAC.
+    const authorized = await authorizeDurableEvent(context, event);
+    if (authorized && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(event));
+    }
+  }
+
+  /**
+   * Cross-replica + same-replica durable fan-out entry point. The per-replica
+   * broker listener calls this for each row it pulls on NOTIFY/safety-poll.
+   */
+  function deliverDurableEvent(companyId: string, event: LiveEvent): void {
+    const sockets = companySockets.get(companyId);
+    if (!sockets) return;
+    for (const socket of sockets) {
+      const context = contextByClient.get(socket);
+      if (!context) continue;
+      void deliverDurableEventToSocket(socket, context, event).catch((err) => {
+        logger.warn(
+          { err, companyId },
+          "durable live event fan-out failed"
+        );
+      });
+    }
+  }
+
+  /**
+   * On (re)connect with `?sinceSeq=N`, replay `seq > N` (re-running per-event
+   * RBAC, hide-don't-403) then hand off to live keyed on the same cursor. A cursor
+   * older than the retained window floor → a bounded snapshot-refetch signal.
+   */
+  function sendResume(socket: WsSocket): void {
+    if (socket.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(buildSnapshotResumeFrame());
+      } catch {
+        /* socket going away */
+      }
+    }
+  }
+
+  /**
+   * Finish a replay: tear down the latch and either fall back to a bounded
+   * snapshot (on overflow) or drain the buffered live events in ascending seq
+   * (dropping any `seq <= replayMaxSeq` already covered by the replay). Draining
+   * runs each event back through deliverDurableEventToSocket (now un-latched), so
+   * the per-socket cursor dedups the overlap.
+   */
+  async function finishReplay(
+    socket: WsSocket,
+    context: UpgradeContext,
+    replayMaxSeq: number,
+    snapshot: boolean
+  ): Promise<void> {
+    const replay = replayBufferByClient.get(socket);
+    replayBufferByClient.delete(socket);
+    if (snapshot || replay?.overflow) {
+      // The client will blanket-refetch; buffered live events are covered by it.
+      sendResume(socket);
+      return;
+    }
+    if (!replay || replay.buffer.length === 0) return;
+    const ordered = orderReplayBuffer(replay.buffer, replayMaxSeq);
+    for (const event of ordered) {
+      if (socket.readyState !== WebSocket.OPEN) break;
+      await deliverDurableEventToSocket(socket, context, event);
+    }
+  }
+
+  async function replaySinceSeq(
+    socket: WsSocket,
+    context: UpgradeContext,
+    sinceSeq: number
+  ): Promise<void> {
+    const store = getLiveEventLogStore();
+    if (!store) return;
+    const cursor = cursorByClient.get(socket);
+    // Latch the socket into replay mode so live durable events are buffered, not
+    // sent inline, for the whole async replay window (defect #2).
+    replayBufferByClient.set(socket, { buffer: [], overflow: false });
+    let replayMaxSeq = sinceSeq;
+    let snapshot = false;
+    try {
+      const floor = await store.retentionFloor(context.companyId);
+      if (needsSnapshotFallback(sinceSeq, floor)) {
+        snapshot = true;
+        return;
+      }
+      const tail = await store.since(context.companyId, sinceSeq, DEFAULT_REPLAY_LIMIT);
+      // Defect #3: a full page whose last seq is still behind the company's
+      // high-water means events past the page were never replayed. Do NOT advance
+      // the cursor past the hole — fall back to a bounded snapshot refetch.
+      if (tail.length > 0) {
+        const pageMaxSeq = tail[tail.length - 1]!.seq;
+        const currentSeq = await store.currentSeq(context.companyId);
+        if (replayTruncatedBeyondPage(tail.length, pageMaxSeq, currentSeq, DEFAULT_REPLAY_LIMIT)) {
+          snapshot = true;
+          return;
+        }
+      }
+      const authorized = await filterAuthorizedReplay(tail, (event) =>
+        authorizeDurableEvent(context, event)
+      );
+      for (const event of authorized) {
+        if (socket.readyState !== WebSocket.OPEN) break;
+        socket.send(JSON.stringify(event));
+      }
+      // Advance the cursor past the whole replayed window (authorized or not) so
+      // an overlapping live redelivery of any replayed seq is suppressed.
+      replayMaxSeq = tail.length > 0 ? tail[tail.length - 1]!.seq : sinceSeq;
+      cursor?.advanceTo(replayMaxSeq);
+    } catch (err) {
+      logger.warn(
+        { err, companyId: context.companyId },
+        "live event sinceSeq replay failed"
+      );
+    } finally {
+      await finishReplay(socket, context, replayMaxSeq, snapshot);
+    }
+  }
+
   const pingInterval = setInterval(() => {
     for (const socket of wss.clients) {
       if (!aliveByClient.get(socket)) {
@@ -626,10 +855,29 @@ export function setupLiveEventsWebSocketServer(
       return;
     }
 
+    // MIG-003: index this socket for durable cross-replica fan-out + give it a
+    // per-socket dedup cursor seeded at the client's `?sinceSeq=N` (0 = fresh).
+    const sinceSeq = parseSinceSeq(req.url);
+    let companyBucket = companySockets.get(context.companyId);
+    if (!companyBucket) {
+      companyBucket = new Set();
+      companySockets.set(context.companyId, companyBucket);
+    }
+    companyBucket.add(socket);
+    cursorByClient.set(socket, new SocketSeqCursor(sinceSeq ?? 0));
+
     const unsubscribe = subscribeCompanyLiveEvents(
       context.companyId,
       (event) => {
         if (socket.readyState !== WebSocket.OPEN) return;
+        // ROBUST MODEL: the same-replica emitter ALWAYS delivers this copy —
+        // seq-less, immediate, never dropped, never gated on a health flag. The
+        // seq-carrying durable copy the drainer pulls back for THIS event is
+        // suppressed cross-path by the drainer (it skips eventIds this replica
+        // published), so there is no same-replica double and an append that later
+        // fails cannot silently drop an already-delivered event. Peer-replica
+        // events never reach this emitter — they arrive only via the durable
+        // reader (deliverDurableEvent).
         if (isHubEvent(event)) {
           void mayReceiveHubEvent(context, event)
             .then((ok) => {
@@ -669,6 +917,13 @@ export function setupLiveEventsWebSocketServer(
     cleanupByClient.set(socket, unsubscribe);
     aliveByClient.set(socket, true);
     contextByClient.set(socket, context);
+
+    // MIG-003: the socket is now subscribed (emitter) AND indexed (durable) BEFORE
+    // the replay read, so a durable event that lands during catch-up is delivered
+    // live through the cursor (no gap) and the replay's advanceTo won't re-send it.
+    if (sinceSeq !== null) {
+      void replaySinceSeq(socket, context, sinceSeq);
+    }
 
     socket.on("pong", () => {
       aliveByClient.set(socket, true);
@@ -758,6 +1013,16 @@ export function setupLiveEventsWebSocketServer(
       contextByClient.delete(socket);
       authorizationCheckInFlight.delete(socket);
       threadRegistry.removeConnection(socket);
+      // MIG-003: drop this socket from the durable fan-out index + cursor map +
+      // the replay/backpressure per-socket state.
+      cursorByClient.delete(socket);
+      replayBufferByClient.delete(socket);
+      backpressureLatched.delete(socket);
+      const bucket = companySockets.get(context.companyId);
+      if (bucket) {
+        bucket.delete(socket);
+        if (bucket.size === 0) companySockets.delete(context.companyId);
+      }
 
       // Plan 7: drop this connection's presence and notify the affected threads
       // so other viewers see them leave promptly (rather than waiting for TTL).
@@ -829,6 +1094,17 @@ export function setupLiveEventsWebSocketServer(
         rejectUpgrade(socket, "500 Internal Server Error", "upgrade failed");
       });
   });
+
+  // MIG-003: expose the durable fan-out entry point + the active-company set so
+  // the per-replica broker listener (index.ts) can push NOTIFY/poll-pulled log
+  // rows into this replica's sockets through the same per-event RBAC + dedup +
+  // backpressure path, and safety-poll every company this replica serves.
+  const durableFanoutApi = wss as WsServer & {
+    deliverDurableEvent?: typeof deliverDurableEvent;
+    activeCompanies?: () => Iterable<string>;
+  };
+  durableFanoutApi.deliverDurableEvent = deliverDurableEvent;
+  durableFanoutApi.activeCompanies = () => companySockets.keys();
 
   return wss;
 }
