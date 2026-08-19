@@ -14,6 +14,8 @@
  * Runtime imports: relative modules only — the E4-D01 boundary.
  */
 
+import { createHash } from "node:crypto";
+
 import type { Logger } from "../logging/logger.js";
 import { CLEANUP_OUTCOME_METRIC, RECONCILE_ORPHANS_METRIC, type Metrics } from "../metrics/metrics.js";
 import {
@@ -23,6 +25,24 @@ import {
   type ResourceSummary,
   type SandboxProvider,
 } from "./provider.js";
+
+/**
+ * The structured operator-alert event name emitted (via `logger.error`) when a
+ * reconciliation sweep records ≥1 FAILED cleanup — a provider outage the swept
+ * resources survive to the next bounded sweep. Reused as both the pino message
+ * and a queryable `event` field. (CLI-004/D2.)
+ */
+export const RECONCILE_PROVIDER_OUTAGE_EVENT = "reconcile_provider_outage";
+
+/**
+ * A stable lowercase-hex SHA-256 over the canonical (org, target, worker) scope —
+ * the ONLY form of the ownership selector that may enter the outage alert. Raw
+ * selector VALUES never leave the supervisor (mirrors `hashResourceLabels`).
+ */
+function hashOwnershipSelector(selector: OwnershipSelector): string {
+  const canonical = [selector.organizationId, selector.targetId, selector.workerId].join(" ");
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
 
 export interface ReconcileDeps {
   readonly provider: SandboxProvider;
@@ -92,6 +112,26 @@ export async function reconcile(deps: ReconcileDeps): Promise<ReconcileResult> {
     }
     pageToken = page.nextPageToken;
   } while (pageToken !== null);
+
+  // CLI-004/D2 — provider-outage backoff + ALERT. A sweep that reported ≥1 FAILED
+  // cleanup (a transient provider/transport fault the resource survives) raises a
+  // structured OPERATOR alert so "provider outage backs off with an alert" holds.
+  // The BACKOFF itself is the provider's bounded retry + the resource surviving to
+  // the next sweep (the live periodic delay is E4-D12); this only surfaces the
+  // outage. It carries ONLY the HASHED ownership scope + the failed count — never a
+  // raw org/target/worker id, command, env, or secret byte. Read-only: after the
+  // sweep, it does not alter convergence.
+  if (orphansFailed > 0) {
+    deps.logger?.error(
+      {
+        event: RECONCILE_PROVIDER_OUTAGE_EVENT,
+        ownershipHash: hashOwnershipSelector(deps.ownershipSelector),
+        orphansFailed,
+        scanned,
+      },
+      RECONCILE_PROVIDER_OUTAGE_EVENT,
+    );
+  }
 
   return { scanned, orphansDestroyed, orphansFailed, outcomes };
 }

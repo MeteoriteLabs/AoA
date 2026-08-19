@@ -265,7 +265,7 @@ export type {
   WorkerEventSink,
 } from "./supervisor/events.js";
 
-export { reconcile } from "./supervisor/reconcile.js";
+export { reconcile, RECONCILE_PROVIDER_OUTAGE_EVENT } from "./supervisor/reconcile.js";
 export type {
   ReconcileDeps,
   ReconcileResult,

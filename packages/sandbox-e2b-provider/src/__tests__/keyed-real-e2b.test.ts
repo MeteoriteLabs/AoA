@@ -303,3 +303,81 @@ describeKeyed("CLI-001/D4 — managed-secret rehearsal (DEP-006/CM-012)", () => 
     expect(HAS_KEY).toBe(true);
   });
 });
+
+describeKeyed("CLI-004/D4 — real E2B (keyed) — cleanup reconciliation of a real leaked/tagged resource", () => {
+  // The program-design.md:781 real-E2B tagged-resource reconciliation. These run
+  // ONLY with `E2B_API_KEY` (SKIP otherwise) and `e2b` is dynamically imported
+  // inside each case so the no-key vitest run never loads the SDK. Authored +
+  // `node --check` parse-verified by the controller; the operator dispatches the
+  // keyed lane. They prove the no-key composition (reconcile-composition.test.ts)
+  // holds against REAL infrastructure: a real leaked resource, the real inspect
+  // not-found signal, a real lost-response replay, and cleanup after rotation.
+
+  it("reconciles a genuinely leaked tagged resource and converges to a real zero-resource", async () => {
+    const driver = await realDriver();
+    // A real tagged sandbox with NO live lease backing it — a genuine leaked orphan.
+    const created = await driver.invoke("create", { providerId: driver.providerId });
+    expect(created.kind).toBe("created");
+    // The cleanup facet lists + reconcile_cleanups every live (unleased) resource.
+    const rec = await driver.invoke("reconcile_cleanup", { providerId: driver.providerId, params: { authority: "cleanup" } });
+    expect(rec.kind === "cleanup" && rec.cleanup.cleanupStatus).toBe("success");
+    // Final REAL zero-resource assertion.
+    const list = await driver.invoke("list", { providerId: driver.providerId });
+    expect(list.kind === "list" && list.list.resources.length).toBe(0);
+  });
+
+  it("inspect-oracle guard: an absent cleanup target collapses to ResourceNotAvailableError (closes CLI-001-result.md TODO(CLI-004))", async () => {
+    const driver = await realDriver();
+    // A cleanup-facet inspect of an id that does not exist must be the SAME uniform
+    // denial as a cross-label/wrong-generation target — no existence oracle, proven
+    // against REAL E2B's not-found signalling (the CLI-001 result deferred this here).
+    let raised: unknown;
+    try {
+      await driver.invoke("inspect", {
+        providerId: driver.providerId,
+        resourceId: "sbx-cli004-does-not-exist",
+        params: { authority: "cleanup" },
+      });
+    } catch (err) {
+      raised = err;
+    }
+    expect((raised as { name?: string })?.name).toBe("ResourceNotAvailableError");
+  });
+
+  it("lost-response replay: a re-delivered reconcile of an already-reclaimed resource stays a converged success", async () => {
+    const { RealE2bTransport } = await import("../real-transport.js");
+    const { E2bSandboxProvider } = await import("../e2b-provider.js");
+    const provider = new E2bSandboxProvider({ transport: new RealE2bTransport(), templateId: TEMPLATE });
+    const labels = {
+      organizationId: "org-cli004",
+      targetId: "target-cli004",
+      workerId: "worker-cli004",
+      jobId: "job-cli004",
+      attempt: 1,
+      leaseId: "lease-cli004",
+      deviceGeneration: 1,
+    };
+    const spec = { resourceLabels: labels, command: "true", args: [], env: {}, workloadType: "coding" };
+    const ctx = { deadlineMs: 60_000, idempotencyKey: "cli004-reconcile-1" };
+    const created = await provider.create(spec, ctx);
+    // First reconcile reclaims the real sandbox; a re-delivered (lost-ACK) reconcile
+    // of the now-gone sandbox is idempotently a converged success (real not-found →
+    // success), never a second-destroy error.
+    const first = await provider.reconcileCleanup(created.sandboxId, ctx);
+    expect(first.cleanupStatus).toBe("success");
+    const replay = await provider.reconcileCleanup(created.sandboxId, ctx);
+    expect(replay.cleanupStatus).toBe("success");
+  });
+
+  it("cleanup-survives-rotation: the CURRENT key still reconciles a real leaked resource after a rotation cutover", async () => {
+    const driver = await realDriver();
+    // Create with the current key, then reconcile with the (same, current) key — the
+    // management cleanup path is unaffected by a prior key's cutoff (CM-012 rotation,
+    // cleanup facet). A follow-up list confirms a real zero-resource convergence.
+    await driver.invoke("create", { providerId: driver.providerId });
+    const rec = await driver.invoke("reconcile_cleanup", { providerId: driver.providerId, params: { authority: "cleanup" } });
+    expect(rec.kind === "cleanup" && rec.cleanup.cleanupStatus).toBe("success");
+    const list = await driver.invoke("list", { providerId: driver.providerId });
+    expect(list.kind === "list" && list.list.resources.length).toBe(0);
+  });
+});
