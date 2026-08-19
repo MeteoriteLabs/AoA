@@ -157,6 +157,11 @@ import {
   resolveAgentSubscriptionEnvironment,
 } from "./provider-credential-bindings.js";
 import { postRunSummaryComment } from "./run-summary-comment.js";
+import {
+  buildHandoffRunPatch,
+  shouldSuppressLegacyExecution,
+  type RunExecutionOwner,
+} from "./run-execution-owner.js";
 import { createCanaryRunProjector } from "./canary-run-projector.js";
 import {
   createAttemptTerminalProjectionHandler,
@@ -5180,8 +5185,53 @@ export function heartbeatService(
         });
       }
 
+      // ── CLI-006 (D3/D3a) — the canary execution-ownership decision ────────
+      // Computed HERE, not at the CLI-005 convert seam ~2,000 lines above,
+      // because the frozen batch envelope carries the run's context as artifacts
+      // and the submission is immutable: a job cannot be submitted before the
+      // context exists (D3a). The harness checkout above runs unchanged for
+      // canary; `admitAndSubmit` skips its own via the D3a bypass, so the run is
+      // never checked out twice.
+      //
+      // ONE call, ONE stored value. The suppression guard below reads THAT value
+      // and never re-derives the condition — Invariant 1 is what makes double
+      // execution structurally hard rather than merely tested against.
+      //
+      // Best-effort by construction: `resolveExecutionOwner` never throws and
+      // every failure direction resolves to legacy (Invariant 2).
+      let canaryExecutionOwner: RunExecutionOwner | undefined;
+      if (
+        distributedRolloutHook &&
+        distributedRolloutState === "canary" &&
+        distributedRolloutOrganizationId &&
+        issueId &&
+        issueContext &&
+        issueContext.assigneeAgentId === agent.id
+      ) {
+        canaryExecutionOwner = await distributedRolloutHook.resolveExecutionOwner({
+          source: { kind: "task_run", runId: run.id, issueId, assigneeAgentId: agent.id },
+          actor: { kind: "agent", id: agent.id, companyId: agent.companyId },
+          organizationId: distributedRolloutOrganizationId,
+          idempotencyKey: run.id,
+          rolloutState: distributedRolloutState,
+        });
+      }
+
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
       try {
+        // ── CLI-006 (D4) — the suppression seam. The ONLY edit to this call site.
+        //
+        // This return MUST stay INSIDE this `try`. The `finally` below is the sole
+        // call site of `deregisterRuntimeHook` and of `heartbeatMcpDelivery.cleanup()`;
+        // returning before `try {` typechecks, passes every behavioural test, and
+        // silently leaks a 24-hour-valid runtime-permission token plus a tmpdir MCP
+        // config file that, for non-brokered claude_local, embeds DATABASE_URL — no
+        // TTL, no sweeper. `cli-006-seam-suppression.test.ts` asserts this position
+        // structurally, because nothing else in this repo can.
+        if (shouldSuppressLegacyExecution(canaryExecutionOwner)) {
+          await markRunHandedOffToDistributed(run, canaryExecutionOwner!);
+          return; // CLI-006-SUPPRESSION-RETURN
+        }
         adapterResult = await adapter.execute({
           runId: run.id,
           agent,
@@ -6584,6 +6634,41 @@ export function heartbeatService(
     await dispatchQueuedRunsAfterAgentSignal(agent.id);
 
     return newRun;
+  }
+
+  /**
+   * CLI-006 (Task 3) — durably record that a distributed attempt, not this
+   * process, owns this run's execution.
+   *
+   * This write is what every other consumer reads. `reapOrphanedRuns` exempts a
+   * run only when it appears in the in-process `runningProcesses` map, which a
+   * distributed attempt never populates, and the startup reap runs with
+   * `staleThresholdMs = 0` — so without this marker a control-plane restart
+   * would fail every handed-off run. The five cancel writers and the projector
+   * read it too.
+   *
+   * Deliberately no `status` write: the attempt is the terminal authority from
+   * here, and latching a terminal now would make the projector's later terminal
+   * a no-op and discard the distributed evidence.
+   */
+  async function markRunHandedOffToDistributed(
+    run: typeof heartbeatRuns.$inferSelect,
+    owner: RunExecutionOwner,
+  ) {
+    const patch = buildHandoffRunPatch(owner, new Date());
+    await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, run.id));
+    const maxSeq = await db
+      .select({ value: sql<number | null>`max(${heartbeatRunEvents.seq})` })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, run.id))
+      .then((rows) => rows[0]?.value ?? null);
+    await appendRunEvent(run, projectionSeqBase(maxSeq) + 1, {
+      eventType: "distributed_execution_handoff",
+      stream: "system",
+      level: "info",
+      message: `Execution handed off to distributed attempt ${patch.distributedAttemptId}`,
+      payload: { jobId: patch.distributedJobId, attemptId: patch.distributedAttemptId },
+    });
   }
 
   async function finalizeDistributedRunImpl(input: {

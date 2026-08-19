@@ -102,6 +102,58 @@ export type RunExecutionOwner =
   | { readonly owner: "distributed"; readonly jobId: string; readonly attemptId: string }
   | { readonly owner: "legacy"; readonly reason: LegacyOwnerReason; readonly detail?: string };
 
+/**
+ * CLI-006 (D4) — the suppression predicate. The seam reads THIS, never a
+ * re-derivation of the canary condition: Invariant 1 is that one value is
+ * computed once and every consumer reads it, so placement and suppression cannot
+ * disagree.
+ *
+ * `null`/`undefined` means no decision was made — the overwhelmingly common
+ * non-canary case, and also what a partially-deployed control plane sees. Absence
+ * reads as legacy, which is what makes the safe default structural rather than
+ * remembered (D4).
+ */
+export function shouldSuppressLegacyExecution(
+  owner: RunExecutionOwner | null | undefined,
+): boolean {
+  return owner?.owner === "distributed";
+}
+
+/**
+ * The durable handoff marker for a run whose execution transferred.
+ *
+ * Deliberately does NOT touch `status`. The attempt is the terminal authority
+ * from here on; latching a terminal at handoff time would make the projector's
+ * later terminal a no-op and throw away the distributed evidence.
+ *
+ * Throws on a legacy decision rather than returning a partial patch. The marker
+ * is what the reaper, the five cancel writers, and the projector all read to
+ * learn the attempt owns this run — writing it for a run the legacy adapter is
+ * about to execute strands that run permanently: the reaper stands down, cancel
+ * routes to a job that never terminalizes, and nothing finalizes it.
+ */
+export function buildHandoffRunPatch(
+  owner: RunExecutionOwner,
+  now: Date,
+): {
+  executionOwner: "distributed";
+  distributedJobId: string;
+  distributedAttemptId: string;
+  updatedAt: Date;
+} {
+  if (owner.owner !== "distributed") {
+    throw new Error(
+      `buildHandoffRunPatch requires a distributed owner; refusing to mark a legacy run (reason=${owner.reason})`,
+    );
+  }
+  return {
+    executionOwner: "distributed",
+    distributedJobId: owner.jobId,
+    distributedAttemptId: owner.attemptId,
+    updatedAt: now,
+  };
+}
+
 export interface RunExecutionOwnerResolver {
   resolve(input: {
     source: SubmitJobSource;
