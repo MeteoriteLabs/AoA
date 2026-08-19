@@ -145,15 +145,31 @@ interface UpdateCall {
   set: Record<string, unknown> | null;
 }
 
-function createMockDb() {
+/**
+ * @param updateWins when true, an UPDATE chain's `.returning()` resolves to a row
+ *   so `setRunStatus` reports that it WON the terminal-status race. The default is
+ *   true because that is the ordinary case; pass false to model a row that a
+ *   concurrent cancel or projection already terminalized.
+ *
+ *   This distinction only became observable with the CLI-006 R1b guard. Before it,
+ *   the reaper ran its recovery chain unconditionally, so a harness that resolved
+ *   every write to `[]` (i.e. "the write lost") still exercised the whole chain and
+ *   nothing noticed the mismatch.
+ */
+function createMockDb(updateWins = true) {
   const updateCalls: UpdateCall[] = [];
 
   function makeChain(currentUpdate?: UpdateCall): any {
     const handler: ProxyHandler<any> = {
       get(_target, prop) {
         if (prop === "then") {
-          // Thenable: resolve to [] so `.then(rows => rows[0] ?? null)` → null.
-          return (resolve: (v: unknown) => unknown) => resolve([]);
+          // Thenable. On an UPDATE chain, resolve to one row when the write is
+          // modelled as winning, so `.then(rows => rows[0] ?? null)` yields a row;
+          // otherwise [] → null (row gone or already terminal). SELECT chains keep
+          // resolving to [] — the activeRuns query is served separately by
+          // createServiceWithRuns.
+          return (resolve: (v: unknown) => unknown) =>
+            resolve(currentUpdate && updateWins ? [{ id: "run_x", companyId: "co_1", status: "failed" }] : []);
         }
         if (prop === "transaction") {
           return async (fn: (tx: unknown) => unknown) => fn(makeChain());
@@ -324,6 +340,38 @@ describe("reapOrphanedRuns — A-H6 concurrency-clamp queued runs", () => {
 
     const reaped = processLostCalls(updateCalls);
     expect(reaped.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // ── CLI-006 (R1b) — honour the terminal latch before recovering ────────────
+  //
+  // `setRunStatus` returns null whenever it did NOT win the transition: the row
+  // is gone, the flip was a no-op against a terminal row, or it fell through to
+  // the metadata-only patch. All three mean a concurrent cancel or a projection
+  // finished this run between the activeRuns select and the reaper's write.
+  //
+  // Running the recovery chain anyway fires releaseIssueExecutionAndPromote —
+  // which promotes a deferred wake into a NEW run — and marks the agent failed,
+  // against a run that just completed on its own.
+  it("skips recovery side effects when its terminal write LOST the race (R1b)", async () => {
+    const run = staleRun({ id: "run_lost_race", status: "running" });
+    const { db } = createMockDb(false); // the row was already terminal
+    const svc = createServiceWithRuns(db, [run]);
+
+    await svc.reapOrphanedRuns({ staleThresholdMs: PERIODIC_THRESHOLD });
+
+    // The prompt cancellation is the first link of the recovery chain; if the
+    // guard holds, none of the chain runs.
+    expect(cancelActiveForRunMock).not.toHaveBeenCalled();
+  });
+
+  it("DOES run recovery side effects when its terminal write won", async () => {
+    const run = staleRun({ id: "run_won_race", status: "running" });
+    const { db } = createMockDb(true);
+    const svc = createServiceWithRuns(db, [run]);
+
+    await svc.reapOrphanedRuns({ staleThresholdMs: PERIODIC_THRESHOLD });
+
+    expect(cancelActiveForRunMock).toHaveBeenCalled();
   });
 
   it("does NOT reap a `queued` run that IS in runningProcesses (periodic)", async () => {

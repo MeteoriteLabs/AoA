@@ -2479,11 +2479,26 @@ export function heartbeatService(
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
-      await setRunStatus(run.id, "failed", {
+      const reapedRun = await setRunStatus(run.id, "failed", {
         error: "Process lost -- server may have restarted",
         errorCode: "process_lost",
         finishedAt: now,
       });
+      // CLI-006 (R1b): honour the terminal latch before running the recovery chain.
+      // `setRunStatus` returns null when the row was already terminal — e.g. a
+      // concurrent cancel, or a projection, landed between the activeRuns select
+      // above and this write. Without this check the chain below still fires
+      // `releaseIssueExecutionAndPromote` (which promotes a deferred wake into a
+      // NEW run) and `finalizeAgentStatus(..., "failed")` against a run that just
+      // finished on its own. This mirrors the completion path's
+      // "lost terminal-status race; skipping side effects" guard.
+      if (!reapedRun) {
+        logger.info(
+          { runId: run.id },
+          "orphan reap lost terminal-status race; skipping recovery side effects",
+        );
+        continue;
+      }
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
         error: "Process lost -- server may have restarted",
