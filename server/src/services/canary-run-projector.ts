@@ -68,11 +68,34 @@ export interface CanaryRunProjectorDeps {
     message?: string;
     payload?: Record<string, unknown>;
   }): Promise<void>;
+  /**
+   * Write the run's terminal. Resolves `true` when this write WON the terminal
+   * latch, `false` when it lost (the row was gone, already terminal, or fell to
+   * the metadata-only fallback — `setRunStatus` returns null in all three).
+   * Losing means someone else already finalized this run.
+   */
   setRunStatus(
     runId: string,
     status: string,
     patch: Record<string, unknown>,
-  ): Promise<void>;
+  ): Promise<boolean>;
+  /**
+   * Discharge the rest of what the legacy completion path does: release the issue
+   * execution lock (so the next wake can run), reset the agent's status, and
+   * terminalize the wakeup request. A suppressed run skips all of that, so the
+   * projector must drive it — otherwise the agent stays pinned at `running`, and
+   * because `finalizeAgentStatus` recomputes from the count of running rows, the
+   * pinned row also keeps every OTHER run of that agent at `running` (R7).
+   *
+   * Optional so a deployment that has not wired the canary path composes exactly
+   * the pre-CLI-006 projector.
+   */
+  finalizeRun?(input: {
+    runId: string;
+    companyId: string;
+    outcome: CanaryAttemptOutcome;
+    errorMessage: string | null;
+  }): Promise<void>;
   postRunSummary(input: {
     companyId: string;
     issueId: string | null;
@@ -152,8 +175,17 @@ export function createCanaryRunProjector(deps: CanaryRunProjectorDeps): CanaryRu
       }
 
       // (2) The terminal — through the one shared writer, latch and all.
+      //
+      // `lostLatch` and a THROW are different failures and must behave differently.
+      // Losing the latch means someone else already finalized this run — a
+      // concurrent cancel, or a redelivered terminal — so re-finalizing would
+      // release an issue lock and reset an agent out from under whoever won, and
+      // re-posting the summary would duplicate a comment on the task. A throw is an
+      // infrastructure fault where the run is still ours to finish, so the
+      // remaining substeps proceed (best-effort, as before).
+      let lostLatch = false;
       try {
-        await deps.setRunStatus(target.runId, runStatusForOutcome(evidence.terminal.outcome), {
+        const won = await deps.setRunStatus(target.runId, runStatusForOutcome(evidence.terminal.outcome), {
           error: evidence.terminal.errorMessage,
           usageJson: {
             inputTokens: evidence.usage.inputTokens,
@@ -165,15 +197,33 @@ export function createCanaryRunProjector(deps: CanaryRunProjectorDeps): CanaryRu
             terminalErrorCode: evidence.terminal.errorCode,
           },
         });
+        lostLatch = won === false;
       } catch {
-        // Best-effort; the summary below is still worth posting.
+        // An infrastructure fault, not a race — the run is still ours to finish.
       }
 
-      // (3) The run-summary comment, via the SAME writer heartbeat and crew use, so
+      // (3) Finalize the rest of what the legacy completion path does: release the
+      // issue execution lock, reset the agent's status, terminalize the wakeup.
+      // Skipped when the latch was lost — whoever won already did this, and
+      // repeating it would release a lock and reset an agent out from under them.
+      if (!lostLatch && deps.finalizeRun) {
+        try {
+          await deps.finalizeRun({
+            runId: target.runId,
+            companyId: target.companyId,
+            outcome: evidence.terminal.outcome,
+            errorMessage: evidence.terminal.errorMessage,
+          });
+        } catch {
+          // Best-effort; the summary below is still worth posting.
+        }
+      }
+
+      // (4) The run-summary comment, via the SAME writer heartbeat and crew use, so
       // the format and the `autoRunSummary` opt-out live in one place. Skipped with
       // no issue — there is nothing to comment on — while the run terminal above is
       // deliberately NOT issue-gated.
-      if (!target.issueId) return;
+      if (lostLatch || !target.issueId) return;
       try {
         await deps.postRunSummary({
           companyId: target.companyId,

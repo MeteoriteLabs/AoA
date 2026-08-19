@@ -44,8 +44,9 @@ function evidence(overrides: Partial<CanaryAttemptEvidence> = {}): CanaryAttempt
 function deps(overrides: Partial<CanaryRunProjectorDeps> = {}): CanaryRunProjectorDeps {
   return {
     appendRunEvent: vi.fn(async () => {}),
-    setRunStatus: vi.fn(async () => {}),
+    setRunStatus: vi.fn(async () => true),
     postRunSummary: vi.fn(async () => ({ posted: true })),
+    finalizeRun: vi.fn(async () => {}),
     ...overrides,
   };
 }
@@ -190,6 +191,71 @@ describe("CLI-006 D5 — canary run projector", () => {
     const d = deps();
     await createCanaryRunProjector(d).projectTerminal({ target, evidence: evidence() });
     expect(d.setRunStatus).toHaveBeenCalledTimes(1);
+  });
+
+  // ── R7 — the run terminal is not the whole finalization ───────────────────
+  //
+  // The legacy completion path does far more than write a status: it releases the
+  // issue execution lock (so the next wake can run), resets the agent's status, and
+  // terminalizes the wakeup request. A suppressed run skips all of it, so the
+  // projector must drive it instead. Without this the agent stays pinned at
+  // `running` — and since `finalizeAgentStatus` recomputes from the count of
+  // running rows, the pinned row also keeps EVERY other run of that agent at
+  // `running`. At the default per-agent concurrency of 1, the agent accepts no
+  // further work for the attempt's lifetime.
+  it("finalizes the run — issue lock, agent status, wakeup — after the terminal", async () => {
+    const d = deps();
+    await createCanaryRunProjector(d).projectTerminal({ target, evidence: evidence() });
+    expect(d.finalizeRun).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: RUN, outcome: "succeeded" }),
+    );
+  });
+
+  it.each(["failed", "cancelled", "timed_out"] as const)(
+    "finalizes on the `%s` terminal too",
+    async (outcome) => {
+      const d = deps();
+      await createCanaryRunProjector(d).projectTerminal({
+        target,
+        evidence: evidence({ terminal: { outcome, errorCode: null, errorMessage: null } }),
+      });
+      expect(d.finalizeRun).toHaveBeenCalledWith(expect.objectContaining({ outcome }));
+    },
+  );
+
+  // Losing the latch and throwing are DIFFERENT failures and must behave
+  // differently. Losing means someone else already finalized this run — a
+  // concurrent cancel, or a redelivered terminal — so re-finalizing would release
+  // an issue lock and reset an agent out from under whoever won. Throwing is an
+  // infrastructure fault where the run is still ours to finish.
+  it("does NOT finalize or summarize when the terminal write LOST the latch", async () => {
+    const d = deps({ setRunStatus: vi.fn(async () => false) });
+    await createCanaryRunProjector(d).projectTerminal({ target, evidence: evidence() });
+    expect(d.finalizeRun).not.toHaveBeenCalled();
+    expect(d.postRunSummary).not.toHaveBeenCalled();
+  });
+
+  it("still finalizes when the terminal write THREW (infrastructure fault, not a race)", async () => {
+    const d = deps({
+      setRunStatus: vi.fn(async () => {
+        throw new Error("status down");
+      }),
+    });
+    await createCanaryRunProjector(d).projectTerminal({ target, evidence: evidence() });
+    expect(d.finalizeRun).toHaveBeenCalled();
+  });
+
+  it("never throws when finalization fails", async () => {
+    const d = deps({
+      finalizeRun: vi.fn(async () => {
+        throw new Error("finalize down");
+      }),
+    });
+    await expect(
+      createCanaryRunProjector(d).projectTerminal({ target, evidence: evidence() }),
+    ).resolves.toBeUndefined();
+    // and the summary still posts
+    expect(d.postRunSummary).toHaveBeenCalled();
   });
 
   it("skips the summary comment when there is no issue (nothing to comment on)", async () => {
