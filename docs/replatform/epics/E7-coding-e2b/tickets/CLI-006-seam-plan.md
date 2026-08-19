@@ -187,11 +187,40 @@ The port is genuinely needed, because `requestCancellation` lives on `createJobR
 
 **(3) The unset-port fail-safe is a real decision, not a default.** A marked run can only exist because the seam ran, which requires distributed execution enabled — but a control-plane **restart with the flag off** leaves marked runs behind and no port. Refusing to write a terminal then strands them forever; falling through to the legacy cancel converges, because with the subsystem disabled no worker will ever terminalize that attempt. **Fall through to the legacy cancel, and log loudly.** The cost is losing distributed evidence for a run the operator has already disabled the subsystem for; the alternative is an unkillable run. This is the opposite direction from the seam's own fail-safe and that asymmetry is deliberate: suppression must never strand a run, and cancel must never leave one unkillable.
 
-- [ ] **Step 1: Write the failing test** — for each of the five writers, with a distributed-marked run, assert `requestCancellation` is called with the stored `jobId` and the heartbeat side does NOT write a terminal status.
-- [ ] **Step 2: Run it, expect FAIL** on all five.
-- [ ] **Step 3: Route each writer** — on `execution_owner === "distributed"`, call the fence-revoking `requestCancellation` and leave terminalization to the projector.
-- [ ] **Step 4: Run tests + typecheck.**
-- [ ] **Step 5: Commit.**
+### Part 1 — LANDED (`e7cfae545`)
+
+`server/src/services/distributed-cancellation-port.ts`: `resolveCancelRoute` + the module-level port. Inert — nothing calls the resolver and nothing registers the port. 9 tests; all three guards mutation-proven (owner check, port check, job-id check each removed in turn → RED).
+
+### Part 2 — the four heartbeat writers, the bulk writer, and one more decision
+
+All four heartbeat writers share one shape: `setRunStatus(…, "cancelled")` → `setWakeupStatus` → `cancelRuntimeDecisionPromptsForRun` → kill the local process → release the issue. For a distributed-owned run the first two must not happen (the projector owns the terminal); the runtime-decision cancel still should.
+
+| Writer | Location | Shape |
+|---|---|---|
+| `cancelRun` | `heartbeat.ts:7039` | single run, **throws to an HTTP caller** |
+| `cancelActiveForAgent` | `:7087` | loop over an agent's runs |
+| `cancelBudgetScopeWork` (agent scope) | `:7135` | loop, budget hard-stop |
+| `cancelBudgetScopeWork` (company scope) | `:7172` | loop, budget hard-stop |
+| task-ineligible bulk | `services/issues.ts:176-187` | **one `tx.update` over `activeRunIds`** |
+
+**4-D1 — a THROWING port is not the same failure as a MISSING one, and must not share its fail-safe.**
+
+Part 1 established that a missing port falls through to the legacy write, because with the subsystem disabled no worker will ever terminalize that attempt, so the legacy write is the only convergent outcome. **That reasoning does not transfer to a port that throws.** There the subsystem is enabled and the worker is *live*: writing `cancelled` locally would claim a stop that did not happen, latch the run, and cause the projector to discard the attempt's real terminal when it arrives. The run would read cancelled in the UI while the sandbox kept burning budget.
+
+So on a port throw: **never write a terminal.** Then split by caller, because the callers have genuinely different obligations:
+
+- **`cancelRun` — propagate.** It answers an HTTP request. An operator who asked to cancel must be told it failed rather than shown a false success; retry is theirs to make.
+- **The three loops and the bulk writer — log and skip that run, continue the batch.** One unreachable attempt must not abort a company-wide budget hard-stop for every other run. The skipped run stays `running` and is revisited by the next sweep.
+
+**4-D2 — the bulk writer partitions, it does not branch.** `services/issues.ts:176-187` updates every id in `activeRunIds` in a single statement inside a transaction that also nulls `issues.executionRunId`. The fix is to partition `activeRunIds` by `execution_owner` and narrow the `tx.update` to the legacy subset; the distributed subset is routed after the transaction commits, because `requestCancellation` runs under `runInTenant` on a different pool and must not be entangled with this transaction's lifetime. Note the issue-lock release must still cover both subsets — a distributed run whose task became ineligible still has to give the lock back.
+
+- [ ] **Step 1: failing tests** — per writer, with a distributed-marked run: assert `requestCancellation` is called with the stored `jobId` and NO terminal status is written. Plus the 4-D1 matrix: port throw → no terminal, `cancelRun` propagates, loops continue.
+- [ ] **Step 2: Run, expect FAIL on all five.**
+- [ ] **Step 3: route the four heartbeat writers** through one private helper over `resolveCancelRoute`.
+- [ ] **Step 4: partition the bulk writer** per 4-D2.
+- [ ] **Step 5: register the port** in `index.ts`'s distributed block.
+- [ ] **Step 6: mutation-check** — the terminal-suppression on the distributed branch removed must go RED.
+- [ ] **Step 7: Commit.**
 
 ---
 
