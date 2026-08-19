@@ -62,6 +62,12 @@ jobs:
         run: |
           pnpm --filter @armyofagents/worker-protocol build
           pnpm --filter @armyofagents/worker-daemon build
+          # sandbox-provider-contract's tsconfig `files`-includes port-conformance.test.ts
+          # (a compile-time port-conformance assertion) which imports the
+          # @armyofagents/sandbox-fake-provider devDep — so its dist must exist before
+          # the contract's `tsc` runs, else TS2307 + cascading TS2344. The full `verify`
+          # gate builds everything, so this only bites the selective keyed-lane build.
+          pnpm --filter @armyofagents/sandbox-fake-provider build
           pnpm --filter @armyofagents/sandbox-provider-contract build
 
       - name: Run keyed real-E2B conformance
