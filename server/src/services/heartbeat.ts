@@ -6598,6 +6598,56 @@ export function heartbeatService(
 
     getRun,
 
+    /**
+     * CLI-006 — discharge, for a run whose execution was owned by a distributed
+     * attempt, the finalization the legacy completion path would have done. The
+     * projector calls this after it wins the terminal latch.
+     *
+     * These three effects live in closures over `heartbeatService`'s `db` and are
+     * not otherwise reachable, which is why the capability is exposed here rather
+     * than assembled in the composition root:
+     *
+     *   - `releaseIssueExecutionAndPromote` — release the issue execution lock and
+     *     promote any deferred wake, so the next run for that issue can proceed.
+     *   - `finalizeAgentStatus` — recompute the agent's status. Without it the
+     *     agent pins at `running`, and since the recompute counts running rows,
+     *     the pinned row also holds every OTHER run of that agent at `running`.
+     *   - `setWakeupStatus` — terminalize the originating wakeup request.
+     *
+     * The caller owns the latch check: this runs ONLY when the terminal write won,
+     * so it can never release a lock or reset an agent out from under whoever did.
+     * Best-effort per substep and never throws — a stranded finalization is
+     * recoverable, and this is invoked from an after-commit projection hook whose
+     * failure must not cost the worker's ACK.
+     */
+    async finalizeDistributedRun(input: {
+      runId: string;
+      outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+      errorMessage: string | null;
+    }): Promise<void> {
+      const run = await getRun(input.runId);
+      if (!run) return;
+      const wakeupStatus = input.outcome === "succeeded" ? "completed" : input.outcome;
+      try {
+        await setWakeupStatus(run.wakeupRequestId, wakeupStatus, {
+          finishedAt: new Date(),
+          error: input.errorMessage,
+        });
+      } catch (err) {
+        logger.warn({ err, runId: run.id }, "[CLI-006] distributed finalize: wakeup status failed");
+      }
+      try {
+        await releaseIssueExecutionAndPromote(run);
+      } catch (err) {
+        logger.warn({ err, runId: run.id }, "[CLI-006] distributed finalize: issue release failed");
+      }
+      try {
+        await finalizeAgentStatus(run.agentId, input.outcome);
+      } catch (err) {
+        logger.warn({ err, runId: run.id }, "[CLI-006] distributed finalize: agent status failed");
+      }
+    },
+
     scheduleBoundedRetryForRun,
 
     promoteDueScheduledRetries,

@@ -374,6 +374,37 @@ describe("reapOrphanedRuns — A-H6 concurrency-clamp queued runs", () => {
     expect(cancelActiveForRunMock).toHaveBeenCalled();
   });
 
+  // ── CLI-006 — finalizeDistributedRun ──────────────────────────────────────
+  //
+  // The projector wins the terminal latch, then calls this to discharge the rest
+  // of what the legacy completion path would have done. It must never throw: it
+  // is invoked from an after-commit projection hook whose failure must not cost
+  // the worker's ACK.
+  it("finalizeDistributedRun is a no-op for an unknown run", async () => {
+    const { db, updateCalls } = createMockDb();
+    const svc = createServiceWithRuns(db, []);
+    await expect(
+      svc.finalizeDistributedRun({ runId: "missing", outcome: "succeeded", errorMessage: null }),
+    ).resolves.toBeUndefined();
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it("finalizeDistributedRun never throws when a substep fails", async () => {
+    const run = staleRun({ id: "run_finalize", status: "running", executionOwner: "distributed" });
+    // A db whose every write rejects — each substep must be caught independently.
+    const throwingDb: any = new Proxy(function () {}, {
+      get(_t, prop) {
+        if (prop === "then") return undefined;
+        if (prop === "transaction") return async () => { throw new Error("db down"); };
+        return () => throwingDb;
+      },
+    });
+    const svc = createServiceWithRuns(throwingDb, [run]);
+    await expect(
+      svc.finalizeDistributedRun({ runId: run.id as string, outcome: "failed", errorMessage: "boom" }),
+    ).resolves.toBeUndefined();
+  });
+
   it("does NOT reap a `queued` run that IS in runningProcesses (periodic)", async () => {
     const run = staleRun({ id: "run_queued_live", status: "queued" });
     runningProcesses.set(run.id, { fake: true });
