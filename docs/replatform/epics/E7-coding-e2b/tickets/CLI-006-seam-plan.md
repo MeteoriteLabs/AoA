@@ -85,18 +85,45 @@ Composed `ownerResolver` from the shared rollout source, the MIG-008 preflight o
 - Modify: `server/src/index.ts` — build the callback
 - Test: `server/src/__tests__/cli-006-projector-wiring.test.ts` (create)
 
-**Composition-ordering problem to solve first, before any code.** `createJobEventIngestService` is composed in `worker-control.ts:98` (reached via `app.ts:447`), not at the composition root, so the callback threads three hops. Worse, the callback needs `heartbeat.finalizeDistributedRun`, and `heartbeatService` is constructed inside a *different* conditional (`if (config.heartbeatSchedulerEnabled)`) from the distributed block (`if (config.distributedExecutionEnabled && distributedExecutionDatabases)`). **Those two conditions are independent: a deployment can enable one without the other.**
+**Composition-ordering problem — RESOLVED. Decision below, written before any code.**
 
-Decide explicitly, and write the decision into the plan before implementing:
-- What the callback does when distributed execution is on but the heartbeat scheduler is off (no `finalizeDistributedRun` available). Fail-closed answer: project the terminal and the summary, skip finalization, and log — never silently drop.
-- Whether the callback is built lazily (resolved at call time) or eagerly (requires reordering the two blocks).
+### Terrain, re-verified in `C:\e3` at `dba9d0abf` (not inherited)
 
-- [ ] **Step 1: Write the ordering decision into this task**, then the failing test asserting a terminal signal reaches `projectTerminal` with the run resolved by `distributed_job_id`/`distributed_attempt_id`.
+1. **The ordering constraint is stronger than this plan first stated.** `createApp` is called at `index.ts:846` — *before* both the distributed block (`:1055`) and the heartbeat block (`:1146`). So the problem is not merely that the two conditionals are independent; **neither one has run yet** when `createApp` composes `workerControlRoutes` → `createJobEventIngestService`. An eager callback referencing either block's locals is impossible, not just awkward.
+2. **`server.listen` is at `:1870`**, after all composition. A lazy mutable holder would therefore be *observably* safe — no HTTP request can arrive before every block has run. That is exactly why it is the wrong answer: it would make correctness rest on a startup ordering invariant that nothing enforces and no test can see.
+3. **`heartbeatService` (`heartbeat.ts:1435`) is a plain factory, not a singleton**, and `finalizeDistributedRun` (`:6623`) closes over only `db`-derived helpers — `getRun`, `setWakeupStatus`, `releaseIssueExecutionAndPromote`, `finalizeAgentStatus`. It touches neither the scheduler nor the `distributedRollout` option. `index.ts:1770` already constructs a second unconditional instance today (`runtimeDecisionTimeoutHeartbeat`), so a further construction is established practice — but the factory calls the module-global `setSecretResolver` (`:1453`), so construction is not side-effect-free.
+
+### 2b-D1 — Eager and self-contained: the callback owns its dependency graph
+
+The callback is composed **immediately before `createApp`**, from `db` and `distributedExecutionDatabases.appDb` — both already in scope at `:562`. It never reaches into the `:1055` or `:1146` block. No holder, no reordering of existing blocks, no late binding.
+
+`finalizeDistributedRun` comes from a **lazily-constructed, memoized** `heartbeatService(db)` created inside the callback on first use. Lazy because the factory mutates a module global; a deployment that never canaries should not pay a third `setSecretResolver` registration at startup. Memoized so repeated terminals construct once.
+
+**This dissolves the question the plan asked rather than answering it.** There is no "distributed on, scheduler off" degraded mode to fail closed against, because the capability was never sourced from the scheduler's instance. The proposed fallback — project terminal and summary, skip finalization, log — becomes unreachable by construction. That is strictly better than a branch: consistent with D3's "structurally hard, not merely tested-against", and it removes a partial-deployment path in which an agent pins at `running` and, because `finalizeAgentStatus` recomputes from the count of running rows, drags every other run of that agent with it (R7).
+
+### 2b-D2 — `expired` → `timed_out` is a real vocabulary break, and the whole reason the fold is a named pure function
+
+The signal carries `terminalStatus: TerminalEventStatus`, whose protocol vocabulary is **`succeeded | failed | cancelled | expired`** (`packages/worker-protocol/src/events.ts:320`). The projector consumes `CanaryAttemptOutcome` = **`succeeded | failed | cancelled | timed_out`** (`canary-run-projector.ts:23`). The sets differ in both directions.
+
+`runStatusForOutcome` (`canary-run-projector.ts:125`) is an exhaustive switch with **no `default`**. It compiles only because its parameter type excludes `expired`; a cast at the boundary would return `undefined` at runtime and write a run status of `undefined`. This is the same shape as the `succeeded` ≠ `"completed"` defect already fixed in `089ee34ab` — a vocabulary crossing that typechecks clean and fails silently. It gets an explicit total mapping and a test per member, not a cast.
+
+### 2b-D3 — `costUsd` is null by protocol, not by omission
+
+`usagePayloadV1Schema` (`events.ts:82`) is `.strict()` over `inputTokens` / `outputTokens` / `cachedInputTokens` / `runtimeMillis` and deliberately rejects every pricing field. So the folded evidence carries `costUsd: null` and `durationMs` from `runtimeMillis`. `detectedFiles` is `[]`: `artifact_prepared` (`:294`) carries `artifactId` + `kind`, never a path — the same honest `[]` the W3a crew loopback ships.
+
+### Shape
+
+A new `server/src/services/canary-terminal-projection.ts` holding two pieces, so the logic is testable without the composition root:
+- `foldAttemptEvidence(rows, terminalStatus)` — **pure**; `job_events` rows → `CanaryAttemptEvidence`, including the 2b-D2 mapping, sequence ordering, and `eventId` dedupe.
+- `createAttemptTerminalProjectionHandler(deps)` — resolve the run by `(distributedJobId, distributedAttemptId)` **and** `executionOwner = "distributed"`, read the attempt's events under `runInTenant`, fold, project. No matching run → return silently: that is a non-canary attempt, or one whose run fell back to legacy.
+
+- [ ] **Step 1: Write the ordering decision into this task** (done, above), then the failing test asserting a terminal signal reaches `projectTerminal` with the run resolved by `distributed_job_id`/`distributed_attempt_id`.
 - [ ] **Step 2: Run it, expect FAIL.**
-- [ ] **Step 3: Add `onAttemptTerminal` to `workerControlRoutes` opts and pass it to `createJobEventIngestService`.**
-- [ ] **Step 4: Thread through `app.ts` opts.**
-- [ ] **Step 5: Build the callback in `index.ts`** — resolve the run by the marker columns, construct the projector with `finalizeRun` per the ordering decision.
-- [ ] **Step 6: Run tests + typecheck. Commit.**
+- [ ] **Step 3: Build `canary-terminal-projection.ts`** — pure fold + handler.
+- [ ] **Step 4: Add `onAttemptTerminal` to `workerControlRoutes` opts and pass it to `createJobEventIngestService`; thread through `app.ts` opts.**
+- [ ] **Step 5: Compose the callback in `index.ts` before `createApp`**, per 2b-D1.
+- [ ] **Step 6: Mutation-check** — the `executionOwner` predicate and the `expired` mapping each removed in turn; the suite must go RED for both.
+- [ ] **Step 7: Run tests + typecheck. Commit.**
 
 ---
 
