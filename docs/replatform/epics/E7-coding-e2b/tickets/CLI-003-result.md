@@ -1,6 +1,6 @@
 # CLI-003 Result — Logs, cancellation, usage, and result collection
 
-**Status:** `complete (no-key core) + keyed-lane authored` — the no-key core is green (worker-daemon + sandbox-e2b-provider suites); the real-E2B success/cancellation/forced-timeout/lost-ACK cases ride the operator-dispatched `keyed-e2b-conformance.yml`.
+**Status:** `complete (no-key core) + CI-GREEN + keyed-lane authored` — the no-key core is green in the PR gate suite at landed SHA `13f8cbaed` (verify runs the worker-daemon + sandbox-e2b-provider units; ci-required success). The real-E2B success/cancellation/forced-timeout/lost-ACK cases ride the operator-dispatched `keyed-e2b-conformance.yml`.
 **Disposition:** `pass` (scope-honest: in-process/mocked evidence for the no-key core; the real-E2B rerun runs on operator key). **Third ticket of E7.**
 **Date opened (UTC):** `2026-08-17`
 **Epic:** `E7 — Coding/CLI workload on E2B`. **Plan task:** `CLI-003 (program-design.md:769-774)`.
