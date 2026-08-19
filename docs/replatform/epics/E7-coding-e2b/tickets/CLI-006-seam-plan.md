@@ -64,20 +64,39 @@ That exclusion is load-bearing because the check that would otherwise catch misr
 
 - [x] Implementation + 8 tests locking the nulls, byte-stability, key-set stability, and copy-on-return.
 
-## Task 2: Compose the canary path in the composition root
+## Task 2a: Compose the canary ownership path — DONE
+
+**Files:** Modify `server/src/index.ts:1055-1101`; test `server/src/__tests__/cli-006-run-execution-owner.test.ts`.
+
+Composed `ownerResolver` from the shared rollout source, the MIG-008 preflight over its delegating store, the existing convert orchestrator, and the placement SERVICE with the null credential binding. `deploymentEnabled` uses the already-resolved `config.distributedExecutionEnabled`, not a second `process.env` read — two reads of the gate can disagree after a reload.
+
+**The placement adapter is extracted as a named, tested `toRunExecutionPlacement` because the compiler cannot guard it.** `JobPlacementServiceInput` requires `now` and `maxHeartbeatAgeMs`, which `RunExecutionPlacement.place` does not supply; since `place` uses method-shorthand syntax, TypeScript's parameter bivariance lets `placement: placementService` compile clean — **verified by mutating the real composition root and running `tsc` (exit 0)**. At runtime that hands `decideJobPlacement` `now: undefined`, failing its `now instanceof Date` check → `invalid_placement_input` → every canary transfer silently falls back to legacy, with no type error and no failing test.
+
+- [x] Composition + 4 adapter tests (22 total in that file). Commit `f569a9985`.
+
+---
+
+## Task 2b: Wire the projector into the ingest hook
 
 **Files:**
-- Modify: `server/src/index.ts:1073-1101`
-- Test: `server/src/__tests__/cli-006-composition.test.ts` (create)
+- Modify: `server/src/services/job-events.ts` — already accepts `onAttemptTerminal` (landed `ddaa29b78`)
+- Modify: `server/src/routes/worker-control.ts:74-98` — add `onAttemptTerminal` to opts, pass to `createJobEventIngestService`
+- Modify: `server/src/app.ts:446-454` — thread it through
+- Modify: `server/src/index.ts` — build the callback
+- Test: `server/src/__tests__/cli-006-projector-wiring.test.ts` (create)
 
-Depends on Task 1.
+**Composition-ordering problem to solve first, before any code.** `createJobEventIngestService` is composed in `worker-control.ts:98` (reached via `app.ts:447`), not at the composition root, so the callback threads three hops. Worse, the callback needs `heartbeat.finalizeDistributedRun`, and `heartbeatService` is constructed inside a *different* conditional (`if (config.heartbeatSchedulerEnabled)`) from the distributed block (`if (config.distributedExecutionEnabled && distributedExecutionDatabases)`). **Those two conditions are independent: a deployment can enable one without the other.**
 
-- [ ] **Step 1: Write the failing test** — assert the composed hook resolves a non-canary org to legacy without touching preflight or placement, and that an unwired `ownerResolver` yields `{owner:"legacy"}`.
-- [ ] **Step 2: Run it, expect FAIL** (`ownerResolver` not composed).
-- [ ] **Step 3: Compose** `ownerResolver: createRunExecutionOwnerResolver({...})` with the rollout-source wrap, `createCanaryPreflight({ store: createDrizzleCanaryPreflightStore(appDb) })`, the existing `createJobConvertOrchestrator({ bridge })`, and `createJobPlacementService` using the Task 1 resolver.
-- [ ] **Step 4: Wire the projector** — pass `onAttemptTerminal` to `createJobEventIngestService`, resolving the run by `distributed_job_id`/`distributed_attempt_id` and calling `projectTerminal` with `finalizeRun: heartbeat.finalizeDistributedRun`.
-- [ ] **Step 5: Run tests + typecheck.**
-- [ ] **Step 6: Commit.**
+Decide explicitly, and write the decision into the plan before implementing:
+- What the callback does when distributed execution is on but the heartbeat scheduler is off (no `finalizeDistributedRun` available). Fail-closed answer: project the terminal and the summary, skip finalization, and log — never silently drop.
+- Whether the callback is built lazily (resolved at call time) or eagerly (requires reordering the two blocks).
+
+- [ ] **Step 1: Write the ordering decision into this task**, then the failing test asserting a terminal signal reaches `projectTerminal` with the run resolved by `distributed_job_id`/`distributed_attempt_id`.
+- [ ] **Step 2: Run it, expect FAIL.**
+- [ ] **Step 3: Add `onAttemptTerminal` to `workerControlRoutes` opts and pass it to `createJobEventIngestService`.**
+- [ ] **Step 4: Thread through `app.ts` opts.**
+- [ ] **Step 5: Build the callback in `index.ts`** — resolve the run by the marker columns, construct the projector with `finalizeRun` per the ordering decision.
+- [ ] **Step 6: Run tests + typecheck. Commit.**
 
 ---
 
