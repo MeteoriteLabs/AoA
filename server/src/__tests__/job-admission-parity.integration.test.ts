@@ -168,6 +168,58 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(afterReplay.started_at).toEqual(afterFirst.started_at);
     });
 
+    // CLI-006 (D3a) — the canary path submits LATE, after the HARNESS has already
+    // checked the run out (the immutable envelope carries the run's context as
+    // artifacts, so it cannot be built at the CLI-005 seam). Re-driving checkout
+    // here would reset `started_at` and re-broadcast, checking the run out twice —
+    // the Invariant 3 break CLI-005's review caught for active mode.
+    it("[2b] skips checkout when THIS run already owns it (CLI-006 late submit)", async () => {
+      guard();
+      const run = randomUUID();
+      const issue = randomUUID();
+      await seedRun(run, AGENT_A);
+      // Exactly the state the harness checkout leaves behind.
+      await seedIssue({
+        id: issue,
+        status: "in_progress",
+        assigneeAgentId: AGENT_A,
+        checkoutRunId: run,
+        executionRunId: run,
+      });
+      const before = await issueRow(issue);
+      const source = { kind: "task_run", runId: run, issueId: issue, assigneeAgentId: AGENT_A } as const;
+
+      const response = await bridge().admitAndSubmit(source, userActor, "parity-late-submit");
+      expect(response.replayed).toBe(false);
+      expect(response.jobId).toBeTruthy();
+
+      const after = await issueRow(issue);
+      // The single load-bearing assertion: no second checkout. `checkout` sets
+      // started_at to now unconditionally, so a stable value proves it did not fire.
+      expect(after.started_at).toEqual(before.started_at);
+      expect(after.checkout_run_id).toBe(run);
+      expect(after.execution_run_id).toBe(run);
+    });
+
+    // The bypass must never ADMIT something admission would reject: it is gated on
+    // the same predicate `submitJobWithinTenant` admits on, so a run that does NOT
+    // own the checkout still goes through the real checkout engine and its gates.
+    it("[2c] still drives checkout for a run that does NOT already own it", async () => {
+      guard();
+      const run = randomUUID();
+      const issue = randomUUID();
+      await seedRun(run, AGENT_A);
+      await seedIssue({ id: issue, status: "todo" });
+      const source = { kind: "task_run", runId: run, issueId: issue, assigneeAgentId: AGENT_A } as const;
+
+      await bridge().admitAndSubmit(source, userActor, "parity-not-owned");
+
+      const after = await issueRow(issue);
+      expect(after.checkout_run_id).toBe(run);
+      expect(after.execution_run_id).toBe(run);
+      expect(after.status).toBe("in_progress");
+    });
+
     it("[3] adopts a bounded stale checkout run (terminal/missing prior run)", async () => {
       guard();
       const oldRun = randomUUID(); // intentionally NOT seeded → missing → stale

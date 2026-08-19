@@ -290,13 +290,37 @@ export function jobAdmissionBridge(
           // is untouched (parity); this only makes the bridge honor its own idempotencyKey.
           const replay = await findIdempotentReplay(repos, request);
           if (replay) return replay;
-          await issueService(tx).checkout(
-            source.issueId,
-            source.assigneeAgentId,
-            [...TASK_RUN_CHECKOUT_STATUSES],
-            source.runId,
-            { deferPublish: (publish) => afterCommit.push(publish) },
-          );
+          // CLI-006 (D3a): the canary path submits LATE — after the run's context
+          // exists, because the immutable envelope carries it as artifacts — by
+          // which point the HARNESS has already checked this run out. Re-driving
+          // checkout here would reset `issues.startedAt` and re-broadcast
+          // `issue.status_changed`, checking the run out twice (Invariant 3, the
+          // break CLI-005's review caught for active mode).
+          //
+          // `taskSourceIsAdmitted` tests exactly the two columns a checkout
+          // establishes — `checkoutRunId === runId && executionRunId === runId` —
+          // so a passing probe means the checkout this bridge would perform has
+          // already been performed, by this same run, and is safe to skip. It is
+          // deliberately the SAME predicate `submitJobWithinTenant` admits on, so
+          // the bypass can never admit something admission would reject.
+          //
+          // Active mode (CLI-005) is unaffected: there the harness SUPPRESSES its
+          // checkout, so the probe fails and the bridge checks out as before.
+          const checkoutAlreadyOwnedByThisRun = await repos.jobControl.taskSourceIsAdmitted({
+            companyId,
+            issueId: source.issueId,
+            assigneeAgentId: source.assigneeAgentId,
+            runId: source.runId,
+          });
+          if (!checkoutAlreadyOwnedByThisRun) {
+            await issueService(tx).checkout(
+              source.issueId,
+              source.assigneeAgentId,
+              [...TASK_RUN_CHECKOUT_STATUSES],
+              source.runId,
+              { deferPublish: (publish) => afterCommit.push(publish) },
+            );
+          }
         }
 
         // (2) Admission + per-source authority + immutable submission, in the SAME tx.
