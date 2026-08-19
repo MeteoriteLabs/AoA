@@ -42,16 +42,27 @@ These tasks are **complete and pushed**; they are listed so the plan reads as a 
 
 ---
 
-## Task 1: Credential binding resolver
+## Task 1: Credential binding resolver — DONE
 
-**Blocked pending the credential-binding terrain map** (workflow `wf_a79c4b7e-ba8`). The map decides whether a resolver can be safely composed at all, or whether CLI-006 must bind only to an already-authorised credential path. Task steps are written once that returns — writing them now would be the placeholder this skill forbids.
+**Files:**
+- Create: `server/src/services/canary-credential-binding.ts`
+- Test: `server/src/__tests__/cli-006-canary-credential-binding.test.ts`
 
-Two constraints are already fixed regardless of the outcome:
+**Outcome: compose a constant, non-asserting binding (four explicit nulls). REFUSE any credential-derived resolver.**
 
-- It must **reuse** MIG-008's authority (`deriveE2bKeyGeneration` and whatever function already answers "which credential does this company's execution use"), never re-implement it. A parallel implementation is how CLI-002's memory bundle drifted from the crew lineage and dropped a security predicate.
-- It must **fail closed**: no credential, a superseded key generation, or an unresolvable Organization all resolve to *no binding*, which must make placement refuse rather than place with a default.
+The adversarial map established that a credential-derived resolver is not merely risky here, it is not constructible. `resolveCredentialBinding` receives four fields (`job-placement.ts:398-403`); `resolveProviderCredential` needs nine (`provider-resolution.ts:155-165`). Three of the six missing ones cannot be threaded:
 
----
+- **`currentEnv` is an ordering impossibility.** The heartbeat computes `resolvedEnv` at `heartbeat.ts:3378` and `hbProviderId` at `:3430` — 140+ and 190+ lines AFTER the convert/place seam that reaches this resolver. A resolver here would have to re-derive the run's own credential decision from inputs that do not exist yet, producing two decisions per run that can disagree.
+- **`executionTargetId` is circular.** `chooseGovernedSubscriptionBinding` validates against an expected target; placement is what chooses one.
+- **`agentId` is not on the job.** Reachable only through `jobs.executorPrincipalId`, which is overloaded (`{kind:"worker", id: agentId}` for task_run, an opaque operationId for one_shot).
+
+**Verified independently before accepting:** `requestedTarget: null` is hardcoded on every submitted job (`job-submission.ts:134-138`), and `TARGET_KIND_BY_CLASS` maps `owner_desktop` to `{desktop, local_host}` only while `pooled_gvisor` sits under `managed_cloud` (`execution-target-resolver.ts:52-55`). With four nulls the pin is null, routing falls to the `pooled_gvisor` branch (`:195`), and **no reachable path reaches an `owner_desktop` target** — the DE-29 owner-misrouting class is structurally excluded.
+
+That exclusion is load-bearing because the check that would otherwise catch misrouting is **tautological**: `credentialOwnerId` is read off the routed target's profile (`job-placement.ts:279-281`) and `requiredOwnerPrincipalId` off the same profile (`:289`), so `candidateFits` compares a value to itself (`:548-555`).
+
+**Do not enrich this binding.** A rotating value (a key generation, a freshly-read credential row) is hashed into `placementInputDigest`/`placementPolicyDigest`; a digest that changes between first placement and a retry throws `placement_already_decided` → `transfer_error` → that run falls back to legacy permanently. Credential-generation freshness belongs to the preflight, which already owns it.
+
+- [x] Implementation + 8 tests locking the nulls, byte-stability, key-set stability, and copy-on-return.
 
 ## Task 2: Compose the canary path in the composition root
 
