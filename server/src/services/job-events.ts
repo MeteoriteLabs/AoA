@@ -78,9 +78,62 @@ function toAcceptInputs(batch: WorkerEventBatchV1): AcceptEventInput[] {
   });
 }
 
+/**
+ * CLI-006: identity of an attempt that just reached a durable terminal state.
+ * Handed to the after-commit projection hook so a canary-owned heartbeat run can
+ * be finalized from the attempt's evidence.
+ */
+export interface AttemptTerminalSignal {
+  readonly organizationId: string;
+  readonly companyId: string;
+  readonly jobId: string;
+  readonly attemptId: string;
+  readonly terminalStatus: TerminalEventStatus;
+}
+
+/**
+ * CLI-006 — decide whether THIS ingest just terminalized the attempt.
+ *
+ * Pure, and deliberately narrow. Two distinctions matter:
+ *
+ *  - A batch carries a terminal event only when one of its accept inputs has a
+ *    non-null `terminalStatus` (set in `toAcceptInputs` for `eventType==="terminal"`).
+ *  - `status === "terminal"` in the ACK does NOT mean "just became terminal". It is
+ *    the fence guard reporting the attempt was ALREADY terminal and refusing the
+ *    append BEFORE touching any row. Projecting on that would re-fire the terminal
+ *    projection on every late retry of an already-finished attempt.
+ *
+ * So the signal is: the batch contained a terminal event AND the append was accepted.
+ */
+export function resolveAttemptTerminalSignal(input: {
+  acceptInputs: readonly AcceptEventInput[];
+  ackStatus: "accepted" | "gap" | "hash_mismatch" | "stale_fence" | "terminal";
+  identity: { organizationId: string; companyId: string; jobId: string; attemptId: string };
+}): AttemptTerminalSignal | null {
+  if (input.ackStatus !== "accepted") return null;
+  const terminal = input.acceptInputs.find((event) => event.terminalStatus != null);
+  if (!terminal || terminal.terminalStatus == null) return null;
+  return {
+    organizationId: input.identity.organizationId,
+    companyId: input.identity.companyId,
+    jobId: input.identity.jobId,
+    attemptId: input.identity.attemptId,
+    terminalStatus: terminal.terminalStatus,
+  };
+}
+
 export function createJobEventIngestService(input: {
   appDb: Db;
   maxHeartbeatAgeMs?: number;
+  /**
+   * CLI-006 — fired AFTER the tenant transaction commits, when this ingest
+   * terminalized the attempt. Optional: an unwired deployment behaves exactly as
+   * before. It must never be called inside `runInTenant` — a projection failure
+   * cannot be allowed to roll back the committed `acceptEvent` append (the same
+   * invariant the trace-logger binding respects below), and its own failure is
+   * swallowed so the worker's ACK is never lost to a projection error.
+   */
+  onAttemptTerminal?: (signal: AttemptTerminalSignal) => void | Promise<void>;
 }) {
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300_000);
   return {
@@ -99,7 +152,10 @@ export function createJobEventIngestService(input: {
       }
       const acceptInputs = toAcceptInputs(batch);
 
-      return runInTenant(input.appDb, auth.organizationId, async (repos) => {
+      // CLI-006: captured INSIDE the tx, fired AFTER it commits (see the hook doc).
+      let terminalSignal: AttemptTerminalSignal | null = null;
+
+      const response = await runInTenant(input.appDb, auth.organizationId, async (repos) => {
         const databaseNow = await repos.jobControl.currentDatabaseTime();
         await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);
         await repos.jobControl.cleanupExpiredOperationReceipts(databaseNow, 100);
@@ -230,6 +286,12 @@ export function createJobEventIngestService(input: {
           // propagate and roll back the committed acceptEvent append (invariant #8).
         }
 
+        terminalSignal = resolveAttemptTerminalSignal({
+          acceptInputs,
+          ackStatus: status,
+          identity: fenceIdentity,
+        });
+
         return eventUploadOperationResponseV1Schema.parse({
           protocolVersion: 1,
           correlationId: request.correlationId,
@@ -252,6 +314,21 @@ export function createJobEventIngestService(input: {
           },
         });
       });
+
+      // AFTER COMMIT ONLY. The attempt's durable terminal is already persisted; the
+      // heartbeat-side projection is a downstream read of it, so a projection failure
+      // must cost neither the append nor the worker's ACK. Swallowed deliberately —
+      // the projector is itself best-effort per substep, and a stranded run is
+      // recoverable, whereas a lost ACK makes the worker replay a terminal forever.
+      if (terminalSignal && input.onAttemptTerminal) {
+        try {
+          await input.onAttemptTerminal(terminalSignal);
+        } catch (err) {
+          logger.warn({ err, signal: terminalSignal }, "attempt-terminal projection hook failed");
+        }
+      }
+
+      return response;
     },
   };
 }
