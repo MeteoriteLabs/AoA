@@ -58,7 +58,9 @@ export function getDistributedCancellationPort(): DistributedCancellationPort | 
 /** Why a marked run is nonetheless being cancelled the legacy way. */
 export type CancelRouteDegradation =
   | "no_distributed_cancellation_port"
-  | "missing_distributed_job_id";
+  | "missing_distributed_job_id"
+  /** The port was present and the fence revoke FAILED. Not the same thing. */
+  | "cancellation_request_failed";
 
 export type CancelRoute =
   | { readonly route: "distributed"; readonly jobId: string }
@@ -93,4 +95,61 @@ export function resolveCancelRoute(
   // revoke without a job id.
   if (!run.distributedJobId) return { route: "legacy", degraded: "missing_distributed_job_id" };
   return { route: "distributed", jobId: run.distributedJobId };
+}
+
+/**
+ * Dispatch one run's cancellation and tell the caller whether IT still has to
+ * write the legacy terminal.
+ *
+ * **4-D1 — a throwing port is not the same failure as a missing one.**
+ *
+ * A MISSING port means the subsystem is disabled, so no worker will ever
+ * terminalize that attempt and the legacy write is the only convergent outcome
+ * (`writeLegacyTerminal: true`).
+ *
+ * A THROWING port means the subsystem is enabled and the worker is **live**.
+ * Writing `cancelled` locally would claim a stop that did not happen: it latches
+ * the run, makes the projector discard the attempt's real terminal when it
+ * arrives, and shows the founder a cancelled run while the sandbox keeps burning
+ * budget. So a throw NEVER yields `writeLegacyTerminal: true` — under either
+ * error mode. That is the single most important property in this module.
+ *
+ * `onError` splits the two caller shapes, which have genuinely different
+ * obligations:
+ *  - `"propagate"` — `cancelRun`, which answers an HTTP request. An operator who
+ *    asked to cancel must be told it failed rather than shown a false success.
+ *  - `"skip"` — the batch writers (agent pause, budget hard-stop, task-ineligible
+ *    sweep). One unreachable attempt must not abort a company-wide hard-stop for
+ *    every other run; the skipped run stays `running` and the next sweep revisits.
+ */
+export async function dispatchCancel(input: {
+  run: { executionOwner: string | null; distributedJobId: string | null };
+  companyId: string;
+  organizationId: string;
+  reason: string;
+  graceful: boolean;
+  port: DistributedCancellationPort | undefined;
+  onError: "propagate" | "skip";
+}): Promise<{ writeLegacyTerminal: boolean; degraded?: CancelRouteDegradation }> {
+  const route = resolveCancelRoute(input.run, input.port);
+  if (route.route === "legacy") {
+    return route.degraded
+      ? { writeLegacyTerminal: true, degraded: route.degraded }
+      : { writeLegacyTerminal: true };
+  }
+
+  try {
+    await input.port!.requestCancellation({
+      jobId: route.jobId,
+      companyId: input.companyId,
+      organizationId: input.organizationId,
+      reason: input.reason,
+      graceful: input.graceful,
+    });
+    return { writeLegacyTerminal: false };
+  } catch (err) {
+    if (input.onError === "propagate") throw err;
+    // Skipped, but deliberately NOT terminalized — the worker is still live.
+    return { writeLegacyTerminal: false, degraded: "cancellation_request_failed" };
+  }
 }

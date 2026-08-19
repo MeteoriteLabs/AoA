@@ -18,6 +18,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  dispatchCancel,
   resolveCancelRoute,
   setDistributedCancellationPort,
   getDistributedCancellationPort,
@@ -118,5 +119,77 @@ describe("CLI-006/Task 4 — the module-level port", () => {
       reason: "Cancelled by control plane",
       graceful: true,
     });
+  });
+});
+
+// -- 4-D1: a THROWING port is not the same failure as a MISSING one -----------
+//
+// A missing port falls through to the legacy write, because with the subsystem
+// disabled no worker will ever terminalize that attempt. That reasoning does NOT
+// transfer to a port that throws: there the subsystem is ENABLED and the worker
+// is LIVE, so writing `cancelled` locally would claim a stop that did not happen,
+// latch the run, and make the projector discard the attempt's real terminal. The
+// run would read cancelled in the UI while the sandbox kept burning budget.
+
+const RUN_CTX = { companyId: "c", organizationId: "o", reason: "stop", graceful: true };
+
+describe("CLI-006/4-D1 — dispatchCancel", () => {
+  it("tells a legacy run's caller to write the terminal itself", async () => {
+    await expect(
+      dispatchCancel({
+        run: { executionOwner: null, distributedJobId: null },
+        ...RUN_CTX,
+        port,
+        onError: "propagate",
+      }),
+    ).resolves.toEqual({ writeLegacyTerminal: true });
+  });
+
+  it("revokes the fence and tells the caller NOT to write a terminal", async () => {
+    const requestCancellation = vi.fn(async () => {});
+    await expect(
+      dispatchCancel({ run: distributedRun, ...RUN_CTX, port: { requestCancellation }, onError: "propagate" }),
+    ).resolves.toEqual({ writeLegacyTerminal: false });
+    expect(requestCancellation).toHaveBeenCalledWith({
+      jobId: JOB,
+      companyId: "c",
+      organizationId: "o",
+      reason: "stop",
+      graceful: true,
+    });
+  });
+
+  it("falls through to the legacy write when no port is registered", async () => {
+    await expect(
+      dispatchCancel({ run: distributedRun, ...RUN_CTX, port: undefined, onError: "propagate" }),
+    ).resolves.toEqual({ writeLegacyTerminal: true, degraded: "no_distributed_cancellation_port" });
+  });
+
+  it("PROPAGATES a port throw for cancelRun — an operator must not see a false success", async () => {
+    const boom = { requestCancellation: async () => { throw new Error("unreachable"); } };
+    await expect(
+      dispatchCancel({ run: distributedRun, ...RUN_CTX, port: boom, onError: "propagate" }),
+    ).rejects.toThrow(/unreachable/);
+  });
+
+  it("SKIPS a port throw for a batch, and still writes NO terminal", async () => {
+    // One unreachable attempt must not abort a company-wide budget hard-stop for
+    // every other run. But the skipped run must stay `running`, not be latched
+    // cancelled — the worker is still live.
+    const boom = { requestCancellation: async () => { throw new Error("unreachable"); } };
+    await expect(
+      dispatchCancel({ run: distributedRun, ...RUN_CTX, port: boom, onError: "skip" }),
+    ).resolves.toEqual({ writeLegacyTerminal: false, degraded: "cancellation_request_failed" });
+  });
+
+  it("never writes a terminal on a throw, under EITHER error mode", async () => {
+    // The single property that matters most in this file: a live worker plus a
+    // locally-latched `cancelled` is the one outcome that silently lies.
+    const boom = { requestCancellation: async () => { throw new Error("unreachable"); } };
+    const skipped = await dispatchCancel({ run: distributedRun, ...RUN_CTX, port: boom, onError: "skip" });
+    expect(skipped.writeLegacyTerminal).toBe(false);
+    await expect(
+      dispatchCancel({ run: distributedRun, ...RUN_CTX, port: boom, onError: "propagate" }),
+    ).rejects.toThrow();
   });
 });
