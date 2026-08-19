@@ -174,10 +174,18 @@ try {
 `;
   const res = dexecModuleResult(dexecModule("control-plane", script, { timeout: 90_000 }), "append+notify@A");
   assert.equal(res.ok, true, `append/notify failed: ${JSON.stringify(res).slice(0, 800)}`);
-  assert.equal(res.seq, 1, `first append must assign contiguous seq 1: ${JSON.stringify(res)}`);
+  // `seq` is a Postgres bigint. The append/NOTIFY path reports it as a JSON STRING
+  // ("1") across the dexec boundary, while the since() read path yields numbers —
+  // so every seq comparison coerces with Number(). This file imports
+  // `node:assert/strict`, where `equal` is strict, so an uncoerced '1' vs 1 fails
+  // on a run whose realtime mechanism is entirely correct. That is exactly what
+  // this test did before the coercion: ok:true, contiguous seqs, a data-free wake,
+  // cross-replica convergence and NOTIFY-drop recovery all held, and only the JS
+  // type of the reported value differed.
+  assert.equal(Number(res.seq), 1, `first append must assign contiguous seq 1: ${JSON.stringify(res)}`);
   assert.ok(res.received, `the LISTEN connection must receive the NOTIFY wake: ${JSON.stringify(res)}`);
   assert.equal(res.received.companyId, companyId, `wake carries the companyId: ${JSON.stringify(res.received)}`);
-  assert.equal(res.received.seq, 1, `wake carries only (companyId, seq): ${JSON.stringify(res.received)}`);
+  assert.equal(Number(res.received.seq), 1, `wake carries only (companyId, seq): ${JSON.stringify(res.received)}`);
   assert.equal(res.received.payload, undefined, `wake must be DATA-FREE (no payload): ${JSON.stringify(res.received)}`);
   assert.deepEqual(res.rowSeqs, [1], `since() returns the committed row: ${JSON.stringify(res)}`);
   assert.equal(res.rowEventIds[0], eventId, `the row carries the append eventId (drainer dedup key): ${JSON.stringify(res)}`);
@@ -205,7 +213,7 @@ try {
 `;
   const appended = dexecModuleResult(dexecModule("control-plane", appendScript, { timeout: 60_000 }), "append@A");
   assert.equal(appended.ok, true, `append@A failed: ${JSON.stringify(appended).slice(0, 800)}`);
-  assert.equal(appended.seq, 1, `append@A must assign seq 1: ${JSON.stringify(appended)}`);
+  assert.equal(Number(appended.seq), 1, `append@A must assign seq 1: ${JSON.stringify(appended)}`);
 
   // Read on replica B via the SAME since() SQL the drainer runs (safety-poll path:
   // no NOTIFY needed — the shared DB is authoritative, so a dropped wake is a DELAY,
@@ -259,7 +267,7 @@ try {
 `;
   const res = dexecModuleResult(dexecModule("control-plane", script, { timeout: 60_000 }), "notify-drop");
   assert.equal(res.ok, true, `notify-drop test failed: ${JSON.stringify(res).slice(0, 800)}`);
-  assert.equal(res.firstSeq, 1, `first append seq 1: ${JSON.stringify(res)}`);
-  assert.equal(res.secondSeq, 2, `second append contiguous seq 2: ${JSON.stringify(res)}`);
+  assert.equal(Number(res.firstSeq), 1, `first append seq 1: ${JSON.stringify(res)}`);
+  assert.equal(Number(res.secondSeq), 2, `second append contiguous seq 2: ${JSON.stringify(res)}`);
   assert.deepEqual(res.recovered, [2], `the un-notified event 2 is recovered by the safety poll: ${JSON.stringify(res)}`);
 });
