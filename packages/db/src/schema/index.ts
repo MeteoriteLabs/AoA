@@ -223,6 +223,14 @@ export { environments } from "./environments.js";
 export { onboardingProgress } from "./onboarding_progress.js";
 export { userProfiles, type UserProfileSocialLink } from "./user_profiles.js";
 export { environmentLeases } from "./environment_leases.js";
+// MIG-008 (E10 desktop-migration): append-only legacy-lease/resource reconciliation
+// crosswalk (operator-metadata infra; aoa_operator write / aoa_app read-only /
+// tenants invisible — mirrors the DEP-003 cutover marker RLS shape).
+export {
+  legacyResourceReconciliation,
+  type LegacyResourceReconciliation,
+  type NewLegacyResourceReconciliation,
+} from "./legacy_resource_reconciliation.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { workspaceOperations } from "./workspace_operations.js";
 export { feedbackVotes } from "./feedback_votes.js";

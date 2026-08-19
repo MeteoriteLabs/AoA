@@ -235,6 +235,21 @@ export const EXECUTION_TARGET_REVOCATION_OPERATOR_GRANTS = Object.freeze({
   execution_target_revocations: ["SELECT", "INSERT", "UPDATE"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
+/**
+ * MIG-008 (E10 desktop-migration) append-only legacy-lease/resource reconciliation
+ * crosswalk (migration 0256). aoa_operator writes the durable reconciliation records
+ * (no DELETE — records are durable); aoa_app reads the closure store ONLY outside a
+ * tenant transaction (RLS app-read policy). These mirror the reviewed C14 grants in
+ * 0256 exactly — a grant change there must update these constants and survive review.
+ * Same operator-metadata shape as CUTOVER_MARKER_* / EXECUTION_TARGET_REVOCATION_* above.
+ */
+export const LEGACY_RESOURCE_RECONCILIATION_APP_GRANTS = Object.freeze({
+  legacy_resource_reconciliation: ["SELECT"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+export const LEGACY_RESOURCE_RECONCILIATION_OPERATOR_GRANTS = Object.freeze({
+  legacy_resource_reconciliation: ["SELECT", "INSERT", "UPDATE"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
 /** Tenant target metadata needed to issue/consume enrollment and retire bootstrap auth. */
 export const APP_ENROLLMENT_TARGET_SELECT_COLUMNS = Object.freeze([
   "id", "organization_id", "owner_user_id", "scope", "target_authority_key",
@@ -290,6 +305,7 @@ export const APP_SERVING_RELATIONS = sortedUnion(
   Object.keys(WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS),
   Object.keys(CUTOVER_MARKER_APP_GRANTS),
   Object.keys(EXECUTION_TARGET_REVOCATION_APP_GRANTS),
+  Object.keys(LEGACY_RESOURCE_RECONCILIATION_APP_GRANTS),
   ["mcp_api_keys", "execution_targets"],
 );
 
@@ -299,6 +315,7 @@ export const OPERATOR_SERVING_RELATIONS = sortedUnion(
   Object.keys(OPERATOR_METADATA_COLUMN_GRANTS),
   Object.keys(CUTOVER_MARKER_OPERATOR_GRANTS),
   Object.keys(EXECUTION_TARGET_REVOCATION_OPERATOR_GRANTS),
+  Object.keys(LEGACY_RESOURCE_RECONCILIATION_OPERATOR_GRANTS),
   ["execution_targets"],
 );
 
@@ -313,6 +330,8 @@ export const RLS_RELATIONS = Object.freeze([
   "folder_grants",
   // DEP-009: the shared worker-admission rate-limit counter table (migration 0255).
   "worker_admission_rate_limits",
+  // MIG-008: the append-only legacy-lease/resource reconciliation crosswalk (migration 0256).
+  "legacy_resource_reconciliation",
 ] as const);
 
 export const FORCE_RLS_RELATIONS = Object.freeze(
@@ -346,6 +365,8 @@ export const POLICY_COUNTS = deepFreeze({
   folder_grants: 1,
   // DEP-009: one aoa_app org-scoped tenant-isolation policy (migration 0255).
   worker_admission_rate_limits: 1,
+  // MIG-008: operator-write + app-read (mirrors distributed_cutover_markers, migration 0256).
+  legacy_resource_reconciliation: 2,
 } as const);
 
 const ORGANIZATION_QUAL =
@@ -414,6 +435,11 @@ export const RLS_POLICY_MANIFEST = deepFreeze([
   // DEP-009 worker-admission rate-limit (migration 0255): aoa_app-only org-scoped tenant
   // isolation, FORCE RLS, no operator authority. Same shape as folder_grants.
   policy("worker_admission_rate_limits", "worker_admission_rate_limits_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  // MIG-008 legacy-lease/resource reconciliation crosswalk (migration 0256): operator
+  // writes (USING/CHECK true), app reads only outside a tenant transaction
+  // (aoa.organization_id GUC unset). Same operator-metadata shape as the 0188 cutover marker.
+  policy("legacy_resource_reconciliation", "legacy_resource_reconciliation_operator_write", "ALL", "aoa_operator", "true", "true"),
+  policy("legacy_resource_reconciliation", "legacy_resource_reconciliation_app_read", "SELECT", "aoa_app", CUTOVER_APP_READ_QUAL, null),
 ] as const);
 
 /*
@@ -465,6 +491,7 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreeze({
     jobs: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     labels: { aoa_app: ["SELECT"], aoa_operator: [] },
     leases: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    legacy_resource_reconciliation: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
     mcp_api_keys: { aoa_app: [], aoa_operator: [] },
     notification_digest_items: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
     notification_preferences: { aoa_app: ["SELECT"], aoa_operator: [] },
@@ -591,6 +618,7 @@ const RELATION_ACL_NULLNESS_CERTIFICATE = deepFreeze({
   jobs: false,
   labels: false,
   leases: false,
+  legacy_resource_reconciliation: false,
   mcp_api_keys: false,
   notification_digest_items: false,
   notification_preferences: false,
