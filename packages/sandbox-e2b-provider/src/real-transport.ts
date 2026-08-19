@@ -36,6 +36,7 @@ import {
   type E2bStreamHandlers,
   type E2bTransport,
 } from "./transport.js";
+import { isE2bNotFound, shellJoin } from "./real-transport-helpers.js";
 
 /** Loose facade over the version-sensitive `e2b` SDK surface (keyed lane only). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -105,7 +106,9 @@ export class RealE2bTransport implements E2bTransport {
 
   async runCommand(req: E2bRunCommandRequest, handlers?: E2bStreamHandlers): Promise<E2bCommandResult> {
     const sandbox = await this.#sdk.connect(req.sandboxId, { apiKey: this.#apiKey });
-    const full = [req.command, ...req.args].join(" ");
+    // Quote every token so the argv survives the collapse into e2b's single
+    // command-STRING API — a naive space-join silently breaks `sh -c "<script>"`.
+    const full = shellJoin(req.command, req.args);
     try {
       // CLI-003/D1 — bind the `e2b` SDK command stream to the streaming callbacks.
       // The SDK invokes `onStdout`/`onStderr` with each output chunk as it is
@@ -143,8 +146,14 @@ export class RealE2bTransport implements E2bTransport {
 
   async terminate(sandboxId: string): Promise<void> {
     try {
-      await this.#sdk.kill(sandboxId, { apiKey: this.#apiKey });
+      // `Sandbox.kill` resolves `true` when the sandbox was found and killed and
+      // `false` when it was already gone — it does NOT throw for a missing sandbox.
+      // Surface the gone case as the uniform not-found signal so repeated teardown is
+      // idempotent (the second terminate of a reclaimed sandbox → not-found, no hang).
+      const killed = await this.#sdk.kill(sandboxId, { apiKey: this.#apiKey });
+      if (killed === false) throw new E2bTransportNotFoundError(sandboxId);
     } catch (err) {
+      if (err instanceof E2bTransportNotFoundError) throw err;
       if (this.#isNotFound(err)) throw new E2bTransportNotFoundError(sandboxId);
       throw new E2bTransportTransientError(err instanceof Error ? err.message : undefined);
     }
@@ -219,8 +228,10 @@ export class RealE2bTransport implements E2bTransport {
   }
 
   #isNotFound(err: unknown): boolean {
-    const name = err instanceof Error ? err.name : "";
-    return name === "NotFoundError" || name === "SandboxNotFoundError" || name.toLowerCase().includes("notfound");
+    // Delegates to the SDK-free classifier (no-key-tested): named not-found/bad-target
+    // classes + a base `SandboxError` carrying a 4xx status (an absent/foreign sandbox
+    // lookup surfaces as an unmapped 4xx, not `NotFoundError`, against real E2B).
+    return isE2bNotFound(err);
   }
 }
 

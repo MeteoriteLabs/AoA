@@ -196,7 +196,11 @@ export function perOpToInvokeDriver(
     if (params.lifecycleFault === "crash" || params.lifecycleFault === "ttl") {
       env[DIRECTIVE_KEYS.lifecycleFault] = params.lifecycleFault;
     }
-    return { sandboxId, command: "run", args: [], env };
+    // `true` is a portable no-op that exits 0 in every base image; the earlier
+    // placeholder `run` is not a real binary, so a real-E2B execute exited 127
+    // ("run: command not found"). The mock ignores the command (directive-driven),
+    // so this default only matters on the keyed lane's happy path.
+    return { sandboxId, command: "true", args: [], env };
   };
 
   // --- ownership (no existence oracle) ---------------------------------------

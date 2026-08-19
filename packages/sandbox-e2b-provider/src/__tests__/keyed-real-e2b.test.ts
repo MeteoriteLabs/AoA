@@ -85,7 +85,10 @@ describeKeyed("CLI-001/D4 — real E2B (keyed) — happy path + adapter-enforced
     } catch (err) {
       raised = err;
     }
-    expect((raised as { name?: string })?.name).toBe("ResourceNotAvailableError");
+    // Diagnostic message surfaces the real error shape if E2B returns an unexpected
+    // status (the classifier maps a base `SandboxError` with a 4xx-prefixed message).
+    const seen = raised as { name?: string; message?: string };
+    expect(seen?.name, `received ${seen?.name}: ${seen?.message}`).toBe("ResourceNotAvailableError");
   });
 
   it("§2.2 the cleanup facet denies every effect op", async () => {
@@ -150,7 +153,9 @@ describeKeyed("CLI-001/D4 — real E2B (keyed) — real TTL enforcement", () => 
     const inspect = await driver.invoke("inspect", { providerId: driver.providerId, resourceId: rid });
     // Post-expiry the resource is absent on the effect facet → null projection.
     expect(inspect.kind === "inspect" && inspect.projection).toBeNull();
-  });
+    // The in-test 5s expiry wait exceeds vitest's 5000ms default → an explicit,
+    // generous per-test budget (still bounded; the sandbox has a 1s TTL).
+  }, 30_000);
 });
 
 describeKeyed("CLI-003/D4 — real E2B (keyed) — streaming, cancel, forced-timeout, lost-ACK", () => {
@@ -341,7 +346,8 @@ describeKeyed("CLI-004/D4 — real E2B (keyed) — cleanup reconciliation of a r
     } catch (err) {
       raised = err;
     }
-    expect((raised as { name?: string })?.name).toBe("ResourceNotAvailableError");
+    const seen = raised as { name?: string; message?: string };
+    expect(seen?.name, `received ${seen?.name}: ${seen?.message}`).toBe("ResourceNotAvailableError");
   });
 
   it("lost-response replay: a re-delivered reconcile of an already-reclaimed resource stays a converged success", async () => {
