@@ -650,8 +650,7 @@ jobs:
 
       - name: Install Playwright
         run: |
-          # OS libraries for chromium (apt). Always works on the runner.
-          # BOUNDED. This is apt, and apt stalls: observed twice in a row on
+          # OS libraries for chromium (apt). BOUNDED. This is apt, and apt stalls: observed twice in a row on
           # run 32291821396, hanging ~20 min on archive.ubuntu.com after
           # `Get:5 noble-security InRelease` until the job timeout killed it
           # (`Terminate orphan process: npm exec playwright install-deps chromium`).
