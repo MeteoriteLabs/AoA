@@ -234,9 +234,10 @@ So on a port throw: **never write a terminal.** Then split by caller, because th
 
 This task documents the trap with tests rather than changing the capacity engine (JOB-007 owns it); the operator guidance goes in the result doc.
 
-- [ ] **Step 1: Write the test** — cap 1 with one running legacy run for the org asserts `{owner:"legacy", reason:"convert_failed"}`; a companion at cap ≥ 2 asserts `{owner:"distributed"}`.
-- [ ] **Step 2: Run and confirm both pass** (this characterises current behaviour; it is not expected to fail first).
-- [ ] **Step 3: Commit.**
+- [x] **Characterised in `cli-006-capacity-trap.test.ts` (7 tests).** Re-verified in the code rather than inherited: `countRunningRunsForOrg` (`org-concurrency.ts:82-94`) counts EVERY `status='running'` heartbeat run for the Organization with **no owner exclusion**, `resolveOrgCapacityUsage` returns `legacyRunning + heldAttempts`, and `admitAttemptCapacity` denies on `usageForReport >= cap`.
+- [x] **The consequence is worse than "cap 1 is tight".** At the moment the seam resolves ownership the run is ALREADY `running`, so it is counted against itself before its attempt has claimed anything. At `cap = 1` usage is 1 on a **completely idle Organization** → denied → `convert_failed` → legacy, silently. Nothing errors and nothing surfaces at the operator's altitude; the canary simply never happens. `cap = 1` is the natural first choice for a pilot.
+- [x] **Operator guidance for the result doc:** the cap must be **strictly greater than the Organization's concurrent legacy runs**, not merely greater than 1. `cap = 2` works only on an otherwise-idle org.
+- [x] **Proven non-vacuous** — adding an `executionOwner` exclusion to `countRunningRunsForOrg` (which would dissolve the trap) turns the suite RED.
 
 ---
 
@@ -248,10 +249,9 @@ This task documents the trap with tests rather than changing the capacity engine
 
 `dispatchQueuedRunsAfterAgentSignal` at `:5799` is the only bare `await` in the outer `finally` (the neighbours at `:5783`/`:5792`/`:5795` are `.catch`-chained). It throws in the tenant-isolated branch (`:2829`). If it throws after a suppression `return`, `executeRun`'s promise rejects into the call-site `.catch` (`:2717`/`:2780`), which — seeing the run still `running` — writes `pre_spawn_failed` and releases the issue. **That is exactly the legacy finalization the seam exists to prevent, reached through an exception.**
 
-- [ ] **Step 1: Write the failing test** — force `dispatchQueuedRunsAfterAgentSignal` to reject on a suppressed run; assert status stays `running` and `errorCode` is not `pre_spawn_failed`.
-- [ ] **Step 2: Run it, expect FAIL.**
-- [ ] **Step 3: Fix** — `.catch(() => undefined)` on `:5799`.
-- [ ] **Step 4: Run tests. Commit.**
+- [x] **Re-verified, then fixed fail-first.** Confirmed in the code: it is the only bare `await` in `executeRun`'s outer `finally` — the workspace run lock, the runtime services and the environment leases above it are all `.catch`-chained — and `dispatchQueuedRunsAfterAgentSignal` genuinely throws in the tenant-isolated branch when an Organization cannot be resolved.
+- [x] **Chained with a logging `.catch`**, matching its three neighbours rather than swallowing silently.
+- [x] **Structural test RED first**, then green; a companion asserts the neighbours still hold the line, so the property stays "nothing in this finally can reject" rather than "one call was fixed".
 
 ---
 
@@ -262,8 +262,8 @@ This task documents the trap with tests rather than changing the capacity engine
 
 `server/src` is **not** on `d1-merge-train.yml`'s path filter, so a server-only change silently does not run the live lane. This bit DEP-009 already.
 
-- [ ] **Step 1: Bump the re-trigger nonce** with a comment naming the CLI-006 seam.
-- [ ] **Step 2: Commit and push; watch the lane to green.**
+- [x] **Nonce bumped** to `cli-006-seam-387447d35`, with a comment naming exactly what is off the filter: Tasks 2b/3/4/6 land in `server/src` ONLY.
+- [ ] **Watch the D1 lane to green** (fires on push).
 
 ---
 

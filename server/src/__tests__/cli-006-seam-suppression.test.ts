@@ -147,3 +147,36 @@ describe("CLI-006/Task 3 — the suppression return sits inside the adapter try"
     expect(hits).toHaveLength(1);
   });
 });
+
+// -- Task 6: the unguarded await in the outer finally (R6) --------------------
+//
+// `dispatchQueuedRunsAfterAgentSignal` THROWS in the tenant-isolated branch when
+// an Organization cannot be resolved (`heartbeat.ts`, the `resolveCompanyOrganizationId`
+// guard). It is awaited in `executeRun`'s outer `finally`, where its three
+// neighbours — the workspace run lock, the runtime services, and the environment
+// leases — are all `.catch`-chained.
+//
+// If it throws AFTER a suppression return, `executeRun`'s promise rejects into
+// the call-site `.catch`, which sees the run still `running` and writes
+// `pre_spawn_failed` + releases the issue. That is exactly the legacy
+// finalization the seam exists to prevent, reached through an exception rather
+// than through the code path the seam guards.
+
+describe("CLI-006/Task 6 — no bare await can reject out of the outer finally", () => {
+  it("chains a catch onto dispatchQueuedRunsAfterAgentSignal in the finally", () => {
+    const idx = HEARTBEAT_SRC.findIndex(
+      (line) => line.includes("dispatchQueuedRunsAfterAgentSignal(agent.id)") && line.includes("await"),
+    );
+    expect(idx, "expected the finally's dispatch call").toBeGreaterThan(-1);
+    const window = HEARTBEAT_SRC.slice(idx, idx + 4).join(" ");
+    expect(window).toContain(".catch(");
+  });
+
+  it("keeps the neighbouring releases catch-chained too", () => {
+    // The property is "nothing in this finally can reject", not "one call was
+    // fixed" — so assert the neighbours still hold the line.
+    const src = HEARTBEAT_SRC.join(" ");
+    expect(src).toContain("heartbeat: failed to release environment leases in finally");
+    expect(src).toContain("heartbeat: failed to release thread workspace run lock in finally");
+  });
+});

@@ -5888,7 +5888,19 @@ export function heartbeatService(
         .catch((leaseReleaseErr: unknown) => {
           logger.warn({ err: leaseReleaseErr, runId: run.id }, "heartbeat: failed to release environment leases in finally");
         });
-      await dispatchQueuedRunsAfterAgentSignal(agent.id);
+      // CLI-006 (R6) — the ONLY bare await in this finally, now chained like its
+      // three neighbours above. `dispatchQueuedRunsAfterAgentSignal` throws in the
+      // tenant-isolated branch when an Organization cannot be resolved. Unchained,
+      // that rejection escapes `executeRun` into the call-site `.catch`, which sees
+      // the run still `running` and writes `pre_spawn_failed` + releases the issue
+      // — precisely the legacy finalization the suppression seam exists to
+      // prevent, reached through an exception instead of through the guarded path.
+      await dispatchQueuedRunsAfterAgentSignal(agent.id).catch((dispatchErr: unknown) => {
+        logger.warn(
+          { err: dispatchErr, runId: run.id, agentId: agent.id },
+          "heartbeat: failed to dispatch queued runs in finally",
+        );
+      });
     }
   }
 
