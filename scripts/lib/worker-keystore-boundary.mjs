@@ -38,6 +38,7 @@ import {
   classifyRuntimeSourceFileName,
   extractModuleSpecifiers,
   findForbiddenGlobals,
+  tokenizeSource,
 } from "./worker-protocol-boundary.mjs";
 
 export { classifyRuntimeSourceFileName };
@@ -68,6 +69,23 @@ export const REQUIRED_RUNTIME_DEPENDENCIES = [
  * dangerous capability, one file" has to mean one PATH.
  */
 export const SUBPROCESS_HOST_PATH = "src/command-runner.ts";
+
+/**
+ * The banned boolean-absence oracle, matched as a CODE TOKEN.
+ *
+ * Two earlier attempts at this line were wrong in instructive ways. The first
+ * carried RAW 0x08 backspace bytes where `` was intended, so the regex matched
+ * nothing while the corpus still reported green — a guard that was dead the day
+ * it was written. The second was a plain substring scan over raw source, which
+ * then flagged `command-runner.ts` for the COMMENTS explaining why existsSync was
+ * removed: a checker that makes you delete the explanation of a bug is a bad
+ * checker.
+ *
+ * The shared tokenizer already discards comments and string contents, so a `word`
+ * token is the honest unit. It catches the named import and `fs.existsSync(...)`
+ * alike, and prose is invisible to it.
+ */
+const BANNED_ORACLE_WORD = "existsSync";
 
 /** Specifiers that grant subprocess execution. */
 const SUBPROCESS_SPECIFIERS = new Set(["child_process", "node:child_process"]);
@@ -138,6 +156,24 @@ export function evaluateRuntimeSourceImports({ relPath, absPath, sourceRoot, sou
     if (forbidden === "require(") {
       errors.push(`${relPath}: CommonJS require() is forbidden in runtime source`);
     }
+  }
+  // The boolean absence oracle, banned by NAME rather than by specifier.
+  //
+  // `node:fs` itself is legitimate here — `statSync` throws with a discriminating
+  // errno and is what the probe is built on. `existsSync` is the specific hazard:
+  // it returns FALSE for any error, so a permission-denied probe reads as "never
+  // enrolled", the daemon mints a second identity, and the server denies it
+  // forever. That exact bug shipped once and was caught only by re-reading.
+  //
+  // Matched as a code TOKEN so `fs.existsSync(p)` is caught as well as the named
+  // import — a specifier check would see only `node:fs` and pass both — while the
+  // comments that explain why it was removed stay legal.
+  if (tokenizeSource(source).some((tk) => tk.type === "word" && tk.value === BANNED_ORACLE_WORD)) {
+    errors.push(
+      `${relPath}: existsSync is forbidden — it returns false for ANY error, so a ` +
+        "permission-denied probe reads as 'never enrolled' and the daemon mints a " +
+        "second identity the server denies forever. Use the errno-discriminating statSync probe",
+    );
   }
   return errors;
 }

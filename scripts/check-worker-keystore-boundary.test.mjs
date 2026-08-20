@@ -76,7 +76,7 @@ test("accepts the legitimate shape", async () => {
 
 test("accepts child_process imported from the confinement host", async () => {
   const { policyErrors } = await checkTree({
-    files: { "command-runner.ts": 'import cp from "child_process";\nimport { existsSync } from "node:fs";\n' },
+    files: { "command-runner.ts": 'import cp from "child_process";\nimport { statSync } from "node:fs";\n' },
   });
   assert.deepEqual(policyErrors, []);
 });
@@ -107,6 +107,45 @@ test("REJECTS the bare `child_process` specifier too, not just the node: form", 
     files: { ...clean, "outcome.ts": 'import { execFileSync } from "child_process";\n' },
   });
   assert.equal(policyErrors.length, 1);
+});
+
+test("REJECTS existsSync ANYWHERE, including in the confinement host itself", async () => {
+  // The boolean absence oracle. `node:fs` stays legitimate — statSync throws with
+  // a discriminating errno and is what the probe is built on — so this is banned
+  // by NAME, not by specifier. existsSync returns false for ANY error, so a
+  // permission-denied probe reads as "never enrolled", the daemon mints a second
+  // identity, and the server denies it forever. That bug shipped once.
+  const cases = [
+    ["command-runner.ts", 'import { existsSync } from "node:fs";'],
+    ["outcome.ts", 'import fs from "node:fs";\nconst ok = fs.existsSync(p);'],
+  ];
+  for (const [name, source] of cases) {
+    const { policyErrors } = await checkTree({ files: { ...clean, [name]: source + "\n" } });
+    assert.ok(
+      policyErrors.some((e) => e.includes("existsSync is forbidden")),
+      `${name} should be rejected: ${JSON.stringify(policyErrors)}`,
+    );
+  }
+});
+
+test("ACCEPTS statSync — the ban is on the ORACLE, not on node:fs", async () => {
+  const { policyErrors } = await checkTree({
+    files: { ...clean, "outcome.ts": 'import { statSync } from "node:fs";\n' },
+  });
+  assert.deepEqual(policyErrors, []);
+});
+
+test("ACCEPTS the word inside a COMMENT — explaining the bug must stay legal", async () => {
+  // The real package documents why existsSync was removed. A raw-substring scan
+  // flagged exactly that documentation, which would have forced deleting the
+  // explanation of the bug in order to satisfy the checker.
+  const { policyErrors } = await checkTree({
+    files: {
+      ...clean,
+      "outcome.ts": "// an earlier version used existsSync, which fails open\nexport const x = 1;\n",
+    },
+  });
+  assert.deepEqual(policyErrors, []);
 });
 
 test("REJECTS a native keychain binding added as a runtime dependency", async () => {
