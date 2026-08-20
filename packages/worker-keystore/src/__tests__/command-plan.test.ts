@@ -23,6 +23,8 @@ import {
   planVaultCommand,
   POWERSHELL_ABSOLUTE_PATH,
   STORE_SUCCESS_SENTINEL,
+  selectChildEnv,
+  CHILD_ENV_ALLOWLIST,
   type VaultOp,
 } from "../command-plan.js";
 
@@ -181,5 +183,68 @@ describe("DSK-001 — the store script must not confuse 'full disk' with 'alread
   it("exposes the sentinel as a shared constant, not a duplicated literal", () => {
     expect(typeof STORE_SUCCESS_SENTINEL).toBe("string");
     expect(STORE_SUCCESS_SENTINEL.length).toBeGreaterThan(0);
+  });
+});
+
+describe("DSK-001/I5 — the child gets a MINIMAL environment, never an inherited one", () => {
+  // `execFileSync` with no `env:` hands the child this process's entire
+  // environment block. The daemon's enrollment credential lives in an
+  // OPERATOR-NAMED variable — `AOA_WORKER_ENROLLMENT_CODE_ENV` names the variable
+  // that holds it (`worker-daemon/src/config/config.ts:59`) — so there is no name
+  // a denylist could target. An allowlist is the only shape that can work.
+  //
+  // This matters because the child is a PowerShell process we hand the private
+  // key to on stdin. Anything else in its environment is extra material sitting
+  // in a process that a same-user tool can inspect, and `PSModulePath` is worse
+  // than extra: a writable entry there is code injection into exactly that
+  // process, the same hazard the absolute interpreter path closes for argv (I9).
+
+  it("passes through only what Windows PowerShell actually needs", () => {
+    const selected = selectChildEnv({
+      SystemRoot: "C:\Windows",
+      windir: "C:\Windows",
+      LOCALAPPDATA: "C:\Users\t\AppData\Local",
+      TEMP: "C:\Temp",
+      OPERATOR_CHOSE_THIS_NAME: "aoa_enr_abcdefgh12345678.0123456789abcdef0123456789abcdef",
+      AOA_WORKER_ENROLLMENT_CODE_ENV: "OPERATOR_CHOSE_THIS_NAME",
+      AWS_SECRET_ACCESS_KEY: "nope",
+      PSModulePath: "C:\attacker\modules",
+    });
+    expect(selected.SystemRoot).toBe("C:\Windows");
+    expect(selected.LOCALAPPDATA).toBe("C:\Users\t\AppData\Local");
+    // The credential, whatever it is called, must not be there.
+    expect(Object.keys(selected)).not.toContain("OPERATOR_CHOSE_THIS_NAME");
+    expect(Object.keys(selected)).not.toContain("AOA_WORKER_ENROLLMENT_CODE_ENV");
+    expect(Object.keys(selected)).not.toContain("AWS_SECRET_ACCESS_KEY");
+    // PSModulePath is excluded DELIBERATELY, not incidentally.
+    expect(Object.keys(selected)).not.toContain("PSModulePath");
+    expect(JSON.stringify(selected)).not.toContain("aoa_enr_");
+  });
+
+  it("omits an allowlisted name that is absent, rather than passing undefined", () => {
+    // `execFileSync` rejects a non-string env value; a key present with
+    // `undefined` would be a crash on any machine missing an optional variable.
+    const selected = selectChildEnv({ SystemRoot: "C:\Windows" });
+    for (const value of Object.values(selected)) expect(typeof value).toBe("string");
+    expect(Object.keys(selected)).not.toContain("TEMP");
+  });
+
+  it("never grows by accident — the allowlist is the whole contract", () => {
+    // A snapshot of intent: adding a name here should be a deliberate edit with a
+    // reason, not something that drifts in behind an unrelated change.
+    expect([...CHILD_ENV_ALLOWLIST].sort()).toEqual([
+      "APPDATA",
+      "COMSPEC",
+      "HOMEDRIVE",
+      "HOMEPATH",
+      "LOCALAPPDATA",
+      "PATHEXT",
+      "SystemDrive",
+      "SystemRoot",
+      "TEMP",
+      "TMP",
+      "USERPROFILE",
+      "windir",
+    ].sort());
   });
 });

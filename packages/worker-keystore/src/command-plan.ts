@@ -80,6 +80,65 @@ const EXIT_ALREADY_EXISTS = 4;
 export const STORE_SUCCESS_SENTINEL = "aoa-keystore-stored-v1";
 
 /**
+ * The ONLY environment variables the PowerShell child receives.
+ *
+ * `execFileSync` with no `env:` hands the child this process's ENTIRE environment
+ * block. That is a real exposure here for two reasons.
+ *
+ * First, the daemon's enrollment credential lives in an OPERATOR-NAMED variable —
+ * `AOA_WORKER_ENROLLMENT_CODE_ENV` names the variable that holds it
+ * (`worker-daemon/src/config/config.ts:59`) — so there is no fixed name a
+ * denylist could target. Only an allowlist can be correct.
+ *
+ * Second, the child is the process we hand the private key to on stdin. Whatever
+ * else is in its environment is extra material sitting in exactly the process an
+ * attacker would want to read.
+ *
+ * `PSModulePath` is excluded DELIBERATELY, not by oversight: a writable entry
+ * there is code injection into that same process, which is the argv-hijack hazard
+ * I9 closes with the absolute interpreter path, arriving by another door. Nothing
+ * here needs it — the script runs `-NoProfile` and `Add-Type` resolves from the
+ * GAC. `Path` is excluded for the same reason and is not needed, because argv[0]
+ * is already absolute.
+ *
+ * What remains is what Windows itself needs to start a process and what DPAPI
+ * `CurrentUser` needs to resolve the calling user's profile.
+ */
+export const CHILD_ENV_ALLOWLIST: readonly string[] = [
+  "SystemRoot",
+  "windir",
+  "SystemDrive",
+  "COMSPEC",
+  "PATHEXT",
+  "TEMP",
+  "TMP",
+  "USERPROFILE",
+  "LOCALAPPDATA",
+  "APPDATA",
+  "HOMEDRIVE",
+  "HOMEPATH",
+];
+
+/**
+ * Project an environment down to the allowlist. Pure, so the exposure decision is
+ * provable on the ubuntu-only REQUIRED lane rather than only on a Windows box.
+ *
+ * An absent name is OMITTED rather than set to `undefined`: `execFileSync` rejects
+ * a non-string env value, so a key carrying `undefined` would crash on any machine
+ * missing an optional variable.
+ */
+export function selectChildEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of CHILD_ENV_ALLOWLIST) {
+    const value = env[name];
+    if (typeof value === "string") out[name] = value;
+  }
+  return out;
+}
+
+/**
  * Wrap a body so failure is reported DELIBERATELY rather than incidentally.
  *
  * This is what makes `locked` distinguishable from every other fault. Unwrapped,

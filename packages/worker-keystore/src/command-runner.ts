@@ -42,7 +42,7 @@
 import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 
-import type { VaultCommandPlan } from "./command-plan.js";
+import { selectChildEnv, type VaultCommandPlan } from "./command-plan.js";
 import type { CommandRunner } from "./identity-store.js";
 import type { StoreCommandResult } from "./outcome.js";
 
@@ -141,6 +141,11 @@ export function createCommandRunner(deps: { probe?: (path: string) => BlobProbe 
           input: stdin ? Buffer.from(stdin) : undefined,
           maxBuffer: MAX_OUTPUT_BYTES,
           windowsHide: true,
+          // The child gets an ALLOWLISTED environment, never an inherited block.
+          // With no `env:` it would receive everything this process holds —
+          // including the enrollment credential, which lives in an operator-named
+          // variable no denylist could target. See `selectChildEnv`.
+          env: selectChildEnv(process.env),
           // stdio must NOT inherit: a child that inherits this process's stderr
           // could interleave its diagnostics into our logs, and inheriting stdin
           // would hand it whatever the daemon's stdin happens to be.
