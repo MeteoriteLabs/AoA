@@ -156,7 +156,7 @@ Each is stated so a test can fail it. Lane in brackets.
 | **I9** | Protection scope is `CurrentUser`, never `LocalMachine`; the binary is an absolute System32 path, never a PATH lookup; script text and argv are byte-identical to the committed fixture. [A] | Byte-equality vitest in a `*.test.ts` (never `__tests__/support/*.ts`, which classify as runtime under F1) against `tests/fixtures/device-keystore/v1/vectors.json`; a `LocalMachine` or bare-`powershell.exe` variant must be rejected. |
 | **I10** | Wrong entropy, tampered blob, and missing blob are three distinguishable outcomes. [A] | `scripts/probe-os-vault.mjs` on the Windows leg, executing real DPAPI against the same fixture (F20/F21). |
 | **I11** | `keyStoreMode: "os_keychain"` with no injected `identityStore` exits non-zero before any network I/O. [A] | Bootstrap test over the injectable `env`/`proc` seam (`bin/worker-daemon.ts:38-89`), same shape as the existing invalid-config test at `:107-114`. |
-| **I12** | A DSK-001 desktop worker can never be matched work. [A] | Property test: N generated `jobCapabilityRequirements` against `buildDesktopHello(...)` through the **real** matcher (`capabilities.ts:474-486`) → no-match, 100%. Pins F14 in both directions. |
+| **I12** | A DSK-001 desktop worker can never be matched work. [A] | Property test: N generated `jobCapabilityRequirements` against `buildDesktopHello(...)` through the **real** matcher (`capabilities.ts:474-486`) → no-match, 100%. Pins F14 in both directions. **CORRECTED (see D13):** the test must NOT assert through `capacity`. `evaluateStaticLeaseEligibility` overwrites it with `NEUTRAL_LEASE_MATCHER_CAPACITY` (`server/src/services/job-lease-eligibility.ts:20-27, :213`), which forces all three slot counts to 1, so an all-zero capacity contributes ZERO unmatchability and a test that mutates only `capacity` would pass vacuously. Assert through the axis that actually decides, and include a non-vacuity case proving a *matchable* hello IS matched. |
 | **I13** | The session token is never persisted and is dropped after enrollment. [A] | After `enrollOnce`, assert no file under the state dir and no log record contains it, and that the bootstrap result exposes no token field. |
 | **I14** | Revocation and target replacement each disable the *next* worker operation, and the daemon does not re-mint. [A/D] | Embedded-PG integration against `worker-session-auth.ts:158-165`: for `worker.status='revoked'` and `target.deviceGeneration+1` → `WorkerSessionError("target_revoked")`; re-enroll → 401 → `stopAndBackoff`; store still holds the original `workerId`. |
 | **I15** | Owner membership loss disables AoA use at **both** ends: an inactive member's `ownerUserId` cannot be issued an enrollment ticket, and an already-enrolled device fails its next operation. [B/D] | (a) service test on `issueTenantCode` with an inactive/removed membership → `unauthorized` (closes F17); (b) the `!ownerMembershipActive` arm of I14. |
@@ -317,6 +317,22 @@ This closes DAT-004 residual B (F25), whose stated deferral rationale — "the O
 **Cost, stated plainly:** (3) changes `SecretResolveAuthzInput` (`job-fence.ts:180-189`), forcing coordinated edits to `job-control.ts`, `tests/fixtures/secret-resolve/v1/vectors.json`, and `scripts/check-secret-resolve-vectors.mjs`'s independent `decideResolve`. That dual derivation is the gate working as designed, but Lane B **cannot land partially**.
 
 ### D13 — The hello is deliberately unmatchable, and DSK-001 ships one unpackaged composition host
+
+> **CORRECTION (found by adversarially attacking this design before implementing it).** This decision
+> originally claimed the all-zero `capacity` was one of two axes on which job matching fails closed.
+> **It is not an axis at all.** Neither real call site consults the hello's capacity:
+> `evaluateStaticLeaseEligibility` replaces it wholesale with `NEUTRAL_LEASE_MATCHER_CAPACITY`
+> (`server/src/services/job-lease-eligibility.ts:213`), a frozen constant whose `batchSlots`,
+> `browserSessionSlots` and `serviceSlots` are all **1** and whose free-resource fields are 0
+> (`:20-27`) — so the slot check always passes and the zero free-resource values trivially satisfy
+> the `>` ceiling comparisons. The placement path substitutes live poll capacity instead
+> (`job-placement.ts:544-546`).
+>
+> Keep the all-zero capacity for byte-stability, but unmatchability must rest on the OTHER axis
+> alone, and I12's property test must not assert through capacity — it would pass for the wrong
+> reason and prove nothing. This is exactly the vacuous-guard failure mode the program's process
+> exists to catch, caught here before a line of code was written rather than after.
+
 
 `buildDesktopHello` emits `reportedCapabilities: []`, all-zero `capacity` (legal — `nonNegativeIntSchema`, `capabilities.ts:89-98`), a real `platform` from `node:os`/`process` against the closed enums at `:101-113` (`windows` is a legal `WORKER_OS`), and `policyHash = UNPROVISIONED_POLICY_HASH` — a named exported constant, `sha256("aoa.worker.policy.unprovisioned.v1")`, satisfying `sha256DigestSchema` while being structurally unable to equal a real profile hash. Job matching then fails closed on **both** axes (`capabilities.ts:474-486`). This works because the enroll path validates neither field (F14).
 

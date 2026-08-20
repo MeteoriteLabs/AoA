@@ -9,9 +9,19 @@
 // mechanically confined by `scripts/check-worker-keystore-boundary.mjs` rather
 // than by review.
 //
-// The store is SYNCHRONOUS because the port it ultimately satisfies is:
-// `DeviceKeyStore.load(): DeviceKey | null`
+// The store is SYNCHRONOUS because the daemon-side port it will eventually be
+// adapted to is synchronous: `DeviceKeyStore.load(): DeviceKey | null`
 // (`packages/worker-daemon/src/identity/key-store.ts:32-40`).
+//
+// NOTE — it is NOT structurally that port, and an earlier version of this comment
+// implied it was. `DeviceKeyStore` is `load(): DeviceKey | null` + `save(key)` +
+// `clear()`; this is `load(): DeviceIdentityRecord | null` + `saveIfAbsent(record)`
+// + `clear()`. Different return type, different write method, different write
+// semantics. An adapter is MANDATORY, and by the boundary rule it cannot live
+// under `packages/worker-daemon/src` — no file there may name this package. The
+// difference is deliberate: `DeviceKeyStore` persists a key with no `workerId`
+// and its `save()` is a plain overwrite, so it can satisfy neither I6 (one
+// artifact) nor I4 (compare-and-set).
 //
 // I2 — every outcome other than `present`/`absent` throws `DeviceKeyStoreError`.
 //      `load()` never returns a key it could not authenticate, and never returns
@@ -30,7 +40,18 @@ import { decodeIdentityEnvelope, encodeIdentityEnvelope, type DeviceIdentityReco
 /**
  * Mirrors `DeviceKeyStoreError` from the worker-daemon port by NAME rather than
  * by import, so this package does not drag the daemon's module graph into a pure
- * unit test. The daemon's fail-closed handling keys on the name.
+ * unit test.
+ *
+ * CORRECTION — an earlier version of this comment claimed "the daemon's
+ * fail-closed handling keys on the name". It does not. Grep confirms nothing in
+ * `packages/worker-daemon/src` or `server/src` ever tests
+ * `err.name === "DeviceKeyStoreError"`; the fail-closed property comes ENTIRELY
+ * from the throw being UNCAUGHT.
+ *
+ * That matters for whoever wires this up: adding a broad `catch` anywhere around
+ * the enroller silently regresses I3 ("a store that cannot open never results in
+ * a new identity"), because there is no name check to fall back on. The name is
+ * for humans reading logs; the guarantee is the uncaught throw.
  */
 export class DeviceKeyStoreError extends Error {
   constructor(message: string) {
