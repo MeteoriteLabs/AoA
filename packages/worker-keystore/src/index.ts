@@ -41,3 +41,7 @@ export {
   type CommandRunner,
   type DeviceIdentityStore,
 } from "./identity-store.js";
+
+// The subprocess host. Importing this pulls in `node:child_process`; every other
+// module in this package is deliberately OS-free.
+export { createCommandRunner } from "./command-runner.js";
