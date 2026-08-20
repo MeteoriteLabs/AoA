@@ -113,7 +113,33 @@ export async function enrollOnce(deps: EnrollOnceDeps): Promise<EnrollmentOutcom
   let identity = deps.identityStore.load();
   const receipt = deps.receiptStore.load();
 
-  // (2) Steady state. No ticket read, no network — ever again.
+  // (2a) THE RECEIPT AND THE IDENTITY MUST AGREE.
+  //
+  // Four quadrants are possible on disk, and only three were handled. A receipt
+  // WITHOUT an identity is a device claiming an enrolment whose private key is
+  // gone — AV quarantine, a selective restore, an operator deleting "the key
+  // file". Falling through to the mint gate (which tests `identity === null`
+  // alone) minted a SECOND identity that the server denies permanently.
+  //
+  // Refusing does not recover the device: the precondition already destroyed the
+  // key. It converts a silent, durable false success into a diagnosable failure.
+  // Without it the worst case is not the failed mint but what follows — once a
+  // receipt exists, every later boot short-circuits below and reports the device
+  // enrolled as the receipt's worker while it holds a different worker's key,
+  // forever, without ever retrying or erroring.
+  if (receipt && !identity) {
+    throw new EnrollOnceError(
+      "an enrollment receipt exists but the device identity is missing; " +
+        "refusing to mint a second identity (reset the device deliberately to re-enrol)",
+    );
+  }
+  if (identity && receipt && identity.workerId !== receipt.workerId) {
+    throw new EnrollOnceError(
+      "the stored identity and enrollment receipt disagree about the worker; refusing to proceed",
+    );
+  }
+
+  // (2b) Steady state. No ticket read, no network — ever again.
   if (identity && receipt) {
     return Object.freeze({
       enrolled: true,
@@ -197,13 +223,24 @@ export async function enrollOnce(deps: EnrollOnceDeps): Promise<EnrollmentOutcom
     idempotencyKey,
   });
 
-  deps.receiptStore.saveIfAbsent({
+  // The receipt write's verdict is LOAD-BEARING, not fire-and-forget. An
+  // `already_present` here means a receipt existed that `load()` did not return
+  // at the top of this function — so it disagrees with what we just enrolled.
+  // Discarding that let the stale receipt survive and be reported by every later
+  // boot. Refusing surfaces it while an operator can still act.
+  const receiptWrite = deps.receiptStore.saveIfAbsent({
     v: 1,
     workerId: identity.workerId,
     targetId: identity.targetId,
     deviceGeneration: identity.deviceGeneration,
     deviceThumbprint: result.deviceThumbprint,
   });
+  if (receiptWrite === "already_present") {
+    throw new EnrollOnceError(
+      "an enrollment receipt already existed for this device after enrolling; " +
+        "refusing to leave a receipt that disagrees with the stored identity",
+    );
+  }
 
   // `result.session` is dropped here and never returned (I13).
   return Object.freeze({

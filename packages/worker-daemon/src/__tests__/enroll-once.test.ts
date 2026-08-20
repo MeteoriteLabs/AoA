@@ -252,3 +252,70 @@ describe("DSK-001 — a target mismatch is refused, not silently re-enrolled", (
     expect(d.randomWorkerId).not.toHaveBeenCalled();
   });
 });
+
+// -- found by adversarially reviewing the completed lane ----------------------
+
+describe("DSK-001 — the receipt and the identity must agree", () => {
+  const receipt = {
+    v: 1 as const,
+    workerId: WORKER_ID,
+    targetId: TARGET_ID,
+    deviceGeneration: 1,
+    deviceThumbprint: "tp-1",
+  };
+
+  it("REFUSES when a receipt exists but the identity is gone, instead of minting", async () => {
+    // The quadrant the original code fell straight through: `receipt` was read
+    // only inside `if (identity && receipt)`, and the mint gate was
+    // `identity === null` alone. So a device whose key file was lost — AV
+    // quarantine, a selective restore, an operator deleting "the key file" —
+    // minted a SECOND identity the server denies permanently.
+    //
+    // The precondition already destroyed the private key, so refusing does not
+    // recover the device; it makes the failure diagnosable instead of turning it
+    // into a silent, durable false success.
+    const d = deps({
+      identityStore: memoryStore<DeviceIdentityRecord>(),
+      receiptStore: memoryStore(receipt),
+    });
+    await expect(enrollOnce(d)).rejects.toThrow(/receipt/i);
+    expect(d.randomWorkerId).not.toHaveBeenCalled();
+    expect(d.generateKey).not.toHaveBeenCalled();
+    expect(d.renew).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES when both exist but name DIFFERENT workers", async () => {
+    // Otherwise the device short-circuits forever, reporting itself enrolled as
+    // the receipt's worker while holding a different worker's key — a permanent
+    // silent disagreement that no later boot can detect.
+    const d = deps({
+      identityStore: memoryStore<DeviceIdentityRecord>(record()),
+      receiptStore: memoryStore({ ...receipt, workerId: "99999999-9999-4999-8999-999999999999" }),
+    });
+    await expect(enrollOnce(d)).rejects.toThrow(/disagree|mismatch/i);
+  });
+
+  it("still short-circuits when they AGREE", async () => {
+    // Non-vacuity: the cross-check must not break the steady-state path.
+    const d = deps({
+      identityStore: memoryStore<DeviceIdentityRecord>(record()),
+      receiptStore: memoryStore(receipt),
+    });
+    const out = await enrollOnce(d);
+    expect(out.skipped).toBe(true);
+    expect(out.workerId).toBe(WORKER_ID);
+  });
+
+  it("REFUSES when the receipt write loses to a DISAGREEING existing receipt", async () => {
+    // `saveIfAbsent`'s return was discarded, so a pre-existing receipt naming a
+    // different worker survived silently and every later boot reported it.
+    const d = deps({
+      receiptStore: {
+        load: () => null,
+        saveIfAbsent: () => "already_present" as const,
+        clear: () => {},
+      },
+    });
+    await expect(enrollOnce(d)).rejects.toThrow(/receipt/i);
+  });
+});
