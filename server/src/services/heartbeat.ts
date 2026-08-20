@@ -5207,6 +5207,15 @@ export function heartbeatService(
       if (
         distributedRolloutHook &&
         distributedRolloutState === "canary" &&
+        // M6 — the SAME wake predicate the active-convert block carries, for the
+        // same reason. Without it, a mention / execution_* / null wake skips the
+        // harness checkout (heartbeat.ts:3212) while this block still fires; the
+        // D3a bypass probe then fails because `issues.checkoutRunId !== run.id`,
+        // so `admitAndSubmit` drives its OWN checkout and silently flips a backlog
+        // task the founder merely mentioned into `in_progress` with `startedAt`
+        // reset. That is the exact parity break CLI-005's review closed for active
+        // mode. Canary must fire only on the wakes the harness checks out for.
+        shouldAutoCheckoutForWake &&
         distributedRolloutOrganizationId &&
         issueId &&
         issueContext &&
@@ -6854,6 +6863,10 @@ export function heartbeatService(
         attemptId: string;
       }) => Promise<readonly AttemptEventRow[]>;
     }): Promise<void> {
+      // Per-projection caches for the M4/M5 hoist. Scoped to this one call, so a
+      // concurrent projection for a different run never shares them.
+      let projectionRun: Awaited<ReturnType<typeof getRun>> | undefined;
+      let projectionSeqOffset: number | undefined;
       const handler = createAttemptTerminalProjectionHandler({
         findRunForAttempt: async ({ jobId, attemptId, companyId }) =>
           db
@@ -6896,15 +6909,24 @@ export function heartbeatService(
         },
 
         projector: createCanaryRunProjector({
+          // M4/M5 — the run row and the seq base are resolved ONCE per projection,
+          // not once per event. Re-reading `max(seq)` inside the loop made the base
+          // grow with every insert, so projected seqs went 1, 3, 6, 10, … —
+          // sum-of-sequence growth that overflows `heartbeat_run_events.seq`
+          // (int4) at roughly 65k events, where the projector's blanket catch would
+          // silently swallow the failure. It also issued three sequential
+          // round-trips per event inside the worker's awaited ACK path.
           appendRunEvent: async (event) => {
-            const run = await getRun(event.runId);
+            const run = projectionRun ?? (projectionRun = await getRun(event.runId));
             if (!run) return;
-            const maxSeq = await db
-              .select({ value: sql<number | null>`max(${heartbeatRunEvents.seq})` })
-              .from(heartbeatRunEvents)
-              .where(eq(heartbeatRunEvents.runId, run.id))
-              .then((rows) => rows[0]?.value ?? null);
-            await appendRunEvent(run, projectionSeqBase(maxSeq) + event.seq, {
+            projectionSeqOffset ??= projectionSeqBase(
+              await db
+                .select({ value: sql<number | null>`max(${heartbeatRunEvents.seq})` })
+                .from(heartbeatRunEvents)
+                .where(eq(heartbeatRunEvents.runId, run.id))
+                .then((rows) => rows[0]?.value ?? null),
+            );
+            await appendRunEvent(run, projectionSeqOffset + event.seq, {
               eventType: event.eventType,
               stream: event.stream,
               message: event.message,

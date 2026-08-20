@@ -180,3 +180,33 @@ describe("CLI-006/Task 6 — no bare await can reject out of the outer finally",
     expect(src).toContain("heartbeat: failed to release thread workspace run lock in finally");
   });
 });
+
+// -- M6: the canary guard must carry the SAME wake predicate as CLI-005 -------
+//
+// Found by adversarial review. CLI-005's active-convert block gates on
+// `shouldAutoCheckoutForWake` and its comment says why: without it, convert mode
+// checks out (flips status to in_progress, resets startedAt, re-broadcasts
+// issue.status_changed) on mention / execution_* / null wakes that legacy leaves
+// to the agent's own self-checkout.
+//
+// The canary block omitted it. On such a wake the harness checkout is skipped
+// (heartbeat.ts:3212), the canary block fires anyway, the D3a bypass probe
+// `taskSourceIsAdmitted` fails because `issues.checkoutRunId !== run.id`, and so
+// `admitAndSubmit` drives its OWN checkout — silently flipping a backlog task the
+// founder merely mentioned into `in_progress`. Exactly the parity break CLI-005's
+// review closed for active mode.
+
+describe("CLI-006/M6 — canary fires only on wakes the harness checks out for", () => {
+  it("carries shouldAutoCheckoutForWake, like the active-convert block", () => {
+    const canary = HEARTBEAT_SRC.findIndex((l) => l.includes('distributedRolloutState === "canary"'));
+    expect(canary, "expected the canary guard").toBeGreaterThan(-1);
+    const guard = HEARTBEAT_SRC.slice(canary - 3, canary + 24).join(" ");
+    expect(guard).toContain("shouldAutoCheckoutForWake");
+  });
+
+  it("keeps the active-convert block's predicate too, so the two cannot diverge", () => {
+    const active = HEARTBEAT_SRC.findIndex((l) => l.includes('distributedRolloutState === "active"'));
+    const guard = HEARTBEAT_SRC.slice(active, active + 8).join(" ");
+    expect(guard).toContain("shouldAutoCheckoutForWake");
+  });
+});
