@@ -109,6 +109,29 @@ export function classifyStoreOutcome(result: StoreCommandResult): KeyStoreProbeO
     return { kind: "unavailable", detail };
   }
 
+  // (3) A ZERO EXIT IS THE AUTHORITY FOR SUCCESS, and stderr may not override it.
+  //
+  // This ordering was corrected after running the real Windows probe: PowerShell
+  // writes CLIXML progress noise to STDERR on a SUCCESSFUL run ("Preparing
+  // modules for first use."). With the fault matchers consulted first, a
+  // successful load whose incidental stderr happened to contain a marker word was
+  // classified `unavailable` — discarding a perfectly good key and, because the
+  // daemon treats a store fault as fatal, refusing to start. stderr is advisory;
+  // the exit code is not.
+  //
+  // A clean success must still carry real, non-whitespace bytes. An empty or
+  // whitespace-only stdout on exit 0 is the measured `-File` fail-open, and that
+  // is a FAULT — never an absence.
+  if (result.exitCode === 0) {
+    const text = new TextDecoder().decode(result.stdout);
+    if (text.trim().length > 0) return { kind: "present", envelope: result.stdout };
+    return {
+      kind: "corrupt",
+      detail: "store reported success but returned no envelope bytes",
+    };
+  }
+
+  // (4) Non-zero only from here down, so stderr is now genuinely diagnostic.
   if (has(result.stderr, UNAVAILABLE_MARKERS)) {
     return { kind: "unavailable", detail: result.stderr.trim() };
   }
@@ -119,19 +142,7 @@ export function classifyStoreOutcome(result: StoreCommandResult): KeyStoreProbeO
     return { kind: "locked", detail: result.stderr.trim() || "store could not be opened" };
   }
 
-  // (3) A clean success must carry real, non-whitespace bytes. An empty or
-  // whitespace-only stdout on exit 0 is the measured `-File` fail-open, and it is
-  // a FAULT — not an absence.
-  if (result.exitCode === 0) {
-    const text = new TextDecoder().decode(result.stdout);
-    if (text.trim().length > 0) return { kind: "present", envelope: result.stdout };
-    return {
-      kind: "corrupt",
-      detail: "store reported success but returned no envelope bytes",
-    };
-  }
-
-  // (4) Any other non-zero exit. Deliberately NOT `absent`: the measured
+  // (5) Any other non-zero exit. Deliberately NOT `absent`: the measured
   // `-EncodedCommand` shape lands here on a genuine crypto failure.
   return {
     kind: "corrupt",

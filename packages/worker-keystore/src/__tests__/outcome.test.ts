@@ -139,3 +139,60 @@ describe("DSK-001/D5 — the outcome union is total and closed", () => {
     }
   });
 });
+
+// -- found by running the real Windows probe ---------------------------------
+//
+// PowerShell writes CLIXML progress noise to STDERR on a SUCCESSFUL run
+// ("Preparing modules for first use."). An earlier version of the classifier
+// consulted the stderr markers BEFORE checking the exit code, so a successful
+// load whose incidental stderr happened to contain a marker word would be
+// misclassified as `unavailable` or `denied` — discarding a perfectly good key
+// and, because the daemon treats a fault as fatal, refusing to start.
+//
+// A zero exit with real envelope bytes is a success. Nothing on stderr may
+// override it.
+
+describe("DSK-001 — incidental stderr never overrides a successful exit", () => {
+  const utf8b = (s: string) => new TextEncoder().encode(s);
+
+  it("returns present despite CLIXML progress noise on stderr", () => {
+    const out = classifyStoreOutcome({
+      exitCode: 0,
+      signal: null,
+      stdout: utf8b("ZW52ZWxvcGU="),
+      stderr: '#< CLIXML <Objs Version="1.1.0.1"><AV>Preparing modules for first use.</AV></Objs>',
+      absenceSignalled: false,
+    });
+    expect(out.kind).toBe("present");
+  });
+
+  it("returns present even when stderr contains a marker word, on a zero exit", () => {
+    // Deliberately adversarial: the noise contains words the fault matchers look
+    // for. The exit code is the authority for success.
+    for (const noise of ["spawn helper ready", "ENOENT while probing modules", "access is denied (advisory)"]) {
+      const out = classifyStoreOutcome({
+        exitCode: 0,
+        signal: null,
+        stdout: utf8b("ZW52ZWxvcGU="),
+        stderr: noise,
+        absenceSignalled: false,
+      });
+      expect(out.kind, noise).toBe("present");
+    }
+  });
+
+  it("still classifies those markers as faults when the exit code is NOT zero", () => {
+    expect(
+      classifyStoreOutcome({
+        exitCode: 9, signal: null, stdout: new Uint8Array(),
+        stderr: "spawn ENOENT", absenceSignalled: false,
+      }).kind,
+    ).toBe("unavailable");
+    expect(
+      classifyStoreOutcome({
+        exitCode: 9, signal: null, stdout: new Uint8Array(),
+        stderr: "Access is denied.", absenceSignalled: false,
+      }).kind,
+    ).toBe("denied");
+  });
+});
