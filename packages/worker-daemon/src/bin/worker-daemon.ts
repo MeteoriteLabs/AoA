@@ -29,6 +29,12 @@ import {
   type ShutdownSignal,
 } from "../lifecycle/shutdown.js";
 import { createStartupSteps, runStartupSteps, type StartupReconciler } from "../lifecycle/startup-steps.js";
+import {
+  resolveCustody,
+  type DeviceEnrollmentReceipt,
+  type DeviceIdentityRecord,
+  type DeviceRecordStore,
+} from "../identity/device-identity-store.js";
 
 /** The subset of `process` the entrypoint needs; injected for tests. */
 export interface ProcessLike {
@@ -84,6 +90,17 @@ export interface BootstrapDeps {
    * composition root to actually run at boot.
    */
   readonly reconciler?: StartupReconciler;
+  /**
+   * DSK-001 — OS-custody record stores, injected by the HOST.
+   *
+   * Typed structurally and never imported from the keystore package:
+   * `scripts/check-worker-daemon-boundary.mjs` rejects a bare specifier the
+   * moment a file under this `src` names one outside the two-dependency pin, so
+   * the daemon declares the shape and the host supplies something satisfying it.
+   * Absent in `mounted_secret` mode, required in `os_keychain` (I11).
+   */
+  readonly identityStore?: DeviceRecordStore<DeviceIdentityRecord>;
+  readonly receiptStore?: DeviceRecordStore<DeviceEnrollmentReceipt>;
 }
 
 export interface BootstrapResult {
@@ -123,6 +140,23 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
     },
     "worker-daemon starting",
   );
+
+  // DSK-001 (I11) — CUSTODY BEFORE THE SOCKET.
+  //
+  // `keyStoreMode` has been parsed since WRK-002 and read only to be logged just
+  // above; nothing constructed a store from it. So a deployment configured for
+  // `os_keychain` with no store injected would bind its health listener and
+  // report itself UP, discovering it had no custody only when something tried to
+  // enrol — by which point an operator has been told the worker is healthy.
+  //
+  // The decision is a pure function so it is provable without a socket, and an
+  // unknown mode fails closed rather than degrading to a weaker custody model.
+  const custody = resolveCustody(config.keyStoreMode, deps.identityStore, deps.receiptStore);
+  if (custody.kind === "refuse") {
+    logger.error({ reason: custody.reason }, "worker-daemon custody unavailable; refusing to start");
+    deps.proc.exit(1);
+    return { ok: false, config, logger };
+  }
 
   const metrics = makeMetrics();
   const health = await startHealth({ host: config.health.host, port: config.health.port }, metrics);
