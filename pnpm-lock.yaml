@@ -639,6 +639,25 @@ importers:
         specifier: ^3.2.6
         version: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
 
+  packages/worker-keystore:
+    dependencies:
+      '@armyofagents/worker-daemon':
+        specifier: workspace:*
+        version: link:../worker-daemon
+      '@armyofagents/worker-protocol':
+        specifier: workspace:*
+        version: link:../worker-protocol
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.6
+        version: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
+
   packages/worker-protocol:
     dependencies:
       zod:
