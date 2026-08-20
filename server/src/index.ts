@@ -1197,7 +1197,11 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
           `cannot revoke the fence for job ${jobId}: company ${companyId} resolves to no Organization`,
         );
       }
-      await jobReconciliationForCancel.requestCancellation({
+      // H1 — the OUTCOME is load-bearing, not fire-and-forget. Only `queued` /
+      // `already_requested` mean a fenced worker will emit a terminal event; the
+      // rest mean nothing ever will, and the caller must write the legacy
+      // terminal instead of leaving the run pinned at `running` forever.
+      return jobReconciliationForCancel.requestCancellation({
         organizationId,
         companyId,
         jobId,

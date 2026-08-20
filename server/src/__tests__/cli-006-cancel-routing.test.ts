@@ -35,7 +35,8 @@ const distributedRun = {
 };
 
 const port: DistributedCancellationPort = {
-  requestCancellation: async () => {},
+  // `queued` = a fenced worker will deliver the terminal event (see H1).
+  requestCancellation: async () => ({ status: "queued" }),
 };
 
 beforeEach(() => {
@@ -105,7 +106,7 @@ describe("CLI-006/Task 4 — the module-level port", () => {
   });
 
   it("carries the graceful flag and the reason through to the fence revoke", async () => {
-    const requestCancellation = vi.fn(async () => {});
+    const requestCancellation = vi.fn(async () => ({ status: "queued" }));
     setDistributedCancellationPort({ requestCancellation });
     await getDistributedCancellationPort()!.requestCancellation({
       jobId: JOB,
@@ -146,7 +147,7 @@ describe("CLI-006/4-D1 — dispatchCancel", () => {
   });
 
   it("revokes the fence and tells the caller NOT to write a terminal", async () => {
-    const requestCancellation = vi.fn(async () => {});
+    const requestCancellation = vi.fn(async () => ({ status: "queued" }));
     await expect(
       dispatchCancel({ run: distributedRun, ...RUN_CTX, port: { requestCancellation }, onError: "propagate" }),
     ).resolves.toEqual({ writeLegacyTerminal: false });
@@ -252,5 +253,103 @@ describe("CLI-006/4-D2 — the bulk writer excludes distributed runs in SQL", ()
     const route = lines.findIndex((l) => l.includes("routeDistributedCancelsForRuns(db, runsToTerminate"));
     expect(terminate).toBeGreaterThan(-1);
     expect(route).toBeGreaterThan(terminate);
+  });
+});
+
+// -- H1: a cancel that no worker will ever terminalize must fall back to legacy --
+//
+// Found by adversarial review, and it is the difference between "cancel" and
+// "this run can never be cancelled again".
+//
+// `repos.jobControl.requestCancellation` returns six statuses. Three of them mean
+// NOTHING will ever emit a `job_events` terminal for this attempt:
+//
+//   cancelled   — no live lease, so the repo finalizes job+attempt DIRECTLY with
+//                 row updates (job-control.ts:3001-3033) precisely because
+//                 claimReadyOutbox would never dispatch it. No event is written.
+//   job_terminal— already terminal.
+//   not_found   — no visible job row.
+//
+// `onAttemptTerminal` has exactly ONE producer: the worker event-ingest path. So
+// for those three, treating the cancel as "the distributed side owns the terminal"
+// pins the run at `running` forever — and because every retry returns
+// `job_terminal`, it is then permanently uncancellable, recoverable only by hand.
+//
+// An unleased attempt is not an edge case: it is what a first canary produces,
+// since the worker daemon is inert outside the D1 topology (E4-D12).
+
+describe("CLI-006/H1 — dispatchCancel honours the cancellation outcome", () => {
+  const withStatus = (status: string) => ({
+    requestCancellation: async () => ({ status }) as { status: string },
+  });
+
+  it("leaves the terminal to the worker when a fenced worker will deliver one", async () => {
+    for (const status of ["queued", "already_requested"] as const) {
+      const out = await dispatchCancel({
+        run: distributedRun,
+        ...RUN_CTX,
+        port: withStatus(status),
+        onError: "propagate",
+      });
+      expect(out.writeLegacyTerminal, status).toBe(false);
+    }
+  });
+
+  it("writes the legacy terminal when NOTHING will ever project one", async () => {
+    for (const status of ["cancelled", "job_terminal", "not_found", "no_active_lease"] as const) {
+      const out = await dispatchCancel({
+        run: distributedRun,
+        ...RUN_CTX,
+        port: withStatus(status),
+        onError: "propagate",
+      });
+      expect(out.writeLegacyTerminal, status).toBe(true);
+      expect(out.degraded, status).toBe("no_distributed_terminal_expected");
+    }
+  });
+
+  it("treats an unrecognised status as no-terminal-expected, not as handled", async () => {
+    // Fail towards a killable run: a status this build does not understand must
+    // not be assumed to mean "a worker will finish it".
+    const out = await dispatchCancel({
+      run: distributedRun,
+      ...RUN_CTX,
+      port: withStatus("some_future_status"),
+      onError: "propagate",
+    });
+    expect(out.writeLegacyTerminal).toBe(true);
+  });
+
+  it("still treats a THROW as no-terminal-write — the worker may be live (4-D1)", async () => {
+    // H1 must not weaken 4-D1. A throw is not an outcome; the worker may be
+    // executing, so a local `cancelled` would still be a lie.
+    const boom = { requestCancellation: async () => { throw new Error("unreachable"); } };
+    const out = await dispatchCancel({ run: distributedRun, ...RUN_CTX, port: boom, onError: "skip" });
+    expect(out.writeLegacyTerminal).toBe(false);
+  });
+});
+
+// -- H3: the issue execution lock must NOT be released for a live attempt -----
+//
+// The bulk terminal update was narrowed to exclude distributed-owned runs, but
+// the `issues` update immediately below it still used the UNFILTERED id list. So
+// a distributed run's issue lock was released while its worker was still
+// executing. `heartbeat.cancelRun`'s sibling path gets this right and says why.
+//
+// The plan's own note — "the issue-lock release must still cover both subsets" —
+// was wrong. It assumed an ineligible task cannot be claimed. For
+// `reason: "reassigned"` the task stays perfectly eligible, just for a DIFFERENT
+// agent, so the lock going free lets that agent check out and execute the same
+// task while the attempt runs. The per-agent concurrency clamp does not help.
+
+describe("CLI-006/H3 — the issue lock release excludes distributed runs", () => {
+  const issues = src("../services/issues.ts");
+
+  it("releases the lock only for the legacy subset", () => {
+    expect(issues).toContain("inArray(issues.executionRunId, legacyRunIds)");
+  });
+
+  it("no longer releases it for the unfiltered id list", () => {
+    expect(issues).not.toContain("inArray(issues.executionRunId, activeRunIds)");
   });
 });

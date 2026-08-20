@@ -5233,7 +5233,31 @@ export function heartbeatService(
         // TTL, no sweeper. `cli-006-seam-suppression.test.ts` asserts this position
         // structurally, because nothing else in this repo can.
         if (shouldSuppressLegacyExecution(canaryExecutionOwner)) {
-          await markRunHandedOffToDistributed(run, canaryExecutionOwner!);
+          // H2 — this try has only a `finally`, no `catch`, so an unguarded throw
+          // here reaches `executeRun`'s outer catch, which writes `adapter_failed`
+          // AND calls `releaseIssueExecutionAndPromote` — promoting a deferred wake
+          // into a NEW run on the same issue. The attempt is already durably
+          // lease-eligible at this point, so that is two executors on one task.
+          //
+          // Suppress regardless of whether the marker landed. Letting
+          // `adapter.execute` run is CERTAIN double execution; an unmarked
+          // suppressed run is a recoverable inconsistency, and it is logged at
+          // error level precisely because a reap can later mistake it for a
+          // crashed legacy run.
+          try {
+            await markRunHandedOffToDistributed(run, canaryExecutionOwner!);
+          } catch (markerErr) {
+            logger.error(
+              {
+                err: markerErr,
+                runId: run.id,
+                jobId: canaryExecutionOwner!.owner === "distributed" ? canaryExecutionOwner!.jobId : null,
+                attemptId:
+                  canaryExecutionOwner!.owner === "distributed" ? canaryExecutionOwner!.attemptId : null,
+              },
+              "[CLI-006] handoff marker write FAILED after a lease-eligible placement — suppressing the legacy executor anyway; this run is handed off but unmarked",
+            );
+          }
           return; // CLI-006-SUPPRESSION-RETURN
         }
         adapterResult = await adapter.execute({
@@ -6708,8 +6732,12 @@ export function heartbeatService(
     run: typeof heartbeatRuns.$inferSelect,
     owner: RunExecutionOwner,
   ) {
+    // H2 — the marker UPDATE is the ONLY critical statement here. The lifecycle
+    // event below is visibility, and a failure to append it must not cost the
+    // marker, so it is separately guarded.
     const patch = buildHandoffRunPatch(owner, new Date());
     await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, run.id));
+    try {
     const maxSeq = await db
       .select({ value: sql<number | null>`max(${heartbeatRunEvents.seq})` })
       .from(heartbeatRunEvents)
@@ -6722,6 +6750,9 @@ export function heartbeatService(
       message: `Execution handed off to distributed attempt ${patch.distributedAttemptId}`,
       payload: { jobId: patch.distributedJobId, attemptId: patch.distributedAttemptId },
     });
+    } catch (eventErr) {
+      logger.warn({ err: eventErr, runId: run.id }, "[CLI-006] handoff lifecycle event failed (marker is durable)");
+    }
   }
 
   async function finalizeDistributedRunImpl(input: {

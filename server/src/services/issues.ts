@@ -163,7 +163,7 @@ async function cancelActiveWorkQuestionsForIssue(
         inArray(agentWakeupRequests.id, wakeupIds),
       ));
       const activeRuns = await tx
-        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, executionOwner: heartbeatRuns.executionOwner })
         .from(heartbeatRuns)
         .where(and(
           eq(heartbeatRuns.companyId, input.companyId),
@@ -177,6 +177,19 @@ async function cancelActiveWorkQuestionsForIssue(
         .filter((run) => run.status === "running")
         .map((run) => run.id);
       const activeRunIds = activeRuns.map((run) => run.id);
+      // CLI-006 (H3) — the issue EXECUTION LOCK must not be handed back while a
+      // distributed attempt is still executing. Releasing it lets a different
+      // agent check the same task out and run it concurrently; the per-agent
+      // concurrency clamp does not help, because it is a different agent. The
+      // sibling path in `heartbeat.cancelRun` already gets this right.
+      //
+      // The earlier note "the release must cover both subsets" was wrong: it
+      // assumed an ineligible task cannot be claimed, but for `reassigned` the
+      // task stays perfectly eligible — just for someone else. The projector
+      // releases the lock when the attempt's real terminal arrives.
+      const legacyRunIds = activeRuns
+        .filter((run) => run.executionOwner !== "distributed")
+        .map((run) => run.id);
       if (activeRunIds.length > 0) {
         // CLI-006 (4-D2) — this is a BULK terminal write that bypasses
         // `setRunStatus` entirely, so the CLI-006 terminal latch does not protect
@@ -207,7 +220,7 @@ async function cancelActiveWorkQuestionsForIssue(
         }).where(and(
           eq(issues.companyId, input.companyId),
           eq(issues.id, input.issueId),
-          inArray(issues.executionRunId, activeRunIds),
+          inArray(issues.executionRunId, legacyRunIds),
         ));
       }
     }

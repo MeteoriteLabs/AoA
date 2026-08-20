@@ -44,7 +44,7 @@ export interface DistributedCancellationPort {
     companyId: string;
     reason: string;
     graceful: boolean;
-  }): Promise<void>;
+  }): Promise<{ status: string }>;
 }
 
 let registeredPort: DistributedCancellationPort | undefined;
@@ -67,7 +67,9 @@ export type CancelRouteDegradation =
   | "no_distributed_cancellation_port"
   | "missing_distributed_job_id"
   /** The port was present and the fence revoke FAILED. Not the same thing. */
-  | "cancellation_request_failed";
+  | "cancellation_request_failed"
+  /** The revoke succeeded, but no worker will ever emit a terminal for it. */
+  | "no_distributed_terminal_expected";
 
 export type CancelRoute =
   | { readonly route: "distributed"; readonly jobId: string }
@@ -145,13 +147,31 @@ export async function dispatchCancel(input: {
   }
 
   try {
-    await input.port!.requestCancellation({
+    const outcome = await input.port!.requestCancellation({
       jobId: route.jobId,
       companyId: input.companyId,
       reason: input.reason,
       graceful: input.graceful,
     });
-    return { writeLegacyTerminal: false };
+    // H1 — the outcome decides who terminalizes. `requestCancellation` returns six
+    // statuses, and only two of them mean a fenced worker will deliver a terminal
+    // event. The other four mean NOTHING will: `cancelled` is the no-live-lease
+    // path, where the repo finalizes job+attempt DIRECTLY with row updates
+    // (job-control.ts:3001-3033) and writes no `job_events` row; `job_terminal`
+    // and `not_found` never had one coming.
+    //
+    // `onAttemptTerminal` has exactly one producer — the worker event-ingest path
+    // — so treating those as "the distributed side owns it" pins the run at
+    // `running` forever, and since every retry then returns `job_terminal`, the
+    // run becomes permanently UNCANCELLABLE. An unleased attempt is the ordinary
+    // first-canary state, not an edge case (E4-D12 keeps the daemon inert outside
+    // the D1 topology).
+    //
+    // Unknown statuses fail towards a killable run.
+    if (outcome.status === "queued" || outcome.status === "already_requested") {
+      return { writeLegacyTerminal: false };
+    }
+    return { writeLegacyTerminal: true, degraded: "no_distributed_terminal_expected" };
   } catch (err) {
     if (input.onError === "propagate") throw err;
     // Skipped, but deliberately NOT terminalized — the worker is still live.
