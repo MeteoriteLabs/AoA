@@ -34,8 +34,8 @@ One canary Organization's coding run now transfers execution ownership from the 
 ## 2. Evidence
 
 - **PR gate green** on the branch tip, all jobs including `ci-required`.
-- **Live D1 lane green — 40/40, 0 skipped** on `8324e434b`. Two control planes, real workers, Toxiproxy, MinIO, fake provider. This only ran because Task 7 bumped `docker/d1/campaign.env`; `server/src` is off that lane's path filter, so the entire seam would otherwise have been invisible to it.
-  > **The trap bites twice.** Every fix after `8324e434b` — H1/H2/H3, M6, M4/M5, and round 2 — is `server/src`-only and therefore *also* invisible to that filter, so the 40/40 above does **not** cover the shipped code. The nonce was bumped a second time to re-prove the final state. **Bump `campaign.env` after the last `server/src` change, not once per ticket.**
+- **Live D1 lane green — 40/40, 0 skipped, on `fb963d71c`** — the final state, review fixes and round 2 included. Two control planes, real workers, Toxiproxy, MinIO, fake provider.
+  > **The nonce had to be bumped three times, and that is the lesson.** `server/src` is off `d1-merge-train.yml`'s push path filter, so the first bump proved only `8324e434b`; every fix after it (H1/H2/H3, then M6 + M4/M5, then round 2) was `server/src`-only and therefore invisible to the lane. A green D1 on an earlier SHA says nothing about the code that ships. **Bump `campaign.env` after the LAST `server/src` change, not once per ticket** — and re-check which SHA the lane actually ran before citing it as evidence.
 - **163 tests** across 11 CLI-006 files.
 - **Seven always-on policy checkers** pass.
 - **Every guard mutation-tested.** Removing any of these turns the suite RED: the `execution_owner` predicate; the `expired`→`timed_out` mapping; the suppression `return`'s position inside the inner `try`; a throw latching a local terminal; the `propagate` branch; the bulk SQL exclusion; one writer's cancel routing; the H1 outcome mapping; the H3 lock narrowing; the M6 wake predicate; and — for the Task 5 characterization, which passes by construction — adding an owner exclusion that would dissolve the trap.
