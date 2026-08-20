@@ -86,6 +86,16 @@ describe("DSK-001/I11 — os_keychain without a store never opens a socket", () 
     const { exitCodes, proc } = fakeProc();
     const store = { load: () => null, saveIfAbsent: () => "stored" as const, clear: () => {} };
 
+    // Enrolment is STUBBED here on purpose. This test is about the custody GATE
+    // — did the daemon get past the pre-socket verdict and bind its listener —
+    // and since D4 the same configuration now goes on to enrol for real.
+    //
+    // It passed unstubbed only while `enrollOnce` had no caller. With the block
+    // wired, `baseEnv`'s `/run/secrets/enrollment-code` does not exist, the read
+    // throws, and the daemon correctly exits 1. That is right behaviour and a
+    // wrong test: it would have been asserting "enrolment happens to succeed"
+    // under the name of the gate. The exit-on-unreadable-ticket case is covered
+    // directly in `enrollment-bootstrap.test.ts`.
     const result = await bootstrapWorkerDaemon({
       env: baseEnv({ AOA_WORKER_KEY_STORE_MODE: "os_keychain" }),
       proc,
@@ -93,6 +103,12 @@ describe("DSK-001/I11 — os_keychain without a store never opens a socket", () 
       startHealth: startHealth as never,
       identityStore: store,
       receiptStore: store,
+      enrollOnceFn: (async () => ({
+        enrolled: true, minted: true, skipped: false,
+        workerId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        targetId: "a3000000-0000-4000-8000-000000000003",
+        deviceGeneration: 1,
+      })) as never,
     } as never);
 
     expect(result.ok).toBe(true);
@@ -124,5 +140,46 @@ describe("DSK-001/I11 — resolveCustody is pure and total", () => {
     for (const mode of ["", "tpm", "os_keychain_v2", "OS_KEYCHAIN"]) {
       expect(resolveCustody(mode, store, store).kind, mode).toBe("refuse");
     }
+  });
+});
+
+describe("DSK-001/I11 — a CONTRADICTORY custody configuration dies pre-socket", () => {
+  // Plan §4/D3 row 2, which did not ship: `mounted_secret` returned `ok` no
+  // matter what was injected. A mutation exposed it — removing the keyStoreMode
+  // gate from the enrolment block left the whole suite green, because nothing
+  // ever put a store and `mounted_secret` together.
+  //
+  // That combination is a real misconfiguration: `MountedSecretKeyStore`
+  // persists PKCS8 DER with no workerId slot, so enrolling against it would ship
+  // precisely the torn-identity hazard I6 exists to prevent. Refusing is better
+  // than quietly not enrolling — the operator learns immediately, and before any
+  // socket is bound.
+  it("refuses mounted_secret when an identity store is injected", () => {
+    const store = { load: () => null, saveIfAbsent: () => "stored" as const, clear: () => {} };
+    const verdict = resolveCustody("mounted_secret", store, undefined);
+    expect(verdict.kind).toBe("refuse");
+  });
+
+  it("refuses mounted_secret when a receipt store is injected", () => {
+    const store = { load: () => null, saveIfAbsent: () => "stored" as const, clear: () => {} };
+    const verdict = resolveCustody("mounted_secret", undefined, store as never);
+    expect(verdict.kind).toBe("refuse");
+  });
+
+  it("never opens a socket for that configuration", async () => {
+    const startHealth = vi.fn(async () => handle);
+    const { exitCodes, proc } = fakeProc();
+    const store = { load: () => null, saveIfAbsent: () => "stored" as const, clear: () => {} };
+    const result = await bootstrapWorkerDaemon({
+      env: baseEnv({ AOA_WORKER_KEY_STORE_MODE: "mounted_secret" }),
+      proc,
+      createLogger: noopLogger,
+      startHealth: startHealth as never,
+      identityStore: store,
+      receiptStore: store,
+    } as never);
+    expect(result.ok).toBe(false);
+    expect(exitCodes).toEqual([1]);
+    expect(startHealth).not.toHaveBeenCalled();
   });
 });

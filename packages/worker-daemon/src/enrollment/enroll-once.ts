@@ -65,6 +65,57 @@ export class EnrollOnceError extends Error {
   }
 }
 
+/**
+ * A failure of the NETWORK call specifically, carrying whether this boot minted.
+ *
+ * Amendment A1. Everything else here throws a plain `EnrollOnceError` and is
+ * unconditionally fatal — a store that cannot open must never look survivable
+ * (I3), and a ticket we cannot parse is not something to run past.
+ *
+ * An authority failure is different, and the difference is `minted`:
+ *
+ *   minted === true   a fresh device that could not enrol is useless. The caller
+ *                     should exit non-zero. The loop is bounded because the next
+ *                     boot LOADS the persisted record rather than minting again.
+ *
+ *   minted === false  the identity is intact and already on disk. Exiting would
+ *                     turn a survivable state into a restart loop — and a restart
+ *                     loop is exactly what pressures an operator toward
+ *                     `--reset-identity`, which on the same target IS the
+ *                     permanent lockout. The caller should log and run idle.
+ *
+ * The underlying error travels as `cause` rather than being flattened into the
+ * message, so the daemon's `err` serializer and its redactor still see a real
+ * Error. A pre-stringified transport message would bypass both.
+ *
+ * The enrollment code is never an input to this type. `workerId` and `targetId`
+ * are opaque ids the logger deliberately leaves visible.
+ */
+export class EnrollmentAuthorityError extends EnrollOnceError {
+  readonly minted: boolean;
+  readonly workerId: string;
+  readonly targetId: string;
+  override readonly cause: unknown;
+
+  constructor(input: {
+    minted: boolean;
+    workerId: string;
+    targetId: string;
+    cause: unknown;
+  }) {
+    super(
+      input.minted
+        ? "device enrollment could not reach authority after minting a new identity"
+        : "device enrollment could not reach authority; the existing identity is intact",
+    );
+    this.name = "EnrollmentAuthorityError";
+    this.minted = input.minted;
+    this.workerId = input.workerId;
+    this.targetId = input.targetId;
+    this.cause = input.cause;
+  }
+}
+
 export interface EnrollOnceDeps {
   readonly identityStore: DeviceRecordStore<DeviceIdentityRecord>;
   readonly receiptStore: DeviceRecordStore<DeviceEnrollmentReceipt>;
@@ -217,11 +268,25 @@ export async function enrollOnce(deps: EnrollOnceDeps): Promise<EnrollmentOutcom
   // THE NETWORK POINT. `renew`, not `enroll` — see the header note.
   const makeEnroller = deps.createEnrollerFn ?? createEnroller;
   const enroller = makeEnroller({ keyStore: frozenDeviceKeyView(key), client: deps.client });
-  const result = await enroller.renew({
-    hello,
-    code: input.enrollmentCode,
-    idempotencyKey,
-  });
+  let result;
+  try {
+    result = await enroller.renew({
+      hello,
+      code: input.enrollmentCode,
+      idempotencyKey,
+    });
+  } catch (err) {
+    // A1. Typed HERE and nowhere else: this is the only point at which the
+    // failure is known to be the network rather than our own custody, and the
+    // only point at which `minted` is still in scope. Everything above stays a
+    // plain throw and stays unconditionally fatal.
+    throw new EnrollmentAuthorityError({
+      minted,
+      workerId: identity.workerId,
+      targetId: identity.targetId,
+      cause: err,
+    });
+  }
 
   // The receipt write's verdict is LOAD-BEARING, not fire-and-forget. An
   // `already_present` here means a receipt existed that `load()` did not return

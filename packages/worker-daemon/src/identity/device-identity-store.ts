@@ -66,6 +66,16 @@ export interface DeviceRecordStore<T> {
  * `loadOrCreateKey` on every call, and a throwing `save` would turn a benign
  * no-op into a failed enrolment.
  */
+/**
+ * The two concrete instantiations, named so a host outside this package can
+ * declare what it is composing in without spelling the generic each time — and
+ * so the keystore side can prove assignability at compile time instead of with a
+ * cast. An earlier `as never` at that composition root hid a genuine record-shape
+ * mismatch; naming the types is what makes the compiler the standing guard.
+ */
+export type DeviceIdentityStore = DeviceRecordStore<DeviceIdentityRecord>;
+export type DeviceReceiptStore = DeviceRecordStore<DeviceEnrollmentReceipt>;
+
 export function frozenDeviceKeyView(key: DeviceKey): DeviceKeyStore {
   return Object.freeze({
     load: () => key,
@@ -103,7 +113,26 @@ export function resolveCustody(
     }
     return { kind: "ok" };
   }
-  if (mode === "mounted_secret") return { kind: "ok" };
+  if (mode === "mounted_secret") {
+    // Plan §4/D3 row 2. A store injected under `mounted_secret` is a
+    // CONTRADICTORY configuration, and refusing is better than quietly ignoring
+    // it: `MountedSecretKeyStore` persists PKCS8 DER with no `workerId` slot
+    // (`identity/key-store.ts:89-101`), so anything that went on to enrol
+    // against it would ship exactly the torn-identity hazard I6 exists to
+    // prevent. The operator should learn at boot, before a socket is bound —
+    // not from a worker that reports healthy and never enrols.
+    //
+    // This row did not ship originally, and nothing caught it until a mutation
+    // showed that removing the enrolment block's mode gate left the suite green:
+    // no test had ever put a store and `mounted_secret` together.
+    if (identityStore) {
+      return { kind: "refuse", reason: "keyStoreMode is mounted_secret but an identity store was injected" };
+    }
+    if (receiptStore) {
+      return { kind: "refuse", reason: "keyStoreMode is mounted_secret but a receipt store was injected" };
+    }
+    return { kind: "ok" };
+  }
   // An unknown mode fails closed. A future mode this build does not understand
   // must not silently fall back to a weaker custody model.
   return { kind: "refuse", reason: `unknown keyStoreMode ${JSON.stringify(mode)}` };

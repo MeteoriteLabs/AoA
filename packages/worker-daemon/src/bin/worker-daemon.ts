@@ -9,6 +9,7 @@
  * unit-testable without spawning a process.
  */
 
+import { readFileSync } from "node:fs";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
@@ -35,6 +36,13 @@ import {
   type DeviceIdentityRecord,
   type DeviceRecordStore,
 } from "../identity/device-identity-store.js";
+import { createControlPlaneClient } from "../transport/client.js";
+import {
+  enrollOnce,
+  EnrollmentAuthorityError,
+  type EnrollmentOutcome,
+} from "../enrollment/enroll-once.js";
+import { readEnrollmentInput } from "../enrollment/enrollment-input.js";
 
 /** The subset of `process` the entrypoint needs; injected for tests. */
 export interface ProcessLike {
@@ -101,6 +109,19 @@ export interface BootstrapDeps {
    */
   readonly identityStore?: DeviceRecordStore<DeviceIdentityRecord>;
   readonly receiptStore?: DeviceRecordStore<DeviceEnrollmentReceipt>;
+
+  /**
+   * Seams for the enrolment block (D4, amended by A1).
+   *
+   * NOTE THE POLARITY BREAK from the seams above: `createLogger`/`startHealth`
+   * exist so a test can OBSERVE. These exist so a test can enrol with NO network
+   * and NO filesystem. `readFileText` is required because
+   * `readEnrollmentInput(source, env, readFileText)` injects its reader — that is
+   * what makes the `{kind:"path"}` arm testable — and the daemon must supply one.
+   */
+  readonly createClient?: typeof createControlPlaneClient;
+  readonly readFileText?: (path: string) => string;
+  readonly enrollOnceFn?: typeof enrollOnce;
 }
 
 export interface BootstrapResult {
@@ -161,6 +182,86 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   const metrics = makeMetrics();
   const health = await startHealth({ host: config.health.host, port: config.health.port }, metrics);
   metrics.setWorkerUp(true);
+
+  // DSK-001 (D4, amended by A1) — ENROL, once, here.
+  //
+  // AFTER the health server, deliberately: the compose healthcheck must be able
+  // to answer while a device is enrolling (D14). The CONFIGURATION verdict is
+  // separate and already happened above, pre-socket (I11) — splitting the two is
+  // the only shape that satisfies both.
+  //
+  // Gated on the MODE rather than on the custody verdict, because the verdict is
+  // a pure yes/no and deliberately carries neither a mode nor the stores (A1 §1).
+  // `mounted_secret` therefore reaches none of this: every deployed compose file
+  // uses that mode, and row 3 of the I11 truth table guarantees zero shipped-
+  // container behaviour change.
+  //
+  // HONEST NOTE ON THIS CONDITION. Since `resolveCustody` now REFUSES
+  // `mounted_secret` with any store injected (row 2, added because a mutation
+  // showed nothing had ever tested that pair), the mode check here is redundant
+  // by construction: this line is unreachable with `mounted_secret`. A mutation
+  // removing it therefore SURVIVES, and it is recorded as a survivor rather than
+  // dressed up as a proven guard. It stays because the property is guarded one
+  // layer out, and if that gate is ever loosened, the absence of this line would
+  // silently switch enrolment on for the mode every shipped container uses.
+  if (config.keyStoreMode === "os_keychain" && deps.identityStore && deps.receiptStore) {
+    const runEnrollment = deps.enrollOnceFn ?? enrollOnce;
+    const makeClient = deps.createClient ?? createControlPlaneClient;
+    const readFileText = deps.readFileText ?? ((path: string) => readFileSync(path, "utf8"));
+
+    let outcome: EnrollmentOutcome;
+    try {
+      outcome = await runEnrollment({
+        identityStore: deps.identityStore,
+        receiptStore: deps.receiptStore,
+        client: makeClient({ baseUrl: config.controlPlaneBaseUrl }),
+        // A THUNK, not a resolved value: the credential materializes only when a
+        // ticket is actually needed, so an already-enrolled device never brings
+        // one into memory.
+        readInput: () => readEnrollmentInput(config.enrollmentCodeSource, deps.env, readFileText),
+        platform: process.platform,
+        arch: process.arch,
+      });
+    } catch (err) {
+      // The survivable branch is deliberately NARROW: only a network failure on
+      // a device whose identity already existed. Widening it to "any enrolment
+      // error" would silently regress I3 — a locked store would read as a
+      // transient problem and the daemon would carry on without custody.
+      //
+      // And exiting on the narrow case would be its own bug: a device that is
+      // fine would restart-loop, and a restart loop is what walks an operator
+      // into `--reset-identity`, which on the same target IS the permanent
+      // lockout. See amendment A1.
+      if (err instanceof EnrollmentAuthorityError && !err.minted) {
+        logger.error(
+          { err, workerId: err.workerId, targetId: err.targetId },
+          "worker-daemon could not obtain authority; running idle with the existing device identity",
+        );
+      } else {
+        logger.error({ err }, "worker-daemon enrollment failed; refusing to start");
+        // `.catch(() => {})` matters: a rejected close would otherwise escape
+        // bootstrap into the entry guard's `console.error(err.stack)`, which
+        // bypasses the redactor entirely (I13).
+        await health.close().catch(() => {});
+        deps.proc.exit(1);
+        return { ok: false, config, logger, metrics };
+      }
+    }
+
+    if (outcome!) {
+      logger.info(
+        {
+          workerId: outcome.workerId,
+          targetId: outcome.targetId,
+          deviceGeneration: outcome.deviceGeneration,
+          deviceThumbprint: outcome.deviceThumbprint,
+        },
+        outcome.skipped
+          ? "worker-daemon already enrolled; skipping control-plane enrollment"
+          : "worker-daemon enrolled",
+      );
+    }
+  }
 
   // WRK-007: the one-shot startup reconciliation pass runs ONCE here — after the
   // health server is up, BEFORE signal registration. Gated on presence: with no

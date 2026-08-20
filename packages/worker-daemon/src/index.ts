@@ -117,6 +117,51 @@ export type {
   WorkerSession,
 } from "./enrollment/enroll.js";
 
+// --- DSK-001 (D6): desktop enrollment ----------------------------------------
+//
+// These exist so a host OUTSIDE this package can compose device custody in.
+// `scripts/check-worker-daemon-boundary.mjs` walks `packages/worker-daemon/src`
+// and rejects a bare specifier the moment a file here names anything outside the
+// two-dependency pin, so this package can never import `@armyofagents/worker-
+// keystore`. It declares the SHAPE and the keystore supplies an implementation;
+// the dependency arrow points keystore -> daemon and never back. The TYPE exports
+// are what let the keystore side prove assignability at compile time rather than
+// by a cast.
+
+export { resolveCustody, frozenDeviceKeyView } from "./identity/device-identity-store.js";
+export type {
+  CustodyVerdict,
+  DeviceIdentityRecord,
+  DeviceEnrollmentReceipt,
+  DeviceRecordStore,
+  DeviceIdentityStore,
+  DeviceReceiptStore,
+} from "./identity/device-identity-store.js";
+
+export { enrollOnce, EnrollOnceError, EnrollmentAuthorityError } from "./enrollment/enroll-once.js";
+export type { EnrollOnceDeps, EnrollmentOutcome } from "./enrollment/enroll-once.js";
+
+export { readEnrollmentInput } from "./enrollment/enrollment-input.js";
+export type { EnrollmentInput } from "./enrollment/enrollment-input.js";
+
+export {
+  buildDesktopHello,
+  UNPROVISIONED_POLICY_HASH,
+  DESKTOP_RUNTIME_LABEL,
+  FIRST_ENROLLMENT_DEVICE_GENERATION,
+} from "./enrollment/desktop-hello.js";
+
+export {
+  encodeEnrollmentTicket,
+  decodeEnrollmentTicket,
+  EnrollmentTicketError,
+  ENROLLMENT_TICKET_PREFIX,
+  ENROLLMENT_TICKET_VERSION,
+} from "./enrollment/ticket.js";
+export type { EnrollmentTicket } from "./enrollment/ticket.js";
+
+export { deriveEnrollmentIdempotencyKey } from "./enrollment/idempotency.js";
+
 export { SessionStore, SessionStoppedError, REENROLLMENT_REQUIRED_METRIC } from "./identity/session.js";
 export type { SessionStoreDeps } from "./identity/session.js";
 

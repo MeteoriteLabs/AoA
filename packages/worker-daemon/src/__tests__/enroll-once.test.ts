@@ -12,7 +12,7 @@
 // mocking anywhere.
 
 import { describe, expect, it, vi } from "vitest";
-import { enrollOnce, type EnrollOnceDeps } from "../enrollment/enroll-once.js";
+import { enrollOnce, EnrollmentAuthorityError, type EnrollOnceDeps } from "../enrollment/enroll-once.js";
 import { DeviceKeyStoreError } from "../identity/key-store.js";
 import { generateDeviceKey, exportDevicePrivateKeyPkcs8Der } from "../identity/device-key.js";
 import type { DeviceIdentityRecord, DeviceRecordStore } from "../identity/device-identity-store.js";
@@ -317,5 +317,123 @@ describe("DSK-001 — the receipt and the identity must agree", () => {
       },
     });
     await expect(enrollOnce(d)).rejects.toThrow(/receipt/i);
+  });
+});
+
+describe("DSK-001/A1 — a NETWORK failure is distinguishable from a store fault", () => {
+  // Amendment A1. The bootstrap's fatal/non-fatal split turns on whether this
+  // boot MINTED. A plain throw carries no such thing, and treating every failure
+  // as fatal would restart-loop a device whose identity is intact — which is
+  // exactly what pressures an operator toward `--reset-identity`, the permanent
+  // lockout. So an authority failure is typed and carries `minted`.
+  //
+  // Store and ticket faults deliberately do NOT get this treatment: they stay
+  // plain and unconditionally fatal, because a store that cannot open must never
+  // look survivable (I3).
+
+  it("throws EnrollmentAuthorityError with minted=true when this boot minted", async () => {
+    const d = deps({
+      createEnrollerFn: () => ({
+        enroll: async () => { throw new Error("never"); },
+        renew: async () => { throw new Error("503 service unavailable"); },
+      }),
+    });
+    await expect(enrollOnce(d)).rejects.toBeInstanceOf(EnrollmentAuthorityError);
+    try {
+      await enrollOnce(deps({
+        createEnrollerFn: () => ({
+          enroll: async () => { throw new Error("never"); },
+          renew: async () => { throw new Error("503 service unavailable"); },
+        }),
+      }));
+    } catch (err) {
+      const e = err as EnrollmentAuthorityError;
+      expect(e.minted).toBe(true);
+      expect(e.workerId).toBe(WORKER_ID);
+      expect(e.targetId).toBe(TARGET_ID);
+    }
+  });
+
+  it("throws EnrollmentAuthorityError with minted=false when the identity pre-existed", async () => {
+    // The device crashed between the identity write and the receipt write. Its
+    // key is intact, so the bootstrap must be able to choose to run idle rather
+    // than exit and loop.
+    const identityStore = memoryStore<DeviceIdentityRecord>();
+    const receiptStore = memoryStore();
+    const first = deps({
+      identityStore,
+      receiptStore,
+      createEnrollerFn: () => ({
+        enroll: async () => { throw new Error("never"); },
+        renew: async () => { throw new Error("503 service unavailable"); },
+      }),
+    });
+    await expect(enrollOnce(first)).rejects.toBeInstanceOf(EnrollmentAuthorityError);
+
+    const second = deps({
+      identityStore,
+      receiptStore,
+      createEnrollerFn: () => ({
+        enroll: async () => { throw new Error("never"); },
+        renew: async () => { throw new Error("503 service unavailable"); },
+      }),
+    });
+    try {
+      await enrollOnce(second);
+      throw new Error("expected a rejection");
+    } catch (err) {
+      const e = err as EnrollmentAuthorityError;
+      expect(e).toBeInstanceOf(EnrollmentAuthorityError);
+      expect(e.minted).toBe(false);
+      expect(second.randomWorkerId).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does NOT type a store fault as an authority failure", async () => {
+    // The distinction has to be narrow, or the bootstrap's survivable branch
+    // starts swallowing the faults that must always be fatal.
+    const d = deps({
+      identityStore: {
+        load: () => { throw new Error("device identity store unusable (locked)"); },
+        saveIfAbsent: () => "stored" as const,
+        clear: () => {},
+      } as never,
+    });
+    await expect(enrollOnce(d)).rejects.not.toBeInstanceOf(EnrollmentAuthorityError);
+  });
+
+  it("carries the underlying error as `cause`, without flattening it into a message", async () => {
+    // The bootstrap logs through the redactor; a pre-stringified message would
+    // bypass the `err` serializer and could carry whatever the transport put in
+    // it.
+    const underlying = new Error("401 unauthorized");
+    const d = deps({
+      createEnrollerFn: () => ({
+        enroll: async () => { throw new Error("never"); },
+        renew: async () => { throw underlying; },
+      }),
+    });
+    try {
+      await enrollOnce(d);
+      throw new Error("expected a rejection");
+    } catch (err) {
+      expect((err as EnrollmentAuthorityError).cause).toBe(underlying);
+    }
+  });
+
+  it("never puts the enrollment code in the error", async () => {
+    const d = deps({
+      createEnrollerFn: () => ({
+        enroll: async () => { throw new Error("never"); },
+        renew: async () => { throw new Error("401 unauthorized"); },
+      }),
+    });
+    try {
+      await enrollOnce(d);
+    } catch (err) {
+      const e = err as EnrollmentAuthorityError;
+      expect(e.message).not.toContain(CODE);
+      expect(JSON.stringify({ m: e.message, w: e.workerId, t: e.targetId })).not.toContain("aoa_enr_");
+    }
   });
 });
