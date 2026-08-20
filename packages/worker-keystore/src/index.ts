@@ -19,3 +19,18 @@ export {
   type KeyStoreProbeOutcome,
   type StoreCommandResult,
 } from "./outcome.js";
+
+export {
+  planVaultCommand,
+  POWERSHELL_ABSOLUTE_PATH,
+  type VaultOp,
+  type VaultRef,
+  type VaultCommandPlan,
+} from "./command-plan.js";
+
+export {
+  encodeIdentityEnvelope,
+  decodeIdentityEnvelope,
+  IDENTITY_ENVELOPE_VERSION,
+  type DeviceIdentityRecord,
+} from "./envelope.js";
