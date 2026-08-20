@@ -47,3 +47,16 @@ export {
 export { createCommandRunner } from "./command-runner.js";
 
 export { resolveVaultRefs, VaultPathError, type VaultRefs } from "./blob-path.js";
+
+export {
+  encodeEnrollmentReceipt,
+  decodeEnrollmentReceipt,
+  RECEIPT_ENVELOPE_VERSION,
+  type DeviceEnrollmentReceipt,
+} from "./receipt-envelope.js";
+
+export { createOsRecordStore, type DeviceRecordStore, type RecordCodec } from "./identity-store.js";
+
+// The composition host — the only module here that names the worker-daemon
+// bootstrap. Importing it pulls in both packages by design.
+export { runDesktopHost, RESET_IDENTITY_FLAG, type DesktopHostDeps } from "./bin/desktop-host.js";

@@ -70,14 +70,17 @@ export interface CommandRunner {
   run(plan: VaultCommandPlan, stdin?: Uint8Array): StoreCommandResult;
 }
 
-export interface DeviceIdentityStore {
-  /** The stored identity, or `null` ONLY when the platform signalled absence. */
-  load(): DeviceIdentityRecord | null;
+export interface DeviceRecordStore<T> {
+  /** The stored record, or `null` ONLY when the platform signalled absence. */
+  load(): T | null;
   /** Compare-and-set. `already_present` means someone else won the race. */
-  saveIfAbsent(record: DeviceIdentityRecord): "stored" | "already_present";
-  /** Remove any stored identity. Throws on a fault — a failed wipe is not success. */
+  saveIfAbsent(record: T): "stored" | "already_present";
+  /** Remove any stored record. Throws on a fault — a failed wipe is not success. */
   clear(): void;
 }
+
+/** The identity store: the general record store bound to the identity codec. */
+export type DeviceIdentityStore = DeviceRecordStore<DeviceIdentityRecord>;
 
 /** Base64 without depending on Node's Buffer, so the module stays runtime-neutral. */
 function toBase64(bytes: Uint8Array): string {
@@ -93,12 +96,28 @@ function fromBase64(value: string): Uint8Array {
   return out;
 }
 
-export function createOsIdentityStore(deps: {
+/**
+ * The record codec. Generalized so the identity blob and the enrollment receipt
+ * share ONE store implementation: two near-identical stores would drift, and the
+ * fault discipline here is the part that must never differ between them.
+ */
+export interface RecordCodec<T> {
+  encode(record: T): Uint8Array;
+  decode(bytes: Uint8Array): T;
+}
+
+const identityCodec: RecordCodec<DeviceIdentityRecord> = {
+  encode: encodeIdentityEnvelope,
+  decode: decodeIdentityEnvelope,
+};
+
+export function createOsRecordStore<T>(deps: {
   runner: CommandRunner;
   ref: VaultRef;
   platform: NodeJS.Platform | string;
-}): DeviceIdentityStore {
-  const { runner, ref, platform } = deps;
+  codec: RecordCodec<T>;
+}): DeviceRecordStore<T> {
+  const { runner, ref, platform, codec } = deps;
 
   return {
     load() {
@@ -119,10 +138,10 @@ export function createOsIdentityStore(deps: {
       // The envelope arrived authenticated by the OS; it must still be a complete
       // record. A decode failure is a FAULT, never absence (I6).
       try {
-        return decodeIdentityEnvelope(fromBase64(new TextDecoder().decode(outcome.envelope)));
+        return codec.decode(fromBase64(new TextDecoder().decode(outcome.envelope)));
       } catch (err) {
         throw new DeviceKeyStoreError(
-          `device identity envelope is unusable: ${(err as Error).message}`,
+          `device record envelope is unusable: ${(err as Error).message}`,
         );
       }
     },
@@ -131,7 +150,7 @@ export function createOsIdentityStore(deps: {
       const plan = planVaultCommand("store", ref, platform);
       // The record crosses STDIN (I5). `planVaultCommand` never sees it, so it
       // cannot appear in argv where a same-user process listing would read it.
-      const stdin = new TextEncoder().encode(toBase64(encodeIdentityEnvelope(record)));
+      const stdin = new TextEncoder().encode(toBase64(codec.encode(record)));
       const result = runner.run(plan, stdin);
 
       // The exclusive-create refusal is a DISTINCT exit code, checked before the
@@ -172,4 +191,16 @@ export function createOsIdentityStore(deps: {
       );
     },
   };
+}
+
+/**
+ * The identity store. A thin alias so existing callers and tests are unchanged
+ * while the implementation is shared with the receipt store.
+ */
+export function createOsIdentityStore(deps: {
+  runner: CommandRunner;
+  ref: VaultRef;
+  platform: NodeJS.Platform | string;
+}): DeviceIdentityStore {
+  return createOsRecordStore({ ...deps, codec: identityCodec });
 }
