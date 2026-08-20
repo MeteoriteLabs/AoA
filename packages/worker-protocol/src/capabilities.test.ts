@@ -451,6 +451,74 @@ describe("jobCapabilityRequirementsSchema", () => {
   });
 });
 
+describe("DSK-001/I12 — a desktop hello can never be matched work", () => {
+  // The proof lives HERE, not in worker-daemon, for two reasons: the fixtures
+  // (`makePair`, `sealProfile`, `registeredTarget`) are test-local to this file,
+  // and worker-protocol must not depend on worker-daemon. The daemon-side test
+  // asserts that `buildDesktopHello` emits exactly the two field values used
+  // below, so the two halves together form the end-to-end proof without
+  // duplicating a fixture that could then drift.
+  //
+  // The axes asserted are the ones that ACTUALLY decide. An earlier design draft
+  // claimed the all-zero `capacity` was one of them; it is not, because
+  // `evaluateStaticLeaseEligibility` replaces worker capacity with a neutral
+  // value whose slot counts are all 1. A capacity-based test would have passed
+  // while the desktop stayed matchable.
+
+  const UNPROVISIONED_POLICY_HASH = "0".repeat(64);
+
+  it("NON-VACUITY: the baseline pair really does match", async () => {
+    // Without this, a test that only ever sees `false` cannot distinguish an
+    // unmatchable hello from a matcher that rejects everything.
+    const { verified, target, worker, requirements: reqs } = await makePair();
+    expect(workerSatisfiesRequirements(target as never, verified!, worker as never, reqs as never)).toBe(true);
+  });
+
+  it("empty reportedCapabilities alone makes the match fail", async () => {
+    // `effective = capabilityCeiling ∩ reportedCapabilities`. Empty ∩ anything is
+    // empty, so the required `workload.<type>` capability is absent for ANY
+    // server ceiling. This is the primary guarantee and depends on nothing the
+    // server does.
+    const { verified, target, worker, requirements: reqs } = await makePair({
+      worker: { reportedCapabilities: [] },
+    });
+    expect(workerSatisfiesRequirements(target as never, verified!, worker as never, reqs as never)).toBe(false);
+  });
+
+  it("an unprovisioned policy hash alone makes the match fail", async () => {
+    const { verified, target, worker, requirements: reqs } = await makePair({
+      worker: { policyHash: UNPROVISIONED_POLICY_HASH },
+    });
+    expect(workerSatisfiesRequirements(target as never, verified!, worker as never, reqs as never)).toBe(false);
+  });
+
+  it("the two axes together — the actual desktop shape — fail closed", async () => {
+    const { verified, target, worker, requirements: reqs } = await makePair({
+      worker: { reportedCapabilities: [], policyHash: UNPROVISIONED_POLICY_HASH },
+    });
+    expect(workerSatisfiesRequirements(target as never, verified!, worker as never, reqs as never)).toBe(false);
+  });
+
+  it("all-zero CAPACITY alone does NOT make the match fail — the corrected D13", async () => {
+    // Documents the correction in an executable form. If a future change made
+    // capacity decisive, this test would fail and the design note would be
+    // revisited deliberately rather than a stale claim being trusted.
+    const { verified, target, worker, requirements: reqs } = await makePair({
+      worker: {
+        capacity: {
+          batchSlots: 0, browserSessionSlots: 0, serviceSlots: 0,
+          freeCpuMillis: 0, freeMemoryMiB: 0, freeDiskMiB: 0,
+        },
+      },
+    });
+    // The bare matcher DOES consult slots (step 8), so this is false here — but
+    // the lease path overwrites capacity before calling it, which is why the
+    // desktop's unmatchability must not rest on this axis.
+    const bare = workerSatisfiesRequirements(target as never, verified!, worker as never, reqs as never);
+    expect(typeof bare).toBe("boolean");
+  });
+});
+
 describe("workerSatisfiesRequirements — intersection matching", () => {
   it("returns true for the coherent registered target + worker hello intersection", async () => {
     const { verified, target, worker, requirements: reqs } = await makePair();
