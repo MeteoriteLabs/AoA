@@ -101,9 +101,15 @@ integration("DEP-009 reap→retry capacity-claim transfer", () => {
     expect(await heldCount()).toBe(1);
 
     // Expire the active lease so the reaper abandons attempt #1 and allocates a retry.
+    // ack_deadline must stay STRICTLY < expires_at (leases_authority_atomic_check).
+    // `clock_timestamp()` advances WITHIN a statement, so two calls with the same
+    // interval leave a zero margin and the second one can land later — which makes
+    // ack_deadline > expires_at and violates the constraint. Under CI-DB load the
+    // gap reached ~52ms and failed the run twice. Every sibling call site already
+    // uses a 1-unit margin for exactly this reason (see job-fencing.integration).
     await ctx().admin`
       UPDATE leases SET expires_at = clock_timestamp() - interval '1 minute',
-        ack_deadline = clock_timestamp() - interval '1 minute'
+        ack_deadline = clock_timestamp() - interval '2 minutes'
       WHERE attempt_id = ${seeded.attemptId}`;
 
     const reap = await runInTenant(ctx().app.db, ORG, (repos) => repos.jobControl.reapExpiredLeases({
