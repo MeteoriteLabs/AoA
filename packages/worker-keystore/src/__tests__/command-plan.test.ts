@@ -120,7 +120,7 @@ describe("DSK-001/D6 — the hardened script reports failure deliberately", () =
 
   it("maps its exit codes explicitly so the classifier is not guessing", () => {
     const plan = planVaultCommand("load", REF, "win32");
-    expect(plan.exitCodes).toEqual({ ok: 0, locked: 3 });
+    expect(plan.exitCodes).toEqual({ ok: 0, locked: 3, alreadyExists: 4 });
   });
 
   it("writes diagnostics to stderr, never to stdout, so stdout stays the envelope channel", () => {

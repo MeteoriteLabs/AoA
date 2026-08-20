@@ -45,7 +45,7 @@ export interface VaultCommandPlan {
   /** Whether the operation feeds the secret on stdin. Never argv. */
   readonly stdin: "none" | "secret";
   /** The script's deliberate exit contract, so the classifier is not guessing. */
-  readonly exitCodes: { readonly ok: 0; readonly locked: 3 };
+  readonly exitCodes: { readonly ok: 0; readonly locked: 3; readonly alreadyExists: 4 };
   readonly blobPath: string;
 }
 
@@ -56,6 +56,17 @@ export interface VaultCommandPlan {
  */
 export const POWERSHELL_ABSOLUTE_PATH =
   "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+
+/**
+ * The exclusive-create refusal (I4). `store` opens the blob with `CreateNew`, so
+ * an existing identity is refused by the OS rather than by a check-then-act the
+ * store would have to win. That is what makes `saveIfAbsent` a real compare-and-set:
+ * two racing enrollers cannot both believe they stored. It is deliberately a
+ * DISTINCT code from the generic fault exit, because conflating 'someone else got
+ * here first' with 'the store broke' would silently drop an enrollment while
+ * reporting success.
+ */
+const EXIT_ALREADY_EXISTS = 4;
 
 /**
  * Wrap a body so failure is reported DELIBERATELY rather than incidentally.
@@ -103,13 +114,29 @@ function windowsScript(op: VaultOp, ref: VaultRef): string {
       );
     case "store":
       // The DER arrives on stdin as base64 and never touches argv (I5).
+      //
+      // The write is an EXCLUSIVE CREATE (I4): `CreateNew` throws when the blob
+      // already exists, which the script reports as its own exit 4. That makes
+      // "someone else got here first" an OS-level refusal rather than a
+      // check-then-act race, and keeps it distinguishable from a genuine fault —
+      // conflating the two would silently drop an enrollment while reporting
+      // success. The directory is ensured first so a missing parent surfaces as a
+      // fault rather than masquerading as `alreadyExists` (both are IOException).
       return harden(
         [
           "  Add-Type -AssemblyName System.Security",
+          `  $dir = [IO.Path]::GetDirectoryName(${path})`,
+          "  if (-not [IO.Directory]::Exists($dir)) { [void][IO.Directory]::CreateDirectory($dir) }",
           "  $b64 = [Console]::In.ReadToEnd()",
           "  $der = [Convert]::FromBase64String($b64.Trim())",
           "  $blob = [Security.Cryptography.ProtectedData]::Protect($der, $null, 'CurrentUser')",
-          `  [IO.File]::WriteAllBytes(${path}, $blob)`,
+          "  try {",
+          `    $fs = [IO.File]::Open(${path}, 'CreateNew')`,
+          "  } catch [IO.IOException] {",
+          "    [Console]::Error.Write('identity already present')",
+          `    exit ${EXIT_ALREADY_EXISTS}`,
+          "  }",
+          "  try { $fs.Write($blob, 0, $blob.Length) } finally { $fs.Dispose() }",
         ].join("\n"),
       );
     case "delete":
@@ -146,7 +173,7 @@ export function planVaultCommand(
     argv: [POWERSHELL_ABSOLUTE_PATH, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
     scriptText,
     stdin: op === "store" ? "secret" : "none",
-    exitCodes: { ok: 0, locked: 3 },
+    exitCodes: { ok: 0, locked: 3, alreadyExists: 4 },
     blobPath: ref.blobPath,
   };
 }

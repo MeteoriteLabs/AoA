@@ -34,3 +34,10 @@ export {
   IDENTITY_ENVELOPE_VERSION,
   type DeviceIdentityRecord,
 } from "./envelope.js";
+
+export {
+  createOsIdentityStore,
+  DeviceKeyStoreError,
+  type CommandRunner,
+  type DeviceIdentityStore,
+} from "./identity-store.js";
