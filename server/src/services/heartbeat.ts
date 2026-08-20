@@ -162,6 +162,10 @@ import {
   shouldSuppressLegacyExecution,
   type RunExecutionOwner,
 } from "./run-execution-owner.js";
+import {
+  dispatchCancel,
+  getDistributedCancellationPort,
+} from "./distributed-cancellation-port.js";
 import { createCanaryRunProjector } from "./canary-run-projector.js";
 import {
   createAttemptTerminalProjectionHandler,
@@ -6651,6 +6655,43 @@ export function heartbeatService(
    * here, and latching a terminal now would make the projector's later terminal
    * a no-op and discard the distributed evidence.
    */
+  /**
+   * CLI-006 (Task 4) — route ONE run's cancellation, and tell the caller whether
+   * it still owns the legacy terminal writes.
+   *
+   * Returns `true` for the ordinary legacy run (the caller proceeds exactly as
+   * before) and `false` when a distributed attempt owns this run — in which case
+   * the caller must write NO terminal, NO wakeup status, and must NOT release the
+   * issue execution lock. Releasing that lock while the attempt is still live
+   * would let another run claim the issue underneath a running worker; the
+   * projector does all three when the attempt's real terminal arrives.
+   *
+   * Reads the port from module scope rather than an injected option, because
+   * every real `cancelRun` caller holds a bare `heartbeatService(db)` — see the
+   * note in `distributed-cancellation-port.ts`.
+   */
+  async function routeRunCancellation(
+    run: typeof heartbeatRuns.$inferSelect,
+    reason: string,
+    opts: { graceful: boolean; onError: "propagate" | "skip" },
+  ): Promise<boolean> {
+    const outcome = await dispatchCancel({
+      run,
+      companyId: run.companyId,
+      reason,
+      graceful: opts.graceful,
+      port: getDistributedCancellationPort(),
+      onError: opts.onError,
+    });
+    if (outcome.degraded) {
+      logger.warn(
+        { runId: run.id, jobId: run.distributedJobId, degraded: outcome.degraded },
+        "[CLI-006] distributed cancel degraded",
+      );
+    }
+    return outcome.writeLegacyTerminal;
+  }
+
   async function markRunHandedOffToDistributed(
     run: typeof heartbeatRuns.$inferSelect,
     owner: RunExecutionOwner,
@@ -7003,6 +7044,21 @@ export function heartbeatService(
       if (!run) throw notFound("Heartbeat run not found");
       if (run.status !== "running" && run.status !== "queued") return run;
 
+      // CLI-006 (Task 4) — `propagate`: this answers an HTTP request, so an
+      // operator who asked to cancel must be told it failed rather than shown a
+      // false success.
+      if (!(await routeRunCancellation(run, "Cancelled by control plane", {
+        graceful: true,
+        onError: "propagate",
+      }))) {
+        // CLI-006 (Task 4) — a distributed attempt owns this run. Revoke its
+        // fence and stop: no terminal, no wakeup status, and NO issue-lock
+        // release while the worker is still live. The projector does all three
+        // when the attempt's real terminal arrives.
+        await cancelRuntimeDecisionPromptsForRun(run, "run cancelled");
+        return run;
+      }
+
       const running = runningProcesses.get(run.id);
       if (running) {
         logger.info(
@@ -7084,6 +7140,13 @@ export function heartbeatService(
         .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["queued", "running"])));
 
       for (const run of runs) {
+        // CLI-006 (Task 4) — `skip`: one unreachable attempt must not abort a
+        // batch cancel for every other run. The skipped run stays `running`
+        // and the next sweep revisits it.
+        if (!(await routeRunCancellation(run, "Cancelled due to agent pause", { graceful: true, onError: "skip" }))) {
+          await cancelRuntimeDecisionPromptsForRun(run, "run cancelled due to agent pause");
+          continue;
+        }
         await setRunStatus(run.id, "cancelled", {
           finishedAt: new Date(),
           error: "Cancelled due to agent pause",
@@ -7132,6 +7195,13 @@ export function heartbeatService(
           .where(and(eq(heartbeatRuns.agentId, scope.scopeId), inArray(heartbeatRuns.status, ["queued", "running"])));
 
         for (const run of runs) {
+          // CLI-006 (Task 4) — `skip`: one unreachable attempt must not abort a
+          // batch cancel for every other run. The skipped run stays `running`
+          // and the next sweep revisits it.
+          if (!(await routeRunCancellation(run, "Cancelled due to budget hard-stop", { graceful: true, onError: "skip" }))) {
+            await cancelRuntimeDecisionPromptsForRun(run, "run cancelled due to budget hard-stop");
+            continue;
+          }
           await setRunStatus(run.id, "cancelled", {
             finishedAt: new Date(),
             error: "Cancelled due to budget hard-stop",
@@ -7169,6 +7239,13 @@ export function heartbeatService(
         .where(and(eq(heartbeatRuns.companyId, scope.companyId), inArray(heartbeatRuns.status, ["queued", "running"])));
 
       for (const run of runs) {
+        // CLI-006 (Task 4) — `skip`: one unreachable attempt must not abort a
+        // batch cancel for every other run. The skipped run stays `running`
+        // and the next sweep revisits it.
+        if (!(await routeRunCancellation(run, "Cancelled due to company budget hard-stop", { graceful: true, onError: "skip" }))) {
+          await cancelRuntimeDecisionPromptsForRun(run, "run cancelled due to company budget hard-stop");
+          continue;
+        }
         await setRunStatus(run.id, "cancelled", {
           finishedAt: new Date(),
           error: "Cancelled due to company budget hard-stop",

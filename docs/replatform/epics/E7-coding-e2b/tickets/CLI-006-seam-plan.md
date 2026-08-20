@@ -214,13 +214,14 @@ So on a port throw: **never write a terminal.** Then split by caller, because th
 
 **4-D2 — the bulk writer partitions, it does not branch.** `services/issues.ts:176-187` updates every id in `activeRunIds` in a single statement inside a transaction that also nulls `issues.executionRunId`. The fix is to partition `activeRunIds` by `execution_owner` and narrow the `tx.update` to the legacy subset; the distributed subset is routed after the transaction commits, because `requestCancellation` runs under `runInTenant` on a different pool and must not be entangled with this transaction's lifetime. Note the issue-lock release must still cover both subsets — a distributed run whose task became ineligible still has to give the lock back.
 
-- [ ] **Step 1: failing tests** — per writer, with a distributed-marked run: assert `requestCancellation` is called with the stored `jobId` and NO terminal status is written. Plus the 4-D1 matrix: port throw → no terminal, `cancelRun` propagates, loops continue.
-- [ ] **Step 2: Run, expect FAIL on all five.**
-- [ ] **Step 3: route the four heartbeat writers** through one private helper over `resolveCancelRoute`.
-- [ ] **Step 4: partition the bulk writer** per 4-D2.
-- [ ] **Step 5: register the port** in `index.ts`'s distributed block.
-- [ ] **Step 6: mutation-check** — the terminal-suppression on the distributed branch removed must go RED.
-- [ ] **Step 7: Commit.**
+- [x] **Steps 1-2: 4-D1 matrix tested fail-first** — `dispatchCancel`, 15 cases.
+- [x] **Step 3: four heartbeat writers routed** through the private `routeRunCancellation` over `dispatchCancel`. `cancelRun` uses `onError:"propagate"`; the three loops use `"skip"`.
+- [x] **Step 4: the bulk writer.** It turned out NOT to need a JS partition — the exclusion goes in the SQL predicate itself (`or(isNull(executionOwner), ne(executionOwner, "distributed"))`), which mirrors `resolveCancelRoute`'s semantics exactly and cannot drift from the id list. The distributed subset is routed by a new `routeDistributedCancelsForRuns` called AFTER the transaction at both `terminateTrackedRuns` sites, because `requestCancellation` runs through `runInTenant` on a different pool. This closed a hole the plan had not named: `terminateTrackedRuns` only signals an in-process child, which a distributed attempt never has, so a task going ineligible previously left the worker running with nothing to stop it.
+- [x] **Step 5: port registered** in `index.ts`'s distributed block, resolving the Organization from `companyId` there (a `heartbeat_runs` row carries none, and heartbeat cannot reach the mapping).
+- [x] **Step 6: mutation-checked** — SQL exclusion removed → RED; one writer's routing removed → RED; a throw latching a local terminal → RED; the propagate branch removed → RED.
+- [x] **Step 7: committed.** 21 tests in the routing file, 147 green across the CLI-006 family, all six policy checkers pass, and the six Windows-local failures are byte-identical with and without the change (6 failed / 103 passed both ways, verified by stashing).
+
+**What is NOT routed, deliberately:** `cancelRuntimeDecisionPromptsForRun` still runs for a distributed run — those prompts belong to a run that is stopping either way. What the distributed branch must NOT do is write a terminal, write a wakeup status, or release the issue execution lock: releasing it while the attempt is live would let another run claim the issue underneath a running worker. The projector does all three when the real terminal arrives.
 
 ---
 

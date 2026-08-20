@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
@@ -37,6 +37,10 @@ import type {
   IssueCommentPresentation,
 } from "@armyofagents/shared";
 import { requestTrackedProcessTermination } from "@armyofagents/adapter-utils/server-utils";
+import {
+  dispatchCancel,
+  getDistributedCancellationPort,
+} from "./distributed-cancellation-port.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { dependencyService, TERMINAL_STATUSES } from "./dependencies.js";
@@ -174,6 +178,15 @@ async function cancelActiveWorkQuestionsForIssue(
         .map((run) => run.id);
       const activeRunIds = activeRuns.map((run) => run.id);
       if (activeRunIds.length > 0) {
+        // CLI-006 (4-D2) — this is a BULK terminal write that bypasses
+        // `setRunStatus` entirely, so the CLI-006 terminal latch does not protect
+        // it. Exclude distributed-owned runs IN THE PREDICATE rather than
+        // partitioning in JS: the attempt is their terminal authority, and
+        // latching `cancelled` here would make the projector discard the real
+        // terminal when it arrives. The `or(isNull, ne)` shape mirrors
+        // `resolveCancelRoute` — an unrecognised owner value reads as legacy, so
+        // a future owner kind this build does not understand is still cancelled
+        // normally rather than silently skipped.
         await tx.update(heartbeatRuns).set({
           status: "cancelled",
           finishedAt: now,
@@ -184,6 +197,7 @@ async function cancelActiveWorkQuestionsForIssue(
           eq(heartbeatRuns.companyId, input.companyId),
           inArray(heartbeatRuns.id, activeRunIds),
           inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+          or(isNull(heartbeatRuns.executionOwner), ne(heartbeatRuns.executionOwner, "distributed")),
         ));
         await tx.update(issues).set({
           executionRunId: null,
@@ -249,6 +263,55 @@ async function cancelActiveWorkQuestionsForIssue(
 function terminateTrackedRuns(runIds: string[]) {
   for (const runId of runIds) {
     requestTrackedProcessTermination(runId);
+  }
+}
+
+/**
+ * CLI-006 (4-D2) — the distributed half of the same stop.
+ *
+ * `terminateTrackedRuns` signals an in-process child, which a distributed attempt
+ * never has, so without this a task going ineligible left the worker running with
+ * nothing to stop it. Runs AFTER the transaction commits, deliberately: the fence
+ * revoke goes through `runInTenant` on a different pool and must not be entangled
+ * with this transaction's lifetime, and reading the rows post-commit sees the
+ * state that actually landed.
+ *
+ * Best-effort and never throws into the caller — the task change has already
+ * committed, and `onError:"skip"` keeps one unreachable attempt from aborting the
+ * rest of the batch.
+ */
+async function routeDistributedCancelsForRuns(
+  db: Db,
+  runIds: string[],
+  reason: string,
+): Promise<void> {
+  if (runIds.length === 0) return;
+  const port = getDistributedCancellationPort();
+  if (!port) return;
+  const rows = await db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      executionOwner: heartbeatRuns.executionOwner,
+      distributedJobId: heartbeatRuns.distributedJobId,
+    })
+    .from(heartbeatRuns)
+    .where(and(inArray(heartbeatRuns.id, runIds), eq(heartbeatRuns.executionOwner, "distributed")));
+  for (const row of rows) {
+    const outcome = await dispatchCancel({
+      run: row,
+      companyId: row.companyId,
+      reason,
+      graceful: true,
+      port,
+      onError: "skip",
+    });
+    if (outcome.degraded) {
+      logger.warn(
+        { runId: row.id, jobId: row.distributedJobId, degraded: outcome.degraded },
+        "[CLI-006] distributed cancel degraded for ineligible task",
+      );
+    }
   }
 }
 
@@ -2022,6 +2085,11 @@ export function issueService(db: Db) {
       });
 
       terminateTrackedRuns(runsToTerminate);
+      // CLI-006 (4-D2) — the distributed half. Best-effort: the task change
+      // has already committed and must not be undone by an unreachable worker.
+      void routeDistributedCancelsForRuns(db, runsToTerminate, "Task no longer eligible").catch(
+        (err: unknown) => logger.warn({ err }, "[CLI-006] distributed cancel routing failed"),
+      );
 
       if (!existing) return null;
 
@@ -2156,6 +2224,11 @@ export function issueService(db: Db) {
         return { removed: enriched, runsToTerminate: runIdsToTerminate };
       });
       terminateTrackedRuns(runsToTerminate);
+      // CLI-006 (4-D2) — the distributed half. Best-effort: the task change
+      // has already committed and must not be undone by an unreachable worker.
+      void routeDistributedCancelsForRuns(db, runsToTerminate, "Task no longer eligible").catch(
+        (err: unknown) => logger.warn({ err }, "[CLI-006] distributed cancel routing failed"),
+      );
       return removed;
     },
 

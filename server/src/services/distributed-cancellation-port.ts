@@ -31,10 +31,17 @@
  * Implemented in the composition root over JOB-006's reconciliation service.
  */
 export interface DistributedCancellationPort {
+  /**
+   * Note the absence of `organizationId`. `requestCancellation` needs one (it
+   * runs under `runInTenant`), but a `heartbeat_runs` row does not carry it and
+   * heartbeat has no way to resolve it — that mapping lives on the tenant
+   * `appDb`. So the IMPLEMENTATION resolves the Organization from `companyId`,
+   * exactly as the rollout hook already does. Keeping it off this interface
+   * means no cancel writer has to learn about Organizations.
+   */
   requestCancellation(input: {
     jobId: string;
     companyId: string;
-    organizationId: string;
     reason: string;
     graceful: boolean;
   }): Promise<void>;
@@ -125,7 +132,6 @@ export function resolveCancelRoute(
 export async function dispatchCancel(input: {
   run: { executionOwner: string | null; distributedJobId: string | null };
   companyId: string;
-  organizationId: string;
   reason: string;
   graceful: boolean;
   port: DistributedCancellationPort | undefined;
@@ -142,7 +148,6 @@ export async function dispatchCancel(input: {
     await input.port!.requestCancellation({
       jobId: route.jobId,
       companyId: input.companyId,
-      organizationId: input.organizationId,
       reason: input.reason,
       graceful: input.graceful,
     });

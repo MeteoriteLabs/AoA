@@ -16,6 +16,8 @@
 // cancel — wired-looking, typechecking, and never firing. That is the Task 2a
 // defect shape, and instance-independence is the property that fixes it.
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   dispatchCancel,
@@ -108,14 +110,12 @@ describe("CLI-006/Task 4 — the module-level port", () => {
     await getDistributedCancellationPort()!.requestCancellation({
       jobId: JOB,
       companyId: "c",
-      organizationId: "o",
       reason: "Cancelled by control plane",
       graceful: true,
     });
     expect(requestCancellation).toHaveBeenCalledWith({
       jobId: JOB,
       companyId: "c",
-      organizationId: "o",
       reason: "Cancelled by control plane",
       graceful: true,
     });
@@ -131,7 +131,7 @@ describe("CLI-006/Task 4 — the module-level port", () => {
 // latch the run, and make the projector discard the attempt's real terminal. The
 // run would read cancelled in the UI while the sandbox kept burning budget.
 
-const RUN_CTX = { companyId: "c", organizationId: "o", reason: "stop", graceful: true };
+const RUN_CTX = { companyId: "c", reason: "stop", graceful: true };
 
 describe("CLI-006/4-D1 — dispatchCancel", () => {
   it("tells a legacy run's caller to write the terminal itself", async () => {
@@ -153,7 +153,6 @@ describe("CLI-006/4-D1 — dispatchCancel", () => {
     expect(requestCancellation).toHaveBeenCalledWith({
       jobId: JOB,
       companyId: "c",
-      organizationId: "o",
       reason: "stop",
       graceful: true,
     });
@@ -191,5 +190,67 @@ describe("CLI-006/4-D1 — dispatchCancel", () => {
     await expect(
       dispatchCancel({ run: distributedRun, ...RUN_CTX, port: boom, onError: "propagate" }),
     ).rejects.toThrow();
+  });
+});
+
+// -- the wiring, asserted structurally -------------------------------------------
+//
+// The five writers live inside a service closure and inside a database
+// transaction, so neither is reachable from an in-process unit test. What CAN be
+// proven — and mutation-proven — is that each writer actually consults the
+// routing, and that the bulk SQL carries its exclusion predicate. Per the CLI-002
+// lesson: a mocked DB never executes a WHERE, so assert the predicate's presence
+// rather than pretending to exercise it.
+
+const src = (rel: string) =>
+  readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+
+describe("CLI-006/Task 4 — every heartbeat cancel writer consults the routing", () => {
+  const heartbeat = src("../services/heartbeat.ts");
+
+  it("routes all FOUR writers", () => {
+    // cancelRun, cancelActiveForAgent, and both cancelBudgetScopeWork scopes.
+    const calls = heartbeat.match(/routeRunCancellation\(run,/g) ?? [];
+    expect(calls).toHaveLength(4);
+  });
+
+  it("propagates for cancelRun and skips for the three batch writers", () => {
+    expect(heartbeat).toContain('onError: "propagate"');
+    expect((heartbeat.match(/onError: "skip"/g) ?? []).length).toBe(3);
+  });
+
+  it("reads the port from module scope, never from a service option", () => {
+    // A constructor option would be undefined at every real cancel — the three
+    // callers all hold a bare heartbeatService(db).
+    expect(heartbeat).toContain("port: getDistributedCancellationPort()");
+    expect(heartbeat).not.toMatch(/distributedCancellation\??\.\s*requestCancellation/);
+  });
+});
+
+describe("CLI-006/4-D2 — the bulk writer excludes distributed runs in SQL", () => {
+  const issues = src("../services/issues.ts");
+
+  it("carries the exclusion predicate on the bulk terminal update", () => {
+    // This update bypasses setRunStatus entirely, so the CLI-006 terminal latch
+    // does not protect it. Without this predicate a distributed-owned run is
+    // latched `cancelled` and the projector discards the attempt's real terminal.
+    expect(issues).toContain(
+      'or(isNull(heartbeatRuns.executionOwner), ne(heartbeatRuns.executionOwner, "distributed"))',
+    );
+  });
+
+  it("routes the distributed subset after the transaction, at BOTH call sites", () => {
+    const calls = issues.match(/routeDistributedCancelsForRuns\(db, runsToTerminate/g) ?? [];
+    expect(calls).toHaveLength(2);
+  });
+
+  it("routes AFTER terminateTrackedRuns, not inside the transaction", () => {
+    // requestCancellation goes through runInTenant on a different pool and must
+    // not be entangled with this transaction's lifetime.
+    const lines = issues.split(/\r?\n/);
+    const terminate = lines.findIndex((l) => l.includes("terminateTrackedRuns(runsToTerminate);"));
+    const route = lines.findIndex((l) => l.includes("routeDistributedCancelsForRuns(db, runsToTerminate"));
+    expect(terminate).toBeGreaterThan(-1);
+    expect(route).toBeGreaterThan(terminate);
   });
 });

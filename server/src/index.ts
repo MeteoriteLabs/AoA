@@ -1170,6 +1170,43 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
     convert: convertOrchestrator,
     placement: toRunExecutionPlacement(placementService),
   });
+  // ── CLI-006 (Task 4) — register the fence-revoking cancel port ──────────────
+  // Module-level registration, NOT an option on heartbeatService: every real
+  // `cancelRun` caller holds a bare `heartbeatService(db)` (agents.ts:198,
+  // issues.ts:99, index.ts:1828), so a constructor option would be `undefined`
+  // at every actual cancel — wired-looking and inert.
+  //
+  // The Organization is resolved HERE rather than on the port's interface,
+  // because a `heartbeat_runs` row does not carry one and heartbeat cannot reach
+  // the mapping. A company with no Organization throws: with `onError:"propagate"`
+  // the operator is told the cancel failed, and with `"skip"` the batch continues
+  // and the run stays `running` — both honest, and neither writes a terminal for
+  // a worker that is still live (4-D1).
+  const [{ createJobReconciliationService }] = await Promise.all([
+    import("./services/job-reconciliation.js"),
+  ]);
+  const jobReconciliationForCancel = createJobReconciliationService({ appDb });
+  const { setDistributedCancellationPort } = await import(
+    "./services/distributed-cancellation-port.js"
+  );
+  setDistributedCancellationPort({
+    requestCancellation: async ({ jobId, companyId, reason, graceful }) => {
+      const organizationId = await resolveCompanyOrganizationId(appDb, companyId);
+      if (!organizationId) {
+        throw new Error(
+          `cannot revoke the fence for job ${jobId}: company ${companyId} resolves to no Organization`,
+        );
+      }
+      await jobReconciliationForCancel.requestCancellation({
+        organizationId,
+        companyId,
+        jobId,
+        reason,
+        graceful,
+      });
+    },
+  });
+
   distributedRolloutHook = createHeartbeatDistributedRolloutHook({
     env: process.env,
     deploymentMode: config.deploymentMode,
