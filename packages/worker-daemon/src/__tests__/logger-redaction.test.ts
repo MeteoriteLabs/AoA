@@ -100,3 +100,51 @@ describe("createWorkerLogger — redaction guard", () => {
     expect(JSON.stringify(record)).toContain("health server close failed");
   });
 });
+
+describe("DSK-001/D7 — raw bytes never print, whatever the field is called", () => {
+  // The redactor is NAME-based, and that is exactly the hole here. A device
+  // private key is a Uint8Array; under a key the list does not match — `blob`,
+  // `der`, `payload`, `record` — it serializes to an object of numeric indices
+  // and the key prints in full as a list of digits. No amount of naming
+  // discipline in future call sites fixes that; the type does.
+  //
+  // Plan §4/D7. One line, and it closes the hazard structurally.
+
+  function logged(bindings: Record<string, unknown>): string {
+    const chunks: string[] = [];
+    const logger = createWorkerLogger({
+      destination: { write: (c: string) => { chunks.push(c); } },
+    });
+    logger.error(bindings, "diagnostic");
+    return chunks.join("");
+  }
+
+  it("masks a Uint8Array under an INNOCENT key name", () => {
+    const der = new Uint8Array([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70]);
+    const text = logged({ blob: der });
+    // The give-away is the index-keyed serialization of the bytes.
+    expect(text).not.toContain('"0":48');
+    expect(text).toContain("[bytes]");
+  });
+
+  it("masks bytes nested inside an ordinary object", () => {
+    const text = logged({ record: { workerId: "w-1", der: new Uint8Array([1, 2, 3]) } });
+    expect(text).not.toContain('"0":1');
+    expect(text).toContain("[bytes]");
+    // The surrounding diagnostic must survive.
+    expect(text).toContain("w-1");
+  });
+
+  it("masks an ArrayBuffer as well as a view over one", () => {
+    const text = logged({ buf: new ArrayBuffer(8) });
+    expect(text).toContain("[bytes]");
+  });
+
+  it("leaves ordinary arrays of numbers alone", () => {
+    // The guard must key on the TYPE, not on "looks like numbers" — a plain
+    // array of counts is a legitimate diagnostic.
+    const text = logged({ counts: [1, 2, 3] });
+    expect(text).not.toContain("[bytes]");
+    expect(text).toContain("3");
+  });
+});

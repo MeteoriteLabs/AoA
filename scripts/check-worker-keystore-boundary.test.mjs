@@ -109,6 +109,21 @@ test("REJECTS the bare `child_process` specifier too, not just the node: form", 
   assert.equal(policyErrors.length, 1);
 });
 
+test("REJECTS the real ENTRY POINT spawning a subprocess", async () => {
+  // Plan §1D asked for this case specifically. `bin/aoa-worker-desktop.ts` is the
+  // shipped executable and the process that holds an enrollment ticket; it is
+  // exactly where someone would reach for a shell "just to check something".
+  // It composes `command-runner` like every other module and never spawns itself.
+  const { policyErrors } = await checkTree({
+    files: {
+      ...clean,
+      "bin/aoa-worker-desktop.ts": 'import { execFileSync } from "node:child_process";\n',
+    },
+  });
+  assert.equal(policyErrors.length, 1);
+  assert.match(policyErrors[0], /ONE PATH/);
+});
+
 test("REJECTS existsSync ANYWHERE, including in the confinement host itself", async () => {
   // The boolean absence oracle. `node:fs` stays legitimate — statSync throws with
   // a discriminating errno and is what the probe is built on — so this is banned

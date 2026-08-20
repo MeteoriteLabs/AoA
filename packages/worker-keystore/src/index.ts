@@ -59,4 +59,13 @@ export { createOsRecordStore, type DeviceRecordStore, type RecordCodec } from ".
 
 // The composition host — the only module here that names the worker-daemon
 // bootstrap. Importing it pulls in both packages by design.
-export { runDesktopHost, RESET_IDENTITY_FLAG, type DesktopHostDeps } from "./bin/desktop-host.js";
+export {
+  runDesktopHost,
+  RESET_IDENTITY_FLAG,
+  RESET_ACKNOWLEDGEMENT_FLAG,
+  type DesktopHostDeps,
+} from "./bin/desktop-host.js";
+
+// The entry guard's redactor. Exported so a packaging host (DSK-003) reuses it
+// rather than reinventing the one path that bypasses the logger.
+export { redactEnrollmentCodes } from "./bin/aoa-worker-desktop.js";

@@ -63,6 +63,12 @@ function isSensitiveKey(key: string): boolean {
 function redactBindings(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
   if (value === null || typeof value !== "object") return value;
   if (value instanceof Error) return value;
+  // DSK-001 (D7). Raw bytes are masked by TYPE, because this redactor is
+  // otherwise name-based and a device private key is a Uint8Array. Under a key
+  // the list does not match — `blob`, `der`, `payload` — it serializes to an
+  // object of numeric indices and prints in full as a list of digits. No amount
+  // of naming discipline at future call sites closes that; the type check does.
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return "[bytes]";
   if (seen.has(value)) return "[circular]";
   seen.add(value);
   if (Array.isArray(value)) return value.map((item) => redactBindings(item, seen));

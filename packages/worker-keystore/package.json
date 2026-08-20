@@ -11,6 +11,9 @@
       "import": "./dist/index.js"
     }
   },
+  "bin": {
+    "aoa-worker-desktop": "./dist/bin/aoa-worker-desktop.js"
+  },
   "files": [
     "dist"
   ],
