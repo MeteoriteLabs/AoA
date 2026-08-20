@@ -45,18 +45,30 @@ export interface DeviceIdentityRecord {
 }
 
 /**
- * Field names are deliberately inert under the frozen wire-safety normalizer
- * (`packages/worker-protocol/src/wire-safety.ts:18-31`). `k` rather than `key` or
- * `secret` keeps the record from tripping a forbidden-key scan if it is ever
- * summarised in a diagnostic — the value never travels, but the NAME should not
- * be a landmine either.
+ * The key-bearing field is named to be CAUGHT by the daemon logger's redactor,
+ * not to slip past a scanner.
+ *
+ * This was `k`, justified by the frozen wire-safety normalizer
+ * (`packages/worker-protocol/src/wire-safety.ts:18-31`). That justification cited
+ * the wrong guard. The record never travels the wire — the entire design keeps it
+ * on local disk under OS custody — so the wire normalizer never runs on it. The
+ * guard that actually applies to a stray diagnostic is the daemon logger's
+ * `SENSITIVE_SUBSTRINGS` (`worker-daemon/src/logging/logger.ts:37-49`), and
+ * optimising for the scan that never runs made the field invisible to the scan
+ * that does: `k` normalizes to `k` and matches nothing in that list, so logging
+ * the envelope would print the base64 private key in full.
+ *
+ * `privateKeyPkcs8B64` normalizes to `privatekeypkcs8b64`, which contains
+ * `privatekey` and is therefore redacted. Plan §1D specifies this name.
+ *
+ * `v` stays 1: zero devices are enrolled, so there is no corpus to migrate.
  */
 interface EncodedEnvelope {
   readonly v: number;
   readonly workerId: string;
   readonly targetId: string;
   readonly deviceGeneration: number;
-  readonly k: string;
+  readonly privateKeyPkcs8B64: string;
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -88,7 +100,7 @@ export function encodeIdentityEnvelope(record: DeviceIdentityRecord): Uint8Array
     workerId: record.workerId,
     targetId: record.targetId,
     deviceGeneration: record.deviceGeneration,
-    k: toBase64(record.privateKeyPkcs8Der),
+    privateKeyPkcs8B64: toBase64(record.privateKeyPkcs8Der),
   };
   return new TextEncoder().encode(JSON.stringify(payload));
 }
@@ -115,7 +127,13 @@ export function decodeIdentityEnvelope(bytes: Uint8Array): DeviceIdentityRecord 
     throw new Error("identity envelope: not an object");
   }
 
-  const { v, workerId, targetId, deviceGeneration, k } = parsed as Partial<EncodedEnvelope>;
+  const {
+    v,
+    workerId,
+    targetId,
+    deviceGeneration,
+    privateKeyPkcs8B64: keyB64,
+  } = parsed as Partial<EncodedEnvelope>;
   if (v !== IDENTITY_ENVELOPE_VERSION) {
     throw new Error(`identity envelope: unsupported version ${String(v)}`);
   }
@@ -132,13 +150,13 @@ export function decodeIdentityEnvelope(bytes: Uint8Array): DeviceIdentityRecord 
   ) {
     throw new Error("identity envelope: deviceGeneration must be a positive integer");
   }
-  if (typeof k !== "string" || k.length === 0) {
+  if (typeof keyB64 !== "string" || keyB64.length === 0) {
     throw new Error("identity envelope: missing private key");
   }
 
   let der: Uint8Array;
   try {
-    der = fromBase64(k);
+    der = fromBase64(keyB64);
   } catch {
     throw new Error("identity envelope: private key is not valid base64");
   }

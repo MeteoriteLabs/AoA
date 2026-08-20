@@ -11,6 +11,7 @@
 // FAULT, never as "half a record" and never as absence.
 
 import { describe, expect, it } from "vitest";
+import { createWorkerLogger } from "@armyofagents/worker-daemon";
 import {
   decodeIdentityEnvelope,
   encodeIdentityEnvelope,
@@ -22,6 +23,9 @@ const WORKER_ID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
 const DER = new Uint8Array([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70]);
 
 const TARGET_ID = "a3000000-0000-4000-8000-000000000003";
+
+/** The encoded name of the key-bearing field, in ONE place. */
+const KEY_FIELD = "privateKeyPkcs8B64";
 const record: DeviceIdentityRecord = {
   v: 1,
   workerId: WORKER_ID,
@@ -73,15 +77,15 @@ describe("DSK-001/I6 — a partial or damaged record is a FAULT, never half a re
     ["not json", new TextEncoder().encode("not-json-at-all")],
     ["truncated json", encodeIdentityEnvelope(record).slice(0, 20)],
     ["json but not an object", new TextEncoder().encode('"a string"')],
-    ["missing workerId", new TextEncoder().encode(JSON.stringify({ v: 1, targetId: TARGET_ID, deviceGeneration: 1, k: "AAAA" }))],
+    ["missing workerId", new TextEncoder().encode(JSON.stringify({ v: 1, targetId: TARGET_ID, deviceGeneration: 1, [KEY_FIELD]: "AAAA" }))],
     ["missing key", new TextEncoder().encode(JSON.stringify({ v: 1, workerId: WORKER_ID, targetId: TARGET_ID, deviceGeneration: 1 }))],
-    ["missing targetId", new TextEncoder().encode(JSON.stringify({ v: 1, workerId: WORKER_ID, deviceGeneration: 1, k: "AAAA" }))],
-    ["missing deviceGeneration", new TextEncoder().encode(JSON.stringify({ v: 1, workerId: WORKER_ID, targetId: TARGET_ID, k: "AAAA" }))],
-    ["zero deviceGeneration", new TextEncoder().encode(JSON.stringify({ v: 1, workerId: WORKER_ID, targetId: TARGET_ID, deviceGeneration: 0, k: "AAAA" }))],
-    ["empty workerId", new TextEncoder().encode(JSON.stringify({ v: 1, workerId: "", targetId: TARGET_ID, deviceGeneration: 1, k: "AAAA" }))],
-    ["empty key", new TextEncoder().encode(JSON.stringify({ v: 1, workerId: WORKER_ID, targetId: TARGET_ID, deviceGeneration: 1, k: "" }))],
-    ["wrong version", new TextEncoder().encode(JSON.stringify({ v: 99, workerId: WORKER_ID, targetId: TARGET_ID, deviceGeneration: 1, k: "AAAA" }))],
-    ["non-base64 key", new TextEncoder().encode(JSON.stringify({ v: 1, workerId: WORKER_ID, targetId: TARGET_ID, deviceGeneration: 1, k: "!!!!" }))],
+    ["missing targetId", new TextEncoder().encode(JSON.stringify({ v: 1, workerId: WORKER_ID, deviceGeneration: 1, [KEY_FIELD]: "AAAA" }))],
+    ["missing deviceGeneration", new TextEncoder().encode(JSON.stringify({ v: 1, workerId: WORKER_ID, targetId: TARGET_ID, [KEY_FIELD]: "AAAA" }))],
+    ["zero deviceGeneration", new TextEncoder().encode(JSON.stringify({ v: 1, workerId: WORKER_ID, targetId: TARGET_ID, deviceGeneration: 0, [KEY_FIELD]: "AAAA" }))],
+    ["empty workerId", new TextEncoder().encode(JSON.stringify({ v: 1, workerId: "", targetId: TARGET_ID, deviceGeneration: 1, [KEY_FIELD]: "AAAA" }))],
+    ["empty key", new TextEncoder().encode(JSON.stringify({ v: 1, workerId: WORKER_ID, targetId: TARGET_ID, deviceGeneration: 1, [KEY_FIELD]: "" }))],
+    ["wrong version", new TextEncoder().encode(JSON.stringify({ v: 99, workerId: WORKER_ID, targetId: TARGET_ID, deviceGeneration: 1, [KEY_FIELD]: "AAAA" }))],
+    ["non-base64 key", new TextEncoder().encode(JSON.stringify({ v: 1, workerId: WORKER_ID, targetId: TARGET_ID, deviceGeneration: 1, [KEY_FIELD]: "!!!!" }))],
   ];
 
   for (const [name, bytes] of bad) {
@@ -109,17 +113,45 @@ describe("DSK-001/I6 — a partial or damaged record is a FAULT, never half a re
   });
 });
 
-describe("DSK-001/I5 — the envelope never carries a field that looks like a credential", () => {
-  it("uses key names that pass the frozen wire-safety normalizer", () => {
-    // FORBIDDEN_WIRE_KEYS matches on normalized key NAMES, so an envelope field
-    // called `token`/`credential`/`apiKey` would be rejected at the wire boundary
-    // if this record ever travelled. Keep the names inert by construction.
+describe("DSK-001/I5 — the key field is named so the DAEMON LOGGER redacts it", () => {
+  // This test previously asserted the opposite-facing property: that the field
+  // names pass the frozen WIRE-safety normalizer. That is the wrong guard. The
+  // record never travels the wire — the whole design keeps it on the local disk —
+  // so `wire-safety.ts` never runs on it. The guard that actually applies to a
+  // stray diagnostic is the daemon logger's `SENSITIVE_SUBSTRINGS`
+  // (`logging/logger.ts:37-49`), and optimising the name for the scan that never
+  // runs made it INVISIBLE to the scan that does: `k` normalizes to `k` and
+  // matches nothing, while `privatekey` is in the list. A field called `k` prints
+  // the base64 private key in full.
+  //
+  // Asserted through the REAL logger rather than against a copied word list, so
+  // the test cannot drift from the redactor it is claiming to satisfy.
+
+  function logged(value: unknown): string {
+    const chunks: string[] = [];
+    const logger = createWorkerLogger({
+      destination: { write: (chunk: string) => { chunks.push(chunk); } },
+    });
+    logger.error({ envelope: value }, "diagnostic");
+    return chunks.join("");
+  }
+
+  it("does not print the private key when the envelope is logged", () => {
     const parsed = JSON.parse(new TextDecoder().decode(encodeIdentityEnvelope(record)));
-    const forbidden = ["env", "environment", "apikey", "password", "token", "accesstoken",
-      "refreshtoken", "cookie", "authorization", "credential", "credentials", "secretvalue"];
-    for (const key of Object.keys(parsed)) {
-      const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-      expect(forbidden, `envelope field "${key}"`).not.toContain(normalized);
-    }
+    const keyText = parsed[KEY_FIELD] as string;
+    expect(typeof keyText).toBe("string");
+    expect(keyText.length).toBeGreaterThan(8);
+    const text = logged(parsed);
+    expect(text).not.toContain(keyText);
+    // Positively: the field was REDACTED, not silently dropped — otherwise this
+    // would pass for a logger that logged nothing at all.
+    expect(text).toContain("[redacted]");
+  });
+
+  it("still prints the non-secret fields, so the diagnostic stays useful", () => {
+    const parsed = JSON.parse(new TextDecoder().decode(encodeIdentityEnvelope(record)));
+    const text = logged(parsed);
+    expect(text).toContain(WORKER_ID);
+    expect(text).toContain(TARGET_ID);
   });
 });
