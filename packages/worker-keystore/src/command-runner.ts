@@ -26,9 +26,21 @@
 //      measured as exit 0 under `-File` and exit 1 under `-EncodedCommand`, with
 //      identical empty stdout. So the runner probes the file first and sets
 //      `absenceSignalled` explicitly; the classifier never infers it.
+//
+//      **The probe is THREE-valued, and that is not stylistic.** The first
+//      version used `existsSync`, which returns `false` for ANY error — EACCES,
+//      EPERM, ENOTDIR, ELOOP, an unreadable mount, an invalid path — not only for
+//      non-existence. A permission-denied probe therefore reported ABSENCE,
+//      `load()` returned `null`, `loadOrCreateKey` read that as NEVER ENROLLED,
+//      and the device enrolled under a SECOND identity the server denies forever
+//      with no reset route. That is the exact bug the six-valued classifier
+//      exists to prevent, reintroduced one layer beneath it: a careful classifier
+//      fed by a lossy oracle is not careful. A boolean cannot express a fault, so
+//      the seam's TYPE is three-valued and every fake inherits the distinction
+//      rather than the defect.
 
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 
 import type { VaultCommandPlan } from "./command-plan.js";
 import type { CommandRunner } from "./identity-store.js";
@@ -50,13 +62,50 @@ function isExecError(err: unknown): err is ExecFileSyncError {
 }
 
 /**
+ * A three-valued probe result. `{fault}` is what a boolean could not say.
+ */
+export type BlobProbe = "absent" | "present" | { readonly fault: string };
+
+/**
+ * The real probe. `statSync` THROWS with a discriminating `code`, which is the
+ * whole reason it replaces `existsSync`: only `ENOENT` (and `ENOTDIR` on a path
+ * whose parent is missing) means "not there". Everything else is a fault that
+ * must not be mistaken for a device that has never enrolled.
+ */
+/**
+ * The errno decision, extracted and exported so it is actually TESTABLE.
+ *
+ * It was originally inline inside `probeBlob`, where every test injected a fake
+ * probe and therefore never exercised it — a mutation making it return `"absent"`
+ * for every errno left the whole suite green. That is the vacuous-coverage shape
+ * this repo's "mutation-test every guard" rule exists to catch, and it applied to
+ * the single decision that prevents permanent device lockout.
+ *
+ * ONLY `ENOENT` is absence. Everything else — including `UNKNOWN`, which Windows
+ * produces for several conditions — is a fault.
+ */
+export function classifyProbeErrno(code: string | undefined): BlobProbe {
+  if (code === "ENOENT") return "absent";
+  return { fault: code ?? "UNKNOWN" };
+}
+
+function probeBlob(path: string): BlobProbe {
+  try {
+    statSync(path);
+    return "present";
+  } catch (err) {
+    return classifyProbeErrno((err as NodeJS.ErrnoException).code);
+  }
+}
+
+/**
  * The production runner.
  *
- * `fileExists` is injectable purely so the absence oracle can be exercised in a
- * unit test without touching a real filesystem; it defaults to the real check.
+ * `probe` is injectable so the absence oracle can be exercised without touching a
+ * real filesystem. Its type is deliberately three-valued — see note 2 above.
  */
-export function createCommandRunner(deps: { fileExists?: (path: string) => boolean } = {}): CommandRunner {
-  const fileExists = deps.fileExists ?? existsSync;
+export function createCommandRunner(deps: { probe?: (path: string) => BlobProbe } = {}): CommandRunner {
+  const probe = deps.probe ?? probeBlob;
 
   return {
     run(plan: VaultCommandPlan, stdin?: Uint8Array): StoreCommandResult {
@@ -65,14 +114,26 @@ export function createCommandRunner(deps: { fileExists?: (path: string) => boole
       // handled by the store as success. Deciding absence here — from the
       // filesystem — is what keeps `classifyStoreOutcome` free to treat every
       // crypto-layer failure as a fault.
-      if (plan.stdin === "none" && !fileExists(plan.blobPath)) {
-        return {
-          exitCode: null,
-          signal: null,
-          stdout: new Uint8Array(),
-          stderr: "",
-          absenceSignalled: true,
-        };
+      if (plan.stdin === "none") {
+        const probed = probe(plan.blobPath);
+        if (probed === "absent") {
+          return {
+            exitCode: null, signal: null, stdout: new Uint8Array(),
+            stderr: "", absenceSignalled: true,
+          };
+        }
+        if (typeof probed === "object") {
+          // A FAULT, never absence. Reported with the errno so the classifier can
+          // separate a denial from a transient unavailability, and so an operator
+          // sees which one it was. This branch also covers `clear()`, which takes
+          // the same `stdin === "none"` path: without it a FAILED WIPE reported
+          // success, contradicting clear()'s own contract.
+          return {
+            exitCode: null, signal: null, stdout: new Uint8Array(),
+            stderr: `device identity blob probe failed: ${probed.fault}`,
+            absenceSignalled: false,
+          };
+        }
       }
 
       try {

@@ -103,9 +103,18 @@ export function classifyStoreOutcome(result: StoreCommandResult): KeyStoreProbeO
   // (2) No exit code at all: spawn failure or a killed child. A signal says
   // nothing about the stored bytes, so this is `unavailable`, never `corrupt`.
   if (result.exitCode === null) {
-    const detail = result.signal
-      ? `child terminated by ${result.signal}`
-      : result.stderr.trim() || "no exit code and no stderr";
+    // A SIGNAL says nothing about the stored bytes, so a killed child is always
+    // `unavailable` regardless of what it managed to write.
+    if (result.signal) {
+      return { kind: "unavailable", detail: `child terminated by ${result.signal}` };
+    }
+    const detail = result.stderr.trim() || "no exit code and no stderr";
+    // No exit code and no signal also covers the runner's own three-valued blob
+    // probe, which reports an errno rather than spawning. A permission errno is a
+    // DENIAL, and saying `unavailable` would send an operator looking for a
+    // missing binary instead of a broken ACL. Both are faults either way — the
+    // run never becomes `absent` — so this only sharpens the diagnosis.
+    if (has(detail, DENIAL_MARKERS)) return { kind: "denied", detail };
     return { kind: "unavailable", detail };
   }
 
