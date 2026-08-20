@@ -87,8 +87,19 @@ test("REJECTS child_process imported from any other runtime file", async () => {
       files: { ...clean, [name]: 'import { execFileSync } from "node:child_process";\n' },
     });
     assert.equal(policyErrors.length, 1, `${name} should be rejected`);
-    assert.match(policyErrors[0], /may be imported ONLY from command-runner\.ts/);
+    assert.match(policyErrors[0], /may be imported ONLY from src\/command-runner\.ts/);
   }
+});
+
+test("REJECTS a SAME-NAMED file in a subdirectory — the confinement is a PATH, not a basename", async () => {
+  // This passed before the fix: the check keyed on `path.basename`, so anyone who
+  // created `src/anything/command-runner.ts` inherited spawn permission. Verified
+  // live against the real tree before and after.
+  const { policyErrors } = await checkTree({
+    files: { ...clean, "sneaky/command-runner.ts": 'import { execFileSync } from "node:child_process";\n' },
+  });
+  assert.equal(policyErrors.length, 1);
+  assert.match(policyErrors[0], /ONE PATH/);
 });
 
 test("REJECTS the bare `child_process` specifier too, not just the node: form", async () => {

@@ -12,8 +12,9 @@
  * store — is pure and OS-free so it is provable on the ubuntu-only REQUIRED CI
  * lane. That decomposition is only meaningful if the dangerous capability
  * actually stays in one place. Review cannot guarantee that; a mechanical
- * basename confinement can, and it is the repo's established answer to "one
- * dangerous capability, one file" (see CREDENTIAL_HOST_BASENAME in the e2b leaf).
+ * PATH confinement can. (The e2b leaf's CREDENTIAL_HOST_BASENAME is the same idea
+ * keyed on a basename — which is weaker, and was the bug here: a same-named file
+ * in a subdirectory inherited the permission.)
  *
  * Policy:
  *   - The manifest declares EXACTLY `@armyofagents/worker-daemon` and
@@ -22,7 +23,7 @@
  *     arrive here by accident, because this package is injected INTO the daemon's
  *     process.
  *   - `node:child_process` (and the bare `child_process`) may be imported from
- *     EXACTLY ONE runtime source file, `command-runner.ts`.
+ *     EXACTLY ONE runtime source PATH, `src/command-runner.ts`.
  *   - Non-literal imports and the `node:module` createRequire bridge are rejected,
  *     because either would let arbitrary code reach the process holding the key.
  *
@@ -56,8 +57,17 @@ export const REQUIRED_RUNTIME_DEPENDENCIES = [
   "@armyofagents/worker-protocol",
 ];
 
-/** The single runtime source file permitted to spawn a subprocess. */
-export const SUBPROCESS_HOST_BASENAME = "command-runner.ts";
+/**
+ * The single runtime source file permitted to spawn a subprocess, as a full
+ * package-relative path.
+ *
+ * It was a BASENAME, and that was a real hole: a file at
+ * `src/anything/command-runner.ts` inherited spawn permission simply by being
+ * named the same. Demonstrated live — the checker passed such a file — so the
+ * confinement was bypassable by anyone who created a subdirectory. "One
+ * dangerous capability, one file" has to mean one PATH.
+ */
+export const SUBPROCESS_HOST_PATH = "src/command-runner.ts";
 
 /** Specifiers that grant subprocess execution. */
 const SUBPROCESS_SPECIFIERS = new Set(["child_process", "node:child_process"]);
@@ -111,10 +121,13 @@ export function evaluateRuntimeSourceImports({ relPath, absPath, sourceRoot, sou
       continue;
     }
     // Subprocess confinement: ONLY `command-runner.ts` may spawn.
-    if (SUBPROCESS_SPECIFIERS.has(value) && path.basename(absPath) !== SUBPROCESS_HOST_BASENAME) {
+    // The confinement keys on the FULL package-relative path. A basename check
+    // let `src/anything/command-runner.ts` inherit spawn permission.
+    const packageRelative = relPath.slice(relPath.indexOf("/src/") + 1);
+    if (SUBPROCESS_SPECIFIERS.has(value) && packageRelative !== SUBPROCESS_HOST_PATH) {
       errors.push(
-        `${relPath}: ${JSON.stringify(value)} may be imported ONLY from ${SUBPROCESS_HOST_BASENAME} — ` +
-          "subprocess execution is confined to one file so the pure decision logic stays OS-free",
+        `${relPath}: ${JSON.stringify(value)} may be imported ONLY from ${SUBPROCESS_HOST_PATH} — ` +
+          "subprocess execution is confined to ONE PATH so the pure decision logic stays OS-free",
       );
       continue;
     }
