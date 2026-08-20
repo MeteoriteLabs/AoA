@@ -45,3 +45,5 @@ export {
 // The subprocess host. Importing this pulls in `node:child_process`; every other
 // module in this package is deliberately OS-free.
 export { createCommandRunner } from "./command-runner.js";
+
+export { resolveVaultRefs, VaultPathError, type VaultRefs } from "./blob-path.js";
