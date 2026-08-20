@@ -96,12 +96,17 @@ export async function runDesktopHost(deps: DesktopHostDeps): Promise<{ ok: boole
     return { ok: true };
   }
 
+  // NO CAST. An earlier version wrote `as never` here, which erased a genuine
+  // record-shape mismatch: the keystore's identity record was missing `v`,
+  // `targetId` and `deviceGeneration`. The compiler had been reporting exactly
+  // that and the cast silenced it. Keeping this call uncast makes the
+  // type-checker the standing guard against the two shapes diverging again.
   const result: BootstrapResult = await bootstrap({
     env: deps.env,
     proc: deps.proc,
     identityStore,
     receiptStore,
-  } as never);
+  });
 
   return { ok: result.ok };
 }

@@ -21,8 +21,26 @@
 /** Bumping this is a deliberate migration, not an accident. */
 export const IDENTITY_ENVELOPE_VERSION = 1;
 
+/**
+ * The FIVE-field record, structurally identical to the daemon's port record
+ * (`worker-daemon/src/identity/device-identity-store.ts`).
+ *
+ * An earlier version carried only `workerId` and the key, and a `as never` cast
+ * at the composition root hid the mismatch from the compiler. That was not a
+ * cosmetic gap: `targetId` is what the coordinator's "persisted identity belongs
+ * to a different target" refusal reads, so dropping it makes that comparison
+ * evaluate against `undefined` and THROW on every subsequent boot — leaving
+ * `--reset-identity` (a second mint, denied permanently) as the only way out.
+ * `deviceGeneration` is compared by the server for exact equality.
+ *
+ * Design D7 and the plan's remedy A4(iv) both specify these fields. The cast is
+ * gone, so the compiler is the standing guard against the shapes diverging again.
+ */
 export interface DeviceIdentityRecord {
+  readonly v: 1;
   readonly workerId: string;
+  readonly targetId: string;
+  readonly deviceGeneration: number;
   readonly privateKeyPkcs8Der: Uint8Array;
 }
 
@@ -36,6 +54,8 @@ export interface DeviceIdentityRecord {
 interface EncodedEnvelope {
   readonly v: number;
   readonly workerId: string;
+  readonly targetId: string;
+  readonly deviceGeneration: number;
   readonly k: string;
 }
 
@@ -54,6 +74,10 @@ function fromBase64(value: string): Uint8Array {
 
 export function encodeIdentityEnvelope(record: DeviceIdentityRecord): Uint8Array {
   if (!record.workerId) throw new Error("identity envelope: workerId is required");
+  if (!record.targetId) throw new Error("identity envelope: targetId is required");
+  if (!Number.isInteger(record.deviceGeneration) || record.deviceGeneration < 1) {
+    throw new Error("identity envelope: deviceGeneration must be a positive integer");
+  }
   if (record.privateKeyPkcs8Der.length === 0) {
     throw new Error("identity envelope: private key is required");
   }
@@ -62,6 +86,8 @@ export function encodeIdentityEnvelope(record: DeviceIdentityRecord): Uint8Array
   const payload: EncodedEnvelope = {
     v: IDENTITY_ENVELOPE_VERSION,
     workerId: record.workerId,
+    targetId: record.targetId,
+    deviceGeneration: record.deviceGeneration,
     k: toBase64(record.privateKeyPkcs8Der),
   };
   return new TextEncoder().encode(JSON.stringify(payload));
@@ -89,12 +115,22 @@ export function decodeIdentityEnvelope(bytes: Uint8Array): DeviceIdentityRecord 
     throw new Error("identity envelope: not an object");
   }
 
-  const { v, workerId, k } = parsed as Partial<EncodedEnvelope>;
+  const { v, workerId, targetId, deviceGeneration, k } = parsed as Partial<EncodedEnvelope>;
   if (v !== IDENTITY_ENVELOPE_VERSION) {
     throw new Error(`identity envelope: unsupported version ${String(v)}`);
   }
   if (typeof workerId !== "string" || workerId.length === 0) {
     throw new Error("identity envelope: missing workerId");
+  }
+  if (typeof targetId !== "string" || targetId.length === 0) {
+    throw new Error("identity envelope: missing targetId");
+  }
+  if (
+    typeof deviceGeneration !== "number" ||
+    !Number.isInteger(deviceGeneration) ||
+    deviceGeneration < 1
+  ) {
+    throw new Error("identity envelope: deviceGeneration must be a positive integer");
   }
   if (typeof k !== "string" || k.length === 0) {
     throw new Error("identity envelope: missing private key");
@@ -108,5 +144,5 @@ export function decodeIdentityEnvelope(bytes: Uint8Array): DeviceIdentityRecord 
   }
   if (der.length === 0) throw new Error("identity envelope: private key decoded empty");
 
-  return { workerId, privateKeyPkcs8Der: der };
+  return { v: 1, workerId, targetId, deviceGeneration, privateKeyPkcs8Der: der };
 }

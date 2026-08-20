@@ -23,7 +23,10 @@ import type { StoreCommandResult } from "../outcome.js";
 
 const REF = { blobPath: "C:\\AoA\\device-identity.v1.bin" };
 const RECORD: DeviceIdentityRecord = {
+  v: 1,
   workerId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+  targetId: "a3000000-0000-4000-8000-000000000003",
+  deviceGeneration: 1,
   privateKeyPkcs8Der: new Uint8Array([1, 2, 3, 4]),
 };
 
@@ -128,7 +131,7 @@ describe("DSK-001/I4 — saveIfAbsent is compare-and-set", () => {
     };
     const a = storeWith(runner);
     const b = storeWith(runner);
-    const results = [a.saveIfAbsent(RECORD), b.saveIfAbsent({ ...RECORD, workerId: "other" })];
+    const results = [a.saveIfAbsent(RECORD), b.saveIfAbsent({ ...RECORD, workerId: "other-worker-id" })];
     expect(results.filter((r) => r === "stored")).toHaveLength(1);
     expect(results.filter((r) => r === "already_present")).toHaveLength(1);
   });
