@@ -69,6 +69,17 @@ export const POWERSHELL_ABSOLUTE_PATH =
 const EXIT_ALREADY_EXISTS = 4;
 
 /**
+ * Emitted on stdout by a successful `store`, so success is something the script
+ * SAYS rather than something the caller infers from an absence of output.
+ *
+ * The store previously read `corrupt && exitCode === 0` — i.e. empty stdout — as
+ * proof of a write. That is the same inference-from-nothing shape as reading
+ * empty stdout as absence, which is the defect this whole package exists to
+ * prevent. A positive sentinel closes it.
+ */
+export const STORE_SUCCESS_SENTINEL = "aoa-keystore-stored-v1";
+
+/**
  * Wrap a body so failure is reported DELIBERATELY rather than incidentally.
  *
  * This is what makes `locked` distinguishable from every other fault. Unwrapped,
@@ -116,12 +127,20 @@ function windowsScript(op: VaultOp, ref: VaultRef): string {
       // The DER arrives on stdin as base64 and never touches argv (I5).
       //
       // The write is an EXCLUSIVE CREATE (I4): `CreateNew` throws when the blob
-      // already exists, which the script reports as its own exit 4. That makes
-      // "someone else got here first" an OS-level refusal rather than a
-      // check-then-act race, and keeps it distinguishable from a genuine fault —
-      // conflating the two would silently drop an enrollment while reporting
-      // success. The directory is ensured first so a missing parent surfaces as a
-      // fault rather than masquerading as `alreadyExists` (both are IOException).
+      // already exists, which the script reports as its own exit 4 — an OS-level
+      // refusal rather than a check-then-act race.
+      //
+      // The catch is narrowed to HResult 0x80070050 (ERROR_FILE_EXISTS). An
+      // unqualified `catch [IO.IOException]` was far too wide: a full disk, a
+      // vanished network path, a sharing violation and DirectoryNotFoundException
+      // are all IOException, and reporting any of them as "already present" makes
+      // the caller treat a FAILED enrolment as a lost race and report success.
+      // Everything else falls through to the hardened exit 3.
+      //
+      // Flush($true) forces the bytes to the device before the handle is
+      // released. Without it a power loss between Dispose and the physical write
+      // leaves a zero-length blob that is PRESENT but undecodable — a bricked
+      // device rather than an unenrolled one, and the CAS then refuses to heal it.
       return harden(
         [
           "  Add-Type -AssemblyName System.Security",
@@ -133,10 +152,12 @@ function windowsScript(op: VaultOp, ref: VaultRef): string {
           "  try {",
           `    $fs = [IO.File]::Open(${path}, 'CreateNew')`,
           "  } catch [IO.IOException] {",
+          "    if ($_.Exception.HResult -ne 0x80070050) { throw }",
           "    [Console]::Error.Write('identity already present')",
           `    exit ${EXIT_ALREADY_EXISTS}`,
           "  }",
-          "  try { $fs.Write($blob, 0, $blob.Length) } finally { $fs.Dispose() }",
+          "  try { $fs.Write($blob, 0, $blob.Length); $fs.Flush($true) } finally { $fs.Dispose() }",
+          `  [Console]::Out.Write('${STORE_SUCCESS_SENTINEL}')`,
         ].join("\n"),
       );
     case "delete":

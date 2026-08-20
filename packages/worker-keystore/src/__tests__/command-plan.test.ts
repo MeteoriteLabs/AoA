@@ -19,7 +19,12 @@
 // circular with that fixture — they assert the invariants directly.
 
 import { describe, expect, it } from "vitest";
-import { planVaultCommand, POWERSHELL_ABSOLUTE_PATH, type VaultOp } from "../command-plan.js";
+import {
+  planVaultCommand,
+  POWERSHELL_ABSOLUTE_PATH,
+  STORE_SUCCESS_SENTINEL,
+  type VaultOp,
+} from "../command-plan.js";
 
 const REF = { blobPath: "C:\\Users\\t\\AppData\\Local\\AoA\\worker\\device-identity.v1.bin" };
 const OPS: VaultOp[] = ["load", "store", "delete"];
@@ -139,5 +144,42 @@ describe("DSK-001/D4 — non-Windows platforms are ports, not production adapter
     for (const platform of ["darwin", "linux"] as const) {
       expect(() => planVaultCommand("load", REF, platform)).toThrow(/unsupported|not supported/i);
     }
+  });
+});
+
+// -- corrections found by attacking the design against the code ---------------
+
+describe("DSK-001 — the store script must not confuse 'full disk' with 'already enrolled'", () => {
+  it("narrows the already-exists catch to ERROR_FILE_EXISTS by HResult", () => {
+    // `catch [IO.IOException]` is far too wide. DirectoryNotFoundException,
+    // a full disk, a vanished network path and a sharing violation are ALL
+    // IOException — so an unqualified catch reported every one of them as
+    // "someone else got here first". The caller then treats a failed enrolment
+    // as a lost race, reports success, and the device is never enrolled.
+    const s = planVaultCommand("store", REF, "win32").scriptText;
+    expect(s).toContain("0x80070050");
+  });
+
+  it("flushes to disk before releasing the handle", () => {
+    // Without Flush($true) the bytes may sit in the OS cache. A power loss
+    // between Dispose and the physical write leaves a zero-length blob that is
+    // PRESENT (so not absence) but undecodable — a bricked device rather than an
+    // unenrolled one.
+    const s = planVaultCommand("store", REF, "win32").scriptText;
+    expect(s).toContain("Flush($true)");
+  });
+
+  it("emits a success sentinel on stdout so success is positive, not inferred", () => {
+    // The store previously inferred "stored" from `corrupt && exitCode === 0`,
+    // i.e. from the ABSENCE of output. That is the same shape as inferring
+    // absence from empty stdout, which is the bug this whole package exists to
+    // avoid. Success must be a thing the script SAYS.
+    const s = planVaultCommand("store", REF, "win32").scriptText;
+    expect(s).toContain(STORE_SUCCESS_SENTINEL);
+  });
+
+  it("exposes the sentinel as a shared constant, not a duplicated literal", () => {
+    expect(typeof STORE_SUCCESS_SENTINEL).toBe("string");
+    expect(STORE_SUCCESS_SENTINEL.length).toBeGreaterThan(0);
   });
 });

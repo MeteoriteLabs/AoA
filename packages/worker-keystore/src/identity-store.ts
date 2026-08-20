@@ -34,7 +34,12 @@
 //      win. Two racing enrollers therefore yield exactly one surviving envelope.
 
 import { classifyStoreOutcome, type StoreCommandResult } from "./outcome.js";
-import { planVaultCommand, type VaultCommandPlan, type VaultRef } from "./command-plan.js";
+import {
+  planVaultCommand,
+  STORE_SUCCESS_SENTINEL,
+  type VaultCommandPlan,
+  type VaultRef,
+} from "./command-plan.js";
 import { decodeIdentityEnvelope, encodeIdentityEnvelope, type DeviceIdentityRecord } from "./envelope.js";
 
 /**
@@ -136,12 +141,17 @@ export function createOsIdentityStore(deps: {
       // device unenrolled while reporting success.
       if (result.exitCode === plan.exitCodes.alreadyExists) return "already_present";
 
+      // Success must be POSITIVE. This previously accepted
+      // `corrupt && exitCode === 0` — i.e. it inferred a successful write from an
+      // ABSENCE of output, the same inference-from-nothing shape that made the
+      // absence oracle fail open. The script now emits a sentinel and we require it.
       const outcome = classifyStoreOutcome(result);
-      if (outcome.kind === "present") return "stored";
-      // `store` writes nothing to stdout, so a clean success classifies as
-      // `corrupt` ("success but no envelope bytes") — expected here, and the one
-      // place that shape is legitimate.
-      if (outcome.kind === "corrupt" && result.exitCode === plan.exitCodes.ok) return "stored";
+      if (
+        outcome.kind === "present" &&
+        new TextDecoder().decode(outcome.envelope).trim() === STORE_SUCCESS_SENTINEL
+      ) {
+        return "stored";
+      }
       throw new DeviceKeyStoreError(
         `device identity store could not save (${outcome.kind}): ` +
           ("detail" in outcome ? outcome.detail : ""),

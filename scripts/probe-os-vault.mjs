@@ -96,7 +96,31 @@ try {
   check("tampered blob writes a diagnostic to stderr", bad.stderr.trim().length > 0);
   check("tampered blob returns NO envelope on stdout", bad.stdout.toString().trim() === "");
 
-  // (5) delete
+  // (5) The sentinel and the NARROWED already-exists catch, both live.
+  //
+  // The catch was widened-by-default before: `catch [IO.IOException]` also
+  // matches a full disk, a vanished network path, a sharing violation and
+  // DirectoryNotFoundException, so every one of those reported "already present"
+  // and the caller treated a FAILED enrolment as a lost race. Narrowing it to
+  // HResult 0x80070050 could have broken the genuine case, so prove the genuine
+  // case still works against real Windows rather than trusting the script text.
+  writeFileSync(blobPath, blob); // restore a valid blob
+  const second = await run(planVaultCommand("store", ref, "win32"), secret.toString("base64"));
+  check(
+    "a second store on an existing blob still yields exit 4",
+    second.exitCode === 4,
+    `exit=${second.exitCode} ${second.stderr.trim()}`,
+  );
+
+  rmSync(blobPath, { force: true });
+  const fresh = await run(planVaultCommand("store", ref, "win32"), secret.toString("base64"));
+  check(
+    "a successful store emits the positive sentinel on stdout",
+    fresh.stdout.toString().trim() === "aoa-keystore-stored-v1",
+    `stdout=${JSON.stringify(fresh.stdout.toString().trim())}`,
+  );
+
+  // (6) delete
   const del = await run(planVaultCommand("delete", ref, "win32"));
   check("delete exits 0", del.exitCode === 0, `exit=${del.exitCode}`);
   check("blob removed", !existsSync(blobPath));

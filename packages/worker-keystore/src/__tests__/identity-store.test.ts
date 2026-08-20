@@ -18,6 +18,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOsIdentityStore, type CommandRunner } from "../identity-store.js";
 import { encodeIdentityEnvelope, type DeviceIdentityRecord } from "../envelope.js";
+import { STORE_SUCCESS_SENTINEL } from "../command-plan.js";
 import type { StoreCommandResult } from "../outcome.js";
 
 const REF = { blobPath: "C:\\AoA\\device-identity.v1.bin" };
@@ -25,6 +26,10 @@ const RECORD: DeviceIdentityRecord = {
   workerId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
   privateKeyPkcs8Der: new Uint8Array([1, 2, 3, 4]),
 };
+
+/** A successful `store` now emits a positive sentinel; success is no longer
+ * inferred from empty stdout. */
+const stored = (): StoreCommandResult => ok(new TextEncoder().encode(STORE_SUCCESS_SENTINEL));
 
 const ok = (stdout: Uint8Array): StoreCommandResult => ({
   exitCode: 0, signal: null, stdout, stderr: "", absenceSignalled: false,
@@ -98,7 +103,7 @@ describe("DSK-001/I2 — load() distinguishes absence from every fault", () => {
 
 describe("DSK-001/I4 — saveIfAbsent is compare-and-set", () => {
   it("reports stored on the first write", () => {
-    const s = storeWith({ run: () => ok(new Uint8Array()) });
+    const s = storeWith({ run: () => stored() });
     expect(s.saveIfAbsent(RECORD)).toBe("stored");
   });
 
@@ -118,7 +123,7 @@ describe("DSK-001/I4 — saveIfAbsent is compare-and-set", () => {
         if (plan.stdin !== "secret") return absent();
         if (created) return fault({ exitCode: 4, stderr: "already exists" });
         created = true;
-        return ok(new Uint8Array());
+        return stored();
       },
     };
     const a = storeWith(runner);
@@ -136,7 +141,7 @@ describe("DSK-001/I4 — saveIfAbsent is compare-and-set", () => {
   });
 
   it("feeds the record on stdin, never through the plan's argv", () => {
-    const run = vi.fn(() => ok(new Uint8Array()));
+    const run = vi.fn(() => stored());
     const s = storeWith({ run });
     s.saveIfAbsent(RECORD);
     const [plan, stdin] = run.mock.calls[0] as unknown as [{ stdin: string; argv: string[] }, Uint8Array];
@@ -157,5 +162,20 @@ describe("DSK-001 — clear()", () => {
   it("throws on a fault, so a failed wipe is never reported as success", () => {
     const s = storeWith({ run: () => fault({ exitCode: 5, stderr: "Access is denied." }) });
     expect(() => s.clear()).toThrow();
+  });
+});
+
+describe("DSK-001 — a store success must be positive, never inferred", () => {
+  it("REJECTS a zero exit with no sentinel — silence is not proof of a write", () => {
+    // This previously returned "stored". Inferring a successful write from an
+    // ABSENCE of output is the same shape as inferring absence from empty
+    // stdout, which is the defect this package exists to prevent.
+    const s = storeWith({ run: () => ok(new Uint8Array()) });
+    expect(() => s.saveIfAbsent(RECORD)).toThrow();
+  });
+
+  it("REJECTS a zero exit whose stdout is some OTHER string", () => {
+    const s = storeWith({ run: () => ok(new TextEncoder().encode("something else")) });
+    expect(() => s.saveIfAbsent(RECORD)).toThrow();
   });
 });
