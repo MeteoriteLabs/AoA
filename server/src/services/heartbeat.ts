@@ -5248,14 +5248,40 @@ export function heartbeatService(
           // into a NEW run on the same issue. The attempt is already durably
           // lease-eligible at this point, so that is two executors on one task.
           //
-          // Suppress regardless of whether the marker landed. Letting
-          // `adapter.execute` run is CERTAIN double execution; an unmarked
-          // suppressed run is a recoverable inconsistency, and it is logged at
-          // error level precisely because a reap can later mistake it for a
-          // crashed legacy run.
+          // Suppress regardless of whether the marker landed — letting
+          // `adapter.execute` run is CERTAIN double execution.
+          //
+          // But an unmarked suppressed run is NOT merely "recoverable", as an
+          // earlier version of this comment claimed. Nothing in the codebase
+          // recovers it, and the one mechanism that touches it does the actively
+          // wrong thing: with the marker absent, the reaper's R1 stand-down does
+          // not apply, so the run is reaped and `releaseIssueExecutionAndPromote`
+          // frees the issue lock and promotes a deferred wake — a SECOND executor,
+          // while the attempt is durably lease-eligible.
+          //
+          // So the failure is CONVERGED instead: revoke the attempt's fence. The
+          // attempt then never runs, which makes the later reap the correct
+          // action and hands the work back to legacy — a genuine Invariant 2
+          // outcome rather than a stranded run with a live worker behind it.
           try {
             await markRunHandedOffToDistributed(run, canaryExecutionOwner!);
           } catch (markerErr) {
+            const cancelPort = getDistributedCancellationPort();
+            if (cancelPort && canaryExecutionOwner!.owner === "distributed") {
+              try {
+                await cancelPort.requestCancellation({
+                  jobId: canaryExecutionOwner!.jobId,
+                  companyId: run.companyId,
+                  reason: "handoff marker write failed — converging to legacy",
+                  graceful: false,
+                });
+              } catch (revokeErr) {
+                logger.error(
+                  { err: revokeErr, runId: run.id, jobId: canaryExecutionOwner!.jobId },
+                  "[CLI-006] fence revoke FAILED after a failed handoff marker write — a lease-eligible attempt is live with no marker",
+                );
+              }
+            }
             logger.error(
               {
                 err: markerErr,

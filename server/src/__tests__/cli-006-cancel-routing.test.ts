@@ -353,3 +353,85 @@ describe("CLI-006/H3 — the issue lock release excludes distributed runs", () =
     expect(issues).not.toContain("inArray(issues.executionRunId, activeRunIds)");
   });
 });
+
+// -- A: the FIFTH writer must honour writeLegacyTerminal ----------------------
+//
+// Found by re-reviewing the H1 fix itself. H1 made `writeLegacyTerminal`
+// load-bearing — for `cancelled` / `job_terminal` / `not_found` / unknown it means
+// "nothing will ever project a terminal, the CALLER must write it". Four writers
+// consume it via `routeRunCancellation`. `routeDistributedCancelsForRuns` — the
+// task-ineligible sweep, the fifth writer — bound the outcome and read only
+// `.degraded` for a log line, discarding the flag.
+//
+// Failure: a canary task with an in-flight Ask-Human continuation run whose
+// attempt is not yet leased (the ordinary first-canary state). The founder marks
+// the task done / cancelled / reassigns / deletes. The in-transaction terminal
+// correctly excludes the run, the post-commit route gets
+// `writeLegacyTerminal:true`, discards it, and the run is pinned `running` with no
+// convergence path: no worker event was written, the reaper stands down on the
+// marker, and the stale-lock breaker only covers queued/scheduled_retry.
+//
+// The blast radius is what makes it HIGH rather than a stranded row:
+// `countRunningRunsForAgent` counts it with no owner filter, and at AoA's
+// permanent `HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1` the canary agent then
+// never dispatches again.
+
+describe("CLI-006/A — the task-ineligible sweep honours the cancel outcome", () => {
+  const issues = src("../services/issues.ts");
+
+  it("consumes writeLegacyTerminal, not just the degraded label", () => {
+    const fn = issues.slice(
+      issues.indexOf("async function routeDistributedCancelsForRuns"),
+      issues.indexOf("function monitorClearReasonForIssue"),
+    );
+    expect(fn).toContain("writeLegacyTerminal");
+  });
+
+  it("writes the terminal itself for runs nothing will ever project", () => {
+    const fn = issues.slice(
+      issues.indexOf("async function routeDistributedCancelsForRuns"),
+      issues.indexOf("function monitorClearReasonForIssue"),
+    );
+    expect(fn).toContain("task_no_longer_eligible");
+    // and releases the execution lock for exactly those runs
+    expect(fn).toContain("executionRunId: null");
+  });
+
+  it("still guards the terminal on a non-terminal status", () => {
+    const fn = issues.slice(
+      issues.indexOf("async function routeDistributedCancelsForRuns"),
+      issues.indexOf("function monitorClearReasonForIssue"),
+    );
+    expect(fn).toContain('["queued", "running", "scheduled_retry"]');
+  });
+});
+
+// -- B: a failed marker write must CONVERGE, not strand ----------------------
+//
+// The re-review refuted my own justification. The seam's comment claimed an
+// unmarked suppressed run is "a recoverable inconsistency" — it is not. Nothing
+// in the codebase recovers it, and the one mechanism that touches it (the reaper)
+// does the actively wrong thing: with the marker absent, R1's stand-down does not
+// apply, so the run is reaped and `releaseIssueExecutionAndPromote` frees the
+// issue lock and promotes a deferred wake — a SECOND executor, while the attempt
+// is durably lease-eligible.
+//
+// Revoking the fence in that catch converts the failure into a genuine
+// Invariant 2 outcome: the attempt never runs, the later reap becomes the correct
+// action, and promotion hands the work back to legacy.
+
+describe("CLI-006/B — a failed handoff marker write revokes the fence", () => {
+  const heartbeat = src("../services/heartbeat.ts");
+
+  it("revokes the fence rather than leaving a live attempt behind", () => {
+    const idx = heartbeat.indexOf("handoff marker write FAILED");
+    expect(idx, "expected the marker-failure branch").toBeGreaterThan(-1);
+    const branch = heartbeat.slice(idx - 1800, idx + 1800);
+    expect(branch).toContain("getDistributedCancellationPort()");
+  });
+
+  it("no longer claims the unmarked state is recoverable", () => {
+    // The claim was load-bearing for shipping the residual, and it was false.
+    expect(heartbeat).not.toContain("recoverable inconsistency");
+  });
+});

@@ -24,7 +24,8 @@ One canary Organization's coding run now transfers execution ownership from the 
 | 4 | Cancel routing across all five writers | `e7cfae545`, `922ed081b`, `387447d35` |
 | 5-7 | Capacity characterization, the outer-`finally` catch, the D1 nonce | `7f22288ad` |
 | 8 | Three HIGH fixes from adversarial review | `a10f43f33` |
-| 8 | M6 parity fix + the M4/M5 projector-loop hoist | *(this commit)* |
+| 8 | M6 parity fix + the M4/M5 projector-loop hoist | `037b1334f` |
+| 8b | Round 2: the fifth writer's dropped outcome + a converging marker-failure | *(this commit)* |
 
 **Still inert in every deployment.** Nothing resolves to `canary` until an Organization is set `mode:"canary"` in `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`. Rollback is deleting that key (Invariant 9) — no code change, no migration.
 
@@ -33,8 +34,9 @@ One canary Organization's coding run now transfers execution ownership from the 
 ## 2. Evidence
 
 - **PR gate green** on the branch tip, all jobs including `ci-required`.
-- **Live D1 lane green — 40/40, 0 skipped.** Two control planes, real workers, Toxiproxy, MinIO, fake provider. This only ran because Task 7 bumped `docker/d1/campaign.env`; `server/src` is off that lane's path filter, so the entire seam would otherwise have been invisible to it.
-- **158 tests** across 11 CLI-006 files.
+- **Live D1 lane green — 40/40, 0 skipped** on `8324e434b`. Two control planes, real workers, Toxiproxy, MinIO, fake provider. This only ran because Task 7 bumped `docker/d1/campaign.env`; `server/src` is off that lane's path filter, so the entire seam would otherwise have been invisible to it.
+  > **The trap bites twice.** Every fix after `8324e434b` — H1/H2/H3, M6, M4/M5, and round 2 — is `server/src`-only and therefore *also* invisible to that filter, so the 40/40 above does **not** cover the shipped code. The nonce was bumped a second time to re-prove the final state. **Bump `campaign.env` after the last `server/src` change, not once per ticket.**
+- **163 tests** across 11 CLI-006 files.
 - **Seven always-on policy checkers** pass.
 - **Every guard mutation-tested.** Removing any of these turns the suite RED: the `execution_owner` predicate; the `expired`→`timed_out` mapping; the suppression `return`'s position inside the inner `try`; a throw latching a local terminal; the `propagate` branch; the bulk SQL exclusion; one writer's cancel routing; the H1 outcome mapping; the H3 lock narrowing; the M6 wake predicate; and — for the Task 5 characterization, which passes by construction — adding an owner exclusion that would dissolve the trap.
 
@@ -48,7 +50,9 @@ Three HIGH, all re-traced in the code before acceptance and fixed fail-first:
 
 **H1 — cancel made a canary run permanently uncancellable.** `requestCancellation` returns six statuses; only `queued` / `already_requested` mean a fenced worker will emit a terminal event. The `"cancelled"` status is the *no-live-lease* path, where `job-control.ts:3001-3033` finalizes job and attempt **directly with row updates and no `job_events` row** — deliberately, because the outbox would never dispatch it. `onAttemptTerminal` has exactly one producer, so discarding that outcome pinned the run at `running` forever; every retry then returned `job_terminal`, also treated as handled. Unrecoverable without manual SQL. An unleased attempt is the **ordinary first-canary state**, not an edge case, because E4-D12 keeps the daemon inert outside D1.
 
-**H2 — a throw from the marker write produced two executors.** The seam's `try` has only a `finally`, so an unguarded throw reached `executeRun`'s outer `catch`, which writes `adapter_failed` *and* calls `releaseIssueExecutionAndPromote` — promoting a deferred wake into a new run on the same issue while the attempt was already durably lease-eligible. Now guarded, and suppression happens regardless: letting `adapter.execute` run is *certain* double execution, whereas an unmarked suppressed run is a recoverable inconsistency (logged at error level). The write was also narrowed so the marker UPDATE is the only critical statement.
+**H2 — a throw from the marker write produced two executors.** The seam's `try` has only a `finally`, so an unguarded throw reached `executeRun`'s outer `catch`, which writes `adapter_failed` *and* calls `releaseIssueExecutionAndPromote` — promoting a deferred wake into a new run on the same issue while the attempt was already durably lease-eligible. Now guarded, and suppression happens regardless. The write was also narrowed so the marker UPDATE is the only critical statement.
+
+> **Corrected in round 2.** This section originally called an unmarked suppressed run "a recoverable inconsistency". **That was false**, and it was load-bearing for shipping the residual. Nothing in the codebase recovers such a run, and the one mechanism that touches it does the actively wrong thing: with the marker absent, the reaper's R1 stand-down does not apply, so the run is reaped and the issue lock is freed and a deferred wake promoted — a second executor, while the attempt is live. The marker-failure branch now **revokes the attempt's fence**, converting the failure into a genuine Invariant 2 outcome: the attempt never runs, the later reap becomes correct, and the work returns to legacy.
 
 **H3 — the issue execution lock was released while the attempt was live.** The bulk terminal update was narrowed; the `issues` update immediately below it still used the unfiltered id list. **The plan's own note was the defect** — it claimed the release must cover both subsets, reasoning that an ineligible task cannot be claimed. False for `reason='reassigned'`: the task stays perfectly eligible for a *different* agent, so the freed lock lets that agent check out and execute the same task concurrently. The per-agent clamp does not help.
 
@@ -95,11 +99,19 @@ This is the Task 5 finding and it is not obvious. Occupancy is `legacyRunning + 
 | produce patch | ✅ D1; keyed D2 = campaign |
 | review | ✅ projector surfaces review state |
 | **retry** | ⚠️ **NOT satisfied by this wiring** — see deferral 4 |
-| cancel | ✅ fence-revoking, with the H1 fix ensuring a cancel that no worker will terminalize still converges |
+| cancel | ✅ fence-revoking across all five writers, with the H1 fix ensuring a cancel that no worker will terminalize still converges (round 2 wired the fifth writer, which had been dropping that outcome) |
 | audit / operator inspection | ✅ JOB-008 surface asserted |
 | non-canary tenants remain legacy | ✅ four-mode byte-identity matrix |
 
 ---
+
+## 6a. Round 2 — re-reviewing the fixes
+
+The first adversarial review ran at `8324e434b` and therefore **could not have seen any of the fixes it prompted**. A second review over the fix diff alone, five independent lenses with 2-of-3 adjudication, found one genuinely new HIGH and refuted the rest as restatements of deferral 5.
+
+**The new HIGH: the fifth cancel writer dropped the outcome H1 had just made load-bearing.** `writeLegacyTerminal` had exactly ONE consumer in `server/src`; `routeDistributedCancelsForRuns` bound the outcome and read only `.degraded` for a log line. So a canary task with an unleased attempt, marked done/cancelled/reassigned/deleted, left its run pinned `running` with no convergence path. The blast radius is what makes it HIGH rather than one stranded row: `countRunningRunsForAgent` counts it with no owner filter, so at AoA's permanent `HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1` **the canary agent never dispatches again**. Fixed and mutation-proven.
+
+The lesson worth carrying: a fix that makes a previously-ignored value load-bearing must be followed by finding **every** consumer of that value, not just the ones the fix touched.
 
 ## 7. Residual risk
 

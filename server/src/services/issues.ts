@@ -301,6 +301,7 @@ async function routeDistributedCancelsForRuns(
   if (runIds.length === 0) return;
   const port = getDistributedCancellationPort();
   if (!port) return;
+  const unprojectedRunIds: string[] = [];
   const rows = await db
     .select({
       id: heartbeatRuns.id,
@@ -325,6 +326,44 @@ async function routeDistributedCancelsForRuns(
         "[CLI-006] distributed cancel degraded for ineligible task",
       );
     }
+    // H1 made this flag load-bearing: `true` means NOTHING will ever project a
+    // terminal for this attempt (the repo finalized it directly with row updates
+    // and wrote no `job_events` row, or it was already terminal / not found), so
+    // THIS caller owns the terminal. The four heartbeat writers consume it via
+    // `routeRunCancellation`; this fifth one used to read only `.degraded` and
+    // drop it, which pinned the run at `running` with no convergence path —
+    // no worker event, the reaper standing down on the marker, and the stale-lock
+    // breaker covering only queued/scheduled_retry. Worse than a stranded row:
+    // `countRunningRunsForAgent` counts it with no owner filter, so at the
+    // permanent HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT of 1 the canary agent then
+    // never dispatches again.
+    if (outcome.writeLegacyTerminal) unprojectedRunIds.push(row.id);
+  }
+
+  // Post-commit, and only for the subset nothing will project. Latching here is
+  // safe precisely BECAUSE those statuses mean no projector terminal is coming,
+  // so the in-transaction block's "latching would discard the real terminal"
+  // reasoning does not apply to them.
+  if (unprojectedRunIds.length > 0) {
+    const now = new Date();
+    await db.update(heartbeatRuns).set({
+      status: "cancelled",
+      finishedAt: now,
+      error: `Task ${reason}`,
+      errorCode: "task_no_longer_eligible",
+      updatedAt: now,
+    }).where(and(
+      inArray(heartbeatRuns.id, unprojectedRunIds),
+      inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+    ));
+    // Release the execution lock the in-transaction block deliberately withheld.
+    // On the delete path this is a harmless no-op — the issue is already gone.
+    await db.update(issues).set({
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      updatedAt: now,
+    }).where(inArray(issues.executionRunId, unprojectedRunIds));
   }
 }
 
