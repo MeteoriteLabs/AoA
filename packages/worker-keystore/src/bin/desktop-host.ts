@@ -18,7 +18,9 @@
 // irreversible in the way that matters: the server denies a re-minted identity
 // permanently and `findWorkerForBinding` has no status predicate, so a wipe that
 // happens by accident is a machine that can never enrol again. It is therefore a
-// deliberate, explicitly-named subcommand and never part of a normal boot.
+// deliberate, explicitly-named subcommand, never part of a normal boot, and
+// GUARDED — it names the identity it would destroy, states the permanence, and
+// requires a second acknowledgement argument unless the slot is provably empty.
 
 import {
   bootstrapWorkerDaemon,
@@ -29,11 +31,27 @@ import {
 import { resolveVaultRefs } from "../blob-path.js";
 import { createCommandRunner } from "../command-runner.js";
 import { createOsRecordStore, type CommandRunner } from "../identity-store.js";
-import { decodeIdentityEnvelope, encodeIdentityEnvelope } from "../envelope.js";
+import {
+  decodeIdentityEnvelope,
+  encodeIdentityEnvelope,
+  type DeviceIdentityRecord,
+} from "../envelope.js";
 import { decodeEnrollmentReceipt, encodeEnrollmentReceipt } from "../receipt-envelope.js";
 
 /** The subcommand that wipes a device identity. Deliberately verbose. */
 export const RESET_IDENTITY_FLAG = "--reset-identity";
+
+/**
+ * The second argument the wipe requires (plan §3/I7 point 4).
+ *
+ * Long and unpleasant to type ON PURPOSE. `--reset-identity` is what an operator
+ * reaches for when a start fails, and on the same target the reset IS the
+ * permanent lockout: the server denies the re-minted `workerId` as
+ * `worker_transfer_denied` (`worker-enrollment.ts:418-423`) and
+ * `findWorkerForBinding` carries no status predicate, so the stale row keeps
+ * matching forever with no reset route. A one-argument path to that is a trap.
+ */
+export const RESET_ACKNOWLEDGEMENT_FLAG = "--i-understand-this-is-permanent";
 
 export interface DesktopHostDeps {
   readonly env: Record<string, string | undefined>;
@@ -74,14 +92,70 @@ export async function runDesktopHost(deps: DesktopHostDeps): Promise<{ ok: boole
     codec: { encode: encodeEnrollmentReceipt, decode: decodeEnrollmentReceipt },
   });
 
-  // The ONLY `clear()` caller, behind an explicit subcommand.
-  //
-  // The receipt is cleared FIRST and the identity SECOND. That order matters: if
-  // the process dies between them, the device is left holding an identity with no
-  // receipt, which the coordinator treats as "enrolled but unconfirmed" and can
-  // retry. The reverse order would leave a receipt with no identity — a state
-  // claiming an enrolment whose key is gone, which nothing can recover.
+  // The ONLY `clear()` caller, behind an explicit, guarded subcommand.
   if (deps.argv.includes(RESET_IDENTITY_FLAG)) {
+    // Read what is about to be destroyed BEFORE destroying it. A warning that
+    // cannot name the identity is a warning an operator clicks through.
+    let identity: DeviceIdentityRecord | null = null;
+    let unreadable: string | null = null;
+    try {
+      identity = identityStore.load();
+    } catch (err) {
+      // A NARROW catch, and the reason it is safe here does NOT generalize.
+      // `identity-store.ts` warns that the fail-closed property of a store fault
+      // comes entirely from the throw being uncaught — nothing checks
+      // `err.name` — so a broad catch around the ENROLLER would silently
+      // reinstate the mint-a-second-identity bug (I3). This branch never mints,
+      // never reaches the network, and turns the fault into a REFUSAL rather
+      // than into a "no key" verdict. It is the strictest possible reading of
+      // the failure, not a softening of it.
+      unreadable = (err as Error).message;
+    }
+
+    // The one relaxation, and it rests on the single signal this package trusts:
+    // `absent` arrives only through the platform's own ENOENT oracle and is never
+    // inferred. With nothing stored there is provably nothing to make
+    // unenrollable, and demanding the acknowledgement here would train operators
+    // to paste it reflexively — which is how a guard stops being one.
+    //
+    // DEFERRED, deliberately: plan §3/I7 point 4 also relaxes for a G2(ii) crash
+    // (identity slot PRESENT but zero-length, receipt absent). That state is not
+    // distinguishable with the current outcome vocabulary — `ReadAllBytes` on a
+    // zero-length blob yields an empty array, `Unprotect` throws, `harden` reports
+    // exit 3, and the classifier says `locked`, exactly as it does for a genuinely
+    // locked or ACL-denied slot holding a PERFECTLY GOOD key. Relaxing on `locked`
+    // would drop the guard precisely where the lockout is real. Splitting the
+    // vocabulary would take a distinct empty-slot exit code; that buys only a
+    // friendlier message in one bricked state and is not worth a seventh outcome
+    // kind on the package's most dangerous decision.
+    const provablyAbsent = identity === null && unreadable === null;
+
+    if (!provablyAbsent && !deps.argv.includes(RESET_ACKNOWLEDGEMENT_FLAG)) {
+      const subject = identity
+        ? `identity: workerId=${identity.workerId} targetId=${identity.targetId}`
+        : `the identity slot could not be read (${unreadable}) — it may hold a working enrolment`;
+      log(
+        [
+          "desktop host: REFUSING to reset the device identity. This is PERMANENT.",
+          `  ${subject}`,
+          "  Wiping the local key does NOT un-enrol this device. The server keeps the",
+          "  worker bound to its target, denies any re-minted identity as",
+          "  worker_transfer_denied, and the bound row keeps matching with no reset",
+          "  route — so this machine can never enrol against that target again.",
+          "  If a start is failing and an identity is present, do NOT reset: repair",
+          "  the store or the OS profile instead.",
+          `  To proceed anyway: ${RESET_IDENTITY_FLAG} ${RESET_ACKNOWLEDGEMENT_FLAG}`,
+        ].join("\n"),
+      );
+      deps.proc.exit(1);
+      return { ok: false };
+    }
+
+    // The receipt is cleared FIRST and the identity SECOND. That order matters: if
+    // the process dies between them, the device is left holding an identity with no
+    // receipt, which the coordinator treats as "enrolled but unconfirmed" and can
+    // retry. The reverse order would leave a receipt with no identity — a state
+    // claiming an enrolment whose key is gone, which nothing can recover.
     try {
       receiptStore.clear();
       identityStore.clear();
@@ -92,7 +166,13 @@ export async function runDesktopHost(deps: DesktopHostDeps): Promise<{ ok: boole
       deps.proc.exit(1);
       return { ok: false };
     }
-    log("desktop host: device identity reset; the next start will enrol afresh");
+    log(
+      provablyAbsent
+        ? "desktop host: no device identity was stored; cleared any leftover enrollment receipt"
+        : `desktop host: device identity reset${
+            identity ? ` (workerId=${identity.workerId} targetId=${identity.targetId})` : ""
+          }; this machine can no longer enrol against that target`,
+    );
     return { ok: true };
   }
 
