@@ -28,6 +28,11 @@ type EmbeddedPostgresCtor = new (opts: Record<string, unknown>) => EmbeddedPostg
 
 const integration = describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1");
 
+/** DSK-002 Lane A: resolveCapturedPath now BINDS the grant to the presenting device, so
+ * every call supplies the identity the fixture enrolled. A grant is no longer usable by
+ * any device in the organization that happens to know its id. */
+const PRESENTED = { ownerUserId: OWNER, executionTargetId: TARGET, deviceGeneration: 1 };
+
 integration("DAT-006 folder-grant admission + resolver", () => {
   let embedded: EmbeddedPostgresInstance | null = null;
   let dataDir = "";
@@ -130,10 +135,40 @@ integration("DAT-006 folder-grant admission + resolver", () => {
       organizationId: ORG, ownerUserId: OWNER, executionTargetId: TARGET,
       targetAuthorityKey: AUTHORITY_KEY, deviceGeneration: 1, declaredBasePath: "project/src",
     });
-    const inside = await svc.resolveCapturedPath({ organizationId: ORG, folderGrantId, capturedPath: "project/src/main.ts" });
+    const inside = await svc.resolveCapturedPath({ organizationId: ORG, folderGrantId, capturedPath: "project/src/main.ts", presented: PRESENTED });
     expect(inside.admitted).toBe(true);
-    const outside = await svc.resolveCapturedPath({ organizationId: ORG, folderGrantId, capturedPath: "project/other/x.ts" });
+    const outside = await svc.resolveCapturedPath({ organizationId: ORG, folderGrantId, capturedPath: "project/other/x.ts", presented: PRESENTED });
     expect(outside.admitted).toBe(false);
+  }, 60_000);
+
+  it("(DSK-002/I3) a grant is refused for a DIFFERENT desktop and a stale generation", async () => {
+    // The real-DB proof of the binding. resolve() is scoped by org RLS, and an org scope
+    // is not a device scope: this grant row is perfectly visible to both desktops. Before
+    // Lane A the path below was ADMITTED for either of them.
+    const { app } = guardCtx();
+    await reset();
+    const svc = createFolderGrantService({ appDb: app.db });
+    const { folderGrantId } = await svc.admit({
+      organizationId: ORG, ownerUserId: OWNER, executionTargetId: TARGET,
+      targetAuthorityKey: AUTHORITY_KEY, deviceGeneration: 1, declaredBasePath: "project/src",
+    });
+    const capturedPath = "project/src/main.ts";
+
+    // Non-vacuity: the enrolled device IS admitted for this exact path.
+    await expect(svc.resolveCapturedPath({ organizationId: ORG, folderGrantId, capturedPath, presented: PRESENTED }))
+      .resolves.toMatchObject({ admitted: true });
+
+    // Another desktop in the SAME organization.
+    await expect(svc.resolveCapturedPath({
+      organizationId: ORG, folderGrantId, capturedPath,
+      presented: { ...PRESENTED, executionTargetId: OTHER_TARGET },
+    })).resolves.toMatchObject({ admitted: false, reason: "wrong_target" });
+
+    // The same desktop, re-enrolled since the grant was given.
+    await expect(svc.resolveCapturedPath({
+      organizationId: ORG, folderGrantId, capturedPath,
+      presented: { ...PRESENTED, deviceGeneration: 2 },
+    })).resolves.toMatchObject({ admitted: false, reason: "stale_device_generation" });
   }, 60_000);
 
   it("(5) resolveCapturedPath EXCLUDES likely-secret paths even inside the declared base", async () => {
@@ -147,11 +182,11 @@ integration("DAT-006 folder-grant admission + resolver", () => {
     // Inside the base but a secret → NOT admitted (the always-on floor admitCapturedPaths
     // enforces — a grant stages source, never exfiltrates a credential).
     for (const secret of ["project/src/.env", "project/src/id_rsa", "project/src/deploy.pem", "project/src/credentials"]) {
-      const r = await svc.resolveCapturedPath({ organizationId: ORG, folderGrantId, capturedPath: secret });
+      const r = await svc.resolveCapturedPath({ organizationId: ORG, folderGrantId, capturedPath: secret, presented: PRESENTED });
       expect(r.admitted, secret).toBe(false);
     }
     // An ordinary source file inside the base is still admitted.
-    const ok = await svc.resolveCapturedPath({ organizationId: ORG, folderGrantId, capturedPath: "project/src/app.ts" });
+    const ok = await svc.resolveCapturedPath({ organizationId: ORG, folderGrantId, capturedPath: "project/src/app.ts", presented: PRESENTED });
     expect(ok.admitted).toBe(true);
   }, 60_000);
 

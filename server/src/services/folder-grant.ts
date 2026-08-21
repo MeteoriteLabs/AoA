@@ -14,7 +14,8 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { folderGrants, type Db } from "@armyofagents/db";
 import { runInTenant } from "../db/tenant-context.js";
-import { isSafeWorkspacePath, isPathWithinBase, isLikelySecretPath } from "./folder-grant-path.js";
+import { isSafeWorkspacePath, isPathWithinBase, isLikelySecretPath, admitCapturedPaths, type CapturedEntry, type PathAdmissionResult } from "./folder-grant-path.js";
+import { bindGrantToDevice, type GrantBindingRejection, type PresentedDeviceIdentity } from "./folder-grant-binding.js";
 
 export type FolderGrantErrorReason = "invalid_base";
 
@@ -51,6 +52,15 @@ export interface ResolvedFolderGrant {
 export interface ResolveCapturedPathResult {
   admitted: boolean;
   grant: ResolvedFolderGrant | null;
+  /** Present when the grant resolved but did not bind, or was absent. */
+  reason?: GrantBindingRejection | "out_of_base" | "likely_secret";
+}
+
+export interface AdmitCaptureResult {
+  grant: ResolvedFolderGrant | null;
+  /** Set when the whole capture is refused before any path is considered. */
+  refusal: GrantBindingRejection | null;
+  paths: PathAdmissionResult;
 }
 
 export function createFolderGrantService(input: { appDb: Db }) {
@@ -112,21 +122,53 @@ export function createFolderGrantService(input: { appDb: Db }) {
       });
     },
 
-    /** Resolve a folder grant and gate that a single captured path is WITHIN its declared
-     * base. A revoked/absent grant, or an out-of-base/unsafe path, is not admitted. */
+    /** Resolve a folder grant, BIND it to the presenting device, and gate that a single
+     * captured path is WITHIN its declared base. A revoked/absent grant, a grant belonging
+     * to another desktop or a superseded device generation, or an out-of-base/unsafe path,
+     * is not admitted.
+     *
+     * `presented` is REQUIRED, deliberately. It was added as a required parameter rather
+     * than an optional one so that no caller can omit it and silently fall back to the
+     * org-only scoping this method used to do — an organization's RLS scope is not a
+     * device scope (see `folder-grant-binding.ts`). There were zero callers when this
+     * changed, so the strictness cost nothing. */
     async resolveCapturedPath(pathInput: {
       organizationId: string;
       folderGrantId: string;
       capturedPath: string;
+      presented: PresentedDeviceIdentity;
     }): Promise<ResolveCapturedPathResult> {
       const grant = await this.resolve({ organizationId: pathInput.organizationId, folderGrantId: pathInput.folderGrantId });
-      if (!grant) return { admitted: false, grant: null };
+      const binding = bindGrantToDevice(grant, pathInput.presented);
+      if (!binding.bound) return { admitted: false, grant, reason: binding.reason };
       // Enforce the SAME always-on secret floor the batch admitCapturedPaths applies —
       // a grant is permission to stage source, NEVER to exfiltrate a `.env`/`id_rsa`/
       // `*.pem`/credential even when it sits inside the declared base.
-      const admitted = isPathWithinBase(grant.declaredBasePath, pathInput.capturedPath)
-        && !isLikelySecretPath(pathInput.capturedPath);
-      return { admitted, grant };
+      if (!isPathWithinBase(grant!.declaredBasePath, pathInput.capturedPath)) {
+        return { admitted: false, grant, reason: "out_of_base" };
+      }
+      if (isLikelySecretPath(pathInput.capturedPath)) {
+        return { admitted: false, grant, reason: "likely_secret" };
+      }
+      return { admitted: true, grant };
+    },
+
+    /** Batch form: bind once, then admit a whole captured entry set against the declared
+     * base. A refused BINDING admits nothing at all — it does not degrade into a
+     * per-path filter, because the question "may this device use this grant" is prior to
+     * "is this path in the base". */
+    async admitCapture(captureInput: {
+      organizationId: string;
+      folderGrantId: string;
+      presented: PresentedDeviceIdentity;
+      entries: readonly CapturedEntry[];
+    }): Promise<AdmitCaptureResult> {
+      const grant = await this.resolve({ organizationId: captureInput.organizationId, folderGrantId: captureInput.folderGrantId });
+      const binding = bindGrantToDevice(grant, captureInput.presented);
+      if (!binding.bound) {
+        return { grant, refusal: binding.reason, paths: { admitted: [], rejected: [] } };
+      }
+      return { grant, refusal: null, paths: admitCapturedPaths(grant!.declaredBasePath, captureInput.entries) };
     },
   };
 }
