@@ -102,6 +102,29 @@ export interface FenceCloseProxyDeps {
   readonly metrics?: Metrics;
   readonly newEventId?: () => string;
   readonly now?: () => string;
+  /**
+   * DSK-002 Lane C (D5) — the lease deadline, as an absolute epoch-millis value.
+   *
+   * OPTIONAL: absent, the clock plays no part and `close()` remains the only gate, which
+   * is exactly the pre-DSK-002 behaviour every existing construction relies on.
+   *
+   * CLOCK DISCIPLINE, stated because "monotonic" is the word the lease code uses and it
+   * would be wrong here. `lease-renewal.ts` compares `Date.now()` against an absolute
+   * `expiresAtMs` parsed from the server's `expiresAt`. That IS the right comparison —
+   * the deadline is an absolute instant the server issued, so a true monotonic source
+   * (`performance.now()`) would have to be anchored to wall time anyway and would then
+   * drift across suspend/resume in the other direction. This uses the SAME discipline as
+   * the renewal loop deliberately: two different notions of "expired" in one daemon would
+   * be worse than one imperfect one.
+   *
+   * RESIDUAL: a device that sets its clock BACKWARD defeats this check. The server-side
+   * fence (`guardActiveFence`) is the authoritative gate and is unaffected; this is
+   * defense in depth, and a machine whose owner controls the clock is the same machine
+   * whose owner controls the daemon binary.
+   */
+  readonly expiresAtMs?: number;
+  /** Injected clock for {@link FenceCloseProxyDeps.expiresAtMs}. Defaults to `Date.now`. */
+  readonly nowMs?: () => number;
   /** DAT-005 D4 — per-run secret canaries scrubbed from the proxy's `network_denied`
    * denial stream before the digest (defense in depth; a denial reason is
    * daemon-authored but the redaction chokepoint stays uniform across every sink). */
@@ -112,11 +135,15 @@ export class FenceCloseProxy implements GovernedEffectAuthority {
   readonly #fence: EffectFence;
   readonly #events: EventSequencer;
   readonly #metrics?: Metrics;
+  readonly #expiresAtMs?: number;
+  readonly #nowMs: () => number;
   #active = true;
 
   constructor(deps: FenceCloseProxyDeps) {
     this.#fence = deps.fence;
     this.#metrics = deps.metrics;
+    this.#expiresAtMs = deps.expiresAtMs;
+    this.#nowMs = deps.nowMs ?? (() => Date.now());
     // A dedicated sequencer for the proxy's defense-in-depth denial stream. In a
     // wired world the run's sequencer would carry the contiguous seq; while the
     // loop is inert (E4-D12) the proxy owns its own denial event stream.
@@ -149,18 +176,44 @@ export class FenceCloseProxy implements GovernedEffectAuthority {
     return new FenceClosedError(this.#fence.leaseId, effect);
   }
 
+  /**
+   * DSK-002 Lane C (D5/I7/I8) — the single gate every governed effect passes through.
+   *
+   * `#active` alone was not enough. `lease-renewal.ts` DOES close the fence with
+   * `deadline_lapse` and does so without needing the network — but only while its loop is
+   * running, and only once its retry `sleep` returns. Between real expiry and that
+   * closure every governed effect was permitted, and with the loop stopped, crashed or
+   * never registered the window had no bound.
+   *
+   * A lapse CLOSES rather than vetoing per call, so the state stays terminal and honest:
+   * `isActive()` must not keep claiming a live fence after the first refusal. `close()` is
+   * idempotent, so the `deadline_lapse` metric fires exactly once on the transition.
+   *
+   * I8 falls out of the construction rather than needing enforcement: this reads a clock
+   * and nothing else, so a reachable Internet cannot extend authority.
+   */
+  #gate(effect: GovernedEffect): FenceClosedError | null {
+    if (this.#expiresAtMs !== undefined && this.#nowMs() >= this.#expiresAtMs) {
+      this.close("deadline_lapse");
+    }
+    return this.#active ? null : this.#denied(effect);
+  }
+
   commit<T>(effect: () => Promise<T> | T): Promise<T> {
-    if (!this.#active) return Promise.reject(this.#denied("artifact_commit"));
+    const denied = this.#gate("artifact_commit");
+    if (denied) return Promise.reject(denied);
     return Promise.resolve(effect());
   }
 
   readSecret<T>(effect: () => Promise<T> | T): Promise<T> {
-    if (!this.#active) return Promise.reject(this.#denied("secret_materialization"));
+    const denied = this.#gate("secret_materialization");
+    if (denied) return Promise.reject(denied);
     return Promise.resolve(effect());
   }
 
   complete<T>(effect: () => Promise<T> | T): Promise<T> {
-    if (!this.#active) return Promise.reject(this.#denied("task_completion"));
+    const denied = this.#gate("task_completion");
+    if (denied) return Promise.reject(denied);
     return Promise.resolve(effect());
   }
 
@@ -171,8 +224,9 @@ export class FenceCloseProxy implements GovernedEffectAuthority {
    * hard denial), then a {@link FenceClosedError} rejects.
    */
   async openEgress<T>(effect: () => Promise<T> | T, attempt: EgressAttempt = {}): Promise<T> {
-    if (!this.#active) {
-      const err = this.#denied("governed_egress");
+    const denied = this.#gate("governed_egress");
+    if (denied) {
+      const err = denied;
       await this.#events.networkDenied({
         destinationClass: attempt.destinationClass ?? "not_allowlisted",
         reason: attempt.reason ?? "fence closed; governed egress denied",
