@@ -213,6 +213,12 @@ jobs:
       - name: Desktop installer admission (DSK-003)
         run: node --test scripts/lib/__tests__/installer-admission.test.mjs
 
+      # DSK-004 Lane A — update admission. The binding that matters is from→to: a
+      # signature authorizes ONE transition, so it cannot be replayed onto a different
+      # target version or used to push a device backward onto a known-bad build.
+      - name: Desktop update admission (DSK-004)
+        run: node --test scripts/lib/__tests__/update-admission.test.mjs
+
       # DSK-003 — the installer staging manifest. The property it exists for is that a
       # STRAY file fails: "everything I declared is present" is not "nothing else is
       # here", and only the second is worth anything for an artifact about to be signed.
