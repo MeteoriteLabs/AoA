@@ -262,6 +262,11 @@ export function executionTargetToAdapterConfig(
   multiTenant = true,
 ): Record<string, unknown> | null {
   const cfg = target.config ?? {};
+  // local_host is the one legitimate null: the local driver IS the default, so there is
+  // nothing to override. Every other unhandled kind used to reach the bare `return null`
+  // at the end of this function, and null means "no adapter override" — i.e. the run
+  // executed on the CONTROL-PLANE host, which is precisely what an execution target
+  // exists to prevent. See DSK-001 Lane C / F28.
   if (target.kind === "local_host") return null; // local driver, no override
   if (target.kind === "pooled_gvisor" || target.kind === "dedicated_worker") {
     if (multiTenant) {
@@ -280,5 +285,34 @@ export function executionTargetToAdapterConfig(
       isolation: cfg.isolation ?? HARDENED_ISOLATION,
     };
   }
-  return null;
+
+  // EXHAUSTIVE FROM HERE. `desktop` and `e2b` belong to the DISTRIBUTED placement system
+  // rather than this legacy adapter path — `TARGET_KIND_BY_CLASS` above maps
+  // `managed_cloud -> {pooled_gvisor, e2b}` and `owner_desktop -> {desktop, local_host}`,
+  // and E2B execution itself runs through `environments` with `provider: "e2b"`
+  // (`environment-runtime.ts`), keyed on the ENVIRONMENT provider, not on the target
+  // kind. So neither kind has a legacy adapter representation, and falling through to
+  // null never meant "handled elsewhere" — it meant "runs here, unsandboxed".
+  //
+  // Fail-closed is the right direction: the heartbeat's routing `.catch()` does not wrap
+  // this call, so the throw propagates and fails the run. A failed run beats a run
+  // executing on the control plane with a desktop target.
+  //
+  // NO COMPILE-TIME `never` HERE, deliberately. `ExecutionTargetRow.kind` is `string`
+  // because the column is `text("kind")` with only a COMMENT listing the five values and
+  // NO CHECK constraint (`schema/execution_targets.ts:33`) — the database really can hold
+  // an unknown kind. An exhaustiveness assertion would be claiming a guarantee the data
+  // layer does not provide, which is how a guard ends up decorative.
+  //
+  // The guarantee that IS available: this runtime throw catches anything unhandled, and a
+  // test iterating EXECUTION_TARGET_KINDS catches drift in the known set — so adding a
+  // sixth kind without handling it fails a test rather than going quiet.
+  if (target.kind === "desktop" || target.kind === "e2b") {
+    throw new Error(
+      `Execution target kind "${target.kind}" has no control-plane adapter configuration. ` +
+        "It is placed through the distributed worker path, so running it here would " +
+        "execute on the control-plane host.",
+    );
+  }
+  throw new Error(`Unhandled execution target kind ${JSON.stringify(target.kind)}.`);
 }

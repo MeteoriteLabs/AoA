@@ -1,4 +1,5 @@
 // server/src/__tests__/execution-target-resolver.test.ts
+import { EXECUTION_TARGET_KINDS } from "@armyofagents/shared";
 import { describe, expect, it } from "vitest";
 import {
   chooseExecutionTargetRow,
@@ -78,5 +79,75 @@ describe("chooseExecutionTargetRow (route by credential kind)", () => {
   it("returns null (fallback to local) when no targets exist", () => {
     const chosen = chooseExecutionTargetRow({ credentialKind: "company_api_key", pinnedTargetId: null, executionTargetSlug: null, targets: [] });
     expect(chosen).toBeNull();
+  });
+});
+
+describe("DSK-001 Lane C / F28 — an unhandled target kind THROWS, it never falls through", () => {
+  // The bug was never really about desktop. It was a bare `return null` at the end of
+  // the function, which every kind the switch did not name inherited. Null means "no
+  // adapter override", so the run executed on the CONTROL-PLANE host — the exact thing
+  // an execution target exists to prevent.
+  //
+  // Reachable today: the sole caller is heartbeat.ts:3620, and chooseExecutionTargetRow's
+  // pin branch returns ANY active row.
+
+  const row = (kind: string) => ({
+    id: "t", slug: "s", kind, trustClass: "local_trusted",
+    status: "active", organizationId: null,
+  }) as never;
+
+  it("THROWS for a desktop target instead of silently running on the control plane", () => {
+    // Asserts the SPECIFIC diagnosis, not merely "it threw". Mutation showed that
+    // disabling this branch still threw — via the generic unhandled-kind arm — so a
+    // loose /desktop/ match could not tell the two apart. The difference is what an
+    // operator reads when a run fails: "placed through the distributed worker path"
+    // tells them why, "Unhandled" does not.
+    expect(() => executionTargetToAdapterConfig(row("desktop"), true))
+      .toThrow(/control-plane host/i);
+    expect(() => executionTargetToAdapterConfig(row("desktop"), false))
+      .toThrow(/distributed worker path/i);
+  });
+
+  it("THROWS for an e2b target too — the same fallthrough, audited in the same pass", () => {
+    // e2b belongs to the DISTRIBUTED placement system (TARGET_KIND_BY_CLASS maps
+    // managed_cloud -> {pooled_gvisor, e2b}), and E2B execution runs through
+    // `environments` with provider:"e2b" — keyed on the environment provider, not the
+    // target kind. So there is no legacy adapter representation for it, and returning
+    // null does not mean "handled elsewhere", it means "runs here, unsandboxed".
+    expect(() => executionTargetToAdapterConfig(row("e2b"), true))
+      .toThrow(/control-plane host/i);
+    expect(() => executionTargetToAdapterConfig(row("e2b"), false))
+      .toThrow(/distributed worker path/i);
+  });
+
+  it("THROWS for a kind nobody has invented yet", () => {
+    // The property with the longest shelf life: a sixth entry in EXECUTION_TARGET_KINDS
+    // must fail loudly rather than inherit a permissive default.
+    // And it takes the GENERIC arm, not the named one — so the two messages stay
+    // distinguishable and neither branch can quietly absorb the other.
+    expect(() => executionTargetToAdapterConfig(row("quantum_toaster"), true))
+      .toThrow(/Unhandled execution target kind/i);
+  });
+
+  it("still returns null for local_host — the local driver IS the default", () => {
+    // Not every null is a hole. This one is correct and must not be swept up.
+    expect(executionTargetToAdapterConfig(row("local_host"), true)).toBeNull();
+    expect(executionTargetToAdapterConfig(row("local_host"), false)).toBeNull();
+  });
+
+  it("names EVERY kind in EXECUTION_TARGET_KINDS, so the set cannot drift", () => {
+    // Non-vacuity for the exhaustiveness claim: if a kind is added to the shared
+    // constant and not to the switch, this fails rather than the branch going quiet.
+    for (const kind of EXECUTION_TARGET_KINDS) {
+      let outcome: "null" | "config" | "throw";
+      try {
+        outcome = executionTargetToAdapterConfig(row(kind), false) === null ? "null" : "config";
+      } catch {
+        outcome = "throw";
+      }
+      expect(["null", "config", "throw"], `kind ${kind}`).toContain(outcome);
+      // and specifically: only local_host may be silently unhandled
+      if (outcome === "null") expect(kind).toBe("local_host");
+    }
   });
 });
