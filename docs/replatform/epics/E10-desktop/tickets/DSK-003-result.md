@@ -3,7 +3,7 @@
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
-**Tip:** `cf755add9`
+**Tip:** `f8435d65d`
 **Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
 
 **This is a partial closure, and §6 says exactly which clause is not closed and why.**
@@ -33,8 +33,9 @@ not wired**.
 | `383548a22` | control-file locations, derived from the vault | 4/4 |
 | `1bba6c86b` | the host routes control commands | 5/5 |
 | `cf755add9` | control-token provisioning — never quietly replaced | 8/8 |
+| `f8435d65d` | the production control effects | 8/8 |
 
-**125 mutants, 125 killed.** Five of those only after the mutant exposed something wrong in
+**133 mutants, 133 killed.** Five of those only after the mutant exposed something wrong in
 my own work rather than in the code under test (§4).
 
 ---
@@ -89,7 +90,7 @@ Two consequences worth naming:
 
 ## 4. Where mutation earned its keep
 
-125/125 is the boring number. These are the ones that mattered:
+133/133 is the boring number. These are the ones that mattered:
 
 **Three surviving mutants were dead code, not missing tests**, and each was removed or
 documented rather than papered over with a contrived test:
@@ -219,16 +220,21 @@ since launchd would create a file wherever it resolved a relative string.
 
 ## 6. What is NOT done
 
-- **Clause (4) is REACHABLE.** A control invocation now routes, authorizes, resolves the
-  running host, acts, and returns — without bootstrapping. `revoke` destroys the same
-  pair in the same order as `--reset-identity`, and for the same recorded reason.
+- **Clause (4) is complete in substance.** Routing, authorization, host discovery with
+  the stale-pid defence, the effect layer, the record's lifecycle, token provisioning and
+  the production effects are all built and mutation-tested. Three properties of the
+  effects are worth restating because they are refusals: `drain` sends **SIGTERM, never
+  SIGKILL** (SIGKILL skips the whole shutdown ordering); the instance probe uses a
+  **literal loopback host**, so a tampered record cannot turn the stale-pid defence into
+  an SSRF; and `status` is **built by naming each field**, so a future field cannot land
+  in an unauthenticated response by default.
 
-  **What is still injected rather than implemented:** the host takes `signal`,
-  `resolveTarget`, `readStatus` and `readLogTail` as dependencies and no production
-  wiring supplies them yet. The token they authorize against IS provisioned
-  (`cf755add9`), so the authorization half of the loop is complete. Each is thin and unambiguous except `readLogTail` on Windows,
-  which has no target at all (§5a). So the surface is complete and testable end-to-end
-  through injection, and one composition step short of usable from a terminal.
+  **What remains is one wiring line and one platform gap.** `runDesktopHost` builds its
+  control effects from injected deps but no caller yet constructs them from
+  `resolveControlPaths` + `createDesktopControlEffects`. And `readLogTail` still has no
+  target on Windows — the only platform the vault supports — because Task Scheduler
+  cannot redirect and the host does not open its own file (§5a). That is a design gap,
+  not a wiring one.
 
 - **No installer is produced.** Lane C ships the autostart manifests and the
   least-privilege assertions; it does not ship a `.pkg`, `.msi` or staging root. The
