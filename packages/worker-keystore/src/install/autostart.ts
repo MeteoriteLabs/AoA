@@ -38,6 +38,14 @@ export interface AutostartManifestInput {
   readonly execPath: string;
   /** Reverse-DNS style identifier, e.g. `com.aoa.worker-desktop`. */
   readonly label: string;
+  /**
+   * The installing user's home directory, used to resolve the log destination.
+   *
+   * OPTIONAL: with none supplied the darwin agent emits no redirection keys at all,
+   * because half a path is worse than none — launchd would create a file wherever it
+   * resolved a relative string, which is not somewhere anyone will look.
+   */
+  readonly homeDir?: string;
 }
 
 export interface AutostartManifest {
@@ -53,6 +61,20 @@ export class AutostartManifestError extends Error {
     super(message);
     this.name = "AutostartManifestError";
   }
+}
+
+/**
+ * Where this platform's host should write its output, RELATIVE TO HOME — or `null` when
+ * the platform already has a better answer.
+ *
+ * `null` for linux is a decision, not an omission. systemd captures stdout to the journal
+ * already; adding a file would bypass journald's rotation, retention and access control
+ * and split one host's output across two places. `journalctl --user` is the answer there.
+ */
+export function autostartLogPath(platform: AutostartPlatform, label: string): string | null {
+  if (platform === "darwin") return `Library/Logs/${label}.log`;
+  if (platform === "win32") return `AoA/${label}.log`;
+  return null; // linux → journald
 }
 
 /** Escape the five XML metacharacters. Applied to EVERY interpolated value. */
@@ -109,6 +131,24 @@ function assertExecPath(execPath: string): void {
   }
 }
 
+/**
+ * Drop trailing `/` and `\` so a home directory joins cleanly.
+ *
+ * Written as a character scan rather than a regex, for the same reason
+ * `hasControlCharacter` is: a character class needing an escaped backslash is exactly the
+ * kind of literal that survives one round of string handling and not the next. A first
+ * draft of this lost a backslash in transit and silently stopped trimming `\`.
+ */
+function stripTrailingSeparators(value: string): string {
+  let end = value.length;
+  while (end > 0) {
+    const ch = value[end - 1];
+    if (ch !== "/" && ch !== "\\") break;
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
 /** systemd expands `%` specifiers (`%h` is the user's home); doubling escapes them. */
 function systemdEscape(value: string): string {
   return value.replace(/%/g, "%%");
@@ -122,8 +162,18 @@ function systemdEscape(value: string): string {
  */
 export function buildAutostartManifest(input: AutostartManifestInput): AutostartManifest {
   assertExecPath(input.execPath);
+  // The home directory is interpolated into the same XML, so it carries the same
+  // injection surface as the exec path and gets the same guard.
+  if (input.homeDir !== undefined) assertExecPath(input.homeDir);
   const exec = xmlEscape(input.execPath.trim());
   const label = xmlEscape(input.label);
+
+  // Emitted ONLY when a home directory is known — see the `homeDir` doc.
+  const logRelative = autostartLogPath(input.platform, input.label);
+  const logAbsolute =
+    input.homeDir !== undefined && logRelative !== null
+      ? xmlEscape(`${stripTrailingSeparators(input.homeDir.trim())}/${logRelative}`)
+      : null;
 
   if (input.platform === "darwin") {
     const filename = `${input.label}.plist`;
@@ -144,7 +194,15 @@ export function buildAutostartManifest(input: AutostartManifestInput): Autostart
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <true/>${
+    logAbsolute === null
+      ? ""
+      : `
+  <key>StandardOutPath</key>
+  <string>${logAbsolute}</string>
+  <key>StandardErrorPath</key>
+  <string>${logAbsolute}</string>`
+  }
   <!-- No UserName key: a LaunchAgent runs as the logged-in user by construction. -->
   <key>ProcessType</key>
   <string>Background</string>
