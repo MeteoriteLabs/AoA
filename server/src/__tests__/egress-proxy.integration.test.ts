@@ -294,6 +294,11 @@ integration("DAT-005 fence-aware egress proxy", () => {
     ownerPrincipalKind?: string | null; ownerPrincipalId?: string | null;
   }
 
+  // `destination` distinguishes ABSENT from explicitly NULL. It used to default with
+  // `cols.destination ?? "https://api.notion.com"`, and `??` cannot tell those apart —
+  // so the one caller that passed `destination: null` (the device_local test) silently
+  // received a network destination and was refused `sandbox_local_network_destination`
+  // by rule 4, never reaching the branch it was written to exercise.
   async function mintHandle(jobId: string, handle: string, cols: HandleCols): Promise<void> {
     const { admin } = guardCtx();
     await admin`INSERT INTO job_secret_handles
@@ -302,7 +307,7 @@ integration("DAT-005 fence-aware egress proxy", () => {
       VALUES (${ORG}, ${jobId}, ${handle},
         ${cols.refKind ?? "connector_oauth"}, ${cols.refId ?? "mcp:oauth:notion"},
         ${cols.materialization ?? "proxy"}, ${cols.usePolicy ?? "fence_proxy"},
-        ${cols.destination ?? "https://api.notion.com"},
+        ${cols.destination === undefined ? "https://api.notion.com" : cols.destination},
         ${cols.status ?? "active"}, ${cols.ownerPrincipalKind ?? null}, ${cols.ownerPrincipalId ?? null})`;
   }
 
