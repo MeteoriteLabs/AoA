@@ -1,13 +1,13 @@
-# DSK-002 Lanes A, B and C — result
+# DSK-002 — result
 
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `a3b9f7dd5` (the DSK-002 design, committed before any code)
-**Lane tip:** `8b69ed96e`
-**Covers:** D1–D6, invariants I1, I3, I4, I5, I6, I7, I8; I9 by citation; I4b as a recorded residual
+**Ticket tip:** `9fa726a53`
+**Covers:** D1–D7, invariants I1, I3, I4, I5, I6, I7, I8, I10, I11; I9 by citation; I4b as a recorded residual
 
-**Lane D (device-local broker activation + deadline destruction) is NOT in this
-increment.** §7 says what remains and why it is separable.
+All four lanes are in. What is deliberately NOT built — and why building it now would
+be guesswork rather than caution — is in §7.
 
 ---
 
@@ -21,12 +21,15 @@ increment.** §7 says what remains and why it is separable.
 | `1bd85461a` | Lane A — grant↔device binding (I1, I3) | 8/8 |
 | `07738b79d` | Lane B — isolation capabilities (I5, I6) | 8/8 |
 | `8b69ed96e` | Lane C — the fence deadline gate (I7, I8) | 8/8 |
+| `9fa726a53` | Lane D — the activation policy (I10, I11) | 10/10 |
 
-**36 mutants, 36 killed** — but two of them only after the mutant exposed a defect in
+**46 mutants, 46 killed** — but two of them only after the mutant exposed a defect in
 *my own test*, which is the number that actually matters (§5).
 
-534 worker-daemon tests, 21 server unit tests, 8 folder-grant integration tests against
-real embedded Postgres with RLS, `tsc` clean across both packages.
+534 worker-daemon tests, 31 server unit tests, 8 folder-grant integration tests against
+real embedded Postgres with RLS, `tsc` clean across both packages. The D1 Merge Train ran
+green on `1bd85461a`, proving Lane A's `server/src` changes on the live two-replica
+topology.
 
 ---
 
@@ -163,24 +166,39 @@ fence-aware egress path exists; claiming it now is the exact over-report D4 forb
 
 ## 7. What is NOT done
 
-- **Lane D** — device-local broker activation and deadline destruction.
-  `failClosedDeviceLocalBroker` still throws and still names DSK-002. Lane C's gate
-  already refuses `secret_materialization` past the deadline, which is the *authority*
-  half of clause (5); the *destruction* half (D7's `proxy_endpoint`-first activation)
-  is Lane D.
+**Lane D shipped the POLICY, not the wiring, and that is a decision.**
+`clampActivationExpiry` is the bound `device-local-broker.ts` said out loud that nothing
+enforced — including the `NaN` case, where every comparison is false so an unchecked
+deadline sails through the clamp. D7's ranking (`proxy_endpoint` > `env_name` >
+`file_path`) is ours rather than the caller's list order.
+
+What Lane D deliberately did not do is invent the wiring. No lease deadline reaches that
+layer today; threading one is part of building a real device-side implementation — an OS
+keystore read and a loopback listener — which needs the least-privilege host and belongs
+with DSK-003. A decorator written now would be guessing at an interface DSK-003 defines.
+`failClosedDeviceLocalBroker` still throws, which is correct rather than a gap: it means
+no activation can be minted, so no unbounded activation can exist.
+
+Still open, each for a stated reason:
+
 - **Clause (4) remains PARTIAL**, exactly as §7 of the design predicted. A same-user
   child process can read the OS keychain by construction; real containment needs
   DSK-003's least-privilege host. What ships instead is an honest capability report so
   the control plane **refuses to place** work needing isolation the device lacks. That
   is a placement refusal, not a containment guarantee, and calling it clause (4) would
   be dishonest.
+- **Clause (5) is PARTIAL by the same split.** Lane C's gate closes the *authority* half
+  — a `secret_materialization` past the deadline is refused locally, on the clock,
+  whether or not anything called `close()`. The *destruction* half is bounded by D7's
+  ranking rather than closed by it: for `proxy_endpoint` process death is destruction,
+  but a `file_path` activation orphaned by `kill -9` leaves bytes no timer will collect.
+  Ranking `file_path` last is a mitigation, not a fix.
 - **Per-OS native isolation probes** — DSK-003 owns the host. A desktop that cannot
   prove Docker reports `none`, the correct fail-closed answer rather than a placeholder.
+- **Hardlink escape (I4b)** — unclosed by decision, retired by measurement (§6).
 - **Backward clock jumps** defeat the Lane C deadline check. Recorded in the code: the
   server-side `guardActiveFence` is the authoritative gate and is unaffected, and a
   machine whose owner controls the clock is the machine whose owner controls the binary.
-
----
 
 ## 8. Behaviour changes worth a release note
 
@@ -195,3 +213,5 @@ fence-aware egress path exists; claiming it now is the exact over-report D4 forb
 3. **`resolveCapturedPath` takes a required `presented` parameter.** Required rather
    than optional so no caller can silently fall back to org-only scoping. There were
    zero production callers, so the strictness cost nothing.
+4. **None of Lane D is reachable in production.** The broker remains fail-closed, so the
+   activation policy is inert until DSK-003 wires a device-side implementation.
