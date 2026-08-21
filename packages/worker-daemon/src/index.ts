@@ -202,6 +202,15 @@ export type {
   TargetProcessResult,
 } from "./control/host-state.js";
 
+// DSK-003 Lane A — the control-command effect layer.
+export { RESET_ACKNOWLEDGEMENT_FLAG, executeControlCommand } from "./control/execute.js";
+export type {
+  ControlExecuteDeps,
+  ControlExecuteInput,
+  ControlExecuteRejection,
+  ControlExecuteResult,
+} from "./control/execute.js";
+
 export { enrollOnce, EnrollOnceError, EnrollmentAuthorityError } from "./enrollment/enroll-once.js";
 export type { EnrollOnceDeps, EnrollmentOutcome } from "./enrollment/enroll-once.js";
 
