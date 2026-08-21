@@ -8,6 +8,10 @@
 // test around the behaviour as it stood would have enshrined it — so the fixes landed
 // first and these assertions followed.
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -43,6 +47,18 @@ vi.mock("@armyofagents/db", () => ({ executionTargets: {} }));
 import { executionTargetRoutes } from "../routes/execution-targets.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Read a source file with line endings normalised.
+ *
+ * These files are CRLF. A structural scan written with bare `
+` matches nothing and
+ * reports it as "the mount is not there" — a false NEGATIVE that would have made the
+ * clause-2 assertion look satisfied for the worst possible reason. Normalise once.
+ */
+const readSource = (...segments: string[]) =>
+  readFileSync(join(HERE, ...segments), "utf8").split("\r\n").join("\n");
 const ORG = "77777777-7777-4777-8777-777777777777";
 const boardAdmin = { type: "board", source: "session", userId: "operator-9", companyIds: [] };
 
@@ -145,5 +161,90 @@ describe("I22 clause 1 — flag-off, a desktop execution target cannot be create
     const res = await request(makeApp({ desktopEnabled: false }))
       .get(`/api/organizations/${ORG}/execution-targets`);
     expect(JSON.stringify(res.body)).toMatch(/"kind":"desktop"/);
+  });
+});
+
+describe("I22 clause 2 — flag-off, the worker-control surface is not mounted at all", () => {
+  // Holds today. The proof is STRUCTURAL rather than a live request: booting the whole
+  // app to observe a 404 would test express's router, not the property. The property is
+  // that the mount is lexically INSIDE the flag block — an unmounted route 404s by
+  // construction, and no ordering or middleware change can quietly expose it.
+  const appSource = readSource("..", "app.ts");
+
+  it("mounts workerControlRoutes only inside the distributed-execution flag block", () => {
+    const flagOpen = appSource.indexOf("if (opts.distributedExecutionEnabled) {");
+    expect(flagOpen).toBeGreaterThan(-1);
+    // The block's matching close: the next line that is exactly two-space "}" after it.
+    const close = appSource.indexOf("\n  }\n", flagOpen);
+    expect(close).toBeGreaterThan(flagOpen);
+
+    const mount = appSource.indexOf("workerControlRoutes(");
+    expect(mount, "workerControlRoutes is not mounted at all").toBeGreaterThan(-1);
+    expect(mount).toBeGreaterThan(flagOpen);
+    expect(mount).toBeLessThan(close);
+  });
+
+  it("does NOT mount it anywhere else", () => {
+    // A second mount outside the block would reopen the surface while the first
+    // assertion still passed.
+    const mounts = appSource.split("workerControlRoutes(").length - 1;
+    expect(mounts).toBe(1);
+  });
+
+  it("proves the assertion is non-vacuous: executionTargetRoutes is OUTSIDE that block", () => {
+    // The control case, and the reason clause 1 needed a code fix at all. If this ever
+    // starts failing because the route moved inside the block, the create guard becomes
+    // redundant — which is worth knowing, not worth hiding.
+    const flagOpen = appSource.indexOf("if (opts.distributedExecutionEnabled) {");
+    const close = appSource.indexOf("\n  }\n", flagOpen);
+    const mount = appSource.indexOf("executionTargetRoutes(", appSource.indexOf("api.use"));
+    expect(mount).toBeGreaterThan(close);
+  });
+});
+
+describe("I22 clause 5 — no desktop option can reach the environments UI", () => {
+  // `ui/` contains ~104 occurrences of "desktop" and every one is a responsive
+  // breakpoint ("desktop tier", "desktop width"), so a grep-based check would be pure
+  // noise. The real property is narrower and stronger.
+  const uiSource = readSource(
+    "..", "..", "..", "ui", "src", "components", "settings", "sections", "EnvironmentsSection.tsx",
+  );
+
+  it("offers a CLOSED set of target types that does not include desktop", () => {
+    const union = /type EnvTargetType = ([^;]+);/.exec(uiSource);
+    expect(union, "EnvTargetType union not found — the shape changed").not.toBeNull();
+    const members = [...union![1]!.matchAll(/"([a-z0-9-]+)"/g)].map((m) => m[1]);
+    expect(members.length).toBeGreaterThan(2); // the scan found a real union
+    expect(members).not.toContain("desktop");
+  });
+
+  it("does NOT derive its options from EXECUTION_TARGET_KINDS", () => {
+    // This is the half that keeps clause 5 true tomorrow. The union above is hardcoded,
+    // so adding "desktop" to the shared kind constant cannot make an option appear. If
+    // the UI ever starts mapping over that constant, a desktop option would render the
+    // day DSK-002 lands — silently.
+    expect(uiSource).not.toContain("EXECUTION_TARGET_KINDS");
+  });
+});
+
+describe("I22 — the seven clauses are closed, and each names where it is proven", () => {
+  // A manifest, so "DSK-00 is closed" is auditable in one place instead of being spread
+  // across three files and a CI script. A clause with nowhere to point is a clause
+  // nobody is asserting.
+  const WHERE: Record<number, string> = {
+    1: "this file — flag-off create is refused 403 and persists nothing",
+    2: "this file — workerControlRoutes is mounted only inside the flag block",
+    3: "execution-target-resolver.test.ts — desktop/e2b/unknown kinds THROW",
+    4: "execution-target-resolver.test.ts — no-pin routing never returns desktop",
+    5: "this file — the environments UI union is closed and not kind-derived",
+    6: "scripts/check-desktop-surface-disabled.mjs — the distribution.md doc pin",
+    7: "scripts/check-desktop-surface-disabled.mjs — no desktop package/update route",
+  };
+
+  it("accounts for all seven", () => {
+    expect(Object.keys(WHERE).map(Number).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    for (const [clause, where] of Object.entries(WHERE)) {
+      expect(where, `clause ${clause} has no home`).toMatch(/\S/);
+    }
   });
 });

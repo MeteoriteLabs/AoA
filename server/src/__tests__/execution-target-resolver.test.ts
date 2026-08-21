@@ -151,3 +151,51 @@ describe("DSK-001 Lane C / F28 — an unhandled target kind THROWS, it never fal
     }
   });
 });
+
+describe("DSK-001 Lane C / I22 clause 4 — no-pin routing never selects a desktop target", () => {
+  // Holds today, so this ASSERTS rather than fixes. It matters because the pin branch
+  // deliberately returns any active row (that is what F28's throw now guards); this is
+  // the other half — the paths a run takes when nobody pinned anything must never
+  // wander onto a desktop target on their own.
+
+  const target = (kind: string, slug: string) => ({
+    id: `id-${slug}`, slug, kind, trustClass: "local_trusted",
+    status: "active", organizationId: null,
+  }) as never;
+
+  const desktop = target("desktop", "my-laptop");
+
+  it("does not select desktop for a company_api_key run, even when it is the only active row", () => {
+    // company_api_key routes to the shared pool. With no pool present the answer must be
+    // "nothing", never "well, there is a desktop here".
+    expect(chooseExecutionTargetRow({
+      credentialKind: "company_api_key", pinnedTargetId: null,
+      executionTargetSlug: null, targets: [desktop],
+    })).toBeNull();
+  });
+
+  it("does not select desktop for a personal_subscription run whose slug MATCHES it", () => {
+    // The sharpest case: the credential names this very target by slug. The kind filter
+    // still refuses, because a slug match is not a capability match.
+    expect(() => chooseExecutionTargetRow({
+      credentialKind: "personal_subscription", pinnedTargetId: null,
+      executionTargetSlug: "my-laptop", targets: [desktop],
+    })).toThrow();
+  });
+
+  it("still selects the kinds it is supposed to — the filter is not a blanket refusal", () => {
+    // Non-vacuity: a function that returned null for everything would satisfy both
+    // assertions above while breaking every run.
+    const pool = target("pooled_gvisor", "pool");
+    expect(chooseExecutionTargetRow({
+      credentialKind: "company_api_key", pinnedTargetId: null,
+      executionTargetSlug: null, targets: [desktop, pool],
+    })).toBe(pool);
+
+    const dedicated = target("dedicated_worker", "box");
+    expect(chooseExecutionTargetRow({
+      credentialKind: "personal_subscription", pinnedTargetId: null,
+      executionTargetSlug: "box", targets: [desktop, dedicated],
+    })).toBe(dedicated);
+  });
+});

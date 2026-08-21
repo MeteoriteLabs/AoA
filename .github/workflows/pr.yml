@@ -194,6 +194,11 @@ jobs:
           node scripts/check-secret-resolve-vectors.mjs
           node --test scripts/check-secret-resolve-vectors.test.mjs
 
+      - name: Desktop surface stays disabled (DSK-00 / I22 clauses 6+7)
+        run: |
+          node scripts/check-desktop-surface-disabled.mjs
+          node --test scripts/check-desktop-surface-disabled.test.mjs
+
       - name: Egress-policy destination vectors (DAT-005)
         run: |
           node scripts/check-egress-policy-vectors.mjs
