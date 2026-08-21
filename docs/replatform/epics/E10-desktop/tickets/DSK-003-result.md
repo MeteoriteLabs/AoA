@@ -3,7 +3,7 @@
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
-**Tip:** `f8435d65d`
+**Tip:** `fa3c45afc`
 **Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
 
 **This is a partial closure, and §6 says exactly which clause is not closed and why.**
@@ -34,8 +34,9 @@ not wired**.
 | `1bba6c86b` | the host routes control commands | 5/5 |
 | `cf755add9` | control-token provisioning — never quietly replaced | 8/8 |
 | `f8435d65d` | the production control effects | 8/8 |
+| `fa3c45afc` | the last wiring line — real effects by default | 5/5 |
 
-**133 mutants, 133 killed.** Five of those only after the mutant exposed something wrong in
+**138 mutants, 138 killed.** Five of those only after the mutant exposed something wrong in
 my own work rather than in the code under test (§4).
 
 ---
@@ -90,7 +91,7 @@ Two consequences worth naming:
 
 ## 4. Where mutation earned its keep
 
-133/133 is the boring number. These are the ones that mattered:
+138/138 is the boring number. These are the ones that mattered:
 
 **Three surviving mutants were dead code, not missing tests**, and each was removed or
 documented rather than papered over with a contrived test:
@@ -229,12 +230,16 @@ since launchd would create a file wherever it resolved a relative string.
   an SSRF; and `status` is **built by naming each field**, so a future field cannot land
   in an unauthenticated response by default.
 
-  **What remains is one wiring line and one platform gap.** `runDesktopHost` builds its
-  control effects from injected deps but no caller yet constructs them from
-  `resolveControlPaths` + `createDesktopControlEffects`. And `readLogTail` still has no
-  target on Windows — the only platform the vault supports — because Task Scheduler
-  cannot redirect and the host does not open its own file (§5a). That is a design gap,
-  not a wiring one.
+  **The wiring is done.** `runDesktopHost` composes its own effects when none are
+  injected, so the binary works rather than declining to; `deps.control` is now an
+  override for tests. `status`, `logs`, `drain` and `revoke` are reachable end to end.
+
+  **One DESIGN gap remains, and it is not wiring.** `readLogTail` has no target on
+  Windows — the only platform the vault supports — because Task Scheduler cannot redirect
+  and the host does not open its own file (§5a). `readLogFile` is deliberately left
+  ABSENT rather than pointed at a path nothing writes, so `logs` reports that there is no
+  log file instead of reporting an empty one. Closing it means deciding whether the host
+  opens and rotates its own file, which is a decision this ticket did not own.
 
 - **No installer is produced.** Lane C ships the autostart manifests and the
   least-privilege assertions; it does not ship a `.pkg`, `.msi` or staging root. The
