@@ -76,13 +76,21 @@ export interface DeviceLocalActivation {
   /**
    * When the activation stops being usable, as an ISO-8601 instant.
    *
-   * D10 specifies `expiresAt <= the lease deadline`. NOTHING ENFORCES THAT BOUND
-   * TODAY, and this comment is here so the field does not imply a guarantee it does
-   * not have: no lease deadline reaches this layer — neither `SecretResolveRequestV1`
-   * nor `AuthorizedSecretResolution` carries one. Threading it would widen two more
-   * types for a port nothing consumes, so it is an explicit deferral to DSK-002.
+   * D10 specifies `expiresAt <= the lease deadline`.
    *
-   * It is safe by construction in the meantime: the only implementation is
+   * DSK-002 Lane D landed the RULE: `clampActivationExpiry`
+   * (`device-local-activation-policy.ts`) clamps a requested TTL to the lease deadline
+   * and REFUSES rather than coercing on the three cases that would otherwise mint
+   * something special — an absent/NaN deadline (the forever-activation this comment
+   * used to warn about), a deadline already passed, and a non-positive TTL.
+   *
+   * WHAT IS STILL NOT WIRED, so this field still does not imply a guarantee it does not
+   * have: no lease deadline REACHES this layer — neither `SecretResolveRequestV1` nor
+   * `AuthorizedSecretResolution` carries one — so nothing calls the clamp on this path
+   * yet. Threading it is part of wiring a real device-side implementation, which needs
+   * the least-privilege host and therefore belongs with DSK-003.
+   *
+   * It remains safe by construction in the meantime: the only implementation is
    * `failClosedDeviceLocalBroker`, which throws, so no activation can be minted and
    * therefore no unbounded activation can exist.
    */
