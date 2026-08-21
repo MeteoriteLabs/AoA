@@ -8,6 +8,16 @@
   },
   "admitVectors": [
     {
+      "_note": "device_local on the FENCE-PROXY seam. Rule 3b bans only remote_server_fenced, so this has always admitted -- but no vector covered it, which left nothing stopping a future edit from widening 3b to ban fence_proxy and silently killing the seam DSK-002's proxy arm depends on. refId is a UUID: for device_local it is provider_credentials.id (DSK-001 Lane B D-B2).",
+      "name": "device_local_fence_proxy_with_destination",
+      "handle": {
+        "status": "active", "refKind": "device_local", "refId": "b3f1c2d4-5e6a-4b7c-8d9e-0f1a2b3c4d5e", "materialization": "proxy",
+        "usePolicy": "fence_proxy", "destination": "https://api.provider.example", "boundTargetGeneration": null,
+        "ownerPrincipalKind": "user", "ownerPrincipalId": "11111111-1111-4111-8111-111111111111"
+      },
+      "ownerMembershipActive": true
+    },
+    {
       "name": "company_secret_sandbox_local_env",
       "handle": {
         "status": "active", "refKind": "company_secret", "refId": "company-secret-1", "materialization": "env",

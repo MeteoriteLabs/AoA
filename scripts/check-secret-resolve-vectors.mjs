@@ -40,6 +40,28 @@ export class SecretResolveVectorError extends Error {}
 export const SECRET_REF_KINDS = ["company_secret", "connector_oauth", "provider_key", "device_local"];
 
 /**
+ * The CLOSED rejection vocabulary, mirrored from `SECRET_RESOLVE_REJECTION_REASONS`
+ * in `job-fence.ts`.
+ *
+ * Hand-written, like `decideResolve` itself — importing the real one would collapse
+ * two independent derivations into one and defeat the point of this lane. The
+ * corpus pins it by parsing the array out of the TypeScript source, so a mirror
+ * that drifts fails rather than rots.
+ */
+export const SECRET_RESOLVE_REJECTION_REASONS = [
+  "handle_revoked",
+  "unknown_ref_kind",
+  "ref_pointer_missing",
+  "materialization_policy_conflict",
+  "ref_kind_policy_conflict",
+  "sandbox_local_network_destination",
+  "network_destination_missing",
+  "target_generation_mismatch",
+  "owner_binding_incomplete",
+  "owner_membership_lost",
+];
+
+/**
  * The pure post-fence resolve decision. Mirrors `authorizeSecretResolve` in
  * `@armyofagents/db` (job-fence.ts) WITHOUT importing it. Returns "admit" or a
  * closed internal reason.
@@ -155,6 +177,16 @@ export function verifyFixture(fixture) {
       problems.push(`reject vector ${label}: reference ADMITTED a handle that must be refused`);
     } else if (decision !== r.reason) {
       problems.push(`reject vector ${label}: reference decided ${decision}, expected ${r.reason}`);
+    }
+  }
+
+  // EVERY rejection reason must be exercised. Without this, adding a reason to the
+  // vocabulary and forgetting its vector leaves every lane green — the decision
+  // surface would grow a branch that no gate has ever evaluated.
+  const covered = new Set((rejects ?? []).map((r) => r?.reason));
+  for (const reason of SECRET_RESOLVE_REJECTION_REASONS) {
+    if (!covered.has(reason)) {
+      problems.push(`rejection reason ${reason} has no reject vector`);
     }
   }
 

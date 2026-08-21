@@ -188,20 +188,39 @@ export interface SecretResolveAuthzInput {
   liveTargetGeneration: number;
 }
 
-/** Why a secret resolve was refused AFTER the fence admitted it. INTERNAL + precise;
+/**
+ * Why a secret resolve was refused AFTER the fence admitted it. INTERNAL + precise;
  * the service maps every one of these to the coarse, non-disclosing `malformed`
- * (a resolve refusal must never disclose which invariant a foreign caller tripped). */
-export type SecretResolveRejectionReason =
-  | "handle_revoked"
-  | "unknown_ref_kind"
-  | "ref_pointer_missing"
-  | "materialization_policy_conflict"
-  | "ref_kind_policy_conflict"
-  | "sandbox_local_network_destination"
-  | "network_destination_missing"
-  | "target_generation_mismatch"
-  | "owner_binding_incomplete"
-  | "owner_membership_lost";
+ * (a resolve refusal must never disclose which invariant a foreign caller tripped).
+ *
+ * DECLARED AS AN ARRAY, and the union derived from it, for the same reason
+ * `SECRET_REF_KINDS` above is: the vocabulary has to be ENUMERABLE AT RUNTIME so a
+ * gate can prove every member is exercised.
+ *
+ * It was a bare union, and that left a hole in the gate itself: nothing anywhere
+ * asserted exhaustiveness (four references repo-wide, none of them a check), so an
+ * eleventh member with zero vectors would have left every lane green — on the one
+ * surface whose entire job is to be exhaustively pinned. The policy-lane checker
+ * now reads this array out of this file and refuses a fixture that misses any
+ * member, so adding a reason without a vector fails CI.
+ *
+ * Deriving the type from the array rather than asserting the two agree means they
+ * cannot disagree by construction.
+ */
+export const SECRET_RESOLVE_REJECTION_REASONS = [
+  "handle_revoked",
+  "unknown_ref_kind",
+  "ref_pointer_missing",
+  "materialization_policy_conflict",
+  "ref_kind_policy_conflict",
+  "sandbox_local_network_destination",
+  "network_destination_missing",
+  "target_generation_mismatch",
+  "owner_binding_incomplete",
+  "owner_membership_lost",
+] as const;
+
+export type SecretResolveRejectionReason = (typeof SECRET_RESOLVE_REJECTION_REASONS)[number];
 
 export type SecretResolveDecision = "admit" | SecretResolveRejectionReason;
 

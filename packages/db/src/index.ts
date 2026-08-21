@@ -93,6 +93,7 @@ export {
   SecretResolveRejection,
   authorizeSecretResolve,
   SECRET_REF_KINDS,
+  SECRET_RESOLVE_REJECTION_REASONS,
   GUARDED_JOB_MUTATORS,
   TERMINAL_ATTEMPT_STATUSES,
   type ActiveFenceRequest,
