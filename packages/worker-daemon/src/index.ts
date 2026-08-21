@@ -151,6 +151,23 @@ export {
 } from "./identity/control-token.js";
 export type { ControlTokenRejection, ControlTokenResult } from "./identity/control-token.js";
 
+// DSK-003 Lane A — the desktop control surface (default-deny authorization).
+export {
+  CONTROL_COMMANDS,
+  READ_ONLY_COMMANDS,
+  authorizeControlCommand,
+  parseControlCommand,
+  requiresControlToken,
+} from "./control/commands.js";
+export type {
+  ControlAuthzDeps,
+  ControlAuthzRejection,
+  ControlAuthzResult,
+  ControlCommand,
+  ParsedControlCommand,
+  ReadOnlyCommand,
+} from "./control/commands.js";
+
 export { enrollOnce, EnrollOnceError, EnrollmentAuthorityError } from "./enrollment/enroll-once.js";
 export type { EnrollOnceDeps, EnrollmentOutcome } from "./enrollment/enroll-once.js";
 
