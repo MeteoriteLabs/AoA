@@ -88,3 +88,7 @@ export type { DesktopInvocation } from "./bin/desktop-invocation.js";
 
 // DSK-003 Lane A — where the control token and host state record live.
 export { resolveControlPaths, type ControlPaths } from "./control-paths.js";
+
+// DSK-003 Lane A — bring the control token into existence, never quietly replace it.
+export { provisionControlToken, CONTROL_TOKEN_PROVISION_REFUSALS } from "./control-token-provisioning.js";
+export type { ControlTokenIo, ControlTokenProvisionRefusal, ControlTokenProvisionResult } from "./control-token-provisioning.js";
