@@ -9,6 +9,7 @@
  * unit-testable without spawning a process.
  */
 
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -20,6 +21,7 @@ import type { Env } from "../config/env.js";
 import { createWorkerLogger, type Logger } from "../logging/logger.js";
 import { createMetrics, type Metrics } from "../metrics/metrics.js";
 import { startHealthServer, type HealthServerHandle } from "../health/health-server.js";
+import type { HostStateRecord } from "../control/host-state.js";
 import {
   createEventOutboxShutdownSteps,
   createLeaseLifecycleSteps,
@@ -54,6 +56,18 @@ export interface BootstrapDeps {
   readonly env: Env;
   readonly proc: ProcessLike;
   readonly createLogger?: typeof createWorkerLogger;
+  /**
+   * DSK-003 — publish the host state record once the health socket is listening.
+   *
+   * OPTIONAL, and absent by default. Every deployed compose file bootstraps without a
+   * desktop host, so requiring this would be a live behaviour change to running
+   * containers rather than a new capability. With no writer configured no record is
+   * published, no instance nonce reaches the health server, and `/instance` stays 404 —
+   * the surface is byte-identical to the pre-DSK-003 container.
+   */
+  readonly writeHostState?: (record: HostStateRecord) => Promise<void>;
+  /** Remove the record on shutdown. Paired with `writeHostState`. */
+  readonly removeHostState?: () => Promise<void>;
   readonly createMetricsFn?: typeof createMetrics;
   readonly startHealth?: typeof startHealthServer;
   /**
@@ -180,8 +194,30 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   }
 
   const metrics = makeMetrics();
-  const health = await startHealth({ host: config.health.host, port: config.health.port }, metrics);
+  // DSK-003 — ONE nonce per boot, shared by the health server and the state record. If
+  // the two ever disagreed, the stale-pid defence would reject the very host that wrote
+  // the record — so they come from a single value here rather than being generated
+  // independently at each site.
+  const instanceId = deps.writeHostState ? randomUUID() : undefined;
+  const health = await startHealth(
+    { host: config.health.host, port: config.health.port, instanceId },
+    metrics,
+  );
   metrics.setWorkerUp(true);
+
+  // AFTER the socket is listening, deliberately: the record advertises a port the
+  // stale-pid defence probes, and publishing it earlier would advertise something that
+  // cannot answer. `health.port` is the ACTUALLY bound port — the configured one may be
+  // 0, and a record carrying 0 would send every control command nowhere.
+  if (deps.writeHostState && instanceId) {
+    await deps.writeHostState({
+      instanceId,
+      pid: process.pid,
+      healthPort: health.port,
+      startedAt: new Date().toISOString(),
+      version: WORKER_VERSION,
+    });
+  }
 
   // DSK-001 (D4, amended by A1) — ENROL, once, here.
   //
@@ -277,7 +313,18 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   const leaseSteps = deps.leasing ? createLeaseLifecycleSteps(deps.leasing, deps.renewal) : [];
   const outboxSteps = deps.eventOutbox ? createEventOutboxShutdownSteps(deps.eventOutbox) : [];
   const shutdown = createShutdownHandler({
-    steps: [...leaseSteps, ...outboxSteps, { name: "health-server", stop: () => health.close() }],
+    steps: [
+      ...leaseSteps,
+      ...outboxSteps,
+      { name: "health-server", stop: () => health.close() },
+      // LAST, after health closes. While the host drains, `status` should still find the
+      // record — the same reason `stop-host` is last in the uninstall plan. Once health is
+      // closed a probe fails and `drain` refuses, which is the right answer for a host
+      // already shutting down.
+      ...(deps.removeHostState
+        ? [{ name: "host-state", stop: () => deps.removeHostState!() }]
+        : []),
+    ],
     logger,
     exit: (code) => deps.proc.exit(code),
     flush: () => logger.flush(),
