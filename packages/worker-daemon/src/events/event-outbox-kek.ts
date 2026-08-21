@@ -18,14 +18,14 @@
  */
 
 import { hkdfSync, randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { ownerOnlyViolation } from "../identity/file-custody.js";
 import { dirname } from "node:path";
 
 import { exportDevicePrivateKeyPkcs8Der, type DeviceKey } from "../identity/device-key.js";
 import { KEK_BYTES } from "./event-row-codec.js";
 
 const STRICT_FILE_MODE = 0o600;
-const GROUP_OTHER_MASK = 0o077;
 
 /** HKDF params binding a device-derived KEK to this exact purpose + version. */
 const DEVICE_KEK_SALT = Buffer.from("aoa-worker-event-outbox-kek-v1", "utf8");
@@ -91,10 +91,11 @@ export class MountedSecretKekStore implements EventOutboxKekStore {
     return kek;
   }
 
+  /** Delegates to the shared `ownerOnlyViolation` (DSK-003 D2); see the twin comment in
+   * `identity/key-store.ts`. The error type stays here — the classification is this
+   * store's — and an unreadable file is now a refusal rather than a raw fs throw. */
   #assertSecurePermissions(): void {
-    if (process.platform === "win32") return;
-    const mode = statSync(this.path).mode & 0o777;
-    if ((mode & GROUP_OTHER_MASK) !== 0) {
+    if (ownerOnlyViolation(this.path) !== null) {
       throw new EventOutboxKekError("event outbox KEK store has insecure permissions");
     }
   }

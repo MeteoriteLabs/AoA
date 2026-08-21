@@ -12,7 +12,8 @@
  * are observable.
  */
 
-import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { ownerOnlyViolation } from "./file-custody.js";
 import { dirname } from "node:path";
 
 import {
@@ -48,7 +49,6 @@ export interface DeviceKeyStore {
 export type OsKeychainKeyStore = DeviceKeyStore;
 
 const STRICT_FILE_MODE = 0o600;
-const GROUP_OTHER_MASK = 0o077;
 
 function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
   return typeof err === "object" && err !== null && "code" in err;
@@ -105,11 +105,15 @@ export class MountedSecretKeyStore implements DeviceKeyStore {
   }
 
   /** On POSIX, refuse a key file readable by group/other (fail closed). Windows
-   * cannot represent these bits via `chmod`, so the check is skipped there. */
+   * cannot represent these bits via `chmod`, so the check is skipped there.
+   *
+   * Delegates to the shared `ownerOnlyViolation` (DSK-003 D2) — this file and
+   * `events/event-outbox-kek.ts` carried byte-identical copies of the comparison. The
+   * ERROR TYPE stays here, because the classification is this store's, not the rule's.
+   * An unreadable file is also a refusal: the previous inline version let `statSync`
+   * throw a raw fs error out of a security check, which is a worse failure to read. */
   private assertSecurePermissions(): void {
-    if (process.platform === "win32") return;
-    const mode = statSync(this.path).mode & 0o777;
-    if ((mode & GROUP_OTHER_MASK) !== 0) {
+    if (ownerOnlyViolation(this.path) !== null) {
       throw new DeviceKeyStoreError("device key store has insecure permissions");
     }
   }

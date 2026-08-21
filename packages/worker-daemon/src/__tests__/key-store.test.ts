@@ -88,3 +88,30 @@ describe("InMemoryKeyStore (OS-keychain stub for tests)", () => {
     expect(store.load()).toBeNull();
   });
 });
+
+describe("MountedSecretKeyStore — custody (DSK-003 Lane A)", () => {
+  // `assertSecurePermissions` had NO test before this. Its twin in
+  // `event-outbox-kek.ts` was covered; this one was not, so the guard on the file
+  // holding the DEVICE IDENTITY was the uncovered half of the pair. Adding it here is
+  // part of extracting the shared rule — the extraction is only safe if both callers
+  // are actually pinned.
+  it("FAILS CLOSED on insecure permissions (POSIX group/other readable)", () => {
+    if (process.platform === "win32") return; // chmod cannot clear these bits here
+    const file = scratchFile();
+    const store = new MountedSecretKeyStore(file);
+    store.save(generateDeviceKey());
+    chmodSync(file, 0o644);
+    expect(() => store.load()).toThrow(DeviceKeyStoreError);
+  });
+
+  it("accepts the 0600 file it wrote itself — non-vacuity", () => {
+    const file = scratchFile();
+    const store = new MountedSecretKeyStore(file);
+    const key = generateDeviceKey();
+    store.save(key);
+    expect(store.load()).not.toBeNull();
+    if (process.platform !== "win32") {
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    }
+  });
+});
