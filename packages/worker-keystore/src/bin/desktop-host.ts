@@ -38,8 +38,16 @@ import {
 } from "../envelope.js";
 import { decodeEnrollmentReceipt, encodeEnrollmentReceipt } from "../receipt-envelope.js";
 
-/** The subcommand that wipes a device identity. Deliberately verbose. */
-export const RESET_IDENTITY_FLAG = "--reset-identity";
+/** The subcommand that wipes a device identity. Deliberately verbose.
+ *
+ * DECLARED IN `desktop-invocation.ts` and re-exported here. Which argv means what is
+ * a ROUTING concern, and the router must test for this flag; two declarations of the
+ * same flag are two things to keep in step, which is the drift argued against for the
+ * acknowledgement flag. Re-exported so every existing importer is unaffected. */
+import { RESET_IDENTITY_FLAG } from "./desktop-invocation.js";
+
+// Re-exported so every existing importer of this module is unaffected by the move.
+export { RESET_IDENTITY_FLAG };
 
 /**
  * The second argument the wipe requires (plan §3/I7 point 4).

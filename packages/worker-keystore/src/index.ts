@@ -81,3 +81,7 @@ export type {
   AutostartManifestInput,
   AutostartPlatform,
 } from "./install/autostart.js";
+
+// DSK-003 Lane A — what an invocation of the desktop binary means.
+export { resolveDesktopInvocation } from "./bin/desktop-invocation.js";
+export type { DesktopInvocation } from "./bin/desktop-invocation.js";
