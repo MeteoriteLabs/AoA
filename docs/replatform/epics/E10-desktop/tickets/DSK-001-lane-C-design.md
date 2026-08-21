@@ -68,6 +68,39 @@ on the *environment provider*, not the execution-target kind.
 So there is no legacy adapter representation for either kind, and `return null` does not
 mean "handled elsewhere" — it means "runs here, unsandboxed". Both throw.
 
+> **STRENGTHENED after the terrain map (2026-08-21).** My original framing — "null
+> means no adapter override, so the run executes on the control-plane host" — is
+> directionally right but imprecise about *why*, and the precise version is a better
+> argument for throwing.
+>
+> On a **pinned** run the adapter-config return value has **no effect at all**.
+> `mergeResolvedExecutionTarget` writes `resolvedConfig` at `heartbeat.ts:3617`, but
+> `applyEnvironmentAcquisitionConfig` is applied afterwards at `:4466` and the code's own
+> comment at `:4460` calls it "always the authoritative, LAST-applied one". A pin always
+> implies an environment (`executionTargetId` and `environmentId` are read from the same
+> row and returned null together), so the environment's config patch is non-empty and
+> overwrites whatever the adapter produced.
+>
+> So returning a config and returning null are **the same no-op**. A throw is the only
+> outcome that changes anything — which turns "should e2b throw?" from a judgement call
+> into the only available answer.
+>
+> Three further supports, verified: the throw lands on a clean path
+> (`pre_spawn_failed`, run marked failed, leases and workspaces released, error run event
+> appended, `heartbeat.ts:2769-2790`); `assertUnsandboxedMultitenantAllowed` early-returns
+> unless `cloud_auth`, so the self-hosted modes DSK-00 must keep inert have **no
+> downstream guard** and this throw is the only one on the reachable surface; and
+> Decision #117 §4 already fails closed for an explicit pin when routing *errors*, so
+> silently degrading when routing *succeeds* onto an unmapped kind was an asymmetry
+> nobody designed.
+>
+> **The one honest caveat:** an operator who paired an e2b *environment* with an e2b-*kind*
+> target as bookkeeping would see that run fail. Zero such instances exist in code, tests,
+> fixtures, migrations or docs, and `docs/api/execution-targets.md:18` never mentions e2b.
+> If that pairing is ever wanted, the right shape is an explicit branch proven by the
+> acquire's resolved sandbox — not a bare fallthrough indistinguishable from the dangerous
+> case.
+
 The replacement is an **exhaustive switch**, so a sixth kind added to
 `EXECUTION_TARGET_KINDS` fails loudly rather than inheriting the fallthrough. That is the
 part with the longest shelf life: the bug was never really about desktop, it was about a
