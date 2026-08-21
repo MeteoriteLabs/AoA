@@ -108,8 +108,8 @@ The walks reject symlinks correctly, including a symlinked *directory* mid-path 
 is `lstat`ed as the walk descends). Three residuals, recorded rather than assumed away:
 
 - **Hardlinks.** A hardlink to `~/.ssh/id_rsa` inside the granted base is indistinguishable
-  from a regular file by `lstat`. `nlink > 1` is the only local signal, and it is POSIX-only
-  and noisy.
+  from a regular file by `lstat`. `nlink > 1` is the only local signal — see the D2
+  amendment below, which retires it on measurement.
 - **The root is never `lstat`ed.** `walkContentTree(input.root, input.root, …)` calls
   `readdirSync` on the root directly. A root that is itself a symlink is followed. Between
   grant time and capture time this is a TOCTOU escape.
@@ -123,9 +123,33 @@ is `lstat`ed as the walk descends). Three residuals, recorded rather than assume
   caught — but "should" is not evidence, and the ticket demands platform-capability tests on
   every advertised OS.
 
-**D2.** Lane A closes the root `lstat` gap and adds the junction proof. Hardlinks get an
-explicit `nlink` check on POSIX and a written residual for Windows — a partial mitigation
-declared as partial, not a claim of closure.
+**D2.** Lane A closes the root `lstat` gap and adds the junction proof.
+
+**D2 — AMENDED 2026-08-21, before implementation.** The original D2 said hardlinks would
+get "an explicit `nlink` check on POSIX". **Measurement retires that guard.** Sampling this
+repository's own `node_modules`:
+
+```
+files sampled: 4001
+nlink>1:  3678   (92%)      e.g. …/@adobe/css-tools/package.json  nlink=41
+nlink==1:  323
+```
+
+pnpm's content-addressable store hardlinks every package file into `node_modules`, on
+Windows as well as POSIX. An `nlink > 1` rejection would refuse **92% of the files in any
+pnpm project** — it would be switched off on first contact, and a guard that gets switched
+off is worse than none, because the residual then goes unrecorded.
+
+There is also no portable way to ask the useful question. The threat is a hardlink whose
+*other* name is outside the granted base, and POSIX offers no enumeration of the links to
+an inode. Linux's `protected_hardlinks` does not help either: it permits linking files you
+own, and the user owns `~/.ssh/id_rsa`.
+
+**So hardlinks are an UNCLOSED residual of DSK-002, by decision and with evidence.** The
+defence that actually works is the principal boundary — a capture that runs as a principal
+which cannot read `~/.ssh` in the first place — and that is DSK-003's least-privilege host,
+the same boundary clause (4) turns on in §7. Shipping a noisy `nlink` check would have
+bought the appearance of a mitigation and none of the substance.
 
 ---
 
@@ -258,6 +282,7 @@ carrying a real, exploitable gap.
 | # | Invariant | Lane | How it is proven |
 |---|---|---|---|
 | I1 | A capture outside the declared base fails closed | A | admission unit + a wired end-to-end case |
+| I4b | A hardlink escape is NOT closed; the residual is recorded, not silently dropped | A | D2 amendment + result-doc residual |
 | I2 | A symlink is rejected by the DEVICE walk, not by the server's declaration check | A | device-side test with a real symlink on disk |
 | I3 | A device that LIES about `kind` still cannot widen the base | A | server-side test feeding `kind:"file"` for an out-of-base path |
 | I4 | The capture root is `lstat`ed; a symlinked root fails closed | A | new test — currently RED |
