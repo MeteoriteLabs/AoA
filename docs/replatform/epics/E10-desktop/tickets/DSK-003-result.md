@@ -3,7 +3,7 @@
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
-**Tip:** `ab67a6bfb`
+**Tip:** `cd76988e3`
 **Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
 
 **This is a partial closure, and §6 says exactly which clause is not closed and why.**
@@ -28,8 +28,9 @@ not wired**.
 | `73f0a563a` | `GET /instance` — the live half of that defence | 5/5 |
 | `770224daf` | the control effect layer + the revoke-bypass guard | 8/8 |
 | `ab67a6bfb` | the composition root — the record's lifecycle | 7/7 |
+| `cd76988e3` | invocation routing — a control command never boots | 5/5 |
 
-**95 mutants, 95 killed.** Five of those only after the mutant exposed something wrong in
+**100 mutants, 100 killed.** Five of those only after the mutant exposed something wrong in
 my own work rather than in the code under test (§4).
 
 ---
@@ -84,7 +85,7 @@ Two consequences worth naming:
 
 ## 4. Where mutation earned its keep
 
-95/95 is the boring number. These are the ones that mattered:
+100/100 is the boring number. These are the ones that mattered:
 
 **Three surviving mutants were dead code, not missing tests**, and each was removed or
 documented rather than papered over with a contrived test:
@@ -185,10 +186,21 @@ source, and why the CI step runs the self-test only.
   lifecycle** are all built and mutation-tested — a bootstrapped host now publishes a
   record and serves the nonce that authorizes acting on it.
 
-  What remains is the desktop binary itself: routing a control subcommand and supplying
-  the four real effect implementations (`signal`, `readStatus`, `readLogTail`,
-  `destroyIdentity`). Every decision on the path is made and tested; **no command is yet
-  reachable from a command line.**
+  The binary's **invocation routing** is now built and tested too — including the property
+  that a control command never boots a second host, and that `--reset-identity` outranks a
+  control command in an ambiguous argv.
+
+  **What remains is precisely two things**, and neither is a decision:
+
+  1. `runDesktopHost` does not yet CALL `resolveDesktopInvocation`. The router exists and
+     is mutation-tested; the host still branches only on `--reset-identity`.
+  2. The four effect implementations are not supplied. Three are thin (`signal` is
+     `process.kill`, `destroyIdentity` is the existing store `clear()` pair, `readStatus`
+     is the record plus a probe). **`readLogTail` has no target**: the daemon logs to
+     stdout through pino and no log-file location is defined anywhere, so `logs` needs a
+     convention that does not exist yet rather than an implementation.
+
+  **No command is reachable from a command line.**
 - **No installer is produced.** Lane C ships the autostart manifests and the
   least-privilege assertions; it does not ship a `.pkg`, `.msi` or staging root. The
   admission verifier and the secret scan are therefore *ready for* an artifact rather than
