@@ -3,7 +3,7 @@
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
-**Tip:** `383548a22`
+**Tip:** `1bba6c86b`
 **Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
 
 **This is a partial closure, and §6 says exactly which clause is not closed and why.**
@@ -31,8 +31,9 @@ not wired**.
 | `cd76988e3` | invocation routing — a control command never boots | 5/5 |
 | `9f5e10e9f` | the macOS agent was discarding its own output | 8/8 |
 | `383548a22` | control-file locations, derived from the vault | 4/4 |
+| `1bba6c86b` | the host routes control commands | 5/5 |
 
-**112 mutants, 112 killed.** Five of those only after the mutant exposed something wrong in
+**117 mutants, 117 killed.** Five of those only after the mutant exposed something wrong in
 my own work rather than in the code under test (§4).
 
 ---
@@ -87,7 +88,7 @@ Two consequences worth naming:
 
 ## 4. Where mutation earned its keep
 
-112/112 is the boring number. These are the ones that mattered:
+117/117 is the boring number. These are the ones that mattered:
 
 **Three surviving mutants were dead code, not missing tests**, and each was removed or
 documented rather than papered over with a contrived test:
@@ -201,30 +202,16 @@ since launchd would create a file wherever it resolved a relative string.
 
 ## 6. What is NOT done
 
-- **Clause (4) is PARTIAL, and the gap is now exactly one mile long.** Parsing,
-  authorization, host discovery with the stale-pid defence, the effect layer (including
-  `revoke`'s ordering and acknowledgement guard), and the **record's boot/shutdown
-  lifecycle** are all built and mutation-tested — a bootstrapped host now publishes a
-  record and serves the nonce that authorizes acting on it.
+- **Clause (4) is REACHABLE.** A control invocation now routes, authorizes, resolves the
+  running host, acts, and returns — without bootstrapping. `revoke` destroys the same
+  pair in the same order as `--reset-identity`, and for the same recorded reason.
 
-  The binary's **invocation routing** is now built and tested too — including the property
-  that a control command never boots a second host, and that `--reset-identity` outranks a
-  control command in an ambiguous argv.
+  **What is still injected rather than implemented:** the host takes `signal`,
+  `resolveTarget`, `readStatus` and `readLogTail` as dependencies and no production
+  wiring supplies them yet. Each is thin and unambiguous except `readLogTail` on Windows,
+  which has no target at all (§5a). So the surface is complete and testable end-to-end
+  through injection, and one composition step short of usable from a terminal.
 
-  **What remains is precisely two things**, and neither is a decision:
-
-  1. `runDesktopHost` does not yet CALL `resolveDesktopInvocation`. The router exists and
-     is mutation-tested, and the control files now have resolved, vault-derived locations
-     — but the host still branches only on `--reset-identity`.
-  2. The four effect implementations are not supplied. `destroyIdentity` must clear the
-     RECEIPT before the IDENTITY when it is written, matching the ordering the existing
-     `--reset-identity` path is already tested for — two paths destroying the same pair
-     must not do it in two orders. Three are thin (`signal` is
-     `process.kill`, `destroyIdentity` is the existing store `clear()` pair, `readStatus`
-     is the record plus a probe). `readLogTail` now HAS a target on two of three
-     platforms — see §5a — and on Windows still does not.
-
-  **No command is reachable from a command line.**
 - **No installer is produced.** Lane C ships the autostart manifests and the
   least-privilege assertions; it does not ship a `.pkg`, `.msi` or staging root. The
   admission verifier and the secret scan are therefore *ready for* an artifact rather than
