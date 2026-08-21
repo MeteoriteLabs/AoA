@@ -92,3 +92,7 @@ export { resolveControlPaths, type ControlPaths } from "./control-paths.js";
 // DSK-003 Lane A — bring the control token into existence, never quietly replace it.
 export { provisionControlToken, CONTROL_TOKEN_PROVISION_REFUSALS } from "./control-token-provisioning.js";
 export type { ControlTokenIo, ControlTokenProvisionRefusal, ControlTokenProvisionResult } from "./control-token-provisioning.js";
+
+// DSK-003 Lane A — the production control effects.
+export { createDesktopControlEffects } from "./control-effects.js";
+export type { DesktopControlEffects, DesktopControlEffectDeps } from "./control-effects.js";
