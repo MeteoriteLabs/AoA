@@ -96,3 +96,7 @@ export type { ControlTokenIo, ControlTokenProvisionRefusal, ControlTokenProvisio
 // DSK-003 Lane A — the production control effects.
 export { createDesktopControlEffects } from "./control-effects.js";
 export type { DesktopControlEffects, DesktopControlEffectDeps } from "./control-effects.js";
+
+// DSK-004 Lane B — is this build one the server will still talk to?
+export { evaluateUpdateCompatibility, UPDATE_COMPATIBILITY_REJECTIONS } from "./update-compatibility.js";
+export type { UpdateCompatibilityInput, UpdateCompatibilityRejection, UpdateCompatibilityResult } from "./update-compatibility.js";
