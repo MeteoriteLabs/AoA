@@ -213,6 +213,12 @@ jobs:
       - name: Desktop installer admission (DSK-003)
         run: node --test scripts/lib/__tests__/installer-admission.test.mjs
 
+      # DSK-003 — the installer staging manifest. The property it exists for is that a
+      # STRAY file fails: "everything I declared is present" is not "nothing else is
+      # here", and only the second is worth anything for an artifact about to be signed.
+      - name: Desktop staging manifest (DSK-003)
+        run: node --test scripts/lib/__tests__/staging-manifest.test.mjs
+
       - name: Secret-resolve authorization vectors (DAT-004)
         run: |
           node scripts/check-secret-resolve-vectors.mjs
