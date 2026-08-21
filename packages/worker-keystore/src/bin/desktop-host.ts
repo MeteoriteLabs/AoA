@@ -44,7 +44,8 @@ import { decodeEnrollmentReceipt, encodeEnrollmentReceipt } from "../receipt-env
  * a ROUTING concern, and the router must test for this flag; two declarations of the
  * same flag are two things to keep in step, which is the drift argued against for the
  * acknowledgement flag. Re-exported so every existing importer is unaffected. */
-import { RESET_IDENTITY_FLAG } from "./desktop-invocation.js";
+import { RESET_IDENTITY_FLAG, resolveDesktopInvocation } from "./desktop-invocation.js";
+import { executeControlCommand, type ControlExecuteDeps } from "@armyofagents/worker-daemon";
 
 // Re-exported so every existing importer of this module is unaffected by the move.
 export { RESET_IDENTITY_FLAG };
@@ -69,6 +70,14 @@ export interface DesktopHostDeps {
   readonly createRunner?: () => CommandRunner;
   readonly bootstrap?: typeof bootstrapWorkerDaemon;
   readonly log?: (message: string) => void;
+  /**
+   * DSK-003 — the outward effects a control command needs, injected.
+   *
+   * `destroyIdentity` is deliberately NOT part of this: it is supplied by the host from
+   * the stores it already built, so the receipt-before-identity ordering has exactly one
+   * implementation rather than one per caller.
+   */
+  readonly control?: Omit<ControlExecuteDeps, "destroyIdentity">;
 }
 
 export async function runDesktopHost(deps: DesktopHostDeps): Promise<{ ok: boolean }> {
@@ -100,7 +109,44 @@ export async function runDesktopHost(deps: DesktopHostDeps): Promise<{ ok: boole
     codec: { encode: encodeEnrollmentReceipt, decode: decodeEnrollmentReceipt },
   });
 
-  // The ONLY `clear()` caller, behind an explicit, guarded subcommand.
+  const invocation = resolveDesktopInvocation(deps.argv);
+
+  // DSK-003 — a control command is handled HERE and returns. It must never fall through
+  // to bootstrap: `aoa-worker-desktop status` starting a worker as a side effect would
+  // give an operator checking on a running host a SECOND one.
+  if (invocation.kind === "control") {
+    if (!deps.control) {
+      log("desktop host: control commands are not available in this build");
+      deps.proc.exit(1);
+      return { ok: false };
+    }
+    const result = await executeControlCommand(
+      { command: invocation.command, token: invocation.token, argv: deps.argv },
+      {
+        ...deps.control,
+        // The receipt is cleared FIRST and the identity SECOND — the same order, and the
+        // same reason, as the reset branch below: dying between them must leave an
+        // identity with no receipt ("enrolled but unconfirmed", retryable) rather than a
+        // receipt with no identity, which nothing can recover.
+        destroyIdentity: async () => {
+          receiptStore.clear();
+          identityStore.clear();
+        },
+      },
+    );
+    if (!result.ok) {
+      log(`desktop host: ${result.message}`);
+      deps.proc.exit(1);
+      return { ok: false };
+    }
+    log(`desktop host: ${result.command} ok${
+      result.detail === undefined ? "" : ` ${JSON.stringify(result.detail)}`
+    }`);
+    return { ok: true };
+  }
+
+  // The ONLY `clear()` caller outside the control path, behind an explicit, guarded
+  // subcommand.
   if (deps.argv.includes(RESET_IDENTITY_FLAG)) {
     // Read what is about to be destroyed BEFORE destroying it. A warning that
     // cannot name the identity is a warning an operator clicks through.
