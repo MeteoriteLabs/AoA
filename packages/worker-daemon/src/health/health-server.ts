@@ -25,6 +25,20 @@ export function assertLoopbackHost(host: string): void {
 export interface HealthServerConfig {
   readonly host: string;
   readonly port: number;
+  /**
+   * DSK-003 — the per-boot instance nonce served at `GET /instance`.
+   *
+   * It exists for the stale-pid defence: `control/host-state.ts` will not hand a control
+   * command a pid to signal unless the LIVE host reports the same nonce the state record
+   * carries. Without it, a crashed host whose pid the OS recycled would be signalled in
+   * place of an unrelated process.
+   *
+   * Serving it here is deliberate and stays inside this surface's stated category — a
+   * random nonce identifies WHICH process is listening and nothing about it, so it is
+   * read-only liveness exactly like `/healthz`, not tenant data. OPTIONAL: with no nonce
+   * configured the route 404s and the server behaves exactly as before.
+   */
+  readonly instanceId?: string;
 }
 
 export interface HealthServerHandle {
@@ -45,6 +59,14 @@ export async function startHealthServer(
     if (req.method === "GET" && url === "/healthz") {
       res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
       res.end("ok\n");
+      return;
+    }
+    // DSK-003: the nonce echo the stale-pid defence probes. Gated on presence, so an
+    // unconfigured server keeps its exact prior surface. Nothing else is disclosed here —
+    // the endpoint is unauthenticated by design and must not grow into a status surface.
+    if (req.method === "GET" && url === "/instance" && config.instanceId !== undefined) {
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(`${JSON.stringify({ instanceId: config.instanceId })}\n`);
       return;
     }
     if (req.method === "GET" && url === "/metrics") {
