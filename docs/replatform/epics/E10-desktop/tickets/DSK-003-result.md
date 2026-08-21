@@ -3,7 +3,7 @@
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
-**Tip:** `770224daf`
+**Tip:** `ab67a6bfb`
 **Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
 
 **This is a partial closure, and §6 says exactly which clause is not closed and why.**
@@ -27,8 +27,9 @@ not wired**.
 | `401b1dc68` | host state record + the stale-pid defence | 10/10 |
 | `73f0a563a` | `GET /instance` — the live half of that defence | 5/5 |
 | `770224daf` | the control effect layer + the revoke-bypass guard | 8/8 |
+| `ab67a6bfb` | the composition root — the record's lifecycle | 7/7 |
 
-**88 mutants, 88 killed.** Five of those only after the mutant exposed something wrong in
+**95 mutants, 95 killed.** Five of those only after the mutant exposed something wrong in
 my own work rather than in the code under test (§4).
 
 ---
@@ -83,7 +84,7 @@ Two consequences worth naming:
 
 ## 4. Where mutation earned its keep
 
-88/88 is the boring number. These are the ones that mattered:
+95/95 is the boring number. These are the ones that mattered:
 
 **Three surviving mutants were dead code, not missing tests**, and each was removed or
 documented rather than papered over with a contrived test:
@@ -151,6 +152,14 @@ inert text and `xmlEscape` would be actively **wrong**, since systemd reads the 
 The systemd vector is a NEWLINE: it closes `ExecStart=` and opens a fresh directive, and
 `User=root` on that line is exactly the elevation the module prevents.
 
+**Three of my own assumptions were wrong, and running found them where reasoning did
+not.** The bootstrap requires an enrolment code in EVERY key-store mode, not only
+`os_keychain`. Config **rejects** health port 0 although the health server itself accepts
+it — two different validations of the same value. And `bin/worker-daemon.ts` is CRLF, so
+multi-line edit anchors fail silently against LF search strings. The port test is better
+for the second: it now uses two real ports, so the configured and bound values are
+genuinely distinguishable rather than both being zero.
+
 **H.D1 is superseded, not contradicted (D9).** `distribution.md` locks "Docker + NPM only.
 No desktop installer in Phase H." It is scoped to Phase H by its own heading;
 `decisions.md` carries no locked desktop-installer decision (checked, not assumed); and
@@ -170,13 +179,16 @@ source, and why the CI step runs the self-test only.
 
 ## 6. What is NOT done
 
-- **Clause (4) is PARTIAL, and the remaining gap is now purely the composition root.**
-  Parsing, authorization, host discovery with the stale-pid defence, and the effect layer
-  — including `revoke`'s ordering and its acknowledgement guard — are all built and
-  mutation-tested. What is missing is the WIRING: nothing writes the state record at boot,
-  supplies the real `signal`/`readStatus`/`readLogTail`/`destroyIdentity` implementations,
-  or exposes a subcommand on the binary. Every decision is made and tested; nothing is
-  reachable from a command line yet.
+- **Clause (4) is PARTIAL, and the gap is now exactly one mile long.** Parsing,
+  authorization, host discovery with the stale-pid defence, the effect layer (including
+  `revoke`'s ordering and acknowledgement guard), and the **record's boot/shutdown
+  lifecycle** are all built and mutation-tested — a bootstrapped host now publishes a
+  record and serves the nonce that authorizes acting on it.
+
+  What remains is the desktop binary itself: routing a control subcommand and supplying
+  the four real effect implementations (`signal`, `readStatus`, `readLogTail`,
+  `destroyIdentity`). Every decision on the path is made and tested; **no command is yet
+  reachable from a command line.**
 - **No installer is produced.** Lane C ships the autostart manifests and the
   least-privilege assertions; it does not ship a `.pkg`, `.msi` or staging root. The
   admission verifier and the secret scan are therefore *ready for* an artifact rather than
