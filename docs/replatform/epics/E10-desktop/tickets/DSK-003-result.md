@@ -3,7 +3,7 @@
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
-**Tip:** `a8f33e492`
+**Tip:** `7293d5a46`
 **Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
 
 **This is a partial closure, and §6 says exactly which clause is not closed and why.**
@@ -36,8 +36,9 @@ not wired**.
 | `f8435d65d` | the production control effects | 8/8 |
 | `fa3c45afc` | the last wiring line — real effects by default | 5/5 |
 | `a8f33e492` | the host opens its own log — the last design gap | 5/5 |
+| `7293d5a46` | the installer staging manifest | 8/8 |
 
-**143 mutants, 143 killed.** Five of those only after the mutant exposed something wrong in
+**151 mutants, 151 killed.** Five of those only after the mutant exposed something wrong in
 my own work rather than in the code under test (§4).
 
 ---
@@ -92,7 +93,7 @@ Two consequences worth naming:
 
 ## 4. Where mutation earned its keep
 
-143/143 is the boring number. These are the ones that mattered:
+151/151 is the boring number. These are the ones that mattered:
 
 **Three surviving mutants were dead code, not missing tests**, and each was removed or
 documented rather than papered over with a contrived test:
@@ -267,7 +268,15 @@ to the stream it asserts on.
   bound. That is a real operational limit, not a security one, and DSK-004 owns the
   update/repair lifecycle where it belongs.
 
-- **No installer is produced.** Lane C ships the autostart manifests and the
+- **The staging MANIFEST exists; the assembler does not.** `staging-manifest.mjs` defines
+  what an artifact IS — a declared file set with a digest binding version and platform,
+  where an **undeclared file is a failure** — and the secret scan and admission verifier
+  now have a shape to run against. What is still missing is the step that physically
+  assembles a root from the built packages and their runtime dependencies. That is
+  packaging work (Node runtime bundling, `.msi` wrapping), and it is the remaining half of
+  "signed installers".
+
+- **No installer PACKAGE is produced.** Lane C ships the autostart manifests and the
   least-privilege assertions; it does not ship a `.pkg`, `.msi` or staging root. The
   admission verifier and the secret scan are therefore *ready for* an artifact rather than
   applied to one — `check-embedded-secrets.mjs <dir>` is the entry point waiting for it.
