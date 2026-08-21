@@ -361,6 +361,8 @@ integration("DAT-005 fence-aware egress proxy", () => {
       app = createTenantAppDbConnection(adminUrl.replace("test:test", `aoa_app:${PASSWORD}`), { max: 16 });
       operator = createOperatorDbConnection(adminUrl.replace("test:test", `aoa_operator:${PASSWORD}`), { max: 8 });
       await admin`INSERT INTO organizations (id, name, slug) VALUES (${ORG}, 'DAT-005 org', 'dat-005-org')`;
+      await admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
+        VALUES (${COMPANY}, ${ORG}, 'DAT-005 company', 'D005')`;
       // DSK-001 Lane B (C-8). This suite seeded NO company_memberships, so the
       // owner-bound device_local handle below was refused `owner_membership_lost` at
       // AUTHORIZATION and never reached the egress-layer check the test is named for.
@@ -368,8 +370,6 @@ integration("DAT-005 fence-aware egress proxy", () => {
       // while proving nothing.
       await admin`INSERT INTO company_memberships (company_id, principal_type, principal_id, status)
         VALUES (${COMPANY}, 'worker', ${WORKER}, 'active')`;
-      await admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
-        VALUES (${COMPANY}, ${ORG}, 'DAT-005 company', 'D005')`;
       const provider = providerProfile();
       const profile = registeredProfile(provider);
       await admin`INSERT INTO execution_targets
