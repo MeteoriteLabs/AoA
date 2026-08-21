@@ -50,6 +50,10 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreezeFixture({
     companies: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
     company_memberships: { aoa_app: ["SELECT"], aoa_operator: [] },
     cost_events: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
+    // DSK-001 Lane B (D12/3): the fenced secret-resolve tx must read
+    // provider_credentials.state to admit ONLY a verified credential. Read-only, and
+    // the table holds no secret value -- "logical credential ownership only".
+    provider_credentials: { aoa_app: ["SELECT"], aoa_operator: [] },
     discussion_entries: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
     distributed_cutover_markers: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
     execution_target_revocations: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
@@ -188,6 +192,7 @@ const PLAN_DERIVED_RELATION_ACL_NULLNESS = deepFreezeFixture({
   companies: false,
   company_memberships: false,
   cost_events: false,
+  provider_credentials: false,
   discussion_entries: false,
   distributed_cutover_markers: false,
   execution_target_revocations: false,

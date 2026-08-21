@@ -36,6 +36,37 @@ import {
  */
 
 /** The non-owner (NOSUPERUSER, NOBYPASSRLS) serving role for the new-path tables. */
+/**
+ * Tables that entered `JOB_CONTROL_LEGACY_GRANTS` AFTER the 0213 / 0214 artifacts
+ * were applied.
+ *
+ * Applied migrations are IMMUTABLE, and `buildServingRoleCorrectionMigrationSql`
+ * (0213) and `buildServingRoleHardeningMigrationSql` (0214) RECONSTRUCT their bodies
+ * by walking the live grant map. So every later addition to that map must be excluded
+ * here, or it retroactively rewrites a migration that already ran. A byte-identity
+ * test catches it — which is exactly how this was found, and 0214 had no exclusion
+ * list at all until now.
+ *
+ * The grant for each of these ships in its own later migration instead. Named sets
+ * rather than a growing chain of `table === "..."` clauses, so the next addition has
+ * one obvious home and the reason travels with it.
+ */
+const GRANTED_AFTER_0213 = new Set([
+  // landed in 0214
+  "user_roles",
+  "company_memberships",
+  "notification_preferences",
+  "notification_digest_items",
+  "hub_counter_snapshots",
+  // landed in 0259 (DSK-001 Lane B)
+  "provider_credentials",
+]);
+
+const GRANTED_AFTER_0214 = new Set([
+  // landed in 0259 (DSK-001 Lane B)
+  "provider_credentials",
+]);
+
 export const TENANT_APP_ROLE = "aoa_app";
 
 /** Bounded non-owner role for null-Organization platform worker/target metadata. */
@@ -352,13 +383,7 @@ export function buildServingRoleCorrectionMigrationSql(): string {
   for (const [table, privileges] of Object.entries(JOB_CONTROL_LEGACY_GRANTS)) {
     // Preserve byte identity for the already-applied 0213 artifact. Its successor
     // 0214 consumes the current trace below; applied migrations are immutable.
-    if (
-      table === "user_roles" ||
-      table === "company_memberships" ||
-      table === "notification_preferences" ||
-      table === "notification_digest_items" ||
-      table === "hub_counter_snapshots"
-    ) continue;
+    if (GRANTED_AFTER_0213.has(table)) continue;
     const correctionPrivileges = table === "notifications"
       ? (["SELECT", "UPDATE"] as const)
       : privileges;
@@ -418,6 +443,9 @@ export function buildServingRoleHardeningMigrationSql(): string {
     statements.push(grantTablePrivilegesSql(TENANT_APP_ROLE, table, privileges));
   }
   for (const [table, privileges] of Object.entries(JOB_CONTROL_LEGACY_GRANTS)) {
+    // Same immutability rule, one artifact later: 0214 is applied, so its
+    // reconstruction must not grow when the live grant map does.
+    if (GRANTED_AFTER_0214.has(table)) continue;
     statements.push(grantTablePrivilegesSql(TENANT_APP_ROLE, table, privileges));
   }
   for (const [table, columns] of Object.entries(OPERATOR_METADATA_COLUMN_GRANTS)) {

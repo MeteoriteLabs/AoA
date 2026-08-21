@@ -187,24 +187,49 @@ This maximises what the cheapest, most-gated surface can prove. It also means th
 `device_local` admit vector (`refId: "provider-credential-1"`, not a UUID) flips to reject —
 which is why fixtures are reseeded in B5, one increment *before* the rule lands in B6.
 
-### D-B3 — the grant is **column-level**, no RLS policy (OQ-3)
+### D-B3 — the grant is **table-level**, no RLS policy (OQ-3)
+
+> **AMENDED 2026-08-21, during B4.** This decision originally said *column-level*,
+> reasoning from the `execution_targets` precedent. Reading the code while
+> implementing reversed it, on two pieces of evidence:
+>
+> 1. **`has_table_privilege` does not see a column grant.** I claimed it did. It does
+>    not — and `execution_targets` proves it: it carries column grants and its
+>    `PLAN_DERIVED_ACL_MATRIX` entry is `aoa_app: []`. Column privileges are checked by
+>    a *separate* `has_column_privilege` pass.
+> 2. **Column-level is more machinery, not less exposure.** It exists solely for
+>    `execution_targets` and carries a bespoke `APP_ENROLLMENT_TARGET_SELECT_COLUMNS`
+>    constant wired into two DDL emitters *and* the column-assertion pass. Inventing a
+>    second one for a read-only lookup on a table with no secret in it trades real
+>    complexity for no real containment.
 
 ```sql
 REVOKE ALL ON "provider_credentials" FROM PUBLIC;
-GRANT SELECT ("id", "company_id", "owner_user_id", "state") ON "provider_credentials" TO "aoa_app";
+GRANT SELECT ON "provider_credentials" TO "aoa_app";
 ```
 
-Column-level mirrors the tighter `execution_targets` precedent (`0221`) rather than the
-table-level `company_memberships` one (`0214`). Four columns — exactly what the gate reads.
+This mirrors `company_memberships` (`0214`), which is the same class of read: a legacy
+company-scoped authorization fact consulted inside the fence. Scoping is enforced by
+the query filtering on the **LOCKED lease's** `companyId`, never a wire value — exactly
+as the sibling membership re-check already does. No RLS policy, matching that
+precedent.
 
-**No RLS policy**, matching the established shape for legacy company-scoped tables the
-serving role reads: `company_memberships` has a plain grant and no policy, and scoping is
-enforced by the query filtering on the **LOCKED lease's** `companyId`, never a wire value.
+Verified rather than assumed: `provider_credentials` stores **no secret value** —
+"logical credential ownership only", with provider-native subscription files remaining
+in the owning execution target.
 
-Two facts make this proportionate, and both were verified: `provider_credentials` stores
-**no secret value** ("logical credential ownership only" — provider-native subscription
-files live in the owning execution target), and `has_table_privilege(...,'SELECT')` returns
-true for a column grant, so the manifest entry is a plain `["SELECT"]`.
+### D-B8 — a SEVENTH surface: the immutable-artifact reconstructions
+
+The terrain map counted five artifacts for the grant. There are **seven**. Two
+functions in `rls-tenant.ts` RECONSTRUCT the bodies of migrations 0213 and 0214 by
+walking the live grant map, and applied migrations are immutable — so adding one entry
+to `JOB_CONTROL_LEGACY_GRANTS` retroactively rewrote two migrations that already ran.
+
+A byte-identity test caught it immediately, which is the system working. Worth
+recording anyway: **0214's builder had no exclusion list at all**, so it was one
+addition away from this the whole time. Both are now gated on named sets
+(`GRANTED_AFTER_0213`, `GRANTED_AFTER_0214`) rather than a growing chain of
+`table === "..."` clauses, so the next addition has one obvious home.
 
 ### D-B4 — the owner triple includes the `execution_targets` leg (OQ-4)
 

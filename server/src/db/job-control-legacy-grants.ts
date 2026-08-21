@@ -44,6 +44,13 @@ export const JOB_CONTROL_LEGACY_GRANTS = Object.freeze({
   notifications: ["SELECT", "INSERT", "UPDATE"],
   user_roles: ["SELECT"],
   company_memberships: ["SELECT"],
+  // DSK-001 Lane B (D12/3). The fenced secret-resolve tx admits a device_local handle
+  // only when its provider_credentials row is state='verified' and the owner triple
+  // agrees. Read-only, and the table stores NO secret value -- "logical credential
+  // ownership only"; provider-native subscription files stay in the owning execution
+  // target. Table-level SELECT mirrors company_memberships, which is the same class of
+  // read: a legacy company-scoped authorization fact consulted inside the fence.
+  provider_credentials: ["SELECT"],
   notification_preferences: ["SELECT"],
   notification_digest_items: ["SELECT", "INSERT"],
   hub_counter_snapshots: ["SELECT", "UPDATE"],
@@ -485,6 +492,7 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreeze({
     companies: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
     company_memberships: { aoa_app: ["SELECT"], aoa_operator: [] },
     cost_events: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
+    provider_credentials: { aoa_app: ["SELECT"], aoa_operator: [] },
     discussion_entries: { aoa_app: ["SELECT", "UPDATE"], aoa_operator: [] },
     distributed_cutover_markers: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
     execution_target_revocations: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
@@ -614,6 +622,7 @@ const RELATION_ACL_NULLNESS_CERTIFICATE = deepFreeze({
   companies: false,
   company_memberships: false,
   cost_events: false,
+  provider_credentials: false,
   discussion_entries: false,
   distributed_cutover_markers: false,
   execution_target_revocations: false,
