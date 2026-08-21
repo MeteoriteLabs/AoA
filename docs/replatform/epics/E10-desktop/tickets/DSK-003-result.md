@@ -1,0 +1,178 @@
+# DSK-003 — result
+
+**Date:** 2026-08-21
+**Branch:** `docs/replatform-program` (PR #323)
+**Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
+**Tip:** `7ea62626c`
+**Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
+
+**This is a partial closure, and §6 says exactly which clause is not closed and why.**
+Clauses (1), (2) and (5) are met; clause (3) was already met by WRK-006/007; clause (4)'s
+authorization and command surface are built but **not wired to effects**.
+
+---
+
+## 1. What shipped
+
+| Commit | Increment | Mutants |
+|---|---|---|
+| `5155d2a60` | one owner-only custody rule; the untested half now tested | 8/8 |
+| `10ef8dd76` | the local control token (I1, I2) | 9/9 |
+| `358cc1764` | default-deny command authorization (I1) | 8/8 |
+| `cf0a1b708` | uninstall plan — explicit identity policy (I6, I7) | 8/8 |
+| `acd9ff97a` | embedded-secret scan + CI self-test (I10, I11) | 9/9 |
+| `951f0a113` | per-user unprivileged autostart + the H.D1 supersession (I8) | 12/12 |
+| `7ea62626c` | fail-closed installer admission (I9) | 11/11 |
+
+**65 mutants, 65 killed.** Five of those only after the mutant exposed something wrong in
+my own work rather than in the code under test (§4).
+
+---
+
+## 2. The finding that changed the ticket's shape
+
+**Signing was not the blocker, and the handoff's operator prerequisites were overstated.**
+I opened this ticket saying code-signing certificates and macOS hardware gated it. Reading
+the program says otherwise:
+
+- **REL-004 owns it** — "Pin, scan, sign, and attest control-plane, worker, sandbox, and
+  every enabled desktop installer/updater artifact."
+- **DEP-001 already ships the pattern** — `image-admission.mjs`, a pure fail-closed
+  `node:crypto` verifier on a **TEST** cosign key, whose own acceptance text says
+  "REL-004 later replaces test roots with release roots."
+
+So DSK-003 builds the artifact and its *verification*, on a test root, and reaches
+CI-green with no certificate. Certificates, notarization and macOS hardware gate
+**beta-gate evidence**, not this ticket's code. That distinction is worth keeping: it is
+the difference between a blocked ticket and a ticket with an evidence tail.
+
+---
+
+## 3. The central security decision
+
+`health-server.ts` binds loopback-only and has **no authentication of any kind** — correct
+for `GET /healthz` and payload-free counters, which is read-only liveness exposing no
+tenant data.
+
+Clause (4) also asks for `drain` and `revoke`. Serving those from the same surface would
+change the category: unauthenticated **mutating** control reachable by every local
+process. On a shared desktop, any local user — or anything the user runs — could revoke
+the worker's identity or drain its work. **Loopback is a network boundary, not an
+authorization boundary.**
+
+So the surface splits by mutation (D1), with the OS as the authority: the control token is
+a file only the installing user can read, which reduces "may this caller control the host"
+to a question the operating system already answers better than this process could.
+
+Two consequences worth naming:
+
+- **Authorization is default-deny.** `requiresControlToken` is "not in the read-only
+  allowlist", never "in the mutating list". A `pause` or `rotate` added later by someone
+  who never opens the file is gated automatically; a maintained list of mutating commands
+  fails open exactly once, silently, in the direction that matters.
+- **`revoke` is named for what it does.** A desktop cannot revoke its own server-side
+  target — that authority is the control plane's. It destroys the LOCAL identity and stops
+  work. A `revoke` that silently did half the job would read as a security control it is
+  not.
+
+---
+
+## 4. Where mutation earned its keep
+
+65/65 is the boring number. These are the ones that mattered:
+
+**Three surviving mutants were dead code, not missing tests**, and each was removed or
+documented rather than papered over with a contrived test:
+
+- a `& 0o777` pre-mask in the custody check that **cannot** affect any result, because
+  `0o077` already selects the low six bits — carried by both prior copies, and my own test
+  comment asserted it was load-bearing. It was not; the claim was wrong and is corrected.
+- a redundant `unreadable` arm in the token verifier — a file that cannot be stat'ed also
+  cannot be read, and both ended at `no_token_file`.
+- an equivalent policy spelling in the uninstall plan, where the preceding validation has
+  already narrowed the value to two options.
+
+**One surviving mutant exposed a real ordering bug**: the control token was being READ
+before its file permissions were validated. Reordered to custody-first, and the ordering
+is source-pinned because it is a principle, not an observable behaviour.
+
+**Two exposed gaps in my own tests**: a flag guard never exercised because the only flag
+case was `--token=` (consumed before the guard), and a documented allowlist rule — one bad
+entry rejects the whole list — that nothing tested.
+
+**One mutant was simply wrong**, not a coverage gap: it appended `arguments[3]` at a
+3-arg call site, which is `undefined` and dropped by `JSON.stringify`, so nothing leaked.
+
+### The guard that was born dead, again
+
+The autostart control-character check first shipped as a regex character class containing
+**raw control bytes** where the escape sequences were meant. It compiled, read correctly,
+and matched nothing. DSK-001 hit the identical failure with a backspace byte in place of a
+word boundary. It is now a `charCodeAt` scan — no escaping surface to get wrong — with the
+reason in the source so nobody "simplifies" it back.
+
+### Reusing a helper by name without reading it
+
+`installer-admission.mjs` first imported `normalizeAllowlist` from the image verifier. It
+**requires** a `sourceRevision` on every entry and returns only
+`{image, digest, sourceRevision}` — so installer entries' `version` and `platform` were
+rejected outright and, had they passed, silently dropped. An image-shaped helper wearing a
+generic name. Nine tests failed at once, which is the cheap way to find that out.
+`verifyDetachedSignature`, `normalizeTrustRoot` and `DIGEST_RE` **are** generic and are
+still reused.
+
+---
+
+## 5. Corrections and governance
+
+**Each format has a different injection vector, and conflating them hides one.** My first
+autostart test asserted the XML vector against systemd and failed — for the wrong reason,
+which exposed the right one. A unit file is INI-like, so `<RunLevel>` in a path there is
+inert text and `xmlEscape` would be actively **wrong**, since systemd reads the raw path.
+The systemd vector is a NEWLINE: it closes `ExecStart=` and opens a fresh directive, and
+`User=root` on that line is exactly the elevation the module prevents.
+
+**H.D1 is superseded, not contradicted (D9).** `distribution.md` locks "Docker + NPM only.
+No desktop installer in Phase H." It is scoped to Phase H by its own heading;
+`decisions.md` carries no locked desktop-installer decision (checked, not assumed); and
+`program-design.md` — which `accepted-caveats.md` names authoritative — schedules DSK-003
+and counts installed-desktop targets in foundation completion. `distribution.md` now
+records the supersession, what has *not* changed (Docker + npm remain the control-plane
+path; desktop stays off until its own beta gate; signing is REL-004's), and why. Leaving
+two committed documents disagreeing is how a future reader concludes the installer was
+built by mistake.
+
+**The secret scanner immediately proved its own design rationale.** Pointed at
+`packages/worker-daemon/src` it correctly reported three findings — all deliberate
+redaction-test fixtures. That is precisely why D7 says scan the packaged artifact and not
+source, and why the CI step runs the self-test only.
+
+---
+
+## 6. What is NOT done
+
+- **Clause (4) is PARTIAL.** The commands are parsed, authorized and specified, and
+  `drain`'s ordering is deliberately delegated (D10) rather than re-derived. They are
+  **not wired to effects**: `status` querying the health server, `logs` reading the log
+  file, and `drain`/`revoke` reaching the running host all need a host state/PID record
+  that does not exist yet. Nothing in this increment can be invoked end-to-end.
+- **No installer is produced.** Lane C ships the autostart manifests and the
+  least-privilege assertions; it does not ship a `.pkg`, `.msi` or staging root. The
+  admission verifier and the secret scan are therefore *ready for* an artifact rather than
+  applied to one — `check-embedded-secrets.mjs <dir>` is the entry point waiting for it.
+- **Repair and diagnostics** from the outcome sentence are not built.
+- **Operator evidence remains open**: production code-signing certificates (REL-004),
+  Apple notarization credentials, and macOS hardware for the advertised-OS matrix. None of
+  these blocks the code; all of them block the desktop beta gate.
+
+---
+
+## 7. Behaviour changes worth a release note
+
+1. **`MountedSecretKeyStore` and `MountedSecretKekStore` now refuse an unreadable file**
+   rather than letting a raw `fs` error escape a security check. Same outcome for the
+   caller, clearer failure.
+2. **The keystore package exports `install/autostart`** and the daemon exports the control
+   surface and custody helpers. Additive; no existing export changed.
+3. **`distribution.md` H.D1 now carries a supersession note.** No behaviour, but a reader
+   following that lock will now find the reason it no longer binds this program.
