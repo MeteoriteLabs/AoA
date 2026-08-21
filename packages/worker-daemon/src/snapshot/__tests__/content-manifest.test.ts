@@ -124,3 +124,64 @@ describe("buildWorkspaceManifest — content_manifest", () => {
     expect(a.manifestHash).not.toBe(b.manifestHash);
   });
 });
+
+describe("the .aoa keystore directory is NEVER captured, whatever the caller asked for", () => {
+  // AOA_BUILTIN_IGNORE_RULES exists, per its own comment, as "the overlay that keeps the
+  // `.aoa/` keystore dir out of a snapshot". It was applied on the GIT base only
+  // (`git-base.ts`). The content_manifest walk used `input.ignore.rules` — the CALLER's
+  // list — so a snapshot taken with an empty rule list walked `.aoa/` and captured
+  // whatever was in it.
+  //
+  // Two snapshot bases, one security-motivated builtin, applied to one of them. The
+  // builtin is not advice to callers; it is a floor.
+
+  it("omits .aoa/ even when the caller supplies NO ignore rules", async () => {
+    seedTree(dir);
+    mkdirSync(path.join(dir, ".aoa"), { recursive: true });
+    writeFileSync(path.join(dir, ".aoa", "device-identity.v1.bin"), "PRIVATE-KEY-BYTES");
+
+    const result = await buildWorkspaceManifest(baseInput(dir));
+    const paths = result.manifest.entries.map((e) => e.path);
+    expect(paths).not.toContain(".aoa/device-identity.v1.bin");
+    expect(JSON.stringify(result.manifest)).not.toContain("PRIVATE-KEY-BYTES");
+    // Non-vacuity: the rest of the tree IS captured, so this is not passing because the
+    // walk found nothing.
+    expect(paths).toContain("readme.md");
+  });
+
+  it("omits .git/ on the content base too — the same floor, both builtins", async () => {
+    seedTree(dir);
+    mkdirSync(path.join(dir, ".git"), { recursive: true });
+    writeFileSync(path.join(dir, ".git", "config"), "[core]\n");
+
+    const result = await buildWorkspaceManifest(baseInput(dir));
+    expect(result.manifest.entries.map((e) => e.path)).not.toContain(".git/config");
+  });
+
+  it("still honours the caller's own rules — the floor ADDS, it does not replace", async () => {
+    // If the builtin merge accidentally replaced the caller's list, this would capture
+    // secrets.txt and the fix would have traded one leak for another.
+    seedTree(dir);
+    writeFileSync(path.join(dir, "secrets.txt"), "caller asked to skip this");
+
+    const input = { ...baseInput(dir), ignore: { kind: "explicit" as const, rules: ["secrets.txt"] } };
+    const result = await buildWorkspaceManifest(input);
+    const paths = result.manifest.entries.map((e) => e.path);
+    expect(paths).not.toContain("secrets.txt");
+    expect(paths).toContain("readme.md");
+  });
+
+  it("attests what it APPLIED — the digest reflects the floor, not just the caller's list", async () => {
+    // The git-base convention, quoted: the builtins are "BOTH folded into the digest
+    // (attribution) AND independently APPLIED … makes the attested policy match what was
+    // applied". A digest over the caller's list alone would claim a weaker policy than
+    // the one enforced, which is the same class of dishonesty as the leak itself.
+    seedTree(dir);
+    const withRules = await buildWorkspaceManifest({
+      ...baseInput(dir), ignore: { kind: "explicit" as const, rules: [".aoa/", ".git/"] },
+    });
+    const withoutRules = await buildWorkspaceManifest(baseInput(dir));
+    expect(withoutRules.manifest.base.ignorePolicy.digest)
+      .toBe(withRules.manifest.base.ignorePolicy.digest);
+  });
+});

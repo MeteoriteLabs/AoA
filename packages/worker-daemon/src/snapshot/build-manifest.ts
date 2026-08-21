@@ -41,6 +41,7 @@ import {
   computeExplicitIgnoreDigest,
   computeGitignoreDigest,
   isIgnoredByExplicit,
+  resolveEffectiveExplicitRules,
   type GitignoreSource,
   type IgnorePolicyInput,
 } from "./ignore.js";
@@ -273,7 +274,11 @@ export async function buildWorkspaceManifest(
     if (input.ignore.kind !== "explicit") {
       throw new WorkspaceSnapshotError("content_manifest base requires an explicit ignore policy");
     }
-    const rules = input.ignore.rules;
+    // The pinned built-ins go UNDERNEATH the caller's rules, and the SAME resolved
+    // value feeds the walk below and the digest further down. A caller passing an
+    // empty list is not asking to snapshot the `.aoa/` keystore; before this, one
+    // did exactly that.
+    const rules = resolveEffectiveExplicitRules(input.ignore.rules);
     const budget: SnapshotBudget = { totalBytes: 0, entryCount: 0 };
     const collected: SnapshotEntry[] = [];
     walkContentTree(input.root, input.root, rules, limits, input.sha256, budget, collected);

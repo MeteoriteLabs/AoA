@@ -20,9 +20,11 @@ import { captureGitBase } from "../git-base.js";
 import { WorkspaceSnapshotError } from "../errors.js";
 import type { GitRunner } from "../git-runner.js";
 import {
+  AOA_BUILTIN_IGNORE_RULES,
   classifyExplicitRule,
   computeExplicitIgnoreDigest,
   isIgnoredByExplicit,
+  resolveEffectiveExplicitRules,
 } from "../ignore.js";
 import { DEFAULT_SNAPSHOT_LIMITS } from "../limits.js";
 
@@ -77,6 +79,45 @@ describe("explicit ignore matcher", () => {
     expect(computeExplicitIgnoreDigest(["a", "b"], sha256)).toBe(computeExplicitIgnoreDigest(["a", "b"], sha256));
     expect(computeExplicitIgnoreDigest(["a", "b"], sha256)).not.toBe(computeExplicitIgnoreDigest(["b", "a"], sha256));
     expect(computeExplicitIgnoreDigest([], sha256)).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  // The EXPORTED digest contract, tested at the function rather than through
+  // buildWorkspaceManifest. Mutation is why this exists: a mutant that digested the
+  // raw argument SURVIVED, because the build path already hands in a resolved list —
+  // so the internal resolve is load-bearing only for the package's other consumers,
+  // and that is precisely the caller with no coverage. An external consumer computing
+  // an expected digest from a raw rule list must land on the value the daemon
+  // actually emits, or the attestation cannot be checked from outside.
+  it("digests the EFFECTIVE policy, so a raw rule list and a resolved one agree", () => {
+    expect(computeExplicitIgnoreDigest([], sha256))
+      .toBe(computeExplicitIgnoreDigest([".git/", ".aoa/"], sha256));
+    expect(computeExplicitIgnoreDigest(["build/"], sha256))
+      .toBe(computeExplicitIgnoreDigest([".git/", ".aoa/", "build/"], sha256));
+  });
+
+  it("resolves to the built-ins underneath the caller's rules, deduplicated", () => {
+    expect(resolveEffectiveExplicitRules([])).toEqual([...AOA_BUILTIN_IGNORE_RULES]);
+    expect(resolveEffectiveExplicitRules(["build/"])).toEqual([...AOA_BUILTIN_IGNORE_RULES, "build/"]);
+    // Restating a built-in must not duplicate it, whatever order it is given in.
+    expect(resolveEffectiveExplicitRules([".aoa/", "build/", ".git/"]))
+      .toEqual([...AOA_BUILTIN_IGNORE_RULES, "build/"]);
+  });
+
+  it("is idempotent — which is what makes the internal resolve safe to apply blindly", () => {
+    for (const input of [[], ["build/"], [".aoa/"], [".git/", ".aoa/", "x.txt"]]) {
+      const once = resolveEffectiveExplicitRules(input);
+      expect(resolveEffectiveExplicitRules(once)).toEqual([...once]);
+      expect(computeExplicitIgnoreDigest(once, sha256)).toBe(computeExplicitIgnoreDigest(input, sha256));
+    }
+  });
+
+  it("still distinguishes policies that genuinely differ", () => {
+    // Non-vacuity: if resolve collapsed everything to the built-ins, every assertion
+    // above would pass while the digest stopped meaning anything.
+    expect(computeExplicitIgnoreDigest(["build/"], sha256))
+      .not.toBe(computeExplicitIgnoreDigest(["dist/"], sha256));
+    expect(computeExplicitIgnoreDigest([], sha256))
+      .not.toBe(computeExplicitIgnoreDigest(["build/"], sha256));
   });
 });
 

@@ -490,6 +490,7 @@ export {
   classifyExplicitRule,
   isIgnoredByExplicit,
   computeExplicitIgnoreDigest,
+  resolveEffectiveExplicitRules,
   computeGitignoreDigest,
   createGitRunner,
   GitRunnerError,

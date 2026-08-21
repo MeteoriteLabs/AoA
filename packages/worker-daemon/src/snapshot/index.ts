@@ -36,6 +36,7 @@ export {
   classifyExplicitRule,
   isIgnoredByExplicit,
   computeExplicitIgnoreDigest,
+  resolveEffectiveExplicitRules,
   computeGitignoreDigest,
 } from "./ignore.js";
 export type { IgnorePolicyInput, GitignoreSource } from "./ignore.js";

@@ -24,14 +24,22 @@ export type IgnorePolicyInput =
   | { readonly kind: "explicit"; readonly rules: readonly string[] };
 
 /**
- * The PINNED AOA built-in ignore rule set for a `gitignore_plus_aoa` base. It is
- * BOTH folded into the digest (attribution) AND independently APPLIED during git
- * enumeration (`captureGitBase` drops matching paths — see Finding B): git's own
- * `--exclude-standard` covers `.gitignore` only, so these rules are the overlay
- * that keeps the `.aoa/` keystore dir out of a snapshot and makes the attested
- * policy match what was applied. `.git/` is a no-op (git never lists it) kept for
- * an explicit, versioned marker. Changing this constant changes every
- * `gitignore_plus_aoa` digest and its frozen vectors.
+ * The PINNED AOA built-in ignore rule set. It is BOTH folded into the digest
+ * (attribution) AND independently APPLIED during enumeration: these rules are the
+ * overlay that keeps the `.aoa/` keystore dir out of a snapshot and makes the
+ * attested policy match what was applied.
+ *
+ * IT APPLIES TO BOTH BASES. On `gitignore_plus_aoa`, git's `--exclude-standard`
+ * covers `.gitignore` only, so `captureGitBase` drops matching paths (Finding B).
+ * On `content_manifest` the rules arrive from the CALLER, and a caller who passes
+ * an empty list is not thereby asking to snapshot the keystore — so
+ * `resolveEffectiveExplicitRules` puts this set underneath every explicit policy.
+ * That asymmetry was a live key-material leak: `build-manifest.ts` walked
+ * `input.ignore.rules` directly, so `rules: []` captured `.aoa/` byte-for-byte.
+ *
+ * `.git/` is a no-op on the git base (git never lists it) kept for an explicit,
+ * versioned marker; on the content base it does real work. Changing this constant
+ * changes every ignore digest of both kinds and their frozen vectors.
  */
 export const AOA_BUILTIN_IGNORE_RULES: readonly string[] = [".git/", ".aoa/"];
 
@@ -76,9 +84,35 @@ export function isIgnoredByExplicit(relPath: string, rules: readonly string[]): 
   return false;
 }
 
-/** Compute the `explicit` ignore-policy digest (order-preserving over rules). */
+/**
+ * The rule list an `explicit` policy ACTUALLY enforces: the pinned AOA built-ins
+ * underneath the caller's own rules, in the caller's order.
+ *
+ * ONE resolved value feeds BOTH the walk and the digest, which is the invariant
+ * that matters — `git-base.ts` states it as "makes the attested policy match what
+ * was applied", and the content base broke it by deriving the digest from one list
+ * and walking another.
+ *
+ * A caller who redundantly restates a built-in is deduplicated rather than given a
+ * forked digest, so the digest is a function of the effective POLICY and not of how
+ * it was spelled. That also makes this IDEMPOTENT — `resolve(resolve(x))` equals
+ * `resolve(x)` — which is what lets `computeExplicitIgnoreDigest` call it
+ * unconditionally without double-prepending for callers who pass a resolved list.
+ */
+export function resolveEffectiveExplicitRules(rules: readonly string[]): readonly string[] {
+  const builtins = new Set(AOA_BUILTIN_IGNORE_RULES);
+  return [...AOA_BUILTIN_IGNORE_RULES, ...rules.filter((rule) => !builtins.has(rule))];
+}
+
+/**
+ * Compute the `explicit` ignore-policy digest (order-preserving over rules).
+ *
+ * Digests the EFFECTIVE rules, never the caller's raw list: a digest over the raw
+ * list would attest a weaker policy than the one enforced, which is the same class
+ * of dishonesty as the leak it guards against.
+ */
 export function computeExplicitIgnoreDigest(rules: readonly string[], sha256: Sha256Fn): string {
-  return sha256(canonicalizeJsonV1({ kind: "explicit", rules: [...rules] }));
+  return sha256(canonicalizeJsonV1({ kind: "explicit", rules: [...resolveEffectiveExplicitRules(rules)] }));
 }
 
 /**
