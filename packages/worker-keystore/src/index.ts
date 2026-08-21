@@ -85,3 +85,6 @@ export type {
 // DSK-003 Lane A — what an invocation of the desktop binary means.
 export { resolveDesktopInvocation } from "./bin/desktop-invocation.js";
 export type { DesktopInvocation } from "./bin/desktop-invocation.js";
+
+// DSK-003 Lane A — where the control token and host state record live.
+export { resolveControlPaths, type ControlPaths } from "./control-paths.js";
