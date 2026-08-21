@@ -57,6 +57,13 @@ export interface BootstrapDeps {
   readonly proc: ProcessLike;
   readonly createLogger?: typeof createWorkerLogger;
   /**
+   * DSK-003 — write the host's log to this file instead of stdout.
+   *
+   * A desktop background host has nowhere for stdout to go. OPTIONAL and absent by
+   * default, so every container keeps logging to stdout exactly as before.
+   */
+  readonly logFilePath?: string;
+  /**
    * DSK-003 — publish the host state record once the health socket is listening.
    *
    * OPTIONAL, and absent by default. Every deployed compose file bootstraps without a
@@ -152,7 +159,7 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   const makeMetrics = deps.createMetricsFn ?? createMetrics;
   const startHealth = deps.startHealth ?? startHealthServer;
 
-  const logger = makeLogger();
+  const logger = makeLogger({ filePath: deps.logFilePath });
 
   // Fail-closed on invalid config: exit non-zero BEFORE any socket is opened
   // (no health server, no signal handlers).

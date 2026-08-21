@@ -53,6 +53,7 @@ import {
   verifyControlToken,
   type ControlExecuteDeps,
 } from "@armyofagents/worker-daemon";
+import { readFileSync } from "node:fs";
 import { resolveControlPaths } from "../control-paths.js";
 import { createDesktopControlEffects } from "../control-effects.js";
 
@@ -248,11 +249,14 @@ export async function runDesktopHost(deps: DesktopHostDeps): Promise<{ ok: boole
   // `targetId` and `deviceGeneration`. The compiler had been reporting exactly
   // that and the cast silenced it. Keeping this call uncast makes the
   // type-checker the standing guard against the two shapes diverging again.
+  // DSK-003 — the background host writes to its own file. Task Scheduler has no native
+  // redirection, so without this every line on the only supported platform went nowhere.
   const result: BootstrapResult = await bootstrap({
     env: deps.env,
     proc: deps.proc,
     identityStore,
     receiptStore,
+    logFilePath: resolveControlPaths(deps.env, deps.platform).logPath,
   });
 
   return { ok: result.ok };
@@ -276,10 +280,10 @@ function buildRealControlDeps(
     kill: (pid, signal) => { process.kill(pid, signal as NodeJS.Signals); },
     fetchInstance: async (url) => (await fetch(url)).json() as Promise<{ instanceId?: string }>,
     readHostStateAt: () => readHostState(paths.statePath) as never,
-    // No log file on the only platform the vault supports: Task Scheduler cannot
-    // redirect and the host does not yet open its own. Left ABSENT rather than pointed
-    // at a path nothing writes, so `logs` says so instead of reporting an empty file.
-    readLogFile: undefined,
+    // The host opens this file itself, so `logs` now has a real target. `readFileSync`
+    // throws when it does not exist yet, which `readLogTail` reports as "could not read"
+    // rather than as an empty log — a distinction that matters on a first run.
+    readLogFile: () => readFileSync(paths.logPath, "utf8"),
   });
   return {
     authorize: (command, token) =>

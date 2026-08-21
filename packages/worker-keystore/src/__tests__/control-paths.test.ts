@@ -32,6 +32,21 @@ describe("DSK-003 — the control files sit beside the vault", () => {
     expect(statePath.startsWith(`${vaultDir}\\`), statePath).toBe(true);
   });
 
+  it("resolves a log path beside the other two", () => {
+    // The host opens this itself, because Task Scheduler cannot redirect. It lives with
+    // the vault for the same reason the others do: one AoA directory, one set of
+    // refusals — not `%APPDATA%`, not `Library/Logs`, not the cwd.
+    const { logPath, statePath } = resolveControlPaths(ENV, "win32");
+    const dir = (p: string) => p.split("\\").slice(0, -1).join("\\");
+    expect(dir(logPath)).toBe(dir(statePath));
+    expect(logPath).toMatch(/host\.v1\.log$/);
+  });
+
+  it("gives the three files distinct, versioned names", () => {
+    const { tokenPath, statePath, logPath } = resolveControlPaths(ENV, "win32");
+    expect(new Set([tokenPath, statePath, logPath]).size).toBe(3);
+  });
+
   it("gives the two files distinct, versioned names", () => {
     // A version in the filename makes a format change a deliberate migration rather
     // than a silent misparse, matching the vault's own convention.

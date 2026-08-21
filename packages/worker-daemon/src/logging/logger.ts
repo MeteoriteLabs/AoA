@@ -25,6 +25,26 @@ export interface WorkerLoggerOptions {
   /** Injectable destination for tests; defaults to stdout. */
   readonly destination?: pino.DestinationStream;
   readonly base?: Record<string, unknown>;
+  /**
+   * DSK-003 — write to this file instead of stdout.
+   *
+   * A desktop background host has nowhere for stdout to go: Task Scheduler has no native
+   * redirection, so on Windows every line went to nothing and `logs` had nothing to read.
+   * The alternative was wrapping the launch in `cmd /c "... >> file"`, which puts a SHELL
+   * on the launch path of the process holding the device identity, and adds cmd quoting
+   * as a second escaping grammar beside the XML one. Opening the file in-process needs no
+   * shell.
+   *
+   * APPEND, never truncate — a restart must not erase the log explaining why the last run
+   * stopped. `mkdir` because the vault directory may not exist on a first run, and a
+   * logger that threw there would take the host down before it could report why. `0600`
+   * because the redactor removes sensitive VALUES but the log still discloses which jobs
+   * ran and when, on a machine whose whole control model is "can this caller read that
+   * file".
+   *
+   * Ignored when `destination` is supplied — an explicit stream wins.
+   */
+  readonly filePath?: string;
 }
 
 /**
@@ -86,7 +106,10 @@ export function createWorkerLogger(opts: WorkerLoggerOptions = {}): Logger {
       base: opts.base,
       serializers: { err: pino.stdSerializers.err },
     },
-    opts.destination ?? pino.destination(1),
+    opts.destination ??
+      (opts.filePath === undefined
+        ? pino.destination(1)
+        : pino.destination({ dest: opts.filePath, mkdir: true, append: true, mode: 0o600 })),
   );
 
   const logger: Logger = {

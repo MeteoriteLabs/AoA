@@ -26,12 +26,22 @@ import { resolveVaultRefs } from "./blob-path.js";
 /** Fixed, versioned filenames. A version bump is a deliberate migration. */
 const CONTROL_TOKEN_FILE = "control-token.v1.txt";
 const HOST_STATE_FILE = "host-state.v1.json";
+const HOST_LOG_FILE = "host.v1.log";
 
 export interface ControlPaths {
   /** The 0600-equivalent file whose readability authorizes a mutating command. */
   readonly tokenPath: string;
   /** The record naming the running host's pid, port and per-boot instance nonce. */
   readonly statePath: string;
+  /**
+   * Where the background host writes its own output.
+   *
+   * Beside the vault rather than under `Library/Logs` or `%APPDATA%`, for the same reason
+   * the other two are: one AoA directory, one set of refusals. Task Scheduler cannot
+   * redirect, so the host opens this file itself (`createWorkerLogger({ filePath })`) —
+   * no shell on the launch path of the process holding the device identity.
+   */
+  readonly logPath: string;
 }
 
 /**
@@ -52,5 +62,6 @@ export function resolveControlPaths(
   return {
     tokenPath: `${dir}\\${CONTROL_TOKEN_FILE}`,
     statePath: `${dir}\\${HOST_STATE_FILE}`,
+    logPath: `${dir}\\${HOST_LOG_FILE}`,
   };
 }
