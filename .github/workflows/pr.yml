@@ -206,6 +206,13 @@ jobs:
       - name: Embedded-secret scan self-test (DSK-003)
         run: node --test scripts/lib/__tests__/embedded-secret-scan.test.mjs
 
+      # DSK-003 Lane D, I9 — packaging/signature tamper. Signed with a TEST trust root,
+      # exactly as DEP-001's image verifier is; REL-004 replaces test roots with release
+      # roots and this logic does not change. That is why DSK-003 needs no certificate to
+      # reach green: the certificate gates beta-gate EVIDENCE, not this code.
+      - name: Desktop installer admission (DSK-003)
+        run: node --test scripts/lib/__tests__/installer-admission.test.mjs
+
       - name: Secret-resolve authorization vectors (DAT-004)
         run: |
           node scripts/check-secret-resolve-vectors.mjs
