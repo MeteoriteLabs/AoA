@@ -132,6 +132,26 @@ export function executionTargetRoutes(opts: {
       const orgId = uuidParam.parse(req.params.orgId);
       await assertOrgAdmin(req, orgId);
       const input = req.body as CreateExecutionTargetInput;
+      // DSK-00 (D16/F27). This router is mounted OUTSIDE the distributed-execution flag
+      // block in app.ts, so without this guard an org admin could register an ACTIVE
+      // `desktop` target on a deployment where desktop does not exist — and a run pinned
+      // to it used to execute on the CONTROL-PLANE host (F28, fixed separately).
+      //
+      // `opts.workerSession` is already exactly the flag: app.ts derives it as
+      // `distributedExecutionEnabled && tenantAppDb && operatorDb && signingKey`, so
+      // truthy means distributed execution is genuinely usable. No new plumbing.
+      //
+      // 403 rather than 400, matching the two existing refusals in this file (":265",
+      // ":293"): a disabled capability is "you may not", not "your input is malformed".
+      //
+      // Rejecting at CREATE, never by filtering GET — D16 rejects filtering because it
+      // hides an already-enabled row instead of neutralising it, which is strictly worse
+      // for incident review.
+      if (input.kind === "desktop" && !opts.workerSession) {
+        throw forbidden(
+          "Desktop execution targets require distributed execution to be enabled.",
+        );
+      }
       // Mint a rotatable worker credential: persist only its hash, return the
       // plaintext ONCE. The row id is no longer a credential (Finding #3).
       const workerToken = createWorkerToken();
