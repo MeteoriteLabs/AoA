@@ -69,3 +69,15 @@ export {
 // The entry guard's redactor. Exported so a packaging host (DSK-003) reuses it
 // rather than reinventing the one path that bypasses the logger.
 export { redactEnrollmentCodes } from "./bin/aoa-worker-desktop.js";
+
+// DSK-003 Lane C — per-user, unprivileged autostart manifests.
+export {
+  AUTOSTART_PLATFORMS,
+  AutostartManifestError,
+  buildAutostartManifest,
+} from "./install/autostart.js";
+export type {
+  AutostartManifest,
+  AutostartManifestInput,
+  AutostartPlatform,
+} from "./install/autostart.js";
