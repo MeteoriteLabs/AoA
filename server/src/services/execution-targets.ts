@@ -16,6 +16,7 @@ import {
 } from "@armyofagents/worker-protocol";
 import { runInTenant } from "../db/tenant-context.js";
 import { normalizePlacementRegistryTarget, type ExecutionTargetRow } from "./execution-target-resolver.js";
+import { projectDesktopDevice } from "./desktop-device-projection.js";
 
 // Rotatable worker credential (Finding #3). The row id is NOT a credential;
 // this token is. Only its hash is persisted (execution_targets.worker_token_hash);
@@ -499,6 +500,59 @@ export async function registerWorkerHeartbeat(
  * resolveExecutionTargetForRun) reads system rows SEPARATELY and never exposes
  * their ids to a caller, so routing to the shared pool is unaffected.
  */
+/**
+ * DSK-001 Lane D (D17) — the org's enrolled desktop devices, redacted.
+ *
+ * Built from the org's OWN targets outward: the WHERE clause pins
+ * `execution_targets.organization_id` first, and `workers` is reached only through that
+ * join. D17 calls that construction safe where a generic worker join is not, and F31 is
+ * why — the redacted `WorkerSummary` allowlist had to drop `executionTargetId`, so a
+ * worker-first query has no safe way back to the owning org.
+ *
+ * DEVIATION FROM D17, recorded rather than taken quietly: the design says "inside
+ * `runInTenant`". That is NOT implementable as written. `runInTenant` opens as the
+ * non-owner `aoa_app` role, whose grant on `execution_targets` is COLUMN-level and covers
+ * only id / organization_id / owner_user_id / scope / target_authority_key / status /
+ * device_generation / capabilities (`APP_ENROLLMENT_TARGET_SELECT_COLUMNS`). Neither
+ * `kind` nor `slug` is readable there — so the `kind = 'desktop'` filter the design
+ * specifies could not run, and `targetSlug` could not be emitted.
+ *
+ * This uses the owner pool with SQL scoping, exactly like `listExecutionTargets` below,
+ * whose own comment defends the pattern: "the no-system/cross-org guarantee is the WHERE
+ * clause, not a JS post-filter". Every sibling route in this router already reads that
+ * way, so introducing a second access pattern for one listing would be the inconsistency,
+ * not the safety.
+ *
+ * If RLS defence-in-depth is wanted later, the shape is to add `slug` and `kind` to
+ * `APP_ENROLLMENT_TARGET_SELECT_COLUMNS` — both are non-sensitive — and move the query.
+ * That is a security-manifest change with its own surfaces, so it is a deliberate
+ * follow-up rather than something to slip into a listing.
+ */
+export async function listDesktopDevices(db: Db, organizationId: string | null) {
+  // A null org sees nothing, and must not even scan — same rule as the sibling below.
+  if (organizationId == null) return [];
+  const rows = await db
+    .select({
+      deviceId: workers.id,
+      targetSlug: executionTargets.slug,
+      label: workers.label,
+      status: workers.status,
+      deviceGeneration: workers.deviceGeneration,
+      enrolledAt: workers.enrolledAt,
+      lastSeenAt: workers.lastSeenAt,
+    })
+    .from(executionTargets)
+    .innerJoin(workers, eq(workers.executionTargetId, executionTargets.id))
+    .where(and(
+      eq(executionTargets.organizationId, organizationId),
+      eq(executionTargets.kind, "desktop"),
+    ));
+  // The projection is applied even though the SELECT is already narrow. The select list
+  // is an implementation detail a future edit can widen; `projectDesktopDevice` is the
+  // allowlist, and routing every row through it is what makes the canary test meaningful.
+  return rows.map((row) => projectDesktopDevice(row as never));
+}
+
 export async function listExecutionTargets(db: Db, organizationId: string | null) {
   // organizationId is required to see any target; a null org sees nothing — and
   // must not even scan the table (system rows must never surface to a tenant admin;

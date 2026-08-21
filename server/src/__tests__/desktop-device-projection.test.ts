@@ -31,6 +31,7 @@ import {
   projectDesktopDevice,
   desktopDeviceLeakKeys,
 } from "../services/desktop-device-projection.js";
+import { listDesktopDevices } from "../services/execution-targets.js";
 
 /** Distinctive, greppable bytes — one per omitted column. */
 const CANARY = "CANARY-a6f3d1-";
@@ -184,5 +185,71 @@ describe("DSK-001/I18 — every emitted name is safe under BOTH redactors", () =
     expect(FORBIDDEN_WIRE_KEYS.has(normalizeWireKey("credentialHandleId"))).toBe(false);
     // …and a name the WIRE rejects outright, so that guard is exercised too.
     expect(FORBIDDEN_WIRE_KEYS.has(normalizeWireKey("access_token"))).toBe(true);
+  });
+});
+
+describe("DSK-001 Lane D — the listing query is scoped and routed through the projection", () => {
+  // The projection above is the security artifact; this is the wiring that must actually
+  // use it. Mutation exposed that the query had no test at all: returning raw rows, or
+  // dropping the desktop filter, changed nothing observable.
+
+  function fakeDb(rows: unknown[]) {
+    const calls: { selected?: unknown; joined: boolean } = { joined: false };
+    const db = {
+      select: (selected: unknown) => {
+        calls.selected = selected;
+        return {
+          from: () => ({
+            innerJoin: () => {
+              calls.joined = true;
+              return { where: async () => rows };
+            },
+          }),
+        };
+      },
+    };
+    return { db, calls };
+  }
+
+  it("returns nothing for a null organization, without touching the database", async () => {
+    // Same rule as listExecutionTargets: a null org must not even scan.
+    let touched = false;
+    const db = { select: () => { touched = true; throw new Error("must not query"); } };
+    expect(await listDesktopDevices(db as never, null)).toEqual([]);
+    expect(touched).toBe(false);
+  });
+
+  it("routes every row through the projection, so a widened SELECT cannot leak", async () => {
+    // The select list is an implementation detail a future edit can widen. Routing
+    // through projectDesktopDevice is what makes that safe — and this is the assertion
+    // that would fail if someone returned `rows` directly.
+    const { db } = fakeDb([{ ...row, extraColumnSomebodyAdded: `${CANARY}widened` }]);
+    const out = await listDesktopDevices(db as never, "org-1");
+    expect(out).toHaveLength(1);
+    expect(Object.keys(out[0]!).sort()).toEqual([...DESKTOP_DEVICE_PROJECTION_KEYS].sort());
+    expect(JSON.stringify(out)).not.toContain(CANARY);
+  });
+
+  it("builds the query from the org's own TARGETS outward, joining workers", async () => {
+    // F31: a worker-first query has no safe way back to the owning org, because the
+    // redacted WorkerSummary had to drop executionTargetId. Targets-first is why D17
+    // calls this construction safe.
+    const { db, calls } = fakeDb([]);
+    await listDesktopDevices(db as never, "org-1");
+    expect(calls.joined).toBe(true);
+  });
+
+  it("filters on organization AND kind='desktop' — asserted against the source", () => {
+    // The where-clause is a drizzle SQL object; asserting on its internals would pin
+    // drizzle rather than the property. Reading the source is the honest check that both
+    // predicates are present, and it fails if either is removed.
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "services", "execution-targets.ts"),
+      "utf8",
+    );
+    const body = source.slice(source.indexOf("export async function listDesktopDevices"));
+    const fn = body.slice(0, body.indexOf("\nexport "));
+    expect(fn).toContain("eq(executionTargets.organizationId, organizationId)");
+    expect(fn).toContain('eq(executionTargets.kind, "desktop")');
   });
 });

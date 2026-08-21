@@ -52,11 +52,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /**
  * Read a source file with line endings normalised.
  *
- * These files are CRLF. A structural scan written with bare `
-` matches nothing and
- * reports it as "the mount is not there" — a false NEGATIVE that would have made the
+ * These files are CRLF. A structural scan written against bare LF matches nothing, and
+ * reports that as "the mount is not there" — a false NEGATIVE that would have made the
  * clause-2 assertion look satisfied for the worst possible reason. Normalise once.
  */
+/** The two-space `}` that closes the flag block in app.ts. */
+const BLOCK_CLOSE = ["", "  }", ""].join(String.fromCharCode(10));
+
 const readSource = (...segments: string[]) =>
   readFileSync(join(HERE, ...segments), "utf8").split("\r\n").join("\n");
 const ORG = "77777777-7777-4777-8777-777777777777";
@@ -180,6 +182,19 @@ describe("I22 clause 2 — flag-off, the worker-control surface is not mounted a
 
     const mount = appSource.indexOf("workerControlRoutes(");
     expect(mount, "workerControlRoutes is not mounted at all").toBeGreaterThan(-1);
+    expect(mount).toBeGreaterThan(flagOpen);
+    expect(mount).toBeLessThan(close);
+  });
+
+  it("mounts the DEVICE LISTING inside that block too (D17 / D-D5)", () => {
+    // Lane D's listing is flag-gated BY CONSTRUCTION rather than by a guard — the
+    // opposite of F27, which needed an explicit desktop refusal because its router sits
+    // outside. If this router ever moves out, the listing becomes reachable flag-off and
+    // DSK-00 clause (a) stops holding for it.
+    const flagOpen = appSource.indexOf("if (opts.distributedExecutionEnabled) {");
+    const close = appSource.indexOf(BLOCK_CLOSE, flagOpen);
+    const mount = appSource.indexOf("desktopDeviceRoutes(");
+    expect(mount, "desktopDeviceRoutes is not mounted at all").toBeGreaterThan(-1);
     expect(mount).toBeGreaterThan(flagOpen);
     expect(mount).toBeLessThan(close);
   });

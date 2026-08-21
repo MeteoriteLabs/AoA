@@ -458,6 +458,14 @@ export async function createApp(
       sessionSigningKey: opts.workerSessionSigningKey,
       onAttemptTerminal: opts.onAttemptTerminal,
     }));
+    // DSK-001 Lane D (D17) — the owner-scoped device listing. Mounted HERE, inside the
+    // flag block, so DSK-00 clause (a) holds by construction: flag-off the router does
+    // not exist and every path under it 404s. Contrast F27, where executionTargetRoutes
+    // sits outside this block and needed an explicit desktop refusal instead.
+    // Dynamically imported for the same reason as worker-control above: a flag-off
+    // startup never loads the module graph.
+    const { desktopDeviceRoutes } = await import("./routes/desktop-devices.js");
+    api.use(desktopDeviceRoutes({ db }));
   }
   // Settings -> Providers. Path-mounted (mergeParams) so the provider endpoints
   // share one /companies/:companyId/providers prefix.
