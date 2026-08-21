@@ -24,6 +24,7 @@ import { describe, it } from "node:test";
 import {
   STAGING_VERIFY_FAILURES,
   buildStagingManifest,
+  collectStagingFiles,
   isShippableStagingPath,
   verifyStagingRoot,
 } from "../staging-manifest.mjs";
@@ -100,6 +101,36 @@ describe("DSK-003 — development files never enter the artifact", () => {
       "dist/.env.local",
     ]) {
       assert.equal(isShippableStagingPath(p), false, p);
+    }
+  });
+
+  it("refuses third-party docs and benchmarks", () => {
+    // Found by running the scan over a REAL `pnpm deploy` root: pino's README and
+    // @pinojs/redact's benchmarks contain example code like `password: "hunter2"`, which
+    // tripped the secret gate. They are not credentials — but they are not runtime files
+    // either, and the choice was between pruning them and weakening the gate.
+    for (const p of [
+      "node_modules/.pnpm/pino@9.14.0/node_modules/pino/README.md",
+      "node_modules/pino/docs/transports.md",
+      "node_modules/@pinojs/redact/benchmarks/basic.js",
+      "node_modules/x/examples/demo.js",
+      "node_modules/x/.github/workflows/ci.yml",
+      "node_modules/x/CHANGELOG.md",
+      "node_modules/x/test/unit.js",
+    ]) {
+      assert.equal(isShippableStagingPath(p), false, p);
+    }
+  });
+
+  it("KEEPS licence and notice files", () => {
+    // A redistributed dependency's licence must travel with it. Dropping these to tidy
+    // the artifact would be an attribution failure, not a cleanup.
+    for (const p of [
+      "node_modules/pino/LICENSE",
+      "node_modules/x/LICENSE.md",
+      "node_modules/x/NOTICE",
+    ]) {
+      assert.equal(isShippableStagingPath(p), true, p);
     }
   });
 
@@ -189,5 +220,67 @@ describe("DSK-003 — a stray file is a failure", () => {
     assert.equal(verifyStagingRoot([], manifest).ok, false);
     const emptyManifest = buildStagingManifest([], { version: "0.1.0", platform: "win32" });
     assert.equal(verifyStagingRoot([], emptyManifest).ok, false);
+  });
+});
+
+describe("DSK-003 — a symlink in the artifact is refused, never followed", () => {
+  // A REAL defect in the first version of the assembler, found by comparing its file
+  // count against the tree's: it used `statSync`, followed 36 symlinks in a `pnpm deploy`
+  // root, and declared 3548 files where 346 existed. Two harms, and the second is worse
+  // than the bloat: a junction pointing OUTSIDE the staging root pulls external files
+  // into an artifact about to be signed — for a pnpm store, potentially the whole store.
+  //
+  // Refusing rather than skipping is deliberate. A symlink in a shipped installer is
+  // either a duplicate (bloat) or a pointer into a machine that will not exist at install
+  // time. Silently dropping it would produce an artifact missing a file it needs.
+  const fsFor = (entries) => ({
+    readdir: (dir) => Object.keys(entries).filter((p) => {
+      const rest = p.startsWith(`${dir}/`) ? p.slice(dir.length + 1) : null;
+      return rest !== null && !rest.includes("/");
+    }).map((p) => p.slice(dir.length + 1)),
+    lstat: (p) => entries[p] ?? { kind: "dir" },
+    readFile: (p) => entries[p]?.text ?? "",
+  });
+
+  it("refuses a root containing a symlink", () => {
+    const entries = {
+      "root/dist": { kind: "dir" },
+      "root/dist/index.js": { kind: "file", text: "a" },
+      "root/node_modules": { kind: "dir" },
+      "root/node_modules/pino": { kind: "symlink" },
+    };
+    const result = collectStagingFiles("root", fsFor(entries));
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "symlink_in_artifact");
+    assert.ok(result.detail.includes("node_modules/pino"));
+  });
+
+  it("collects a link-free root — non-vacuity", () => {
+    const entries = {
+      "root/dist": { kind: "dir" },
+      "root/dist/index.js": { kind: "file", text: "a" },
+      "root/package.json": { kind: "file", text: "{}" },
+    };
+    const result = collectStagingFiles("root", fsFor(entries));
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.files.map((f) => f.path).sort(), ["dist/index.js", "package.json"]);
+  });
+
+  it("refuses a symlinked DIRECTORY, not just a file", () => {
+    const entries = {
+      "root/node_modules": { kind: "symlink" },
+      "root/package.json": { kind: "file", text: "{}" },
+    };
+    assert.equal(collectStagingFiles("root", fsFor(entries)).reason, "symlink_in_artifact");
+  });
+
+  it("refuses rather than skipping, so nothing the host needs goes missing", () => {
+    // Skipping would produce an artifact that verifies and then fails to run.
+    const entries = {
+      "root/package.json": { kind: "file", text: "{}" },
+      "root/link": { kind: "symlink" },
+    };
+    const result = collectStagingFiles("root", fsFor(entries));
+    assert.equal(result.ok, false);
   });
 });

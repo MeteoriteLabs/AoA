@@ -33,19 +33,92 @@ import { Buffer } from "node:buffer";
  */
 const EXCLUDED = [
   /(^|\/)__tests__\//,
-  /(^|\/)tests\//,
+  /(^|\/)tests?\//,
   /\.test\.[cm]?[jt]sx?$/,
   /\.spec\.[cm]?[jt]sx?$/,
   /\.map$/,
   /(^|\/)\.env($|\.)/,
   /(^|\/)fixtures\//,
+  // Third-party documentation and benchmarks. Not hygiene for its own sake: running the
+  // secret scan over a real `pnpm deploy` root FAILED on pino's README and
+  // `@pinojs/redact`'s benchmarks, which contain example code like `password: "hunter2"`.
+  // Those are not embedded credentials — but they are also not runtime files, and the
+  // choice was between pruning them and weakening the scan. An installer has no reason to
+  // carry a dependency's README.
+  /(^|\/)docs?\//,
+  /(^|\/)benchmarks?\//,
+  /(^|\/)examples?\//,
+  /(^|\/)\.github\//,
+  /(^|\/)(README|CHANGELOG|CONTRIBUTING|SECURITY|CODE_OF_CONDUCT)[^/]*$/i,
 ];
 
-/** True iff `path` may be assembled into the artifact. */
+/**
+ * True iff `path` may be assembled into the artifact.
+ *
+ * LICENSE and NOTICE files are deliberately NOT excluded: a redistributed dependency's
+ * licence must travel with it, and dropping them to tidy the artifact would be an
+ * attribution failure rather than a cleanup.
+ */
 export function isShippableStagingPath(path) {
   if (typeof path !== "string" || path.length === 0) return false;
   const normalized = path.split("\\").join("/");
   return !EXCLUDED.some((re) => re.test(normalized));
+}
+
+export const STAGING_COLLECT_FAILURES = ["symlink_in_artifact", "unreadable_root"];
+
+/**
+ * Collect every file under `root`, REFUSING any symlink.
+ *
+ * THIS IS A FIX FOR A REAL DEFECT, recorded because the defect is easy to reintroduce.
+ * The first assembler used `statSync`, which FOLLOWS links. Pointed at a `pnpm deploy`
+ * root it followed 36 symlinks and declared 3548 files where 346 existed. The bloat is
+ * the lesser harm: a junction pointing OUTSIDE the staging root pulls external files into
+ * an artifact about to be signed — for a pnpm store, potentially the whole store. This is
+ * the same class as the capture-root defect in `worker-daemon`'s snapshot walk, which is
+ * why the rule is worth stating twice: `lstat`, never `stat`, whenever a link is a
+ * possibility.
+ *
+ * REFUSED, not skipped. A symlink in a shipped installer is either a duplicate or a
+ * pointer into a machine that will not exist at install time; silently dropping it yields
+ * an artifact that verifies and then fails to run. The caller must produce a link-free
+ * root instead.
+ *
+ * The fs is injected so both branches are provable without creating real links, which on
+ * Windows needs either elevation or Developer Mode.
+ */
+export function collectStagingFiles(root, io) {
+  const files = [];
+  const walk = (dir, relBase) => {
+    let names;
+    try {
+      names = io.readdir(dir);
+    } catch {
+      return { ok: false, reason: "unreadable_root", detail: `cannot read ${dir}` };
+    }
+    for (const name of names) {
+      const abs = `${dir}/${name}`;
+      const rel = relBase === "" ? name : `${relBase}/${name}`;
+      const st = io.lstat(abs);
+      if (st?.kind === "symlink") {
+        return {
+          ok: false,
+          reason: "symlink_in_artifact",
+          detail: `symlink in the artifact: ${rel}`,
+        };
+      }
+      if (st?.kind === "dir") {
+        const nested = walk(abs, rel);
+        if (nested) return nested;
+        continue;
+      }
+      if (st?.kind === "file") files.push({ path: rel, text: io.readFile(abs) });
+    }
+    return null;
+  };
+  const failure = walk(root, "");
+  if (failure) return failure;
+  return { ok: true, files };
 }
 
 /** UTF-8 byte-order comparison, so the sort is not locale-dependent. */

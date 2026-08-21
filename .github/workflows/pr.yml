@@ -217,7 +217,9 @@ jobs:
       # STRAY file fails: "everything I declared is present" is not "nothing else is
       # here", and only the second is worth anything for an artifact about to be signed.
       - name: Desktop staging manifest (DSK-003)
-        run: node --test scripts/lib/__tests__/staging-manifest.test.mjs
+        run: |
+          node --test scripts/lib/__tests__/staging-manifest.test.mjs
+          node --test scripts/lib/__tests__/build-desktop-staging.test.mjs
 
       - name: Secret-resolve authorization vectors (DAT-004)
         run: |
