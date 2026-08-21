@@ -40,6 +40,10 @@ const WORKER = "a6000000-0000-4000-8000-000000000005";
 const OTHER_ORG = "a6000000-0000-4000-8000-0000000000aa";
 const OTHER_COMPANY = "a6000000-0000-4000-8000-0000000000bb";
 const OWNER_USER = "a6000000-0000-4000-8000-0000000000cc";
+// DSK-001 Lane B (D12/1): for `device_local`, ref_id IS provider_credentials.id — a
+// uuid PK, never a slug. The fixture used the literal "provider-credential-1", which
+// no row could ever have. Seeded for real so the handle points at something.
+const PROVIDER_CREDENTIAL = "a6000000-0000-4000-8000-0000000000c1";
 const PASSWORD = "dat-004-role-password";
 const POLICY_HASH = "3".repeat(64);
 const THUMBPRINT = "4".repeat(64);
@@ -331,6 +335,18 @@ integration("DAT-004 lease-scoped secret broker", () => {
       // The device_local owner's ACTIVE company membership (re-checked at resolve).
       await admin`INSERT INTO company_memberships (company_id, principal_type, principal_id, status)
         VALUES (${COMPANY}, 'user', ${OWNER_USER}, 'active')`;
+      // DSK-001 Lane B. provider_credentials.owner_user_id FKs to "user" with
+      // onDelete restrict, and this suite never seeded a user row — so the credential
+      // could not exist at all until now.
+      await admin`INSERT INTO "user" (id, name, email, created_at, updated_at)
+        VALUES (${OWNER_USER}, 'DAT-004 owner', 'owner@dat-004.test', now(), now())`;
+      // The credential the device_local handles point at. state='verified' is what the
+      // B6 gate will admit on; seeding it here (assertions unchanged) is what keeps
+      // that later diff pure decision logic.
+      await admin`INSERT INTO provider_credentials
+        (id, company_id, provider, owner_user_id, execution_target_id, kind, state, verified_at)
+        VALUES (${PROVIDER_CREDENTIAL}, ${COMPANY}, 'anthropic', ${OWNER_USER}, ${TARGET},
+                'personal_subscription', 'verified', now())`;
       const provider = providerProfile();
       const profile = registeredProfile(provider);
       await admin`INSERT INTO execution_targets
@@ -421,14 +437,14 @@ integration("DAT-004 lease-scoped secret broker", () => {
     const brokers = recordingBrokers();
     const { app } = guardCtx();
     const { offer } = await activateLease({ kind: "user", id: OWNER_USER });
-    await mintHandle(offer.job.jobId, "h-device", { refKind: "device_local", refId: "provider-credential-1", materialization: "file", usePolicy: "sandbox_local_only", ownerPrincipalKind: "user", ownerPrincipalId: OWNER_USER });
+    await mintHandle(offer.job.jobId, "h-device", { refKind: "device_local", refId: PROVIDER_CREDENTIAL, materialization: "file", usePolicy: "sandbox_local_only", ownerPrincipalKind: "user", ownerPrincipalId: OWNER_USER });
     const svc = createSecretBrokerService({ appDb: app.db, brokers });
     const res = await svc.resolve({ auth: auth(`r-${crypto.randomUUID()}`), request: request(offer, "h-device") });
     expect(res.outcome).toBe("device_handoff");
     if (res.outcome !== "device_handoff") return;
     expect(brokers.calls).toEqual([]);
     expect(JSON.stringify(res)).not.toContain(SECRET_MARKER);
-    expect(res.handoff.refId).toBe("provider-credential-1");
+    expect(res.handoff.refId).toBe(PROVIDER_CREDENTIAL);
   }, 60_000);
 
   // ---- fence-first + no audit on refusal ----------------------------------
@@ -506,7 +522,7 @@ integration("DAT-004 lease-scoped secret broker", () => {
     const { app } = guardCtx();
     // Job executor is the WORKER, but the handle claims a user owner → binding incomplete.
     const { offer } = await activateLease({ kind: "worker", id: WORKER });
-    await mintHandle(offer.job.jobId, "h-wrongowner", { refKind: "device_local", refId: "pc-1", materialization: "file", usePolicy: "sandbox_local_only", ownerPrincipalKind: "user", ownerPrincipalId: OWNER_USER });
+    await mintHandle(offer.job.jobId, "h-wrongowner", { refKind: "device_local", refId: PROVIDER_CREDENTIAL, materialization: "file", usePolicy: "sandbox_local_only", ownerPrincipalKind: "user", ownerPrincipalId: OWNER_USER });
     const svc = createSecretBrokerService({ appDb: app.db, brokers });
     const res = await svc.resolve({ auth: auth(`r-${crypto.randomUUID()}`), request: request(offer, "h-wrongowner") });
     expect(res.outcome).toBe("denied");
@@ -519,7 +535,7 @@ integration("DAT-004 lease-scoped secret broker", () => {
     const { app, admin } = guardCtx();
     const gone = "a6000000-0000-4000-8000-0000000000dd";
     const { offer } = await activateLease({ kind: "user", id: gone });
-    await mintHandle(offer.job.jobId, "h-nomember", { refKind: "device_local", refId: "pc-1", materialization: "file", usePolicy: "sandbox_local_only", ownerPrincipalKind: "user", ownerPrincipalId: gone });
+    await mintHandle(offer.job.jobId, "h-nomember", { refKind: "device_local", refId: PROVIDER_CREDENTIAL, materialization: "file", usePolicy: "sandbox_local_only", ownerPrincipalKind: "user", ownerPrincipalId: gone });
     // No active membership exists for `gone`.
     const svc = createSecretBrokerService({ appDb: app.db, brokers });
     const res = await svc.resolve({ auth: auth(`r-${crypto.randomUUID()}`), request: request(offer, "h-nomember") });
