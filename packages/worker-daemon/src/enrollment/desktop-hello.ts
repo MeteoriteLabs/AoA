@@ -35,6 +35,7 @@ import {
 } from "@armyofagents/worker-protocol";
 
 import { WORKER_VERSION } from "../config/config.js";
+import { capabilitiesForIsolation, type IsolationMechanism } from "./isolation-capabilities.js";
 
 /**
  * The opaque runtime label. A CONSTANT, never `process.version`: `runtime` is a
@@ -89,6 +90,17 @@ export function buildDesktopHello(input: {
   deviceGeneration: number;
   platform: string;
   arch: string;
+  /**
+   * DSK-002 Lane B. The ALREADY-DETECTED isolation mechanism, passed in rather than
+   * probed here — this function must stay free of clock, random and `process` so a
+   * replayed enrolment produces byte-identical output. Probing Docker inside would be
+   * exactly such a variation: a daemon that stopped between the first attempt and the
+   * retry would yield a different hello, and a replay would become a new submission.
+   *
+   * Defaults to `none`, which is both the pre-DSK-002 behaviour and the fail-closed
+   * answer (D4).
+   */
+  isolation?: IsolationMechanism;
 }): WorkerHelloV1 {
   const os = OS_BY_PLATFORM[input.platform];
   if (!os) {
@@ -113,8 +125,23 @@ export function buildDesktopHello(input: {
     agentVersion: WORKER_VERSION,
     supportedProtocol: { min: MIN_PROTOCOL_VERSION, max: PROTOCOL_VERSION },
     platform: { os, arch: input.arch, runtime: DESKTOP_RUNTIME_LABEL },
-    // THE unmatchability guarantee (step 5). Empty ∩ anything = empty.
-    reportedCapabilities: [],
+    // Unmatchability (step 5), restated after DSK-002 Lane B made this list non-empty.
+    //
+    // The old argument was "empty ∩ anything = empty". Reporting isolation capabilities
+    // retires that phrasing, so here is the argument that actually holds, read from
+    // `workerSatisfiesRequirements` rather than from a comment:
+    //
+    //     const workloadCapability = `workload.${requirements.workloadType}`;
+    //     if (!effective.has(workloadCapability)) return false;
+    //
+    // The match REQUIRES a `workload.*` capability in `ceiling ∩ reported`. This list
+    // contains only `sandbox.*` names, so no `workload.*` can be in the intersection
+    // however generous the server's ceiling is, and the match still fails. Step 4's
+    // unprovisioned `policyHash` remains the second, independent axis.
+    //
+    // `desktop-hello.test.ts` asserts this directly, so the guarantee is a test rather
+    // than a paragraph: if any `workload.*` name ever appears here, that test fails.
+    reportedCapabilities: [...capabilitiesForIsolation(input.isolation ?? "none")],
     // Kept for byte-stability. NOT a safety property — the matcher overwrites it.
     capacity: {
       batchSlots: 0,

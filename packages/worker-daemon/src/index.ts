@@ -151,6 +151,14 @@ export {
   FIRST_ENROLLMENT_DEVICE_GENERATION,
 } from "./enrollment/desktop-hello.js";
 
+// DSK-002 Lane B — isolation capability detection + the frozen-vocabulary mapping.
+export {
+  ISOLATION_MECHANISMS,
+  capabilitiesForIsolation,
+  detectIsolationMechanism,
+} from "./enrollment/isolation-capabilities.js";
+export type { IsolationMechanism, IsolationProbe, IsolationProbes } from "./enrollment/isolation-capabilities.js";
+
 export {
   encodeEnrollmentTicket,
   decodeEnrollmentTicket,
