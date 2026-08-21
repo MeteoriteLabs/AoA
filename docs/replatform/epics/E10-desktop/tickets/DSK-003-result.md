@@ -3,7 +3,7 @@
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
-**Tip:** `73f0a563a`
+**Tip:** `770224daf`
 **Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
 
 **This is a partial closure, and §6 says exactly which clause is not closed and why.**
@@ -26,8 +26,9 @@ not wired**.
 | `7ea62626c` | fail-closed installer admission (I9) | 11/11 |
 | `401b1dc68` | host state record + the stale-pid defence | 10/10 |
 | `73f0a563a` | `GET /instance` — the live half of that defence | 5/5 |
+| `770224daf` | the control effect layer + the revoke-bypass guard | 8/8 |
 
-**80 mutants, 80 killed.** Five of those only after the mutant exposed something wrong in
+**88 mutants, 88 killed.** Five of those only after the mutant exposed something wrong in
 my own work rather than in the code under test (§4).
 
 ---
@@ -82,7 +83,7 @@ Two consequences worth naming:
 
 ## 4. Where mutation earned its keep
 
-80/80 is the boring number. These are the ones that mattered:
+88/88 is the boring number. These are the ones that mattered:
 
 **Three surviving mutants were dead code, not missing tests**, and each was removed or
 documented rather than papered over with a contrived test:
@@ -103,8 +104,23 @@ is source-pinned because it is a principle, not an observable behaviour.
 case was `--token=` (consumed before the guard), and a documented allowlist rule — one bad
 entry rejects the whole list — that nothing tested.
 
-**One mutant was simply wrong**, not a coverage gap: it appended `arguments[3]` at a
-3-arg call site, which is `undefined` and dropped by `JSON.stringify`, so nothing leaked.
+**Two mutants were simply wrong**, not coverage gaps. One appended `arguments[3]` at a
+3-arg call site — `undefined`, dropped by `JSON.stringify`, so nothing leaked. The other
+reordered whole blocks and was killed by a SYNTAX ERROR rather than by the ordering test
+it was aimed at; the harness reported "killed, but these expected tests did not fail",
+which is the only reason it was caught. **A kill for the wrong reason proves nothing**,
+and the mutant was rewritten as a single well-formed insertion.
+
+### The guarded action with a second, unguarded door
+
+`--reset-identity` requires `--i-understand-this-is-permanent`, because on the same target
+the reset IS a permanent lockout — the server denies the re-minted workerId and
+`findWorkerForBinding` has no status predicate, so the stale row matches forever with no
+reset route. **`revoke` destroys the same identity.** Shipping it without that
+acknowledgement would have left the guard in place and simply off the path anyone takes.
+The flag is duplicated (the daemon may not depend on the keystore package) and therefore
+pinned by test across the package boundary — both the constant and the line that checks
+it — because a duplicated guard that drifts is two guards.
 
 ### The guard that was born dead, again
 
@@ -154,14 +170,13 @@ source, and why the CI step runs the self-test only.
 
 ## 6. What is NOT done
 
-- **Clause (4) is PARTIAL, but less so than at first writing.** The commands are parsed,
-  authorized and specified; `drain`'s ordering is deliberately delegated (D10) rather than
-  re-derived; and the host **state record now exists**, together with the stale-pid
-  defence and its live `GET /instance` counterpart — so a command can now safely discover
-  *which* process to act on. What is still missing is the **effect layer**: nothing yet
-  writes the record at boot, sends the signal, reads the log file, or renders `status`.
-  The dangerous half (deciding whether a pid may be signalled at all) is built and
-  mutation-tested; the mechanical half is not, and no command can be invoked end-to-end.
+- **Clause (4) is PARTIAL, and the remaining gap is now purely the composition root.**
+  Parsing, authorization, host discovery with the stale-pid defence, and the effect layer
+  — including `revoke`'s ordering and its acknowledgement guard — are all built and
+  mutation-tested. What is missing is the WIRING: nothing writes the state record at boot,
+  supplies the real `signal`/`readStatus`/`readLogTail`/`destroyIdentity` implementations,
+  or exposes a subcommand on the binary. Every decision is made and tested; nothing is
+  reachable from a command line yet.
 - **No installer is produced.** Lane C ships the autostart manifests and the
   least-privilege assertions; it does not ship a `.pkg`, `.msi` or staging root. The
   admission verifier and the secret scan are therefore *ready for* an artifact rather than
