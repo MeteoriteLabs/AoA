@@ -182,6 +182,26 @@ export type {
   UninstallStepName,
 } from "./control/uninstall-plan.js";
 
+// DSK-003 Lane A — the host state record + the stale-pid defence.
+export {
+  HOST_STATE_KEYS,
+  HOST_STATE_REJECTIONS,
+  TARGET_PROCESS_REJECTIONS,
+  buildHostStateRecord,
+  hostStateLeakKeys,
+  readHostState,
+  resolveTargetProcess,
+} from "./control/host-state.js";
+export type {
+  HostStateKey,
+  HostStateRecord,
+  HostStateRejection,
+  HostStateResult,
+  TargetProcessDeps,
+  TargetProcessRejection,
+  TargetProcessResult,
+} from "./control/host-state.js";
+
 export { enrollOnce, EnrollOnceError, EnrollmentAuthorityError } from "./enrollment/enroll-once.js";
 export type { EnrollOnceDeps, EnrollmentOutcome } from "./enrollment/enroll-once.js";
 
