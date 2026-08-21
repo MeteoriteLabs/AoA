@@ -189,6 +189,23 @@ jobs:
           node scripts/check-workspace-patch-vectors.mjs
           node --test scripts/check-workspace-patch-vectors.test.mjs
 
+      # DSK-003 Lane D, clause (1) "no credential is embedded".
+      #
+      # This runs the SELF-TEST only, deliberately. The scanner's value is that planted
+      # CI test identities ARE found for every pattern class — a scanner that finds
+      # nothing looks exactly like a scanner that looks for nothing — and that half is
+      # what runs here.
+      #
+      # It does NOT scan the source tree. Pointing it at packages/worker-daemon/src was
+      # tried and correctly reported three findings, all of them deliberate redaction-test
+      # fixtures. That is the design reason the gate targets a PACKAGED ARTIFACT rather
+      # than source: source says nothing about what packaging swept in, and it is full of
+      # fixtures that must keep looking like credentials. The artifact scan is wired in
+      # DSK-003 Lane C, where an artifact first exists; the entry point is already
+      # `node scripts/check-embedded-secrets.mjs <dir>`.
+      - name: Embedded-secret scan self-test (DSK-003)
+        run: node --test scripts/lib/__tests__/embedded-secret-scan.test.mjs
+
       - name: Secret-resolve authorization vectors (DAT-004)
         run: |
           node scripts/check-secret-resolve-vectors.mjs
