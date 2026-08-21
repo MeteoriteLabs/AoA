@@ -3,7 +3,7 @@
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
-**Tip:** `9f5e10e9f`
+**Tip:** `383548a22`
 **Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
 
 **This is a partial closure, and §6 says exactly which clause is not closed and why.**
@@ -30,8 +30,9 @@ not wired**.
 | `ab67a6bfb` | the composition root — the record's lifecycle | 7/7 |
 | `cd76988e3` | invocation routing — a control command never boots | 5/5 |
 | `9f5e10e9f` | the macOS agent was discarding its own output | 8/8 |
+| `383548a22` | control-file locations, derived from the vault | 4/4 |
 
-**108 mutants, 108 killed.** Five of those only after the mutant exposed something wrong in
+**112 mutants, 112 killed.** Five of those only after the mutant exposed something wrong in
 my own work rather than in the code under test (§4).
 
 ---
@@ -86,7 +87,7 @@ Two consequences worth naming:
 
 ## 4. Where mutation earned its keep
 
-108/108 is the boring number. These are the ones that mattered:
+112/112 is the boring number. These are the ones that mattered:
 
 **Three surviving mutants were dead code, not missing tests**, and each was removed or
 documented rather than papered over with a contrived test:
@@ -213,8 +214,12 @@ since launchd would create a file wherever it resolved a relative string.
   **What remains is precisely two things**, and neither is a decision:
 
   1. `runDesktopHost` does not yet CALL `resolveDesktopInvocation`. The router exists and
-     is mutation-tested; the host still branches only on `--reset-identity`.
-  2. The four effect implementations are not supplied. Three are thin (`signal` is
+     is mutation-tested, and the control files now have resolved, vault-derived locations
+     — but the host still branches only on `--reset-identity`.
+  2. The four effect implementations are not supplied. `destroyIdentity` must clear the
+     RECEIPT before the IDENTITY when it is written, matching the ordering the existing
+     `--reset-identity` path is already tested for — two paths destroying the same pair
+     must not do it in two orders. Three are thin (`signal` is
      `process.kill`, `destroyIdentity` is the existing store `clear()` pair, `readStatus`
      is the record plus a probe). `readLogTail` now HAS a target on two of three
      platforms — see §5a — and on Windows still does not.
