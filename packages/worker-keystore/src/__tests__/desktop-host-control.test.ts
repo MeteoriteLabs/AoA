@@ -164,12 +164,12 @@ describe("DSK-003 — a refused command fails loudly", () => {
     expect(h.calls).toEqual([]);
   });
 
-  it("refuses cleanly when the build supplies no control effects", async () => {
-    // Nothing in this file exercised the absent-deps path, so a mutant deleting the
-    // guard survived. It is load-bearing: without it the effects object is spread from
-    // `undefined` and `executeControlCommand` calls a function that is not there — the
-    // host THROWS instead of refusing, which an operator sees as a crash rather than an
-    // answer.
+  it("builds the REAL effects when none are injected, and status still answers", async () => {
+    // An earlier revision refused when `control` was absent. That was scaffolding for an
+    // unwired state that no longer exists: a production binary must build its own
+    // effects, not decline to have any. Constructing them touches nothing — the paths
+    // resolve purely — so `status` runs for real here against a vault directory with no
+    // host in it, and correctly reports not-running rather than throwing.
     const { proc, exitCodes } = fakeProc();
     const bootstrap = vi.fn(async () => ({ ok: true }));
     const logs: string[] = [];
@@ -181,12 +181,12 @@ describe("DSK-003 — a refused command fails loudly", () => {
       createRunner: recordingRunner([]) as never,
       bootstrap: bootstrap as never,
       log: (m: string) => { logs.push(m); },
-      // no `control`
+      // no `control` — the real ones are built
     } as never);
-    expect(result.ok).toBe(false);
-    expect(exitCodes).toEqual([1]);
+    expect(result.ok).toBe(true);
+    expect(exitCodes).toEqual([]);
     expect(bootstrap).not.toHaveBeenCalled();
-    expect(logs.join(" ")).toMatch(/not available/i);
+    expect(logs.join(" ")).toMatch(/running/i);
   });
 
   it("exits non-zero for an unknown command rather than booting", async () => {

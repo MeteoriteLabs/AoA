@@ -45,7 +45,16 @@ import { decodeEnrollmentReceipt, encodeEnrollmentReceipt } from "../receipt-env
  * same flag are two things to keep in step, which is the drift argued against for the
  * acknowledgement flag. Re-exported so every existing importer is unaffected. */
 import { RESET_IDENTITY_FLAG, resolveDesktopInvocation } from "./desktop-invocation.js";
-import { executeControlCommand, type ControlExecuteDeps } from "@armyofagents/worker-daemon";
+import {
+  authorizeControlCommand,
+  executeControlCommand,
+  readHostState,
+  resolveTargetProcess,
+  verifyControlToken,
+  type ControlExecuteDeps,
+} from "@armyofagents/worker-daemon";
+import { resolveControlPaths } from "../control-paths.js";
+import { createDesktopControlEffects } from "../control-effects.js";
 
 // Re-exported so every existing importer of this module is unaffected by the move.
 export { RESET_IDENTITY_FLAG };
@@ -71,7 +80,12 @@ export interface DesktopHostDeps {
   readonly bootstrap?: typeof bootstrapWorkerDaemon;
   readonly log?: (message: string) => void;
   /**
-   * DSK-003 — the outward effects a control command needs, injected.
+   * DSK-003 — the outward effects a control command needs.
+   *
+   * OPTIONAL OVERRIDE, not a requirement: absent, the host builds the real ones from
+   * `resolveControlPaths` + `createDesktopControlEffects`. An earlier revision refused
+   * when this was missing, which was scaffolding for an unwired state that no longer
+   * exists — a production binary must build its own effects, not decline to have any.
    *
    * `destroyIdentity` is deliberately NOT part of this: it is supplied by the host from
    * the stores it already built, so the receipt-before-identity ordering has exactly one
@@ -115,15 +129,14 @@ export async function runDesktopHost(deps: DesktopHostDeps): Promise<{ ok: boole
   // to bootstrap: `aoa-worker-desktop status` starting a worker as a side effect would
   // give an operator checking on a running host a SECOND one.
   if (invocation.kind === "control") {
-    if (!deps.control) {
-      log("desktop host: control commands are not available in this build");
-      deps.proc.exit(1);
-      return { ok: false };
-    }
+    // Build the real effects when none were injected. Constructing touches nothing:
+    // `resolveControlPaths` is pure and the effects only reach the filesystem or the
+    // loopback port when a command actually invokes them.
+    const control = deps.control ?? buildRealControlDeps(deps.env, deps.platform);
     const result = await executeControlCommand(
       { command: invocation.command, token: invocation.token, argv: deps.argv },
       {
-        ...deps.control,
+        ...control,
         // The receipt is cleared FIRST and the identity SECOND — the same order, and the
         // same reason, as the reset branch below: dying between them must leave an
         // identity with no receipt ("enrolled but unconfirmed", retryable) rather than a
@@ -243,4 +256,42 @@ export async function runDesktopHost(deps: DesktopHostDeps): Promise<{ ok: boole
   });
 
   return { ok: result.ok };
+}
+
+/**
+ * Compose the production control effects.
+ *
+ * Separate from `runDesktopHost` so the composition is readable on its own and so a test
+ * can substitute the whole set. Everything it needs comes from `env`/`platform`, keeping
+ * the "refuse rather than guess" rules of `resolveControlPaths` on the path.
+ */
+function buildRealControlDeps(
+  env: Record<string, string | undefined>,
+  platform: NodeJS.Platform | string,
+): Omit<ControlExecuteDeps, "destroyIdentity"> {
+  const paths = resolveControlPaths(env, platform);
+  const effects = createDesktopControlEffects({
+    paths,
+    platform,
+    kill: (pid, signal) => { process.kill(pid, signal as NodeJS.Signals); },
+    fetchInstance: async (url) => (await fetch(url)).json() as Promise<{ instanceId?: string }>,
+    readHostStateAt: () => readHostState(paths.statePath) as never,
+    // No log file on the only platform the vault supports: Task Scheduler cannot
+    // redirect and the host does not yet open its own. Left ABSENT rather than pointed
+    // at a path nothing writes, so `logs` says so instead of reporting an empty file.
+    readLogFile: undefined,
+  });
+  return {
+    authorize: (command, token) =>
+      authorizeControlCommand(command, token, {
+        verify: (presented, d) => verifyControlToken(paths.tokenPath, presented, d),
+      }),
+    resolveTarget: async () =>
+      resolveTargetProcess(paths.statePath, {
+        probe: async (port) => (await fetch(`http://127.0.0.1:${port}/instance`)).json() as never,
+      }) as never,
+    signal: effects.signal,
+    readStatus: effects.readStatus,
+    readLogTail: effects.readLogTail,
+  };
 }
