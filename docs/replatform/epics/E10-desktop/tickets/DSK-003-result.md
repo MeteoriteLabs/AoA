@@ -3,12 +3,13 @@
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
-**Tip:** `7ea62626c`
+**Tip:** `73f0a563a`
 **Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
 
 **This is a partial closure, and §6 says exactly which clause is not closed and why.**
 Clauses (1), (2) and (5) are met; clause (3) was already met by WRK-006/007; clause (4)'s
-authorization and command surface are built but **not wired to effects**.
+authorization, command surface and host-discovery are built but the **effect layer is
+not wired**.
 
 ---
 
@@ -23,8 +24,10 @@ authorization and command surface are built but **not wired to effects**.
 | `acd9ff97a` | embedded-secret scan + CI self-test (I10, I11) | 9/9 |
 | `951f0a113` | per-user unprivileged autostart + the H.D1 supersession (I8) | 12/12 |
 | `7ea62626c` | fail-closed installer admission (I9) | 11/11 |
+| `401b1dc68` | host state record + the stale-pid defence | 10/10 |
+| `73f0a563a` | `GET /instance` — the live half of that defence | 5/5 |
 
-**65 mutants, 65 killed.** Five of those only after the mutant exposed something wrong in
+**80 mutants, 80 killed.** Five of those only after the mutant exposed something wrong in
 my own work rather than in the code under test (§4).
 
 ---
@@ -151,11 +154,14 @@ source, and why the CI step runs the self-test only.
 
 ## 6. What is NOT done
 
-- **Clause (4) is PARTIAL.** The commands are parsed, authorized and specified, and
-  `drain`'s ordering is deliberately delegated (D10) rather than re-derived. They are
-  **not wired to effects**: `status` querying the health server, `logs` reading the log
-  file, and `drain`/`revoke` reaching the running host all need a host state/PID record
-  that does not exist yet. Nothing in this increment can be invoked end-to-end.
+- **Clause (4) is PARTIAL, but less so than at first writing.** The commands are parsed,
+  authorized and specified; `drain`'s ordering is deliberately delegated (D10) rather than
+  re-derived; and the host **state record now exists**, together with the stale-pid
+  defence and its live `GET /instance` counterpart — so a command can now safely discover
+  *which* process to act on. What is still missing is the **effect layer**: nothing yet
+  writes the record at boot, sends the signal, reads the log file, or renders `status`.
+  The dangerous half (deciding whether a pid may be signalled at all) is built and
+  mutation-tested; the mechanical half is not, and no command can be invoked end-to-end.
 - **No installer is produced.** Lane C ships the autostart manifests and the
   least-privilege assertions; it does not ship a `.pkg`, `.msi` or staging root. The
   admission verifier and the secret scan are therefore *ready for* an artifact rather than
@@ -174,5 +180,7 @@ source, and why the CI step runs the self-test only.
    caller, clearer failure.
 2. **The keystore package exports `install/autostart`** and the daemon exports the control
    surface and custody helpers. Additive; no existing export changed.
-3. **`distribution.md` H.D1 now carries a supersession note.** No behaviour, but a reader
+3. **`GET /instance` is a new loopback route**, served only when the host is started with
+   an instance nonce. Absent one it 404s and the surface is byte-identical to before.
+4. **`distribution.md` H.D1 now carries a supersession note.** No behaviour, but a reader
    following that lock will now find the reason it no longer binds this program.
