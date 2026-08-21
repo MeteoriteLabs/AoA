@@ -84,11 +84,30 @@ export interface FenceResolvedMaterial {
  */
 export interface DeviceLocalHandoff {
   refKind: "device_local";
+  /** For `device_local` this is `provider_credentials.id` — a uuid, never a slug. */
   refId: string;
   ownerPrincipalKind: string | null;
   ownerPrincipalId: string | null;
   materialization: "proxy" | "env" | "file";
   usePolicy: SecretDeliverySeam;
+  /**
+   * The LOCKED lease's company. It comes from the fence, never from the wire — a
+   * consumer that had to re-derive it would be trusting the request for the one
+   * fact the fence exists to pin.
+   */
+  companyId: string;
+  /** The handle this activation is bound to, so it can be revoked by identity. */
+  handleId: string;
+  /** The placed generation the handle is pinned to (null = unpinned). */
+  boundTargetGeneration: number | null;
+  /**
+   * The bound egress destination. Load-bearing on exactly the `fence_proxy` seam:
+   * rule 4b guarantees it non-null for a network-use handle, and that is the seam
+   * D10's `proxy_endpoint` arm exists to serve. It was dropped here while every
+   * other consumer received it, which would have forced DSK-002 to widen this type
+   * on day one.
+   */
+  destination: string | null;
 }
 
 export type SecretResolveOutcome =
@@ -146,6 +165,12 @@ export async function dispatchResolvedSecret(
         ownerPrincipalId: authorized.ownerPrincipalId,
         materialization: authorized.materialization,
         usePolicy: authorized.usePolicy,
+        // A pure pass-through: every one of these was already on the authorized
+        // resolution and was simply not copied across. No new query, no new read.
+        companyId: authorized.companyId,
+        handleId: authorized.handleId,
+        boundTargetGeneration: authorized.boundTargetGeneration,
+        destination: authorized.destination,
       },
     };
   }

@@ -131,3 +131,73 @@ describe("DAT-004 dispatchResolvedSecret", () => {
     }), failClosedSecretBrokers)).rejects.toThrow();
   });
 });
+
+describe("DSK-001 Lane B/B2 — the handoff key set is FROZEN, and carries its scope", () => {
+  // The old proof was `expect(Object.keys(handoff)).not.toContain("value")`. That is
+  // a denylist of one: a field named `token`, `bytes`, `secret` or `material` would
+  // have passed it untouched. Design invariant I19 asks for the opposite shape — an
+  // allowlist — so a NEW field cannot appear without this test being edited on
+  // purpose. A reviewer editing this list is the point.
+
+  const FROZEN_HANDOFF_KEYS = [
+    "boundTargetGeneration",
+    "companyId",
+    "destination",
+    "handleId",
+    "materialization",
+    "ownerPrincipalId",
+    "ownerPrincipalKind",
+    "refId",
+    "refKind",
+    "usePolicy",
+  ];
+
+  async function handoff() {
+    const out = await dispatchResolvedSecret(authorized({
+      refKind: "device_local", refId: "b3f1c2d4-5e6a-4b7c-8d9e-0f1a2b3c4d5e",
+      materialization: "proxy", usePolicy: "fence_proxy",
+      destination: "https://api.provider.example",
+      ownerPrincipalKind: "user", ownerPrincipalId: "u1",
+    }), recordingBrokers());
+    if (out.outcome !== "device_handoff") throw new Error(`expected a handoff, got ${out.outcome}`);
+    return out.handoff;
+  }
+
+  it("has EXACTLY the frozen key set — no more, no fewer", async () => {
+    expect(Object.keys(await handoff()).sort()).toEqual(FROZEN_HANDOFF_KEYS);
+  });
+
+  it("carries the company scope, so a consumer need not re-derive it from the wire", async () => {
+    // companyId comes from the LOCKED lease (AuthorizedSecretResolution.companyId),
+    // never from a request. A device-side consumer that had to re-derive it would be
+    // trusting the wire for the one fact the fence exists to pin.
+    const h = await handoff();
+    expect(h.companyId).toBe("company-1");
+  });
+
+  it("carries handleId and boundTargetGeneration, so an activation can be bound and revoked", async () => {
+    const h = await handoff();
+    expect(h.handleId).toBeTruthy();
+    expect(h).toHaveProperty("boundTargetGeneration");
+  });
+
+  it("carries destination — load-bearing on exactly the fence_proxy seam", async () => {
+    // C-7. Rule 4b guarantees destination is non-null for a network-use handle, and
+    // fence_proxy is the seam D10's `proxy_endpoint` arm exists to serve. Dropping it
+    // would force DSK-002 to widen this type immediately.
+    expect((await handoff()).destination).toBe("https://api.provider.example");
+  });
+
+  it("STILL carries no value-bearing field under any name", async () => {
+    const h = await handoff();
+    for (const key of Object.keys(h)) {
+      const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+      // NOT "material": `materialization` legitimately contains it, and a check that
+      // forces you to rename a correct field is a bad check. `value` covers the case
+      // that mattered (`FenceResolvedMaterial.value`).
+      for (const forbidden of ["value", "token", "secret", "credential", "bytes", "password", "apikey"]) {
+        expect(normalized, `handoff field "${key}"`).not.toContain(forbidden);
+      }
+    }
+  });
+});
