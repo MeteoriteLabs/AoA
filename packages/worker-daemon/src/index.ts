@@ -168,6 +168,20 @@ export type {
   ReadOnlyCommand,
 } from "./control/commands.js";
 
+// DSK-003 Lane B — the uninstall plan (explicit identity disposition, no default).
+export {
+  UNINSTALL_IDENTITY_POLICIES,
+  UNINSTALL_REFUSALS,
+  planUninstall,
+} from "./control/uninstall-plan.js";
+export type {
+  UninstallIdentityPolicy,
+  UninstallPlan,
+  UninstallRefusal,
+  UninstallStep,
+  UninstallStepName,
+} from "./control/uninstall-plan.js";
+
 export { enrollOnce, EnrollOnceError, EnrollmentAuthorityError } from "./enrollment/enroll-once.js";
 export type { EnrollOnceDeps, EnrollmentOutcome } from "./enrollment/enroll-once.js";
 
