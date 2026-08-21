@@ -113,6 +113,49 @@ export function assertRepresentable(stats: Stats, relPath: string): void {
 }
 
 /**
+ * Fail closed on a capture ROOT that is not a plain directory (DSK-002/I4).
+ *
+ * The walk `lstat`s every CHILD, so a symlink anywhere inside the tree is rejected —
+ * but `walkContentTree(root, root, …)` goes straight to `readdirSync`, so the root
+ * itself was never stat'ed and a root that IS a link was silently followed. Under
+ * DSK-002's threat model that is a TOCTOU escape: a grant names a base, and whatever
+ * can replace that base with a link between grant time and capture time redirects the
+ * entire capture. The agent writing into the granted folder is precisely the actor
+ * with that access.
+ *
+ * Applied to BOTH bases. `captureGitBase` uses `root` only as a git cwd and a join
+ * base and never stats it either, so the git path had the identical hole.
+ *
+ * `lstat`, never `stat` — the whole point is to see the link rather than its target.
+ *
+ * The symlink arm is kept SEPARATE from the directory arm even though `lstat` already
+ * reports a link as a non-directory, so today either arm would reject. Two reasons:
+ * the operator-facing diagnosis differs ("you pointed at a file" is not "we refuse to
+ * follow your link"), and if any platform ever reported a link as a directory the
+ * directory arm would ADMIT it — which is precisely the platform assumption the
+ * junction test in `capture-root.test.ts` exists to keep honest.
+ */
+export function assertCaptureRoot(root: string): void {
+  let stats: Stats;
+  try {
+    stats = lstatSync(root);
+  } catch (cause) {
+    // WorkspaceSnapshotError carries a message only, so the errno is folded in rather
+    // than widening a shared error type — ENOENT and EACCES need to stay tellable apart.
+    const code = (cause as NodeJS.ErrnoException | null)?.code ?? "unknown";
+    throw new WorkspaceSnapshotError(`capture root is not readable (${code}): ${root}`);
+  }
+  if (stats.isSymbolicLink()) {
+    throw new WorkspaceSnapshotError(
+      `capture root is a symlink and will not be followed: ${root}`,
+    );
+  }
+  if (!stats.isDirectory()) {
+    throw new WorkspaceSnapshotError(`capture root is not a directory: ${root}`);
+  }
+}
+
+/**
  * Normalize an absolute path under `root` to a forward-slash relative path, folded
  * to Unicode NFC so a tree whose filesystem reports NFD names (e.g. HFS+/APFS)
  * yields the SAME entry path — and thus the same content-base hash — as one
@@ -269,6 +312,8 @@ export async function buildWorkspaceManifest(
   if (limits.maxEntries > DEFAULT_SNAPSHOT_LIMITS.maxEntries) {
     throw new WorkspaceSnapshotError("maxEntries may not exceed the schema cap of 1,000,000");
   }
+  // Before EITHER base branch: both walk from `input.root` and neither stat'ed it.
+  assertCaptureRoot(input.root);
 
   if (input.base === "content_manifest") {
     if (input.ignore.kind !== "explicit") {
