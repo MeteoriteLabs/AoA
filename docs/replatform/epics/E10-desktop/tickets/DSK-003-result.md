@@ -3,7 +3,7 @@
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
-**Tip:** `7293d5a46`
+**Tip:** `65c86ba4f`
 **Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
 
 **This is a partial closure, and §6 says exactly which clause is not closed and why.**
@@ -37,8 +37,9 @@ not wired**.
 | `fa3c45afc` | the last wiring line — real effects by default | 5/5 |
 | `a8f33e492` | the host opens its own log — the last design gap | 5/5 |
 | `7293d5a46` | the installer staging manifest | 8/8 |
+| `65c86ba4f` | the assembler — and the symlink defect it shipped with | 5/5 |
 
-**151 mutants, 151 killed.** Five of those only after the mutant exposed something wrong in
+**156 mutants, 156 killed.** Five of those only after the mutant exposed something wrong in
 my own work rather than in the code under test (§4).
 
 ---
@@ -93,7 +94,7 @@ Two consequences worth naming:
 
 ## 4. Where mutation earned its keep
 
-151/151 is the boring number. These are the ones that mattered:
+156/156 is the boring number. These are the ones that mattered:
 
 **Three surviving mutants were dead code, not missing tests**, and each was removed or
 documented rather than papered over with a contrived test:
@@ -242,6 +243,44 @@ merely reordered the ternary, because the pinned string survived the reorder. On
 behavioural test distinguishes them — and it matters, because if `filePath` ever outranked
 an injected stream, every existing suite would silently start writing to disk instead of
 to the stream it asserts on.
+
+## 5c. The assembler, and why no `pnpm deploy` invocation ships
+
+`build-desktop-staging.mjs` turns a **link-free** directory into an artifact: collect →
+prune → build the manifest → verify → scan. Step four runs the embedded-secret gate over
+**real bytes** for the first time, which is what the manifest was for.
+
+**It shipped with a symlink-following defect and the tooling exposed it.** The first
+version used `statSync`, which follows links. Pointed at a `pnpm deploy` root it declared
+**3548 files where 346 existed** — the same bytes counted roughly ten times through
+different paths. The bloat was the lesser harm: a junction pointing outside the staging
+root pulls external files into an artifact about to be signed, and for a pnpm store that
+is potentially the whole store. Same class as DSK-002's capture-root defect, so the rule is
+now written in both places: **`lstat`, never `stat`, wherever a link is possible.** Symlinks
+are REFUSED rather than skipped — silently dropping one yields an artifact that verifies
+and then fails to run.
+
+**The honest consequence: no `pnpm deploy` invocation produces a shippable root.** Measured
+here:
+
+| command | result |
+|---|---|
+| `pnpm deploy --prod` | complete, **36 symlinks** → refused |
+| `pnpm deploy --prod --node-linker=hoisted` | link-free, but **no `node_modules` at all** |
+
+Neither ships. Closing that needs real packaging work — a bundler, or a copy step that
+dereferences pnpm's links — and the script says so rather than documenting a command that
+does not work.
+
+**Two findings from running the gate on real bytes.** The scan failed on pino's README and
+`@pinojs/redact`'s benchmarks: vendor docs carrying `password: "hunter2"` examples. Not
+credentials, but not runtime files either, and the choice was between pruning them and
+weakening the gate. Pruned — with **LICENSE and NOTICE deliberately kept**, because a
+redistributed dependency's licence must travel with it and dropping it to tidy the artifact
+would be an attribution failure. And the CLI had **no test at all** (the same shape as
+DSK-002's untested service function) and could not have one, because it called
+`process.exit` at module load; it is now importable and covered by a test that creates a
+real Windows junction.
 
 ## 6. What is NOT done
 
