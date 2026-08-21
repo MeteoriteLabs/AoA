@@ -3,7 +3,7 @@
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
-**Tip:** `cd76988e3`
+**Tip:** `9f5e10e9f`
 **Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
 
 **This is a partial closure, and §6 says exactly which clause is not closed and why.**
@@ -29,8 +29,9 @@ not wired**.
 | `770224daf` | the control effect layer + the revoke-bypass guard | 8/8 |
 | `ab67a6bfb` | the composition root — the record's lifecycle | 7/7 |
 | `cd76988e3` | invocation routing — a control command never boots | 5/5 |
+| `9f5e10e9f` | the macOS agent was discarding its own output | 8/8 |
 
-**100 mutants, 100 killed.** Five of those only after the mutant exposed something wrong in
+**108 mutants, 108 killed.** Five of those only after the mutant exposed something wrong in
 my own work rather than in the code under test (§4).
 
 ---
@@ -85,7 +86,7 @@ Two consequences worth naming:
 
 ## 4. Where mutation earned its keep
 
-100/100 is the boring number. These are the ones that mattered:
+108/108 is the boring number. These are the ones that mattered:
 
 **Three surviving mutants were dead code, not missing tests**, and each was removed or
 documented rather than papered over with a contrived test:
@@ -178,6 +179,25 @@ source, and why the CI step runs the self-test only.
 
 ---
 
+## 5a. A defect this ticket shipped, found by asking why `logs` had nothing to read
+
+The LaunchAgent plist carried `Label`, `ProgramArguments`, `RunAtLoad`, `KeepAlive` and
+`ProcessType` — and no `StandardOutPath`. Modern launchd routes an agent's stdout nowhere
+by default, so **every line the macOS host wrote went to `/dev/null`**. A background host
+you cannot get logs out of is one you cannot diagnose, and it is the reason `readLogTail`
+appeared to have no target: nothing was ever written.
+
+The fix is per-platform, and for one platform it is deliberately nothing:
+
+| | |
+|---|---|
+| **darwin** | launchd redirects natively — two plist keys, no host cooperation. Both keys, because launchd treats them independently and capturing stdout while discarding stderr loses exactly the lines worth reading. |
+| **linux** | systemd **already** captures stdout to the journal. A file here would be worse, not more consistent: it bypasses journald's rotation, retention and access control and splits one host's output across two places. `journalctl --user` is the answer. |
+| **win32** | Task Scheduler has **no** native redirection. Emitting a path nothing honours would read as "logs are captured" while output still went nowhere — the exact dishonesty this fix corrects. **Recorded residual**, pending the host opening its own file. |
+
+The keys are emitted only when a home directory is known: half a path is worse than none,
+since launchd would create a file wherever it resolved a relative string.
+
 ## 6. What is NOT done
 
 - **Clause (4) is PARTIAL, and the gap is now exactly one mile long.** Parsing,
@@ -196,9 +216,8 @@ source, and why the CI step runs the self-test only.
      is mutation-tested; the host still branches only on `--reset-identity`.
   2. The four effect implementations are not supplied. Three are thin (`signal` is
      `process.kill`, `destroyIdentity` is the existing store `clear()` pair, `readStatus`
-     is the record plus a probe). **`readLogTail` has no target**: the daemon logs to
-     stdout through pino and no log-file location is defined anywhere, so `logs` needs a
-     convention that does not exist yet rather than an implementation.
+     is the record plus a probe). `readLogTail` now HAS a target on two of three
+     platforms — see §5a — and on Windows still does not.
 
   **No command is reachable from a command line.**
 - **No installer is produced.** Lane C ships the autostart manifests and the
