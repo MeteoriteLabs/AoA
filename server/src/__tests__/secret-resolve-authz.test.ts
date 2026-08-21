@@ -40,8 +40,29 @@ function base(overrides: Partial<SecretResolveAuthzInput["handle"]> = {}): Secre
     jobOwner: { ...OWNER },
     ownerMembershipActive: null,
     liveTargetGeneration: 7,
+    liveTargetId: LIVE_TARGET_ID,
+    // NOTE: the compiler does NOT protect this file. `server/tsconfig.json` excludes
+    // `src/__tests__` and vitest erases types, so the `SecretResolveAuthzInput`
+    // annotation above would have accepted a missing `deviceCredential` and passed
+    // `undefined` silently. Only `job-control.ts` errors on the real signature.
+    deviceCredential: null,
   };
 }
+
+/** A verified credential owned by OWNER on a target owned by OWNER. */
+function verifiedCredential(over: Record<string, unknown> = {}) {
+  return {
+    state: "verified",
+    ownerUserId: OWNER.executorPrincipalId,
+    executionTargetId: LIVE_TARGET_ID,
+    ...over,
+  };
+}
+
+/** `ref_id` for device_local is the provider_credentials uuid PK (D12/1). */
+const DEVICE_CREDENTIAL_ID = "b3f1c2d4-5e6a-4b7c-8d9e-0f1a2b3c4d5e";
+/** The device the job is placed on — a device_local credential must live on it. */
+const LIVE_TARGET_ID = "a3000000-0000-4000-8000-000000000003";
 
 describe("DAT-004 authorizeSecretResolve (pure decision)", () => {
   it("admits a well-formed non-owner-bound company_secret handle", () => {
@@ -60,12 +81,14 @@ describe("DAT-004 authorizeSecretResolve (pure decision)", () => {
   it("admits a device_local handle owned by the locked job executor with active membership", () => {
     const input = base({
       refKind: "device_local",
+      refId: DEVICE_CREDENTIAL_ID,
       materialization: "file",
       usePolicy: "sandbox_local_only",
       ownerPrincipalKind: "user",
       ownerPrincipalId: "user-owner-1",
     });
     input.ownerMembershipActive = true;
+    input.deviceCredential = verifiedCredential();
     expect(authorizeSecretResolve(input)).toBe("admit");
   });
 
@@ -113,14 +136,14 @@ describe("DAT-004 authorizeSecretResolve (pure decision)", () => {
   });
 
   it("DENIES a device_local handle with no denormalized owner (incomplete binding)", () => {
-    const input = base({ refKind: "device_local", materialization: "file", usePolicy: "sandbox_local_only" });
+    const input = base({ refKind: "device_local", refId: DEVICE_CREDENTIAL_ID, materialization: "file", usePolicy: "sandbox_local_only" });
     input.ownerMembershipActive = true;
     expect(authorizeSecretResolve(input)).toBe("owner_binding_incomplete");
   });
 
   it("DENIES an owner-bound handle whose owner is NOT the locked job executor", () => {
     const input = base({
-      refKind: "device_local", materialization: "file", usePolicy: "sandbox_local_only",
+      refKind: "device_local", refId: DEVICE_CREDENTIAL_ID, materialization: "file", usePolicy: "sandbox_local_only",
       ownerPrincipalKind: "user", ownerPrincipalId: "someone-else",
     });
     input.ownerMembershipActive = true;
@@ -129,7 +152,7 @@ describe("DAT-004 authorizeSecretResolve (pure decision)", () => {
 
   it("DENIES an owner-bound handle whose owner lost company membership (re-check at resolve)", () => {
     const input = base({
-      refKind: "device_local", materialization: "file", usePolicy: "sandbox_local_only",
+      refKind: "device_local", refId: DEVICE_CREDENTIAL_ID, materialization: "file", usePolicy: "sandbox_local_only",
       ownerPrincipalKind: "user", ownerPrincipalId: "user-owner-1",
     });
     input.ownerMembershipActive = false;
@@ -168,10 +191,17 @@ describe("authorizeSecretResolve — bound to the committed vectors fixture", ()
     context: { jobOwner: { executorPrincipalKind: string; executorPrincipalId: string }; liveTargetGeneration: number };
     admitVectors: Array<{ name: string; handle: Record<string, unknown>; ownerMembershipActive: boolean | null }>;
     rejectVectors: Array<{ name: string; reason: string; handle: Record<string, unknown>; ownerMembershipActive: boolean | null }>;
+  } & {
+    admitVectors: Array<{ deviceCredential?: unknown }>;
+    rejectVectors: Array<{ deviceCredential?: unknown }>;
   };
   // The DB always sends `null` (never `undefined`) for a missing column — normalize so
   // the fixture faithfully models a persisted row.
-  const asInput = (handle: Record<string, unknown>, ownerMembershipActive: boolean | null): SecretResolveAuthzInput => ({
+  const asInput = (
+    handle: Record<string, unknown>,
+    ownerMembershipActive: boolean | null,
+    deviceCredential: unknown = null,
+  ): SecretResolveAuthzInput => ({
     handle: {
       status: (handle.status ?? null) as never,
       refKind: (handle.refKind ?? null) as never,
@@ -186,16 +216,18 @@ describe("authorizeSecretResolve — bound to the committed vectors fixture", ()
     jobOwner: fixture.context.jobOwner,
     ownerMembershipActive,
     liveTargetGeneration: fixture.context.liveTargetGeneration,
+    liveTargetId: (fixture.context as { liveTargetId: string }).liveTargetId,
+    deviceCredential: (deviceCredential ?? null) as never,
   });
 
   it("admits every committed admit vector", () => {
     for (const v of fixture.admitVectors) {
-      expect(authorizeSecretResolve(asInput(v.handle, v.ownerMembershipActive))).toBe("admit");
+      expect(authorizeSecretResolve(asInput(v.handle, v.ownerMembershipActive, v.deviceCredential))).toBe("admit");
     }
   });
   it("rejects every committed reject vector with the exact reason", () => {
     for (const v of fixture.rejectVectors) {
-      expect(authorizeSecretResolve(asInput(v.handle, v.ownerMembershipActive))).toBe(v.reason);
+      expect(authorizeSecretResolve(asInput(v.handle, v.ownerMembershipActive, v.deviceCredential))).toBe(v.reason);
     }
   });
 });

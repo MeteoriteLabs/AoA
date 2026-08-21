@@ -35,6 +35,12 @@ function reasonsFromSource() {
 }
 
 const OWNER = { executorPrincipalKind: "user", executorPrincipalId: "owner-1" };
+/** The device the job is placed on; a device_local credential must live on it. */
+const LIVE_TARGET_ID = "a3000000-0000-4000-8000-000000000003";
+const DEVICE_CREDENTIAL_ID = "b3f1c2d4-5e6a-4b7c-8d9e-0f1a2b3c4d5e";
+const verifiedCredential = (over = {}) => ({
+  state: "verified", ownerUserId: "owner-1", executionTargetId: LIVE_TARGET_ID, ...over,
+});
 
 function decide(handle, overrides = {}) {
   return decideResolve({
@@ -42,6 +48,8 @@ function decide(handle, overrides = {}) {
     jobOwner: OWNER,
     ownerMembershipActive: null,
     liveTargetGeneration: 7,
+    liveTargetId: LIVE_TARGET_ID,
+    deviceCredential: null,
     ...overrides,
   });
 }
@@ -96,11 +104,13 @@ test("denies a target-generation mismatch and admits an equal pin", () => {
 });
 
 test("device_local owner binding + membership re-check", () => {
-  const owned = { refKind: "device_local", materialization: "file", usePolicy: "sandbox_local_only", ownerPrincipalKind: "user", ownerPrincipalId: "owner-1" };
-  assert.equal(decide(activeHandle({ refKind: "device_local", materialization: "file", usePolicy: "sandbox_local_only" }), { ownerMembershipActive: true }), "owner_binding_incomplete");
+  // refId must be the provider_credentials uuid: a device_local handle with a slug is
+  // refused `ref_pointer_malformed` by rule 5b before any of these rules is reached.
+  const owned = { refKind: "device_local", refId: DEVICE_CREDENTIAL_ID, materialization: "file", usePolicy: "sandbox_local_only", ownerPrincipalKind: "user", ownerPrincipalId: "owner-1" };
+  assert.equal(decide(activeHandle({ refKind: "device_local", refId: DEVICE_CREDENTIAL_ID, materialization: "file", usePolicy: "sandbox_local_only" }), { ownerMembershipActive: true }), "owner_binding_incomplete");
   assert.equal(decide(activeHandle({ ...owned, ownerPrincipalId: "other" }), { ownerMembershipActive: true }), "owner_binding_incomplete");
   assert.equal(decide(activeHandle(owned), { ownerMembershipActive: false }), "owner_membership_lost");
-  assert.equal(decide(activeHandle(owned), { ownerMembershipActive: true }), "admit");
+  assert.equal(decide(activeHandle(owned), { ownerMembershipActive: true, deviceCredential: verifiedCredential() }), "admit");
 });
 
 test("verifyFixture throws when an admit vector is mutated to a denial shape", () => {
@@ -178,13 +188,13 @@ test("a device_local handle admits on the fence-proxy seam with a bound destinat
   assert.equal(
     decide(activeHandle({
       refKind: "device_local",
-      refId: "b3f1c2d4-5e6a-4b7c-8d9e-0f1a2b3c4d5e",
+      refId: DEVICE_CREDENTIAL_ID,
       materialization: "proxy",
       usePolicy: "fence_proxy",
       destination: "https://api.provider.example",
       ownerPrincipalKind: "user",
       ownerPrincipalId: "owner-1",
-    }), { ownerMembershipActive: true }),
+    }), { ownerMembershipActive: true, deviceCredential: verifiedCredential() }),
     "admit",
   );
 });

@@ -41,6 +41,12 @@ const ORG = "a5000000-0000-4000-8000-000000000001";
 const COMPANY = "a5000000-0000-4000-8000-000000000002";
 const TARGET = "a5000000-0000-4000-8000-000000000003";
 const WORKER = "a5000000-0000-4000-8000-000000000005";
+// DSK-001 Lane B. A device_local credential belongs to a USER (its owner_user_id
+// references the `user` table), so the handle owner must be a user — and rule 6 also
+// requires the handle owner to be the LOCKED job's executor. The job below therefore
+// executes as this user rather than as the worker principal.
+const OWNER_USER = "a5000000-0000-4000-8000-0000000000cc";
+const DEVICE_CREDENTIAL = "a5000000-0000-4000-8000-0000000000c1";
 const PASSWORD = "dat-005-role-password";
 const POLICY_HASH = "3".repeat(64);
 const THUMBPRINT = "4".repeat(64);
@@ -243,7 +249,7 @@ integration("DAT-005 fence-aware egress proxy", () => {
        available_at, priority, status, created_at, updated_at)
        VALUES (${jobId}, ${ORG}, ${COMPANY}, 'batch', 'one_shot', ${jobId},
          ${{ kind: "one_shot", operationId: jobId, operationKind: "extraction" }},
-         'system', 'dat-005-test', 'worker', ${WORKER}, ${workload},
+         'system', 'dat-005-test', 'user', ${OWNER_USER}, ${workload},
          ${"5".repeat(64)}, ${{ policyId: "job-submission-default", version: 1 }}, ${POLICY_HASH},
          ${{ workloadType: "batch", requiredCapabilities: ["sandbox.process_isolated"] }},
         ${{ policyId: "job-submission-default", policyVersion: 1, requestedTarget: TARGET }},
@@ -374,7 +380,9 @@ integration("DAT-005 fence-aware egress proxy", () => {
       // Both paths deny `malformed` (non-disclosing by design), so the test passed
       // while proving nothing.
       await admin`INSERT INTO company_memberships (company_id, principal_type, principal_id, status)
-        VALUES (${COMPANY}, 'worker', ${WORKER}, 'active')`;
+        VALUES (${COMPANY}, 'user', ${OWNER_USER}, 'active')`;
+      await admin`INSERT INTO "user" (id, name, email, created_at, updated_at)
+        VALUES (${OWNER_USER}, 'DAT-005 owner', 'owner@dat-005.test', now(), now())`;
       const provider = providerProfile();
       const profile = registeredProfile(provider);
       await admin`INSERT INTO execution_targets
@@ -384,6 +392,13 @@ integration("DAT-005 fence-aware egress proxy", () => {
         VALUES (${TARGET}, ${ORG}, 'dat-005-target', 'dedicated_worker', 'dedicated_tenant', 'active', '{}', '{}',
           'organization', ${AUTHORITY_KEY}, 1, ${profile}, ${sha256(canonicalizeJsonV1(profile))},
           ${provider}, clock_timestamp())`;
+      // The credential the device_local handle points at. `execution_target_id` is THIS
+      // target: a device_local value lives in one machine's OS keystore, and the job
+      // must be placed on that machine to read it.
+      await admin`INSERT INTO provider_credentials
+        (id, company_id, provider, owner_user_id, execution_target_id, kind, state, verified_at)
+        VALUES (${DEVICE_CREDENTIAL}, ${COMPANY}, 'anthropic', ${OWNER_USER}, ${TARGET},
+                'personal_subscription', 'verified', now())`;
       const hello = workerHello();
       await admin`INSERT INTO workers
         (id, scope, organization_id, execution_target_id, target_authority_key, device_public_key,
@@ -537,8 +552,8 @@ integration("DAT-005 fence-aware egress proxy", () => {
     const rec = recordingDispatch();
     const { offer } = await activateLease();
     await mintHandle(offer.job.jobId, "h-device", {
-      refKind: "device_local", refId: "pc-1", materialization: "file", usePolicy: "sandbox_local_only",
-      destination: null, ownerPrincipalKind: "worker", ownerPrincipalId: WORKER,
+      refKind: "device_local", refId: DEVICE_CREDENTIAL, materialization: "file", usePolicy: "sandbox_local_only",
+      destination: null, ownerPrincipalKind: "user", ownerPrincipalId: OWNER_USER,
     });
     const proxy = proxyDeps({ brokers, dispatch: rec.dispatch });
     const res = await proxy.egress({ auth: auth(`e-${crypto.randomUUID()}`), request: egressRequest(offer, "h-device", "https://api.notion.com/v1") });

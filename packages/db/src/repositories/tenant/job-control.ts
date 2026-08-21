@@ -23,6 +23,7 @@ import {
   organizationMemberships,
   organizations,
   executionTargets,
+  providerCredentials,
   workers,
   workerOperationReceipts,
   workerLeaseRejections,
@@ -2720,6 +2721,42 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         ownerMembershipActive = membership != null;
       }
 
+      // DSK-001 Lane B (D12/3 + D12/4) — the device credential, read in THIS transaction,
+      // as a sibling of the owner-membership re-check above.
+      //
+      // Only for `device_local`: every other ref_kind performs no query at all, so this
+      // costs nothing on the paths that do not need it. The lookup is scoped by the
+      // LOCKED lease's company — `provider_credentials` is company-scoped while
+      // `job_secret_handles` is org-scoped, and the job is what binds them — so a handle
+      // can never reach across companies by naming a foreign credential id.
+      //
+      // The read is NOT locked, deliberately: neither `handle.status` nor
+      // `ownerMembershipActive` is either, and for all three revocation takes effect on
+      // the NEXT resolve. Taking `FOR SHARE` on a company-scoped credentials table from
+      // inside a transaction already holding the lease/attempt locks would add a new
+      // lock-ordering surface for a strictly narrower window than the mechanism already
+      // tolerates. Recorded as a decision (Lane B design D-B5), not an oversight.
+      let deviceCredential: {
+        state: string | null;
+        ownerUserId: string | null;
+        executionTargetId: string | null;
+      } | null = null;
+      if (row.refKind === "device_local" && row.refId) {
+        const [credential] = await tx
+          .select({
+            state: providerCredentials.state,
+            ownerUserId: providerCredentials.ownerUserId,
+            executionTargetId: providerCredentials.executionTargetId,
+          })
+          .from(providerCredentials)
+          .where(and(
+            eq(providerCredentials.id, row.refId),
+            eq(providerCredentials.companyId, input.companyId),
+          ))
+          .limit(1);
+        deviceCredential = credential ?? null;
+      }
+
       // The PURE decision (D6): re-verify the materialization×use_policy invariant, the
       // sandbox-local-vs-network-destination invariant, the bound_target_generation pin
       // (D5) against the LIVE lease generation, revocation, and the owner binding.
@@ -2744,6 +2781,10 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         // request's generation IS the live one (and is non-null typed).
         ownerMembershipActive,
         liveTargetGeneration: input.targetGeneration,
+        // The device the job is actually placed on. `guardActiveFence` already proved
+        // this is the LIVE target under lock, so it is authoritative here.
+        liveTargetId: input.targetId,
+        deviceCredential,
       });
       if (decision !== "admit") throw new SecretResolveRejection(decision);
 

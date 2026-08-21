@@ -231,17 +231,40 @@ addition away from this the whole time. Both are now gated on named sets
 (`GRANTED_AFTER_0213`, `GRANTED_AFTER_0214`) rather than a growing chain of
 `table === "..."` clauses, so the next addition has one obvious home.
 
-### D-B4 — the owner triple includes the `execution_targets` leg (OQ-4)
+### D-B4 — the third leg binds the credential to its DEVICE, not to a target owner (OQ-4)
 
-`guardActiveFence` matches `leases.targetId` under lock but proves nothing about
-`execution_targets.owner_user_id`. The third leg is what stops a credential owned by user A
-being activated on a target owned by user B. It costs one indexed PK lookup.
+> **AMENDED 2026-08-21, during B6.** The design's third owner leg compared
+> `provider_credentials.owner_user_id === execution_targets.owner_user_id`. Implementing
+> it showed that is both weaker and wrong-shaped:
+>
+> 1. **It says nothing about which device holds the value.** A `device_local` credential
+>    lives in exactly one machine's OS keystore, named by
+>    `provider_credentials.execution_target_id`. If the job is placed anywhere else, that
+>    machine cannot read it. Owner equality does not express this.
+> 2. **It can never hold for an organization-scoped target**, whose `owner_user_id` is
+>    NULL — so it would reject every handle on a shared worker rather than the ones that
+>    are actually mis-bound. Both integration suites use organization-scoped targets, and
+>    the rule as designed would have forced a fixture rewrite to accommodate a check that
+>    was not the right check.
+>
+> **Ships instead:** `credential.executionTargetId === input.liveTargetId`, where
+> `liveTargetId` is the lease's target — already proven under lock by `guardActiveFence`.
+> This subsumes the owner comparison: a credential and a target that disagree about the
+> device are mis-bound whoever owns them. The reason is `credential_target_mismatch`.
+>
+> It also removed a query: the transaction no longer reads `execution_targets` at all,
+> so the column-projection trap OQ-4 flagged (table-level privileges are `[]`) does not
+> arise.
 
-`owner_user_id` is already in `aoa_app`'s granted column list on `execution_targets`
-(`0221`), so **no new grant is needed for this leg** — but table-level privileges are `[]`,
-so the `tx.select()` **must carry an explicit projection**. A bare `select()` fails.
+Legs 1 and 2 are unchanged: `ownerPrincipalKind === "user"` (because
+`provider_credentials.owner_user_id` references the `user` table, so a worker or agent
+principal can never own a device credential), and
+`ownerPrincipalId === provider_credentials.owner_user_id`.
 
-All three owner columns are `text`; there is no type mismatch in the comparison.
+Leg 1 is checked **before** the owner-binding rule, deliberately: it is a property of the
+handle alone, and placing it after would make `owner_principal_kind_invalid` unreachable
+whenever the job's executor is itself a non-user principal — which is exactly the case
+that motivates it.
 
 ### D-B5 — the credential read is read-committed, deliberately (OQ-6)
 

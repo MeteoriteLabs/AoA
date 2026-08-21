@@ -149,6 +149,13 @@ export class OrphanQuarantineRejection extends Error {
 export const SECRET_REF_KINDS = ["company_secret", "connector_oauth", "provider_key", "device_local"] as const;
 export type SecretRefKind = (typeof SECRET_REF_KINDS)[number];
 
+/**
+ * `ref_id` for a `device_local` handle: the `provider_credentials` uuid PK, lowercase
+ * or upper. Anchored — a uuid embedded in a longer string is not a uuid.
+ */
+const DEVICE_CREDENTIAL_REF_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Non-secret facts read from the widened handle row (never a value). */
 export interface SecretResolveHandleFacts {
   /** `active` | `revoked`. */
@@ -177,6 +184,28 @@ export interface SecretResolveJobOwner {
   executorPrincipalId: string;
 }
 
+/**
+ * The `provider_credentials` row a `device_local` handle points at, read in the SAME
+ * fenced transaction. `null` means the query ran and found NOTHING — or, outside a
+ * `device_local` handle, that no query was needed.
+ *
+ * A STRUCT rather than three booleans on purpose. Booleans would make the caller
+ * decide *why* a credential is unacceptable, and the caller is the transaction — the
+ * one place that cannot be exercised by the vector lane. Passing the facts lets the
+ * PURE function name the reason, so every branch is provable without a database.
+ */
+export interface DeviceCredentialFacts {
+  /** `pending | verified | revoked | suspended` (text; no DB CHECK constrains it). */
+  state: string | null;
+  /** `provider_credentials.owner_user_id`. */
+  ownerUserId: string | null;
+  /**
+   * `provider_credentials.execution_target_id` — the device whose OS keystore actually
+   * holds this credential's value.
+   */
+  executionTargetId: string | null;
+}
+
 export interface SecretResolveAuthzInput {
   handle: SecretResolveHandleFacts;
   jobOwner: SecretResolveJobOwner;
@@ -186,6 +215,18 @@ export interface SecretResolveAuthzInput {
   ownerMembershipActive: boolean | null;
   /** The LIVE target generation of the active lease (proven by `guardActiveFence`). */
   liveTargetGeneration: number;
+  /** The LIVE target of the active lease — the device the job is actually placed on. */
+  liveTargetId: string;
+  /**
+   * D12(3)+(4) — the credential a `device_local` handle points at, read in the SAME
+   * fenced transaction as the membership re-check. `null` for every other ref_kind
+   * (no query is performed) and `null` when the row does not exist.
+   *
+   * NOT optional. An optional field would compile everywhere unchanged and silently
+   * arrive as `undefined` — and `server/tsconfig.json` excludes `src/__tests__`, so
+   * the test literals would not have complained either.
+   */
+  deviceCredential: DeviceCredentialFacts | null;
 }
 
 /**
@@ -218,6 +259,12 @@ export const SECRET_RESOLVE_REJECTION_REASONS = [
   "target_generation_mismatch",
   "owner_binding_incomplete",
   "owner_membership_lost",
+  "ref_pointer_malformed",
+  "credential_not_found",
+  "credential_unverified",
+  "credential_owner_mismatch",
+  "credential_target_mismatch",
+  "owner_principal_kind_invalid",
 ] as const;
 
 export type SecretResolveRejectionReason = (typeof SECRET_RESOLVE_REJECTION_REASONS)[number];
@@ -297,6 +344,29 @@ export function authorizeSecretResolve(input: SecretResolveAuthzInput): SecretRe
     return "target_generation_mismatch";
   }
 
+  // 5b. device_local HANDLE SHAPE (D12/1 + D12/4). Pure, and deliberately ahead of the
+  //     owner-binding check: both are properties of the handle ALONE, so they hold
+  //     regardless of who the job executor happens to be. Putting them after rule 6
+  //     would make `owner_principal_kind_invalid` unreachable whenever the job's
+  //     executor is itself a non-user principal — exactly the case that motivates it.
+  if (h.refKind === "device_local") {
+    // `ref_id` IS `provider_credentials.id`, a uuid PK. The column comment sanctioned
+    // "id-or-slug"; for this ref_kind the slug reading is retired. A DB-level FK is not
+    // available — job_secret_handles is org-scoped and provider_credentials is
+    // company-scoped, and a cross-scope FK is the cross-tenant existence oracle E2-F013
+    // already removed once — so the shape is checked here, where the vector lane can
+    // prove it without a database.
+    if (!DEVICE_CREDENTIAL_REF_RE.test(h.refId)) return "ref_pointer_malformed";
+    // `provider_credentials.owner_user_id` references the `user` table, so a worker or
+    // agent principal can never be the owner of a device credential. Without this the
+    // comparison below would be between a user id and a worker id and could only ever
+    // fail — with a reason that misdescribes the fault.
+    // Only when a kind is actually present: a handle with NO owner at all is
+    // "owner_binding_incomplete" at rule 6, which is the more precise fault. Checking
+    // it here unconditionally would swallow that case under a misleading reason.
+    if (h.ownerPrincipalKind && h.ownerPrincipalKind !== "user") return "owner_principal_kind_invalid";
+  }
+
   // 6. Owner binding + membership re-check. device_local is ALWAYS owner-bound; any
   //    handle that denormalizes an owner is re-validated against the LOCKED job's
   //    executor + a live, active company membership.
@@ -308,6 +378,38 @@ export function authorizeSecretResolve(input: SecretResolveAuthzInput): SecretRe
       return "owner_binding_incomplete";
     }
     if (input.ownerMembershipActive !== true) return "owner_membership_lost";
+  }
+
+  // 7. device_local CREDENTIAL BINDING (D12/3 + D12/4). The facts come from the same
+  //    fenced transaction as the membership re-check; the decision stays here so the
+  //    vector lane proves every branch with no database.
+  if (h.refKind === "device_local") {
+    const credential = input.deviceCredential;
+    // Fail-closed on absence: a handle pointing at a credential that does not exist in
+    // the LOCKED lease's company is unresolvable, never resolvable-by-default.
+    if (!credential) return "credential_not_found";
+    // Only a VERIFIED credential may be activated. `state` is plain text with no CHECK
+    // constraint, so this is a positive equality test, never "not revoked".
+    if (credential.state !== "verified") return "credential_unverified";
+    // The OWNER TRIPLE. Rule 6 already proved handle owner === the LOCKED job executor;
+    // these two close it over the credential and the device it lives on.
+    if (credential.ownerUserId !== h.ownerPrincipalId) return "credential_owner_mismatch";
+    // THE CREDENTIAL MUST LIVE ON THE DEVICE THE JOB IS RUNNING ON.
+    //
+    // The design's third owner leg compared `execution_targets.owner_user_id`. That is
+    // both weaker and wrong-shaped, and implementing it showed why: it says nothing
+    // about WHICH device holds the value, and it can never hold for an
+    // organization-scoped target (owner_user_id is NULL there), so it would reject
+    // every handle on a shared worker instead of the ones that are actually
+    // mis-bound.
+    //
+    // The real invariant is direct: a `device_local` value sits in ONE machine's OS
+    // keystore, named by `provider_credentials.execution_target_id`. If the job is
+    // placed anywhere else, that machine cannot read it — so the credential is bound to
+    // its device, and the lease's LIVE target must be that device. This subsumes the
+    // owner comparison, because a credential and a target that disagree about the
+    // device are mis-bound whoever owns them.
+    if (credential.executionTargetId !== input.liveTargetId) return "credential_target_mismatch";
   }
 
   return "admit";

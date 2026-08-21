@@ -48,6 +48,10 @@ export const SECRET_REF_KINDS = ["company_secret", "connector_oauth", "provider_
  * corpus pins it by parsing the array out of the TypeScript source, so a mirror
  * that drifts fails rather than rots.
  */
+/** device_local ref_id is the provider_credentials uuid PK. Anchored. */
+const DEVICE_CREDENTIAL_REF_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export const SECRET_RESOLVE_REJECTION_REASONS = [
   "handle_revoked",
   "unknown_ref_kind",
@@ -59,6 +63,12 @@ export const SECRET_RESOLVE_REJECTION_REASONS = [
   "target_generation_mismatch",
   "owner_binding_incomplete",
   "owner_membership_lost",
+  "ref_pointer_malformed",
+  "credential_not_found",
+  "credential_unverified",
+  "credential_owner_mismatch",
+  "credential_target_mismatch",
+  "owner_principal_kind_invalid",
 ];
 
 /**
@@ -110,6 +120,16 @@ export function decideResolve(input) {
     return "network_destination_missing";
   }
 
+  // 5b. device_local HANDLE SHAPE (D12/1 + D12/4). Ahead of the owner-binding check
+  //     because both are properties of the handle alone.
+  if (h.refKind === "device_local") {
+    if (!DEVICE_CREDENTIAL_REF_RE.test(h.refId)) return "ref_pointer_malformed";
+    // Only when a kind is actually present: a handle with NO owner at all is
+    // "owner_binding_incomplete" at rule 6, which is the more precise fault. Checking
+    // it here unconditionally would swallow that case under a misleading reason.
+    if (h.ownerPrincipalKind && h.ownerPrincipalKind !== "user") return "owner_principal_kind_invalid";
+  }
+
   // 5. Target-generation binding (D5): pinned handles resolve only on their placement.
   if (h.boundTargetGeneration !== null && h.boundTargetGeneration !== undefined
     && h.boundTargetGeneration !== input.liveTargetGeneration) {
@@ -127,6 +147,16 @@ export function decideResolve(input) {
     if (input.ownerMembershipActive !== true) return "owner_membership_lost";
   }
 
+  // 7. device_local CREDENTIAL BINDING (D12/3 + D12/4). Facts read in the same fenced
+  //    transaction as the membership re-check; the decision stays pure.
+  if (h.refKind === "device_local") {
+    const credential = input.deviceCredential ?? null;
+    if (!credential) return "credential_not_found";
+    if (credential.state !== "verified") return "credential_unverified";
+    if (credential.ownerUserId !== h.ownerPrincipalId) return "credential_owner_mismatch";
+    if (credential.executionTargetId !== input.liveTargetId) return "credential_target_mismatch";
+  }
+
   return "admit";
 }
 
@@ -138,6 +168,8 @@ export function verifyFixture(fixture) {
   if (typeof ctx !== "object" || ctx === null) problems.push("context missing");
   const jobOwner = ctx?.jobOwner;
   const liveTargetGeneration = ctx?.liveTargetGeneration;
+  const liveTargetId = ctx?.liveTargetId;
+  if (typeof liveTargetId !== "string" || liveTargetId === "") problems.push("context.liveTargetId missing");
   if (typeof jobOwner !== "object" || jobOwner === null) problems.push("context.jobOwner missing");
   if (!Number.isInteger(liveTargetGeneration)) problems.push("context.liveTargetGeneration must be an integer");
 
@@ -155,6 +187,8 @@ export function verifyFixture(fixture) {
       handle: v.handle,
       jobOwner,
       ownerMembershipActive: v.ownerMembershipActive ?? null,
+      deviceCredential: v.deviceCredential ?? null,
+      liveTargetId,
       liveTargetGeneration,
     });
     if (decision !== "admit") {
@@ -171,6 +205,8 @@ export function verifyFixture(fixture) {
       handle: r.handle,
       jobOwner,
       ownerMembershipActive: r.ownerMembershipActive ?? null,
+      deviceCredential: r.deviceCredential ?? null,
+      liveTargetId,
       liveTargetGeneration,
     });
     if (decision === "admit") {
