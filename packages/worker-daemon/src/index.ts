@@ -138,6 +138,19 @@ export type {
   DeviceReceiptStore,
 } from "./identity/device-identity-store.js";
 
+// DSK-003 Lane A — owner-only file custody (one copy) + the local control token that
+// gates every MUTATING desktop control.
+export { GROUP_OTHER_MASK, STRICT_FILE_MODE, isOwnerOnlyMode, ownerOnlyViolation } from "./identity/file-custody.js";
+export type { OwnerOnlyViolation, OwnerOnlyDeps } from "./identity/file-custody.js";
+export {
+  CONTROL_TOKEN_BYTES,
+  CONTROL_TOKEN_REJECTIONS,
+  MIN_STORED_TOKEN_LENGTH,
+  generateControlToken,
+  verifyControlToken,
+} from "./identity/control-token.js";
+export type { ControlTokenRejection, ControlTokenResult } from "./identity/control-token.js";
+
 export { enrollOnce, EnrollOnceError, EnrollmentAuthorityError } from "./enrollment/enroll-once.js";
 export type { EnrollOnceDeps, EnrollmentOutcome } from "./enrollment/enroll-once.js";
 
