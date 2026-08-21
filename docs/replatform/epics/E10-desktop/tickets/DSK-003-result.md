@@ -82,7 +82,7 @@ Two consequences worth naming:
 
 ## 4. Where mutation earned its keep
 
-65/65 is the boring number. These are the ones that mattered:
+80/80 is the boring number. These are the ones that mattered:
 
 **Three surviving mutants were dead code, not missing tests**, and each was removed or
 documented rather than papered over with a contrived test:
