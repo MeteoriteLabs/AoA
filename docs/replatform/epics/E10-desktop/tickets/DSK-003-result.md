@@ -3,7 +3,7 @@
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
-**Tip:** `1bba6c86b`
+**Tip:** `cf755add9`
 **Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
 
 **This is a partial closure, and §6 says exactly which clause is not closed and why.**
@@ -32,8 +32,9 @@ not wired**.
 | `9f5e10e9f` | the macOS agent was discarding its own output | 8/8 |
 | `383548a22` | control-file locations, derived from the vault | 4/4 |
 | `1bba6c86b` | the host routes control commands | 5/5 |
+| `cf755add9` | control-token provisioning — never quietly replaced | 8/8 |
 
-**117 mutants, 117 killed.** Five of those only after the mutant exposed something wrong in
+**125 mutants, 125 killed.** Five of those only after the mutant exposed something wrong in
 my own work rather than in the code under test (§4).
 
 ---
@@ -88,7 +89,7 @@ Two consequences worth naming:
 
 ## 4. Where mutation earned its keep
 
-117/117 is the boring number. These are the ones that mattered:
+125/125 is the boring number. These are the ones that mattered:
 
 **Three surviving mutants were dead code, not missing tests**, and each was removed or
 documented rather than papered over with a contrived test:
@@ -108,6 +109,22 @@ is source-pinned because it is a principle, not an observable behaviour.
 **Two exposed gaps in my own tests**: a flag guard never exercised because the only flag
 case was `--token=` (consumed before the guard), and a documented allowlist rule — one bad
 entry rejects the whole list — that nothing tested.
+
+### False kills: the harness note is the only detector
+
+Three times this ticket a mutant reported KILLED while the named assertion had not
+failed, and every time it was a **kill for the wrong reason** — once a syntax error from
+a block-reordering mutant, twice a suite that did not LOAD at all because a heredoc had
+turned `
+` into a literal newline inside a string. `Tests no tests` in the runner output
+is the tell. A kill for the wrong reason proves nothing, and without the harness printing
+`killed, but these expected tests did not fail` all three would have inflated the score
+silently. Every battery in this ticket now names the test it expects to fail.
+
+That escaping failure happened **four times** in total, twice damaging production code
+(a control-character regex, a trailing-separator regex) and twice a test file. Both
+production cases were fixed by removing the regex entirely in favour of a character
+scan; the test case by building the newline with `String.fromCharCode`.
 
 **Two mutants were simply wrong**, not coverage gaps. One appended `arguments[3]` at a
 3-arg call site — `undefined`, dropped by `JSON.stringify`, so nothing leaked. The other
@@ -208,7 +225,8 @@ since launchd would create a file wherever it resolved a relative string.
 
   **What is still injected rather than implemented:** the host takes `signal`,
   `resolveTarget`, `readStatus` and `readLogTail` as dependencies and no production
-  wiring supplies them yet. Each is thin and unambiguous except `readLogTail` on Windows,
+  wiring supplies them yet. The token they authorize against IS provisioned
+  (`cf755add9`), so the authorization half of the loop is complete. Each is thin and unambiguous except `readLogTail` on Windows,
   which has no target at all (§5a). So the surface is complete and testable end-to-end
   through injection, and one composition step short of usable from a terminal.
 
