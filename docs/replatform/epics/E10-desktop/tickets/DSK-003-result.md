@@ -3,7 +3,7 @@
 **Date:** 2026-08-21
 **Branch:** `docs/replatform-program` (PR #323)
 **Start SHA:** `40f512c8f` (the DSK-003 design, committed before any code)
-**Tip:** `fa3c45afc`
+**Tip:** `a8f33e492`
 **Covers:** D1–D10; invariants I1, I2, I5, I6, I7, I8, I9, I10, I11
 
 **This is a partial closure, and §6 says exactly which clause is not closed and why.**
@@ -35,8 +35,9 @@ not wired**.
 | `cf755add9` | control-token provisioning — never quietly replaced | 8/8 |
 | `f8435d65d` | the production control effects | 8/8 |
 | `fa3c45afc` | the last wiring line — real effects by default | 5/5 |
+| `a8f33e492` | the host opens its own log — the last design gap | 5/5 |
 
-**138 mutants, 138 killed.** Five of those only after the mutant exposed something wrong in
+**143 mutants, 143 killed.** Five of those only after the mutant exposed something wrong in
 my own work rather than in the code under test (§4).
 
 ---
@@ -91,7 +92,7 @@ Two consequences worth naming:
 
 ## 4. Where mutation earned its keep
 
-138/138 is the boring number. These are the ones that mattered:
+143/143 is the boring number. These are the ones that mattered:
 
 **Three surviving mutants were dead code, not missing tests**, and each was removed or
 documented rather than papered over with a contrived test:
@@ -219,6 +220,28 @@ The fix is per-platform, and for one platform it is deliberately nothing:
 The keys are emitted only when a home directory is known: half a path is worse than none,
 since launchd would create a file wherever it resolved a relative string.
 
+## 5b. Closing the log gap: the shell that was not added
+
+Task Scheduler has no native redirection, so the conventional Windows answer is to launch
+through `cmd /c "... >> file 2>&1"`. That was rejected. It puts a **shell on the launch
+path of the process that holds the device identity**, and introduces cmd quoting as a
+second escaping grammar alongside the XML one the manifests already guard — in a ticket
+where escaping mistakes had already produced two born-dead guards.
+
+`createWorkerLogger` already accepted a `destination`, so the host opens the file
+in-process instead. Four properties, each with a reason: **append** (a restart must not
+erase the log explaining why the last run stopped), **mkdir** (the vault directory may not
+exist on a first run, and a logger that threw there would take the host down before it
+could say why), **0600** (the redactor removes sensitive values, but the log still
+discloses which jobs ran and when), and **an explicit destination still wins** so every
+suite injecting a stream keeps working.
+
+The last of those was found by mutation: a source pin for it matched a mutant that had
+merely reordered the ternary, because the pinned string survived the reorder. Only a
+behavioural test distinguishes them — and it matters, because if `filePath` ever outranked
+an injected stream, every existing suite would silently start writing to disk instead of
+to the stream it asserts on.
+
 ## 6. What is NOT done
 
 - **Clause (4) is complete in substance.** Routing, authorization, host discovery with
@@ -234,12 +257,15 @@ since launchd would create a file wherever it resolved a relative string.
   injected, so the binary works rather than declining to; `deps.control` is now an
   override for tests. `status`, `logs`, `drain` and `revoke` are reachable end to end.
 
-  **One DESIGN gap remains, and it is not wiring.** `readLogTail` has no target on
-  Windows — the only platform the vault supports — because Task Scheduler cannot redirect
-  and the host does not open its own file (§5a). `readLogFile` is deliberately left
-  ABSENT rather than pointed at a path nothing writes, so `logs` reports that there is no
-  log file instead of reporting an empty one. Closing it means deciding whether the host
-  opens and rotates its own file, which is a decision this ticket did not own.
+  **The log gap is closed** (`a8f33e492`). The host opens its own file via
+  `createWorkerLogger({ filePath })`, so `logs` has a real target on Windows. The
+  conventional answer — wrapping the launch in `cmd /c "... >> file"` — was rejected
+  because it puts a SHELL on the launch path of the process holding the device identity
+  and adds cmd quoting as a second escaping grammar beside the XML one. See §5b.
+
+  **Rotation is not implemented** and is named as a residual: the file appends without
+  bound. That is a real operational limit, not a security one, and DSK-004 owns the
+  update/repair lifecycle where it belongs.
 
 - **No installer is produced.** Lane C ships the autostart manifests and the
   least-privilege assertions; it does not ship a `.pkg`, `.msi` or staging root. The
