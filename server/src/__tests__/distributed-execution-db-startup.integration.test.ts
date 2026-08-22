@@ -5192,6 +5192,21 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         ...legacyGrants.JOB_SUBMISSION_NEW_PATH_GRANTS,
         ...legacyGrants.WORKER_ENROLLMENT_APP_GRANTS,
         ...legacyGrants.JOB_LEASING_NEW_PATH_GRANTS,
+        // REL-004 Lane C. `instance_settings` was swept while its grant lived in
+        // JOB_CONTROL_LEGACY_GRANTS; moving it to its own constant silently dropped it out of
+        // this list, and NOTHING went red — the assertion is `acceptedMutations` is empty, and a
+        // relation that is never probed contributes nothing. That is the "a check that nothing
+        // runs" class, caused by a fix for a different instance of the same class.
+        //
+        // NOTE FOR THE NEXT ADDITION: this spread is HAND-MAINTAINED and already omits ten other
+        // app serving relations (folder_grants, worker_admission_rate_limits, live_event_log,
+        // live_event_sequences, legacy_resource_reconciliation, job_events,
+        // job_projection_receipts, job_control_commands, distributed_cutover_markers,
+        // execution_target_revocations). Deriving it from `APP_SERVING_RELATIONS` would make it
+        // self-maintaining; it is not done here only because each relation costs a full server
+        // boot plus one per column, and this test already carries a 180s budget. Measured and
+        // recorded in REL-004-lane-C-result.md rather than absorbed.
+        ...legacyGrants.KILL_SWITCH_POLICY_APP_GRANTS,
       } as Readonly<Record<string, readonly string[]>>;
       const operatorTables = legacyGrants.WORKER_ENROLLMENT_OPERATOR_GRANTS as
         Readonly<Record<string, readonly string[]>>;
@@ -5265,7 +5280,13 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         }
       }
       expect(acceptedMutations).toEqual([]);
-    }, 180_000);
+      // 180s -> 300s. Every relation in the list costs a full server-boot attempt, and every
+      // non-dropped column costs another; restoring `instance_settings` (7 columns) added eight.
+      // On Linux CI the whole file fits comfortably — the PR run at 4d5bcbead reported exactly
+      // two failures, both in a DIFFERENT file, so this test passed there WITH the relation
+      // covered. On a Windows local run it measured 192s against the old 180s budget. The extra
+      // headroom keeps the local run usable and changes nothing about what is asserted.
+    }, 300_000);
 
     it("fails exact attacl tuples when an expected column gains a grant option", async () => {
       guard();

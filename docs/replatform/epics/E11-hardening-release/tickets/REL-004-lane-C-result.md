@@ -224,14 +224,23 @@ correction anyway.
 migration's GRANT and `appTablePrivileges()` agree in a real database at boot — the contract test
 compares manifest to manifest and would stay green with the migration missing.
 
-Locally on Windows it reports **69 passed / 4 failed**, all four in the `observeServer` group that
-spawns a real server subprocess, all four with `distributed_execution_app_authority`.
+Locally on Windows it reports **69 passed / 4 failed**.
 
-**That first looked like my grant, and it is not.** Run in isolation, the same test PASSES. The
-failure appears only in the full-suite run, whose earlier cases deliberately construct drifted
-roles (`rejects an exact-named app role with inherited secret authority`, `rejects an exact-named
-operator role with a stale table grant`) — residue from those is the ordering hazard, and nothing
-in the suite knows about `instance_settings` at all.
+**CORRECTION.** An earlier revision of this section said all four were in the `observeServer`
+group. That was asserted before the names were in hand and it is wrong in detail — I had verified
+one of them, not four. The actual four, captured with a working reporter:
+
+1. `checks grant-option ACL tuples independently on every derived relation and non-dropped user column` — **a timeout**, not an authority failure
+2. `keeps aoa_operator outside the drizzle migration schema`
+3. `proves the module-load sentinel reaches every guarded module while enabled`
+4. `threads the identical metrics instance through the real flag-on startup and app composition`
+
+Three of the four do spawn a real server subprocess and fail with
+`distributed_execution_app_authority`; the fourth is a timeout with a separate cause (§4.2). Run
+in isolation, (4) PASSES, and the suite's earlier cases deliberately construct drifted roles
+(`rejects an exact-named app role with inherited secret authority`, `rejects an exact-named
+operator role with a stale table grant`), which is the ordering hazard. Nothing in the suite
+knows about `instance_settings` at all.
 
 It DID also surface a genuine local trap on the first attempt, worth recording: `pnpm db:generate`
 writes to `packages/db/src/migrations` while `applyPendingMigrations` loads from
@@ -253,6 +262,32 @@ failures, which looked alarming and meant nothing: `git checkout <sha> -- <path>
 modified files but does **not remove files added since**, so the tree still held every new Lane C
 test and module while their imports had been reverted underneath them. An inconsistent tree
 answers no question. The clean signals are the isolation run and the live D1 lane above.
+
+### 4.2 The fix caused a SILENT coverage loss, which is the failure class itself
+
+Found by an exhaustive grant-surface sweep run after the fix landed, and then verified directly.
+
+`distributed-execution-db-startup.integration.test.ts` contains a grant-option ACL mutation sweep
+that composes its relation list from a **hand-maintained partial spread of six grant constants**
+(`:5188-5194`). While `instance_settings` lived in `JOB_CONTROL_LEGACY_GRANTS` it was swept.
+Moving it to its own constant — the fix for §2.4 — dropped it straight out, and **nothing turned
+red**: the assertion is `expect(acceptedMutations).toEqual([])`, and a relation that is never
+probed contributes nothing to that array.
+
+So the fix for one instance of "a check that nothing runs" created another. Coverage is restored
+by adding the new constant to that spread. Restoring it pushed the test from ~170s to 246s on this
+machine, over its 180s budget, so the budget is now 300s — every relation costs a full server-boot
+attempt and every column costs another, and `instance_settings` has seven columns. Linux CI has
+the headroom: the PR run at `4d5bcbead` had the relation covered (via the legacy constant) and
+reported exactly two failures, both in a different file.
+
+**Not absorbed, deliberately:** that spread still omits **ten** other app serving relations
+(`folder_grants`, `worker_admission_rate_limits`, `live_event_log`, `live_event_sequences`,
+`legacy_resource_reconciliation`, `job_events`, `job_projection_receipts`,
+`job_control_commands`, `distributed_cutover_markers`, `execution_target_revocations`). Deriving
+the list from `APP_SERVING_RELATIONS` would make it self-maintaining, but at ~8 boots per relation
+that is a large addition to a test already at 246s, and it is a pre-existing gap rather than one
+this ticket created. Recorded here and in a comment at the spread, not silently expanded.
 
 Neighbouring suites re-run: `job-leasing.integration` 39/39, whole `worker-daemon` 669/669,
 `tenant-app-db-startup` + `job-control-runtime` + `job-source-governance-matrix` +
