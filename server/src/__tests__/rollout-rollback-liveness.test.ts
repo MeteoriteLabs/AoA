@@ -1,19 +1,15 @@
 /**
- * Wave-3→4 gate, clause 3 — the rollback path's LIMITS, pinned.
+ * Wave-3→4 gate clause 3 — the rollback path's limits.
  *
- * CLI-006's rollback instruction reads "removing the Organization's key from
- * AOA_DISTRIBUTED_EXECUTION_ROLLOUT … a config edit, with no code change and no migration."
- * True, and it omits "and a restart": the rollout source captures its parsed map AND the
- * deployment flag once at construction, and `index.ts` builds it once at boot.
+ * HISTORY, kept because it is the point. This file's G1 block used to pin the OPPOSITE of what
+ * it pins now: that the rollout map was captured at construction, so rollback needed a restart.
+ * Its failure message said "if this assertion now fails, the map has been made live — which is
+ * an improvement, but the rollback runbook … must be corrected in the same change."
  *
- * The test that appears to cover rollback (`cli-006-canary-rollout-mode.test.ts`) constructs a
- * FRESH source from a new env bag — something a running process cannot do — so it proves the
- * decision function, not a live rollback.
- *
- * These are PINNING tests: they assert today's behaviour so the runbook cannot silently become
- * wrong. G1 is deliberately the inverse of the obvious test. It is SUPPOSED to fail the day
- * someone makes the map live — that is precisely when the runbook needs updating, and the
- * failure message says so.
+ * MIG-002 made the map live. The pin fired, named the two documents to fix, and they were fixed
+ * in that commit. The liveness assertions now live in `rollout-dial-live.test.ts` (M1/M2), which
+ * is their natural home; what remains here is the part MIG-002 did NOT change — the flag's
+ * behaviour at the hook, and the fact that it still cannot unregister the worker control plane.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -36,59 +32,6 @@ function resolve(source: ReturnType<typeof createDistributedExecutionRolloutSour
     workloadType: "batch",
   });
 }
-
-// ─── G1 ──────────────────────────────────────────────────────────────────────
-describe("G1 — the rollout map is captured at construction, so rollback needs a restart", () => {
-  it("ignores an Organization being REMOVED from the map after construction", () => {
-    const env: Record<string, string | undefined> = {
-      AOA_DISTRIBUTED_EXECUTION_ENABLED: "1",
-      AOA_DISTRIBUTED_EXECUTION_ROLLOUT: rolloutJson("canary"),
-    };
-    const source = createDistributedExecutionRolloutSource(env);
-    expect(resolve(source)).toBe("canary");
-
-    // The documented rollback, performed on a LIVE process.
-    env.AOA_DISTRIBUTED_EXECUTION_ROLLOUT = rolloutJson(null);
-
-    expect(
-      resolve(source),
-      "The rollout map is parsed ONCE in createDistributedExecutionRolloutSource, so a live " +
-        "process cannot observe this edit. If this assertion now fails, the map has been made " +
-        "live — which is an improvement, but the rollback runbook (docs/deploy/" +
-        "environment-variables.md and CLI-006-result.md) says a restart is required and must " +
-        "be corrected in the same change.",
-    ).toBe("canary");
-  });
-
-  it("ignores a mode DOWNGRADE after construction", () => {
-    const env: Record<string, string | undefined> = {
-      AOA_DISTRIBUTED_EXECUTION_ENABLED: "1",
-      AOA_DISTRIBUTED_EXECUTION_ROLLOUT: rolloutJson("canary"),
-    };
-    const source = createDistributedExecutionRolloutSource(env);
-    env.AOA_DISTRIBUTED_EXECUTION_ROLLOUT = rolloutJson("shadow");
-    expect(resolve(source)).toBe("canary");
-  });
-
-  it("ignores the deployment flag being unset after construction", () => {
-    // The source's OWN flag read is captured too — only the hook re-reads (G2).
-    const env: Record<string, string | undefined> = {
-      AOA_DISTRIBUTED_EXECUTION_ENABLED: "1",
-      AOA_DISTRIBUTED_EXECUTION_ROLLOUT: rolloutJson("canary"),
-    };
-    const source = createDistributedExecutionRolloutSource(env);
-    env.AOA_DISTRIBUTED_EXECUTION_ENABLED = "0";
-    expect(resolve(source)).toBe("canary");
-  });
-
-  it("a FRESHLY constructed source does see the edit — i.e. a restart is what applies it", () => {
-    const rolledBack = createDistributedExecutionRolloutSource({
-      AOA_DISTRIBUTED_EXECUTION_ENABLED: "1",
-      AOA_DISTRIBUTED_EXECUTION_ROLLOUT: rolloutJson(null),
-    });
-    expect(resolve(rolledBack)).toBe("off");
-  });
-});
 
 // ─── G2 ──────────────────────────────────────────────────────────────────────
 describe("G2 — the deployment flag IS live at the heartbeat hook", () => {
@@ -113,17 +56,19 @@ describe("G2 — the deployment flag IS live at the heartbeat hook", () => {
 
     env.AOA_DISTRIBUTED_EXECUTION_ENABLED = "0";
 
-    // THIS is the live lever, and it is the only one. The hook checks the flag itself,
-    // before consulting the source whose own copy is stale (G1).
+    // The hook checks the flag ITSELF, before consulting the source at all. That mattered
+    // more before MIG-002 (when the source's own copy was stale); it still matters because
+    // flag-first is what guarantees no Organization is resolved for a flag-off deployment.
     const after = await h.resolveRunRolloutState({ companyId: "c-1" });
     expect(after.state).toBe("off");
     // Flag-first: no Organization is resolved when the flag is off.
     expect(after.organizationId).toBeNull();
   });
 
-  it("the two levers are therefore NOT interchangeable", async () => {
-    // The distinction the runbook has to carry: same env bag, same edit shape, different
-    // latency. Conflating them is how an operator throws a lever that has not fired.
+  it("both levers are live now — what still differs is SCOPE, not latency", async () => {
+    // Before MIG-002 these two edits had different latency: the flag was live at the hook, the
+    // map needed a restart. Both are live now, so the operator-facing distinction is scope —
+    // the flag stops every Organization, a map edit stops one.
     const env: Record<string, string | undefined> = {
       AOA_DISTRIBUTED_EXECUTION_ENABLED: "1",
       AOA_DISTRIBUTED_EXECUTION_ROLLOUT: rolloutJson("canary"),
@@ -131,12 +76,65 @@ describe("G2 — the deployment flag IS live at the heartbeat hook", () => {
     const h = hook(env);
     const source = createDistributedExecutionRolloutSource(env);
 
-    env.AOA_DISTRIBUTED_EXECUTION_ROLLOUT = rolloutJson(null); // map edit: NOT live
-    expect((await h.resolveRunRolloutState({ companyId: "c-1" })).state).toBe("canary");
-    expect(resolve(source)).toBe("canary");
-
-    env.AOA_DISTRIBUTED_EXECUTION_ENABLED = "0"; // flag unset: live at the hook
+    env.AOA_DISTRIBUTED_EXECUTION_ROLLOUT = rolloutJson(null); // one Organization, live
     expect((await h.resolveRunRolloutState({ companyId: "c-1" })).state).toBe("off");
+    expect(resolve(source)).toBe("off");
+
+    env.AOA_DISTRIBUTED_EXECUTION_ROLLOUT = rolloutJson("canary");
+    expect((await h.resolveRunRolloutState({ companyId: "c-1" })).state).toBe("canary");
+
+    env.AOA_DISTRIBUTED_EXECUTION_ENABLED = "0"; // everything, live
+    expect((await h.resolveRunRolloutState({ companyId: "c-1" })).state).toBe("off");
+  });
+});
+
+// ─── MIG-002 seam ────────────────────────────────────────────────────────────
+const HEARTBEAT_SRC = readFileSync(
+  fileURLToPath(new URL("../services/heartbeat.ts", import.meta.url)),
+  "utf8",
+);
+
+describe("MIG-002 — the org heartbeat seam names its own sink", () => {
+  function hookWithSources(sources: string[]) {
+    const env: Record<string, string | undefined> = {
+      AOA_DISTRIBUTED_EXECUTION_ENABLED: "1",
+      AOA_DISTRIBUTED_EXECUTION_ROLLOUT: JSON.stringify({
+        organizations: { [ORG]: { mode: "canary", workloads: ["batch"], sources } },
+      }),
+    };
+    return createHeartbeatDistributedRolloutHook({
+      env,
+      deploymentMode: "cloud_auth",
+      rolloutSource: createDistributedExecutionRolloutSource(env),
+      resolveOrganizationId: async () => ORG,
+      convertOrchestrator: { convertRunToJob: async () => ({ converted: false, reason: "disabled" }) },
+      comparator: { compare: () => ({}) as never },
+    });
+  }
+
+  it("is OFF for an Organization canaried only for Commander", async () => {
+    // The Wave-4 ordering in one assertion: Commander can be canaried without arming the org
+    // heartbeat. Before MIG-002 this was inexpressible — every sink resolved to "batch".
+    const h = hookWithSources(["commander_turn"]);
+    expect((await h.resolveRunRolloutState({ companyId: "c-1", sourceKind: "task_run" })).state).toBe("off");
+  });
+
+  it("is ON once task_run joins the list", async () => {
+    const h = hookWithSources(["commander_turn", "task_run"]);
+    expect((await h.resolveRunRolloutState({ companyId: "c-1", sourceKind: "task_run" })).state).toBe("canary");
+  });
+
+  it("and heartbeat.ts actually PASSES its sink — the resolver cannot filter what it is not told", () => {
+    // A behavioural test of the hook proves the filter works; only this proves the one
+    // production caller uses it. Without it the seam would silently opt into every sink.
+    const callAt = HEARTBEAT_SRC.indexOf("distributedRolloutHook.resolveRunRolloutState({");
+    expect(callAt).toBeGreaterThan(-1);
+    const call = HEARTBEAT_SRC.slice(callAt, callAt + 500);
+    expect(
+      call,
+      "the org heartbeat must identify itself as task_run, or an Organization opted in for one " +
+        "sink would arm this one too",
+    ).toMatch(/sourceKind:\s*"task_run"/);
   });
 });
 

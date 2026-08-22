@@ -173,7 +173,7 @@ the two documents that must be corrected in the same change.
 
 ## 6. Limits, stated
 
-1. **No live per-Organization rollback exists.** Recommended as a follow-up, with a constraint:
+1. **CLOSED by MIG-002 (Wave 4 item 1).** The source now re-reads per resolution and gained a per-sink `sources` axis, so per-Organization rollback is live and the Wave-4 one-sink-at-a-time ordering is expressible. The G1 pin fired on that change, named the two documents to correct, and they were corrected in the same commit — which is what the pin existed for. ~~No live per-Organization rollback exists.~~
    `index.ts:1162-1163` hands `resolveOrganizationPolicy` / `resolveWorkloadPolicy` to
    `createJobPlacementService`, so the seam and placement share one source. Making the map live
    must make **all** resolvers live together; a version where the seam is live and placement is

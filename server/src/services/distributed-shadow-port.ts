@@ -73,6 +73,8 @@ export interface DistributedShadowRecorderDeps {
   /** Resolves `off | shadow | active | canary` plus the Organization, flag-first. */
   resolveRolloutState(input: {
     companyId: string;
+    /** MIG-002 per-sink axis — the sink whose rollout is being resolved. */
+    sourceKind?: string;
   }): Promise<{ state: string; organizationId: string | null }>;
   probe(input: AdmissibilityProbeInput): Promise<AdmissibilityVerdict>;
   comparator: Pick<JobShadowComparator, "compare">;
@@ -126,6 +128,9 @@ async function recordOnce(
 ): Promise<void> {
   const { state, organizationId } = await deps.resolveRolloutState({
     companyId: input.companyId,
+    // Resolve the rollout for THIS sink. Without it, an Organization opted in for one sink
+    // would arm every sink — the exact thing the per-sink axis exists to prevent.
+    sourceKind: input.source.kind,
   });
   // ONLY shadow. `active`/`canary` are the cutover states and are owned by the
   // convert/placement path, not by an observability record.

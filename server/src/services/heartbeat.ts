@@ -3175,6 +3175,10 @@ export function heartbeatService(
       try {
         const resolution = await distributedRolloutHook.resolveRunRolloutState({
           companyId: agent.companyId,
+          // MIG-002 per-sink axis. An org heartbeat run is a `task_run`; naming it here is what
+          // lets an operator canary Commander without arming this sink, which is the ordering
+          // Wave 4 prescribes and could not previously express.
+          sourceKind: "task_run",
         });
         distributedRolloutState = resolution.state;
         distributedRolloutOrganizationId = resolution.organizationId;

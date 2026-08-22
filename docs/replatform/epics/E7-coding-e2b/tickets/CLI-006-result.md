@@ -1,21 +1,28 @@
 # CLI-006 Result — First coding golden journey and tenant canary (E7 GATE)
 
 
-> **CORRECTION added by the Wave-3→4 gate, clause 3.** This document names rollback as a config
-> edit and does not say that a live process never sees it. `createDistributedExecutionRolloutSource`
-> parses the map — and reads the deployment flag — **once at construction**
-> (`distributed-execution-rollout-source.ts:159-160`), and the server builds the source once at
-> boot. `cli-006-canary-rollout-mode.test.ts`'s rollback cases construct a FRESH source, which a
-> running process cannot do, so they prove the decision function rather than a live rollback.
+> **CORRECTION added by the Wave-3→4 gate (clause 3), then SUPERSEDED by MIG-002.**
 >
-> The correct path is an ORDERED PAIR: **(1)** throw the REL-004 kill switch — immediate, read
-> from the database per poll, in-flight work finishes — then **(2)** edit the map and restart.
-> Doing (2) alone can strand an already-handed-off attempt, because after a flag-off restart no
-> worker can lease it and neither the sweeper nor the drain has a production caller.
+> This document named rollback as a config edit and did not say that a live process never saw
+> it: the rollout source parsed the map — and read the deployment flag — once at construction,
+> and the server built it once at boot. The rollback cases in `cli-006-canary-rollout-mode.test.ts`
+> construct a FRESH source, which a running process cannot do, so they proved the decision
+> function rather than a live rollback.
 >
-> Pinned by `rollout-rollback-liveness.test.ts`; runbook in `docs/deploy/environment-variables.md`
-> § "Rolling distributed execution back"; reasoning in
-> `epics/E11-hardening-release/tickets/GATE-clause-3-rollback-{terrain,design}.md`.
+> **MIG-002 fixed the underlying behaviour.** The source re-reads per resolution (memoized on the
+> raw string), so removing an Organization's key, downgrading its `mode`, or dropping a sink from
+> its new `sources` list takes effect **with no restart**. This document's rollback instruction
+> is correct again as written.
+>
+> Two caveats it still does not carry, and both matter in an incident: **(a)** the recommended
+> FIRST step is the REL-004 kill switch (immediate, read per poll), but it has no UI and no API,
+> so throwing it means hand-executing SQL, and it is instance-wide per provider rather than per
+> Organization; **(b)** if a restart happens for any other reason, keep
+> `AOA_DISTRIBUTED_EXECUTION_ENABLED` set, or already-handed-off runs strand.
+>
+> Runbook: `docs/deploy/environment-variables.md` § "Rolling distributed execution back".
+> Reasoning: `epics/E11-hardening-release/tickets/GATE-clause-3-rollback-*.md` and
+> `epics/E10-desktop-migration-realtime/tickets/MIG-002-dial-*.md`.
 
 
 **Status:** implementation complete, PR-gate and live-D1 green. **The E7 exit gate's CODE is done; its VOLUME clauses (D1/D2) are operator campaign records and are NOT claimed here.**
@@ -45,7 +52,7 @@ One canary Organization's coding run now transfers execution ownership from the 
 | 8 | M6 parity fix + the M4/M5 projector-loop hoist | `037b1334f` |
 | 8b | Round 2: the fifth writer's dropped outcome + a converging marker-failure | *(this commit)* |
 
-**Still inert in every deployment.** Nothing resolves to `canary` until an Organization is set `mode:"canary"` in `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`. Rollback is deleting that key (Invariant 9) — no code change, no migration, **but it does require a restart; see the CORRECTION below**.
+**Still inert in every deployment.** Nothing resolves to `canary` until an Organization is set `mode:"canary"` in `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`. Rollback is deleting that key (Invariant 9) — no code change, no migration, and since MIG-002 no restart either.
 
 ---
 
@@ -101,7 +108,7 @@ This is the Task 5 finding and it is not obvious. Occupancy is `legacyRunning + 
 
 `cap = 2` works only on an otherwise-idle org. JOB-007 owns the capacity engine; CLI-006 characterises the behaviour rather than changing it.
 
-**Rollback** is removing the Organization's key from `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` (or setting `mode:"active"`) **and restarting** — see the CORRECTION below. Do **not** roll back by downgrading the binary: `parseDistributedExecutionRolloutMap` throws on an unknown mode, so an old binary reading a `canary` config fails loudly at startup.
+**Rollback** is removing the Organization's key from `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` (or setting `mode:"active"`). Since MIG-002 this is LIVE — no restart. See the CORRECTION above for two caveats. Do **not** roll back by downgrading the binary: `parseDistributedExecutionRolloutMap` throws on an unknown mode, so an old binary reading a `canary` config fails loudly at startup.
 
 ---
 

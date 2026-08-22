@@ -48,7 +48,15 @@ export interface HeartbeatDistributedRolloutHook {
    * best-effort if Organization/rollout resolution throws. The resolved `organizationId`
    * is returned so a shadow comparison can label its record without a second lookup.
    */
-  resolveRunRolloutState(input: { companyId: string }): Promise<HeartbeatRolloutResolution>;
+  resolveRunRolloutState(input: {
+    companyId: string;
+    /**
+     * MIG-002 per-sink axis. Optional, and omitting it means "do not filter by sink" — so a
+     * caller that does not pass it behaves exactly as before. Every real caller SHOULD pass it,
+     * or an Organization opted in for one sink would enable them all.
+     */
+    sourceKind?: string;
+  }): Promise<HeartbeatRolloutResolution>;
   /** Active convert (D3): delegate to the orchestrator. Best-effort; never throws. */
   convertActiveRun(input: {
     source: SubmitJobSource;
@@ -96,7 +104,7 @@ export function createHeartbeatDistributedRolloutHook(deps: {
   const env = deps.env ?? process.env;
 
   return {
-    async resolveRunRolloutState({ companyId }) {
+    async resolveRunRolloutState({ companyId, sourceKind }) {
       // FLAG FIRST — no Organization resolution, no rollout-source read when off.
       if (!isDistributedExecutionFlagEnabled(env)) return { state: "off", organizationId: null };
       try {
@@ -106,6 +114,7 @@ export function createHeartbeatDistributedRolloutHook(deps: {
           deploymentMode: deps.deploymentMode,
           organizationId,
           workloadType: HEARTBEAT_TASK_RUN_WORKLOAD_TYPE,
+          sourceKind,
         });
         return { state, organizationId };
       } catch {

@@ -1143,7 +1143,17 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
   ]);
   const bridge = jobAdmissionBridge(appDb);
   const convertOrchestrator = createJobConvertOrchestrator({ bridge });
-  const rolloutSource = createDistributedExecutionRolloutSource(process.env);
+  // MIG-002: the source now re-reads per call, so a rollback needs no restart. `onParseError`
+  // is a callback rather than a logger import inside `config/` — that module's static graph is
+  // deliberately logger-free. It fires once per distinct bad value, not once per call.
+  const rolloutSource = createDistributedExecutionRolloutSource(process.env, {
+    onParseError: (message, rawValue) =>
+      logger.error(
+        { message, rawValueLength: rawValue.length },
+        "[mig-002] AOA_DISTRIBUTED_EXECUTION_ROLLOUT is malformed — every Organization resolves " +
+          "to `off` (legacy) until it is corrected. No restart is needed once it is.",
+      ),
+  });
 
   // ── CLI-006: the canary execution-ownership path ────────────────────────────
   // Placement is what makes an attempt lease-eligible, so composing it is what
