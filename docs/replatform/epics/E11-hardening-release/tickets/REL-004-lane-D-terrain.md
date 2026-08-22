@@ -10,6 +10,17 @@ Every claim below was verified by opening the file. Line references are to
 
 ---
 
+
+> **CORRECTION (revision 2 of the design).** Two claims below are WRONG and are struck where they
+> appear: that `server` declares `@armyofagents/worker-protocol` **only** (it declares
+> `"e2b": "^2.30.5"` at `server/package.json:67` and kills sandboxes by id at
+> `sandbox-provider-runtime.ts:823-827`), and that the control plane holds **no handle** to a
+> distributed sandbox (the id is durably held via `attemptStartedPayloadV1Schema.sandboxId` ->
+> `job_events.event`). Only the `leases`-table half was accurate. The check that produced the
+> error grepped dependency NAMES for `sandbox`/`worker`, which cannot match a package called
+> `e2b`; its silence was read as evidence. The conclusion (ship nothing distributed) survives for
+> DIFFERENT reasons — see the design's section 2 — but it is a CHOICE, not an impossibility.
+
 ## 1. The finding that reframes the ticket
 
 **Wiring MIG-008's reconciler as instructed would make a reclaimable paused E2B sandbox
