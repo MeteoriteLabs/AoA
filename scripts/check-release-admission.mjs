@@ -35,6 +35,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { RELEASE_ARTIFACT_CLASSES, evaluateReleaseAdmission } from "./lib/release-manifest.mjs";
+import { evaluateVulnerabilityPolicy } from "./lib/vulnerability-policy.mjs";
 
 const FILES = Object.freeze({
   manifest: "manifest.json",
@@ -44,6 +45,11 @@ const FILES = Object.freeze({
   imageAllowlist: "image-allowlist.json",
   installerAllowlist: "installer-allowlist.json",
   revokedVersions: "revoked-versions.json",
+  // REL-004 clause 2 runs on the SAME invocation as clause 1, deliberately. Two separate
+  // gates on one promotion is two chances to run only one of them — and the one skipped
+  // would be the one that failed.
+  scanReport: "scan-report.json",
+  vulnerabilityExceptions: "vulnerability-exceptions.json",
 });
 
 function readText(dir, name) {
@@ -87,25 +93,42 @@ function main(argv) {
   }
 
   const verdict = evaluateReleaseAdmission(loaded.release);
-  if (verdict.admitted) {
-    console.log(
-      `release-admission: ADMITTED candidate ${loaded.release.manifest.candidate} ` +
-        `(${RELEASE_ARTIFACT_CLASSES.length} artifact classes)`,
-    );
-    for (const artifact of verdict.artifacts) {
-      console.log(`  ok  ${artifact.artifactClass} (${artifact.kind})`);
+  if (!verdict.admitted) {
+    console.error(`release-admission: REFUSED — ${verdict.reason}`);
+    if (verdict.artifactClass) console.error(`  artifact class: ${verdict.artifactClass}`);
+    for (const artifact of verdict.artifacts ?? []) {
+      if (!artifact.admitted) {
+        console.error(`  refused  ${artifact.artifactClass} (${artifact.kind}): ${artifact.reason}`);
+      }
     }
-    return 0;
+    return 1;
   }
 
-  console.error(`release-admission: REFUSED — ${verdict.reason}`);
-  if (verdict.artifactClass) console.error(`  artifact class: ${verdict.artifactClass}`);
-  for (const artifact of verdict.artifacts ?? []) {
-    if (!artifact.admitted) {
-      console.error(`  refused  ${artifact.artifactClass} (${artifact.kind}): ${artifact.reason}`);
+  // Clock read HERE, at the IO boundary, so the policy module stays pure and its expiry
+  // rules remain provable without a clock.
+  const policy = evaluateVulnerabilityPolicy({
+    report: loaded.release.scanReport,
+    exceptions: loaded.release.vulnerabilityExceptions,
+    candidate: loaded.release.manifest.candidate,
+    now: Date.now(),
+  });
+  if (!policy.promoted) {
+    console.error(`release-admission: REFUSED — ${policy.reason}`);
+    if (policy.artifactClass) console.error(`  artifact class: ${policy.artifactClass}`);
+    for (const blocked of policy.blocked ?? []) {
+      console.error(`  blocked  ${blocked.artifactClass}: ${blocked.id} (${blocked.severity})`);
     }
+    return 1;
   }
-  return 1;
+
+  console.log(
+    `release-admission: ADMITTED candidate ${loaded.release.manifest.candidate} ` +
+      `(${RELEASE_ARTIFACT_CLASSES.length} artifact classes, scan clean)`,
+  );
+  for (const artifact of verdict.artifacts) {
+    console.log(`  ok  ${artifact.artifactClass} (${artifact.kind})`);
+  }
+  return 0;
 }
 
 if (process.argv[1]?.endsWith("check-release-admission.mjs")) {

@@ -76,6 +76,12 @@ function buildRelease(mutate = () => {}) {
     })),
     installerAllowlist: [{ digest: D.desktop_installer, version: "1.2.3", platform: "win32" }],
     revokedVersions: [],
+    scanReport: {
+      schema: 1,
+      candidate: CANDIDATE,
+      artifacts: Object.fromEntries(Object.keys(D).map((cls) => [cls, { findings: [] }])),
+    },
+    vulnerabilityExceptions: { schema: 1, exceptions: [] },
     omit: new Set(),
   };
   mutate(files);
@@ -91,6 +97,8 @@ function buildRelease(mutate = () => {}) {
   write("image-allowlist.json", JSON.stringify(files.imageAllowlist, null, 2));
   write("installer-allowlist.json", JSON.stringify(files.installerAllowlist, null, 2));
   write("revoked-versions.json", JSON.stringify(files.revokedVersions, null, 2));
+  write("scan-report.json", JSON.stringify(files.scanReport, null, 2));
+  write("vulnerability-exceptions.json", JSON.stringify(files.vulnerabilityExceptions, null, 2));
   return dir;
 }
 
@@ -179,12 +187,34 @@ describe("REL-004 — the gate REFUSES, from a real invocation", () => {
     for (const name of [
       "manifest.json", "manifest.sig", "trust-root.pem",
       "signatures.json", "image-allowlist.json", "installer-allowlist.json",
+      "scan-report.json", "vulnerability-exceptions.json",
     ]) {
       withRelease((f) => { f.omit.add(name); }, ({ code, output }) => {
         assert.equal(code, 1, name);
         assert.match(output, new RegExp(name.replace(".", "\\.")), name);
       });
     }
+  });
+
+  it("refuses a CRITICAL vulnerability on the same invocation as admission", () => {
+    // Clause 1 and clause 2 gate the same promotion. Two separate commands would be two
+    // chances to run only one of them, and the one skipped would be the one that failed.
+    withRelease((f) => {
+      f.scanReport.artifacts.worker.findings.push({
+        id: "CVE-2026-9999", severity: "critical", package: "libfoo",
+      });
+    }, ({ code, output }) => {
+      assert.equal(code, 1);
+      assert.match(output, /blocked_by_vulnerability/);
+      assert.match(output, /CVE-2026-9999/);
+    });
+  });
+
+  it("refuses when the scan report is ABSENT, rather than promoting an unscanned build", () => {
+    withRelease((f) => { f.omit.add("scan-report.json"); }, ({ code, output }) => {
+      assert.equal(code, 1);
+      assert.match(output, /scan-report\.json/);
+    });
   });
 
   it("exits 2 without a --release-dir, rather than checking nothing and passing", () => {

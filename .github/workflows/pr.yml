@@ -223,6 +223,7 @@ jobs:
       - name: Release admission gate (REL-004)
         run: |
           node --test scripts/lib/__tests__/release-manifest.test.mjs
+          node --test scripts/lib/__tests__/vulnerability-policy.test.mjs
           node --test scripts/check-release-admission.test.mjs
 
       - name: Test-suite inventory (may not silently shrink)
