@@ -104,7 +104,7 @@ Governed by [`distributed-execution-delivery-policy.md`](../architecture/distrib
 | Variable | Default | Description |
 | --- | --- | --- |
 | `AOA_DISTRIBUTED_EXECUTION_ENABLED` | unset (`false`) | Default-off deployment gate for distributed execution. Enabling it **creates no worker by itself** and registers no distributed route, but it does require and verify both bounded database pools below before startup continues. The per-Organization rollout flag (E3/E10) and per-workload flag remain separately required (`resolveDistributedExecutionRollout`). Accepts `1`/`true`/`yes`/`on` (or `0`/`false`/`no`/`off`); any other value fails startup. |
-| `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` | unset (`{}` — all Organizations off) | CLI-005 config-driven per-Organization / per-workload rollout source that feeds the otherwise-stubbed org+workload inputs of `resolveDistributedExecutionRollout`, making the three rollout states reachable **without a new table or migration**. JSON: `{"organizations":{"<organizationId>":{"mode":"shadow"\|"active","workloads":["batch","*"]}}}`. An Organization absent from the map is **off**; a workload absent from an enabled Organization's `workloads` (and no `*`) is off; `mode` selects shadow vs active. **Gated behind `AOA_DISTRIBUTED_EXECUTION_ENABLED` first** — a flag-off deployment resolves every run to `off` regardless of this map, so the legacy adapter stays the sole executor. `shadow` runs an effect-free routing/provenance/policy comparison only; `active` mints a durable **non-leasable** job (inert until MIG-002) and moves checkout ownership to the admission bridge. Malformed JSON/shape fails startup validation. Default-off/dormant. |
+| `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` | unset (`{}` — all Organizations off) | CLI-005 config-driven per-Organization / per-workload rollout source that feeds the otherwise-stubbed org+workload inputs of `resolveDistributedExecutionRollout`, making the three rollout states reachable **without a new table or migration**. JSON: `{"organizations":{"<organizationId>":{"mode":"shadow"\|"active","workloads":["batch","*"]}}}`. An Organization absent from the map is **off**; a workload absent from an enabled Organization's `workloads` (and no `*`) is off; `mode` selects shadow vs active. **Gated behind `AOA_DISTRIBUTED_EXECUTION_ENABLED` first** — a flag-off deployment resolves every run to `off` regardless of this map, so the legacy adapter stays the sole executor. `shadow` runs an effect-free routing/provenance/policy comparison only; `active` mints a durable **non-leasable** job (inert until MIG-002) and moves checkout ownership to the admission bridge. Malformed JSON/shape fails startup validation. Default-off/dormant. **TAKES EFFECT AT RESTART ONLY** — `createDistributedExecutionRolloutSource` parses this value once at construction and the server builds the source once at boot, so editing it in a live process changes nothing until the process restarts. See **Rolling distributed execution back** below; pinned by `rollout-rollback-liveness.test.ts`. |
 | `AOA_APP_DATABASE_URL` | unset | Required only when distributed execution is enabled. PostgreSQL URL whose authenticated `session_user` and active `current_user` are both exactly the NOSUPERUSER/NOBYPASSRLS/NOINHERIT/NOREPLICATION `aoa_app` tenant-serving role. Missing, invalid, privileged, masked by startup role options, wrong-role, inherited, owned-object, or out-of-matrix authority fails startup; there is no owner-pool fallback. |
 | `AOA_OPERATOR_DATABASE_URL` | unset | Required only when distributed execution is enabled. PostgreSQL URL whose authenticated `session_user` and active `current_user` are both exactly the bounded NOSUPERUSER/NOBYPASSRLS/NOINHERIT/NOREPLICATION `aoa_operator` platform-metadata role. Startup role options cannot mask a broader login. Its current pre-JOB-002 surface is read-only named metadata columns; it is not a tenant/job-data connection. |
 | `AOA_APP_DB_PASSWORD` | unset | Optional boot-time credential provisioning for `aoa_app`, performed through the migration/bootstrap owner before the bounded pool opens. Prefer external secret provisioning where available; never commit this value. |
@@ -115,6 +115,29 @@ Governed by [`distributed-execution-delivery-policy.md`](../architecture/distrib
 | `AOA_WORKER_POLL_RATE_LIMIT_WINDOW_MS` | `60000` | DEP-009 shared worker-poll admission window length in milliseconds (the fixed-window bucket for `AOA_WORKER_POLL_RATE_LIMIT_MAX`). The counter resets each window. Only consulted when distributed execution is enabled. Must be a positive integer. |
 | `AOA_DISTRIBUTED_PUBLIC_SERVICE_INGRESS_ENABLED` | unset (excluded) | **Reserved hard-negative sentinel.** Public service ingress is excluded from this re-platform release. Any truthy value **rejects startup in every deployment mode** rather than enabling a feature; the reserved path `/api/distributed-execution/public-services` is unregistered and returns `404`. |
 | `AOA_DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENABLED` | unset (excluded) | **Reserved hard-negative sentinel.** The distributed cloud-plugin surface is excluded from this re-platform release. Any truthy value **rejects startup in every deployment mode**; the reserved path `/api/distributed-execution/cloud-plugins` is unregistered and returns `404`. FND-006/FND-008 own the actual current plugin surfaces (Decision #103). |
+
+### Rolling distributed execution back
+
+**The rollback path is an ordered pair, and the order is load-bearing.** Every step-2-only
+instruction elsewhere in this repo predates this note.
+
+1. **Throw the execution kill switch** for the affected provider/target
+   (`instance_settings.kill_switches`, REL-004 clause 3a). **Immediate** — it is read from the
+   database on every worker poll, so workers stop being offered new leases at once while
+   in-flight work is allowed to finish.
+2. **Edit `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`** (remove the Organization, or downgrade its
+   `mode`) **and restart the process.** The map is captured at construction; without a restart
+   the edit has no effect.
+
+Doing 2 without 1 is the hazard: the restart can land while an attempt has already been handed
+off to a worker (the legacy adapter suppressed, the attempt durably lease-eligible). After a
+flag-off restart no worker can lease it, and neither the job-control sweeper nor the distributed
+drain has a production caller today, so that run stays `running` indefinitely. Step 1 first
+drains the window.
+
+**Unsetting `AOA_DISTRIBUTED_EXECUTION_ENABLED` is not a master switch.** It is live for new
+heartbeat conversions (the rollout hook re-reads it per call), but the worker control routes are
+registered behind a construction-time check, so workers keep polling and leasing until a restart.
 
 ### Distributed worker daemon (staging, DEP-006)
 

@@ -205,6 +205,18 @@ chain but over a SEEDED corpus: no existing live lane drives a Commander turn, a
 dispatch or an extraction, so no organic volume can be cited. Clause 2 result §6 limit 1
 states exactly what a real-traffic run needs.
 
+**Gate clause 3 status (added in-session).** SATISFIED for the org heartbeat; recorded as
+trivially satisfied — and therefore **NOT ticked** — for the three shadow-only sinks, which must
+re-satisfy it when Wave 4 activates them. See
+[`GATE-clause-3-rollback-result.md`](./epics/E11-hardening-release/tickets/GATE-clause-3-rollback-result.md).
+The rollback path turned out to be an **ordered pair**, not the config edit every document named:
+throw the REL-004 kill switch first (immediate, per-poll, in-flight work finishes), THEN edit the
+rollout map and **restart** — the map is captured at construction, so a live process never sees
+the edit. Clause 1 therefore answers most of clause 3, which this document had treated as
+unrelated. **A WAVE-4 BLOCKER falls out of it:** a restart-based rollback strands an
+already-handed-off attempt, because neither the job-control sweeper nor the distributed drain has
+a production caller (inherited deferral #2 + CLI-005 deferral 1, owner MIG-002).
+
 **A new Wave 4 prerequisite surfaced.** All four cutover sinks resolve to
 `workloadType: "batch"`, so one rollout switch arms them all — which means §5's
 MIG-005 → MIG-006 → MIG-007 ordering, "lowest blast radius first", is **not expressible
