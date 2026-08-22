@@ -57,6 +57,33 @@ describe("DSK-004/I5 — layout", () => {
     }
   });
 
+  it("refuses Windows reserved device names, including with a suffix", () => {
+    // MEASURED, because my first guess was wrong. Node's fs uses the \\?\ prefix, so it
+    // creates a directory literally named "NUL.1.0" and reads back from it happily. The
+    // hazard is not Node — it is the BOUNDARY. DSK-003 writes the install path into an
+    // autostart manifest that Task Scheduler consumes, and Win32 path normalization does
+    // apply there: it matches a reserved device on the name up to the first dot, so
+    // `versions\NUL.1.0\worker.exe` resolves to the null device for the launcher while
+    // Node sees a perfectly ordinary directory. Refusing the name costs nothing and
+    // removes the whole class of divergence.
+    for (const bad of ["NUL", "nul", "CON", "com1", "LPT9", "NUL.1.0", "aux.2"]) {
+      expect(isSafeVersionSegment(bad), bad).toBe(false);
+    }
+    // Not reserved merely for containing the letters.
+    for (const good of ["nullify", "console-1", "auxiliary", "com10"]) {
+      expect(isSafeVersionSegment(good), good).toBe(true);
+    }
+  });
+
+  it("refuses a trailing dot, which Win32 silently strips", () => {
+    // Same boundary, same divergence: Node creates "0.1.0." literally, Win32 consumers
+    // resolve it to "0.1.0". The pointer would record one string while the launcher
+    // opened another, and a rollback comparing the two would report the previous version
+    // absent when it is sitting right there.
+    expect(isSafeVersionSegment("0.1.0.")).toBe(false);
+    expect(isSafeVersionSegment("0.1.0")).toBe(true);
+  });
+
   it("refuses an absurdly long version segment", () => {
     // Windows MAX_PATH is 260 and this package is win32-only, so an unbounded segment
     // is a way to make the install path unusable rather than merely ugly. 64 is the
@@ -95,6 +122,20 @@ describe("DSK-004/I8 — the vault is never inside the install root", () => {
     expect(() =>
       assertVaultOutsideInstallRoot(ROOT, "C:\\Users\\t\\AppData\\Local\\AoA\\worker\\identity.blob"),
     ).not.toThrow();
+  });
+
+  it("THROWS on a malformed root or vault rather than reporting them unrelated", () => {
+    // The failure mode this closes is the one this programme keeps producing: a guard
+    // that passes because it could not evaluate anything. `isPathInside` answers false
+    // for an empty path, which is the right answer to "is A inside B" and the WRONG
+    // basis for "I have verified the vault is safe". An installer that computed an empty
+    // root would be told the layout was checked when nothing was compared.
+    for (const bad of [undefined, null, "", "   ", 0]) {
+      expect(() => assertVaultOutsideInstallRoot(bad as never, "C:\\v\\id.blob"), String(bad)).toThrow(
+        /install root/i,
+      );
+      expect(() => assertVaultOutsideInstallRoot(ROOT, bad as never), String(bad)).toThrow(/vault/i);
+    }
   });
 });
 

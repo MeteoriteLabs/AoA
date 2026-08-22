@@ -47,6 +47,24 @@ const MAX_VERSION_SEGMENT_LENGTH = 64;
  */
 const SAFE_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 
+/**
+ * Windows reserved device names, matched on the segment up to the FIRST dot.
+ *
+ * Measured rather than assumed: Node's `fs` uses the `\\?\` prefix, so it creates a
+ * directory literally named `NUL.1.0` and reads back from it without complaint. The
+ * hazard lives at the BOUNDARY. DSK-003 writes the install path into an autostart
+ * manifest that Task Scheduler consumes, and Win32 normalization does apply there —
+ * `versions\NUL.1.0\worker.exe` resolves to the null device for the launcher while Node
+ * sees an ordinary directory. Refusing the name costs nothing and removes the entire
+ * class of divergence between "the directory we created" and "the path the launcher
+ * opens".
+ */
+const WINDOWS_RESERVED_DEVICE_NAMES = new Set([
+  "con", "prn", "aux", "nul",
+  "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+  "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+]);
+
 /** Drive-letter absolute only. A UNC root would put the install on a share. */
 const DRIVE_ABSOLUTE_PATTERN = /^[A-Za-z]:[\\/]/;
 
@@ -80,7 +98,13 @@ export interface InstallLayout {
 export function isSafeVersionSegment(version: unknown): boolean {
   if (typeof version !== "string") return false;
   if (version.length > MAX_VERSION_SEGMENT_LENGTH) return false;
-  return SAFE_VERSION_PATTERN.test(version);
+  if (!SAFE_VERSION_PATTERN.test(version)) return false;
+  // Win32 strips a trailing dot, so `0.1.0.` and `0.1.0` name the same directory to a
+  // launcher while remaining different strings to us — the pointer would record one and
+  // the launcher open the other, and a rollback comparing them would call a version that
+  // is sitting right there absent.
+  if (version.endsWith(".")) return false;
+  return !WINDOWS_RESERVED_DEVICE_NAMES.has(version.split(".")[0]!.toLowerCase());
 }
 
 /**
@@ -106,6 +130,19 @@ export function normalizePathForComparison(candidate: unknown): string {
 }
 
 /**
+ * Nothing a containment question can be asked about.
+ *
+ * The whitespace case is the one worth spelling out: `"   "` survives normalization as a
+ * segment, because a path segment may legitimately contain spaces (`Program Files`). It
+ * is still not a path, and my first version of this guard let it through — the trimmed
+ * test is what makes the refusal cover it.
+ */
+function isUnusablePath(candidate: unknown): boolean {
+  if (typeof candidate !== "string" || candidate.trim() === "") return true;
+  return normalizePathForComparison(candidate) === "";
+}
+
+/**
  * Containment, with the prefix trap closed.
  *
  * `child.startsWith(parent)` reports `C:\AoA2` as living inside `C:\AoA`, because string
@@ -127,6 +164,22 @@ export function isPathInside(parent: unknown, child: unknown): boolean {
  * identity on the next update.
  */
 export function assertVaultOutsideInstallRoot(installRoot: unknown, vaultPath: unknown): void {
+  // REFUSE TO ANSWER RATHER THAN ANSWER "SAFE". `isPathInside` returns false for an empty
+  // path, which is the correct answer to "is A inside B" and the wrong basis for "I have
+  // verified the vault is safe" — an installer that computed an empty root would be told
+  // the layout had been checked when nothing was compared. This programme has produced
+  // that failure — a guard passing because it could not evaluate anything — often enough
+  // to be worth two explicit lines.
+  if (isUnusablePath(installRoot)) {
+    throw new Error(
+      `worker-keystore: cannot check vault containment against install root ${JSON.stringify(installRoot)}`,
+    );
+  }
+  if (isUnusablePath(vaultPath)) {
+    throw new Error(
+      `worker-keystore: cannot check containment of vault path ${JSON.stringify(vaultPath)}`,
+    );
+  }
   if (isPathInside(installRoot, vaultPath)) {
     throw new Error(
       `worker-keystore: the device vault (${String(vaultPath)}) is inside the install root ` +
