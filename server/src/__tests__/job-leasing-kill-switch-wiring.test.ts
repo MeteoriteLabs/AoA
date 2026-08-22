@@ -25,6 +25,26 @@ const LEASING = readFileSync(
   fileURLToPath(new URL("../services/job-leasing.ts", import.meta.url)),
   "utf8",
 );
+const TARGETS = readFileSync(
+  fileURLToPath(new URL("../services/execution-targets.ts", import.meta.url)),
+  "utf8",
+);
+const KILL_SWITCHES = readFileSync(
+  fileURLToPath(new URL("../services/execution-kill-switches.ts", import.meta.url)),
+  "utf8",
+);
+
+/**
+ * Strip comments before asserting a token is absent.
+ *
+ * Without this the separation check below fails on the module's own PROSE — the header
+ * explains at length why a kill switch is not a revocation, and the word "revoking" appears
+ * in that explanation. A guard that matches documentation instead of code is a guard that
+ * punishes writing the documentation.
+ */
+function codeOnly(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
 
 describe("REL-004 Lane C — the poll cannot be built without its kill switch", () => {
   it("constructs the reader internally, from the SAME pool the lease transaction runs on", () => {
@@ -75,5 +95,33 @@ describe("REL-004 Lane C — the poll cannot be built without its kill switch", 
     const ackIndex = LEASING.indexOf("async ack(");
     expect(ackIndex).toBeGreaterThan(-1);
     expect(LEASING.slice(ackIndex)).not.toContain("evaluateKillSwitches");
+  });
+});
+
+describe("REL-004 Lane C/I7 — the switch and JOB-007 revocation stay separate, both ways", () => {
+  // Design D1. Three questions, deliberately not merged: "may this DEVICE work" is JOB-007's
+  // generation-fenced identity surgery; "may work be PLACED on this provider" and "may work RUN
+  // FROM this template" are policy opinions. Merging them would mean killing one bad template
+  // required revoking every target that used it — destroying enrollment state to express a
+  // policy. The integration suite proves the forward direction against a live database; these
+  // pin the structure in both directions so a later refactor cannot quietly conflate them.
+
+  it("revocation does not read or write the kill-switch policy", () => {
+    const code = codeOnly(TARGETS);
+    expect(code).not.toContain("kill_switches");
+    expect(code).not.toContain("killSwitches");
+    expect(code).not.toContain("evaluateKillSwitches");
+  });
+
+  it("the kill switch has no revocation vocabulary in its CODE", () => {
+    // Its prose is full of the word, and deliberately so — the header exists to explain the
+    // separation. What must stay absent is any actual reference.
+    for (const forbidden of ["revoke", "deviceGeneration", "device_generation", "executionTargets"]) {
+      expect(codeOnly(KILL_SWITCHES), forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it("`target` is not a kill-switch dimension — it belongs to JOB-007", () => {
+    expect(KILL_SWITCHES).toContain('KILL_SWITCH_DIMENSIONS = ["provider", "template"]');
   });
 });
