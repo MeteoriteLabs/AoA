@@ -1119,6 +1119,8 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
     { jobAdmissionBridge },
     { createJobConvertOrchestrator },
     { createJobShadowComparator },
+    { createDistributedShadowRecorder, setDistributedShadowPort },
+    { probeDistributedAdmissibility },
     { createRunExecutionOwnerResolver, toRunExecutionPlacement },
     { createCanaryPreflight },
     { createDrizzleCanaryPreflightStore },
@@ -1131,6 +1133,8 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
     import("./services/job-admission-bridge.js"),
     import("./services/job-convert-orchestrator.js"),
     import("./services/job-shadow-comparator.js"),
+    import("./services/distributed-shadow-port.js"),
+    import("./services/job-shadow-admissibility.js"),
     import("./services/run-execution-owner.js"),
     import("./services/canary-preflight.js"),
     import("./services/canary-preflight-store.js"),
@@ -1211,14 +1215,7 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
     },
   });
 
-  distributedRolloutHook = createHeartbeatDistributedRolloutHook({
-    env: process.env,
-    deploymentMode: config.deploymentMode,
-    rolloutSource,
-    resolveOrganizationId: (companyId: string) => resolveCompanyOrganizationId(appDb, companyId),
-    convertOrchestrator,
-    ownerResolver,
-    comparator: createJobShadowComparator({
+  const shadowComparator = createJobShadowComparator({
       sink: {
         record: (result) =>
           logger.info(
@@ -1242,9 +1239,32 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
             },
             "[cli-005] distributed-execution shadow comparison",
           ),
-      },
-    }),
+    },
   });
+
+  distributedRolloutHook = createHeartbeatDistributedRolloutHook({
+    env: process.env,
+    deploymentMode: config.deploymentMode,
+    rolloutSource,
+    resolveOrganizationId: (companyId: string) => resolveCompanyOrganizationId(appDb, companyId),
+    convertOrchestrator,
+    ownerResolver,
+    comparator: shadowComparator,
+  });
+
+  // ── MIG-005/006/007 (Lane C) — the shadow recorder the three non-heartbeat sinks use.
+  // Registered HERE, beside the comparator it shares, because both are meaningful only
+  // when distributed execution is composed at all. Unregistered is a no-op, so every
+  // other deployment is byte-identical. The heartbeat keeps its own seam (it resolves
+  // rollout once per run and reuses that decision); this port serves Commander turns,
+  // crew dispatch and one-shot operations, which each hold only a bare `db`.
+  setDistributedShadowPort(
+    createDistributedShadowRecorder({
+      resolveRolloutState: (input) => distributedRolloutHook!.resolveRunRolloutState(input),
+      probe: (probeInput) => probeDistributedAdmissibility(appDb, probeInput),
+      comparator: shadowComparator,
+    }),
+  );
 }
 
 if (config.heartbeatSchedulerEnabled) {
