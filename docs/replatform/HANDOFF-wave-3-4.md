@@ -164,6 +164,9 @@ in-branch; a sibling-certificate failure is not a regression in your change.
    volume figure is not evidence.
 3. A named rollback path exists per sink, tested at least once.
 4. CI green, and the D1 two-replica lane green on the exact candidate SHA.
+5. **The provider-credential path is resolved, or its limit is explicitly scoped and
+   stated** — see §6 deferral 1. A shadow run does not need a credential; a real
+   Commander turn or crew run does. Do not discover this mid-cutover.
 
 If a shadow divergence is unexplained, the gate does not open. Explaining it is the work.
 
@@ -184,7 +187,52 @@ switch and the per-org dial exist precisely so a bad cutover is reversible in se
 
 ---
 
-## 6. Out of scope for this engagement
+## 6. Deferrals INHERITED by this wave — verified still open at `d8efd5466`
+
+Wave 2 recorded these. They are not background reading: three of them land inside this
+wave's scope, and the first is close to a blocker for Wave 4.
+
+| # | Deferral | Verified | Owner in this wave |
+|---|---|---|---|
+| 1 | **A worker receives NO provider credential.** The lease envelope hardcodes `secretHandles: []` (`job-leasing.ts:349`) and `job_secret_handles` has no production writer — only `canary-credential-binding.ts` and test scaffolding touch it. The seam transfers ownership, but a task cannot yet authenticate a CLI inside the sandbox. | `secretHandles: []` still present; no production writer | **Blocks MIG-005/006/007 ACTIVE.** Shadow is unaffected. Resolve or state the limit before the gate. |
+| 2 | **JOB-006's lease reaper has no live trigger.** `createJobControlSweeper` has no caller outside its own file. An attempt whose lease expires *without* emitting a terminal event has no convergence path — its run stays `running`. | Confirmed: zero non-test callers | **MIG-002** |
+| 3 | **The placement owner check is tautological** — `credentialOwnerId` and `requiredOwnerPrincipalId` both read from the routed target's profile. Safety currently rests on the structural exclusion of `owner_desktop` routing, not on that check. | carried from Wave 2 | Re-derive before enriching credential binding (interacts with #1) |
+| 4 | **CLI-005 deferrals** — live drain enumeration, shadow independent derivation, admissibility probe. | carried from Wave 2 | **MIG-002** |
+| 5 | **Old-key kill-switch enforcement** | carried from Wave 2 | **REL-004 clause 3**, §3 item 1 |
+
+Deferral 1 deserves emphasis. **Shadow mode does not need it** — a shadow run compares
+decisions, not credentials. **Active cutover does**, because a real Commander turn or crew
+run must authenticate a CLI inside the sandbox. Decide before the gate whether Wave 4 is
+resolving it or explicitly scoping around it; do not discover it mid-cutover.
+
+---
+
+## 7. Limits no engineering compresses
+
+- **D2** needs three *consecutive* passing real-E2B runs across ≥120 jobs on the operator's
+  `E2B_API_KEY`. Real spend, operator-dispatched — not something an agent can schedule.
+- **D6** needs three external beta Organizations across the *same* 14 consecutive days.
+  Partner recruitment is not a coding task and must precede the window.
+- **`verify` is the ~25–40 minute long pole** on every push, and each push cancels the
+  prior run's in-flight `verify`. Plan pushes accordingly; do not push over a running gate
+  you care about.
+- **The D1 two-replica lane is ~45 minutes** and only rebuilds when `docker/d1/campaign.env`
+  changes for `server/src`-only work.
+
+**Reading a red `verify`:** check the vitest `Errors N` line and the *Unhandled Errors*
+section, not just `Tests N passed`. A 20k-test suite with per-test embedded PostgreSQL
+surfaces tooling-scale flakes — driver teardown races, birpc RPC timeouts — that read as
+red against a 100%-green suite. Those are patched via `pnpm.patchedDependencies`.
+
+**Agent operating model** (`program-design.md`): one ticket, one worktree, one
+implementation agent. A protocol/schema custodian owns shared protocol types and
+migrations. Never run parallel tickets touching the same migration, state machine, or route
+module. Do not add worker logic to `heartbeat.ts` or more process timers to
+`server/src/index.ts`.
+
+---
+
+## 8. Out of scope for this engagement
 
 - **E8 browser (BRW ×6) and E9 service agents (SVC ×7)** — 13 tickets, **no designs
   written**. They need a design phase of their own. Write those designs *during* Wave 4,
@@ -196,7 +244,7 @@ switch and the per-org dial exist precisely so a bad cutover is reversible in se
 
 ---
 
-## 7. Traps that have bitten, in this repo
+## 9. Traps that have bitten, in this repo
 
 - **`docker/d1/campaign.env`** — `server/src` is not on the D1 lane's push filter. A
   runtime change without a nonce bump is never exercised live. This has bitten twice.
@@ -214,7 +262,7 @@ switch and the per-org dial exist precisely so a bad cutover is reversible in se
 - **A guard can be born dead** — a regex with raw control bytes, a pattern that does not
   match what its comment claims. Mutation-test it, and verify patterns against real paths.
 
-## 8. Frozen — never edit
+## 10. Frozen — never edit
 
 `packages/worker-protocol/` (v1, source SHA `b7a842870ce7509d8baa75409e0ab19da375c88a`),
 the worker-daemon `SandboxProvider` port, and `docs/architecture/distributed-execution-threat-*`.
