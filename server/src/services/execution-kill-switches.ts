@@ -18,7 +18,9 @@
 // have served the policy did not, and reading that as "nothing denied" installs a withdrawn
 // build. Here the document lives in `instance_settings` — the same store as the leasing
 // decision itself. If it cannot be read, the lease transaction has already failed; there is
-// no separate service whose outage could quietly turn "absent" into "permitted". And an
+// no separate service whose outage could quietly turn "absent" into "permitted". A read that
+// FAILS is a different fact and must not arrive here as `undefined` — the caller routes it in as
+// a non-plain-object sentinel so it lands on the unreadable path below. And an
 // absent document is the normal steady state of every install that has never thrown a
 // switch, so fail-closed would stop all work on a fresh instance.
 //
@@ -28,7 +30,9 @@
 // never causes the rest to be honoured and the bad one skipped — that is how a typo
 // silently disables a switch an operator believes they have thrown.
 //
-// Pure. The caller reads `instance_settings.general.killSwitches` and supplies it.
+// Pure. The caller reads `instance_settings.kill_switches` and supplies it (Lane C/D3 — a
+// dedicated column, because `instanceSettingsService.updateGeneral` rewrites the `general` bag
+// from a fixed field list and would erase an unknown key on the next Settings PATCH).
 
 /**
  * The placement dimensions a switch can name. `target` is absent on purpose: it belongs to
@@ -49,7 +53,7 @@ export type KillSwitchVerdict =
     };
 
 export interface KillSwitchInput {
-  /** `instance_settings.general.killSwitches`, or undefined when none has ever been set. */
+  /** `instance_settings.kill_switches`, or undefined when none has ever been set. */
   readonly document: unknown;
   /** The execution target's `kind` — the provider this work would be placed on. */
   readonly provider: unknown;
@@ -60,8 +64,27 @@ export interface KillSwitchInput {
    * cannot apply to it. `undefined` means UNKNOWN, and is fail-closed: a caller that could
    * not determine the template must not be able to express that as "no template" and slip
    * past a switch. The distinction is the contract; do not collapse them.
+   *
+   * REL-004 Lane C (D2): UNKNOWN refuses only against a switch that actually NAMES the
+   * template dimension. The distributed poll can never determine the template — the E2B alias
+   * is pinned worker-side and no frozen protocol shape carries it — so it passes `undefined`
+   * on every call. Refusing every document on that basis would mean killing one provider
+   * drained the whole fleet, and a template it cannot read cannot change the verdict of a
+   * provider switch anyway.
    */
   readonly template: unknown;
+  /**
+   * The closed placement-provider vocabulary — `execution_targets.kind`, supplied by the caller
+   * so this module stays dependency-free (see `EXECUTION_TARGET_KINDS`).
+   *
+   * REL-004 Lane C (D6): a `provider` switch naming a value outside it is REFUSED, never read
+   * as "matches nothing". `E2B` for `e2b` is the same shape of operator typo as `providers` for
+   * `provider`, and it deserves the same answer. The OBSERVED provider is deliberately not
+   * required to be a member: an unrecognized kind is an enrollment fault that placement
+   * normalization already fails closed on, and checking it here would widen a policy decision
+   * into placement validation.
+   */
+  readonly knownProviders: unknown;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -70,6 +93,18 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function unreadable(): KillSwitchVerdict {
   return { killed: true, dimension: null, value: null, reason: "policy_unreadable" };
+}
+
+/**
+ * A switch that is perfectly well-formed but that THIS caller structurally cannot evaluate.
+ *
+ * Kept distinct from `unreadable()` because the operator's next move differs: `policy_unreadable`
+ * sends them to the document, `placement_unknown` tells them the dimension they used cannot be
+ * enforced at this seam at all. Both fail closed; only the diagnostic differs, and the drain
+ * reason is the only diagnostic a worker ever sees.
+ */
+function unevaluatable(): KillSwitchVerdict {
+  return { killed: true, dimension: null, value: null, reason: "placement_unknown" };
 }
 
 function isStatedReason(value: unknown): value is string {
@@ -84,7 +119,7 @@ function isStatedReason(value: unknown): value is string {
  */
 export function evaluateKillSwitches(input: KillSwitchInput): KillSwitchVerdict {
   if (!isPlainObject(input)) return unreadable();
-  const { document, provider, template } = input;
+  const { document, provider, template, knownProviders } = input;
 
   // Absent is the steady state, not a failure. See the header for why this differs from
   // DSK-004's rule rather than contradicting it.
@@ -96,7 +131,13 @@ export function evaluateKillSwitches(input: KillSwitchInput): KillSwitchVerdict 
 
   // If we do not know where this work would be placed, we cannot know whether it is killed.
   if (typeof provider !== "string" || provider.length === 0) return unreadable();
-  if (template !== null && typeof template !== "string") return unreadable();
+  // The vocabulary is required whenever a document exists: without it a mistyped provider value
+  // cannot be told apart from a real one, which is the whole point of D6.
+  if (!Array.isArray(knownProviders) || knownProviders.length === 0
+      || knownProviders.some((kind) => typeof kind !== "string" || kind.length === 0)) {
+    return unreadable();
+  }
+  const providerVocabulary = knownProviders as readonly string[];
 
   for (const entry of document.switches) {
     if (!isPlainObject(entry)) return unreadable();
@@ -112,11 +153,31 @@ export function evaluateKillSwitches(input: KillSwitchInput): KillSwitchVerdict 
     // A kill switch stops other people's work; why it was thrown is not decoration.
     if (!isStatedReason(reason)) return unreadable();
 
-    // Exact match. These are identifiers: a prefix match would make killing `e2b` also kill
-    // `e2b-staging`, and a case-insensitive one would depend on how an operator typed it.
-    const placed = dimension === "provider" ? provider : template;
-    if (placed !== null && placed === value) {
-      return { killed: true, dimension: dimension as KillSwitchDimension, value, reason };
+    // Exact match throughout. These are identifiers: a prefix match would make killing
+    // `aoa-base` also kill `aoa-base-2`, and a case-insensitive one would depend on how an
+    // operator typed it.
+    if (dimension === "provider") {
+      // D6 — outside the closed vocabulary is a typo, not a miss.
+      if (!providerVocabulary.includes(value)) return unreadable();
+      if (provider === value) {
+        return { killed: true, dimension: "provider", value, reason };
+      }
+      // Keep scanning: a later entry may still match. Returning here would make only the
+      // first switch in a document count.
+      continue;
+    }
+
+    // D2 — the template checks live HERE, not before the loop, so an unknown template refuses
+    // only a document that actually names the template dimension.
+    if (template === undefined) return unevaluatable();
+    if (template !== null && typeof template !== "string") return unreadable();
+    // `template !== null` is redundant TODAY and deliberately kept: `value` is already
+    // guaranteed a non-empty string above, so `null === value` can never hold. Mutation
+    // testing confirms removing it is an equivalent mutant. It stays because it states the
+    // DEFINITELY-NONE contract at the point of use, and becomes load-bearing the moment the
+    // value check above changes.
+    if (template !== null && template === value) {
+      return { killed: true, dimension: "template", value, reason };
     }
   }
 
