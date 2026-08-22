@@ -1286,11 +1286,6 @@ if (config.heartbeatSchedulerEnabled) {
   // Sweeper no-ops when the instance-level experimental flag is off.
   scheduleTtlSweeper(db as any);
 
-  // Periodic reap: destroy warm (reuse_by_agent) E2B snapshots left idle past
-  // the instance TTL (~30 min). No-ops when `enableWarmSandboxReaper` is off,
-  // exactly like the TTL sweeper above.
-  scheduleWarmSandboxReaper(db as any);
-
   // Retry filesystem cleanup for workspaces stuck in `cleanup_failed` (Windows
   // file-handle races). Runs every 60s; promotes to `archived` once rm succeeds.
   scheduleCleanupRetrySweeper(db as any);
@@ -1353,6 +1348,22 @@ if (config.heartbeatSchedulerEnabled) {
   runProductivityReviewReconciliation();
   setInterval(runProductivityReviewReconciliation, PRODUCTIVITY_REVIEW_RECONCILIATION_INTERVAL_MS);
 }
+
+// Periodic reap: destroy warm (reuse_by_agent) E2B snapshots left idle past the instance TTL
+// (~30 min), and reclaim STRANDED leases — terminal rows that still hold an unreleased provider
+// handle. No-ops when `enableWarmSandboxReaper` is off.
+//
+// REGISTERED HERE, AT MODULE SCOPE — deliberately NOT inside the
+// `config.heartbeatSchedulerEnabled` block above (REL-004 Lane D / D1). That knob is
+// operator-facing and documents itself as governing SCHEDULE TICKS, but what MINTS these
+// sandboxes is not gated on it: a Commander turn acquires a warm lease on the HTTP path, and org
+// wakeups dispatch in-process from routes. Gated, the system kept creating E2B sandboxes and
+// stopped reclaiming them — and now that this sweep is the reclaim path for a killed provider,
+// an operator who turned off routines would also have turned off the kill switch's teeth.
+//
+// Same argument and same placement as `scheduleClaudeConfigDirSweeper()` below; pinned by
+// `warm-sandbox-reaper-registration.test.ts`.
+scheduleWarmSandboxReaper(db as any);
 
 // Idempotent backfill: ensure Commander and the appropriate crew roster exist
 // for all companies. Safe to run on every startup — the seeders use
