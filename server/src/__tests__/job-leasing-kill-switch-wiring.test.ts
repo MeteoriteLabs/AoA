@@ -29,6 +29,10 @@ const TARGETS = readFileSync(
   fileURLToPath(new URL("../services/execution-targets.ts", import.meta.url)),
   "utf8",
 );
+const JOB_CONTROL_REPO = readFileSync(
+  fileURLToPath(new URL("../../../packages/db/src/repositories/tenant/job-control.ts", import.meta.url)),
+  "utf8",
+);
 const KILL_SWITCHES = readFileSync(
   fileURLToPath(new URL("../services/execution-kill-switches.ts", import.meta.url)),
   "utf8",
@@ -123,5 +127,30 @@ describe("REL-004 Lane C/I7 — the switch and JOB-007 revocation stay separate,
 
   it("`target` is not a kill-switch dimension — it belongs to JOB-007", () => {
     expect(KILL_SWITCHES).toContain('KILL_SWITCH_DIMENSIONS = ["provider", "template"]');
+  });
+});
+
+describe("REL-004 Lane C — the provider axis is present on BOTH authority branches", () => {
+  // `guardedAuthority.currentTarget` comes from `lockWorkerLeaseAuthority` for organization- and
+  // owner-scoped targets, and from `recheckPlatformTargetAuthority` for platform ones. If the
+  // platform projection were ever narrowed to drop `kind`, the kill switch would read
+  // `provider: undefined` there and refuse — so throwing ANY switch would drain every platform
+  // worker, whatever the switch actually named. That failure is invisible until a switch exists,
+  // which is the worst time to discover it.
+  //
+  // The integration suite exercises an organization-scoped target. Only this pins the platform
+  // branch; a live platform kill-switch case is recorded as a residual in the result doc.
+  it("selects the shared placement projection on both paths, and it carries `kind`", () => {
+    expect(JOB_CONTROL_REPO).toMatch(/const placementTargetColumns = \{[\s\S]*?kind: executionTargets\.kind,/);
+    for (const fn of ["lockWorkerLeaseAuthority", "recheckPlatformTargetAuthority"]) {
+      const start = JOB_CONTROL_REPO.indexOf(`async ${fn}(`);
+      expect(start, fn).toBeGreaterThan(-1);
+      // Bounded window: the next `async ` method starts the following body.
+      const rest = JOB_CONTROL_REPO.slice(start + 1);
+      const end = rest.indexOf("\n    async ");
+      const body = end === -1 ? rest : rest.slice(0, end);
+      expect(body, `${fn} must select the shared placement projection`)
+        .toContain("tx.select(placementTargetColumns)");
+    }
   });
 });

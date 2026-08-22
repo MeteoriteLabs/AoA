@@ -26,8 +26,11 @@
 
 import { describe, expect, it } from "vitest";
 
+import { pollResponseV1Schema } from "@armyofagents/worker-protocol";
+
 import {
   KILL_SWITCH_DIMENSIONS,
+  KILL_SWITCH_MAX_REASON_LENGTH,
   evaluateKillSwitches,
 } from "../services/execution-kill-switches.js";
 
@@ -400,5 +403,64 @@ describe("REL-004 Lane C/D6 — a provider value outside the closed vocabulary i
     expect(evaluateKillSwitches({
       document: undefined, provider: "e2b", template: undefined, knownProviders: undefined,
     })).toEqual({ killed: false });
+  });
+});
+
+describe("REL-004 Lane C — a reason the wire cannot carry is a malformed entry", () => {
+  // ADVERSARIAL FIND. The verdict's `reason` is operator-authored free text and it is the ONLY
+  // part of a switch that travels to the worker, inside the frozen poll response — where
+  // `reason` is `z.string().max(1000).nullable()`.
+  //
+  // Unbounded here, a 1001-character reason makes `pollResponseV1Schema.parse` THROW inside the
+  // poll. That is not a drain: the route maps the throw to `internal_unavailable`, the daemon
+  // classifies 503 as TRANSIENT and backs off, and the kill switch degrades into a 503 storm
+  // that never tells anyone why. Refusing the entry keeps it fail-closed AND keeps it a drain.
+  const long = "x".repeat(KILL_SWITCH_MAX_REASON_LENGTH + 1);
+
+  it("matches the frozen protocol's own bound, so the two cannot drift apart", () => {
+    // Parsed through the top-level schema rather than by reaching into its members: it is
+    // wrapped in `.superRefine`, and a test that introspects the wrapper is a test that breaks
+    // on a refactor instead of on a contract change.
+    const drainResponse = (reason: string) => ({
+      protocolVersion: 1,
+      correlationId: "00000000-0000-4000-8000-000000000000",
+      serverTime: new Date().toISOString(),
+      outcome: "drain",
+      retryAfterMs: 1_000,
+      reason,
+    });
+    expect(
+      pollResponseV1Schema.safeParse(drainResponse("x".repeat(KILL_SWITCH_MAX_REASON_LENGTH))).success,
+      "the module's bound must be acceptable to the wire",
+    ).toBe(true);
+    expect(
+      pollResponseV1Schema.safeParse(drainResponse(long)).success,
+      "one character over must be rejected by the wire",
+    ).toBe(false);
+  });
+
+  it("REFUSES a switch whose reason the wire cannot carry", () => {
+    const result = evaluateKillSwitches({ document: doc([live({ reason: long })]), ...placement });
+    expect(result.killed).toBe(true);
+    expect(result.killed && result.reason).toBe("policy_unreadable");
+  });
+
+  it("accepts a reason exactly at the bound", () => {
+    // Non-vacuity: the refusal above is about the boundary, not about long strings in general.
+    const atBound = "x".repeat(KILL_SWITCH_MAX_REASON_LENGTH);
+    expect(evaluateKillSwitches({ document: doc([live({ reason: atBound })]), ...placement }))
+      .toEqual({ killed: true, dimension: "provider", value: "e2b", reason: atBound });
+  });
+
+  it("keeps every reason the module itself emits within the bound", () => {
+    // policy_unreadable / placement_unknown are ours, not the operator's, and a future reason
+    // string must stay carryable too.
+    for (const document of [{}, doc([live({ dimension: "template", value: "aoa-base", reason: "x" })])]) {
+      const result = evaluateKillSwitches({
+        document, provider: "e2b", template: undefined, knownProviders: KNOWN,
+      });
+      expect(result.killed).toBe(true);
+      expect((result.killed && result.reason).length).toBeLessThanOrEqual(KILL_SWITCH_MAX_REASON_LENGTH);
+    }
   });
 });

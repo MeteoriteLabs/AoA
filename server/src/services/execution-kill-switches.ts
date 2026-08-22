@@ -107,8 +107,26 @@ function unevaluatable(): KillSwitchVerdict {
   return { killed: true, dimension: null, value: null, reason: "placement_unknown" };
 }
 
+/**
+ * The longest reason a switch may carry.
+ *
+ * Bound to the FROZEN poll response's own limit (`pollResponseV1Schema`'s drain member declares
+ * `reason: z.string().max(1000).nullable()`), because the reason is the only part of a switch
+ * that travels to the worker. Unbounded here, a 1001-character operator reason makes the poll's
+ * `pollResponseV1Schema.parse` THROW: the route maps that to `internal_unavailable`, the daemon
+ * classifies 503 as transient and merely backs off, and the kill switch silently degrades from a
+ * drain into a 503 storm that never says why. Refusing the entry keeps it fail-closed AND keeps
+ * it a drain.
+ *
+ * `execution-kill-switches.test.ts` asserts this constant against the frozen schema in both
+ * directions, so the two cannot drift.
+ */
+export const KILL_SWITCH_MAX_REASON_LENGTH = 1000;
+
 function isStatedReason(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
+  return typeof value === "string"
+    && value.trim().length > 0
+    && value.length <= KILL_SWITCH_MAX_REASON_LENGTH;
 }
 
 /**

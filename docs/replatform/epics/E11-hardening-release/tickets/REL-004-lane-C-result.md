@@ -17,9 +17,11 @@ provider resources) is Lane D and is untouched.
 | 5 | `c476af0c2` | the policy reader, fail-closed |
 | 6 | `451db1b11` | the poll answers `drain` |
 | 7 | `94fd1c6f1` | the daemon's resumable drain |
-| 8 | this commit | separation guard, D1 nonce, test-inventory pin, this doc |
+| 8 | `75ad64d44` | separation guard, D1 nonce, test-inventory pin, this doc |
+| 9 | this commit | adversarial-review findings (§2.3) |
 
-**43 mutants: 41 killed, 1 documented equivalent, 1 intentional negative control.**
+**47 mutants: 44 killed, 1 documented equivalent, 1 explained-not-a-defect, 1 intentional
+negative control.**
 
 ---
 
@@ -116,6 +118,23 @@ M33 inserts an *unreviewed* call over a protected value into the same body — a
 `binding:protected-value-escape` still fails. Registering a reviewed call did not retire the
 guard.
 
+### 2.3 The adversarial pass found one real defect of its own
+
+Attacking the WIRE boundary rather than re-reading the code: the verdict's `reason` is
+operator-authored free text and it is the only part of a switch that travels to the worker,
+inside the frozen poll response, where `reason` is `z.string().max(1000).nullable()`.
+
+Unbounded on our side, a 1001-character reason makes `pollResponseV1Schema.parse` **throw**
+inside the poll. That is not a drain: the route maps the throw to `internal_unavailable`, the
+daemon classifies 503 as TRANSIENT and merely backs off, and the kill switch silently degrades
+into a 503 storm that never tells anyone why. The switch still stops leases, by accident, in the
+worst available way.
+
+Fixed by bounding the reason at `KILL_SWITCH_MAX_REASON_LENGTH`, tied to the frozen schema's own
+limit, so an over-long reason is refused as a malformed entry — fail-closed AND still a drain.
+The test asserts the constant against the frozen schema **in both directions**, so the two cannot
+drift; mutants M43-M45 (bound removed, bound one over, off-by-one at the boundary) all die.
+
 ---
 
 ## 3. Acceptance → named executable artifact
@@ -154,8 +173,10 @@ Neighbouring suites re-run: `job-leasing.integration` 39/39, whole `worker-daemo
 | Policy reader (M20–M25) | 6 | 6 | incl. turning the sentinel into a plain object |
 | Poll wiring (M26–M32) | 7 | 7 | incl. replacing the reader with a permissive stub |
 | Frozen guard (M33–M35) | 3 | 1 | M33 killed = the point; M34/M35 explained below |
-| Daemon drain (M36–M42) | 7 | 7 | incl. a pause silently becoming terminal |
+| Reason wire-bound (M43–M45) | 3 | 3 | the adversarial find, §2.3 |
 | Comment-stripping separation guard | 1 | 1 | a real code reference fails it; prose does not |
+| Both-branches projection guard | 1 | 1 | narrowing the platform projection fails it |
+| Daemon drain (M36–M42) | 7 | 7 | incl. a pause silently becoming terminal |
 
 **Survivors, honestly:**
 
@@ -220,6 +241,21 @@ survival — proves nothing until you have checked which tests actually ran.*
 
 6. **The switch is instance-wide, not per-organization.** MIG-002's per-org dial is the other
    control and is deliberately separate (handoff §5).
+
+7. **The reason string is broadcast to every worker on the instance.** It is the only field that
+   crosses to the fleet, the switch is instance-wide, and on a multi-tenant deployment a
+   dedicated worker may be operated by the tenant. Write reasons for that audience. Bounded at
+   1000 characters (§2.3); not otherwise filtered.
+
+8. **No LIVE platform-target kill-switch case.** The integration suite uses an
+   organization-scoped `dedicated_worker`. The platform branch takes its target from
+   `recheckPlatformTargetAuthority`, and the risk if that projection were narrowed to drop `kind`
+   is specific and nasty — the switch would read `provider: undefined` and refuse, so throwing
+   ANY switch would drain every platform worker regardless of what it named, and only once a
+   switch existed. Pinned structurally instead (`job-leasing-kill-switch-wiring.test.ts`: both
+   authority paths select the shared `placementTargetColumns`, which carries `kind`), and that
+   guard is itself mutation-checked. A live platform case needs an operator-db fixture plus a
+   physical/logical worker pair; it is worth adding when Lane D touches the same suite.
 
 ---
 
