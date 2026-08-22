@@ -65,5 +65,8 @@ server/src/realtime/live-events-ws.ts text eol=lf diff
 # Pinned for the whole scripts/ directory rather than the one file, because every
 # shebang-bearing executable has the same property and the next one to be imported by a
 # test would fail the same way.
-scripts/*.mjs text eol=lf
-scripts/*.sh text eol=lf
+# `scripts/*.mjs` would match ONLY the top level — `*` does not cross a slash — while
+# the reason above says "the whole scripts/ directory". `**` between slashes matches
+# zero or more directories, so these cover both scripts/x.mjs and scripts/lib/x.mjs.
+scripts/**/*.mjs text eol=lf
+scripts/**/*.sh text eol=lf
