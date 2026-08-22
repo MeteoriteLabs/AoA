@@ -50,6 +50,18 @@ export type {
   EventOutboxLifecycle,
 } from "./lifecycle/shutdown.js";
 
+// DSK-004 Lane D — stop leasing, drain, then swap. Composed from the shutdown steps
+// above, under the opposite failure policy: a failed drain refuses the swap rather than
+// being swallowed, because an update is not exiting and the pointer must not move over
+// work that is still running.
+export { createUpdateDrainSteps, runDrainBeforeSwap } from "./update/drain-before-swap.js";
+export type {
+  DrainBeforeSwapOptions,
+  UpdateDrainDeps,
+  UpdateDrainResult,
+  UpdateRefusalReason,
+} from "./update/drain-before-swap.js";
+
 export { startHealthServer, assertLoopbackHost } from "./health/health-server.js";
 export type { HealthServerHandle, HealthServerConfig } from "./health/health-server.js";
 
