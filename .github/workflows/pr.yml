@@ -220,6 +220,26 @@ jobs:
       # end-to-end CLI suite (a real invocation that must exit non-zero on a tampered,
       # incomplete or unpromoted release), and the anti-orphan test that fails if a
       # verifier exists which the gate does not dispatch to.
+      # A CHECK THAT NOTHING RUNS IS NOT A CHECK. Two guards below had never executed
+      # in CI, found by the sweep that followed REL-004:
+      #
+      #   - the FROZEN worker-protocol v1 consumer check existed only as an npm script
+      #     nothing invoked, and that script omitted the required --source-sha, so it
+      #     would have exited 1 even if someone had run it. Its two self-tests were in
+      #     no workflow either. The guard passes; it had simply never been asked.
+      #   - guard-inventory itself now records, for every check-*/verify-* script,
+      #     whether anything runs it — default-deny, so a new check must be classified.
+      - name: Frozen worker-protocol v1 consumer (E1)
+        run: |
+          pnpm check:frozen-worker-protocol-v1
+          node --test scripts/check-frozen-worker-protocol-consumer.test.mjs
+          node --test scripts/check-frozen-worker-protocol-consumer-isolation.test.mjs
+
+      - name: Guard inventory (every check declares what runs it)
+        run: |
+          node --test scripts/lib/__tests__/guard-inventory.test.mjs
+          node scripts/check-guard-inventory.mjs
+
       - name: Release admission gate (REL-004)
         run: |
           node --test scripts/lib/__tests__/release-manifest.test.mjs
