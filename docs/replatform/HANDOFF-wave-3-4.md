@@ -12,20 +12,42 @@ after it moves live execution.
 
 ## 0. How to start the session
 
-1. **Work in `C:\e3` on branch `docs/replatform-program`** — NOT the OneDrive worktree.
-   Two reasons: embedded Postgres cannot initdb from the deep OneDrive path (MAX_PATH),
-   and the OneDrive worktree currently sits on a stale branch that does not contain this
-   programme's work at all.
-2. **Confirm you are where you think you are** before anything else:
-   ```
-   cd /c/e3 && git rev-parse --abbrev-ref HEAD && git rev-parse --short HEAD && git status --porcelain
-   ```
-   Expect `docs/replatform-program`, a tip at or after `a800a1e2b`, and a clean tree.
-3. **Read this document, then §2** — the evidence pass is already done; re-running it is
-   wasted effort.
-4. **First ticket is REL-004 clause 3a**, the kill-switch wiring. Its terrain is mapped in
-   §3, including the grant surface it needs and the seam it must NOT use.
-5. Design docs and result docs live under `docs/replatform/epics/<epic>/tickets/`.
+**Worktree:** `C:\e3` — a dedicated checkout for this programme, NOT the OneDrive worktree.
+**Branch:** `docs/replatform-program` — the single long-lived integration branch (PR #323).
+
+Both matter and neither is optional. The OneDrive worktree cannot run embedded Postgres
+(its path exceeds MAX_PATH at initdb) *and* currently sits on a stale branch containing
+none of this programme's work — a session started there finds no handoff and no tickets.
+
+**Preflight — run this first; it FAILS rather than printing something to eyeball:**
+
+```bash
+cd /c/e3 \
+  && [ "$(git rev-parse --abbrev-ref HEAD)" = "docs/replatform-program" ] \
+  && git merge-base --is-ancestor c6c6bc318 HEAD \
+  && [ -z "$(git status --porcelain)" ] \
+  && [ -f docs/replatform/HANDOFF-wave-3-4.md ] \
+  && echo "PREFLIGHT OK" \
+  || echo "PREFLIGHT FAILED - wrong worktree, wrong branch, behind, or dirty"
+```
+
+A non-zero exit or `PREFLIGHT FAILED` means stop and fix the environment. Do not proceed
+on the assumption that it is probably fine.
+
+**Then:**
+
+1. Read this document end to end, then **§2** — the evidence pass is done; re-running it
+   is wasted effort.
+2. **§6 first if you are heading for Wave 4** — one inherited deferral gates the cutover.
+3. **First ticket: REL-004 clause 3a**, the kill-switch wiring. Terrain is mapped in §3,
+   including the grant surface it needs and the seam it must NOT use.
+4. Design and result docs live under `docs/replatform/epics/<epic>/tickets/`.
+
+**On worktrees:** `program-design.md` sets one ticket, one worktree, one implementation
+agent, and forbids parallel tickets touching the same migration, state machine or route
+module. Wave 3's items are independent enough to run sequentially in `C:\e3`; if you do
+fan out, give each ticket its own worktree off the same branch and never let two touch the
+same migration.
 
 ## 1. The per-ticket process — EVERY ticket below, no exceptions
 
