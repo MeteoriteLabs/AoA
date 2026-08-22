@@ -178,8 +178,19 @@ database has never been given, and the real server subprocess crashes exactly th
 `@armyofagents/db` before running any integration suite after generating a migration.** CI builds
 first, so it does not see this.
 
-Linux CI is the verdict for this suite, per the programme's convention for Windows-local
-aggregates.
+**Settled by the LIVE lane, not by argument.** The D1 Merge Train ran on the pushed tip
+(`4d5bcbead`, run `32560322510`) and is **green in 6m37s**: static topology preflight, split-image
+build, two-replica bring-up, the live E6F campaign, teardown. Both replicas BOOTING is precisely
+the assertion in question — `assertExactServingRoleAuthority` runs at startup against the real
+migrated database, so a manifest/grant mismatch would have refused the bring-up. It did not. The
+PR gate's `migrations` job is green on the same tip.
+
+One attribution attempt is worth recording as a method failure. Reverting the code in place with
+`git checkout <pre-lane-C-sha> -- server/src packages/db packages/worker-daemon` produced 58
+failures, which looked alarming and meant nothing: `git checkout <sha> -- <path>` restores
+modified files but does **not remove files added since**, so the tree still held every new Lane C
+test and module while their imports had been reverted underneath them. An inconsistent tree
+answers no question. The clean signals are the isolation run and the live D1 lane above.
 
 Neighbouring suites re-run: `job-leasing.integration` 39/39, whole `worker-daemon` 669/669,
 `tenant-app-db-startup` + `job-control-runtime` + `job-source-governance-matrix` +
