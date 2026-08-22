@@ -19,6 +19,7 @@ provider resources) is Lane D and is untouched.
 | 7 | `94fd1c6f1` | the daemon's resumable drain |
 | 8 | `75ad64d44` | separation guard, D1 nonce, test-inventory pin, this doc |
 | 9 | `1cd3ad755` | adversarial-review findings (§2.3) |
+| 10 | this commit | CI-red fix: the grant left the frozen 0213/0214 body (§2.4) |
 
 **47 mutants: 44 killed, 1 documented equivalent, 1 explained-not-a-defect, 1 intentional
 negative control.**
@@ -134,6 +135,59 @@ Fixed by bounding the reason at `KILL_SWITCH_MAX_REASON_LENGTH`, tied to the fro
 limit, so an over-long reason is refused as a malformed entry — fail-closed AND still a drain.
 The test asserts the constant against the frozen schema **in both directions**, so the two cannot
 drift; mutants M43-M45 (bound removed, bound one over, off-by-one at the boundary) all die.
+
+### 2.4 CI went red, and the cause was a SIXTH coupling surface the documentation omits
+
+`verify` failed on the pushed tip: **21,743 passed, 2 failed**, both in
+`tenant-rls-enforcement-unit.test.ts`. Everything else — `e2e`, `migrations`,
+`distributed-contract`, `policy`, `brand-check`, and the live D1 lane — was green, so the
+attribution was exact.
+
+**The cause.** `server/src/db/rls-tenant.ts` RECONSTRUCTS the bodies of the already-applied,
+IMMUTABLE migrations 0213 and 0214 by walking `JOB_CONTROL_LEGACY_GRANTS`, and byte-identity
+tests assert the reconstruction matches the committed files. Adding one key to that object
+therefore retroactively rewrites two migrations that have already run.
+
+**Why I walked into it.** Migration 0259 is the precedent I followed, and its header carries an
+explicit "MANIFEST COUPLING" list of the places that must agree. That list has five items and
+does not include the reconstructors. It is wrong — and it is wrong in a particular way worth
+naming: **DSK-001 Lane B, the ticket that wrote 0259, had already discovered this.** Its design
+doc has a section titled *"D-B8 — a SEVENTH surface: the immutable-artifact reconstructions"*
+which says verbatim *"The terrain map counted five artifacts for the grant. There are seven."*
+That ticket hit the trap, added `GRANTED_AFTER_0213`/`GRANTED_AFTER_0214` to escape it, wrote it
+up — and then shipped the stale five-item list into the migration header a successor actually
+copies. The lesson generalizes past this ticket: **when a ticket learns something, the durable
+artifact people read has to learn it too, or the next person repeats the mistake with the
+document in their hand.**
+
+**The fix is structural, not another list.** `instance_settings` moved OUT of
+`JOB_CONTROL_LEGACY_GRANTS` into its own `KILL_SWITCH_POLICY_APP_GRANTS`, spread into
+`appTablePrivileges()` and the `APP_SERVING_RELATIONS` union. That is the dominant convention for
+every other post-0214 addition (`FOLDER_GRANTS_*`, `WORKER_ADMISSION_RATE_LIMITS_*`,
+`LIVE_EVENT_LOG_*`, `LEGACY_RESOURCE_RECONCILIATION_*`), and the reconstructors never walk those
+constants — so the hazard becomes unrepresentable instead of remembered. It is also the more
+honest classification: `instance_settings` is an instance policy document read by the distributed
+poll, not the "legacy company-scoped authorization fact" that justified putting
+`provider_credentials` in the legacy bag.
+
+Two further surfaces surfaced while fixing it, both now handled: the contract test independently
+re-derives the serving-relation inventory in **two** places from the named constants, so a new
+constant must be listed in both.
+
+**A LATENT trap was found next door and closed.** `buildServingRoleHardeningMigrationSql` walks
+`JOB_CONTROL_NEW_PATH_GRANTS` **unconditionally — there is no exclusion set for it at all**. A
+table added there rewrites applied migration 0214 with no way to opt out, and nothing guarded it.
+Verified by reading `rls-tenant.ts:442-449`.
+
+**Guards added, both mutation-checked.** `job-control-legacy-grants.contract.test.ts` now pins the
+exact key set of BOTH frozen constants, with failure messages that name the mistake and the fix.
+Re-introducing the mistake fails the named guard (and the byte-identity tests); adding a probe
+table to `JOB_CONTROL_NEW_PATH_GRANTS` fails the second pin. The byte-identity test always caught
+this — as a forty-line SQL diff, thirty minutes into `verify`. The pins turn that into one line.
+
+Migration 0261's header now carries the complete nine-item coupling list. Migration 0259's is
+deliberately **not** edited: it is an applied migration, and the guard now catches the mistake
+regardless of what its comment says.
 
 ---
 

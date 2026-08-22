@@ -350,6 +350,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       ...Object.keys(grants.FOLDER_GRANTS_NEW_PATH_GRANTS),
       ...Object.keys(grants.WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS),
       ...Object.keys(grants.LIVE_EVENT_LOG_NEW_PATH_GRANTS),
+      ...Object.keys(grants.KILL_SWITCH_POLICY_APP_GRANTS),
       ...Object.keys(grants.CUTOVER_MARKER_APP_GRANTS),
       ...Object.keys(grants.EXECUTION_TARGET_REVOCATION_APP_GRANTS),
       ...Object.keys(grants.LEGACY_RESOURCE_RECONCILIATION_APP_GRANTS),
@@ -518,6 +519,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       ...Object.keys(grants.FOLDER_GRANTS_NEW_PATH_GRANTS),
       ...Object.keys(grants.WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS),
       ...Object.keys(grants.LIVE_EVENT_LOG_NEW_PATH_GRANTS),
+      ...Object.keys(grants.KILL_SWITCH_POLICY_APP_GRANTS),
       ...Object.keys(grants.WORKER_ENROLLMENT_OPERATOR_GRANTS),
       ...Object.keys(grants.OPERATOR_METADATA_COLUMN_GRANTS),
       ...Object.keys(grants.CUTOVER_MARKER_APP_GRANTS),
@@ -695,5 +697,82 @@ describe("REL-004 Lane C/I11 — instance_settings is reachable by aoa_app", () 
     // requires exact equality with RLS_RELATIONS, so enabling RLS here would itself be drift.
     expect(grants.RLS_RELATIONS).not.toContain("instance_settings");
     expect(grants.POLICY_COUNTS).not.toHaveProperty("instance_settings");
+  });
+});
+
+describe("JOB_CONTROL_LEGACY_GRANTS is the FROZEN 0213/0214 body — do not grow it", () => {
+  /**
+   * This object is not merely a grant list. `server/src/db/rls-tenant.ts` RECONSTRUCTS the
+   * bodies of the already-applied, IMMUTABLE migrations 0213 and 0214 by walking it, so adding
+   * one key retroactively rewrites two migrations that have already run.
+   *
+   * That has now happened TWICE. DSK-001 Lane B hit it and added the
+   * `GRANTED_AFTER_0213` / `GRANTED_AFTER_0214` exclusion sets; its design doc says plainly
+   * "the terrain map counted five artifacts — there are SEVEN". But the coupling comment that
+   * ticket shipped in migration 0259, which is the artifact a successor actually copies, still
+   * lists only five. REL-004 Lane C followed that comment and hit the identical trap.
+   *
+   * The byte-identity test in `tenant-rls-enforcement-unit.test.ts` catches it — as a forty-line
+   * SQL diff, ~30 minutes into `verify`. This pins the key set instead, so the failure names the
+   * mistake and the fix in one line.
+   */
+  const FROZEN_0213_0214_TABLES = [
+    "activity_log", "agent_runtime_decisions", "agent_runtime_trust_rules", "agent_wakeup_requests",
+    "agents", "approvals", "artifact_versions", "artifacts", "assets", "budget_incidents",
+    "budget_policies", "companies", "company_memberships", "cost_events", "discussion_entries",
+    "execution_workspaces", "heartbeat_runs", "hub_audit", "hub_counter_snapshots",
+    "internal_agent_config", "internal_agent_conversations", "internal_agent_messages",
+    "internal_agent_runs", "internal_agent_runtime_approvals", "internal_agent_tool_trust_rules",
+    "issue_comments", "issue_labels", "issues", "labels", "notification_digest_items",
+    "notification_preferences", "notifications", "organizations", "projects",
+    "provider_credentials", "task_dependencies", "task_outputs", "thread_orchestration_state",
+    "user_roles", "workspace_runtime_services",
+  ].sort();
+
+  it("holds exactly the tables the immutable 0213/0214 reconstruction expects", () => {
+    expect(
+      Object.keys(JOB_CONTROL_LEGACY_GRANTS).sort(),
+      "JOB_CONTROL_LEGACY_GRANTS reconstructs the IMMUTABLE migrations 0213/0214 " +
+        "(server/src/db/rls-tenant.ts). Do NOT add a table here: put the new grant in its own " +
+        "`*_APP_GRANTS` / `*_NEW_PATH_GRANTS` constant, spread it into appTablePrivileges() and " +
+        "the APP_SERVING_RELATIONS union, and ship it in its own C14 migration. Adding here " +
+        "instead ALSO requires an entry in BOTH GRANTED_AFTER_0213 and GRANTED_AFTER_0214.",
+    ).toEqual(FROZEN_0213_0214_TABLES);
+  });
+
+  it("also freezes JOB_CONTROL_NEW_PATH_GRANTS, which 0214 reconstructs with NO exclusion set", () => {
+    // Found while fixing the above. `buildServingRoleHardeningMigrationSql` walks BOTH
+    // `JOB_CONTROL_NEW_PATH_GRANTS` (rls-tenant.ts, unconditionally) and
+    // `JOB_CONTROL_LEGACY_GRANTS` (gated on GRANTED_AFTER_0214). The legacy one has an
+    // exclusion set; the new-path one has NOTHING — so a table added there rewrites applied
+    // migration 0214 and there is no mechanism to opt out. Same pin, same reason, and this one
+    // has never been guarded at all.
+    expect(
+      Object.keys(JOB_CONTROL_NEW_PATH_GRANTS).sort(),
+      "JOB_CONTROL_NEW_PATH_GRANTS is reconstructed into the IMMUTABLE migration 0214 with NO " +
+        "exclusion mechanism (server/src/db/rls-tenant.ts). Do NOT add a table here. Put the " +
+        "new grant in its own `*_APP_GRANTS` / `*_NEW_PATH_GRANTS` constant and spread it into " +
+        "appTablePrivileges() + the APP_SERVING_RELATIONS union.",
+    ).toEqual([
+      "job_artifacts", "job_attempts", "job_secret_handles", "jobs", "leases",
+      "service_instances", "services", "workers",
+    ]);
+  });
+
+  it("keeps the kill-switch grant OUT of the frozen body, in its own constant", () => {
+    // Non-vacuity for the pin above, and a regression guard for the specific mistake made.
+    expect(JOB_CONTROL_LEGACY_GRANTS).not.toHaveProperty("instance_settings");
+    expect(grants.KILL_SWITCH_POLICY_APP_GRANTS).toEqual({ instance_settings: ["SELECT"] });
+    expect(appTablePrivileges().instance_settings).toEqual(["SELECT"]);
+  });
+
+  it("needs no 0213/0214 exclusion entry, because the reconstructors never see it", () => {
+    const rlsTenant = readFileSync(
+      fileURLToPath(new URL("../db/rls-tenant.ts", import.meta.url)),
+      "utf8",
+    );
+    // If a future change moves the grant back into the frozen body, this flips and the pin
+    // above fires first with the actionable message.
+    expect(rlsTenant).not.toContain('"instance_settings"');
   });
 });

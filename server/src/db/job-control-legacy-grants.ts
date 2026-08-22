@@ -35,6 +35,17 @@ function deepFreeze<T>(value: T): T {
  * approvals/runtime-decision, budget/cost, concurrency, or output-summary code.
  * New legacy access must be added by a reviewed trace, never by an owner fallback.
  */
+// DO NOT ADD A NEW TABLE HERE. This object is not merely a grant list: `rls-tenant.ts`
+// RECONSTRUCTS the bodies of the ALREADY-APPLIED, IMMUTABLE migrations 0213 and 0214 by walking
+// it, so a new entry retroactively rewrites two migrations that have already run and the
+// byte-identity test in `tenant-rls-enforcement-unit.test.ts` fails ~30 minutes into `verify`.
+// (DSK-001 Lane B hit this and added `GRANTED_AFTER_0213`/`GRANTED_AFTER_0214`; REL-004 Lane C
+// hit it again by following 0259's coupling comment, which does not mention it.)
+//
+// A NEW grant goes in its OWN `*_APP_GRANTS` / `*_NEW_PATH_GRANTS` constant below — the
+// reconstructors never see those, so the hazard becomes unrepresentable rather than remembered.
+// `job-control-legacy-grants.contract.test.ts` pins this object's exact key set so the mistake
+// fails with an instruction instead of a forty-line SQL byte diff.
 export const JOB_CONTROL_LEGACY_GRANTS = Object.freeze({
   issues: ["SELECT", "UPDATE"],
   agents: ["SELECT", "UPDATE"],
@@ -51,15 +62,6 @@ export const JOB_CONTROL_LEGACY_GRANTS = Object.freeze({
   // target. Table-level SELECT mirrors company_memberships, which is the same class of
   // read: a legacy company-scoped authorization fact consulted inside the fence.
   provider_credentials: ["SELECT"],
-  // REL-004 Lane C — the provider/template kill-switch policy document. The worker poll reads
-  // `instance_settings.kill_switches` on the aoa_app pool BEFORE opening the lease transaction;
-  // without this grant the read fails at RUNTIME with permission denied, not at compile time.
-  // Table-level for the reason 0259 records: the column-level form exists to keep a WRITEABLE,
-  // worker-owned table narrow and carries a bespoke allowlist plus a has_column_privilege pass;
-  // a second such mechanism for a read-only singleton lookup would be more machinery, not less
-  // exposure. Exposure verified rather than assumed: instance_settings stores NO secret — UI
-  // flags, a feedback-sharing preference, a retention policy, and migration snapshots.
-  instance_settings: ["SELECT"],
   notification_preferences: ["SELECT"],
   notification_digest_items: ["SELECT", "INSERT"],
   hub_counter_snapshots: ["SELECT", "UPDATE"],
@@ -161,6 +163,28 @@ export const FOLDER_GRANTS_NEW_PATH_GRANTS = Object.freeze({
  * of expired windows). This is the ONE keystone reconciliation DEP-009 forces. */
 export const WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS = Object.freeze({
   worker_admission_rate_limits: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
+/**
+ * REL-004 Lane C kill-switch policy read, versioned after the immutable DEP-009 rate-limit
+ * delta. `instance_settings` is a PRE-EXISTING legacy singleton, not a new table — but the grant
+ * is new (migration 0261), and it lives in its own constant rather than in
+ * `JOB_CONTROL_LEGACY_GRANTS` for a structural reason: that object reconstructs the immutable
+ * 0213/0214 migration bodies, so an entry there needs a matching exclusion in BOTH
+ * `GRANTED_AFTER_0213` and `GRANTED_AFTER_0214` or it rewrites migrations that already ran.
+ * Here, the reconstructors never see it.
+ *
+ * The worker poll reads `instance_settings.kill_switches` on the aoa_app pool BEFORE opening the
+ * lease transaction; without the grant the read fails at RUNTIME with permission denied, not at
+ * compile time. Table-level for the reason 0259 records: the column-level form exists to keep a
+ * WRITEABLE, worker-owned table narrow and carries a bespoke allowlist plus a
+ * has_column_privilege pass; a second such mechanism for a read-only singleton lookup would be
+ * more machinery, not less exposure. Exposure verified rather than assumed: instance_settings
+ * stores NO secret — UI flags, a feedback-sharing preference, a retention policy, and migration
+ * snapshots. SELECT only; no operator authority.
+ */
+export const KILL_SWITCH_POLICY_APP_GRANTS = Object.freeze({
+  instance_settings: ["SELECT"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
 /** MIG-003 (E10 realtime foundation) durable realtime event-log authority, versioned after the
@@ -331,6 +355,7 @@ export const APP_SERVING_RELATIONS = sortedUnion(
   Object.keys(FOLDER_GRANTS_NEW_PATH_GRANTS),
   Object.keys(WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS),
   Object.keys(LIVE_EVENT_LOG_NEW_PATH_GRANTS),
+  Object.keys(KILL_SWITCH_POLICY_APP_GRANTS),
   Object.keys(CUTOVER_MARKER_APP_GRANTS),
   Object.keys(EXECUTION_TARGET_REVOCATION_APP_GRANTS),
   Object.keys(LEGACY_RESOURCE_RECONCILIATION_APP_GRANTS),
