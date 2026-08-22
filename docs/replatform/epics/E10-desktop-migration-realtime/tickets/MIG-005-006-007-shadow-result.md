@@ -195,6 +195,14 @@ survival for the wrong reason proves as little as a kill for the wrong reason.
    records cannot be correlated back to a specific extraction. That is the operation's own
    identity, not a fabricated run/issue.
 
+8. **Three new integration suites, three embedded-PostgreSQL boots.** `tenant-read-only`,
+   `job-shadow-admissibility.integration` and `mig-shadow-evidence.integration` each call
+   `setupJobControlFixture`, so each boots its own cluster and adds a few minutes to `verify`.
+   They are kept separate because they answer unrelated questions (database-enforced
+   read-only-ness; can the probe see real rows through RLS; the aggregate evidence table), and
+   sharing one fixture would couple them. Stated because it is a cost I introduced, not a free
+   addition.
+
 ## 7. Process note
 
 `job-shadow-admissibility.ts` was written before its tests — a real deviation from the fail-first
