@@ -719,6 +719,26 @@ export interface ReapExpiredLeasesInput {
   maxBackoffMs: number;
 }
 
+/**
+ * MIG-002 convergence: one attempt the reaper drove to a TERMINAL job outcome.
+ *
+ * `onAttemptTerminal` has exactly one producer (the worker's accepted event batch), so a
+ * reaped attempt leaves its heartbeat run pinned at `running`. The sweeper projects a run
+ * terminal for each of these through the existing `canary-terminal-projection` handler — one
+ * projection, two triggers, so the ownership predicate is never duplicated.
+ *
+ * Listed ONLY when the JOB reached a terminal state. A reaped lease whose attempt expired but
+ * whose job was RETRIED is deliberately absent: that job is about to run again, and projecting
+ * a run terminal for it would leave two executors.
+ */
+export interface ReapedTerminalAttempt {
+  readonly companyId: string;
+  readonly jobId: string;
+  readonly attemptId: string;
+  /** Frozen `TerminalEventStatus` vocabulary: succeeded | failed | cancelled | expired. */
+  readonly terminalStatus: "succeeded" | "failed" | "cancelled" | "expired";
+}
+
 export interface ReapExpiredLeasesResult {
   scanned: number;
   revoked: number;
@@ -726,6 +746,8 @@ export interface ReapExpiredLeasesResult {
   deadLettered: number;
   cancelled: number;
   finalized: number;
+  /** ADDITIVE (MIG-002). Existing consumers read only the counts and are unchanged. */
+  terminalized: ReapedTerminalAttempt[];
 }
 
 /** DAT-006 — the device-authenticated orphan quarantine record input. All identity is
@@ -3180,6 +3202,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       const bounded = Math.max(1, Math.min(128, Math.floor(input.limit)));
       const result: ReapExpiredLeasesResult = {
         scanned: 0, revoked: 0, retried: 0, deadLettered: 0, cancelled: 0, finalized: 0,
+        terminalized: [],
       };
       const terminalAttempt = [...TERMINAL_ATTEMPT_STATUSES];
 
@@ -3266,6 +3289,10 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           // Worker committed a winning terminal then vanished: finalize, never retry.
           await finalizeJob("succeeded");
           result.finalized += 1;
+          result.terminalized.push({
+            companyId: lease.companyId, jobId: lease.jobId, attemptId: attempt.id,
+            terminalStatus: "succeeded",
+          });
         } else if (attempt.status === "cancelled" || cancelling) {
           await tx.update(jobAttempts).set({
             status: "cancelled",
@@ -3279,6 +3306,10 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           ));
           await finalizeJob("cancelled");
           result.cancelled += 1;
+          result.terminalized.push({
+            companyId: lease.companyId, jobId: lease.jobId, attemptId: attempt.id,
+            terminalStatus: "cancelled",
+          });
         } else {
           // Abandoned mid-flight (or a worker-reported failure): fail this attempt,
           // then retry under the job lock or dead-letter on exhaustion.
@@ -3307,6 +3338,8 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
               // atomically in this one reaper txn under the org-capacity advisory lock).
               inheritCapacityHeld: reapedHeldCapacity,
             });
+            // DELIBERATELY NOT listed in `terminalized`: the job runs again, so its run has no
+            // terminal yet. Projecting one here would leave two executors.
             if (alloc.status === "created") result.retried += 1;
           } else {
             await tx.update(jobs).set({
@@ -3320,6 +3353,10 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
               notInArray(jobs.status, [...JOB_TERMINAL_STATUSES]),
             ));
             result.deadLettered += 1;
+            result.terminalized.push({
+              companyId: lease.companyId, jobId: lease.jobId, attemptId: attempt.id,
+              terminalStatus: "failed",
+            });
           }
         }
       }

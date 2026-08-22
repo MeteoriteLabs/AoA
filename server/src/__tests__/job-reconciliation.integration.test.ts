@@ -125,6 +125,9 @@ integration("JOB-006 reconciliation / reaper", () => {
 
     const result = await reconciliation.reapOrganization(ORG);
     expect(result.finalized).toBe(1);
+    // MIG-002 N1: a finalized job IS terminal, so its run needs a terminal projected.
+    expect(result.terminalized).toHaveLength(1);
+    expect(result.terminalized[0]).toMatchObject({ terminalStatus: "succeeded" });
     expect(result.retried).toBe(0);
     const state = await jobState(seeded.jobId);
     expect(state.status).toBe("succeeded");
@@ -184,6 +187,9 @@ integration("JOB-006 reconciliation / reaper", () => {
 
     const result = await reconciliation.reapOrganization(ORG);
     expect(result.cancelled).toBe(1);
+    // MIG-002 N1: cancellation is terminal too, and must map to the frozen `cancelled`.
+    expect(result.terminalized).toHaveLength(1);
+    expect(result.terminalized[0]).toMatchObject({ terminalStatus: "cancelled" });
     expect(result.retried).toBe(0);
     const state = await jobState(seeded.jobId);
     expect(state.status).toBe("cancelled");
@@ -222,6 +228,45 @@ integration("JOB-006 reconciliation / reaper", () => {
     expect(attempt2?.status).toBe("pending");
     expect(await outboxCount(attempt2!.id)).toBe(1);
   }, 60_000);
+
+  // ─── MIG-002 convergence (N1/N2) ───────────────────────────────────────────
+  // The reaper terminalizes attempts, but `onAttemptTerminal` has exactly ONE producer (the
+  // worker's event batch), so a reaped attempt leaves its heartbeat run pinned at `running`.
+  // To project a run terminal, the sweeper needs to know WHICH attempts were terminalized —
+  // and the result carried counts only. The reaper already selects the identities it needs
+  // (`{id, companyId, jobId, attemptId, attemptNumber}` under SKIP LOCKED) and discarded them.
+  //
+  // N2 is the sharp one: a reaped lease can end in a RETRY, where the job runs again. Listing
+  // a retried attempt would make the sweeper project a run terminal for work that is about to
+  // execute — a two-executor bug manufactured by the fix.
+  it("N1/N2 lists the attempts it TERMINALIZED, and never a retried one", async () => {
+    const f = ctx();
+    const reconciliation = createJobReconciliationService({ appDb: f.app.db, baseBackoffMs: 5_000 });
+
+    // (a) abandoned WITH a retry available -> job runs again -> must NOT be listed.
+    const retried = await f.activateLease(6_401);
+    await expireLease(retried.offer.leaseId);
+    const retryResult = await reconciliation.reapOrganization(ORG);
+    expect(retryResult.retried).toBe(1);
+    expect(
+      retryResult.terminalized,
+      "a retried attempt's job is about to run again; projecting a run terminal for it would " +
+        "leave two executors",
+    ).toEqual([]);
+
+    // (b) retry EXHAUSTED -> dead-letter -> terminal, and reported as `failed`.
+    const dead = await f.activateLease(6_402, { maxAttempts: 1 });
+    await expireLease(dead.offer.leaseId);
+    const deadResult = await reconciliation.reapOrganization(ORG);
+    expect(deadResult.deadLettered).toBe(1);
+    expect(deadResult.terminalized).toHaveLength(1);
+    expect(deadResult.terminalized[0]).toMatchObject({
+      jobId: dead.seeded.jobId,
+      attemptId: dead.seeded.attemptId,
+      terminalStatus: "failed",
+    });
+    expect(deadResult.terminalized[0]?.companyId).toBeTruthy();
+  }, 90_000);
 
   it("the sweeper is flag-gated, single-in-flight, and idempotent across duplicate ticks", async () => {
     const f = ctx();
