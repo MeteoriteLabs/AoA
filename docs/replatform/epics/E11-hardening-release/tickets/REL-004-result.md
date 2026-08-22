@@ -7,7 +7,7 @@
 |---|---|---|---|---|
 | A | Release manifest + the gate that CALLS the three verifiers | 1 | `60e658c07` | **Done** |
 | B | Vulnerability policy with expiring exceptions | 2 | `d90ffe68b` | **Done** |
-| C | Provider + template kill switches | 3a | — | **Not built** — designed and terrain-verified, see §4 |
+| C | Provider + template kill switches | 3a | `<pending>` | **Decision built, NOT WIRED** — see §4 |
 | D | Reconcile active provider resources on kill | 3b | — | **Not built** — see §4 |
 
 **42 mutants across the two landed lanes, 41 killed, 1 documented equivalent.**
@@ -121,9 +121,18 @@ Neither is blocked. Both are specified below with the terrain verified, so a suc
 implements rather than re-derives.
 
 **The storage is `instance_settings.general`** — a singleton JSONB table that already
-exists. A kill-switch document needs **no migration, no new distributed table, and none of
-the keystone reconciliation** a new one would require (two grant surfaces plus a C14
-idempotency hand-append). Widening beats adding, as this programme has now proven repeatedly.
+exists, so a kill-switch document needs **no migration and no new distributed table**.
+
+**CORRECTION (2026-08-22), because the first version of this section was wrong.** It also
+claimed "none of the keystone reconciliation". That does not hold, and a successor
+following it would have hit a wall. `instance_settings` is absent from
+`appTablePrivileges()` in `server/src/db/distributed-execution-databases.ts`, and
+`assertExactServingRoleAuthority` requires EXACT ACLs across every non-system table — so
+`aoa_app`, the role the lease path runs as, must have *zero* privileges on it, enforced
+fail-closed. Reading the document from a poll therefore requires a grant entry (a
+`SELECT`-only surface) plus whatever policy the table needs for a non-owner role. Less work
+than a new distributed table; not none. The lesson is the programme's own: **check that the
+consuming path can reach a store before recommending it.**
 
 **The dimension already exists too**: `execution_targets.kind` carries
 `pooled_gvisor | dedicated_worker | e2b | local_host | desktop`, which is the provider axis.
