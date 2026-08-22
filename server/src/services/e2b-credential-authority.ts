@@ -19,8 +19,13 @@
  * `resolveE2bApiKey` path in `sandbox-provider-runtime.ts` is NOT removed — it is
  * retired when MIG-006/007 cut crew/one-shot execution over. This module makes the
  * boundary authoritative for reconciled/new work only. The LIVE force-kill of
- * sandboxes tagged with a superseded generation is REL-004's kill-switch primitive
- * (deferred §5.3) — this module builds only the AoA-side resolve/inject refusal.
+ * sandboxes tagged with a superseded generation was deferred here to REL-004's kill-switch
+ * primitive (§5.3), and REL-004 Lane D has now BUILT it: the acquire path records the generation
+ * into `environment_leases.metadata.keyGeneration`, and the warm-sandbox reaper reclaims PAUSED
+ * snapshots whose recorded generation is no longer current. Scoped to paused deliberately — a
+ * superseded snapshot is dead weight because THIS module refuses to resolve the old generation,
+ * so AoA will never resume it; live work is left to drain. This module still builds only the
+ * AoA-side resolve/inject refusal.
  *
  * No hosted-API call is added (Rule #11): the E2B provider-control key is a
  * confined credential, not an LLM/embeddings call.

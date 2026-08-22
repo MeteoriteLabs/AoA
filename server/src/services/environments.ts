@@ -411,6 +411,34 @@ export function environmentService(db: Db) {
     },
 
     /**
+     * REL-004 Lane D (§5) — paused e2b snapshots that CARRY a recorded key generation.
+     *
+     * Its own query rather than a filter over `listPausedLeasesForProvider`, for two reasons: the
+     * `metadata->>'keyGeneration' IS NOT NULL` predicate belongs in SQL rather than scanning every
+     * paused lease into memory, and keeping the two scans distinct makes the reclaim arm and the
+     * superseded arm separately observable — in logs and in tests.
+     *
+     * Untagged rows are excluded here, not skipped later: absence of a generation is "acquired
+     * before this tag existed", never "superseded". Reading it the other way would reap every
+     * pre-existing warm snapshot on the first deploy.
+     */
+    listPausedLeasesWithKeyGeneration: async (cutoff: Date) => {
+      return db
+        .select()
+        .from(environmentLeases)
+        .where(
+          and(
+            eq(environmentLeases.status, "paused"),
+            eq(environmentLeases.provider, "e2b"),
+            lt(environmentLeases.pausedAt, cutoff),
+            isNotNull(environmentLeases.providerLeaseId),
+            sql`${environmentLeases.metadata}->>'keyGeneration' IS NOT NULL`,
+          ),
+        )
+        .orderBy(desc(environmentLeases.pausedAt));
+    },
+
+    /**
      * REL-004 Lane D (D3) — STRANDED leases: terminal in the database, but still holding an
      * unreleased provider handle. The row says "done", the VM says "running", and it bills.
      *

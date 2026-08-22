@@ -11,6 +11,7 @@ import { normalizeWarmIdleTtlMinutes } from "./warm-sandbox-constants.js";
 import { EXECUTION_TARGET_KINDS } from "./execution-target-resolver.js";
 import { killedProviders } from "./execution-kill-switches.js";
 import { createKillSwitchPolicyReader } from "./execution-kill-switch-policy.js";
+import { deriveE2bKeyGeneration } from "./e2b-credential-authority-wiring.js";
 import type { SandboxRuntimeProvider } from "./sandbox-provider-runtime.js";
 import { logger } from "../middleware/logger.js";
 
@@ -41,6 +42,8 @@ export interface WarmReaperDeps {
    * button; here an aggressive one force-kills virtual machines.
    */
   readKillSwitchDocument?: () => Promise<unknown>;
+  /** DI seam for tests: the company's CURRENT e2b key generation (REL-004 Lane D §5). */
+  currentKeyGeneration?: (companyId: string) => Promise<string | null>;
 }
 
 /**
@@ -212,12 +215,54 @@ export async function sweepIdleWarmSandboxes(
     }
   }
 
+  // REL-004 Lane D (§5) — inherited deferral #5, "old-key kill-switch enforcement".
+  //
+  // A paused snapshot created under a SUPERSEDED e2b key generation is dead weight by this
+  // system's own policy: `e2b-credential-authority` refuses to resolve or inject a superseded
+  // generation, so AoA will never resume it. Reclaiming it destroys nothing anyone can use.
+  //
+  // Above the flag gate for the same reason as the reclaim arm: this is credential hygiene after
+  // a rotation, not warm economy. Fail-OPEN throughout — an unknown generation, a null current
+  // generation (no BYO key), or a lookup that throws all reclaim NOTHING. Absence must never be
+  // read as supersession, or the first deploy after this ships would reap every pre-existing
+  // warm snapshot.
+  const currentKeyGeneration = deps.currentKeyGeneration
+    ?? ((companyId: string) => deriveE2bKeyGeneration(db, companyId));
+  let supersededScanned = 0;
+  try {
+    const graceCutoff = new Date(Date.now() - KILL_SWITCH_RECLAIM_GRACE_MS);
+    const pausedE2b = await environments.listPausedLeasesWithKeyGeneration(graceCutoff);
+    const generationByCompany = new Map<string, string | null>();
+    for (const row of pausedE2b) {
+      const lease = normalizeEnvironmentLease(row);
+      const recorded = (lease.metadata as Record<string, unknown> | null)?.keyGeneration;
+      if (typeof recorded !== "string" || recorded.length === 0) continue;
+      if (!generationByCompany.has(lease.companyId)) {
+        generationByCompany.set(lease.companyId, await currentKeyGeneration(lease.companyId));
+      }
+      const current = generationByCompany.get(lease.companyId) ?? null;
+      if (current === null || current === recorded) continue;
+      supersededScanned++;
+      try {
+        const outcome = await destroyPausedLease(lease, { environments, runtime });
+        if (outcome.destroyed) reaped++;
+      } catch (err) {
+        logger.warn(
+          { err, leaseId: lease.id, recorded, current },
+          "warm-sandbox reaper: failed to reclaim a superseded-key snapshot (best-effort)",
+        );
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, "warm-sandbox reaper: superseded-key scan failed — reclaiming nothing");
+  }
+
   if (!experimental.enableWarmSandboxReaper) {
     logger.info(
-      { scanned: reclaimScanned, reclaimProviders: [...reclaimProviders], reaped },
+      { scanned: reclaimScanned + supersededScanned, reclaimProviders: [...reclaimProviders], supersededScanned, reaped },
       "Warm sandbox reap complete (routine arms disabled by enableWarmSandboxReaper)",
     );
-    return { scanned: reclaimScanned, reaped };
+    return { scanned: reclaimScanned + supersededScanned, reaped };
   }
 
   const ttlMinutes = normalizeWarmIdleTtlMinutes(experimental.warmSandboxIdleTtlMinutes);
@@ -257,11 +302,11 @@ export async function sweepIdleWarmSandboxes(
     }
   }
 
-  const scanned = stale.length + stranded.length + reclaimScanned;
+  const scanned = stale.length + stranded.length + reclaimScanned + supersededScanned;
   logger.info(
     {
       scanned, stalePaused: stale.length, stranded: stranded.length,
-      reclaimScanned, reclaimProviders: [...reclaimProviders], reaped, ttlMinutes,
+      reclaimScanned, reclaimProviders: [...reclaimProviders], supersededScanned, reaped, ttlMinutes,
     },
     "Warm sandbox idle reap complete",
   );

@@ -107,6 +107,7 @@ describe("REL-004 Lane D/D2a — a plain kill switch must NOT destroy", () => {
       expireLeaseIfPaused: vi.fn(async () => ({ ...pausedRow(), status: "expired" })),
       listPausedLeasesOlderThan: vi.fn(async () => []),
       listPausedLeasesForProvider: vi.fn(async () => [pausedRow()]),
+      listPausedLeasesWithKeyGeneration: vi.fn(async () => []),
       listTerminalUncleanedLeases: vi.fn(async () => []),
       claimTerminalUncleaned: vi.fn(async () => null),
       listLiveAndPausedProviderLeasesForCompany: vi.fn(),

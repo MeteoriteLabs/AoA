@@ -64,6 +64,7 @@ describe("warm reaper never touches an in-flight (active) Commander turn (W7.5e 
       listPausedLeasesOlderThan,
       // REL-004 Lane D: the sweep gained a second, switch-independent arm over STRANDED
       // leases. Stubbed empty here so these cases still exercise only the paused path.
+      listPausedLeasesWithKeyGeneration: vi.fn(async () => []),
       listTerminalUncleanedLeases: vi.fn(async () => []),
       claimTerminalUncleaned: vi.fn(async () => null),
       listLiveAndPausedProviderLeasesForCompany: vi.fn(),

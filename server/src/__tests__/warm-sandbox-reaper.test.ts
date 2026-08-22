@@ -46,6 +46,7 @@ describe("warm-sandbox reaper (U7.6)", () => {
       listPausedLeasesOlderThan,
       // REL-004 Lane D: the sweep gained a second, switch-independent arm over STRANDED
       // leases. Stubbed empty here so these cases still exercise only the paused path.
+      listPausedLeasesWithKeyGeneration: vi.fn(async () => []),
       listTerminalUncleanedLeases: vi.fn(async () => []),
       claimTerminalUncleaned: vi.fn(async () => null),
       listLiveAndPausedProviderLeasesForCompany: vi.fn(),
