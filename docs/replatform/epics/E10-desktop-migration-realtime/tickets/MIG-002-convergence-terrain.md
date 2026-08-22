@@ -9,7 +9,53 @@ Line references are to `docs/replatform-program` at `d43b1d26f`.
 
 ---
 
-## 1. The finding: the machine is complete. It is simply never started.
+> ## ★ REVISION 2 — the headline below was WRONG, and following it would have made things worse
+>
+> Revision 1 said "the machine is complete, it is simply never started", and concluded that
+> wiring the sweeper would fix "the stranded-run half of gate clause 3". An adversarial pass
+> refuted that, and I re-verified every leg by hand:
+>
+> **The reaper cannot converge a heartbeat RUN.** `onAttemptTerminal` — the hook that projects a
+> distributed terminal back onto the run — **has exactly one producer, the worker's accepted
+> event batch** (`worker-control.ts:100` is the only place it reaches a service; the codebase
+> says so itself at `distributed-cancellation-port.ts:163`). `reapExpiredLeases` is a repository
+> reaper doing row updates inside a tenant transaction. It emits no `job_events` row, so the
+> projector never fires, so **the run stays `running`**.
+>
+> And the run is un-reapable by the other side too: the orphaned-run reaper stands down on
+> `execution_owner = "distributed"` (`heartbeat.ts:2482`) *because the attempt projector is the
+> terminal authority*. After a reaper-terminalized attempt, **that stated rationale is false** —
+> the authority it defers to will never speak for this attempt. The run is stranded with its
+> justification invalidated, which is worse than stranded with a pending authority.
+>
+> So wiring the sweeper alone buys the capacity slot and the lease/attempt/job terminal — real
+> value — and does **not** buy run convergence. §3 below is corrected accordingly. An honest
+> convergence slice needs the sweeper **and** a run-terminal path for reaper-terminalized
+> attempts.
+>
+> **The drain is further away than revision 1 implied**, on four counts, all verified:
+> **(a)** `listActiveAttempts` has no SQL anywhere, and its `DistributedExecutionActiveAttempt`
+> shape is three strings — `organizationId`, `companyId`, `jobId` — with **no attemptId, no
+> lease, no status**, so despite the name its unit of work is a job;
+> **(b)** its rollback gate is wired at the WRONG GRAIN and typechecks: the drain declares and
+> calls `assertRollbackSafe(organizationId)` (`job-distributed-drain.ts:50`, `:118`) while all
+> three implementations take a **companyId** (`job-audit-bridge.ts:116`,
+> `job-budget-cost-bridge.ts:108`, `job-output-bridge.ts`). Both are `(string) => Promise<void>`,
+> and the drain's catch is bare — so a naively wired drain would mark EVERY organization
+> `rollback_pending` and cancel nothing, while reporting a clean, deliberate sweep;
+> **(c)** `DRAINED_STATUSES` counts `"cancelled"`, which is the no-live-lease branch that updates
+> rows directly with no `job_events` append — i.e. it counts as "drained" the one outcome that
+> strands a run, and it is the only status with no test;
+> **(d)** `listAdmittedOrganizationIds` is a local `const` inside the flag block (`index.ts:586`,
+> never exported), so a drain built on it cannot exist flag-off — the exact state a
+> disable-drain is for.
+>
+> Also: `nextDelayMs` has **zero callers anywhere, including its own tests** (`job-control-sweeper.ts`
+> :13/:46/:127 are the only hits), so half the sweeper's public interface is unexercised; and an
+> Organization suspended while holding live leases is invisible to the enumerator — never
+> scanned, never reported skipped.
+
+## 1. Half the finding holds: the LEASE machine is complete and never started
 
 Inherited deferral #2 says *"JOB-006's lease reaper has no live trigger … an attempt whose lease
 expires without emitting a terminal event has no convergence path — its run stays `running`."*
@@ -26,8 +72,8 @@ Everything is built:
 | a scheduled tick loop | **the outbox worker's, 20 lines below at `index.ts:613-625`, is the precedent** |
 
 So the sweeper's two dependencies are already in the file that would register it, and the
-registration pattern is immediately adjacent. **Nothing has to be designed; something has to be
-started.**
+registration pattern is immediately adjacent. For the LEASE side, nothing has to be designed;
+something has to be started. For the RUN side, revision 2 shows something still has to be built.
 
 One small adapter is needed: the sweeper's `AdmittedOrganizationPage` is
 `{ afterOrganizationId, limit }` (`job-control-sweeper.ts:25-28`) while the existing lister also
@@ -56,13 +102,17 @@ resource reclamation are separate mechanisms and both now exist.
 
 ## 3. What it would actually fix
 
-- **Inherited deferral #2**, by name.
-- The stranded-run half of gate clause 3: a handed-off attempt whose worker never reports has,
-  today, no path back. `reapExpiredLeases` is also one of the three capacity-release sites
-  (`job-control.ts:3251`), so reaping releases the org concurrency slot too — the general case of
-  the specific leak fixed in the dial slice.
-- It removes the "manual per-run cancel" as the only convergent action named in the rollback
-  runbook.
+- **Inherited deferral #2, the LEASE half.** Its wording ("an attempt whose lease expires
+  without emitting a terminal event has no convergence path") is satisfied for the attempt and
+  not for the run it names.
+- ~~The stranded-run half of gate clause 3.~~ **NO — see revision 2.** Reaping the lease does
+  not terminalize the RUN, because the projector has exactly one producer and it is the worker.
+  What reaping DOES buy is real but narrower: `reapExpiredLeases` is one of the three
+  capacity-release sites (`job-control.ts:3251`), so it hands back the org concurrency slot —
+  the general case of the specific leak fixed in the dial slice — and it terminalizes the
+  lease/attempt/job so the row stops looking active.
+- It does NOT remove the "manual per-run cancel" from the rollback runbook: that action exists
+  to converge the RUN, which the reaper still cannot do.
 
 ## 4. What it does NOT fix, and must not be claimed to
 
