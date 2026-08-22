@@ -299,8 +299,20 @@ async function routeDistributedCancelsForRuns(
   reason: string,
 ): Promise<void> {
   if (runIds.length === 0) return;
+  // NO `if (!port) return;` HERE — that guard defeated the handling written for exactly this
+  // case. `dispatchCancel` takes `port: DistributedCancellationPort | undefined` by design and
+  // answers LEGACY with `writeLegacyTerminal: true`, documented as "the legacy write is the only
+  // convergent outcome" for "a control-plane restart with the distributed flag off leaves marked
+  // runs behind and no port". Returning early meant this fifth writer never reached that — in
+  // precisely the post-rollback state it exists for — so the H1 convergence block below (latch
+  // `cancelled`, release the execution lock) was dead when it mattered, pinning the run at
+  // `running` and, at the permanent concurrency default of 1, stopping that agent dispatching
+  // again. Found by the Wave-3→4 gate clause-3 review.
+  //
+  // Cost of removing it: one indexed SELECT on terminate paths. The query filters on
+  // `executionOwner = "distributed"`, so a deployment that never enabled distributed execution
+  // matches zero rows and the loop body never runs.
   const port = getDistributedCancellationPort();
-  if (!port) return;
   const unprojectedRunIds: string[] = [];
   const rows = await db
     .select({

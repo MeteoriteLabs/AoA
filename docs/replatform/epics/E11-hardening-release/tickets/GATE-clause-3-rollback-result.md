@@ -48,7 +48,7 @@ ticked on triviality for the three shadow-only sinks, which must re-satisfy it a
 > §2 and §6 below are corrected in place; the runbook in
 > `docs/deploy/environment-variables.md` is rewritten accordingly.
 
-**5 mutants: 5 killed, 0 survived.**
+**8 mutants: 8 killed, 0 survived.**
 
 ---
 
@@ -123,6 +123,36 @@ live lever for the leasing half. The handoff lists the two clauses as unrelated;
 The three MIG sinks have nothing to roll back because nothing has moved. That is a fact about
 today, not a property of the design, and Wave 4 changes it for each sink it activates.
 
+## 4b. A live defect found by this review, and fixed
+
+`routeDistributedCancelsForRuns` — the **fifth** cancel writer (`issues.ts:296`) — opened with:
+
+```ts
+const port = getDistributedCancellationPort();
+if (!port) return;
+```
+
+`dispatchCancel` takes `port: DistributedCancellationPort | undefined` **by design**
+(`distributed-cancellation-port.ts:139`) and answers LEGACY with `writeLegacyTerminal: true`,
+its own comment naming the scenario: *"a control-plane restart with the distributed flag off
+leaves marked runs behind and no port. Refusing to terminalize them would strand them forever …
+the legacy write is the only convergent outcome."*
+
+The early return meant this writer **never reached that handling, in exactly the post-rollback
+state the handling exists for.** The H1 convergence block below it — latch `cancelled`, release
+the execution lock — was dead precisely when it mattered. Its own comment describes the
+consequence: the run is pinned at `running`, and because `countRunningRunsForAgent` counts it
+with no owner filter, at the permanent concurrency default of 1 that agent never dispatches
+again.
+
+Two tests already proved the CALLEE handles a missing port
+(`cli-006-cancel-routing.test.ts:60`, `:162`). **Proving the callee handles a case is not proving
+the caller reaches it** — the same shape as this programme's zero-caller findings, one level in.
+
+Fixed by deleting the guard. Cost: one indexed SELECT on terminate paths; the query filters on
+`executionOwner = "distributed"`, so a deployment that never enabled distributed execution
+matches zero rows. 3 further mutants, 3 killed (§5).
+
 ## 5. Mutation ledger
 
 | Mutant | Kills |
@@ -132,6 +162,9 @@ today, not a property of the design, and Wave 4 changes it for each sink it acti
 | H2 the hook stops re-reading the flag — rollback stops being live anywhere | ✓ |
 | H3 the hook resolves an Organization before checking the flag (not flag-first) | ✓ |
 | H4 the worker-control gate becomes a per-request env read | ✓ |
+| J1 the fifth writer's early return is restored (the defect) | ✓ |
+| J2 the port stops being passed to `dispatchCancel` | ✓ |
+| J3 the distributed-only filter is dropped | ✓ |
 
 **These are PINNING tests, so they passed on first run.** The fail-first evidence is the mutation
 pass: each pin was shown to break under the exact change it exists to detect. H1 is the important

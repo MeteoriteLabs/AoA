@@ -435,3 +435,60 @@ describe("CLI-006/B — a failed handoff marker write revokes the fence", () => 
     expect(heartbeat).not.toContain("recoverable inconsistency");
   });
 });
+
+// ── Wave-3→4 gate, clause 3 ──────────────────────────────────────────────────
+// The fifth writer must REACH dispatchCancel when there is no port.
+//
+// `dispatchCancel` is built for a missing port — its signature takes
+// `port: DistributedCancellationPort | undefined` and `resolveCancelRoute` answers LEGACY
+// with `writeLegacyTerminal: true`, documented as "the legacy write is the only convergent
+// outcome" for "a control-plane restart with the distributed flag off". Two tests above
+// prove that CALLEE behaviour (`falls through to LEGACY when no port is registered` and
+// `falls through to the legacy write when no port is registered`).
+//
+// But `routeDistributedCancelsForRuns` used to guard itself with `if (!port) return;`,
+// which meant the fifth writer never reached the handling written for it — in exactly the
+// post-rollback state that handling exists for. The H1 convergence block below it (latch
+// `cancelled`, release the execution lock) was therefore dead precisely when it mattered,
+// leaving a run pinned at `running` whose agent, at the permanent concurrency default of 1,
+// never dispatches again.
+//
+// Proving the callee handles a case is not proving the caller reaches it.
+describe("clause 3 — the fifth cancel writer converges with no port registered", () => {
+  const issues = src("../services/issues.ts");
+  // CODE ONLY. A source-contract test that matches comments is a trap: the fix for this very
+  // defect explains itself by quoting the removed guard, which would keep the test red forever
+  // and invite someone to weaken the comment instead of the code.
+  // CODE ONLY. A source-contract test that matches comments is a trap: the fix for this very
+  // defect explains itself by quoting the removed guard, which would keep the test red forever
+  // and invite someone to weaken the comment instead of the code.
+  const NEWLINE = String.fromCharCode(10);
+  const body = issues
+    .slice(
+      issues.indexOf("async function routeDistributedCancelsForRuns"),
+      issues.indexOf("async function routeDistributedCancelsForRuns") + 3500,
+    )
+    .split(NEWLINE)
+    .filter((line) => !line.trim().startsWith("//"))
+    .join(NEWLINE);
+
+  it("does not bail out before dispatchCancel when the port is absent", () => {
+    expect(
+      body,
+      "an early `if (!port) return;` makes the post-rollback convergence block unreachable " +
+        "in the one state it was written for; dispatchCancel accepts an undefined port by design",
+    ).not.toMatch(/if \(!port\) return;/);
+  });
+
+  it("still passes the (possibly undefined) port through to dispatchCancel", () => {
+    expect(body).toContain("dispatchCancel({");
+    expect(body).toContain("port,");
+  });
+
+  it("keeps the query filtered to distributed-marked runs, so a legacy deployment does no work", () => {
+    // Removing the guard costs one indexed SELECT on terminate paths. A deployment that
+    // never enabled distributed execution has no `executionOwner = "distributed"` rows, so
+    // the loop body never runs.
+    expect(body).toContain('eq(heartbeatRuns.executionOwner, "distributed")');
+  });
+});
