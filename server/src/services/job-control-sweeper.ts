@@ -35,11 +35,27 @@ export interface JobControlSweeperTickResult {
   deadLettered: number;
   cancelled: number;
   finalized: number;
+  /** MIG-002: run terminals projected for reaper-terminalized attempts (see the header). */
+  projected: number;
 }
 
 const ZERO_TICK: JobControlSweeperTickResult = {
   organizations: 0, scanned: 0, revoked: 0, retried: 0, deadLettered: 0, cancelled: 0, finalized: 0,
+  projected: 0,
 };
+
+/**
+ * MIG-002 — the signal the run-terminal projection consumes. Structurally identical to
+ * JOB-005's `AttemptTerminalSignal`, declared here so this module keeps its narrow dependency
+ * surface (it imports one type today).
+ */
+export interface SweeperRunTerminalSignal {
+  readonly organizationId: string;
+  readonly companyId: string;
+  readonly jobId: string;
+  readonly attemptId: string;
+  readonly terminalStatus: string;
+}
 
 export interface JobControlSweeper {
   tick(): Promise<JobControlSweeperTickResult>;
@@ -49,6 +65,21 @@ export interface JobControlSweeper {
 export function createJobControlSweeper(input: {
   reconciliation: JobReconciliationService;
   listAdmittedOrganizationIds: (page: AdmittedOrganizationPage) => Promise<string[]>;
+  /**
+   * MIG-002 — project a RUN terminal for an attempt the reaper terminalized.
+   *
+   * `onAttemptTerminal` has exactly one producer, the worker's accepted event batch, so a
+   * reaped attempt otherwise leaves its heartbeat run pinned at `running` — and the
+   * orphaned-run reaper stands down on that run BECAUSE the attempt projector is the terminal
+   * authority, an authority that will never speak for this attempt.
+   *
+   * This is the SAME handler the ingest path uses: one projection, two triggers. The ownership
+   * predicate ("project only onto a run whose execution_owner is distributed") stays there, so
+   * the projector cannot become a second authority for run state.
+   *
+   * Optional: a deployment that has not composed it sweeps exactly as before.
+   */
+  projectRunTerminal?: (signal: SweeperRunTerminalSignal) => Promise<void>;
   enabled?: boolean;
   maxOrganizationShards?: number;
   reapBatchLimit?: number;
@@ -107,6 +138,28 @@ export function createJobControlSweeper(input: {
       result.deadLettered += outcome.deadLettered;
       result.cancelled += outcome.cancelled;
       result.finalized += outcome.finalized;
+
+      // Per-attempt and BEST-EFFORT. The projection's own rule is that evidence gathering is
+      // best-effort but the terminal is not: losing one run's terminal must not cost the rest
+      // of the batch, and must never fail the tick. A failure is simply not counted.
+      if (input.projectRunTerminal) {
+        for (const attempt of outcome.terminalized ?? []) {
+          try {
+            await input.projectRunTerminal({
+              // The Organization is the SWEEP LOOP's key — the reap row does not carry it, and
+              // a tenant-less signal would reach a tenant-scoped projection.
+              organizationId,
+              companyId: attempt.companyId,
+              jobId: attempt.jobId,
+              attemptId: attempt.attemptId,
+              terminalStatus: attempt.terminalStatus,
+            });
+            result.projected += 1;
+          } catch {
+            // Visibility lost for this run; the sweep continues.
+          }
+        }
+      }
     }
     return result;
   }

@@ -575,6 +575,41 @@ if (distributedExecutionDatabases) {
 let jobControlRuntime: { stop(): Promise<void> } | null = null;
 let scheduler: import("./services/job-ready-scheduler.js").JobReadyScheduler | undefined;
 let jobControlMetrics: import("./services/job-control-metrics.js").JobControlMetrics | undefined;
+// MIG-002: hoisted out of the job-control block below so the CONVERGENCE sweeper (registered
+// with the canary projection, further down) can share the one org enumerator instead of a
+// second copy. Same shape as `onAttemptTerminal`: present only when the pools exist, because
+// flag-off allocates no `aoa_app` pool at all.
+const listAdmittedOrganizationIds = distributedExecutionDatabases
+  ? async (input: {
+  afterOrganizationId: string | null;
+  limit: number;
+  statementTimeoutMs: number;
+}): Promise<string[]> => {
+  const boundedLimit = Math.max(1, Math.min(32, Math.floor(input.limit)));
+  const boundedTimeout = Math.max(1, Math.min(750, Math.floor(input.statementTimeoutMs)));
+  return distributedExecutionDatabases.appDb.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('statement_timeout', ${String(boundedTimeout)}, true)`);
+    const rows = await tx.select({ id: organizations.id })
+      .from(organizations)
+      .where(and(
+        eq(organizations.status, "active"),
+        ne(organizations.id, "00000000-0000-0000-0000-000000000001"),
+        input.afterOrganizationId
+          ? gt(organizations.id, input.afterOrganizationId)
+          : undefined,
+        exists(
+          tx.select({ id: companies.id })
+            .from(companies)
+            .where(eq(companies.organizationId, organizations.id)),
+        ),
+      ))
+      .orderBy(asc(organizations.id))
+      .limit(boundedLimit);
+    return rows.map((row) => row.id);
+  });
+    }
+  : undefined;
+
 if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
   const { createJobReadyScheduler } = await import("./services/job-ready-scheduler.js");
   const { createJobOutboxWorker } = await import("./services/job-outbox-worker.js");
@@ -583,38 +618,11 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
   // the outbox worker, and (via createApp -> worker-control) the leasing service.
   jobControlMetrics = createPinoJobControlMetrics(logger);
   scheduler = createJobReadyScheduler({ metrics: jobControlMetrics });
-  const listAdmittedOrganizationIds = async (input: {
-    afterOrganizationId: string | null;
-    limit: number;
-    statementTimeoutMs: number;
-  }): Promise<string[]> => {
-    const boundedLimit = Math.max(1, Math.min(32, Math.floor(input.limit)));
-    const boundedTimeout = Math.max(1, Math.min(750, Math.floor(input.statementTimeoutMs)));
-    return distributedExecutionDatabases.appDb.transaction(async (tx) => {
-      await tx.execute(sql`SELECT set_config('statement_timeout', ${String(boundedTimeout)}, true)`);
-      const rows = await tx.select({ id: organizations.id })
-        .from(organizations)
-        .where(and(
-          eq(organizations.status, "active"),
-          ne(organizations.id, "00000000-0000-0000-0000-000000000001"),
-          input.afterOrganizationId
-            ? gt(organizations.id, input.afterOrganizationId)
-            : undefined,
-          exists(
-            tx.select({ id: companies.id })
-              .from(companies)
-              .where(eq(companies.organizationId, organizations.id)),
-          ),
-        ))
-        .orderBy(asc(organizations.id))
-        .limit(boundedLimit);
-      return rows.map((row) => row.id);
-    });
-  };
   const outbox = createJobOutboxWorker({
     appDb: distributedExecutionDatabases.appDb,
     scheduler,
-    listAdmittedOrganizationIds,
+    // Non-null inside this block by the same guard that builds the pools.
+    listAdmittedOrganizationIds: listAdmittedOrganizationIds!,
     maxOrganizationShards: 32,
     metrics: jobControlMetrics,
   });
@@ -1207,10 +1215,76 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
   // the operator is told the cancel failed, and with `"skip"` the batch continues
   // and the run stays `running` — both honest, and neither writes a terminal for
   // a worker that is still live (4-D1).
-  const [{ createJobReconciliationService }] = await Promise.all([
+  const [{ createJobReconciliationService }, { createJobControlSweeper }] = await Promise.all([
     import("./services/job-reconciliation.js"),
+    import("./services/job-control-sweeper.js"),
   ]);
   const jobReconciliationForCancel = createJobReconciliationService({ appDb });
+
+  // ── MIG-002 convergence — START the lease reaper ────────────────────────────────────────
+  // Inherited deferral #2: JOB-006's reaper had NO live trigger, so an attempt whose lease
+  // expired without a worker terminal never converged and its run stayed `running` forever.
+  // Everything was built (bounded batches, fair rotating cursor, tick budget, backoff,
+  // flag-off no-op); nothing started it.
+  //
+  // `projectRunTerminal` is THE SAME `onAttemptTerminal` the worker event-ingest path uses —
+  // one projection, two triggers. The ownership predicate (project only onto a run whose
+  // execution_owner is distributed) therefore stays in `canary-terminal-projection`, and the
+  // projector never becomes a second authority for run state.
+  //
+  // REGISTERED INSIDE THIS BLOCK, and that is a correction to the design's D5. D5 argued for
+  // unconditional registration on the REL-004 warm-reaper precedent (a safety net must not be
+  // disabled by an unrelated operator knob). That precedent does not transfer: flag-off
+  // allocates no `aoa_app` pool at all (see `distributedExecutionDatabases`), so the sweeper
+  // CANNOT run there — `runInTenant` has nothing to open. Convergence flag-off is structurally
+  // impossible, not a policy choice, which is exactly why the rollback runbook says to keep
+  // AOA_DISTRIBUTED_EXECUTION_ENABLED set across a restart.
+  const convergenceSweeper = createJobControlSweeper({
+    reconciliation: jobReconciliationForCancel,
+    listAdmittedOrganizationIds: (page) =>
+      listAdmittedOrganizationIds!({ ...page, statementTimeoutMs: 750 }),
+    projectRunTerminal: onAttemptTerminal
+      ? (signal) => onAttemptTerminal(signal as Parameters<typeof onAttemptTerminal>[0])
+      : undefined,
+  });
+  let convergenceStopped = false;
+  let convergenceTimer: NodeJS.Timeout | undefined;
+  const convergenceTick = async (): Promise<void> => {
+    if (convergenceStopped) return;
+    let delay = 15_000;
+    try {
+      const result = await convergenceSweeper.tick();
+      // `nextDelayMs` had zero callers anywhere before this — half the sweeper's public
+      // interface was unexercised. Using it is what makes the backoff real.
+      delay = convergenceSweeper.nextDelayMs(result);
+      if (result.revoked > 0 || result.projected > 0) {
+        logger.info(
+          {
+            organizations: result.organizations, scanned: result.scanned,
+            revoked: result.revoked, retried: result.retried,
+            deadLettered: result.deadLettered, cancelled: result.cancelled,
+            finalized: result.finalized, projected: result.projected,
+          },
+          "[mig-002] lease reaper converged expired distributed work",
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, "[mig-002] lease reaper tick failed");
+    }
+    if (convergenceStopped) return;
+    convergenceTimer = setTimeout(() => { void convergenceTick(); }, delay);
+    convergenceTimer.unref();
+  };
+  void convergenceTick();
+  // Mirrors the sibling timers in this file (mcp-oauth sweep, reconcile, embedding worker):
+  // stop on SIGTERM/SIGINT. The timer is unref'd, so it never holds the process open either.
+  const stopConvergence = () => {
+    convergenceStopped = true;
+    if (convergenceTimer) clearTimeout(convergenceTimer);
+  };
+  process.once("SIGTERM", stopConvergence);
+  process.once("SIGINT", stopConvergence);
+
   const { setDistributedCancellationPort } = await import(
     "./services/distributed-cancellation-port.js"
   );

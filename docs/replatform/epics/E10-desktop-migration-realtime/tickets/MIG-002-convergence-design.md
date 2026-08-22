@@ -58,13 +58,24 @@ gathering is best-effort; the terminal is not … without that the run never lat
 lock is never released, and the agent pins at `running`, dragging every other run of that agent
 with it."* One attempt's projection failure must not abort the batch or the tick.
 
-**D5 — registration is unconditional; the sweeper's own `enabled` flag governs it.** The sweeper
-is already built so that `enabled: false` makes `tick()` a no-op that touches no database. So it
-can be registered at module scope and gated by its own flag, which is the REL-004 Lane D
-precedent (the warm-sandbox reaper was moved out of the heartbeat gate precisely because an
-operator-facing knob should not silently disable a safety net). The outbox precedent — inside the
-flag block — is the wrong one here: convergence is a safety net, and this programme has already
-paid for a safety net that a config flag could switch off.
+**D5 — REVISED AT IMPLEMENTATION. Registered INSIDE the distributed-execution block.**
+
+~~Register unconditionally; the sweeper's own `enabled` flag governs it.~~ The original D5
+argued this from the REL-004 Lane D precedent — the warm-sandbox reaper was moved out of the
+heartbeat gate because an operator knob that advertises itself as governing *schedule ticks*
+should not silently disable the only force-kill.
+
+**That precedent does not transfer, and the reason is structural rather than a judgement call.**
+Flag-off allocates **no `aoa_app` pool at all** — `distributedExecutionDatabases` is built only
+when the flag is on, and its own comment says "Flag-off skips migration identity loading, URL
+reads, and pool allocation." `reapOrganization` runs through `runInTenant` on that pool. So a
+flag-off sweeper has nothing to open: convergence flag-off is **impossible**, not disabled.
+
+The REL-004 case was an *asymmetry* (minting ungated, reclaiming gated). Here minting and
+converging share one gate, so there is none — with one real exception, which is why the
+rollback runbook already says what it says: if an operator turns the flag off while distributed
+work is in flight, that work loses its convergence path. That is a genuine limit and it is
+recorded in §4, not designed away.
 
 > **The trap D5 walks past.** Registering it with `enabled` left false is a *scheduled no-op* —
 > this programme's signature failure, one level in. So the acceptance below requires a test that
