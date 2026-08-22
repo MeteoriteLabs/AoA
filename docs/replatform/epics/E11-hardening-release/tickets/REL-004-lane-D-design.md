@@ -68,7 +68,17 @@ the instance the moment *any* switch exists — including a `desktop` switch tha
 lease at all. Composition instead: the existing TTL sweep, unchanged, **plus** one provider-scoped
 pass per killed value.
 
-**D2a — The prompt pass is opt-in, because zero grace is irreversible.**
+**D2a — DECIDED: reclaim always for waste, opt-in for user-visible state.**
+Two arms, deliberately different, because they destroy different things:
+
+- **Arm 1 — stranded rows (§4): reclaim ALWAYS, switch-independent.** A terminal row holding an
+  unreleased provider handle has no user-visible state and no owner; leaving it costs money and
+  buys nothing. This arm is what makes "reconciles active provider resources" true on every sweep
+  rather than only when an operator opts in, and it is what closes the MIG-008 orphan.
+- **Arm 2 — healthy paused snapshots on a killed provider: requires explicit `"reclaim": true`
+  on the switch entry.** Irreversible, and it hits in-use state.
+
+Rationale for arm 2 being opt-in:
 Verified: warm leases are paused at the end of **every** Commander turn
 (`commander-sandbox.ts:157-175`), warm is default-on (`warm-sandbox-policy.ts:41-42`), and
 `findResumablePausedLease` has **no age bound** (`environments.ts:225-245`) — so the paused
@@ -167,8 +177,15 @@ Options, to be decided in review rather than assumed:
 - **(b)** Defer with the limit stated, and correct `e2b-credential-authority.ts`'s pointer so two
   documents stop disagreeing.
 
-(a) is small and safe and closes an inherited deferral; (b) is honest but leaves the pointer
-dangling. **Recommendation: (a), scoped to paused snapshots only.**
+**DECIDED: (a), scoped to PAUSED snapshots only.** It closes a deferral the handoff assigns here
+rather than pushing it to a third wave; it resolves a promise `e2b-credential-authority.ts` makes
+about this ticket, and leaving that dangling is the same "two documents assert contradictory
+things" pattern REL-004 Lane A exists to eliminate; and it is small — `metadata` is jsonb, so no
+migration. Scoped to paused it cannot touch live work: a snapshot that can never be resumed under
+the current key is waste by definition.
+
+The cost, stated: it adds one recorded field to a LIVE legacy acquire path. That is the only
+change this lane makes to a running code path, and it is kept to exactly one field.
 
 ## 6. Invariants
 
