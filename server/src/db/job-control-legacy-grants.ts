@@ -51,6 +51,15 @@ export const JOB_CONTROL_LEGACY_GRANTS = Object.freeze({
   // target. Table-level SELECT mirrors company_memberships, which is the same class of
   // read: a legacy company-scoped authorization fact consulted inside the fence.
   provider_credentials: ["SELECT"],
+  // REL-004 Lane C — the provider/template kill-switch policy document. The worker poll reads
+  // `instance_settings.kill_switches` on the aoa_app pool BEFORE opening the lease transaction;
+  // without this grant the read fails at RUNTIME with permission denied, not at compile time.
+  // Table-level for the reason 0259 records: the column-level form exists to keep a WRITEABLE,
+  // worker-owned table narrow and carries a bespoke allowlist plus a has_column_privilege pass;
+  // a second such mechanism for a read-only singleton lookup would be more machinery, not less
+  // exposure. Exposure verified rather than assumed: instance_settings stores NO secret — UI
+  // flags, a feedback-sharing preference, a retention policy, and migration snapshots.
+  instance_settings: ["SELECT"],
   notification_preferences: ["SELECT"],
   notification_digest_items: ["SELECT", "INSERT"],
   hub_counter_snapshots: ["SELECT", "UPDATE"],
@@ -497,6 +506,9 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreeze({
     distributed_cutover_markers: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
     execution_target_revocations: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
     execution_targets: { aoa_app: [], aoa_operator: [] },
+    // REL-004 Lane C: read-only kill-switch policy lookup on the worker poll path
+    // (migration 0261). No RLS — an instance singleton with no organization column.
+    instance_settings: { aoa_app: ["SELECT"], aoa_operator: [] },
     execution_workspaces: { aoa_app: ["SELECT"], aoa_operator: [] },
     folder_grants: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     heartbeat_runs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
@@ -628,6 +640,7 @@ const RELATION_ACL_NULLNESS_CERTIFICATE = deepFreeze({
   execution_target_revocations: false,
   execution_targets: false,
   execution_workspaces: false,
+  instance_settings: false,
   folder_grants: false,
   heartbeat_runs: false,
   hub_audit: false,

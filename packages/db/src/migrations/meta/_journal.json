@@ -1828,6 +1828,13 @@
       "when": 1787381909370,
       "tag": "0260_cultured_taskmaster",
       "breakpoints": true
+    },
+    {
+      "idx": 261,
+      "version": "7",
+      "when": 1787381909371,
+      "tag": "0261_instance_settings_app_select",
+      "breakpoints": true
     }
   ]
 }

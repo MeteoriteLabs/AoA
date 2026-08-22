@@ -58,6 +58,9 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreezeFixture({
     distributed_cutover_markers: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
     execution_target_revocations: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
     execution_targets: { aoa_app: [], aoa_operator: [] },
+    // REL-004 Lane C: the worker poll reads instance_settings.kill_switches on the aoa_app
+    // pool before opening the lease transaction. Read-only; the table holds no secret.
+    instance_settings: { aoa_app: ["SELECT"], aoa_operator: [] },
     execution_workspaces: { aoa_app: ["SELECT"], aoa_operator: [] },
     folder_grants: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     heartbeat_runs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
@@ -198,6 +201,7 @@ const PLAN_DERIVED_RELATION_ACL_NULLNESS = deepFreezeFixture({
   execution_target_revocations: false,
   execution_targets: false,
   execution_workspaces: false,
+  instance_settings: false,
   folder_grants: false,
   heartbeat_runs: false,
   hub_audit: false,
@@ -664,5 +668,32 @@ describe("startup serving-role authority table map matches the plan-derived matr
 
   it("registers exactly the operator table-level grants the plan assigns aoa_operator", () => {
     expect(normalize(operatorTablePrivileges())).toEqual(nonEmpty("aoa_operator"));
+  });
+});
+
+describe("REL-004 Lane C/I11 — instance_settings is reachable by aoa_app", () => {
+  // The worker poll reads `instance_settings.kill_switches` on the aoa_app pool BEFORE opening
+  // the lease transaction. `assertExactServingRoleAuthority` enforces EXACT ACLs across every
+  // non-system table, so without this grant the role holds ZERO privileges on it and the read
+  // fails at RUNTIME with permission denied — not at compile time, and not in any unit test.
+  //
+  // These assertions pin manifest-to-manifest. The only artifact that proves the GRANT in
+  // migration 0261 actually exists in the DATABASE is
+  // `distributed-execution-db-startup.integration.test.ts`, which applies the migrations,
+  // provisions the real roles and calls `openDistributedExecutionDatabases`.
+  it("grants exactly SELECT to aoa_app and nothing to aoa_operator", () => {
+    expect(appTablePrivileges().instance_settings).toEqual(["SELECT"]);
+    expect(operatorTablePrivileges().instance_settings).toBeUndefined();
+  });
+
+  it("appears in the app serving inventory", () => {
+    expect(grants.APP_SERVING_RELATIONS).toContain("instance_settings");
+  });
+
+  it("carries no RLS — it is an instance singleton with no organization column", () => {
+    // `assertExactCatalogCertificate` enumerates every relation with row security enabled and
+    // requires exact equality with RLS_RELATIONS, so enabling RLS here would itself be drift.
+    expect(grants.RLS_RELATIONS).not.toContain("instance_settings");
+    expect(grants.POLICY_COUNTS).not.toHaveProperty("instance_settings");
   });
 });

@@ -1,0 +1,47 @@
+-- REL-004 Lane C (clause 3a) custom security DDL. drizzle-kit cannot express role grants;
+-- every statement below is naturally idempotent per C14.
+--
+-- WHY. The worker poll must know whether placement on this target's provider has been killed
+-- before it offers a lease. It reads `instance_settings.kill_switches` (migration 0260) on the
+-- NON-OWNER `aoa_app` pool (NOSUPERUSER / NOBYPASSRLS), and `instance_settings` has never had
+-- an `aoa_app` grant of any kind. `assertExactServingRoleAuthority` enumerates
+-- `has_table_privilege` for every table at startup and enforces EXACT ACLs, so today the role
+-- holds ZERO privileges on it and the read would fail at RUNTIME with permission denied — not
+-- at compile time, and not in any unit test.
+--
+-- WHY TABLE-LEVEL, NOT COLUMN-LEVEL. This mirrors 0259 (`provider_credentials`) and
+-- `company_memberships` (0214_e2_serving_role_hardening.sql). The column-level form used for
+-- `execution_targets` (0221) exists to keep a WRITEABLE, worker-owned table narrow, and it
+-- carries its own bespoke column-allowlist constant plus a separate `has_column_privilege`
+-- assertion pass; adding a second such mechanism for a read-only singleton lookup would be
+-- more machinery, not less exposure.
+--
+-- The exposure is proportionate and was verified rather than assumed: `instance_settings`
+-- stores NO secret. Its columns are id, singleton_key, general, experimental, kill_switches,
+-- created_at and updated_at; `general` and `experimental` hold UI flags, a feedback-sharing
+-- preference, a backup-retention policy, and migration snapshots.
+--
+-- Scoping is not needed and not possible: the table is a singleton with no organization
+-- column. The read is pinned to `singleton_key = 'default'` in the query, never to a value
+-- taken from the wire.
+--
+-- NO RLS POLICY, matching the 0259/0214 precedent for legacy non-tenant tables.
+-- `assertExactCatalogCertificate` enumerates every relation with row security ENABLED and
+-- requires exact equality with `RLS_RELATIONS`; `instance_settings` is deliberately absent
+-- from that list, so enabling RLS here would itself be the drift.
+--
+-- MANIFEST COUPLING — this file alone is not enough, and getting it wrong is a BOOT CRASH
+-- rather than a test failure. A grant without a manifest entry, or a manifest entry without
+-- the grant, throws `distributed_execution_app_authority` and BOTH replicas refuse to start.
+-- The matching entries land in the same commit:
+--   - JOB_CONTROL_LEGACY_GRANTS            (server/src/db/job-control-legacy-grants.ts)
+--   - PLAN_DERIVED_ACL_MATRIX.relations    (same file, production copy)
+--   - RELATION_ACL_NULLNESS_CERTIFICATE    (same file)
+--   - PLAN_DERIVED_ACL_MATRIX              (the INDEPENDENT copy in the contract test)
+--   - PLAN_DERIVED_RELATION_ACL_NULLNESS   (a third hand-transcribed list, same test)
+
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; REVOKE is idempotent.
+REVOKE ALL ON "instance_settings" FROM PUBLIC;
+--> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; GRANT is idempotent.
+GRANT SELECT ON "instance_settings" TO "aoa_app";
