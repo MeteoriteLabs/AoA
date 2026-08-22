@@ -32,6 +32,7 @@ import {
   KILL_SWITCH_DIMENSIONS,
   KILL_SWITCH_MAX_REASON_LENGTH,
   evaluateKillSwitches,
+  killedProviders,
 } from "../services/execution-kill-switches.js";
 
 /**
@@ -462,5 +463,110 @@ describe("REL-004 Lane C — a reason the wire cannot carry is a malformed entry
       expect(result.killed).toBe(true);
       expect((result.killed && result.reason).length).toBeLessThanOrEqual(KILL_SWITCH_MAX_REASON_LENGTH);
     }
+  });
+});
+
+describe("REL-004 Lane D/J9 — ONE parse, two readers, and they can never disagree", () => {
+  /**
+   * Lane D needs a second reading of the same document: "which providers has an operator
+   * explicitly asked to reclaim?" A reaper must be fail-OPEN where leasing is fail-CLOSED —
+   * `evaluateKillSwitches` returns `killed:true` on a transient database error, and force-killing
+   * virtual machines on a database hiccup is the worst outcome available.
+   *
+   * The temptation is a second, simpler accessor. That diverges DESTRUCTIVELY: a vocabulary-free
+   * reader handed `{dimension:"provider", value:"gvisor"}` — a real legacy lease-provider value
+   * that is NOT in EXECUTION_TARGET_KINDS — would return a non-empty destroy set while leasing
+   * refuses the very same document as unreadable.
+   *
+   * So both readers consume ONE parse, and this table proves they agree on every shape.
+   */
+  const CASES: ReadonlyArray<{ name: string; document: unknown; readable: boolean }> = [
+    { name: "absent", document: undefined, readable: true },
+    { name: "null", document: null, readable: true },
+    { name: "not an object", document: "killSwitches", readable: false },
+    { name: "wrong schema", document: { schema: 2, switches: [] }, readable: false },
+    { name: "switches not an array", document: { schema: 1, switches: "none" }, readable: false },
+    { name: "entry not an object", document: doc([7]), readable: false },
+    { name: "unknown dimension", document: doc([live({ dimension: "providers" })]), readable: false },
+    { name: "empty value", document: doc([live({ value: "" })]), readable: false },
+    { name: "missing reason", document: doc([live({ reason: undefined })]), readable: false },
+    { name: "over-long reason", document: doc([live({ reason: "x".repeat(1001) })]), readable: false },
+    { name: "value outside the vocabulary", document: doc([live({ value: "gvisor" })]), readable: false },
+    { name: "valid provider", document: doc([live({ value: "e2b" })]), readable: true },
+    { name: "template only", document: doc([live({ dimension: "template", value: "aoa-base", reason: "cve" })]), readable: true },
+    { name: "mixed valid + malformed", document: doc([live({ value: "e2b" }), live({ value: "NOPE" })]), readable: false },
+  ];
+
+  it("agrees with evaluateKillSwitches on readability for every shape", () => {
+    for (const testCase of CASES) {
+      const verdict = evaluateKillSwitches({
+        document: testCase.document, provider: "e2b", template: "aoa-base", knownProviders: KNOWN,
+      });
+      const unreadable = verdict.killed && verdict.reason === "policy_unreadable";
+      expect(!unreadable, `${testCase.name}: evaluateKillSwitches readability`).toBe(testCase.readable);
+
+      const reclaim = killedProviders(testCase.document, KNOWN);
+      // The inversion: unreadable reclaims NOTHING, where leasing would refuse everything.
+      if (unreadable) {
+        expect([...reclaim], `${testCase.name}: unreadable must reclaim nothing`).toEqual([]);
+      }
+    }
+  });
+
+  it("returns only providers an operator explicitly asked to reclaim", () => {
+    const reclaimable = doc([
+      { dimension: "provider", value: "e2b", reason: "provider incident", reclaim: true },
+      { dimension: "provider", value: "local_host", reason: "placement only" },
+    ]);
+    expect([...killedProviders(reclaimable, KNOWN)]).toEqual(["e2b"]);
+  });
+
+  it("returns EMPTY for a killed provider with no reclaim intent — the deny-list does not destroy", () => {
+    // Non-vacuity for the case above, and the whole of D2a arm 2: a plain switch stops placement
+    // and must not delete a warm snapshot a human is mid-conversation with.
+    expect([...killedProviders(doc([live({ value: "e2b" })]), KNOWN)]).toEqual([]);
+  });
+
+  it("returns EMPTY for an unreadable document, inverted from leasing", () => {
+    for (const document of ["killSwitches", { schema: 2, switches: [] }, doc([7])]) {
+      expect([...killedProviders(document, KNOWN)], JSON.stringify(document)).toEqual([]);
+    }
+  });
+
+  it("returns EMPTY for an absent document and for a missing vocabulary", () => {
+    expect([...killedProviders(undefined, KNOWN)]).toEqual([]);
+    expect([...killedProviders(doc([live({ value: "e2b", reclaim: true })]), undefined)]).toEqual([]);
+  });
+
+  it("REFUSES a non-boolean reclaim rather than coercing it", () => {
+    // Found by mutation testing: without this check `"reclaim": "true"` fails `=== true` and
+    // silently becomes false, so an operator who asked for the destructive act gets a no-op and
+    // believes it is armed. Coercion is SAFE here (it under-destroys) and still wrong — it is the
+    // same "a switch they just threw does nothing" hazard this module refuses everywhere else.
+    for (const reclaim of ["true", 1, {}, null]) {
+      const document = doc([live({ value: "e2b", reclaim })]);
+      const verdict = evaluateKillSwitches({
+        document, provider: "e2b", template: null, knownProviders: KNOWN,
+      });
+      expect(verdict.killed, JSON.stringify(reclaim)).toBe(true);
+      expect(verdict.killed && verdict.reason, JSON.stringify(reclaim)).toBe("policy_unreadable");
+      expect([...killedProviders(document, KNOWN)], JSON.stringify(reclaim)).toEqual([]);
+    }
+  });
+
+  it("accepts an ABSENT reclaim as false — the common, non-destructive case", () => {
+    // Non-vacuity for the refusal above: absent is legal and means "placement only".
+    const document = doc([live({ value: "e2b" })]);
+    expect(evaluateKillSwitches({
+      document, provider: "e2b", template: null, knownProviders: KNOWN,
+    }).killed).toBe(true);
+    expect([...killedProviders(document, KNOWN)]).toEqual([]);
+  });
+
+  it("never returns a TEMPLATE value — reclaim is a provider-dimension act", () => {
+    const templateReclaim = doc([
+      { dimension: "template", value: "aoa-base", reason: "cve", reclaim: true },
+    ]);
+    expect([...killedProviders(templateReclaim, KNOWN)]).toEqual([]);
   });
 });

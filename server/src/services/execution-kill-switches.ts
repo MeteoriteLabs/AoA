@@ -130,6 +130,98 @@ function isStatedReason(value: unknown): value is string {
 }
 
 /**
+ * A switch entry that has passed every structural check.
+ *
+ * REL-004 Lane D: `reclaim` is the opt-in that separates "stop placing work here" from "destroy
+ * what is already here". A plain switch is a placement deny-list and must not delete a warm
+ * snapshot a human is mid-conversation with; `reclaim: true` is an operator explicitly asking for
+ * the destructive act. Absent means false; anything that is not a boolean is a typo
+ * (`"reclaim": "true"`) and refuses the document rather than being coerced.
+ */
+export interface ValidatedKillSwitch {
+  readonly dimension: KillSwitchDimension;
+  readonly value: string;
+  readonly reason: string;
+  readonly reclaim: boolean;
+}
+
+/**
+ * The SINGLE parse of the kill-switch document. Both readers consume it.
+ *
+ * There is deliberately no second, simpler accessor. A vocabulary-free reader handed
+ * `{dimension:"provider", value:"gvisor"}` — a real legacy lease-provider value that is not in
+ * `EXECUTION_TARGET_KINDS` — would return a non-empty DESTROY set while leasing refuses the very
+ * same document as unreadable. Two readings of one document must never disagree about whether
+ * that document can be read at all; they may only differ in what they do about it.
+ */
+export function parseKillSwitchDocument(
+  document: unknown,
+  knownProviders: unknown,
+): "absent" | "unreadable" | readonly ValidatedKillSwitch[] {
+  // Absent is the steady state, not a failure. See the header for why this differs from
+  // DSK-004's rule rather than contradicting it.
+  if (document === undefined || document === null) return "absent";
+
+  if (!isPlainObject(document)) return "unreadable";
+  if (document.schema !== DOCUMENT_SCHEMA) return "unreadable";
+  if (!Array.isArray(document.switches)) return "unreadable";
+  // The vocabulary is required whenever a document exists: without it a mistyped provider value
+  // cannot be told apart from a real one, which is the whole point of D6.
+  if (!Array.isArray(knownProviders) || knownProviders.length === 0
+      || knownProviders.some((kind) => typeof kind !== "string" || kind.length === 0)) {
+    return "unreadable";
+  }
+  const providerVocabulary = knownProviders as readonly string[];
+
+  const parsed: ValidatedKillSwitch[] = [];
+  for (const entry of document.switches) {
+    if (!isPlainObject(entry)) return "unreadable";
+    const { dimension, value, reason, reclaim } = entry;
+    // An unknown dimension is refused rather than ignored: `providers` for `provider` is
+    // exactly the shape of an operator typo, and ignoring it means the switch they just
+    // threw does nothing at all.
+    if (typeof dimension !== "string"
+        || !(KILL_SWITCH_DIMENSIONS as readonly string[]).includes(dimension)) {
+      return "unreadable";
+    }
+    if (typeof value !== "string" || value.length === 0) return "unreadable";
+    // A kill switch stops other people's work; why it was thrown is not decoration.
+    if (!isStatedReason(reason)) return "unreadable";
+    if (reclaim !== undefined && typeof reclaim !== "boolean") return "unreadable";
+    // D6 — a provider value outside the closed vocabulary is a typo, not a miss.
+    if (dimension === "provider" && !providerVocabulary.includes(value)) return "unreadable";
+    parsed.push({
+      dimension: dimension as KillSwitchDimension,
+      value,
+      reason,
+      reclaim: reclaim === true,
+    });
+  }
+  return parsed;
+}
+
+/**
+ * The providers an operator has explicitly asked to RECLAIM (REL-004 Lane D).
+ *
+ * Fail-OPEN, inverted from `evaluateKillSwitches` and deliberately so: this set drives a
+ * force-kill of virtual machines, and destroying them because a database read blipped is the
+ * worst outcome available. An absent, malformed or unreadable document reclaims NOTHING.
+ *
+ * Never returns a template value — reclaim is a provider-dimension act. The control plane cannot
+ * evaluate the template axis at all (see `template` on {@link KillSwitchInput}).
+ */
+export function killedProviders(
+  document: unknown,
+  knownProviders: unknown,
+): ReadonlySet<string> {
+  const parsed = parseKillSwitchDocument(document, knownProviders);
+  if (parsed === "absent" || parsed === "unreadable") return new Set();
+  return new Set(
+    parsed.filter((entry) => entry.dimension === "provider" && entry.reclaim).map((e) => e.value),
+  );
+}
+
+/**
  * Decide whether placement is killed.
  *
  * Never throws: a leasing path must get a verdict, not an exception, and the fail-closed
@@ -139,63 +231,36 @@ export function evaluateKillSwitches(input: KillSwitchInput): KillSwitchVerdict 
   if (!isPlainObject(input)) return unreadable();
   const { document, provider, template, knownProviders } = input;
 
-  // Absent is the steady state, not a failure. See the header for why this differs from
-  // DSK-004's rule rather than contradicting it.
-  if (document === undefined || document === null) return { killed: false };
-
-  if (!isPlainObject(document)) return unreadable();
-  if (document.schema !== DOCUMENT_SCHEMA) return unreadable();
-  if (!Array.isArray(document.switches)) return unreadable();
+  const parsed = parseKillSwitchDocument(document, knownProviders);
+  if (parsed === "absent") return { killed: false };
+  if (parsed === "unreadable") return unreadable();
 
   // If we do not know where this work would be placed, we cannot know whether it is killed.
   if (typeof provider !== "string" || provider.length === 0) return unreadable();
-  // The vocabulary is required whenever a document exists: without it a mistyped provider value
-  // cannot be told apart from a real one, which is the whole point of D6.
-  if (!Array.isArray(knownProviders) || knownProviders.length === 0
-      || knownProviders.some((kind) => typeof kind !== "string" || kind.length === 0)) {
-    return unreadable();
-  }
-  const providerVocabulary = knownProviders as readonly string[];
 
-  for (const entry of document.switches) {
-    if (!isPlainObject(entry)) return unreadable();
-    const { dimension, value, reason } = entry;
-    // An unknown dimension is refused rather than ignored: `providers` for `provider` is
-    // exactly the shape of an operator typo, and ignoring it means the switch they just
-    // threw does nothing at all.
-    if (typeof dimension !== "string"
-        || !(KILL_SWITCH_DIMENSIONS as readonly string[]).includes(dimension)) {
-      return unreadable();
-    }
-    if (typeof value !== "string" || value.length === 0) return unreadable();
-    // A kill switch stops other people's work; why it was thrown is not decoration.
-    if (!isStatedReason(reason)) return unreadable();
-
+  for (const entry of parsed) {
     // Exact match throughout. These are identifiers: a prefix match would make killing
     // `aoa-base` also kill `aoa-base-2`, and a case-insensitive one would depend on how an
     // operator typed it.
-    if (dimension === "provider") {
-      // D6 — outside the closed vocabulary is a typo, not a miss.
-      if (!providerVocabulary.includes(value)) return unreadable();
-      if (provider === value) {
-        return { killed: true, dimension: "provider", value, reason };
+    if (entry.dimension === "provider") {
+      if (provider === entry.value) {
+        return { killed: true, dimension: "provider", value: entry.value, reason: entry.reason };
       }
-      // Keep scanning: a later entry may still match. Returning here would make only the
-      // first switch in a document count.
+      // Keep scanning: a later entry may still match.
       continue;
     }
 
-    // D2 — the template checks live HERE, not before the loop, so an unknown template refuses
-    // only a document that actually names the template dimension.
+    // D2 — the template checks live HERE, not in the parse, because they depend on CALLER state:
+    // an unknown template refuses only a document that actually names the template dimension.
     if (template === undefined) return unevaluatable();
     if (template !== null && typeof template !== "string") return unreadable();
     // `template !== null` is redundant TODAY and deliberately kept: `value` is already
-    // guaranteed a non-empty string above, so `null === value` can never hold. Mutation
-    // testing confirms removing it is an equivalent mutant. It stays because it states the
+    // guaranteed a non-empty string, so `null === value` can never hold. Mutation testing
+    // confirms removing it is an equivalent mutant. It stays because it states the
     // DEFINITELY-NONE contract at the point of use, and becomes load-bearing the moment the
     // value check above changes.
-    if (template !== null && template === value) {
-      return { killed: true, dimension: "template", value, reason };
+    if (template !== null && template === entry.value) {
+      return { killed: true, dimension: "template", value: entry.value, reason: entry.reason };
     }
   }
 
