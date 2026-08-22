@@ -255,13 +255,22 @@ wave's scope, and the first is close to a blocker for Wave 4.
 | 1 | **A worker receives NO provider credential.** The lease envelope hardcodes `secretHandles: []` (`job-leasing.ts:349`) and `job_secret_handles` has no production writer — only `canary-credential-binding.ts` and test scaffolding touch it. The seam transfers ownership, but a task cannot yet authenticate a CLI inside the sandbox. | `secretHandles: []` still present; no production writer | **Blocks MIG-005/006/007 ACTIVE.** Shadow is unaffected. Resolve or state the limit before the gate. |
 | 2 | **JOB-006's lease reaper has no live trigger.** `createJobControlSweeper` has no caller outside its own file. An attempt whose lease expires *without* emitting a terminal event has no convergence path — its run stays `running`. | Confirmed: zero non-test callers | **MIG-002** |
 | 3 | **The placement owner check is tautological** — `credentialOwnerId` and `requiredOwnerPrincipalId` both read from the routed target's profile. Safety currently rests on the structural exclusion of `owner_desktop` routing, not on that check. | carried from Wave 2 | Re-derive before enriching credential binding (interacts with #1) |
-| 4 | **CLI-005 deferrals** — live drain enumeration, shadow independent derivation, admissibility probe. | carried from Wave 2 | **MIG-002** |
-| 5 | **Old-key kill-switch enforcement** | carried from Wave 2 | **REL-004 clause 3**, §3 item 1 |
+| 4 | **CLI-005 deferrals** — live drain enumeration, shadow independent derivation, admissibility probe. | **PARTLY CLOSED in this wave, NOT by MIG-002.** The admissibility probe is built and wired (`job-shadow-admissibility.ts`, read-only, deadline-bounded); the "independent derivation" was re-scoped rather than delivered whole — four of the six fields have no second authority to derive from, which is why the comparison became admissibility (see the MIG result §2). **Still open for MIG-002: live drain enumeration.** | **MIG-002** (drain only) |
+| 5 | **Old-key kill-switch enforcement** | **CLOSED** by REL-004 Lane D. Its prerequisite did not exist — nothing recorded the key generation a sandbox was created under — so the acquire path now stamps `metadata.keyGeneration` and the reaper reclaims superseded paused snapshots. | — |
 
 Deferral 1 deserves emphasis. **Shadow mode does not need it** — a shadow run compares
 decisions, not credentials. **Active cutover does**, because a real Commander turn or crew
 run must authenticate a CLI inside the sandbox. Decide before the gate whether Wave 4 is
 resolving it or explicitly scoping around it; do not discover it mid-cutover.
+
+**Deferral 1, as scoped for gate clause 5 (this wave's answer).** It is NOT resolved, and
+shadow did not need it: the MIG-005/006/007 shadow pass ran all three sinks end to end
+without a provider credential, because it compares admission and placement decisions and
+never authenticates a CLI. It remains a hard blocker for the ACTIVE cutover of all three
+sinks — a real Commander turn, crew dispatch or extraction must authenticate inside the
+sandbox, and `secretHandles: []` is still hardcoded with no production writer. Wave 4
+must resolve it before the first sink moves; the shadow evidence says nothing about it
+either way, and should not be read as though it did.
 
 ---
 
