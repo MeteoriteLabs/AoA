@@ -4758,6 +4758,13 @@ function leaseStaticContextPollViolations(source: string): string[] {
     const path = callPath(call);
     return [
       "authorityCurrent", "deriveAdmissibleWorkloadTypes", "evaluateStaticLeaseEligibility",
+      // REL-004 clause 3a. A PURE decision over the locked, revalidated target's `kind` plus a
+      // document read BEFORE the transaction opened: it adds no repository selection, performs
+      // no IO, and cannot mutate the authority context. Reviewed and registered here for the
+      // same reason `evaluateStaticLeaseEligibility` is — this list is a register of reviewed
+      // calls, not a freeze. The `binding:protected-value-escape` guard still refuses anything
+      // NOT on it, which `job-leasing-contract-guard.mutation` proves.
+      "evaluateKillSwitches",
       "buildJobEnvelope", "leaseOfferV1Schema.parse", "Math.min", "minCapacity", "normalizedProviderDemand",
       "normalizedRequirements", "pollResponseV1Schema.parse",
       "staticNegativeCertificates.push", "tryOffer",
@@ -4812,6 +4819,8 @@ function leaseStaticContextPollViolations(source: string): string[] {
       const approvedContainer = node === sourceArgument ||
         Boolean(parentCall && [
           "authorityCurrent", "buildJobEnvelope", "buildLeaseStaticContextInput", "evaluateStaticLeaseEligibility",
+          // REL-004 clause 3a — see the note in `auditedProtectedCallPath`.
+          "evaluateKillSwitches",
           "leaseOfferV1Schema.parse", "pollResponseV1Schema.parse", "staticNegativeCertificates.push",
           `${reposName}.jobControl.lockEligibleLeaseCandidates`,
           `${reposName}.jobControl.lockWorkerLeaseAuthority`,

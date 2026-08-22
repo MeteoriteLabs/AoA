@@ -1409,3 +1409,57 @@ contained in one branch of one loop in a package whose poll loop has no producti
   (Tasks 5, 6) passes it. `KILL_SWITCH_POLICY_UNREADABLE` is defined in Task 5 and consumed in
   Tasks 5 and 6. `EXECUTION_TARGET_KINDS` is defined in Task 1 and consumed in Task 6.
   `KILL_SWITCH_DRAIN_RETRY_AFTER_MS` is defined in Task 6 and asserted in Tasks 6 and 7.
+
+---
+
+## 10. What the BUILD changed in this design — two decisions moved
+
+Recorded here rather than silently edited above, so the audit trail survives. Both changes were
+forced by guards that were right and a plan that was wrong.
+
+### 10.1 D1 amended — the check sits AFTER the canonical chain, not before it
+
+The plan put the kill check before `normalizePlacementRegistryTarget`, reasoning that a killed
+provider should cost one pure function call rather than a candidate scan. The JOB-003 contract
+guard refused it with `candidate:canonical-chain-dominates-return`
+(`job-leasing-contract.test.ts:4226-4241`): **any** return from the poll's tenant transaction
+before the canonical chain (locked authority → revalidated target → static context → candidate
+selection) is a violation, so that every poll outcome is provably derived from the validated
+context.
+
+The guard is right and the plan's optimisation was worth less than the invariant. The check now
+sits immediately after `metrics.certificateScan(...)` and before the eligibility loop. A drained
+poll performs one extra already-indexed query; the invariant is untouched.
+
+### 10.2 D1 amended — the reader is NOT injected, and the guard that said so was right
+
+The plan added `killSwitches?: KillSwitchPolicyReader` to `createJobLeasingService`. The contract
+guard refused it with `service:no-context-or-guard-injection`, which carries an explicit
+allow-list of service options (`ackTimeoutMs`, `appDb`, `leaseDurationMs`, `maxHeartbeatAgeMs`,
+`metrics`, `operatorDb`, `scheduler`).
+
+The tempting move was to add an eighth key. That would have been widening a guard *named for
+exactly the thing I was doing*. And the guard's objection is substantive, not bureaucratic: **a
+reader the caller supplies is a reader the caller can substitute**, and a substituted reader that
+always reports "no policy" turns the stop button off for the entire fleet with no trace. That is
+strictly worse than the hazard the option was meant to avoid.
+
+So the reader is constructed inside `createJobLeasingService` from the same `input.appDb` the
+authority chain runs on. Three consequences, all improvements:
+
+- there is no injectable override, so a permissive reader is unrepresentable;
+- there is no "a composition root forgot to wire it" hole, so the wiring test no longer has to
+  walk `server/src` looking for constructions that omit an option — it pins the internal
+  construction instead (`job-leasing-kill-switch-wiring.test.ts`);
+- `worker-control.ts` is unchanged, so the frozen service-option set stays frozen.
+
+The plan's I10 still holds and is now evidenced: mutant **M33** inserts an *unreviewed* call over
+a protected value into the tenant body and the guard still fails, so registering
+`evaluateKillSwitches` as a reviewed call did not retire `binding:protected-value-escape`.
+
+### 10.3 One harness defect worth recording
+
+The first mutation run over the poll wiring reported M28 and M31 as survivors. Both were false:
+the harness did not set `AOA_RUN_WIN_INTEGRATION=1`, so the integration suite was **skipped** and
+only the structural wiring test ran. A skipped suite kills nothing. With the env var set, 7/7
+died. *A kill — or a survival — proves nothing until you have checked which tests actually ran.*

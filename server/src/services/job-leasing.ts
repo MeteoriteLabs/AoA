@@ -33,9 +33,12 @@ import { runInTenant } from "../db/tenant-context.js";
 import type { JobReadyScheduler } from "./job-ready-scheduler.js";
 import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
 import {
+  EXECUTION_TARGET_KINDS,
   normalizePlacementRegistryTarget,
   type NormalizedPlacementRegistryTarget,
 } from "./execution-target-resolver.js";
+import { evaluateKillSwitches } from "./execution-kill-switches.js";
+import { createKillSwitchPolicyReader } from "./execution-kill-switch-policy.js";
 import { normalizeSubmittedJobPlacementFacts } from "./job-placement.js";
 import {
   buildLeaseStaticContextInput,
@@ -47,6 +50,16 @@ import type { VerifiedWorkerOperation } from "../middleware/worker-operation-pro
 
 export type { VerifiedWorkerOperation } from "../middleware/worker-operation-proof.js";
 
+
+/**
+ * REL-004 clause 3a — how long a drained worker waits before polling again.
+ *
+ * NON-NULL on purpose. The frozen protocol makes `retryAfterMs` nullable on a drain, and the
+ * worker daemon reads the two cases differently: `null` is a terminal drain that exits the poll
+ * loop, a value is a reversible pause. A kill switch must be un-throwable without restarting
+ * every worker, so it always sends a value. The daemon clamps it into its own backoff bounds.
+ */
+export const KILL_SWITCH_DRAIN_RETRY_AFTER_MS = 30_000;
 
 export class JobLeasingError extends Error {
   constructor(public readonly code:
@@ -376,6 +389,15 @@ export function createJobLeasingService(input: {
   const leaseDurationMs = Math.max(ackTimeoutMs + 1000, input.leaseDurationMs ?? 300000);
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300000);
   const metrics = input.metrics ?? NOOP_JOB_CONTROL_METRICS;
+  // REL-004 clause 3a — the kill-switch policy reader is constructed HERE, from the same
+  // `appDb` the authority chain runs on, and is deliberately NOT a service option.
+  //
+  // The JOB-003 contract guard `service:no-context-or-guard-injection` refuses an injected
+  // guard, and it is right to: a reader supplied by the caller is a reader a caller can
+  // substitute, and substituting one that always reports "no policy" turns the stop button off
+  // for the whole fleet with no trace. Building it internally makes that unrepresentable, and
+  // removes the matching hole where a composition root simply forgets to pass one.
+  const killSwitches = createKillSwitchPolicyReader({ appDb: input.appDb });
 
   class HeadRestartConflict extends Error {}
   const isHeadRestartConflict = (error: unknown): error is HeadRestartConflict =>
@@ -479,6 +501,10 @@ export function createJobLeasingService(input: {
         pollInput.auth.organizationId,
         pollInput.auth.targetId,
       ) ?? false;
+      // REL-004 clause 3a — read the policy ONCE per poll, BEFORE the lease transaction opens,
+      // so the frozen JOB-003 authority chain gains no repository selection. Reading it once
+      // also means a switch thrown mid-restart cannot flip the verdict between retry attempts.
+      const killSwitchDocument = await killSwitches.read();
       for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {
         // A retry iteration (restartAttempt > 0) means the previous head claim rolled back; count it
         // here so the head-conflict catch below stays the exact classifier/exhaustion/continue triple.
@@ -625,6 +651,50 @@ export function createJobLeasingService(input: {
               });
             // Certificate scan facts come only from the claim SQL, never from candidates.length.
             metrics.certificateScan(certificateMetrics);
+            // REL-004 clause 3a — a killed provider answers `drain`, so NEW leases stop while
+            // in-flight work finishes (`ack` and `renew` deliberately carry no kill check).
+            //
+            // Evaluated HERE, and the position is load-bearing in three ways:
+            //
+            //   AFTER the canonical authority chain (locked authority -> revalidated target ->
+            //   liveness touch -> static context -> candidate selection). The JOB-003 contract
+            //   guard `candidate:canonical-chain-dominates-return` forbids ANY return from this
+            //   transaction before that chain has run, so every poll outcome is provably derived
+            //   from the validated context. An earlier return would have been cheaper for a
+            //   killed provider by exactly one already-indexed query, and would have cost that
+            //   invariant. The invariant wins.
+            //
+            //   AFTER the liveness touch, because a paused worker is ALIVE. Skipping the touch
+            //   would make a drained fleet look dead to every heartbeat-age guard, and the
+            //   workers would then fail authority revalidation once the switch was lifted.
+            //
+            //   BEFORE the eligibility loop: that loop writes `static_requirements_mismatch`
+            //   negative certificates, and a kill switch is not a requirements mismatch. Routing
+            //   it there would corrupt the eligibility certificates JOB-* depends on.
+            //
+            // This call adds NO repository selection to the frozen chain — the policy document
+            // was read once, before the transaction opened.
+            const killVerdict = evaluateKillSwitches({
+              document: killSwitchDocument,
+              provider: guardedAuthority.currentTarget.kind,
+              // Structurally UNKNOWN, on every call, forever. No control-plane surface carries
+              // the sandbox template: the E2B alias is pinned worker-side in
+              // packages/sandbox-e2b-provider, and the frozen hello / provider-constraint /
+              // registered-target schemas have no field for it. `null` would be a lie that
+              // silently no-ops every template switch; `undefined` makes the gap loud.
+              template: undefined,
+              knownProviders: EXECUTION_TARGET_KINDS,
+            });
+            if (killVerdict.killed) {
+              return pollResponseV1Schema.parse({
+                protocolVersion: 1,
+                correlationId: parsedRequest.correlationId,
+                serverTime: databaseNow.toISOString(),
+                outcome: "drain",
+                retryAfterMs: KILL_SWITCH_DRAIN_RETRY_AFTER_MS,
+                reason: killVerdict.reason,
+              });
+            }
             const staticNegativeCertificates: Array<{
               candidate: LeaseCandidate;
               reasonCode: "static_requirements_mismatch";
