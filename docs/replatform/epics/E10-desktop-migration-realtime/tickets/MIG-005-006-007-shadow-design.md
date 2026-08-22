@@ -21,7 +21,7 @@ an *honest* independent derivation of each field would be, and the answer collap
 | Field | Second authority | Verdict |
 |---|---|---|
 | `policy.effectiveCompletionPolicy` | `resolveAgentCompletionPolicy` | **Same resolver both sides.** Equality is structural. Uncomparable. |
-| `policy.model` | run-scoped model resolution | Same resolver. Uncomparable. |
+| `policy.model` | ~~run-scoped model resolution — same resolver~~ **none at all** (revision 2, §9 R2) | The distributed side has **no** model authority: `model` appears nowhere in `job-submission.ts` or `job-placement.ts`; the model is embedded in the caller-built command. Uncomparable. |
 | `policy.budgetPolicyId` | `budget_policies` | Same store. Uncomparable. |
 | `provenance.executionPrincipalKind` | `taskSourceIsAdmitted` (`job-submission.ts:157`) | The distributed side can **refuse**. Not a field mismatch — a *denial*. |
 | `provenance.credentialKind` | — | Inherited deferral #1: no credential exists to compare. |
@@ -48,6 +48,18 @@ That question has genuinely independent authorities that genuinely return no:
 Both can say no for reasons that are precisely what Wave 4 needs to know in advance. Both are
 **pure or read-only**. Neither is reachable today: `compare(..., { admissible })` has **zero**
 callers that supply it, so the slot has always been `null`.
+
+> **REVISION 2 — the three sinks do NOT have equal signal (§9 R1).** The first draft of this
+> section implied source-level admission can refuse for all three. It cannot. In
+> `submitJobWithinTenant`: `commander_turn` runs `commanderSourceIsAdmitted` (`:180`) and
+> `crew_run` runs `internalRunSourceIsAdmitted` (`:188`) — both real DB authorities that return
+> null and deny. **`one_shot` does not** — it assigns a constant
+> `executionPrincipal = { kind: "worker", id: source.operationId }` (`:195-199`) with no lookup,
+> so it can never refuse. For MIG-007 the only denial surfaces are the generic `admission()`
+> (Organization exists / Company in Organization / principal authorized / requester kind) and
+> placement. **This must be stated per sink in the evidence**, or "0 divergences across three
+> sinks" reproduces the same tautology one level down — which is exactly the defect this ticket
+> exists to fix.
 
 **Decision D1.** The shadow record's headline becomes an **admissibility verdict** per sink, not
 a field-equality boolean. Field capture stays — as *captured provenance*, explicitly marked
@@ -109,9 +121,23 @@ This also matches the existing shape: `admissible` is already an *input* to `com
 something it computes.
 
 **Decision D5.** The probe is a single shared function, `probeDistributedAdmissibility`, not four
-copies. It is read-only by construction (it receives a `Db` but performs `select` only) and
-best-effort: any throw yields `{ admissible: null, reason: "probe_error" }` and is recorded, never
-propagated. A shadow probe must never fail a live Commander turn.
+copies. It is best-effort: any throw yields `{ admissible: null, reason: "probe_error" }` and is
+recorded, never propagated. A shadow probe must never fail a live Commander turn.
+
+**Decision D5a (revision 2, §9 R3) — read-only is enforced by PostgreSQL, not by a test.** The
+probe runs inside a new `runInTenantReadOnly` sibling of `runInTenant` (`db/tenant-context.ts:46`)
+which issues `SET TRANSACTION READ ONLY` immediately after opening. Any write the probe attempts —
+now or after a future edit — raises `25006 read_only_sql_transaction` instead of succeeding
+quietly. The original acceptance clause (snapshot three tables' row counts across a probe) could
+not see a write to a fourth table; this can. No such facility exists today — `READ ONLY` appears
+nowhere in `server/src/db/` — so it is built here.
+
+**Decision D5b (revision 2, §9 R4) — the probe is bounded, and a timeout is data.** These are
+live user-visible paths; a Commander turn must not wait on candidate enumeration. Admission is a
+small indexed lookup and runs per operation. Placement enumerates worker candidates and runs per
+operation **behind a hard deadline**, recording `probe_timeout` as its own outcome rather than as
+an error or as agreement. A bound that silently degrades to "looks fine" is the failure class
+this ticket is about.
 
 ## 5. The rollout key — state the limit, do not widen it
 
@@ -146,7 +172,9 @@ downstream number is false. It lands first and alone.
 | S4 | No fabricated `runId`/`issueId` on a non-task variant survives | contract test against the FROZEN `.strict()` variants |
 | S5 | The comparator holds no `Db` handle | structural: `createJobShadowComparator`'s deps type; an anti-regression test asserting the dep keys |
 | S6 | A throwing admissibility probe never propagates into the caller | `mig-shadow-probe.test.ts` |
-| S7 | The probe performs no write | integration test on embedded PostgreSQL: snapshot `jobs`/`job_attempts`/`environment_leases` row counts across a probe |
+| S7 | The probe performs no write | **revision 2:** `runInTenantReadOnly` issues `SET TRANSACTION READ ONLY`; integration test on embedded PostgreSQL asserts an attempted write inside the probe's transaction raises `25006`. Row-counting a chosen few tables is not proof — it cannot see a write to a table it did not count. |
+| S11 | The per-sink admissibility signal is reported per sink, and MIG-007's weaker signal is named | evidence table in the result doc + a test pinning that `one_shot` has no source-level admission authority, so a future addition is a deliberate change |
+| S12 | A placement probe that exceeds its deadline records `probe_timeout`, never `agree` | probe test with an injected clock |
 | S8 | Each of the three seams emits exactly one record per operation, and zero when rollout ≠ shadow | per-seam tests |
 | S9 | A denied admission is recorded as a **divergence with a reason**, not as an error | probe test |
 | S10 | Rollout key limit (D6) is stated, not silently widened | result doc + a test pinning `HEARTBEAT_TASK_RUN_WORKLOAD_TYPE`-equivalent constants to `"batch"` for all four sinks |
@@ -165,3 +193,47 @@ Every guard mutation-tested per §1.8 of the handoff.
 5. **It does not claim "real traffic" means production users.** For a pre-release programme the
    traffic source is the D1 two-replica lane's journey. Lane D states the source and the
    denominator rather than implying organic volume.
+
+---
+
+## 9. Plan review (step 4) — findings against revision 1
+
+Reviewed by attacking the design, not re-reading it. Four findings; the design above is
+revision 2 and carries the corrections inline so the reasoning stays visible.
+
+**R1 — HIGH. D1 was overstated: `one_shot` admission cannot refuse.** Revision 1 said both
+authorities "can genuinely say no", implying parity across the three sinks. Verified against
+`job-submission.ts`: `commander_turn` and `crew_run` each run a real DB admission check that can
+deny, but `one_shot` assigns a constant execution principal with no lookup. Left unstated, Lane D
+would report "0 divergences across three sinks" while one of them is structurally incapable of
+producing a source-level divergence — **the same tautology the ticket exists to remove, one level
+down.** Fixed in §1 and pinned by acceptance S11.
+
+**R2 — MEDIUM. A stated reason was wrong.** Revision 1 justified `policy.model` as uncomparable
+because "the same resolver runs on both sides". Verified: `model` appears nowhere in
+`job-submission.ts` or `job-placement.ts` — the distributed side has *no* model authority at all.
+Same conclusion, different reason. A right answer reached by a wrong route is a defect, because
+the route is what a successor reuses.
+
+**R3 — MEDIUM→HIGH. The effect-freeness clause was untestable as written.** Snapshotting
+`jobs`/`job_attempts`/`environment_leases` row counts cannot see a write to a table not on the
+list, and the list is hand-maintained. Replaced with a PostgreSQL-enforced read-only transaction
+(D5a): the database refuses the write instead of a test noticing it afterwards. This also removes
+the "receives a `Db` but only selects" honour-system phrasing from D5.
+
+**R4 — MEDIUM. Unbounded probe on live user paths.** Placement enumerates worker candidates;
+doing that synchronously inside a Commander turn is a latency regression on a live path for the
+sake of an observability record. Bounded by D5b, with `probe_timeout` recorded as a distinct
+outcome — a bound that degrades to "looks fine" would reintroduce the false-agreement failure.
+
+**R5 — LOW, scope note.** Lane A changes `match` from `boolean` to a three-state, which the
+existing consumers read (`index.ts:1231` logs it; `heartbeat.ts:5169` supplies the old snapshot
+shape). Migrating both is in Lane A's scope, not deferred — a lane that leaves the tree
+uncompilable is not a lane.
+
+### Not accepted
+
+- *"Give the comparator a read-only `Db` and let it probe itself."* Rejected in D4 and again here:
+  the comparator's one structural guarantee is that it holds no handle. Trading a structural
+  property for an argued one, to save passing a value, is a bad trade — and the argued version
+  degrades silently the first time someone adds a method to the port.
