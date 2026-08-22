@@ -15,12 +15,22 @@ in §6 — the rate is produced over a seeded corpus, not organic traffic.**
 | 2 | `aade5a915` | design — compare admissibility, not field equality |
 | 3 | `88efc0d57` | plan review, revision 2 |
 | 4 | `48d5113c8` | Lane A — an uncompared field is never agreement |
-| 5 | `4a8ddc017` | Lane B — the read-only admissibility probe |
-| 6 | `59db7b799` | Lane C — the one-shot seam + the port |
-| 7 | `55ef0265b` | Lane C — the Commander and crew seams |
-| 8 | `19ad7b45e` | Lane D — the evidence harness, and the gap it found |
+| 5 | `26428fb94` | Lane B foundation — PostgreSQL enforces the probe cannot write |
+| 6 | `4a8ddc017` | Lane B — the read-only admissibility probe |
+| 7 | `59db7b799` | Lane C — the one-shot seam + the port |
+| 8 | `55ef0265b` | Lane C — the Commander and crew seams |
+| 9 | `19ad7b45e` | Lane D — the evidence harness, and the gap it found |
 
-**57 mutants across the ticket: 55 killed, 2 documented equivalent.**
+**52 mutants across the ticket: 50 killed, 2 documented equivalent.**
+
+| Lane | Killed | Equivalent |
+|---|---|---|
+| A — the honesty fix + source union | 14 | 1 (the `not_compared` arm is unreachable in `buildComparison` once `workloadType` is compared unconditionally; that state is reached via `erroredComparison`, which A7b covers) |
+| B — read-only tenant transaction | 4 | 1 (statement order: PostgreSQL restricts only ISOLATION LEVEL to before the first query, so the swap is genuinely equivalent — measured, see §5) |
+| B — the admissibility probe | 9 | 0 |
+| C — the port + the one-shot seam | 11 | 0 |
+| C — the Commander and crew seams | 9 | 0 |
+| D — the evidence threading | 3 | 0 |
 
 ---
 
