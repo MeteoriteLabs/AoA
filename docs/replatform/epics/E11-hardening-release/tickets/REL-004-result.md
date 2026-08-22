@@ -7,7 +7,7 @@
 |---|---|---|---|---|
 | A | Release manifest + the gate that CALLS the three verifiers | 1 | `60e658c07` | **Done** |
 | B | Vulnerability policy with expiring exceptions | 2 | `d90ffe68b` | **Done** |
-| C | Provider + template kill switches | 3a | `<pending>` | **Decision built, NOT WIRED** — see §4 |
+| C | Provider + template kill switches | 3a | `2b7ccc3f2` | **Decision built, NOT WIRED** — see §4 |
 | D | Reconcile active provider resources on kill | 3b | — | **Not built** — see §4 |
 
 **42 mutants across the two landed lanes, 41 killed, 1 documented equivalent.**
