@@ -9,6 +9,42 @@ Line references are to `docs/replatform-program` at `323eeee3c`.
 
 ---
 
+> ## ★ REVISION 2 — two corrections, and the second is the mistake this document warns about
+>
+> An adversarial cross-check refuted two claims below. Both re-verified by hand.
+>
+> **C1 — "No protocol change is needed" is only half true, and the other half is decisive.**
+> The FROZEN contract carries a handle in the envelope, yes. But there is **no wire verb to
+> REDEEM one**: `WORKER_PROTOCOL_OPERATIONS` is a closed list of exactly ten operations
+> (`transport.ts:756-768`) and none of them is a secret op. `secret-broker.ts:5-6` states it as
+> intent: *"there is NO `secret_resolve` wire op (the frozen 10-op list is closed); resolution
+> is in-band + behind the fence proxy."*
+>
+> So `materialization: {kind:"env"|"file"}` **declares where a value should land and the
+> protocol gives no channel to fill it.** Only `{kind:"proxy"} + fence_proxy` is servable
+> without an out-of-band channel, and adding a verb is not available — the package is FROZEN.
+> **This answers §4's open question**, in the direction the invariants already leaned: the proxy
+> is not merely preferred, it is the only implementable path. §4 is corrected accordingly.
+>
+> **C2 — "it has a production caller" is true one hop up and FALSE at the root.**
+> `resolveExecutionSecret` is called by `secret-broker.ts:234`. But the broker's only
+> constructor is `egress-proxy.ts:150`, and **`createFenceAwareEgressProxy` has ZERO callers —
+> only its own definition** (`egress-proxy.ts:146`). Nothing reachable from server boot
+> constructs it. So the whole chain (egress proxy → secret broker → `resolveExecutionSecret`) is
+> unreachable.
+>
+> I counted one hop and stopped — **the exact failure class this document exists to warn about,
+> committed inside the warning.** The rule I already had was "a gap found by reading a CALLER is
+> not a gap until you open the callee"; the converse is the one that bit here: **a caller is not
+> a caller until you trace it to a boot root.**
+>
+> **Net effect on scope.** §2's "three things missing" understates it. DAT-004 and DAT-005 are
+> BUILT and CORRECT — that part stands, and rebuilding them would still be the expensive
+> mistake — but they are also entirely **unwired**, so the remaining work is: compose the
+> egress-proxy/broker chain at boot, populate `secretHandles` in the envelope, write
+> `job_secret_handles`, replace the inert `failClosedEgressDispatcher`, and redirect each v1
+> CLI's API base URL at the proxy.
+
 ## 1. The deferral's framing is out of date, and in the useful direction
 
 It reads: *"A worker receives NO provider credential … the seam transfers ownership, but a task
@@ -17,8 +53,8 @@ is missing. **It is not. Most of this is built.**
 
 | Layer | State |
 |---|---|
-| **Wire contract** (FROZEN) | **COMPLETE.** `secretHandleRefSchema` = `{handleId, materialization, usePolicy}`, `.strict()`, with recursive wire-safety that *"rejects any connector OAuth access/refresh token or broker token bundle nested anywhere"* (`policy.ts:157-187`). `materialization` is a discriminated union `proxy \| env{target} \| file{target}`, each strict, so **"the wire has no field for a raw secret value."** Cross-field fail-closed rules bind `proxy⇄fence_proxy` and keep `sandbox_local_only` off the network mechanism. **No protocol change is needed, and the package is FROZEN anyway.** |
-| **Authorization** (DAT-004, SHIPPED) | **BUILT and hardened.** `resolveExecutionSecret` is a guarded mutator: `guardActiveFence` FIRST, handle loaded by `(org, job, handle)`, dispatching owner re-derived from the LOCKED `jobs` row, `company_memberships` re-checked in-tx, then `authorizeSecretResolve`, audit-as-columns — *"returns the AUTHORIZED non-secret binding, **never a value**."* Registered in `GUARDED_JOB_MUTATORS` + `GOVERNED_FENCE_SURFACE`. **It has a production caller** (`secret-broker.ts:234`). Its own review fixed two HIGH findings, including a `ref_kind`→policy binding gap that would have handed a real OAuth token to a sandbox env. |
+| **Wire contract** (FROZEN) | **COMPLETE.** `secretHandleRefSchema` = `{handleId, materialization, usePolicy}`, `.strict()`, with recursive wire-safety that *"rejects any connector OAuth access/refresh token or broker token bundle nested anywhere"* (`policy.ts:157-187`). `materialization` is a discriminated union `proxy \| env{target} \| file{target}`, each strict, so **"the wire has no field for a raw secret value."** Cross-field fail-closed rules bind `proxy⇄fence_proxy` and keep `sandbox_local_only` off the network mechanism. **Carrying a handle needs no protocol change — but REDEEMING one has no wire verb at all; see revision 2 C1.** |
+| **Authorization** (DAT-004, SHIPPED) | **BUILT and hardened.** `resolveExecutionSecret` is a guarded mutator: `guardActiveFence` FIRST, handle loaded by `(org, job, handle)`, dispatching owner re-derived from the LOCKED `jobs` row, `company_memberships` re-checked in-tx, then `authorizeSecretResolve`, audit-as-columns — *"returns the AUTHORIZED non-secret binding, **never a value**."* Registered in `GUARDED_JOB_MUTATORS` + `GOVERNED_FENCE_SURFACE`. ~~It has a production caller.~~ **Its caller is itself unreachable from boot — revision 2 C2.** Its own review fixed two HIGH findings, including a `ref_kind`→policy binding gap that would have handed a real OAuth token to a sandbox env. |
 | **Materialization** (DAT-005, SHIPPED) | **BUILT for the PROXY path.** `createFenceAwareEgressProxy` does policy-load (fail-closed) → per-request fence reauth → destination binding → classify → materialize the value into request **HEADERS** at delivery through an **IP-pinned** socket. The value only ever exists server-side. |
 
 So the hard part — the security model, the authorization gate, the fence reauthorization, the
@@ -60,7 +96,12 @@ doc claims.
 > sequences the three sink cutovers as the wave's core. Every one of them is blocked by §2, and
 > **no ticket in that list owns §2.** The plan schedules work whose blocker it does not schedule.
 
-## 4. The question a design must answer first
+## 4. ~~The question a design must answer first~~ — ANSWERED by revision 2 C1
+
+**The proxy is the only implementable path.** There is no wire verb to redeem a handle, so
+`env`/`file` cannot be served without an out-of-band channel the FROZEN protocol does not
+provide. What remains open is narrower and concrete: **can each v1 CLI be pointed at a proxy
+base URL?** The original framing is kept below for the reasoning.
 
 > **For a CLI running inside a sandbox, which materialization is intended — `env`/`file`, or
 > pointing the CLI at the fence proxy?**
