@@ -116,6 +116,20 @@ appearing in the aggregate rather than as prose.
 
 **§1's tautology** — the ticket's reason to exist. Found by terrain, measured before any change.
 
+★★★ **CLI-005 HAD ALREADY SAID SO, and the handoff did not carry it.** `CLI-005-result.md`
+records three scope-honesty deferrals in plain words: shadow "is diff-clean by construction
+(identity mapping)", its provenance/policy fields "are placeholders", and "the read-only
+admissibility probe is not wired (`admissible` is always the safe `null`)" — all deferred to
+MIG-002. That document was honest. The Wave-3/4 handoff then wrote a gate clause requiring a
+"stated divergence rate" from that comparator and instructed the next agent to wire three more
+sinks into it, without rechecking those deferrals.
+
+**So the failure is not a wrongly refuted finding — it is that a documented deferral does not
+travel to the document that later depends on it.** Each document was true in isolation; the pair
+would have manufactured the evidence a gate opens on. Worth carrying forward as its own hazard:
+when a gate clause consumes a number, go and read what the thing producing that number said
+about itself.
+
 **R1, from the plan review (HIGH).** Revision 1 implied all three sinks have a real source-level
 admission authority. `commander_turn` and `crew_run` do; **`one_shot` does not** —
 `submitJobWithinTenant` assigns it a constant execution principal with no lookup. Left unstated,

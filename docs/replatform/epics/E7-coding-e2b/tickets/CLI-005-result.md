@@ -26,6 +26,23 @@ Behind the default-off `AOA_DISTRIBUTED_EXECUTION_ENABLED` flag + a config-drive
 
 3. **PARTIAL (MEDIUM) — drain aborted the whole sweep on one `requestCancellation` throw.** The per-attempt loop was unguarded (unlike the `assertRollbackSafe` skip). **Fix (fail-first):** wrapped enumeration + per-attempt cancellation in try/catch (skip-and-continue, record `enumerate_error`), mirroring the rollback-safety skip. New RED→GREEN test: a throw on attempt 2 of 3 still cancels the rest + the next org.
 
+> **CLOSURE NOTE added by MIG-005/006/007 (Wave 3 item 4).** Deferrals 2 and 3 below are now
+> CLOSED, and **not by MIG-002** — the admissibility probe is built and wired
+> (`job-shadow-admissibility.ts`), and the identity mapping is GONE (`match` is now
+> `agree|diverge|not_compared`, with the record carrying its own denominator).
+>
+> The "always matches" item in the Refuted list was correct as CLI-005 scoped it — the identity
+> mapping WAS the intended inert model, and this document said so plainly. What went wrong is
+> downstream and worth naming: the Wave-3/4 handoff later wrote a gate clause requiring a
+> "stated divergence rate" from this comparator, and instructed the next agent to wire three
+> more sinks into it. Both documents were true in isolation; together they would have produced
+> a 0% rate with a volume figure and no meaning (measured: 2,000 randomized snapshots,
+> 0 divergences, by construction).
+>
+> **The lesson is not that a finding was wrongly refuted. It is that a documented deferral does
+> not travel to the document that later depends on it.** See
+> `epics/E10-desktop-migration-realtime/tickets/MIG-005-006-007-shadow-result.md`.
+
 ### Refuted (no code change — the review confirmed these are the intended design)
 
 - **Shadow identity-mapping "always matches"** — REFUTED: `identityDistributedIntent` is the intended CLI-005 model (Invariant 8 "diff-clean mapping"; a divergence = a mapping bug). The `deriveDistributedIntent` injection seam exists so MIG-002 supplies a divergence-capable derivation.
