@@ -49,3 +49,21 @@ tests/fixtures/worker-protocol-consumers/v1/** text eol=lf
 # This file's historical base blob contains NUL bytes. Treat the repaired
 # source as LF text so PR review and future diffs remain inspectable.
 server/src/realtime/live-events-ws.ts text eol=lf diff
+
+# A SHEBANG FOLLOWED BY CRLF BREAKS AN IMPORT, though not an execution. vite/esbuild
+# strips `#!...` up to the LF and leaves a stray CR behind, which V8 then rejects with
+# "Invalid or unexpected token". Node's own loader handles it, so `node scripts/x.mjs`
+# works fine and ONLY an import from a vitest suite fails — which is exactly why this was
+# invisible on Linux CI (checked out LF) and red on every Windows checkout (autocrlf).
+#
+# It is not hypothetical: packages/worker-protocol/src/cross-version.test.ts imports
+# scripts/check-frozen-worker-protocol-consumer.mjs, and that one CR made the frozen
+# worker-protocol suite fail locally for anyone on Windows. Isolated by bisection —
+# shebang+LF imports fine, shebang+CRLF does not, and the same file with its shebang
+# removed imports fine.
+#
+# Pinned for the whole scripts/ directory rather than the one file, because every
+# shebang-bearing executable has the same property and the next one to be imported by a
+# test would fail the same way.
+scripts/*.mjs text eol=lf
+scripts/*.sh text eol=lf
