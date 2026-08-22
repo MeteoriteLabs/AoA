@@ -97,6 +97,10 @@ export const CLOSED_LABEL_VALUES: Readonly<Record<string, ReadonlySet<string>>> 
     "offer",
     "no_work",
     "drain",
+    // REL-004 clause 3a — a drain carrying `retryAfterMs` is a reversible PAUSE, not a stop.
+    // Kept as its own value because "the fleet is paused" and "the fleet shut down" is the one
+    // question an operator asks during a kill, and one shared label cannot answer it.
+    "drain_paused",
     "incompatible",
     "backpressure",
     "recovered",

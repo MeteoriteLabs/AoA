@@ -649,9 +649,28 @@ export function createPollLoop(deps: PollLoopDeps): PollLoopController {
         resetBackoff();
         await cadenceSleep(attempt.retryAfterMs);
       } else if (attempt.kind === "drain") {
-        emitPoll("drain");
-        drainRequested = true;
-        stopLeasingRequested = true;
+        if (attempt.retryAfterMs === null) {
+          // No hint = a TERMINAL drain (an operator drain, a rolling shutdown). Stop leasing and
+          // let the loop exit; `run()` reports "drained".
+          emitPoll("drain");
+          drainRequested = true;
+          stopLeasingRequested = true;
+        } else {
+          // REL-004 clause 3a — a hint makes the drain a REVERSIBLE PAUSE: finish in-flight work,
+          // wait the server's cadence, then resume polling. The frozen protocol has always
+          // modelled this (`retryAfterMs` is nullable on the drain outcome) and nothing read it,
+          // so a kill switch could previously only be un-thrown by restarting every worker.
+          //
+          // `drainRequested`/`stopLeasingRequested` stay UNSET: this is not a stop, and setting
+          // them would both exit the loop and make `run()` report a shutdown that did not happen.
+          emitPoll("drain_paused");
+          await drainInFlight();
+          // A drain is a successful poll — the server answered. Reset the recovery spin counter
+          // and the backoff so the resumed loop starts clean rather than inheriting a ladder.
+          consecutiveRecoveries = 0;
+          resetBackoff();
+          await cadenceSleep(attempt.retryAfterMs);
+        }
       } else if (attempt.kind === "terminal") {
         if (attempt.reason === "target_revoked") {
           emitPoll("target_revoked");
