@@ -16,9 +16,11 @@ new leases (Lane C), 3b reconciles what the control plane can actually reclaim.
 | 4 | `97d0129e6` | the RECLAIM arm — opt-in, provider-scoped, fail-open (D2, arm 2) |
 | 5 | `db6b801b8` | an explicit reclaim outranks the warm-economy toggle (J12, J14) |
 | 6 | `99f90d106` | superseded-key snapshots — deferral #5 (§5) |
-| 7 | this commit | J13, this doc |
+| 7 | `573376d13` | J13, this doc |
+| 8 | `0963cf0b0` | J10, and the CAS defect it exposed |
 
-**26 mutants across the lane: 26 killed.** Two survived first, both real gaps in my own tests.
+**28 mutants across the lane: 28 killed.** Three survived first — two were gaps in my own
+tests, and the third exposed a real defect in the implementation (§5.1).
 
 ---
 
@@ -104,6 +106,7 @@ refusal. `e2b-credential-authority.ts`'s comment now says built rather than defe
 | J11 registration outside the heartbeat gate | `warm-sandbox-reaper-registration.test.ts` | pass |
 | J12 explicit reclaim outranks the flag, routine arms do not | `warm-sandbox-reaper-reclaim.test.ts` | pass |
 | J13 instance-wide semantics pinned (every company's leases) | same file | pass |
+| J10 two CONCURRENT sweeps produce exactly ONE kill | `warm-sandbox-reaper-race.integration.test.ts` (embedded PostgreSQL, two-party barrier) | pass |
 | J14 vocabularies still intersect on `e2b`; `pooled_gvisor` reclaims nothing | same file | pass |
 | J9 the two readers never disagree | `execution-kill-switches.test.ts` 14-shape table | pass |
 | §5 superseded reclaim, four safety directions | `warm-sandbox-reaper-superseded.test.ts` | pass |
@@ -118,13 +121,38 @@ refusal. `e2b-credential-authority.ts`'s comment now says built rather than defe
 | Flag ordering (J12a–b) | 2 | 2 |
 | Superseded arm (K1–K5) | 5 | 5 |
 | Registration guard | 1 | 1 |
-| **Total** | **26** | **26** |
+| CAS predicate (J10, both directions) | 2 | 2 |
+| **Total** | **28** | **28** |
 
 **S1 is the one worth naming**: it reverts D3 to the design's revision-1 shape (widen the reaper's
 SELECT, reuse the paused CAS) and dies — which is the proof that the second claim primitive is
 load-bearing rather than decorative. Revision 1 would have shipped a fix that did nothing.
 
-**Two survived first, both defects in my own tests:**
+### 5.1 The third survivor was a real defect, and it took two attempts to see
+
+J10 was listed as an open limit in the first draft of this doc. Closing it produced the most
+valuable finding in the lane.
+
+The first race test — two `sweepIdleWarmSandboxes` calls under `Promise.all` — **passed, and kept
+passing with the claim predicate stripped entirely.** It proved nothing: the two sweeps serialize,
+so the second lists after the first has finished its kill and sees no row. A race test that cannot
+observe a double-kill is a check that nothing runs.
+
+Replaced with a two-party barrier that holds BOTH sweeps inside `listTerminalUncleanedLeases`
+until each has read the row, then releases them together. **That version failed with 2 kills.**
+
+The defect: `claimTerminalUncleaned` wrote `cleanup_status='failed'` while its predicate accepted
+anything `IS DISTINCT FROM 'success'` — so the second concurrent claimer matched the row the first
+had just claimed. **A claim whose predicate does not exclude the state it writes is not a
+compare-and-swap.** Claimable is now `{NULL, 'pending'}` (unattempted), the scan mirrors it, and
+the retry bound becomes structural instead of aspirational.
+
+It also corrected a test that asserted the opposite: an earlier strand case required
+`cleanup_status='failed'` to be reclaimed, which contradicted the design's own retry bound *and*
+was what forced the non-CAS predicate. The terminal STATUS never told you whether a teardown had
+been attempted; `cleanup_status` does.
+
+**Two more survived first, both defects in my own tests:**
 - **N1** — I documented that `"reclaim": "true"` must refuse and never tested it. Without the
   check it coerces to `false`, so an operator's explicit destructive intent silently becomes a
   no-op while they believe it is armed. Under-destroying is the safe direction and is still the
@@ -147,9 +175,10 @@ load-bearing rather than decorative. Revision 1 would have shipped a fix that di
    from the reaper's scans. Throwing it stops placement only. Pinned by J14.
 4. **No write path or UI for throwing a switch** — still REL-001/005, unchanged from Lane C. The
    runbook SQL in Lane C's result now needs a `"reclaim": true` variant for the destructive form.
-5. **J10 (two CONCURRENT sweeps produce exactly one kill) is not proven by an integration test.**
-   The claim latches are in place and unit-pinned (`S4`, and `claimTerminalUncleaned`'s
-   compare-and-swap), but a genuine two-process race needs embedded PostgreSQL. Both D1 replicas
-   run this loop, so it is worth doing — recorded as the one open test rather than claimed.
+5. **A teardown that was attempted and did not confirm is never retried.** That is the retry
+   bound, and it is a real trade: a sandbox whose kill fails once is not reclaimed again by this
+   sweep. The alternative — retrying every five minutes forever against a provider that is
+   refusing — is worse. Such rows remain visible in `environment_leases` with
+   `cleanup_status='failed'` for an operator or a future sweep with its own policy.
 6. **Whether CLI-004's provider-side sweep can see a legacy-created sandbox** remains unverified
    (terrain §1). It does not block this lane, which no longer depends on that sweep.
