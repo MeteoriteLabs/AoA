@@ -109,6 +109,15 @@ export type {
   UpdateSwapInput,
 } from "./install-layout.js";
 
+// DSK-004 Lane C — the pointer file. Written via temp + rename so a machine that loses
+// power mid-update comes back to one whole version, never to a truncated pointer.
+export {
+  POINTER_SCHEMA_VERSION,
+  readVersionPointer,
+  writeVersionPointer,
+} from "./install-pointer.js";
+export type { PointerIo, PointerReadResult } from "./install-pointer.js";
+
 // DSK-003 Lane A — bring the control token into existence, never quietly replace it.
 export { provisionControlToken, CONTROL_TOKEN_PROVISION_REFUSALS } from "./control-token-provisioning.js";
 export type { ControlTokenIo, ControlTokenProvisionRefusal, ControlTokenProvisionResult } from "./control-token-provisioning.js";
