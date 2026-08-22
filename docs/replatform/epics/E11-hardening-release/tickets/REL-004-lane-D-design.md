@@ -1,124 +1,205 @@
 # REL-004 Lane D — reconcile active provider resources on kill (clause 3b) · design
 
 **Ticket** REL-004 · **Clause** 3b · **Epic** E11 · **Branch** `docs/replatform-program` (PR #323)
-**Terrain** [`REL-004-lane-D-terrain.md`](./REL-004-lane-D-terrain.md) — read it first; this design
-only makes sense against it.
-**Depends on** Lane C ([result](./REL-004-lane-C-result.md)), landed and CI-green.
+**Terrain** [`REL-004-lane-D-terrain.md`](./REL-004-lane-D-terrain.md) ·
+**Predecessor** [`REL-004-lane-C-result.md`](./REL-004-lane-C-result.md), landed and CI-green.
 
-**Goal:** when a provider is killed, its active resources are accounted for and the ones the
-control plane can actually reclaim *are* reclaimed — without contradicting Lane C's guarantee that
-in-flight work finishes.
+> **REVISION 2, after the plan review.** Revision 1 was reviewed by four independent lenses; it
+> produced 43 findings, 8 confirmed HIGH after an independent refutation pass. **Three of its six
+> decisions did not survive contact with source, and its central premise was false.** What changed
+> and why is §7 — kept in the document rather than quietly overwritten, because the false premise
+> was about to be written into a durable result doc, which is precisely the failure Lane C §2.4
+> was written about.
 
-**Architecture:** the warm-sandbox reaper — the only scheduled force-kill in the system, already
-running, already the owner of the claim→kill sequence — learns to read the kill-switch document
-and treat a killed provider's paused leases as immediately reclaimable instead of waiting out the
-idle TTL. MIG-008's reconciler stops stranding the rows that path depends on. Nothing new is
-scheduled, no new grant is taken, and the distributed platform's limit is stated rather than
-faked.
+**Goal:** when a provider is killed, the resources the control plane can reclaim *are* reclaimed,
+the ones it must not touch are left to drain, and every limit is stated as a choice with a reason
+rather than as an impossibility.
 
 ---
 
-## 1. The design is small because the terrain says most of it is impossible
+## 1. Corrected premise: the control plane CAN reach these sandboxes
 
-Three families of "active provider resource", and only one is reclaimable by the control plane.
+Revision 1 claimed the control plane "holds no handle, by construction". **That is false**, and the
+check that produced it was badly aimed — a grep of `server/package.json` dependency *names* for
+`sandbox|worker`, which structurally cannot find a package called `e2b`.
 
-| Family | Can the control plane reclaim it? | Why |
+| Claim in revision 1 | Truth | Evidence |
 |---|---|---|
-| Distributed sandboxes (worker-side) | **No, by construction** | `server/package.json` declares `@armyofagents/worker-protocol` **only** — no worker-daemon, no sandbox provider — so there is no provider API to call. `leases` carries `providerConstraintHash` (a policy digest) and **no sandbox id**, so there is no handle to release. Verified directly. |
-| Legacy E2B leases, **live/active** | **No, and must not** | Lane C's I12 pins that in-flight work finishes; MIG-008's Invariant #2 says the same. Killing these is the failure, not the feature. |
-| Legacy E2B leases, **paused** | **Yes — and this is the whole ticket** | `warm-sandbox-reaper.ts` already force-kills them via `releaseRunLease(forceDestroy)`, on a 5-minute schedule, on the owner `db` handle. |
+| server has no provider package | **False** | `server/package.json:67` `"e2b": "^2.30.5"`; `sandbox-provider-runtime.ts:585` `return import("e2b")` |
+| the control plane cannot call the provider API | **False** | `sandbox-provider-runtime.ts:823-827` `const sandbox = await connect(config, input.providerLeaseId); … await sandbox.kill?.()` — on a schedule, today |
+| no distributed sandbox id is held | **False** | `attemptStartedPayloadV1Schema = z.object({ sandboxId })` (`worker-protocol/src/events.ts:55`) → `payload: event` (`job-events.ts:75`) → `event: jsonb("event")` on an append-only ledger (`job_events.ts:54`) |
+| `leases` carries no sandbox id | **True** | `packages/db/src/schema/leases.ts` — the only accurate half |
 
-So clause 3b is not "build a reconciler". It is: **make sure a kill does not break the one reclaim
-path that exists, and make that path act promptly for a killed provider.**
+So the scope question is not "what is possible" but "what should we do with authority we already
+have". The answers below are choices, each with a reason.
 
-## 2. Decisions
+## 2. What clause 3b will and will not do
 
-**D1 — The warm-sandbox reaper is the owner. Nothing new is scheduled.**
-It is already the only scheduled force-kill (`index.ts:1292`, 5-minute interval, gated on
-`enableWarmSandboxReaper`); it already performs exactly the claim→kill sequence this ticket needs
-(`expireLeaseIfPaused` as a CAS latch, *then* `releaseRunLease(forceDestroy)`); it runs on the
-owner `db` handle, so it needs **no `aoa_app` grant** — and terrain §2.3 showed
-`environment_leases` has none and getting one costs the 21-surface coupling dance Lane C just paid.
-It is also flag-independent, which matters: terrain §2.1 showed a poll-triggered reconcile would
-run over a structurally empty set on any deployment that has E2B sandboxes but no distributed
-fleet.
-
-**D2 — For a killed provider, the idle grace period is zero.**
-`listPausedLeasesOlderThan(cutoff)` waits out the instance idle TTL (~30 min). That is the right
-default for a merely-idle snapshot and the wrong one for a provider an operator has just declared
-compromised. For a killed provider the cutoff becomes "now": the same query, the same kill, no
-grace. `environment_leases.provider` is on the row (the reaper already filters on it via
-`notInArray(..., NON_SANDBOX_LEASE_PROVIDERS)`), so scoping is direct.
-
-**D3 — Fix MIG-008's orphan, minimally, and do not touch its classification.**
-Terrain §1: `casClaimPaused` flips `paused → expired` with `cleanupStatus: 'pending'` and does not
-kill, while the reaper selects *exclusively* `status = 'paused'` — so a claimed row leaves the only
-reclaim path forever, sandbox still running.
-
-The CAS is load-bearing for MIG-008's own correctness (it is what stops a concurrent warm-resume
-from resuming a lease the crosswalk has called terminal), so removing it is wrong. Killing inside
-the store seam is also wrong — it is a DB seam, and MIG-008 deliberately has no provider dependency.
-
-The minimal correct fix is to make the reclaim path able to see the post-CAS state: the reaper
-additionally sweeps rows that are `expired` **and** `cleanup_status = 'pending'` **and** still
-carry a `provider_lease_id`. That is precisely the set "terminally reconciled, never killed", it
-is exactly what the reaper exists for, and it also cleans up any rows a future MIG-008 run creates.
-
-*Rejected:* teaching MIG-008 not to claim (changes reviewed, mutation-tested classification
-semantics); killing in `casClaimPaused` (puts provider IO in a DB store and contradicts its own
-documented contract).
-
-**D4 — The distributed limit is STATED, not simulated.**
-No code will pretend to reclaim a distributed sandbox. Clause 3b's result doc says plainly that
-the control plane holds no handle, that stopping placement (3a) plus draining (3a/I12) is the
-whole of its distributed authority, and that reclaiming a leaked distributed sandbox belongs to
-CLI-004's provider-side sweep running **on the worker**. Terrain §1 also records that whether that
-sweep can even see a *legacy*-created sandbox is unverified — that question is called out, not
-answered by assertion.
-
-**D5 — Reuse the Lane C reader verbatim.**
-The reaper reads the same `instance_settings.kill_switches` document through the same
-`createKillSwitchPolicyReader`, and evaluates with the same `evaluateKillSwitches`. One document,
-one evaluator, one vocabulary. But note D6 — the *verdict* is not the right input here.
-
-**D6 — The reaper keys on the SWITCH LIST, not on a `killed` verdict.**
-Terrain §2.2: `evaluateKillSwitches` returns `{killed:true, dimension:null, value:null}` for an
-unreadable document — including on a transient database error — and the same shape for every
-template switch. Fail-closed is right for *leasing*; it is fail-**destructive** for a reaper. So
-the reaper needs to answer a different question: *"which provider values has an operator
-explicitly killed?"* That is a new, narrow, pure accessor over the same document
-(`killedProviders(document)`), which returns a set and returns **empty** for an absent, malformed
-or unreadable document. Refusing to reclaim is the safe direction here, exactly inverted from
-leasing, and that inversion is the single most important thing in this design.
-
----
-
-## 3. Invariants
-
-| # | Invariant | Proven by |
+| Family | Action | Reason |
 |---|---|---|
-| J1 | A killed provider's PAUSED legacy leases are force-killed without waiting out the idle TTL | reaper unit + integration |
-| J2 | A live/active legacy lease is never killed by this path, killed provider or not | reaper unit, both directions |
-| J3 | An unreadable, malformed or absent kill-switch document reclaims NOTHING (inverted from leasing, deliberately) | `killedProviders` unit, incl. the read-failure sentinel |
-| J4 | A row stranded by MIG-008 (`expired` + `cleanup_status='pending'` + live handle) is reclaimed | reaper unit + a regression test that reproduces the strand |
-| J5 | An unkilled provider's behaviour is byte-for-byte unchanged (idle TTL still applies) | reaper unit, non-vacuity |
-| J6 | No new grant, no new migration, no new scheduled loop | the diff; `job-control-legacy-grants.contract.test.ts` frozen pins stay green |
-| J7 | The control plane attempts no distributed-sandbox reclaim | structural test: the reaper and any new module import no provider package |
-| J8 | Reaping is idempotent under repeated sweeps while the switch stays thrown | integration, two consecutive sweeps |
+| Legacy E2B, **paused**, killed provider | **Reclaim, promptly** | The reaper already force-kills these; a killed provider should not wait out the idle TTL. |
+| Legacy E2B, **stranded** (terminal, handle present, never confirmed cleaned) | **Reclaim, switch-independently** | Includes MIG-008's orphan (§4) and the crash-window orphan (§4.1). Pure waste in every case. |
+| Legacy E2B, **live/active** | **Leave to drain** | Lane C I12; MIG-008 Invariant #2. |
+| Distributed, **live attempt** | **Leave to drain — a CHOICE, not a limit** | We hold the id via `job_events`. Destroying it contradicts I12 and the JOB-007 precedent, which flips leases to `revoked` and cancels non-gracefully. |
+| Distributed, **orphaned attempt** (lease gone, no terminal event) | **Deferred, with an owner** | This is inherited deferral **#2** (`createJobControlSweeper` has no live trigger), assigned by the Wave-3 handoff to **MIG-002**, not here. Absorbing it would take another ticket's scope. |
+| **Superseded-key sandboxes** (inherited deferral #5) | **Prerequisite missing — see §5** | |
 
-Every guard mutation-tested, per the standing process.
+## 3. Decisions
 
----
+**D1 — The warm-sandbox reaper is the owner, and its registration moves.**
+It is the only scheduled force-kill, already owns the claim→kill sequence, and runs on the **owner**
+`db` handle — so no `aoa_app` grant (terrain §2.3 verified `environment_leases` has none).
 
-## 4. Out of scope, stated as limits
+*Correction:* revision 1 called it "flag-independent". It is independent of
+`AOA_DISTRIBUTED_EXECUTION_ENABLED`, but it is registered **inside**
+`if (config.heartbeatSchedulerEnabled)` (`index.ts:1245`, call at `:1292`), a documented,
+operator-facing knob (`docs/guides/board-operator/routines.md:23`) that advertises itself as
+governing *schedule ticks* and says nothing about disabling the only force-kill — while minting is
+**not** gated (`commander-sandbox.ts:96`; `routes/issues.ts:99`). An incident-response reclaim must
+not vanish because an operator turned off routines. The registration moves out of that block,
+following the precedent the repo already set and pinned:
+`index.ts:1752-1761` ("deliberately NOT inside the `config.heartbeatSchedulerEnabled` block"),
+guarded by `claude-config-dir-sweeper.test.ts:88-109`.
 
-- **Reclaiming distributed sandboxes.** Impossible from the control plane (§1). Belongs to
-  CLI-004's provider-side sweep, worker-side.
-- **Whether CLI-004's sweep can see a legacy-created sandbox.** Terrain §1 flags it as unverified.
-  Answering it needs the keyed real-E2B lane and an operator's key (programme limit D2).
-- **A write path or UI for throwing a switch.** Still REL-001/005, unchanged from Lane C.
-- **Widening the grant-option ACL sweep to the ten relations it still omits** — recorded in Lane
-  C's result §4.2, not this ticket.
-- **A per-provider reclaim for `pooled_gvisor`.** The reaper's `NON_SANDBOX_LEASE_PROVIDERS`
-  filter and the gVisor pool's own lifecycle are a separate question; this lane covers the E2B
-  family the kill switch was written for.
+**D2 — A killed provider gets a SEPARATE provider-scoped pass, not a global cutoff of zero.**
+`listPausedLeasesOlderThan(cutoff)` takes one cutoff for the whole result set, so the naive
+`cutoff = killed.size > 0 ? now : ttl` would zero-grace **every** paused external-provider lease on
+the instance the moment *any* switch exists — including a `desktop` switch that names no legacy
+lease at all. Composition instead: the existing TTL sweep, unchanged, **plus** one provider-scoped
+pass per killed value.
+
+**D2a — The prompt pass is opt-in, because zero grace is irreversible.**
+Verified: warm leases are paused at the end of **every** Commander turn
+(`commander-sandbox.ts:157-175`), warm is default-on (`warm-sandbox-policy.ts:41-42`), and
+`findResumablePausedLease` has **no age bound** (`environments.ts:225-245`) — so the paused
+population is the *in-use* population, and a zero cutoff kills the snapshots of conversations a
+human is mid-way through, in that tenant's own BYO E2B account, unrecoverably
+(`environment-runtime.ts:531-536` retires the row and creates fresh). That inverts the module's own
+first line — *"A KILL SWITCH IS A DENY-LIST OVER A PLACEMENT DIMENSION, not an identity
+revocation"* — and Lane C's "reversible in seconds".
+
+So the deny-list alone must **not** destroy. Reclamation is a distinct, explicitly-thrown intent:
+`{"dimension":"provider","value":"e2b","reason":"…","reclaim":true}`. Absent `reclaim`, a switch
+stops placement and nothing else. The codebase already refuses zero as an operator intent —
+`normalizeWarmIdleTtlMinutes` clamps to `[1,1440]` (`warm-sandbox-constants.ts:19-23`) — so even
+with `reclaim` the pass honours a one-minute floor.
+
+**D3 — The strand fix is a SECOND CLAIM PRIMITIVE, not a wider SELECT.**
+Revision 1 proposed widening the reaper's query to `expired` + `cleanup_status='pending'`. **That
+is inert.** `destroyPausedLease`'s first statement is `expireLeaseIfPaused(lease.id)`
+(`warm-sandbox-reaper.ts:70`), whose CAS is `WHERE status='paused'` (`environments.ts:324`). Every
+row the wider SELECT adds fails that CAS, returns `{destroyed:false}`, and the sandbox lives. It
+would have shipped a fix that does nothing — the failure class this programme is named for, in the
+fix for an instance of it.
+
+Add one store primitive (no migration: `cleanup_status` is plain `text`,
+`environment_leases.ts:42`, over `["pending","success","failed"]`):
+
+```
+claimTerminalUncleaned(id):
+  UPDATE environment_leases SET cleanup_status='failed', updated_at=now()
+  WHERE id=$1 AND provider_lease_id IS NOT NULL
+    AND status IN ('expired','failed') AND cleanup_status IS DISTINCT FROM 'success'
+  RETURNING *
+```
+
+and branch `destroyPausedLease` on the row's status instead of calling the paused CAS
+unconditionally. Claiming to `'failed'` first is the latch **and** the retry bound: the kill
+promotes it to the real outcome, so a permanently-failing kill is attempted once, not every five
+minutes forever.
+
+**D4 — Two readings of one document, ONE parse.**
+A reaper must be fail-**open** where leasing is fail-closed: `evaluateKillSwitches` returns
+`killed:true` on a transient database error, and force-killing VMs on a database hiccup is the
+worst outcome available. But a second, independent accessor would diverge destructively: for
+`{"dimension":"provider","value":"gvisor"}` — a real lease-provider value outside
+`EXECUTION_TARGET_KINDS` — leasing returns `policy_unreadable` while a vocabulary-free accessor
+would return a non-empty destroy set. So factor **one** parse:
+
+```
+parseKillSwitchDocument(document, knownProviders): "unreadable" | readonly ValidatedSwitch[]
+```
+
+with `evaluateKillSwitches` and `killedProviders(document, knownProviders)` as its two consumers.
+`killedProviders` maps `"unreadable" → ∅`.
+
+**D5 — The reader is constructed inside the sweep, from the owner `db`.**
+Lane C §2.2's lesson, with the hazard *inverted*: there, a permissive injected reader disabled the
+stop button; here an **aggressive** one force-kills. Build it in `sweepIdleWarmSandboxes`, not
+through the existing four-key DI bag (`warm-sandbox-reaper.ts:27-35`). Also update
+`execution-kill-switch-policy.ts:20-22`, whose DORMANCY comment ("imported only by
+`job-leasing.ts` … under AOA_DISTRIBUTED_EXECUTION_ENABLED") becomes false the moment this lands.
+
+**D6 — State the vocabulary join to the OPERATOR, not just to engineers.**
+`EXECUTION_TARGET_KINDS` ∩ legacy lease providers = **`{"e2b"}`**. `pooled_gvisor` never equals
+`gvisor`, and `gvisor` is excluded by `NON_SANDBOX_LEASE_PROVIDERS` anyway (`environments.ts:20`).
+Throwing `pooled_gvisor` stops placement and reclaims nothing; the runbook must say so.
+
+## 4. The two strands D3 must cover
+
+1. **MIG-008's** — `casClaimPaused` sets `expired` + `cleanup_status='pending'` and does not kill
+   (`legacy-resource-reconciliation-store.ts:57-64`).
+2. **The crash window** — the reaper's own CAS calls `expireLeaseIfPaused(lease.id)` with **no**
+   `cleanupStatus`, so a process death between claim and kill leaves `expired` with the field
+   *unchanged*. Revision 1's `='pending'` predicate missed this entirely. Hence
+   `IS DISTINCT FROM 'success'`.
+
+Note the exception path sets status **`failed`**, not `expired`
+(`environment-runtime.ts:689-691`) — hence `status IN ('expired','failed')`.
+
+## 5. Inherited deferral #5 — and why it cannot be built as written
+
+The Wave-3 handoff assigns "old-key kill-switch enforcement" to REL-004 clause 3, and
+`e2b-credential-authority.ts:21-23` points here by name: *"The LIVE force-kill of sandboxes tagged
+with a superseded generation is REL-004's kill-switch primitive."* Revision 1 never mentioned it.
+
+**The prerequisite does not exist.** `deriveE2bKeyGeneration` (`e2b-credential-authority-wiring.ts:20`)
+returns the company's *current* key version from `runtime_provider_keys → company_secret_versions`.
+**Nothing tags a live sandbox or lease with the generation it was created under** — verified: zero
+matches for `keyGeneration` on the live acquire path (`sandbox-provider-runtime.ts`,
+`environment-runtime.ts`). "Superseded" is therefore not computable for an existing sandbox.
+
+Options, to be decided in review rather than assumed:
+- **(a)** Record the generation into `environment_leases.metadata` (jsonb — no migration) at acquire,
+  then superseded = `metadata.keyGeneration !== deriveE2bKeyGeneration(company)`. Reclaim only
+  **paused** superseded snapshots: a snapshot that can never be resumed with the current key is
+  pure waste, and killing it touches no live work.
+- **(b)** Defer with the limit stated, and correct `e2b-credential-authority.ts`'s pointer so two
+  documents stop disagreeing.
+
+(a) is small and safe and closes an inherited deferral; (b) is honest but leaves the pointer
+dangling. **Recommendation: (a), scoped to paused snapshots only.**
+
+## 6. Invariants
+
+J1–J8 from revision 1, amended, plus J9–J14 from the review.
+
+| # | Invariant | Non-vacuity it needs |
+|---|---|---|
+| J1 | A killed provider's paused legacy leases are reclaimed promptly **when `reclaim` is set** | a same-fixture case with `reclaim` absent that reclaims nothing |
+| J2 | A live/active lease is never killed by this path | both directions |
+| J3 | Unreadable/malformed/absent document reclaims NOTHING | incl. the read-failure sentinel |
+| J4 | Both strands (§4) are reclaimed | a test that reproduces each strand, not a hand-built row |
+| J5 | An unkilled provider's **paused-path** behaviour is unchanged; the strand arm is switch-independent **by design** | (restated — revision 1's J5 contradicted D3) |
+| J6 | No new grant, no new migration, no new scheduled loop; **one** new store primitive | the diff |
+| J7 | The reaper enumerates no provider-side sandbox list and reads no `job_events` sandbox id; the reader is built from the owner `db` | (replaces revision 1's unfalsifiable import assertion) |
+| J8 | Idempotent across consecutive sweeps | |
+| J9 | The two readers never disagree about readability | ONE shared fixture table fed to both |
+| J10 | Two **concurrent** sweeps produce exactly ONE provider kill | race two sweeps on one row; both D1 replicas run this loop |
+| J11 | Registration sits outside the heartbeat gate | source assertion in the `claude-config-dir-sweeper.test.ts:103-109` shape |
+| J12 | With `enableWarmSandboxReaper` OFF and a switch thrown, the decided behaviour holds | every existing reaper test stubs it true |
+| J13 | A switch reaps EVERY company's leases of that provider | two companies, one switch — pins the real cross-tenant semantics |
+| J14 | The switch and lease-provider vocabularies still intersect on `e2b` | plus a `pooled_gvisor` case reaping zero |
+
+## 7. What revision 1 got wrong
+
+| # | Revision 1 | Reality |
+|---|---|---|
+| 1 | "no handle, by construction" | `server` depends on `e2b` directly and kills by id today; the distributed id is in `job_events` (§1) |
+| 2 | D3 widens the reaper's SELECT | **Inert** — the paused-only CAS rejects every added row (§D3) |
+| 3 | D3's predicate `= 'pending'` | Misses the crash-window strand (§4.1) |
+| 4 | D2 zero grace | Destroys in-use Commander snapshots irreversibly (§D2a) |
+| 5 | D1 "flag-independent" | Subordinate to `heartbeatSchedulerEnabled` (§D1) |
+| 6 | D6 `killedProviders(document)` | One-arg cannot reproduce the vocabulary refusal; diverges destructively (§D4) |
+| 7 | J5, J7 | Self-contradictory / unfalsifiable (§6) |
+| 8 | silent on deferral #5 | The handoff and MIG-008 both assign it here (§5) |
