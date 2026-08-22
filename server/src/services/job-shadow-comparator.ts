@@ -158,6 +158,17 @@ export interface ShadowComparisonResult {
   readonly placementReasonCode: string;
   /** Read-only admissibility probe result, if the caller supplied one; else null. */
   readonly admissible: boolean | null;
+  /**
+   * WHY the probe answered as it did, and WHICH authorities actually ran.
+   *
+   * Without these the record can say "would have been refused" and not say why, which
+   * makes gate clause 2's "every divergence explained" unmeetable from the evidence —
+   * and makes the per-sink signal asymmetry (one_shot has no source authority)
+   * invisible in aggregate. Building the evidence table is what exposed that they were
+   * being computed and then dropped.
+   */
+  readonly admissibilityReason: string | null;
+  readonly admissibilityAuthorities: string[];
   /** True iff the best-effort compute threw (the failure is recorded, never propagated). */
   readonly errored: boolean;
 }
@@ -229,6 +240,10 @@ export interface JobShadowComparator {
     snapshot: LegacyRunExecutionSnapshot,
     options?: {
       admissible?: boolean | null;
+      /** Why, and by which authorities — carried into the record so a refusal is
+       *  explainable from the evidence rather than only from a re-run. */
+      admissibilityReason?: string | null;
+      admissibilityAuthorities?: readonly string[];
       /** The independently derived distributed intent, if the caller has one. */
       intent?: DistributedIntentProjection;
     },
@@ -265,7 +280,11 @@ export function createJobShadowComparator(deps: {
 /** The record produced when the comparison could not be built at all. Claims nothing. */
 function erroredComparison(
   snapshot: LegacyRunExecutionSnapshot | undefined,
-  options: { admissible?: boolean | null },
+  options: {
+    admissible?: boolean | null;
+    admissibilityReason?: string | null;
+    admissibilityAuthorities?: readonly string[];
+  },
 ): ShadowComparisonResult {
   return {
     organizationId: typeof snapshot?.organizationId === "string" ? snapshot.organizationId : "",
@@ -283,13 +302,20 @@ function erroredComparison(
     placementLeaseEligible: false,
     placementReasonCode: "shadow_selected",
     admissible: options.admissible ?? null,
+    admissibilityReason: options.admissibilityReason ?? null,
+    admissibilityAuthorities: [...(options.admissibilityAuthorities ?? [])],
     errored: true,
   };
 }
 
 function buildComparison(
   snapshot: LegacyRunExecutionSnapshot,
-  options: { admissible?: boolean | null; intent?: DistributedIntentProjection },
+  options: {
+    admissible?: boolean | null;
+    admissibilityReason?: string | null;
+    admissibilityAuthorities?: readonly string[];
+    intent?: DistributedIntentProjection;
+  },
 ): ShadowComparisonResult {
   const parsedWorkload = batchWorkloadV1Schema.safeParse({
     command: snapshot.workloadCharacterization.command,
@@ -319,6 +345,8 @@ function buildComparison(
     placementLeaseEligible: false,
     placementReasonCode: "shadow_selected",
     admissible: options.admissible ?? null,
+    admissibilityReason: options.admissibilityReason ?? null,
+    admissibilityAuthorities: [...(options.admissibilityAuthorities ?? [])],
     errored: false,
   };
 }

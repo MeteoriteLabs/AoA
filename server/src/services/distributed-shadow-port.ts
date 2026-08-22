@@ -158,6 +158,13 @@ async function recordOnce(
       policy: input.policy,
       workloadCharacterization: input.workloadCharacterization,
     },
-    { admissible: verdict.admissible },
+    {
+      admissible: verdict.admissible,
+      // Carry the WHY, not just the verdict: a refusal nobody can explain is not
+      // evidence, and `authoritiesChecked` is what makes the per-sink signal
+      // asymmetry visible in the aggregate rather than only in a unit test.
+      admissibilityReason: verdict.reason,
+      admissibilityAuthorities: verdict.authoritiesChecked,
+    },
   );
 }
