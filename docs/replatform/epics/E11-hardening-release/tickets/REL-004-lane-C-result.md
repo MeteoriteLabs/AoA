@@ -18,7 +18,7 @@ provider resources) is Lane D and is untouched.
 | 6 | `451db1b11` | the poll answers `drain` |
 | 7 | `94fd1c6f1` | the daemon's resumable drain |
 | 8 | `75ad64d44` | separation guard, D1 nonce, test-inventory pin, this doc |
-| 9 | this commit | adversarial-review findings (§2.3) |
+| 9 | `1cd3ad755` | adversarial-review findings (§2.3) |
 
 **47 mutants: 44 killed, 1 documented equivalent, 1 explained-not-a-defect, 1 intentional
 negative control.**
@@ -151,9 +151,35 @@ drift; mutants M43-M45 (bound removed, bound one over, off-by-one at the boundar
 | I8 — the switch is reversible without a fleet restart | `poll-drain-resumable.component.test.ts` | 5/5 |
 | I9 — no repository selection added to the frozen chain | `job-leasing-contract.test.ts` | 20/20 |
 | I10 — the widened guard still refuses an unreviewed call | mutant **M33** | killed |
-| I11 — `aoa_app` can actually read the document | integration **case 0** (`has_table_privilege` asserted by name) + `job-control-legacy-grants.contract.test.ts` + `distributed-execution-db-startup.integration.test.ts` | pass |
+| I11 — `aoa_app` can actually read the document | integration **case 0** (`has_table_privilege` asserted by name, and the read performed as `aoa_app`) + `job-control-legacy-grants.contract.test.ts` | pass |
+| I11 — the grant and the manifest agree at BOOT | `distributed-execution-db-startup.integration.test.ts` | see §4.1 |
 | I12 — in-flight work finishes | integration cases 8–10 (ack + renew succeed under a thrown switch; the same worker's next poll drains) | pass |
 | every guard mutation-tested | §4 | 41 killed / 43 |
+
+### 4.1 The startup-authority suite, stated honestly
+
+`distributed-execution-db-startup.integration.test.ts` is the only artifact that proves the
+migration's GRANT and `appTablePrivileges()` agree in a real database at boot — the contract test
+compares manifest to manifest and would stay green with the migration missing.
+
+Locally on Windows it reports **69 passed / 4 failed**, all four in the `observeServer` group that
+spawns a real server subprocess, all four with `distributed_execution_app_authority`.
+
+**That first looked like my grant, and it is not.** Run in isolation, the same test PASSES. The
+failure appears only in the full-suite run, whose earlier cases deliberately construct drifted
+roles (`rejects an exact-named app role with inherited secret authority`, `rejects an exact-named
+operator role with a stale table grant`) — residue from those is the ordering hazard, and nothing
+in the suite knows about `instance_settings` at all.
+
+It DID also surface a genuine local trap on the first attempt, worth recording: `pnpm db:generate`
+writes to `packages/db/src/migrations` while `applyPendingMigrations` loads from
+`packages/db/dist/migrations`. Until the db package is rebuilt, the manifest expects a grant the
+database has never been given, and the real server subprocess crashes exactly this way. **Rebuild
+`@armyofagents/db` before running any integration suite after generating a migration.** CI builds
+first, so it does not see this.
+
+Linux CI is the verdict for this suite, per the programme's convention for Windows-local
+aggregates.
 
 Neighbouring suites re-run: `job-leasing.integration` 39/39, whole `worker-daemon` 669/669,
 `tenant-app-db-startup` + `job-control-runtime` + `job-source-governance-matrix` +
