@@ -110,6 +110,43 @@ have armed the heartbeat too — silently defeating the axis this slice exists t
 test proves the filter works; only a source-contract test proves the one production caller uses
 it. **A resolver cannot filter on what it is not told.**
 
+## 5b. A HIGH defect the cross-check found, and fixed
+
+An adversarial pass over this slice's terrain surfaced a consequence my own M8 analysis missed:
+**fail-safe for EXECUTION is not fail-safe for STATE.**
+
+The chain, each link verified by hand:
+
+1. the convert's submit claims an org concurrency slot — `job-submission.ts:296-303` calls
+   `admitAttemptCapacity`, setting `job_attempts.capacity_claim_state = 'held'`;
+2. `resolveExecutionOwner` returned `legacy("placement_not_leasable")` when placement declined
+   (`run-execution-owner.ts:232`) and released **nothing**;
+3. that attempt is then inert forever — never leased, so never terminalized — and the only
+   releases are attempt-terminal, cancel-finalize, and the lease reaper, whose
+   `createJobControlSweeper` has **zero production callers**;
+4. the org cap counts `capacity_claim_state = 'held'` (`org-concurrency.ts:116-121`), and the
+   **LEGACY** heartbeat claims against that same budget (`heartbeat.ts:2748`).
+
+So every canary run that is not placed permanently removes one slot from the Organization's
+ordinary legacy capacity. And placement declining after a successful convert is a NORMAL
+outcome — no worker enrolled yet, requirements mismatch, capacity — so the very first thing an
+operator does, arming a canary before enrolling a worker, leaks a slot on every run. The symptom
+is the Organization's legacy work quietly slowing to a stop, with nothing pointing at the cause.
+
+**This is pre-existing, not created by the live dial.** The dial adds one more way to reach it
+(an operator can now drop a sink mid-run). Stating that precisely matters: the fix is not a
+consequence of this slice, and the slice is not excused from carrying it.
+
+Fixed: the resolver releases the claimed slot on both legacy exits after a convert — the
+placement decline and the catch-all — best-effort, so a capacity-table failure cannot turn an
+already-decided legacy run into a throw. It deliberately does **not** release when the attempt
+is going to execute distributed; that would let the org over-subscribe its cap, the inverse
+defect and a worse one. Wired at the composition root inside a tenant transaction, because
+`job_attempts` is RLS-protected and an untenanted update would silently match zero rows — and
+the wiring itself is pinned, because a release nothing composes is a fix that never runs.
+
+6 mutants, 6 killed, 1 documented equivalent.
+
 ## 6. Limits, stated
 
 1. **Convergence is unchanged and still absent.** `createJobControlSweeper`,

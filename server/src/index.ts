@@ -1183,6 +1183,17 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
     preflight: createCanaryPreflight({ store: createDrizzleCanaryPreflightStore(appDb) }),
     convert: convertOrchestrator,
     placement: toRunExecutionPlacement(placementService),
+    // Hand back the org concurrency slot the convert claimed when the run ends up legacy.
+    // `job_attempts` is RLS-protected, so the update must run inside the Organization's tenant
+    // transaction on the non-owner pool — the same shape `releaseAttemptCapacity`'s only other
+    // caller uses.
+    releaseCapacity: async ({ attemptId, organizationId }) => {
+      const { runInTenant } = await import("./db/tenant-context.js");
+      const { releaseAttemptCapacity } = await import("./services/org-concurrency.js");
+      return runInTenant(appDb, organizationId, async (_repos, tx) =>
+        releaseAttemptCapacity(tx, { attemptId, organizationId }),
+      );
+    },
   });
   // ── CLI-006 (Task 4) — register the fence-revoking cancel port ──────────────
   // Module-level registration, NOT an option on heartbeatService: every real

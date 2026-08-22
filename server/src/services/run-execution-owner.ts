@@ -84,6 +84,22 @@ export interface RunExecutionOwnerDeps {
   preflight: CanaryPreflight;
   convert: JobConvertOrchestrator;
   placement: RunExecutionPlacement;
+  /**
+   * Release the org concurrency slot the CONVERT claimed, when the run ends up legacy anyway.
+   *
+   * The convert's submit claims a slot (`job-submission.ts` -> `admitAttemptCapacity`, which
+   * sets `job_attempts.capacity_claim_state = 'held'`). If placement then declines — a NORMAL
+   * outcome: no worker enrolled yet, requirements mismatch, capacity — the attempt is inert
+   * forever: never leased, so never terminalized, so never released by the attempt-terminal or
+   * cancel-finalize paths, and the lease reaper that would catch it has no production caller.
+   *
+   * The org's cap counts `capacity_claim_state = 'held'`, and the LEGACY heartbeat claims
+   * against that same budget, so each leaked slot permanently throttles the Organization's
+   * ordinary work. Arming a canary before enrolling a worker leaks one per run.
+   *
+   * Optional: a deployment that has not composed it behaves exactly as before.
+   */
+  releaseCapacity?(input: { attemptId: string; organizationId: string }): Promise<unknown>;
 }
 
 export type LegacyOwnerReason =
@@ -179,7 +195,7 @@ function legacy(reason: LegacyOwnerReason, detail?: string): RunExecutionOwner {
 export function createRunExecutionOwnerResolver(
   deps: RunExecutionOwnerDeps,
 ): RunExecutionOwnerResolver {
-  const { resolveRunRolloutState, preflight, convert, placement } = deps;
+  const { resolveRunRolloutState, preflight, convert, placement, releaseCapacity } = deps;
 
   return {
     async resolve({
@@ -191,6 +207,20 @@ export function createRunExecutionOwnerResolver(
       jobInput,
       rolloutState,
     }) {
+      // Set once the convert has claimed a capacity slot, so every later legacy exit — the
+      // placement decline AND the catch-all — can hand it back. Declared out here because the
+      // catch cannot see the try's block scope, the same reason `outcomeAgentName` exists in
+      // the heartbeat runner.
+      let claimedAttemptId: string | null = null;
+      /** Best-effort: the ownership decision is already made and must not change. */
+      const releaseClaimedCapacity = async (): Promise<void> => {
+        if (!claimedAttemptId || !releaseCapacity) return;
+        try {
+          await releaseCapacity({ attemptId: claimedAttemptId, organizationId });
+        } catch {
+          // A capacity-table hiccup must never fail a run that is already going to legacy.
+        }
+      };
       try {
         // 1. Canary only. A non-canary run does not even consult the gate — no
         //    extra query, no behavioral difference (Invariant 4). The caller may
@@ -217,8 +247,10 @@ export function createRunExecutionOwnerResolver(
         const jobId = converted.response?.jobId;
         const attemptId = converted.response?.attemptId;
         if (!converted.converted || !jobId || !attemptId) {
+          // No attempt, so no slot was claimed — nothing to release.
           return legacy("convert_failed", `convert reason ${converted.reason}`);
         }
+        claimedAttemptId = attemptId;
 
         // 4. Placement — LAST, because it is what makes the attempt leasable.
         //    A `canary` Organization is presented to placement as `active`
@@ -231,15 +263,22 @@ export function createRunExecutionOwnerResolver(
           companyId: actor.companyId,
         });
         if (decision.disposition !== "selected" || decision.leaseEligible !== true) {
+          // The run goes legacy, so the slot this convert claimed must go back — otherwise the
+          // inert attempt throttles the Organization's legacy work forever.
+          await releaseClaimedCapacity();
           return legacy(
             "placement_not_leasable",
             `placement disposition ${decision.disposition}, leaseEligible ${String(decision.leaseEligible)}`,
           );
         }
 
+        // Selected and leasable: the attempt WILL execute, so it keeps its slot. Releasing here
+        // would let the Organization over-subscribe its cap — the inverse defect, and worse.
         return { owner: "distributed", jobId, attemptId };
       } catch (error) {
-        // Fail safe. The run still executes — on the legacy path.
+        // Fail safe. The run still executes — on the legacy path. If the convert had already
+        // claimed a slot before the throw, hand it back for the same reason as above.
+        await releaseClaimedCapacity();
         return legacy(
           "transfer_error",
           error instanceof Error ? error.message : String(error),
