@@ -124,6 +124,37 @@ resource reclamation are separate mechanisms and both now exist.
   Revoke control writes a `status:"pending"` row nothing reads). Filed separately.
 - **The kill switch still has no write path** (REL-001/005), so rollback step 1 is still hand-SQL.
 
+## 4b. REVISION 2 addendum — the projection bridge exists, and the reaper cannot reach it
+
+There is already a standalone, reusable handler for exactly this: `canary-terminal-projection.ts`
+turns an attempt terminal into a run terminal, and its header states the two properties that
+make it the right target rather than a new writer:
+
+* *"The ownership predicate lives here, in one place. A terminal projects onto a run ONLY when
+  `execution_owner === "distributed"` … projecting onto [a legacy run] would make the projector a
+  second authority for run state (Invariant 8)."*
+* *"Evidence gathering is best-effort; the terminal is not … without that the run never latches,
+  the issue lock is never released, and the agent pins at `running`, dragging every other run of
+  that agent with it."* — i.e. the module already names the failure this slice exists to prevent.
+
+So the shape is **one projection, two triggers** (worker ingest, and the reaper) rather than a
+second run-terminal writer. That keeps Invariant 8 intact.
+
+**But the reaper cannot supply the trigger.** `AttemptTerminalSignal` requires
+`{organizationId, companyId, jobId, attemptId, terminalStatus}` (`job-events.ts:86-92`).
+`ReapExpiredLeasesResult` is **counts only** — `{scanned, revoked, retried, deadLettered,
+cancelled, finalized}` (`job-control.ts:722-729`). **No identities.** You cannot build a signal
+from a count.
+
+That sizes the slice honestly. It is not "start the sweeper"; it is:
+
+1. `reapExpiredLeases` returns the identities of what it terminalized — a change to a tenant
+   mutator that runs under the authoritative locks, so it needs care and its own proof;
+2. the sweeper projects each one through the EXISTING `canary-terminal-projection` handler;
+3. the sweeper is registered.
+
+Step 1 is the real work and the real risk. Steps 2 and 3 are wiring.
+
 ## 5. The question a design must answer first
 
 > **Does the sweeper get its own scheduler, or ride the outbox worker's tick?**
