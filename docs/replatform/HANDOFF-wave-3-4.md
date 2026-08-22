@@ -121,7 +121,18 @@ Order within the wave is flexible except where noted.
 | 2 | **REL-004 clause 3b** — reconcile active provider resources on kill | Completes the clause; builds on MIG-008's `legacy-resource-reconciliation.ts` seam. |
 | 3 | **JOB-013 evidence citation** | The single open finding from §2. |
 | 4 | **MIG-005/006/007 in SHADOW ONLY** | Commander turns, crew dispatch, one-shot extraction run distributed *beside* legacy via `job-shadow-comparator.ts`, results compared, **no effect**. This is the highest-information, lowest-risk way to exercise E3+E4 against real traffic. |
-| 5 | **Merge PR #323** | Once shadow comparison is clean. 565 commits is its own risk and it compounds. The work is flag-off inert, so merging early reduces integration risk rather than adding it. |
+| 5 | **Do NOT merge PR #323** | `program-design.md` §"Integration branch and PR strategy (LOCKED)": no per-epic merges to `main`; merge happens only at the program integration checkpoint. An earlier draft of this handoff said to merge here and was wrong. |
+
+### On the 565 commits — do not "reduce risk" by merging
+
+The accumulation is not a debt to be paid down; it is the mechanism. **CI-green on the
+branch tip is the integration invariant that preserves cross-agent attribution** — with
+no second branch to reconcile, a red tip is always attributable to the last push. That is
+why "merge now, test later" is banned by name. Merging early would trade an attributable
+failure surface for an unattributable one.
+
+Expect manifest/grant blast radius to surface over **2–3 CI rounds** and reconcile it
+in-branch; a sibling-certificate failure is not a regression in your change.
 
 ### Wiring the kill switch — terrain already verified
 
