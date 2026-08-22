@@ -127,9 +127,19 @@ these as verified so the wave does not re-audit them:
 | Guard-shaped exported functions with no caller (112 examined) | 0 |
 | `check-*` / `verify-*` scripts unclassified | 0 |
 
-**The one open finding:** `JOB-013-result.md` cites `activity-log.test.ts` as acceptance
-evidence and no such file exists. Resolve it in Wave 3 — either the test was renamed and
-the citation is stale, or a clause has no proof.
+**The one open finding — RESOLVED 2026-08-22, and it was a FALSE POSITIVE of the pass itself.**
+`JOB-013-result.md` never cited `activity-log.test.ts` as evidence. It named the file to say the
+file does **not** exist, as the justification for using `mcp-connector-oauth-route.test.ts` as the
+regression check instead. The extractor matched a `*.test.ts` token inside a clause asserting its
+absence.
+
+Verified rather than assumed: no `activity-log*.test.ts` exists anywhere in the tree, none has
+ever existed in git history (`--diff-filter=D` over all refs is empty), and the evidence the
+clause actually cites — `server/src/__tests__/mcp-connector-oauth-route.test.ts` — is present and
+still passes at exactly the claimed **24**. The JOB-013 sentence now drops the nonexistent
+filename so a future pass cannot re-raise it. No clause was left without proof.
+
+There is no committed evidence-pass script to teach, so the fix is in the prose.
 
 ---
 
