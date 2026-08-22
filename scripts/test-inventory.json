@@ -46,7 +46,7 @@
     },
     "packages/worker-keystore": {
       "mode": "pinned",
-      "count": 16
+      "count": 17
     },
     "packages/worker-protocol": {
       "mode": "pinned",

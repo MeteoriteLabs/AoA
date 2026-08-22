@@ -89,6 +89,26 @@ export type { DesktopInvocation } from "./bin/desktop-invocation.js";
 // DSK-003 Lane A — where the control token and host state record live.
 export { resolveControlPaths, type ControlPaths } from "./control-paths.js";
 
+// DSK-004 Lane C — side-by-side versions and the pointer swap. `assertVaultOutsideInstallRoot`
+// is exported deliberately: it is how an installer states, and keeps stating, that a version
+// swap can never reach the device identity.
+export {
+  assertVaultOutsideInstallRoot,
+  isPathInside,
+  isSafeVersionSegment,
+  normalizePathForComparison,
+  planRollback,
+  planUpdateSwap,
+  resolveInstallLayout,
+} from "./install-layout.js";
+export type {
+  InstallLayout,
+  RollbackInput,
+  SwapPlan,
+  SwapRefusalReason,
+  UpdateSwapInput,
+} from "./install-layout.js";
+
 // DSK-003 Lane A — bring the control token into existence, never quietly replace it.
 export { provisionControlToken, CONTROL_TOKEN_PROVISION_REFUSALS } from "./control-token-provisioning.js";
 export type { ControlTokenIo, ControlTokenProvisionRefusal, ControlTokenProvisionResult } from "./control-token-provisioning.js";
