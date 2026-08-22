@@ -185,6 +185,32 @@ in-branch; a sibling-certificate failure is not a regression in your change.
 
 ---
 
+### Wave 3 status (updated in-session)
+
+| # | Work | Status |
+|---|---|---|
+| 1 | REL-004 clause 3a — kill-switch wiring | **DONE**, CI + D1 green |
+| 2 | REL-004 clause 3b — reconcile on kill | **DONE**, CI + D1 green; inherited deferral #5 closed |
+| 3 | JOB-013 evidence citation | **DONE** |
+| 4 | MIG-005/006/007 SHADOW ONLY | **DONE** — see [`MIG-005-006-007-shadow-result.md`](./epics/E10-desktop-migration-realtime/tickets/MIG-005-006-007-shadow-result.md) |
+
+**Read the MIG result before opening the gate.** The artifact this document named —
+`job-shadow-comparator.ts` — could not report a divergence: it diffed each field against
+a copy of itself, measured at 2,000 randomized snapshots with 0 divergences. Wiring three
+sinks into it would have produced a volume figure and a 0% rate that meant nothing. The
+comparison was replaced (admissibility, not field equality) and the three sinks wired.
+
+**Gate clause 2 is PARTIALLY met.** The rate is produced end to end through the real
+chain but over a SEEDED corpus: no existing live lane drives a Commander turn, a crew
+dispatch or an extraction, so no organic volume can be cited. Clause 2 result §6 limit 1
+states exactly what a real-traffic run needs.
+
+**A new Wave 4 prerequisite surfaced.** All four cutover sinks resolve to
+`workloadType: "batch"`, so one rollout switch arms them all — which means §5's
+MIG-005 → MIG-006 → MIG-007 ordering, "lowest blast radius first", is **not expressible
+against the rollout key as built**. A per-sink axis belongs to JOB-007 / MIG-002 and must
+exist before the progressive cutover §5 describes can be performed as written.
+
 ## 4. THE GATE — binding, between Wave 3 and Wave 4
 
 **No active cutover begins until all of the following are true and evidenced:**
