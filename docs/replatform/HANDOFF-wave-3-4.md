@@ -275,6 +275,23 @@ decisions, not credentials. **Active cutover does**, because a real Commander tu
 run must authenticate a CLI inside the sandbox. Decide before the gate whether Wave 4 is
 resolving it or explicitly scoping around it; do not discover it mid-cutover.
 
+> ★ **DEFERRAL 1 RE-SCOPED after terrain (see**
+> [`DEFERRAL-1-credential-terrain.md`](./epics/E5-workspaces-secrets/tickets/DEFERRAL-1-credential-terrain.md)**).**
+> The row's framing — "a worker receives NO provider credential" — implies the broker is missing.
+> **It is not.** The FROZEN wire contract is complete (`secretHandleRefSchema`; the wire has no
+> field for a raw secret value). **DAT-004 SHIPPED** the authorization half: `resolveExecutionSecret`,
+> fence-first, owner re-derived from the locked job row, membership re-checked, returning a
+> non-secret binding — and it has a production caller. **DAT-005 SHIPPED** materialization into
+> request headers at an IP-pinned socket, server-side only.
+>
+> What is actually missing is three things: `job-leasing.ts:362` still sends `secretHandles: []`,
+> the worker-daemon has ZERO `secretHandle` references, and DAT-005's outbound channel is the
+> inert E4-D12 seam.
+>
+> **AND A SEQUENCING GAP:** DAT-004 owns this by its outcome sentence, DAT-004 has shipped, and
+> **no ticket in the Wave-4 list (§5) owns the remaining seam.** The plan sequences three sink
+> cutovers whose blocker it does not schedule — the same shape as the per-sink rollout-axis gap.
+
 **Deferral 1, as scoped for gate clause 5 (this wave's answer).** It is NOT resolved, and
 shadow did not need it: the MIG-005/006/007 shadow pass ran all three sinks end to end
 without a provider credential, because it compares admission and placement decisions and
