@@ -386,6 +386,31 @@ export function environmentService(db: Db) {
     },
 
     /**
+     * REL-004 Lane D (D2) — paused leases of ONE provider, older than a cutoff.
+     *
+     * Provider-scoped on purpose. `listPausedLeasesOlderThan` applies a single cutoff to the
+     * whole result set, so expressing "this killed provider now, everything else at the idle
+     * TTL" through it is impossible: it would zero-grace every paused external-provider lease on
+     * the instance the moment any switch existed, including one naming a provider that has no
+     * legacy lease at all.
+     */
+    listPausedLeasesForProvider: async (provider: string, cutoff: Date) => {
+      return db
+        .select()
+        .from(environmentLeases)
+        .where(
+          and(
+            eq(environmentLeases.status, "paused"),
+            eq(environmentLeases.provider, provider),
+            lt(environmentLeases.pausedAt, cutoff),
+            isNotNull(environmentLeases.providerLeaseId),
+            notInArray(environmentLeases.provider, NON_SANDBOX_LEASE_PROVIDERS),
+          ),
+        )
+        .orderBy(desc(environmentLeases.pausedAt));
+    },
+
+    /**
      * REL-004 Lane D (D3) — STRANDED leases: terminal in the database, but still holding an
      * unreleased provider handle. The row says "done", the VM says "running", and it bills.
      *

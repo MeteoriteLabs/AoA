@@ -17,10 +17,14 @@
 // organization column and no RLS, so a tenant context would add a SET LOCAL and mean nothing.
 // This mirrors MIG-008's app-side read of `legacy_resource_reconciliation`.
 //
-// DORMANCY: imported only by `job-leasing.ts`, which is reachable only from
-// `worker-control.ts`, which is mounted only under AOA_DISTRIBUTED_EXECUTION_ENABLED. The db
-// barrel and the infrastructure logger are already always-loaded, so this pulls nothing new
-// into the flag-off import graph.
+// DORMANCY — NO LONGER DORMANT, and the comment is corrected rather than left to rot.
+// This was imported only by `job-leasing.ts` (reachable only under
+// AOA_DISTRIBUTED_EXECUTION_ENABLED). REL-004 Lane D added a second consumer,
+// `warm-sandbox-reaper.ts`, which is registered at module scope and therefore ALWAYS loaded.
+// That is deliberate: the reaper is the reclaim path for a killed provider and must not be
+// gated on the distributed flag, since the legacy sandboxes it reclaims are minted regardless
+// of it. The db barrel and the infrastructure logger are already always-loaded, so this still
+// pulls nothing new into the flag-off graph — verified by `tenant-app-db-startup.test.ts`.
 
 import { eq } from "drizzle-orm";
 import { instanceSettings, type Db } from "@armyofagents/db";

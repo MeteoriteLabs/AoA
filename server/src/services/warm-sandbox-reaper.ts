@@ -8,6 +8,9 @@ import {
 } from "./environment-runtime.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { normalizeWarmIdleTtlMinutes } from "./warm-sandbox-constants.js";
+import { EXECUTION_TARGET_KINDS } from "./execution-target-resolver.js";
+import { killedProviders } from "./execution-kill-switches.js";
+import { createKillSwitchPolicyReader } from "./execution-kill-switch-policy.js";
 import type { SandboxRuntimeProvider } from "./sandbox-provider-runtime.js";
 import { logger } from "../middleware/logger.js";
 
@@ -32,7 +35,22 @@ export interface WarmReaperDeps {
   runtimeProviderKeys?: RuntimeKeysOption;
   /** DI seam for tests: control the reaper flag + idle TTL without a DB row. */
   getExperimental?: () => Promise<{ enableWarmSandboxReaper: boolean; warmSandboxIdleTtlMinutes: number }>;
+  /**
+   * DI seam for tests ONLY. Production builds the reader from `db` inside the sweep — Lane C
+   * §2.2's lesson, with the hazard INVERTED: there a permissive injected reader disabled a stop
+   * button; here an aggressive one force-kills virtual machines.
+   */
+  readKillSwitchDocument?: () => Promise<unknown>;
 }
+
+/**
+ * REL-004 Lane D (D2a) — the floor grace applied to a reclaim pass.
+ *
+ * NOT zero. A cutoff of exactly `now` races a resume that is already in flight, and the codebase
+ * already refuses zero as an operator intent: `normalizeWarmIdleTtlMinutes` clamps to [1, 1440]
+ * and returns the default for any non-positive input. One minute is that same floor.
+ */
+export const KILL_SWITCH_RECLAIM_GRACE_MS = 60_000;
 
 function resolveDeps(db: Db, deps: WarmReaperDeps): {
   environments: EnvironmentService;
@@ -192,9 +210,48 @@ export async function sweepIdleWarmSandboxes(
     }
   }
 
-  const scanned = stale.length + stranded.length;
+  // REL-004 Lane D (D2 / D2a arm 2) — the RECLAIM arm. Destructive and therefore opt-in: only a
+  // switch carrying `reclaim: true` reaches here. A plain deny-list stops placement and touches
+  // nothing, because the paused population is the IN-USE population (warm leases pause at the end
+  // of every Commander turn) and destroying it is irreversible.
+  //
+  // Provider-SCOPED, one pass per killed value, rather than a global cutoff of zero: the idle
+  // sweep above is untouched, so an unkilled provider's behaviour does not change.
+  const readDocument = deps.readKillSwitchDocument
+    ?? (() => createKillSwitchPolicyReader({ appDb: db }).read());
+  // Fail-OPEN: `killedProviders` returns the empty set for an absent, malformed or unreadable
+  // document, and a read that throws must not be able to trigger a fleet-wide teardown.
+  let reclaimProviders: ReadonlySet<string> = new Set();
+  try {
+    reclaimProviders = killedProviders(await readDocument(), EXECUTION_TARGET_KINDS);
+  } catch (err) {
+    logger.warn({ err }, "warm-sandbox reaper: kill-switch policy unreadable — reclaiming nothing");
+  }
+  let reclaimScanned = 0;
+  for (const provider of reclaimProviders) {
+    const reclaimCutoff = new Date(Date.now() - KILL_SWITCH_RECLAIM_GRACE_MS);
+    const doomed = await environments.listPausedLeasesForProvider(provider, reclaimCutoff);
+    reclaimScanned += doomed.length;
+    for (const row of doomed) {
+      const lease = normalizeEnvironmentLease(row);
+      try {
+        const outcome = await destroyPausedLease(lease, { environments, runtime });
+        if (outcome.destroyed) reaped++;
+      } catch (err) {
+        logger.warn(
+          { err, leaseId: lease.id, provider },
+          "warm-sandbox reaper: failed to reclaim a killed provider's paused lease (best-effort)",
+        );
+      }
+    }
+  }
+
+  const scanned = stale.length + stranded.length + reclaimScanned;
   logger.info(
-    { scanned, stalePaused: stale.length, stranded: stranded.length, reaped, ttlMinutes },
+    {
+      scanned, stalePaused: stale.length, stranded: stranded.length,
+      reclaimScanned, reclaimProviders: [...reclaimProviders], reaped, ttlMinutes,
+    },
     "Warm sandbox idle reap complete",
   );
   return { scanned, reaped };
