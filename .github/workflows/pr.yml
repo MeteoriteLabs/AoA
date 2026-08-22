@@ -203,6 +203,22 @@ jobs:
       # fixtures that must keep looking like credentials. The artifact scan is wired in
       # DSK-003 Lane C, where an artifact first exists; the entry point is already
       # `node scripts/check-embedded-secrets.mjs <dir>`.
+      # INCIDENT REMEDIATION (2026-08-22). On 2026-08-21 the desktop staging assembler
+      # deleted 154 test files from this repository — its prune walked with statSync,
+      # followed pnpm-deploy symlinks out of the staging root, and removed the real
+      # suites in packages/*. CI then reported success on FOUR consecutive commits,
+      # because deleting a test subtracts a failure rather than causing one.
+      #
+      # The assembler's lstat fix stops that assembler. This guard stops the next
+      # script that walks a tree with rmSync, by making the suite's size a committed
+      # fact a machine re-checks. It sits in `policy`, which runs even on docs-only
+      # PRs: a change that touches no code has even less business shrinking the suite.
+      - name: Test-suite inventory (may not silently shrink)
+        run: |
+          node --test scripts/lib/__tests__/test-inventory.test.mjs
+          node --test scripts/check-test-inventory.test.mjs
+          node scripts/check-test-inventory.mjs
+
       - name: Embedded-secret scan self-test (DSK-003)
         run: node --test scripts/lib/__tests__/embedded-secret-scan.test.mjs
 

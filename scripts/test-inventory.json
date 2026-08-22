@@ -1,0 +1,72 @@
+{
+  "trees": {
+    "cli": {
+      "mode": "pinned",
+      "count": 13
+    },
+    "docker": {
+      "mode": "pinned",
+      "count": 4
+    },
+    "packages/adapter-utils": {
+      "mode": "floor",
+      "count": 29
+    },
+    "packages/adapters": {
+      "mode": "floor",
+      "count": 93
+    },
+    "packages/db": {
+      "mode": "floor",
+      "count": 57
+    },
+    "packages/plugins": {
+      "mode": "floor",
+      "count": 1
+    },
+    "packages/sandbox-e2b-provider": {
+      "mode": "pinned",
+      "count": 8
+    },
+    "packages/sandbox-fake-provider": {
+      "mode": "pinned",
+      "count": 4
+    },
+    "packages/sandbox-provider-contract": {
+      "mode": "pinned",
+      "count": 5
+    },
+    "packages/shared": {
+      "mode": "floor",
+      "count": 55
+    },
+    "packages/worker-daemon": {
+      "mode": "pinned",
+      "count": 122
+    },
+    "packages/worker-keystore": {
+      "mode": "pinned",
+      "count": 16
+    },
+    "packages/worker-protocol": {
+      "mode": "pinned",
+      "count": 17
+    },
+    "scripts": {
+      "mode": "pinned",
+      "count": 36
+    },
+    "server": {
+      "mode": "floor",
+      "count": 1421
+    },
+    "tests": {
+      "mode": "pinned",
+      "count": 105
+    },
+    "ui": {
+      "mode": "floor",
+      "count": 553
+    }
+  }
+}
