@@ -118,26 +118,62 @@ Governed by [`distributed-execution-delivery-policy.md`](../architecture/distrib
 
 ### Rolling distributed execution back
 
-**The rollback path is an ordered pair, and the order is load-bearing.** Every step-2-only
-instruction elsewhere in this repo predates this note.
+**The rollback path is an ordered pair, and both steps have sharp edges. Read the whole section
+before an incident, not during one.**
 
-1. **Throw the execution kill switch** for the affected provider/target
-   (`instance_settings.kill_switches`, REL-004 clause 3a). **Immediate** — it is read from the
-   database on every worker poll, so workers stop being offered new leases at once while
-   in-flight work is allowed to finish.
-2. **Edit `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`** (remove the Organization, or downgrade its
-   `mode`) **and restart the process.** The map is captured at construction; without a restart
-   the edit has no effect.
+#### Step 1 — stop new leases (immediate, but there is NO UI and NO API)
 
-Doing 2 without 1 is the hazard: the restart can land while an attempt has already been handed
-off to a worker (the legacy adapter suppressed, the attempt durably lease-eligible). After a
-flag-off restart no worker can lease it, and neither the job-control sweeper nor the distributed
-drain has a production caller today, so that run stays `running` indefinitely. Step 1 first
-drains the window.
+Insert a kill-switch entry into `instance_settings.kill_switches`. The worker poll re-reads this
+row from the database on **every poll**, so the effect is immediate once written.
+
+**There is no write path.** No route, no CLI, no admin screen writes this column — the only
+mutation anywhere in the repository is in a test. Throwing this switch today means an operator
+executing SQL against the production database by hand. A UI/API is REL-001/REL-005.
+
+```sql
+UPDATE instance_settings
+   SET kill_switches = '[{"dimension":"provider","value":"e2b","reason":"incident 1234"}]'::jsonb
+ WHERE singleton_key = 'default';
+```
+
+**It is not scoped to an Organization or to a sink.** The only dimensions are `provider` and
+`template` (`KILL_SWITCH_DIMENSIONS`), so this stops the named provider for the **whole
+instance** — every Organization, every workload. There is no way to stop one tenant this way.
+Add `"reclaim": true` to an entry only when you also intend to destroy that provider's paused
+sandboxes (REL-004 clause 3b); a plain entry stops placement and touches nothing.
+
+#### Step 2 — stop minting new distributed work (restart)
+
+Edit `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` — remove the Organization's key, or downgrade its
+`mode` — and restart. The map is parsed once at construction, so without a restart the edit has
+no effect.
+
+> **KEEP `AOA_DISTRIBUTED_EXECUTION_ENABLED` SET TO TRUE ACROSS THIS RESTART.**
+>
+> Restarting with the flag unset **strands every already-handed-off run.** Such a run carries a
+> durable `execution_owner = "distributed"` marker, and the orphaned-run reaper deliberately
+> stands down on that marker — including on the startup sweep — because the attempt projector is
+> the terminal authority for those runs. But the projector is only composed when the flag is on.
+> Flag-off, nothing terminalizes them and nothing reaps them: the run stays `running` and holds
+> its issue lock indefinitely. Restarting with the flag still on re-composes the projector and
+> the worker-control routes, and in-flight work converges normally.
+>
+> Unset the flag only after in-flight distributed work has drained.
+
+#### Why the order matters
+
+Step 1 first, then step 2. Step 1 lets in-flight work finish while stopping new leases, so the
+step-2 restart lands on a quiet fleet. Doing step 2 alone leaves a window where a run has just
+been handed off — legacy adapter suppressed, attempt lease-eligible — and there is no automated
+convergence: `createJobControlSweeper`, `createDistributedExecutionDrain` and
+`createExecutionTargetRevocationFanout` all have **zero production callers** today, and the
+drain's `listActiveAttempts` has no SQL implementation at all. The only convergent action left is
+a manual per-run cancel.
 
 **Unsetting `AOA_DISTRIBUTED_EXECUTION_ENABLED` is not a master switch.** It is live for new
 heartbeat conversions (the rollout hook re-reads it per call), but the worker control routes are
 registered behind a construction-time check, so workers keep polling and leasing until a restart.
+See the warning above for why unsetting it is also not a safe way to perform step 2.
 
 ### Distributed worker daemon (staging, DEP-006)
 
