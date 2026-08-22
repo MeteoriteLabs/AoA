@@ -1,5 +1,5 @@
 import { tenantRepositories, type TenantRepositories, type Db } from "@armyofagents/db";
-import { withTenantTx } from "./with-tenant-tx.js";
+import { withReadOnlyTenantTx, withTenantTx } from "./with-tenant-tx.js";
 
 /**
  * THE mandatory Organization context for the new-path (distributed-execution)
@@ -57,4 +57,26 @@ export async function runInTenant<T>(
     );
   }
   return withTenantTx(appDb, organizationId, (tx) => fn(tenantRepositories(tx), tx));
+}
+
+/**
+ * `runInTenant`, but the transaction is READ ONLY at the database level (D5a).
+ *
+ * For probes that must observe tenant state without the possibility of changing it —
+ * today, the MIG-005/006/007 shadow admissibility probe, which runs on live Commander /
+ * crew / one-shot paths. Effect-freeness is enforced by PostgreSQL (25006 on any write),
+ * not by a reviewer believing the callback only selects.
+ */
+export async function runInTenantReadOnly<T>(
+  appDb: Db,
+  organizationId: string,
+  fn: (repos: TenantRepositories, tx: Db) => Promise<T>,
+): Promise<T> {
+  if (typeof organizationId !== "string" || organizationId.trim() === "") {
+    throw new Error(
+      "runInTenantReadOnly requires a non-empty organizationId; an empty/blank " +
+        "Organization is rejected before opening a transaction, exactly as runInTenant does.",
+    );
+  }
+  return withReadOnlyTenantTx(appDb, organizationId, (tx) => fn(tenantRepositories(tx), tx));
 }
