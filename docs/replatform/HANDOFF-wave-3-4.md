@@ -281,12 +281,12 @@ resolving it or explicitly scoping around it; do not discover it mid-cutover.
 > **It is not.** The FROZEN wire contract is complete (`secretHandleRefSchema`; the wire has no
 > field for a raw secret value). **DAT-004 SHIPPED** the authorization half: `resolveExecutionSecret`,
 > fence-first, owner re-derived from the locked job row, membership re-checked, returning a
-> non-secret binding — and it has a production caller. **DAT-005 SHIPPED** materialization into
+> non-secret binding. **DAT-005 SHIPPED** materialization into
 > request headers at an IP-pinned socket, server-side only.
 >
 > What is actually missing is three things: `job-leasing.ts:362` still sends `secretHandles: []`,
 > the worker-daemon has ZERO `secretHandle` references, and DAT-005's outbound channel is the
-> inert E4-D12 seam.
+> inert E4-D12 seam. **CORRECTION (revision 2): the chain is unreachable from BOOT** — the broker's only constructor is `egress-proxy.ts:150`, and `createFenceAwareEgressProxy` has ZERO callers, so DAT-004/DAT-005 are built, correct, and entirely unwired. Also decisive: there is **no wire verb to redeem a handle** (the frozen 10-op list is closed), so `env`/`file` materialization is not implementable and the **fence proxy is the only path**.
 >
 > **AND A SEQUENCING GAP:** DAT-004 owns this by its outcome sentence, DAT-004 has shipped, and
 > **no ticket in the Wave-4 list (§5) owns the remaining seam.** The plan sequences three sink
