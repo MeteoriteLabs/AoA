@@ -55,6 +55,18 @@ const TARGET_KIND_BY_CLASS = {
   owner_desktop: new Set(["desktop", "local_host"]),
 } as const;
 
+/**
+ * The closed placement-provider vocabulary, DERIVED from the class map above so it cannot drift
+ * from the kinds normalization will accept.
+ *
+ * REL-004 Lane C (D6) passes this to `evaluateKillSwitches`, which refuses a provider switch
+ * naming a value outside it. A mistyped value would otherwise match nothing and silently
+ * permit — the same hazard that module already refuses for a mistyped `dimension`.
+ */
+export const EXECUTION_TARGET_KINDS: readonly string[] = Object.freeze(
+  [...new Set(Object.values(TARGET_KIND_BY_CLASS).flatMap((kinds) => [...kinds]))].sort(),
+);
+
 const LEGACY_TRUST_BY_CLASS = {
   managed_cloud: "shared_multitenant",
   organization_dedicated: "dedicated_tenant",
