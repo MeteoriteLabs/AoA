@@ -5,6 +5,14 @@ import type {
   SubmitJobResponse,
   SubmitJobSource,
 } from "@armyofagents/shared";
+// MIG-005/006/007 (D3): these two were private to this module. They moved to the shared
+// layer so the shadow comparator diffs the SAME source identity and the SAME rollout
+// workload key a real submission uses — two switches over the source union would drift,
+// and a shadow gated on a key active cannot use would prove nothing about active.
+import {
+  submitJobSourceIdentity,
+  submitJobSourceWorkloadType,
+} from "@armyofagents/shared";
 import { HttpError } from "../errors.js";
 import { runInTenant } from "../db/tenant-context.js";
 import {
@@ -52,22 +60,8 @@ function digest(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
-function sourceIdentity(source: SubmitJobSource): string {
-  switch (source.kind) {
-    case "task_run": return source.runId;
-    case "commander_turn": return source.internalAgentRunId;
-    case "crew_run": return source.crewRunId;
-    case "one_shot": return source.operationId;
-    case "browser_request": return source.browserRequestId;
-    case "service_reconcile": return source.reconciliationId;
-  }
-}
-
-function workloadType(source: SubmitJobSource): string {
-  if (source.kind === "browser_request") return "browser_session";
-  if (source.kind === "service_reconcile") return "service";
-  return "batch";
-}
+const sourceIdentity = submitJobSourceIdentity;
+const workloadType = submitJobSourceWorkloadType;
 
 function priority(source: SubmitJobSource): number {
   return {

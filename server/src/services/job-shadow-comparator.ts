@@ -1,10 +1,13 @@
 // server/src/services/job-shadow-comparator.ts
 //
 // CLI-005 (D2) — the effect-free shadow comparator.
+// MIG-005/006/007 (D2/D3) — generalized to every execution source, and taught the
+// difference between "agreed" and "never checked".
 //
-// When a heartbeat run resolves to `shadow`, this service COMPUTES the would-be
-// distributed intent for the run and DIFFS it against the legacy run's actual
-// routing / provenance / policy — with NO durable submission. By construction it:
+// When an execution resolves to `shadow`, this service RECORDS the legacy run's
+// resolved routing / provenance / policy and, where the caller can supply an
+// INDEPENDENTLY DERIVED value, diffs the two — with NO durable submission. By
+// construction it:
 //
 //   * writes NO `jobs` / `job_attempts` row (it is handed no Db/tx — it cannot),
 //   * drives NO checkout, claims NO capacity, holds NO lease,
@@ -12,32 +15,46 @@
 //   * NEVER throws into the legacy run (every compute + sink write is wrapped).
 //
 // Its only output is a comparison record on an injected observable sink (in prod: the
-// `job_trace_log` pino spine + count-only metrics). This is the primitive that makes
-// Invariant 2 hold structurally, and its diff is Invariant 8's assertion.
+// `job_trace_log` pino spine + count-only metrics).
 //
-// The would-be placement decision is NON-LEASABLE by construction: shadow-mode
-// `decideJobPlacement` sets `leaseEligible = mode === "active"` → always false for
-// shadow (proven against the pure primitive in job-placement.property.test.ts and the
-// comparator test). We therefore record the structural shadow lease-eligibility here
-// without persisting anything (the pure placement DECISION never touches the DB, but
-// the shadow comparator additionally avoids constructing worker candidates — it only
-// needs the diff-stable lease-eligibility + reason).
+// ── WHY THE IDENTITY MAPPING IS GONE ────────────────────────────────────────────
+// This module used to default `deriveDistributedIntent` to an IDENTITY function that
+// copied the snapshot, and then diffed the snapshot against that copy. Every field
+// therefore compared equal to itself: `match` was `true` for 100% of runs, forever,
+// and the production composition never supplied a replacement. Measured at MIG terrain
+// time: 2,000 randomized snapshots across all six fields, 0 divergences. A divergence
+// rate whose numerator cannot increment is not weak evidence — it is false evidence,
+// and gate clause 2 opens on exactly that number.
+//
+// The rule that replaces it: **an uncompared field is recorded as uncompared, never as
+// matching.** A field is compared only when the caller supplies an independently
+// derived value for it; `comparedFields` is the denominator, and a record in which
+// nothing could be compared is `not_compared`, never `agree`.
+//
+// The caller supplies the independent value because the caller is where a `Db` legitimately
+// lives (design D4). Keeping the handle OUT of this module is what makes effect-freeness
+// structural rather than promised.
 
 import type { SubmitJobSource } from "@armyofagents/shared";
+import { submitJobSourceIdentity, submitJobSourceWorkloadType } from "@armyofagents/shared";
 import { batchWorkloadV1Schema, type BatchWorkloadV1 } from "@armyofagents/worker-protocol";
 
 /**
- * A snapshot of the legacy run's ACTUAL resolved execution intent, captured at the
- * heartbeat seam AFTER routing/provenance/policy resolution. The comparator treats it as
- * read-only data; it never re-resolves anything against the database.
+ * A snapshot of the legacy run's ACTUAL resolved execution intent, captured at a sink's
+ * seam AFTER routing/provenance/policy resolution. The comparator treats it as read-only
+ * data; it never re-resolves anything against the database.
  */
 export interface LegacyRunExecutionSnapshot {
   readonly organizationId: string;
   readonly companyId: string;
-  readonly runId: string;
-  readonly issueId: string;
-  readonly assigneeAgentId: string;
-  /** The distributed workload type this run maps to (task_run → "batch"). */
+  /**
+   * The execution source, carrying its OWN identity fields. Not a task triple:
+   * `commander_turn` / `crew_run` / `one_shot` have no run or issue, and the FROZEN
+   * worker-protocol variants are `.strict()`, so fabricating one is refused at the
+   * schema boundary.
+   */
+  readonly source: SubmitJobSource;
+  /** The distributed workload type this execution maps to. */
   readonly workloadType: string;
   readonly routing: { readonly executionTargetType: string };
   readonly provenance: {
@@ -62,27 +79,76 @@ export interface LegacyRunExecutionSnapshot {
   };
 }
 
-/** The distributed-intent projection the comparator diffs against the legacy snapshot. */
+/**
+ * The fields a shadow pass is capable of comparing. This list is the DENOMINATOR of
+ * the divergence rate reported to the Wave-3/4 gate; every field is either compared
+ * against an independently derived value or explicitly recorded as uncompared.
+ */
+export const SHADOW_COMPARABLE_FIELDS = [
+  // Always compared: the comparator derives this one itself, purely, from the source —
+  // see `workloadType` below. It is the only field that never needs a caller.
+  "workloadType",
+  // Compared only when the caller supplies an independently derived value.
+  "routing.executionTargetType",
+  "provenance.executionPrincipalKind",
+  "provenance.credentialKind",
+  "policy.model",
+  "policy.budgetPolicyId",
+  "policy.effectiveCompletionPolicy",
+] as const;
+export type ShadowComparableField = (typeof SHADOW_COMPARABLE_FIELDS)[number];
+
+/**
+ * The six fields that require a caller-supplied independent value. Separated from
+ * `workloadType` so a test can assert that none of THESE is ever counted as agreement
+ * without one — the property the identity-mapping defect violated.
+ */
+export const SHADOW_CALLER_DERIVED_FIELDS = SHADOW_COMPARABLE_FIELDS.filter(
+  (f) => f !== "workloadType",
+);
+
+/**
+ * An INDEPENDENTLY DERIVED projection of the distributed intent. Deliberately partial:
+ * only fields with a genuine second authority are supplied, and everything absent is
+ * reported as uncompared rather than silently counted as agreement.
+ *
+ * A supplied `null` is a VALUE, not an absence — `credentialKind` and `budgetPolicyId`
+ * are legitimately null in production, and conflating the two would drop them out of
+ * the denominator.
+ */
 export interface DistributedIntentProjection {
-  readonly routing: { readonly executionTargetType: string };
-  readonly provenance: {
-    readonly executionPrincipalKind: string;
-    readonly credentialKind: string | null;
+  readonly routing?: { readonly executionTargetType?: string };
+  readonly provenance?: {
+    readonly executionPrincipalKind?: string;
+    readonly credentialKind?: string | null;
   };
-  readonly policy: {
-    readonly model: string | null;
-    readonly budgetPolicyId: string | null;
-    readonly effectiveCompletionPolicy: string;
+  readonly policy?: {
+    readonly model?: string | null;
+    readonly budgetPolicyId?: string | null;
+    readonly effectiveCompletionPolicy?: string;
   };
 }
+
+/**
+ * `agree` — at least one field was compared and none diverged.
+ * `diverge` — at least one compared field differed.
+ * `not_compared` — nothing had an independent value to compare against. NOT agreement.
+ */
+export type ShadowComparisonVerdict = "agree" | "diverge" | "not_compared";
 
 export interface ShadowComparisonResult {
   readonly organizationId: string;
   readonly companyId: string;
-  readonly runId: string;
-  readonly issueId: string;
+  readonly sourceKind: SubmitJobSource["kind"];
+  /** The source's discriminant identity — runId, internalAgentRunId, crewRunId, … */
+  readonly sourceId: string;
   readonly mode: "shadow";
-  readonly match: boolean;
+  readonly match: ShadowComparisonVerdict;
+  /** Fields an independent value was supplied for. The gate's denominator. */
+  readonly comparedFields: string[];
+  /** Fields captured but NOT checked. Never counted as agreement. */
+  readonly uncomparedFields: string[];
+  /** Always a subset of `comparedFields`. */
   readonly mismatchedFields: string[];
   readonly wouldBeSource: SubmitJobSource;
   readonly wouldBeWorkload: BatchWorkloadV1 | null;
@@ -101,113 +167,91 @@ export interface ShadowComparisonSink {
 }
 
 /**
- * The faithful (identity) mapping from the run's actuals to the distributed intent. A
- * correct CLI-005 mapping is diff-clean because active-mode jobs are inert and the
- * legacy path stays the executor — the distributed intent is DERIVED from the same
- * resolved config, so it must equal the legacy snapshot. A divergence is a mapping bug.
+ * Walk the six comparable fields once, partitioning them into compared / uncompared and
+ * collecting mismatches. `undefined` means "no independent value supplied"; `null` is a
+ * supplied value and IS compared.
  */
-export function identityDistributedIntent(
-  snapshot: LegacyRunExecutionSnapshot,
-): DistributedIntentProjection {
-  return {
-    routing: { executionTargetType: snapshot.routing.executionTargetType },
-    provenance: {
-      executionPrincipalKind: snapshot.provenance.executionPrincipalKind,
-      credentialKind: snapshot.provenance.credentialKind,
-    },
-    policy: {
-      model: snapshot.policy.model,
-      budgetPolicyId: snapshot.policy.budgetPolicyId,
-      effectiveCompletionPolicy: snapshot.policy.effectiveCompletionPolicy,
-    },
-  };
-}
-
-function diffIntent(
+function compareFields(
   snapshot: LegacyRunExecutionSnapshot,
   intent: DistributedIntentProjection,
-): string[] {
+): { compared: string[]; uncompared: string[]; mismatched: string[] } {
+  // Absence is `undefined`; a supplied `null` is a VALUE and IS compared. Reading the
+  // optional property straight through gets both right — `null !== undefined`. An earlier
+  // draft tested key PRESENCE with `in` plus `?? null`, which additionally coerced an
+  // explicitly-`undefined` key into a compared `null` and could invent a divergence.
+  const pairs: ReadonlyArray<
+    readonly [ShadowComparableField, string | null, string | null | undefined]
+  > = [
+    [
+      // The one field with a second authority that needs no caller: what workload class
+      // a REAL submission would compute from this source. A seam that declares the wrong
+      // class (e.g. "batch" for a browser_request) diverges here.
+      "workloadType",
+      snapshot.workloadType,
+      submitJobSourceWorkloadType(snapshot.source),
+    ],
+    [
+      "routing.executionTargetType",
+      snapshot.routing.executionTargetType,
+      intent.routing?.executionTargetType,
+    ],
+    [
+      "provenance.executionPrincipalKind",
+      snapshot.provenance.executionPrincipalKind,
+      intent.provenance?.executionPrincipalKind,
+    ],
+    ["provenance.credentialKind", snapshot.provenance.credentialKind, intent.provenance?.credentialKind],
+    ["policy.model", snapshot.policy.model, intent.policy?.model],
+    ["policy.budgetPolicyId", snapshot.policy.budgetPolicyId, intent.policy?.budgetPolicyId],
+    [
+      "policy.effectiveCompletionPolicy",
+      snapshot.policy.effectiveCompletionPolicy,
+      intent.policy?.effectiveCompletionPolicy,
+    ],
+  ];
+
+  const compared: string[] = [];
+  const uncompared: string[] = [];
   const mismatched: string[] = [];
-  if (snapshot.routing.executionTargetType !== intent.routing.executionTargetType) {
-    mismatched.push("routing.executionTargetType");
+  for (const [field, actual, derived] of pairs) {
+    if (derived === undefined) {
+      uncompared.push(field);
+      continue;
+    }
+    compared.push(field);
+    if (actual !== derived) mismatched.push(field);
   }
-  if (snapshot.provenance.executionPrincipalKind !== intent.provenance.executionPrincipalKind) {
-    mismatched.push("provenance.executionPrincipalKind");
-  }
-  if (snapshot.provenance.credentialKind !== intent.provenance.credentialKind) {
-    mismatched.push("provenance.credentialKind");
-  }
-  if (snapshot.policy.model !== intent.policy.model) mismatched.push("policy.model");
-  if (snapshot.policy.budgetPolicyId !== intent.policy.budgetPolicyId) {
-    mismatched.push("policy.budgetPolicyId");
-  }
-  if (snapshot.policy.effectiveCompletionPolicy !== intent.policy.effectiveCompletionPolicy) {
-    mismatched.push("policy.effectiveCompletionPolicy");
-  }
-  return mismatched;
+  return { compared, uncompared, mismatched };
 }
 
 export interface JobShadowComparator {
   compare(
     snapshot: LegacyRunExecutionSnapshot,
-    options?: { admissible?: boolean | null },
+    options?: {
+      admissible?: boolean | null;
+      /** The independently derived distributed intent, if the caller has one. */
+      intent?: DistributedIntentProjection;
+    },
   ): ShadowComparisonResult;
 }
 
 export function createJobShadowComparator(deps: {
   sink: ShadowComparisonSink;
-  deriveDistributedIntent?: (snapshot: LegacyRunExecutionSnapshot) => DistributedIntentProjection;
 }): JobShadowComparator {
-  const derive = deps.deriveDistributedIntent ?? identityDistributedIntent;
-
   return {
     compare(snapshot, options = {}) {
-      const wouldBeSource: SubmitJobSource = {
-        kind: "task_run",
-        runId: snapshot.runId,
-        issueId: snapshot.issueId,
-        assigneeAgentId: snapshot.assigneeAgentId,
-      };
-      const parsedWorkload = batchWorkloadV1Schema.safeParse({
-        command: snapshot.workloadCharacterization.command,
-        args: snapshot.workloadCharacterization.args,
-        stdinArtifactId: snapshot.workloadCharacterization.stdinArtifactId,
-        maxRuntimeSeconds: snapshot.workloadCharacterization.maxRuntimeSeconds,
-      });
-
-      let mismatchedFields: string[] = [];
-      let match = false;
-      let errored = false;
+      // OUTER GUARD. The inner try covers the field comparison, but the record's own
+      // construction reads `snapshot.source` (for `sourceKind` / `sourceId`), and a
+      // malformed source would throw straight into the legacy run — breaking this
+      // module's first promise. Three new seams hand-build a source, so this is the
+      // difference between a bad snapshot degrading an observability record and a bad
+      // snapshot failing a live Commander turn.
+      let result: ShadowComparisonResult;
       try {
-        const intent = derive(snapshot);
-        mismatchedFields = diffIntent(snapshot, intent);
-        match = mismatchedFields.length === 0;
+        result = buildComparison(snapshot, options);
       } catch {
-        // A faulty mapping derivation must NEVER fail the legacy run. Record it as a
-        // (non-matching) errored comparison and continue.
-        errored = true;
-        match = false;
-        mismatchedFields = ["<derivation_error>"];
+        result = erroredComparison(snapshot, options);
       }
-
-      const result: ShadowComparisonResult = {
-        organizationId: snapshot.organizationId,
-        companyId: snapshot.companyId,
-        runId: snapshot.runId,
-        issueId: snapshot.issueId,
-        mode: "shadow",
-        match,
-        mismatchedFields,
-        wouldBeSource,
-        wouldBeWorkload: parsedWorkload.success ? parsedWorkload.data : null,
-        workloadValid: parsedWorkload.success,
-        // Shadow placement is non-leasable by construction (see module header).
-        placementLeaseEligible: false,
-        placementReasonCode: "shadow_selected",
-        admissible: options.admissible ?? null,
-        errored,
-      };
-
       try {
         deps.sink.record(result);
       } catch {
@@ -215,5 +259,66 @@ export function createJobShadowComparator(deps: {
       }
       return result;
     },
+  };
+}
+
+/** The record produced when the comparison could not be built at all. Claims nothing. */
+function erroredComparison(
+  snapshot: LegacyRunExecutionSnapshot | undefined,
+  options: { admissible?: boolean | null },
+): ShadowComparisonResult {
+  return {
+    organizationId: typeof snapshot?.organizationId === "string" ? snapshot.organizationId : "",
+    companyId: typeof snapshot?.companyId === "string" ? snapshot.companyId : "",
+    sourceKind: (snapshot?.source?.kind ?? "task_run") as SubmitJobSource["kind"],
+    sourceId: "",
+    mode: "shadow",
+    match: "not_compared",
+    comparedFields: [],
+    uncomparedFields: [...SHADOW_COMPARABLE_FIELDS],
+    mismatchedFields: [],
+    wouldBeSource: snapshot?.source as SubmitJobSource,
+    wouldBeWorkload: null,
+    workloadValid: false,
+    placementLeaseEligible: false,
+    placementReasonCode: "shadow_selected",
+    admissible: options.admissible ?? null,
+    errored: true,
+  };
+}
+
+function buildComparison(
+  snapshot: LegacyRunExecutionSnapshot,
+  options: { admissible?: boolean | null; intent?: DistributedIntentProjection },
+): ShadowComparisonResult {
+  const parsedWorkload = batchWorkloadV1Schema.safeParse({
+    command: snapshot.workloadCharacterization.command,
+    args: snapshot.workloadCharacterization.args,
+    stdinArtifactId: snapshot.workloadCharacterization.stdinArtifactId,
+    maxRuntimeSeconds: snapshot.workloadCharacterization.maxRuntimeSeconds,
+  });
+
+  const { compared, uncompared, mismatched } = compareFields(snapshot, options.intent ?? {});
+  const match: ShadowComparisonVerdict =
+    mismatched.length > 0 ? "diverge" : compared.length > 0 ? "agree" : "not_compared";
+
+  return {
+    organizationId: snapshot.organizationId,
+    companyId: snapshot.companyId,
+    sourceKind: snapshot.source.kind,
+    sourceId: submitJobSourceIdentity(snapshot.source),
+    mode: "shadow",
+    match,
+    comparedFields: compared,
+    uncomparedFields: uncompared,
+    mismatchedFields: mismatched,
+    wouldBeSource: snapshot.source,
+    wouldBeWorkload: parsedWorkload.success ? parsedWorkload.data : null,
+    workloadValid: parsedWorkload.success,
+    // Shadow placement is non-leasable by construction (see module header).
+    placementLeaseEligible: false,
+    placementReasonCode: "shadow_selected",
+    admissible: options.admissible ?? null,
+    errored: false,
   };
 }

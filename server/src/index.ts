@@ -1223,12 +1223,17 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
         record: (result) =>
           logger.info(
             {
-              runId: result.runId,
-              issueId: result.issueId,
+              sourceKind: result.sourceKind,
+              sourceId: result.sourceId,
               organizationId: result.organizationId,
               companyId: result.companyId,
               mode: result.mode,
+              // Three-state. `not_compared` is NOT agreement: it means no field had an
+              // independently derived value to check against, so this record must not be
+              // counted in a divergence rate. `comparedFields` is that rate's denominator.
               match: result.match,
+              comparedFields: result.comparedFields,
+              uncomparedFields: result.uncomparedFields,
               mismatchedFields: result.mismatchedFields,
               placementLeaseEligible: result.placementLeaseEligible,
               placementReasonCode: result.placementReasonCode,

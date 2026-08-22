@@ -5169,9 +5169,15 @@ export function heartbeatService(
         distributedRolloutHook.runShadowComparison({
           organizationId: distributedRolloutOrganizationId ?? agent.companyId,
           companyId: agent.companyId,
-          runId: run.id,
-          issueId,
-          assigneeAgentId: agent.id,
+          // MIG-005/006/007 (D3): identity travels INSIDE the source, so the same
+          // comparator serves commander_turn / crew_run / one_shot, none of which
+          // has a run or an issue to put at the top level.
+          source: {
+            kind: "task_run",
+            runId: run.id,
+            issueId,
+            assigneeAgentId: agent.id,
+          },
           workloadType: HEARTBEAT_TASK_RUN_WORKLOAD_TYPE,
           routing: { executionTargetType: executionTarget.type },
           provenance: { executionPrincipalKind: "agent", credentialKind: null },
