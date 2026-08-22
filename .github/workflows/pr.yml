@@ -213,6 +213,18 @@ jobs:
       # script that walks a tree with rmSync, by making the suite's size a committed
       # fact a machine re-checks. It sits in `policy`, which runs even on docs-only
       # PRs: a change that touches no code has even less business shrinking the suite.
+      # REL-004 Lane A — the release promotion gate, and the reason it exists. The
+      # three admission verifiers (image/DEP-001, installer/DSK-003, update/DSK-004)
+      # had NO CALLER outside their own unit suites, so "an unapproved digest cannot
+      # run" could not refuse anything. This runs the gate's own unit suite, its
+      # end-to-end CLI suite (a real invocation that must exit non-zero on a tampered,
+      # incomplete or unpromoted release), and the anti-orphan test that fails if a
+      # verifier exists which the gate does not dispatch to.
+      - name: Release admission gate (REL-004)
+        run: |
+          node --test scripts/lib/__tests__/release-manifest.test.mjs
+          node --test scripts/check-release-admission.test.mjs
+
       - name: Test-suite inventory (may not silently shrink)
         run: |
           node --test scripts/lib/__tests__/test-inventory.test.mjs

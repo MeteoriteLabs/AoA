@@ -64,8 +64,12 @@ jobs:
       COMPOSE_FILE_PATH: docker-compose.d1.yml
       EVIDENCE_DIR: ${{ github.workspace }}/d1-evidence
       # DEP-001 admission: the compose stack pins images by digest via these vars.
-      # The build step below populates docker/d1/.env; live admission is enforced
-      # by the split-image admission verifier (DEP-001), not by this lane.
+      # The build step below populates docker/d1/.env. This lane does NOT verify
+      # admission, and until REL-004 nothing else did either — the verifier this
+      # comment used to delegate to had no caller anywhere. The REL-004 gate
+      # (scripts/check-release-admission.mjs) now runs on every PR; wiring it to
+      # THIS lane is not meaningful, because the lane signs and verifies images it
+      # built itself, which proves nothing about approval.
       AOA_D1_FAKE_PROVIDER_IMAGE: aoa-d1-fake-provider:merge-train
 
     steps:
