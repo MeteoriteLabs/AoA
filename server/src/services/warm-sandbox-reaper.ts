@@ -167,16 +167,63 @@ export async function sweepIdleWarmSandboxes(
 ): Promise<{ scanned: number; reaped: number }> {
   const getExperimental = deps.getExperimental ?? (() => instanceSettingsService(db).getExperimental());
   const experimental = await getExperimental();
-  if (!experimental.enableWarmSandboxReaper) {
-    return { scanned: 0, reaped: 0 };
+  const { environments, runtime } = resolveDeps(db, deps);
+  let reaped = 0;
+
+  // REL-004 Lane D (D2 / D2a arm 2) — the RECLAIM arm, ABOVE the flag gate on purpose (J12).
+  //
+  // `enableWarmSandboxReaper` is a warm-ECONOMY default: "do not bother reaping idle snapshots".
+  // An operator who has thrown a kill switch carrying `reclaim: true` has expressed a stronger and
+  // far more specific intent, and an incident-response reclaim must not be silently disabled by a
+  // background toggle that has no UI. The two ROUTINE arms below stay subordinate to it.
+  //
+  // Destructive and therefore opt-in: a plain deny-list stops placement and touches nothing,
+  // because the paused population is the IN-USE population (warm leases pause at the end of every
+  // Commander turn) and destroying it is irreversible.
+  //
+  // Provider-SCOPED, one pass per killed value, rather than a global cutoff of zero.
+  const readDocument = deps.readKillSwitchDocument
+    ?? (() => createKillSwitchPolicyReader({ appDb: db }).read());
+  // Fail-OPEN, inverted from leasing: `killedProviders` returns the empty set for an absent,
+  // malformed or unreadable document, and a read that THROWS must not be able to trigger a
+  // fleet-wide teardown.
+  let reclaimProviders: ReadonlySet<string> = new Set();
+  try {
+    reclaimProviders = killedProviders(await readDocument(), EXECUTION_TARGET_KINDS);
+  } catch (err) {
+    logger.warn({ err }, "warm-sandbox reaper: kill-switch policy unreadable — reclaiming nothing");
+  }
+  let reclaimScanned = 0;
+  for (const provider of reclaimProviders) {
+    const reclaimCutoff = new Date(Date.now() - KILL_SWITCH_RECLAIM_GRACE_MS);
+    const doomed = await environments.listPausedLeasesForProvider(provider, reclaimCutoff);
+    reclaimScanned += doomed.length;
+    for (const row of doomed) {
+      const lease = normalizeEnvironmentLease(row);
+      try {
+        const outcome = await destroyPausedLease(lease, { environments, runtime });
+        if (outcome.destroyed) reaped++;
+      } catch (err) {
+        logger.warn(
+          { err, leaseId: lease.id, provider },
+          "warm-sandbox reaper: failed to reclaim a killed provider's paused lease (best-effort)",
+        );
+      }
+    }
   }
 
-  const { environments, runtime } = resolveDeps(db, deps);
+  if (!experimental.enableWarmSandboxReaper) {
+    logger.info(
+      { scanned: reclaimScanned, reclaimProviders: [...reclaimProviders], reaped },
+      "Warm sandbox reap complete (routine arms disabled by enableWarmSandboxReaper)",
+    );
+    return { scanned: reclaimScanned, reaped };
+  }
+
   const ttlMinutes = normalizeWarmIdleTtlMinutes(experimental.warmSandboxIdleTtlMinutes);
   const cutoff = new Date(Date.now() - ttlMinutes * 60 * 1000);
 
   const stale = await environments.listPausedLeasesOlderThan(cutoff);
-  let reaped = 0;
   for (const row of stale) {
     const lease = normalizeEnvironmentLease(row);
     try {
@@ -207,42 +254,6 @@ export async function sweepIdleWarmSandboxes(
         { err, leaseId: lease.id, environmentId: lease.environmentId },
         "warm-sandbox reaper: failed to reclaim stranded lease (best-effort)",
       );
-    }
-  }
-
-  // REL-004 Lane D (D2 / D2a arm 2) — the RECLAIM arm. Destructive and therefore opt-in: only a
-  // switch carrying `reclaim: true` reaches here. A plain deny-list stops placement and touches
-  // nothing, because the paused population is the IN-USE population (warm leases pause at the end
-  // of every Commander turn) and destroying it is irreversible.
-  //
-  // Provider-SCOPED, one pass per killed value, rather than a global cutoff of zero: the idle
-  // sweep above is untouched, so an unkilled provider's behaviour does not change.
-  const readDocument = deps.readKillSwitchDocument
-    ?? (() => createKillSwitchPolicyReader({ appDb: db }).read());
-  // Fail-OPEN: `killedProviders` returns the empty set for an absent, malformed or unreadable
-  // document, and a read that throws must not be able to trigger a fleet-wide teardown.
-  let reclaimProviders: ReadonlySet<string> = new Set();
-  try {
-    reclaimProviders = killedProviders(await readDocument(), EXECUTION_TARGET_KINDS);
-  } catch (err) {
-    logger.warn({ err }, "warm-sandbox reaper: kill-switch policy unreadable — reclaiming nothing");
-  }
-  let reclaimScanned = 0;
-  for (const provider of reclaimProviders) {
-    const reclaimCutoff = new Date(Date.now() - KILL_SWITCH_RECLAIM_GRACE_MS);
-    const doomed = await environments.listPausedLeasesForProvider(provider, reclaimCutoff);
-    reclaimScanned += doomed.length;
-    for (const row of doomed) {
-      const lease = normalizeEnvironmentLease(row);
-      try {
-        const outcome = await destroyPausedLease(lease, { environments, runtime });
-        if (outcome.destroyed) reaped++;
-      } catch (err) {
-        logger.warn(
-          { err, leaseId: lease.id, provider },
-          "warm-sandbox reaper: failed to reclaim a killed provider's paused lease (best-effort)",
-        );
-      }
     }
   }
 

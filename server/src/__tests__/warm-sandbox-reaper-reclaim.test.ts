@@ -20,6 +20,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { EnvironmentService } from "../services/environments.js";
 import { sweepIdleWarmSandboxes } from "../services/warm-sandbox-reaper.js";
+import { EXECUTION_TARGET_KINDS } from "../services/execution-target-resolver.js";
 
 const CO = "00000000-0000-0000-0000-000000000001";
 const ENV = "00000000-0000-0000-0000-000000000010";
@@ -181,5 +182,83 @@ describe("REL-004 Lane D/J1 — an explicit reclaim intent DOES reclaim, scoped 
     });
     await h.run();
     expect(h.releaseProvider).not.toHaveBeenCalled();
+  });
+});
+
+describe("REL-004 Lane D/J12 — an explicit reclaim outranks the warm-economy toggle", () => {
+  it("still reclaims when enableWarmSandboxReaper is OFF", async () => {
+    // The flag is a warm-ECONOMY default: "do not bother reaping idle snapshots". An operator who
+    // has thrown a kill switch WITH reclaim has expressed a stronger and far more specific
+    // intent, and an incident-response reclaim must not be silently disabled by a background
+    // toggle that has no UI. The idle and strand arms stay subordinate to it — they are routine.
+    const releaseProvider = vi.fn(async () => ({ cleanupStatus: "success" as const }));
+    const listPausedLeasesOlderThan = vi.fn(async () => []);
+    const listTerminalUncleanedLeases = vi.fn(async () => []);
+    const environments = {
+      get: vi.fn(async () => ({ id: ENV, companyId: CO, name: "warm", driver: "sandbox", config: { provider: "e2b", template: "base" } })),
+      releaseLease: vi.fn(async () => ({ ...pausedRow(), status: "expired" })),
+      expireLeaseIfPaused: vi.fn(async () => ({ ...pausedRow(), status: "expired" })),
+      listPausedLeasesOlderThan,
+      listPausedLeasesForProvider: vi.fn(async () => [pausedRow()]),
+      listTerminalUncleanedLeases,
+      claimTerminalUncleaned: vi.fn(async () => null),
+      listLiveAndPausedProviderLeasesForCompany: vi.fn(),
+      acquireLease: vi.fn(),
+      releaseLeasesForRun: vi.fn(),
+    } as unknown as EnvironmentService;
+
+    const result = await sweepIdleWarmSandboxes({} as never, {
+      environments,
+      sandboxProviders: [{ provider: "e2b", acquireLease: vi.fn(), releaseLease: releaseProvider, execute: vi.fn() }],
+      runtimeProviderKeys: { resolveCredential: vi.fn(async () => "sk-e2b") },
+      getExperimental: async () => ({ enableWarmSandboxReaper: false, warmSandboxIdleTtlMinutes: 30 }),
+      readKillSwitchDocument: async () => switches([
+        { dimension: "provider", value: "e2b", reason: "compromised", reclaim: true },
+      ]),
+    });
+
+    expect(releaseProvider).toHaveBeenCalledTimes(1);
+    expect(result.reaped).toBe(1);
+    // ...and the ROUTINE arms stayed off, which is what the flag actually governs.
+    expect(listPausedLeasesOlderThan).not.toHaveBeenCalled();
+    expect(listTerminalUncleanedLeases).not.toHaveBeenCalled();
+  });
+
+  it("with the flag OFF and no reclaim intent, does nothing at all", async () => {
+    // Non-vacuity for the case above: the flag still governs everything else.
+    const h = harness({ document: undefined, fresh: [pausedRow()] });
+    const result = await sweepIdleWarmSandboxes({} as never, {
+      environments: h.environments,
+      sandboxProviders: [{ provider: "e2b", acquireLease: vi.fn(), releaseLease: h.releaseProvider, execute: vi.fn() }],
+      runtimeProviderKeys: { resolveCredential: vi.fn(async () => "sk-e2b") },
+      getExperimental: async () => ({ enableWarmSandboxReaper: false, warmSandboxIdleTtlMinutes: 30 }),
+      readKillSwitchDocument: async () => undefined,
+    });
+    expect(h.releaseProvider).not.toHaveBeenCalled();
+    expect(result).toEqual({ scanned: 0, reaped: 0 });
+  });
+});
+
+describe("REL-004 Lane D/J14 — the switch and lease-provider vocabularies must keep intersecting", () => {
+  it("`e2b` is in the kill-switch vocabulary, or a provider switch can reclaim nothing", () => {
+    expect(
+      EXECUTION_TARGET_KINDS,
+      "a provider kill switch names an EXECUTION_TARGET_KINDS value, and reclaim matches it " +
+        "against environment_leases.provider. If `e2b` ever leaves that vocabulary, every " +
+        "reclaim silently becomes a no-op.",
+    ).toContain("e2b");
+  });
+
+  it("`pooled_gvisor` reclaims nothing — it is not a legacy lease-provider value", async () => {
+    // Operator-facing fact, pinned: the vocabularies intersect on `e2b` ALONE. `pooled_gvisor`
+    // never equals `gvisor`, and `gvisor` is excluded from the reaper's scans anyway. Throwing
+    // `pooled_gvisor` stops placement and reclaims nothing.
+    const h = harness({
+      document: switches([{ dimension: "provider", value: "pooled_gvisor", reason: "x", reclaim: true }]),
+      fresh: [],
+    });
+    const result = await h.run();
+    expect(h.listPausedLeasesForProvider.mock.calls[0]?.[0]).toBe("pooled_gvisor");
+    expect(result.reaped).toBe(0);
   });
 });
