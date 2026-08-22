@@ -58,20 +58,24 @@ function resolveDeps(db: Db, deps: WarmReaperDeps): {
  *  SKIP the kill and leave the now-LIVE sandbox untouched. Returns
  *  `{ destroyed }`: false = we lost the race to a concurrent resume (or a
  *  co-running destroyer), true = we own the row and killed it. */
-async function destroyPausedLease(
+async function destroyClaimedLease(
   lease: EnvironmentLease,
   ctx: {
     environments: Pick<EnvironmentService, "get" | "releaseLease" | "expireLeaseIfPaused">;
     runtime: Pick<EnvironmentRuntimeService, "releaseRunLease">;
   },
+  claim: () => Promise<unknown | null>,
+  /** Why a lost claim happened, for the log. REL-004 Lane D added a SECOND cause; a
+   *  hard-coded "concurrent resume" message would now misattribute a structural refusal. */
+  lostClaimReason: string,
 ): Promise<{ destroyed: boolean }> {
-  // Claim the row FIRST. Losing this CAS means someone else (a resume, or the
-  // sibling over-cap evictor) already owns it — never force-kill in that case.
-  const claimed = await ctx.environments.expireLeaseIfPaused(lease.id);
+  // Claim the row FIRST. Losing this CAS means someone else (a resume, the sibling
+  // over-cap evictor, or a co-running sweep) already owns it — never force-kill then.
+  const claimed = await claim();
   if (!claimed) {
     logger.info(
-      { leaseId: lease.id, environmentId: lease.environmentId },
-      "warm-sandbox reaper: lease no longer paused (concurrent resume/evict won the CAS) — skipping destroy",
+      { leaseId: lease.id, environmentId: lease.environmentId, lostClaimReason },
+      "warm-sandbox reaper: lost the claim — skipping destroy",
     );
     return { destroyed: false };
   }
@@ -96,6 +100,42 @@ async function destroyPausedLease(
     forceDestroy: true,
   });
   return { destroyed: true };
+}
+
+/** The paused-lease arm: claim via the `WHERE status='paused'` CAS, then force-kill. */
+function destroyPausedLease(
+  lease: EnvironmentLease,
+  ctx: {
+    environments: Pick<EnvironmentService, "get" | "releaseLease" | "expireLeaseIfPaused">;
+    runtime: Pick<EnvironmentRuntimeService, "releaseRunLease">;
+  },
+): Promise<{ destroyed: boolean }> {
+  return destroyClaimedLease(
+    lease, ctx,
+    () => ctx.environments.expireLeaseIfPaused(lease.id),
+    "lease no longer paused (concurrent resume or over-cap evict won the paused CAS)",
+  );
+}
+
+/**
+ * REL-004 Lane D (D3) — the STRANDED arm: claim a terminal row that still holds a provider
+ * handle, then force-kill. A separate claim is not a nicety: the paused CAS is
+ * `WHERE status='paused'` and can never match these rows, so reusing it would have made this
+ * whole arm inert.
+ */
+function destroyStrandedLease(
+  lease: EnvironmentLease,
+  ctx: {
+    environments: Pick<EnvironmentService, "get" | "releaseLease" | "expireLeaseIfPaused"> &
+      Pick<EnvironmentService, "claimTerminalUncleaned">;
+    runtime: Pick<EnvironmentRuntimeService, "releaseRunLease">;
+  },
+): Promise<{ destroyed: boolean }> {
+  return destroyClaimedLease(
+    lease, ctx,
+    () => ctx.environments.claimTerminalUncleaned(lease.id),
+    "lease already cleaned or claimed by a co-running sweep (terminal CAS lost)",
+  );
 }
 
 /**
@@ -134,8 +174,30 @@ export async function sweepIdleWarmSandboxes(
     }
   }
 
-  logger.info({ scanned: stale.length, reaped, ttlMinutes }, "Warm sandbox idle reap complete");
-  return { scanned: stale.length, reaped };
+  // REL-004 Lane D (D3 / D2a arm 1) — the STRANDED arm, deliberately switch-INDEPENDENT.
+  // A terminal row still holding a provider handle is pure waste with no user-visible state:
+  // there is nothing for an operator to opt into. This is also the arm that closes MIG-008's
+  // orphan, which would otherwise leave a billing sandbox unreachable forever.
+  const stranded = await environments.listTerminalUncleanedLeases();
+  for (const row of stranded) {
+    const lease = normalizeEnvironmentLease(row);
+    try {
+      const outcome = await destroyStrandedLease(lease, { environments, runtime });
+      if (outcome.destroyed) reaped++;
+    } catch (err) {
+      logger.warn(
+        { err, leaseId: lease.id, environmentId: lease.environmentId },
+        "warm-sandbox reaper: failed to reclaim stranded lease (best-effort)",
+      );
+    }
+  }
+
+  const scanned = stale.length + stranded.length;
+  logger.info(
+    { scanned, stalePaused: stale.length, stranded: stranded.length, reaped, ttlMinutes },
+    "Warm sandbox idle reap complete",
+  );
+  return { scanned, reaped };
 }
 
 /**

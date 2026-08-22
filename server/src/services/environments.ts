@@ -384,5 +384,65 @@ export function environmentService(db: Db) {
         )
         .orderBy(desc(environmentLeases.pausedAt));
     },
+
+    /**
+     * REL-004 Lane D (D3) — STRANDED leases: terminal in the database, but still holding an
+     * unreleased provider handle. The row says "done", the VM says "running", and it bills.
+     *
+     * Two producers, both verified:
+     *   - MIG-008's `casClaimPaused` flips paused -> expired with `cleanup_status='pending'` and
+     *     deliberately does not kill;
+     *   - the reaper's own CAS (`expireLeaseIfPaused(id)` with no cleanupStatus) followed by a
+     *     process death, which leaves `expired` with the field UNCHANGED.
+     *
+     * `IS DISTINCT FROM 'success'` rather than `= 'pending'` so both are covered, plus the
+     * `cleanup_status='failed'` shapes where the provider reported a failed teardown. `status IN
+     * ('expired','failed')` because the exception path in environment-runtime sets `failed`, not
+     * `expired`. Bounded, because an unbounded sweep over a growing terminal table is its own
+     * hazard.
+     */
+    listTerminalUncleanedLeases: async (limit = 200) => {
+      return db
+        .select()
+        .from(environmentLeases)
+        .where(
+          and(
+            inArray(environmentLeases.status, ["expired", "failed"]),
+            sql`${environmentLeases.cleanupStatus} IS DISTINCT FROM 'success'`,
+            isNotNull(environmentLeases.providerLeaseId),
+            notInArray(environmentLeases.provider, NON_SANDBOX_LEASE_PROVIDERS),
+          ),
+        )
+        .orderBy(desc(environmentLeases.updatedAt))
+        .limit(limit);
+    },
+
+    /**
+     * REL-004 Lane D (D3) — the claim latch for a stranded lease, and its RETRY BOUND.
+     *
+     * The paused reaper claims with `expireLeaseIfPaused` (a `WHERE status='paused'` CAS), which
+     * by construction can never match a terminal row — widening the reaper's SELECT without this
+     * primitive would have been inert. This is the terminal-row equivalent.
+     *
+     * Claiming moves `cleanup_status` to 'failed' BEFORE the kill, and the kill promotes it to
+     * the real outcome. That is deliberate on both counts: it is the compare-and-swap that stops
+     * two concurrent sweeps double-killing one sandbox, AND it is the retry bound — a kill that
+     * never succeeds is attempted once, not every five minutes forever.
+     */
+    claimTerminalUncleaned: async (id: string) => {
+      const [lease] = await db
+        .update(environmentLeases)
+        .set({ cleanupStatus: "failed", updatedAt: new Date() })
+        .where(
+          and(
+            eq(environmentLeases.id, id),
+            inArray(environmentLeases.status, ["expired", "failed"]),
+            sql`${environmentLeases.cleanupStatus} IS DISTINCT FROM 'success'`,
+            isNotNull(environmentLeases.providerLeaseId),
+          ),
+        )
+        .returning();
+      return lease ?? null;
+    },
   };
 }

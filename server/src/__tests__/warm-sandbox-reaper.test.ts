@@ -44,6 +44,10 @@ describe("warm-sandbox reaper (U7.6)", () => {
       releaseLease,
       expireLeaseIfPaused,
       listPausedLeasesOlderThan,
+      // REL-004 Lane D: the sweep gained a second, switch-independent arm over STRANDED
+      // leases. Stubbed empty here so these cases still exercise only the paused path.
+      listTerminalUncleanedLeases: vi.fn(async () => []),
+      claimTerminalUncleaned: vi.fn(async () => null),
       listLiveAndPausedProviderLeasesForCompany: vi.fn(),
       acquireLease: vi.fn(),
       releaseLeasesForRun: vi.fn(),
@@ -75,6 +79,10 @@ describe("warm-sandbox reaper (U7.6)", () => {
       get: vi.fn(),
       releaseLease: vi.fn(),
       listPausedLeasesOlderThan,
+      // REL-004 Lane D: the sweep gained a second, switch-independent arm over STRANDED
+      // leases. Stubbed empty here so these cases still exercise only the paused path.
+      listTerminalUncleanedLeases: vi.fn(async () => []),
+      claimTerminalUncleaned: vi.fn(async () => null),
       listLiveAndPausedProviderLeasesForCompany: vi.fn(),
       acquireLease: vi.fn(),
       releaseLeasesForRun: vi.fn(),
@@ -101,6 +109,10 @@ describe("warm-sandbox reaper (U7.6)", () => {
       get: vi.fn(),
       releaseLease: vi.fn(),
       listPausedLeasesOlderThan,
+      // REL-004 Lane D: the sweep gained a second, switch-independent arm over STRANDED
+      // leases. Stubbed empty here so these cases still exercise only the paused path.
+      listTerminalUncleanedLeases: vi.fn(async () => []),
+      claimTerminalUncleaned: vi.fn(async () => null),
       listLiveAndPausedProviderLeasesForCompany: vi.fn(),
       acquireLease: vi.fn(),
       releaseLeasesForRun: vi.fn(),
@@ -182,6 +194,9 @@ describe("warm-sandbox reaper (U7.6)", () => {
       releaseLease,
       expireLeaseIfPaused,
       listPausedLeasesOlderThan: vi.fn(async () => [paused]),
+      // REL-004 Lane D: the sweep gained a second, switch-independent STRANDED arm.
+      listTerminalUncleanedLeases: vi.fn(async () => []),
+      claimTerminalUncleaned: vi.fn(async () => null),
       listLiveAndPausedProviderLeasesForCompany: vi.fn(),
       acquireLease: vi.fn(),
       releaseLeasesForRun: vi.fn(),
