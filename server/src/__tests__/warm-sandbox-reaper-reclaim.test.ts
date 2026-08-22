@@ -263,3 +263,47 @@ describe("REL-004 Lane D/J14 — the switch and lease-provider vocabularies must
     expect(result.reaped).toBe(0);
   });
 });
+
+describe("REL-004 Lane D/J13 — the switch is INSTANCE-wide, and that is a stated limit", () => {
+  it("reclaims EVERY company's leases of the killed provider", async () => {
+    // The kill-switch document is an instance singleton (`instance_settings`) and carries no
+    // tenant axis — its values are closed to EXECUTION_TARGET_KINDS. Meanwhile each lease is
+    // killed inside THAT company's own BYO E2B account, and nothing on the destroy path notifies
+    // anyone. So one operator's switch reaches every tenant.
+    //
+    // That cannot be fixed by an invariant — there is no tenant axis to scope to — so it is
+    // pinned as behaviour instead, deliberately: a future change that quietly made this
+    // per-company (or that kept it instance-wide while the docs claimed otherwise) fails here.
+    const CO_OTHER = "00000000-0000-0000-0000-0000000000ff";
+    const releaseProvider = vi.fn(async () => ({ cleanupStatus: "success" as const }));
+    const environments = {
+      get: vi.fn(async () => ({ id: ENV, companyId: CO, name: "warm", driver: "sandbox", config: { provider: "e2b", template: "base" } })),
+      releaseLease: vi.fn(async () => ({ ...pausedRow(), status: "expired" })),
+      expireLeaseIfPaused: vi.fn(async (id: string) => ({ ...pausedRow(), id, status: "expired" })),
+      listPausedLeasesOlderThan: vi.fn(async () => []),
+      listPausedLeasesForProvider: vi.fn(async () => [
+        pausedRow({ id: "co-a", companyId: CO }),
+        pausedRow({ id: "co-b", companyId: CO_OTHER }),
+      ]),
+      listPausedLeasesWithKeyGeneration: vi.fn(async () => []),
+      listTerminalUncleanedLeases: vi.fn(async () => []),
+      claimTerminalUncleaned: vi.fn(async () => null),
+      listLiveAndPausedProviderLeasesForCompany: vi.fn(),
+      acquireLease: vi.fn(),
+      releaseLeasesForRun: vi.fn(),
+    } as unknown as EnvironmentService;
+
+    const result = await sweepIdleWarmSandboxes({} as never, {
+      environments,
+      sandboxProviders: [{ provider: "e2b", acquireLease: vi.fn(), releaseLease: releaseProvider, execute: vi.fn() }],
+      runtimeProviderKeys: { resolveCredential: vi.fn(async () => "sk-e2b") },
+      getExperimental: async () => ({ enableWarmSandboxReaper: true, warmSandboxIdleTtlMinutes: 30 }),
+      readKillSwitchDocument: async () => switches([
+        { dimension: "provider", value: "e2b", reason: "compromised", reclaim: true },
+      ]),
+    });
+
+    expect(releaseProvider).toHaveBeenCalledTimes(2);
+    expect(result.reaped).toBe(2);
+  });
+});
