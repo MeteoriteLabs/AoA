@@ -186,8 +186,16 @@ table to `JOB_CONTROL_NEW_PATH_GRANTS` fails the second pin. The byte-identity t
 this — as a forty-line SQL diff, thirty minutes into `verify`. The pins turn that into one line.
 
 Migration 0261's header now carries the complete nine-item coupling list. Migration 0259's is
-deliberately **not** edited: it is an applied migration, and the guard now catches the mistake
-regardless of what its comment says.
+deliberately **not** edited, and the reason is mechanical rather than stylistic:
+`loadRequiredMigrationIdentity()` (`packages/db/src/client.ts:153`) sha256s the **raw bytes of
+every checked-in migration file** and folds them into a `ledgerSha256`;
+`assertRequiredMigrationIdentity` compares that against the same hashes computed from
+`__drizzle_migrations`, and a mismatch throws `distributed_execution_migration_identity` — a boot
+refusal. **Editing an applied migration's COMMENT changes its hash and breaks boot on every
+database where it has already run.** Editing 0261 is safe only because 0261 has never been
+applied to a persistent database: CI and the D1 lane build from scratch every run. The guard now
+catches the mistake regardless of what 0259's comment says, which is the better place for the
+correction anyway.
 
 ---
 
