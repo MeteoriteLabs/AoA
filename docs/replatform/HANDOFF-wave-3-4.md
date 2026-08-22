@@ -1,6 +1,6 @@
 # Re-platform — Wave 3 + 4 handoff (prove, then cut over)
 
-**As of:** branch `docs/replatform-program` tip `6a793766a` (ONE PR #323, worktree `C:\e3`).
+**As of:** branch `docs/replatform-program` tip `a800a1e2b` (ONE PR #323, worktree `C:\e3`).
 Worktree clean, nothing unpushed, PR CI green.
 **72 / 95 landed. 23 remain.**
 
@@ -9,6 +9,23 @@ gate is not advisory — see §4. Everything before it is provably effect-free; 
 after it moves live execution.
 
 ---
+
+## 0. How to start the session
+
+1. **Work in `C:\e3` on branch `docs/replatform-program`** — NOT the OneDrive worktree.
+   Two reasons: embedded Postgres cannot initdb from the deep OneDrive path (MAX_PATH),
+   and the OneDrive worktree currently sits on a stale branch that does not contain this
+   programme's work at all.
+2. **Confirm you are where you think you are** before anything else:
+   ```
+   cd /c/e3 && git rev-parse --abbrev-ref HEAD && git rev-parse --short HEAD && git status --porcelain
+   ```
+   Expect `docs/replatform-program`, a tip at or after `a800a1e2b`, and a clean tree.
+3. **Read this document, then §2** — the evidence pass is already done; re-running it is
+   wasted effort.
+4. **First ticket is REL-004 clause 3a**, the kill-switch wiring. Its terrain is mapped in
+   §3, including the grant surface it needs and the seam it must NOT use.
+5. Design docs and result docs live under `docs/replatform/epics/<epic>/tickets/`.
 
 ## 1. The per-ticket process — EVERY ticket below, no exceptions
 
