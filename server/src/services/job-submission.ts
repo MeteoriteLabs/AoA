@@ -78,7 +78,12 @@ function denial(): TenantAdmissionDeniedError {
   return new TenantAdmissionDeniedError();
 }
 
-const SOURCE_REQUESTER_KINDS = Object.freeze({
+/**
+ * Which requester kinds may submit each source kind. Exported (MIG-005/006/007) so the
+ * read-only shadow admissibility probe applies THE SAME allow-list — a second copy would
+ * drift, and a probe compared against a re-implementation proves nothing about this path.
+ */
+export const SOURCE_REQUESTER_KINDS = Object.freeze({
   task_run: ["founder", "team_lead", "team_member", "agent"],
   commander_turn: ["founder", "team_lead", "team_member", "commander"],
   crew_run: ["founder", "team_lead", "team_member", "agent"],
