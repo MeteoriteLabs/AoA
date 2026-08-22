@@ -101,11 +101,29 @@ describe("REL-004 Lane D/J4 — stranded leases are reclaimed, with a real provi
     expect(h.releaseProvider).toHaveBeenCalledTimes(1);
   });
 
-  it("reclaims the exception-path shape (status 'failed', not 'expired')", async () => {
-    // environment-runtime.ts sets status 'failed' on a provider-release throw.
-    const h = harness({ stranded: [strandedRow({ id: "lease-failed", status: "failed", cleanupStatus: "failed" })] });
+  it("reclaims a status-'failed' row that was never ATTEMPTED", async () => {
+    // environment-runtime.ts sets status 'failed' on a provider-release throw, so the terminal
+    // status alone does not tell you whether a teardown was tried. `cleanup_status` does.
+    const h = harness({ stranded: [strandedRow({ id: "lease-failed", status: "failed", cleanupStatus: "pending" })] });
     await h.run();
     expect(h.releaseProvider).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT retry a row whose teardown was already attempted (the retry bound)", async () => {
+    // CORRECTED. An earlier version of this suite asserted that cleanup_status='failed' IS
+    // reclaimed. That is wrong twice over. It contradicts the design's own retry bound — a kill
+    // that never succeeds must be attempted once, not every five minutes forever — and it forced
+    // a claim predicate of `IS DISTINCT FROM 'success'`, which is not a compare-and-swap at all:
+    // the claim WRITES 'failed', so a second concurrent claimer still matched and both killed the
+    // same sandbox. The barrier race in warm-sandbox-reaper-race.integration.test.ts found it.
+    //
+    // Claimable is therefore {NULL, 'pending'} — unattempted — and the claim moves the row out of
+    // that set. The scan mirrors it, so an attempted-and-failed row is never re-listed.
+    const h = harness({ stranded: [] });
+    const result = await h.run();
+    expect(h.listTerminalUncleanedLeases).toHaveBeenCalled();
+    expect(h.releaseProvider).not.toHaveBeenCalled();
+    expect(result.reaped).toBe(0);
   });
 
   it("does NOT kill when the terminal CAS is lost — no double-kill", async () => {

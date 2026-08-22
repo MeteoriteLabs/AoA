@@ -461,7 +461,11 @@ export function environmentService(db: Db) {
         .where(
           and(
             inArray(environmentLeases.status, ["expired", "failed"]),
-            sql`${environmentLeases.cleanupStatus} IS DISTINCT FROM 'success'`,
+            // UNATTEMPTED only. `'failed'` means a teardown was already tried and did not
+            // confirm; re-listing it would retry a doomed kill every five minutes forever, and
+            // `'success'` is done. Claiming moves a row OUT of this set, which is what makes the
+            // claim a real compare-and-swap — see `claimTerminalUncleaned`.
+            sql`(${environmentLeases.cleanupStatus} IS NULL OR ${environmentLeases.cleanupStatus} = 'pending')`,
             isNotNull(environmentLeases.providerLeaseId),
             notInArray(environmentLeases.provider, NON_SANDBOX_LEASE_PROVIDERS),
           ),
@@ -490,7 +494,12 @@ export function environmentService(db: Db) {
           and(
             eq(environmentLeases.id, id),
             inArray(environmentLeases.status, ["expired", "failed"]),
-            sql`${environmentLeases.cleanupStatus} IS DISTINCT FROM 'success'`,
+            // The CAS predicate MUST exclude the state the claim WRITES, or it is not a CAS at
+            // all: with `IS DISTINCT FROM 'success'` a second concurrent claimer matched the
+            // already-claimed row and both killed the same sandbox. Caught by the barrier race in
+            // `warm-sandbox-reaper-race.integration.test.ts` — and NOT by the naive race beside
+            // it, which passed even with this predicate stripped entirely.
+            sql`(${environmentLeases.cleanupStatus} IS NULL OR ${environmentLeases.cleanupStatus} = 'pending')`,
             isNotNull(environmentLeases.providerLeaseId),
           ),
         )
