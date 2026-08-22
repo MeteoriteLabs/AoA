@@ -1,5 +1,13 @@
 # Re-platform program — status + next-wave handoff
 
+> **SUPERSEDED — 2026-08-22.** This handoff describes the state at 66/95 tickets and
+> lists CLI-006 as unfinished; both are out of date. CLI-006, DSK-001..004 and REL-004
+> (clauses 1 and 2) have since landed CI-green — **72/95, 23 remain**. The current plan
+> is [`HANDOFF-wave-3-4.md`](./HANDOFF-wave-3-4.md). Kept for the per-ticket process and
+> the trap list, which remain accurate and are carried forward there.
+
+
+
 **As of:** branch `docs/replatform-program` tip `9a6910aed` (ONE PR #323, worktree `C:\e3`).
 **Overall: 66 / 95 tickets landed CI-green.** Epics E0–E6 complete; E7 complete except its gate (CLI-006); E10's realtime-foundation gate closed; E8/E9/E11 not started.
 

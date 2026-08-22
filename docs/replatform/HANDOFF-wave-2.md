@@ -1,5 +1,13 @@
 # Re-platform — Wave 2 handoff
 
+> **SUPERSEDED — 2026-08-22.** This handoff describes the state at 66/95 tickets and
+> lists CLI-006 as unfinished; both are out of date. CLI-006, DSK-001..004 and REL-004
+> (clauses 1 and 2) have since landed CI-green — **72/95, 23 remain**. The current plan
+> is [`HANDOFF-wave-3-4.md`](./HANDOFF-wave-3-4.md). Kept for the per-ticket process and
+> the trap list, which remain accurate and are carried forward there.
+
+
+
 **As of:** branch `docs/replatform-program` tip `976183a28` (ONE PR #323, worktree `C:\e3`). **PR CI 12/12 green. Worktree clean, nothing unpushed.**
 **Scope is LOCKED AT MAXIMUM** (operator decision, 2026-08-19): desktop **and** cross-target mobility advertised, on **both Windows and macOS**, nothing deferred to post-beta.
 **66 / 95 landed. 29 remain.** CLI-006 is in progress (not landed).
