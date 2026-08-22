@@ -121,6 +121,38 @@ OAuth handle could be coerced into the sandbox env. **UNVERIFIED and decisive: w
 supported CLIs can be pointed at a proxy base URL for every provider in the v1 adapter matrix.**
 That is the first thing to establish; everything else follows from it.
 
+## 4b. ★ The last open question is ANSWERED: yes, and the plumbing already exists
+
+Revision 2 narrowed the design question to one concrete item: **can each v1 CLI be pointed at a
+proxy base URL?** Verified: **yes, for both, using env vars the allowlist already permits.**
+
+- The v1 admitted adapter set is exactly two — `claude_local` (anthropic) and `codex_local`
+  (openai) (`sandbox-coding-disposition.ts:50-51`).
+- `PROVIDER_AUTH_KEYS` already allowlists **`ANTHROPIC_BASE_URL`** and **`OPENAI_BASE_URL`**
+  (`sandbox-env-allowlist.ts:33-34`). The base URL is a first-class, already-permitted sandbox
+  env var for both.
+- The sandbox **already calls back to the control plane**: `AOA_API_URL` and `AOA_API_KEY` (the
+  run-JWT) are in `ALWAYS_ALLOWED` (`:43-44`). So a run-scoped credential and a control-plane
+  URL are both already in the sandbox, over a channel that exists today.
+
+So the whole shape is available with no new mechanism and no protocol change:
+
+> sandbox CLI → `*_BASE_URL` pointed at the control-plane fence proxy, authenticating with the
+> run-JWT it already carries → DAT-004 reauthorizes on the fence per request → DAT-005
+> materializes the real provider key into request **headers** at an IP-pinned socket → provider.
+>
+> **The tenant's provider key never enters the sandbox at all** — which is strictly better than
+> the legacy host-side path it replaces, where `buildSandboxEnvAllowlist` stages the real
+> `ANTHROPIC_API_KEY` into the VM.
+
+**One design detail, not a blocker:** most CLIs require *some* auth value to be set before they
+will attempt a request, so the sandbox still needs a bearer for `*_API_KEY` — presumably the
+run-JWT or a per-run placeholder the proxy swaps for the real key. UNVERIFIED which the CLIs
+accept; it is a small experiment, not an architectural fork.
+
+**So there is no remaining architectural question.** What is left is wiring, in the order
+revision 2 lists it, plus that one experiment.
+
 ## 5. Traps
 
 - **Do not read deferral #1 as "the broker is missing".** §1 — it is built, shipped, and
