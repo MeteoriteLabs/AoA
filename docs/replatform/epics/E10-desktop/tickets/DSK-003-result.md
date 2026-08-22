@@ -337,3 +337,51 @@ real Windows junction.
    an instance nonce. Absent one it 404s and the surface is byte-identical to before.
 4. **`distribution.md` H.D1 now carries a supersession note.** No behaviour, but a reader
    following that lock will now find the reason it no longer binds this program.
+
+---
+
+## 8. Incident — this ticket's assembler deleted 154 test files
+
+Recorded here rather than in a separate document because the defect shipped in this
+ticket, and because the honest reading of section 5's mutation numbers depends on it.
+
+**What happened.** Commit `65c86ba4f` — the commit that ADDED the assembler's symlink
+refusal — deleted 154 test files from the repository in the same breath: 122 from
+`worker-daemon`, 17 from `worker-protocol`, 15 from `worker-keystore`, including six
+pre-existing DSK-001 suites this ticket never touched.
+
+**Why.** `build-desktop-staging.mjs` PRUNES non-shippable paths with `rmSync`, and
+`__tests__/` and `*.test.*` are non-shippable by definition. The first version of the
+walk used `statSync`, which resolves symlinks. A `pnpm deploy` root is largely links
+pointing back at the real `packages/*` directories, so the prune left its own staging
+root, walked into the working tree, and deleted the originals. `git add -A` then
+committed the deletions.
+
+The risk was named in that commit's own message — *"a junction pointing outside the
+root pulls external files into an artifact about to be signed"* — and I did not notice
+it had already happened. The wording understated the harm: **a pruner does not merely
+read what it follows.**
+
+**Why nothing caught it.** CI went green on `b7ace872a`, `13f604805`, `a6883d64c` and
+the docs commits between. Deleting a test removes a failure rather than causing one, so
+every gate in this repository was structurally incapable of noticing. The mutation
+numbers reported in section 5 were measured BEFORE the deletion and are accurate; the
+CI-green claims for those four commits were true and misleading, and are corrected here.
+
+**Resolution.**
+
+| | |
+|---|---|
+| Restored | all 154 files at `b6aae0e10`, verified 652 + 495 + 201 tests, CI green |
+| Root cause fixed | the `lstat`-and-refuse walk already shipped in this ticket |
+| Detection added | `scripts/check-test-inventory.mjs` at `3471c25d9` — the suite's size is now a committed fact the `policy` job re-checks; 13 mutants, 12 killed, 1 documented equivalent |
+
+**The lesson worth keeping is not "use lstat".** It is that a green pipeline proves the
+tests that RAN passed, and says nothing whatever about the tests that no longer exist.
+Every gate here was a filter over a set nothing was measuring.
+
+**Unrelated, recorded so it is not misread as fallout.** `worker-protocol`'s
+`cross-version.test.ts` fails on a local Windows run and did so before any of this: it
+imports a `scripts/*.mjs` beginning with a shebang, which Node strips and esbuild does
+not. The script is unmodified and the test was present at `486d1d944`, where CI was
+green. Linux CI is the authority for this branch class.
