@@ -109,7 +109,71 @@ With a one-way drain, un-throwing a switch requires restarting every worker proc
 grenade, not a switch, and discovering it mid-cutover is exactly what §4 of the handoff
 forbids. D5 fixes it, using the nullable `retryAfterMs` the frozen protocol already models.
 
-### 1.5 Where enforcement may and may not go
+### 1.5 The two flows, drawn
+
+```
+WORKER POLL (server side) — where the kill check sits
+────────────────────────────────────────────────────────────────────────────
+  POST /worker-control/poll
+        │
+        ├─ pollRequestV1Schema.safeParse ─────────── malformed ─▶ 400
+        ├─ verifyWorkerOperationProof ────────────── bad proof ─▶ 401
+        ├─ pollRateLimiter.admit (DEP-009, shared) ─ over cap ──▶ 429 throttled
+        │
+        ▼   leasing.poll()
+    ┌───────────────────────────────────────────────────────────────────┐
+    │  killSwitchDocument = killSwitches.read()      ◀── OUTSIDE the tx │
+    │     row missing / column NULL  ─▶ undefined  (absent = permitted) │
+    │     read threw                 ─▶ SENTINEL   (unreadable = kill)  │
+    │     no reader wired            ─▶ SENTINEL   (no stop button =    │
+    │                                               NOT "nothing kills")│
+    └───────────────────────────────────────────────────────────────────┘
+        │
+        ▼   for (restartAttempt = 0..2)  runInTenant(appDb, orgId)      ── FROZEN
+             ├─ cleanupExpiredProofs / recordProof / lockWorkerLeaseAuthority
+             ├─ guardPlatformAuthority ──▶ authorityCurrent
+             ├─ touchWorkerLeaseProfile              ◀── D7: a paused worker is ALIVE
+             │
+             ├─ evaluateKillSwitches({                ◀── THE CHECK (pure, no new SELECT)
+             │      document, provider: currentTarget.kind,
+             │      template: undefined, knownProviders: EXECUTION_TARGET_KINDS })
+             │        killed ─▶ return { outcome: "drain", retryAfterMs, reason }
+             │
+             ├─ normalizePlacementRegistryTarget
+             ├─ lockEligibleLeaseCandidates   ◀── the ONE repository selection
+             ├─ evaluateStaticLeaseEligibility loop  ◀── NOT here (certificates)
+             └─ offerLease ─▶ { outcome: "offer" }   or   { outcome: "no_work" }
+
+  UNTOUCHED, and that is the point: ack + renew have no kill check, so a lease
+  offered one millisecond before the switch still completes (I12).
+```
+
+```
+WORKER DAEMON — what a drain means (D5)
+────────────────────────────────────────────────────────────────────────────
+                       ┌──────────────┐
+              ┌───────▶│   POLLING    │◀────────────┐
+              │        └──────┬───────┘             │
+   resume after cadence       │                     │ offer / no_work
+              │               ▼                     │
+              │        outcome = "drain"            │
+              │               │                     │
+              │      ┌────────┴────────┐            │
+              │      │ retryAfterMs?   │            │
+              │      └────┬───────┬────┘            │
+              │      set  │       │  null           │
+              │           ▼       ▼                 │
+              │     ┌─────────┐  ┌──────────────┐   │
+              └─────┤ PAUSED  │  │  DRAINED     │   │
+                    │ drain   │  │ (terminal —  │   │
+                    │ in-flight  │  loop exits) │   │
+                    └─────────┘  └──────────────┘   │
+                                                    │
+   BEFORE this change both arrows went to DRAINED, so un-throwing a kill
+   switch would have required restarting every worker process.
+```
+
+### 1.6 Where enforcement may and may not go
 
 - **Not** in `evaluateStaticLeaseEligibility`'s loop — it records
   `static_requirements_mismatch` negative certificates, and a kill switch is not a
@@ -225,8 +289,16 @@ would make a paused fleet look dead to every heartbeat-age guard.
 | I9 | The kill check adds no repository selection to the frozen poll authority chain | `job-leasing-contract.test.ts` stays green with only reviewed allow-list additions |
 | I10 | The JOB-003 contract guard still refuses an *unreviewed* call in the tenant body after the allow-list is widened | mutation test on the contract guard |
 | I11 | `aoa_app` can actually read the document at runtime | integration under the `aoa_app` role; startup authority assertion |
+| I12 | **In-flight work survives the switch**: a lease offered before a switch is thrown can still be ACKed and renewed | integration, two cases (see §5 Task 6) |
 
 Every guard is mutation-tested before the lane lands.
+
+**On I12 — added by the plan review, and it is not padding.** The plan originally proved
+only "no NEW lease". Clause 3a's other half, "in-flight work finishes rather than being
+orphaned", holds today purely because `ack` (`job-leasing.ts`) and renewal
+(`job-fencing.ts`) are separate code paths that nobody added a kill check to. A property that
+holds by omission is the *vacuously true* class this programme has been bitten by four times.
+It gets a test.
 
 ---
 
@@ -963,22 +1035,40 @@ git commit -m "feat(rel-004): read the kill-switch policy on the aoa_app pool, f
 
 - [ ] **Step 1: write the failing integration test**
 
-Create `server/src/__tests__/execution-kill-switch-poll.integration.test.ts`, modelled on
-`job-leasing.integration.test.ts` (embedded PostgreSQL, `skipIf(win32)`, self-provisioning).
-It must exercise the REAL poll — not the decision function — per handoff §4 clause 1.
+Create `server/src/__tests__/execution-kill-switch-poll.integration.test.ts`. **Reuse the
+existing harness rather than reinventing it** — copy the fixture scaffolding from
+`server/src/__tests__/job-leasing.integration.test.ts`, which already provides everything
+needed: `const integration = describe.skipIf(...)` (line 60), `allocateEmbeddedPgPort`
+(`./helpers/embedded-pg-port.js`), `provisionTenantAppRoleLoginSql` (`../db/rls-tenant.js`),
+`applyPendingMigrations`, `runInTenant`, `createJobControlRepository`, and the
+`providerProfile` / `registeredProfile` / `workerHello` / `pollRequest` / `ackRequest`
+builders plus the `ORG` / `COMPANY` / `TARGET` / `WORKER` UUID constants.
+
+It must exercise the REAL poll — not the decision function — per handoff §4 clause 1, and the
+service must be constructed with a real `createKillSwitchPolicyReader({ appDb })`, not a stub.
 
 ```ts
-// Cases (each asserts BOTH the poll response and the absence/presence of a `leases` row):
-//  1. no document                       -> outcome "offer",  a lease row exists
-//  2. a switch on a DIFFERENT provider  -> outcome "offer",  a lease row exists   (non-vacuity)
-//  3. a switch on THIS target's kind    -> outcome "drain",  reason = the stated reason,
-//                                          retryAfterMs = KILL_SWITCH_DRAIN_RETRY_AFTER_MS,
-//                                          and NO new lease row
-//  4. kill_switches = '{}'::jsonb       -> outcome "drain",  reason "policy_unreadable"
-//  5. a template switch                 -> outcome "drain",  reason "placement_unknown"
-//  6. after the switch is REMOVED       -> outcome "offer" again, a lease row exists
-//  7. the target row is NOT revoked by any of the above (I7): status/device_generation
-//     unchanged, and the worker can still enroll/poll once the switch is lifted
+// Cases 1-7 each assert BOTH the poll response and the presence/absence of a `leases` row.
+//  1. no document (kill_switches IS NULL)  -> "offer", a lease row exists
+//  2. a switch on a DIFFERENT provider     -> "offer", a lease row exists          (non-vacuity)
+//  3. a switch on THIS target's kind       -> "drain", reason = the stated reason,
+//                                             retryAfterMs = KILL_SWITCH_DRAIN_RETRY_AFTER_MS,
+//                                             and NO new lease row
+//  4. kill_switches = '{}'::jsonb          -> "drain", reason "policy_unreadable"
+//  5. a template switch                    -> "drain", reason "placement_unknown"
+//  6. after the switch is REMOVED          -> "offer" again, a lease row exists
+//  7. I7 separation: none of the above changed execution_targets.status or
+//     device_generation, and no execution_target_revocations row was written
+//
+// I12 — in-flight work finishes. These are the cases the plan review added.
+//  8. offer a lease, THEN throw the switch, THEN ACK that lease
+//        -> the ACK still succeeds (outcome "acknowledged"); the lease activates.
+//           A kill switch stops PLACEMENT, not work that was already placed.
+//  9. with the lease active and the switch still thrown, RENEW it
+//        -> renewal still succeeds. Killing renewal would orphan the run inside the
+//           sandbox and leave the attempt to the lease reaper — the opposite of "drains".
+// 10. the SAME worker's next poll while the switch is thrown -> "drain"
+//        (proves 8 and 9 are about the existing lease, not a hole in the gate)
 ```
 
 - [ ] **Step 2: run and watch it fail**
@@ -1003,7 +1093,16 @@ export const KILL_SWITCH_DRAIN_RETRY_AFTER_MS = 30_000;
 `createJobLeasingService(input: { …; killSwitches?: KillSwitchPolicyReader })`.
 
 At the top of `poll()`, before the `restartAttempt` loop and outside `runInTenant` — so the
-frozen authority chain gains no repository selection:
+frozen authority chain gains no repository selection.
+
+**Verified during the plan review:** the JOB-003 contract guard constrains statements *after*
+the restart loop (`statementsAfterLoop.length === 1`, the exhaustion throw) and the loop's own
+shape, but places **no constraint on statements before the loop**
+(`job-leasing-contract.test.ts:3079-3220`). A pre-loop `await` is therefore admissible.
+If that reading turns out to be wrong at implementation time, the fallback — in order — is
+(a) read it in `worker-control.ts` and pass it as a new key on the single `pollInput` object
+(`pollMethod.parameters.length === 1` is asserted, so it must stay ONE parameter, but its keys
+are not enumerated), then (b) stop and re-derive. Do not widen the guard to admit the read.
 
 ```ts
       // REL-004 clause 3a. Read once per poll, before the lease transaction. An absent reader
@@ -1122,8 +1221,14 @@ describe("REL-004 Lane C/I8 — a drain with a retry hint is a reversible PAUSE"
 
   it("drains in-flight work, sleeps the hint, and RESUMES polling when retryAfterMs is set", async () => {
     // poll #1 -> drain{retryAfterMs:30000}; poll #2 -> no_work; poll #3 -> offer.
-    // Assert: >=3 polls, the sleep observed 30000, an offer was ACKed on poll #3,
-    // and run() does NOT resolve "drained".
+    // Assert: >=3 polls, an offer was ACKed on poll #3, and run() does NOT resolve "drained".
+    //
+    // The observed sleep is NOT 30000 unless the fixture's backoff.maxMs allows it.
+    // `cadenceSleep` (poll-loop.ts:502-507) clamps every honored delay into
+    // [min(baseMs, maxMs), maxMs], so assert the CLAMP, not the literal:
+    //   expect(sleptMs).toBe(Math.max(Math.min(30_000, backoff.maxMs), Math.min(backoff.baseMs, backoff.maxMs)))
+    // Also run one fixture with maxMs > 30_000 so the un-clamped path is covered too —
+    // otherwise a mutant that hardcodes the cap would survive.
   });
 
   it("finishes in-flight handoffs BEFORE resuming", async () => {
@@ -1239,7 +1344,8 @@ either fixed or documented as equivalent, and the deferrals in §7 stated honest
 | the column default cannot kill (I3) | `instance-settings-kill-switches-schema.test.ts` |
 | the template axis refuses rather than silently permitting (I5) | `execution-kill-switches.test.ts` D2 block; integration case 5 |
 | a mistyped provider value refuses (I6) | `execution-kill-switches.test.ts` D6 block |
-| `aoa_app` can reach the document (I11) | `job-control-legacy-grants.contract.test.ts`; the integration suite runs under the serving role |
+| in-flight work finishes (I12) | `execution-kill-switch-poll.integration.test.ts` cases 8–10 |
+| `aoa_app` can reach the document (I11) | `job-control-legacy-grants.contract.test.ts` (manifest↔manifest↔startup-spread) **plus** `distributed-execution-db-startup.integration.test.ts`, which applies the migrations, provisions the real roles and calls `openDistributedExecutionDatabases` — that is the only artifact that proves manifest↔**database**, i.e. that the GRANT in 0261 actually exists. The contract test alone would pass with the migration missing. |
 | the frozen authority chain is unchanged (I9, I10) | `job-leasing-contract.test.ts` green, plus mutants M25 and M26 |
 | the switch is reversible without a fleet restart (I8) | `packages/worker-daemon/src/__tests__/poll-loop.test.ts` D5 block |
 | every guard is mutation-tested | the M1–M31 ledger in the result doc |
@@ -1269,7 +1375,28 @@ either fixed or documented as equivalent, and the deferrals in §7 stated honest
 
 ---
 
-## 8. Self-review
+## 8. Plan review (process step 4) — what it changed
+
+Run against this document before any code. Findings, with the source line that motivated each:
+
+| # | Sev | Conf | Finding | Resolution |
+|---|---|---|---|---|
+| F1 | P1 | 9/10 | Clause 3a has two halves and the plan only proved one. "In-flight work finishes" held **by omission** — `ack` and renewal simply have no kill check — which is the vacuously-true class. | New invariant I12 + integration cases 8–10 |
+| F2 | P2 | 9/10 | The daemon test asserted the literal `30000`. `cadenceSleep` clamps into `[min(baseMs,maxMs), maxMs]` (`poll-loop.ts:506-507`: `const floor = Math.min(deps.backoff.baseMs, deps.backoff.maxMs); const delay = Math.max(Math.min(Math.max(retryAfterMs, 0), deps.backoff.maxMs), floor);`), so that assertion would have failed for the wrong reason. | Assert the clamp; add an un-clamped fixture so a hardcoded-cap mutant dies |
+| F3 | P2 | 8/10 | No diagrams for a change whose whole risk is control flow. | §1.5 poll data flow + daemon drain state machine |
+| F4 | P2 | 8/10 | Task 6 assumed a pre-loop `await` is admissible without checking. | Verified admissible (`job-leasing-contract.test.ts` constrains only the loop shape and `statementsAfterLoop.length === 1`); recorded, with a named fallback and an explicit "do not widen the guard" |
+| F5 | P3 | 9/10 | The integration task named no harness, inviting a reinvented fixture. | Named the real helpers in `job-leasing.integration.test.ts` |
+| F6 | P3 | 7/10 | I11's artifact was the contract test, which compares manifest to manifest — it would stay green with the GRANT missing from the migration. | Named `distributed-execution-db-startup.integration.test.ts` as the manifest↔database artifact |
+| F7 | P3 | 6/10 | `scheduler.consume()` burns the ready signal before a drain, so the first poll after un-killing gets the 750 ms cadence instead of 100 ms. | Accepted, not fixed — the check needs the target `kind`, which only exists inside the transaction |
+
+**Scope call recorded here rather than deferred.** Task 7 changes the worker daemon, which is
+wider than "wire the kill switch". It is included deliberately: the handoff's stated reason for
+building this before Wave 4 is that "a bad cutover is reversible in seconds", and §1.4 shows a
+poll drain is currently one-way. Shipping a stop button that can only be un-pressed by
+restarting every worker would satisfy the ticket's words and fail its purpose. The change is
+contained in one branch of one loop in a package whose poll loop has no production caller yet.
+
+## 9. Self-review
 
 - **Spec coverage.** Clause 3a maps to Tasks 3–7; every invariant I1–I11 has a task and a named
   artifact in §6. Clause 3b is explicitly deferred to Lane D.
