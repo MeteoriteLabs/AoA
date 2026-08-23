@@ -46,10 +46,18 @@ it, and `self` in the path makes it explicit that no identifier is accepted from
 200 { protocolVersion: 1, registeredProfile: {...}, providerConstraintProfile: {...}, serverTime }
 ```
 
-Both bodies are returned **verbatim as stored**. They are not re-serialized, re-ordered or
-re-shaped, because the worker re-derives the constraint profile's digest from canonical bytes
-(`verifyAndBrandProviderConstraintProfileV1`) and any normalisation on the way out would break that
-verification. This is a load-bearing property, not an optimisation.
+Both bodies are returned **as stored** — no re-shaping, no field selection.
+
+**Corrected during implementation, because the original rationale was wrong.** This design said key
+re-ordering would break verification. It would not: `canonicalizeJsonV1` **sorts keys** before the
+digest is computed, and a JSONB round trip does not preserve order anyway. The real requirement is
+that every FIELD and VALUE survive intact — `verifyAndBrandProviderConstraintProfileV1` recomputes
+the digest over every key except `digest`, so a dropped, added or coerced field fails the brand and
+the worker refuses its own self-model. Serving the stored object untouched is how that is
+guaranteed rather than reasoned about.
+
+The integration test therefore asserts the invariant that is real — a profile brands successfully
+**after** a live JSONB round trip — rather than the ordering property that never mattered.
 
 **Conditional.** The body may carry `knownSelfModelHash`; a match answers **304**, so a worker can
 re-check on every poll cycle instead of caching a self-model across a generation bump. The hash

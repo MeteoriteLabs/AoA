@@ -358,9 +358,16 @@ export function executionTargetRoutes(opts: {
   // cycle instead of caching a self-model across a generation bump. Both halves are
   // covered by that hash, so a constraint-profile change cannot slip past it.
   //
-  // Both payloads are served VERBATIM as stored. The worker re-derives the
-  // constraint profile's digest from canonical bytes, so any re-serialisation or key
-  // re-ordering here would silently break its verification. Load-bearing.
+  // Both payloads are served AS STORED - no re-shaping, no field selection.
+  //
+  // Precisely why, because it is easy to overstate: key ORDER is irrelevant, since
+  // `canonicalizeJsonV1` sorts keys before the digest is computed, and a JSONB round
+  // trip does not preserve order anyway. What the worker's
+  // `verifyAndBrandProviderConstraintProfileV1` actually requires is that every FIELD
+  // and VALUE survive intact - it recomputes the digest over every key except
+  // `digest`, so a dropped, added or coerced field fails the brand and the worker
+  // refuses its own self-model. Serving the stored object untouched is how that is
+  // guaranteed rather than reasoned about.
   // Mounted ONLY when distributed execution is genuinely usable. `opts.workerSession`
   // is already exactly that flag (app.ts derives it as
   // `distributedExecutionEnabled && tenantAppDb && operatorDb && signingKey`), and the
