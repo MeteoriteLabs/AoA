@@ -118,7 +118,7 @@ drives a Commander turn, crew dispatch or extraction. Stated, not papered over.
 
 | # | Work | Why here |
 |---|---|---|
-| 1 | **Deferral #1 — wire the credential path** | **THE critical path.** MIG-005/006/007 ACTIVE are all blocked on it and nothing else unblocks them. Terrain complete; no architectural question left. |
+| 1 | **Deferral #1 — wire the credential path** → **DAT-008, slices 1–4 LANDED + CI-green (`4840c04e1`)**. Slices 5–7 remain (worker redemption, warm-resume re-resolution). See [`DAT-008-result.md`](./epics/E5-workspaces-secrets/tickets/DAT-008-result.md). | **THE critical path.** MIG-005/006/007 ACTIVE are all blocked on it and nothing else unblocks them. |
 | 2 | **MIG-005** Commander turns → `commander_turn` | Lowest blast radius; start here once (1) lands. |
 | 3 | **MIG-006** crew dispatch → `crew_run` | |
 | 4 | **MIG-007** extraction / compaction / readiness → `one_shot` | |
@@ -128,7 +128,33 @@ drives a Commander turn, crew dispatch or extraction. Stated, not papered over.
 MIG-002 added the per-sink `sources` axis, which did not exist when the Wave-3/4 handoff
 prescribed it.
 
-### 3.1 A DECISION ONLY A HUMAN CAN MAKE — read before planning
+### 3.1 ~~A DECISION ONLY A HUMAN CAN MAKE~~ — TAKEN. Ticket = **DAT-008**.
+
+> **RESOLVED.** The Integration Gate Owner chose a new ticket in E5: **DAT-008**, with its own
+> terrain, design and result docs. Slices 1–4 have landed and are CI-green on `4840c04e1` (PR gate
+> incl. `ci-required`, and the D1 two-replica lane, both on that exact SHA).
+>
+> **Half the premise below was wrong, and the correction matters more than the decision.**
+> *"No ticket in the Wave-4 list owns it"* is true of the epic ticket list and **FALSE of the
+> plan**: **CM-013** (`current-main-crosswalk.md:29`) owns this seam and names MIG-005/006/007 in
+> its own dependency list. The *ownership* question was real; the *architecture* question was not —
+> CM-013, `program-design.md:35` and `:765` all already fixed the answer as `materialization: env`
+> + `usePolicy: sandbox_local_only`. §3.2's implication that the proxy is "the only path" is a
+> statement about the **connector-OAuth** credential class, not the model-provider key.
+> See [`DAT-008-terrain.md`](./epics/E5-workspaces-secrets/tickets/DAT-008-terrain.md) revision 1.
+>
+> **Lesson for the next reader of this document: check the crosswalk, not just the epic list.**
+
+**What remains on DAT-008** — slice 5 (worker redemption, env synthesis, redaction-canary seeding),
+slice 6 (deferral #3 is closed on the MINT side only), slice 7 (warm-resume re-resolution, which is
+required *before* MIG-005 because MIG-005 is both the first sink and the warm-lease one).
+
+**One thing to measure, not assume, before MIG-005:** how many agents carry a *plain-literal*
+provider key outside strict secret mode. Those cannot be cut over — DAT-008 refuses to mint for
+them and leaves them on the legacy executor — and the residual is only acceptable if the number is
+small.
+
+### 3.1b The original text, kept for the record
 
 **Deferral #1 has no owner in the plan.** DAT-004 owns it by its outcome sentence
 (`program-design.md:648`), **DAT-004 has SHIPPED**, and no ticket in the list above owns the

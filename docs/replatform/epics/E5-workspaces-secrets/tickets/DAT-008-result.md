@@ -130,3 +130,24 @@ log policy that exists for exactly that class and already covers `/worker-contro
 lease now performs one extra tenant read inside the offering transaction, and two migrations touch an
 already-distributed table whose grants `assertExactServingRoleAuthority` compares against the live
 role at boot.
+
+### CI — watched to green on the exact candidate SHA `4840c04e1`
+
+**PR gate** (run `32619755898`) — every job green, including the required verdict:
+
+| Job | | Job | |
+|---|---|---|---|
+| `ci-required` | ✅ **the verdict** | `verify` | ✅ |
+| `migrations` | ✅ | `e2e` | ✅ |
+| `policy` | ✅ | `e2e-pgvector` | ✅ |
+| `brand-check` | ✅ | `lint` | ✅ |
+| `distributed-contract` | ✅ | `changes` | ✅ |
+| `worker-protocol-contract-bytes (ubuntu-latest)` | ✅ | `(windows-latest)` | ✅ |
+
+**D1 Merge Train** (run `32619751656`) — ✅ green on the same SHA, so the live two-replica
+topology exercised the extra per-lease read and both migrations against the real serving role.
+
+Two of these are worth naming rather than leaving in a table. `migrations` green means 0262 and
+0263 both applied, and `migration-idempotency` did not trip on the hand-appended C14 guards.
+`worker-protocol-contract-bytes` green on BOTH platforms confirms the frozen package's bundled
+bytes are unchanged — the claim "no protocol change" is verified, not asserted.
