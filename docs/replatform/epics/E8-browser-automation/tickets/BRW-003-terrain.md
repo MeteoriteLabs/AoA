@@ -1,8 +1,9 @@
 # BRW-003 — Browser observation artifact pipeline — TERRAIN
 
 **Epic:** E8 · **Lane:** B (`C:\e8`) · **Mapped at:** `e7ba73a59`
-**Status:** terrain complete; **design BLOCKED on two questions (§1, §2)** that must be settled
-before any design work, not during it.
+**Status:** terrain complete. **§1 is ESCALATED** as a programme decision
+([`DECISION-REQUEST-byte-egress.md`](../DECISION-REQUEST-byte-egress.md)) and BRW-003 is not
+designed until it returns. **§2 is SETTLED** — see the decision recorded there.
 
 **Spec.** Outcome: stream metadata and store screenshots, DOM snapshots where allowed, trace,
 video and downloads as sensitive artifacts. Acceptance: event payloads remain bounded;
@@ -61,9 +62,18 @@ base** (`events.ts:347`), *not* inside the workload object. And
 a capture policy shipped **non-critical is silently ignorable — fail-OPEN on a security
 control**; shipped **critical is rejected by every worker**, including the current one.
 
-**Settle before design, two options only:** (i) the allow decision never crosses the wire —
-the control plane decides which *kinds* it will accept at commit and the guest always
-attempts; or (ii) a frozen change to `browserWorkloadV1Schema`, which is a Custodian STOP.
+**DECISION (programme owner, 2026-08-23): option (i) — the allow decision NEVER crosses the
+wire.** The guest always attempts capture; the control plane decides which artifact *kinds* it
+accepts at commit. No frozen change, no Custodian STOP, and the decision sits where the
+authority already is — the server is already digest-authoritative at commit
+(`artifact-commit.ts` heads the object and trusts the store, not the manifest).
+
+**The caveat, recorded rather than glossed:** the capture briefly exists inside the sandbox
+before being discarded at the door. Since the sandbox is destroyed at terminal state that
+satisfies a retention requirement, but it does NOT satisfy a literal "this data is never
+captured" requirement. If such a requirement ever appears, it needs option (ii) and its
+Custodian process — so "where allowed" means **where retained**, and BRW-006's UI copy must
+not imply otherwise.
 
 ## 3. Two unconnected pipelines, and BRW-003 sits on the seam
 
