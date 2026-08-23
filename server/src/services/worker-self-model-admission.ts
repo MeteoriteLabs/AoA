@@ -44,6 +44,39 @@ export type SelfModelReadDecision =
 
 const refuse = (reason: SelfModelReadRefusal): SelfModelReadDecision => ({ admit: false, reason });
 
+/**
+ * Map a refusal onto the wire, and it is a TWO-WAY branch on purpose.
+ *
+ * The first cut of this route collapsed all five refusals into a single coarse
+ * `unauthorized`, on a non-disclosure argument. That argument does not apply here and
+ * applying it cost the caller the one thing it needs: `unauthorized` is NON-RETRYABLE
+ * on the wire (only `throttled`/`internal_unavailable` may carry `retryAfterMs`), so a
+ * worker whose operator simply has not configured its placement profile yet was told,
+ * in effect, "stop forever".
+ *
+ * Non-disclosure protects against a FOREIGN caller probing for a resource it does not
+ * own. This route accepts NO identifier — the target is taken from the authenticated
+ * principal — so the caller has already proven ownership of the only row it can ask
+ * about. Telling it a fact about ITSELF discloses nothing to anyone.
+ *
+ * So:
+ *   profile_absent  -> `internal_unavailable` (503, retryable): an operator has not run
+ *                      `PUT .../placement-profile` yet. WAIT. This is a normal state on
+ *                      a freshly enrolled worker, not a fault.
+ *   everything else -> `unauthorized` (401, terminal): a credential, generation or
+ *                      lifecycle problem a human must resolve. STOP.
+ *
+ * That is exactly the branch the poll loop's own vocabulary already names
+ * (`reenrollment_required` vs a transient backoff), and without it a daemon cannot
+ * distinguish "not provisioned yet" from "revoked" — which is the question the whole
+ * fail-closed-on-boot decision depends on.
+ */
+export function selfModelRefusalWireCode(
+  reason: SelfModelReadRefusal,
+): "unauthorized" | "internal_unavailable" {
+  return reason === "profile_absent" ? "internal_unavailable" : "unauthorized";
+}
+
 export function admitSelfModelRead(input: SelfModelReadInput): SelfModelReadDecision {
   // 1. Credential strength FIRST, before any property of the target is consulted.
   //

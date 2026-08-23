@@ -35,8 +35,17 @@ checks it.
 | 5 | `AOA_WORKER_TARGET_PROFILE_ID` — set on **both** D1 worker containers — is **read by no daemon source file** | `docker-compose.d1.yml:297,339`; zero hits in `packages/worker-daemon/src` |
 | 6 | The frozen enroll response carries `workerId, targetId, deviceGeneration, providerConstraints` (a **ref**) and is `.strict()` | `transport.ts:197-208` |
 
-So the D1 lane's workers enroll, poll, and exercise the control-plane routes. **They dispatch no
-sandbox.** Fact 5 is worth dwelling on: the compose file looks like it provisions a profile, and
+~~So the D1 lane's workers enroll, poll, and exercise the control-plane routes.~~ **CORRECTED —
+that sentence is FALSE and it under-stated the gap.** The D1 workers do not enroll either:
+`bin/worker-daemon.ts:250` gates the whole enrolment block on
+`config.keyStoreMode === "os_keychain"`, and both D1 workers set
+`AOA_WORKER_KEY_STORE_MODE: "mounted_secret"` (`docker-compose.d1.yml:312,348`). The container entry
+injects no identity/receipt stores at all. The D1 workers boot, serve `/healthz`, and do nothing
+else — as `tests/d1/e6f-03-networked-smoke.test.mjs:8-9` states outright: *"There is NO live
+worker-daemon loop — the harness plays the worker with HTTP calls + real proofs."*
+
+**Consequence for sizing:** "default OFF" in D1 is currently indistinguishable from "cannot enrol",
+so a flag-off gate there would prove nothing. Fact 5 is worth dwelling on: the compose file looks like it provisions a profile, and
 nothing consumes it. A reader checking "is dispatch wired?" by looking at the topology would
 conclude yes.
 
@@ -46,9 +55,18 @@ conclude yes.
 
 | Field | Source | State |
 |---|---|---|
-| `report: WorkerHelloV1` | the worker's own self-report | ✅ **local** — the daemon already builds this for enroll |
+| `report: WorkerHelloV1` | the worker's own self-report | ⚠️ **CORRECTED — buildable locally, IRRELEVANT locally.** See below. |
 | `registeredTargetProfile: RegisteredTargetProfileV1` | **server authority** | ❌ not delivered |
 | `verifiedProviderConstraints: VerifiedProviderConstraintProfileV1` | **server authority**, branded | ❌ not delivered (enroll gives a *ref*) |
+
+> ★ **THE `report` ROW WAS THE SIZING ERROR IN THIS DOCUMENT.** The worker's local hello is not what
+> the server matches on. The server runs the matcher over its OWN stored copy,
+> `workers.profile_snapshot` (`job-leasing.ts:562-565,725-727`), whose only two writers are
+> `request.hello` at enrolment (`worker-enrollment.ts:444,470`). **There is no update channel.** And
+> the daemon's only production hello builder is `buildDesktopHello`, whose header says it exists to
+> emit a desktop that *"can never be matched work"*. So a daemon can assemble a perfect
+> `WorkerSelfModel`, self-check correctly, and be offered nothing — forever. Composing the loop does
+> not, by itself, produce a worker that receives work.
 
 ## ★ 3. Both missing artifacts ALREADY EXIST server-side and are already written
 

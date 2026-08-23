@@ -10,8 +10,12 @@
 import { describe, expect, it } from "vitest";
 import {
   admitSelfModelRead,
+  selfModelRefusalWireCode,
   type SelfModelReadInput,
+  type SelfModelReadRefusal,
 } from "../services/worker-self-model-admission.js";
+
+type ExecutionSecretMintRefusalLike = SelfModelReadRefusal;
 
 function input(overrides: Partial<SelfModelReadInput> = {}): SelfModelReadInput {
   return {
@@ -136,5 +140,32 @@ describe("admitSelfModelRead — absent profile (design 5)", () => {
       revokedAt: "2026-08-01T00:00:00.000Z",
       hasRegisteredProfile: false,
     }))).toEqual({ admit: false, reason: "target_revoked" });
+  });
+});
+
+describe("selfModelRefusalWireCode — the retryable/terminal branch", () => {
+  it("makes an unconfigured target RETRYABLE, because an operator simply has not acted yet", () => {
+    // `unauthorized` is non-retryable on the wire (only throttled/internal_unavailable
+    // may carry retryAfterMs). Collapsing this into it told a freshly-enrolled worker
+    // "stop forever" for a state that resolves by itself when an operator configures it.
+    expect(selfModelRefusalWireCode("profile_absent")).toBe("internal_unavailable");
+  });
+
+  it.each([
+    "legacy_authority_refused",
+    "generation_stale",
+    "target_revoked",
+    "target_disabled",
+  ] as const)("keeps %s terminal — a human must resolve it", (reason) => {
+    expect(selfModelRefusalWireCode(reason)).toBe("unauthorized");
+  });
+
+  it("covers every refusal in the union, so a new one cannot default to retryable", () => {
+    const ALL: ExecutionSecretMintRefusalLike[] = [
+      "legacy_authority_refused", "generation_stale", "target_revoked",
+      "target_disabled", "profile_absent",
+    ];
+    expect(ALL.filter((r) => selfModelRefusalWireCode(r) === "internal_unavailable"))
+      .toEqual(["profile_absent"]);
   });
 });

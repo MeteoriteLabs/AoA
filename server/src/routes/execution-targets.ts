@@ -41,7 +41,10 @@ import {
 } from "../middleware/worker-session-auth.js";
 import { sendWorkerProtocolError } from "../services/worker-protocol-http.js";
 import { loadWorkerSelfModel } from "../services/execution-targets.js";
-import { admitSelfModelRead } from "../services/worker-self-model-admission.js";
+import {
+  admitSelfModelRead,
+  selfModelRefusalWireCode,
+} from "../services/worker-self-model-admission.js";
 
 const uuidParam = z.string().uuid();
 const selfModelReadBody = z.object({
@@ -389,8 +392,11 @@ export function executionTargetRoutes(opts: {
         // "no such target" and "never configured". A caller learns it may not read a
         // self-model, never which of the reasons applied — otherwise this route
         // becomes an oracle for target existence, generation and revocation state.
-        const deny = () => {
-          sendWorkerProtocolError(req, res, "unauthorized", opts.workerSession?.now?.() ?? new Date());
+        // A credential/lifecycle refusal is terminal; "an operator has not configured
+        // this target yet" is RETRYABLE. See `selfModelRefusalWireCode` for why telling
+        // an authenticated owner a fact about its own target discloses nothing.
+        const deny = (code: "unauthorized" | "internal_unavailable" = "unauthorized") => {
+          sendWorkerProtocolError(req, res, code, opts.workerSession?.now?.() ?? new Date());
         };
 
         // Refuse the weaker credential BEFORE touching the database. The decision
@@ -418,7 +424,7 @@ export function executionTargetRoutes(opts: {
           hasProviderConstraintProfile: selfModel.providerConstraintProfile !== null,
         });
         if (!decision.admit) {
-          deny();
+          deny(selfModelRefusalWireCode(decision.reason));
           return;
         }
 
