@@ -235,6 +235,11 @@ jobs:
           node --test scripts/check-frozen-worker-protocol-consumer.test.mjs
           node --test scripts/check-frozen-worker-protocol-consumer-isolation.test.mjs
 
+      - name: Programme dependency graph (the plan may not schedule work behind an unscheduled blocker)
+        run: |
+          node --test scripts/lib/__tests__/dependency-graph.test.mjs
+          node scripts/check-dependency-graph.mjs
+
       - name: Guard inventory (every check declares what runs it)
         run: |
           node --test scripts/lib/__tests__/guard-inventory.test.mjs

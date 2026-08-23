@@ -16,6 +16,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-dependency-graph.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow"
+    },
     "scripts/check-desktop-surface-disabled.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"
@@ -47,11 +51,11 @@
     },
     "scripts/check-frozen-worker-protocol-consumer.mjs": {
       "status": "ci",
-      "reason": "policy job \u2014 pnpm check:frozen-worker-protocol-v1 plus its two self-tests. Wired 2026-08-22: it had existed only as an npm script nothing invoked, which also omitted the required --source-sha."
+      "reason": "policy job — pnpm check:frozen-worker-protocol-v1 plus its two self-tests. Wired 2026-08-22: it had existed only as an npm script nothing invoked, which also omitted the required --source-sha."
     },
     "scripts/check-guard-inventory.mjs": {
       "status": "ci",
-      "reason": "policy job \u2014 this guard checks the others, and is checked by the same rule it applies"
+      "reason": "policy job — this guard checks the others, and is checked by the same rule it applies"
     },
     "scripts/check-image-deps-stages.mjs": {
       "status": "ci",
@@ -59,7 +63,7 @@
     },
     "scripts/check-release-admission.mjs": {
       "status": "ci_logic_only",
-      "reason": "REL-004 promotion gate. It has no release directory to check until a promotion pipeline with a recorded allowlist exists (REL-004-result.md \u00a75); its end-to-end CLI suite runs in CI and exercises the real invocation.",
+      "reason": "REL-004 promotion gate. It has no release directory to check until a promotion pipeline with a recorded allowlist exists (REL-004-result.md §5); its end-to-end CLI suite runs in CI and exercises the real invocation.",
       "provenTest": "scripts/check-release-admission.test.mjs"
     },
     "scripts/check-sandbox-coding-disposition.mjs": {
@@ -116,7 +120,7 @@
     },
     "scripts/verify-image-admission.mjs": {
       "status": "dormant",
-      "reason": "SUPERSEDED by check-release-admission.mjs (REL-004), which calls the same evaluateAdmission across all five artifact classes. This CLI was never invoked by anything \u2014 the orphan that REL-004's terrain map found."
+      "reason": "SUPERSEDED by check-release-admission.mjs (REL-004), which calls the same evaluateAdmission across all five artifact classes. This CLI was never invoked by anything — the orphan that REL-004's terrain map found."
     },
     "scripts/verify-marketplace-recovery-preflight.mjs": {
       "status": "dormant",
