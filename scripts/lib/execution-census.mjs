@@ -50,6 +50,7 @@ export function stripCommentLines(text) {
  * @param {Map<string,string>} input.stepRunText  "<workflow>::<step name>" -> that step's run: block
  * @param {string[]} input.vitestProjects      the hand-maintained projects[] from vitest.config.ts
  * @param {string[]} input.packagesWithSpecs   packages containing at least one *.test.ts(x)
+ * @param {string[]} input.vitestConfigPackages packages owning their own vitest.config.ts
  */
 export function evaluateExecutionCensus({
   mjsTestFiles = [],
@@ -57,6 +58,7 @@ export function evaluateExecutionCensus({
   stepRunText = new Map(),
   vitestProjects = [],
   packagesWithSpecs = [],
+  vitestConfigPackages = [],
 }) {
   const problems = [];
   const files = (manifest && manifest.files) || {};
@@ -117,6 +119,25 @@ export function evaluateExecutionCensus({
     }
   }
 
+  // ★ THE SECOND SPEC NAMING CONVENTION — added because the first version of this guard
+  // was BLIND to a live instance. `packagesWithSpecs` matches `*.test.ts(x)`, and
+  // `packages/plugins/examples/plugin-authoring-smoke-example` names its suite
+  // `tests/plugin.spec.ts` (its own vitest config sets `include: ["tests/**/*.spec.ts"]`).
+  // It is a pnpm workspace member, it is in no root project, nothing invokes it, and it
+  // passes — a whole suite that has never run, invisible to the very census written to
+  // find such things.
+  //
+  // Keyed on OWNING A vitest.config.ts rather than on the `.spec.ts` suffix, deliberately:
+  // `tests/e2e/**` and `tests/release-smoke/**` are full of `.spec.ts` files that belong to
+  // PLAYWRIGHT (they carry playwright.config.ts and no vitest config). Matching the suffix
+  // would flag those as unrun vitest suites — a false positive, which is how a guard earns
+  // its own deletion.
+  for (const pkg of [...new Set(vitestConfigPackages.map(normalize))].sort()) {
+    if (!projects.has(pkg)) {
+      problems.push({ kind: "vitest_config_not_in_projects", file: pkg, detail: "owns a vitest.config.ts but is absent from the root projects[] — the root run never reaches it" });
+    }
+  }
+
   return {
     ok: problems.length === 0,
     problems,
@@ -127,6 +148,7 @@ export function evaluateExecutionCensus({
       unrun: Object.values(files).filter((e) => e && e.status === "unrun").length,
       vitestProjects: projects.size,
       packagesWithSpecs: new Set(packagesWithSpecs.map(normalize)).size,
+      vitestConfigPackages: new Set(vitestConfigPackages.map(normalize)).size,
     },
   };
 }

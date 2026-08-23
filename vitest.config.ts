@@ -21,6 +21,6 @@ export default defineConfig({
     poolOptions: {
       forks: { maxForks, minForks: 1 },
     },
-    projects: ["packages/adapter-utils", "packages/shared", "packages/db", "packages/worker-protocol", "packages/worker-daemon", "packages/sandbox-provider-contract", "packages/sandbox-fake-provider", "packages/browser-runtime", "packages/sandbox-e2b-provider", "packages/worker-keystore", "packages/adapters/opencode-local", "packages/adapters/gemini-local", "packages/adapters/codex-local", "packages/adapters/claude-local", "packages/adapters/grok-local", "packages/adapters/pi-local", "packages/adapters/acpx-local", "packages/adapters/cursor-local", "packages/adapters/cursor-cloud", "packages/adapters/openclaw", "packages/adapters/openclaw-gateway", "server", "ui", "cli"],
+    projects: ["packages/adapter-utils", "packages/shared", "packages/db", "packages/worker-protocol", "packages/worker-daemon", "packages/sandbox-provider-contract", "packages/sandbox-fake-provider", "packages/browser-runtime", "packages/sandbox-e2b-provider", "packages/worker-keystore", "packages/adapters/opencode-local", "packages/adapters/gemini-local", "packages/adapters/codex-local", "packages/adapters/claude-local", "packages/adapters/grok-local", "packages/adapters/pi-local", "packages/adapters/acpx-local", "packages/adapters/cursor-local", "packages/adapters/cursor-cloud", "packages/adapters/openclaw", "packages/adapters/openclaw-gateway", "server", "ui", "cli", "packages/plugins/examples/plugin-authoring-smoke-example"],
   },
 });

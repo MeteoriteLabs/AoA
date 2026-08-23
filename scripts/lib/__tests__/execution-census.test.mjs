@@ -110,3 +110,20 @@ test("path separators are normalised so a Windows walk matches a POSIX declarati
   });
   assert.equal(r.ok, true);
 });
+
+test("★ a package owning a vitest.config.ts but absent from projects[] FAILS", () => {
+  // The blind spot this guard shipped with. `packages/plugins/examples/plugin-authoring-smoke-example`
+  // names its suite `tests/plugin.spec.ts`, so the *.test.ts(x) walk never saw it — a whole
+  // passing suite that had never run, invisible to the census written to find such things.
+  const r = evaluateExecutionCensus({
+    ...BASE,
+    vitestConfigPackages: ["server", "packages/orphan"],
+  });
+  assert.equal(r.ok, false);
+  assert.ok(r.problems.some((p) => p.kind === "vitest_config_not_in_projects" && p.file === "packages/orphan"));
+});
+
+test("the vitest-config axis does not fire when the package IS listed", () => {
+  const r = evaluateExecutionCensus({ ...BASE, vitestConfigPackages: ["server"] });
+  assert.equal(r.ok, true);
+});

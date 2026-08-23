@@ -116,6 +116,31 @@ export function readVitestProjects(repoRoot) {
   return m ? [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]) : [];
 }
 
+/**
+ * Every package owning its own `vitest.config.ts`.
+ *
+ * A second, independent discovery axis. The spec-suffix walk below misses a package whose
+ * suite is named `*.spec.ts` (one exists, and had never run); keying on the config file
+ * catches it without dragging in the playwright `.spec.ts` trees, which own a
+ * playwright.config.ts and no vitest config.
+ */
+export function findVitestConfigPackages(repoRoot) {
+  const found = [];
+  const walk = (rel, depth) => {
+    if (depth > 6) return;
+    const abs = path.join(repoRoot, rel);
+    if (!existsSync(abs)) return;
+    let entries;
+    try { entries = readdirSync(abs, { withFileTypes: true }); } catch { return; }
+    if (entries.some((d) => d.isFile() && d.name === "vitest.config.ts")) found.push(rel);
+    for (const d of entries) {
+      if (d.isDirectory() && !d.isSymbolicLink() && !EXCLUDED.has(d.name)) walk(`${rel}/${d.name}`, depth + 1);
+    }
+  };
+  for (const r of ["packages", "server", "ui", "cli"]) walk(r, 0);
+  return found.sort();
+}
+
 /** Every package (nearest ancestor with a package.json) containing at least one vitest spec. */
 export function findPackagesWithSpecs(repoRoot) {
   const found = new Set();
@@ -164,6 +189,7 @@ function main() {
     stepRunText: collectStepRunText(repoRoot),
     vitestProjects: readVitestProjects(repoRoot),
     packagesWithSpecs: findPackagesWithSpecs(repoRoot),
+    vitestConfigPackages: findVitestConfigPackages(repoRoot),
   });
 
   if (!r.ok) {
@@ -180,7 +206,8 @@ function main() {
   const c = r.counts;
   console.log(
     `execution-census: OK (${c.onDisk} *.test.mjs on disk, ${c.runs} declared running, ${c.unrun} declared unrun; ` +
-      `${c.packagesWithSpecs} packages with vitest specs, all present among ${c.vitestProjects} projects). ` +
+      `${c.packagesWithSpecs} packages with vitest specs and ${c.vitestConfigPackages} owning a vitest config, ` +
+      `all present among ${c.vitestProjects} projects). ` +
       `NOTE: 'runs' means the declaration still matches the tree, NOT observed execution — see lib header.`,
   );
 }
