@@ -21,7 +21,11 @@
 //
 //     batch            declared, NOT enforced -> input passes through byte-identically
 //     browser_session  declared, ENFORCED     -> normalised to the frozen workload shape
-//     service          declared, NOT enforced -> input passes through byte-identically
+//     service          declared, ENFORCED     -> SVC-001; normalised, ingress refused
+//
+// SVC-001 promoted `service` from not_enforced to enforced. Before that promotion a
+// service job carrying {"port": 8080} was accepted with 201, persisted and hashed, and
+// then died silently at envelope parse with no lease and no error.
 //
 // A `not_enforced` slot is deliberately inert: it returns the caller's input unchanged, so
 // adding this registry changes the runtime behaviour of the paths this epic does not own by
@@ -29,6 +33,7 @@
 // guarded by tests.
 import { WORKLOAD_TYPES, type WorkloadType } from "@armyofagents/worker-protocol";
 import { normalizeBrowserJobInput } from "./browser-job-config.js";
+import { normalizeServiceJobInput } from "./service-job-config.js";
 
 export type WorkloadInputValidationResult =
   | { readonly ok: true; readonly value: Record<string, unknown> }
@@ -66,11 +71,11 @@ export const WORKLOAD_INPUT_VALIDATORS: Readonly<Record<WorkloadType, WorkloadVa
       },
     },
     service: {
-      status: "not_enforced",
-      reason:
-        "Service workload input is defined by SVC-001, which has not been implemented yet. " +
-        "This slot is declared so the exhaustiveness guard covers it and SVC-001 wires a " +
-        "validator here rather than building a parallel path.",
+      status: "enforced",
+      validate: (raw: unknown): WorkloadInputValidationResult => {
+        const result = normalizeServiceJobInput(raw);
+        return result.ok ? { ok: true, value: result.value } : { ok: false, reason: result.reason };
+      },
     },
   } satisfies Record<WorkloadType, WorkloadValidatorSlot>);
 

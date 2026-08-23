@@ -59,8 +59,11 @@ describe("BRW-001 — only browser_session is enforced in this ticket", () => {
     expect(WORKLOAD_INPUT_VALIDATORS.batch.status).toBe("not_enforced");
   });
 
-  it("leaves service not enforced", () => {
-    expect(WORKLOAD_INPUT_VALIDATORS.service.status).toBe("not_enforced");
+  it("SVC-001 promoted service to ENFORCED", () => {
+    // Was `not_enforced` when BRW-001 declared the slot, with a reason naming SVC-001 as
+    // the ticket that would wire it. SVC-001 did. Before the promotion, a service job
+    // carrying {"port": 8080} was accepted with 201 and then never leased, silently.
+    expect(WORKLOAD_INPUT_VALIDATORS.service.status).toBe("enforced");
   });
 });
 
@@ -83,11 +86,12 @@ describe("BRW-001 — a not_enforced slot passes input through UNCHANGED", () =>
       expect(JSON.stringify(result.value)).toBe(JSON.stringify(raw));
     });
 
-    it(`returns ${name} byte-identically for service`, () => {
-      const result = validateWorkloadInput("service", raw);
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      expect(JSON.stringify(result.value)).toBe(JSON.stringify(raw));
+    it(`REFUSES ${name} for service now that SVC-001 enforces it`, () => {
+      // The inverse of the assertion this test used to make. These three fixtures are
+      // shapes the frozen serviceWorkloadV1Schema does not accept, so passing them
+      // through byte-identically is exactly what produced a null envelope and a job that
+      // never leased. Refusing them at submit is the fix.
+      expect(validateWorkloadInput("service", raw).ok).toBe(false);
     });
   }
 });

@@ -58,6 +58,7 @@ const CONVERSATION_A = "70000000-0000-4000-8000-000000000001";
 const CREW_RUN_A = "80000000-0000-4000-8000-000000000001";
 const BROWSER_RUN_A = "a0000000-0000-4000-8000-000000000001";
 const SERVICE_A = "b0000000-0000-4000-8000-000000000001";
+const SERVICE_INSTANCE_A = "b0000000-0000-4000-8000-0000000000f1";
 
 const SOURCE_CASES = [
   { kind: "task_run", runId: RUN_A, issueId: ISSUE_A, assigneeAgentId: AGENT_A },
@@ -126,9 +127,23 @@ function route(orgId = ORG_A, companyId = COMPANY_A): string {
  * configuration for the browser case. Do NOT "simplify" this back to one shared blob.
  */
 function command(idempotencyKey: string, source: Record<string, unknown> = SOURCE_CASES[0], value = "alpha") {
+  // SVC-001 promoted the `service` slot to ENFORCED, so a service submission must now
+  // carry a real serviceWorkloadV1 rather than the generic {value, nested} probe payload.
+  // Before the promotion this fixture's generic input submitted with a 201 and then never
+  // leased, which is the silent failure the validator registry exists to prevent.
   const input = source.kind === "browser_request"
     ? { locale: "en-GB", recordTrace: true, maxSessionSeconds: 600 }
-    : { value, nested: { stable: true } };
+    : source.kind === "service_reconcile"
+      ? {
+          serviceId: SERVICE_A,
+          serviceInstanceId: SERVICE_INSTANCE_A,
+          generation: 1,
+          command: "node",
+          args: ["server.js", value],
+          checkpointArtifactId: null,
+          gracefulStopSeconds: 30,
+        }
+      : { value, nested: { stable: true } };
   return { idempotencyKey, source, input };
 }
 

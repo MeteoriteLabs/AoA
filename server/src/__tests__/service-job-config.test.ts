@@ -1,0 +1,160 @@
+// -----------------------------------------------------------------------------
+// SVC-001 clause (d) — "no public port/ingress configuration is accepted".
+//
+// ★ WHAT THIS CLAUSE DOES AND DOES NOT BUY. It governs DECLARATIVE CONFIGURATION,
+// not reachability. E2B serves arbitrary in-sandbox ports to the public internet
+// unauthenticated, at a URL derivable from the sandboxId (measured in BRW-002's
+// terrain, this same lane). A service that merely LISTENS is therefore publicly
+// reachable with no ingress configuration at all. Nothing in this file changes
+// that, and nobody should read a green clause (d) as "services cannot be publicly
+// reached" — those are different guarantees and only one is delivered here.
+//
+// Consequently `args` is deliberately NOT scanned for `--port`. Rejecting a
+// process argument would be security theatre: it would not close the reachability
+// path, and it WOULD break legitimate services that bind a port internally, which
+// is the normal case. The clause is about what the API accepts as configuration.
+//
+// THE RED STATE THIS STARTS FROM IS REAL, NOT VACUOUS. Today the `service` slot in
+// WORKLOAD_INPUT_VALIDATORS is `not_enforced` and passes input through
+// byte-identically, and FORBIDDEN_WIRE_KEYS carries no port/host/url. So a service
+// job carrying {"port": 8080} is accepted with 201, persisted, hashed — and then
+// dies silently at envelope parse with no lease and no error. That silent
+// never-leases failure is precisely what BRW-001 built this registry to prevent.
+// -----------------------------------------------------------------------------
+
+import { describe, expect, it } from "vitest";
+import { serviceWorkloadV1Schema } from "@armyofagents/worker-protocol";
+
+import { normalizeServiceJobInput, SERVICE_INGRESS_DENY_KEYS } from "../services/service-job-config.js";
+import { WORKLOAD_INPUT_VALIDATORS, validateWorkloadInput } from "../services/workload-input-validators.js";
+
+const SERVICE_ID = "11111111-1111-4111-8111-111111111111";
+const INSTANCE_ID = "22222222-2222-4222-8222-222222222222";
+
+function validInput(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    serviceId: SERVICE_ID,
+    serviceInstanceId: INSTANCE_ID,
+    generation: 1,
+    command: "node",
+    args: ["server.js"],
+    checkpointArtifactId: null,
+    gracefulStopSeconds: 30,
+    ...overrides,
+  };
+}
+
+describe("SVC-001 (d) — the service slot is ENFORCED, not declared-and-inert", () => {
+  it("is registered as enforced", () => {
+    // RED STATE: this slot is `not_enforced` today, with a reason naming SVC-001 as the
+    // ticket that would wire it. This is that wiring.
+    expect(WORKLOAD_INPUT_VALIDATORS.service.status).toBe("enforced");
+  });
+
+  it("no longer passes service input through byte-identically", () => {
+    const result = validateWorkloadInput("service", { anything: "goes" });
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("SVC-001 (d) — ingress configuration is refused", () => {
+  for (const key of SERVICE_INGRESS_DENY_KEYS) {
+    it(`refuses \`${key}\`, and says so by name`, () => {
+      const result = normalizeServiceJobInput(validInput({ [key]: 8080 }));
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reason).toBe("ingress_configuration_rejected");
+    });
+  }
+
+  it("refuses an unknown field that is NOT ingress with a different reason", () => {
+    // The two refusals must be distinguishable. If every rejection collapsed to one
+    // reason, the ingress guard would be indistinguishable from the allow-list and the
+    // deny-set could be deleted without a single test going red.
+    const result = normalizeServiceJobInput(validInput({ someOtherField: 1 }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("unknown_field");
+  });
+
+  it("does NOT scan args for --port — the clause governs configuration, not arguments", () => {
+    // Asserted deliberately so a later reader does not "harden" this into theatre.
+    const result = normalizeServiceJobInput(validInput({ args: ["server.js", "--port", "8080"] }));
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("SVC-001 (d) — the deny-set cannot silently stop mattering", () => {
+  it("every deny key is genuinely absent from the frozen schema", () => {
+    // If a deny key were ever ADDED to the frozen workload, the allow-list would accept it
+    // while the deny-set rejected it — a contradiction that should fail loudly here rather
+    // than surprise someone at runtime.
+    const allowed = new Set(Object.keys(serviceWorkloadV1Schema.shape));
+    for (const key of SERVICE_INGRESS_DENY_KEYS) {
+      expect(allowed.has(key), `${key} is BOTH allowed and denied`).toBe(false);
+    }
+  });
+
+  it("★ contains the named core keys — a loop-generated suite SHRINKS silently", () => {
+    // FOUND BY MUTATION. The per-key tests above are generated by iterating the deny-set,
+    // so deleting a key does not fail a test — it DELETES that key's test, and the suite
+    // stays green with one fewer case. Removing "port", the key this ticket's acceptance
+    // clause literally names, was survivable until this assertion existed.
+    //
+    // Same failure class as a guard nothing invokes: a check that stops existing is not a
+    // check that fails. This list is stated explicitly, outside the loop, so shrinking it
+    // is loud.
+    for (const required of ["port", "ports", "ingress", "publicUrl", "hostname", "expose"]) {
+      expect(SERVICE_INGRESS_DENY_KEYS, `the deny-set lost "${required}"`).toContain(required);
+    }
+  });
+
+  it("the deny-set is non-empty", () => {
+    // Deriving the allow-list from the frozen schema auto-widens as the schema grows, so
+    // the deny-set needs its own reason to exist and its own mutation signature. An empty
+    // set would make every ingress test above pass vacuously.
+    expect(SERVICE_INGRESS_DENY_KEYS.length).toBeGreaterThan(0);
+  });
+});
+
+describe("SVC-001 — a valid service workload survives normalisation unchanged in meaning", () => {
+  it("accepts input that satisfies the frozen schema", () => {
+    const result = normalizeServiceJobInput(validInput());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(serviceWorkloadV1Schema.safeParse(result.value).success).toBe(true);
+  });
+
+  it("produces a STABLE key order, so an equivalent resubmission hashes identically", () => {
+    // inputHash is computed over this value; an unstable order would make two identical
+    // submissions produce different digests and defeat idempotency.
+    const a = normalizeServiceJobInput(validInput());
+    const b = normalizeServiceJobInput({
+      gracefulStopSeconds: 30,
+      checkpointArtifactId: null,
+      args: ["server.js"],
+      command: "node",
+      generation: 1,
+      serviceInstanceId: INSTANCE_ID,
+      serviceId: SERVICE_ID,
+    });
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect(JSON.stringify(a.value)).toBe(JSON.stringify(b.value));
+  });
+
+  it("refuses input the frozen schema would refuse, rather than passing it to a null envelope", () => {
+    // The whole point of the registry: catch it at submit with a 400 instead of accepting
+    // 201 and never leasing.
+    for (const bad of [
+      validInput({ generation: 0 }),
+      validInput({ command: "" }),
+      validInput({ gracefulStopSeconds: 301 }),
+      validInput({ serviceId: "not-a-uuid" }),
+      "not an object",
+      null,
+    ]) {
+      expect(normalizeServiceJobInput(bad).ok, JSON.stringify(bad)).toBe(false);
+    }
+  });
+});
