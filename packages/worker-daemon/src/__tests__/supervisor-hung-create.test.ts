@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createMetrics } from "../metrics/metrics.js";
-import { createFakeSandboxProvider } from "../supervisor/fake-provider.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { createSupervisor } from "../supervisor/supervisor.js";
 import { collectingSink, makeHandoff, SUPERVISOR_IDENTITY } from "./support/supervisor-fixtures.js";
 

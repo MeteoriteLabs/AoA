@@ -12,7 +12,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createFakeSandboxProvider } from "../supervisor/fake-provider.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { reconcile } from "../supervisor/reconcile.js";
 import { buildControlPlaneIsOrphan, probeLeaseAuthority } from "../supervisor/startup-reconcile.js";
 

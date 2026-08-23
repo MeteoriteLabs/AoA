@@ -377,13 +377,10 @@ export type {
   RedactedResourceProjection,
 } from "./supervisor/provider.js";
 
-export { createFakeSandboxProvider } from "./supervisor/fake-provider.js";
-export type {
-  FakeSandboxProvider,
-  FakeProviderScript,
-  FakeProviderCall,
-  SeededResource,
-} from "./supervisor/fake-provider.js";
+// WRK-009 — the in-process fake provider is NO LONGER exported and no longer lives in
+// the production source tree. It fabricates success (exit 0 -> terminal "succeeded"),
+// it shipped in the worker image, and it was the only SandboxProvider the daemon could
+// import. It now sits with every other double in src/__tests__/support/.
 
 export { EffectAuthority, EffectAuthorityWithdrawnError } from "./supervisor/effect-authority.js";
 export type { EffectFence } from "./supervisor/effect-authority.js";

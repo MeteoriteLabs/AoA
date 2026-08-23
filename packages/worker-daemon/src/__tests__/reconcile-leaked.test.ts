@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { createMetrics } from "../metrics/metrics.js";
-import { createFakeSandboxProvider } from "../supervisor/fake-provider.js";
-import type { SeededResource } from "../supervisor/fake-provider.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
+import type { SeededResource } from "./support/fake-provider.js";
 import { reconcile } from "../supervisor/reconcile.js";
 import { makeCtx, sampleLabels } from "./support/supervisor-fixtures.js";
 

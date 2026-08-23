@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import * as childProcess from "node:child_process";
 
-import { createFakeSandboxProvider } from "../supervisor/fake-provider.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { createSupervisor } from "../supervisor/supervisor.js";
 import { collectingSink, makeHandoff, SUPERVISOR_IDENTITY } from "./support/supervisor-fixtures.js";
 

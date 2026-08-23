@@ -25,7 +25,7 @@ import { createEventOutboxDrain } from "../events/event-outbox-drain.js";
 import { DurableWorkerEventSink } from "../events/durable-event-sink.js";
 import { deriveStreamKey, openEventOutboxStore, type DurableEventStore } from "../events/event-outbox-store.js";
 import { uploadEventBatchOnce } from "../events/event-upload.js";
-import { createFakeSandboxProvider } from "../supervisor/fake-provider.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { createStartupReconciler } from "../supervisor/startup-reconcile.js";
 
 import type { FakeControlPlane } from "./support/fake-control-plane.js";

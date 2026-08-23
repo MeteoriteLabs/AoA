@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Logger } from "../logging/logger.js";
 import { createMetrics } from "../metrics/metrics.js";
-import { createFakeSandboxProvider } from "../supervisor/fake-provider.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { RECONCILE_PROVIDER_OUTAGE_EVENT, reconcile } from "../supervisor/reconcile.js";
 import { makeCtx, sampleLabels } from "./support/supervisor-fixtures.js";
 

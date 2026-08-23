@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { createFakeSandboxProvider } from "../supervisor/fake-provider.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { SandboxNotFoundError } from "../supervisor/provider.js";
-import type { SeededResource } from "../supervisor/fake-provider.js";
+import type { SeededResource } from "./support/fake-provider.js";
 import { makeCtx, sampleLabels } from "./support/supervisor-fixtures.js";
 
 function seed(n: number): SeededResource[] {

@@ -48,7 +48,7 @@ import {
   type SandboxProvider,
   type SandboxState,
   type StopResult,
-} from "./provider.js";
+} from "../../supervisor/provider.js";
 
 /** A resource the fake is pre-seeded with (reconcile / list-pagination tests). */
 export interface SeededResource {

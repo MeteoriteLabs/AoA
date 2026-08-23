@@ -43,6 +43,10 @@ on:
       - "scripts/check-staging-manifest.mjs"
       - "scripts/lib/staging-manifest-invariants.mjs"
       - "docker/**"
+      # WRK-009/F7: `.dockerignore` decides what enters EVERY image build context.
+      # It was not previously a trigger, so a change to it could alter the contents
+      # of both shipped images without the image-building lane ever running.
+      - ".dockerignore"
       - "tests/d1/**"
       - "scripts/check-d1-compose.mjs"
       - "scripts/collect-d1-evidence.mjs"
@@ -126,6 +130,32 @@ jobs:
             echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
             echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
           } > docker/d1/.env
+
+      - name: Least-privilege assertions on the BUILT images (DEP-001 / WRK-009)
+        run: |
+          set -euo pipefail
+          # WRK-009 — this file asserts, against the images just built above, that the
+          # worker ships NO fabricating test-double provider and no test tree of our own.
+          #
+          # It had NO CI INVOCATION ANYWHERE until this step. `pr.yml` runs only the
+          # STATIC `dockerfile-static.test.mjs` and says the built-image lane "is wired
+          # by DEP-004's image lane" — which does not exist. This job is the only place
+          # in the repo that has a Docker daemon AND both images built, so the
+          # assertions belong here.
+          #
+          # Proof they had never run: the control-plane half read `CONTROL_PLANE_IMAGE`
+          # while build.sh emits `CONTROL-PLANE_IMAGE`, so it would have crashed on
+          # `docker inspect undefined` the very first time it executed. A latent
+          # never-triggered crash IS the evidence of non-execution.
+          # NOT wired here: image-startup-smoke.test.mjs. It has never run either and
+          # carries two defects of its own (the same key-parser bug, plus a `--tmpfs
+          # /worker` that lands root-owned over the Dockerfile's `chown node:node`, so a
+          # non-root worker cannot write its state dir). D1 itself is unaffected — it
+          # mounts the NAMED VOLUME `d1-worker-a-state:/worker`, which Docker initialises
+          # from the image and which therefore keeps that ownership. Fixing the test's
+          # mount semantics is its own ticket; wiring it red here would say the worker
+          # image is broken when it is not.
+          AOA_DEP001_IMAGE_TEST=1 node --test docker/images/__tests__/image-contents.test.mjs
 
       - name: Bring up the D1 stack
         run: docker compose -f "$COMPOSE_FILE_PATH" up -d --wait --wait-timeout 300

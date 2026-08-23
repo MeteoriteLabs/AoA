@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createFakeSandboxProvider } from "../supervisor/fake-provider.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { makeCtx, sampleLabels } from "./support/supervisor-fixtures.js";
 
 describe("provider-idempotency-replay — a repeated idempotency key returns the recorded result", () => {

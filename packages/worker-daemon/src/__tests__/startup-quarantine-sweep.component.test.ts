@@ -13,7 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createFakeSandboxProvider } from "../supervisor/fake-provider.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { createStartupReconciler, type StartupQuarantineCandidate } from "../supervisor/startup-reconcile.js";
 import { SessionTerminalError } from "../poll/poll-loop.js";
 import type { WorkerSession } from "../enrollment/enroll.js";

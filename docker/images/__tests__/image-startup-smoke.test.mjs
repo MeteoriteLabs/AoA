@@ -42,8 +42,18 @@ const env = {};
 before(() => {
   if (!ACTIVE) return;
   for (const line of readFileSync(DIGESTS, "utf8").split(/\r?\n/)) {
-    const m = line.match(/^([A-Z_]+)=(.*)$/);
-    if (m) env[m[1]] = m[2];
+    // build.sh emits `CONTROL-PLANE_IMAGE` (bash `^^` does not translate the
+    // hyphen), which `[A-Z_]+` silently dropped — so the control-plane case here
+    // ran against `undefined:latest`. Same defect as image-contents.test.mjs.
+    // NOTE: fixing this does NOT make this file pass. Its worker case mounts
+    // `--tmpfs /worker`, which lands root-owned OVER the Dockerfile's
+    // `chown node:node /worker`, so the non-root daemon dies with
+    // "mkdir: cannot create directory '/worker/tmp': Permission denied".
+    // That is a defect in THIS TEST, not in the image: D1 uses a named volume,
+    // which inherits the image's ownership. Tracked separately; this file is
+    // deliberately still not wired into CI.
+    const m = line.match(/^([A-Z0-9_-]+)=(.*)$/);
+    if (m) env[m[1].replace(/-/g, "_")] = m[2];
   }
 });
 

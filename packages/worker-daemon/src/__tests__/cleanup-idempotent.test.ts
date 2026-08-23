@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { CleanupAuthority, CleanupAuthorityDeniedError } from "../supervisor/cleanup-authority.js";
-import { createFakeSandboxProvider } from "../supervisor/fake-provider.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { makeCtx, sampleLabels } from "./support/supervisor-fixtures.js";
 
 const fence = { jobId: "job-1", attempt: 1, leaseId: "lease-1", fenceToken: "f".repeat(40), deviceGeneration: 1, observedSeq: 0 };

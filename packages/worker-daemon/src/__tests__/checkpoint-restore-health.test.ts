@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { EffectAuthority } from "../supervisor/effect-authority.js";
-import { createFakeSandboxProvider } from "../supervisor/fake-provider.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { makeCtx, sampleLabels } from "./support/supervisor-fixtures.js";
 
 const fence = {

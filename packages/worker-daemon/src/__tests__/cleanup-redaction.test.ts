@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { CleanupAuthority } from "../supervisor/cleanup-authority.js";
-import { createFakeSandboxProvider } from "../supervisor/fake-provider.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { hashResourceLabels } from "../supervisor/provider.js";
 import { makeCtx, sampleLabels } from "./support/supervisor-fixtures.js";
 

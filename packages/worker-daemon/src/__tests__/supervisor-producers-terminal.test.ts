@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { verifyWorkerEventDigestV1 } from "@armyofagents/worker-protocol";
 
-import { createFakeSandboxProvider } from "../supervisor/fake-provider.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { createSupervisor } from "../supervisor/supervisor.js";
 import { collectingSink, makeGate, makeHandoff, SUPERVISOR_IDENTITY, waitFor } from "./support/supervisor-fixtures.js";
 import { sha256hex } from "./support/poll-fixtures.js";

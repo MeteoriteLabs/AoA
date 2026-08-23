@@ -149,6 +149,100 @@ locally with "column does not exist" and nothing would point at the cause.
 Invisible to every static check, to CI, and to reading the script. Ten minutes to hit once
 something actually ran. **This is the argument for the spike, in one bug.**
 
+### * F5 - Enrolment input is WINDOWS-ONLY, and the entire fleet is Linux
+
+`assertLocalAbsolutePath` (`packages/worker-daemon/src/enrollment/enrollment-input.ts:58-72`)
+normalizes `/` into a backslash and then requires `/^[A-Za-z]:\/`. A POSIX path — `/worker/state` —
+becomes `\worker\state`, matches no drive letter, and throws `"path is not an absolute local path"`.
+
+The function is careful and well-reasoned about hostile Windows path syntax (UNC, device namespace,
+long-path UNC). It is an allowlist of exactly one shape, and **that shape does not exist on Linux**.
+Both D1 workers and every staging container are Linux.
+
+**This sits BEHIND F1 and would have been the next wall.** Even if a container could obtain an
+identity, it could not present a local path to enrol with. Two independent blockers on the same hop,
+and the second is invisible until the first is fixed — which is precisely why walking the skeleton
+finds things that reading the plan does not.
+
+Own ticket. The fix is not "also accept a leading slash" without thought: the docstring's reasoning
+about ambiguous shapes has a POSIX analogue, and whoever owns it should state the accepted shape per
+platform rather than widen the regex.
+
+### * F6 - The worker image ships a provider that FABRICATES SUCCESS
+
+`createFakeSandboxProvider` lived in the daemon's own production source tree
+(`src/supervisor/fake-provider.ts`), was re-exported from the public barrel, and therefore shipped at
+`/worker-app/dist/supervisor/fake-provider.js`. Its default script returns exit 0; the supervisor
+maps that to `terminal{status:"succeeded"}`; the server completes a tenant attempt **for work that
+never ran**.
+
+No production constructor calls it, so this was a loaded footgun rather than a live vulnerability —
+but it is the ONLY `SandboxProvider` the daemon can import under E4-D01, `createSpecFor` already
+hardcodes `env: {}`, and **a fabricated success is byte-identical to a real one on every existing
+gate**. Closed by WRK-009.
+
+### *** F7 - The images were NOT REPRODUCIBLE FROM SOURCE (`.dockerignore` had no `dist` rule)
+
+Found because the F6 fix **did not work**: the file was moved out of the source tree, the whole suite
+passed, and `/worker-app/dist/supervisor/fake-provider.js` was STILL in the rebuilt image.
+
+`.dockerignore` excluded `node_modules` but never `dist`. So `COPY packages/worker-daemon/
+packages/worker-daemon/` (`docker/worker/Dockerfile:58`) carried the **developer's local `dist/`**
+into the build, and `tsc` then wrote into that same directory — without removing outputs whose source
+was gone. A file deleted or moved in source keeps shipping forever.
+
+The general statement is worse than the specific one: **every image depended on whatever `dist/`
+happened to be sitting on the machine that built it.** CI escapes it only because its tree starts
+clean, which also means CI can never detect it.
+
+Same shape as F4 (stale `dist/migrations`): a build output surviving a rebuild. Two instances in one
+day is a pattern, not a coincidence. Fixed by adding `**/dist`; verified safe because every
+Dockerfile compiles its own `dist` inside the image (`RUN pnpm build` / `RUN tsc`) and the
+`COPY --from=build` lines copy between STAGES, which `.dockerignore` does not affect.
+
+Measured side effect: the build context fell from **403 MB to 19.5 kB**.
+
+### *** F8 - The built-image test lane HAS NEVER RUN, and a latent crash proves it
+
+`docker/images/__tests__/image-contents.test.mjs` and `image-startup-smoke.test.mjs` had **no CI
+invocation anywhere in the repo**. `pr.yml:390` runs only the STATIC `dockerfile-static.test.mjs`
+and states the built-image lane "is wired by DEP-004's image lane" — **that lane does not exist**.
+`d1-merge-train.yml` builds both images and greps their tags for compose, but never runs the
+assertions.
+
+**The proof is a latent crash, not an absence of evidence.** `build.sh:52` emits an uppercased image
+name; bash `^^` uppercases without translating the hyphen, so the file records `CONTROL-PLANE_IMAGE`.
+Both test files parsed with `/^([A-Z_]+)=(.*)$/`, which does not match a hyphen, so those lines were
+silently dropped and `env.CONTROL_PLANE_IMAGE` was `undefined`. Every control-plane assertion ran
+`docker run undefined:latest`. **Had the lane ever executed with Docker present, it would have hard
+failed on the first run.** It never did.
+
+This is the programme's recurring failure class — *a check that nothing runs is not a check* — and it
+evaded the standing guard built for exactly it: `check-guard-inventory.mjs` scans only
+`scripts/check-*.mjs` and `scripts/verify-*.mjs`, so **test files are outside its scope**. The
+defect lived in the blind spot of its own detector. Extending that guard to cover
+`__tests__/*.test.mjs` is its own ticket and should be taken.
+
+Fixed in the consumer, deliberately: `d1-merge-train.yml` greps `^CONTROL-PLANE_IMAGE=` to point
+compose at the built tags, so "correcting" `build.sh` to emit an underscore would have silently
+broken D1 bring-up — a worse failure than the one being repaired.
+
+### F9 - `image-startup-smoke` mounts a root-owned tmpfs over a chowned directory
+
+With F8's parser fixed, the worker case still fails: `mkdir: cannot create directory
+'/worker/tmp': Permission denied`. `--tmpfs /worker:rw,size=32m` lands a fresh root-owned tmpfs
+**over** `docker/worker/Dockerfile:92-93`'s `mkdir -p /worker && chown node:node /worker`, and the
+container runs as `node`.
+
+**A defect in the TEST, not the image.** D1 mounts the named volume `d1-worker-a-state:/worker`,
+which Docker initialises from the image and which therefore keeps that ownership; tmpfs does not.
+So this file is left un-wired with the reason recorded in place, rather than wired red to say the
+worker image is broken when it is not. Its own ticket.
+
+It does surface a real operability fact worth writing down: **the worker requires a writable
+`/worker` owned by its uid**, and an operator who mounts a bare tmpfs there gets a container that
+dies with an error message no runbook explains — because there is no runbook.
+
 ## Log
 
 **Established before the D1 stack finished building** (static, from source — recorded here because
