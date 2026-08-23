@@ -77,6 +77,15 @@ const EXPECTED_UNGUARDED = [
   "lockPlacementContext",
   "listPlacementCandidateSnapshots",
   "persistPlacementDecision",
+  // DAT-008 — the secret-handle MINT surface, deliberately UNGUARDED. It runs inside
+  // the placement transaction, under the row lock `lockPlacementContext` already took,
+  // and at that point no lease and therefore no fence exists yet — a fence guard here
+  // would be unsatisfiable, not stricter. The fenced surface is the RESOLVE
+  // (`resolveExecutionSecret`), which is where a value is actually produced.
+  "loadAgentAdapterBinding",
+  "insertExecutionSecretHandle",
+  // A tenant-scoped read of NON-SECRET handle references for the lease envelope.
+  "listActiveExecutionSecretHandles",
   "lockWorkerLeaseAuthority",
   "lockEligibleLeaseCandidates",
   "snapshotLiveLeaseCapacity",

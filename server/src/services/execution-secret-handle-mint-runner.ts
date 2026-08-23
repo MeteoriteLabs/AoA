@@ -37,6 +37,7 @@ export interface ExecutionSecretMintRepo {
     materialization: "env";
     usePolicy: "sandbox_local_only";
     envTarget: string;
+    refVersion: string | null;
     boundTargetGeneration: number | null;
     ownerPrincipalKind: string | null;
     ownerPrincipalId: string | null;
@@ -135,6 +136,9 @@ export async function mintExecutionSecretHandleForPlacement(
     materialization: "env",
     usePolicy: "sandbox_local_only",
     envTarget: decision.envTarget,
+    // `null` = latest. A pinned agent secret keeps the version it pinned; the company
+    // key is unpinned by design so rotation is picked up on the next lease.
+    refVersion: decision.secretVersion === null ? null : String(decision.secretVersion),
     boundTargetGeneration: decision.boundTargetGeneration,
     // Denormalized from the job's executing principal, so `resolveExecutionSecret` can
     // re-derive the owner from the LOCKED job row rather than trusting a request.

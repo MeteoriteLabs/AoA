@@ -40,6 +40,13 @@ import { createArtifactTransferGrantService } from "../services/artifact-transfe
 import { createArtifactCommitService } from "../services/artifact-commit.js";
 import { createQuarantineGrantService } from "../services/quarantine-grant.js";
 import { createQuarantineFinalizeService } from "../services/quarantine-finalize.js";
+import { createSecretBrokerService } from "../services/secret-broker.js";
+import { createExecutionSecretBrokers } from "../services/execution-secret-brokers.js";
+import {
+  admitSandboxLocalResolution,
+  executionSecretResolveRequestSchema,
+  EXECUTION_SECRET_RESOLVE_DESCRIPTOR,
+} from "../services/execution-secret-resolve.js";
 import { createStorageProviderFromConfig } from "../storage/provider-registry.js";
 import { loadConfig } from "../config.js";
 import {
@@ -108,6 +115,15 @@ export function workerControlRoutes(opts: {
   // WRK-007); these stand up the server end.
   const quarantineGrants = createQuarantineGrantService({ appDb: opts.appDb, storage });
   const quarantineFinalize = createQuarantineFinalizeService({ appDb: opts.appDb, storage });
+  // DAT-008 — the BOOT ROOT the DAT-004 broker never had. Its only other constructor
+  // chain (`createFenceAwareEgressProxy`) has zero callers, so `resolveExecutionSecret`
+  // has never executed in production. The brokers are the real value stores for the two
+  // sandbox-local ref kinds; `connector_oauth` stays fail-closed by construction.
+  const executionSecrets = createSecretBrokerService({
+    appDb: opts.appDb,
+    brokers: createExecutionSecretBrokers(opts.db),
+    metrics: opts.jobControlMetrics,
+  });
   const controlAck = createJobControlAckService({ appDb: opts.appDb });
   const reconciliation = createJobReconciliationService({ appDb: opts.appDb });
   // DEP-009 — the SHARED, DB-backed admission rate limiter for the worker poll. Both
@@ -525,6 +541,78 @@ export function workerControlRoutes(opts: {
         reasonCode: "worker_artifact_commit_internal_unavailable",
       }, "worker artifact commit unavailable");
       sendWorkerOperationProtocolError(req, res, "artifact_commit", "internal_unavailable", opts.now?.() ?? new Date());
+    }
+  });
+
+  // DAT-008 — redeem ONE sandbox-local execution-secret handle. NOT a frozen wire op
+  // (E4-D02 keeps the ten closed; E4's WRK-005 non-goals assign the live
+  // secret-materialization transport op and its server route to E5/DAT), so the
+  // descriptor is local — but it exists, because a route without one silently has no
+  // size ceiling, no timeout, no typed error emitter and no audience declaration.
+  //
+  // The response carries a live credential, so every failure path below returns the
+  // SAME coarse shape a denial does. A caller learns the resolve was refused, never
+  // which invariant it tripped or whether a foreign handle exists.
+  router.post("/worker-control/execution-secrets/resolve", async (req, res) => {
+    const denyMalformed = () => res.status(200).json({
+      protocolVersion: 1,
+      outcome: "denied",
+      reason: "malformed",
+      serverTime: (opts.now?.() ?? new Date()).toISOString(),
+    });
+    try {
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      if (rawBody && rawBody.length > EXECUTION_SECRET_RESOLVE_DESCRIPTOR.maxRequestBytes) {
+        return denyMalformed();
+      }
+      const parsed = executionSecretResolveRequestSchema.safeParse(req.body);
+      const authorization = req.header("authorization");
+      const proof = deviceProofHeaders(req);
+      if (!parsed.success || !authorization || !proof || !rawBody) return denyMalformed();
+
+      const auth = verifyWorkerOperationProof({
+        sessionSigningKey: opts.sessionSigningKey,
+        authorization,
+        rawBody,
+        proof,
+        method: req.method,
+        path: req.originalUrl,
+        correlationId: parsed.data.correlationId,
+        now: opts.now?.(),
+      });
+
+      const outcome = await executionSecrets.resolve({
+        auth,
+        request: {
+          workerId: parsed.data.workerId,
+          jobId: parsed.data.jobId,
+          attempt: parsed.data.attempt,
+          leaseId: parsed.data.leaseId,
+          fenceToken: parsed.data.fenceToken,
+          handleId: parsed.data.handleId,
+        },
+      });
+      const admitted = admitSandboxLocalResolution(outcome);
+      if (admitted.outcome === "denied") {
+        return res.status(200).json({
+          protocolVersion: 1,
+          outcome: "denied",
+          reason: admitted.reason,
+          serverTime: (opts.now?.() ?? new Date()).toISOString(),
+        });
+      }
+      return res.status(200).json({
+        protocolVersion: 1,
+        outcome: "resolved",
+        envTarget: admitted.envTarget,
+        value: admitted.value,
+        serverTime: (opts.now?.() ?? new Date()).toISOString(),
+      });
+    } catch {
+      // Includes an auth-layer JobLeasingError and a proof failure. Both collapse to
+      // the same coarse denial: distinguishing them would turn this route into an
+      // oracle for which worker/lease/handle exists.
+      return denyMalformed();
     }
   });
 

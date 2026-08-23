@@ -187,6 +187,8 @@ export interface JobControlRepository {
     materialization: "env";
     usePolicy: "sandbox_local_only";
     envTarget: string;
+    /** Pinned version selector for `ref_id`; null = latest. */
+    refVersion: string | null;
     boundTargetGeneration: number | null;
     ownerPrincipalKind: string | null;
     ownerPrincipalId: string | null;
@@ -570,7 +572,14 @@ export interface AuthorizedSecretResolution {
   handleId: string;
   refKind: SecretRefKind;
   refId: string;
+  /** DAT-008 — the pinned version selector for `refId`; null = latest. A NON-SECRET
+   * selector, carried so the broker resolves the version the handle was minted for. */
+  refVersion: string | null;
   materialization: "proxy" | "env" | "file";
+  /** DAT-008 — the materialization TARGET (an env-var NAME for `env`), so a resolve
+   * response is self-describing and a consumer never has to correlate it back to the
+   * envelope to learn where the value belongs. A name, never a value. */
+  materializationTarget: string | null;
   usePolicy: "fence_proxy" | "remote_server_fenced" | "sandbox_local_only";
   destination: string | null;
   ownerPrincipalKind: string | null;
@@ -2754,6 +2763,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         refId: input.refId,
         materialization: input.materialization,
         materializationTarget: input.envTarget,
+        refVersion: input.refVersion,
         usePolicy: input.usePolicy,
         // A `sandbox_local_only` handle may NEVER bind a network destination — the
         // resolver re-checks this, and minting one would be the coercion DAT-004's
@@ -2937,7 +2947,9 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         handleId: row.handle,
         refKind: row.refKind as SecretRefKind,
         refId: row.refId ?? "",
+        refVersion: row.refVersion,
         materialization: row.materialization as "proxy" | "env" | "file",
+        materializationTarget: row.materializationTarget,
         usePolicy: row.usePolicy as "fence_proxy" | "remote_server_fenced" | "sandbox_local_only",
         destination: row.destination,
         ownerPrincipalKind: row.ownerPrincipalKind,

@@ -53,6 +53,13 @@ export const jobSecretHandles = pgTable(
     // Nullable additive widen of an already-distributed table — inherits the existing
     // whole-table `aoa_app` grant + FORCE-RLS policy with no keystone reconciliation.
     materializationTarget: text("materialization_target"),
+    // DAT-008 — the PINNED version of `ref_id` for a `company_secret` handle bound to
+    // an agent's own secret_ref. The legacy runtime path honours an explicitly pinned
+    // version (`resolveEnvBindings` passes `binding.version`), so resolving `latest`
+    // instead would silently move a pinned agent onto a different secret version.
+    // NULL means "latest", which is also the canonical default for an unpinned ref.
+    // Text, not integer: the selector is `number | "latest"`.
+    refVersion: text("ref_version"),
     usePolicy: text("use_policy"), // fence_proxy | remote_server_fenced | sandbox_local_only
     // The bound egress destination / networkPolicyRef — DAT-004 BINDS; DAT-005 ENFORCES.
     destination: text("destination"),

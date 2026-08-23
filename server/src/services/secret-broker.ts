@@ -73,6 +73,8 @@ export type SecretDeliverySeam = "fence_proxy" | "remote_server_fenced" | "sandb
 export interface FenceResolvedMaterial {
   value: string;
   materialization: "proxy" | "env" | "file";
+  /** DAT-008 — where the value belongs (an env-var NAME for `env`). Non-secret. */
+  materializationTarget: string | null;
   /** The bound egress destination (null for a sandbox-local, non-network handle). */
   destination: string | null;
 }
@@ -130,6 +132,10 @@ export interface SecretBrokerSet {
     companyId: string;
     refKind: "provider_key" | "company_secret";
     refId: string;
+    /** DAT-008 — the pinned version selector for `refId`; null = latest. Non-secret. */
+    refVersion: string | null;
+    /** DAT-008 — the resolving handle, for the secret-access audit's consumer id. */
+    handleId: string;
   }): Promise<string>;
 }
 
@@ -184,6 +190,8 @@ export async function dispatchResolvedSecret(
       companyId: authorized.companyId,
       refKind: authorized.refKind,
       refId: authorized.refId,
+      refVersion: authorized.refVersion,
+      handleId: authorized.handleId,
     });
   }
 
@@ -193,6 +201,7 @@ export async function dispatchResolvedSecret(
     material: {
       value,
       materialization: authorized.materialization,
+      materializationTarget: authorized.materializationTarget,
       destination: authorized.destination,
     },
   };
