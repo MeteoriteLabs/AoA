@@ -1,0 +1,161 @@
+// server/src/services/execution-secret-handle-mint.ts
+//
+// DAT-008 slice 1 — the execution-secret-handle MINT decision.
+//
+// CM-013's target state: keep model-credential resolution/rotation authority in the
+// control plane, and issue only job/attempt/lease/fence/Company/principal-scoped
+// SANDBOX MATERIALIZATION authority. A handle is that authority in row form: an
+// opaque reference the frozen wire can carry (`secretHandleRefSchema`), resolved to
+// a value only behind an active fence by `resolveExecutionSecret`.
+//
+// This module decides WHETHER to mint and WHAT to point at. It is PURE — no db, no
+// clock, no randomness (the uuid is minted by the caller) — so every guard below is
+// directly unit- and mutation-testable. The caller performs the insert inside the
+// placement transaction, where the target generation is known.
+//
+//   deployment mode ──┐
+//   executor kind ────┤
+//   adapter v1 scope ─┼──> decideExecutionSecretHandle ──> mint {refKind, refId, envTarget}
+//   provider target ──┤                                └─> refuse {reason}
+//   agent binding ────┤
+//   owner authorities ┘
+//
+// The per-agent split (design revision 1, R2) is the load-bearing part. Today a
+// per-agent provider key ALWAYS wins over the company key (`needsCompanyKeyFallback`
+// in secrets.ts: "Per-agent overrides always win and are never rewritten"). The
+// cutover must not quietly reverse that, so the binding decides the ref:
+//
+//   secret_ref  -> company_secret handle pointing at the AGENT's own secret
+//   plain       -> refuse; the job stays on the legacy executor
+//   absent      -> provider_key handle pointing at the Company key
+//
+// A `plain` literal is the one shape with no handle representation: the wire carries
+// references, never values. Refusing is the only honest answer — substituting the
+// company key would silently re-attribute the work to a different credential.
+
+import { gateCodingAdapterDispatch, isCloudSandboxMode } from "./sandbox-coding-disposition.js";
+import type { ProviderKeyTarget } from "./providers/provider-key.js";
+
+/** A per-agent env binding for the provider var, already canonicalized by the
+ * caller (`canonicalizeBinding`), with the VALUE deliberately dropped: the mint
+ * decides a reference and must never be able to read a secret. `null` = the agent
+ * sets no value for that env var, which is exactly `needsCompanyKeyFallback`. */
+export type CanonicalProviderBinding =
+  | { readonly type: "plain" }
+  | { readonly type: "secret_ref"; readonly secretId: string; readonly version: number | "latest" };
+
+export interface ExecutionSecretMintInput {
+  readonly deploymentMode: string;
+  readonly adapterType: string;
+  /** `jobs.executor_principal_kind` — only an agent run stages a model credential. */
+  readonly executorPrincipalKind: string;
+  /** `companyKeyTargetForAdapter(adapterType)`; null when the adapter has no company key. */
+  readonly providerKeyTarget: ProviderKeyTarget | null;
+  readonly providerBinding: CanonicalProviderBinding | null;
+  /** Authority A — the placement decision's owner class. */
+  readonly placementOwner: string | null;
+  /** Authority B — the job's own resolved credential binding kind. Independent of A. */
+  readonly credentialKind: string | null;
+  /** The placed target generation to pin the handle to; null = unpinned. */
+  readonly targetGeneration: number | null;
+}
+
+export type ExecutionSecretMintRefusal =
+  | "not_cloud_deployment"
+  | "executor_not_agent"
+  | "adapter_not_v1_scope"
+  | "adapter_has_no_company_key"
+  | "agent_plain_literal_override"
+  | "owner_desktop_target"
+  | "owner_authority_disagreement";
+
+export type ExecutionSecretMintDecision =
+  | {
+      readonly mint: true;
+      readonly refKind: "provider_key" | "company_secret";
+      /** `provider:<id>` secret NAME for a company key, or the agent's `secretId`. */
+      readonly refId: string;
+      /** The env var NAME the worker will set. Never a value. */
+      readonly envTarget: string;
+      /** Pinned version for an agent secret_ref; null for a company key. */
+      readonly secretVersion: number | "latest" | null;
+      readonly boundTargetGeneration: number | null;
+    }
+  | { readonly mint: false; readonly reason: ExecutionSecretMintRefusal };
+
+const refuse = (reason: ExecutionSecretMintRefusal): ExecutionSecretMintDecision => ({ mint: false, reason });
+
+/**
+ * Deferral #3 — the owner check must not be tautological.
+ *
+ * The inherited deferral records that `credentialOwnerId` and
+ * `requiredOwnerPrincipalId` both read from the routed target's profile, so the
+ * existing check compares a value with a copy of itself and safety rests instead on
+ * the structural exclusion of `owner_desktop` routing.
+ *
+ * These two inputs are derived independently: `placementOwner` comes from the
+ * placement decision over the candidate registry, `credentialKind` from the job's
+ * own authority resolution. Requiring them to AGREE makes the check falsifiable — a
+ * disagreement is a real signal that one of the two derivations is wrong, and
+ * neither may then be trusted to authorize staging a Company credential.
+ */
+function ownerAuthoritiesAgree(placementOwner: string | null, credentialKind: string | null): boolean {
+  if (placementOwner === null || credentialKind === null) return false;
+  const desktopByOwner = placementOwner === "owner_desktop";
+  const desktopByCredential = credentialKind === "personal_subscription";
+  return desktopByOwner === desktopByCredential;
+}
+
+export function decideExecutionSecretHandle(input: ExecutionSecretMintInput): ExecutionSecretMintDecision {
+  // 1. Deployment mode FIRST, and deliberately before every other reason: a
+  //    self-hosted deployment has no hosted key at all (Rule #11 / Decision #104),
+  //    so reporting it as an adapter or owner problem would send an operator
+  //    hunting for a misconfiguration that does not exist.
+  if (!isCloudSandboxMode(input.deploymentMode)) return refuse("not_cloud_deployment");
+
+  // 2. Only an agent run stages a model credential.
+  if (input.executorPrincipalKind !== "agent") return refuse("executor_not_agent");
+
+  // 3. The v1 sandboxed-coding adapter scope (`claude_local` + `codex_local`).
+  //    NOTE this gate admits on the adapter's disposition bucket and does NOT read
+  //    the deployment mode — step 1 is not redundant with it.
+  if (!gateCodingAdapterDispatch(input.adapterType, input.deploymentMode).admitted) {
+    return refuse("adapter_not_v1_scope");
+  }
+
+  // 4. Deferral #3 — both owner authorities must exist and agree, BEFORE any
+  //    binding is considered. An agent's own secret does not license staging into
+  //    a target whose ownership we cannot establish.
+  if (!ownerAuthoritiesAgree(input.placementOwner, input.credentialKind)) {
+    return refuse("owner_authority_disagreement");
+  }
+  if (input.placementOwner === "owner_desktop") return refuse("owner_desktop_target");
+
+  // 5. The adapter must map to a company key target. `null` is the mint-nothing
+  //    signal `companyKeyTargetForAdapter` already returns, not a new list.
+  const target = input.providerKeyTarget;
+  if (!target) return refuse("adapter_has_no_company_key");
+
+  // 6. The three-way per-agent split. `plain` has no reference form, so it refuses.
+  if (input.providerBinding?.type === "plain") return refuse("agent_plain_literal_override");
+
+  if (input.providerBinding?.type === "secret_ref") {
+    return {
+      mint: true,
+      refKind: "company_secret",
+      refId: input.providerBinding.secretId,
+      envTarget: target.envVar,
+      secretVersion: input.providerBinding.version,
+      boundTargetGeneration: input.targetGeneration,
+    };
+  }
+
+  return {
+    mint: true,
+    refKind: "provider_key",
+    refId: target.secretName,
+    envTarget: target.envVar,
+    secretVersion: null,
+    boundTargetGeneration: input.targetGeneration,
+  };
+}

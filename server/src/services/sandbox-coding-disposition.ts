@@ -123,6 +123,22 @@ export const CODING_ADAPTER_DISPOSITIONS: Readonly<Record<string, AdapterDisposi
 /** Deployment modes on which the sandboxed cloud pool is the execution substrate. */
 const CLOUD_SANDBOX_MODES: ReadonlySet<string> = new Set(["cloud_auth", "authenticated"]);
 
+/**
+ * True for a deployment mode whose runs execute in the SHARED CLOUD sandbox pool,
+ * i.e. the modes where a Company's own model-provider key is resolved and staged
+ * (Decision #104's 2026-08-08 amendment). Self-hosted modes are keyless: the CLI
+ * uses its installed local login and no hosted key exists to stage.
+ *
+ * Exported so DAT-008's handle mint asks the SAME question this module already
+ * asks, rather than carrying a second copy of the mode set that could drift.
+ * NOTE this is deliberately NOT what `gateCodingAdapterDispatch` gates on — that
+ * function admits on the adapter's v1 bucket and uses the mode only to phrase its
+ * rejection. The two gates are independent and a caller usually needs both.
+ */
+export function isCloudSandboxMode(deploymentMode: string): boolean {
+  return CLOUD_SANDBOX_MODES.has(deploymentMode);
+}
+
 export interface DispositionGateDecision {
   readonly admitted: boolean;
   readonly disposition: AdapterDisposition;

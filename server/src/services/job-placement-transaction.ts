@@ -24,6 +24,7 @@ import {
   sortExecutionTargetRowsForPlacement,
   type ExecutionTargetRow,
 } from "./execution-target-resolver.js";
+import { mintExecutionSecretHandleForPlacement } from "./execution-secret-handle-mint-runner.js";
 
 const SOURCE_KINDS = new Set<string>(EXECUTION_SOURCE_KINDS);
 
@@ -342,6 +343,41 @@ export async function placeJobAttemptTransaction(
         return decisionFromAttempt(fallbackStored)!;
       }
       if (!stored) throw new JobPlacementError("placement_already_decided");
+
+      // DAT-008 — mint the execution-secret handle under the SAME lock that just
+      // decided the placement, because the handle pins the placed target generation.
+      // Gated on a live, lease-eligible ACTIVE selection: a shadow or unplaced
+      // decision must stay effect-free, and nothing will ever lease it to redeem the
+      // handle anyway.
+      //
+      // Best-effort by construction: a refusal is the NORMAL outcome for most jobs
+      // (self-hosted, non-agent executor, adapter outside the v1 scope), and a
+      // failure must not fail placement — that would take the LEGACY path down with
+      // it, since placement is shared. The job simply leases with no handle and the
+      // sandbox has no key, which is the pre-DAT-008 behaviour.
+      if (stored.placementDisposition === "selected"
+        && stored.placementMode === "active"
+        && stored.placementLeaseEligible === true) {
+        try {
+          await mintExecutionSecretHandleForPlacement(repos.jobControl, {
+            organizationId: input.organizationId,
+            companyId: input.companyId,
+            jobId: input.jobId,
+            executorPrincipalKind: context.job.executorPrincipalKind,
+            executorPrincipalId: context.job.executorPrincipalId,
+            placementOwner: decision.owner,
+            // The SECOND, independently-derived owner authority (deferral #3): this
+            // comes from the job's own credential-binding resolution, not from the
+            // routed target's profile that produced `decision.owner`.
+            credentialKind: authority.credentialBinding.credentialKind,
+            targetGeneration: decision.targetGeneration,
+          });
+        } catch {
+          // Never a disclosing log: a mint failure must not narrate credential
+          // topology into the placement path.
+        }
+      }
+
       return decisionFromAttempt(stored)!;
     };
 

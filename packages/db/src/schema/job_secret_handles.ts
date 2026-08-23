@@ -44,6 +44,15 @@ export const jobSecretHandles = pgTable(
     // Mirror the frozen wire ref so the resolver RE-CHECKS the sandbox-vs-proxy
     // invariant server-side (defense in depth against a hand-built envelope).
     materialization: text("materialization"), // proxy | env | file
+    // DAT-008 — the materialization TARGET the frozen wire ref carries alongside the
+    // kind: an env-var NAME for `env`, a sandbox path for `file`, and NULL for `proxy`
+    // (whose wire arm is `.strict()` with no target at all). It is a NAME, never a
+    // value. Without it the envelope could not be rebuilt: `{kind:"env"}` alone is not
+    // a valid `secretMaterializationSchema` member, and for a handle pointing at an
+    // AGENT's own secret the env-var name is not derivable from `ref_id`.
+    // Nullable additive widen of an already-distributed table — inherits the existing
+    // whole-table `aoa_app` grant + FORCE-RLS policy with no keystone reconciliation.
+    materializationTarget: text("materialization_target"),
     usePolicy: text("use_policy"), // fence_proxy | remote_server_fenced | sandbox_local_only
     // The bound egress destination / networkPolicyRef — DAT-004 BINDS; DAT-005 ENFORCES.
     destination: text("destination"),

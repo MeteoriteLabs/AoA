@@ -167,6 +167,30 @@ export interface JobControlRepository {
   }): Promise<{ job: Job; attempt: JobAttempt } | null>;
   listPlacementCandidateSnapshots(): Promise<PlacementCandidateSnapshot[]>;
   persistPlacementDecision(input: PlacementDecisionWrite): Promise<JobAttempt | null>;
+  /** DAT-008 — the executing agent's adapter binding, for the secret-handle mint.
+   * Company-scoped; returns null for an unknown agent (never an existence oracle,
+   * since the caller already proved the job's tenancy under the placement lock). */
+  loadAgentAdapterBinding(input: {
+    companyId: string;
+    agentId: string;
+  }): Promise<{ adapterType: string; adapterConfig: Record<string, unknown> } | null>;
+  /** DAT-008 — mint ONE opaque execution-secret handle for a job. The row carries a
+   * REFERENCE only (`ref_kind`/`ref_id`); no secret value ever lands here. Idempotent
+   * per (organization, job, ref): a replayed placement must not mint a second handle. */
+  insertExecutionSecretHandle(input: {
+    organizationId: string;
+    companyId: string;
+    jobId: string;
+    handle: string;
+    refKind: "provider_key" | "company_secret";
+    refId: string;
+    materialization: "env";
+    usePolicy: "sandbox_local_only";
+    envTarget: string;
+    boundTargetGeneration: number | null;
+    ownerPrincipalKind: string | null;
+    ownerPrincipalId: string | null;
+  }): Promise<{ handle: string; minted: boolean }>;
   lockWorkerLeaseAuthority(input: {
     workerId: string;
     targetId: string;
@@ -2681,6 +2705,55 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         eq(jobSecretHandles.handle, input.handle),
       )).limit(1);
       return row ?? null;
+    },
+
+    async loadAgentAdapterBinding(input) {
+      const [row] = await tx
+        .select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+        .from(agents)
+        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+        .limit(1);
+      return row ?? null;
+    },
+
+    async insertExecutionSecretHandle(input) {
+      // Idempotent per (organization, job, ref_kind, ref_id) over ACTIVE rows. A
+      // placement replay must not mint a second handle for the same reference: the
+      // envelope would then carry two handles for one env var, and the frozen
+      // duplicate-handle check only catches a repeated handle ID, not a repeated ref.
+      const [existing] = await tx
+        .select({ handle: jobSecretHandles.handle })
+        .from(jobSecretHandles)
+        .where(and(
+          eq(jobSecretHandles.organizationId, input.organizationId),
+          eq(jobSecretHandles.jobId, input.jobId),
+          eq(jobSecretHandles.refKind, input.refKind),
+          eq(jobSecretHandles.refId, input.refId),
+          eq(jobSecretHandles.status, "active"),
+        ))
+        .limit(1);
+      if (existing) return { handle: existing.handle, minted: false };
+
+      await tx.insert(jobSecretHandles).values({
+        organizationId: input.organizationId,
+        jobId: input.jobId,
+        handle: input.handle,
+        refKind: input.refKind,
+        refId: input.refId,
+        materialization: input.materialization,
+        materializationTarget: input.envTarget,
+        usePolicy: input.usePolicy,
+        // A `sandbox_local_only` handle may NEVER bind a network destination — the
+        // resolver re-checks this, and minting one would be the coercion DAT-004's
+        // own review already had to fix once.
+        destination: null,
+        boundTargetGeneration: input.boundTargetGeneration,
+        ownerPrincipalKind: input.ownerPrincipalKind,
+        ownerPrincipalId: input.ownerPrincipalId,
+        status: "active",
+        resolveCount: 0,
+      });
+      return { handle: input.handle, minted: true };
     },
 
     async resolveExecutionSecret(input) {
