@@ -1681,8 +1681,13 @@ try {
 // ── Clock control: back-date the durable lease deadline row (D1) ──────────────
 // The control plane's ONLY time source is the Postgres clock_timestamp() re-read
 // per locked mutation; there is no injectable clock / shortenable-deadline config
-// in the running stack, and the reaper has no live trigger — so a back-dated lease
-// never converges on its own. The sole deterministic, sleep-free lever is to rewrite
+// in the running stack. (STALE PREMISE, CORRECTED: this note used to continue "and the
+// reaper has no live trigger — so a back-dated lease never converges on its own".
+// MIG-002 `c341cf680` started a LIVE background lease reaper on every control-plane
+// replica, so a back-dated lease CAN now converge on its own, on a cadence that drops to
+// 1 second after any productive tick. Back-dating is still the deterministic lever for
+// CROSSING the deadline; what it no longer buys is exclusivity over who reaps.)
+// The sole deterministic, sleep-free lever is to rewrite
 // the row (the proven idiom from job-reconciliation.integration.test.ts). Column
 // subtlety (load-bearing): back-date ack_deadline for the pre-ACK/offered case (leave
 // expires_at future), expires_at for the expired/active case, and ALWAYS keep

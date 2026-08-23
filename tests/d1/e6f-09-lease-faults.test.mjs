@@ -3,9 +3,14 @@
 // Docker + a running docker-compose.d1.yml stack). The three mandated cases from
 // program-design.md:721, driven on the standing DEP-002 substrate with the two
 // DEP-005 additions — a SQL clock helper that back-dates the durable lease deadline
-// columns, and the DORMANT flag-gated reaper trigger — so every deadline boundary is
-// crossed SYNCHRONOUSLY (toxic/toggle + row back-date + one reap), NEVER by sleeping
-// on a natural deadline or a sweeper interval.
+// columns, and the flag-gated reaper trigger — so every deadline boundary is crossed
+// SYNCHRONOUSLY (toxic/toggle + row back-date + reap), NEVER by sleeping on a natural
+// deadline.
+//
+// CORRECTED (MIG-002): this header used to add "or a sweeper interval". That stopped
+// being true at `c341cf680`, which starts a LIVE background lease reaper on both
+// control-plane replicas. These cases no longer assert WHICH reaper converged the
+// lease — only that it converged. See `reapAndConverge`.
 //
 //   AOA_D1_LIVE=1 node --test tests/d1/e6f-09-lease-faults.test.mjs
 //
@@ -81,6 +86,48 @@ function diag(res, label) {
 
 function run(res, label) {
   return { result: stepResult(res, label), raw: diag(res, label) };
+}
+
+/**
+ * Reap, then converge — tolerating the MIG-002 background lease reaper.
+ *
+ * WHY THIS EXISTS. This file's header used to claim every deadline boundary is crossed
+ * "NEVER by ... a sweeper interval", and the harness's clock-control note claimed "the
+ * reaper has no live trigger". Both were true when written and MIG-002 (`c341cf680`)
+ * made them false: `createJobControlSweeper` now runs on BOTH D1 control-plane replicas
+ * on a self-scheduling loop that drops to a 1-SECOND cadence after any productive tick.
+ *
+ * So a back-dated lease CAN be reaped by the background sweeper before the explicit
+ * `_test/reap` lands, and the explicit reap then correctly reports `scanned:0` — the
+ * candidate predicate selects only `offered`/`active` leases, and the sweeper has
+ * already moved it to `expired`. Observed on run 32627822479: the sweeper logged
+ * "[mig-002] lease reaper converged" at 08:23:13 and this test's reap returned
+ * scanned:0 at 08:23:14.
+ *
+ * Asserting `revoked >= 1` on the explicit reap's body therefore tests WHO performed the
+ * convergence, not WHETHER it happened — an implementation detail that is now genuinely
+ * racy. The END STATE is the property these cases actually demonstrate, and it is
+ * asserted in full immediately after (lease expired, attempt 1 expired, retry attempt 2
+ * pending, single winner, job requeued).
+ *
+ * The reap is still issued and still must answer 200: a reap that ERRORS is a real
+ * failure. Only the "I was the one who did it" claim is dropped. A bounded re-read
+ * covers the remaining window where a background reap is mid-flight (the candidate
+ * SELECT takes `FOR UPDATE SKIP LOCKED`, so an in-flight sweep is invisible to both the
+ * explicit reap AND to a state read taken in the same instant).
+ */
+function reapAndConverge({ organizationId, jobId, attempts = 10 }) {
+  const reaped = run(reapOrganization({ organizationId }), "reap");
+  assert.equal(reaped.result.status, 200, `reap expected 200: ${truncate(reaped.result.body)}${reaped.raw}`);
+  let last = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    last = run(queryLeaseFaultState({ organizationId, jobId }), "state-after");
+    if (last.result?.leases?.[0]?.status === "expired") return { reaped, after: last };
+    // Re-issue rather than sleep: each docker exec round-trip is itself the delay, and
+    // a second reap is idempotent — if the sweeper already converged, it reports zero.
+    run(reapOrganization({ organizationId }), "reap-retry");
+  }
+  assert.fail(`lease never converged to expired after ${attempts} reap+read cycles${last?.raw ?? ""}`);
 }
 
 function stripVolatile(body) {
@@ -199,13 +246,9 @@ test(
       assert.equal(expired.result.ok, true, `back-date ok${expired.raw}`);
       assert.equal(expired.result.updated, 1, `exactly one lease back-dated${expired.raw}`);
 
-      const reaped = run(reapOrganization({ organizationId: A.orgId }), "reap");
-      assert.equal(reaped.result.status, 200, `reap expected 200: ${truncate(reaped.result.body)}${reaped.raw}`);
-      assert.ok(reaped.result.body.revoked >= 1, `reaper revoked >= 1: ${truncate(reaped.result.body)}${reaped.raw}`);
-      assert.ok(reaped.result.body.retried >= 1, `reaper retried >= 1: ${truncate(reaped.result.body)}${reaped.raw}`);
-
       // Convergence: lease + attempt 1 expired, retry attempt 2 pending, job requeued.
-      const after = run(queryLeaseFaultState({ organizationId: A.orgId, jobId: A.jobId }), "state-after");
+      // Either reaper may perform it — see `reapAndConverge`.
+      const { after } = reapAndConverge({ organizationId: A.orgId, jobId: A.jobId });
       assert.equal(after.result.leases[0].status, "expired", `lease reaped to expired${after.raw}`);
       const attempt1 = after.result.attempts.find((a) => a.attemptNumber === 1);
       const attempt2 = after.result.attempts.find((a) => a.attemptNumber === 2);
@@ -333,13 +376,10 @@ test(
     assert.equal(expired.result.ok, true, `back-date ok${expired.raw}`);
     assert.equal(expired.result.updated, 1, `exactly one lease back-dated${expired.raw}`);
 
-    const reaped = run(reapOrganization({ organizationId: A.orgId }), "reap");
-    assert.equal(reaped.result.status, 200, `reap expected 200: ${truncate(reaped.result.body)}${reaped.raw}`);
-    assert.ok(reaped.result.body.revoked >= 1, `reaper revoked >= 1: ${truncate(reaped.result.body)}${reaped.raw}`);
-    assert.ok(reaped.result.body.retried >= 1, `reaper retried >= 1: ${truncate(reaped.result.body)}${reaped.raw}`);
-
     // SINGLE-WINNER convergence: lease + attempt 1 expired, EXACTLY one retry attempt.
-    const after = run(queryLeaseFaultState({ organizationId: A.orgId, jobId: A.jobId }), "state-after");
+    // Either reaper may perform it — see `reapAndConverge`. The single-winner property
+    // (exactly 2 attempts) is unaffected by WHICH reaper ran and is asserted below.
+    const { after } = reapAndConverge({ organizationId: A.orgId, jobId: A.jobId });
     assert.equal(after.result.leases[0].status, "expired", `lease reaped to expired${after.raw}`);
     assert.equal(after.result.attempts.find((a) => a.attemptNumber === 1)?.status, "expired", `attempt 1 expired${after.raw}`);
     assert.equal(after.result.attempts.length, 2, `exactly one retry attempt (single winner)${after.raw}`);
