@@ -49,6 +49,10 @@
       "reason": "DSK-003 secret scanner for a desktop artifact. No shippable installer root exists yet (DSK-003-result.md), so the CLI has nothing to scan; its decision logic runs in CI via the named test.",
       "provenTest": "scripts/lib/__tests__/embedded-secret-scan.test.mjs"
     },
+    "scripts/check-execution-census.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow"
+    },
     "scripts/check-forbidden-tokens.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"

@@ -283,6 +283,26 @@ jobs:
           node --test scripts/check-test-inventory.test.mjs
           node scripts/check-test-inventory.mjs
 
+      - name: Execution census (a test file that nothing runs is not coverage)
+        run: |
+          # TRACK-002. The inventory step above asks whether the suite SHRANK. It never
+          # asks whether anything RUNS what it counted — and nine test files carrying 222
+          # tests were invoked by nothing at all, one of them (141 tests) RED on a mutation
+          # test whose mutation is a no-op. Existence was credited; execution was never asked.
+          node --test scripts/lib/__tests__/execution-census.test.mjs
+          node scripts/check-execution-census.mjs
+
+      - name: Previously-unrun guard self-tests (TRACK-002)
+        run: |
+          # These five were invoked by NOTHING until TRACK-002. Each is the self-test for a
+          # guard that already runs in this job or in the D1 lane, and each passes today —
+          # so the only thing standing between them and CI was that no line named them.
+          node --test scripts/check-d1-compose.test.mjs
+          node --test scripts/lib/__tests__/d1-compose-invariants.test.mjs
+          node --test scripts/lib/__tests__/collect-d1-evidence.test.mjs
+          node --test scripts/check-bundled-snapshot-inputs.test.mjs
+          node --test docker/d1/__tests__/ctl-allowlist.test.mjs
+
       # BRW-002. The browser lane's execution guard must itself be proven: it replaced a
       # grep that failed an all-green run, so its non-vacuousness is a self-test, not a
       # claim. Runs in `policy` because it is pure and needs no browser.

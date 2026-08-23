@@ -698,6 +698,13 @@ The backlog contains 95 implementation tickets. Sizes are planning estimates: **
 - **Acceptance:** The check is asymmetric on purpose — a built ticket the authority cannot see is a FAILURE, while an id named here with no file yet is the BACKLOG and must not fail (19 such ids exist today); a combined filename such as `MIG-005-006-007-shadow-design.md` expands to every id it names; an empty result set is treated as a broken checker rather than a clean tree.
 - **Test:** Unit suite pinning each of those decisions, plus a proven fail-first run naming exactly the untracked ids.
 
+#### TRACK-002 — Execution census: a test file that nothing runs is not coverage (S)
+
+- **Depends on:** TRACK-001.
+- **Outcome:** `check-test-inventory.mjs` asks whether the suite SHRANK; nothing asked whether anything RUNS what it counted. Nine `*.test.mjs` files were invoked by nothing at all — one of them 141 tests and RED, on a mutation test whose own mutation is a no-op, so it had correctly detected it could not evaluate what it guards and the detection reached nobody. Add a census: every `*.test.mjs` on disk must be declared `runs` (naming workflow + step) or `unrun` (with a reason saying what would have to change), and every package containing a vitest spec must appear in `vitest.config.ts`'s hand-maintained `projects[]`.
+- **Acceptance:** Declaration-based, not observation-based, because CI jobs are separate runners, `d1-merge-train.yml` is a different workflow a `pr.yml` census could never see, and the heavy jobs skip on docs-only PRs — so an artifact-consuming census would either fail every docs PR or pass having collected nothing. A comment naming a file does NOT satisfy `runs`. An empty discovery, manifest, or projects list each fail. The limit of the `runs` direction is named in the guard's own source rather than described as enforcement.
+- **Test:** Unit suite pinning each decision (comment-stripping, missing reason, renamed step, stale entry, vitest project gap, anti-vacuity), plus a proven fail-first run naming all nine.
+
 ### E6 — Deployment and distributed test harness
 
 #### DEP-000 — Deterministic fake sandbox provider (M)
