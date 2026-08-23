@@ -191,6 +191,18 @@ export interface JobControlRepository {
     ownerPrincipalKind: string | null;
     ownerPrincipalId: string | null;
   }): Promise<{ handle: string; minted: boolean }>;
+  /** DAT-008 — the ACTIVE handles to advertise in a job's lease envelope. Ordered by
+   * creation so an envelope is byte-stable across rebuilds of the same job. Revoked
+   * or non-active rows are excluded here as well as at resolve time. */
+  listActiveExecutionSecretHandles(input: {
+    organizationId: string;
+    jobId: string;
+  }): Promise<Array<{
+    handle: string;
+    materialization: string | null;
+    materializationTarget: string | null;
+    usePolicy: string | null;
+  }>>;
   lockWorkerLeaseAuthority(input: {
     workerId: string;
     targetId: string;
@@ -2754,6 +2766,24 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         resolveCount: 0,
       });
       return { handle: input.handle, minted: true };
+    },
+
+    async listActiveExecutionSecretHandles(input) {
+      return tx
+        .select({
+          handle: jobSecretHandles.handle,
+          materialization: jobSecretHandles.materialization,
+          materializationTarget: jobSecretHandles.materializationTarget,
+          usePolicy: jobSecretHandles.usePolicy,
+        })
+        .from(jobSecretHandles)
+        .where(and(
+          eq(jobSecretHandles.organizationId, input.organizationId),
+          eq(jobSecretHandles.jobId, input.jobId),
+          eq(jobSecretHandles.status, "active"),
+          isNull(jobSecretHandles.revokedAt),
+        ))
+        .orderBy(asc(jobSecretHandles.createdAt), asc(jobSecretHandles.handle));
     },
 
     async resolveExecutionSecret(input) {

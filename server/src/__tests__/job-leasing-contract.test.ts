@@ -4440,7 +4440,21 @@ function leaseStaticContextPollViolations(source: string): string[] {
             : null;
         const ackDeadlineDeclaration = declarationAt(0);
         const expiresAtDeclaration = declarationAt(1);
-        const jobEnvelopeDeclaration = declarationAt(2);
+        // DAT-008 — the job's ACTIVE execution-secret handles are read inside this
+        // same tenant transaction, immediately before the envelope that advertises
+        // them, so a concurrently revoked handle cannot be advertised from a stale
+        // read. Pinned positionally like every other statement in this chain.
+        const storedHandlesDeclaration = declarationAt(2);
+        const storedHandlesName = storedHandlesDeclaration && ts.isIdentifier(storedHandlesDeclaration.name)
+          ? storedHandlesDeclaration.name.text
+          : null;
+        const storedHandlesCall = storedHandlesDeclaration
+          ? unwrappedCall(storedHandlesDeclaration.initializer)
+          : null;
+        const storedHandlesInput = storedHandlesCall?.arguments.length === 1
+          ? closedObjectProperties(storedHandlesCall.arguments[0])
+          : null;
+        const jobEnvelopeDeclaration = declarationAt(3);
         const jobEnvelopeName = jobEnvelopeDeclaration && ts.isIdentifier(jobEnvelopeDeclaration.name)
           ? jobEnvelopeDeclaration.name.text
           : null;
@@ -4450,11 +4464,11 @@ function leaseStaticContextPollViolations(source: string): string[] {
         const jobEnvelopeInput = jobEnvelopeCall?.arguments.length === 1
           ? closedObjectProperties(jobEnvelopeCall.arguments[0])
           : null;
-        const jobEnvelopeReject = tryOfferStatements[3] && ts.isIfStatement(tryOfferStatements[3])
-          ? tryOfferStatements[3]
+        const jobEnvelopeReject = tryOfferStatements[4] && ts.isIfStatement(tryOfferStatements[4])
+          ? tryOfferStatements[4]
           : null;
-        const fenceDeclaration = declarationAt(4);
-        const leaseDeclaration = declarationAt(5);
+        const fenceDeclaration = declarationAt(5);
+        const leaseDeclaration = declarationAt(6);
         const ackDeadlineName = ackDeadlineDeclaration && ts.isIdentifier(ackDeadlineDeclaration.name)
           ? ackDeadlineDeclaration.name.text
           : null;
@@ -4471,10 +4485,10 @@ function leaseStaticContextPollViolations(source: string): string[] {
         const offerLeaseInput = offerLeaseCall?.arguments.length === 1
           ? closedObjectProperties(offerLeaseCall.arguments[0])
           : null;
-        const leaseReject = tryOfferStatements[6] && ts.isIfStatement(tryOfferStatements[6])
-          ? tryOfferStatements[6]
+        const leaseReject = tryOfferStatements[7] && ts.isIfStatement(tryOfferStatements[7])
+          ? tryOfferStatements[7]
           : null;
-        const offerDeclaration = declarationAt(7);
+        const offerDeclaration = declarationAt(8);
         const offerName = offerDeclaration && ts.isIdentifier(offerDeclaration.name)
           ? offerDeclaration.name.text
           : null;
@@ -4482,15 +4496,15 @@ function leaseStaticContextPollViolations(source: string): string[] {
         const leaseOfferInput = leaseOfferCall?.arguments.length === 1
           ? closedObjectProperties(leaseOfferCall.arguments[0])
           : null;
-        const protocolReturn = tryOfferStatements[8] && ts.isReturnStatement(tryOfferStatements[8])
-          ? tryOfferStatements[8]
+        const protocolReturn = tryOfferStatements[9] && ts.isReturnStatement(tryOfferStatements[9])
+          ? tryOfferStatements[9]
           : null;
         const protocolCall = protocolReturn ? unwrappedCall(protocolReturn.expression) : null;
         const protocolInput = protocolCall?.arguments.length === 1
           ? closedObjectProperties(protocolCall.arguments[0])
           : null;
         const exactTryOffer = Boolean(tryOfferBinding && tryOfferHelper && tryOfferParameter &&
-          tryOfferNormalizedParameter === "normalized" && tryOfferStatements.length === 9 &&
+          tryOfferNormalizedParameter === "normalized" && tryOfferStatements.length === 10 &&
           ackDeadlineName === "ackDeadline" &&
           expiresAtName === "expiresAt" && fenceName === "fence" &&
           compact(ackDeadlineDeclaration?.initializer) === "newDate(databaseNow.getTime()+ackTimeoutMs)" &&
@@ -4498,7 +4512,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
           jobEnvelopeName === "jobEnvelope" && jobEnvelopeCall &&
           callPath(jobEnvelopeCall) === "buildJobEnvelope" && jobEnvelopeInput &&
           [...jobEnvelopeInput.keys()].sort().join(",") ===
-            "attempt,databaseNow,job,leaseExpiresAt,requirements,resourceLimits,target" &&
+            "attempt,databaseNow,job,leaseExpiresAt,requirements,resourceLimits,secretHandles,target" &&
           pathOf(jobEnvelopeInput.get("job"))?.join(".") === `${tryOfferParameter}.job` &&
           pathOf(jobEnvelopeInput.get("attempt"))?.join(".") === `${tryOfferParameter}.attempt` &&
           pathOf(jobEnvelopeInput.get("target"))?.join(".") === targetName &&
@@ -4507,6 +4521,14 @@ function leaseStaticContextPollViolations(source: string): string[] {
           pathOf(jobEnvelopeInput.get("resourceLimits"))?.join(".") === "providerDemand.resources" &&
           pathOf(jobEnvelopeInput.get("databaseNow"))?.join(".") === "databaseNow" &&
           pathOf(jobEnvelopeInput.get("leaseExpiresAt"))?.join(".") === expiresAtName &&
+          storedHandlesName === "storedHandles" && storedHandlesCall &&
+          isAwaitedCall(storedHandlesCall) &&
+          callPath(storedHandlesCall) === `${reposName}.jobControl.listActiveExecutionSecretHandles` &&
+          storedHandlesInput && [...storedHandlesInput.keys()].sort().join(",") === "jobId,organizationId" &&
+          pathOf(storedHandlesInput.get("organizationId"))?.join(".") ===
+            `${tryOfferParameter}.job.organizationId` &&
+          pathOf(storedHandlesInput.get("jobId"))?.join(".") === `${tryOfferParameter}.job.id` &&
+          compact(jobEnvelopeInput.get("secretHandles")) === `toSecretHandleRefs(${storedHandlesName})` &&
           jobEnvelopeReject && !jobEnvelopeReject.elseStatement &&
           conditionRejects(jobEnvelopeReject.expression, jobEnvelopeName) &&
           directlyThrows(jobEnvelopeReject.thenStatement) &&
@@ -4770,6 +4792,12 @@ function leaseStaticContextPollViolations(source: string): string[] {
       "staticNegativeCertificates.push", "tryOffer",
       `${reposName}.jobControl.offerLease`,
       `${reposName}.jobControl.snapshotLiveLeaseCapacity`,
+      // DAT-008 — a tenant-scoped READ keyed on (organizationId, jobId), taken inside
+      // the same transaction that offers the lease. It selects no authority row, writes
+      // nothing, and returns only NON-SECRET handle references, so it cannot mutate or
+      // launder the authority context. Registered here for the same reason the two reads
+      // above are.
+      `${reposName}.jobControl.listActiveExecutionSecretHandles`,
       `${reposName}.jobControl.upsertLeaseRejectionCertificates`,
     ].includes(path ?? "") || Boolean(path &&
       (path.endsWith(".getTime") || path === "databaseNow.toISOString"));
@@ -4826,6 +4854,8 @@ function leaseStaticContextPollViolations(source: string): string[] {
           `${reposName}.jobControl.lockWorkerLeaseAuthority`,
           `${reposName}.jobControl.offerLease`,
           `${reposName}.jobControl.snapshotLiveLeaseCapacity`,
+          // DAT-008 — see the register note in `auditedProtectedCallPath`.
+          `${reposName}.jobControl.listActiveExecutionSecretHandles`,
         ].includes(parentPath ?? ""));
       if (!approvedContainer) {
         violations.add("binding:protected-value-escape");
@@ -6154,6 +6184,10 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
                    const tryOffer = async (candidate: any, normalized: any) => {
                      const ackDeadline = new Date(databaseNow.getTime() + ackTimeoutMs);
                      const expiresAt = new Date(databaseNow.getTime() + leaseDurationMs);
+                     const storedHandles = await repos.jobControl.listActiveExecutionSecretHandles({
+                       organizationId: candidate.job.organizationId,
+                       jobId: candidate.job.id,
+                     });
                      const jobEnvelope = buildJobEnvelope({
                        job: candidate.job,
                        attempt: candidate.attempt,
@@ -6162,6 +6196,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
                        resourceLimits: providerDemand.resources,
                        databaseNow,
                        leaseExpiresAt: expiresAt,
+                       secretHandles: toSecretHandleRefs(storedHandles),
                      });
                      if (!jobEnvelope) throw new Error("internal_unavailable");
                      const fence = randomBytes(32).toString("base64url");

@@ -30,6 +30,10 @@ import {
   type WorkerHelloV1,
 } from "@armyofagents/worker-protocol";
 import { runInTenant } from "../db/tenant-context.js";
+import {
+  toSecretHandleRefs,
+  type CandidateSecretHandleRef,
+} from "./execution-secret-handle-envelope.js";
 import type { JobReadyScheduler } from "./job-ready-scheduler.js";
 import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
 import {
@@ -328,6 +332,12 @@ function buildJobEnvelope(input: {
   resourceLimits: { cpuMillis: number; memoryMiB: number; pids: number; diskMiB: number };
   databaseNow: Date;
   leaseExpiresAt: Date;
+  /** DAT-008 — the job's ACTIVE execution-secret handles, already shaped for the
+   * frozen wire but NOT yet validated. The `safeParse` below is the authority: a
+   * malformed handle yields a null envelope and therefore no lease, which is the
+   * fail-closed direction (a lease whose sandbox has no credential is the outcome
+   * nothing downstream can recover from). */
+  secretHandles: readonly CandidateSecretHandleRef[];
 }): JobEnvelopeV1 | null {
   const executionSource = source(input.job);
   if (!executionSource) return null;
@@ -359,7 +369,7 @@ function buildJobEnvelope(input: {
     adapter: { type: "aoa_job_control", version: "1", configArtifactId: null },
     requiredCapabilities: input.requirements.capabilities,
     workspace: null,
-    secretHandles: [],
+    secretHandles: input.secretHandles,
     resourceLimits: input.resourceLimits,
     networkPolicy: {
       policyId: "job-default-deny",
@@ -585,6 +595,13 @@ export function createJobLeasingService(input: {
             ): Promise<PollResponseV1 | null> => {
           const ackDeadline = new Date(databaseNow.getTime() + ackTimeoutMs);
           const expiresAt = new Date(databaseNow.getTime() + leaseDurationMs);
+          // DAT-008 — read the job's ACTIVE handles inside the SAME tenant tx that
+          // is about to offer the lease, so a handle revoked concurrently cannot be
+          // advertised by an envelope built from a stale read.
+          const storedHandles = await repos.jobControl.listActiveExecutionSecretHandles({
+            organizationId: candidate.job.organizationId,
+            jobId: candidate.job.id,
+          });
           const jobEnvelope = buildJobEnvelope({
             job: candidate.job,
             attempt: candidate.attempt,
@@ -593,6 +610,7 @@ export function createJobLeasingService(input: {
             resourceLimits: providerDemand.resources,
             databaseNow,
             leaseExpiresAt: expiresAt,
+            secretHandles: toSecretHandleRefs(storedHandles),
           });
           if (!jobEnvelope) throw new JobLeasingError("internal_unavailable");
           const fence = randomBytes(32).toString("base64url");
