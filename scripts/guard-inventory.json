@@ -4,6 +4,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-browser-suite-executed.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow"
+    },
     "scripts/check-bundled-snapshot-inputs.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"

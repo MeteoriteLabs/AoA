@@ -275,6 +275,12 @@ jobs:
           node --test scripts/check-test-inventory.test.mjs
           node scripts/check-test-inventory.mjs
 
+      # BRW-002. The browser lane's execution guard must itself be proven: it replaced a
+      # grep that failed an all-green run, so its non-vacuousness is a self-test, not a
+      # claim. Runs in `policy` because it is pure and needs no browser.
+      - name: Browser-lane execution guard self-test (BRW-002)
+        run: node --test scripts/check-browser-suite-executed.test.mjs
+
       - name: Embedded-secret scan self-test (DSK-003)
         run: node --test scripts/lib/__tests__/embedded-secret-scan.test.mjs
 
@@ -1201,24 +1207,18 @@ jobs:
           AOA_RUN_BROWSER_TESTS: "1"
         run: |
           set -o pipefail
-          pnpm --filter @armyofagents/browser-runtime exec vitest run --reporter=basic 2>&1 \
-            | tee /tmp/browser-suite.log
+          # Emit BOTH reporters: `basic` for a human-readable log, `json` for the
+          # execution guard. The guard used to grep this log and was defeated by the
+          # ANSI colour codes vitest wraps the count in, failing a run in which all 94
+          # browser tests passed. Structured counts cannot be defeated by formatting.
+          pnpm --filter @armyofagents/browser-runtime exec vitest run \
+            --reporter=basic --reporter=json --outputFile.json=/tmp/browser-suite.json
 
       # Fail loudly if the browser suite did not actually EXECUTE. A green lane that ran zero
       # browser tests is exactly the shape this lane was created to eliminate — and the
       # clauses would be unproven while the gate showed green.
       - name: Prove the browser suite was not skipped
-        run: |
-          for f in browser-containment.browser.test.ts browser-teardown.browser.test.ts; do
-            grep -qF "$f" /tmp/browser-suite.log || {
-              echo "::error::$f did not run"; exit 1; }
-          done
-          # vitest prints "Tests  N passed" — require a non-zero passed count.
-          passed=$(grep -oE "Tests +[0-9]+ passed" /tmp/browser-suite.log | grep -oE "[0-9]+" | head -1)
-          if [ -z "$passed" ] || [ "$passed" -eq 0 ]; then
-            echo "::error::the browser suite reported no passing tests"; exit 1
-          fi
-          echo "browser suite executed with $passed passing tests"
+        run: node scripts/check-browser-suite-executed.mjs /tmp/browser-suite.json
 
   ci-required:
     needs: [changes, policy, brand-check, worker-protocol-contract-bytes, verify, lint, e2e, e2e-pgvector, migrations, distributed-contract, browser]
