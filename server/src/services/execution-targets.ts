@@ -564,3 +564,75 @@ export async function listExecutionTargets(db: Db, organizationId: string | null
     stripWorkerSecret,
   );
 }
+
+// --- WRK-008 slice 1: a worker's own self-model -------------------------------
+
+/**
+ * The facts `admitSelfModelRead` needs, plus the payload to serve.
+ *
+ * `revokedAt` comes from INSIDE the registered profile (the frozen
+ * `registeredTargetProfileV1` field), not from a column — revocation is expressed in
+ * the server-owned profile, and reading it anywhere else would be a second authority.
+ */
+export interface WorkerSelfModelRead {
+  readonly registeredProfile: Record<string, unknown> | null;
+  readonly providerConstraintProfile: Record<string, unknown> | null;
+  readonly deviceGeneration: number | null;
+  readonly targetStatus: string;
+  readonly revokedAt: string | null;
+  /**
+   * A single version token over BOTH halves, so a worker can ask "has my self-model
+   * changed?" in one comparison.
+   *
+   * Both inputs are already hex digests — the stored `registered_profile_hash` column
+   * and the constraint profile's own self-describing `digest` — so this composes them
+   * rather than re-hashing payloads. Comparing only the registered hash would miss a
+   * constraint-profile change written independently of the registered one.
+   */
+  readonly selfModelHash: string | null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** Load one target's self-model facts. Returns null when the target does not exist —
+ * the caller maps that to the SAME coarse refusal as every other denial, so this is
+ * never an existence oracle. */
+export async function loadWorkerSelfModel(
+  db: Db,
+  targetId: string,
+): Promise<WorkerSelfModelRead | null> {
+  const rows = await db
+    .select({
+      registeredProfile: executionTargets.registeredProfile,
+      registeredProfileHash: executionTargets.registeredProfileHash,
+      providerConstraintProfile: executionTargets.providerConstraintProfile,
+      deviceGeneration: executionTargets.deviceGeneration,
+      status: executionTargets.status,
+    })
+    .from(executionTargets)
+    .where(eq(executionTargets.id, targetId));
+  const row = rows[0];
+  if (!row) return null;
+
+  const registeredProfile = asRecord(row.registeredProfile);
+  const providerConstraintProfile = asRecord(row.providerConstraintProfile);
+  const constraintDigest = typeof providerConstraintProfile?.digest === "string"
+    ? providerConstraintProfile.digest
+    : null;
+  const revoked = registeredProfile?.revokedAt;
+
+  return {
+    registeredProfile,
+    providerConstraintProfile,
+    deviceGeneration: typeof row.deviceGeneration === "number" ? row.deviceGeneration : null,
+    targetStatus: row.status,
+    revokedAt: typeof revoked === "string" ? revoked : null,
+    selfModelHash: row.registeredProfileHash && constraintDigest
+      ? createHash("sha256").update(`${row.registeredProfileHash}:${constraintDigest}`).digest("hex")
+      : null,
+  };
+}

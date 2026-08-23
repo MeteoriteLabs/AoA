@@ -26,7 +26,13 @@ already assign such routes to the owning epic. `packages/worker-protocol/` is no
 
 ## 3. The route
 
-`GET /api/execution-targets/self/placement-profile`
+`POST /api/execution-targets/self/placement-profile`
+
+**POST, not GET, and that is load-bearing.** `rawBody` is only captured when the body is non-empty
+(`app.ts`), and the worker-session auth path REQUIRES `rawBody` to recompute the device proof's body
+digest. A GET could therefore never authenticate as a worker session — which is why all ten frozen
+worker ops are POST as well. *(The design originally said GET; the adversarial pass caught that it
+would refuse every legitimate caller while typechecking and passing unit tests.)*
 
 Mounted in `routes/execution-targets.ts` beside the existing worker heartbeat, behind the **same**
 `requireWorkerHeartbeatAuthority` middleware that already authenticates a worker to its own target
@@ -45,8 +51,19 @@ re-shaped, because the worker re-derives the constraint profile's digest from ca
 (`verifyAndBrandProviderConstraintProfileV1`) and any normalisation on the way out would break that
 verification. This is a load-bearing property, not an optimisation.
 
-**404 when either profile is absent.** A target whose placement profile was never set by an
-org admin has none. See §5.
+**Conditional.** The body may carry `knownSelfModelHash`; a match answers **304**, so a worker can
+re-check on every poll cycle instead of caching a self-model across a generation bump. The hash
+composes the stored `registered_profile_hash` with the constraint profile's own `digest`, so a
+constraint change written independently of the registered profile cannot slip past it. *(Added
+during implementation: slice 2 codes against this contract, so a conditional added afterwards would
+mean changing a shipped one — and it retires the terrain's "when does the worker re-read?" question.)*
+
+**Every refusal answers the same coarse `unauthorized`** — including "no such target" and "never
+configured" — so the route is never an oracle for target existence, generation or revocation state.
+
+**Mounted only when `opts.workerSession` is set.** That value is already exactly the
+distributed-execution flag, so the route is ABSENT rather than present-and-always-refusing:
+unreachable by absence instead of by behaviour.
 
 ## ★ 4. Three decisions, each with the fail-closed direction chosen
 

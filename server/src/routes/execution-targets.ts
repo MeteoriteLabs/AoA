@@ -40,8 +40,16 @@ import {
   type VerifiedTargetPrincipal,
 } from "../middleware/worker-session-auth.js";
 import { sendWorkerProtocolError } from "../services/worker-protocol-http.js";
+import { loadWorkerSelfModel } from "../services/execution-targets.js";
+import { admitSelfModelRead } from "../services/worker-self-model-admission.js";
 
 const uuidParam = z.string().uuid();
+const selfModelReadBody = z.object({
+  protocolVersion: z.literal(1),
+  /** The self-model version the worker already holds; a match answers 304. */
+  knownSelfModelHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+}).strict();
+
 const placementProfileBody = z.object({
   registeredProfile: z.record(z.string(), z.unknown()),
   providerConstraintProfile: z.record(z.string(), z.unknown()),
@@ -325,6 +333,101 @@ export function executionTargetRoutes(opts: {
           scope: "platform",
         }, "platform execution target placement profile ratified");
         res.json(target);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // WRK-008 slice 1 — a worker reads its OWN self-model: the registered target
+  // profile + the provider-constraint profile, the two artefacts WorkerSelfModel
+  // needs before it can advertise capacity, self-check an offer and take a lease.
+  //
+  // The URL carries NO target identifier, no org id and no slug. The target comes
+  // from the authenticated principal, so "could this caller reach another tenant's
+  // profile?" is answered by CONSTRUCTION rather than by a check that could drift.
+  // `self` in the path makes that explicit to a reader.
+  //
+  // POST, not GET, and that is load-bearing: `rawBody` is only captured when the body
+  // is non-empty (app.ts), and the worker-session auth path REQUIRES `rawBody` to
+  // recompute the device proof's body digest. A GET therefore could never authenticate
+  // as a worker session - which is why all ten frozen worker ops are POST too.
+  //
+  // Conditional: body `knownSelfModelHash` returns 304 when the worker already
+  // holds the current self-model, so a worker can re-check cheaply on every poll
+  // cycle instead of caching a self-model across a generation bump. Both halves are
+  // covered by that hash, so a constraint-profile change cannot slip past it.
+  //
+  // Both payloads are served VERBATIM as stored. The worker re-derives the
+  // constraint profile's digest from canonical bytes, so any re-serialisation or key
+  // re-ordering here would silently break its verification. Load-bearing.
+  // Mounted ONLY when distributed execution is genuinely usable. `opts.workerSession`
+  // is already exactly that flag (app.ts derives it as
+  // `distributedExecutionEnabled && tenantAppDb && operatorDb && signingKey`), and the
+  // route is absent rather than present-and-always-refusing, so "unreachable when the
+  // composition is off" is true by absence instead of by behaviour.
+  if (opts.workerSession) router.post(
+    "/execution-targets/self/placement-profile",
+    requireWorkerHeartbeatAuthority(opts.db, opts.workerSession),
+    validate(selfModelReadBody),
+    async (req, res, next) => {
+      try {
+        const authority = (req as Request & {
+          workerHeartbeatAuthority?:
+            | { kind: "legacy"; targetId: string; organizationId: string }
+            | { kind: "session"; principal: VerifiedTargetPrincipal };
+        }).workerHeartbeatAuthority!;
+
+        // Every refusal below answers with the SAME coarse `unauthorized`, including
+        // "no such target" and "never configured". A caller learns it may not read a
+        // self-model, never which of the reasons applied — otherwise this route
+        // becomes an oracle for target existence, generation and revocation state.
+        const deny = () => {
+          sendWorkerProtocolError(req, res, "unauthorized", opts.workerSession?.now?.() ?? new Date());
+        };
+
+        // Refuse the weaker credential BEFORE touching the database. The decision
+        // function refuses it too (that is where it is mutation-tested); doing it here
+        // as well means a legacy token never causes a read on behalf of a caller that
+        // was never going to be served.
+        if (authority.kind !== "session") {
+          deny();
+          return;
+        }
+
+        const selfModel = await loadWorkerSelfModel(opts.db, authority.principal.targetId);
+        if (!selfModel) {
+          deny();
+          return;
+        }
+
+        const decision = admitSelfModelRead({
+          authorityKind: authority.kind,
+          principalTargetGeneration: authority.principal.targetGeneration,
+          profileDeviceGeneration: selfModel.deviceGeneration,
+          revokedAt: selfModel.revokedAt,
+          targetStatus: selfModel.targetStatus,
+          hasRegisteredProfile: selfModel.registeredProfile !== null,
+          hasProviderConstraintProfile: selfModel.providerConstraintProfile !== null,
+        });
+        if (!decision.admit) {
+          deny();
+          return;
+        }
+
+        const { knownSelfModelHash: known } = req.body as z.infer<typeof selfModelReadBody>;
+        if (known !== undefined && selfModel.selfModelHash !== null && known === selfModel.selfModelHash) {
+          res.status(304).end();
+          return;
+        }
+
+        res.status(200).json({
+          protocolVersion: 1,
+          selfModelHash: selfModel.selfModelHash,
+          registeredProfile: selfModel.registeredProfile,
+          providerConstraintProfile: selfModel.providerConstraintProfile,
+          serverTime: (opts.workerSession?.now?.() ?? new Date()).toISOString(),
+        });
       } catch (err) {
         next(err);
       }
