@@ -64,37 +64,59 @@ describe("BRW-002 launch guard — cdpPort is the surface args cannot see", () =
   });
 });
 
-describe("BRW-002 launch guard — debugging arguments", () => {
+describe("BRW-002 launch guard — arguments are an ALLOW-LIST, not a deny-list", () => {
+  // WHY THIS IS AN ALLOW-LIST NOW. The first version matched the `--flag` spelling and was
+  // REPRODUCIBLY BYPASSED by a single-dash switch: `-remote-debugging-port=9333` was
+  // ACCEPTED, Playwright launched it (its own validation only rejects args that do not start
+  // with "-"), and Chromium opened a live DevTools endpoint — HTTP 200 on /json/version —
+  // while Playwright kept driving over its pipe so the session looked healthy. On E2B that
+  // port is publicly reachable, so that is `public_cdp_endpoint`: the exact forbidden effect
+  // this module exists to prevent, produced by ONE character.
+  //
+  // A deny-list cannot be made safe here. Chromium accepts roughly 1500 switches, honours
+  // `-flag`, `--flag` and (on Windows) `/flag`, and new ones arrive every release. Only an
+  // allow-list has a bounded, reviewable failure mode.
   const debugArgs = [
     "--remote-debugging-port=9222",
-    "--remote-debugging-port",
+    "-remote-debugging-port=9222",
+    "---remote-debugging-port=9222",
+    "/remote-debugging-port=9222",
     "--remote-debugging-address=0.0.0.0",
-    "--remote-debugging-pipe",
+    "-remote-debugging-pipe",
+    "--REMOTE-DEBUGGING-PORT=9222",
+    "  -remote-debugging-port=9222  ",
   ];
 
   for (const arg of debugArgs) {
-    it(`refuses ${arg}`, () => {
-      const result = checkBrowserLaunchSafety({ ...SAFE, args: ["--disable-gpu", arg] }, NO_ENV);
+    it(`refuses ${JSON.stringify(arg)}`, () => {
+      const result = checkBrowserLaunchSafety({ ...SAFE, args: [arg] }, NO_ENV);
       expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.reason).toBe("remote_debugging_arg");
     });
   }
 
-  // `--remote-debugging-pipe` is refused for a different reason than the ports: Playwright
-  // manages the pipe itself and THROWS if the caller passes it
-  // (chromium.js:281-282, "Playwright manages remote debugging connection itself"). Refusing
-  // it here turns a launch-time crash into a typed refusal.
-  it("refuses a debugging arg regardless of case or surrounding whitespace", () => {
-    for (const arg of ["  --remote-debugging-port=9222", "--REMOTE-DEBUGGING-PORT=9222"]) {
-      expect(checkBrowserLaunchSafety({ ...SAFE, args: [arg] }, NO_ENV).ok).toBe(false);
+  it("refuses an unrecognised switch instead of guessing whether it is safe", () => {
+    const result = checkBrowserLaunchSafety({ ...SAFE, args: ["--some-future-switch=1"] }, NO_ENV);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("argument_not_allowed");
+  });
+
+  it("refuses --remote-allow-origins, which relaxes DevTools origin checks", () => {
+    // The deny-list version deliberately ALLOWED this. Under the allow-list it is refused,
+    // which is the better answer: nothing this runtime does needs it.
+    expect(checkBrowserLaunchSafety({ ...SAFE, args: ["--remote-allow-origins=null"] }, NO_ENV).ok).toBe(false);
+  });
+
+  it("accepts the switches the runtime actually needs", () => {
+    for (const arg of ["--disable-gpu", "--lang=en-US", "--window-size=1280,720", "--hide-scrollbars"]) {
+      expect(checkBrowserLaunchSafety({ ...SAFE, args: [arg] }, NO_ENV).ok, arg).toBe(true);
     }
   });
 
-  it("does not refuse an unrelated arg that merely contains the word remote", () => {
-    // Over-broad matching would be its own defect: it would refuse safe launches and get
-    // relaxed later.
-    expect(checkBrowserLaunchSafety({ ...SAFE, args: ["--remote-allow-origins=null"] }, NO_ENV).ok).toBe(true);
+  it("refuses a single-dash spelling of an OTHERWISE-ALLOWED switch too", () => {
+    // Normalisation must be applied uniformly, or the allow-list becomes a way to smuggle
+    // spellings past a later deny check.
+    expect(checkBrowserLaunchSafety({ ...SAFE, args: ["-disable-gpu"] }, NO_ENV).ok).toBe(true);
   });
 });
 
@@ -145,6 +167,13 @@ describe("BRW-002 launch guard — Chromium's OS sandbox must be ON", () => {
 
   it("refuses --disable-setuid-sandbox, which defeats the sandbox by another name", () => {
     expect(checkBrowserLaunchSafety({ ...SAFE, args: ["--disable-setuid-sandbox"] }, NO_ENV).ok).toBe(false);
+  });
+
+  it("refuses the single-dash and slash spellings of --no-sandbox", () => {
+    // REPRODUCED bypass: `-no-sandbox` was ACCEPTED by the deny-list version.
+    for (const arg of ["-no-sandbox", "/no-sandbox", "-disable-setuid-sandbox"]) {
+      expect(checkBrowserLaunchSafety({ ...SAFE, args: [arg] }, NO_ENV).ok, arg).toBe(false);
+    }
   });
 });
 

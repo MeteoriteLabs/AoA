@@ -68,6 +68,30 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): Browse
 
       const page = context.pages()[0] ?? (await context.newPage());
 
+      // GRACEFUL-CANCELLATION TEARDOWN, and the measured reason it is not sufficient.
+      //
+      // MEASURED: killing the runner with SIGKILL does NOT reap Chromium. The runner process
+      // was confirmed dead and a Chromium process was still alive 15 seconds later. So the
+      // browser is orphaned by an uncatchable kill, and clause (c) cannot rest on this layer
+      // alone — destroying the sandbox is the mechanism that actually reclaims, which is what
+      // terrain already concluded about `destroy`/`terminate` versus the no-op `signal`.
+      //
+      // What this DOES buy is the catchable half: a graceful cancellation closes the context,
+      // which both reaps the browser and flushes video. Registered `once` and removed on
+      // close so a long-lived host process cannot accumulate listeners per session.
+      let closed = false;
+      const shutdown = (): void => {
+        if (closed) return;
+        closed = true;
+        void context.close().catch(() => undefined);
+      };
+      process.once("SIGTERM", shutdown);
+      process.once("SIGINT", shutdown);
+      const detach = (): void => {
+        process.removeListener("SIGTERM", shutdown);
+        process.removeListener("SIGINT", shutdown);
+      };
+
       return {
         async navigate(url: string) {
           // The waiter is ARMED BEFORE the navigation, deliberately. The `download` event can
@@ -109,6 +133,8 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): Browse
         async close() {
           // Flushes video. Also destroys the staging directory — hence the orchestrator's
           // fixed ordering of saveAs before close.
+          detach();
+          closed = true;
           await context.close();
         },
       };

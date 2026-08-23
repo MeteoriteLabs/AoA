@@ -1,4 +1,8 @@
-// BRW-002 — clauses (a), (b) and (c) against a REAL Chromium.
+// BRW-002 — clauses (a) and (b) against a REAL Chromium.
+//
+// Clause (c) is NOT here. An earlier header claimed this file covered it while no teardown
+// test existed at all — adversarial review caught the false claim. Clause (c) lives in
+// browser-teardown.browser.test.ts.
 //
 // These are the tests that make the ticket falsifiable. Plan review established there was no
 // environment in which any BRW-002 clause could fail, which is the failure class this

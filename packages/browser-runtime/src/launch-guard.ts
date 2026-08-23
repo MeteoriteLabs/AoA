@@ -41,6 +41,7 @@ export interface BrowserLaunchOptions {
 export type BrowserLaunchRefusal =
   | "cdp_port_requested"
   | "remote_debugging_arg"
+  | "argument_not_allowed"
   | "remote_endpoint_env"
   | "chromium_sandbox_disabled";
 
@@ -52,39 +53,69 @@ export type BrowserLaunchCheck =
 const REMOTE_ENDPOINT_ENV = ["SELENIUM_REMOTE_URL", "PW_TEST_CONNECT_WS_ENDPOINT"] as const;
 
 /**
- * Argument prefixes that open, or hand over, a remote control channel.
+ * Switch NAMES (never spellings) that open or hand over a remote control channel.
  *
- * `--remote-debugging-pipe` is included even though a pipe is what we WANT: Playwright manages
- * it itself and throws if the caller passes it (chromium.js:281-282, "Playwright manages
- * remote debugging connection itself"). Refusing it here turns a launch-time crash into a
- * typed refusal.
- *
- * Matching is on a `--flag` boundary — the flag itself, or the flag followed by `=`. A bare
- * `startsWith` would also refuse `--remote-allow-origins`, and an over-broad guard that
- * refuses safe launches is a guard that gets relaxed later.
+ * `remote-debugging-pipe` is included even though a pipe is what we want: Playwright manages
+ * it itself and throws if the caller passes it (chromium.js:281-282), so refusing it turns a
+ * launch-time crash into a typed refusal.
  */
-const REMOTE_DEBUGGING_FLAGS = [
-  "--remote-debugging-port",
-  "--remote-debugging-address",
-  "--remote-debugging-pipe",
-] as const;
+const REMOTE_DEBUGGING_SWITCHES = new Set([
+  "remote-debugging-port",
+  "remote-debugging-address",
+  "remote-debugging-pipe",
+]);
 
-/** Arguments that defeat Chromium's OS sandbox by name. */
-const SANDBOX_DEFEATING_FLAGS = ["--no-sandbox", "--disable-setuid-sandbox"] as const;
+/** Switch names that defeat Chromium's OS sandbox. */
+const SANDBOX_DEFEATING_SWITCHES = new Set(["no-sandbox", "disable-setuid-sandbox"]);
 
-/** True iff `arg` is exactly `flag` or `flag=<value>`, ignoring case and surrounding space. */
-function matchesFlag(arg: string, flag: string): boolean {
-  const normalized = arg.trim().toLowerCase();
-  return normalized === flag || normalized.startsWith(`${flag}=`);
-}
+/**
+ * THE ALLOW-LIST. Every caller-supplied switch must be named here or the launch is refused.
+ *
+ * WHY AN ALLOW-LIST. The first version of this guard matched the `--flag` spelling and was
+ * REPRODUCIBLY BYPASSED: `-remote-debugging-port=9333` (single dash) was ACCEPTED, Playwright
+ * launched it — its own validation only rejects args that do not start with `-`
+ * (chromium.js:283) — and Chromium opened a live DevTools endpoint, HTTP 200 on
+ * `/json/version`, while Playwright kept driving over its pipe so the session looked
+ * completely healthy. On E2B that port is publicly reachable (measured), so a one-character
+ * change produced `public_cdp_endpoint`: the exact forbidden effect this module exists to
+ * prevent.
+ *
+ * A deny-list cannot be repaired into safety here. Chromium accepts on the order of 1500
+ * switches, honours `-flag`, `--flag` and `/flag`, and gains more every release; enumerating
+ * the dangerous ones is a race nobody wins. An allow-list has a bounded, reviewable failure
+ * mode: the worst case is refusing something benign, which surfaces as a loud typed refusal
+ * rather than a silent public endpoint.
+ *
+ * Keep this SMALL. Every addition is a decision to trust a switch.
+ */
+const ALLOWED_SWITCHES = new Set([
+  "disable-gpu",
+  "disable-dev-shm-usage",
+  "hide-scrollbars",
+  "lang",
+  "window-size",
+  "force-color-profile",
+  "disable-background-timer-throttling",
+  "disable-backgrounding-occluded-windows",
+  "disable-renderer-backgrounding",
+]);
 
-function findFlag(args: readonly string[], flags: readonly string[]): string | null {
-  for (const arg of args) {
-    for (const flag of flags) {
-      if (matchesFlag(arg, flag)) return arg.trim();
-    }
-  }
-  return null;
+/**
+ * Reduce an argument to the switch NAME Chromium would parse from it.
+ *
+ * Mirrors `base::CommandLine`: any leading run of `-` is a switch prefix, `/` is one on
+ * Windows, the value is separated by the FIRST `=`, and matching is case-insensitive. Doing
+ * this once, here, is what makes every downstream comparison spelling-proof — the previous
+ * version compared raw spellings and lost.
+ */
+export function normalizeSwitchName(arg: string): string {
+  let value = arg.trim().toLowerCase();
+  // Strip every leading dash, not just two: `---remote-debugging-port` parses the same.
+  let start = 0;
+  while (start < value.length && (value[start] === "-" || value[start] === "/")) start += 1;
+  value = value.slice(start);
+  const equals = value.indexOf("=");
+  return equals >= 0 ? value.slice(0, equals) : value;
 }
 
 /**
@@ -111,13 +142,34 @@ export function checkBrowserLaunchSafety(
 
   const args = options.args ?? [];
 
-  const debuggingArg = findFlag(args, REMOTE_DEBUGGING_FLAGS);
-  if (debuggingArg !== null) {
-    return {
-      ok: false,
-      reason: "remote_debugging_arg",
-      detail: `argument ${debuggingArg} opens or reassigns a remote control channel`,
-    };
+  // Every argument is reduced to the switch NAME Chromium would parse, so `-x`, `--x`,
+  // `---x`, `/x` and `--X=1` all collapse to the same token before any comparison happens.
+  for (const arg of args) {
+    const name = normalizeSwitchName(arg);
+    if (REMOTE_DEBUGGING_SWITCHES.has(name)) {
+      return {
+        ok: false,
+        reason: "remote_debugging_arg",
+        detail: `argument ${arg.trim()} opens or reassigns a remote control channel`,
+      };
+    }
+    if (SANDBOX_DEFEATING_SWITCHES.has(name)) {
+      return {
+        ok: false,
+        reason: "chromium_sandbox_disabled",
+        detail: `argument ${arg.trim()} defeats the OS sandbox`,
+      };
+    }
+    if (!ALLOWED_SWITCHES.has(name)) {
+      // Refuse rather than guess. An unrecognised switch might be harmless, but the cost of
+      // being wrong is a public control endpoint, and the cost of being over-strict is a
+      // loud typed refusal that a human resolves by adding one line above.
+      return {
+        ok: false,
+        reason: "argument_not_allowed",
+        detail: `argument ${arg.trim()} is not on the permitted switch list`,
+      };
+    }
   }
 
   for (const name of REMOTE_ENDPOINT_ENV) {
@@ -140,15 +192,6 @@ export function checkBrowserLaunchSafety(
       ok: false,
       reason: "chromium_sandbox_disabled",
       detail: "chromiumSandbox must be true; Playwright otherwise passes --no-sandbox",
-    };
-  }
-
-  const sandboxDefeatingArg = findFlag(args, SANDBOX_DEFEATING_FLAGS);
-  if (sandboxDefeatingArg !== null) {
-    return {
-      ok: false,
-      reason: "chromium_sandbox_disabled",
-      detail: `argument ${sandboxDefeatingArg} defeats the OS sandbox`,
     };
   }
 

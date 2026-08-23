@@ -65,6 +65,7 @@ export interface SessionDeps {
 export type SessionFailure =
   | "cdp_port_requested"
   | "remote_debugging_arg"
+  | "argument_not_allowed"
   | "remote_endpoint_env"
   | "chromium_sandbox_disabled"
   | "port_opened"
