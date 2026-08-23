@@ -1171,10 +1171,18 @@ jobs:
       # lane fixes the environment and keeps `chromiumSandbox: true`.
       #
       # Safe on an ephemeral runner: the VM is destroyed after the job.
+      # Deliberately NON-FATAL. On a runner image without the AppArmor restriction the sysctl
+      # key does not exist, and a hard failure here would fail the job for the wrong reason
+      # and MASK the browser verdict. The browser step below is the source of truth: if the
+      # sandbox still cannot start, its assertion fails with Chromium's own diagnostic.
       - name: Allow Chromium's OS sandbox (unprivileged user namespaces)
         run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          echo "unprivileged_userns_clone: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo n/a)"
+          before=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo "absent")
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 \
+            || echo "::warning::could not set kernel.apparmor_restrict_unprivileged_userns (was: $before)"
+          after=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo "absent")
+          echo "apparmor_restrict_unprivileged_userns: $before -> $after"
+          echo "kernel: $(uname -r) | $(. /etc/os-release && echo "$PRETTY_NAME")"
 
       # The teardown tests spawn `dist/runner.js` as a real process, so the package must be
       # COMPILED before they run. Without this they fail in ~30ms with a missing module, which
