@@ -1,0 +1,6 @@
+BRW-002 port-exposure probe #1 (2026-08-23): does E2B's edge serve an arbitrary in-sandbox
+user port to an UNAUTHENTICATED caller from outside? Source cannot settle this — the SDK's
+getHost(port) is pure string concatenation with no "expose" side effect, so omitting a
+port-exposure operation from AoA's transport is not a control. The frozen golden-journey
+fixture names `public_cdp_endpoint` a FORBIDDEN EFFECT, so the answer decides whether
+BRW-002 gets that for free or must prevent CDP from ever binding a reachable TCP port.
