@@ -257,6 +257,14 @@ jobs:
         run: |
           node --test scripts/lib/__tests__/dependency-graph.test.mjs
           node scripts/check-dependency-graph.mjs
+          # TRACK-001 — the graph above is only as good as its authority, and that
+          # authority is hand-maintained. It had drifted: DAT-008, WRK-008 and WRK-009
+          # appeared in program-design.md ZERO times while carrying landed code, so every
+          # reachability answer the checker gave was unsound. This runs in the SAME step
+          # deliberately — a separate step is a second chance to run only one of the two,
+          # and the one skipped would be the one that failed.
+          node --test scripts/lib/__tests__/ticket-graph-coverage.test.mjs
+          node scripts/check-ticket-graph-coverage.mjs
 
       - name: Guard inventory (every check declares what runs it)
         run: |

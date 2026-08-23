@@ -619,6 +619,20 @@ The backlog contains 95 implementation tickets. Sizes are planning estimates: **
 - **Acceptance:** Live owned work resumes only when policy permits; stale sandboxes are killed; unknown artifacts are quarantined; cleanup is observable and retryable.
 - **Test:** Crash at each lifecycle checkpoint using the fake provider.
 
+#### WRK-008 — Serve a worker its own registered self-model (S)
+
+- **Depends on:** JOB-002, PRT-006.
+- **Outcome:** A worker-authenticated read of its OWN execution target's registered profile and provider-constraint profile, so a daemon can assemble the `WorkerSelfModel` the poll loop requires. Closes the control-plane half of the E4-D12 live-dispatch gap without a frozen wire change. **Slice 1 (control plane) has landed; slice 2 (daemon assembly and composing the loop) is OUTSTANDING and is where live dispatch actually begins.**
+- **Acceptance:** The route carries no target, organization, or slug identifier — the target comes from the authenticated principal, so cross-tenant reach is answered by construction rather than by a check that can drift; a legacy credential, a stale device generation in either direction, a revoked or disabled target, and an absent profile each refuse with the same coarse code; the route is not mounted at all when distributed execution is off.
+- **Test:** Unit admission matrix plus embedded-PostgreSQL integration proving the provider-constraint profile still brands after a live JSONB round trip, with a mutated-field pair proving that check can fail.
+
+#### WRK-009 — No fabricating provider in the shipped worker image (S)
+
+- **Depends on:** WRK-004, DEP-001.
+- **Outcome:** Remove the success-fabricating test double from the worker daemon's production source tree and prove, against the BUILT image, that it is gone. A default `createFakeSandboxProvider` returns exit 0, which the supervisor maps to `terminal{status:"succeeded"}`, completing a tenant attempt for work that never ran.
+- **Acceptance:** The built worker image contains no fake/test-double provider and no test tree of our own emitted output; the assertion is proven to FAIL against the pre-move image; images are reproducible from source (build outputs are excluded from the build context, so a file removed in source cannot keep shipping).
+- **Test:** Image-content assertions run in the D1 lane against the freshly built images — the lane that has both a Docker daemon and both images — verified as executing, not skipping.
+
 ### E5 — Workspaces, artifacts, secrets, and network policy
 
 #### DAT-001 — Immutable workspace snapshot format (M)
@@ -669,6 +683,20 @@ The backlog contains 95 implementation tickets. Sizes are planning estimates: **
 - **Outcome:** Relocate #320's in-process brokered internal AoA tool surface (memory, tasks, goals, artifacts, `use_skill`, `ask_human`) so a remote-worker sandbox reaches it as a tenant-scoped control-plane API authenticated by the run-JWT, preserving the per-actor RBAC gate. Do not create a second tool registry, memory store, or task store; the control plane remains the sole executor of tool effects.
 - **Acceptance:** Tool serving enforces Decision #118/#119 visibility for the resolved actor kind (org/crew/Commander), scoped to the job's Organization and Company; the run-JWT audience binds the calling sandbox to its job/attempt/lease/fence; a stale, replaced, or wrong-tenant caller is denied without existence disclosure; the sandbox never receives database or memory-table access; `ask_human` routes through the PRT-007 `work_question` path; unknown tools fail closed. Self-hosted behavior is byte-identical.
 - **Test:** Per-actor RBAC visibility matrix (identity/company/domain tiers), cross-tenant and stale-fence denial, run-JWT audience mismatch, unknown-tool rejection, and a no-DB/no-memory-access assertion — driven by a stub run-JWT-authenticated caller against the control-plane broker in the D0/D1 harness (no live sandbox required); CLI-002 later exercises it end-to-end. This ticket takes no dependency on E7.
+
+#### DAT-008 — Provider-credential materialization for placed work (M)
+
+- **Depends on:** DAT-004, DAT-005.
+- **Outcome:** Own inherited deferral #1 — the seam between the lease-scoped secret broker and the execution surface that must actually receive a credential. Mint an execution-secret handle at placement, resolve it only inside the sandbox boundary, and keep connector OAuth on the proxy path while the model-provider key follows the `env` + `sandbox_local_only` class fixed by crosswalk row CM-013.
+- **Acceptance:** A malformed provider binding refuses rather than falling back to the company key; a proxy-class row cannot be laundered into a literal; every refusal reason is actionable at the call site rather than discarded; no credential value is serialized into protocol, prompt, or evidence.
+- **Test:** Pure admission matrix plus broker round trip, with mutation coverage over every guard. **Slices 1-4 have landed; slices 5/6/7 (worker-side redemption) are DEFERRED, so this ticket does NOT yet close CM-013 — see `scripts/crosswalk-coverage.json`, where that row remains a declared `open_gap`.**
+
+#### TRACK-001 — The dependency graph must not drift behind the work (S)
+
+- **Depends on:** none.
+- **Outcome:** `check-dependency-graph.mjs` reasons over the ticket graph in this document, which is hand-maintained and had drifted: DAT-008, WRK-008 and WRK-009 appeared here zero times while carrying landed code, so every reachability answer the checker gave was unsound. Add a guard that fails when a ticket FILE exists whose id has no `#### ID` node here.
+- **Acceptance:** The check is asymmetric on purpose — a built ticket the authority cannot see is a FAILURE, while an id named here with no file yet is the BACKLOG and must not fail (19 such ids exist today); a combined filename such as `MIG-005-006-007-shadow-design.md` expands to every id it names; an empty result set is treated as a broken checker rather than a clean tree.
+- **Test:** Unit suite pinning each of those decisions, plus a proven fail-first run naming exactly the untracked ids.
 
 ### E6 — Deployment and distributed test harness
 
