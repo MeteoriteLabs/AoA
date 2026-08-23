@@ -1,0 +1,149 @@
+# Wave 4 — consolidated execution plan (Lane A)
+
+**As of** `docs/replatform-program` local tip `0293510f8` (`1334c8a90` pushed; the E4-D12 terrain
+is committed and awaiting a clean gate before push).
+**Scope:** the cutover critical path. Lane B (E8/E9) runs concurrently in `C:\e8` and is not
+sequenced here — see [`HANDOFF-lane-b-browser-service.md`](./HANDOFF-lane-b-browser-service.md).
+
+---
+
+## 1. Two blockers, not one — and they are now both mapped
+
+Wave 4's goal is to cut MIG-005/006/007 from shadow to active. Two prerequisites stand in front of
+that, and **the plan as written scheduled neither**:
+
+| Blocker | Owner | State |
+|---|---|---|
+| Deferral #1 — a worker receives no provider credential | **DAT-008** (created this session) | slices 1–4 landed CI-green; 5, 6, 7 open |
+| **E4-D12 — the worker does not dispatch at all** | **UNOWNED** — see §2 | terrain done ([`E4-D12-live-dispatch-terrain.md`](./epics/E4-worker-daemon/tickets/E4-D12-live-dispatch-terrain.md)) |
+
+Both were found the same way: a mechanism that looks wired, isn't, and whose absence nothing
+detects. That is the programme's signature failure class, now on its third and fourth instance.
+
+## ★ 2. Ownership decision required — recommendation: WRK-008, reopening E4
+
+E4-D12 exists only as prose in `E4-worker-daemon/implementation-plan.md:838`. No ticket, no gate,
+no owner, no dependency edge.
+
+**Recommendation: a new ticket `WRK-008` in E4.** The work is a worker-daemon composition plus one
+control-plane read route; it is E4's own deferred decision, carrying E4's own decision id. Putting
+it anywhere else would separate the ticket from the plan that deferred it.
+
+**Cost, stated plainly: this reopens E4, which currently reports complete.** That is the honest
+consequence and it is preferable to parking live-dispatch work in an epic that never designed it.
+Same call as DAT-008, same reasoning.
+
+## ★ 3. The sequence — CHANGED, and the change is the point
+
+My earlier advice was "DAT-008 slice 5 next". **That order is wrong**, and the terrain pass is why.
+
+DAT-008 slice 5 puts credential redemption into `createSpecFor` on the supervisor. E4-D12 slice 2
+composes that same supervisor and poll loop into the daemon's boot. If slice 5 goes first it lands
+on a path nothing executes — **buildable, unit-testable, and unprovable end to end.** Reversing them
+costs nothing and turns slice 5 from asserted to demonstrated. It also avoids editing
+`supervisor.ts` twice for two different reasons.
+
+```
+1. WRK-008 slice 1   control-plane: worker-authenticated read of its own target profiles
+2. WRK-008 slice 2   daemon: self-model assembly + compose loop/supervisor    <- dispatch goes LIVE
+3. DAT-008 slice 5   worker redemption + env synthesis + canary seeding       <- now provable
+4. DAT-008 slice 7   warm-resume re-resolution                                <- gates MIG-005
+5. DAT-008 slice 6   deferral #3 on the placement side
+6. MIG-005 -> soak -> MIG-006 -> soak -> MIG-007                              <- one at a time
+7. MIG-001           Decision #117 target/credential routing
+```
+
+**Why 4 before 6:** MIG-005 is both the first sink and the only warm-lease sink. Without slice 7 the
+first cutover is the one where key rotation and revocation never reach a running sandbox.
+
+**Why 6 is not one step:** gate clause 3 (a named, tested rollback path) was explicitly NOT ticked
+for the three shadow sinks. Each owes its own rollback evidence — three times, not once.
+
+## 4. Planning required, per item
+
+| Item | Planning state | What it needs before code |
+|---|---|---|
+| WRK-008 slice 1 | terrain ✅ | design doc (small — mirrors DAT-008 slice 4) |
+| WRK-008 slice 2 | terrain ✅, **3 open questions** | design must answer them (§5) |
+| DAT-008 slice 5 | terrain ✅, design ✅ but **stale in one place** | a design revision — see §4.1 |
+| DAT-008 slices 6, 7 | terrain ✅, design ✅, reviewed ✅ | **nothing** — straight to fail-first TDD |
+| MIG-005 / 006 / 007 | shadow result docs exist | terrain + design each, plus per-sink rollback evidence |
+| MIG-001 | none | full cycle |
+
+Every item runs [`HANDOFF-wave-3-4.md`](./HANDOFF-wave-3-4.md) §1 unchanged: terrain → design
+(committed BEFORE code; its SHA is the Start SHA) → review → fail-first TDD → adversarial review →
+mutation-test every guard → result doc → push → CI to green.
+
+### ★ 4.1 Review of this plan found DAT-008 slice 5's design is stale
+
+Slice 5's design says the worker seeds every redeemed value as a **redaction canary** before
+`provider.create`, closing M7. Terrain since found the seam does not support that as written:
+`SupervisorDeps.redactionCanaries` is read **once at `createSupervisor`** (`supervisor.ts:113`,
+`events.ts:107`), while a `Supervisor` is long-lived and multi-run (`accept(handoff)`,
+`activeRunCount()`). A **construction-time array cannot carry a per-run secret** — and the secret is
+resolved per lease, long after construction.
+
+Its own doc comment calls them *"PER-RUN secret canaries"*. They are not; they are per-supervisor.
+
+**So slice 5 needs a design revision before code:** the canary registry has to become per-run, keyed
+by lease, which is a change to a DAT-005 artifact rather than a new addition. Cheap to fix, expensive
+to discover during implementation — which is exactly what this review pass is for.
+
+### ★ 4.2 Two risks the sequence change introduces, named rather than absorbed
+
+**Between step 2 and step 3 the daemon dispatches with `env: {}`.** A distributed job would start a
+CLI with no credential and fail auth. Both the distributed flag and the rollout dial are default-off,
+so there is no production exposure — but the intermediate state is real and the step-2 result doc
+should say so rather than leave it implied.
+
+**Step 2 makes D1's workers start taking real leases.** The D1 suites currently exercise lease races
+through the harness against workers that never dispatch. Turning dispatch on changes what those
+suites observe. **This is the largest single risk in the plan**, and it is worse than "must check",
+because it was checked:
+
+> **The daemon has NO dispatch gate.** Its whole config surface is `AOA_WORKER_CONTROL_PLANE_URL`,
+> enrollment code, key-store mode, target scope, concurrency and timeouts (`config/config.ts:57-66`).
+> There is no `AOA_DISTRIBUTED_EXECUTION_ENABLED` equivalent — that flag gates the **control
+> plane**, a different process. Composing the loop therefore turns dispatch on **unconditionally,
+> for every daemon running that build**, including both D1 workers, the moment it merges.
+
+**So WRK-008 slice 2 has a hard design requirement, not an open question: an explicit worker-side
+opt-in flag, default OFF.** Composition must be inert until something deliberately enables it, and
+D1 must enable it in its own compose file as a separate, attributable change. Landing dispatch and
+enabling it in one commit would make any D1 regression unattributable — the exact property this
+branch's integration invariant exists to protect.
+
+## ★ 5. WRK-008 slice 2's three open questions — the real sizing risk
+
+Not plumbing. Each is a behaviour decision that must be made deliberately:
+
+1. **A target with no admin-set placement profile has none.** Fail-closed is almost certainly right,
+   but it means **enrolment alone does not produce a dispatchable worker**. That is product-visible
+   and someone should assert it on purpose rather than discover it.
+2. **Generation bump / revocation mid-run.** `registeredTargetProfile` carries `deviceGeneration`
+   and `revokedAt`. A cached self-model is a worker advertising ceilings it no longer holds.
+3. **Enroll → profile-read → loop ordering.** A failure at step 2 must not leave a half-started
+   daemon holding a session and no loop.
+
+## 6. Standing risks this plan does not remove
+
+- **Gate clause 2 remains PARTIAL** — the shadow divergence rate is real and end-to-end but over a
+  seeded corpus. Only a deployment driving real Commander/crew/extraction traffic closes it.
+- **The kill switch still has no write path.** Throwing it means hand-executed SQL, instance-wide
+  per provider, with no Organization and no sink dimension. "Reversible in seconds" stays half true
+  until REL-001/005 own it.
+- **Agents with a plain-literal provider key outside strict secret mode cannot be cut over.** Count
+  them before MIG-005; the residual is acceptable only if the number is small.
+- **D2 and D6 are calendar items, not tasks.** D6 needs three external organizations across the
+  *same* fourteen consecutive days, with recruitment lead time in front of it. If that has not
+  started it becomes the critical path regardless of code.
+
+## 7. Operating discipline — one rule I broke three times today
+
+`verify` is a 30–40 minute pole and **each push cancels the previous run**. I pushed docs commits
+over three consecutive gates, so the last *completed* green PR gate is `4840c04e1` and the
+refusal-signal fix has never passed one. Let a gate finish before pushing again. A cancelled run is
+not a red one, but it is also not evidence.
+
+Bump `docker/d1/campaign.env` **after the last `server/src` change** in a push, never once per
+ticket — and never before a further `server/src` commit lands.
