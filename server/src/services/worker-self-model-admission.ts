@@ -1,0 +1,82 @@
+// server/src/services/worker-self-model-admission.ts
+//
+// WRK-008 slice 1 — may this caller read its own execution target's SELF-MODEL?
+//
+// The self-model is the registered target profile + the provider-constraint profile:
+// the two artefacts `WorkerSelfModel` needs before a worker can advertise capacity,
+// self-check an offer and take a lease. It is therefore the artefact that turns an
+// enrolled worker into one that executes tenant work, and every refusal below is the
+// fail-closed direction of a real question rather than defensive noise.
+//
+// PURE: no database, no clock, no request. The route resolves the facts; this decides.
+// That keeps all four guards directly unit- and mutation-testable.
+//
+// The tenancy question is deliberately ABSENT from this function, and that is not an
+// omission. The route carries no target identifier at all — it reads the caller's own
+// target from the authenticated principal, on a URL with no org id and no slug, so
+// "could this caller reach another tenant's profile?" is answered by construction at
+// the middleware rather than by a check here that could drift out of agreement with it.
+
+export type SelfModelReadRefusal =
+  | "legacy_authority_refused"
+  | "generation_stale"
+  | "target_revoked"
+  | "profile_absent";
+
+export interface SelfModelReadInput {
+  /** Which of the two credentials `requireWorkerHeartbeatAuthority` admitted. */
+  readonly authorityKind: "legacy" | "session";
+  /** `VerifiedTargetPrincipal.targetGeneration` — the generation the caller PROVED. */
+  readonly principalTargetGeneration: number | null;
+  /** `registeredTargetProfile.deviceGeneration` — the target's CURRENT generation. */
+  readonly profileDeviceGeneration: number | null;
+  readonly revokedAt: string | null;
+  readonly hasRegisteredProfile: boolean;
+  readonly hasProviderConstraintProfile: boolean;
+}
+
+export type SelfModelReadDecision =
+  | { readonly admit: true }
+  | { readonly admit: false; readonly reason: SelfModelReadRefusal };
+
+const refuse = (reason: SelfModelReadRefusal): SelfModelReadDecision => ({ admit: false, reason });
+
+export function admitSelfModelRead(input: SelfModelReadInput): SelfModelReadDecision {
+  // 1. Credential strength FIRST, before any property of the target is consulted.
+  //
+  //    `requireWorkerHeartbeatAuthority` admits two identities: a legacy bearer worker
+  //    token, and the device-proof-bound session. A distributed worker always holds the
+  //    latter. Admitting the former here would make the self-model reachable by the
+  //    weaker of two credentials purely because a shared middleware tolerates it — the
+  //    route would inherit an authorization decision it never made.
+  //
+  //    Ordering matters: a weak credential must never be reported as a generation or
+  //    revocation problem, which would send an operator to the wrong place.
+  if (input.authorityKind !== "session") return refuse("legacy_authority_refused");
+
+  // 2. The generation the caller PROVED must equal the target's CURRENT generation.
+  //
+  //    Behind means the session predates a device-generation bump: the worker is asking
+  //    for a self-model it is no longer entitled to act on. Ahead should be impossible —
+  //    if it happens, one of the two independently-derived authorities is wrong and
+  //    neither may be trusted. A null on either side is not a match; it is an unanswered
+  //    question, and the answer to an unanswered question here is no.
+  if (input.principalTargetGeneration === null
+    || input.profileDeviceGeneration === null
+    || input.principalTargetGeneration !== input.profileDeviceGeneration) {
+    return refuse("generation_stale");
+  }
+
+  // 3. A revoked target serves nothing. Checked BEFORE absence so a revoked target is
+  //    never reported as merely unconfigured — those call for opposite operator actions.
+  if (input.revokedAt !== null) return refuse("target_revoked");
+
+  // 4. Both halves must exist. `PUT .../placement-profile` is admin-guarded and is the
+  //    only writer, so this is a genuine product state: ENROLMENT ALONE DOES NOT PRODUCE
+  //    A DISPATCHABLE WORKER. "Enrolled" and "can take work" are two different things.
+  if (!input.hasRegisteredProfile || !input.hasProviderConstraintProfile) {
+    return refuse("profile_absent");
+  }
+
+  return { admit: true };
+}
