@@ -194,6 +194,21 @@ the pipe transport makes impossible — CDP rides fds 3/4 of the spawned child.
 - **The PR gate could not complete** under two-lane operation (`cancel-in-progress: true`,
   seven consecutive cancellations). Fixed by scoping the concurrency setting to this branch;
   in-progress runs now reach a verdict.
+- **★ A browser job's `maxSessionSeconds` is never read for the envelope deadline — this
+  ticket's own miss.** `buildJobEnvelope` (`server/src/services/job-leasing.ts:344-348`)
+  derives the deadline from `job.input.maxRuntimeSeconds ?? 600`, and `maxRuntimeSeconds` is a
+  field of **`batchWorkloadV1Schema` only**. `browserWorkloadV1Schema` carries
+  `maxSessionSeconds` instead, so **every browser envelope gets `now + 600 s`** regardless of
+  the ceiling BRW-001 validated, defaulted and mutation-tested. Because `job.input` IS the
+  workload and the schema is `.strict()`, the field cannot simply be added — that produces
+  `unrecognized_keys`, a null envelope, and exactly the silent-never-leases defect BRW-001
+  exists to prevent. **Latent, not live:** the envelope `deadline` is set and schema-validated
+  but read by nothing in production, so nothing is truncated today; it bites the moment a
+  worker honours it. Found by the SVC-001 terrain map, not by this ticket's own review — the
+  same line breaks service jobs harder (a 10-minute deadline on a 72-hour workload class), and
+  the three-way fork is stated in
+  [`SVC-001-terrain.md`](../../E9-service-agents/tickets/SVC-001-terrain.md) §2 for a decision
+  on the record. BRW-003 must not assume the ceiling is enforced anywhere.
 
 ## 8. CI status — the honest position
 
