@@ -17,7 +17,7 @@ import {
   provisionTenantAppRoleLoginSql,
   TENANT_APP_ROLE,
 } from "../db/rls-tenant.js";
-import { openDistributedExecutionDatabases } from "../db/distributed-execution-databases.js";
+import { openDistributedExecutionDatabases, appTablePrivileges } from "../db/distributed-execution-databases.js";
 import * as legacyGrants from "../db/job-control-legacy-grants.js";
 
 type EmbeddedPostgresInstance = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
@@ -2239,6 +2239,68 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         expect(rows).toEqual([{ slug: "flag-off-legacy-owner" }]);
       } finally {
         await legacyOwner.end();
+      }
+    }, 60_000);
+
+    // TEMPORARY DIAGNOSTIC (SVC-001). The app-authority phase deliberately discards the
+    // underlying assertion, so a failure below says only "distributed_execution_app_authority".
+    // A standalone diagnostic already proved that a FRESHLY MIGRATED database on this same
+    // Linux runner matches every certificate exactly - so if drift exists, it is in THIS
+    // suite's own database, mutated by its own setup. This runs the same comparisons against
+    // `appUrl` immediately before the first failing test and NAMES what differs.
+    // DELETE once the cause is known.
+    it("DIAGNOSTIC: names any certificate drift in this suite's own database", async () => {
+      guard();
+      const client = postgres(appUrl, { max: 1 });
+      try {
+        const priv = await client<{ schema_name: string; table_name: string; s: boolean; i: boolean; u: boolean; d: boolean }[]>`
+          SELECT ns.nspname AS schema_name, rel.relname AS table_name,
+            has_table_privilege(current_user, rel.oid, 'SELECT') AS s,
+            has_table_privilege(current_user, rel.oid, 'INSERT') AS i,
+            has_table_privilege(current_user, rel.oid, 'UPDATE') AS u,
+            has_table_privilege(current_user, rel.oid, 'DELETE') AS d
+          FROM pg_class rel JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+          WHERE ns.nspname <> 'information_schema' AND ns.nspname NOT LIKE 'pg\_%'
+            AND rel.relkind IN ('r','p','v','m','f')`;
+        const expectedTables = appTablePrivileges();
+        const privBad: string[] = [];
+        for (const row of priv) {
+          const exp = new Set((row.schema_name === "public" ? expectedTables[row.table_name] ?? [] : []) as string[]);
+          const act: Record<string, boolean> = { SELECT: row.s, INSERT: row.i, UPDATE: row.u, DELETE: row.d };
+          for (const op of ["SELECT", "INSERT", "UPDATE", "DELETE"]) {
+            if (act[op] !== exp.has(op)) privBad.push(`${row.schema_name}.${row.table_name} ${op} db=${act[op]} manifest=${exp.has(op)}`);
+          }
+        }
+        const schemaRows = await client<{ schema_name: string; usage: boolean; create_priv: boolean }[]>`
+          SELECT ns.nspname AS schema_name,
+            has_schema_privilege(current_user, ns.oid, 'USAGE') AS usage,
+            has_schema_privilege(current_user, ns.oid, 'CREATE') AS create_priv
+          FROM pg_namespace ns
+          WHERE ns.nspname <> 'information_schema' AND ns.nspname NOT LIKE 'pg\_%'`;
+        const schemaBad = schemaRows
+          .filter((r) => r.usage !== (r.schema_name === "public") || r.create_priv)
+          .map((r) => `${r.schema_name} usage=${r.usage} create=${r.create_priv}`);
+        const rls = await client<{ relation: string; force: boolean }[]>`
+          SELECT rel.relname AS relation, rel.relforcerowsecurity AS force
+          FROM pg_class rel JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+          WHERE ns.nspname='public' AND rel.relrowsecurity`;
+        const dbRls = rls.map((r) => r.relation).sort();
+        const manifestRls = [...legacyGrants.RLS_RELATIONS].sort();
+        const rlsDiff = {
+          onlyDb: dbRls.filter((x) => !manifestRls.includes(x)),
+          onlyManifest: manifestRls.filter((x) => !dbRls.includes(x)),
+        };
+        // eslint-disable-next-line no-console
+        console.error("SUITE_DB_PRIV_BAD:", JSON.stringify(privBad.slice(0, 20)));
+        // eslint-disable-next-line no-console
+        console.error("SUITE_DB_SCHEMA_BAD:", JSON.stringify(schemaBad));
+        // eslint-disable-next-line no-console
+        console.error("SUITE_DB_RLS_DIFF:", JSON.stringify(rlsDiff));
+        expect({ privBad, schemaBad, rlsDiff }).toEqual({
+          privBad: [], schemaBad: [], rlsDiff: { onlyDb: [], onlyManifest: [] },
+        });
+      } finally {
+        await client.end();
       }
     }, 60_000);
 
