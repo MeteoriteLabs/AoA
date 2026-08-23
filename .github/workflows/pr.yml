@@ -1160,27 +1160,57 @@ jobs:
       - name: Install Chromium
         run: pnpm --filter @armyofagents/browser-runtime exec playwright install --with-deps chromium
 
+      # CONFIGURE THE ENVIRONMENT TO SUPPORT SANDBOXING — do NOT disable the sandbox.
+      #
+      # Ubuntu 23.10+ (which GitHub runners are) restricts unprivileged user namespaces with
+      # AppArmor, and Chromium's zygote needs them: without this the launch dies with
+      # "No usable sandbox!". Chromium's own message offers two ways out and names this one
+      # as preferred; the alternative it suggests is `chromiumSandbox: false`, which would
+      # silently downgrade the containment property this whole ticket is about. The design
+      # said a refusal here is a finding to escalate, never a flag to quietly drop — so the
+      # lane fixes the environment and keeps `chromiumSandbox: true`.
+      #
+      # Safe on an ephemeral runner: the VM is destroyed after the job.
+      - name: Allow Chromium's OS sandbox (unprivileged user namespaces)
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          echo "unprivileged_userns_clone: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo n/a)"
+
+      # The teardown tests spawn `dist/runner.js` as a real process, so the package must be
+      # COMPILED before they run. Without this they fail in ~30ms with a missing module, which
+      # is exactly how they failed on the first CI run of this lane.
+      - name: Build the runtime (the teardown tests spawn dist/runner.js)
+        run: pnpm --filter @armyofagents/browser-runtime build
+
       # AOA_RUN_BROWSER_TESTS is what un-skips the *.browser.test.ts suites. Without it they
       # skip everywhere, which would make this lane a check that runs nothing.
+      #
+      # The output is captured ONCE and asserted below, rather than re-running the suite: a
+      # second full run would double the lane's cost to prove something the first run's own
+      # output already shows.
       - name: Run the browser clauses
         env:
           AOA_RUN_BROWSER_TESTS: "1"
-        run: pnpm --filter @armyofagents/browser-runtime exec vitest run
-
-      # Fail loudly if the browser suite did not actually execute. A green lane that ran zero
-      # browser tests is exactly the shape this lane was created to eliminate.
-      - name: Prove the browser suite was not skipped
-        env:
-          AOA_RUN_BROWSER_TESTS: "1"
         run: |
-          out=$(pnpm --filter @armyofagents/browser-runtime exec vitest run \
-            src/__tests__/browser-containment.browser.test.ts --reporter=basic 2>&1)
-          echo "$out"
-          echo "$out" | grep -qE "browser-containment\.browser\.test\.ts" || {
-            echo "::error::the browser suite did not run"; exit 1; }
-          if echo "$out" | grep -qE "Tests +[0-9]+ skipped \(|no tests"; then
-            echo "::error::the browser suite reported no executed tests"; exit 1
+          set -o pipefail
+          pnpm --filter @armyofagents/browser-runtime exec vitest run --reporter=basic 2>&1 \
+            | tee /tmp/browser-suite.log
+
+      # Fail loudly if the browser suite did not actually EXECUTE. A green lane that ran zero
+      # browser tests is exactly the shape this lane was created to eliminate — and the
+      # clauses would be unproven while the gate showed green.
+      - name: Prove the browser suite was not skipped
+        run: |
+          for f in browser-containment.browser.test.ts browser-teardown.browser.test.ts; do
+            grep -qF "$f" /tmp/browser-suite.log || {
+              echo "::error::$f did not run"; exit 1; }
+          done
+          # vitest prints "Tests  N passed" — require a non-zero passed count.
+          passed=$(grep -oE "Tests +[0-9]+ passed" /tmp/browser-suite.log | grep -oE "[0-9]+" | head -1)
+          if [ -z "$passed" ] || [ "$passed" -eq 0 ]; then
+            echo "::error::the browser suite reported no passing tests"; exit 1
           fi
+          echo "browser suite executed with $passed passing tests"
 
   ci-required:
     needs: [changes, policy, brand-check, worker-protocol-contract-bytes, verify, lint, e2e, e2e-pgvector, migrations, distributed-contract, browser]

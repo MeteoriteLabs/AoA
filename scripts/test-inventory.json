@@ -16,6 +16,10 @@
       "mode": "floor",
       "count": 93
     },
+    "packages/browser-runtime": {
+      "mode": "floor",
+      "count": 7
+    },
     "packages/db": {
       "mode": "floor",
       "count": 57
