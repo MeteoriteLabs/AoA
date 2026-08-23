@@ -10,6 +10,46 @@ Line references are to `docs/replatform-program` at `373205816`.
 
 ---
 
+> ## ★ REVISION 1 — plan-eng-review findings, folded in
+>
+> Seven findings, all verified against source before promotion. Two were scope decisions taken by
+> the Integration Gate Owner; five were corrections with no real alternative. §11 carries the
+> full list; the affected sections below are amended in place.
+>
+> **The two decided ones:**
+>
+> **R1 — warm-resume re-resolution is IN SCOPE (new slice 7).** `program-design.md:36` keeps
+> Decision #120's Commander warm-E2B lifecycle authoritative *"until MIG-005 cuts it over"*, and
+> MIG-005 is both the first sink and the warm-lease one. Deferring re-resolution would have
+> satisfied CM-013 for cold leases only, in front of the one sink that is not cold. Decided: build
+> it now rather than reorder the sinks or accept staleness.
+>
+> **R2 — the per-agent override splits three ways, and the data already makes the split.** The
+> original design bound the company key unconditionally, which would silently override an agent's
+> own key — a behavioural regression introduced by the cutover. The first fix considered was
+> fail-closed for every override; that was too coarse and rested on an unchecked assumption that a
+> per-agent key is a plaintext literal. It usually is not: `normalizeEnvConfig`
+> (`secrets.ts:500-526`) persists env entries as `{type:"secret_ref", secretId, version}` or
+> `{type:"plain", value}`, and strict secret mode (`:514`) **rejects** a non-empty plain value for
+> a sensitive key outright. A `secret_ref` therefore maps directly onto an existing handle kind
+> with **no data migration** — `dispatchResolvedSecret` (`secret-broker.ts:181-188`) already routes
+> `company_secret` to `resolveProviderOrCompanySecret`.
+>
+> | Agent env state for the provider var | Handle minted | Override preserved |
+> |---|---|---|
+> | `secret_ref` | `refKind:"company_secret"`, `refId: secretId`, pinned `version` | yes, exactly |
+> | `plain` literal (only reachable outside strict mode) | **none** — refuse to mint; job stays on legacy | yes, by not moving it |
+> | absent | `refKind:"provider_key"` (the company key) | n/a — matches `needsCompanyKeyFallback` |
+>
+> The third row **calls `needsCompanyKeyFallback`** (`secrets.ts:291-298`) rather than restating
+> its logic, so the mint and the legacy merge cannot drift on "when does the company key apply?"
+> — the same argument that function's own doc comment makes for its two existing callers.
+>
+> **Named residual:** an agent with a plain-literal provider key outside strict secret mode cannot
+> be cut over. **Measure how many exist before MIG-005**; do not assume zero.
+
+---
+
 ## 1. The one-sentence goal
 
 A distributed job's sandbox can authenticate its CLI with the Company's model-provider key,
@@ -79,8 +119,18 @@ change on the worker.
 
 ### Slice 1 — mint the handle (control plane)
 
-At job placement, for a job whose workload needs a model-provider key, write one
-`job_secret_handles` row inside the existing placement transaction:
+**Inputs (R3, R4, amended).** The mint is keyed on the agent's **adapter type**, not a provider
+id: `companyKeyTargetForAdapter(adapterType)` (`secrets.ts:251`) returns `{ownerId, secretName,
+envVar}` or **`null`** when that adapter has no company key — and that `null` is the "mint
+nothing" signal, so no separate disposition list is needed. Two gates precede it:
+
+- **Deployment mode.** Self-hosted has no hosted key (Rule #11 / Decision #104); the CLI uses its
+  local login. Reuse the existing `gateCodingAdapterDispatch(adapterType, deploymentMode)` +
+  `CLOUD_SANDBOX_MODES` (`sandbox-coding-disposition.ts:155-163`) rather than a second mode gate.
+- **Per-agent override.** The three-way split in revision 1 R2, branching on
+  `needsCompanyKeyFallback`.
+
+Then write one `job_secret_handles` row inside the existing placement transaction:
 
 | Column | Value | Why |
 |---|---|---|
@@ -120,8 +170,25 @@ the acceptance.
 
 `POST /api/worker-control/execution-secrets/resolve`, mounted beside the existing ten in
 `worker-control.ts`, authenticated by the **same** device proof + worker session as every other
-worker route (E4-D03). Body: the complete active fence (`workerId, jobId, attempt, leaseId,
-fenceToken`) + `handleId`. It calls `createSecretBrokerService.resolve()` verbatim.
+worker route (E4-D03). The body is `SecretResolveRequestV1` (`secret-broker.ts:50`) **reused
+verbatim** — not a third request shape. It calls `createSecretBrokerService.resolve()`.
+
+> **★ R5 — the route needs its own descriptor, or it silently loses four protections.**
+> Every existing worker route derives them from the frozen op: `worker-control.ts:487` parses with
+> `artifactCommitOperationRequestV1Schema`, which pins `audience: z.literal("worker_run")`
+> (`transport.ts:263`), and bounds the body with `OPERATION_DESCRIPTORS.artifact_commit.maxRequestBytes`.
+> `verifyWorkerOperationProof` (`middleware/worker-operation-proof.ts:34-50`) checks only
+> `claims.organizationId` and `claims.scope` — **it never checks the op audience.** A route with no
+> descriptor therefore has no audience binding (a `worker_poll` session could redeem secrets), no
+> request-size ceiling, no timeout, and cannot emit a typed protocol error, because
+> `sendWorkerOperationProtocolError` is keyed on an op name.
+>
+> **Fix:** define a local, non-frozen descriptor beside the route — audience pinned to
+> `worker_run` (the fence-bearing audience every other fence op uses), an explicit
+> `maxRequestBytes` and `timeoutMs`, and an explicit audience check against the session claims,
+> since no frozen schema will do it for us. `packages/worker-protocol/` is still not touched.
+> **Mutation-tested**, and the audience check gets a negative test with a genuinely valid
+> `worker_poll` session — a test using an invalid session would pass either way.
 
 **This route is the boot root that closes M3** for the `sandbox_local_only` class.
 
@@ -149,10 +216,40 @@ Denials keep the broker's coarse, non-disclosing vocabulary (`stale_fence`, `att
    closing M7. This is ordered *before* create so no lifecycle event can precede the canary.
 3. **A redemption failure fails the attempt.** It never proceeds with a partial env — a CLI
    started without its key burns a provider round-trip and reports a misleading error.
+4. **★ R6 — redemption gets its own deadline, inside the create budget.** `createSpecFor`
+   (`supervisor.ts:195`) is currently synchronous and `withDeadline` wraps only `create`
+   (`:291`). Making spec-building async without a deadline puts a hanging redemption **outside
+   every timeout the supervisor has**. The redemption budget is subtracted from the create budget,
+   not added to it, so a slow control plane cannot extend a run's wall clock.
+5. **★ R7 — retry is bounded and explicit, because resolution is NOT a safe read.**
+   `resolveExecutionSecret` writes `last_resolved_at` / `resolve_count` in the same audit UPDATE
+   (`job_secret_handles.ts:56-64`). A blind retry inflates the audit and makes `resolveCount`
+   useless as a signal. One retry at most, only on a transport error (never on a denial), and the
+   test asserts `resolveCount` increments **exactly once** for a successful redemption.
+6. **E4-D04 parity.** The daemon vendors the route path and any constants in
+   `transport/client.ts` with a contract test asserting the exact strings, exactly as it does for
+   the other ten paths — it may not import them.
 
 ### Slice 6 — deferral #3, the tautological owner check
 
 See §7.
+
+### ★ Slice 7 — warm-resume re-resolution (revision 1 R1)
+
+A handle is a reference, so cold-lease re-resolution is free (§4 slice 1). A **warm** sandbox is
+not: it holds the value baked into its env at create, so a rotated or revoked key never reaches
+it. That is the gap CM-013's *"re-resolve on every new lease and warm resume"* names, and MIG-005
+is the sink that has warm leases.
+
+On warm resume, before the sandbox is handed any further work: redeem again, and if the value
+differs from the one the sandbox was created with, the sandbox is **not reused** — it is torn down
+and recreated. Comparing without ever re-materializing keeps the decision cheap and avoids a
+second injection path into a live sandbox.
+
+- A *denied* re-resolution (revoked handle, replaced fence) tears down and does **not** recreate:
+  the credential is gone, so there is nothing to run with.
+- The comparison is over the redeemed value, so the test must make the two values **actually
+  differ** — a test that rotates nothing proves only that equal values compare equal.
 
 ---
 
@@ -160,7 +257,13 @@ See §7.
 
 | Area | Test |
 |---|---|
-| Mint | uuid not slug; correct `refId`/`target` from `resolveProviderKeyTarget`; `destination` null; generation pinned |
+| Mint | uuid not slug; correct `refId`/`target`; `destination` null; generation pinned |
+| **Mint — three-way split (R2)** | `secret_ref` → `company_secret` handle with the pinned `secretId`/`version`; `plain` literal → **no handle minted** and the job is not routed distributed; absent → `provider_key`. The `secret_ref` case asserts the agent's own secret is used, not the company's |
+| **Mint — mode gate (R4)** | self-hosted mints nothing; `cloud_auth` mints. Asserted through `gateCodingAdapterDispatch`, not a re-implemented mode check |
+| **Route — audience (R5)** | a **valid** `worker_poll` session is refused; a `worker_run` session is admitted. Over-size body refused; timeout enforced |
+| **Retry / audit (R7)** | `resolveCount` increments **exactly once** on success; a denial is never retried |
+| **Warm resume (R1)** | an unchanged value reuses the sandbox; a **genuinely rotated** value tears down and recreates; a denied re-resolution tears down and does not recreate |
+| **Deadline (R6)** | a hanging redemption is cut off by the create budget, not left unbounded |
 | Envelope | handles appear; a malformed handle yields `null` envelope and **no lease** (fail-closed direction asserted, not just parse failure) |
 | Route authz | wrong tenant / wrong job / stale fence / terminal attempt / revoked target — each denied with the exact frozen reason and **no disclosure difference** between "foreign handle exists" and "does not exist" |
 | **Class separation** | a `fence_proxy` handle presented to the resolve route is refused **even though the broker would resolve it** — the guard is at the route, so the test must prove the broker succeeded and the route still refused |
@@ -221,10 +324,13 @@ and a copy of itself (the MIG-005/006/007 comparator lesson).
 
 - **The `fence_proxy` / connector-OAuth path** (M4, M5): the streaming reverse proxy and the
   network-policy store. Not needed for `sandbox_local_only`.
-- **Warm-resume re-resolution and rotation/revocation propagation** (CM-013 names both). Handle
-  revocation is *representable* today (`status`/`revokedAt` are read by
-  `authorizeSecretResolve`), so a revoked handle already fails its next redemption; what is not
-  built is proactive propagation to a running sandbox.
+- ~~**Warm-resume re-resolution**~~ — **pulled INTO scope as slice 7** (revision 1 R1).
+- **Proactive rotation/revocation push to a running sandbox.** Slice 7 re-resolves at resume
+  boundaries, not mid-run. A key rotated while a sandbox is actively executing is picked up at the
+  next resume, not immediately. Handle revocation is already representable (`status`/`revokedAt`
+  are read by `authorizeSecretResolve`), so the *next* redemption fails closed.
+- **Agents with a plain-literal provider key outside strict secret mode** (revision 1 R2 residual).
+  They stay on the legacy executor. Measure the count before MIG-005.
 - **`gemini_local` / `opencode_local` / `cursor` / `grok_local` / `pi_local`** — CLI-001's v1
   scope is `claude_local` + `codex_local` only.
 
@@ -245,3 +351,30 @@ and a copy of itself (the MIG-005/006/007 comparator lesson).
 Mint nothing. With slice 1 disabled the job has no handles, slice 2 emits `secretHandles: []`, and
 slices 4–5 are unreachable — byte-identical to today's behaviour. The rollback unit is the mint,
 which is why it is slice 1 and not slice 5.
+
+---
+
+## 11. Review ledger — plan-eng-review, all seven findings
+
+Run against this design before any code. Every finding was verified by quoting the motivating
+source line before promotion; none is a pattern-match.
+
+| # | Sev | Conf | Finding | Disposition |
+|---|---|---|---|---|
+| R1 | P1 | 8/10 | Warm-resume re-resolution deferred, but MIG-005 is both the first sink and the warm-lease one (`program-design.md:36`) | **In scope** — new slice 7 |
+| R2 | P1 | 9/10 | Mint bound the company key unconditionally, silently overriding an agent's own key (`secrets.ts:269-289`) | **Fixed** — three-way split, revision 1 |
+| R5 | P0 | 9/10 | The new route inherits no audience binding, size ceiling, timeout, or typed error emitter; `verifyWorkerOperationProof` never checks op audience (`middleware/worker-operation-proof.ts:34-50`) | **Fixed** — local descriptor + explicit audience check, slice 4 |
+| R3 | P2 | 8/10 | The mint's input was unnamed; `companyKeyTargetForAdapter` (`secrets.ts:251`) already keys on adapter type and returns `null` as the mint-nothing signal | **Fixed** — slice 1 inputs |
+| R4 | P2 | 8/10 | No deployment-mode gate; self-hosted has no hosted key (Rule #11) | **Fixed** — reuse `gateCodingAdapterDispatch`, slice 1 |
+| R6 | P2 | 7/10 | `createSpecFor` goes async while `withDeadline` wraps only `create` (`supervisor.ts:291`) | **Fixed** — redemption budget subtracted from create, slice 5 |
+| R7 | P2 | 7/10 | Resolution is not a safe read — it writes `last_resolved_at`/`resolve_count` (`job_secret_handles.ts:56-64`), so blind retry inflates the audit | **Fixed** — bounded retry + exact-once assertion, slice 5 |
+
+Code-quality findings folded in without a row: reuse `SecretResolveRequestV1` rather than a third
+request shape (slice 4); E4-D04 path vendoring with a parity contract test (slice 5).
+
+**What the review changed about the shape of the ticket:** two of the seven (R1, R2) were scope,
+not correctness — the design was internally consistent and still wrong about what it had to
+cover. R5 was the one true defect: a new route that looked like the other ten and silently was
+not. R2 is worth remembering for its own reason — the first fix considered was fail-closed for
+every override, which was too coarse, and the correction came from reading how the value is
+actually persisted rather than defending the recommendation.
