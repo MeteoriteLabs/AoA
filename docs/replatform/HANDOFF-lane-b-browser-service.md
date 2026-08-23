@@ -1,7 +1,8 @@
 # Lane B kickoff — E8 browser (BRW ×6) + E9 service agents (SVC ×7)
 
-**Branch:** `docs/replatform-program` (the same single integration branch — PR #323).
-**Worktree:** a NEW, dedicated checkout. **NOT** `C:\e3` — that is Lane A's.
+**Remote branch:** `docs/replatform-program` (the same single integration branch — PR #323).
+**Worktree:** `C:\e8`, on the local branch **`lane-b`** which TRACKS that remote branch.
+**NOT** `C:\e3` — that is Lane A's, and git refuses to check one branch out in two worktrees.
 **Written from** `C:\e3` at `39fa9fe34`, by the session executing Lane A (DAT-008 → MIG-005/006/007).
 
 This is a **parallel lane**, not a successor. Lane A is running the cutover critical path in its
@@ -14,12 +15,24 @@ your first commit, not after.
 
 **Preflight — it FAILS rather than printing something to eyeball:**
 
+The worktree ALREADY EXISTS. Lane A created it with:
+
 ```bash
-cd <your-worktree> \
-  && [ "$(git rev-parse --abbrev-ref HEAD)" = "docs/replatform-program" ] \
-  && git merge-base --is-ancestor 39fa9fe34 HEAD \
-  && [ -z "$(git status --porcelain)" ] \
+git -C /c/e3 worktree add -b lane-b /c/e8 origin/docs/replatform-program
+```
+
+`git worktree add /c/e8 docs/replatform-program` **fails**: git refuses to check one branch out in
+two worktrees, and Lane A holds it. The local branch `lane-b` is the workaround, and it changes
+nothing that matters — there is still exactly ONE remote integration branch, and you push to it by
+name (§5.2).
+
+```bash
+cd /c/e8 \
+  && [ "$(git rev-parse --abbrev-ref HEAD)" = "lane-b" ] \
   && [ "$(git rev-parse --show-toplevel)" != "/c/e3" ] \
+  && git fetch -q origin docs/replatform-program \
+  && git merge-base --is-ancestor e9032408e HEAD \
+  && [ -z "$(git status --porcelain)" ] \
   && echo "PREFLIGHT OK" \
   || echo "PREFLIGHT FAILED - wrong worktree, wrong branch, behind, dirty, or you are in Lane A"
 ```
@@ -140,9 +153,18 @@ epic closed.
 tickets touching the same migration, state machine, or route module.* You and Lane A are on **one
 branch**, so:
 
-1. **Separate worktree.** Non-negotiable. `C:\e3` is Lane A's.
-2. **`git pull --ff-only` immediately before every push.** Two sessions on one branch WILL race on
-   non-fast-forward. This is the only routine friction and it is mechanical.
+1. **Separate worktree.** Non-negotiable, and not for tidiness: two sessions editing one working
+   tree corrupt each other's in-progress edits and git index. `C:\e3` is Lane A's; you are `C:\e8`.
+2. **Sync then push, every time.** Your local branch is `lane-b`; the shared branch is
+   `docs/replatform-program`. The push names both:
+
+   ```bash
+   git pull --rebase origin docs/replatform-program && git push origin lane-b:docs/replatform-program
+   ```
+
+   Two lanes on one remote branch WILL race on non-fast-forward. This is the only routine friction
+   and it is mechanical. **Rebase, never merge** — a merge commit here destroys the attribution the
+   integration invariant exists to preserve.
 3. **Never force-push.** A red tip must stay attributable to the push that caused it — that is the
    integration invariant this branch exists to preserve.
 4. **Migrations are the sharp edge.** If a ticket needs one, the number you generate can collide
