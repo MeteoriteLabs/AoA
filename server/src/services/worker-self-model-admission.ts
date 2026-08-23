@@ -21,6 +21,7 @@ export type SelfModelReadRefusal =
   | "legacy_authority_refused"
   | "generation_stale"
   | "target_revoked"
+  | "target_disabled"
   | "profile_absent";
 
 export interface SelfModelReadInput {
@@ -31,6 +32,8 @@ export interface SelfModelReadInput {
   /** `registeredTargetProfile.deviceGeneration` — the target's CURRENT generation. */
   readonly profileDeviceGeneration: number | null;
   readonly revokedAt: string | null;
+  /** `execution_targets.status`: active | draining | offline | disabled. */
+  readonly targetStatus: string;
   readonly hasRegisteredProfile: boolean;
   readonly hasProviderConstraintProfile: boolean;
 }
@@ -70,6 +73,18 @@ export function admitSelfModelRead(input: SelfModelReadInput): SelfModelReadDeci
   // 3. A revoked target serves nothing. Checked BEFORE absence so a revoked target is
   //    never reported as merely unconfigured — those call for opposite operator actions.
   if (input.revokedAt !== null) return refuse("target_revoked");
+
+  // 3b. `disabled` is the operator saying "do not use this target". Refuse it.
+  //
+  //     The other non-active statuses deliberately do NOT refuse, and the reasoning
+  //     matters more than the rule:
+  //       * `draining` must still serve. Drain means "take no NEW work"; that is the
+  //         poll response's job, and withholding the self-model would break the drain
+  //         semantics of a worker that is legitimately finishing in-flight work.
+  //       * `offline` is a LIVENESS observation, not an authorization one. A worker
+  //         that was unreachable and came back must be able to recover; refusing here
+  //         would turn a transient outage into a permanent one.
+  if (input.targetStatus === "disabled") return refuse("target_disabled");
 
   // 4. Both halves must exist. `PUT .../placement-profile` is admin-guarded and is the
   //    only writer, so this is a genuine product state: ENROLMENT ALONE DOES NOT PRODUCE

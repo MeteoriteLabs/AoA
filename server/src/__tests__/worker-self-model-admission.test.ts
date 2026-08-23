@@ -19,6 +19,7 @@ function input(overrides: Partial<SelfModelReadInput> = {}): SelfModelReadInput 
     principalTargetGeneration: 7,
     profileDeviceGeneration: 7,
     revokedAt: null,
+    targetStatus: "active",
     hasRegisteredProfile: true,
     hasProviderConstraintProfile: true,
     ...overrides,
@@ -90,6 +91,31 @@ describe("admitSelfModelRead — revocation (design 4.3)", () => {
       principalTargetGeneration: 3,
       profileDeviceGeneration: 3,
     }))).toEqual({ admit: false, reason: "target_revoked" });
+  });
+});
+
+describe("admitSelfModelRead — target status", () => {
+  it("refuses a DISABLED target - the operator said do not use it", () => {
+    expect(admitSelfModelRead(input({ targetStatus: "disabled" })))
+      .toEqual({ admit: false, reason: "target_disabled" });
+  });
+
+  it("still serves a DRAINING target", () => {
+    // Drain means "take no NEW work" and that is the poll response's job. Withholding
+    // the self-model would break the drain semantics of a worker legitimately
+    // finishing in-flight work.
+    expect(admitSelfModelRead(input({ targetStatus: "draining" }))).toEqual({ admit: true });
+  });
+
+  it("still serves an OFFLINE target", () => {
+    // Offline is a LIVENESS observation, not an authorization one. Refusing would turn
+    // a transient outage into a permanent one by denying the worker its recovery path.
+    expect(admitSelfModelRead(input({ targetStatus: "offline" }))).toEqual({ admit: true });
+  });
+
+  it("reports revocation ahead of disablement", () => {
+    expect(admitSelfModelRead(input({ targetStatus: "disabled", revokedAt: "2026-08-01T00:00:00.000Z" })))
+      .toEqual({ admit: false, reason: "target_revoked" });
   });
 });
 

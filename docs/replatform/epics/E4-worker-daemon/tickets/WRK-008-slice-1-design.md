@@ -68,7 +68,21 @@ caller will immediately act on with a stale identity.
 target is revoked. Serving its profile would hand a revoked worker exactly the artefact it needs to
 start leasing.
 
-All three are mutation-tested. 4.2's test must use a session that is otherwise **completely valid**
+**4.4 — `disabled` refuses; `draining` and `offline` do NOT.** *(Added during implementation: the
+design missed `execution_targets.status` entirely, and it is an authorization property.)* `disabled`
+is an operator saying "do not use this target". The other two are deliberately admitted, and the
+reasoning matters more than the rule:
+
+- **`draining` must still serve.** Drain means "take no NEW work" — that is the poll response's job.
+  Withholding the self-model would break the drain semantics of a worker legitimately finishing
+  in-flight work.
+- **`offline` is a LIVENESS observation, not an authorization one.** A worker that was unreachable
+  and came back must be able to recover; refusing here turns a transient outage into a permanent one.
+
+The over-strict direction is a real bug, so it is mutation-tested too: a mutant widening the check to
+`!== "active"` (which would strip a draining worker's self-model) must be killed.
+
+All four are mutation-tested. 4.2's test must use a session that is otherwise **completely valid**
 — a test whose session fails for another reason would pass whether or not the generation check
 exists.
 
