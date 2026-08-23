@@ -70,12 +70,23 @@ Three ways out, and SVC-001 must pick one **on the record**:
    Custodian STOP** (`job.ts:312`, a field beside `gracefulStopSeconds`). Settle before design
    per handoff §7 / E4-D02.
 2. **Edit the deadline derivation** — `job-leasing.ts` is in the **DO-NOT-TOUCH** set.
-3. **Declare that the deadline is the LEASE, not the TTL** — let `leaseExpiresAt + 1` dominate
-   by making service leases long, and carry service TTL entirely control-plane-side as a
-   reconciler stop decision. **The only option needing neither a wire change nor a
-   do-not-touch edit**, and the recommended one — but it changes what `deadline` MEANS for one
-   workload class and makes SVC-003's bounded lease renewal load-bearing for TTL. It must be
-   written down, not assumed.
+3. **Declare that the deadline is the LEASE, not the TTL** — carry service TTL
+   control-plane-side as a reconciler stop decision. **The only option needing neither a wire
+   change nor a do-not-touch edit.**
+
+> **★ CORRECTION (design stage). The wording of option 3 above — "let `leaseExpiresAt + 1`
+> dominate by making service leases long" — IS NOT IMPLEMENTABLE, and was refuted during
+> design.** Both halves fail independently. *Expressibility:* `leaseDurationMs` is fixed at
+> service construction (`job-leasing.ts:399`, default 300 000 ms) and `worker-control.ts:100-105`
+> passes none — there is no per-job or per-workload seam outside the forbidden file, and the one
+> lever that IS outside it is global, so a 72 h lease would make a crashed *batch* worker's job
+> unreclaimable for 72 hours (`reapExpiredLeases` fires only on `expires_at <= clock_timestamp()`,
+> `job-control.ts:3337`). *Self-contradiction:* the reconciler's stop reaches a worker through
+> exactly one channel — `cancelRequested` on the lease-renew response (`job.ts:461`) — so a long
+> lease makes renewals rare and the TTL stop SLOWER. Option 3 asked one knob to be both large and
+> small. The corrected form (**C-prime**: leases stay SHORT at the 300 s default *because* the
+> renew response is the only stop channel) is specified in
+> [`SVC-001-design.md`](./SVC-001-design.md) §2, which supersedes this paragraph.
 
 **Severity today: LATENT, not live.** The envelope `deadline` is set and schema-validated but
 read by **nothing** in production (`grep -a` over `server/src` + `packages/worker-daemon/src`
