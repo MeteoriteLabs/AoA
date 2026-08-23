@@ -88,9 +88,18 @@ describe("BRW-002 launch guard — arguments are an ALLOW-LIST, not a deny-list"
   ];
 
   for (const arg of debugArgs) {
-    it(`refuses ${JSON.stringify(arg)}`, () => {
+    it(`refuses ${JSON.stringify(arg)} AS A DEBUGGING SWITCH`, () => {
       const result = checkBrowserLaunchSafety({ ...SAFE, args: [arg] }, NO_ENV);
       expect(result.ok).toBe(false);
+      if (result.ok) return;
+      // ASSERTING THE REASON IS LOAD-BEARING, not decoration. Mutation testing found that
+      // five separate normaliser defects — not stripping "/", not case-folding, not
+      // trimming, and skipping the deny-set entirely — ALL still produced a refusal, because
+      // the allow-list backstop catches whatever the normaliser fails to recognise. With only
+      // `expect(ok).toBe(false)` the normaliser could be completely broken and this suite
+      // would stay green. The reason is what distinguishes "recognised as dangerous" from
+      // "not recognised at all".
+      expect(result.reason).toBe("remote_debugging_arg");
     });
   }
 
@@ -111,6 +120,12 @@ describe("BRW-002 launch guard — arguments are an ALLOW-LIST, not a deny-list"
     for (const arg of ["--disable-gpu", "--lang=en-US", "--window-size=1280,720", "--hide-scrollbars"]) {
       expect(checkBrowserLaunchSafety({ ...SAFE, args: [arg] }, NO_ENV).ok, arg).toBe(true);
     }
+  });
+
+  it("splits on the FIRST equals, so a value containing '=' is still allowed", () => {
+    // `lastIndexOf` would yield the switch name "lang=en" — not on the allow-list — and
+    // refuse a legitimate launch. Nothing else in the suite could tell the two apart.
+    expect(checkBrowserLaunchSafety({ ...SAFE, args: ["--lang=en=US"] }, NO_ENV).ok).toBe(true);
   });
 
   it("refuses a single-dash spelling of an OTHERWISE-ALLOWED switch too", () => {
@@ -169,10 +184,15 @@ describe("BRW-002 launch guard — Chromium's OS sandbox must be ON", () => {
     expect(checkBrowserLaunchSafety({ ...SAFE, args: ["--disable-setuid-sandbox"] }, NO_ENV).ok).toBe(false);
   });
 
-  it("refuses the single-dash and slash spellings of --no-sandbox", () => {
-    // REPRODUCED bypass: `-no-sandbox` was ACCEPTED by the deny-list version.
-    for (const arg of ["-no-sandbox", "/no-sandbox", "-disable-setuid-sandbox"]) {
-      expect(checkBrowserLaunchSafety({ ...SAFE, args: [arg] }, NO_ENV).ok, arg).toBe(false);
+  it("refuses the single-dash and slash spellings of --no-sandbox AS SANDBOX DEFEAT", () => {
+    // REPRODUCED bypass: `-no-sandbox` was ACCEPTED by the deny-list version. The reason is
+    // asserted for the same argument as the debugging switches — without it, the allow-list
+    // backstop would mask a broken normaliser.
+    for (const arg of ["-no-sandbox", "/no-sandbox", "-disable-setuid-sandbox", "--NO-SANDBOX"]) {
+      const result = checkBrowserLaunchSafety({ ...SAFE, args: [arg] }, NO_ENV);
+      expect(result.ok, arg).toBe(false);
+      if (result.ok) continue;
+      expect(result.reason, arg).toBe("chromium_sandbox_disabled");
     }
   });
 });
