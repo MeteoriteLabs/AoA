@@ -13,7 +13,7 @@
 // 49983 (`e2b/dist/index.js:885`), so "no listening sockets" is false at t=0 and a guard that
 // cannot pass gets relaxed into the allowlist it was meant to avoid.
 import { describe, expect, it } from "vitest";
-import { listeningPortDelta, parseListeningPorts } from "../listening-ports.js";
+import { listeningPortDelta, parseListeningPorts, readListeningPorts } from "../listening-ports.js";
 
 // Real `/proc/net/tcp` shape. Columns: sl, local_address, rem_address, st, ...
 // st 0A = LISTEN, 01 = ESTABLISHED.
@@ -56,6 +56,17 @@ describe("BRW-002 listening ports — parses LISTEN rows only", () => {
     // Only the well-formed row survives; a parser that throws here would take the whole
     // guard down on an unexpected kernel row.
     expect(parseListeningPorts(malformed)).toEqual([8080]);
+  });
+
+  it("ignores a row whose ADDRESS is not hex even when the PORT is", () => {
+    // Mutation testing found the address check was unkillable: every malformed row in the
+    // fixture above ALSO had a malformed port, so the port check alone explained the
+    // result. This row isolates the address check, which is the only thing that can reject
+    // it.
+    const badAddress = `  sl  local_address rem_address   st
+   0: NOTHEXAD:1F90 00000000:0000 0A 0 0 0 0 0 0 0 0 1
+`;
+    expect(parseListeningPorts(badAddress)).toEqual([]);
   });
 });
 
@@ -103,5 +114,39 @@ describe("BRW-002 listening ports — the guard is a DELTA", () => {
 
   it("returns a sorted, deterministic result", () => {
     expect(listeningPortDelta([], [9222, 8080, 49983])).toEqual([8080, 9222, 49983]);
+  });
+});
+
+describe("BRW-002 listening ports — reading both tables", () => {
+  // `readListeningPorts` had NO test when it was written. A function with no test is the
+  // thing this programme keeps finding in other people's code; found in my own here.
+  const reader = (files: Record<string, string>) => async (path: string) => {
+    const contents = files[path];
+    if (contents === undefined) throw new Error(`ENOENT ${path}`);
+    return contents;
+  };
+
+  it("merges both tables and deduplicates a dual-stack listener", async () => {
+    const ports = await readListeningPorts(
+      reader({ "/proc/net/tcp": TCP4, "/proc/net/tcp6": TCP6 }),
+    );
+    expect(ports).toEqual([8080, 8081, 9222, 49983]);
+  });
+
+  it("still measures when the IPv6 table is absent", async () => {
+    // A kernel without IPv6 has no /proc/net/tcp6, and that is not a containment failure.
+    const ports = await readListeningPorts(reader({ "/proc/net/tcp": TCP4 }));
+    expect(ports).toEqual([8080, 49983]);
+  });
+
+  it("still measures when only the IPv6 table exists", async () => {
+    const ports = await readListeningPorts(reader({ "/proc/net/tcp6": TCP6 }));
+    expect(ports).toEqual([8081, 9222]);
+  });
+
+  it("THROWS when neither table can be read", async () => {
+    // The load-bearing case: returning [] here would manufacture a passing containment
+    // guard out of a measurement that never happened.
+    await expect(readListeningPorts(reader({}))).rejects.toThrow(/did not run/);
   });
 });
