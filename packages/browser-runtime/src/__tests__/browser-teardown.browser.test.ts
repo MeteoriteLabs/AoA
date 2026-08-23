@@ -176,13 +176,31 @@ linuxOnly("BRW-002 (c) — on LINUX, the target platform, SIGKILL reaps the brow
       expect(started, "the browser never started, so this test would prove nothing").toBe(true);
 
       child.kill("SIGKILL");
-      const reaped = await waitFor(async () => (await processesMentioning(profile)) === 0, 30_000);
-      expect(reaped, "a Chromium process outlived the runner on Linux").toBe(true);
+      // The bound is 90s, not 30s, and the reason is recorded rather than tuned away: the
+      // property is "EVENTUALLY reaped via CDP pipe EOF". 30s was an arbitrary first guess that
+      // held for five consecutive CI runs and then failed once. This job runs concurrently with
+      // the full `verify` suite on the same runner, and the page under test is deliberately
+      // /slow, so a browser mid-navigation can be slow to act on EOF. Raising an arbitrary bound
+      // is legitimate; weakening the ASSERTION would not be, so reaping is still REQUIRED.
+      const reaped = await waitFor(async () => (await processesMentioning(profile)) === 0, 90_000);
+      if (!reaped) {
+        // Make the next failure DIAGNOSTIC rather than a bare timeout: a surviving process list
+        // distinguishes "slow" from "never" — the difference between a bound that is too tight
+        // and an invariant that is false.
+        const survivors = await execFileAsync("sh", [
+          "-c",
+          `ps -eo pid,stat,etimes,comm,args | grep -F -- '${profile}' | grep -v grep || true`,
+        ]).then((r) => r.stdout.trim()).catch((error) => `ps failed: ${String(error)}`);
+        // eslint-disable-next-line no-console
+        console.error(`SURVIVING PROCESSES after 90s:
+${survivors}`);
+      }
+      expect(reaped, "a Chromium process outlived the runner on Linux by more than 90s. If the process list above shows a LIVE browser, the CDP-pipe-EOF claim in this header is FALSE and must be rewritten, not re-timed").toBe(true);
     } finally {
       child.kill("SIGKILL");
       await killLeftovers(profile);
     }
-  }, 90_000);
+  }, 150_000);
 });
 
 windowsOnly("BRW-002 (c) — on WINDOWS, SIGKILL ORPHANS the browser (developer platform only)", () => {

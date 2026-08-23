@@ -63,6 +63,72 @@ The three obvious immutability tests **cannot see** the path that erases the row
 not `23503`. That is *stricter* — Postgres raises 23001 only for an `ON DELETE RESTRICT` action,
 while `NO ACTION` raises 23503 — so the code proves the FK is genuinely RESTRICT.
 
+## 3a. ★ The defect that cost three CI rounds — a certificate that compares KEY ORDER
+
+`verify` failed deterministically (32 failures, three runs, byte-identical) with every failure
+wrapped as the opaque `distributed_execution_app_authority`. The cause was mine, in one commit
+(`ea3064722`), traced by `git log -L` on both offending lines.
+
+**`exactJson` is `JSON.stringify(a) === JSON.stringify(b)` — ORDER-SENSITIVE on object keys.**
+`assertExactCatalogCertificate` builds `actualPolicyCounts` by mapping over `RLS_RELATIONS`, so its
+key order IS that array's order, then compares it to `POLICY_COUNTS`. SVC-001 registered
+`service_generations` **last** in `RLS_RELATIONS` (index 25) and **beside `services`** in
+`POLICY_COUNTS` (index 5). Identical keys, identical values, different serialization →
+`catalog certificate drift: policy counts`.
+
+```
+before:  exactJson equal? false | same keys? true
+         first divergence idx 5: RLS='service_instances'  PC='service_generations'
+after:   exactJson equal? true
+```
+
+### Why eight clean diagnostics missed it — the lesson worth keeping
+
+Two diagnostics, run on both platforms, reported **every** comparison clean: table privileges,
+schema privileges, RLS and FORCE RLS inventories, policy counts, policy rows, relation ACL tuples,
+column ACL nullness. All empty, including on the failing Linux runner.
+
+They compared policy counts **BY KEY** — `Object.entries(POLICY_COUNTS).filter(([k,v]) => actual[k]
+!== v)` — which is **structurally blind to key order**. The right thing was measured the wrong way,
+three times.
+
+The deeper error was the search strategy: the failing comparison is a **pure in-process JS fact
+with no database input at all**. Probing real databases — done extensively, on two platforms —
+could never have found it. What found it was enumerating *what the code asserts* instead of *what
+the database contains*.
+
+### The guard existed, and was asymmetrically blind
+
+`job-control-legacy-grants.contract.test.ts` mirrors both constants:
+
+```js
+expect(manifest.RLS_RELATIONS).toEqual(rls);      // ARRAY  → order-SENSITIVE
+expect(manifest.POLICY_COUNTS).toEqual(counts);   // OBJECT → order-BLIND
+```
+
+The mirror carried the correct order all along; the production constant did not; and the only
+assertion joining them could not see the difference. That asymmetry also **uniquely determines the
+fix**: `POLICY_COUNTS` must move, because moving `RLS_RELATIONS` would fail the order-sensitive
+array assertion instead.
+
+**The fix is two parts and the second matters more:**
+
+1. `POLICY_COUNTS`' key moved to the end, matching `RLS_RELATIONS`.
+2. An order-sensitive assertion added beside the order-blind one —
+   `expect(Object.keys(POLICY_COUNTS)).toEqual([...RLS_RELATIONS])` — which fails on the unfixed
+   constant and passes on the fixed one. The next person to add a distributed table learns this in
+   seconds. Both constants now carry a comment saying order is load-bearing.
+
+**No second latent order fault:** `POLICY_COUNTS` was the only hand-ordered side of an
+`assertExactJson`; the other eight call sites derive both sides from sorted lists — verified at
+runtime, including the relation-ACL and column-ACL manifests that only become reachable once this
+one passes.
+
+**Refuted along the way, and recorded so nobody re-treads it:** the same suite's earlier failure at
+`a4b7ed22f` (which predates SVC-001) is a *different* test with a different mechanism — a
+port-collision flake — and passes in every post-SVC-001 run. The base-rate argument built on it was
+unsound.
+
 ## 4. Mutation testing — and three checks that could not evaluate anything
 
 Every new guard was mutated. Three findings were defects **in my own tests**, all caught before
@@ -135,9 +201,17 @@ job-control surface only when `distributedExecutionEnabled` and refuses owner fa
 **Local:** 104 tests green across the five affected suites; `migration-idempotency` 7/7;
 distributed-execution foundation PASS; guard + test inventories OK; typecheck clean.
 
-**CI:** running on `2e7a8be15` at time of writing. This section is the honest position and will be
-updated when the gate reaches a verdict — the definition of done requires CI watched to green, and
-it is not green yet.
+**CI:** `verify` is **GREEN** on `4f4892975` — 32 failures → 0 — together with `policy`,
+`migrations`, `e2e`, `e2e-pgvector`, `lint`, `brand-check`, `distributed-contract` and both
+`worker-protocol-contract-bytes` legs. The root cause is §3a.
+
+One job remains red and it is this lane's own: `browser`, on a single assertion — clause (c)'s
+SIGKILL-reaps test timed out at its 30s bound after **five consecutive green runs**. Not treated
+as a flake and not re-run: the bound was an arbitrary first guess, the job runs concurrently with
+the full `verify` suite on one runner, and the page under test is deliberately `/slow`. Raised to
+90s with a surviving-process dump on failure, so the next occurrence distinguishes "slow" from
+"never" — a bound that is too tight versus an invariant that is false. **The assertion itself is
+unchanged: reaping is still required to happen.**
 
 ## 8. Registration surfaces touched
 
