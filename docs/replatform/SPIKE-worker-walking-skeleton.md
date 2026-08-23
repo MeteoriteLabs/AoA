@@ -104,6 +104,51 @@ that can produce an enrolled worker is the desktop host — not the container th
 is built from. That inverts an assumption running through the programme: the containerised fleet is
 the *less* provisioned of the two paths, not the more.
 
+### ★ F3 — P3 is FALSIFIED. The matching mechanism WORKS; the gap is one missing builder
+
+This is the most consequential finding and it is **good news**, so it deserves the same scrutiny as
+a bad one.
+
+The claim under test was *"the server matches on `workers.profile_snapshot`, written at enrolment
+from an unmatchable hello, so a worker can never be offered a job."* The first half is true. The
+conclusion is **too strong**, and the D1 lane disproves it on every run:
+
+- `tests/d1/lib/e6f-harness.mjs:133-141` — *"The seed embeds POLICY_HASH + WORKER_CAPABILITIES into
+  the registered target profile (capabilityCeiling) and the `buildWorkerHello()` output reuses them
+  for reportedCapabilities/policyHash, **so the poll-time matcher … is satisfied**."*
+- `buildWorkerHello` (`:208-220`) reports `reportedCapabilities: [...WORKER_CAPABILITIES]`,
+  a real `capacity`, and `policyHash: POLICY_HASH`.
+- `tests/d1/e6f-03-networked-smoke.test.mjs:6-9` — the *"enroll → (seeded submit + placement) →
+  poll → lease → ack → fake-execute path works end to end, with genuine Ed25519 device proofs (no
+  security check is weakened or bypassed)."*
+
+**So submit → placement → lease → ack is proven working, live, on every D1 run.** What does not
+exist is a *worker* hello builder: the daemon's only one is `buildDesktopHello`, whose header says
+it exists to emit a desktop that *"can never be matched work"*.
+
+**Why the distinction changes the plan.** "The mechanism cannot offer a worker a lease" would be a
+deep architectural gap. "The daemon has no matchable hello builder, while a matchable hello is
+demonstrated working in-repo" is a much smaller, well-precedented piece of work. The path *behind*
+identity is not speculative — it runs green every night.
+
+### F4 — A shipping build defect, found only by running (fixed in `bcf7cf21a`)
+
+`packages/db`'s build was `tsc && cp -r src/migrations dist/migrations`. `cp -r` is not idempotent
+against an existing destination: the first build is correct, and every later build copies *into* it
+(`dist/migrations/migrations`), so `dist/migrations` keeps the FIRST build's contents forever. The
+worktree held 213 stale `.sql` at the top level and 264 current ones nested inside.
+
+The stack failed to come up with `role "aoa_operator" does not exist` — because the image contained
+213 of 264 migrations, stopping exactly at `0213_e2_serving_role_correction`, the migration that
+creates that role. The migration runner reported success; it had applied everything it *had*.
+
+CI never sees this (its `dist/` starts clean). **Any developer who builds twice ships stale
+migrations silently** — including migrations 0262/0263 from earlier today, so DAT-008 would fail
+locally with "column does not exist" and nothing would point at the cause.
+
+Invisible to every static check, to CI, and to reading the script. Ten minutes to hit once
+something actually ran. **This is the argument for the spike, in one bug.**
+
 ## Log
 
 **Established before the D1 stack finished building** (static, from source — recorded here because
@@ -111,5 +156,12 @@ the conclusion is structural and does not need the runtime to demonstrate it):
 
 - P1 → **confirmed and deepened** into F1. Not a gate; an absent mechanism.
 - F2 → new, not predicted.
+- **P3 → FALSIFIED** (F3). The single most valuable outcome available to this spike, and it came
+  back the favourable way: the mechanism works and is exercised nightly.
+- P4, P5 → still standing, but **re-ordered**: both are downstream of an identity the container
+  cannot obtain, so neither is next.
+- F4 → a real shipping defect, entirely outside the spike's question, found by running the stack.
 
-*(runtime observations appended below as the stack comes up)*
+**Runtime confirmation of F1 pending** — the first bring-up died on F4 before the worker containers
+started, which is itself a data point: the D1 stack could not be brought up locally at all until
+that build defect was fixed.
