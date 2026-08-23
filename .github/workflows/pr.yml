@@ -401,8 +401,20 @@ jobs:
       - name: Split-image Dockerfile static checks (DEP-001)
         run: |
           # STATIC (no-build) least-privilege assertions on the split Dockerfiles.
-          # The built-image lane (build.sh + image-contents/image-startup-smoke)
-          # is Linux/CI docker-only and is wired by DEP-004's image lane.
+          #
+          # CORRECTED (WRK-009 follow-up). This previously read "the built-image lane
+          # … is wired by DEP-004's image lane". THAT LANE DOES NOT EXIST, and the claim
+          # is how `image-contents.test.mjs` went un-invoked for its whole life: a reader
+          # checking "are the built images asserted on?" found a delegation and stopped.
+          #
+          # Where they actually run, as of now:
+          #   - image-contents.test.mjs   -> d1-merge-train.yml, after build.sh (WRK-009).
+          #   - image-startup-smoke.test.mjs -> NOWHERE. Deliberately un-wired: its worker
+          #     case mounts a root-owned `--tmpfs /worker` OVER the Dockerfile's
+          #     `chown node:node`, so the non-root daemon cannot start. That is a defect in
+          #     the TEST, not the image (D1 uses a named volume, which inherits ownership).
+          #     Tracked separately; stated here rather than delegated to a lane that does
+          #     not exist.
           node --test docker/images/__tests__/dockerfile-static.test.mjs
 
       - name: Validate dependency resolution when manifests change
