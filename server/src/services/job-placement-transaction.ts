@@ -25,6 +25,11 @@ import {
   type ExecutionTargetRow,
 } from "./execution-target-resolver.js";
 import { mintExecutionSecretHandleForPlacement } from "./execution-secret-handle-mint-runner.js";
+import {
+  isActionableMintRefusal,
+  type ExecutionSecretMintRefusal,
+} from "./execution-secret-handle-mint.js";
+import { logger } from "../middleware/logger.js";
 
 const SOURCE_KINDS = new Set<string>(EXECUTION_SOURCE_KINDS);
 
@@ -359,7 +364,7 @@ export async function placeJobAttemptTransaction(
         && stored.placementMode === "active"
         && stored.placementLeaseEligible === true) {
         try {
-          await mintExecutionSecretHandleForPlacement(repos.jobControl, {
+          const mint = await mintExecutionSecretHandleForPlacement(repos.jobControl, {
             organizationId: input.organizationId,
             companyId: input.companyId,
             jobId: input.jobId,
@@ -372,9 +377,23 @@ export async function placeJobAttemptTransaction(
             credentialKind: authority.credentialBinding.credentialKind,
             targetGeneration: decision.targetGeneration,
           });
+          // The refusal reason is the whole point of computing one. Discarding it made
+          // a blocked agent silently stay on the legacy executor with no signal
+          // anywhere — a partial migration nobody notices. Only the ACTIONABLE reasons
+          // are reported: the rest are the normal answer for most jobs and would emit a
+          // line per job per placement.
+          if (!mint.minted && isActionableMintRefusal(mint.reason as ExecutionSecretMintRefusal)) {
+            logger.warn({
+              action: "job.execution_secret_mint.refused",
+              reasonCode: mint.reason,
+              organizationId: input.organizationId,
+              companyId: input.companyId,
+              jobId: input.jobId,
+            }, "execution-secret handle not minted; job stays on the legacy executor");
+          }
         } catch {
-          // Never a disclosing log: a mint failure must not narrate credential
-          // topology into the placement path.
+          // Never a disclosing log: a mint FAILURE (as opposed to a refusal) must not
+          // narrate credential topology into the placement path.
         }
       }
 

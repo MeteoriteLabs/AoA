@@ -86,6 +86,26 @@ export type ExecutionSecretMintDecision =
 const refuse = (reason: ExecutionSecretMintRefusal): ExecutionSecretMintDecision => ({ mint: false, reason });
 
 /**
+ * Which refusals an operator can DO something about.
+ *
+ * Most refusals are the normal, expected answer for the overwhelming majority of jobs
+ * — a self-hosted deployment stages no key at all, a non-agent executor needs none, an
+ * adapter outside the v1 scope is not being cut over yet. Reporting those would emit a
+ * line per job per placement and bury the two that matter.
+ *
+ * These two matter:
+ *   * `agent_plain_literal_override` — this agent CANNOT be cut over. Its provider key
+ *     is a plain literal, which the wire has no reference form for, so it stays on the
+ *     legacy executor indefinitely. Silent, it is a partial migration nobody notices.
+ *   * `owner_authority_disagreement` — two independently-derived owner authorities
+ *     disagree. That should be impossible; if it happens, something upstream is wrong
+ *     and the credential decision is the wrong place to find out about it quietly.
+ */
+export function isActionableMintRefusal(reason: ExecutionSecretMintRefusal): boolean {
+  return reason === "agent_plain_literal_override" || reason === "owner_authority_disagreement";
+}
+
+/**
  * Deferral #3 — the owner check must not be tautological.
  *
  * The inherited deferral records that `credentialOwnerId` and

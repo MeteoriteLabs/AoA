@@ -11,7 +11,9 @@
 import { describe, expect, it } from "vitest";
 import {
   decideExecutionSecretHandle,
+  isActionableMintRefusal,
   type ExecutionSecretMintInput,
+  type ExecutionSecretMintRefusal,
 } from "../services/execution-secret-handle-mint.js";
 
 const TARGET = { ownerId: "anthropic", secretName: "provider:anthropic", envVar: "ANTHROPIC_API_KEY" } as const;
@@ -196,5 +198,38 @@ describe("decideExecutionSecretHandle — refusal precedence", () => {
       credentialKind: "company_api_key",
       providerBinding: { type: "secret_ref", secretId: "sec-agent-own", version: 1 },
     }))).toEqual({ mint: false, reason: "owner_authority_disagreement" });
+  });
+});
+
+describe("isActionableMintRefusal", () => {
+  it("reports the two refusals an operator can act on", () => {
+    // A blocked agent stays on the legacy executor indefinitely, and two owner
+    // authorities disagreeing should be impossible — both need to be visible.
+    expect(isActionableMintRefusal("agent_plain_literal_override")).toBe(true);
+    expect(isActionableMintRefusal("owner_authority_disagreement")).toBe(true);
+  });
+
+  it("stays silent for the refusals that are the NORMAL answer for most jobs", () => {
+    // Reporting these would emit a line per job per placement and bury the two above.
+    for (const reason of [
+      "not_cloud_deployment",
+      "executor_not_agent",
+      "adapter_not_v1_scope",
+      "adapter_has_no_company_key",
+      "owner_desktop_target",
+    ] as const) {
+      expect(isActionableMintRefusal(reason)).toBe(false);
+    }
+  });
+
+  it("covers every refusal in the union, so a new one cannot default to silent", () => {
+    // A refusal added later without a decision here would be invisible by accident.
+    const ALL: ExecutionSecretMintRefusal[] = [
+      "not_cloud_deployment", "executor_not_agent", "adapter_not_v1_scope",
+      "adapter_has_no_company_key", "agent_plain_literal_override",
+      "owner_desktop_target", "owner_authority_disagreement",
+    ];
+    expect(ALL.filter(isActionableMintRefusal).sort())
+      .toEqual(["agent_plain_literal_override", "owner_authority_disagreement"]);
   });
 });
