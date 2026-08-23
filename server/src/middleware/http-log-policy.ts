@@ -38,6 +38,10 @@ function normalizePath(url: string): string {
 const PAYLOAD_OMITTED_PATHS = [
   /^(?:\/api)?\/organizations\/[^/]+\/companies\/[^/]+\/jobs$/,
   /^(?:\/api)?\/worker-control\/enroll$/,
+  // DAT-008 — the execution-secret resolve request carries a live FENCE TOKEN and its
+  // response carries a resolved provider credential. Registered here for the same
+  // reason enroll is: this route is credential-bearing on both legs.
+  /^(?:\/api)?\/worker-control\/execution-secrets\/resolve$/,
   /^(?:\/api)?\/execution-targets\/heartbeat$/,
 ];
 
