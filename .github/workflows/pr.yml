@@ -26,7 +26,25 @@ on:
 
 concurrency:
   group: pr-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded runs EVERYWHERE EXCEPT the shared integration branch.
+  #
+  # `docs/replatform-program` (PR #323) is worked by two lanes concurrently. `verify` is a
+  # ~35-40 minute pole and the lanes push every ~25 minutes, so with unconditional
+  # cancel-in-progress the required gate could never finish: SEVEN consecutive runs were
+  # cancelled, and the last green PR run predated hours of landed work on BOTH lanes. A gate
+  # that structurally cannot complete is not a gate — every ticket's definition of done says
+  # "CI watched to green", and that was unachievable for either lane.
+  #
+  # Setting this false for that branch makes runs QUEUE instead of cancel, so every push gets
+  # a verdict. It is bounded: GitHub keeps at most one PENDING run per concurrency group (a
+  # newer trigger replaces the pending one), so the queue never grows beyond
+  # one in-progress + one pending. The in-progress run always reaches a verdict and the
+  # newest push is always next.
+  #
+  # `github.head_ref` is the source BRANCH on a pull_request event (github.ref there is
+  # `refs/pull/<n>/merge`, which would never match a branch name); `github.ref` covers the
+  # push-to-main trigger. Both are checked so neither event type slips through.
+  cancel-in-progress: ${{ github.head_ref != 'docs/replatform-program' && github.ref != 'refs/heads/docs/replatform-program' }}
 
 jobs:
   # Cheap change-detector: decides whether the heavy suite needs to run.
