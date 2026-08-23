@@ -1118,8 +1118,72 @@ jobs:
   # closing the Phase 1 skip-success class. On a draft PR `changes` is skipped,
   # so this gate goes RED (drafts are unmergeable; a passing required check
   # there would be the footgun). Marking ready re-runs everything for real.
+  # BRW-002 — the browser lane. Runs the sandbox-local browser runtime's clauses against a
+  # REAL Chromium. It exists because plan review established there was no environment in which
+  # any BRW-002 acceptance clause could FAIL: the vitest project list had no browser entry and
+  # `verify` installs no browsers, so every containment/download/teardown assertion would have
+  # been unfalsifiable — this programme's signature defect.
+  #
+  # Deliberately NOT the D1 topology (that is BRW-005's, by three separate documents). It is
+  # the minimum that makes this ticket's own clauses provable: one Linux runner, one browser,
+  # one in-process fixture site.
+  #
+  # Linux specifically: the containment proof reads /proc/net/tcp{,6} to measure the listening
+  # sockets the browser adds, and those files do not exist on Windows or macOS.
+  browser:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `--with-deps` installs the system libraries headless Chromium needs on a bare runner.
+      # Only chromium is fetched: the runtime pins `engine: "chromium"` in the frozen browser
+      # workload, so firefox/webkit would be minutes of download proving nothing.
+      - name: Install Chromium
+        run: pnpm --filter @armyofagents/browser-runtime exec playwright install --with-deps chromium
+
+      # AOA_RUN_BROWSER_TESTS is what un-skips the *.browser.test.ts suites. Without it they
+      # skip everywhere, which would make this lane a check that runs nothing.
+      - name: Run the browser clauses
+        env:
+          AOA_RUN_BROWSER_TESTS: "1"
+        run: pnpm --filter @armyofagents/browser-runtime exec vitest run
+
+      # Fail loudly if the browser suite did not actually execute. A green lane that ran zero
+      # browser tests is exactly the shape this lane was created to eliminate.
+      - name: Prove the browser suite was not skipped
+        env:
+          AOA_RUN_BROWSER_TESTS: "1"
+        run: |
+          out=$(pnpm --filter @armyofagents/browser-runtime exec vitest run \
+            src/__tests__/browser-containment.browser.test.ts --reporter=basic 2>&1)
+          echo "$out"
+          echo "$out" | grep -qE "browser-containment\.browser\.test\.ts" || {
+            echo "::error::the browser suite did not run"; exit 1; }
+          if echo "$out" | grep -qE "Tests +[0-9]+ skipped \(|no tests"; then
+            echo "::error::the browser suite reported no executed tests"; exit 1
+          fi
+
   ci-required:
-    needs: [changes, policy, brand-check, worker-protocol-contract-bytes, verify, lint, e2e, e2e-pgvector, migrations, distributed-contract]
+    needs: [changes, policy, brand-check, worker-protocol-contract-bytes, verify, lint, e2e, e2e-pgvector, migrations, distributed-contract, browser]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -1136,6 +1200,8 @@ jobs:
           R_E2E: ${{ needs.e2e.result }}
           R_E2E_PGVECTOR: ${{ needs['e2e-pgvector'].result }}
           R_MIGRATIONS: ${{ needs.migrations.result }}
+          # BRW-002: the browser lane, required on the same terms as the other heavy jobs.
+          R_BROWSER: ${{ needs.browser.result }}
           # DEP-004: the distributed-contract consumer + its four gating classes.
           R_DC: ${{ needs['distributed-contract'].result }}
           R_PROTOCOL: ${{ needs.changes.outputs.protocol }}
@@ -1143,7 +1209,7 @@ jobs:
           R_FIXTURES: ${{ needs.changes.outputs.fixtures }}
           R_PROVIDER: ${{ needs.changes.outputs.provider }}
         run: |
-          echo "code=$R_CODE | changes=$R_CHANGES policy=$R_POLICY brand-check=$R_BRAND worker-protocol-contract-bytes=$R_WP_BYTES verify=$R_VERIFY lint=$R_LINT e2e=$R_E2E e2e-pgvector=$R_E2E_PGVECTOR migrations=$R_MIGRATIONS"
+          echo "code=$R_CODE | changes=$R_CHANGES policy=$R_POLICY brand-check=$R_BRAND worker-protocol-contract-bytes=$R_WP_BYTES verify=$R_VERIFY lint=$R_LINT e2e=$R_E2E e2e-pgvector=$R_E2E_PGVECTOR migrations=$R_MIGRATIONS browser=$R_BROWSER"
           echo "distributed-contract=$R_DC | protocol=$R_PROTOCOL schema=$R_SCHEMA fixtures=$R_FIXTURES provider=$R_PROVIDER"
           fail=0
           # Detector must have succeeded. Skipped (draft) => red, by design.
@@ -1166,7 +1232,7 @@ jobs:
           # Heavy jobs required to pass ONLY when code changed. On a docs-only
           # PR (code=false) they are skipped, which is allowed.
           if [ "$R_CODE" = "true" ]; then
-            for kv in "verify=$R_VERIFY" "lint=$R_LINT" "e2e=$R_E2E" "e2e-pgvector=$R_E2E_PGVECTOR" "migrations=$R_MIGRATIONS"; do
+            for kv in "verify=$R_VERIFY" "lint=$R_LINT" "e2e=$R_E2E" "e2e-pgvector=$R_E2E_PGVECTOR" "migrations=$R_MIGRATIONS" "browser=$R_BROWSER"; do
               name="${kv%%=*}"; res="${kv#*=}"
               [ "$res" = "success" ] || { echo "::error::$name=$res (required for code changes)"; fail=1; }
             done
