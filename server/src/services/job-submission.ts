@@ -27,6 +27,7 @@ import { attemptReadyOutbox } from "./job-outbox.js";
 // workload types this epic does not own. Pure and logger-free, so it is safe as a static
 // import (see the org-concurrency note below for why that matters in this module).
 import { validateWorkloadInput } from "./workload-input-validators.js";
+import { stampServiceIdentity } from "./service-job-config.js";
 // DEP-009 — submit-time org-capacity admission. The deployment-flag reader is imported
 // statically because `config/distributed-execution.ts` is logger-free (a single type
 // import). `admitAttemptCapacity` (org-concurrency) is DYNAMICALLY imported inside the
@@ -247,7 +248,16 @@ export async function submitJobWithinTenant(
           // the ordering above exists to protect.
           throw new HttpError(400, `Invalid ${requirements.workloadType} input: ${validatedInput.reason}`);
         }
-        const effectiveInput = validatedInput.value;
+        // SVC-001 — server-stamped service identity. Two checks exist and neither can see
+        // the other: `serviceSourceIsAdmitted` authorized on source.serviceId/generation
+        // without seeing the workload, and the validator above saw the workload without
+        // seeing the source. Without this, a caller authorized to reconcile service A can
+        // submit a workload naming service B and every check passes. Runs AFTER validation
+        // so the authorization-oracle ordering above is preserved.
+        //
+        // Covers serviceId and generation ONLY. serviceReconcileSourceSchema carries no
+        // serviceInstanceId, so that field stays caller-controlled - SVC-002/SVC-003's.
+        const effectiveInput = stampServiceIdentity(source, validatedInput.value);
         // Hash what actually becomes the workload, not what the caller happened to send.
         const inputHash = digest(effectiveInput);
 

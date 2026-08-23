@@ -25,7 +25,11 @@
 import { describe, expect, it } from "vitest";
 import { serviceWorkloadV1Schema } from "@armyofagents/worker-protocol";
 
-import { normalizeServiceJobInput, SERVICE_INGRESS_DENY_KEYS } from "../services/service-job-config.js";
+import {
+  normalizeServiceJobInput,
+  stampServiceIdentity,
+  SERVICE_INGRESS_DENY_KEYS,
+} from "../services/service-job-config.js";
 import { WORKLOAD_INPUT_VALIDATORS, validateWorkloadInput } from "../services/workload-input-validators.js";
 
 const SERVICE_ID = "11111111-1111-4111-8111-111111111111";
@@ -156,5 +160,68 @@ describe("SVC-001 — a valid service workload survives normalisation unchanged 
     ]) {
       expect(normalizeServiceJobInput(bad).ok, JSON.stringify(bad)).toBe(false);
     }
+  });
+});
+
+
+describe("SVC-001 — server-stamped identity: the caller does not get to name the service", () => {
+  const source = { kind: "service_reconcile", serviceId: SERVICE_ID, generation: 7 } as const;
+
+  it("overwrites a caller-supplied serviceId with the AUTHORIZED source's", () => {
+    // RED STATE: today whatever the caller puts in `input.serviceId` is persisted verbatim.
+    // `serviceSourceIsAdmitted` authorizes on source.serviceId/generation and never sees the
+    // workload; validateWorkloadInput sees the workload and never sees the source. Nothing
+    // ties them together, so a caller authorized for service A can submit a workload naming
+    // service B.
+    const stamped = stampServiceIdentity(source, validInput({ serviceId: "99999999-9999-4999-8999-999999999999" }));
+    expect(stamped.serviceId).toBe(SERVICE_ID);
+  });
+
+  it("overwrites a caller-supplied generation with the AUTHORIZED source's", () => {
+    const stamped = stampServiceIdentity(source, validInput({ generation: 1 }));
+    expect(stamped.generation).toBe(7);
+  });
+
+  it("leaves every other field exactly as validated", () => {
+    const input = validInput({ command: "python", args: ["app.py"], gracefulStopSeconds: 12 });
+    const stamped = stampServiceIdentity(source, input);
+    expect(stamped.command).toBe("python");
+    expect(stamped.args).toEqual(["app.py"]);
+    expect(stamped.gracefulStopSeconds).toBe(12);
+    expect(stamped.checkpointArtifactId).toBeNull();
+  });
+
+  it("keeps the stamped result parseable by the frozen schema", () => {
+    const stamped = stampServiceIdentity(source, validInput());
+    expect(serviceWorkloadV1Schema.safeParse(stamped).success).toBe(true);
+  });
+
+  it("preserves key ORDER, so stamping does not change the inputHash of an unchanged job", () => {
+    const a = stampServiceIdentity(source, validInput({ serviceId: SERVICE_ID, generation: 7 }));
+    const b = normalizeServiceJobInput(validInput({ serviceId: SERVICE_ID, generation: 7 }));
+    expect(b.ok).toBe(true);
+    if (!b.ok) return;
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b.value));
+  });
+
+  it("is a no-op for a NON-service source, which must not be stamped", () => {
+    // Stamping keys onto a batch or browser workload would inject fields their strict
+    // frozen schemas reject, producing a null envelope — the exact defect being prevented.
+    const browser = { locale: "en-GB", recordTrace: true, maxSessionSeconds: 600 };
+    const stamped = stampServiceIdentity({ kind: "browser_request" }, browser);
+    expect(stamped).toBe(browser);
+  });
+
+  it("★ covers TWO of the THREE identity fields, and serviceInstanceId is NOT one of them", () => {
+    // Stated as an assertion so the result doc cannot quietly read this as "the service
+    // workload's identity is authorized". serviceWorkloadV1Schema requires serviceId,
+    // serviceInstanceId and generation, but serviceReconcileSourceSchema carries no
+    // serviceInstanceId at all — so it stays caller-controlled and is validated against
+    // nothing here. Nothing downstream rescues it either: service_instances has no
+    // company_id and its getById filters on id alone. Instance-identity authorization
+    // belongs to SVC-002/SVC-003.
+    const attacker = "88888888-8888-4888-8888-888888888888";
+    const stamped = stampServiceIdentity(source, validInput({ serviceInstanceId: attacker }));
+    expect(stamped.serviceInstanceId).toBe(attacker);
   });
 });

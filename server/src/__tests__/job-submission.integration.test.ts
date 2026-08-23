@@ -12,7 +12,7 @@ import {
   createTenantAppDbConnection,
   type NonOwnerDbConnection,
 } from "@armyofagents/db";
-import { browserWorkloadV1Schema } from "@armyofagents/worker-protocol";
+import { browserWorkloadV1Schema, serviceWorkloadV1Schema } from "@armyofagents/worker-protocol";
 import type { StorageService } from "../storage/types.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import { provisionTenantAppRoleLoginSql, TENANT_APP_ROLE } from "../db/rls-tenant.js";
@@ -59,6 +59,8 @@ const CREW_RUN_A = "80000000-0000-4000-8000-000000000001";
 const BROWSER_RUN_A = "a0000000-0000-4000-8000-000000000001";
 const SERVICE_A = "b0000000-0000-4000-8000-000000000001";
 const SERVICE_INSTANCE_A = "b0000000-0000-4000-8000-0000000000f1";
+/** A service the caller is NOT authorized for, used to prove server-stamping. */
+const SERVICE_DECOY = "b0000000-0000-4000-8000-0000000000de";
 
 const SOURCE_CASES = [
   { kind: "task_run", runId: RUN_A, issueId: ISSUE_A, assigneeAgentId: AGENT_A },
@@ -135,9 +137,14 @@ function command(idempotencyKey: string, source: Record<string, unknown> = SOURC
     ? { locale: "en-GB", recordTrace: true, maxSessionSeconds: 600 }
     : source.kind === "service_reconcile"
       ? {
-          serviceId: SERVICE_A,
+          // DELIBERATELY WRONG identity. The source authorizes (SERVICE_A, generation 1);
+          // this claims a different service and generation, so the persisted row can only
+          // carry the right values if the server actually STAMPED them. With the same
+          // values on both sides the assertion below passes even with stamping disabled -
+          // verified by mutation, which is how this fixture came to be written this way.
+          serviceId: SERVICE_DECOY,
           serviceInstanceId: SERVICE_INSTANCE_A,
-          generation: 1,
+          generation: 99,
           command: "node",
           args: ["server.js", value],
           checkpointArtifactId: null,
@@ -521,6 +528,18 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         executor_principal_kind: "service_instance",
         executor_principal_id: SERVICE_A,
       });
+
+      // SVC-001 - what is PERSISTED must satisfy the frozen schema, or the job would
+      // submit with a 201 and then never lease.
+      expect(serviceWorkloadV1Schema.safeParse(job!.input).success).toBe(true);
+
+      // * SERVER-STAMPED IDENTITY, proven end to end. The fixture deliberately claims
+      // SERVICE_DECOY / generation 99 while the source authorizes SERVICE_A / generation
+      // 1, so these can only match if the server actually overwrote them. An earlier
+      // version used the SAME values on both sides and passed with stamping completely
+      // disabled - it was vacuous, and mutation testing is what exposed it.
+      expect(job!.input).toMatchObject({ serviceId: SERVICE_A, generation: 1 });
+      expect((job!.input as Record<string, unknown>).serviceId).not.toBe(SERVICE_DECOY);
     });
 
     it("enforces the frozen hostile source/caller authority matrix before persistence", async () => {

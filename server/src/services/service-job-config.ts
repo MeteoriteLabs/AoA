@@ -115,3 +115,42 @@ export function normalizeServiceJobInput(raw: unknown): NormalizeServiceJobInput
 
   return { ok: true, value: candidate as Record<string, unknown> };
 }
+
+
+/**
+ * Stamp the AUTHORIZED source's service identity over whatever the caller claimed.
+ *
+ * WHY THIS IS NEEDED AT ALL. Two checks exist and neither can see the other:
+ * `serviceSourceIsAdmitted` authorizes on `source.serviceId` / `source.generation` and never
+ * sees the workload, while `validateWorkloadInput` sees the workload and never sees the
+ * source. Without stamping, a caller authorized to reconcile service A can submit a workload
+ * naming service B, and every check passes.
+ *
+ * ★ THIS COVERS TWO OF THREE IDENTITY FIELDS. `serviceWorkloadV1Schema` requires
+ * `serviceId`, `serviceInstanceId` AND `generation`, but `serviceReconcileSourceSchema`
+ * carries no `serviceInstanceId` — so there is nothing authorized to stamp it from, and it
+ * remains caller-controlled and validated against nothing. Nothing downstream rescues it:
+ * `service_instances` has no `company_id` column and `repos.serviceInstances.getById`
+ * filters on `id` alone. Instance-identity authorization belongs to SVC-002/SVC-003 and is
+ * NOT delivered here. Do not read a green authorization test as covering it.
+ *
+ * Key order is preserved so an otherwise-unchanged job keeps the same `inputHash`.
+ */
+export function stampServiceIdentity(
+  source: { readonly kind: string; readonly serviceId?: unknown; readonly generation?: unknown },
+  validated: Record<string, unknown>,
+): Record<string, unknown> {
+  // A non-service source must pass through untouched: stamping these keys onto a batch or
+  // browser workload would inject fields their strict frozen schemas reject, producing the
+  // null envelope and silent non-lease this whole registry exists to prevent.
+  if (source.kind !== "service_reconcile") return validated;
+  return {
+    serviceId: source.serviceId,
+    serviceInstanceId: validated.serviceInstanceId,
+    generation: source.generation,
+    command: validated.command,
+    args: validated.args,
+    checkpointArtifactId: validated.checkpointArtifactId ?? null,
+    gracefulStopSeconds: validated.gracefulStopSeconds,
+  };
+}
