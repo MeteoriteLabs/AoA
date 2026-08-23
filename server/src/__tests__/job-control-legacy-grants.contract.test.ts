@@ -473,6 +473,21 @@ describe("JOB-003 bounded aoa_app authority", () => {
     expect(manifest.FORCE_RLS_RELATIONS).toEqual(rls.filter((relation) => relation !== "execution_targets"));
     expect(manifest.NON_FORCE_RLS_RELATIONS).toEqual(["execution_targets"]);
     expect(manifest.POLICY_COUNTS).toEqual(counts);
+
+    // ★ KEY ORDER IS LOAD-BEARING, and `toEqual` on an object CANNOT see it.
+    //
+    // The production check is `assertExactJson(actualPolicyCounts, POLICY_COUNTS, "policy counts")`
+    // and `exactJson` is `JSON.stringify(a) === JSON.stringify(b)` — order-SENSITIVE on object
+    // keys. `actualPolicyCounts` is built by mapping over RLS_RELATIONS, so its key order IS
+    // RLS_RELATIONS' order. A POLICY_COUNTS whose keys carry the same names and the same values
+    // in a DIFFERENT order therefore fails startup while every by-key comparison says it is
+    // identical.
+    //
+    // SVC-001 shipped exactly that: `service_generations` last in RLS_RELATIONS, index 5 in
+    // POLICY_COUNTS. It cost three CI rounds and eight clean diagnostics to find, because every
+    // diagnostic compared counts BY KEY. The assertion above passed the whole time. This is the
+    // assertion that would have caught it in seconds.
+    expect(Object.keys(manifest.POLICY_COUNTS ?? {})).toEqual([...(manifest.RLS_RELATIONS ?? [])]);
     expect(manifest.RLS_POLICY_MANIFEST).toEqual(policies);
     expect(manifest.RLS_POLICY_MANIFEST?.reduce<Record<string, number>>((actual, row) => {
       actual[row.relation] = (actual[row.relation] ?? 0) + 1;

@@ -426,7 +426,6 @@ export const POLICY_COUNTS = deepFreeze({
   leases: 1,
   workers: 2,
   services: 1,
-  service_generations: 1,
   service_instances: 1,
   job_artifacts: 1,
   job_secret_handles: 1,
@@ -451,6 +450,14 @@ export const POLICY_COUNTS = deepFreeze({
   // MIG-003: one aoa_app org-scoped tenant-isolation policy per table (migration 0257).
   live_event_log: 1,
   live_event_sequences: 1,
+  // ORDER MATTERS HERE, not just membership. `assertExactCatalogCertificate` compares
+  // `Object.fromEntries(RLS_RELATIONS.map(...))` against this object with JSON.stringify
+  // equality, so these keys must appear in RLS_RELATIONS' order. `service_generations` is
+  // LAST in RLS_RELATIONS, so it must be last here. Placing it beside `services` — which reads
+  // more naturally — produces an object with identical keys and identical values that still
+  // fails startup with `catalog certificate drift: policy counts`, surfaced only as the opaque
+  // `distributed_execution_app_authority`. SVC-001 shipped that and it cost three CI rounds.
+  service_generations: 1,
 } as const);
 
 const ORGANIZATION_QUAL =
