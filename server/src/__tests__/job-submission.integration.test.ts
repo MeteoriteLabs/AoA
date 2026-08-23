@@ -12,6 +12,7 @@ import {
   createTenantAppDbConnection,
   type NonOwnerDbConnection,
 } from "@armyofagents/db";
+import { browserWorkloadV1Schema } from "@armyofagents/worker-protocol";
 import type { StorageService } from "../storage/types.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import { provisionTenantAppRoleLoginSql, TENANT_APP_ROLE } from "../db/rls-tenant.js";
@@ -110,8 +111,25 @@ function route(orgId = ORG_A, companyId = COMPANY_A): string {
   return `/api/organizations/${orgId}/companies/${companyId}/jobs`;
 }
 
+/**
+ * BRW-001 — the submitted `input` is now WORKLOAD-TYPED for browser jobs.
+ *
+ * This helper's `{ value, nested }` blob is incidental filler: these tests assert authority
+ * and persistence, not workload shape. That was harmless while `job.input` was passed
+ * straight through to `buildJobEnvelope` unvalidated — but a `browser_request` carrying
+ * `{ value, nested }` could never have leased, because the frozen `browserWorkloadV1Schema`
+ * rejects it. The submission simply persisted a job that would silently never run.
+ *
+ * BRW-001 validates browser input at submit, so the filler is now a 400. The fix is the
+ * fixture, not the guard: keep the generic blob for every other source (their workload
+ * types are declared `not_enforced`, so they are unchanged), and send a real browser
+ * configuration for the browser case. Do NOT "simplify" this back to one shared blob.
+ */
 function command(idempotencyKey: string, source: Record<string, unknown> = SOURCE_CASES[0], value = "alpha") {
-  return { idempotencyKey, source, input: { value, nested: { stable: true } } };
+  const input = source.kind === "browser_request"
+    ? { locale: "en-GB", recordTrace: true, maxSessionSeconds: 600 }
+    : { value, nested: { stable: true } };
+  return { idempotencyKey, source, input };
 }
 
 function asUser(userId = USER_A) {
@@ -452,6 +470,22 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(job).toHaveProperty("policy_hash");
       expect(job).toHaveProperty("requirements");
       expect(job).toHaveProperty("placement_request");
+
+      // BRW-001 — for a browser job, prove the PERSISTED workload is frozen-valid through
+      // the real route and a real database. This is the end-to-end evidence that the
+      // silent-non-lease is closed: `buildJobEnvelope` passes `job.input` straight through
+      // as the workload, so if this parses, the envelope's workload parses.
+      if (source.kind === "browser_request") {
+        expect(browserWorkloadV1Schema.safeParse(job!.input).success).toBe(true);
+        // Defaults were applied for the fields the caller omitted, and the caller's own
+        // values survived.
+        expect(job!.input).toMatchObject({
+          engine: "chromium",
+          locale: "en-GB",
+          recordTrace: true,
+          maxSessionSeconds: 600,
+        });
+      }
     });
 
     it("accepts service reconciliation only through a system principal and tenant-bound service generation", async () => {
