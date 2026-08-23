@@ -225,3 +225,39 @@ From `HANDOFF-wave-3-4.md` §1. A ticket is not done until **all** hold:
 - Every guard is mutation-tested; survivors fixed or documented as equivalent with the reason.
 - The result doc states deferrals honestly, **including anything built but not wired**.
 - CI watched to green. `ci-required` is the verdict.
+
+---
+
+## 9. NEW (Lane A, TRACK-001) — creating a ticket file now requires a graph node
+
+**Added after this handoff was written. It can fail your build, so it is here rather than left to
+be discovered from a red gate.**
+
+`check-ticket-graph-coverage.mjs` runs in the `policy` job and **fails when a ticket FILE exists
+whose id has no `#### <ID>` node in `docs/replatform/program-design.md`.**
+
+**Why it exists.** That document is the sole authority `check-dependency-graph.mjs` reasons over,
+and it had drifted: `DAT-008`, `WRK-008` and `WRK-009` appeared in it **zero times** while carrying
+landed code, so every reachability answer the graph checker gave was unsound. Stale authority is a
+distinct failure mode from no-caller, and `check-guard-inventory.mjs` cannot detect it.
+
+**What it means for you, concretely:**
+
+- **`SVC-001` is fine** — it already has a node, so your current tree passes. Checked directly
+  against `C:\e8` at `558244eb7`, not assumed.
+- **`BRW-003`, `BRW-004`, `BRW-005`, `BRW-006` all have nodes.** Fine.
+- ⚠ **`BRW-007` and `BRW-008` have NO node.** If you create ticket files for either, `policy` will
+  fail until you add a `#### BRW-007` section with a `**Depends on:**` line.
+- The reverse direction is **not** a failure: an id named in the authority with no ticket file yet
+  is the backlog (15 such ids today), and the guard deliberately ignores it.
+
+**When you add a node, state only what is actually true.** Do not add edges to make a crosswalk row
+look dominated — `check-dependency-graph.mjs` reads those edges, and a false ownership claim is
+worse than a missing node. Lane A hit exactly this with `DAT-008`: giving it edges to
+`MIG-005/006/007` would have made row `CM-013` look *closed* when only slices 1-4 had landed.
+
+**Also worth comparing notes on.** Your `SVC-001` result records *"three checks in this ticket could
+not evaluate what they guarded"*. Lane A closed four instances of that same class on the same day
+(an image guard with no CI invocation; a guard blind to test files; a stale-authority guard; and an
+adversarial verifier that could not return "confirmed"). It is systemic, not incidental — see
+`docs/replatform/WAVE-4-RESEQUENCE.md` §0 and the `checks-that-nothing-runs` pattern.
