@@ -1,5 +1,12 @@
 # Re-platform — Wave 3 + 4 handoff (prove, then cut over)
 
+> **SUPERSEDED FOR FORWARD WORK by [`HANDOFF-wave-4.md`](./HANDOFF-wave-4.md).**
+> Wave 3 is complete and the gate has been assessed (clauses 1/3/4/5 satisfied, clause 2
+> PARTIAL — see wave-4 handoff §2). **This document stays authoritative for two things** and is
+> referenced rather than duplicated: §1 (the binding per-ticket process) and §6 (the inherited
+> deferral ledger, where rows #2 and #5 are now CLOSED and #1 carries a re-scope note).
+> Start a new session from the wave-4 handoff, on this same branch.
+
 **As of:** branch `docs/replatform-program` tip `a800a1e2b` (ONE PR #323, worktree `C:\e3`).
 Worktree clean, nothing unpushed, PR CI green.
 **72 / 95 landed. 23 remain.**
