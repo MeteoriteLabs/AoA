@@ -13,6 +13,62 @@ are not repeated. **Its §4b does not stand**, and §4b is the part the Wave-4 h
 
 ---
 
+> ## ★ REVISION 1 — §3 was wrong: this is NOT an open fork. Planning decided it.
+>
+> §3 below presented Direction A vs Direction B as an unresolved architectural fork and asked for
+> a decision. **That framing is incorrect and is retracted.** I looked at the epic ticket list and
+> at DAT-004/DAT-005, and did not look at the crosswalk — where the decision actually lives.
+>
+> **The authority is CM-013** (`current-main-crosswalk.md:29`), whose target-state column reads:
+> *"Keep encrypted model-credential resolution/rotation authority in the control plane, but issue
+> only **job/attempt/lease/fence/Company/principal-scoped sandbox materialization and egress
+> authority**; re-resolve on every new lease and warm resume. Never place the value in common
+> protocol, prompt, argv, logs, artifacts, or evidence."* Its dependency list is **DAT-004,
+> DAT-005, CLI-002, CLI-005, MIG-005, MIG-006, MIG-007** — CM-013 is exactly the row the three
+> sink cutovers hang off.
+>
+> Reinforced by two further locked statements: `program-design.md:35` — *"`cloud_auth` resolves
+> the Company's model-provider credential **only for sandbox-local CLI execution inside E2B**"* —
+> and `program-design.md:765` (CLI-001) — *"materialized in-sandbox via the U5 allowlist, reaching
+> the provider API through the DAT-005 fence-aware egress proxy."*
+>
+> **A and B are not alternatives for one credential. They are two decided paths for two credential
+> classes**, which is precisely what the frozen `usePolicy` vocabulary encodes:
+>
+> | Credential class | Decided path | Frozen pairing |
+> |---|---|---|
+> | Company **model-provider key** (CM-013) — DAT-008's scope | materialized **in-sandbox**, authority fence-scoped, destination policed by the DAT-005 proxy | `env`/`file` + `sandbox_local_only` |
+> | **Connector OAuth** / governed platform credentials | value **never enters the sandbox**; rendered into request headers inside the fence proxy | `proxy` + `fence_proxy` |
+>
+> The `SecretBrokerSet` doc comment says the same thing in code (`secret-broker.ts:118-125`):
+> `connector_oauth` → *"rendered into fence-proxy request HEADERS at delivery"*; `provider_key` /
+> `company_secret` → `resolveSecretValue`. DAT-004's acceptance clause *"platform-managed
+> credentials never become direct sandbox egress credentials"* governs the **platform's** own
+> credentials (the E2B provider-control key, DEP-006's lifecycle) — not the tenant's model key,
+> which `program-design.md:35` explicitly separates from both MCP OAuth authority and the E2B
+> provider-control credential.
+>
+> **What survives from §3:** nothing, as a fork. Read the table above instead.
+> **What survives from §0/§1/§2/§4:** all of it. The decided architecture still needs mechanisms
+> that do not exist (M1, M2, M5, M6), and M4's finding is re-scoped rather than dropped — the
+> built `egress()` implements the **connector-OAuth** shape, which is why it injects a header and
+> returns only a status. It was never meant to carry an LLM request. That is not a defect in
+> DAT-005; it is evidence that DAT-005 built the other class.
+>
+> **Also correct the Wave-4 handoff's §3.1 premise.** *"No ticket in the Wave-4 list owns it"* is
+> true of the epic ticket list and **false of the plan** — CM-013 owns it and names MIG-005/006/007
+> as dependents. DAT-008 is therefore the *implementation* of a decided CM-013 target state, not a
+> new architectural choice. The ownership question was real; the architecture question was not.
+>
+> **The one thing planning did NOT settle** — and the only genuine open item — is the **redemption
+> channel**: how the worker obtains the value it must materialize, given that the wire cannot carry
+> it (§0) and `WORKER_PROTOCOL_OPERATIONS` has no secret op. CM-013 specifies the *authority*
+> (`resolveExecutionSecret` already returns exactly that authorized non-secret binding); it does
+> not specify the transport that turns the authority into a value at the worker. That is a
+> mechanism question for the design, not a fork.
+
+---
+
 ## ★ 0. Headline — §4b reasoned from the WRONG SANDBOX PATH, and the answer changes
 
 `DEFERRAL-1-credential-terrain.md` §4b concluded: *"the whole shape is available with no new
@@ -99,10 +155,11 @@ architecture rather than wiring.
 
 ---
 
-## ★ 3. The programme's own documents point in two different directions
+## ~~★ 3. The programme's own documents point in two different directions~~ — RETRACTED by revision 1
 
-This is the architectural fork §4b declared closed. Both statements are in-tree and they are not
-the same system.
+**This section is WRONG and is retained only so the reasoning can be audited. There is no fork:
+CM-013 decided it. See revision 1 above for the correct reading.** What follows is the superseded
+text.
 
 **Direction A — key in the sandbox, proxy polices the network.** `program-design.md:765`
 (CLI-001's outcome sentence): *"coding jobs authenticate with the company's own provider API key
