@@ -2,8 +2,9 @@
 
 **Status:** `backlog`
 **Depends on:** E7; BRW-006 additionally requires `E10-REALTIME-FOUNDATION`
-**Tickets:** BRW-001 through BRW-006
-**Exit gate:** sandbox-local browser, evidence, approvals, network/secret policy, cancellation, cleanup, and D3 reconnect journey pass.
+**Tickets:** BRW-001 through BRW-008 (007/008 added 2026-08-23 — see
+[`scope-addendum-agent-and-commander.md`](./scope-addendum-agent-and-commander.md))
+**Exit gate:** sandbox-local browser, evidence, approvals, network/secret policy, cancellation, cleanup, and D3 reconnect journey pass; agents can request a session and Commander runs on the governed path with no host-side browser spawn reachable from a boot root.
 
 ## Mandatory planning brief
 
