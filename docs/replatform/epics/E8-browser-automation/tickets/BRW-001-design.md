@@ -309,3 +309,95 @@ Unit tests are Linux+Windows; the submission integration test is
   browser-capable sandbox template; `e2b/e2b.Dockerfile` has not yet been checked for a
   Chromium layer.
 - No D1/D3 lane work here — BRW-005 owns both, and the D3 lane does not yet exist.
+
+---
+
+## 7. Plan review — findings and resolutions
+
+`/plan-eng-review` run against this doc at Start SHA `949c0324b`, all four sections
+(architecture, code quality, tests, performance). Four findings; three verified by reading
+code. Resolutions below are folded into the design and supersede §3 where they conflict.
+
+### F1 [P1] (confidence 9/10) — ordering creates an authorization oracle. FIXED.
+
+`job-submission.ts:121` computes `const inputHash = digest(input.command.input);` **before**
+the admission gate at `:139-153` (`throw denial()`). Normalising at that natural spot would
+let an **unauthorized** caller with a malformed browser config receive a different response
+from an unauthorized caller with a valid one — two distinguishable outcomes where the
+threat model requires one. That is the H-01 disclosure shape this programme bans.
+
+**Resolution:** browser normalisation runs **strictly after** the admission gate. A denied
+caller receives the identical opaque denial regardless of config validity. Pinned by a test
+that asserts response equality across the valid/invalid pair for a denied principal — not
+merely that each is a denial.
+
+### F2 [P2] (confidence 8/10) — browser-only validation duplicates into SVC-001. FIXED.
+
+`job-control-source.ts:51-55` maps `browser_request`→`browser_session`,
+`service_reconcile`→`service`, and every other source→`batch`; `buildJobEnvelope` passes
+`input.job.input` through as the workload for **all three**. The hazard is general, not
+browser-specific — F3 shows it is already live on the batch path. A browser-only module
+fixes one of three instances and leaves the shape intact, and SVC-001 (ticket 8 of this
+same lane) would land a near-copy.
+
+**Resolution — a workload-validator registry, with declared ≠ enforced.**
+`server/src/services/workload-input-validators.ts` maps `workloadType` → validator. All
+three frozen `WORKLOAD_TYPES` get a **declared** slot; only `browser_session` is
+**enforcing** in BRW-001. `batch` and `service` are declared `not_enforced` with an explicit
+reason (F3 / SVC-001 respectively), so Lane A's runtime behaviour changes by exactly zero
+bytes while the structure exists.
+
+The registry earns its place by enabling one thing a browser-only module cannot have: an
+**exhaustiveness guard over `WORKLOAD_TYPES`**, making "this workload type has no declared
+validator" a build-and-test failure instead of an invisible default. That is the mechanism
+that prevents recurrence; without it "we'll extract it later" is an intention, not a
+control.
+
+Rejected: also wiring an enforcing `batch` validator. It is the most complete option and it
+crosses into `job-leasing.ts` / the live CLI-006 cutover path that §2 forbids touching
+without coordination.
+
+### F3 [P1] (confidence 9/10) — CROSS-LANE. NOT FIXED HERE, BY DECISION.
+
+The live cutover path carries the same silent-non-lease defect. Verified boot-root chain:
+`heartbeat.ts:5234` calls `resolveExecutionOwner({source, actor, organizationId,
+idempotencyKey, rolloutState})` with **no `input` key** → `heartbeat-distributed-rollout.ts:148`
+`jobInput: input` (undefined) → `run-execution-owner.ts:245` `input: jobInput` →
+`job-admission-bridge.ts:261` `admitAndSubmit(source, actor, idempotencyKey, input = {})`.
+So a converted `task_run` gets `job.input = {}`, and measured against the frozen schema:
+
+```
+batch  {} (the live task_run default) -> REJECT: command, args, stdinArtifactId, maxRuntimeSeconds
+```
+
+`buildJobEnvelope` therefore returns `null` and the attempt cannot be leased. Shadow mode
+does not build envelopes, which is consistent with CLI-006 having gone green.
+
+Owned by CLI-006 / Lane A, in files this lane must not touch. Reported to the programme
+owner directly; recorded here only as the reason the `batch` registry slot is declared
+`not_enforced`.
+
+### F4 [P2] (confidence 7/10) — rejection status was unspecified. FIXED.
+
+`job-control.ts:96-104` returns **403** for principal denial. A malformed browser config is
+a caller error and must be **400**. Conflating them both misleads callers and blurs the F1
+boundary. The design now names the status explicitly.
+
+### Test gaps found in this plan's own §4 table. ADDED.
+
+The review found three codepaths this plan introduced but did not test:
+
+| Gap | Added test |
+|---|---|
+| F1 ordering invariant | denied principal + invalid config and denied principal + valid config produce **byte-identical** responses |
+| Replay survives normalisation | submit raw A (stored normalised A′), resubmit raw A with the same idempotency key ⇒ **replay**, not a 409 conflict — proves `commandDigest` still hashes the raw command |
+| Defaulting determinism | same raw input ⇒ same normalised output ⇒ same `inputHash`, so an equivalent resubmission cannot diverge |
+
+**Additional guard to mutation-test:** the registry exhaustiveness guard over
+`WORKLOAD_TYPES`, and the declared-vs-enforced discriminator (a mutant that silently
+promotes `not_enforced` to enforcing must be killed — it would change Lane A's path).
+
+### Performance — no issues found.
+
+Normalisation is pure CPU over an already-bounded ≤64 KiB record, adds no database access,
+and introduces no N+1. Nothing to change.
