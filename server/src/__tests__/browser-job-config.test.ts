@@ -130,6 +130,70 @@ describe("BRW-001 — browser job config: rejection fixtures", () => {
   });
 });
 
+describe("BRW-001 adversarial — the ceiling guard must cover the INJECTED ceiling too", () => {
+  // Found by attacking the implementation. The module-load guard checks the DEFAULT
+  // ceiling, but `normalizeBrowserJobInput` exposes a `ceilings` parameter — so a caller
+  // could inject a ceiling the guard never saw and raise the effective TTL bound. The
+  // frozen schema still backstops at 43200, so this is not a vulnerability today, but a
+  // guard that only covers the value nobody passes is weaker than it looks.
+  it("refuses an injected ceiling above the frozen ceiling", () => {
+    const result = normalizeBrowserJobInput(
+      { ...exactFrozenShape, maxSessionSeconds: 40_000 },
+      { maxSessionSeconds: 999_999 },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid_ceiling");
+  });
+
+  it("refuses a zero, negative, or non-integer injected ceiling AS AN INVALID CEILING", () => {
+    // Asserting only `ok === false` let a mutant survive: with the lower bound relaxed to
+    // `>= 0`, a ceiling of 0 becomes "valid" and the call still fails — but as
+    // `max_session_seconds_above_ceiling`, a different guard entirely. Pinning the REASON
+    // is what makes this test able to see the bound it is supposed to be testing.
+    for (const bad of [0, -1, 900.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const result = normalizeBrowserJobInput(exactFrozenShape, { maxSessionSeconds: bad });
+      expect(result.ok, `ceiling ${bad} must be refused`).toBe(false);
+      if (result.ok) continue;
+      expect(result.reason, `ceiling ${bad} must be refused as an invalid ceiling`).toBe("invalid_ceiling");
+    }
+  });
+
+  it("still honours a legitimate injected ceiling below the frozen one", () => {
+    const tight = normalizeBrowserJobInput({ maxSessionSeconds: 120 }, { maxSessionSeconds: 60 });
+    expect(tight.ok).toBe(false);
+    const fits = normalizeBrowserJobInput({ maxSessionSeconds: 30 }, { maxSessionSeconds: 60 });
+    expect(fits.ok).toBe(true);
+  });
+});
+
+describe("BRW-001 adversarial — a non-plain object is not a config", () => {
+  // Found by attacking the implementation. `typeof x === "object" && !Array.isArray(x)`
+  // admits class instances. `Object.keys(new Date())` is empty, so a Date passed no
+  // unknown-field check and came back as a fully-defaulted VALID browser workload.
+  // Unreachable through the JSON route today, but the registry is shared and SVC-001 will
+  // reuse it, so garbage must not normalise into a plausible default.
+  it("rejects a Date rather than defaulting it into a valid workload", () => {
+    const result = normalizeBrowserJobInput(new Date());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("not_an_object");
+  });
+
+  it("rejects a Map, a Set, and a class instance", () => {
+    class Config {}
+    for (const value of [new Map(), new Set(), new Config()]) {
+      const result = normalizeBrowserJobInput(value);
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it("still accepts a null-prototype object, which IS a plain config", () => {
+    const bare = Object.assign(Object.create(null) as Record<string, unknown>, { locale: "en-GB" });
+    expect(normalizeBrowserJobInput(bare).ok).toBe(true);
+  });
+});
+
 describe("BRW-001 — browser job config: defaulting is deterministic", () => {
   // Test gap found by plan review. Idempotent replay compares the RAW command digest, but
   // an equivalent resubmission must also produce an identical stored workload — otherwise

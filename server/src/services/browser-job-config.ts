@@ -48,14 +48,21 @@ export const BROWSER_SESSION_CEILINGS: BrowserSessionCeilings = Object.freeze({
 /** The default session TTL applied when a caller omits one. Bounded by the ceiling. */
 const DEFAULT_MAX_SESSION_SECONDS = 900;
 
-// GUARD — a server ceiling above the frozen ceiling would let this module emit a workload
-// the frozen schema rejects, reintroducing the silent-non-lease it exists to close. Fail at
-// module load rather than at the first browser submission.
-if (
-  !Number.isInteger(BROWSER_SESSION_CEILINGS.maxSessionSeconds) ||
-  BROWSER_SESSION_CEILINGS.maxSessionSeconds < 1 ||
-  BROWSER_SESSION_CEILINGS.maxSessionSeconds > FROZEN_MAX_SESSION_SECONDS
-) {
+/** GUARD — a session ceiling above the frozen ceiling would let this module emit a workload
+ * the frozen schema rejects, reintroducing the silent-non-lease it exists to close.
+ *
+ * This is a FUNCTION, not an inline module-load check, because `normalizeBrowserJobInput`
+ * exposes a `ceilings` parameter. Adversarial review found that a guard covering only the
+ * default constant is weaker than it looks: an injected ceiling would never have been
+ * checked. Both the module-load assertion and every call now share this one predicate. */
+function isValidSessionCeiling(seconds: number): boolean {
+  return (
+    Number.isInteger(seconds) && seconds >= 1 && seconds <= FROZEN_MAX_SESSION_SECONDS
+  );
+}
+
+// Fail at module load rather than at the first browser submission.
+if (!isValidSessionCeiling(BROWSER_SESSION_CEILINGS.maxSessionSeconds)) {
   throw new Error("browser session ceiling must be an integer within the frozen 1..43200 bound");
 }
 if (
@@ -72,6 +79,7 @@ export type BrowserConfigRejection =
   | "not_an_object"
   | "unknown_field"
   | "invalid_field"
+  | "invalid_ceiling"
   | "max_session_seconds_above_ceiling";
 
 export type NormalizeBrowserJobInputResult =
@@ -91,8 +99,20 @@ const ALLOWED_FIELDS = new Set([
   "maxSessionSeconds",
 ]);
 
+/** A PLAIN object only. `typeof x === "object" && !Array.isArray(x)` is not enough:
+ * adversarial review found that it admits class instances, and because
+ * `Object.keys(new Date())` is empty a Date passed the unknown-field check and normalised
+ * into a fully-defaulted VALID browser workload. A null prototype is still plain.
+ *
+ * THE PROTOTYPE CHECK IS THE LOAD-BEARING LINE. Mutation testing proved `Array.isArray` is
+ * an EQUIVALENT mutant here — an array's prototype is `Array.prototype`, so it already
+ * fails `proto === null || proto === Object.prototype` with or without the explicit array
+ * test. `Array.isArray` is kept only as a cheap fast path. Do not delete the prototype
+ * check on the theory that arrays are handled above it; they are handled BY it. */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value) as unknown;
+  return proto === null || proto === Object.prototype;
 }
 
 /**
@@ -106,6 +126,11 @@ export function normalizeBrowserJobInput(
   raw: unknown,
   ceilings: BrowserSessionCeilings = BROWSER_SESSION_CEILINGS,
 ): NormalizeBrowserJobInputResult {
+  // The injected ceiling is validated on every call, not just at module load — otherwise
+  // the parameter is a way around the guard.
+  if (!isValidSessionCeiling(ceilings.maxSessionSeconds)) {
+    return { ok: false, reason: "invalid_ceiling" };
+  }
   if (!isPlainObject(raw)) return { ok: false, reason: "not_an_object" };
 
   for (const key of Object.keys(raw)) {
