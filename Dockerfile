@@ -61,6 +61,9 @@ COPY packages/worker-protocol/package.json packages/worker-protocol/
 COPY packages/worker-daemon/package.json packages/worker-daemon/
 COPY packages/sandbox-fake-provider/package.json packages/sandbox-fake-provider/
 COPY packages/sandbox-provider-contract/package.json packages/sandbox-provider-contract/
+# BRW-002 - the sandbox-local browser runtime. The deps-stage validator requires every
+# workspace package to be copied here, so a new package that is not listed fails `policy`.
+COPY packages/browser-runtime/package.json packages/browser-runtime/
 COPY packages/sandbox-e2b-provider/package.json packages/sandbox-e2b-provider/
 COPY packages/worker-keystore/package.json packages/worker-keystore/
 COPY patches/ patches/

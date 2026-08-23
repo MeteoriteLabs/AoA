@@ -3,25 +3,31 @@
 // Adversarial review found this clause had NO test at all, while the other browser test
 // file's header claimed to cover it. That claim is now removed and this is the real proof.
 //
-// WHAT THIS LAYER CAN HONESTLY PROVE — and it is LESS than I first wrote here.
+// WHAT THIS LAYER PROVES — corrected TWICE, and the second correction came from CI.
 //
-// The original version of this header claimed that when the runner dies, Chromium dies with
-// it via the CDP pipe reaching EOF. That claim came from a review note asserting the browser
-// was reaped in 0.1-0.2s. IT IS FALSE. Measured directly: the runner process confirmed dead,
-// and a Chromium process still alive 15 seconds later. The first test written from that
-// header failed, which is how the claim was caught.
+// Round 1: the header claimed the runner's death reaps Chromium via CDP pipe EOF, on the
+// strength of a review note. I measured on WINDOWS: runner confirmed dead, Chromium still
+// alive 15 seconds later. So I rewrote this to assert orphaning as a universal limitation.
 //
-// So the honest split is:
-//   * GRACEFUL cancellation (SIGTERM/SIGINT) — the runtime CAN handle, and does: the driver
-//     closes the context, which reaps the browser and flushes video. Proven below (POSIX).
-//   * UNCATCHABLE kill (SIGKILL) — the runtime CANNOT handle, by definition. The browser is
-//     orphaned. Proven below too, deliberately, because that limitation is what makes sandbox
-//     `destroy` load-bearing rather than belt-and-braces.
+// Round 2: the Linux browser lane REFUTED that generalisation on its first green run —
+// "Chromium was reaped by SIGKILL". I had measured one platform and generalised. The review
+// note was right, for Linux.
 //
-// Terrain already established that `signal()` is a no-op against real E2B and only
-// `destroy`/`terminate` reclaims. That is E4's mechanism and is NOT asserted here; what these
-// tests do is pin exactly how much of clause (c) this layer carries, so nobody later reads
-// "browser dies on cancellation" as a property of the runtime.
+// PLATFORM IS THE VARIABLE, and the target platform is the one that matters:
+//   * LINUX (what an E2B sandbox actually is) — killing the runner REAPS Chromium and its
+//     children through the CDP pipe reaching EOF. Clause (c) IS satisfied at this layer.
+//   * WINDOWS (developer machines only) — the browser is ORPHANED. Node maps every
+//     child.kill() to TerminateProcess, and the grandchild survives.
+//
+// Both are asserted below, per platform, because a test that asserts the wrong platform's
+// behaviour is worse than no test: it teaches a false invariant. If Linux ever stops reaping,
+// that assertion fails and tells us the ground moved — which is exactly what happened here,
+// in the useful direction.
+//
+// Terrain established that `signal()` is a no-op against real E2B and only `destroy`/
+// `terminate` reclaims a SANDBOX. That is E4's mechanism and is NOT asserted here. These
+// tests pin what the RUNTIME layer carries, so nobody reads "browser dies on cancellation"
+// as either more or less than it is.
 //
 // The processes are identified by the unique `userDataDir` on their command line, so this
 // counts OUR browser and never a developer's other Chrome.
@@ -87,8 +93,45 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number): Pr
 
 // SIGTERM/SIGINT are only deliverable as real signals on POSIX; on Windows Node maps
 // child.kill() to TerminateProcess regardless of the name, so the graceful path is
-// untestable there and this suite is Linux-only inside the browser lane.
+// untestable there.
 const linuxOnly = describe.skipIf(!RUN || process.platform !== "linux");
+const windowsOnly = describe.skipIf(!RUN || process.platform !== "win32");
+
+/** Start a real runner process on the slow page; a running timer makes a survivor visible. */
+async function startSession(name: string) {
+  const dir = mkdtempSync(join(base, name + "-"));
+  const profile = join(dir, "profile");
+  const root = join(dir, "root");
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(dir, "session.json"),
+    JSON.stringify({
+      downloadRoot: root,
+      userDataDir: profile,
+      downloadsStagingPath: join(dir, "staging"),
+      steps: [{ action: "navigate", url: site.origin + "/slow" }],
+      launch: { headless: true, chromiumSandbox: true, args: [] },
+    }),
+  );
+  const runnerJs = fileURLToPath(new URL("../../dist/runner.js", import.meta.url));
+  const child = spawn(process.execPath, [runnerJs, join(dir, "session.json")], { stdio: "ignore" });
+  return { profile, child };
+}
+
+/** Never leave an orphan behind: the Windows case deliberately creates one. */
+async function killLeftovers(profile: string): Promise<void> {
+  if (process.platform === "win32") {
+    await execFileAsync("powershell", [
+      "-NoProfile",
+      "-Command",
+      "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*" +
+        profile +
+        "*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+    ]).catch(() => undefined);
+  } else {
+    await execFileAsync("sh", ["-c", "pkill -f -- '" + profile + "' || true"]).catch(() => undefined);
+  }
+}
 
 linuxOnly("BRW-002 (c) — a GRACEFUL cancellation reaps the browser", () => {
   it("closes the browser when the runner receives SIGTERM", async () => {
@@ -122,55 +165,45 @@ linuxOnly("BRW-002 (c) — a GRACEFUL cancellation reaps the browser", () => {
   }, 90_000);
 });
 
-suite("BRW-002 (c) — an UNCATCHABLE kill orphans the browser, which is why sandbox destroy is required", () => {
-  it("MEASURES that SIGKILL leaves Chromium alive", async () => {
-    // This test asserts a LIMITATION, deliberately, because the limitation is load-bearing.
-    //
-    // I first wrote the opposite test — "killing the runner reaps the browser" — on the
-    // strength of a review claim that Chromium died in 0.1-0.2s via pipe EOF. It failed, and
-    // measuring directly showed the runner dead while a Chromium process was still alive 15
-    // seconds later. So the runtime layer CANNOT deliver clause (c) on its own.
-    //
-    // Pinning it here means the dependency on sandbox `destroy` is a tested fact rather than
-    // an assumption, and if a future Playwright or Chromium starts self-reaping on pipe EOF
-    // this test fails and tells us the ground moved.
-    const dir = mkdtempSync(join(base, "sigkill-"));
-    const profile = join(dir, "profile");
-    const root = join(dir, "root");
-    mkdirSync(root, { recursive: true });
-    writeFileSync(
-      join(dir, "session.json"),
-      JSON.stringify({
-        downloadRoot: root,
-        userDataDir: profile,
-        downloadsStagingPath: join(dir, "staging"),
-        steps: [{ action: "navigate", url: `${site.origin}/slow` }],
-        launch: { headless: true, chromiumSandbox: true, args: [] },
-      }),
-    );
+linuxOnly("BRW-002 (c) — on LINUX, the target platform, SIGKILL reaps the browser", () => {
+  it("leaves no Chromium alive after an uncatchable kill", async () => {
+    // THE clause-(c) proof on the platform that matters: an E2B sandbox is Linux. Even an
+    // uncatchable kill reaps the browser, because Chromium exits when the CDP pipe on fds
+    // 3/4 reaches EOF. Sandbox destroy remains the outer backstop, not the only mechanism.
+    const { profile, child } = await startSession("linux-sigkill");
+    try {
+      const started = await waitFor(async () => (await processesMentioning(profile)) > 0, 30_000);
+      expect(started, "the browser never started, so this test would prove nothing").toBe(true);
 
-    const runnerJs = fileURLToPath(new URL("../../dist/runner.js", import.meta.url));
-    const child = spawn(process.execPath, [runnerJs, join(dir, "session.json")], { stdio: "ignore" });
-    let orphaned = 0;
+      child.kill("SIGKILL");
+      const reaped = await waitFor(async () => (await processesMentioning(profile)) === 0, 30_000);
+      expect(reaped, "a Chromium process outlived the runner on Linux").toBe(true);
+    } finally {
+      child.kill("SIGKILL");
+      await killLeftovers(profile);
+    }
+  }, 90_000);
+});
+
+windowsOnly("BRW-002 (c) — on WINDOWS, SIGKILL ORPHANS the browser (developer platform only)", () => {
+  it("MEASURES that Chromium outlives the runner", async () => {
+    // Asserted so the platform difference is a TESTED fact rather than folklore. Windows is
+    // not a deployment target for this runtime; this exists so a developer who sees a stray
+    // chrome.exe knows it is expected here and NOT expected on Linux.
+    const { profile, child } = await startSession("win-sigkill");
     try {
       const started = await waitFor(async () => (await processesMentioning(profile)) > 0, 30_000);
       expect(started, "the browser never started, so this test would prove nothing").toBe(true);
 
       child.kill("SIGKILL");
       await new Promise((r) => setTimeout(r, 5_000));
-      orphaned = await processesMentioning(profile);
-      expect(orphaned, "Chromium was reaped by SIGKILL - the ground moved, revisit clause (c)").toBeGreaterThan(0);
+      expect(
+        await processesMentioning(profile),
+        "Windows reaped the browser - the platform difference closed, simplify this suite",
+      ).toBeGreaterThan(0);
     } finally {
-      // Do not leave the orphan running: this test creates the very condition it documents.
-      if (process.platform === "win32") {
-        await execFileAsync("powershell", [
-          "-NoProfile",
-          "-Command",
-          `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${profile}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
-        ]).catch(() => undefined);
-      } else {
-        await execFileAsync("sh", ["-c", `pkill -f -- '${profile}' || true`]).catch(() => undefined);
-      }
+      child.kill("SIGKILL");
+      await killLeftovers(profile);
     }
   }, 90_000);
 });

@@ -42,7 +42,8 @@ scoped; (c) browser and child processes die on cancellation.
 | b | traversal cannot escape | same file, "a traversal filename cannot escape the root" | ✅ |
 | b | path confinement incl. symlink escape | `path-adapter.test.ts` — 20 tests: `..`, absolute reassignment, NUL, sibling-prefix confusion, **symlink escape on a real filesystem** | ✅ (symlink cases Linux) |
 | c | graceful cancellation reaps the browser | `browser-teardown.browser.test.ts` "closes the browser when the runner receives SIGTERM" | ✅ Linux lane |
-| c | **an uncatchable kill ORPHANS the browser** | same file, "MEASURES that SIGKILL leaves Chromium alive" | ✅ — see §4 |
+| c | **on LINUX (the target), SIGKILL REAPS the browser** | `browser-teardown.browser.test.ts` "leaves no Chromium alive after an uncatchable kill" | ✅ Linux lane — see §4 |
+| c | on Windows (dev only) it ORPHANS — pinned so the platform difference is tested, not folklore | same file, "MEASURES that Chromium outlives the runner" | ✅ |
 | c | the runner reports failure rather than exiting silently | same file, two tests: typed event **and** non-zero exit | ✅ |
 | c | the guard fires through the REAL entrypoint | same file, "refuses an unsafe launch through the REAL entrypoint, not just the library" | ✅ boot-root proof |
 | Test | navigation / download / popup | `browser-containment.browser.test.ts` "navigates, downloads, and handles a popup" | ✅ |
@@ -115,11 +116,24 @@ claim, now removed. I then wrote "killing the runner reaps the browser" on the s
 review note asserting Chromium died in 0.1–0.2 s via pipe EOF. **The test failed.** Measured
 directly: runner confirmed dead, Chromium still alive 15 seconds later.
 
-So the runtime cannot deliver clause (c) alone. The honest split is implemented and pinned:
-graceful `SIGTERM`/`SIGINT` closes the context (reaping the browser and flushing video), and
-an uncatchable `SIGKILL` orphans it. **The orphan case is asserted deliberately**, because
-that limitation is what makes sandbox `destroy` load-bearing rather than belt-and-braces —
-and if a future Playwright starts self-reaping, that test fails and tells us the ground moved.
+So I rewrote the clause as a universal limitation: an uncatchable kill orphans the browser.
+
+**Then the Linux lane refuted THAT on its first green run** — *"Chromium was reaped by
+SIGKILL"*. I had measured one platform and generalised from it. The original review note was
+right, for Linux.
+
+**Platform is the variable, and the target platform is the favourable one:**
+- **Linux** — what an E2B sandbox actually is — reaps Chromium and its children even on an
+  uncatchable kill, through the CDP pipe on fds 3/4 reaching EOF. **Clause (c) IS satisfied at
+  the runtime layer**, with sandbox `destroy` as the outer backstop rather than the only
+  mechanism.
+- **Windows** — developer machines only — orphans it, because Node maps every `child.kill()`
+  to `TerminateProcess` and the grandchild survives.
+
+Both are now asserted per platform. A test that asserts the wrong platform's behaviour is
+worse than no test: it teaches a false invariant. And the failure message I wrote for the
+orphan assertion — *"the ground moved, revisit clause (c)"* — is precisely what fired, in the
+useful direction.
 
 ## 5. What design v1 got wrong (superseded at `d4a2c33f4`)
 
