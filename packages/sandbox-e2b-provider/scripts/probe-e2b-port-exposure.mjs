@@ -120,8 +120,11 @@ try {
     console.log(
       "  PUBLICLY SERVED — an unauthenticated caller outside the sandbox retrieved content\n" +
         "  from an arbitrary in-sandbox port. `public_cdp_endpoint` is NOT free: BRW-002 must\n" +
-        "  prevent CDP from ever binding a reachable TCP port (unix socket / loopback-only),\n" +
-        "  because the URL is derivable from the sandboxId alone.",
+        "  prevent CDP from binding a TCP port AT ALL (Playwright's default pipe transport),\n" +
+        "  because the URL is derivable from the sandboxId alone.\n" +
+        "  SCOPE: this probe bound 0.0.0.0, so it says NOTHING about a loopback-only listener.\n" +
+        "  Do NOT read it as endorsing a 127.0.0.1 bind — that is untested here, and the E2B\n" +
+        "  edge terminates outside the guest, so host intuitions about loopback do not carry.",
     );
   } else if (anyReached) {
     console.log(

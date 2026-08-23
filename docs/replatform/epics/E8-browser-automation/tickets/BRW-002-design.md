@@ -1,207 +1,278 @@
-# BRW-002 — Sandbox-local Playwright runtime — DESIGN
+# BRW-002 — Sandbox-local Playwright runtime — DESIGN (v2)
 
 **Epic:** E8 · **Lane:** B (`C:\e8`) · **Start SHA:** this commit
-**Terrain:** [`BRW-002-terrain.md`](./BRW-002-terrain.md) at `2dccddf4d` — read it first; five of
-my own load-bearing claims were refuted there and this design is built on the corrections.
-**Depends on:** BRW-001 ✅, WRK-004 ✅
+**Supersedes:** design v1 (`3f96ffcb3`), which **failed plan review with 10 BLOCKERs and 22
+HIGHs**. v1's thesis survived; its mechanisms did not. §10 records what was wrong and why,
+because the errors are the useful part.
+**Terrain:** [`BRW-002-terrain.md`](./BRW-002-terrain.md) · **Depends on:** BRW-001 ✅, WRK-004 ✅
 
-**Outcome.** Launch Chromium/Playwright inside the sandbox without exposing CDP to other
-tenants or the public network.
 **Acceptance.** (a) browser process shares only the job sandbox; (b) downloads stay job
 scoped; (c) browser and child processes die on cancellation.
 **Test.** Deterministic local site navigation, download, popup, and kill.
 
 ---
 
-## 1. The design in one paragraph
+## 1. The architecture, corrected
 
-A **sandbox-local browser runtime**: a small, dependency-light orchestrator that runs *inside*
-the job sandbox, launches Chromium through Playwright **over a pipe rather than a TCP port**,
-confines every download to a per-job root, and is torn down by destroying the sandbox. It is
-driven through **injected sandbox primitives** (`exec` / `writeFile` / `readFile`) rather than
-being bound to either execution lane, because terrain showed the lane question is genuinely
-unsettled and betting on one would strand the work. Its containment claims are proven by
-**measuring the sandbox**, not by asserting the design.
+v1 said the runtime "runs inside the sandbox" **and** is "driven through injected
+`exec`/`writeFile`/`readFile` primitives". **Those cannot both describe the control channel**,
+and this is the finding that reorganised the design.
 
-## 2. The decision that reorders this ticket
+`playwright-core/lib/server/browserType.js:268-269`:
 
-Terrain's most useful correction: **the missing Chromium layer is not the first problem.**
-Four independent things block a browser job today, and they are not equally in scope:
+```js
+const stdio = launchedProcess.stdio;
+transport = new PipeTransport(stdio[3], stdio[4]);
+```
 
-| # | Blocker | Owner |
-|---|---|---|
-| 1 | No per-workload template selection anywhere (`job-placement.ts:179-180` maps to a *capability*, never a template/image) | **deferred — see §7** |
-| 2 | No browser in the template (`e2b/e2b.Dockerfile`) | **BRW-002 authors it; operator builds it** |
-| 3 | No worker advertises browser capacity (`desktop-hello.ts:146-153` → `browserSessionSlots: 0`) | **deferred — see §7** |
-| 4 | The workload never reaches the sandbox (`createSpecFor` drops browser fields) | **BRW-002, via §4.3** |
+CDP rides **file descriptors 3 and 4 of the spawned child**, held only by the process that
+spawned it. A host-side orchestrator reaching in through `exec` can never hold them. So:
 
-Blockers 1 and 3 only matter for **real-provider** execution, which is D3 — and D3 is
-BRW-005's by three separate documents. BRW-002 is therefore scoped to **the runtime and its
-containment proofs, proven deterministically**, with the real-E2B path declared as an operator
-prerequisite rather than silently assumed. This is the difference between a ticket that closes
-honestly and one that claims a capability nothing can invoke.
+```
+HOST (worker / control plane)                 SANDBOX (one per job)
+  │                                             │
+  ├─ writeFiles: runner bundle + config ──────► /opt/aoa-browser/{runner.mjs, session.json}
+  ├─ exec: node /opt/aoa-browser/runner.mjs ──►  in-guest RUNNER  ← the Playwright parent
+  │                                             │    └─ launchPersistentContext()
+  │                                             │         pipe on fds 3/4, parent = runner
+  │◄─ stdout: NDJSON event stream ──────────────┤    └─ drives the browser
+  ├─ readFile: evidence + results ─────────────►│    └─ writes under the job root
+  └─ destroy (teardown) ───────────────────────►│
+```
 
-## 3. Clause (a) — "shares only the job sandbox"
+**The host never holds the CDP pipe and never drives Playwright.** It stages, starts,
+observes, collects, and destroys. That is the only shape the transport permits.
 
-### 3.1 CDP over a pipe, never a port
+Consequence for testability, stated plainly because v1 got this backwards: injecting fakes
+for `exec`/`writeFile`/`readFile` exercises **the launcher**, not the browser. Browser
+behaviour needs a real browser, which is why §7 builds a lane instead of asserting one exists.
 
-Terrain **measured** that E2B serves arbitrary in-sandbox ports to the public internet
-unauthenticated — port 9222 included, HTTP 200, marker content returned. So the frozen
-forbidden effect `public_cdp_endpoint` must be prevented at the source: **no debugging port
-may ever be bound.**
+## 2. Clause (a) — "shares only the job sandbox"
 
-Playwright's `chromium.launch()` already speaks to the browser over a **pipe**
-(`--remote-debugging-pipe`) — a file descriptor pair, not a socket. Only `connectOverCDP`
-requires a port. The design therefore uses `chromium.launch()` and never passes
-`--remote-debugging-port`.
+### 2.1 No debugging port — guard the OPTION, not just the args
 
-**Critically, "bind to 127.0.0.1" is NOT an acceptable alternative here** and the design
-forbids it. The E2B edge terminates outside the guest, so loopback-binding reasoning that
-holds on a normal host does not transfer. The probe is the authority, not intuition.
+Playwright uses the pipe **unless a port is requested** (`chromium.js:266-270`, verified
+directly). v1 guarded `args` only. That is the wrong surface: `cdpPort` is a **launch option**
+that never appears in `args`, and it alone flips the transport to a WebSocket endpoint
+(`browserType.js:265-266`).
 
-### 3.2 The guard is a measurement, not an assertion
+`assertNoRemoteControlRequested(launchOptions, env)` — a pure function, refusing:
 
-A launch-args allowlist alone would be a check that cannot fail in the way that matters — an
-arg could be added elsewhere, or Chromium could open a port for its own reasons. The real
-guard measures the sandbox:
-
-> **After the browser is launched, the set of listening TCP sockets inside the sandbox must
-> contain nothing but the deterministic test site's port.**
-
-Read with `ss -ltnH` (fall back to `/proc/net/tcp` parsing if `ss` is absent). This proves the
-absence of a reachable endpoint rather than the absence of one spelling of one flag, and it
-would catch a future Playwright/Chromium version that changed its default transport.
-
-Two supporting guards, both cheap:
-- a launch-argument guard rejecting `--remote-debugging-port` (and `--remote-debugging-address`)
-  before spawn, so the failure is loud and early;
-- an assertion that the runtime never calls `connectOverCDP`.
-
-### 3.3 What this does NOT claim
-
-Cross-tenant isolation of the E2B microVM itself is the provider's property and is DEP-008's
-to certify. BRW-002 claims only: **this job's browser opens no reachable endpoint.** Stated
-plainly so nobody later reads clause (a) as a proof of tenant isolation.
-
-## 4. Clause (b) — "downloads stay job scoped"
-
-### 4.1 The gap, precisely
-
-Terrain: nothing confines a sandbox-produced file to a job by path. The artifact object-key
-rules constrain the **destination** in object storage; the live capture path confines by
-**enumeration** (`git diff`), so a download written elsewhere is *invisible, not confined*.
-And the two path vocabularies are incompatible — `isSafeWorkspacePath` rejects a leading `/`
-(`artifacts.ts:53`) while every in-sandbox path is absolute.
-
-**Naming-collision trap, recorded so a later reader does not fall in:**
-`artifactDownloadGrantV1Schema` is about the worker *pulling an artifact out of object
-storage*, not about Chromium *saving a file from a website*. Clause (b) is the latter.
-
-### 4.2 A per-job download root, set three ways
-
-One mechanism is bypassable, so the root is imposed at three independent layers:
-
-1. Playwright browser context: `acceptDownloads: true` + `downloadsPath: <root>`
-2. Chromium: `--user-data-dir=<root>/profile` (so the profile's own default lands inside)
-3. The profile preference `download.default_directory = <root>`
-
-The root is derived from job identity the lease already carries — `ResourceLabels`
-(`supervisor/provider.ts:72-82`) binds organizationId/jobId/attempt/leaseId — rooted under the
-working directory the sandbox already owns. Never caller-supplied.
-
-### 4.3 The missing sandbox-path adapter, and how config reaches the sandbox
-
-A small `assertUnderRoot(root, candidate)` for **absolute** sandbox paths: rejects escape via
-`..`, symlink traversal, absolute reassignment, and control bytes — mirroring the host-side
-`assertCaptureRoot`/`normalizeRelPath` pattern rather than inventing one. Filenames from
-`Content-Disposition` are sanitised before use; a `../`, an absolute path, and a NUL byte must
-each either land inside the root or be refused, never escape.
-
-**Config delivery.** `createSpecFor` degrades a browser workload to `args: []`, so the seven
-frozen browser fields never reach the sandbox. Rather than edit E4's supervisor, the design
-**stages the config as a file** (`writeFiles`) at a known sandbox path, which the in-sandbox
-runtime reads. This avoids argv-escaping entirely, avoids touching another epic's module, and
-is the same staging primitive CLI-002 already uses.
-
-## 5. Clause (c) — "browser and child processes die on cancellation"
-
-Terrain: `signal()` ignores its `kind` and returns `{delivered:true}` unconditionally, and
-that maps to `outcome:"stopped"`, which the contract defines as *ends the process tree*. So
-**cancellation must be built on `destroy`/`terminate`, never on `cancel`/`kill`.**
-
-The test is therefore phrased as what is actually true — **"sandbox destroyed ⇒ browser and
-children gone"** — not "browser killed", which the transport cannot deliver and which would
-be a false claim of enforcement of exactly the kind this programme keeps finding.
-
-Consequences the design accepts and states:
-- **Trace/video/screenshot finalisation happens *during* the run, streamed.** Nothing may be
-  deferred to a cancel handler, because there is no reliable cancel handler.
-- Under cleanup authority, a browser session may be **destroyed** and **described**, but not
-  one byte of screenshot, DOM snapshot, cookie/storage state, trace, video, or download may be
-  read. That is the WRK-004 contract; BRW-003 must stream evidence before fence loss or lose it.
-- Three things terrain could not verify are carried as **open risks, not assumptions**: that
-  `Sandbox.kill` reaps a Chromium zygote/renderer tree (credible by microVM construction,
-  proven by nothing in-repo); whether anything honours the frozen `deadlineMs: 20000`; and
-  whether `browserSessionSlots` is returned on cancel. Each gets a named test or an explicit
-  deferral in the result doc.
-
-## 6. The deterministic test site
-
-BRW-002's Test clause says "deterministic **local** site". Terrain refuted the idea that this
-needs a D1 compose service — D1/D3 lane work is BRW-005's. So the site is an **in-sandbox
-static HTTP server** on a fixed port, serving fixtures for exactly the four required cases:
-
-| Case | Fixture |
+| Surface | Why |
 |---|---|
-| navigation | a page with a known title and a link to a second page |
-| download | a link with `Content-Disposition`, plus hostile filenames (`../`, absolute, NUL) |
-| popup | an anchor with `target=_blank` and a `window.open` button |
-| kill | a page with a long-running timer, so a surviving process would be observable |
+| `cdpPort` set | flips to WebSocketTransport; invisible in `args` |
+| `--remote-debugging-port` / `--remote-debugging-address` in `args` | direct |
+| `SELENIUM_REMOTE_URL`, `PW_TEST_CONNECT_WS_ENDPOINT` in env | reroute the driver to a remote endpoint |
+| any use of `connectOverCDP` | requires a port by construction |
 
-`/dev/shm`: Chromium's default 64 MB shm crash mode is unprovisioned anywhere in the tree and
-cannot be sized through the E2B API, so the runtime passes `--disable-dev-shm-usage`. Recorded
-because it is the classic silent-crash cause and would otherwise be diagnosed as flake.
+### 2.2 Chromium's OS sandbox must be turned back ON
 
-## 7. Scope boundaries — declared, not discovered later
+`chromium.js:295-296`, verified directly:
 
-**In scope:** the runtime, the three containment mechanisms, their measured guards, the
-in-sandbox test site, the four deterministic cases, and an authored browser Dockerfile.
+```js
+if (options.chromiumSandbox !== true)
+  chromeArguments.push("--no-sandbox");
+```
 
-**Explicitly deferred, with reasons:**
-- **Per-workload template selection** (blocker 1) — needed only for real-provider execution,
-  which is D3/BRW-005. Deferring is honest; silently assuming it would make BRW-002's tests
-  pass while no browser job could ever be placed.
-- **Worker browser capacity** (blocker 3) — same reason; `browserSessionSlots: 0` is a worker
-  enrollment concern, not a runtime one.
-- **The operator must build and register the browser template** before any real-E2B run. The
-  Dockerfile is authored here; building it is an operator action, following the
-  `keyed-e2b-conformance` precedent.
-- **Egress policy is BRW-004's**, and terrain §6 records a design-blocking model mismatch
-  there (the DAT-005 proxy is per-request and handle-bound; a browser emits raw DNS/TCP to
-  runtime-discovered hosts). BRW-002 makes no egress claim.
-- **Evidence capture is BRW-003's.** BRW-002 proves a browser runs and is contained; it does
-  not stream observations.
+**Playwright disables Chromium's own sandbox by default.** v1 never mentioned it while every
+containment argument assumed the renderer stayed contained. The runner passes
+`chromiumSandbox: true` and asserts `--no-sandbox` is absent from the effective arguments.
 
-## 8. Acceptance clause → named executable artifact
+**Open risk, tested not assumed:** Chromium's sandbox needs user namespaces, which a managed
+microVM may not grant. §7's lane runs this first. If E2B refuses it, that is a **finding to
+escalate**, not a flag to quietly drop — dropping it silently is how a containment claim
+becomes false.
 
-| # | Clause | Artifact |
+### 2.3 The guard is a DELTA, not an absolute set
+
+v1 required the listening-socket set to "contain nothing but the test site's port". **That is
+false at t=0**: every E2B sandbox runs envd on TCP **49983** (`e2b/dist/index.js:885`,
+`_ConnectionConfig.envdPort = 49983`) — it is how `exec`/`writeFiles` reach the guest. A guard
+that cannot pass gets relaxed into an allowlist, which is how it stops guarding.
+
+So the measurement is the **delta introduced by launching the browser**:
+
+```
+before = listeningPorts()        // envd, and the fixture site
+launch()
+after  = listeningPorts()
+assert setDifference(after, before) is EMPTY
+```
+
+Robust to any pre-existing infrastructure listener, and it fails if a future Playwright or
+Chromium build opens a port for any reason — which an argument allowlist cannot detect.
+
+`listeningPorts()` reads **`/proc/net/tcp` AND `/proc/net/tcp6`**. v1 named the singular file;
+a listener bound to `::` appears **only** in `tcp6`, so the v1 fallback would have reported
+"clean" while a port was bound. `ss` is **not** installed in `node:22`/Debian bookworm
+(measured), so `/proc` parsing is the primary path, not a fallback.
+
+### 2.4 What this does not claim
+
+Cross-tenant isolation of the microVM is the provider's property (DEP-008 certifies it).
+BRW-002 claims only: **this job's browser opens no reachable endpoint.**
+
+## 3. Clause (b) — "downloads stay job scoped"
+
+### 3.1 v1's three layers were one inert, one fatal, one overridden
+
+Measured by review, then confirmed against source:
+
+- **`downloadsPath` is a LAUNCH option, not a context option.** `newContext({downloadsPath})`
+  is accepted and **silently discarded**; the download landed in
+  `/tmp/playwright-artifacts-*/GUID` and the job root was never created. Clause (b) would have
+  failed silently while a naive assertion passed.
+- **`--user-data-dir` in `args` THROWS** (`chromium.js:278-280`) — Playwright manages the
+  profile and refuses the argument.
+- The `download.default_directory` **preference is overridden** at every context init by
+  `Browser.setDownloadBehavior` (`crBrowser.js:305-310`).
+
+### 3.2 One real mechanism, plus explicit persistence
+
+```js
+chromium.launchPersistentContext(userDataDir, {
+  chromiumSandbox: true,
+  acceptDownloads: true,
+  downloadsPath: JOB_DOWNLOAD_ROOT,
+})
+```
+
+`userDataDir` is a **parameter**, not an argument — which is exactly what Playwright demands.
+
+**But `downloadsPath` is a staging area, not a sink: Playwright DELETES its contents when the
+context closes.** So a download is only durable once explicitly persisted:
+
+```
+download.saveAs(assertUnderRoot(JOB_DOWNLOAD_ROOT, safeName(download.suggestedFilename())))
+```
+
+`download.saveAs()` is also **the surface that can actually escape** — it takes a
+caller-supplied path — whereas `suggestedFilename` is pre-sanitised by Chromium. §6 tests the
+escapable surface, not the safe one.
+
+### 3.3 The root sits OUTSIDE the workspace, deliberately
+
+The live capture path sweeps `remoteCwd` into the artifact store. A download root inside it
+would satisfy "job scoped" while the bytes leave the sandbox entirely. The root is therefore
+outside the workspace, and BRW-003 promotes evidence deliberately rather than by sweep.
+
+### 3.4 `assertUnderRoot` must ask the filesystem
+
+v1 described a string function. **A string function cannot see a symlink.** The check resolves
+the candidate's existing parent with `fs.realpathSync`, then verifies the resolved path is
+under the resolved root — the same shape as the host-side `assertCaptureRoot`, which is a
+filesystem check for this reason. Rejects `..`, absolute reassignment, control bytes and NUL,
+and a symlink planted earlier in the session.
+
+## 4. Clause (c) — dies on cancellation
+
+`signal()` ignores its `kind` and reports `{delivered:true}` unconditionally, while the
+contract defines that outcome as *ends the process tree*. So teardown is built on
+**`destroy`/`terminate`**, and the test says what is true: **sandbox destroyed ⇒ browser and
+children gone.**
+
+**Ordering that v1 got wrong and that is mutually constrained:**
+
+- **Video is only written on `context.close()`** — so "stream everything during the run" is
+  false for video.
+- **`context.close()` deletes the `downloadsPath` staging area.**
+
+Therefore the runner's terminal sequence is fixed and testable:
+
+```
+1. download.saveAs(...)   → persist every download under the job root
+2. context.close()        → flush video
+3. (host) destroy         → reclaim the sandbox
+```
+
+Getting this order wrong loses either the downloads or the video, silently. It is asserted by
+a named test rather than left to a comment.
+
+## 5. `public_cdp_endpoint` has no enforcer — BRW-002 builds one
+
+The frozen fixture names `public_cdp_endpoint` a forbidden effect
+(`browser-approval-download.json:222`), and review found **nothing anywhere enforces it** —
+`forbiddenEffects` is only length-checked by `golden-journeys.test.ts`. A named forbidden
+effect nobody checks is precisely this programme's signature defect.
+
+BRW-002 makes §2.1's option guard and §2.3's socket delta the enforcers, and names them
+against that token so a later reader can trace the fixture's vocabulary to running code.
+
+## 6. Tests — with the environment that runs them
+
+| Clause | Test | Runs in |
 |---|---|---|
-| a | shares only the job sandbox | `browser-runtime-containment.test.ts` — post-launch listening-socket set contains only the test-site port; `--remote-debugging-port` refused before spawn; `connectOverCDP` never called |
-| a | (real-provider evidence) | `packages/sandbox-e2b-provider/scripts/probe-e2b-port-exposure.mjs` + `keyed-e2b-cdp-probe.yml` — already landed; the standing proof that a bound port *would* be public |
-| b | downloads stay job scoped | `browser-download-scoping.test.ts` — download lands under the per-job root; `../`, absolute, and NUL filenames refused or contained; all three layers set |
-| b | path adapter | `sandbox-path-adapter.test.ts` — escape, symlink, control-byte and absolute-reassignment cases |
-| c | dies on cancellation | `browser-lifecycle.test.ts` — sandbox destroy ⇒ no surviving browser/child; asserts the `cancel`-is-inert reality rather than assuming a tree-kill |
-| Test | navigation / download / popup / kill | `browser-deterministic-journey.test.ts` against the in-sandbox site |
+| (a) no remote control requested | `browser-launch-guard.test.ts` — `cdpPort`, both args, both env vars, `connectOverCDP` | unit, any OS |
+| (a) OS sandbox on | `browser-launch-guard.test.ts` — `--no-sandbox` absent from effective args | unit |
+| (a) socket delta empty | `browser-containment.browser.test.ts` | **browser lane (§7)** |
+| (a) `/proc` parsing | `listening-ports.test.ts` — IPv4 + IPv6 fixtures, hex byte order, `::` only in tcp6 | unit |
+| (b) root confinement | `sandbox-path-adapter.test.ts` — `..`, absolute, NUL, **symlink planted on a real fs** | unit (real tmpdir) |
+| (b) persistence | `browser-download.browser.test.ts` — `saveAs` into the root; escape attempt refused; file survives `context.close()` | **browser lane** |
+| (c) terminal ordering | `browser-teardown.browser.test.ts` — downloads persisted AND video written; order inverted ⇒ red | **browser lane** |
+| Test clause | `browser-journey.browser.test.ts` — navigation, download, popup, kill against the fixture site | **browser lane** |
 
-**Guards to mutation-test:** the listening-socket assertion, the debugging-port argument
-guard, `assertUnderRoot`, the download-filename sanitiser, and the destroy-not-cancel
-lifecycle branch.
+**Guards to mutation-test:** the option guard (each surface separately), the `chromiumSandbox`
+assertion, the socket-delta comparison, the tcp6 read, `assertUnderRoot`'s realpath call, and
+the terminal-ordering branch.
+
+## 7. The browser lane — because none of the above is falsifiable without it
+
+Review found **no environment where a browser test can run**: the vitest project list has no
+browser entry, `verify` installs no browsers, and the mock transport never executes a command.
+
+BRW-002 adds a `browser` CI job (Linux) that installs Playwright's Chromium and runs the
+`*.browser.test.ts` suite against a fixture site. It is **not** the D1 topology and does not
+trespass on BRW-005 — it is the minimum that makes this ticket's own clauses falsifiable.
+
+Template notes for the authored Dockerfile, all measured:
+- headless uses a **different binary** — `chromium-headless-shell`, not `chromium`
+  (`chromium.js:326`). Install must cover the one that actually runs.
+- `--disable-dev-shm-usage` is **already a Playwright default** (`chromiumSwitches.js:68`).
+  v1 proposed adding it; that was a claim made without checking.
+- browser cache path and ownership must match the sandbox user, not root.
+- the provider's default template is `"base"`, not `"aoa-base"`.
+
+## 8. Scope
+
+**In:** the in-guest runner, the launch guards, the socket-delta measurement, the path
+adapter, the download persistence + ordering, the fixture site, the browser CI lane, and the
+authored Dockerfile.
+
+**Deferred, with reasons:** per-workload template selection and worker `browserSessionSlots`
+(real-provider placement, BRW-005/D3); egress policy (BRW-004 — terrain §6 records the model
+mismatch); evidence streaming (BRW-003); the frozen `deadlineMs: 20000` and slot-release-on-
+cancel (named as untested in terrain, carried as open risks with a named owner).
 
 ## 9. Honest risk
 
-The worker-daemon lane is **dormant** — `createSupervisor`, `createPollLoop`,
-`E2bSandboxProvider` and `createResultCommitter` all have zero production callers. A test
-written directly against those would pass and prove nothing about a live browser. Every test
-above therefore names its injection point and states why it exercises the real path. This is
-the programme's signature defect class and the reason the runtime takes injected primitives
-rather than importing a dormant supervisor.
+`chromiumSandbox: true` may not be grantable inside a managed microVM (§2.2). The lane tests
+it first, and a refusal is escalated rather than silently downgraded. If it cannot be granted,
+clause (a)'s strength is materially reduced and that belongs in front of the programme owner,
+not in a comment.
+
+## 10. What v1 got wrong
+
+Recorded because the pattern matters more than the list. v1's thesis — CDP over a pipe — was
+correct and is now verified three ways. Everything built **on top of** it was asserted rather
+than checked:
+
+| v1 claim | Reality |
+|---|---|
+| `downloadsPath` on the context | launch-only; silently discarded |
+| `--user-data-dir` as a layer | Playwright throws |
+| profile pref as a third layer | overridden by CDP at every context init |
+| "three independent layers" | one inert, one fatal, one overridden |
+| socket set contains only the test port | envd holds 49983 in every sandbox |
+| `/proc/net/tcp` | IPv4 only; `::` listeners live in `tcp6` |
+| `ss` with a `/proc` fallback | `ss` absent from the base image |
+| guard `args` for debug ports | `cdpPort` never appears in `args` |
+| `assertUnderRoot` as string logic | cannot see symlinks |
+| hostile filenames prove confinement | Chromium pre-sanitises; `saveAs` is the escapable surface |
+| stream all evidence during the run | video requires `context.close()` |
+| add `--disable-dev-shm-usage` | already a Playwright default |
+| host drives Playwright over injected primitives | the pipe is on the child's fds 3/4 |
+| Chromium's OS sandbox (unmentioned) | Playwright disables it by default |
+
+The common thread: **every one is a claim about a dependency's behaviour that I did not open
+the dependency to check.** The probe in terrain §1 was right for the same reason in reverse —
+it measured. This design's guards are measurements wherever a measurement is possible.
