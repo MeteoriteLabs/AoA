@@ -199,6 +199,25 @@ export const LIVE_EVENT_LOG_NEW_PATH_GRANTS = Object.freeze({
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
 /**
+ * SVC-001 immutable service generations (migration 0264). SELECT + INSERT ONLY.
+ *
+ * The omission of UPDATE and DELETE is the ENTIRE enforcement mechanism for the ticket's
+ * clause (a) ("updates create a new immutable generation"): this repo contains zero
+ * CREATE TRIGGER / CREATE RULE statements across all 264 migrations, so there is no DB
+ * backstop, and the exact-match relation ACL is what makes the omission binding rather
+ * than aspirational. Widening this to UPDATE or DELETE silently destroys the guarantee
+ * and must not happen without a successor decision.
+ *
+ * NOTE the companion constraint that lives in the migration, not here: the parent FK to
+ * `services` is ON DELETE RESTRICT. A referential action runs with the CONSTRAINT's
+ * rights, not the caller's, so a cascade would let `DELETE FROM services` erase these
+ * rows despite this grant. The two halves only work together.
+ */
+export const SERVICE_GENERATIONS_NEW_PATH_GRANTS = Object.freeze({
+  service_generations: ["SELECT", "INSERT"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
+/**
  * Current heartbeat execution-target resolver projection for aoa_app. This is
  * column-level because the table also stores worker_token_hash and unrelated
  * enrollment/ownership metadata that the tenant-serving path must not read.
@@ -355,6 +374,7 @@ export const APP_SERVING_RELATIONS = sortedUnion(
   Object.keys(FOLDER_GRANTS_NEW_PATH_GRANTS),
   Object.keys(WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS),
   Object.keys(LIVE_EVENT_LOG_NEW_PATH_GRANTS),
+  Object.keys(SERVICE_GENERATIONS_NEW_PATH_GRANTS),
   Object.keys(KILL_SWITCH_POLICY_APP_GRANTS),
   Object.keys(CUTOVER_MARKER_APP_GRANTS),
   Object.keys(EXECUTION_TARGET_REVOCATION_APP_GRANTS),
@@ -388,6 +408,10 @@ export const RLS_RELATIONS = Object.freeze([
   // MIG-003: the durable realtime event log + per-company sequence counter (migration 0257).
   "live_event_log",
   "live_event_sequences",
+  // SVC-001: the immutable service-definition table (migration 0264). FORCE RLS like
+  // every other tenant relation; its aoa_app grant is SELECT + INSERT only, which is
+  // what makes generations immutable.
+  "service_generations",
 ] as const);
 
 export const FORCE_RLS_RELATIONS = Object.freeze(
@@ -402,6 +426,7 @@ export const POLICY_COUNTS = deepFreeze({
   leases: 1,
   workers: 2,
   services: 1,
+  service_generations: 1,
   service_instances: 1,
   job_artifacts: 1,
   job_secret_handles: 1,
@@ -460,6 +485,7 @@ export const RLS_POLICY_MANIFEST = deepFreeze([
   policy("workers", "workers_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
   policy("services", "services_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
   policy("service_instances", "service_instances_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  policy("service_generations", "service_generations_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
   policy("job_artifacts", "job_artifacts_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
   policy("job_secret_handles", "job_secret_handles_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
   policy("job_outbox", "job_outbox_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
@@ -569,6 +595,10 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreeze({
     organizations: { aoa_app: ["SELECT"], aoa_operator: [] },
     projects: { aoa_app: ["SELECT"], aoa_operator: [] },
     service_instances: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    // SVC-001: SELECT + INSERT ONLY. The absence of UPDATE and DELETE is not an
+    // oversight - it IS how clause (a)'s immutability is enforced, since this repo has
+    // zero triggers/rules to fall back on. Do not widen without a successor decision.
+    service_generations: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
     services: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     task_dependencies: { aoa_app: ["SELECT"], aoa_operator: [] },
     task_outputs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
@@ -700,6 +730,7 @@ const RELATION_ACL_NULLNESS_CERTIFICATE = deepFreeze({
   organizations: false,
   projects: false,
   service_instances: false,
+  service_generations: false,
   services: false,
   task_dependencies: false,
   task_outputs: false,

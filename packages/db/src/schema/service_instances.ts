@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, timestamp, index, check, foreignKey } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, index, check, unique, foreignKey } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { organizations } from "./organizations.js";
 import { services } from "./services.js";
@@ -31,10 +31,19 @@ export const serviceInstances = pgTable(
   (table) => ({
     organizationIdx: index("service_instances_organization_idx").on(table.organizationId),
     serviceIdx: index("service_instances_service_idx").on(table.serviceId),
+    // SVC-001: reconciled against the FROZEN authority `SERVICE_INSTANCE_STATUSES`
+    // (packages/worker-protocol states.ts) - all NINE. The previous list had five and
+    // included `interrupted`, which is not a frozen state at all. Hand-written for the
+    // same reason as services (no worker-protocol dependency here); the reconciliation is
+    // asserted server-side, and asserts set EQUALITY so an EXTRA value is caught too.
     statusValid: check(
       "service_instances_status_check",
-      sql`status IN ('pending', 'healthy', 'stopped', 'lost', 'interrupted')`,
+      sql`status IN ('pending', 'leased', 'starting', 'healthy', 'unhealthy', 'stopping', 'stopped', 'failed', 'lost')`,
     ),
+    // SVC-001: this table previously had NO unique constraint at all, so nothing could
+    // bind a composite tenant FK to an instance. Every child table SVC-002/003 needs was
+    // blocked on this one line.
+    orgIdUq: unique("service_instances_org_id_uq").on(table.organizationId, table.id),
     // TEN-004: composite org-scoped FK — an instance's (organization_id,
     // service_id) must exist together in services(organization_id, id), so an
     // instance cannot be stamped with a different tenant than its service. The redundant

@@ -291,5 +291,32 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         "distributed_cutover_markers_operator_write",
       ]);
     });
+
+    it("re-executes SVC-001's 0264 twice with no error, and the grants survive", async () => {
+      // NECESSARY, not belt-and-braces. The static guard in this same file matches only
+      // /^\s*CREATE (UNIQUE )?(TABLE|INDEX)\s+"/, so 0264's ADD CONSTRAINT statements and
+      // its data-only UPDATE backfill are covered by NO static check at all. Without this
+      // case, `migrations` would pass on a first apply while `migration-idempotency` and
+      // `readiness` failed on a replay.
+      if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
+      if (!admin) throw new Error("database client unavailable");
+      for (let pass = 0; pass < 2; pass += 1) {
+        const sql = readFileSync(join(MIGRATIONS_DIR, "0264_public_patch.sql"), "utf8");
+        for (const statement of splitStatements(sql)) {
+          await admin.unsafe(statement);
+        }
+      }
+      const rls = await admin<{ relforcerowsecurity: boolean }[]>`
+        SELECT relforcerowsecurity FROM pg_class WHERE relname = 'service_generations'
+      `;
+      expect(rls[0]?.relforcerowsecurity).toBe(true);
+      // The grant omission is the immutability mechanism, so a replay must not widen it.
+      const privileges = await admin<{ privilege_type: string }[]>`
+        SELECT privilege_type FROM information_schema.role_table_grants
+        WHERE table_name = 'service_generations' AND grantee = 'aoa_app'
+        ORDER BY privilege_type
+      `;
+      expect(privileges.map((row) => row.privilege_type)).toEqual(["INSERT", "SELECT"]);
+    });
   },
 );

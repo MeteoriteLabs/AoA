@@ -66,6 +66,14 @@ export {
   type NewWorkerProofReplay,
 } from "./worker_proof_replays.js";
 export { services, type Service, type NewService } from "./services.js";
+// SVC-001: the immutable service definition. This export line is LOAD-BEARING - the
+// relation-ACL manifest walks the schema barrel and throws for any serving relation
+// without a checked-in Drizzle table, and drizzle-kit emits nothing for an unexported one.
+export {
+  serviceGenerations,
+  type ServiceGeneration,
+  type NewServiceGeneration,
+} from "./service_generations.js";
 export {
   serviceInstances,
   type ServiceInstance,

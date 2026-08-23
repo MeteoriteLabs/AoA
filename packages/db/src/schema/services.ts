@@ -33,13 +33,31 @@ export const services = pgTable(
       table.organizationId,
       table.companyId,
     ),
+    // SVC-001: reconciled against the FROZEN authority `SERVICE_DESIRED_STATES`
+    // (packages/worker-protocol states.ts). `paused` was previously OMITTED, which made
+    // SVC-005's pause/resume unstorable. This list is hand-written because packages/db
+    // does NOT depend on worker-protocol; the reconciliation is asserted server-side in
+    // service-desired-state-schema.integration.test.ts, which imports both.
     desiredStateValid: check(
       "services_desired_state_check",
-      sql`desired_state IN ('running', 'stopped', 'deleted')`,
+      sql`desired_state IN ('running', 'paused', 'stopped', 'deleted')`,
     ),
     // TEN-004: FK-target composite unique so `service_instances` can bind
     // (organization_id, service_id) → services(organization_id, id).
     orgIdUq: unique("services_org_id_uq").on(table.organizationId, table.id),
+    // SVC-001: FK-target TRIPLE composite so `service_generations` can bind
+    // (organization_id, company_id, service_id) -> services(organization_id, company_id, id).
+    // Two INDEPENDENT FKs would not do: nothing would tie a generation's company to its
+    // SERVICE's company, so a generation could carry company B while its service belongs to
+    // company A, both inside org X, with every constraint satisfied. Company scoping is
+    // necessarily app-layer (aoa.organization_id is the ONLY GUC), which makes the
+    // denormalized company_id the sole company predicate any later reader has - so its
+    // integrity is the whole guarantee. Same shape as `jobs_org_company_id_uq`.
+    orgCompanyIdUq: unique("services_org_company_id_uq").on(
+      table.organizationId,
+      table.companyId,
+      table.id,
+    ),
     // TEN-004: composite org-scoped FK — a service's (organization_id,
     // company_id) must exist together in companies(organization_id, id), so a
     // service cannot pair org A with a company owned by org B. The redundant single-column

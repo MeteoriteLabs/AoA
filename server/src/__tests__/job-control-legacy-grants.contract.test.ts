@@ -96,6 +96,9 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreezeFixture({
     organizations: { aoa_app: ["SELECT"], aoa_operator: [] },
     projects: { aoa_app: ["SELECT"], aoa_operator: [] },
     service_instances: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    // SVC-001: SELECT + INSERT only. The omitted UPDATE/DELETE IS the immutability
+    // mechanism for service generations - widening this silently destroys clause (a).
+    service_generations: { aoa_app: ["SELECT", "INSERT"], aoa_operator: [] },
     services: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     task_dependencies: { aoa_app: ["SELECT"], aoa_operator: [] },
     task_outputs: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
@@ -236,6 +239,7 @@ const PLAN_DERIVED_RELATION_ACL_NULLNESS = deepFreezeFixture({
   organizations: false,
   projects: false,
   service_instances: false,
+  service_generations: false,
   services: false,
   task_dependencies: false,
   task_outputs: false,
@@ -350,6 +354,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       ...Object.keys(grants.FOLDER_GRANTS_NEW_PATH_GRANTS),
       ...Object.keys(grants.WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS),
       ...Object.keys(grants.LIVE_EVENT_LOG_NEW_PATH_GRANTS),
+      ...Object.keys(grants.SERVICE_GENERATIONS_NEW_PATH_GRANTS),
       ...Object.keys(grants.KILL_SWITCH_POLICY_APP_GRANTS),
       ...Object.keys(grants.CUTOVER_MARKER_APP_GRANTS),
       ...Object.keys(grants.EXECUTION_TARGET_REVOCATION_APP_GRANTS),
@@ -371,7 +376,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
     expect(Object.isFrozen(manifest.OPERATOR_SERVING_RELATIONS)).toBe(true);
   });
 
-  it("pins the exact 25-table RLS, 24-table FORCE, and 35-row permissive policy certificate", () => {
+  it("pins the exact 26-table RLS, 25-table FORCE, and 36-row permissive policy certificate", () => {
     const manifest = grants as typeof grants & {
       RLS_RELATIONS?: readonly string[];
       FORCE_RLS_RELATIONS?: readonly string[];
@@ -395,6 +400,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       "job_events", "job_projection_receipts", "job_control_commands",
       "execution_target_revocations", "folder_grants", "worker_admission_rate_limits",
       "legacy_resource_reconciliation", "live_event_log", "live_event_sequences",
+      "service_generations",
     ];
     const counts = {
       jobs: 1, job_attempts: 1, leases: 1, workers: 2, services: 1,
@@ -408,6 +414,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       legacy_resource_reconciliation: 2,
       live_event_log: 1,
       live_event_sequences: 1,
+      service_generations: 1,
     };
     const ORG = "(organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
     const CANDIDATE_ORG = "(candidate_organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
@@ -431,6 +438,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       policy("workers", "workers_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
       policy("services", "services_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
       policy("service_instances", "service_instances_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("service_generations", "service_generations_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
       policy("job_artifacts", "job_artifacts_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
       policy("job_secret_handles", "job_secret_handles_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
       policy("job_outbox", "job_outbox_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
@@ -519,6 +527,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       ...Object.keys(grants.FOLDER_GRANTS_NEW_PATH_GRANTS),
       ...Object.keys(grants.WORKER_ADMISSION_RATE_LIMITS_NEW_PATH_GRANTS),
       ...Object.keys(grants.LIVE_EVENT_LOG_NEW_PATH_GRANTS),
+      ...Object.keys(grants.SERVICE_GENERATIONS_NEW_PATH_GRANTS),
       ...Object.keys(grants.KILL_SWITCH_POLICY_APP_GRANTS),
       ...Object.keys(grants.WORKER_ENROLLMENT_OPERATOR_GRANTS),
       ...Object.keys(grants.OPERATOR_METADATA_COLUMN_GRANTS),
