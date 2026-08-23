@@ -21,6 +21,12 @@ import {
   TenantAdmissionDeniedError,
 } from "./tenant-admission.js";
 import { attemptReadyOutbox } from "./job-outbox.js";
+// BRW-001 — per-workload-type input validation. The registry declares a slot for every
+// frozen workload type but ENFORCES only the ones an epic owns; a `not_enforced` slot
+// returns the caller's input byte-identically, so importing this changes nothing for the
+// workload types this epic does not own. Pure and logger-free, so it is safe as a static
+// import (see the org-concurrency note below for why that matters in this module).
+import { validateWorkloadInput } from "./workload-input-validators.js";
 // DEP-009 — submit-time org-capacity admission. The deployment-flag reader is imported
 // statically because `config/distributed-execution.ts` is logger-free (a single type
 // import). `admitAttemptCapacity` (org-concurrency) is DYNAMICALLY imported inside the
@@ -117,8 +123,14 @@ export async function submitJobWithinTenant(
   tx?: Db,
 ): Promise<SubmitJobResponse> {
   const sourceId = sourceIdentity(input.command.source);
+  // `commandDigest` hashes the RAW command, deliberately. Idempotent replay
+  // (`findIdempotentReplay`) compares against it, so normalising the workload input below
+  // must not change what a replay is keyed on — otherwise a redelivery of the same request
+  // would either look new or collide with a different one.
   const commandDigest = digest(input.command);
-  const inputHash = digest(input.command.input);
+  // BRW-001 (review finding F1) — `inputHash` is NOT computed here any more. It is derived
+  // from the VALIDATED input, strictly after the admission gate below, so that an
+  // unauthorized caller cannot distinguish a malformed workload input from a valid one.
   const policySnapshot = {
     policyId: "job-submission-default",
     version: 1,
@@ -217,6 +229,28 @@ export async function submitJobWithinTenant(
         }
         if (!executionPrincipal) throw denial();
 
+        // BRW-001 — workload input validation. THE POSITION OF THIS BLOCK IS THE SECURITY
+        // PROPERTY (review finding F1): it runs only after BOTH authorization stages — the
+        // principal gate above and the per-source authority immediately preceding — have
+        // passed. Validating earlier would give an unauthorized caller two distinguishable
+        // outcomes, one for a malformed input and one for a valid one, which is an
+        // authorization oracle. A denied caller must always receive the identical opaque
+        // denial regardless of what they sent.
+        //
+        // The registry is INERT for every workload type this epic does not own: a
+        // `not_enforced` slot returns the caller's input byte-identically, so this call
+        // changes the behaviour of the live cutover path by exactly zero bytes.
+        const validatedInput = validateWorkloadInput(requirements.workloadType, input.command.input);
+        if (!validatedInput.ok) {
+          // 400, not 403 — this caller IS authorized; their payload is malformed. Reusing
+          // the authorization status here would both mislead them and blur the boundary
+          // the ordering above exists to protect.
+          throw new HttpError(400, `Invalid ${requirements.workloadType} input: ${validatedInput.reason}`);
+        }
+        const effectiveInput = validatedInput.value;
+        // Hash what actually becomes the workload, not what the caller happened to send.
+        const inputHash = digest(effectiveInput);
+
         const now = new Date();
         const jobId = randomUUID();
         const attemptId = randomUUID();
@@ -239,7 +273,7 @@ export async function submitJobWithinTenant(
           requesterPrincipalId: admission.requester.id,
           executorPrincipalKind: executionPrincipal.kind,
           executorPrincipalId: executionPrincipal.id,
-          input: input.command.input,
+          input: effectiveInput,
           inputHash,
           policySnapshot,
           policyHash,
