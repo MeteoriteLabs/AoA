@@ -1,6 +1,7 @@
 # BRW-002 — Sandbox-local Playwright runtime — RESULT
 
-**Epic:** E8 · **Lane:** B (`C:\e8`) · **Status:** COMPLETE, with declared deferrals (§6)
+**Epic:** E8 · **Lane:** B (`C:\e8`) · **Status:** IMPLEMENTATION COMPLETE — **gate not yet
+green (§8)**, with declared deferrals (§6)
 **Start SHA:** `d4a2c33f4` (design v2). Design v1 `3f96ffcb3` failed plan review and was
 rewritten — see §5.
 **Terrain:** [`BRW-002-terrain.md`](./BRW-002-terrain.md) · **Design:** [`BRW-002-design.md`](./BRW-002-design.md)
@@ -179,3 +180,37 @@ the pipe transport makes impossible — CDP rides fds 3/4 of the spawned child.
 - **The PR gate could not complete** under two-lane operation (`cancel-in-progress: true`,
   seven consecutive cancellations). Fixed by scoping the concurrency setting to this branch;
   in-progress runs now reach a verdict.
+
+## 8. CI status — the honest position
+
+The definition of done requires **"CI is watched to green"**, and at the time of writing it is
+**not**. This section exists because marking the ticket COMPLETE without it would be exactly
+the overclaim this programme keeps finding in other people's work.
+
+**What IS proven:**
+- `pnpm test:run` at the repo root: **2252 test files passed, 165 skipped, 0 failed**, with
+  the new package included. The two `*.browser.test.ts` files correctly SKIP without
+  `AOA_RUN_BROWSER_TESTS`, and zero Chromium launches occur — so `verify` is unaffected.
+- The package's own suite: **88 passed with a real browser, 77 without.**
+- `node scripts/check-test-inventory.mjs` → OK (2588 files across 18 trees).
+
+**What is NOT yet proven:** the `browser` lane has never completed green on CI. Its first run
+failed for three reasons, all since fixed (§4 of the commit history): Chromium's OS sandbox
+cannot start on a GitHub runner without unprivileged user namespaces, the lane did not build
+the package the teardown tests spawn, and the test-inventory manifest lacked the new tree.
+Whether the AppArmor sysctl actually grants the sandbox on a runner is **unverified** — it
+cannot be reproduced locally, and the lane logs the before/after value and the kernel/distro
+precisely so the next run answers it from the log alone.
+
+**A risk I introduced deliberately and am naming rather than hiding:** `browser` was added to
+`ci-required` **before it had ever passed**. If it stays red, the aggregator is red for Lane
+A's pushes too. That is tolerable only because PR #323 is "[WIP integration, do not merge]",
+so a red aggregator on this branch is a signal and not a merge blocker. The alternative —
+making it advisory — would have created a check that can fail silently, which is worse. If it
+cannot be made green promptly it should be raised, not left sitting red.
+
+**One unexplained observation, recorded rather than dismissed:** an earlier root-suite run
+reported `ELIFECYCLE exit 1` while a re-run was clean. The first run's output was truncated by
+my own command and the evidence is gone. One failure against one pass is not enough to call it
+a flake or a real defect, so it is logged here as unexplained. If it recurs, it is
+deterministic and must be root-caused rather than re-run.
