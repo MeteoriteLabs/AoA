@@ -99,3 +99,9 @@ _*.log
 # stray onboarding e2e artifacts (were committed by accident)
 test-results/
 local-connectors.json
+
+# Local outputs of docker/images/build.sh (digests + provenance metadata). CI
+# regenerates these per run; committing one developer machine's digests would
+# pin an image nobody else built.
+docker/images/digests.env
+docker/images/*.metadata.json
