@@ -103,6 +103,18 @@ export function isStructurallyValidManifest(m) {
 export function decideCommit(input) {
   const { manifest, authOrganizationId, leaseCompanyId, actualSizeBytes, actualSha256 } = input;
   if (!isStructurallyValidManifest(manifest)) return "malformed_manifest";
+  // BRW-003d-5 — the ABSOLUTE size ceiling, modelled here because the server
+  // enforces one and this reference did not. The header below claims the two
+  // implementations "cannot silently diverge"; they already had, on exactly this
+  // axis, which is the axis the ticket's large-download case sits on.
+  //
+  // PRECEDENCE IS LOAD-BEARING: artifact-commit.ts applies the ceiling to the
+  // store-observed size BEFORE tenant/prefix validity, so an oversized object
+  // under a wrong prefix is refused for SIZE. Ordering this after the prefix check
+  // would model a different server.
+  if (typeof input.maxArtifactBytes === "number" && actualSizeBytes > input.maxArtifactBytes) {
+    return "size_ceiling_exceeded";
+  }
   const prefix = attemptPrefix(authOrganizationId, manifest.jobId, manifest.attempt);
   if (!manifest.objectKey.startsWith(prefix)) return "wrong_prefix";
   if (String(manifest.organizationId) !== String(authOrganizationId)) return "tenant_mismatch";
@@ -132,6 +144,7 @@ export function verifyFixture(fixture) {
     if (!v?.name || seen.has(v.name)) problems.push(`accept vector ${label}: missing or duplicate name`);
     seen.add(v?.name);
     const decision = decideCommit({
+      maxArtifactBytes: ctx?.maxArtifactBytes,
       manifest: v.manifest,
       authOrganizationId: authOrg,
       leaseCompanyId: leaseCompany,
@@ -149,6 +162,7 @@ export function verifyFixture(fixture) {
     seen.add(r?.name);
     if (typeof r?.reason !== "string") { problems.push(`reject vector ${label}: missing reason`); continue; }
     const decision = decideCommit({
+      maxArtifactBytes: ctx?.maxArtifactBytes,
       manifest: r.manifest,
       authOrganizationId: authOrg,
       leaseCompanyId: leaseCompany,

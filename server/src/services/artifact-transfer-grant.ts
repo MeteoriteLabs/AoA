@@ -18,6 +18,7 @@
 // them to an HTTP protocol error; only fence/existence refusals are a 200 `rejected`.
 
 import type { Db } from "@armyofagents/db";
+import { DEFAULT_MAX_ARTIFACT_BYTES } from "./artifact-size-ceiling.js";
 import { resolveGrantTtlSeconds } from "./artifact-grant-ttl.js";
 import { JobFenceError as DbJobFenceError, type JobFenceErrorCode } from "@armyofagents/db";
 import {
@@ -44,7 +45,12 @@ export function createArtifactTransferGrantService(input: {
   storage: StorageProvider;
   grantTtlSeconds?: number;
   maxHeartbeatAgeMs?: number;
+  maxArtifactBytes?: number;
 }) {
+  // Same ceiling the COMMIT path enforces, from the same constant. Enforcing it
+  // here is what makes it a refusal instead of an orphan: the commit ceiling can
+  // only fire once the bytes are already in the store.
+  const maxArtifactBytes = Math.max(1, input.maxArtifactBytes ?? DEFAULT_MAX_ARTIFACT_BYTES);
   // DAT-009 slice 2 §4.1 — CLAMPED, not merely floored. This was
   // `Math.max(30, input.grantTtlSeconds ?? 300)`: a floor, a default, and no ceiling, so
   // the frozen schema (whose only temporal assertion is `expiresAt > issuedAt`) would have
@@ -105,6 +111,17 @@ export function createArtifactTransferGrantService(input: {
             attempt: body.attempt,
           });
           if (!body.expectedObjectKey.startsWith(uploadPrefix)) return rejected("malformed");
+          // BRW-003d-5 — refuse a grant whose DECLARED size already exceeds the
+          // server ceiling, BEFORE a byte moves.
+          //
+          // The frozen request bounds `maxBytes` only by Number.MAX_SAFE_INTEGER,
+          // and a presigned PUT imposes no size bound at the store, so without this
+          // the only ceiling was at commit — i.e. after the object was written.
+          // That refusal leaves an orphan the sweeper has to find, and it spends
+          // the egress to get there. `maxBytes` is used here purely as DECLARED
+          // INTENT to refuse on, which is not the same as trusting it as an
+          // enforced bound at the store (it is not one).
+          if (body.maxBytes > maxArtifactBytes) return rejected("malformed");
           // Immutable-artifact guard (Rule #7 / Decisions #43/#45): never re-grant an
           // upload for an ALREADY-committed artifact — a re-PUT to the committed key
           // would silently overwrite immutable bytes a reader still trusts.

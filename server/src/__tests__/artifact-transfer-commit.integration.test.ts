@@ -24,6 +24,7 @@ import { provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
 import { runInTenant } from "../db/tenant-context.js";
 import { createJobLeasingService, type VerifiedWorkerOperation } from "../services/job-leasing.js";
 import { createArtifactTransferGrantService } from "../services/artifact-transfer-grant.js";
+import { DEFAULT_MAX_ARTIFACT_BYTES } from "../services/artifact-size-ceiling.js";
 import { createArtifactCommitService } from "../services/artifact-commit.js";
 import type { StorageProvider, HeadObjectResult, PresignResult } from "../storage/types.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
@@ -436,6 +437,37 @@ integration("DAT-002 artifact transfer-grant + fenced commit", () => {
     expect(res.grant.objectKey).toBe(objectKey(offer.job.jobId));
     expect(res.grant.redaction).toBe("secret");
     expect(storage.presignCalls).toContain(`PUT ${objectKey(offer.job.jobId)}`);
+  }, 60_000);
+
+  it("★ BRW-003d-5 refuses a grant whose DECLARED size exceeds the ceiling, before a byte moves", async () => {
+    // The frozen request bounds maxBytes only by Number.MAX_SAFE_INTEGER, and a
+    // presigned PUT imposes no size bound at the store — so before this the ONLY
+    // ceiling was at commit, i.e. AFTER the object had been written. That refusal
+    // leaves an orphan the sweeper has to find, and spends the egress to get there.
+    const { app } = guardCtx();
+    const storage = makeStubStorage();
+    const svc = createArtifactTransferGrantService({ appDb: app.db, storage });
+    const { offer } = await activateLease();
+    const { request } = grantRequest(offer, "upload", {
+      maxBytes: DEFAULT_MAX_ARTIFACT_BYTES + 1,
+    });
+    const res = await svc.grant({ auth: auth(`gmax-${crypto.randomUUID()}`), request });
+    expect(res.outcome).not.toBe("upload_granted");
+    // ★ AND NO PRESIGN HAPPENED. Refusing after minting the URL would defeat the
+    // point: the grant is the capability, so the test asserts the capability was
+    // never created rather than merely that the response said no.
+    expect(storage.presignCalls).toHaveLength(0);
+  }, 60_000);
+
+  it("still grants at exactly the ceiling", async () => {
+    // The boundary is inclusive; an off-by-one here would refuse a legal artifact.
+    const { app } = guardCtx();
+    const storage = makeStubStorage();
+    const svc = createArtifactTransferGrantService({ appDb: app.db, storage });
+    const { offer } = await activateLease();
+    const { request } = grantRequest(offer, "upload", { maxBytes: DEFAULT_MAX_ARTIFACT_BYTES });
+    const res = await svc.grant({ auth: auth(`gceil-${crypto.randomUUID()}`), request });
+    expect(res.outcome).toBe("upload_granted");
   }, 60_000);
 
   it("rejects an upload grant on a stale fence", async () => {

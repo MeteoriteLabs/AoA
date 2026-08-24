@@ -23,6 +23,7 @@
 // maps them to an HTTP protocol error, exactly like the event-ingest path.
 
 import type { Db } from "@armyofagents/db";
+import { DEFAULT_MAX_ARTIFACT_BYTES } from "./artifact-size-ceiling.js";
 import {
   JobFenceError as DbJobFenceError,
   ArtifactCommitRejection,
@@ -78,7 +79,7 @@ export function createArtifactCommitService(input: {
   // No-op default, so a composition root that has not wired the sweep changes nothing.
   const sweepTrigger: SweepTrigger = input.sweepTrigger ?? { trigger() {}, async triggerAndWait() {} };
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300_000);
-  const maxArtifactBytes = Math.max(1, input.maxArtifactBytes ?? 5 * 1024 ** 3);
+  const maxArtifactBytes = Math.max(1, input.maxArtifactBytes ?? DEFAULT_MAX_ARTIFACT_BYTES);
   // Optional-chained (no NOOP VALUE import) so this module carries no runtime
   // dependency on job-control-metrics unless a live instance is passed (dormancy gate).
   const metrics = input.metrics;
