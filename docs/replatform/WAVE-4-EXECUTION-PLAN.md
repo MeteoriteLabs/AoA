@@ -11,6 +11,29 @@
 > desktop host is by its own design doc "unshippable without it".
 > See [`WAVE-4-BLOCKER-worker-session-lifetime.md`](./WAVE-4-BLOCKER-worker-session-lifetime.md).
 >
+> ### ★★★ EVERY REMAINING DAT-008 SLICE IS BLOCKED, AND ONE IS ALREADY DONE
+> 
+> §4's table lists slices 6 and 7 as "terrain, design, reviewed — **nothing** needed before
+> code". Checked against the tree on 2026-08-24, that row is wrong in both cells:
+> 
+> | Slice | Plan says | Actually |
+> |---|---|---|
+> | 5 — worker redemption | next after 2b | **blocked**: needs WRK-008 2b + a composition root |
+> | 6 — deferral #3 | ready to build | **DELIVERED** by slice 1 (`ownerAuthoritiesAgree`, wired, 4/4 mutants) |
+> | 7 — warm-resume re-resolution | ready to build, "gates MIG-005" | **nothing to attach to** |
+> 
+> Slice 7 re-resolves a credential *at warm resume*. **The distributed path has no warm
+> resume.** There is no pause/resume on a job lease, the supervisor never resumes a sandbox,
+> and `provider.restore` / `provider.checkpoint` are reachable only from `effect-authority`,
+> whose restore/checkpoint methods are called from **tests only**. The warm-resume machinery
+> that does exist (`environment-runtime.ts` U7.7, OAuth connector tokens) is the LEGACY
+> `#320` path — a different mechanism for a different credential class.
+> 
+> **So there is no Wave-4 work that is both unblocked and not already done.** Every
+> remaining item sits behind the worker chain: composition root → WRK-008 2b → E4-F007 →
+> DAT-008 5 → 7 → MIG-005/006/007. Picking up "the next ready ticket" is not available;
+> the two ownership decisions are what unblock the wave.
+> 
 > ### ★★ INHERITED DEFERRAL #3 NAMES THE WRONG GUARD
 > 
 > Its text says safety *"rests on the structural exclusion of `owner_desktop` routing"*.
