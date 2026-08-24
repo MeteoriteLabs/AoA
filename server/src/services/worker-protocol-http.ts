@@ -102,6 +102,36 @@ export function sendWorkerProtocolError(
   res.status(status).json(workerProtocolErrorV1(req, code, now));
 }
 
+/**
+ * The refusal code for an over-ceiling body, DERIVED from the operation's OWN
+ * frozen error vocabulary.
+ *
+ * ★ WHY THIS IS NOT A CONSTANT. Six handlers refuse an oversized body, and four
+ * of them hard-coded `payload_too_large`. But only event_upload,
+ * artifact_transfer_grant, quarantine_grant and quarantine_finalize DECLARE that
+ * code; artifact_commit and control_command do not. `workerOperationProtocolErrorV1`
+ * THROWS on a code outside the operation's vocabulary, that throw is caught by the
+ * route's own catch, and the fallthrough answers `internal_unavailable` -> 503 with
+ * a bounded retryAfterMs. Both operations are `idempotent_retry`, so a body that can
+ * NEVER succeed would be retried forever.
+ *
+ * That was harmless only while the express 100 KB default kept those two guards dead
+ * by construction (256 KiB > 102400 is unreachable when rawBody can never exceed
+ * 102400). BRW-003d-1 raises the mount, which makes them live -- so the ticket that
+ * revives a guard is also the ticket that has to make it speak a legal word.
+ *
+ * `malformed` is the honest fallback: it IS in every one of the ten vocabularies,
+ * it is what poll / lease_ack / lease_renew already emit for the same condition,
+ * and it is NON-retryable, so an oversized body terminates instead of looping.
+ */
+export function sizeRefusalCode(
+  operation: WorkerProtocolOperation,
+): ProtocolErrorCode {
+  return OPERATION_DESCRIPTORS[operation].errors.includes("payload_too_large")
+    ? "payload_too_large"
+    : "malformed";
+}
+
 export function isEnrollmentWorkerControlPath(url: string): boolean {
   return /^\/(?:api\/)?worker-control\/enroll(?:\?|$)/.test(url);
 }

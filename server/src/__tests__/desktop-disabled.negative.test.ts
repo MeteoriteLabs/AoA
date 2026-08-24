@@ -92,10 +92,24 @@ const flagBlocks = (source: string): Array<{ open: number; close: number }> => {
   return blocks;
 };
 
+/**
+ * True when EVERY occurrence of `needle` in `source` sits inside some flag block.
+ *
+ * "Every", not "the first". A first-occurrence scan is the exact assumption that
+ * broke this file when a second flag block appeared, and repeating it one level
+ * down would mean a SECOND mount added outside the flag still reported true.
+ */
 const mountedInsideAFlagBlock = (source: string, needle: string): boolean => {
-  const mount = source.indexOf(needle);
-  expect(mount, `${needle} is not mounted at all`).toBeGreaterThan(-1);
-  return flagBlocks(source).some((b) => mount > b.open && mount < b.close);
+  const blocks = flagBlocks(source);
+  const positions: number[] = [];
+  for (let from = 0; ; ) {
+    const at = source.indexOf(needle, from);
+    if (at === -1) break;
+    positions.push(at);
+    from = at + needle.length;
+  }
+  expect(positions.length, `${needle} is not mounted at all`).toBeGreaterThan(0);
+  return positions.every((at) => blocks.some((b) => at > b.open && at < b.close));
 };
 const ORG = "77777777-7777-4777-8777-777777777777";
 const boardAdmin = { type: "board", source: "session", userId: "operator-9", companyIds: [] };
@@ -238,10 +252,13 @@ describe("I22 clause 2 — flag-off, the worker-control surface is not mounted a
     // The control case, and the reason clause 1 needed a code fix at all. If this ever
     // starts failing because the route moved inside the block, the create guard becomes
     // redundant — which is worth knowing, not worth hiding.
-    const flagOpen = appSource.indexOf("if (opts.distributedExecutionEnabled) {");
-    const close = appSource.indexOf("\n  }\n", flagOpen);
-    const mount = appSource.indexOf("executionTargetRoutes(", appSource.indexOf("api.use"));
-    expect(mount).toBeGreaterThan(close);
+    // ★ This assertion used to read `mount > close` against the FIRST flag block.
+    // Once BRW-003d-1 added a second block that scan silently changed meaning: it
+    // began proving the mount is after the PARSER block, which is true of almost
+    // everything in app.ts, rather than that it is outside the ROUTE block. It
+    // still passed — which is why it had to be found by reading rather than by a
+    // red test. Ask the real question instead: outside EVERY flag block.
+    expect(mountedInsideAFlagBlock(appSource, "executionTargetRoutes(")).toBe(false);
   });
 });
 

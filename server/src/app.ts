@@ -301,38 +301,6 @@ export async function createApp(
     ["/api/companies/import", "/api/companies/import/preview"],
     express.json({ limit: "20mb", verify: captureRawBody })
   );
-  // BRW-003d-1 — worker-control body limits, DERIVED from the frozen
-  // OPERATION_DESCRIPTORS. See ./worker-control-body-limits.ts for why the limit
-  // must EXCEED the contract ceiling rather than equal it (a mount equal to the
-  // ceiling leaves the handler's guard dead and only moves the wrong-shaped
-  // refusal), and why `inflate` is off (a measured 1019.8:1 gzip amplification
-  // on a surface whose authorization is checked inside the handler, after parse).
-  //
-  // Mounted BEFORE the global express.json() below so it wins on these paths.
-  // The /events mount is registered before the prefix mount because express
-  // matches in registration order and only event_upload needs the wide limit.
-  //
-  // Gated on the same flag as the routes: when distributed execution is off the
-  // worker-control paths 404 at the catch-all, but middleware still runs first,
-  // so an ungated mount would buffer megabytes for a path that answers 404.
-  if (opts.distributedExecutionEnabled) {
-    app.use(
-      WORKER_CONTROL_EVENTS_PATH,
-      express.json({
-        limit: WORKER_CONTROL_EVENTS_BODY_LIMIT_BYTES,
-        inflate: WORKER_CONTROL_INFLATE,
-        verify: captureRawBody,
-      })
-    );
-    app.use(
-      WORKER_CONTROL_PATH_PREFIX,
-      express.json({
-        limit: WORKER_CONTROL_BODY_LIMIT_BYTES,
-        inflate: WORKER_CONTROL_INFLATE,
-        verify: captureRawBody,
-      })
-    );
-  }
   app.use(httpLogger);
   // Strict CSP + tightened cross-origin policies in production deployment
   // modes. Vite-HMR dev (local_trusted + non-production node env) skips CSP
@@ -376,6 +344,44 @@ export async function createApp(
   // Runtime previews are a streaming proxy, not JSON API routes. Mount before
   // the global body parser so POST/PUT/uploads reach the upstream unchanged.
   app.use("/preview", createPreviewRouter(db));
+  // BRW-003d-1 — worker-control body limits, DERIVED from the frozen
+  // OPERATION_DESCRIPTORS. See ./worker-control-body-limits.ts for why the limit
+  // must EXCEED the contract ceiling rather than equal it (a mount equal to the
+  // ceiling leaves the handler's guard dead and only moves the wrong-shaped
+  // refusal), and why `inflate` is off (a measured 1019.8:1 gzip amplification
+  // on a surface whose authorization is checked inside the handler, after parse).
+  //
+  // Mounted BEFORE the global express.json() below so it wins on these paths.
+  // The /events mount is registered before the prefix mount because express
+  // matches in registration order and only event_upload needs the wide limit.
+  //
+  // Gated on the same flag as the routes: when distributed execution is off the
+  // worker-control paths 404 at the catch-all, but middleware still runs first,
+  // so an ungated mount would buffer megabytes for a path that answers 404.
+  if (opts.distributedExecutionEnabled) {
+    app.use(
+      WORKER_CONTROL_EVENTS_PATH,
+      express.json({
+        limit: WORKER_CONTROL_EVENTS_BODY_LIMIT_BYTES,
+        inflate: WORKER_CONTROL_INFLATE,
+        verify: captureRawBody,
+      })
+    );
+    app.use(
+      WORKER_CONTROL_PATH_PREFIX,
+      express.json({
+        limit: WORKER_CONTROL_BODY_LIMIT_BYTES,
+        inflate: WORKER_CONTROL_INFLATE,
+        verify: captureRawBody,
+      })
+    );
+  }
+  // Mounted here rather than beside the company-import parser above: these
+  // widen an UNAUTHENTICATED buffer, so helmet, the private-hostname guard and
+  // the request logger all belong in front of them. Nothing between there and
+  // here reads req.body -- the global parser sitting on the next line is the
+  // proof -- and the worker-control paths do not overlap the /preview proxy, so
+  // the position is behaviour-preserving for the fix.
   app.use(express.json({ verify: captureRawBody }));
   // Protect every board-session mutation, including the direct auth and
   // onboarding routers mounted before the main API router below.

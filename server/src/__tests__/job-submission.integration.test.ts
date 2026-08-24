@@ -524,14 +524,65 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(response.status).toBe(413);
     });
 
-    it("does not raise the limit for paths outside worker-control", async () => {
+    it("lifts the PREFIX paths clear of the default too, not just /events", async () => {
       guard();
-      // The mount must not become a blanket raise. Any other /api path must
-      // still refuse a 200 KB body at the express default.
+      // The prefix mount had no binding coverage: deleting it left every other
+      // assertion in this ticket green. artifact_commit declares 256 KiB, so a
+      // 200 KB body is legal for it and used to die at express's 102,400.
       const response = await request(app)
+        .post("/api/worker-control/artifact-commits")
+        .send({ p: "x".repeat(200_000) });
+      expect(response.status).toBe(400);
+      expect(response.body.protocolVersion).toBe(1);
+      expect(response.body.code).toBe("malformed");
+    });
+
+    it("★ refuses an oversized artifact_commit TERMINALLY, not with a retryable 503", async () => {
+      guard();
+      // THE REGRESSION THIS TICKET ALMOST SHIPPED.
+      // Raising the mount is what makes this guard live for the first time — and
+      // worker-control.ts emitted `payload_too_large` for artifact_commit, which
+      // is NOT in that operation's frozen vocabulary. The envelope builder throws
+      // on an out-of-vocabulary code, the route's own catch swallows it, and the
+      // fallthrough answers `internal_unavailable` → 503 WITH a bounded
+      // retryAfterMs. artifact_commit is `idempotent_retry`, so a body that can
+      // never succeed would have been retried forever — strictly worse than the
+      // terminal 413 it replaced.
+      const over = OPERATION_DESCRIPTORS.artifact_commit.maxRequestBytes + 8_000;
+      const response = await request(app)
+        .post("/api/worker-control/artifact-commits")
+        .send({ p: "x".repeat(over) });
+      expect(response.body.code).not.toBe("internal_unavailable");
+      expect(response.body.code).toBe("malformed");
+      expect(response.status).toBe(400);
+      expect(response.body.retryAfterMs).toBeNull();
+    });
+
+    it("refuses a compressed body on the PREFIX mount as well", async () => {
+      guard();
+      const gz = gzipSync(Buffer.from(JSON.stringify({ p: "x".repeat(4_000_000) })));
+      const response = await request(app)
+        .post("/api/worker-control/artifact-commits")
+        .set("content-type", "application/json")
+        .set("content-encoding", "gzip")
+        .send(gz);
+      expect(response.status).toBe(415);
+    });
+
+    it("scopes the raise to the worker-control subtree exactly", async () => {
+      guard();
+      // The PAIR is what proves scoping; either half alone does not. A path one
+      // character outside the prefix must still refuse what a path inside accepts.
+      // (express requires a separator boundary, so `-not-a-real-path` does not
+      // match the `/api/worker-control` mount.)
+      const inside = await request(app)
+        .post("/api/worker-control/artifact-commits")
+        .send({ p: "x".repeat(200_000) });
+      const outside = await request(app)
         .post("/api/worker-control-not-a-real-path")
         .send({ p: "x".repeat(200_000) });
-      expect(response.status).toBe(413);
+      expect(inside.status).not.toBe(413);
+      expect(outside.status).toBe(413);
     });
 
     it("collapses 32 concurrent identical submissions to one aggregate", async () => {

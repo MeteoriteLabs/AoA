@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   OPERATION_DESCRIPTORS,
   WORKER_PROTOCOL_OPERATIONS,
+  isRetryableProtocolErrorCode,
 } from "@armyofagents/worker-protocol";
+import { sizeRefusalCode } from "../services/worker-protocol-http.js";
 import {
   WORKER_CONTROL_EVENTS_BODY_LIMIT_BYTES,
   WORKER_CONTROL_BODY_LIMIT_BYTES,
@@ -59,6 +61,33 @@ describe("BRW-003d-1 worker-control body limits are DERIVED from the frozen cont
     // The more specific mount must be registered first to win; asserting the
     // prefix relationship is what makes that ordering requirement checkable.
     expect(WORKER_CONTROL_EVENTS_PATH).not.toBe(WORKER_CONTROL_PATH_PREFIX);
+  });
+
+  it("★ never refuses with a code outside the operation's own frozen vocabulary", () => {
+    // Raising a mount REVIVES ceiling guards that the 100 KB default had kept
+    // dead by construction. A revived guard must speak a word its operation
+    // declares: `workerOperationProtocolErrorV1` throws on anything else, the
+    // route's catch swallows the throw, and the fallthrough answers
+    // `internal_unavailable` — a RETRYABLE code — for a body that can never
+    // succeed. Four of the six emit sites hard-coded `payload_too_large`; only
+    // four of the ten operations declare it.
+    for (const op of WORKER_PROTOCOL_OPERATIONS) {
+      const code = sizeRefusalCode(op);
+      expect(
+        OPERATION_DESCRIPTORS[op].errors as readonly string[],
+        `${op} cannot express "${code}"`,
+      ).toContain(code);
+    }
+  });
+
+  it("keeps the size refusal NON-RETRYABLE for operations that cannot say payload_too_large", () => {
+    // The failure mode is not just a wrong word, it is an infinite retry loop:
+    // every operation here carries an idempotent_retry rule.
+    for (const op of WORKER_PROTOCOL_OPERATIONS) {
+      if (OPERATION_DESCRIPTORS[op].errors.includes("payload_too_large")) continue;
+      expect(sizeRefusalCode(op)).toBe("malformed");
+      expect(isRetryableProtocolErrorCode(sizeRefusalCode(op))).toBe(false);
+    }
   });
 
   it("pins the express default it exists to escape", () => {

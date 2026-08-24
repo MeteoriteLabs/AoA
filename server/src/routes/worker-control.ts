@@ -28,7 +28,7 @@ import {
 import { logger } from "../middleware/logger.js";
 import { bindJobTraceLogger } from "../services/job-trace-log.js";
 import { sendWorkerProtocolError } from "../services/worker-protocol-http.js";
-import { sendWorkerOperationProtocolError } from "../services/worker-protocol-http.js";
+import { sendWorkerOperationProtocolError, sizeRefusalCode } from "../services/worker-protocol-http.js";
 import {
   verifyWorkerOperationProof,
   WorkerOperationProofError,
@@ -439,7 +439,7 @@ export function workerControlRoutes(opts: {
         || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.event_upload.maxRequestBytes)) {
         sendWorkerOperationProtocolError(req, res, "event_upload",
           rawBody && rawBody.length > OPERATION_DESCRIPTORS.event_upload.maxRequestBytes
-            ? "payload_too_large" : "malformed", opts.now?.() ?? new Date());
+            ? sizeRefusalCode("event_upload") : "malformed", opts.now?.() ?? new Date());
         return;
       }
       if (!authorization || !proof || !rawBody) {
@@ -488,7 +488,7 @@ export function workerControlRoutes(opts: {
         || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.artifact_transfer_grant.maxRequestBytes)) {
         sendWorkerOperationProtocolError(req, res, "artifact_transfer_grant",
           rawBody && rawBody.length > OPERATION_DESCRIPTORS.artifact_transfer_grant.maxRequestBytes
-            ? "payload_too_large" : "malformed", opts.now?.() ?? new Date());
+            ? sizeRefusalCode("artifact_transfer_grant") : "malformed", opts.now?.() ?? new Date());
         return;
       }
       if (!authorization || !proof || !rawBody) {
@@ -537,7 +537,7 @@ export function workerControlRoutes(opts: {
         || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.artifact_commit.maxRequestBytes)) {
         sendWorkerOperationProtocolError(req, res, "artifact_commit",
           rawBody && rawBody.length > OPERATION_DESCRIPTORS.artifact_commit.maxRequestBytes
-            ? "payload_too_large" : "malformed", opts.now?.() ?? new Date());
+            ? sizeRefusalCode("artifact_commit") : "malformed", opts.now?.() ?? new Date());
         return;
       }
       if (!authorization || !proof || !rawBody) {
@@ -658,7 +658,7 @@ export function workerControlRoutes(opts: {
         || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.quarantine_grant.maxRequestBytes)) {
         sendWorkerOperationProtocolError(req, res, "quarantine_grant",
           rawBody && rawBody.length > OPERATION_DESCRIPTORS.quarantine_grant.maxRequestBytes
-            ? "payload_too_large" : "malformed", opts.now?.() ?? new Date());
+            ? sizeRefusalCode("quarantine_grant") : "malformed", opts.now?.() ?? new Date());
         return;
       }
       if (!authorization || !proof || !rawBody) {
@@ -709,7 +709,7 @@ export function workerControlRoutes(opts: {
         || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.quarantine_finalize.maxRequestBytes)) {
         sendWorkerOperationProtocolError(req, res, "quarantine_finalize",
           rawBody && rawBody.length > OPERATION_DESCRIPTORS.quarantine_finalize.maxRequestBytes
-            ? "payload_too_large" : "malformed", opts.now?.() ?? new Date());
+            ? sizeRefusalCode("quarantine_finalize") : "malformed", opts.now?.() ?? new Date());
         return;
       }
       if (!authorization || !proof || !rawBody) {
@@ -759,7 +759,7 @@ export function workerControlRoutes(opts: {
         || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.control_command.maxRequestBytes)) {
         sendWorkerOperationProtocolError(req, res, "control_command",
           rawBody && rawBody.length > OPERATION_DESCRIPTORS.control_command.maxRequestBytes
-            ? "payload_too_large" : "malformed", opts.now?.() ?? new Date());
+            ? sizeRefusalCode("control_command") : "malformed", opts.now?.() ?? new Date());
         return;
       }
       if (!authorization || !proof || !rawBody) {
