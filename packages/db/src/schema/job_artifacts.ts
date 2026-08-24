@@ -58,9 +58,11 @@ export const jobArtifacts = pgTable(
     applyStatus: text("apply_status"),
     // DAT-006 — the device-authenticated orphan/quarantine disposition (E5, additive,
     // nullable). Populated ONLY on the DAT-006 orphan row, which carries
-    // `status='quarantined'` (a value `findCommitted` never returns, so the
+    // `status='quarantined'` — a value NEITHER `findCommitted` NOR `findEverCommitted`
+    // returns (BRW-003a split the one into two; quarantine is outside both, because an
+    // orphan never committed in the first place). So the
     // `job_artifacts_committed_identity_uidx WHERE status='committed'` partial-unique
-    // STRUCTURALLY cannot let an orphan collide-update a committed attempt). This is the
+    // STRUCTURALLY cannot let an orphan collide-update a committed attempt. This is the
     // frozen device-auth `quarantine/` object prefix path (distinct from the DAT-003
     // in-band `apply_status='conflict_quarantined'` disposition above):
     //   * `orphan_disposition` is the frozen receipt disposition literal — always

@@ -21,6 +21,7 @@ import {
   type RegisteredTargetProfileV1,
 } from "@armyofagents/worker-protocol";
 import { provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
+import { runInTenant } from "../db/tenant-context.js";
 import { createJobLeasingService, type VerifiedWorkerOperation } from "../services/job-leasing.js";
 import { createArtifactTransferGrantService } from "../services/artifact-transfer-grant.js";
 import { createArtifactCommitService } from "../services/artifact-commit.js";
@@ -483,6 +484,149 @@ integration("DAT-002 artifact transfer-grant + fenced commit", () => {
     expect(res.outcome).toBe("rejected");
     if (res.outcome !== "rejected") return;
     expect(storage.presignCalls).toHaveLength(0);
+  }, 60_000);
+
+  // ---- BRW-003a: findCommitted answers two OPPOSITE questions ---------------
+  //
+  // `findCommitted` filters status='committed' and is called from two places that want
+  // opposite answers:
+  //   :111 the Rule #7 immutability guard  -> "did this identity EVER commit?"  (expired COUNTS)
+  //   :149 the download branch             -> "is it still READABLE?"           (expired does NOT)
+  // No status value satisfies both, so the function splits. See BRW-003a-design.md.
+  //
+  // These tests write status='expired' directly. Nothing writes it in production until
+  // BRW-003c — that is exactly why 003a lands first, on the clean shape, before the write
+  // that would otherwise turn this into a regression to chase. `job_artifacts.status` has
+  // no CHECK constraint (verified in schema AND the applied snapshot), so the state is
+  // constructible today.
+
+  /** Commit an artifact, then force it to the state BRW-003c will produce. */
+  async function commitThenExpire(offer: LeaseOfferV1, storage: ReturnType<typeof makeStubStorage>) {
+    const { admin, app } = guardCtx();
+    const commitSvc = createArtifactCommitService({ appDb: app.db, storage });
+    const { artifactId, objectKey: key } = commitRequest(offer);
+    storage.headResult = { exists: true, contentLength: 128, checksumSha256: "b".repeat(64) };
+    const committed = await commitSvc.commit({
+      auth: auth(`ce-${crypto.randomUUID()}`),
+      request: commitRequest(offer, { artifactId, objectKey: key }).request,
+    });
+    expect(committed.outcome).toBe("committed");
+    await admin`UPDATE job_artifacts SET status = 'expired' WHERE identifier = ${artifactId}`;
+    return { artifactId, key };
+  }
+
+  it("BRW-003a: an EXPIRED identity is REFUSED a new upload grant (Rule #7)", async () => {
+    // The immutability guard must count expired. If it does not, retention deletes the
+    // bytes, the identity drops out of the committed partial-unique, and the same key
+    // becomes re-grantable and re-committable — bytes a reader still trusts, overwritten.
+    const { app } = guardCtx();
+    const storage = makeStubStorage();
+    const svc = createArtifactTransferGrantService({ appDb: app.db, storage });
+    const { offer } = await activateLease();
+    const { artifactId, key } = await commitThenExpire(offer, storage);
+
+    const { request } = grantRequest(offer, "upload", { artifactId, expectedObjectKey: key });
+    const res = await svc.grant({ auth: auth(`eu-${crypto.randomUUID()}`), request });
+
+    expect(res.outcome).toBe("rejected");
+    expect(storage.presignCalls).toHaveLength(0);
+  }, 60_000);
+
+  it("BRW-003a: an EXPIRED identity is REFUSED a download grant (bytes are gone)", async () => {
+    // The opposite half. Expiry deleted the object, so a download grant would hand out a
+    // URL for bytes that no longer exist.
+    const { app } = guardCtx();
+    const storage = makeStubStorage();
+    const svc = createArtifactTransferGrantService({ appDb: app.db, storage });
+    const { offer } = await activateLease();
+    const { artifactId, key } = await commitThenExpire(offer, storage);
+
+    const { request } = grantRequest(offer, "download", { artifactId, expectedObjectKey: key });
+    const res = await svc.grant({ auth: auth(`ed-${crypto.randomUUID()}`), request });
+
+    expect(res.outcome).toBe("rejected");
+    expect(storage.presignCalls).toHaveLength(0);
+  }, 60_000);
+
+  it("BRW-003a: with NO expired rows, behaviour is unchanged — upload refused, download granted", async () => {
+    // The test that makes this landable first. It pins that the refactor alters nothing
+    // observable while 'expired' does not exist, so it cannot quietly change a grant or
+    // download decision before BRW-003c arrives.
+    const { app } = guardCtx();
+    const storage = makeStubStorage();
+    const grantSvc = createArtifactTransferGrantService({ appDb: app.db, storage });
+    const commitSvc = createArtifactCommitService({ appDb: app.db, storage });
+    const { offer } = await activateLease();
+
+    const { artifactId, objectKey: key } = commitRequest(offer);
+    storage.headResult = { exists: true, contentLength: 128, checksumSha256: "b".repeat(64) };
+    const committed = await commitSvc.commit({
+      auth: auth(`uc-${crypto.randomUUID()}`),
+      request: commitRequest(offer, { artifactId, objectKey: key }).request,
+    });
+    expect(committed.outcome).toBe("committed");
+
+    // Committed (not expired): upload still refused by the guard...
+    const up = await grantSvc.grant({
+      auth: auth(`uu-${crypto.randomUUID()}`),
+      request: grantRequest(offer, "upload", { artifactId, expectedObjectKey: key }).request,
+    });
+    expect(up.outcome).toBe("rejected");
+
+    // ...and download still granted.
+    const down = await grantSvc.grant({
+      auth: auth(`ud-${crypto.randomUUID()}`),
+      request: grantRequest(offer, "download", { artifactId, expectedObjectKey: key }).request,
+    });
+    expect(down.outcome).toBe("download_granted");
+  }, 60_000);
+
+  it("BRW-003a: findEverCommitted SHORT-CIRCUITS — one query on a hit, two only on a miss", async () => {
+    // ★ Closes the coverage gap the review found: the two-lookup shape is a PERFORMANCE
+    // claim, and a claim with no assertion is the shape this programme keeps shipping.
+    //
+    // `job_artifacts_committed_identity_uidx` is PARTIAL (`WHERE status = 'committed'`), so
+    // a `status IN ('committed','expired')` predicate CANNOT use it — the planner falls back
+    // to the jobId-only index plus a filter, on the hot path. Without this test, someone
+    // later "simplifies" the two lookups into one IN query, every other test still passes,
+    // and the index is silently lost. Counting the queries is the only thing that fails.
+    const { app } = guardCtx();
+    const storage = makeStubStorage();
+    const commitSvc = createArtifactCommitService({ appDb: app.db, storage });
+    const { offer } = await activateLease();
+    const { artifactId, objectKey: key } = commitRequest(offer);
+    storage.headResult = { exists: true, contentLength: 128, checksumSha256: "b".repeat(64) };
+    const committed = await commitSvc.commit({
+      auth: auth(`sc-${crypto.randomUUID()}`),
+      request: commitRequest(offer, { artifactId, objectKey: key }).request,
+    });
+    expect(committed.outcome).toBe("committed");
+
+    await runInTenant(app.db, ORG, async (repos) => {
+      const seen: string[] = [];
+      const real = repos.jobArtifacts.findByIdentityWithStatus.bind(repos.jobArtifacts);
+      // `findEverCommitted` delegates through `this.`, so wrapping the property here is
+      // observed by it. That dispatch choice is what makes this assertion possible at all.
+      repos.jobArtifacts.findByIdentityWithStatus = async (input, status) => {
+        seen.push(status);
+        return real(input, status);
+      };
+
+      // HIT: the identity is committed -> exactly ONE lookup, on the partial index.
+      const hit = await repos.jobArtifacts.findEverCommitted({
+        jobId: offer.job.jobId, attempt: offer.job.attempt, identifier: artifactId,
+      });
+      expect(hit).not.toBeNull();
+      expect(seen).toEqual(["committed"]);
+
+      // MISS: unknown identity -> TWO lookups, committed then expired.
+      seen.length = 0;
+      const miss = await repos.jobArtifacts.findEverCommitted({
+        jobId: offer.job.jobId, attempt: offer.job.attempt, identifier: crypto.randomUUID(),
+      });
+      expect(miss).toBeNull();
+      expect(seen).toEqual(["committed", "expired"]);
+    });
   }, 60_000);
 
   // ---- fenced commit -------------------------------------------------------

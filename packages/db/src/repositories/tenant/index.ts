@@ -81,6 +81,18 @@ export interface JobArtifactsRepository {
    * used to prove object-existence when issuing a fence-independent download grant
    * (a committed artifact stays readable after lease loss). RLS scopes to the org. */
   findCommitted(input: { jobId: string; attempt: number; identifier: string }): Promise<JobArtifact | null>;
+  /** BRW-003a — "did this identity EVER commit?", the Rule #7 immutability guard's question.
+   * Counts BOTH 'committed' and 'expired': once retention (BRW-003c) deletes the bytes and
+   * tombstones the row, the identity drops out of the committed partial-unique and the key
+   * would otherwise become re-grantable and re-committable over bytes a reader still trusts.
+   * Two sequential single-status lookups, never `status IN (...)` — see the implementation. */
+  findEverCommitted(input: { jobId: string; attempt: number; identifier: string }): Promise<JobArtifact | null>;
+  /** BRW-003a — shared predicate behind the two named lookups above. Exposed on the
+   * interface only because the two wrappers delegate to it through `this`. */
+  findByIdentityWithStatus(
+    input: { jobId: string; attempt: number; identifier: string },
+    status: string,
+  ): Promise<JobArtifact | null>;
   /**
    * DAT-009 slice 2 §4.3 — expired grant intents, with the one fact the sweep decision
    * cannot get from the row itself: whether a COMMITTED sibling exists for the same
@@ -249,7 +261,27 @@ export function tenantRepositories(tx: Db): TenantRepositories {
       async listForJob(jobId) {
         return tx.select().from(jobArtifacts).where(eq(jobArtifacts.jobId, jobId));
       },
-      async findCommitted(input) {
+      // BRW-003a — ONE query, TWO names.
+      //
+      // `findCommitted` used to serve two callers that want OPPOSITE answers:
+      //   artifact-transfer-grant.ts:111  "did this identity EVER commit?"  -> expired COUNTS
+      //   artifact-transfer-grant.ts:149  "is it still READABLE?"           -> expired does NOT
+      // No status value satisfies both, so the predicate is shared and the NAMES carry the
+      // question. Callers never handle a status set: the original defect was call sites
+      // having to know the predicate meant two different things, and a status parameter
+      // would relocate that rather than fix it.
+      //
+      // Deliberately ONE STATUS PER QUERY, not `status IN (...)`.
+      // `job_artifacts_committed_identity_uidx` is PARTIAL (`WHERE status = 'committed'`),
+      // so an IN predicate CANNOT use it — the planner falls back to the jobId-only index
+      // plus a filter. Sequential lookups keep the common case (the identity IS committed)
+      // on its exact index at one indexed hit, and compose forward when BRW-003c adds the
+      // matching partial index for 'expired'.
+      //
+      // The index leads with organization_id, which this query does NOT filter: RLS
+      // supplies it (`job_artifacts_tenant_isolation`). So this is index-served BECAUSE it
+      // runs inside a tenant context.
+      async findByIdentityWithStatus(input, status) {
         const [row] = await tx
           .select()
           .from(jobArtifacts)
@@ -257,10 +289,19 @@ export function tenantRepositories(tx: Db): TenantRepositories {
             eq(jobArtifacts.jobId, input.jobId),
             eq(jobArtifacts.attempt, input.attempt),
             eq(jobArtifacts.identifier, input.identifier),
-            eq(jobArtifacts.status, "committed"),
+            eq(jobArtifacts.status, status),
           ))
           .limit(1);
         return row ?? null;
+      },
+      async findCommitted(input) {
+        return this.findByIdentityWithStatus(input, "committed");
+      },
+      async findEverCommitted(input) {
+        return (
+          (await this.findByIdentityWithStatus(input, "committed")) ??
+          (await this.findByIdentityWithStatus(input, "expired"))
+        );
       },
       async findSweepCandidates(input) {
         // The committed-sibling fact comes from an EXISTS over the SAME natural key the

@@ -108,7 +108,13 @@ export function createArtifactTransferGrantService(input: {
           // Immutable-artifact guard (Rule #7 / Decisions #43/#45): never re-grant an
           // upload for an ALREADY-committed artifact — a re-PUT to the committed key
           // would silently overwrite immutable bytes a reader still trusts.
-          const alreadyCommitted = await repos.jobArtifacts.findCommitted({
+          //
+          // BRW-003a: this asks "did this identity EVER commit?", so it must count
+          // 'expired' too. Once BRW-003c deletes the bytes and tombstones the row, the
+          // identity drops out of `job_artifacts_committed_identity_uidx` (partial, WHERE
+          // status='committed') — and a `findCommitted` here would return null and hand
+          // out a fresh upload grant for a key that was already committed once.
+          const alreadyCommitted = await repos.jobArtifacts.findEverCommitted({
             jobId: body.jobId,
             attempt: body.attempt,
             identifier: body.artifactId,
