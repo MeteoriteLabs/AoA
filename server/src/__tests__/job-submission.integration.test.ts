@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import postgres, { type Sql } from "postgres";
 import request from "supertest";
 import {
@@ -491,6 +492,24 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       // NOT 413. `payload_too_large` is not in the 400/503/429/401 map, so it
       // takes the 409 fallthrough — the shape a worker can actually classify.
       expect(response.status).toBe(409);
+    });
+
+    it("refuses a compressed body on the real app", async () => {
+      guard();
+      // ★ THIS TEST EXISTS BECAUSE A MUTANT SURVIVED WITHOUT IT.
+      // Deleting `inflate:` from the mount in app.ts left every other assertion
+      // in this ticket green: the CONSTANT was guarded by the unit tier, but its
+      // BINDING was not. With inflate on, body-parser skips the Content-Length
+      // pre-check for a compressed body, so the limit bounds DECOMPRESSED bytes
+      // and a few KB of gzip buys megabytes of pre-auth heap.
+      const gz = gzipSync(Buffer.from(JSON.stringify({ p: "x".repeat(4_000_000) })));
+      expect(gz.length).toBeLessThan(100_000); // the amplification is real
+      const response = await request(app)
+        .post("/api/worker-control/events")
+        .set("content-type", "application/json")
+        .set("content-encoding", "gzip")
+        .send(gz);
+      expect(response.status).toBe(415);
     });
 
     it("does not mount the raised limit while the flag is off", async () => {

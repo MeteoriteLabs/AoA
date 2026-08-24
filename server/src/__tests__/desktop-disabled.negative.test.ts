@@ -61,6 +61,42 @@ const BLOCK_CLOSE = ["", "  }", ""].join(String.fromCharCode(10));
 
 const readSource = (...segments: string[]) =>
   readFileSync(join(HERE, ...segments), "utf8").split("\r\n").join("\n");
+
+const FLAG_OPEN = "if (opts.distributedExecutionEnabled) {";
+
+/**
+ * Every distributed-execution flag block in app.ts, in source order.
+ *
+ * ★ This scan used to take `indexOf(FLAG_OPEN)` — the FIRST block — and measure
+ * against its close. That was correct only while exactly one such block existed.
+ * BRW-003d-1 added a SECOND one: the worker-control body-parser mounts, which
+ * must be registered BEFORE the global `express.json()` and therefore cannot
+ * share the block that mounts the routes, which is registered after it.
+ *
+ * The first-occurrence scan then measured the wrong block and reported the route
+ * mount as outside the flag — a FALSE ALARM, but the mirror image of the false
+ * negative this file's `readSource` comment already warns about. Enumerate the
+ * blocks instead, and assert HOW MANY there are, so that adding a third is a
+ * deliberate edit to this guard rather than another silent change of meaning.
+ */
+const flagBlocks = (source: string): Array<{ open: number; close: number }> => {
+  const blocks: Array<{ open: number; close: number }> = [];
+  for (let from = 0; ; ) {
+    const open = source.indexOf(FLAG_OPEN, from);
+    if (open === -1) break;
+    const close = source.indexOf(BLOCK_CLOSE, open);
+    expect(close, "a flag block is never closed by a two-space brace").toBeGreaterThan(open);
+    blocks.push({ open, close });
+    from = open + FLAG_OPEN.length;
+  }
+  return blocks;
+};
+
+const mountedInsideAFlagBlock = (source: string, needle: string): boolean => {
+  const mount = source.indexOf(needle);
+  expect(mount, `${needle} is not mounted at all`).toBeGreaterThan(-1);
+  return flagBlocks(source).some((b) => mount > b.open && mount < b.close);
+};
 const ORG = "77777777-7777-4777-8777-777777777777";
 const boardAdmin = { type: "board", source: "session", userId: "operator-9", companyIds: [] };
 
@@ -174,16 +210,13 @@ describe("I22 clause 2 — flag-off, the worker-control surface is not mounted a
   const appSource = readSource("..", "app.ts");
 
   it("mounts workerControlRoutes only inside the distributed-execution flag block", () => {
-    const flagOpen = appSource.indexOf("if (opts.distributedExecutionEnabled) {");
-    expect(flagOpen).toBeGreaterThan(-1);
-    // The block's matching close: the next line that is exactly two-space "}" after it.
-    const close = appSource.indexOf("\n  }\n", flagOpen);
-    expect(close).toBeGreaterThan(flagOpen);
-
-    const mount = appSource.indexOf("workerControlRoutes(");
-    expect(mount, "workerControlRoutes is not mounted at all").toBeGreaterThan(-1);
-    expect(mount).toBeGreaterThan(flagOpen);
-    expect(mount).toBeLessThan(close);
+    // Pin the block COUNT. The scan below is only as meaningful as the set it
+    // searches, and a new flag block should force a conscious look at this file
+    // rather than quietly widening what "inside the flag" is allowed to mean.
+    //   1. the worker-control body-parser mounts (BRW-003d-1), before express.json()
+    //   2. the route mounts, after it
+    expect(flagBlocks(appSource)).toHaveLength(2);
+    expect(mountedInsideAFlagBlock(appSource, "workerControlRoutes(")).toBe(true);
   });
 
   it("mounts the DEVICE LISTING inside that block too (D17 / D-D5)", () => {
@@ -191,12 +224,7 @@ describe("I22 clause 2 — flag-off, the worker-control surface is not mounted a
     // opposite of F27, which needed an explicit desktop refusal because its router sits
     // outside. If this router ever moves out, the listing becomes reachable flag-off and
     // DSK-00 clause (a) stops holding for it.
-    const flagOpen = appSource.indexOf("if (opts.distributedExecutionEnabled) {");
-    const close = appSource.indexOf(BLOCK_CLOSE, flagOpen);
-    const mount = appSource.indexOf("desktopDeviceRoutes(");
-    expect(mount, "desktopDeviceRoutes is not mounted at all").toBeGreaterThan(-1);
-    expect(mount).toBeGreaterThan(flagOpen);
-    expect(mount).toBeLessThan(close);
+    expect(mountedInsideAFlagBlock(appSource, "desktopDeviceRoutes(")).toBe(true);
   });
 
   it("does NOT mount it anywhere else", () => {
