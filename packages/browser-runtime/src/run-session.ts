@@ -43,6 +43,16 @@ export interface BrowserPage {
   collectDownloads(): Promise<readonly DownloadHandle[]>;
   /** Flushes video. Also destroys the download staging area — hence the ordering. */
   close(): Promise<void>;
+  /**
+   * BRW-003b — present only when the session recorded video.
+   *
+   * ★ THIS ONE IS THE OPPOSITE OF EVERYTHING ELSE HERE. Downloads and trace must be
+   * handled BEFORE `close()`; video can only be saved AFTER it. Playwright's `Artifact.saveAs`
+   * queues onto `_saveCallbacks` while the artifact is unfinished and is drained only by
+   * `reportFinished()`, which for a video runs DURING `context.close()`. Awaiting it first
+   * therefore never resolves — the failure is a HUNG SESSION, not a missing file.
+   */
+  readonly video?: { saveAs(target: string): Promise<void> };
 }
 
 export interface BrowserDriver {
@@ -158,6 +168,10 @@ async function finish(
   const saved: string[] = [];
   let refusal: { reason: SessionFailure; detail: string } | null = null;
 
+  // PHASE 1 — everything that must happen BEFORE close: downloads (close unlinks the
+  // staging files) and, once BRW-003b lands trace capture, tracing.stop({path}) (an
+  // unstopped trace is silently discarded by close's flush-without-zip).
+
   try {
     const downloads = await page.collectDownloads();
     for (const download of downloads) {
@@ -180,12 +194,29 @@ async function finish(
     };
   }
 
-  // ALWAYS close, even after a failure: this is what flushes video, and a browser left open
-  // is a leak the sandbox TTL would have to clean up.
+  // PHASE 2 — ALWAYS close, even after a failure: this is what flushes video, and a browser
+  // left open is a leak the sandbox TTL would have to clean up.
   try {
     await page.close();
   } catch {
     // A close failure must not mask the real reason; the sandbox teardown reclaims it.
+  }
+
+  // PHASE 3 — collect what only exists AFTER close. Video's saveAs resolves when close ran
+  // `reportFinished()`; asking before close would hang the session forever. Nothing else
+  // belongs here: downloads were unlinked by close, and an unstopped trace was discarded.
+  if (page.video !== undefined) {
+    const resolved = deps.resolvePath(config.downloadRoot, "session-video.webm");
+    if (resolved.ok) {
+      try {
+        await page.video.saveAs(resolved.path);
+        saved.push(resolved.path);
+      } catch {
+        // Evidence is best-effort at this point: the session's own outcome is already
+        // decided, and losing the video must not turn a successful run into a failure or
+        // mask a refusal that outranks it.
+      }
+    }
   }
 
   if (refusal !== null) return { ok: false, ...refusal };

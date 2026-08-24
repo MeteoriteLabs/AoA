@@ -26,8 +26,22 @@ supersedes three claims in its body.
 | | Scope | Blocked by | Ships |
 |---|---|---|---|
 | **003a** | Split `findCommitted`; second partial unique | nothing | **first** |
-| **003b** | Capture, events + bounding, ordering + ordered read, export seam, sandbox Chromium, parser limit | **003a's mutation tests** | second |
+| **003b** | **PRODUCER**: the three-phase capture split, trace, video, sandbox Chromium | 003a's mutation tests — **cleared** | second |
+| **003d** | **PIPELINE**: events + bounding + redaction, ordering + ordered read, export seam, parser limit, commit-vector ceiling | 003b | third |
 | **003c** | Retention enforcement | **Lane A's `isSweepEligible` edit** + 003a | last |
+
+### ★ 003b was sliced again — same gate, same reason
+
+The scope check that caught BRW-003 catches 003b too: it reached ~12 surfaces across
+`browser-runtime`, `server/src`, `packages/db`, a migration, the E2B image and the commit-vector
+reference. Split on the obvious line — **producer vs pipeline**:
+
+- **003b (producer)** is `packages/browser-runtime` + the E2B template. It is testable in the
+  browser lane, needs no schema, and its central risk is a LIFECYCLE one (the video deadlock).
+- **003d (pipeline)** is server + db: events, bounding, redaction, ordering, the ordered read.
+  Its central risk is VACUITY (columns nothing reads), which is a different kind of review.
+
+Two risks that different in kind do not belong in one review.
 
 ### ★ Two blockers, recorded as blockers rather than notes
 
@@ -55,7 +69,7 @@ between them.**
 | Outcome: screenshots | **003b** | |
 | Outcome: DOM snapshots *where allowed* | **003b** | "allowed" refuses at **grant**, not only at commit |
 | Outcome: trace | **003b** | `recordTrace` is currently ignored by the guest entirely |
-| Outcome: video | **003b** — *decision pending* | the naive ordering **deadlocks**; see 003b §Video |
+| Outcome: video | **003b** — **SHIPS** | the naive ordering deadlocks; guarded by a fail-first test that the wrong order makes TIME OUT |
 | Outcome: downloads | **003b** | BRW-002 already confines them; 003b exports them |
 | Acceptance: payloads bounded | **003b** | per-event bound is frozen; the **aggregate** bound is the 100 KB parser cliff |
 | Acceptance: retention explicit | **003c** | enforcer, not a recorded column |
