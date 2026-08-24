@@ -232,7 +232,10 @@ test("E6F-05 live MinIO: grant(upload) -> PUT -> commit -> grant(download) -> GE
     persisted.rows.filter((r) => r.status === "granted").length, 1,
     `the mint must also have recorded exactly one grant intent: ${JSON.stringify(persisted)}`,
   );
-  const row = persisted.rows[0];
+  // DAT-009 slice 2 — `rows[0]` is now the GRANTED intent (insertion order), not the
+  // committed row. Every assertion below is about the COMMITTED artifact, so it must read
+  // the committed row explicitly rather than rely on ordering that no longer holds.
+  const row = committedRows[0];
   assert.equal(row.status, "committed", `row status: ${JSON.stringify(row)}`);
   assert.equal(row.object_key, objectKey, "row object_key");
   assert.equal(Number(row.size_bytes), sizeBytes, "row size_bytes");

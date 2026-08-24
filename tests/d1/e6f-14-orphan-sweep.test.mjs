@@ -49,7 +49,6 @@ import {
   putPresignedBytes,
   artifactCommit,
   queryJobArtifact,
-  expireLeaseDeadlines,
   ageArtifactGrantIntent,
   artifactObjectExists,
 } from "./lib/e6f-harness.mjs";
@@ -151,9 +150,19 @@ test("E6F-14 live orphan sweep: fence lost mid-flight -> commit refuses -> the o
   const aged = stepResult(ageArtifactGrantIntent({ organizationId: ids.orgId, jobId: ids.jobId, identifier: artifactId, secondsAgo: 120 }), "age-intent");
   assert.equal(aged.rows.length, 1, `ageing must move exactly the granted intent: ${JSON.stringify(aged)}`);
 
-  // 5. Kill the fence. The presigned URL is UNAFFECTED — that is the whole hazard.
-  const expired = stepResult(expireLeaseDeadlines({ leaseId: offer.leaseId, ackDeadlineIntervalSec: 3600, expiresAtIntervalSec: 3600 }), "expire-lease");
-  assert.ok(expired, `lease expiry step produced no result: ${JSON.stringify(expired)}`);
+  // 5. Present a NON-CURRENT fence on the commit — the guard sees exactly what a
+  //    superseded worker's fence looks like, and answers `stale_fence`.
+  //
+  //    The FIRST attempt here back-dated the lease deadlines instead, and the commit
+  //    SUCCEEDED: back-dating `expires_at` alone does not refuse, because the reaper is
+  //    what converts an overdue lease into a terminal one (which is why e6f-09 pairs the
+  //    two). The assertion covering it was `assert.ok(expired, …)` — vacuously true for
+  //    any object — so it reported success while proving nothing. Both mistakes are the
+  //    same class this suite exists to catch.
+  //
+  //    The presigned URL is UNAFFECTED by any of this. That is the whole hazard: the
+  //    grant carries no fence material, so the bytes are already in the store.
+  const staleFence = { ...fence, fenceToken: randomBytes(32).toString("base64url") };
 
   // 6. Commit must refuse — and refusing is what fires the sweep trigger.
   const manifest = {
@@ -166,7 +175,7 @@ test("E6F-14 live orphan sweep: fence lost mid-flight -> commit refuses -> the o
     // fence check at all, so the test proved nothing about stale_fence.
     createdAt: new Date().toISOString(),
   };
-  const committed = stepResult(artifactCommit({ session: enrolled.session, ...fence, manifest, deviceKey }), "commit");
+  const committed = stepResult(artifactCommit({ session: enrolled.session, ...staleFence, manifest, deviceKey }), "commit");
   assert.equal(committed.body.outcome, "rejected", `commit must be REJECTED after fence loss: ${JSON.stringify(committed.body)}`);
   assert.equal(committed.body.reason, "stale_fence", `refusal reason must be stale_fence: ${JSON.stringify(committed.body)}`);
 
