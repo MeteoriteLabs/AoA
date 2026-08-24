@@ -40,6 +40,11 @@ import {
 } from "../identity/device-identity-store.js";
 import { createControlPlaneClient } from "../transport/client.js";
 import {
+  decideDispatchComposition,
+  DISPATCH_REFUSAL_MESSAGES,
+} from "../lifecycle/compose-dispatch.js";
+import type { SandboxProvider } from "../supervisor/provider.js";
+import {
   enrollOnce,
   EnrollmentAuthorityError,
   type EnrollmentOutcome,
@@ -140,6 +145,18 @@ export interface BootstrapDeps {
    * `readEnrollmentInput(source, env, readFileText)` injects its reader — that is
    * what makes the `{kind:"path"}` arm testable — and the daemon must supply one.
    */
+  /**
+   * WRK-008 slice 2 — the sandbox provider a composition root supplies.
+   *
+   * ★ ABSENT FOR THE SHIPPED BINARY, and that is a guarantee rather than an oversight.
+   * `worker-daemon` DEFINES the `SandboxProvider` port and implements it zero times; the
+   * only implementation lives in `@armyofagents/sandbox-e2b-provider`, which DEPENDS ON
+   * this package — so importing it here would be both an E4-D01 boundary breach and a
+   * dependency cycle. The daemon therefore cannot acquire a provider by itself, and
+   * `bootstrapWorkerDaemon({ env, proc })` passes none. Dispatch is off by construction,
+   * exactly as `leasing`/`renewal`/`reconciler` already are.
+   */
+  readonly provider?: SandboxProvider;
   readonly createClient?: typeof createControlPlaneClient;
   readonly readFileText?: (path: string) => string;
   readonly enrollOnceFn?: typeof enrollOnce;
@@ -304,6 +321,31 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
           : "worker-daemon enrolled",
       );
     }
+  }
+
+  // WRK-008 slice 2 — decide whether this daemon dispatches, and SAY WHY NOT.
+  //
+  // Before this, a worker that took no work was silent: an operator could only conclude
+  // "it is running" from the health server and had nothing to act on. The decision is a
+  // reason, not a boolean, precisely so the log line names which of three different
+  // places the fix lives in (rebuild/repackage, edit env, ask an admin).
+  //
+  // The `compose: true` branch is slice 2b: building the supervisor and poll loop needs
+  // the concurrency limiter, capacity probes and event outbox threaded through, which is
+  // its own pass. Until then a provider-bearing host still gets an honest answer, and the
+  // one thing that CANNOT happen is silent non-dispatch.
+  const dispatch = decideDispatchComposition({
+    provider: deps.provider,
+    dispatchEnabled: config.dispatchEnabled,
+    // Slice 2b reads this over `client.selfModelRead`, which needs the session lifecycle
+    // threaded through. Until then no reader exists, and saying so is the whole point:
+    // reporting `no_self_model` here would send an operator to ask an admin for a
+    // placement profile that may already be set.
+    hasSelfModelReader: false,
+    selfModel: null,
+  });
+  if (!dispatch.compose) {
+    logger.info({ reason: dispatch.reason }, DISPATCH_REFUSAL_MESSAGES[dispatch.reason]);
   }
 
   // WRK-007: the one-shot startup reconciliation pass runs ONCE here — after the

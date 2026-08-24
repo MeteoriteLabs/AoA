@@ -58,6 +58,28 @@ export const ARTIFACT_COMMIT_PATH = "/api/worker-control/artifact-commits";
 export const ARTIFACT_TRANSFER_GRANT_PATH = "/api/worker-control/artifact-transfer-grants";
 
 /**
+ * WRK-008 slice 2 — the worker reads its OWN registered self-model.
+ *
+ * ★ NOT a frozen wire op, and deliberately not under `/api/worker-control/`. E4-D02 keeps
+ * the ten frozen operations closed, so this is a LOCAL operation with a local descriptor —
+ * the same shape DAT-008 used for its sandbox-local resolve route. It carries no target
+ * identifier: the target comes from the authenticated principal, so "no other target is
+ * reachable" is true by construction rather than by a check that could drift.
+ *
+ * The path is duplicated from the server route (`execution-targets.ts`) because the device
+ * proof is signed OVER the path — a mismatch here is not a 404, it is a signature that can
+ * never verify. Pinned by a parity test rather than by comment.
+ */
+export const SELF_MODEL_READ_PATH = "/api/execution-targets/self/placement-profile";
+
+/** Local descriptor for the self-model read. A route without one silently has no size
+ * ceiling and no timeout; the values mirror the smallest frozen op class (64 KiB / 15s). */
+export const SELF_MODEL_READ_DESCRIPTOR = Object.freeze({
+  maxRequestBytes: 64 * 1024,
+  timeoutMs: 15_000,
+});
+
+/**
  * The lease-ack route path for `leaseId`. The device proof MUST be signed over
  * this EXACT string — it is the request path the server verifies against
  * (`req.originalUrl`). `leaseId` is a UUID, so encoding is a no-op, but we encode
@@ -143,6 +165,8 @@ export interface ControlPlaneClient {
   readonly artifactCommitPath: string;
   /** The artifact-transfer-grant path the proof must be signed over (CLI-003/D4). */
   readonly artifactTransferGrantPath: string;
+  /** The self-model read path the proof must be signed over (WRK-008 slice 2, LOCAL op). */
+  readonly selfModelReadPath: string;
   /** The lease-ack path for `leaseId` (the proof must be signed over it). */
   leaseAckPath(leaseId: string): string;
   /** The lease-renew path for `leaseId` (the proof must be signed over it, WRK-005). */
@@ -166,6 +190,9 @@ export interface ControlPlaneClient {
   artifactCommit(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
   /** POST a signed artifact transfer grant (audience `worker_run`, 64 KiB / 15s, CLI-003/D4). */
   artifactTransferGrant(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
+  /** POST a device-authenticated read of this worker's own self-model (LOCAL op, 64 KiB / 15s).
+   * A 304 is a legitimate outcome (the caller sent a matching `knownSelfModelHash`). */
+  selfModelRead(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
 }
 
 export interface ControlPlaneClientOptions {
@@ -224,7 +251,8 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
       | "quarantine_finalize"
       | "event_upload"
       | "artifact_commit"
-      | "artifact_transfer_grant",
+      | "artifact_transfer_grant"
+      | "self_model_read",
     targetPath: string,
     perOpTimeoutMs: number,
     maxBytes: number,
@@ -279,8 +307,18 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
     eventUploadPath: EVENT_UPLOAD_PATH,
     artifactCommitPath: ARTIFACT_COMMIT_PATH,
     artifactTransferGrantPath: ARTIFACT_TRANSFER_GRANT_PATH,
+    selfModelReadPath: SELF_MODEL_READ_PATH,
     leaseAckPath,
     leaseRenewPath,
+    selfModelRead(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
+      return postOperation(
+        "self_model_read",
+        SELF_MODEL_READ_PATH,
+        SELF_MODEL_READ_DESCRIPTOR.timeoutMs,
+        SELF_MODEL_READ_DESCRIPTOR.maxRequestBytes,
+        request,
+      );
+    },
     poll(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
       return postOperation("poll", POLL_PATH, pollTimeoutMs, OPERATION_DESCRIPTORS.poll.maxRequestBytes, request);
     },

@@ -35,6 +35,13 @@ export interface WorkerConfig {
   readonly enrollmentCodeSource: EnrollmentCodeSource;
   readonly keyStoreMode: KeyStoreMode;
   readonly targetScope: TargetScope;
+  /** WRK-008 slice 2 — the worker-side dispatch opt-in. Default OFF.
+   *
+   * Composing the loop is ALSO gated on a provider being injected, which the shipped
+   * binary cannot do (E4-D01), so dispatch is already off by construction today. This
+   * flag is what stands between "someone wrote a composition root" and "every daemon
+   * running that build starts taking real leases". */
+  readonly dispatchEnabled: boolean;
   readonly concurrency: {
     readonly batch: number;
     readonly browser: number;
@@ -59,6 +66,7 @@ export const ENV = {
   enrollmentCodeEnv: "AOA_WORKER_ENROLLMENT_CODE_ENV",
   keyStoreMode: "AOA_WORKER_KEY_STORE_MODE",
   targetScope: "AOA_WORKER_TARGET_SCOPE",
+  dispatchEnabled: "AOA_WORKER_DISPATCH_ENABLED",
   concurrencyBatch: "AOA_WORKER_CONCURRENCY_BATCH",
   concurrencyBrowser: "AOA_WORKER_CONCURRENCY_BROWSER",
   concurrencyService: "AOA_WORKER_CONCURRENCY_SERVICE",
@@ -130,11 +138,35 @@ function parseEnrollmentCodeSource(env: Env): EnrollmentCodeSource {
 // desktop org-scoped worker or a container owner-scoped worker). Each field is
 // still validated independently against its own closed enum above.
 
+/**
+ * Exactly `"1"` enables; unset/empty/whitespace and `"0"` disable; ANYTHING ELSE throws.
+ *
+ * ★ The throw is the point. For a flag that turns on live work dispatch, the dangerous
+ * failure is not a refused boot — it is `=true` being read as OFF while the operator
+ * believes it is ON. A boolean coercion here would produce exactly that silence, so an
+ * unrecognised value is a startup error, the same way an invalid enum or a non-loopback
+ * health host already is in this file.
+ */
+function parseDispatchEnabled(env: Env): boolean {
+  const raw = env[ENV.dispatchEnabled];
+  if (raw === undefined) return false;
+  const value = raw.trim();
+  if (value === "") return false;
+  if (value === "1") return true;
+  if (value === "0") return false;
+  throw new Error(
+    `${ENV.dispatchEnabled}=${JSON.stringify(raw)} is not recognised; use "1" to enable ` +
+      "dispatch or leave it unset. It is refused rather than treated as disabled so an " +
+      "intended enable can never be silently ignored.",
+  );
+}
+
 export function loadWorkerConfig(env: Env): WorkerConfig {
   const controlPlaneBaseUrl = parseControlPlaneUrl(env);
   const enrollmentCodeSource = parseEnrollmentCodeSource(env);
   const keyStoreMode = parseEnumEnv(env, ENV.keyStoreMode, KEY_STORE_MODES);
   const targetScope = parseEnumEnv(env, ENV.targetScope, TARGET_SCOPES);
+  const dispatchEnabled = parseDispatchEnabled(env);
 
   const concurrency = Object.freeze({
     batch: parseIntEnv(env, ENV.concurrencyBatch, { defaultValue: 1, min: 0, max: 10000 }),
@@ -173,6 +205,7 @@ export function loadWorkerConfig(env: Env): WorkerConfig {
     enrollmentCodeSource,
     keyStoreMode,
     targetScope,
+    dispatchEnabled,
     concurrency,
     pollTimeoutMs,
     backoff,

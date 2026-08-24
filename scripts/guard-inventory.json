@@ -110,6 +110,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-worker-path-parity.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow"
+    },
     "scripts/check-worker-protocol-boundary.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"

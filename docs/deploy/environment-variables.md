@@ -189,6 +189,7 @@ through the adapter-management surface. Rendered in `docker-compose.staging.yml`
 | --- | --- | --- |
 | `AOA_WORKER_TARGET_PROFILE_ID` | (required) | Stable identifier of the execution-target profile this worker enrolls as. Distinct per worker service in the staging fleet. |
 | `AOA_WORKER_TARGET_SCOPE` | (required) | Trust scope of the worker's target (`platform` / `organization` / …); must match the registered target profile's scope. |
+| `AOA_WORKER_DISPATCH_ENABLED` | unset (disabled) | WRK-008. Worker-side opt-in for taking work. Exactly `1` enables; unset/empty/`0` disable; any other value is a **startup error** (so an intended enable is never silently ignored). Composition is ALSO gated on a sandbox provider being injected, which the shipped binary cannot do — so this flag matters only where a composition root supplies one. |
 | `AOA_WORKER_CONTROL_PLANE_URL` | (required) | Base URL the worker dials for `/worker-control/*` (enroll/poll/ack). In staging this points at the shared control-plane ingress; a session minted at either replica is portable (shared `AOA_WORKER_SESSION_SIGNING_KEY`). |
 | `AOA_WORKER_S3_ENDPOINT` | (required) | Worker-facing object-store endpoint the worker dials for presigned artifact PUT/GET. Points at the external object store's presign host; carries no credential (the presigned URL is the authority). |
 | `AOA_WORKER_KEY_STORE_MODE` | `mounted_secret` | How the worker sources its device/enrollment key material (`mounted_secret` = an orchestrator-mounted secret file). |

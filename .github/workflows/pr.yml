@@ -266,6 +266,15 @@ jobs:
           node --test scripts/lib/__tests__/ticket-graph-coverage.test.mjs
           node scripts/check-ticket-graph-coverage.mjs
 
+      - name: Worker route-path parity (WRK-008)
+        run: |
+          # The device proof is signed OVER the request path, so a drift between the
+          # daemon's vendored constant and the server route is not a 404 - it is a
+          # signature that can never verify, on a request that reached the right handler.
+          # Neither package can import the other (E4-D01 one way, no dependency the
+          # other), so a repo-level guard is the only side that can see both.
+          node scripts/check-worker-path-parity.mjs
+
       - name: Guard inventory (every check declares what runs it)
         run: |
           node --test scripts/lib/__tests__/guard-inventory.test.mjs
