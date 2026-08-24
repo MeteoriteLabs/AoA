@@ -334,14 +334,13 @@ importers:
         version: 5.9.3
 
   packages/browser-runtime:
-    dependencies:
-      playwright:
-        specifier: ^1.58.2
-        version: 1.59.1
     devDependencies:
       '@types/node':
         specifier: ^24.6.0
         version: 24.12.0
+      playwright:
+        specifier: ^1.58.2
+        version: 1.59.1
       typescript:
         specifier: ^5.7.3
         version: 5.9.3

@@ -1,36 +1,57 @@
 // -----------------------------------------------------------------------------
-// BRW-003b — this package's RUNTIME dependencies must be declared as such.
+// BRW-003b — where the STAGED runner actually gets Playwright from.
 //
-// `playwright-driver.ts` does `import { chromium } from "playwright"` at module scope, and
-// the runner is STAGED INTO A SANDBOX and executed there:
+// ★ THIS TEST PREVIOUSLY ASSERTED THE WRONG INVARIANT, and CI proved it.
 //
-//   host: writeFiles(runner + session.json) -> exec(node runner.js session.json)
+// It asserted `playwright` must be a runtime `dependency` of this package, on the
+// reasoning that the runner is staged into a sandbox and a devDependency "does not
+// travel". The second half is true; the conclusion does not follow. NOTHING from
+// this package.json travels either — the host writes `runner.js` and
+// `session.json` into the guest and execs them, with no node_modules and no
+// manifest. A dependency declaration cannot help a process that never sees it.
 //
-// So `playwright` has to resolve in the guest. A devDependency does not travel with a
-// published/installed package, which makes this a runtime resolution failure that no test
-// in this repo would catch — every test here runs in the monorepo where the devDependency
-// IS installed. The failure only appears in the deployment target.
+// What actually makes the staged runner work is the IMAGE: Playwright installed
+// globally with `NODE_PATH` pointing at the global root. That is asserted here and
+// pinned by `image-playwright-parity.test.ts`.
 //
-// This test is cheap and it is the only thing standing between "works on the dev machine"
-// and a sandbox that cannot start a browser.
+// The move was also not free. `browser-teardown.browser.test.ts` went from 3352ms
+// (browser up in ~3s) to 31395ms (browser never appeared inside a 30s wait) on the
+// Linux lane, starting exactly at the commit that made the move — a real launch
+// failure, not a marginal timeout, and invisible on Windows because that clause is
+// Linux-gated.
 // -----------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const manifest = JSON.parse(
-  readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8"),
-) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+const dockerfile = readFileSync(
+  fileURLToPath(new URL("../../../../e2b/e2b.Dockerfile", import.meta.url)),
+  "utf8",
+);
 
-describe("BRW-003b — runtime dependencies are declared as dependencies", () => {
-  it("declares `playwright` as a RUNTIME dependency, not a devDependency", () => {
-    expect(Object.keys(manifest.dependencies ?? {})).toContain("playwright");
+describe("BRW-003b — the sandbox image is what supplies Playwright to the staged runner", () => {
+  it("installs Playwright GLOBALLY in the image", () => {
+    // Global, because the staged runner has no node_modules of its own to resolve
+    // against — it is two files written into a bare guest.
+    expect(dockerfile).toMatch(/npm install -g[^\n]*playwright@/);
   });
 
-  it("does NOT also carry `playwright` in devDependencies", () => {
-    // Declared in both is the shape that hides the bug: the monorepo resolves it either
-    // way, so the mistake stays invisible until the sandbox tries to import it.
-    expect(Object.keys(manifest.devDependencies ?? {})).not.toContain("playwright");
+  it("sets NODE_PATH so a staged file can resolve the global install", () => {
+    // Without this, a global install is invisible to a script executed from an
+    // arbitrary directory — which is exactly how the runner is executed.
+    expect(dockerfile).toMatch(/ENV NODE_PATH=\/usr\/local\/lib\/node_modules/);
+  });
+
+  it("installs a real browser, not just the module", () => {
+    expect(dockerfile).toMatch(/playwright@[^\s]+ install[^\n]*chromium/);
+  });
+
+  it("★ proves BOTH at build time, because either alone passes vacuously", () => {
+    // `require('playwright')` succeeds with no browser installed, and
+    // `executablePath()` returns a string whether or not the file is there. The
+    // image asserts the module resolves AND that the binary exists on disk.
+    expect(dockerfile).toMatch(/chromium\.executablePath\(\)/);
+    expect(dockerfile).toMatch(/accessSync/);
   });
 });
