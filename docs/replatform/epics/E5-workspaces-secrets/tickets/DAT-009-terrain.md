@@ -116,6 +116,53 @@ stay **unsurfaced** — used inside the implementation, never through the port.
 | **2** | Fence-window policy (§4) — TTL + sweeper-or-accepted-orphan | A correctness decision that stands alone and is testable server-side |
 | **3** | The first production consumer: worker digest → grant → export → commit | Where the real risk is; depends on 1 and 2 |
 
+## ★ 9. ADDENDUM — `presignPut` receives TWO required inputs and uses NEITHER
+
+Found while scoping the `maxBytes` follow-up. `PresignInput`
+(`server/src/storage/types.ts:39-45`) **requires** both:
+
+```ts
+maxBytes: number;        // "advisory (commit re-verifies size)" — its own doc comment
+checksumSha256: string;  // "the expected content hash (hex)"
+```
+
+`s3-provider.ts`'s `presign()` (`:114-142`) binds `ChecksumAlgorithm: "SHA256"` and an
+optional `ContentType`, and **uses neither of those two values**. `ContentLength` and
+`ChecksumSHA256` appear elsewhere in that file only on `putObject` / `headObject` / `getObject`.
+
+**Consequences:**
+- A presigned PUT **admits an unbounded write for its whole TTL.** The only size bound is the
+  5 GiB checked at commit, post-hoc (`artifact-commit.ts:71,121`), so an orphan can be
+  arbitrarily large.
+- The **expected digest is passed to the signer and discarded.** The store computes *a*
+  checksum (the algorithm is bound) but is never told which one to demand, so it accepts any
+  bytes; only commit catches the mismatch.
+
+Both are the same shape as the refusal-reason discards recorded elsewhere in this programme:
+a value computed, handed to the thing that could act on it, and dropped.
+
+### Why this is NOT fixed here — a real design question with cross-lane blast radius
+
+Binding `ChecksumSHA256` (and/or `ContentLength`) into the signed command would make the
+**store** reject bad bytes at write time instead of letting commit reject them afterwards.
+That is a genuine tightening, but it **moves a tested failure earlier**:
+
+- The only thing in the repo that redeems a presigned PUT is the D1 harness
+  (`tests/d1/lib/e6f-harness.mjs:1503-1521`), which computes the digest from the ACTUAL body
+  and sends it as `x-amz-checksum-sha256`.
+- Any D1 case that deliberately uploads mismatched bytes to prove commit refuses
+  `hash_mismatch` would then fail at the **store**, with a different status and message.
+
+- Binding `ContentLength` additionally converts `maxBytes` from a CEILING into an EXACT size.
+  That is defensible — the frozen grant request requires `expectedSha256`, so the size is
+  always known — and now is the cheapest moment to tighten it, since
+  `artifactTransferGrant` has **zero production callers**. But it is a semantic change to a
+  frozen-schema field's meaning and should be stated, not slipped in.
+
+**Requires:** a decision on where the mismatch SHOULD fail, the D1 cases updated to match, and
+a D1 run to verify — and `d1-merge-train` does not trigger on `server/src`, so it needs a
+deliberate `docker/d1/campaign.env` nonce bump. Its own ticket.
+
 ## 8. Traps
 
 - **Do not add byte-moving methods to `SandboxProvider`.** The decision is explicit: a grant in, a
