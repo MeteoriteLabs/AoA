@@ -47,9 +47,34 @@ approval, and no D0-T04 corpus.** (REVISION 1 said otherwise; REVISION 2 correct
    *built but dead*, and therefore the first thing to fix.
 2. **DAT-009 slice 1 — the contract capability**, fake-provider implementation and conformance.
    **UNBLOCKED** by REVISION 2; it was held behind a custodian STOP that does not apply.
-3. **Advertisement data** (not protocol): add `artifact.direct_upload` to the relevant targets'
-   `capabilityCeiling` via the existing admin `PUT …/placement-profile` route, and declare it in
-   browser jobs' `requiredCapabilities` so `job-leasing.ts:370` can route on it.
+3. **Advertisement data — ★ NOT YET. Doing this now would make every browser job UNPLACEABLE.**
+
+   Verified while attempting it. The frozen matcher computes
+   `effective = capabilityCeiling ∩ reportedCapabilities` and then requires **every** entry of
+   `requirements.capabilities` to be in that intersection, or `matches()` returns `false`
+   (`capabilities.ts:481-489`). Today **nothing** is on either side: no target's
+   `capabilityCeiling` contains `artifact.direct_upload` (grepped across the D1 compose, D1
+   seeds and `docker/d1/`), and no worker reports it.
+
+   So requiring it — the one-line change at `job-submission.ts:143`, which currently sends
+   `["browser.chromium"]` — would send every browser job to a permanent no-match.
+
+   Two things that make this SMALLER than it looks, both already true:
+   - `artifact.direct_upload` is **already accepted** by the request→frozen translation
+     (`job-placement.ts:181-185` passes all twelve frozen names through verbatim), so **no code
+     change is needed there**. The translation also fails closed on an unknown name.
+   - The plumbing is therefore pure data on both sides.
+
+   **Ordered prerequisites, all of which must land first:**
+   1. a REAL provider implements export — `E2bSandboxProvider` currently declares
+      `artifactExportMode: "none"` and declines (DAT-009 slice 1 §4);
+   2. targets advertise it in `capabilityCeiling` (operator action via the admin route);
+   3. workers REPORT it in `reportedCapabilities` — which flows from the daemon's hello builder,
+      and the daemon's only production builder is `buildDesktopHello`, whose own header says it
+      emits a worker that *"can never be matched work"* (spike F3).
+
+   Only then does requiring it in `requiredCapabilities` become correct. **Requiring before
+   advertising is the failure direction**, and it fails silently: the job simply never leases.
 4. **DAT-009 slice 3 — the worker-side consumer**: digest → grant → export → commit. The first
    production consumer of the DAT-002 grant pipeline.
 5. **Lane B: BRW-003 is fully unblocked** — both the metadata half and the byte-movement half.
