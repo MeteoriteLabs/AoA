@@ -80,6 +80,26 @@ export async function startFixtureSite(): Promise<FixtureSite> {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     const path = url.pathname;
 
+    // ★ /hold — headers flush, the body NEVER ends. `page.goto(url, {waitUntil:"load"})`
+    // therefore stays in-flight and the browser is genuinely held mid-navigation, alive,
+    // for the whole observation window. This is what the teardown tests actually need.
+    //
+    // WHY THIS EXISTS. They used to navigate to /slow, whose NAME promised a held page but
+    // whose HANDLER returned a complete document instantly (only a client-side setInterval
+    // ran). So `goto` resolved, the runner emitted session_completed, and Chromium exited
+    // in ~1s — before the 30s process observer polled. The diagnostic added on 2026-08-24
+    // caught it verbatim: `{"type":"session_started",...}` immediately followed by
+    // `{"type":"session_completed",...}`. The browser DID start; the observer just missed a
+    // process that was already gone. /hold removes the race by keeping the process alive.
+    //
+    // The socket is left open deliberately; the fixture server is torn down per suite, which
+    // drops it. `res.end` is never called, and that is the point.
+    if (path === "/hold") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.write("<!doctype html><html><head><title>held</title></head><body>holding");
+      return;
+    }
+
     const download = DOWNLOADS[path];
     if (download !== undefined) {
       res.writeHead(200, {

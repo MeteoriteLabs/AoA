@@ -109,7 +109,7 @@ async function startSession(name: string) {
       downloadRoot: root,
       userDataDir: profile,
       downloadsStagingPath: join(dir, "staging"),
-      steps: [{ action: "navigate", url: site.origin + "/slow" }],
+      steps: [{ action: "navigate", url: site.origin + "/hold" }],
       launch: { headless: true, chromiumSandbox: true, args: [] },
     }),
   );
@@ -156,7 +156,7 @@ linuxOnly("BRW-002 (c) — a GRACEFUL cancellation reaps the browser", () => {
         downloadRoot: root,
         userDataDir: profile,
         downloadsStagingPath: join(dir, "staging"),
-        steps: [{ action: "navigate", url: `${site.origin}/slow` }],
+        steps: [{ action: "navigate", url: `${site.origin}/hold` }],
         launch: { headless: true, chromiumSandbox: true, args: [] },
       }),
     );
@@ -208,7 +208,8 @@ ${output.join("") || "(none)"}`);
       // property is "EVENTUALLY reaped via CDP pipe EOF". 30s was an arbitrary first guess that
       // held for five consecutive CI runs and then failed once. This job runs concurrently with
       // the full `verify` suite on the same runner, and the page under test is deliberately
-      // /slow, so a browser mid-navigation can be slow to act on EOF. Raising an arbitrary bound
+      // /hold (headers flushed, body never ends), so the browser is GENUINELY mid-navigation
+      // and can be slow to act on EOF. Raising an arbitrary bound
       // is legitimate; weakening the ASSERTION would not be, so reaping is still REQUIRED.
       const reaped = await waitFor(async () => (await processesMentioning(profile)) === 0, 90_000);
       if (!reaped) {

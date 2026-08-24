@@ -63,6 +63,27 @@ describe("BRW-002 fixture site — popup and slow pages", () => {
     // observable rather than idle.
     expect(await (await fetch(`${site.origin}/slow`)).text()).toContain("setInterval");
   });
+
+  it("★ /hold flushes headers but never ends the body", async () => {
+    // The teardown tests navigate here so the browser is held mid-navigation. If the body
+    // ever ended, `page.goto` would resolve, the session would complete, and the browser
+    // would exit before the observer polls — the exact race that made those tests flaky.
+    // Assert: headers arrive (200), and the body stream does NOT complete within a window
+    // that a real ended response clears in milliseconds. An AbortController bounds the read
+    // so this test cannot itself hang.
+    const controller = new AbortController();
+    const res = await fetch(`${site.origin}/hold`, { signal: controller.signal });
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const firstChunk = await reader.read();
+    expect(firstChunk.done).toBe(false); // some body arrived
+    let ended = false;
+    const secondRead = reader.read().then((r) => { ended = r.done; }).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    controller.abort();
+    await secondRead;
+    expect(ended).toBe(false); // the body never signalled completion
+  });
 });
 
 describe("BRW-002 fixture site — binds loopback only", () => {
