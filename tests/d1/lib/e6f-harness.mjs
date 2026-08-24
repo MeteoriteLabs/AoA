@@ -1558,6 +1558,72 @@ try {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DAT-009/DAT-011 — orphan-sweep additions (ADDITIVE ONLY).
+//
+// These let a test prove the ORPHAN path end to end against the live stack: mint a
+// grant, PUT the bytes, lose the fence, watch the commit refuse `stale_fence`, age the
+// grant intent past its expiry, and assert the sweep actually DELETED the object from
+// MinIO. Until now the sweep was unit-proven and its wiring only grep-verified.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Age a `status='granted'` intent row so its grant is past expiry.
+ *
+ * The production TTL ceiling is 300s and a test cannot wait five minutes. Ageing the
+ * ROW is the honest substitute: it moves the same value the sweep reads, rather than
+ * weakening the eligibility rule (which is strictly-after-`expiresAt`, deliberately). */
+export function ageArtifactGrantIntent({ organizationId, jobId, identifier, secondsAgo = 60 }) {
+  const params = { organizationId, jobId, identifier, secondsAgo };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const rows = await sql\`UPDATE job_artifacts
+    SET expires_at = clock_timestamp() - (\${P.secondsAgo} * interval '1 second')
+    WHERE organization_id = \${P.organizationId} AND job_id = \${P.jobId}
+      AND identifier = \${P.identifier} AND status = 'granted'
+    RETURNING id, expires_at, status\`;
+  console.log("${RESULT_MARKER}" + JSON.stringify({ rows: rows.map((r) => ({ ...r })) }));
+} catch (error) {
+  console.log("${RESULT_MARKER}" + JSON.stringify({ rows: [], error: String(error && error.message ? error.message : error) }));
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** Does `objectKey` still exist in the artifact bucket? Runs in control-plane, which
+ * holds the S3 endpoint + credentials. `exists:false` on a 404/NotFound is the ANSWER,
+ * not an error — that is precisely what a swept orphan looks like. */
+export function artifactObjectExists({ objectKey }) {
+  const params = { objectKey };
+  const script = `
+import { S3Client, HeadObjectCommand } from "@aws-sdk/client-s3";
+${embedParams(params)}
+function report(v) { console.log("${RESULT_MARKER}" + JSON.stringify(v)); }
+const client = new S3Client({
+  endpoint: process.env.AOA_STORAGE_S3_ENDPOINT,
+  region: process.env.AOA_STORAGE_S3_REGION || "us-east-1",
+  forcePathStyle: true,
+});
+try {
+  const out = await client.send(new HeadObjectCommand({
+    Bucket: process.env.AOA_STORAGE_S3_BUCKET,
+    Key: P.objectKey,
+  }));
+  report({ exists: true, contentLength: out.ContentLength ?? null });
+} catch (error) {
+  const name = String(error && error.name ? error.name : "");
+  const status = error?.$metadata?.httpStatusCode ?? null;
+  if (name === "NotFound" || status === 404) { report({ exists: false, status }); }
+  else { report({ exists: null, error: String(error && error.message ? error.message : error), name, status }); }
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // DAT-002 slice-7 — Increment 2: toxiproxy incomplete-upload additions (ADDITIVE
 // ONLY — nothing above is modified). These ADD a RUNTIME toxiproxy-admin client
 // (set/remove a toxic on the in-path `worker-to-minio` proxy) and a fault-tolerant
