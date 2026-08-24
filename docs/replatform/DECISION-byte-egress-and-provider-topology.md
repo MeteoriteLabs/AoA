@@ -7,6 +7,62 @@ and the provider-topology fork in [`WAVE-4-RESEQUENCE.md`](./WAVE-4-RESEQUENCE.m
 
 ---
 
+## ★ NET DECISION AS OF REVISION 2 — read this, not the archaeology below
+
+Two revisions have withdrawn parts of the original analysis. Rather than make a reader
+reconstruct the truth from three layers, here it is in one place. **§0-§4 below are retained as
+history; where they disagree with this section, this section wins.**
+
+**The decision:** the provider reads the file from inside its sandbox and PUTs it **directly to
+object storage** under a short-lived, prefix-scoped, **worker-minted** presigned grant. The
+`SandboxProvider` port carries a **grant inbound** and a **reference outbound**, and **never
+bytes**.
+
+**Two provider operations, not one.** The frozen grant request requires `expectedSha256` AND
+`maxBytes`, so the worker must know the digest and size *before* it can ask for a grant — and
+only the provider can see inside the sandbox. The sequence is therefore: digest-and-size →
+mint grant → export-under-grant → commit.
+
+**NO FROZEN PROTOCOL CHANGE IS REQUIRED.** The capability is advertised through
+`artifact.direct_upload`, which already exists in the frozen `KNOWN_WORKER_CAPABILITIES`
+(`capabilities.ts:47-60`) and is used by nothing. The two operations live in
+`packages/worker-daemon`'s port, which is not frozen. **There is no E4-D02 STOP, no custodian
+approval, and no D0-T04 corpus.** (REVISION 1 said otherwise; REVISION 2 corrects it.)
+
+**Option B remains rejected** — desktop browser evidence must not become a second project.
+
+### What is IN CODE today (verified, not asserted)
+
+| Piece | State |
+|---|---|
+| Grant TTL clamped to a 300s ceiling | **wired** — `artifact-transfer-grant.ts` |
+| Grant INTENT recorded at mint | **wired** — `recordArtifactGrantIntent`, fence-guarded |
+| Retention control-plane-owned at commit | **wired** — `resolveStoredRetention` in `artifact-commit.ts` |
+| Migration 0265 (granted partial-unique + expiry index) | landed, idempotency-verified |
+| Sweep eligibility decision + runner | **built, and NOTHING CALLS THE RUNNER** |
+
+### What has to be done, in order
+
+1. **DAT-011 — wire the sweep trigger.** Designed, not built. This is the only piece that is
+   *built but dead*, and therefore the first thing to fix.
+2. **DAT-009 slice 1 — the contract capability**, fake-provider implementation and conformance.
+   **UNBLOCKED** by REVISION 2; it was held behind a custodian STOP that does not apply.
+3. **Advertisement data** (not protocol): add `artifact.direct_upload` to the relevant targets'
+   `capabilityCeiling` via the existing admin `PUT …/placement-profile` route, and declare it in
+   browser jobs' `requiredCapabilities` so `job-leasing.ts:370` can route on it.
+4. **DAT-009 slice 3 — the worker-side consumer**: digest → grant → export → commit. The first
+   production consumer of the DAT-002 grant pipeline.
+5. **Lane B: BRW-003 is fully unblocked** — both the metadata half and the byte-movement half.
+
+### Still open, and NOT part of this decision
+
+- `maxBytes` and `checksumSha256` are handed to `presignPut` and **used by neither**, so a
+  presigned PUT admits an unbounded write of arbitrary content for its whole TTL
+  (`DAT-009-terrain.md` §9). Its own ticket — binding them moves a tested failure earlier.
+- Retention is **stored** trustworthily and **enforced** nowhere (DAT-010 §5).
+
+---
+
 ## 0. The two escalations are ONE decision
 
 Lane B asked "how does a byte leave a sandbox?" and costed three options. Lane A asked "how does a
