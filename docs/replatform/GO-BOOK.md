@@ -4,7 +4,7 @@
 sprint, and that session runs the sprint end to end. Written 2026-08-25 (Sprint 0), against
 branch `docs/replatform-program`, worktree `C:\e3`.
 
-**Read §1 and §2 once. Then jump to your sprint in §4.**
+**Read §1 and §2 once. Then jump to your sprint in §4** (Sprints 1-3 have full plans linked in §3.1).
 
 ---
 
@@ -62,7 +62,7 @@ not, because they share this branch and cancel each other's CI.
 1. **Terrain** — read the code the ticket touches. Verify every claim the plan makes; plans
    go stale. Where a doc and the disk disagree, **trust the disk and say so**.
 2. **Design** — write it, **commit it before any code**. That commit SHA is the ticket's
-   **Start SHA**. (Sprints 1–5 already have designs — see §4. Sprints 6–9 write theirs at
+   **Start SHA**. (Sprints 1–3 already have full plans — see §3.1. Sprints 4–9 write theirs at
    sprint start, deliberately, so they are written against the code as it exists then.)
 3. **Fail-first TDD** — write the failing test, run it, *see it fail*, then the minimal
    implementation, run it, see it pass. Commit.
@@ -137,6 +137,47 @@ not, because they share this branch and cancel each other's CI.
 
 **Sprints 1–5 are the critical path.** After Sprint 5 you have a demonstrably working
 distributed agent. Sprints 6–9 scale it to every sink and agent type, then release.
+
+---
+
+## ★ 3.1 Sprint 1-3 have FULL implementation plans; 4-9 do not, deliberately
+
+| Sprint | Plan | State |
+|---|---|---|
+| 1 | [`WRK-010-design.md`](./epics/E4-worker-daemon/tickets/WRK-010-design.md) | complete - 12 TDD steps, 10 guards, 30+ mutants, acceptance mapping |
+| 2 | [`DEP-010-design.md`](./epics/E6-deployment-test-harness/tickets/DEP-010-design.md) | complete - 12 steps, **Step 0 is a controller STOP** (see below) |
+| 3 | [`WRK-008-slice-2b-design.md`](./epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md) | complete - 11 steps, ~43 mutants, the D1 question answered |
+| 4-9 | scope + sequence only (§4) | **Step 1 of each sprint is: write the plan.** A plan written five sprints early goes stale, which is the exact failure this audit exists to fix. |
+
+### ★ Three things the planning pass found that change what you do
+
+**1. Sprint 2 opens with a decision only you can make.** `worker-keystore` is pinned by
+`scripts/lib/worker-keystore-boundary.mjs` to exactly two dependencies, and the file says adding
+anything is **"a STOP for controller approval"** - because that package is injected INTO the
+daemon's process and holds the device private key. DEP-010 needs to add the provider package,
+which transitively pulls the `e2b` network SDK into that process. The plan asks for it explicitly
+and pays for it: a new `PROVIDER_HOST_PATH` confinement means only ONE file may name the provider,
+so the guard ends up **tighter**, not just wider. **If you refuse, the plan has a costed
+alternative** (a new `worker-desktop-host` package) - it is larger, and §3.4 says why.
+
+**2. `IdentityLifecycle.acquireSession()` does not exist.** DSK-001's design says it "is landed
+as the seam the renewal successor implements" and the blocker doc repeats it. `grep` returns only
+those two documents. The real seam is `SessionStoreDeps.renew`. WRK-010 targets the real one and
+files the discrepancy - the fourth documented fact this programme has found with no code behind it.
+
+**3. Sprint 3 has a FOURTH gate nobody had written down.** The plan expected three (no provider,
+flag off, no self-model reader). There is a fourth: **no device key**. `MountedSecretKeyStore` is
+constructed nowhere outside tests, and `enrollOnce` deliberately DISCARDS the session (I13) so a
+token can never reach a log line. So "thread a session" is not passing a value along - no session
+exists after boot, by design. That is why Sprint 3 writes a whole identity/session module.
+
+### One consequence worth reading before Sprint 3
+
+A composed worker still **cannot be OFFERED work**. The only production hello builder is
+deliberately unmatchable and `workers.profile_snapshot` has no update channel - so a worker can
+assemble a perfect self-model, self-check correctly, and be offered nothing, forever. Sprint 3
+files it as a HIGH finding rather than letting "dispatch composed" read as "dispatch working".
+**Sprint 5 cannot pass until it is owned.**
 
 ---
 
