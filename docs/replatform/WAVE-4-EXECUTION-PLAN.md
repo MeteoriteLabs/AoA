@@ -11,6 +11,29 @@
 > desktop host is by its own design doc "unshippable without it".
 > See [`WAVE-4-BLOCKER-worker-session-lifetime.md`](./WAVE-4-BLOCKER-worker-session-lifetime.md).
 >
+> ### ★★ THE PROVIDER SEAM IS ONE QUESTION ASKED THREE WAYS — decide it once
+>
+> `scripts/check-finding-ownership.mjs` (TRACK-003) put the open findings in one place for
+> the first time, and three of the four unowned ones turn out to be the same question:
+>
+> | Item | Asks |
+> |---|---|
+> | **The composition root** (blocker #3) | who constructs a `SandboxProvider` and hands it to the daemon? |
+> | **E6-F008** (MED, open) | `sandbox-provider-contract`'s driver port and worker-daemon's `SandboxProvider` are structurally unrelated — which is authoritative? |
+> | **E6-F004** (MED-HIGH, open) | where does `sandbox-fake-provider` import the port FROM, and what does the boundary check allow? |
+>
+> Answering any one of them in isolation just moves the seam. **E6-F003 (HIGH, open)** is
+> the fourth face of it — the networked driver API a worker's provider driver speaks was
+> never specified, so there is no worker→provider path even when a provider exists.
+>
+> All four were filed against tickets that have since SHIPPED (DEP-000, CLI-001), so they
+> were carried past their own resolution point with nothing watching. E6-F008 is not
+> academic: it was hit head-on designing WRK-008 slice 2, four days after being filed.
+>
+> **Recommendation: one ticket owns the provider seam** — composition root, port
+> reconciliation, fake-provider import source, and the networked driver API — rather than
+> four partial answers.
+
 > ### ★ UPDATE — WRK-008 slice 2a landed; two claims in this document are now WRONG
 >
 > **1. §4.2's "largest single risk in the plan" does not exist.** It warned that composing
