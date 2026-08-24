@@ -1,6 +1,10 @@
 # DAT-009 slice 2 Result — the fence window
 
-**Status:** LANDED, with ONE named gap: **nothing schedules the sweeper yet** (§6).
+**Status:** LANDED and **PROVEN END TO END**. The gap named in §6 is closed by DAT-011, and
+`tests/d1/e6f-14-orphan-sweep.test.mjs` now exercises the whole path against real PostgreSQL
+and real MinIO — mint → intent → PUT → stale fence → commit denied → **object deleted** →
+intent `swept`. That live lane also found a production defect in DAT-011's trigger placement
+that unit tests, mutation testing and grep verification had all missed.
 **Start SHA:** `a423bd6a7` ([`DAT-009-slice-2-design.md`](./DAT-009-slice-2-design.md)).
 
 ---

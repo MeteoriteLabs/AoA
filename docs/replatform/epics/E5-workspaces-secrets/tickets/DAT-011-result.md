@@ -74,12 +74,30 @@ If that ever becomes unacceptable the honest fix is an **audited operator-scoped
 surface**, explicitly outside the tenant boundary — **not** a quiet cross-tenant reader added
 for housekeeping.
 
-## 6. Not done here
+## ★ 6. NOW PROVEN END TO END — and the lane found a defect this ticket had shipped
 
-- **No integration test proves a real orphan is deleted end to end.** The runner and the
-  decision are unit-proven and the wiring is grep-verified, but the full path
-  (mint → PUT → fence loss → commit refusal → expiry → sweep) is not exercised against real
-  PostgreSQL + storage. That belongs with the D1 lane, and D1 does not trigger on `server/src`.
-- **`orphanDisposition` is still unused** on this path — a refused commit could mark its intent
-  as a confirmed orphan, letting a future sweep distinguish "commit refused" from "never heard
+**`tests/d1/e6f-14-orphan-sweep.test.mjs` is green** against real PostgreSQL and real
+MinIO-over-TLS (D1 campaign: 41 tests, 41 pass, **0 skipped**). It exercises the whole path:
+mint → intent recorded → PUT → object exists → stale fence → commit denied → **the object is
+deleted from the store** → the intent row is `swept`.
+
+**It took four runs, and run 3 found a PRODUCTION DEFECT in this ticket.**
+
+A stale fence is refused by `resolveWorkerFenceContext`, **not** by `commitArtifactVersion`:
+`lockLeaseAckContext` looks the lease up BY the presented fence token, so a superseded fence
+finds no row and throws `JobLeasingError("stale_fence")` — which never reached the catch where
+this ticket originally placed the trigger.
+
+**So the sweep never fired on a stale-fence refusal** — the exact event it was designed
+around. It fired only on successful commits, the design's *secondary* trigger.
+
+★ **What this says about §1's verification.** That section proudly listed four symbols with a
+production caller, grep-verified. That check was true and insufficient: **it cannot tell you
+the caller is unreachable on the path you claimed.** No unit test could either — the control
+flow only diverges against a real lease in a real database.
+
+## 7. Still not done
+
+- **`orphanDisposition` is unused on this path.** A refused commit could mark its intent as a
+  confirmed orphan, letting a future sweep distinguish "commit refused" from "never heard
   from". Not needed for correctness; not slipped into a trigger ticket.
