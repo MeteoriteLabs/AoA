@@ -53,6 +53,14 @@ export interface BrowserPage {
    * therefore never resolves — the failure is a HUNG SESSION, not a missing file.
    */
   readonly video?: { saveAs(target: string): Promise<void> };
+  /**
+   * BRW-003b — present only when the session started a trace.
+   *
+   * Must be called BEFORE `close()`. Playwright's `tracing.flush()` during close is
+   * `abort()` plus an fs sync with NO ZIP, so a trace that was not stopped with a path is
+   * discarded — silently, without an error. The opposite constraint to `video` above.
+   */
+  stopTracing?(target: string): Promise<void>;
 }
 
 export interface BrowserDriver {
@@ -168,9 +176,21 @@ async function finish(
   const saved: string[] = [];
   let refusal: { reason: SessionFailure; detail: string } | null = null;
 
-  // PHASE 1 — everything that must happen BEFORE close: downloads (close unlinks the
-  // staging files) and, once BRW-003b lands trace capture, tracing.stop({path}) (an
-  // unstopped trace is silently discarded by close's flush-without-zip).
+  // PHASE 1 — everything that must happen BEFORE close: the trace (an unstopped trace is
+  // discarded by close's flush-without-zip) and the downloads (close unlinks the staging
+  // files). Both are lost silently if they happen after, which is why the order is a test.
+  if (page.stopTracing !== undefined) {
+    const resolved = deps.resolvePath(config.downloadRoot, "session-trace.zip");
+    if (resolved.ok) {
+      try {
+        await page.stopTracing(resolved.path);
+        saved.push(resolved.path);
+      } catch {
+        // Evidence is best-effort: a trace that fails to write must not turn an otherwise
+        // successful session into a failure, nor mask a download refusal that outranks it.
+      }
+    }
+  }
 
   try {
     const downloads = await page.collectDownloads();

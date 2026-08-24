@@ -70,11 +70,20 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): Browse
 
       // GRACEFUL-CANCELLATION TEARDOWN, and the measured reason it is not sufficient.
       //
-      // MEASURED: killing the runner with SIGKILL does NOT reap Chromium. The runner process
-      // was confirmed dead and a Chromium process was still alive 15 seconds later. So the
-      // browser is orphaned by an uncatchable kill, and clause (c) cannot rest on this layer
-      // alone — destroying the sandbox is the mechanism that actually reclaims, which is what
-      // terrain already concluded about `destroy`/`terminate` versus the no-op `signal`.
+      // ★ CORRECTED (BRW-003b). This said, as a universal claim: "MEASURED: killing the
+      // runner with SIGKILL does NOT reap Chromium." That measurement was taken on WINDOWS
+      // and generalised. Linux CI refuted it on the first green browser run — SIGKILL DOES
+      // reap there, through the CDP pipe on fds 3/4 reaching EOF.
+      //
+      // PLATFORM IS THE VARIABLE, and the target platform is the one that matters:
+      //   * LINUX (what an E2B sandbox is) — an uncatchable kill reaps the browser.
+      //   * WINDOWS (developer machines) — the browser is orphaned; Node maps every
+      //     child.kill() to TerminateProcess and the grandchild survives.
+      //
+      // Destroying the sandbox remains the OUTER backstop either way, which is what terrain
+      // concluded about `destroy`/`terminate` versus the no-op `signal`. Both platforms are
+      // asserted per-platform in browser-teardown.browser.test.ts, so this is a tested fact
+      // rather than folklore.
       //
       // What this DOES buy is the catchable half: a graceful cancellation closes the context,
       // which both reaps the browser and flushes video. Registered `once` and removed on

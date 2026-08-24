@@ -47,6 +47,9 @@ function recordingDriver(overrides: Partial<RecordingOptions> = {}) {
           calls.push("close");
           releaseVideo();
         },
+        stopTracing: overrides.trace === undefined ? undefined : async (target: string) => {
+          calls.push(`stopTracing(${target})`);
+        },
         video: overrides.video === undefined ? undefined : {
           // ★ MODELS PLAYWRIGHT'S REAL SEMANTICS, which is what makes the deadlock testable
           // without a browser. `Artifact.saveAs` pushes onto `_saveCallbacks` whenever the
@@ -71,6 +74,8 @@ interface RecordingOptions {
   navigateThrows: boolean;
   /** Present when the session recorded video. */
   video: boolean;
+  /** Present when the session recorded a trace. */
+  trace: boolean;
 }
 
 /** Ports measured before/after launch. Empty delta = contained. */
@@ -232,6 +237,49 @@ describe("BRW-002 session — THE ORDERING INVARIANT", () => {
       expect(at).toBeLessThan(closeAt);
     }
     expect(calls.findIndex((c) => c.startsWith("video.saved("))).toBeGreaterThan(closeAt);
+  });
+
+  it("BRW-003b: stops the trace BEFORE close — an unstopped trace is silently discarded", async () => {
+    // Playwright's `tracing.flush()` during close is `abort()` + an fs sync with NO ZIP
+    // (tracing.js:269-272). A trace that was not `stop({path})`-ed first is thrown away
+    // without an error — the silent-loss shape, so the ordering is asserted not assumed.
+    const { driver, calls } = recordingDriver({ trace: true });
+    await runBrowserSession(CONFIG, { driver, measurePorts: ports([], []), resolvePath, env: {} });
+
+    const stopAt = calls.findIndex((c) => c.startsWith("stopTracing("));
+    const closeAt = calls.indexOf("close");
+    expect(stopAt).toBeGreaterThan(-1);
+    expect(closeAt).toBeGreaterThan(-1);
+    expect(stopAt).toBeLessThan(closeAt);
+  });
+
+  it("BRW-003b: a session that did NOT record a trace makes no tracing calls", async () => {
+    // The other half. `recordTrace` is a REQUIRED field on the frozen workload, so "off"
+    // has to mean off rather than "we called stop on nothing".
+    const { driver, calls } = recordingDriver({ downloads: ["a.pdf"] });
+    await runBrowserSession(CONFIG, { driver, measurePorts: ports([], []), resolvePath, env: {} });
+    expect(calls.some((c) => c.startsWith("stopTracing("))).toBe(false);
+  });
+
+  it("BRW-003b: trace and video sit on OPPOSITE sides of close", async () => {
+    // The whole reason the phase split exists, in one assertion: stop the trace before,
+    // save the video after. A change that moved either to the other side would pass every
+    // single-artifact test above and still lose evidence or hang the session.
+    const { driver, calls } = recordingDriver({ trace: true, video: true });
+    await runBrowserSession(CONFIG, { driver, measurePorts: ports([], []), resolvePath, env: {} });
+
+    const closeAt = calls.indexOf("close");
+    const stopAt = calls.findIndex((c) => c.startsWith("stopTracing("));
+    const savedAt = calls.findIndex((c) => c.startsWith("video.saved("));
+
+    // ★ Both indices are asserted PRESENT first. `findIndex` returns -1 when the call never
+    // happened, and `-1 < closeAt` is TRUE — so a bare less-than would pass against a system
+    // that never traces at all. This test passed for that exact wrong reason before the
+    // implementation existed, which is how the vacuity was caught.
+    expect(stopAt).toBeGreaterThan(-1);
+    expect(savedAt).toBeGreaterThan(-1);
+    expect(stopAt).toBeLessThan(closeAt);
+    expect(savedAt).toBeGreaterThan(closeAt);
   });
 
   it("persists downloads even when a navigation step failed", async () => {
