@@ -157,11 +157,34 @@ export interface WorkerSummary {
 }
 
 /** Composed job detail: the redacted job + its attempts, leases, and event metadata. */
+/** BRW-003d-4 — one artifact row as an operator sees it. Every disposition is
+ * returned (granted / committed / quarantined / expired), which is why `status`
+ * is on the wire: the row that survives a refused commit is the `granted` intent
+ * row, and hiding it would make "the record stays discoverable" false. */
+export interface JobArtifactSummary {
+  id: string;
+  attempt: number | null;
+  identifier: string;
+  kind: string | null;
+  status: string | null;
+  applyStatus: string | null;
+  versionNumber: number | null;
+  sizeBytes: number | null;
+  sha256: string | null;
+  committedAt: string | Date | null;
+  expiresAt: string | Date | null;
+  createdAt: string | Date;
+}
+
 export interface JobDetail {
   job: JobSummary;
   attempts: AttemptSummary[];
   leases: LeaseSummary[];
   events: EventSummary[];
+  /** True when the events list was capped. Reported so truncation is never silent. */
+  eventsTruncated: boolean;
+  artifacts: JobArtifactSummary[];
+  artifactsTruncated: boolean;
 }
 
 /** Result of an operator drain (job-level graceful cancellation) request. */

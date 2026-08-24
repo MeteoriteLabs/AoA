@@ -54,7 +54,17 @@ vi.mock("../services/tenant-admission.js", () => ({
 // map filters real column refs by output key.
 vi.mock("../db/tenant-context.js", async () => {
   const { getTableName } = await import("drizzle-orm");
+  // BRW-003d-4 — `orderBy` is CHAINABLE HERE BUT DOES NOT SORT, on purpose.
+  //
+  // getJobDetail gained .orderBy(); without this the fake throws "orderBy is not a
+  // function" and every test in this file dies. But a fake that pretended to sort
+  // would make an ordering assertion in THIS tier vacuous — it would pass against
+  // a service whose ORDER BY is wrong, because the fixture order would decide the
+  // result. So ordering is asserted in the embedded-Postgres tier, which really
+  // sorts, and this tier keeps proving what it always proved: projection, tenant
+  // scoping, and the caps.
   const query = (rows: unknown[]) => ({
+    orderBy: () => query(rows),
     limit: (n: number) => Promise.resolve(rows.slice(0, n)),
     then: (resolve: (v: unknown[]) => unknown, reject?: (e: unknown) => unknown) =>
       Promise.resolve(rows).then(resolve, reject),

@@ -24,6 +24,10 @@ import {
 import { provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
 import { createJobLeasingService, type VerifiedWorkerOperation } from "../services/job-leasing.js";
 import { createJobEventIngestService } from "../services/job-events.js";
+import {
+  createJobOperationsService,
+  JOB_DETAIL_EVENT_LIMIT,
+} from "../services/job-operations.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 
 type EmbeddedPostgresInstance = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
@@ -364,6 +368,117 @@ integration("JOB-005 fenced event ingest", () => {
     await embedded?.stop().catch(() => {});
     if (dataDir) await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   }, 60_000);
+
+
+  // ── BRW-003d-4 — ordering and response bounding, on a tier that REALLY SORTS ──
+  //
+  // The unit tier's fake accepts .orderBy() and does not sort, deliberately: an
+  // ordering assertion there would pass against a wrong ORDER BY because the
+  // fixture order would decide the result. These run against embedded Postgres.
+  describe("BRW-003d-4 job detail ordering and bounding", () => {
+    const ops = () => {
+      // `createTenantAppDbConnection` returns a CONNECTION; the service takes the
+      // inner drizzle handle, exactly as app.ts passes `appConnection.db`.
+      const { app: appConn, operator: operatorConn } = guardCtx();
+      return createJobOperationsService({
+        appDb: appConn.db as never,
+        operatorDb: operatorConn.db as never,
+      });
+    };
+
+    it("orders events by (attemptNumber, sequence), not by sequence alone", async () => {
+      const { offer, ingest, seeded } = await activateLease(5_401);
+      await ingest.ingest({ auth: auth("d4-order"), request: batchRequest(offer, [attemptStarted(offer, 1)]) });
+      const { admin } = guardCtx();
+      // A SECOND attempt whose sequence 1 must sort AFTER attempt 1's sequence 9.
+      // Ordering by `sequence` alone interleaves the two into nonsense — this is
+      // the fixture that makes the two-key ORDER BY observable.
+      await admin`INSERT INTO job_events
+        (id, organization_id, company_id, job_id, attempt_id, attempt_number, lease_id, fence_token,
+         event_id, sequence, event_type, event, event_digest, occurred_at)
+        VALUES
+        (gen_random_uuid(), ${ORG}, ${COMPANY}, ${seeded.jobId}, ${seeded.attemptId}, 1,
+         ${offer.leaseId}, ${offer.fenceToken}, gen_random_uuid(), 9, 'log',
+         '{"payload":{"m":"a1s9"}}'::jsonb, encode(sha256('a1s9'::bytea),'hex'), now()),
+        (gen_random_uuid(), ${ORG}, ${COMPANY}, ${seeded.jobId}, ${seeded.attemptId}, 2,
+         ${offer.leaseId}, ${offer.fenceToken}, gen_random_uuid(), 2, 'log',
+         '{"payload":{"m":"a2s2"}}'::jsonb, encode(sha256('a2s2'::bytea),'hex'), now())`;
+
+      const detail = await ops().getJobDetail(ORG, COMPANY, seeded.jobId);
+      const keys = detail.events.map((e) => `${e.attemptNumber}:${e.sequence}`);
+      const a1s9 = keys.indexOf("1:9");
+      const a2s2 = keys.indexOf("2:2");
+      expect(a1s9).toBeGreaterThan(-1);
+      expect(a2s2).toBeGreaterThan(-1);
+      // Ordering by `sequence` alone would place 2 BEFORE 9; both keys places it after.
+      expect(a1s9).toBeLessThan(a2s2);
+      // ascending within an attempt too
+      const attempt1 = keys.filter((k) => k.startsWith("1:")).map((k) => Number(k.split(":")[1]));
+      expect([...attempt1].sort((x, y) => x - y)).toEqual(attempt1);
+    });
+
+    it("bounds the events list and REPORTS the truncation", async () => {
+      const { offer, ingest, seeded } = await activateLease(5_402);
+      await ingest.ingest({ auth: auth("d4-bound"), request: batchRequest(offer, [attemptStarted(offer, 1)]) });
+      const { admin } = guardCtx();
+      // One past the cap, so the boundary itself is exercised.
+      await admin`INSERT INTO job_events
+        (id, organization_id, company_id, job_id, attempt_id, attempt_number, lease_id, fence_token,
+         event_id, sequence, event_type, event, event_digest, occurred_at)
+        SELECT gen_random_uuid(), ${ORG}, ${COMPANY}, ${seeded.jobId}, ${seeded.attemptId}, 1,
+               ${offer.leaseId}, ${offer.fenceToken}, gen_random_uuid(), g, 'log',
+               '{"payload":{}}'::jsonb, encode(sha256(('d'||g)::bytea),'hex'), now()
+        FROM generate_series(100, ${100 + JOB_DETAIL_EVENT_LIMIT}) AS g`;
+
+      const detail = await ops().getJobDetail(ORG, COMPANY, seeded.jobId);
+      expect(detail.events.length).toBeLessThanOrEqual(JOB_DETAIL_EVENT_LIMIT);
+      // ★ Silent truncation is the defect, not the cap: an operator reading the
+      // last row of a truncated ascending list concludes the job ended there.
+      expect(detail.eventsTruncated).toBe(true);
+    });
+
+    it("keeps the MOST RECENT window when it truncates", async () => {
+      const { offer, ingest, seeded } = await activateLease(5_403);
+      await ingest.ingest({ auth: auth("d4-recent"), request: batchRequest(offer, [attemptStarted(offer, 1)]) });
+      const { admin } = guardCtx();
+      await admin`INSERT INTO job_events
+        (id, organization_id, company_id, job_id, attempt_id, attempt_number, lease_id, fence_token,
+         event_id, sequence, event_type, event, event_digest, occurred_at)
+        SELECT gen_random_uuid(), ${ORG}, ${COMPANY}, ${seeded.jobId}, ${seeded.attemptId}, 1,
+               ${offer.leaseId}, ${offer.fenceToken}, gen_random_uuid(), g, 'log',
+               '{"payload":{}}'::jsonb, encode(sha256(('r'||g)::bytea),'hex'), now()
+        FROM generate_series(1000, ${1000 + JOB_DETAIL_EVENT_LIMIT + 50}) AS g`;
+
+      const detail = await ops().getJobDetail(ORG, COMPANY, seeded.jobId);
+      const seqs = detail.events.map((e) => e.sequence as number);
+      // The terminal lives at the newest end; dropping the OLDEST is what keeps a
+      // truncated response useful.
+      expect(Math.max(...seqs)).toBe(1000 + JOB_DETAIL_EVENT_LIMIT + 50);
+      // and still ascending after the reverse
+      expect([...seqs].sort((x, y) => x - y)).toEqual(seqs);
+    });
+
+    it("★ returns a GRANTED artifact row that never committed — the stale-fence record stays discoverable", async () => {
+      const { offer, ingest, seeded } = await activateLease(5_404);
+      await ingest.ingest({ auth: auth("d4-art"), request: batchRequest(offer, [attemptStarted(offer, 1)]) });
+      const { admin } = guardCtx();
+      // A grant-intent row and a committed row for DIFFERENT identifiers. The
+      // granted one is the record that survives a refused commit; a
+      // committed-only read would delete exactly the evidence the stale-fence
+      // clause exists to preserve.
+      await admin`INSERT INTO job_artifacts
+        (id, organization_id, job_id, attempt, identifier, kind, status, created_at)
+        VALUES
+        (gen_random_uuid(), ${ORG}, ${seeded.jobId}, 1, 'never-committed', 'trace', 'granted', now()),
+        (gen_random_uuid(), ${ORG}, ${seeded.jobId}, 1, 'landed', 'trace', 'committed', now())`;
+
+      const detail = await ops().getJobDetail(ORG, COMPANY, seeded.jobId);
+      const byId = Object.fromEntries(detail.artifacts.map((a) => [a.identifier, a.status]));
+      expect(byId["never-committed"]).toBe("granted");
+      expect(byId["landed"]).toBe("committed");
+      expect(detail.artifactsTruncated).toBe(false);
+    });
+  });
 
   it("accepts the first attempt_started and projects attempt leased->running + job queued->running", async () => {
     const { offer, ingest, seeded } = await activateLease(5_001);

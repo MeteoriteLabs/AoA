@@ -23,12 +23,13 @@
 // calls JOB-007 `revokeExecutionTarget`. The operator cancel path is JOB-006's existing
 // `worker-control.ts` route (reused, not duplicated here — see routes/job-control.ts).
 
-import { and, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import {
   jobs,
   jobAttempts,
   leases,
   jobEvents,
+  jobArtifacts,
   workers,
   type CancellationOutcome,
   type Db,
@@ -108,6 +109,50 @@ const EVENT_SUMMARY_COLUMNS = {
   // DROPPED: event (jsonb payload), fenceToken, leaseId.
 } as const;
 
+/**
+ * BRW-003d-4 — the operator's artifact view.
+ *
+ * ★ EVERY DISPOSITION, with `status` ON THE WIRE. `job_artifacts` holds multiple
+ * live rows per identifier by design (granted / committed / quarantined each have
+ * their own partial unique, so they coexist). A `WHERE status = 'committed'` read
+ * would make the stale-fence clause — "commit refuses; the record stays
+ * discoverable" — FALSE BY CONSTRUCTION, because the record that survives a
+ * refused commit IS the `granted` intent row.
+ *
+ * Duplicates per identifier are intentional and legible precisely because `status`
+ * is on the wire: an operator reads `artifact X: granted -> committed` as one
+ * lifecycle, not as two artifacts. Hiding a disposition to avoid a duplicate is
+ * hiding the disposition.
+ *
+ * DROPPED: objectKey — a storage-internal path, on the same principle that drops
+ * fence and targetId from the other projections.
+ */
+const ARTIFACT_SUMMARY_COLUMNS = {
+  id: jobArtifacts.id,
+  attempt: jobArtifacts.attempt,
+  identifier: jobArtifacts.identifier,
+  kind: jobArtifacts.kind,
+  status: jobArtifacts.status,
+  applyStatus: jobArtifacts.applyStatus,
+  versionNumber: jobArtifacts.versionNumber,
+  sizeBytes: jobArtifacts.sizeBytes,
+  sha256: jobArtifacts.sha256,
+  committedAt: jobArtifacts.committedAt,
+  expiresAt: jobArtifacts.expiresAt,
+  createdAt: jobArtifacts.createdAt,
+} as const;
+
+/**
+ * Response caps for the job detail read.
+ *
+ * ★ THE EVENTS SELECT HAD NO LIMIT AT ALL. It returned every `job_events` row for
+ * a job on an authenticated operator route, and a legal upload batch is up to 500
+ * events — so a long-running job's detail response was unbounded. Adding an
+ * unbounded artifacts section beside it would have doubled the problem.
+ */
+export const JOB_DETAIL_EVENT_LIMIT = 500;
+export const JOB_DETAIL_ARTIFACT_LIMIT = 200;
+
 const WORKER_SUMMARY_COLUMNS = {
   id: workers.id,
   scope: workers.scope,
@@ -183,17 +228,51 @@ export function createJobOperationsService(input: {
         const attempts = await tx
           .select(ATTEMPT_SUMMARY_COLUMNS)
           .from(jobAttempts)
-          .where(and(eq(jobAttempts.organizationId, organizationId), eq(jobAttempts.jobId, jobId)));
+          .where(and(eq(jobAttempts.organizationId, organizationId), eq(jobAttempts.jobId, jobId)))
+          .orderBy(asc(jobAttempts.attemptNumber));
         const leaseRows = await tx
           .select(LEASE_SUMMARY_COLUMNS)
           .from(leases)
-          .where(and(eq(leases.organizationId, organizationId), eq(leases.jobId, jobId)));
-        const events = await tx
+          .where(and(eq(leases.organizationId, organizationId), eq(leases.jobId, jobId)))
+          .orderBy(asc(leases.attemptNumber));
+        // ORDER BY (attemptNumber, sequence) — `sequence` is PER-ATTEMPT
+        // (job_events is unique on (organization_id, attempt_id, sequence)), so
+        // ordering by `sequence` alone interleaves two attempts of one job into
+        // nonsense. Both keys, always.
+        //
+        // Read DESCENDING and take limit+1: the extra row is purely the truncation
+        // signal, and reading from the newest end keeps the MOST RECENT window —
+        // the one containing the terminal, which is what an operator is looking
+        // for. Reversed back to ascending before it leaves.
+        const eventPage = await tx
           .select(EVENT_SUMMARY_COLUMNS)
           .from(jobEvents)
-          .where(and(eq(jobEvents.organizationId, organizationId), eq(jobEvents.jobId, jobId)));
+          .where(and(eq(jobEvents.organizationId, organizationId), eq(jobEvents.jobId, jobId)))
+          .orderBy(desc(jobEvents.attemptNumber), desc(jobEvents.sequence))
+          .limit(JOB_DETAIL_EVENT_LIMIT + 1);
+        const eventsTruncated = eventPage.length > JOB_DETAIL_EVENT_LIMIT;
+        const events = eventPage.slice(0, JOB_DETAIL_EVENT_LIMIT).reverse();
 
-        return { job, attempts, leases: leaseRows, events } as unknown as JobDetail;
+        const artifactPage = await tx
+          .select(ARTIFACT_SUMMARY_COLUMNS)
+          .from(jobArtifacts)
+          .where(and(eq(jobArtifacts.organizationId, organizationId), eq(jobArtifacts.jobId, jobId)))
+          .orderBy(asc(jobArtifacts.attempt), asc(jobArtifacts.identifier), asc(jobArtifacts.status))
+          .limit(JOB_DETAIL_ARTIFACT_LIMIT + 1);
+        const artifactsTruncated = artifactPage.length > JOB_DETAIL_ARTIFACT_LIMIT;
+        const artifacts = artifactPage.slice(0, JOB_DETAIL_ARTIFACT_LIMIT);
+
+        // Truncation is REPORTED, never silent: an operator reading the last row of
+        // a silently-truncated list concludes the job ended there.
+        return {
+          job,
+          attempts,
+          leases: leaseRows,
+          events,
+          eventsTruncated,
+          artifacts,
+          artifactsTruncated,
+        } as unknown as JobDetail;
       });
     },
 
