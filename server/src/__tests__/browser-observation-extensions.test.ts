@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { foldAttemptEvidence, type AttemptEventRow } from "../services/canary-terminal-projection.js";
+import {
+  foldAttemptEvidence,
+  PROJECTED_WIRE_EXTENSIONS_KEY,
+  type AttemptEventRow,
+} from "../services/canary-terminal-projection.js";
 import { redactRunEventPayload } from "../redaction.js";
 
 // BRW-003d-3 — stream metadata.
@@ -67,7 +71,12 @@ describe("BRW-003d-3 — the extension channel survives the projection", () => {
     // A carrier that invents an empty artefact on every event makes every payload
     // noisier for no information.
     const evidence = fold([row({ event: { ...OBSERVATION, extensions: [] } })]);
-    expect(JSON.stringify(evidence.events)).not.toContain("extensions");
+    // ★ Assert the ACTUAL key, via the exported constant. This first read
+    // `not.toContain("extensions")` — which can never fail, because the key is
+    // `wireExtensions` and lowercase "extensions" is not a substring of it. A
+    // surviving mutant is what exposed it: the test was checking a string the
+    // code never emits.
+    expect(JSON.stringify(evidence.events)).not.toContain(PROJECTED_WIRE_EXTENSIONS_KEY);
   });
 
   it("tolerates a malformed extensions field without losing the event", () => {
