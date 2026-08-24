@@ -44,6 +44,45 @@ distributed worker, proven once" is **Sprints 1–5**.
 
 ## 2. How to run a sprint (read once, applies to every sprint)
 
+### ★ 2.0 READ THIS BEFORE SPRINT 1 — `verify` cannot currently go green on this branch
+
+**A sprint is not done until CI is green, and right now CI cannot be green.** The `verify` job
+has hit its `timeout-minutes: 60` cap on **five consecutive runs**, and `ci-required` correctly
+fails as a result (`verify=cancelled (required for code changes)`).
+
+| Run | SHA | `verify` wall clock | Outcome |
+|---|---|---|---|
+| 32727172193 | `259dba6c4` | 48m | **failure** (a real test failure, not a timeout) |
+| 32751635948 | `5fbd3b3fb` | 65m00s | cancelled at the cap |
+| 32753452892 | `30861d0be` | 65m00s | cancelled at the cap |
+| 32769954082 | `e33f33efa` | 65m01s | cancelled at the cap |
+| 32775229849 | `43acb1a91` | 65m01s | cancelled at the cap |
+| 32780086655 | `5314e62a3` | 64m59s | cancelled at the cap |
+
+**It predates the Sprint-0 work.** The first two timeouts are on SHAs pushed hours before any
+Sprint-0 commit existed, and on `5314e62a3` **every other job is green** — `policy`,
+`brand-check`, `lint`, `e2e`, `e2e-pgvector`, `migrations`, `distributed-contract`, `browser`,
+`changes`, and both `worker-protocol-contract-bytes` lanes.
+
+**What is known and what is not.** The job's own comment budgets ~37 min of tests plus ~8 min of
+build and calls 60 "durable headroom" — so this is a regression against a measured baseline, not
+drift. Beyond that, do not trust the logs without re-measuring: the two timed-out logs stop at
+very different points (one after ~3.5 min of the test step, one after ~49 min), which is more
+consistent with **log truncation** than with a single hang, and I did not resolve which. Five
+identical 60-minute stops is deterministic; **stop re-running it and bisect.**
+
+**Suspect window:** the last `verify` that produced a full run is before ~12:30 on 2026-08-24;
+the first cap-out is ~16:41. Both lanes pushed heavily in between. `git log --since` over that
+window is the bisect range.
+
+**Consequence for the sequence:** Sprint 1's "Gate to start: none" is true of its *code*, and
+false of its *definition of done*. Either fix `verify` first, or accept that Sprints 1-3 land
+with the required check red and say so out loud in each result doc. **Do not raise
+`timeout-minutes` to make it green** — that converts a regression into a permanently slower gate
+and hides whatever caused it.
+
+---
+
 ### 2.1 Boot
 
 ```bash
