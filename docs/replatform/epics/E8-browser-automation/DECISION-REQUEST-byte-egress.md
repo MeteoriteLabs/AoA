@@ -1,3 +1,87 @@
+# RESOLVED — OPTION D: the PROVIDER exports to object storage, the port carries a REFERENCE
+
+**Decided by the programme.** This document is kept as the record of how the question was framed,
+including where the framing was WRONG. BRW-003 is unblocked and designs against this.
+
+## The decision
+
+Bytes go **provider → S3-compatible object storage** via a short-lived prefix-scoped presigned
+grant. The port carries only a reference — exactly what `stdoutRef`/`stderrRef` already do. Bytes
+never touch the worker daemon or the provider port.
+
+The obligation lives in `packages/sandbox-provider-contract` as a **capability** — "given a grant
+and a path, export and return a reference" — implemented per provider. A desktop provider
+implements it against local storage. One path, one set of guarantees, both deployment shapes.
+
+## ★ Why this escalation was wrong, and it is worth being precise about it
+
+**Option B was rejected**, correctly, and on the reasoning this document itself gave: bypassing the
+cleanup-authority guarantee leaves it *stated and no longer true*.
+
+**But the option set was missing the option the programme had already committed to.** Verified
+directly rather than taken on trust — `docs/architecture/distributed-execution-authority.md:11`,
+echoed at `E0-foundation/implementation-plan.md:378`:
+
+> Snapshots, logs, traces, **downloads**, checkpoints, **artifacts** | S3-compatible object storage
+> | Transfer through short-lived prefix-scoped grants
+
+That row names **downloads** and **traces** — BRW-003's exact artifact kinds. The four walls in §2
+below are all real, and every one of them was derived from the worker/port side. **None of them was
+ever checked against the architecture authority.** The mechanism analysis was exhaustive and the
+authority went unread; this is the same failure this programme keeps recording, in a new place.
+
+Against those four walls Option D costs nothing: (a) the port needs no file operation, it carries a
+reference; (b) the command channel's byte exclusion is **honoured, not amended**; (c)
+`denyControlPlane` is irrelevant — object storage is not the control plane, and the uploader is the
+provider, not the guest; (d) `E2bTransport.readFile` stays unsurfaced, used INSIDE the provider
+implementation. Both §3 constraints dissolve: the cleanup-authority no-customer-bytes proof is
+untouched because no bytes traverse `inspect`, and bounded memory stops being a port problem.
+
+The grant machinery is real and frozen: `artifactUploadGrantV1Schema` and
+`quarantineUploadGrantV1Schema` (`packages/worker-protocol/src/artifacts.ts:411,544`), with routes
+`ARTIFACT_TRANSFER_GRANT_PATH` / `ARTIFACT_COMMIT_PATH`.
+
+## ★ CORRECTION to the costing constraint — the out-of-process boundary is NOT in code
+
+The decision as first relayed said the real E2B provider *must* run out-of-process behind an
+`adapter-manager` service, which would have made Option A mean streaming up to 5 GiB across a
+network hop into a service with no Dockerfile, source, wire protocol or client.
+
+**That boundary does not exist in code yet.** Verified:
+
+- `adapter-manager` appears ONLY as a string constant in a compose-topology validator
+  (`scripts/lib/staging-manifest-invariants.mjs:29`). There is no service directory, no Dockerfile,
+  no source.
+- `E2bSandboxProvider` is a plain in-process class over an **injected transport**
+  (`packages/sandbox-e2b-provider/src/e2b-provider.ts:132`), and the supervisor holds
+  `readonly provider: SandboxProvider` (`worker-daemon/src/supervisor/supervisor.ts:88`) — an
+  in-process interface, no network hop. It has **zero production construction sites** today.
+- The networked driver is explicitly out of core.
+
+The staging-manifest ban itself is real — it forbids the provider-control credential across
+`environment` / `env_file` / `secrets` / `configs` / `volumes` on every non-adapter surface
+(`:448-462`) — but it constrains a **compose topology whose adapter-manager service does not
+exist**. It is a forward-looking constraint, not a current runtime boundary.
+
+**So Option A's original costing was not wrong for today's code.** Option D is chosen on its
+merits — it honours the byte exclusion rather than amending it, and keeps one path for cloud and
+desktop — not because Option A was disqualified by an out-of-process hop that has not been built.
+
+## Open question owned by Lane A (not a blocker on designing)
+
+Can a presigned grant be minted for, and reached from, the **provider** side, and does the
+fence/scope survive that hop? If it fails, Option A returns, costed against out-of-process.
+
+**One thing this lane could not verify, flagged rather than asserted:** the live
+grant → PUT → commit round-trip is described at
+`packages/worker-daemon/src/transport/client.ts:54` as **DAT-002 slice 7**, "a documented CLI-003
+non-goal", with the route "provided for completeness so the commit path has its paired grant op on
+the client." No slice-7 evidence was found in `DAT-002-result.md`. The grant *schemas* and *routes*
+are real and frozen; whether the round-trip is *built* could not be confirmed here. That may widen
+the gate question from "does the fence survive the hop" to "can the round-trip complete at all".
+
+---
+
 # DECISION REQUEST — how does a byte leave a sandbox?
 
 **Raised by:** Lane B (E8), during BRW-003 terrain · **Raised at:** `9c61f8fad`
