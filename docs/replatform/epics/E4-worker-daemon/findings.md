@@ -217,7 +217,7 @@ the trap is named in WRK-008 slice 2b §1.1(c).
 **Blocks:** any claim that a distributed worker executes real work; Sprint 5's single-journey
 proof; MIG-005/006/007 ACTIVE, which inherit it on top of [[E4-F007]].
 
-## E4-F011 — The desktop boot root is TWO gates from live dispatch, not four
+## E4-F011 — The desktop boot root is THREE gates from live dispatch, not four
 
 **Status:** `open` · Severity: HIGH · Source: WRK-008 slice 2b adversarial review (2026-08-25) — the review falsified the plan's own four-gate claim.
 
@@ -228,7 +228,15 @@ a **fatal** refusal, so any desktop host that boots at all is running `os_keycha
 present, and `bin/worker-daemon.ts:267` is entered. Gate 3 (`no_worker_identity`) is therefore
 **already satisfied there**, and gate 5 (`no_session`) is reachable within ten minutes of a code.
 
-**The container stands on four gates. The desktop stands on two: `no_provider` and the flag.**
+**The container stands on four gates. The desktop stands on three: `no_provider`, the flag, and
+`no_event_outbox_path`.**
+
+> **★ CORRECTED 2026-08-25.** This entry was filed saying **two**, copying the number from WRK-008
+> slice 2b before its own round-2 review caught the contradiction: that plan's gate table marks the
+> desktop as gated on `AOA_WORKER_EVENT_OUTBOX_PATH` (`runDesktopHost` forwards `env` verbatim into
+> the same bootstrap, so both roots hit that gate identically) and then counted the desktop at two
+> in the sentence below the table. The table was right. The finding's *substance* is unchanged — one
+> of the container's four gates is already satisfied on the desktop — only the count moved.
 DSK-003 ships that root as a signed installer, so the day a provider lands in it, every installed
 desktop running the build is one environment variable from taking real leases.
 

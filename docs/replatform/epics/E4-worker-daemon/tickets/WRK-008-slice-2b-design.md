@@ -1,11 +1,17 @@
 # WRK-008 slice 2b — Design: compose the poll loop and supervisor so the daemon dispatches
 
-**Status:** DESIGN. **Start SHA:** the commit that adds this file.
+**Status:** DESIGN, **revision 3** — round-2 adversarial review plus the cross-plan completeness
+critic. Throughout this document *"the first draft"* means revision 1 and *"revision 2"* means the
+version reviewed; every correction says which one it is correcting and why, because a design pass
+that quietly overwrites its own reasoning teaches the next reader nothing.
+**Start SHA:** the commit that adds this file.
 **Epic:** `E4-worker-daemon`. **Closes:** the daemon half of E4-D12 that slice 2a left open.
 **Predecessors:** [`WRK-008-slice-2-design.md`](./WRK-008-slice-2-design.md) ·
 [`WRK-008-slice-2-result.md`](./WRK-008-slice-2-result.md) (landed as **2a**) ·
 [`E4-D12-live-dispatch-terrain.md`](./E4-D12-live-dispatch-terrain.md)
-**Depends on:** DEP-010 (a provider) · WRK-010 (session renewal) — §3 states which is hard.
+**Depends on:** DEP-010 (a provider, Sprint 2) — SOFT · WRK-010 **slice 1** (the renewal route,
+Sprint 1) — SOFT · ★ **WRK-010 slice 2 (Sprint 2.5) — HARD for §4's session composition.** §3.2
+says why; §0.1 says what Sprint 2 changes underneath this document.
 **Sprint:** 3 (see `docs/replatform/GO-BOOK.md`)
 
 ---
@@ -27,6 +33,69 @@ roots, and §8 proves that with executable artifacts rather than a paragraph.
 > they do not stand on the same number of gates. The desktop injects OS custody on every boot, so
 > the identity gate is **already satisfied there**. The container's four-gate posture is real; it
 > is not the whole picture, and an earlier revision of this document asserted it as if it were.
+
+---
+
+## ★ 0.1 WRITTEN AGAINST THE PRE-DEP-010 TREE — read this before Steps 8b, 9 and §5
+
+This document was designed before DEP-010 existed, and the go-book runs DEP-010 (**Sprint 2**)
+**before** this slice. DEP-010 Step 3 adds `provider: deps.provider` to the `bootstrap({...})` call
+in `packages/worker-keystore/src/bin/desktop-host.ts:254-260` — today that call passes `env`,
+`proc`, `identityStore`, `receiptStore`, `logFilePath` and **no `provider` key at all** — and its
+Step 2 makes `decideDispatchComposition` + `DISPATCH_REFUSAL_MESSAGES` a **public export** of
+`packages/worker-daemon`. Four assertions written below stop being true at that moment.
+
+| # | Written here | What Sprint 2 does to it | Reformulate as |
+|---|---|---|---|
+| 1 | Step 8b's `"provider" in call === false` | the key is **present** with value `undefined`, so `in` is `true` and the assertion goes red | a **value** assertion — `call.provider === undefined` — under an env the test builds explicitly, with DEP-010's `PROVIDER_ENV` (`AOA_WORKER_SANDBOX_PROVIDER`) and `AOA_WORKER_E2B_TEMPLATE` removed |
+| 2 | Step 9b's declared property — "fails if any call site passes a `provider` key" | `desktop-host.ts` will pass one. The guard lands in the **always-on `policy` job** (`pr.yml:124-127` — gated on draft status only, with no `changes.outputs.code` gate), so it would be red on **every** PR, docs-only ones included | "no boot root constructs a provider **unconditionally**; the shipped default resolves to none" — Step 9b carries the rewrite |
+| 3 | §2 row 1's desktop cell — "**no** — E4-D01 makes it unconstructable here" | E4-D01 still holds for the **daemon** package (it may not import a provider, and DEP-010 leaves `worker-daemon-boundary.mjs` byte-unchanged), but the **keystore** root gains `bin/sandbox-provider.ts` and can construct one. Gate 1 stops being structural on that root | "the shipped default **resolves** to `{kind:"none"}` because `AOA_WORKER_SANDBOX_PROVIDER` is unset" |
+| 4 | Step 9a's `providerUrl: "http://fake-provider:8080"` declaration, and §8 caveat (i) | DEP-010's resolver reads `AOA_WORKER_SANDBOX_PROVIDER` + `AOA_WORKER_E2B_TEMPLATE` and **never** reads `AOA_WORKER_PROVIDER_URL`. A full-tree grep still finds that name at exactly two lines — `docker-compose.d1.yml:304` and `:343` — and in no code whatsoever | declare it as **dead env**, not as a gate, and declare the container root's real provider posture instead — Step 9a carries the rewrite |
+
+**★ Say the weakening out loud.** Items 1 and 2 are strictly **weaker** than what this document
+originally promised. *"This root passes no provider"* is a property of the SHAPE of a call and is
+falsifiable only by a code change. *"This root's shipped default resolves to no provider"* is a
+property of a VALUE under one environment, and is falsifiable by an environment variable. **That
+weakening is the honest content of `E4-F011`** — the finding says DEP-010 may not land a provider in
+that root without a written decision about the flag's default on desktops, and Sprint 2 lands one.
+Do not paper over it by writing a guard that asserts the stronger property and passes for the weaker
+reason; that is the "green means nothing" shape this programme has been bitten by five times.
+
+**★ Write the end state down before it arrives, not after Sprint 3.** Today the desktop's inertness
+rests on one structural fact — no code path anywhere can construct a provider — plus environment.
+After Sprint 2 it rests on **environment alone**: `AOA_WORKER_SANDBOX_PROVIDER`,
+`AOA_WORKER_DISPATCH_ENABLED` and `AOA_WORKER_EVENT_OUTBOX_PATH`, with gate 3 already satisfied on
+every boot (§1.1b). E4-F011's gate count becomes *"three environment variables and zero structural
+gates."* That is a real posture change on the root DSK-003 ships as a signed installer, and it
+belongs in the register rather than in a reviewer's head.
+
+**★ One thing Sprint 3 inherits that §5 did not budget for.** DEP-010 publishes
+`decideDispatchComposition`, `DISPATCH_REFUSAL_MESSAGES` and the input/refusal types from
+`packages/worker-daemon/src/index.ts`, pinned by a new
+`packages/worker-daemon/src/__tests__/public-surface-dispatch.test.ts`. Step 4 below **retires**
+`no_self_model_reader` from `DispatchRefusalReason`, Step 7 replaces `hasSelfModelReader` with
+`hasWorkerIdentity`, and Step 4 adds `hasEventOutboxPath` and swaps `selfModel` for `selfModelRead`
+(today's shape is `compose-dispatch.ts:22-49`). **This slice therefore breaks Sprint 2's published
+surface**, and must edit that test plus DEP-010's Step 8 supporting case ("the same boot reports
+`no_self_model_reader`") — which DEP-010 itself marks *"demoted; retires with slice 2b"*, so the
+expectation is agreed; only the edit was unassigned. Both are now in §5.
+
+**Two registers this slice turns red, named by neither the original §5 nor Step 11.**
+
+- **`scripts/test-execution-census.json`.** Step 9 adds two `*.test.mjs` files under `scripts/`.
+  `scripts/check-execution-census.mjs:3-8` **fails when a `*.test.mjs` exists on disk with no entry
+  in that manifest**; its `SEARCH_ROOTS` are `["scripts","docker"]` (`:28`); and it runs in the
+  always-on `policy` job (`pr.yml:317-324`). A `"runs"` entry must also name the workflow **step**,
+  and the checker verifies that step still names the file — so the `pr.yml` step and the manifest
+  entry ride in the same commit as the test files. `scripts/test-inventory.json` is a **different**
+  manifest and covers neither. (DEP-010 spotted this hazard — for itself, in its §0.1 — and the note
+  was correct and in the wrong plan.)
+- **`docs/deploy/environment-variables.md`.** `AOA_WORKER_EVENT_OUTBOX_PATH` (Step 5) would ship
+  undocumented **with no guard firing at all**: brand-check guard 9 (`pr.yml:648-663`) greps for the
+  literal `process.env.AOA_[A-Z_]+` in `*.ts`, and `config/config.ts` reads every worker variable
+  through the `ENV` map (`:63-79`) against an injected `env`. The existing
+  `AOA_WORKER_DISPATCH_ENABLED` row (`environment-variables.md:192`) is there by discipline, not by
+  enforcement. Add the row in the same commit as Step 5, in that row's style.
 
 ---
 
@@ -78,10 +147,23 @@ invocation (`:398`) satisfies zero of.
 > with both stores present** — the enrolment block at `:267` is entered, and **gate 3 is not a
 > gate there.**
 >
-> The desktop is standing on **two** gates, not four: no provider, and the flag. The day DEP-010
-> lands a provider in a composition root that also builds these stores, the desktop drops to
-> **one env var**. That is precisely the risk §8 claims to have retired — and §8's claim is true
-> only for the containerised D1 workers.
+> The desktop is standing on **three** gates, not four: no provider, the flag, and the outbox path
+> (gate 4, which this slice introduces — §2 row 4). The day DEP-010 lands a provider in a
+> composition root that also builds these stores, the desktop drops to **two env vars**. That is
+> precisely the risk §8 claims to have retired — and §8's claim is true only for the containerised
+> D1 workers.
+>
+> **★ Three, not two — and revision 2 of this document said two in seven places.** The count is
+> §8's own enumeration standard applied to this root: §8 counts the container at four (the flag, a
+> provider-bearing root, custody + a real enrolment, an outbox path), and the desktop is that list
+> minus custody, which is **three**. Gates 5 and 6 are deliberately outside that enumeration on both
+> roots — a session comes from enrolling this device and a self-model comes from a different person,
+> and neither is a change somebody lands. **Note the direction of the correction:** three
+> *understates* nothing. Saying "two" made the desktop sound **closer** to live dispatch than the
+> code has it, so the fix moves the risk posture down, not up. What it repairs is a number recorded
+> in a HIGH finding (`E4-F011`, `findings.md:220-232`) and a number that would have sent the DEP-010
+> implementer looking for dispatch after flipping one variable and finding
+> `no_event_outbox_path` instead.
 
 And `enrollOnce` **deliberately discards the session** (`enrollment/enroll-once.ts:310`, I13)
 because `EnrollResult` is a plain literal containing `session.token` and one
@@ -122,22 +204,32 @@ builds** — a suite passing against a worker that does not exist. Filed as a fi
 
 | # | Gate (refusal token) | Fixed by | Container (D1) | ★ Desktop (`aoa-worker-desktop`) |
 |---|---|---|---|---|
-| 1 | a `SandboxProvider` was injected (`no_provider`) | DEP-010 | **no** — E4-D01 makes it unconstructable here | **no**, same reason |
+| 1 | a `SandboxProvider` was injected (`no_provider`) | DEP-010 | **no** — E4-D01 makes it unconstructable here, and DEP-010 leaves this root untouched (its §5 does not list `bin/worker-daemon.ts`) | **no today; an ENV RESOLUTION after Sprint 2** — DEP-010 gives this root `bin/sandbox-provider.ts`, so the shipped default refuses because `AOA_WORKER_SANDBOX_PROVIDER` is unset, not because nothing can construct a provider (§0.1 item 3) |
 | 2 | `AOA_WORKER_DISPATCH_ENABLED=1` (`dispatch_disabled`) | editing env | yes, but gate 1 refuses first | yes, but gate 1 refuses first |
 | 3 | a device identity exists (`no_worker_identity`) | a root injecting OS-custody stores + enrolling | **no** — `mounted_secret`, no stores (§1.1b) | ★ **ALREADY SATISFIED** on every boot (§1.1b) |
-| 4 | `AOA_WORKER_EVENT_OUTBOX_PATH` is set (`no_event_outbox_path`) | editing env | yes, but 1/3 refuse first | yes, but gate 1 refuses first |
-| 5 | a live session (`no_session`) | a fresh enrolment code (WRK-010 removes the ceiling) | needs 3 first | reachable within 10 min of code issuance (§3.2) |
+| 4 | `AOA_WORKER_EVENT_OUTBOX_PATH` is set (`no_event_outbox_path`) | editing env | yes, but 1/3 refuse first | ★ **yes — a real gate here**, though gate 1 refuses first. `runDesktopHost` forwards `env: deps.env` verbatim into the same `bootstrapWorkerDaemon` (`desktop-host.ts:254-260`), so both roots hit this gate identically, and Step 5 forbids a default. Contrast row 3, which is how this table marks a **non**-gate |
+| 5 | a live session (`no_session`) | a fresh enrolment code (WRK-010 **slice 2** removes the ceiling — §3.2) | needs 3 first | reachable within 10 min of code issuance (§3.2) |
 | 6 | the target has an admin-set placement profile (`no_self_model`) | an org admin | needs 1–5 first | needs 1–5 first |
 
-**The container stands on four gates. The desktop stands on two: gate 1 and the flag.** That is the
-correction §1.1(b) makes, and it is the reason §8's "four simultaneous changes" answer is scoped to
-D1 and says so.
+**The container stands on four gates. The desktop stands on three: gate 1, the flag, and the outbox
+path.** That is the correction §1.1(b) makes, and it is the reason §8's "four simultaneous changes"
+answer is scoped to D1 and says so.
+
+> **★ The count in this sentence must match row 4, and in revision 2 it did not.** The table
+> introduced gate 4 and marked the desktop as gated on it; the sentence underneath then counted the
+> desktop at two. Both cannot be right, and the table was. Apply the same enumeration §8 uses —
+> flag, provider-bearing root, custody + enrolment, outbox path — and the desktop is that list minus
+> custody: **three**. Anywhere this document, `E4-F011` or the gate-clause register says "two",
+> it is the pre-correction number.
 
 **The flag is still non-vacuous — and on the desktop it is doing more work than anywhere else.**
 Gate 1 is structural and protects *today's* build on both roots; gate 3 protects only the
-container. The flag is what stands between "DEP-010 landed a provider in the desktop composition
-root" and "every installed desktop running that build starts taking real leases". In tests it is
-reached by injection, the only way it is reachable at all.
+container; gate 4 is an env edit on this host and protects both. The flag is what stands between
+"DEP-010 landed a provider in the desktop composition root" and "every installed desktop running
+that build starts taking real leases". In tests it is reached by injection, the only way it is
+reachable at all. **★ After Sprint 2, gate 1 stops being structural on the desktop** (§0.1 item 3),
+so on that root the flag and the outbox path become the whole of it — three environment variables,
+zero structural gates.
 
 **Ordering, extending 2a's "deepest fact first."** `no_provider` and `no_worker_identity` are
 BUILD/deployment facts no env edit fixes. `dispatch_disabled` is an explicit operator choice —
@@ -173,17 +265,63 @@ side. Neither blocks the other.
 > **★ But DEP-010 inherits a decision this slice cannot make for it (finding `E4-F011`).** The
 > provider is the *last* structural gate on the desktop root (§1.1b): the moment
 > `desktop-host.ts` — or anything that, like it, builds OS custody — also constructs a provider,
-> that root goes from two gates to **one env var**. DEP-010 must state, explicitly, which root(s)
-> it lands a provider in and what the flag defaults to there. 2b's contribution is that the
-> question is on the table with an artifact behind it (Step 8b's positive control) rather than
-> being discovered from a desktop that started taking leases after an update.
+> that root goes from three gates to **two env vars** (the flag and the outbox path), and **zero**
+> of what remains is structural. DEP-010 must state, explicitly, which root(s) it lands a provider
+> in and what the flag defaults to there. 2b's contribution is that the question is on the table
+> with an artifact behind it (Step 8b's refusal-token ladder) rather than being discovered from a
+> desktop that started taking leases after an update.
+>
+> **★ In the go-book's sequence this has already happened.** DEP-010 is Sprint 2 and runs *before*
+> this slice, and it does land a provider path in exactly that root. So read this paragraph as the
+> statement of a decision that was made, not one that is pending: §0.1 records what it cost, and
+> `E4-F011` closes only when DEP-010's own acceptance proves the shipped desktop **default**
+> constructs no provider — a value property, not the structural one this finding was filed against.
 
-### 3.2 WRK-010 (session renewal) — **SOFT, and the limit is severe. Document it loudly.**
+### 3.2 WRK-010 — **slice 1 is SOFT; slice 2 (Sprint 2.5) is HARD for §4's composition**
 
-> **Without WRK-010, a composed worker dies at T0+15min and cannot come back.**
+> **Without WRK-010 SLICE 2, a composed worker dies at the ten-minute code-route boundary and
+> cannot come back — and WRK-010's route ends up with zero production callers.**
 
-Verified: code route 10 min, session 15 (`worker-enrollment.ts:22-23`); a session is minted
-**only** by enrolment; no device-session renewal route. `SessionStore.forceRefresh`
+**★ THE CORRECTION REVISION 3 MAKES, AND IT IS THE LARGEST ONE IN THIS DOCUMENT.** Revision 2 wired
+§4's seam to `enroller.renew({hello, code, idempotencyKey})`. That function
+(`enrollment/enroll.ts:119`) is the **enrolment code replay**, not a renewal client. Its own module
+header says so in as many words: *"there is NO dedicated renew route/audience"*, *"Replay is a
+lost-response RECOVERY mechanism … NOT sustained session renewal"*, and the server *"gates every
+enroll — replay included — on the enrollment CODE ROUTE TTL (`CODE_TTL_MS = 10 min` …), so a replay
+only succeeds while the code route is live"* (`enroll.ts:4-16`). Composing that thunk means the
+worker still loses authority at ten minutes — and it means **WRK-010's route, the entire product of
+Sprint 1, ships with no production caller.** That is the exact shape of the 17 unprovable gate
+clauses this programme's audit exists to fix, re-committed by the ticket that was supposed to give
+the route its first caller.
+
+**Therefore: Sprint 2.5 (WRK-010 slice 2) is a HARD dependency of §4's session composition.** The
+go-book inserts it between Sprints 2 and 3 for precisely this reason. §4's `renew` thunk points at
+**slice 2's worker-side renewal client** — a device-proof exchange against the WRK-010 route that
+needs no enrolment code at all — and not at `Enroller.renew`.
+
+> **★ If you choose to run 2b WITHOUT 2.5, say what you are shipping.** It is a legal thing to do
+> (dispatch is off by construction, so nothing is exposed), but then: the thunk falls back to the
+> code replay, **the ten-minute ceiling remains in full**, `E4-F007` **stays open** and must not be
+> touched, WRK-010's route still has zero callers, and §4's admission below — that the composed
+> daemon re-reads a bearer credential at arbitrary later times — stands rather than being retired.
+> The result doc must say all five things in its first section. What is NOT legal is composing the
+> replay thunk and describing it as the WRK-010 seam being filled.
+>
+> **★ And there is a lifecycle change that belongs to slice 2, not to a footnote here.**
+> `SessionStore.ensureFresh` (`identity/session.ts:103-107`) returns the current session while
+> `now() < expiresAtMs` and calls `forceRefresh()` **only once the session is absent or already
+> expired**; its own docblock states *"This is NOT a near-expiry renewal scheduler"*. The WRK-010
+> route refuses an expired session by construction. So a thunk pointed at that route **from today's
+> store fires exactly when the credential it must present is already dead** — the route would be
+> unusable by its only caller. Slice 2 adds the near-expiry threshold (WRK-010 §3.5(i) derives a
+> ≥5-minute headroom; below that a proof-replay window of up to ~4.9 minutes opens). **Step 2 below
+> composes `SessionStore` unchanged**, which is correct for this slice and is stated here rather
+> than composed over silently: 2b builds the seam, 2.5 changes when it fires.
+
+**The mechanism behind the box, verified against source.** Code route 10 min, session 15
+(`worker-enrollment.ts:22-23`); a session is minted **only** by enrolment; **and there is no
+device-session renewal route the worker calls** — Sprint 1 ships the route server-side, and until
+slice 2 nothing in `packages/worker-daemon` dials it. `SessionStore.forceRefresh`
 (`identity/session.ts:125`) replays the *enroll* op, so it recovers a session **only while the
 code route is live** — ≤10 min from issuance. Past that the replay 401s, the store STOPS,
 `reenrollment_required` is emitted, and the poll loop stops permanently
@@ -193,15 +331,21 @@ Worse for restarts: a worker restarted more than 10 minutes after its code was i
 steady state in `enrollOnce` (identity+receipt present ⇒ `skipped`, no network), so its **first**
 `ensureFresh()` 401s. It never obtains a session at all.
 
-**Decision: 2b ships behind the flag with the ceiling documented and does not hard-depend on
-WRK-010.** (1) Dispatch is off by construction meanwhile, so the ceiling has no production
-exposure. (2) 2b's composition is what makes WRK-010 provable end to end; hard-depending would
-invert a sequence that already cost this programme one reversal.
+**Decision: 2b hard-depends on WRK-010 SLICE 2 for what the thunk POINTS AT, and on nothing else.**
+The two halves used to be conflated. (1) The *seam* — one injected zero-argument thunk satisfying
+`SessionStoreDeps.renew` (`identity/session.ts:52-55`) — is 2b's to create, and 2b can build and
+test it with an injected fake. (2) The *body* it points at in production is slice 2's, and pointing
+it at `Enroller.renew` instead is not a degraded version of the same thing: it is a different
+mechanism with a ten-minute ceiling that leaves Sprint 1 with no caller. Dispatch being off by
+construction bounds the exposure, not the dishonesty.
 
 **What 2b owes in exchange — acceptance items, not good intentions:**
 - The `renew` thunk is the **named, single-line WRK-010 seam** (Step 2). DSK-001 described this as
   `IdentityLifecycle.acquireSession()`; **that symbol does not exist in code** — it appears only in
   two documents. 2b creates the seam for real.
+- ★ **2b does NOT resolve `E4-F007`.** Sprint 2.5 does, and the finding's register entry already
+  says so. Resolving it here would convert a live problem into a settled one on a worker that still
+  loses authority at ten minutes.
 - Composing emits a **boot WARN naming the ceiling**, so no operator discovers it from a dead
   worker (Step 7).
 - The result doc states the ceiling in its first section, not a footnote.
@@ -222,13 +366,23 @@ createWorkerIdentity()              ← NEW: identity/worker-identity.ts
       │       └── ★ §1.1(c): this hello makes offerSatisfiesWorker FALSE for every offer.
       │           That is the honest composed worker. A fixture hello here would be a lie.
       ├─ SessionStore({now, renew, metrics, logger}, initial = null)
-      │       └── renew: () => enroller.renew({hello, code, idempotencyKey}).session
-      │                    ▲          ▲
-      │                    │          └── code: readEnrollmentInput(config.enrollmentCodeSource,
-      │                    │                      env, readFileText).enrollmentCode — read LAZILY,
-      │                    │                      per renew. See "where the code comes from" below.
-      │                    └── ★ THE WRK-010 SEAM. One thunk. WRK-010 replaces its body with a
-      │                        device-proof renewal call and changes nothing else.
+      │       └── renew: () => renewSession()      ← ★ THE WRK-010 SEAM. ONE injected thunk,
+      │                    ▲                          typed by SessionStoreDeps.renew
+      │                    │                          (identity/session.ts:52-55).
+      │                    │
+      │                    ├── ★ SPRINT 2.5 (WRK-010 slice 2) — the PRODUCTION body: the
+      │                    │   worker-side renewal client. A device proof over the live
+      │                    │   session buys a fresh 15-minute one. NO enrolment code, no
+      │                    │   ten-minute ceiling, nothing re-read off disk.
+      │                    │
+      │                    └── ✗ NOT `enroller.renew({hello, code, idempotencyKey})`.
+      │                        That is the ENROLMENT CODE REPLAY (enroll.ts:119); its module
+      │                        header (:4-16) says there is no dedicated renew route and that
+      │                        the replay only succeeds while CODE_TTL_MS (10 min) is live.
+      │                        Wiring it here keeps the ceiling AND leaves WRK-010's route
+      │                        with zero callers (§3.2). If 2b runs before 2.5 anyway, this
+      │                        is the fallback, and the "where the renewal CODE comes from"
+      │                        note below is the price — read that note as PRE-2.5 ONLY.
       └─ createSessionProvider(store) ──► SessionProvider
              ├──► readWorkerSelfModel()   (client.selfModelRead)
              │       └─ assembleWorkerSelfModel({response, report: hello, sha256Fn})
@@ -248,7 +402,11 @@ production hello builder (`buildDesktopHello`) and exactly one production byte-d
 before ever reaching it — so the composition builds its own from the same function and the same
 persisted record, rather than receiving one.
 
-**★ Where the renewal CODE comes from, and what that costs.** `Enroller.renew` takes
+**★ Where the renewal CODE comes from, and what that costs — PRE-SPRINT-2.5 ONLY.** Everything in
+this subsection describes the fallback body (`Enroller.renew`) and evaporates the moment slice 2's
+device-proof client replaces it. It is kept because a reader who ships 2b before 2.5 is entitled to
+the full price list, and because "the seam is one thunk" is only credible if the expensive body is
+written down as well as the cheap one. `Enroller.renew` takes
 `RenewInput extends EnrollInput`, which requires `code: string` (`enrollment/enroll.ts:106-113`).
 In steady state `enrollOnce` returns `skipped` at `enroll-once.ts:194-204` **before**
 `deps.readInput?.()` at `:207`, so **nothing in the composed path is already holding a code**. The
@@ -263,22 +421,39 @@ acceptable, and all four are asserted in Step 2:
 
 1. **Lazy** — a daemon never asked for a session never touches the file (a `readCode` spy at 0
    calls after construction).
-2. **Named for the redactor** — the reader returns `enrollmentCode`, never `code`, precisely
-   because the logger's redactor keys off that field name
-   (`enrollment/enrollment-input.ts:11-15`, `:40`, `:124`). The thunk must keep that name all the
-   way to `RenewInput` rather than destructuring it into a local `code` in a loggable object.
+2. **Named for the redactor for as long as the type permits — and revision 2 asked for something
+   the type forbids.** The reader returns `enrollmentCode`, never `code`, precisely because the
+   logger's redactor keys off that field name: `SENSITIVE_SUBSTRINGS` (`logging/logger.ts:57-69`)
+   contains `"enrollmentcode"` and does **not** contain `"code"`, so the same bytes print in full
+   under a `code` key and `[redacted]` under an `enrollmentCode` one — the property
+   `enrollment/enrollment-input.ts:11-17` exists to state (`:40`, `:124`). Revision 2 then said the
+   thunk "must keep that name all the way to `RenewInput`". **It cannot.** `RenewInput extends
+   EnrollInput`, and `EnrollInput` declares the field literally as `code: string`
+   (`enroll.ts:106-109`, `:111-113`). The achievable property — and the one Step 2 asserts — is
+   that the hop into a `code` key happens **exactly once, inline in the `enroller.renew({...})`
+   argument position**: never bound to a local, never placed in an object that is logged, returned
+   or aggregated. That is precisely what the shipped enrolment path already does
+   (`enroll-once.ts:274-278`, `code: input.enrollmentCode`), and copying its shape is the whole
+   mitigation. Stating an unachievable property and then testing a weaker one is how a security
+   argument rots; the weaker one is the real one, so it is the one written down.
 3. **Never aggregated** — the value goes into `SessionStore`'s private field and never appears in
    a returned literal (I13, the same rule `enroll-once.ts:310` follows for the session).
 4. **A read failure is a transient rethrow, not a mint** — the store does not stop, and nothing
    generates a new identity.
 
-WRK-010 removes this entirely: its device-proof renewal needs no code at all. That is the second
-reason the seam is worth having, beyond the ceiling in §3.2.
+**WRK-010 slice 2 removes this entire subsection**: its device-proof renewal needs no code at all,
+so there is no lazy read, no redactor-naming discipline, and no bearer credential re-read at
+arbitrary later times. That is the second reason Sprint 2.5 is a hard dependency rather than a
+nicety, beyond the ceiling in §3.2.
 
 **Why `SessionStore` rather than returning the session from `enrollOnce`.** The store already owns
-every property needed — expiry, lazy acquisition (`ensureFresh`, `:103`), recovery
+every property this slice needs — expiry, lazy acquisition (`ensureFresh`, `:103`), recovery
 (`forceRefresh`, `:125`), terminal-401 stop with the `reenrollment_required` metric + warn, and
-rotation detection. It holds the token in a private field and never returns it in a loggable
+rotation detection. **★ It does not own the one property SPRINT 2.5 needs**, and this slice does not
+add it: `ensureFresh` refreshes only when the session is absent or **already expired**
+(`:103-107`), and its docblock says it is not a near-expiry scheduler. Composing the store
+unchanged is the right call for 2b and the wrong call for a route that refuses expired sessions —
+which is why the threshold is slice 2's first line of work and not a footnote here (§3.2). It holds the token in a private field and never returns it in a loggable
 aggregate, so **I13 stays intact**. Changing `enrollOnce`'s return type to carry a session would
 put a live bearer token one `logger.info` away from the log — the exact defect I13 prevents.
 
@@ -384,12 +559,24 @@ Paths are relative to `packages/worker-daemon/src` unless the package is named.
 `selfModel`) · `config/config.ts` (`AOA_WORKER_EVENT_OUTBOX_PATH`) · `bin/worker-daemon.ts` (thread
 identity → decide → read → decide → compose → register lifecycles) · `index.ts` (barrels) ·
 `__tests__/support/fake-control-plane.ts` (the self-model route) ·
-`scripts/gate-clause-wiring.json` (`E4-1/2/4` → `wired`; `E4-3` reason rewritten per §4.2) ·
+`scripts/gate-clause-wiring.json` (`E4-2/4` → `wired`; `E4-1` and `E4-3` stay `unwired` with
+rewritten reasons — see Step 10 and §4.2) ·
 `scripts/guard-inventory.json` · `.github/workflows/pr.yml` · `scripts/test-inventory.json`
 
-**Deliberately NOT modified:** `packages/worker-keystore/src/bin/desktop-host.ts`. It passes no
-`provider` today and this slice does not add one; Step 9b's guard turns that from a habit into a
-checked property, and Step 8b turns it into an assertion.
+**★ Modified, and added in revision 3 — §5 previously presented itself as exhaustive and was not:**
+
+| File | Why it is here |
+|---|---|
+| **`scripts/test-execution-census.json`** | Step 9 adds two `*.test.mjs` files under `scripts/`. `check-execution-census.mjs:3-8` fails on any `*.test.mjs` with no entry (`SEARCH_ROOTS = ["scripts","docker"]`, `:28`), and it runs in the always-on `policy` job (`pr.yml:317-324`). A `"runs"` entry must name the `pr.yml` **step**, and the checker re-verifies that the step still names the file — so manifest entry, workflow step and test file land in ONE commit. This is a **different** manifest from `scripts/test-inventory.json`, which covers neither |
+| **`docs/deploy/environment-variables.md`** | one new row for `AOA_WORKER_EVENT_OUTBOX_PATH`, in the style of the `AOA_WORKER_DISPATCH_ENABLED` row at `:192`. **No guard will catch its absence** — brand-check guard 9 (`pr.yml:648-663`) greps for literal `process.env.AOA_[A-Z_]+`, and `config/config.ts` reads through the `ENV` map (`:63-79`). Discipline is the only mechanism |
+| **`packages/worker-daemon/src/__tests__/public-surface-dispatch.test.ts`** | ★ **Sprint 2's file, broken by Sprint 3.** DEP-010 Step 2 publishes `decideDispatchComposition`, `DISPATCH_REFUSAL_MESSAGES` and the input/refusal types from `index.ts` and pins them with this test. Step 4 retires `no_self_model_reader`, Step 7 replaces `hasSelfModelReader` with `hasWorkerIdentity`, and the input gains `hasEventOutboxPath` and swaps `selfModel` for `selfModelRead`. Update the pinned surface here, in the commit that changes it |
+| **DEP-010's Step 8 supporting case** | its *"the same boot reports `no_self_model_reader`, and **not** `no_provider`"* case asserts a token this slice deletes. DEP-010 already marks the paired mutation *"demoted; retires with slice 2b"*, so the expectation was agreed and only the edit was unassigned. DEP-010 adds no new file at Step 8 (its keystore test-inventory pin moves 18 → 20 across Steps 3 and 7), so **find it by grepping the token, not by the filename** — most likely `packages/worker-keystore/src/__tests__/desktop-host-provider.test.ts`, which is where its Step 4 says its cases land |
+| **`docs/replatform/epics/E4-worker-daemon/findings.md`** | `E4-F011`'s title and body say **two** gates; §1.1(b) and §2 now say **three**. A HIGH finding carrying a number the owning design has corrected is exactly the "one document asserting what another has retracted" failure this register exists to stop. Status stays `open`, the manifest key stays, ownership stays DEP-010 — text only. Also add `E4-F008`'s disposition per §9 |
+
+**Deliberately NOT modified by THIS slice:** `packages/worker-keystore/src/bin/desktop-host.ts`.
+★ **Read that as "this slice adds nothing to it", not as "it passes no provider" — after Sprint 2 it
+does** (§0.1). Step 9b's guard turns the shipped *default* into a checked property, and Step 8b
+turns it into an assertion; neither can any longer assert the absence of the key itself.
 
 **New tests:** `host-probes.test.ts` · `worker-identity.test.ts` ·
 `self-model-read.component.test.ts` · `dispatch-runtime.test.ts` ·
@@ -401,11 +588,25 @@ checked property, and Step 8b turns it into an assertion.
 **★ Why that last one lives in the keystore package and cannot live beside the others.** The
 dependency arrow is keystore → daemon and never back:
 `packages/worker-daemon/package.json:27-30` declares exactly
-`@armyofagents/worker-protocol` + `pino` (and `worker-keystore/package.json:27-30` is what declares
-the arrow the other way), while `check-worker-daemon-boundary.mjs` rejects a bare
-specifier under `packages/worker-daemon/src`. A daemon-side test importing `runDesktopHost` would
-be an undeclared dependency **and** a workspace cycle. The desktop boot root is therefore proven
-from the side that owns it — which is also the side that would break it.
+`@armyofagents/worker-protocol` + `pino`, and `worker-keystore/package.json:27-30` is what declares
+the arrow the other way. A daemon-side test importing `runDesktopHost` would be an undeclared
+dependency **and** a workspace cycle. The desktop boot root is therefore proven from the side that
+owns it — which is also the side that would break it.
+
+> **★ Revision 2 cited a checker that would not have caught it, and the citation is withdrawn.**
+> That draft said `check-worker-daemon-boundary.mjs` "rejects a bare specifier under
+> `packages/worker-daemon/src`", offering the guard as the enforcement behind the placement. Its
+> directory walk **skips test sources entirely** — `if (kind !== "runtime") continue; // test source
+> + non-source files are skipped` (`check-worker-daemon-boundary.mjs:118`), and
+> `classifyRuntimeSourceFileName` returns `"test"` for any `*.test.ts`
+> (`scripts/lib/worker-protocol-boundary.mjs:94-99`). A `.test.ts` under that tree is never read, so
+> no import inside it is ever evaluated. The **conclusion** is unchanged and the guard is still
+> named by clause 23 — for the half it does enforce: the same checker requires the manifest to
+> declare **exactly** those two runtime dependencies (`:5-8`), so *declaring* the keystore dep would
+> go red in `policy`. What is caught by module resolution alone, and by nothing in `policy`, is an
+> **undeclared** bare import inside a daemon-side test. Say which mechanism does which; a guard
+> credited with a check it does not perform is the failure class this programme keeps hitting, and
+> here it was pointed at a paragraph rather than at CI.
 
 ---
 
@@ -435,8 +636,14 @@ uses, from the same persisted record. It lives here rather than in the reader be
 reader (`assembleWorkerSelfModel`'s `report`) and any future renewal (`RenewInput.hello`) need the
 identical value, and two construction sites are two things to keep byte-identical.
 
-**★ `readCode` is the enrolment-code thunk**, invoked per renew, never at construction — §4's
-"where the renewal CODE comes from".
+**★ `renewSession` is the WRK-010 seam**, and in production it is **slice 2's device-proof renewal
+client** (Sprint 2.5), not `Enroller.renew` — §3.2. `createWorkerIdentity` never constructs the body
+itself; it takes the thunk and hands it straight to `SessionStoreDeps.renew`, which is what makes
+"swapping it changes nothing else" an assertion rather than a hope.
+
+**★ `readCode` is the enrolment-code thunk and is PRE-2.5 ONLY**, invoked per renew, never at
+construction — §4's "where the renewal CODE comes from". Once slice 2's client is the body, nothing
+in the composed path reads a code and this parameter goes away with it.
 
 Tests: key re-derived from persisted DER; **★ the hello comes from `buildDesktopHello`, not a
 fixture** — asserted by equality against a direct call with the same record (§1.1c: this is what
@@ -449,10 +656,33 @@ live; **★ E4-F007** — a lapsed code route goes TERMINAL rather than spinning
 failure rethrows unchanged and the store does **not** stop (otherwise one blip retires a worker);
 **★ I13** — no returned value and no emitted log record contains the session token or the code;
 **★ the WRK-010 seam is ONE injected thunk** — swapping it changes nothing else, asserted rather
-than promised in prose.
-*Mutants (6):* fabricate an `initial` session; drop `now`; swallow the `EnrollmentError`; use
-`generateDeviceKey()` instead of the persisted DER; replace `createSessionProvider` with a raw
-`{get}` lacking the terminal wrap; **read the code eagerly at construction instead of per renew**.
+than promised in prose: run the whole suite twice over two different thunk bodies (the code-replay
+fake and a device-proof fake) and assert **every non-renew behaviour is identical**. That is what
+makes "slice 2 replaces the body and nothing else moves" a checked property instead of a promise,
+and it is the one assertion in this step that is not PRE-2.5-conditional.
+
+> **★ Which of these tests are PRE-2.5 ONLY.** The `readCode` laziness pair, the positive control's
+> *"reads the code exactly once"* clause, and the `E4-F007` lapsed-code-route terminal case all
+> describe the code-replay body. Once slice 2's client is the thunk they are deleted, not adapted —
+> there is no code to read and no code route to lapse. The key re-derivation, the hello equality,
+> the mint-laziness, the transient-rethrow, the I13 assertion and the seam-substitution test above
+> are body-independent and survive.
+*Mutants (6):* fabricate an `initial` session; **pass `Date.now` instead of the injected `now`**;
+swallow the `EnrollmentError`; use `generateDeviceKey()` instead of the persisted DER; replace
+`createSessionProvider` with a raw `{get}` lacking the terminal wrap; **read the code eagerly at
+construction instead of per renew**.
+
+> **★ On mutant 2, which revision 2 got wrong in the way this document corrects one step later.**
+> That draft listed "drop `now`". `SessionStoreDeps.now` is declared `readonly now: () => number;`
+> with no `?` and no internal default (`identity/session.ts:51`), and it is read unguarded at `:93`
+> (`isExpired`) and `:105` (`ensureFresh`) — so omitting it is a **type error**. That is exactly the
+> defect Step 6 retracts for "omit `redactionCanaries`": a mutant that cannot compile never runs,
+> and counting it inflates the 51-mutant denominator with something no harness evaluated. Making
+> the same mistake in the same document, two steps apart, is worth the correction being loud.
+> `Date.now` satisfies `() => number`, so the substitution **compiles and runs**, and it is killed
+> by the same property "drop `now`" was reaching for: advance the injected fake clock past
+> `expiresAtMs` and assert the store re-mints. Clause 21's *"all compiling"* stays true on the
+> record.
 
 ### Step 3 — the self-model reader (`selfModelRead` gets its first caller)
 Harness first: add the self-model route to `fake-control-plane.ts`, mirroring the client's vendored
@@ -623,6 +853,17 @@ it is silent, and only the round-trip test above kills it); constant `limiter.sn
 > artifact**, and §7 row 22 now cites that.
 
 ### Step 7 — wire it into `bootstrapWorkerDaemon`
+
+> **★ THIS STEP RETIRES SPRINT 2's PRIMARY INERTNESS PROOF, and Sprint 2 says so itself.** DEP-010's
+> §4.1 structural lock is *"nothing consumes `compose === true`; `bin/worker-daemon.ts:347-349` has
+> no `else`"*, and its Step 8 mutation (a) — *"add an `else` branch at `:349` that composes anything
+> observable"* — is labelled **"this is the load-bearing one — it is the mutation slice 2b will make
+> for real."* Step 7 is that mutation, landed. So Sprint 2's headline acceptance is provable exactly
+> once and then expires, and **nothing in the set replaces it**: after this step, inertness is
+> carried by the six refusal gates and by the two artifacts in Step 8, not by a structural absence.
+> Write that transfer of custody into the result doc rather than letting a reader assume DEP-010's
+> proof still holds.
+
 **★ The decision function is called TWICE, and that is the design.** The self-model read is an
 authenticated round trip; performing it before the cheap gates would waste it and put a network
 result in front of purely local decisions. But the bin must not re-implement the gate ORDER to know
@@ -659,7 +900,12 @@ a boot refusing with `no_provider` derives **no** device key and constructs **no
 and that a `mounted_secret` boot performs **zero** `identityStore` calls of any kind.
 
 `composeDispatchRuntime` is `async` (Step 6), so the call site awaits it. Composing emits the
-**★ WRK-010 ceiling WARN**. The loop is **not awaited** — a terminal stop does not exit the
+**★ WRK-010 ceiling WARN** — ★ **conditional on which body the seam is pointed at.** It is emitted
+when the `renew` thunk is the enrolment-code replay, i.e. 2b shipped ahead of Sprint 2.5, and it
+names the ten-minute code-route boundary. Once slice 2's device-proof client is the body there is no
+ceiling to warn about, and the WARN is **deleted, not left in place saying something false** — a
+warning describing a state the code has left is the same defect Step 4 retires
+`no_self_model_reader` for. The loop is **not awaited** — a terminal stop does not exit the
 process; the daemon stays up serving health, the same "healthy and inert" degradation every other
 failure lands in, and what lets an operator see `/healthz` while diagnosing.
 
@@ -719,24 +965,46 @@ Cases:
   than cited: spy on `deps.bootstrap`, assert `identityStore` and `receiptStore` are both present
   and are the objects built from `resolveVaultRefs`. Without this, every assertion below is about a
   host that may have stopped injecting them.
-- **`runDesktopHost` passes NO `provider`** — `"provider" in call` is `false`. This is gate 1, and
-  on this root gate 1 and the flag are the *only* two gates.
+- **`runDesktopHost`'s shipped default RESOLVES to no provider** — `call.provider === undefined`,
+  under an env this test builds explicitly with DEP-010's `AOA_WORKER_SANDBOX_PROVIDER` and
+  `AOA_WORKER_E2B_TEMPLATE` **removed**. ★ Revision 2 wrote `"provider" in call === false`; after
+  Sprint 2 the key is present with value `undefined` and `in` is `true`, so that assertion goes red
+  on arrival (§0.1 item 1). The replacement is deliberately the weaker of the two properties,
+  because after Sprint 2 the weaker one is the true one.
 - **the composed spy is at 0 calls** for a realistic desktop env (`os_keychain`, no
-  `AOA_WORKER_DISPATCH_ENABLED`) driven through the REAL `bootstrapWorkerDaemon` with the real
-  stores — refusing with **exactly** `no_provider`.
-- **flag FORCED ON, real stores, still refuses** with `no_provider` — the counterfactual that
-  proves the desktop's remaining gate is the provider and nothing else.
-- **★ POSITIVE CONTROL** — inject a provider *and* the flag and the same spy IS reached. This is
-  the load-bearing one: it is the executable statement that **the desktop is two gates from live
-  dispatch**, so the day DEP-010 lands a provider in this root, this test's positive control is
-  already describing production.
+  `AOA_WORKER_DISPATCH_ENABLED`, no provider switch) driven through the REAL
+  `bootstrapWorkerDaemon` with the real stores — refusing with **exactly** `no_provider`.
+- **★ THE REFUSAL-TOKEN LADDER — this replaces revision 2's positive control, which was
+  unsatisfiable as specified.** Three assertions on the same real `bootstrapWorkerDaemon`, adding
+  one variable at a time and pinning the **exact** token each time:
+  1. shipped env ⇒ exactly `no_provider`;
+  2. **+ a provider + the flag ⇒ exactly `no_event_outbox_path`.** This one carries §1.1(b)'s whole
+     point as an executable fact: reaching gate 4 means gate 3 **did not refuse**, i.e. the device
+     identity is already there on this root. It is a stronger statement than the old positive
+     control and it needs no control plane;
+  3. **+ `AOA_WORKER_EVENT_OUTBOX_PATH` ⇒ exactly `no_session`** — the third env var, and the point
+     at which the remaining gates stop being things anybody *sets*.
 - a control command (`status`) and `--reset-identity` each return **without** calling `bootstrap`
   at all (`bin/desktop-host.ts:132-160`, `:164-245`) — the two argv paths that must never fall
   through to a boot.
 
-*Mutants (3):* make `runDesktopHost` pass `provider: someProvider`; delete the `identityStore`
+> **★ Why the old positive control could not have gone green, and why nobody would have noticed
+> until implementation.** It read *"inject a provider **and** the flag and the same spy IS
+> reached"* — with no *"once every gate is satisfied"* qualifier, unlike its correctly-worded twin
+> in 8a. But this slice introduces gate 4 and Step 5 forbids a default, so provider + flag on a
+> root whose gate 3 is already satisfied yields `no_event_outbox_path`, and `composeDispatch` is
+> never invoked. Adding the outbox path is not enough either: gates 5 and 6 need a live session and
+> an admin-set placement profile, i.e. a fake control plane inside `packages/worker-keystore`, which
+> §5 does not budget for and which is exactly why the 8b test cannot live beside the daemon suite.
+> Non-vacuity of the composed spy is carried by **8a's** positive control, on the side where
+> `__tests__/support/fake-control-plane.ts` lives. A ladder that pins exact tokens proves more here
+> and costs nothing.
+
+*Mutants (4):* make `runDesktopHost` resolve a real provider by default; delete the `identityStore`
 argument from the `bootstrap` call; let the `control` branch fall through to `bootstrap` instead of
-returning.
+returning; **reorder gate 4 ahead of gate 3 in `decideDispatchComposition`** — ladder rung 2 must
+fail, because a desktop that reported `no_worker_identity` there would mean gate 3 was a gate on
+this root after all, which is the fact §1.1(b) and `E4-F011` turn on.
 
 ### Step 9 — the two declaration guards
 
@@ -747,71 +1015,170 @@ a guard that only caught accidental enabling would let a *deliberate* enable lan
 declaration flipped, then quietly regress. This is the plan's *"D1 must enable it in its own compose
 file as a separate, attributable change"* made mechanical.
 
-> **★ It must declare ALL FOUR gates, not just the flag.** §8's reason 2 ("no provider is injected")
-> is thinner than it reads, and the compose file already shows why:
-> `AOA_WORKER_PROVIDER_URL: "http://fake-provider:8080"` is **already set on both D1 workers**
-> (`docker-compose.d1.yml:304`, `:343`), pointing at a live `fake-provider` service — and today
-> **nothing in the repository reads that variable** (a full-tree grep finds only those two compose
-> lines). So the day DEP-010's composition root reads it, D1's gate 1 flips **with zero diff to
-> `docker-compose.d1.yml`**, and a checker that parses only `AOA_WORKER_DISPATCH_ENABLED` stays
-> green through it. A guard whose green survives the event it exists to catch is not a guard.
+> **★ It must declare ALL FOUR gates, not just the flag** — and revision 2 named the wrong variable
+> for one of them. §8's reason 2 ("no provider is injected") is thinner than it reads, and the
+> compose file shows why: `AOA_WORKER_PROVIDER_URL: "http://fake-provider:8080"` is **already set on
+> both D1 workers** (`docker-compose.d1.yml:304`, `:343`), pointing at a live `fake-provider`
+> service, and **nothing in the repository reads that variable** — a full-tree grep still finds
+> exactly those two lines and no code. A checker that parses only `AOA_WORKER_DISPATCH_ENABLED`
+> would stay green through the event it exists to catch, and that argument stands.
 >
-> The declaration therefore carries a row per gate per worker — `dispatchEnabled`,
-> `providerUrl`, `keyStoreMode`, `eventOutboxPath` — each with the expected value and a reason, and
-> the checker fails on any divergence in either direction. `providerUrl: "http://fake-provider:8080"`
-> is declared **present and inert**, with the reason saying exactly that: *set, unread by any code
-> today, and the first thing to re-examine when DEP-010 lands*.
+> **★ What does NOT stand is treating `AOA_WORKER_PROVIDER_URL` as D1's provider gate.** DEP-010's
+> resolver reads `AOA_WORKER_SANDBOX_PROVIDER` + `AOA_WORKER_E2B_TEMPLATE` (its Step 6) and never
+> touches `AOA_WORKER_PROVIDER_URL`, so after Sprint 2 that variable is still read by nothing. And
+> the D1 image does not run the root DEP-010 modifies at all: `docker/worker/Dockerfile:112` is
+> `CMD ["node", "dist/bin/worker-daemon.js"]` — the **container** root — while DEP-010's §5 touches
+> only `packages/worker-keystore/src/bin/desktop-host.ts` and explicitly leaves
+> `worker-daemon-boundary.mjs` and `compose-dispatch.ts` untouched. **So D1's gate 1 stays
+> structural through Sprint 2, and revision 2's headline scenario — "the day DEP-010's composition
+> root reads it, D1's gate 1 flips with zero compose diff" — does not happen.** Where the review and
+> the code disagreed, the code won: the hazard is real in shape and mis-aimed in target.
+>
+> The declaration therefore carries a row per gate per worker — `dispatchEnabled`, `provider`,
+> `keyStoreMode`, `eventOutboxPath` — each with the expected value and a reason, and the checker
+> fails on any divergence in either direction. The `provider` row declares **two** things, because
+> one without the other is the mistake above: (a) `AOA_WORKER_PROVIDER_URL` is **present and dead**
+> — set on both workers, read by no code, and **not** a gate; and (b) the variables that would
+> actually construct one, `AOA_WORKER_SANDBOX_PROVIDER` and `AOA_WORKER_E2B_TEMPLATE`, are
+> **absent**, with the reason recording that D1 runs `bin/worker-daemon.js`, which has no resolver
+> at all — so the first thing to re-examine is not a compose diff but **the day the container root
+> gains a provider path**. Author this row **after** Sprint 2, against DEP-010's shipped constant
+> names rather than against this paragraph.
 
 **★ 9b — the boot-roots guard** (`scripts/check-boot-roots-provider-free.mjs`). Step 8b proves the
-desktop root passes no provider *at this commit*; this makes it a standing property. The checker
-enumerates the repository's `bootstrapWorkerDaemon` call sites — today `bin/worker-daemon.ts:398`
-and `bin/desktop-host.ts:254-260` — and fails if any of them passes a `provider` key, **or** if a
-call site appears that the declaration does not name. The second half is the important one: a
-third boot root added quietly is exactly how a two-gate root becomes a zero-gate one, and an
-enumeration that silently ignores what it has not seen before is the "empty result set = pass"
-failure mode this repo has hit five times. It is declaration-based for the same reason
-`check-guard-inventory.mjs` is: inferring "does this file construct a provider" from source is a
-hard inference done badly, while verifying a short declared list against the tree is a cheap one
-done well.
+desktop root's shipped default resolves to no provider *at this commit*; this makes it a standing
+property. The checker enumerates the repository's boot roots — the files that obtain
+`bootstrapWorkerDaemon`, today `bin/worker-daemon.ts:398` (the only bare call expression) and
+`bin/desktop-host.ts`, where it is imported at `:26`, typed at `:81`, aliased at `:101` and invoked
+as `await bootstrap({...})` over `:254-260` — and fails if a boot root appears that the declaration
+does not name. That second direction is the important one: a third boot root added quietly is
+exactly how a three-gate root becomes a zero-gate one, and an enumeration that silently ignores what
+it has not seen before is the "empty result set = pass" failure mode this repo has hit five times.
+It is declaration-based for the same reason `check-guard-inventory.mjs` is — which runs **both**
+directions off a cheap syntactic enumeration (`check-guard-inventory.mjs:36` readdirs `scripts/`;
+`lib/guard-inventory.mjs:80-83` default-denies an undeclared script, `:114-116` flags a stale
+declaration, `:48-55`/`:90-95` confirm the declared side) rather than inferring anything. The
+enumeration 9b needs is equally cheap: a new boot root must **name the identifier** to obtain the
+function, so a non-test file mentioning `bootstrapWorkerDaemon` is the easy direction. The declared
+range `:254-260` is the argument object itself, so a key added there is directly readable —
+the alias is a seam the declaration already points at, not a hole in it.
 
-Both are registered in `scripts/guard-inventory.json` and invoked from the `policy` job.
-*Mutants (6):* 9a — invert each direction (2); return `ok` on an unparseable compose file (an empty
+> **★ THE DECLARED PROPERTY CHANGES AT SPRINT 2, and it must change before this step is written.**
+> Revision 2 said the checker "fails if any of them passes a `provider` key". DEP-010 Step 3 adds
+> `provider: deps.provider` to `desktop-host.ts:254-260`, so that property is **false on arrival**,
+> and this guard lands in the always-on `policy` job (`pr.yml:124-127`) — red on every PR, docs-only
+> ones included (§0.1 item 2). The property becomes: **no boot root constructs a provider
+> UNCONDITIONALLY, and the shipped default resolves to none.** Concretely, for each declared root
+> either (a) it passes no `provider` key at all, or (b) the value it passes is produced by a
+> declared resolver whose default is `{kind:"none"}` and which is confined to
+> `PROVIDER_HOST_PATH` — DEP-010's own confinement, which its Step 5 makes a boundary-checker
+> property. A root that hardcodes a provider, or defaults its resolver to one, fails. **This is
+> weaker than what revision 2 promised and §0.1 says so out loud**; do not write a matcher that
+> keeps the old wording and passes because it only ever recognised the bare identifier.
+
+Both are registered in `scripts/guard-inventory.json`, invoked from the `policy` job, and entered in
+`scripts/test-execution-census.json` alongside the `pr.yml` step that names their `*.test.mjs`
+self-tests (§0.1).
+*Mutants (7):* 9a — invert each direction (2); return `ok` on an unparseable compose file (an empty
 result set must be a broken checker, per the TRACK-001 convention); check only `dispatchEnabled` and
 ignore the other three declared gates. 9b — pass on an unreadable source file; accept an
-undeclared call site.
+undeclared boot root; **★ accept a root whose resolver defaults to a provider** (the direction the
+reformulated property exists for, and the one a matcher written against revision 2's wording would
+miss).
 
 ### Step 10 — the gate-clause register (**this fails the build if skipped**)
-`check-gate-clause-wiring.mjs` treats `unwired_but_now_has_caller` as an **error**, so the moment
-Step 6 lands, `createPollLoop`, `createSupervisor` and `createEventOutboxDrain` have production
-callers and the guard fails. The register is edited **in the same commit**: `E4-1`, `E4-2`, `E4-4`
-→ **`wired`**; `E4-3` stays `unwired` with its reason rewritten per §4.2.
+`check-gate-clause-wiring.mjs` treats `unwired_but_now_has_caller` as an **error**
+(`lib/gate-clause-wiring.mjs:105-113`), so the moment Step 6 lands, `createPollLoop`,
+`createSupervisor` and `createEventOutboxDrain` have production callers and the guard fails. The
+register is edited **in the same commit**.
 
-**The nuance goes in the reason fields, not hidden.** That guard's header is explicit that a count
-> 0 is *"NECESSARY BUT NOT SUFFICIENT for reachability"*. Here it means "reachable from a boot
-root", **not** "runs by default" — dispatch is still off by construction. `E4-1`'s reason will say
-so, enumerate the six refusal gates, and — ★ because §1.1(b) makes it materially different per root
-— state that the CONTAINER holds four of them and the DESKTOP holds two. A reason field that
-averaged the two roots into one number would be the same class of half-truth as the
-`unwired_but_now_has_caller` error this guard exists to raise.
+**★ THE PROMOTION DECISION, MADE DELIBERATELY RATHER THAN BY DEFAULT.** Revision 2 promoted `E4-1`,
+`E4-2` and `E4-4` to `wired` and parked the caveat in `E4-1`'s `reason`. Read what the guard does
+with that field:
+
+- a `wired` entry is validated on **caller count alone** — `if (count === 0) → claimed_wired_but_no_caller`, then `wiredCount += 1` (`lib/gate-clause-wiring.mjs:81-88`). `reason` is **not required** on a `wired` entry, is **never read**, and is **never printed**;
+- only the `unwired` branch requires a reason at all (`hasReason(entry.reason)`, `:91`), and even the green run prints just the dormant clause **ids**, not their reasons (`check-gate-clause-wiring.mjs:129-135`).
+
+So "the nuance goes in the reason field, not hidden" was **false as stated**: a caveat on a `wired`
+entry is a caveat no code path reads and no run prints. That is the aggregation failure this
+register was built to prevent, re-committed one level down. Therefore:
+
+| Clause | Symbol | Disposition |
+|---|---|---|
+| `E4-2-supervises-sandboxes` | `createSupervisor` | → **`wired`**. The clause is *"supervises only sandboxes"*, and that is exactly what the composition does: the supervisor takes the injected `SandboxProvider` and no `observeRun`. True without qualification |
+| `E4-4-event-outbox-replay` | `createEventOutboxDrain` | → **`wired`**. The clause is *"replays its encrypted outbox"*; Step 6 recovers at composition and `drain.start()` runs. True without qualification |
+| `E4-1-leases-through-protocol` | `createPollLoop` | ★ **stays `unwired`, with `expectedReferences: 1`** and a reason naming `E4-F010`. It acquires exactly one production caller (`lifecycle/dispatch-runtime.ts`), which the acknowledged count absorbs, so the guard stays silent about the known reference **and still fires the moment a second appears** — the mechanic `E8-1-sandbox-local-browser` already uses for `runBrowserSession` (`gate-clause-wiring.json:75-81`). The clause says *leases*; a worker whose own `offerSatisfiesWorker` returns `false` for **100% of offers** (§1.1c) does not lease. Claiming `wired` here asserts a leasing capability that cannot lease, with the disclaimer in a field nothing reads |
+| `E4-3-survives-restart` | `createStartupReconciler` | stays `unwired`, reason rewritten per §4.2 (ONE blocker: `leaseCandidates`) |
+
+**Why not promote `E4-1` and rely on the reason.** Because the promote-check is the only mechanism
+that keeps a dormant clause visible: `unwired` clauses are printed by name on every green run,
+deliberately (`check-gate-clause-wiring.mjs:130-135`), while `wired` ones vanish into a count. The
+honest register keeps `E4-1` in the list that gets printed until E4-F010 is fixed — and E4-F010 is
+`unowned`, so nothing else in the graph will notice.
+
+**What the reasons must still say**, because the guard's header is explicit that a count > 0 is
+*"NECESSARY BUT NOT SUFFICIENT for reachability"*: for `E4-2` and `E4-4`, that "reachable" means
+"reachable from a boot root", **not** "runs by default" — dispatch is still off by construction.
+And — ★ because §1.1(b) makes it materially different per root — that the CONTAINER holds four of
+the gates and the DESKTOP **three** (§2). A reason field that averaged the two roots into one
+number would be the same class of half-truth as the `unwired_but_now_has_caller` error this guard
+exists to raise; and revision 2 asked for **two**, which was the wrong number as well as the wrong
+place.
 
 ### Step 11 — mutation sweep, inventories, result doc
 `check-test-inventory.mjs --write` (it must pick up the **keystore-package** test from Step 8b, not
-only the daemon ones); the **51** mutants above **plus 2a's 26** must all still die —
-4+6+6+8+2+6+7+(3+3)+6 by step, every one of them a mutant that COMPILES and RUNS and is killed by
-an ASSERTION rather than by a suite deadline (see Step 6's and Step 7's notes); typecheck **as the
-named artifact for §7 row 22**, since `SupervisorDeps.redactionCanaries` being required is a
-type-level property and the typecheck is the thing that evaluates it;
+only the daemon ones); the **53** mutants above **plus 2a's 26** must all still die —
+4+6+6+8+2+6+7+(3+4)+7 by step, every one of them a mutant that COMPILES and RUNS and is killed by
+an ASSERTION rather than by a suite deadline (see Step 2's, Step 6's and Step 7's notes); typecheck
+**as the named artifact for §7 row 22**, since `SupervisorDeps.redactionCanaries` being required is
+a type-level property and the typecheck is the thing that evaluates it;
 `check-worker-daemon-boundary.mjs` (the new daemon files import only `node:os`, `node:fs`,
 `node:crypto` and relative modules) and `check-worker-keystore-boundary.mjs` for the keystore side;
 `check-worker-path-parity.mjs` — unchanged and now backed by a **live component test** (Step 3's
 sixth mutant); the two new guards from Step 9 run in `policy`. **Do not bump
-`docker/d1/campaign.env`** — no `server/src` file changes in this slice. Result doc §1 states the
-WRK-010 ceiling; §2 states §1.1(c) **including the worker-side self-check**; §3 states the desktop
-root's two-gate posture from §1.1(b).
+`docker/d1/campaign.env`** — no `server/src` file changes in this slice.
+
+> **★ The mutant total moved from 51 to 53 in revision 3, and the arithmetic is the point.** Step 2
+> **substituted** a non-compiling mutant rather than dropping it (`drop now` → `pass Date.now`), so
+> its 6 is unchanged. Step 8b gains a fourth (gate 4 ahead of gate 3, which is what makes the new
+> refusal-token ladder load-bearing) and Step 9b a seventh (a resolver defaulting to a provider,
+> the direction §0.1's reformulated property exists for). Both additions are evaluated by suites
+> that exist in this slice. A denominator that changes for a stated reason is a denominator; one
+> that changes silently is a score.
+
+**★ Two `policy` guards added to this list in revision 3, both of which this slice would otherwise
+turn red on arrival** (§0.1): **`check-execution-census.mjs`** — Step 9's two `*.test.mjs` files
+must each have an entry in `scripts/test-execution-census.json`, and the entry's declared `pr.yml`
+step must actually name the file; and the **brand-check env-doc guard**, which will **not** fire for
+`AOA_WORKER_EVENT_OUTBOX_PATH` (`config.ts` reads through the `ENV` map, `pr.yml:648-663` greps for
+`process.env.AOA_…`), so `docs/deploy/environment-variables.md` is a manual step in the Step 5
+commit and there is no mechanism behind it. Run `node scripts/check-execution-census.mjs` and
+`node scripts/check-guard-inventory.mjs` locally before pushing; both are in the always-on `policy`
+job, which has no docs-only skip.
+
+Result doc §1 states **which renewal body the seam is pointed at** — slice 2's client (Sprint 2.5),
+or, if 2b shipped ahead of it, the code replay together with all five consequences §3.2 lists; §2
+states §1.1(c) **including the worker-side self-check**; §3 states the desktop root's **three**-gate
+posture from §1.1(b) and, if Sprint 2 has landed, that none of the three is structural any more;
+§4 states the `E4-F008` disposition from §9.
 
 ---
 
 ## 7. Acceptance table — clause → the test that proves it
+
+> **★ WHAT "DONE" MEANS HERE, STATED BEFORE THE TABLE.** With a provider injected **and** the flag
+> on, the daemon composes a real poll loop, supervisor, lease-renewal driver and durable event
+> outbox — first production callers for `createPollLoop`, `createSupervisor` and
+> `createEventOutboxDrain` in the programme's history — and with either absent it is **provably**
+> inert. **It does NOT mean "a worker leases, executes and reports."** An earlier version of the
+> go-book's Sprint 3 line said that; `E4-F010` makes it false, and this document establishes why
+> (§1.1c): `poll-loop.ts:538` self-checks every offer against the worker's own hello, the only
+> production hello builder emits `sandbox.*` capabilities with a 64-zero `policyHash`, and so
+> `offerSatisfiesWorker` is `false` for **100% of offers** — before the server-side
+> `profile_snapshot` gap even matters. Row 12 records that as *not claimed* rather than as a caveat,
+> and Step 10 explains why a caveat would have been invisible. A design document whose acceptance
+> table is more optimistic than its own §1.1 is the aggregation failure the gate-clause register
+> exists to catch, one level down.
 
 | # | Clause | Proving artifact |
 |---|---|---|
@@ -820,9 +1187,9 @@ root's two-gate posture from §1.1(b).
 | 3 | …and the refusal is not vacuous | its **★ POSITIVE CONTROL** |
 | 4 | both D1 workers refuse on their real compose env | `it.each(["worker-a","worker-b"])`, env parsed from the compose file |
 | 5 | D1 cannot be enabled without an attributable change **on any of the four gates** | `check-d1-dispatch-declared.mjs` (9a) + its self-test |
-| 5b | ★ **the DESKTOP root still refuses, and passes no provider** | `desktop-host-refuses-dispatch.test.ts` (8b) — spy on `deps.bootstrap`, `"provider" in call === false`, composed spy at 0 calls |
-| 5c | ★ …and it stays that way | `check-boot-roots-provider-free.mjs` (9b) — declared call sites, both directions |
-| 5d | ★ **the desktop's remaining gate count is stated, not implied** | 8b's positive control (provider + flag ⇒ composed) + §1.1(b) + §2's per-root column |
+| 5b | ★ **the DESKTOP root still refuses, and its shipped default resolves to no provider** | `desktop-host-refuses-dispatch.test.ts` (8b) — spy on `deps.bootstrap`, **`call.provider === undefined`** under an explicitly-built env with `AOA_WORKER_SANDBOX_PROVIDER`/`AOA_WORKER_E2B_TEMPLATE` removed (★ **not** `"provider" in call`; §0.1 item 1), composed spy at 0 calls |
+| 5c | ★ …and it stays that way | `check-boot-roots-provider-free.mjs` (9b) — declared boot roots, both directions, property = **"no root constructs a provider unconditionally; the shipped default resolves to none"** (§0.1 item 2). ★ Weaker than revision 2's property, and knowingly so |
+| 5d | ★ **the desktop's remaining gate count is stated, not implied — and it is THREE** | 8b's refusal-token ladder, whose **rung 2** (`provider + flag ⇒ exactly no_event_outbox_path`) is the executable proof that gate 3 is already satisfied on this root, + §1.1(b) + §2's per-root column. Revision 2 cited a positive control that could not be reached (§8b's note) |
 | 6 | `no_self_model_reader` retires | `compose-dispatch.test.ts` "the placeholder reason is GONE" |
 | 7 | `hasSelfModelReader` becomes real | `dispatch-composition-2b.test.ts` read-attempted + its negative twin |
 | 7b | ★ the identity gate leaves **zero residue** on a refusing boot | Step 7's `hasWorkerIdentity` boolean (derived from the enrolment outcome, not a second store read) + "no key derived, no `SessionStore`" on a `no_provider` refusal + zero `identityStore` calls under `mounted_secret` + Step 7 mutant 7 |
@@ -832,21 +1199,25 @@ root's two-gate posture from §1.1(b).
 | 10 | a tampered profile fails closed | same suite |
 | 11 | a failed read leaves the daemon healthy and inert (2a Q3) | `dispatch-composition-2b.test.ts` |
 | 11b | ★ a dead session is reported as `no_session`, never as "ask an admin" | Step 4's precedence test + the `/admin/i` assertion + Step 4 mutant 8 |
-| 12 | **E4 clause 1** — leases through the protocol | `dispatch-runtime.test.ts` + `E4-1: wired`. ★ **Reachability only** — row 8b records that the composed worker self-rejects every offer (§1.1c) |
-| 13 | **E4 clause 2** — supervises only sandboxes | `dispatch-runtime.test.ts`: `createSupervisor` is composed with the injected provider and NO `observeRun`, and the loop's handoffs reach it through the driver (Step 6 mutant 1) + `E4-2: wired` |
-| 14 | **E4 clause 4** — replays its encrypted outbox | durable-before-drainable + recovered-at-composition + `E4-4: wired` |
+| 12 | **E4 clause 1** — leases through the protocol | ★ **NOT CLAIMED.** `dispatch-runtime.test.ts` proves `createPollLoop` is composed and reachable; `E4-1` stays **`unwired` with `expectedReferences: 1`** and a reason naming `E4-F010` (Step 10). The clause says *leases*, and row 8b records that the composed worker self-rejects **100%** of offers (§1.1c). Promoting it would assert a leasing capability that cannot lease, into a field the checker never reads |
+| 13 | **E4 clause 2** — supervises only sandboxes | `dispatch-runtime.test.ts`: `createSupervisor` is composed with the injected provider and NO `observeRun`, and the loop's handoffs reach it through the driver (Step 6 mutant 1) + `E4-2: wired` — true without qualification |
+| 14 | **E4 clause 4** — replays its encrypted outbox | durable-before-drainable + recovered-at-composition + `E4-4: wired` — true without qualification |
+| 14c | ★ **a caveat is not parked where nothing reads it** | Step 10's disposition table. `evaluateGateClauseWiring` validates a `wired` entry on caller count alone (`lib/gate-clause-wiring.mjs:81-88`); `reason` is unrequired, unread and unprinted there, and only `unwired` clauses are named on a green run (`check-gate-clause-wiring.mjs:130-135`) |
 | 14b | ★ the renewal driver's denial events reach the SAME durable store | Step 6's `proxyFor` round-trip test + Step 6 mutant 5 |
 | 15 | **E4 clause 3** — survives restart | **DEFERRED**, §4.2; stays `unwired`; ONE blocker (`leaseCandidates`); finding filed |
 | 16 | the renewal driver decorates, not replaces | Step 6 mutant 1 |
 | 17 | capacity clamped to the server-owned ceiling | `dispatch-runtime.test.ts` |
 | 18 | shutdown stops leasing before draining | stop-order test |
-| 19 | WRK-010's ceiling surfaced at boot | the WARN test |
-| 20 | WRK-010's integration surface is one thunk | `worker-identity.test.ts` |
-| 20b | ★ the renewal code is read lazily and never logged | `worker-identity.test.ts` — `readCode` spy at 0 calls at construction, 1 on first `get()`, I13 assertion |
-| 21 | every new guard mutation-checked | **51** mutants, all compiling, all executed, none killed by timeout; recorded in the result doc |
+| 19 | WRK-010's ceiling surfaced at boot | the WARN test. ★ Applies **only** where the seam is pointed at the code replay, i.e. 2b shipped ahead of Sprint 2.5. With slice 2's client wired there is no ten-minute ceiling and the WARN is deleted, not silenced |
+| 20 | WRK-010's integration surface is one thunk | `worker-identity.test.ts` — the thunk is injected and handed straight to `SessionStoreDeps.renew` (`identity/session.ts:52-55`); swapping the body changes nothing else |
+| 20b | ★ the renewal code is read lazily and never logged | `worker-identity.test.ts` — `readCode` spy at 0 calls at construction, 1 on first `get()`, and the credential's single hop into a `code` key happens **inline in the `enroller.renew({...})` argument** and nowhere else (§4 property 2 — ★ the "keep the `enrollmentCode` name all the way to `RenewInput`" wording is retracted; the type forbids it). PRE-2.5 only |
+| 20c | ★ **the near-expiry gap is recorded, not composed over** | §3.2's note — `ensureFresh` (`identity/session.ts:103-107`) refreshes only when absent-or-expired and says so in its own docblock; this slice composes `SessionStore` unchanged, and Sprint 2.5 owns the threshold. No artifact here **on purpose**: an assertion that today's store lacks a threshold would be a test of the absence of slice 2 |
+| 21 | every new guard mutation-checked | **53** mutants, all compiling, all executed, none killed by timeout; recorded in the result doc with the 51 → 53 arithmetic (Step 11) |
 | 22 | `redactionCanaries: []` is a decision | the **typecheck** (Step 11) — a required field is a type-level property; the first draft cited a non-compiling "mutant", see Step 6's note |
 | 22b | ★ …and it is safe for the stated reason | Step 6's `observeRun === undefined` assertion |
-| 23 | the E4-D01 boundary holds | `check-worker-daemon-boundary.mjs` + `check-worker-keystore-boundary.mjs` |
+| 23 | the E4-D01 boundary holds | `check-worker-daemon-boundary.mjs` (the **manifest** half — it requires exactly `worker-protocol` + `pino`) + `check-worker-keystore-boundary.mjs`. ★ Its **source** half skips `*.test.ts` (`:118`), so the 8b placement rests on the manifest and on module resolution, not on the import scan — §5's withdrawn citation |
+| 24 | ★ **Sprint 2's published surface is repaired, not left broken** | `public-surface-dispatch.test.ts` updated for the retired/renamed fields + DEP-010's Step 8 `no_self_model_reader` case removed (§0.1, §5) |
+| 25 | ★ **the always-on `policy` job is green for the files this slice ADDS** | `check-execution-census.mjs` with both new `*.test.mjs` entered in `scripts/test-execution-census.json` and named by a real `pr.yml` step + `check-guard-inventory.mjs` for the two new guards (Step 11) |
 
 ---
 
@@ -885,14 +1256,27 @@ four** reviewable and attributable.
 
 ### The honest caveats
 
-**(i) The provider gate can flip with no compose diff at all.**
-`AOA_WORKER_PROVIDER_URL: "http://fake-provider:8080"` is **already set on both D1 workers**
-(`:304`, `:343`) and points at a live `fake-provider` service that D1 depends on for health. Today
-**no code reads that variable** — a full-tree grep finds those two lines and nothing else. The day
-DEP-010's composition root reads it, D1's gate 1 flips with a diff to `packages/` and none to
-`docker-compose.d1.yml`. That is why Step 9a's declaration covers all four gates rather than the
-flag alone: a checker that parsed only `AOA_WORKER_DISPATCH_ENABLED` would have stayed green
-straight through the event it exists to catch.
+**(i) The provider gate can flip with no compose diff at all — but NOT via the variable revision 2
+named.** `AOA_WORKER_PROVIDER_URL: "http://fake-provider:8080"` is **already set on both D1
+workers** (`:304`, `:343`) and points at a live `fake-provider` service that D1 depends on for
+health. **No code reads that variable** — a full-tree grep still finds those two lines and nothing
+else. Revision 2 concluded: *"the day DEP-010's composition root reads it, D1's gate 1 flips with a
+diff to `packages/` and none to `docker-compose.d1.yml`."*
+
+**★ That specific scenario does not happen, and the correction matters more than the sentence.**
+DEP-010's resolver reads `AOA_WORKER_SANDBOX_PROVIDER` + `AOA_WORKER_E2B_TEMPLATE`, never
+`AOA_WORKER_PROVIDER_URL`; and DEP-010 lands the resolver in
+`packages/worker-keystore/src/bin/desktop-host.ts`, whereas the D1 image runs the **container**
+root — `docker/worker/Dockerfile:112` is `CMD ["node", "dist/bin/worker-daemon.js"]`, and DEP-010's
+§5 leaves `bin/worker-daemon.ts` untouched. **So D1's gate 1 remains structural through Sprint 2.**
+
+The class of hazard survives intact, re-aimed: a gate can move because a *variable D1 already sets
+becomes read*, or because the *container root gains a provider path* — and in both cases
+`docker-compose.d1.yml` is byte-identical, so a checker that parses only
+`AOA_WORKER_DISPATCH_ENABLED` stays green straight through it. That is why Step 9a's declaration
+covers all four gates rather than the flag alone, and why its `provider` row must record **both**
+that `AOA_WORKER_PROVIDER_URL` is present-and-dead **and** that the variables which would actually
+construct one are absent. Write that row against DEP-010's shipped constant names, after Sprint 2.
 
 **(ii) If a live daemon ever enrolled on D1, the collision is at ENROLMENT, not at offer-matching.**
 The first framing was "a live daemon and the harness would compete for the same offers". The
@@ -927,7 +1311,7 @@ red, and so that nobody re-derives "they just compete for offers" from the earli
 |---|---|---|
 | `E4-F009` | MED | **`createStartupReconciler` is not composable at boot — for ONE reason.** `leaseCandidates` (`supervisor/startup-reconcile.ts:256-257`) has no durable local source: the outbox persists events, not offers, so the lease-authority probe would run over `[]` every boot. `ownershipSelector.organizationId` is **NOT** a blocker — it is on the self-model this slice reads and the frozen schema guarantees it non-null for org- and owner-scoped targets (`worker-protocol/src/capabilities.ts:307-321`); wiring is conditional on scope, not impossible. E4 clause 3 waits on a durable lease-candidate source. |
 | `E4-F010` | HIGH | **A composed worker cannot be offered work — and would refuse it if it were.** *Server side:* `workers.profile_snapshot` has no update channel (only writers `worker-enrollment.ts:444,470`). *Worker side:* `poll-loop.ts:538` runs `offerSatisfiesWorker` over the worker's OWN `self.report`, and the only production hello builder emits `sandbox.*` capabilities with a 64-zero `policyHash` (`enrollment/desktop-hello.ts:144`, `:154`) — so the self-check returns `false` for **100% of offers**, independently of anything the server does. A worker can assemble a perfect self-model, self-check correctly, and dispatch nothing, forever. MIG-005/006/007 ACTIVE inherit this on top of E4-F007. |
-| `E4-F011` | HIGH | **The desktop boot root is two gates from live dispatch, not four.** `worker-keystore/src/bin/desktop-host.ts:114-125` builds both OS-custody stores and `:254-260` passes them on every boot; `resolveCustody` (`identity/device-identity-store.ts:128-133`) makes `mounted_secret` + stores a fatal refusal, so **any desktop host that boots is running `os_keychain` with custody present** and `bin/worker-daemon.ts:267` is entered. Only `no_provider` and the flag remain. DEP-010 must not land a provider in that root without an explicit decision about the flag's default on desktops. **Owner: DEP-010.** |
+| `E4-F011` | HIGH | **The desktop boot root is THREE gates from live dispatch, not four.** `worker-keystore/src/bin/desktop-host.ts:114-125` builds both OS-custody stores and `:254-260` passes them on every boot; `resolveCustody` (`identity/device-identity-store.ts:128-133`) makes `mounted_secret` + stores a fatal refusal, so **any desktop host that boots is running `os_keychain` with custody present** and `bin/worker-daemon.ts:267` is entered. `no_provider`, the flag and `no_event_outbox_path` remain. DEP-010 must not land a provider in that root without an explicit decision about the flag's default on desktops. **Owner: DEP-010.** ★ **The filed entry (`findings.md:220-232`) says TWO in its title and body** — the number this slice introduced and §1.1(b)/§2 now correct. §5 lists the register edit; status, key and owner do not move |
 
 **★ These three were filed into `docs/replatform/epics/E4-worker-daemon/findings.md` at planning
 time, not deferred to execution**, with entries in `scripts/finding-ownership.json`. They are facts
@@ -937,6 +1321,40 @@ because of it. E4-F009 and E4-F011 are `owned` (WRK-008 and DEP-010). **E4-F010 
 record** — neither half of it is fixed by any ticket now in the graph, and force-fitting it onto this
 slice would be exactly the false claim of ownership the guard exists to prevent. Do not close it by
 shipping 2b.
+
+### ★ 9.1 `E4-F008` — owned by WRK-008, and revision 2 of this document never mentioned it
+
+`scripts/finding-ownership.json` names **WRK-008** as the owner of `E4-F008`, with the reason
+*"A rotated provider-constraint digest going stale on a long-lived worker must be reconciled against
+in-flight leases when 2b composes the loop"* and the `ownerStillOpen` note *"Slice 2b — composing
+the poll loop and supervisor — is the live-dispatch wiring seam this finding names."* The register
+therefore expects an answer from **this ticket**, and §9's table gave three findings and not this
+one. A finding whose owning ticket ships without disposing of it does not fail any guard — it just
+rots in place, which is the failure mode the register exists to end.
+
+**Disposition: `E4-F008` SURVIVES this slice, and here is the mechanism rather than a shrug.**
+`assembleWorkerSelfModel` produces a `WorkerSelfModel` **once**, from one authenticated read
+(`identity/self-model.ts:45-67`), and `PollLoopDeps.self` is a plain value, not a getter
+(`poll/poll-loop.ts:440`, consumed at `:533` and `:538`). Step 6 clamps capacity to
+`selfModel.verifiedProviderConstraints.resourceCeiling` at composition time. **Nothing in this
+composition ever re-reads the self-model**, so a provider-constraint rotation after boot cannot be
+observed, and in-flight leases cannot be reconciled against it. Composing the loop is exactly the
+seam the finding named, and the seam now exists — but the reconciliation does not.
+
+**Two things keep it LOW rather than promoting it.** First, the direction of failure is closed:
+`workerSatisfiesRequirements` compares the worker's verified constraints against **both** the
+target's registered ref and the job's requested ref (`worker-protocol/src/capabilities.ts:466-467`),
+so a stale digest makes the worker **unmatchable**, not wrongly matched. Second, `E4-F010` means the
+worker is unmatchable anyway today, so there is no window in which a lease is in flight at all.
+
+**What closes it, and it is not this ticket:** a self-model refresh channel (a periodic or
+poll-triggered re-read) plus a stated policy for leases in flight when the digest changes —
+finish the run under the old constraints, or fence it. Both are design decisions with a blast
+radius, and neither is a line in a composition ticket. **Recommendation: re-point `E4-F008` at the
+ticket that adds the refresh channel, and record the mechanism above in its register entry so the
+next reader does not have to re-derive it.** Leaving it on WRK-008 through 2b's result doc would be
+the false claim of ownership `check-finding-ownership.mjs` exists to prevent — the same call §9
+makes for `E4-F010`, in the opposite direction.
 
 ---
 
@@ -950,8 +1368,9 @@ unwind.
 | Depth | Action | Effect | Cost |
 |---|---|---|---|
 | **1** | unset the flag, restart | identical to a 2a-era boot | one restart |
-| 2 | the composition root stops passing `provider` | `no_provider` regardless of env | a host redeploy |
-| 3 | revert the commit | tree returns to 2a; `E4-1/2/4` back to `unwired` | a build |
+| 1b | ★ unset `AOA_WORKER_EVENT_OUTBOX_PATH`, restart | `no_event_outbox_path`, and no outbox file is opened | one restart |
+| 2 | the composition root stops passing `provider` | `no_provider` regardless of env | a host redeploy. ★ **After Sprint 2 this is depth 1 on the desktop, not depth 2** — unsetting `AOA_WORKER_SANDBOX_PROVIDER` reaches the same state with one restart, because gate 1 stopped being structural there (§0.1) |
+| 3 | revert the commit | tree returns to 2a; `E4-2`/`E4-4` back to `unwired`; `E4-1`'s `expectedReferences` back to `0`; `E4-3` unchanged | a build |
 
 **Why the flag is a genuine rollback rather than a partial one.** Composition is the *last* thing boot
 does before signal registration, and everything it builds is constructed **inside**
@@ -979,10 +1398,20 @@ those events are the record of work that actually ran.
 ## 11. Out of scope, stated
 
 - **The composition root (DEP-010).** 2b ships the seam. ★ It also ships `E4-F011`: DEP-010 owns the
-  decision about what the flag defaults to on a desktop root that has only ever had two gates.
-- **Session renewal (WRK-010).** 2b names the seam and warns about the ceiling. ★ It also inherits
-  §4's admission that the composed daemon re-reads an enrolment code at arbitrary later times —
-  WRK-010's device-proof renewal is what retires that, not only the 15-minute ceiling.
+  decision about what the flag defaults to on a desktop root that has only ever had **three** gates
+  — and that, after DEP-010, has three **environment variables** and no structural gate at all
+  (§0.1).
+- **Session renewal — WRK-010 SLICE 2, i.e. Sprint 2.5, which is a HARD dependency of §4 and not an
+  out-of-scope item.** What is out of scope is the *body* of the thunk: 2b creates and tests the
+  seam, slice 2 supplies the device-proof renewal client and the near-expiry threshold in
+  `SessionStore.ensureFresh`. ★ If 2b ships first, it inherits §4's admission that the composed
+  daemon re-reads an enrolment code at arbitrary later times, keeps the ten-minute ceiling, and
+  leaves WRK-010's route with zero production callers. **2b does not resolve `E4-F007` under any
+  ordering.**
+- **`E4-F008` — reconciling a rotated provider-constraint digest against in-flight leases.** §9.1.
+  The register names WRK-008 as owner; the seam it waited for now exists and the reconciliation does
+  not, so the finding stays open and should be re-pointed at the ticket that adds a self-model
+  refresh channel.
 - **The startup reconciler** — §4.2, ONE named structural blocker (the second was withdrawn on a
   re-read of the frozen schema).
 - **A matchable worker hello / a `profile_snapshot` update channel** — §1.1(c), filed as `E4-F010`.

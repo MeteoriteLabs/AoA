@@ -1,25 +1,39 @@
 # WRK-010 — Design: sustained worker authority via device-proof session renewal
 
 **Ticket node:** `docs/replatform/program-design.md` (`#### WRK-010`)
-**Closes finding:** `E4-F007` (`epics/E4-worker-daemon/findings.md:130`, open, HIGH)
+**ADVANCES — does not close — finding:** `E4-F007` (`epics/E4-worker-daemon/findings.md:130`,
+**stays `open`**, HIGH). ★ Read §0(e) before touching the register: this is **slice 1**, and the
+finding's own statement of the defect is still true after it ships. Slice 2 closes it.
 **Blocker record:** `docs/replatform/WAVE-4-BLOCKER-worker-session-lifetime.md`
 **Depends on:** JOB-002 (enrollment + session mint), WRK-002 (daemon session store)
-**Size:** M · **server-side only.** The daemon client is WRK-010 slice 2 (§9).
-**Sprint:** 1 (see `docs/replatform/GO-BOOK.md`)
+**Size:** M · **server-side only.** The daemon client is WRK-010 slice 2 (§9, scoped in §9.1).
+**Sprint:** 1 = **slice 1**, this document. Slice 2 is **Sprint 2.5** — `GO-BOOK.md` §4,
+*"★ Sprint 2.5 — WRK-010 slice 2: the renewal route gets its first caller"*.
 **Epic ownership: E4** — see §0(d). Recorded here because it was asked for and never answered.
 
 ---
 
 ## ★ 0. Corrections verified at tip before designing around them
 
-**(a) `IdentityLifecycle.acquireSession()` DOES NOT EXIST.** `grep -rn "acquireSession"` and a
-repo-wide search for `IdentityLifecycle` return only three *documents*
-(`scripts/finding-ownership.json:5`, `WAVE-4-BLOCKER-worker-session-lifetime.md:73`,
-`epics/E10-desktop/tickets/DSK-001-design.md:351`). DSK-001 *said* it was landed as the
-successor seam; it was not. The seam that actually exists is `SessionStoreDeps.renew`
-(`packages/worker-daemon/src/identity/session.ts:55`), consumed via `createSessionProvider`
-(`packages/worker-daemon/src/poll/poll-loop.ts:382`). This plan targets the real seam and
-files the discrepancy as a finding (§7 Step 7).
+**(a) `IdentityLifecycle.acquireSession()` DOES NOT EXIST.** `grep -rn "acquireSession"
+--include=*.ts` over the tree returns **nothing at all**; `IdentityLifecycle` appears only in
+*documents*. DSK-001 *said* it was landed as the successor seam; it was not. The seam that
+actually exists is `SessionStoreDeps.renew` (`packages/worker-daemon/src/identity/session.ts:55`),
+consumed via `createSessionProvider` (`packages/worker-daemon/src/poll/poll-loop.ts:382`). This
+plan targets the real seam and files the discrepancy as a finding (§7 Step 7).
+
+**★ The document count in this paragraph was wrong, and the correction changes what Step 7 must
+say.** An earlier revision said "only three documents" and named
+`scripts/finding-ownership.json:5`, `WAVE-4-BLOCKER…:73` and `DSK-001-design.md:351`. Re-counted
+at tip, the mentions outside this file are: **`DSK-001-design.md:351` AND `:431`** — two copies,
+not one — `WRK-008-slice-2b-design.md:203` (which already flags the symbol as nonexistent),
+`GO-BOOK.md` in §3.1's findings list and again in §8's consequence paragraph,
+`WAVE-4-BLOCKER-worker-session-lifetime.md:73`, and the `reason` field of the **`E4-F007` key**
+in `scripts/finding-ownership.json`, which now carries the correction verbatim. Two consequences,
+both applied below: Step 7's new finding names **both** DSK-001 copies (a remediation aimed only
+at `:351` would have left the second standing in the very document the finding is about), and
+this plan **stops citing `scripts/finding-ownership.json` by line number** — it is a living
+register whose line numbers rot within hours. Cite the KEY.
 
 **(b) A renewal requires a LIVE session.** Both candidate credential paths do: the shipped
 authenticator calls `verifyWorkerSessionToken`, which fails `claims.exp <= nowSeconds` at
@@ -43,19 +57,64 @@ mode §3.3 already refuses on the identity question. **This revision adopts the 
 shrinks the pure function to what the authenticator does not decide.** §4, §5 and §7 change
 materially as a result, and §10 R6/R7 record what that costs.
 
-**★ (d) The epic-ownership call, recorded.** `scripts/finding-ownership.json:4-5` marks E4-F007
-`unowned` and says in as many words: *"AWAITING an ownership call: a server-side ticket in E3
-(JOB-002's family, where the escalation was addressed) or E4 (where the finding lives, already
-reopened once for WRK-008)."* The finding text itself
-(`epics/E4-worker-daemon/findings.md:145`) says "E3/JOB-002 follow-up ticket". The GO-BOOK files
-it under E4 (`GO-BOOK.md:125`, `:187`). Nobody reconciled the three.
+**★ (d) The epic-ownership call — already MADE, and already in the tree.** Re-read at tip:
+`scripts/finding-ownership.json`, key **`E4-F007`**, reads `"status": "owned"`, `"ticket":
+"WRK-010"`. Its `reason` records the go-book §8 **D-2** call and carries the `IdentityLifecycle`
+correction verbatim; its `ownerStillOpen` states that slice 1 does **not** close the finding and
+sequences the closure at Sprint 2.5. There is nothing for this ticket to flip.
 
-**Decision: WRK-010 stays in E4.** The finding lives in E4's ledger, the consumer
-(`SessionStoreDeps.renew`) is an E4 daemon seam, the blocked work (WRK-008 slice 2b) is E4, and
-E3 is closed and CI-green — reopening a closed epic to host a ticket whose only non-server
-consumer is E4's daemon buys nothing. E3/JOB-002 remains the *origin* of the defect, which §1
-records; origin and ownership are different questions. §7 Step 7 flips
-`finding-ownership.json` to `owned` naming this ticket.
+**★ What this paragraph used to claim, and why the correction is the point.** An earlier revision
+quoted `scripts/finding-ownership.json:4-5` as marking E4-F007 `unowned` and *"AWAITING an
+ownership call"*. That string is not in the file: the entry had already been flipped to `owned`
+before this plan was written, and the line numbers moved with it. A section headed *"Corrections
+verified at tip before designing around them"* carrying a stale citation is precisely the failure
+it exists to prevent — so the rule stated in §0(a) is repeated here because this is the paragraph
+that broke it: **cite this register by KEY, and re-read it before quoting it.**
+
+The historical disagreement is real and is settled elsewhere, not by anything this ticket writes:
+the finding text still says "E3/JOB-002 follow-up ticket" (`epics/E4-worker-daemon/findings.md:145`)
+while the go-book files WRK-010 under E4 (§3's sequence and §4's Sprint 1). Go-book §8 **D-2**
+reconciles them.
+
+**Decision (recorded, not re-litigated): WRK-010 stays in E4.** The finding lives in E4's ledger,
+the consumer (`SessionStoreDeps.renew`) is an E4 daemon seam, the blocked work (WRK-008 slice 2b)
+is E4, and E3 is closed and CI-green — reopening a closed epic to host a ticket whose only
+non-server consumer is E4's daemon buys nothing. E3/JOB-002 remains the *origin* of the defect,
+which §1 records; origin and ownership are different questions.
+
+**★ (e) SLICE 1 DOES NOT CLOSE E4-F007. Step 7 must not mark it `resolved`, and must not touch a
+manifest status.** Two independent reasons converge; either alone is sufficient.
+
+***Substantive — and this is the real one.*** A cross-plan completeness review asked the question
+no single-plan reviewer could: *after Sprints 1, 2 and 3 ship exactly as written, who calls this
+route?* **Nobody.** This ticket is server-side by its own §9. Sprint 3 (WRK-008 slice 2b) wires
+`SessionStoreDeps.renew` (`identity/session.ts:55`) to **`Enroller.renew`**
+(`packages/worker-daemon/src/enrollment/enroll.ts:119`) — the **enrolment code replay**, whose
+module header says in as many words at `:4-15` that *"there is NO dedicated renew route/audience"*
+and that a replay *"only succeeds while the code route is live"*. So E4-F007's own statement of
+the defect — a worker near expiry has **no path** to a fresh session once the ten-minute code
+route has lapsed — remains **TRUE of every worker** after this ticket ships. Marking it `resolved`
+here would convert a live problem into a settled one, which is the exact damage the ownership
+register exists to prevent.
+
+***Mechanical.*** `evaluateFindingOwnership` computes `openIds` from findings whose parsed status
+is exactly `open` (`scripts/lib/finding-ownership.mjs:79-80`), then pushes
+`{kind: "stale_declaration"}` for **every** manifest key not in that set (`:132-136`) — the
+comment above it says why: *"A manifest that keeps entries for findings that are no longer open
+rots into a list nobody trusts."* Any problem makes `ok:false` (`:138`) and
+`check-finding-ownership.mjs` exits non-zero. That checker runs in the `policy` job
+(`.github/workflows/pr.yml:298`), which is gated **only** on draft status (`:124-126`) — there is
+no `changes.outputs.code` gate — and `policy` is one of `ci-required`'s `needs`. So flipping the
+status to `resolved` while the `E4-F007` key stands reddens the single required check on this
+ticket's **last** step, after every line of code has already landed. The live convention confirms
+the rule rather than merely permitting it: no resolved finding in the register carries a manifest
+entry today.
+
+**What slice 1 does instead.** §7 Step 7 appends a dated **addendum** to E4-F007 in the register's
+own house style — the finding already carries a `WRK-005 addendum` at `findings.md:156` — leaves
+`**Status:** open`, and edits **no** manifest status. E4-F007 closes at slice 2: go-book §4,
+*"★ Sprint 2.5 — WRK-010 slice 2: the renewal route gets its first caller"*, whose "Done when"
+names that closure explicitly.
 
 ---
 
@@ -106,8 +165,9 @@ job does not poll at all. It also puts a mint inside the hottest, most rate-limi
 **What is taken is E4-F007 option (c), AMENDED.** The finding's own words are "add a
 device-proof-**only** reauth endpoint" (`findings.md:148-149`) — which is precisely the shape
 rejected two paragraphs up. This ticket ships **(c), amended: proof PLUS a live session.** §7
-Step 7 records the amendment when it resolves the finding, rather than letting "option (c)" read
-as if the finding's literal proposal was implemented.
+Step 7 records the amendment **in the finding's addendum, which leaves it `open`** (§0e), rather
+than letting "option (c)" read as if the finding's literal proposal was implemented — or as if
+building the server half of it had closed the gap.
 
 ### 2.2 The 15-minute ceiling is UNCHANGED
 
@@ -149,9 +209,19 @@ POST /api/worker-control/session/renew
 | modify | `server/src/routes/worker-control.ts` — one route + one authenticator construction |
 | modify | `server/src/middleware/worker-session-auth.ts` — `export const SESSION_MAX_MS`. **Nothing else.** |
 | modify | `server/src/__tests__/worker-control-body-limits.test.ts` — one parity assertion for the local descriptor |
-| modify | `server/src/__tests__/desktop-disabled.negative.test.ts` — one source-scan clause (§7 Step 4) |
-| modify | `epics/E4-worker-daemon/findings.md` — E4-F007 resolved; new finding for the DSK-001 claim |
-| modify | `scripts/finding-ownership.json` — E4-F007 `unowned` → `owned`, ticket `WRK-010` (§0d) |
+| modify | `server/src/__tests__/desktop-disabled.negative.test.ts` — one source-scan clause **over `routes/worker-control.ts`**, plus a named restatement of the two standing app.ts clauses it composes with (§7 Step 4) |
+| modify | `epics/E4-worker-daemon/findings.md` — E4-F007 **addendum; Status stays `open`** (§0e); one **new LOW** finding for the DSK-001 claim, naming both copies (§0a) |
+| modify | `scripts/finding-ownership.json` — **the `E4-F007` key is NOT touched** (§0d: already `owned`/`WRK-010` at tip, with an `ownerStillOpen` that already says slice 1 does not close it). The only edit is a **declaration for the new LOW finding** — see the note below |
+
+**★ The new LOW finding needs its own manifest declaration, in the same commit that files it.**
+`evaluateFindingOwnership` default-denies: for every open finding it pushes
+`{kind: "undeclared_finding"}` when the manifest has no entry (`scripts/lib/finding-ownership.mjs:83-90`),
+under a docblock that states the intent — *"A new open finding is born UNDECLARED, and undeclared
+fails"*. Severity is irrelevant; only `accepted` consults it. So the register row above is **two**
+edits, not one: an addendum on E4-F007 (status unchanged) and a fresh key for the new finding.
+The plan's own §7 command block runs `check-finding-ownership.mjs`, so an executor sees this
+before pushing rather than in CI — but the plan should not depend on the guard to specify its own
+change set, and `--write` proposes a schema-valid `unowned` stub if it is reached anyway.
 
 **No migration. No new table. No new column. No frozen-contract change. No change to shared
 authentication behaviour** — `export` on a constant is the whole of the middleware diff.
@@ -265,16 +335,20 @@ authenticator without noticing this would have silently shipped platform-physica
 
 After §3.4, `admitSessionRenewal` decides two things and produces one:
 
-1. **May this principal class renew at all?** (§3.5(ii): platform physical may not.)
-2. **Is the operator-side fact a shared-platform target needs actually present?** (fail closed if
-   a future refactor drops it.)
+1. **May this principal class renew at all?** (§3.5(ii): platform physical may not.) **Reachable.**
+2. **Is the operator-side fact a shared-platform target needs actually present?** —
+   **defence in depth, NOT reachable coverage.** See the declaration in §4.2; it is written for a
+   future refactor, and it is not counted.
 3. **The identity half of the claims to mint**, narrowed to a renewable scope.
 
 That is a small function. Naming it honestly: **the authenticator did the work, and duplicating
 it was the defect this revision removes.** The function still earns a file because (a) the
-platform-physical refusal is a real, reachable, mutation-testable decision that exists nowhere
+platform-physical refusal is a real, **reachable**, mutation-testable decision that exists nowhere
 else, (b) it types the minted claims from a narrowed scope so an unrenewable scope cannot reach
 `createWorkerSessionToken` at all, and (c) it keeps the route thin, which is the house pattern.
+Note what is **not** in that list: R2. One reachable decision is a thin justification for a file,
+and saying so is better than inflating the list — the file is still right, for reasons (b) and
+(c), which do not depend on how many guards it holds.
 
 **★ The draft's headline property is downgraded, deliberately and on the record.** §4.1 of the
 first draft claimed the claims are "sourced from the current authority row — never echoed from
@@ -286,7 +360,17 @@ from `claims.sub`, `claims.targetId`, `claims.generation`, `claims.deviceThumbpr
 What makes echoing safe is not re-sourcing; it is that `:160-167` **proved every one of those
 values equal to the row inside the same transaction that authorised the request**. "Renewing,
 not extending" therefore holds by *equality proof* rather than by *provenance*. That is a weaker
-sentence and a true one, and it is the same fact that makes six mutants equivalent (§7 Step 6).
+sentence and a true one.
+
+**★ It is NOT a source of equivalent mutants, and an earlier revision claimed six of them.** The
+argument above proves a *property*; it does not describe a mutation anyone can run. The authority
+row (`current`) is declared inside `verifyCurrent` at `worker-session-auth.ts:156`, consumed by
+the equality checks at `:160-167`, and **never escapes** — the returned `VerifiedTargetPrincipal`
+at `:168-178` is built entirely from `claims.*`, with only `targetScope` (`:177`) row-sourced. So
+at `admitSessionRenewal`, and at the route, there is no *"the row's X"* symbol in scope to
+substitute; §4.5's `SessionRenewalInput` carries no row field, and §6 forbids obtaining one (*"No
+second transaction, and no second read"*). §7 Step 6 records the retraction and states what the
+honest count is.
 
 ### 4.2 The two guards
 
@@ -295,13 +379,34 @@ No ordering rationale accompanies this table, and its absence is deliberate — 
 | # | Guard | Refusal | Why |
 |---|---|---|---|
 | R1 | `principalOrganizationId === null` (or `principalScope === "platform"`) | `platform_physical_unsupported` | §3.5(ii) and §9. A platform PHYSICAL identity's authority lives behind `acquirePlatformTargetAuthorityExclusive`, a materially different transaction shape; renewal for it is out of scope and must be refused explicitly now that the transport no longer refuses it for us. |
-| R2 | `targetScope === "platform"` and `hasSharedPlatformAuthority === false` | `platform_authority_unresolved` | The authenticator only populates `sharedPlatformAuthority` after `:186-197` passes, so `false` here means the operator-side proof did not happen. Refusing on it makes a future refactor that drops the operator read fail **closed** rather than mint on unverified authority. |
+| R2 | `targetScope === "platform"` and `hasSharedPlatformAuthority === false` | `platform_authority_unresolved` | The authenticator only populates `sharedPlatformAuthority` after `:186-197` passes, so `false` here means the operator-side proof did not happen. Refusing on it makes a future refactor that drops the operator read fail **closed** rather than mint on unverified authority. **★ Unreachable today — see below.** |
 
-Guard R1's second arm is defence in depth, not reachable coverage: `assertClaims` pins
-`(scope === "platform") === (organizationId === null)` at `worker-session-auth.ts:69`, so the two
-arms can never disagree in production. It is written because it costs one `||`, and it is
-**declared here rather than counted as coverage** — the same discipline §10 R8 applies to guard
-4's tautological arms.
+**★ Both of the unreachable arms are declared, and neither is counted.** This document applies
+that discipline to guard 4's tautological arms (§10 R8) and to R1's second arm; an earlier
+revision then leaned on **R2** as one of the two reasons the file exists and mapped it into the
+acceptance matrix as coverage of a real condition. It is not one, and the omission was the
+inconsistency, not the rule.
+
+* **R1's second arm** (`principalScope === "platform"` with a non-null org) cannot occur:
+  `assertClaims` pins `(scope === "platform") === (organizationId === null)` at
+  `worker-session-auth.ts:69`, so the two arms can never disagree in production. Written because
+  it costs one `||`.
+* **R2's refusal arm** cannot occur either, and the proof is the authenticator's three exits.
+  (1) `claims.organizationId === null` returns the operator-DB principal at `:180-182` — no
+  `sharedPlatformAuthority`, `targetScope` possibly `platform` — but **R1 refuses that principal
+  first**. (2) A tenant principal with `targetScope === "platform"` enters the block at `:186` and
+  either throws `target_revoked` at `:196` or returns at `:198-205` **with**
+  `sharedPlatformAuthority` populated. (3) `return principal` at `:207` is reached only when
+  `targetScope !== "platform"`. So no principal that survives R1 can present
+  `targetScope === "platform"` **and** `hasSharedPlatformAuthority === false`.
+
+Both are still **written**, still **unit-tested** and still **mutation-killed** — the pure
+function is directly constructible, so a test can present an input the authenticator can never
+produce, and the mutants die there (§7 Step 6). That makes them non-vacuous tests of code that is
+really present. It does **not** make them coverage of a reachable condition, and §8 no longer
+counts them as one. A later reader must not come away believing this route carries a live
+fail-closed check against an unresolved shared-platform authority: it carries a check that
+becomes live the day someone drops the operator read at `:186-197`.
 
 ### ★ 4.3 `draining` and `offline` still renew, and that is still the point
 
@@ -535,12 +640,24 @@ reason written down is a step that proved nothing; stop and find out why.*
 
 ```bash
 pnpm --filter @armyofagents/server test:run -- src/__tests__/worker-session-renewal-admission.test.ts
-pnpm --filter @armyofagents/server test:run -- src/__tests__/worker-session-renewal.integration.test.ts
+# ★ THE ENV PREFIX IS NOT OPTIONAL — see the note below.
+AOA_RUN_WIN_INTEGRATION=1 \
+  pnpm --filter @armyofagents/server test:run -- src/__tests__/worker-session-renewal.integration.test.ts
 pnpm --filter @armyofagents/server test:run -- src/__tests__/desktop-disabled.negative.test.ts
 pnpm --filter @armyofagents/server typecheck && pnpm --filter @armyofagents/server build
 node scripts/check-guard-inventory.mjs && node scripts/check-test-inventory.mjs
 node scripts/check-finding-ownership.mjs
 ```
+
+**★ Without `AOA_RUN_WIN_INTEGRATION=1`, Step 5's RED cannot be observed on this worktree's
+platform.** The harness Step 5 copies is wrapped in
+`describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")`
+(`worker-enrollment.integration.test.ts:288`), so a Windows-local run reports the whole file as
+**skipped — which vitest renders as green**. An executor following §7's rule ("watch it fail for
+the stated reason") would watch nothing fail and read it as a pass, on the step this section calls
+*the whole point*. In PowerShell the prefix is `$env:AOA_RUN_WIN_INTEGRATION = "1"` on its own
+line; the bash form above assumes Git Bash. What is at stake is not one step — §8 records that
+**six of the nine acceptance clauses have this suite as their only evidence** (§10 R6).
 
 `scripts/test-inventory.json` records `server` in **floor** mode at 1467
 (`scripts/test-inventory.json:63-66`), so adding server tests needs no manifest bump.
@@ -575,12 +692,19 @@ admits.
 
 ### Step 2 — the two guards + the wire mapping
 
-R1: `principalOrganizationId: null` → `platform_physical_unsupported`; `principalScope:
-"platform"` → same. R2: `principalTargetScope: "platform"` with `hasSharedPlatformAuthority:
-false` → `platform_authority_unresolved`. **Anti-vacuity:** `hasSharedPlatformAuthority: false`
-is IGNORED for a non-platform target — a guard that fired for every target would pass the case
-above and break every organization-scoped worker in production. Plus the exhaustiveness test:
-every refusal in the union maps to `unauthorized`.
+R1 arm 1: `principalOrganizationId: null` → `platform_physical_unsupported`. R1 arm 2:
+`principalScope: "platform"` → same — and **this case must carry a NON-NULL
+`principalOrganizationId`**, or arm 1 fires, the assertion passes for the wrong reason, and Step
+6's M2 mutant survives unnoticed. R2: `principalTargetScope: "platform"` with
+`hasSharedPlatformAuthority: false` → `platform_authority_unresolved`. **Anti-vacuity:**
+`hasSharedPlatformAuthority: false` is IGNORED for a non-platform target — a guard that fired for
+every target would pass the case above and break every organization-scoped worker in production.
+Plus the exhaustiveness test: every refusal in the union maps to `unauthorized`.
+
+**Label the two unreachable cases in the file itself.** R1 arm 2 and R2 both refuse inputs the
+shipped authenticator cannot produce (§4.2). They are real tests of code that is really there,
+and they are **not** evidence that either refusal ever fires in production. One comment per case,
+so a later reader does not promote them.
 
 This is the whole unit matrix. It is small because §3.4 is true; §10 R6 records what that costs.
 
@@ -614,12 +738,42 @@ must hand-mount the router, and a hand-mounted router says nothing about `app.ts
 **Use the house pattern instead** — the source scan in
 `server/src/__tests__/desktop-disabled.negative.test.ts`: `flagBlocks` (`:82-93`) enumerates every
 `if (opts.distributedExecutionEnabled) {` block, and `mountedInsideAFlagBlock` (`:102-113`)
-asserts that **every** occurrence of a needle sits inside one. `workerControlRoutes(` is already
-asserted this way at `:233`; the new clause asserts the same for the renewal route's own
-registration string, so a future edit that mounts it outside the flag fails a named test. Note
-the file's two standing traps, both documented in place: `readSource` normalises CRLF (`:62-63`),
-and the enumeration exists because a first-occurrence scan silently measured the wrong block once
-already (`:70-81`).
+asserts that **every** occurrence of a needle sits inside one. Note the file's two standing traps,
+both documented in place: `readSource` normalises CRLF (`:62-63`), and the enumeration exists
+because a first-occurrence scan silently measured the wrong block once already (`:70-81`).
+
+**★ But NOT by feeding `mountedInsideAFlagBlock` the renewal route's registration string. An
+earlier revision specified exactly that, and it cannot be written.** The helper is fed
+`appSource = readSource("..", "app.ts")` at **every** call site — `:233`, `:241`, `:261`, all
+sourced from `:224` — and its two failure modes are both hit here:
+
+* Fed `appSource`, the needle `router.post("/worker-control/session/renew"` is **absent**, because
+  app.ts holds no worker-control path literal at all (it mounts the router by factory at `:497`
+  and the parsers by prefix at `:361-377`). `expect(positions.length, "… is not mounted at
+  all").toBeGreaterThan(0)` fails at `:111`.
+* Fed `readSource("..", "routes", "worker-control.ts")`, `flagBlocks` returns `[]` —
+  `grep -c distributedExecutionEnabled server/src/routes/worker-control.ts` is **0** — so
+  `positions.every(…)` is `false` and `.toBe(true)` fails at `:112`.
+
+Either way it is **permanently red for a reason that has nothing to do with dormancy**, and the
+predictable repair is to weaken it until it passes. That is worse than not writing it.
+
+**★ What to write instead — a clause this diff can actually turn red.** Dormancy here is a
+*conjunction*, and honesty means saying which conjunct this ticket owns:
+
+| # | Assertion | Owned by this diff? |
+|---|---|---|
+| a | `readSource("..", "routes", "worker-control.ts")` **contains** the renewal route's registration string | **YES** — red before Step 4's implementation lands, and red again the day someone relocates the registration onto a router app.ts mounts unconditionally |
+| b | `mountedInsideAFlagBlock(appSource, "workerControlRoutes(")` is `true` (`:233`) | no — **green today** |
+| c | app.ts contains exactly **one** `workerControlRoutes(` mount (`:247`) | no — **green today** |
+
+Write (a) as a new named clause in the same `describe`, and restate (b)/(c) in its body **by
+reference**, so the conjunction is visible in one place. Say in the test's comment what this table
+says: **(b) and (c) are pre-existing, are green on the shipped boot root, and cannot be reddened
+by this ticket's diff.** Neither is the clause; (a) is. A dormancy row backed only by (b) would be
+a gate already satisfied before the ticket started — the "green means nothing" pattern this
+programme has been bitten by four times, and which §7's own checker triage refuses two paragraphs
+above.
 
 **The "malformed body" variant is DROPPED.** If it meant invalid JSON, the assertion is simply
 false: `app.use(express.json({ verify: captureRawBody }))` at `app.ts:385` is mounted
@@ -717,69 +871,142 @@ restore.** The matrix is far smaller than the draft's "30+", because §3.4 is tr
 would have covered are shipped middleware with their own suites, and mutating them would kill
 unrelated tests without saying anything about this route. What this ticket owns:
 
-* R1, both arms (`organizationId === null`; `scope === "platform"`) — note the second arm is
-  expected to be **equivalent** (pinned at `worker-session-auth.ts:69`); declare it, do not
-  report a kill.
-* R2, and R2's target-scope condition (a mutant firing R2 for every target must be killed by the
-  organization-scope positive control).
-* The narrowed `scope` in the returned identity.
-* `WORKER_SESSION_RENEWAL_TTL_MS` (`SESSION_MAX_MS` → `SESSION_MAX_MS + 1000` must die at the
-  mint helper).
-* The `internal_unavailable` / `unauthorized` split in the route's `WorkerSessionError` handling.
-* The descriptor's `maxRequestBytes`.
+| # | Mutant | Killed by | Reachable in production? |
+|---|---|---|---|
+| M1 | R1 arm 1 — delete `input.principalOrganizationId === null` | Step 2's null-org case; integration "platform physical is refused" | **yes** |
+| M2 | R1 arm 2 — delete `\|\| input.principalScope === "platform"` | Step 2's `{principalOrganizationId: "<uuid>", principalScope: "platform"}` case | **no** — §4.2 |
+| M3 | R2 — delete the guard | Step 2's `{principalTargetScope: "platform", hasSharedPlatformAuthority: false}` case | **no** — §4.2 |
+| M4 | R2 fires for **every** target (drop the `principalTargetScope === "platform"` conjunct) | the organization-scope positive control from Step 1 | **yes** — this mutant breaks every org-scoped worker |
+| M5 | widen the narrowed `scope` in the returned identity | Step 1's owner/organization identity assertions | **yes** |
+| M6 | `WORKER_SESSION_RENEWAL_TTL_MS` = `SESSION_MAX_MS + 1000` | Step 3 — dies **at the mint helper** (`exp − iat` becomes 901; `worker-session-auth.ts:80`) | **yes** |
+| M7 | collapse the `internal_unavailable` / `unauthorized` split in the route's `WorkerSessionError` handling | Step 3's paired construction (mint error vs authenticator error) | **yes** |
+| M8 | raise/remove the descriptor's `maxRequestBytes` | Step 3's parity assertion | **yes** |
 
-**★ Documented EQUIVALENT mutants — declared, not claimed as killed.** The draft declared one.
-By its own reasoning there are **six**, and reporting kills for any of them would be a false
-kill. Every field the decision function copies out of `VerifiedTargetPrincipal` was already
-proved equal to the authority row by the authenticator (§4.1), so substituting the other source
-cannot change an observable outcome:
+**★ M2 and M3 are killed by inputs production cannot present, and that is stated rather than
+hidden.** The pure function is directly constructible, so a unit case can hand it a shape the
+authenticator can never produce (§4.2 proves neither is reachable). The mutants therefore die,
+which proves the guards are really written — but the kills are **not** coverage of a reachable
+condition, and §8 does not count them as one. One fixture trap follows and must be written into
+the test: **M2's case has to carry a NON-NULL `principalOrganizationId`.** If the fixture leaves
+it `null`, arm 1 still fires, the case passes, and the mutant survives for a reason nobody looks
+at.
 
-| Mutant | Survives because |
-|---|---|
-| `generation: input.generation` → the row's `targetDeviceGeneration` | `worker-session-auth.ts:162` proved them equal, in both directions and for both rows |
-| `sub: input.workerId` → the row's worker id | `findSessionAuthority` is keyed by it (`tenant/worker-enrollment.ts:366`) |
-| `targetId: input.targetId` → the row's target id | keyed by it too (`tenant/worker-enrollment.ts:367`) |
-| `profileHash` → the row's | `:167` proved them equal |
-| `deviceThumbprint` → the row's | `:166` proved them equal (and `:141` chained it to the proof) |
-| `scope` → the row's `worker.scope` | `:165` proved them equal — **note this one is only equivalent because the authenticator's scope check is the strong one** (§3.4); it would NOT have been equivalent under the draft's weaker `∈ {organization, owner}` test |
+**★ RETRACTED — the "six documented EQUIVALENT mutants" table.** An earlier revision listed six
+substitutions of the form *"`input.X` → the row's X"* (generation, worker id, target id, profile
+hash, device thumbprint, scope) and declared them equivalent on the strength of §4.1's equality
+proof. **None of them can be written.** The authority row (`current`) is declared inside
+`verifyCurrent` at `worker-session-auth.ts:156` and never escapes it; the returned principal at
+`:168-178` is built from `claims.*` with only `targetScope` (`:177`) row-sourced. There is no
+*"the row's X"* symbol in scope at `admitSessionRenewal` or at the route, §4.5's
+`SessionRenewalInput` carries no row field, and §6 forbids a second read. Each of the six is a
+`TS2304`/`TS2339` — it cannot be typed, compiled or executed. (One of them could not have been
+typed even with the row in hand: `findSessionAuthority` returns `{worker, target,
+ownerMembershipActive}` and the generation is `current.target.deviceGeneration`; the name
+`targetDeviceGeneration` the table used does not exist on that shape.)
 
-The precedent is `E1-F008`'s "6 of 9 die; the other 3 are documented equivalents". Say so in the
-result rather than inflating the kill count.
+**A documented equivalent mutant that does not compile is not an equivalent mutant** — the same
+rule the sibling ticket applies in `WRK-008-slice-2b-design.md` §7 Step 6 (*"★ On the mutant that
+was dropped"*), where a seventh mutant was retracted for this exact reason: *"it does not compile,
+so it never runs, and a mutant that cannot execute is not a mutant that survived … counting a
+compile error inflates the denominator with something no harness evaluated."* Declaring one is
+the same failure as claiming a kill for one; the *"declared, not claimed as killed"* hedge does
+not escape it.
 
-### Step 7 — docs
+**So, plainly: eight mutants, eight killed, ZERO survivors, ZERO documented equivalents, zero
+false kills.** Report it in that form — the convention WRK-008 slice 2a set. The property §4.1
+proves is real and is still proven; its artifact is the **typecheck**, not a mutation score.
+`E1-F008`'s *"6 of 9 die; the other 3 are documented equivalents"* remains the precedent for
+**honest reporting**, not for having equivalents to report.
 
-E4-F007 → `resolved`, naming the option taken as **(c), amended: proof PLUS a live session**, and
-why the finding's literal "proof-only" wording was not implemented (§2.1) and why (a)/(b) were
-not. `scripts/finding-ownership.json` → `owned`, ticket `WRK-010`, and delete the sentence
-claiming `IdentityLifecycle.acquireSession()` "already landed as the drop-in seam" — leaving it
-there while resolving the finding would propagate the false fact one more hop
-(`check-finding-ownership.mjs` verifies the ticket exists; it cannot verify the prose).
+### ★ Step 7 — docs. **E4-F007 STAYS `open`.**
 
-**New finding (LOW):** DSK-001's `IdentityLifecycle.acquireSession()` claim has no code behind it
-(§0a) — the fourth time this programme has found a documented fact that no code backs.
+Read §0(e) before writing a character of this step. An earlier revision of the plan flipped
+E4-F007 to `resolved` here and left its manifest key standing, which is both substantively wrong
+(the defect survives slice 1) and mechanically red (`stale_declaration` →
+`check-finding-ownership.mjs` non-zero → the always-on `policy` job → `ci-required`). The
+end state below is the one the register accepts *and* the one that is true.
 
-Result doc per the template, and it must carry §0(c) explicitly: *the first design of this ticket
-would have shipped a duplicate authority surface, and an adversarial review caught it before
-code.* A result doc that only describes what shipped loses the finding.
+**1 · `epics/E4-worker-daemon/findings.md` — an ADDENDUM on E4-F007, status UNCHANGED.** House
+style is already established in the entry: `**WRK-005 addendum (2026-08-14 — …)**` at `:156`.
+Write a `**WRK-010 slice-1 addendum**` beneath it recording, in this order:
+
+* what slice 1 ships — a device-proof + live-session renewal route that never touches the
+  enrollment code table;
+* the option taken: **(c), amended — proof PLUS a live session**, why the finding's literal
+  "proof-only" wording (`findings.md:148-149`) was *not* implemented (§2.1), and why (a) and (b)
+  were rejected;
+* **what it does NOT change**, in one unambiguous sentence: *nothing calls this route.* Slice 2b
+  wires `SessionStoreDeps.renew` to `Enroller.renew`, the enrolment code replay
+  (`packages/worker-daemon/src/enrollment/enroll.ts:119`, header `:4-15`), so a worker still loses
+  its path to a fresh session at the ten-minute code-route boundary — which is this finding's own
+  statement of the defect;
+* the closure condition and its owner: **WRK-010 slice 2**, go-book §4 *"★ Sprint 2.5"*.
+
+Leave `**Status:** open`. Leave the `escalated to E3/JOB-002` line alone — it is history, and
+go-book §8 D-2 is where the ownership call lives.
+
+**2 · `scripts/finding-ownership.json` — do NOT touch the `E4-F007` key.** It is already
+`"status": "owned"`, `"ticket": "WRK-010"` at tip, its `reason` already carries the
+`IdentityLifecycle` correction, and its `ownerStillOpen` already states that slice 1 does not
+close it and names Sprint 2.5. Re-editing it is churn on the file that gates the always-on
+`policy` job. If the addendum in step 1 makes `ownerStillOpen` read stale, amend **that string**
+and nothing else. Cite this file by key; §0(a) says why.
+
+**3 · New finding (LOW) — file it WITH its declaration, in the same commit.** DSK-001's
+`IdentityLifecycle.acquireSession()` claim has no code behind it (§0a) — the fourth time this
+programme has found a documented fact that no code backs. Two mechanical requirements:
+
+* the finding text must name **both** copies — `epics/E10-desktop/tickets/DSK-001-design.md:351`
+  ("is landed as the seam the renewal successor implements") **and `:431`** ("is the drop-in
+  seam"). An earlier revision counted one and would have left the other standing;
+* it needs a **new key in `scripts/finding-ownership.json`** in the same commit. A new open
+  finding is born UNDECLARED and undeclared fails (`scripts/lib/finding-ownership.mjs:83-90`);
+  LOW is gated identically. `unowned` with a real `reason` is a legitimate status — say what it
+  blocks, which is nothing, and that the correction is already recorded in E4-F007's `reason`.
+
+**DSK-001's own design doc is NOT rewritten**, and that is deliberate: it is a dated record of a
+shipped ticket, the same reason the blocker record below is not rewritten. The finding is the
+correction; the document keeps its history.
+
+**4 · Result doc** per the template, carrying **three** things a description of what shipped would
+lose:
+
+* §0(c) — *the first design of this ticket would have shipped a duplicate authority surface, and
+  an adversarial review caught it before code*;
+* §0(e) — *this slice ships a route with no callers, on purpose, and the finding it advances is
+  still open*. Write it as a headline, not a footnote: an unread result doc that says "WRK-010
+  landed" next to a `resolved` finding is how a zero-caller clause becomes a claimed capability;
+* the mutation line in the form §7 Step 6 fixes: **eight mutants, eight killed, zero survivors,
+  zero documented equivalents, zero false kills.**
 
 A status line in the blocker record — **do not rewrite it**; it is a dated record.
 
 ## 8. Acceptance mapping
 
-| Acceptance clause | Test |
-|---|---|
-| valid device proof → fresh session, no code, no human | integration `★ THE POINT` |
-| revoked target refused, same coarse code | integration `★ POSITIVE CONTROL: refused once revoked` + the two revocation-column cases |
-| disabled target refused, same coarse code | integration `refuses a DISABLED target` |
-| generation-superseded refused, same coarse code | integration ahead / behind / worker-row-only |
-| not mounted when distributed execution is off | `desktop-disabled.negative.test.ts` source scan — `mountedInsideAFlagBlock` |
-| the ten-minute code route is never consulted | integration `★ never consults the enrollment code table` |
-| the 15-minute ceiling is unchanged | Step 3 + integration `exp - iat === 900` |
-| renewal issues a NEW session, not an extension | integration `iat >`, `s1 !== s0` |
-| platform PHYSICAL renewal is refused (§9 non-goal, enforced not inherited) | unit R1 + integration `platform physical is refused` |
-| **Test:** unit admission matrix | R1 (both arms), R2, the anti-vacuity non-platform case, exhaustiveness |
-| **Test:** embedded-PG proof mints after the code route lapsed | the integration suite, with the **paired** precondition control |
-| **Test:** positive control proving the same proof is refused once revoked | two `★ POSITIVE CONTROL` cases + the paired precondition control |
+| Acceptance clause | Test | Tier |
+|---|---|---|
+| valid device proof → fresh session, no code, no human | integration `★ THE POINT` | **embedded-PG only** |
+| revoked target refused, same coarse code | integration `★ POSITIVE CONTROL: refused once revoked` + the two revocation-column cases | **embedded-PG only** |
+| disabled target refused, same coarse code | integration `refuses a DISABLED target` | **embedded-PG only** |
+| generation-superseded refused, same coarse code | integration ahead / behind / worker-row-only | **embedded-PG only** |
+| not mounted when distributed execution is off | `desktop-disabled.negative.test.ts` — clause **(a)** of Step 4's conjunction (`worker-control.ts` holds the registration), composed with the pre-existing `:233`/`:247` app.ts clauses. ★ Only (a) is this ticket's; (b)/(c) are green today | unit |
+| the ten-minute code route is never consulted | integration `★ never consults the enrollment code table` | **embedded-PG only** |
+| the 15-minute ceiling is unchanged | Step 3 + integration `exp - iat === 900` | unit + integration |
+| renewal issues a NEW session, not an extension | integration `iat >`, `s1 !== s0` | **embedded-PG only** |
+| platform PHYSICAL renewal is refused (§9 non-goal, enforced not inherited) | unit R1 arm 1 + integration `platform physical is refused` | unit + integration |
+| **Test:** unit admission matrix | R1 arm 1 (reachable), R1 arm 2 + R2 (**written and mutation-killed, declared unreachable — not counted as coverage of a live condition**, §4.2), the anti-vacuity non-platform case, exhaustiveness | unit |
+| **Test:** embedded-PG proof mints after the code route lapsed | the integration suite, with the **paired** precondition control | **embedded-PG only** |
+| **Test:** positive control proving the same proof is refused once revoked | two `★ POSITIVE CONTROL` cases + the paired precondition control | **embedded-PG only** |
+
+**★ SIX of the nine acceptance clauses have the embedded-PostgreSQL suite as their ONLY
+evidence** — and that suite is `describe.skipIf(win32 && AOA_RUN_WIN_INTEGRATION !== "1")`
+(`worker-enrollment.integration.test.ts:288`), which a default Windows-local run reports as
+**skipped, i.e. green**. Stated here, next to the matrix, rather than only in §10 R6, because this
+is the table an author signs off against: **on this worktree's platform, a plain `pnpm test`
+signs off six of nine clauses against a run that evaluated nothing.** The prefix in §7's command
+block is what makes the sign-off real; Linux CI runs the suite unconditionally, so the gap is a
+local-verification gap, not a CI one — which makes it exactly the kind that is discovered after
+the push.
 
 **Demoted, not deleted — "the DEAD `s0` stays dead".** The draft mapped it to "renewal issues a
 new session, not an extension". It cannot serve as evidence for that or anything else: `s0`'s
@@ -798,12 +1025,58 @@ labelled a transport refusal; the guard-2 acceptance row is gone.
 
 | Not delivered | Owner | Why |
 |---|---|---|
-| **The daemon client** — `SESSION_RENEW_PATH`, `renewSession()` on the transport, wiring `SessionStoreDeps.renew` (`identity/session.ts:55`) to it in place of the enroll replay, and a near-expiry schedule | **WRK-010 slice 2** | The acceptance is entirely server-side, and E4 already splits this way (WRK-008 1/2). Slice 2 must also add the `PAIRS` entry in `check-worker-path-parity.mjs` and bump `packages/worker-daemon` in `test-inventory.json` (**pinned**). Until it lands, this route exists and nothing calls it — which is the rollback unit. |
-| **Renewal HEADROOM ≥ 5 minutes before the presented session's expiry** | **WRK-010 slice 2 — a requirement, not a preference** | §3.5(i): the authenticator expires the proof-replay row with the PRESENTED session (`worker-session-auth.ts:153`), so a renewal inside the last five minutes leaves its own proof replayable for up to ~4.9 min after the row is swept. The ⅔-TTL cadence satisfies it with margin; slice 2 must state the bound and test it, not merely happen to meet it. |
+| **The daemon client** — `SESSION_RENEW_PATH`, `renewSession()` on the transport, wiring `SessionStoreDeps.renew` (`identity/session.ts:55`) to it in place of the enroll replay, and a near-expiry schedule | **WRK-010 slice 2 = go-book Sprint 2.5** — scoped in §9.1 | The acceptance is entirely server-side, and E4 already splits this way (WRK-008 1/2). Until it lands, this route exists and nothing calls it — which is the rollback unit, **and which is why E4-F007 stays open** (§0e). |
+| **Renewal HEADROOM ≥ 5 minutes before the presented session's expiry** | **WRK-010 slice 2 — an invariant, not a preference** | §3.5(i) / §9.1(2). |
 | **Renewal for a platform PHYSICAL session** | follow-up / DEP-00x | Its authority lives behind `acquirePlatformTargetAuthorityExclusive`, a materially different transaction shape. **This is now an enforced refusal (guard R1), not an inherited one** — §3.5(ii). Shared-platform TENANT workers **are** covered. |
 | **Resurrecting a fully expired session** | not planned | §2.1. |
 | **Any change to enrollment, `CODE_TTL_MS`, or the shared authenticator's behaviour** | — | Untouched on purpose. The bug was never that the code expires; it was that nothing else could mint. The middleware diff is one `export` keyword. |
 | **Rate limiting the renewal route** | **DEP-009 follow-up — and the shape matters** | Named so it is a decision rather than an oversight, but the draft's reasoning ("an attacker who can call it already holds a live session") understated the cost, so record it properly: **every attempt runs a WRITE transaction before any decision is reached** — `cleanupExpiredProofs` issues a `SELECT … LIMIT 100` plus a `DELETE … RETURNING` (`tenant/worker-enrollment.ts:385-397`), and `recordProof` issues a `DELETE` plus an `INSERT … ON CONFLICT DO NOTHING` (`tenant/worker-enrollment.ts:251-261`). That is reachable by **any** holder of a live session, at any rate, on a route with **no** limiter — contrast `poll`, which admits through the shared per-org DB counter *before* touching authority (`worker-control.ts:304-312`). DEP-009 should therefore treat this as a **pre-authority admission** problem shaped like poll's, not as a per-worker call-frequency cap applied after the fact. |
+
+### ★ 9.1 Slice 2, scoped — because the go-book now sequences it as **Sprint 2.5**
+
+Slice 2 stopped being "the daemon half, eventually" the moment the cross-plan review established
+that **nothing calls this route until it ships** (§0e). The go-book carries it as
+`GO-BOOK.md` §4, *"★ Sprint 2.5 — WRK-010 slice 2: the renewal route gets its first caller"*,
+gated on Sprints 1 and 2 and gating Sprint 3. It has no design doc yet, and the go-book's rule is
+that step 1 of a sprint is writing the plan — so this section is not that plan. It is the set of
+requirements **already established** by this ticket's own analysis, so that the slice-2 author
+inherits them rather than rediscovering them.
+
+**(1) `SessionStore.ensureFresh` must gain a near-expiry threshold. Without it, a `renew` thunk
+pointed at this route fires exactly when the credential it must present is already dead.**
+`ensureFresh` (`packages/worker-daemon/src/identity/session.ts:103-107`) returns the current
+session while `now() < expiresAtMs` and calls `forceRefresh()` **only once it is absent or already
+expired**; its docblock at `:96-102` says so in terms — *"This is NOT a near-expiry renewal
+scheduler (E4-D11: there is no sustained renewal)"*. The WRK-010 route refuses an expired session
+by construction: the authenticator calls `verifyWorkerSessionToken`, which fails
+`claims.exp <= nowSeconds` at `worker-session-auth.ts:100` (§0b). Those two facts are
+incompatible. So the seam is one injected thunk, but it is **not** a drop-in: pointing
+`SessionStoreDeps.renew` at `renewSession()` while the store's refresh policy is unchanged
+produces a worker that renews only after it has already lost authority — 401, `SessionStopped`,
+re-enrolment required. The threshold, the module docblock at `:1-31` (whose `:5` states as a fact
+that *"There is NO sustained/sliding renewal"*), the `ensureFresh` docblock at `:96-102`, and
+`SessionStoreDeps.renew`'s own comment at `:52-55` (*"Replay the enroll … Succeeds only while the
+code route is live"*) all move together.
+
+**(2) The threshold must be at least the FIVE-MINUTE headroom §3.5(i) derives. This is an
+invariant of slice 2, not a scheduling preference.** The authenticator writes the proof-replay row
+with `expiresAt` = the **presented** session's expiry (`worker-session-auth.ts:153`), while a
+device proof stays signature-valid for ±5 minutes of skew (`worker-device-proof.ts:4`, enforced at
+`:74`) and `recordProof` **deletes an expired row before inserting**
+(`tenant/worker-enrollment.ts:252-256`). Renew at the ⅔-TTL cadence (T0+10min, session expiring
+T0+15min) and the row outlives the proof: **window zero**. Renew at T0+14.9min and the row lapses
+at T0+15min while the proof stays valid to T0+19.9min: **a ~4.9-minute replay window**. Slice 2
+must therefore *state and test the bound*, not merely happen to satisfy it — a schedule that meets
+it by accident is one refactor away from opening the window, and nothing server-side will notice
+(§10 R7). If slice 2 cannot guarantee the bound, the alternative is a reviewed change to
+`worker-session-auth.ts:153`, not silence.
+
+**Also inherited, already pinned elsewhere in this document:** a **fresh `proofId` per attempt**
+(§10 R1 — a retry with the same one dies as a replay and reads as a revocation); the `PAIRS` entry
+in `scripts/check-worker-path-parity.mjs` (`:26-35`), which is what makes the frozen path (§3.3) a
+checked property instead of a sentence; a bump of `packages/worker-daemon` in
+`scripts/test-inventory.json`, which is **`pinned`** rather than `floor` and so does not
+self-heal; and the closure of **E4-F007**, which is slice 2's to write (§0e).
 
 ## 10. Risks
 
@@ -812,10 +1085,14 @@ labelled a transport refusal; the guard-2 acceptance row is gone.
 worker operation behaves this way. Slice 2 must generate a fresh `proofId` per attempt; if it
 retries with the same one, the retry dies as a replay and reads as a revocation.
 
-**R2 — the renewal window is the daemon's to respect.** No grace past `exp`. Slice 2 renews at
-~⅔ TTL, and `SessionStore.ensureFresh` (`identity/session.ts:103-107`) currently refreshes only
-when **already** expired — that needs a near-expiry threshold, and its docblock at `:1-12` (which
-states as fact that no sustained renewal exists) needs rewriting.
+**R2 — the renewal window is the daemon's to respect, and today's store cannot respect it.** No
+grace past `exp`. `SessionStore.ensureFresh` (`identity/session.ts:103-107`) refreshes only when
+the session is **absent or already expired**, and this route refuses an expired session
+(`worker-session-auth.ts:100`), so a `renew` thunk wired to it from the store as it stands fires
+exactly when its credential is dead. This is not a scheduling nicety deferred to slice 2 — it is
+the reason slice 2 exists as its own sprint (§0e, §9.1(1), go-book §4 "★ Sprint 2.5"). The
+near-expiry threshold and the two docblocks that assert no sustained renewal exists (`:1-31`,
+`:96-102`) land together.
 
 **R3 — the path is frozen at merge.** §3.3. Between now and slice 2 it is protected by that
 sentence and nothing else.
@@ -857,10 +1134,18 @@ and the only way to exercise them **through this route** is the embedded-Postgre
 is slower, and which `describe.skipIf(win32 && !AOA_RUN_WIN_INTEGRATION)` skips on a Windows
 developer's machine by default (the pattern `worker-control-body-limits.test.ts:18-21` warns
 about). The trade is still right — a duplicate authority surface is worse than a slower suite —
-but the cost is real: **a Windows-local `pnpm test` will not run the authority matrix at all.**
-Mitigation: the unit tier keeps the two guards this ticket owns plus the exhaustiveness test, and
-the integration file's header says in one sentence that it is the sole home of the authority
-matrix, so a future author does not delete a case thinking it is covered elsewhere.
+but the cost is real, and it is **wider than the authority matrix**: on a Windows developer's
+machine a plain `pnpm test` reports the file as skipped — which vitest renders green — so **six of
+the nine acceptance clauses in §8 are signed off against a run that evaluated nothing**, and
+Step 5's RED (the step §7 calls *the whole point*) cannot be observed at all. An earlier revision
+of this risk named only "the authority matrix", which understated it by five clauses.
+Mitigations, all three: §7's command block carries `AOA_RUN_WIN_INTEGRATION=1` on that line and
+says why; §8's matrix carries a **Tier** column so the exposure is visible where sign-off happens;
+and the unit tier keeps the two guards this ticket owns plus the exhaustiveness test, with the
+integration file's header stating in one sentence that it is the sole home of the authority
+matrix, so a future author does not delete a case thinking it is covered elsewhere. Linux CI runs
+the suite unconditionally, so this is a **local-verification** gap — the kind that is discovered
+after the push rather than before it.
 
 **R7 — the replay-row expiry divergence is closed by cadence, not by code.** §3.5(i). The window
 is zero at the intended ⅔-TTL cadence and up to ~4.9 minutes at the worst legal cadence. Nothing
@@ -880,7 +1165,21 @@ is a legitimate reason to write a check; it is not a reason to count it.
 
 Delete the route registration in `worker-control.ts`. The services and their tests are inert
 without it; nothing calls the route until slice 2; there is no migration, no table and no data to
-unwind. Reverting `export` on `SESSION_MAX_MS` is optional and changes no behaviour. Reverting
-the `finding-ownership.json` and `findings.md` edits is a docs-only revert, and
-`check-finding-ownership.mjs` will fail loudly if the ticket is removed while the finding still
-claims it — which is the correct failure.
+unwind. Reverting `export` on `SESSION_MAX_MS` is optional and changes no behaviour.
+
+**The docs revert is now trivial, which is a consequence of §0(e) rather than a coincidence.**
+Because Step 7 leaves E4-F007 `open` and touches no manifest status, rolling back means deleting
+an addendum and one new finding **with its declaration** — and those two must move together in
+both directions: a finding without a declaration is `undeclared_finding`, a declaration without a
+finding is `stale_declaration`, and either fails `check-finding-ownership.mjs`
+(`scripts/lib/finding-ownership.mjs:83-90`, `:132-136`) in the always-on `policy` job. Nothing
+else in the register moves.
+
+**An earlier revision argued the opposite and it was wrong in a way worth recording.** It had
+Step 7 mark E4-F007 `resolved` while keeping its manifest key, and defended keeping the key with
+*"`check-finding-ownership.mjs` will fail loudly if the ticket is removed while the finding still
+claims it."* That sentence is true of a different failure (`owner_ticket_missing` — deleting the
+WRK-010 ticket files while the manifest names them) and is not an argument for keeping an entry
+after a finding resolves. In the `resolved` end state the guard's objection is not the prose or
+the ticket: it is **the key**. The end state that survives the guard is the one that survives
+the facts — the finding is still open, so the entry is still correct.

@@ -1,9 +1,51 @@
 # DEP-010 — The provider seam: one authoritative port and a composition root that supplies it
 
-**Epic:** E6 · **Plan node:** `docs/replatform/program-design.md` (`#### DEP-010`, `:818-820`)
+**Epic:** E6 · **Plan node:** `docs/replatform/program-design.md`, `#### DEP-010`
 **Depends on:** DEP-000, WRK-004, CLI-001 (all shipped) · **Size:** M · **Status:** design
 **Sprint:** 2 (see `docs/replatform/GO-BOOK.md`)
-**Revision:** 1 — adversarial review applied (GO-BOOK decision **D-4**); see §-1.
+**Revision:** 2 — round-2 review + the cross-plan completeness critic applied; see §-2. Revision 1
+(GO-BOOK decision **D-4**) is kept below at §-1.
+
+---
+
+## ★ -2. REVISION 2 — the citations rotted, a finding went unowned, and the primary proof expires
+
+Round 2 was two passes: a re-review of this plan, and a **completeness critic** that read the three
+Sprint 1–3 plans *as a set* — which is the only vantage from which three of these are visible at all.
+Revision 1's motto was *a mitigation nothing performs is not a mitigation*. Revision 2 adds two more
+of the same family: **a citation that no longer resolves is not evidence**, and **a proof with an
+expiry date is not a standing property** unless the expiry is written down.
+
+| # | What was wrong | Where it is fixed |
+|---|---|---|
+| **E1** | **Every citation of go-book decision D-3 pointed at the wrong line** — five `:404`s and two `:394`s, plus two stale `:127`/`:236-237`s. The pointers were *correct when written*; revision 1 inserted 22 lines above the ledger in **the same commit** that claimed re-verification, and has since moved again (the ledger is now §8 at a third set of coordinates). | §0's citation convention, and every occurrence — **fixed as a class, not as seven instances** |
+| **E2** | **E4-F011 (HIGH) is `owned` by DEP-010 and this plan never mentioned it.** §2 was headed "all three". The finding asks for something no guard can check: a *written* decision about which root gets a provider and what the dispatch flag defaults to there. | §2 (fourth row), **§4.3** (the written decision), §5, Step 11, §9 |
+| **E3** | **D12's "explicit env" does not remove the credential from the path that reads it.** `requireApiKey` reads the **ambient** `process.env.E2B_API_KEY` (`real-transport.ts:54`); filtering a *copy* changes nothing it observes. D12 recorded a hazard as closed by a mechanism that does not touch the read site. | Step 6 ★D12 (rewritten and narrowed), §8 residual 5 |
+| **E4** | **§4.1's structural lock expires at Sprint 3 and nothing in the set replaces it.** The plan half-said this ("the mutation slice 2b will make for real") and never drew the consequence. | **§4.2** — new, and it is the sentence the critic asked for |
+| **E5** | **This ticket invalidates four WRK-008 slice 2b assertions on arrival**, including a guard that would land in the always-on `policy` job. 2b was written against the pre-DEP-010 tree; the go-book runs it after. | **§10** — new, addressed to the Sprint 3 operator |
+| **E6** | **Naming coordination:** slice 2b Step 9a declares the D1 provider gate as `AOA_WORKER_PROVIDER_URL`; this ticket's resolver never reads it. | **§10.2** |
+| **E7** | **Step 5's three-element dependency pin turns the always-on `policy` job red** — 15 of the self-test's 18 cases share one two-dependency fixture. Reproduced. | Step 5, §5, §6's standing-rule table |
+| **E8** | **§4.1/Step 8 named `BootstrapResult` as the observation surface** for "no loop was composed". It carries no such information. | §4.1, Step 8 (the observable is now named) |
+
+**Three findings revision 2 handles DIFFERENTLY from the way they were filed, and why:**
+
+1. **"Step 8 mutation (c) on `selfModel: null` cannot fail."** Refuted. The plan prescribes **(b)+(c)
+   jointly** — the "Required failure" cell says so in its own words — and that pair is the *only*
+   prescribed state in which the real `bootstrapWorkerDaemon` is observed at `compose === true`,
+   which is the only state where the §4.1 primary proof is non-vacuous. Dropping (c) would leave the
+   inertness lock asserted only where nothing would have composed anyway. **One clause was still
+   over-broad and is corrected in §4.1:** the fourth gate is *not* untested — `compose-dispatch.ts:65`
+   is falsified today by `packages/worker-daemon/src/__tests__/compose-dispatch.test.ts:54-59`. What
+   was missing is a **root-level** entry, and (c) alone is inert because `compose-dispatch.ts:64`
+   short-circuits while `bin/worker-daemon.ts:344` is `false` (pinned at `compose-dispatch.test.ts:92-100`).
+2. **"`GO-BOOK.md:236-237` is cited for a claim it does not make."** True, and subsumed by E1 — but
+   the *substantive* half is a bigger correction than the citation: **slice 2b is no longer the very
+   next sprint.** The go-book inserted **Sprint 2.5** (WRK-010 slice 2) between this ticket and it.
+   §4.1 said "the very next sprint"; it now says what the sequence actually is.
+3. **"14 of 17 cases fail"** (E7). Close, and measured here as **15 of 18** — the count matters
+   because the fifteenth is `the REAL package on disk passes clean`, which Step 5's own
+   `package.json` edit fixes, while the other fourteen need the *fixture* bumped. Two different
+   edits, one commit.
 
 ---
 
@@ -28,7 +70,7 @@ runs is not a check*, and here, *a mitigation nothing performs is not a mitigati
 | D9 | The E6-F003 rewrite named the wrong network — in staging that sentence describes a violation. | §2.1 |
 | D10 | E6-F008 was closed against the wrong half, and against a weaker bar than its own resolution text. | §2.2, §8 |
 | D11 | The crosswalk edit could hard-fail `check-dependency-graph.mjs`. | Step 11 |
-| D12 | Step 6's default-loader test was environment-dependent. | Step 6 |
+| D12 | Step 6's default-loader test was environment-dependent. | Step 6 — **and the revision-1 fix for it did not work; see §-2 E3** |
 | D13 | §8.3 understated what relocating the adapter costs. | §8.3 |
 | D14 | The two new operator switches would go undocumented with no guard firing. | §5, Step 11 |
 | D15 | Two off-by-one citations. | §0 |
@@ -48,8 +90,8 @@ runs is not a check*, and here, *a mitigation nothing performs is not a mitigati
    blank line. Cited as `:132-136`.
 
 **And one thing neither the plan nor the review had.** Step 0 was written as "present the case and
-obtain approval". **The approval already exists.** Go-book decision **D-3** (`GO-BOOK.md:404`),
-settled 2026-08-25 in a ledger headed *"do not relitigate"* (`:394`), approves the keystore widening
+obtain approval". **The approval already exists.** Go-book decision **D-3** (`GO-BOOK.md`
+**§8**, the decisions ledger headed *"settled 2026-08-25, do not relitigate"*) approves the keystore widening
 on **three named conditions** — and, independently of this review, records the same D5 defect: *"the
 earlier approval leaned partly on the staging-manifest mitigation — that build refuses to run, so it
 mitigates nothing."* Step 0 is rewritten from a request into a **conditions check**, mapped
@@ -59,6 +101,16 @@ a settled question comes unsettled.
 ---
 
 ## 0. Grounded by — every load-bearing claim re-verified
+
+**★ Citation convention (revision 2).** Source files are cited by `path:line`, because a line in
+`packages/…` moves only when someone edits the code the claim is about, and the diff then shows it.
+**Living documents are cited by section and id, never by line** — the go-book (`§8`, decision `D-3`),
+the findings registers (`E4-F011`, `E6-F008`), the crosswalk (`CM-010`), the plan graph
+(`#### MIG-008`), `environment-variables.md` (the row's variable name). This is not style. Revision 1
+cited `GO-BOOK.md:404` for D-3 five times and `:394` twice; the same commit that wrote those
+re-verified pointers inserted twenty-two lines above the ledger, and the pointers have since moved a
+second time. The decision **id** is the primary key of a table; a `grep` resolves it in any revision.
+A line number into a document that is still being written is a claim with a half-life.
 
 | Claim | Verified at |
 |---|---|
@@ -85,9 +137,9 @@ a settled question comes unsettled.
 | `AOA_WORKER_DISPATCH_ENABLED` is default-OFF, refuses an unrecognised value | `packages/worker-daemon/src/config/config.ts:69`, `:150-162` **(was cited `:142-162`)** |
 | The `compose:true` branch **does not exist** — that is WRK-008 slice 2b | `bin/worker-daemon.ts:337-349` **(was cited `:331-350`)**; the `if (!dispatch.compose)` at `:347-349` has **no `else`** |
 | `hasSelfModelReader` is hardcoded `false` — and there is a SECOND hardcoded falsy beside it | `bin/worker-daemon.ts:344`; `selfModel: null` at `:345` |
-| …and `hasSelfModelReader` is scaffolding Sprint 3 removes | `compose-dispatch.ts:44` — "This reason retires when 2b lands"; `GO-BOOK.md:127`, `:236-237` |
+| …and `hasSelfModelReader` is scaffolding Sprint 3 removes | `compose-dispatch.ts:44` — "This reason retires when 2b lands"; `GO-BOOK.md` **§3** (the spine: `S3  WRK-008/2b dispatch goes LIVE`) and **§4** *Sprint 3* |
 | Staging forbids `E2B_API_KEY` on every worker; it lives only on `adapter-manager` | `docker-compose.staging.yml:23-28`, `:316-323`; `scripts/lib/staging-manifest-invariants.mjs:120`, `:436-493` **(was cited `:436-470`; the command/entrypoint arm is `:476-481`)** |
-| `adapter-manager` has **zero implementation** | `docs/replatform/DECISION-byte-egress-and-provider-topology.md` §4.2 (`:166-174`) |
+| `adapter-manager` has **zero implementation** | `docs/replatform/DECISION-byte-egress-and-provider-topology.md` **§4 residual 4.2** |
 | The findings register is CI-enforced; a stale entry FAILS | `scripts/lib/finding-ownership.mjs:132-136` **(was cited `:129-136`)**; `.github/workflows/pr.yml:288-298` |
 
 **The one-sentence problem.** A port with zero implementations, an implementation no process can
@@ -128,9 +180,9 @@ three are the ones that would have turned a correct implementation red.
 | `createRealE2bTransport` throws **synchronously in the constructor** when no key, with `E2B_API_KEY` in the text | `packages/sandbox-e2b-provider/src/real-transport.ts:53-59`, `:84`, `:238` |
 | …reading `process.env.E2B_API_KEY` directly, so a developer's exported key changes the outcome | `real-transport.ts:54` |
 | brand-check guard 9 matches **only** literal `process.env.AOA_[A-Z_]+` in `*.ts` | `.github/workflows/pr.yml:648-663` |
-| …which is why `AOA_WORKER_DISPATCH_ENABLED` (read via the `ENV` map at `config.ts:69`) is documented by discipline, not by a guard | `docs/deploy/environment-variables.md:192` |
+| …which is why `AOA_WORKER_DISPATCH_ENABLED` (read via the `ENV` map at `config.ts:69`) is documented by discipline, not by a guard | `docs/deploy/environment-variables.md`, the `AOA_WORKER_DISPATCH_ENABLED` row |
 | `checkProviderControlBoundary` spans environment **and** env_file **and** secrets/configs/volumes **and** command/entrypoint | `scripts/lib/staging-manifest-invariants.mjs:452-482` |
-| CM-010's owner cell is `CLI-001, CLI-004, MIG-008, DEP-006, DEP-008`, dominated today by **MIG-008** | `docs/replatform/current-main-crosswalk.md:26`; `docs/replatform/program-design.md:1049` |
+| CM-010's owner cell is `CLI-001, CLI-004, MIG-008, DEP-006, DEP-008`, dominated today by **MIG-008** | `docs/replatform/current-main-crosswalk.md`, the **CM-010** row; `docs/replatform/program-design.md`, `#### MIG-008` → `Depends on:` |
 | …and the owner cell is located by an **"exclusively a ticket list"** regex, so a prose cell is never read as one | `scripts/lib/dependency-graph.mjs:72-88` |
 | …and an undominated row with no `crosswalk-coverage.json` declaration is `exit 1` | `scripts/lib/dependency-graph.mjs:135-147`; `scripts/check-dependency-graph.mjs:59-64` |
 | `check-guard-inventory.mjs` tracks `scripts/check-*.mjs` **files**; this ticket adds none, so it stays green | `scripts/check-guard-inventory.mjs:32-40` |
@@ -172,7 +224,7 @@ DEP-008) and nothing else.
 - **The bridge is `perOpToInvokeDriver`** (`per-op-adapter.ts:112`): generic, provider-agnostic,
   already tested, already green on both suites against
   `perOpToInvokeDriver(new E2bSandboxProvider(mockTransport))`
-  (`docs/replatform/current-main-crosswalk.md:26`).
+  (`docs/replatform/current-main-crosswalk.md`, CM-010's last column).
 
 Direction is now single and stated: **authoritative per-op port → adapter → harness driver port.**
 Never the reverse. §2.2 says what that costs.
@@ -184,13 +236,19 @@ speculative, and §8.3 now records what the move would actually cost. Recorded i
 
 ---
 
-## 2. Findings disposition — all three, explicitly
+## 2. Findings disposition — all FOUR, explicitly
+
+Revision 1 headed this section "all three". It was wrong by one, and the missing one is the only
+**HIGH** in the set. `scripts/finding-ownership.json` declares **E4-F011** `owned`, `ticket:
+"DEP-010"` — this ticket — and a 986-line plan that never typed the string is not the owner of
+anything. §2.3 is that row.
 
 | Finding | Disposition |
 |---|---|
 | **E6-F008** — two structurally distinct ports | **RESOLVED, one direction only.** D1 names the authority; D2 states the driver's retained role; the mechanism shipped in CLI-001. §2.2 states what is NOT bought and what the resolution text must therefore say. Status `open → resolved`; entry **deleted** from `scripts/finding-ownership.json`. |
 | **E6-F004** — where the fake imports the port from | **RESOLVED, with the OPPOSITE answer to the one proposed.** The finding said the fake should import the port from worker-daemon and the boundary should allow it. **Rejected.** The fake implements the *harness* port, so it needs no import; it stays structural and `sandbox-fake-provider-boundary.mjs:45` stays **exactly** `["@armyofagents/worker-protocol","zod"]`. Widening it would put the daemon's whole surface inside a leaf whose entire point is that it has none. Proved mechanically by Step 9's control #4 — **against the fake's own guard**, which is a different guard from #2 (see Step 9). |
 | **E6-F003** — the networked driver API | **EXPLICITLY DEFERRED.** Half is answered by D1 and recorded; half is not, and this ticket does not pretend otherwise. See §2.1. |
+| **★ E4-F011** (HIGH) — *the desktop boot root is TWO gates from live dispatch, not four* | **RESOLVED, but only because §4.3 writes the decision the guards cannot express.** The provider half of its bar is already built (Step 4's lock, Step 6's *loader never called*, Step 7's control/`--reset-identity` cases, Step 8's structural lock). The half nobody had done is the sentence: **which boot root(s) get a provider, and what the dispatch flag defaults to there.** §4.3 states it. Status `open → resolved` in `epics/E4-worker-daemon/findings.md`; entry **deleted** from `scripts/finding-ownership.json` — **in Step 11, not Step 1** (§2.3 says why). |
 
 ### 2.1 E6-F003 in full — because "deferred" without a reason is how it got orphaned once already
 
@@ -223,7 +281,7 @@ wrong network name stops being a slip and becomes a durable false statement — 
 designs a wire against, and one no guard can contradict because no guard reads prose.
 
 **Why deferring is correct, not convenient.** There is no consumer: `adapter-manager` is declared
-and enforced against but has **zero implementation** (DECISION §4.2, `:166-174`); no worker
+and enforced against but has **zero implementation** (DECISION-byte-egress… **§4 residual 4.2**); no worker
 dispatches (flag default-off, no `compose:true` branch). Specifying a wire against an unimplemented
 peer for an unbuilt caller is the failure this programme keeps re-learning.
 
@@ -254,11 +312,12 @@ structurally (`fake-driver.ts:5-8`); nothing adapts it onto `SandboxProvider`. T
 (§3.4 rejects shipping a fabricating provider on a production path) but it means the harness and the
 daemon exercise **two independent provider doubles** — `packages/sandbox-fake-provider` for the
 suites, `packages/worker-daemon/src/__tests__/support/fake-provider.ts` for the supervisor. The
-DEP-000 harness never drives the daemon's supervisor. Recorded as residual §8.7; **not** fixed here.
+DEP-000 harness never drives the daemon's supervisor. Recorded as residual §8.9; **not** fixed here.
 
 **(b) F008's own resolution text set a bar the shipped adapter does not clear.** The finding's
 option (b) is "a tested `SandboxProvider → SandboxProviderDriver` adapter **with a totality
-assertion over all 11 ops + their result shapes**" (`epics/E6-deployment-test-harness/findings.md:90-92`).
+assertion over all 11 ops + their result shapes**" (`epics/E6-deployment-test-harness/findings.md`,
+E6-F008's **Resolution** paragraph, option (b)).
 `PROVIDER_OPERATIONS` has 11 entries (`packages/worker-protocol/src/capabilities.ts:125-137`). The
 adapter routes them with hand-written `switch` arms (`per-op-adapter.ts:308-392`) and the suite
 checks them **case by case** — `per-op-adapter.test.ts:92` names eight in one test, `:110` covers
@@ -282,6 +341,47 @@ Silently closing at a lower bar than the finding's own text is the aggregation f
 `gate-clause-wiring.mjs` was built for. Whichever branch is taken must appear in the resolution
 paragraph.
 
+### 2.3 ★ E4-F011 — the finding this plan owned and never named
+
+**Its register entry, verbatim** (`scripts/finding-ownership.json`, key `E4-F011`):
+
+> `"status": "owned"`, `"ticket": "DEP-010"`,
+> `"ownerStillOpen": "DEP-010 has a design doc and no result doc. The finding is the constraint on
+> its acceptance, so it closes when DEP-010 ships with a guard proving the shipped desktop default
+> constructs no provider."`
+
+**Why nothing would have failed.** `scripts/lib/finding-ownership.mjs:118` is
+`if (completed.has(entry.ticket) && !hasReason(entry.ownerStillOpen))`, and `hasReason` (`:53-55`)
+is a **trim-length test**. So the moment `DEP-010-result.md` lands — `findCompletedTicketIds`
+(`scripts/check-finding-ownership.mjs:53-67`) keys "shipped" on the result-doc filename — the
+register would carry, for an **open HIGH**, the permanently false sentence *"DEP-010 has a design
+doc and no result doc"*, and `check-finding-ownership.mjs` would exit **0**. That is exactly the
+state the guard's own comment at `:106-117` says it exists to catch (*"An open finding owned by
+SHIPPED work is owned by nothing"*), defeated by the non-emptiness calibration one line below it.
+It is also the failure §2.1 argues at length about for E6-F003's network name: *a durable false
+statement in a CI-enforced register that no guard can contradict, because no guard reads prose.*
+Applying that principle to three findings and not to the plan's own fourth is the defect.
+
+**What the finding actually asks for** (`epics/E4-worker-daemon/findings.md`, `## E4-F011`, its
+*Consequence for DEP-010* paragraph): DEP-010 *"may not put a provider in that composition root
+without an explicit, written decision about the flag's default on desktops. Its acceptance must
+prove the shipped desktop default constructs **no provider at all** — not merely that the flag is
+off."* The second sentence is a guard, and it is built. **The first sentence is prose, and prose is
+the one thing no guard in this repository can produce.** §4.3 is that prose.
+
+**Why it closes in Step 11 and not in Step 1.** E6-F008 and E6-F004 resolve in Step 1 because their
+resolution *is* a decision (D1/D2) and the decision is complete the moment it is written. E4-F011's
+own closure condition is *"ships **with a guard**"* — and the guards land in Steps 4, 6, 7, 8 and 10.
+Flipping it to `resolved` in Step 1 would claim a guard three commits before it exists, which is the
+same shape as the mitigation revision 1 deleted. Step 11 is the first commit at which the sentence
+is true.
+
+**And note what closing it does NOT claim.** E4-F011's headline — *"TWO gates from live dispatch"* —
+is a statement about the desktop's gate count, and §4.2 records that this ticket plus Sprint 3
+drives that count to **zero structural gates**. Resolving the finding closes the *decision* it
+demanded of DEP-010. It does not close the underlying exposure, which §4.2 hands forward in writing
+rather than leaving inside a finding whose title will read as reassuring and be out of date.
+
 ---
 
 ## 3. DECISION D3 — the root is the existing `desktop-host.ts`; the provider package is confined to one new file
@@ -299,8 +399,8 @@ value, which flows through the same allow check).
 
 There is no clever way in. **Adding the provider package to this package IS a controller STOP**, and
 this design asks for it explicitly. The go-book has already granted it, **conditionally**, as
-decision **D-3** (`GO-BOOK.md:404`) — so Step 0 is the check that the three conditions hold, not a
-fresh request.
+decision **D-3** (`GO-BOOK.md` **§8**) — so Step 0 is the check that the three conditions hold, not
+a fresh request.
 
 ### 3.2 Pay for the widening by making the guard tighter than it was
 
@@ -368,7 +468,7 @@ reviewable file instead of becoming ambient, and the credential's name never lan
    step, `pnpm deploy --prod` yields 36 symlinks and the hoisted variant yields no `node_modules` at
    all — and the only thing CI executes is its unit test (`.github/workflows/pr.yml:365`). Nothing
    regenerates a manifest today, so nothing would have caught the growth. **The go-book had already
-   reached the same conclusion independently:** decision **D-3** (`GO-BOOK.md:404`) records that "the
+   reached the same conclusion independently:** decision **D-3** (`GO-BOOK.md` **§8**) records that "the
    earlier approval leaned partly on the staging-manifest mitigation — that build **refuses to run**,
    so it mitigates nothing." Two documents arriving at it separately is the reason it is stated here
    in the plan's own voice rather than left as a cross-reference.
@@ -425,14 +525,22 @@ facts keep the shipped default inert; Steps 7/8/10 prove each:
    makes setting it on a staging worker a CI failure.
 3. **★ Nothing consumes `compose === true` — a STRUCTURAL fact, not a flag value.** This is the
    revised form of the third proof, and it replaces the previous one for a reason worth stating.
+   **It is also the one with an expiry date: §4.2.**
+
+**Read §4.1, §4.2 and §4.3 as one argument.** §4.1 is the proof and the observable it needs; §4.2 is
+the date it stops being true and what is left afterwards; §4.3 is the written decision E4-F011 asked
+this ticket for, which is the part no guard in this repository can produce.
 
 ### 4.1 ★ Why the old third proof was anchored to sand
 
 The first draft proved inertness by keying on `hasSelfModelReader: false`
 (`bin/worker-daemon.ts:344`). That literal is **documented scaffolding that Sprint 3 deletes**:
 `compose-dispatch.ts:44` says in so many words *"This reason retires when 2b lands"*, and slice 2b is
-the very next sprint (`GO-BOOK.md:127`, `:236-237`). A lock whose mutation target is removed by the
-next ticket stops locking anything the moment that ticket lands, silently — nobody re-derives what a
+**Sprint 3** (`GO-BOOK.md` §3, the spine line `S3  WRK-008/2b dispatch goes LIVE`; §4 *Sprint 3*).
+*Revision 1 said "the very next sprint" and that is no longer true* — the go-book inserted **Sprint
+2.5** (WRK-010 slice 2, the renewal route's first caller) between this ticket and 2b, which buys one
+sprint of margin and changes nothing about the argument. A lock whose mutation target is removed by a
+later ticket stops locking anything the moment that ticket lands, silently — nobody re-derives what a
 deleted line was holding up.
 
 **The structural lock, which survives 2b's arrival:**
@@ -450,13 +558,147 @@ That is the honest statement of "does not turn dispatch on": not *the daemon can
 `hasSelfModelReader` becomes real, and it stops being true exactly when slice 2b writes the `else` —
 which is when it *should* stop being true.
 
+**★ Name the observable, or the lock is a wish (revision 2).** Revision 1 wrote *"assert on the
+returned `BootstrapResult` + the injected logger"*. **`BootstrapResult` cannot carry this claim.** It
+is `{ ok, config?, logger?, metrics?, health?, shutdown? }` (`bin/worker-daemon.ts:165-172`), and not
+one of those fields distinguishes a composed loop from an uncomposed one: `startupSteps` (`:355`),
+`leaseSteps` (`:362`) and `outboxSteps` (`:363`) are consumed **locally** into `runStartupSteps` and
+`createShutdownHandler` (`:364-380`) and never surface on the result. An implementer told to "assert
+on the `BootstrapResult`" will fall back to *"the refusal log line is present and no other dispatch
+line is"* — which is the assertion the demoted `:344` check already makes, and which
+`dispatch-composition-bootstrap.test.ts:83-84` already ships. The lock would be indistinguishable
+from the one it replaced.
+
+The **two** real observables, both reachable from what `bootstrapWorkerDaemon` already returns and
+already logs, and both named so mutation (a) has a fixed target:
+
+> **(i) Startup steps.** `runStartupSteps` logs `{step: <name>}` per step
+> (`lifecycle/startup-steps.ts`, `runStartupSteps`). With no `deps.reconciler`, `startupSteps` is
+> `[]` and **zero** `startup:` lines are emitted. Assert zero.
+> **(ii) Shutdown steps.** Invoke `result.shutdown("SIGTERM")` — with an injected `proc` whose
+> `exit` is a spy, because the handler always exits (`lifecycle/shutdown.ts`,
+> `createShutdownHandler` → `opts.exit(0)`). Each step logs `{signal, step: <name>}` before it runs.
+> On the shipped shape the recorded names must be **exactly `["health-server"]`** — no
+> `lease-stop`, no `lease-drain`, no `event-outbox-stop`/`-flush`/`-close`.
+
+Mutation (a) — *add an `else` that composes anything observable* — must be written as an `else` that
+supplies a `leasing`/`eventOutbox` lifecycle, so it moves (ii) from `["health-server"]` to something
+longer. That is a mutation with a defined kill, rather than one defined to be catchable by whatever
+assertion happens to get written.
+
 **The `:344` mutation is DEMOTED to a supporting check.** Keep it (it is cheap and it documents
 today's behaviour), but it is no longer what §9 maps the acceptance clause to.
 
-**And note the second hardcoded falsy nobody mutated.** `selfModel: null` at `bin/worker-daemon.ts:345`
-is a separate literal on the same call, gating a separate refusal (`no_self_model`,
-`compose-dispatch.ts:65`). The old matrix mutated `:344` and never `:345`, so the fourth gate had no
-falsifying test at all. Step 8 adds one.
+**And note the second hardcoded falsy the ROOT-LEVEL matrix never mutated.** `selfModel: null` at
+`bin/worker-daemon.ts:345` is a separate literal on the same call, gating a separate refusal
+(`no_self_model`, `compose-dispatch.ts:65`). The old matrix mutated `:344` and never `:345`.
+**Revision 1 wrote that the fourth gate "had no falsifying test at all"; that was over-broad and is
+corrected here.** The *decision function's* fourth gate is falsified today —
+`packages/worker-daemon/src/__tests__/compose-dispatch.test.ts:54-59` asserts
+`{provider, dispatchEnabled: true, hasSelfModelReader: true, selfModel: null}` →
+`{compose:false, reason:"no_self_model"}`. What was missing is a **root-level** entry, and Step 8
+adds one. Note also that mutating `:345` **alone** is inert: `compose-dispatch.ts:64` short-circuits
+on `!hasSelfModelReader` before `:65` reads `selfModel`, and `:344` is hardcoded `false` — pinned by
+`compose-dispatch.test.ts:92-100`. That is precisely why Step 8 prescribes it **with (b)**, and why
+(b)+(c) is the only prescribed state in which the real `bootstrapWorkerDaemon` is observed at
+`compose === true` — the only state in which the structural lock above is non-vacuous.
+
+### 4.2 ★ The primary proof EXPIRES at Sprint 3, and nothing in the set replaces it
+
+This is the sentence the cross-plan completeness critic asked for, and it belongs here — **before
+Sprint 2 runs** — rather than being rediscovered after Sprint 3.
+
+§4.1's structural lock is a claim about the *shape of the tree*: nothing consumes `compose === true`
+because `bin/worker-daemon.ts:347-349` has no `else`. **It is true only until WRK-008 slice 2b writes
+that `else`,** which is the whole point of Sprint 3 and which this plan already says out loud (§7
+marks mutation (a) *"the mutation slice 2b will make for real"*). So DEP-010's headline acceptance —
+*does not by itself turn dispatch on* — is provable exactly once, and then it is gone.
+
+**What is left holding the line after Sprint 3, stated plainly:**
+
+| Before Sprint 3 | After Sprint 3 |
+|---|---|
+| **A structural gate** — no `else` exists, so `compose:true` cannot compose anything, whatever the environment says | **No structural gate.** The `else` exists and composes a real poll loop, supervisor, renewal driver and event outbox |
+| plus `AOA_WORKER_SANDBOX_PROVIDER` unset | `AOA_WORKER_SANDBOX_PROVIDER` unset |
+| plus `AOA_WORKER_DISPATCH_ENABLED` unset | `AOA_WORKER_DISPATCH_ENABLED` unset |
+| — | `AOA_WORKER_EVENT_OUTBOX_PATH` unset (slice 2b's new gate; **not** defaulted to a path) |
+| — | plus a live session |
+
+**After Sprint 3 the shipped desktop's inertness rests on environment variables and zero structural
+gates.** Three env vars and a session — every one of them a thing an operator, an installer, a
+service definition or a support script can set. E4-F011's *"two gates"* becomes **no gates**; the
+count is not two, and it is not three, it is zero-plus-configuration.
+
+**Three consequences, none of which are this ticket's to fix, all of which are this ticket's to
+write down:**
+
+1. **Sprint 3 must replace the proof, not inherit it.** The go-book's Sprint 3 *"Done when … with
+   either absent it is provably inert"* is a claim about **env-var absence**, not about structure.
+   That is a strictly weaker property and it must be labelled as one where slice 2b records it.
+2. **The env-var gates need a guard on the desktop lane, which does not exist.** Step 10's invariant
+   is real and it is **container-only** (`docker-compose.staging.yml`). There is no equivalent
+   assertion that a DSK-003 installer, autostart entry, service definition or support bundle does
+   not carry `AOA_WORKER_SANDBOX_PROVIDER` or `AOA_WORKER_DISPATCH_ENABLED`. Today that gap is
+   harmless because the structural gate is doing the work. **After Sprint 3 it is the whole
+   exposure**, and it belongs to whoever owns the desktop packaging surface at that point.
+3. **The register will read better than the tree.** Slice 2b promotes `E4-1-leases-through-protocol`
+   to `wired`, and `evaluateGateClauseWiring` validates a `wired` entry on **caller count alone**
+   (`scripts/lib/gate-clause-wiring.mjs:81-88` — `count === 0` is the only failure; `reason` is
+   required for `unwired` and never read for `wired`, `:90-92`), while the green run prints reasons
+   for the **DORMANT list only** (`scripts/check-gate-clause-wiring.mjs:130-136`). A caveat parked in
+   `reason` on a `wired` entry is a caveat no code path reads and no green run prints. Whoever
+   writes that promotion should know the caveat is decoration — the same aggregation failure this
+   register was built to surface, re-committed one level down.
+
+### 4.3 ★ The written decision E4-F011 demanded: which root gets a provider, and what the flag defaults to there
+
+E4-F011 says DEP-010 *"may not put a provider in that composition root without an explicit, written
+decision about the flag's default on desktops."* This is that decision. It is prose on purpose:
+`check-finding-ownership.mjs` cannot verify it, `check-boot-roots-provider-free.mjs` (slice 2b) will
+not exist until Sprint 3, and the thing being decided — a default — is a choice, not a fact a scanner
+can read back.
+
+**(1) Exactly one boot root gets a provider path, and it is `desktop-host.ts`.** The tree has two
+boot roots that call `bootstrapWorkerDaemon`:
+
+| Root | Provider after DEP-010 | Why |
+|---|---|---|
+| `packages/worker-daemon/src/bin/worker-daemon.ts:398` — `bootstrapWorkerDaemon({env: process.env, proc: process})`, the direct-invocation branch | **NONE, and structurally cannot have one.** | This is the container entrypoint (`docker/worker/Dockerfile`, `CMD ["node","dist/bin/worker-daemon.js"]`). The image's runtime closure is worker-daemon + worker-protocol + `pino` **only** (DEP-001), so `worker-keystore` and `sandbox-e2b-provider` are not in it; and `worker-daemon-boundary.mjs:53` pins the daemon's runtime deps to `["@armyofagents/worker-protocol","pino"]`, so it may not name a provider package at all (E4-D01). Not a policy — an unreachable code path. |
+| `packages/worker-keystore/src/bin/desktop-host.ts` (`bootstrap({...})`, `:254-260`) | **A provider *path*, opt-in, resolving to `{kind:"none"}` on the shipped default.** | This is the DSK-003 desktop binary. It is the only root outside the daemon package, which is the entire reason D1 puts the seam here. |
+
+**(2) On that root, `AOA_WORKER_SANDBOX_PROVIDER` defaults to UNSET, and unset means the provider
+package is never even loaded.** Not "constructed and discarded" — `resolveSandboxProvider` returns
+`{kind:"none"}` **before calling the loader**, so the `e2b` SDK does not enter the process image of a
+default desktop boot. Step 6's first case asserts *"the loader is never called"*; Step 7 asserts the
+same for a control command and for `--reset-identity`. This is the clause that satisfies E4-F011's
+*"constructs no provider at all — not merely that the flag is off."*
+
+**(3) On that root, `AOA_WORKER_DISPATCH_ENABLED` defaults to OFF, and DEP-010 does not change that
+in either direction.** `runDesktopHost` forwards `deps.env` verbatim into `bootstrapWorkerDaemon`
+(`desktop-host.ts:254-260`), so the desktop reads the same daemon-wide parser as the container:
+`config.ts:69` via `ENV.dispatchEnabled`, `parseDispatchEnabled` at `:150-162` — **absent → `false`**,
+empty → `false`, `"0"` → `false`, `"1"` → `true`, anything else → a **startup error** rather than a
+silent disable. DEP-010 ships no default, no override and no per-root special case for this flag. The
+desktop's default is the daemon's default because the desktop passes the daemon's env through.
+
+**(4) The honest reading of "two gates", now that a provider path exists there.** E4-F011's own
+analysis is right about the custody half: `desktop-host.ts` builds both OS-custody stores on every
+non-control boot and passes them at `:254-260`, so `bin/worker-daemon.ts:267`
+(`config.keyStoreMode === "os_keychain" && deps.identityStore && deps.receiptStore`) is entered and
+**the identity gate is already satisfied on any desktop that boots at all** — that gate is
+`no_worker_identity` in slice 2b's vocabulary and does not exist as a refusal reason today
+(`compose-dispatch.ts` ships four: `no_provider`, `dispatch_disabled`, `no_self_model_reader`,
+`no_self_model`). After DEP-010 the desktop's remaining refusals on the shipped default are
+**(1) no provider, because the switch is unset, and (2) the flag, which is off** — and, until
+Sprint 3, the structural fact that nothing consumes `compose === true`. **§4.2 records what that count becomes after Sprint 3
+and why the number in the finding's title will be stale.** That is the reason E4-F011 is resolved
+*with* §4.2 rather than by §4.3 alone: closing a finding whose headline number is about to change,
+without writing down what it changes to, is how a settled question comes unsettled.
+
+**(5) What would require a NEW decision, not an extension of this one.** Any of: a default value for
+`AOA_WORKER_SANDBOX_PROVIDER` in an installer, service definition, autostart entry or support
+script; a provider path on the container root; a second composition root; or a resolver kind that
+does not require an explicit opt-in. None is in this ticket, and none should be added to it.
 
 ---
 
@@ -465,12 +707,13 @@ falsifying test at all. Step 8 adds one.
 | File | Change |
 |---|---|
 | `epics/E6-deployment-test-harness/findings.md` | E6-F008 + E6-F004 → `resolved`; E6-F008's resolution states the §2.2b branch taken; E6-F003 body rewritten to the narrowed question **on `control-net`** |
-| `scripts/finding-ownership.json` | delete E6-F008, E6-F004; rewrite E6-F003 reason |
+| **`epics/E4-worker-daemon/findings.md`** | **★ REQUIRED — `E4-F011` → `resolved`, citing §4.3 (the written decision) and §4.2 (what its "two gates" headline becomes after Sprint 3). Landed in Step 11, not Step 1 — §2.3 says why** |
+| `scripts/finding-ownership.json` | delete E6-F008, E6-F004 (Step 1); **delete `E4-F011` (Step 11)**; rewrite E6-F003 reason |
 | **`scripts/gate-clause-wiring.json`** | **★ REQUIRED — `E7-1-coding-journey` re-declared. Without this, `policy` goes red.** See Step 6 |
 | **`scripts/test-inventory.json`** | **★ REQUIRED — `packages/worker-daemon` 131 → 132; `packages/worker-keystore` 18 → 20.** Bumped in the same commits that add the files |
 | **`.github/workflows/pr.yml`** | **★ REQUIRED — `pnpm --filter @armyofagents/sandbox-e2b-provider build` appended to the `verify` pre-build list (`:743-751`); mirrored into the `distributed-contract` list (`:1168-1173`) for symmetry** |
 | **`pnpm-lock.yaml`** | regenerated by `pnpm install` after the manifest change; **must ride in the same commit as `packages/worker-keystore/package.json`** (`pr.yml:134-145`) |
-| **`docs/deploy/environment-variables.md`** | **★ two new rows — `AOA_WORKER_SANDBOX_PROVIDER`, `AOA_WORKER_E2B_TEMPLATE`.** No guard will catch their absence (§0.1: brand-check guard 9 matches only literal `process.env.AOA_…`, and these are read through a string constant) |
+| **`docs/deploy/environment-variables.md`** | **★ two new rows — `AOA_WORKER_SANDBOX_PROVIDER`, `AOA_WORKER_E2B_TEMPLATE`** — **and one CORRECTION**: the existing `AOA_WORKER_DISPATCH_ENABLED` row ends *"Composition is ALSO gated on a sandbox provider being injected, **which the shipped binary cannot do**"*, and this ticket makes that half-sentence false for the desktop lane. Rewrite it to say the container binary cannot, and the desktop binary can only on an explicit opt-in (§4.3). No guard will catch any of the three (§0.1: brand-check guard 9 matches only literal `process.env.AOA_…`, and these are read through a string constant) |
 | `packages/worker-daemon/src/index.ts` | **additive export** of `decideDispatchComposition` + `DISPATCH_REFUSAL_MESSAGES` + types. No new import, no new dependency |
 | `packages/worker-daemon/src/supervisor/provider.ts` | header only: name the authority decision, point at the adapter |
 | `packages/sandbox-provider-contract/src/port.ts` | header only: `:14-26` rewritten from "OPEN item" to the settled demotion |
@@ -478,7 +721,7 @@ falsifying test at all. Step 8 adds one.
 | `packages/worker-keystore/src/bin/desktop-host.ts` | `DesktopHostDeps.provider` + `.loadProviderModule`; resolve-then-inject before `bootstrap(...)` |
 | `packages/worker-keystore/package.json` | add the provider dep |
 | `scripts/lib/worker-keystore-boundary.mjs` | +1 dep, +1 bare, **+`PROVIDER_HOST_PATH` confinement**, **+`FORBIDDEN_CREDENTIAL_TOKENS` ban** |
-| `scripts/check-worker-keystore-boundary.test.mjs` | +6 cases (4 path, 2 credential) |
+| `scripts/check-worker-keystore-boundary.test.mjs` | +6 cases (4 path, 2 credential) — **★ and the shared `manifest()` fixture (`:31-44`) gains the third dependency, plus the keychain case's own `dependencies` literal (`:166-183`). Not a detail: 15 of the file's 18 cases go red without the fixture bump (Step 5 measures it)** |
 | `scripts/lib/staging-manifest-invariants.mjs` | **new invariant**: dispatch/provider switches absent from every worker, across `environment` **and** `command`/`entrypoint` |
 | `scripts/check-staging-manifest.test.mjs` | +4 cases |
 | `packages/sandbox-e2b-provider/src/__tests__/per-op-adapter.test.ts` | +1 totality case, **iff** §2.2b's "earn it" branch is taken (no new file — the pin is per file) |
@@ -495,8 +738,9 @@ falsifying test at all. Step 8 adds one.
 Every step: **write the failing test → run it and read the failure → minimal implementation → run it
 → commit.**
 
-**Standing rule added in revision 1:** three always-on `policy` guards react to files this ticket
-adds, and each must be updated **in the commit that trips it**, never later. A commit that lands red
+**Standing rule added in revision 1, extended in revision 2:** four always-on `policy` guards react
+to files this ticket adds or edits, and each must be updated **in the commit that trips it**, never
+later. A commit that lands red
 and is fixed by the next one is a commit nobody can bisect through.
 
 | Trips on | Fix in the same commit |
@@ -504,10 +748,11 @@ and is fixed by the next one is a commit nobody can bisect through.
 | a new file under any `__tests__` | `scripts/test-inventory.json` pin |
 | production source naming `E2bSandboxProvider` | `scripts/gate-clause-wiring.json` `E7-1` declaration |
 | `packages/worker-keystore/package.json` dependency change | `pnpm-lock.yaml` (same commit, or the lockfile step rejects it) |
+| **★ `REQUIRED_RUNTIME_DEPENDENCIES` in `worker-keystore-boundary.mjs` gaining an element** | **BOTH the real `packages/worker-keystore/package.json` AND the self-test's shared `manifest()` fixture (`check-worker-keystore-boundary.test.mjs:31-44`). Two different edits — see Step 5** |
 
 ### Step 0 — the controller STOP is DISPOSITIONED; confirm the conditions, do not re-litigate
 No code. **The keystore widening is already approved** — go-book decision **D-3**
-(`GO-BOOK.md:404`), settled 2026-08-25 and explicitly listed under "do not relitigate" (`:394`). It
+(`GO-BOOK.md` **§8**), settled 2026-08-25 and explicitly listed under "do not relitigate". It
 was approved **on three conditions**, and Step 0 is now the check that this plan satisfies each:
 
 | D-3 condition | Where this plan satisfies it |
@@ -611,12 +856,52 @@ would otherwise pass by accident and is why the rule scans bytes, not tokens.
 
 Run → **FAIL**.
 
+**★ REVISION 2 — the fixture bump is part of this step, and it is bigger than the six new cases.**
+`check-worker-keystore-boundary.test.mjs` has **one** shared `manifest()` helper (`:31-44`) whose
+`dependencies` are hardcoded to `{worker-daemon, worker-protocol}`, and `checkTree()` (`:47-67`)
+uses it as the default for **every** case. So the three-element pin below is not a change to one
+assertion — it is a change to the fixture the whole file stands on. Measured, by applying the pin
+verbatim and running `node --test scripts/check-worker-keystore-boundary.test.mjs` in this
+worktree: **15 of 18 cases fail**, with
+
+```
+runtime dependencies must equal ["@armyofagents/sandbox-e2b-provider",
+"@armyofagents/worker-daemon","@armyofagents/worker-protocol"],
+got ["@armyofagents/worker-daemon","@armyofagents/worker-protocol"]
+```
+
+— including `accepts the legitimate shape`, all five subprocess-confinement cases, both `ACCEPTS`
+cases (`statSync`, and the word inside a comment), and `the REAL package on disk passes clean`.
+**Two different edits fix them.**
+
+| Failing set | Fixed by |
+|---|---|
+| 14 synthetic cases (everything built through `checkTree`) | add `"@armyofagents/sandbox-e2b-provider": "workspace:*"` to the **`manifest()` fixture's `dependencies`** at `:31-44` |
+| `the REAL package on disk passes clean` (`:241`, which reads the real manifest) | add the same dependency to **`packages/worker-keystore/package.json`** — item (1) below |
+
+The three that survive unaided (`REJECTS existsSync ANYWHERE`, `REJECTS a native keychain binding`,
+`REJECTS a dependency moved into peerDependencies`) do so for reasons of their own and are not
+evidence the pin is safe. **One of them quietly loses meaning and should be repaired in the same
+edit:** the keychain case (`:166-183`) overrides `dependencies` with its own literal
+`{worker-daemon, worker-protocol, <keytar|@napi-rs/keyring|electron>}` and asserts one error matching
+`/runtime dependencies must equal/`. After the pin that set is wrong in **two** ways — the extra
+binding *and* the missing provider — so it would still go green if the keychain ban were removed
+entirely. Add the provider to that literal too, so the only remaining difference is the keychain
+binding and the case proves what its name says. This file runs at `.github/workflows/pr.yml:182-183`, inside the
+**always-on** `policy` job (`:124-126`) — no `needs: changes`, no path filter — so a commit that
+lands the pin without both edits is red on a required check, which is the exact thing §6's standing
+rule exists to prevent. Revision 1's phrasing — *"manifest must declare three deps"*, buried among
+four path-confinement assertions — did not convey that fourteen unrelated cases hang off it.
+
 **GREEN.** In `scripts/lib/worker-keystore-boundary.mjs`: three-element
 `REQUIRED_RUNTIME_DEPENDENCIES`, the specifier in `ALLOWED_BARE`, a new `PROVIDER_HOST_PATH` check in
 `evaluateRuntimeSourceImports` after the `SUBPROCESS_SPECIFIERS` block (`:145-151`) whose error text
 names the reason (the `e2b` SDK entering the key-holding process), and a
 `FORBIDDEN_CREDENTIAL_TOKENS` scan beside the `existsSync` ban (`:171-177`) whose error text says
-*zero files*, not *one host file*. Run → **PASS**; real checker → **FAIL** (manifest still two).
+*zero files*, not *one host file*. **In the same edit, bump the `manifest()` fixture.** Run → the
+seventeen synthetic cases **PASS**; `the REAL package on disk passes clean` still **FAILS** and the
+real checker **FAILS** (manifest still two) — which is the correct intermediate state, and it is
+closed by (1) below in this same commit.
 
 **★ Then, in this same commit:**
 1. add `"@armyofagents/sandbox-e2b-provider": "workspace:*"` to
@@ -639,7 +924,11 @@ CI checkout neither does. **Green locally, red in CI** is the exact failure this
 
 **Mutation.** (a) Drop `PROVIDER_HOST_PATH` from the comparison → the rejected-elsewhere case must
 fail. (b) Remove the specifier from `ALLOWED_BARE` → the allow-at-path case must fail. (c) Narrow the
-credential scan from raw source to code tokens → the comment case must fail. Revert all three.
+credential scan from raw source to code tokens → the comment case must fail. **(d) ★ Revert only the
+`manifest()` fixture bump, leaving the pin and the real `package.json` in place → 14 synthetic cases
+must fail while `the REAL package on disk passes clean` stays green.** That asymmetry is the whole
+point of (d): it is the shape of the CI failure this step would otherwise have shipped, and running
+it once means nobody has to take the measurement on faith. Revert all four.
 
 **Commit:** `DEP-010: allow the provider package in worker-keystore, confined to one path, credential-free`
 
@@ -657,23 +946,70 @@ never reachable from production code). Cases:
 - transport throws → `refused`, and the message **contains** `E2B_API_KEY` — asserted here, in a
   `.test.ts` the scanner skips, because §3.2 forbids the production files from typing it;
 - **the default loader really is the provider package** (no injection → the real
-  `@armyofagents/sandbox-e2b-provider` is imported and, with no key, refuses — proving the seam is
-  not vacuous).
+  `@armyofagents/sandbox-e2b-provider` is what gets imported — proving the seam is not vacuous).
 
-**★ D12 — the last case must pass an EXPLICIT env, not inherit `process.env`.** `requireApiKey` reads
-`process.env.E2B_API_KEY` directly (`real-transport.ts:54`), so on a developer machine with the key
-exported this test would construct a real provider and fail — or, worse, be "fixed" by inverting the
-assertion. Build the env explicitly:
+**★ D12, REVISED IN REVISION 2 — the explicit env was the wrong fix for the right hazard.**
+
+Revision 1 diagnosed the hazard correctly and then prescribed a mechanism that does not touch the
+site it names. Written out, the two halves do not meet:
+
+> `requireApiKey` is `const key = explicit ?? process.env.E2B_API_KEY`
+> (`packages/sandbox-e2b-provider/src/real-transport.ts:53-59`), called from the constructor at
+> `:84`. **It reads the AMBIENT `process.env`.** `RealE2bTransportOptions` (`:45-51`) has exactly
+> two fields — `apiKey?` and `enablePauseResume?` — **there is no `env` field**, so an env object
+> cannot be forwarded through that seam at all. And §3.2 forbids the only route that could:
+> `createRealE2bTransport()` is called with **no** `apiKey`, and `FORBIDDEN_CREDENTIAL_TOKENS` makes
+> it illegal for any `worker-keystore` runtime file to so much as name `E2B_API_KEY`. So the
+> resolver structurally cannot forward the filtered env's (absent) key.
+
+**Deleting the key from a *copy* of `process.env` changes nothing about what `requireApiKey`
+observes.** With the key exported, the seventh case would still construct a real `RealE2bTransport`
+and a real `E2bSandboxProvider` — `E2bSandboxProvider`'s constructor is pure
+(`e2b-provider.ts:159-175`: assign transport, default `templateId` to `"base"`, compute the
+advertised-op set; no I/O) — and a `refused` assertion would fail. Revision 1 conceded this two
+sentences later ("if a future refactor makes the transport read the injected env instead…") and
+asserted the explicit env was the fix anyway. **That is the shape this programme keeps hitting: a
+mitigation nothing performs, recorded as closed.**
+
+**The narrowed, correct fix — change the ASSERTION, not the environment.** The seventh case exists
+for one reason: to prove `loadProviderModule`'s default is really
+`@armyofagents/sandbox-e2b-provider` and not a vacuous stub. That property has nothing to do with
+the credential, and it can be asserted deterministically on any machine:
+
+```ts
+// Non-vacuity of the default loader — no credential on this path at all.
+const mod = await loadProviderModule();
+const real = await import("@armyofagents/sandbox-e2b-provider");
+expect(mod.E2bSandboxProvider).toBe(real.E2bSandboxProvider);
+```
+
+The **refusal-when-no-key** behaviour is already covered, and better, by the sixth case, which
+drives a transport that throws through the injected module seam and asserts the propagated message
+contains `E2B_API_KEY`. Asserting it a second time through the *default* loader bought nothing except
+a dependency on the ambient environment. Do not keep both.
+
+**Keep the explicit env, for the other two variables, and say what it is for.** Passing
 
 ```ts
 const { E2B_API_KEY: _omit, ...rest } = process.env;   // never mutate process.env
 const env = { ...rest, AOA_WORKER_SANDBOX_PROVIDER: "e2b", AOA_WORKER_E2B_TEMPLATE: "t" };
 ```
 
-and pass it to `resolveSandboxProvider(env, /* no loader */)`. `resolveSandboxProvider` already takes
-`env` as its first parameter (§3.2's split-env-source residual, §8.5) — this is what that split is
-*for*. If a future refactor makes the transport read the injected env instead, this test stops being
-environment-dependent for a better reason; until then, the explicit env is the fix.
+to `resolveSandboxProvider(env, …)` is still right — it pins `AOA_WORKER_SANDBOX_PROVIDER` and
+`AOA_WORKER_E2B_TEMPLATE` deterministically against a developer shell that happens to export either.
+**It is inert with respect to the credential, which is the one variable D12 named as the reason for
+the change.** Both facts go in the test's comment; a filter that reads as if it removes the
+credential is worse than no filter, because the next reader stops looking.
+
+**Lane scope, measured — this was never going to be a CI failure.** No current lane exports
+`E2B_API_KEY` into the `worker-keystore` vitest project. `.github/workflows/pr.yml` never names it.
+`keyed-e2b-conformance.yml` sets it but runs only
+`vitest run src/__tests__/keyed-real-e2b.test.ts` inside `@armyofagents/sandbox-e2b-provider`;
+`keyed-e2b-cdp-probe.yml` sets it but runs only `probe-e2b-port-exposure.mjs`. **The live exposure is
+the developer machine the plan itself names, plus any future keyed lane that widens to the full
+suite** — which is exactly the kind of change nobody would think to check against a test in another
+package. That is why the fix is a deterministic assertion rather than an environment filter: the
+filter has to be right forever, the assertion has to be right once.
 
 Run → **FAIL**.
 
@@ -721,8 +1057,12 @@ Two admissible resolutions. **Pick the second unless Sprint 5 has already run:**
 **★ Same commit:** `scripts/test-inventory.json` `packages/worker-keystore` **19 → 20**.
 
 **Mutation.** (a) unrecognised-value branch → `{kind:"none"}` → its test fails. (b) missing template
-→ `templateId ?? "base"` → its test fails. (c) `catch` → `{kind:"none"}` → both the throw test and
-the default-loader test fail. (d) `expectedReferences` lowered by one → `check-gate-clause-wiring.mjs`
+→ `templateId ?? "base"` → its test fails. (c) `catch` → `{kind:"none"}` → the **transport-throws**
+case fails. *(Revision 1 also claimed the default-loader case here. It no longer asserts a refusal —
+see the revised D12 above — so claiming a kill for it would be a false kill.)* (d) point
+`loadProviderModule`'s default at a local stub instead of the real specifier → the **non-vacuity**
+case fails (this is what replaces the credential-dependent arm, and it is the mutation the seventh
+case actually exists for). (e) `expectedReferences` lowered by one → `check-gate-clause-wiring.mjs`
 must fail with `unwired_but_now_has_caller` (proving the number is load-bearing, not decorative).
 Revert all.
 
@@ -750,11 +1090,20 @@ tests must fail. Revert.
 - root-produced provider + flag on → `{compose:true}`; flag off → `dispatch_disabled`.
 - shipped shape → provider `undefined` → `no_provider` for **both** flag values.
 - **★ the structural lock (the primary proof, §4.1):** call the **real** `bootstrapWorkerDaemon` with
-  the root-produced provider **and** `AOA_WORKER_DISPATCH_ENABLED=1`, and assert on the returned
-  `BootstrapResult` + the injected logger that **no supervisor and no poll loop were composed** — the
-  `deps.leasing` / `deps.eventOutbox` / `deps.reconciler` seams stayed `[]`, and the only
-  dispatch-related output is the refusal log line. This holds for any value of `hasSelfModelReader`,
-  because `bin/worker-daemon.ts:347-349` has no `else`.
+  the root-produced provider **and** `AOA_WORKER_DISPATCH_ENABLED=1`, and assert that **no supervisor
+  and no poll loop were composed**. **★ REVISION 2 — the observable, named.** Revision 1 said "assert
+  on the returned `BootstrapResult` + the injected logger", and `BootstrapResult`
+  (`bin/worker-daemon.ts:165-172`) carries no field that distinguishes a composed loop from an
+  uncomposed one (§4.1). Assert these two instead:
+  - **zero `startup:` step lines** on the injected logger (`startupSteps` is `[]` with no
+    `deps.reconciler` — `:355`), and
+  - **`await result.shutdown("SIGTERM")`** with an injected `proc.exit` spy, then assert the
+    recorded shutdown `step` names are **exactly `["health-server"]`** — no `lease-stop`, no
+    `lease-drain`, no `event-outbox-*` (`:362-380`; the handler logs `{signal, step}` per step and
+    always exits, `lifecycle/shutdown.ts`).
+
+  …and that the only dispatch-related output is the refusal log line. This holds for any value of
+  `hasSelfModelReader`, because `bin/worker-daemon.ts:347-349` has no `else`.
 - **the reason today, as a supporting check:** the same boot reports **`no_self_model_reader`**, and
   **not** `no_provider` (the provider did arrive).
 
@@ -825,7 +1174,36 @@ unweakened.
 
 **Commit:** `DEP-010: make "dispatch stays off" a static deployment invariant`
 
-### Step 11 — the headers stop contradicting each other; docs; full gate
+### Step 11 — the headers stop contradicting each other; docs; E4-F011 closes; full gate
+
+**★ Register — E4-F011 (HIGH), the finding this ticket owns.** This is the first commit at which its
+closure condition is true, because that condition is *"ships **with a guard**"* and the guards landed
+in Steps 4, 6, 7, 8 and 10. Do all three parts together:
+
+1. **`docs/replatform/epics/E4-worker-daemon/findings.md`, `## E4-F011` → `Status: resolved`,** with
+   a resolution paragraph that says what was decided, not merely that it was: *exactly one boot root
+   gets a provider path (`desktop-host.ts`); the container root structurally cannot have one
+   (DEP-001's image closure + `worker-daemon-boundary.mjs:53`); on the desktop root the provider
+   switch defaults UNSET and the loader is never called, and `AOA_WORKER_DISPATCH_ENABLED` defaults
+   OFF through the daemon's own parser (`config.ts:69`, `:150-162`) because `runDesktopHost` forwards
+   `deps.env` verbatim* — i.e. §4.3, in the register's voice. **And carry §4.2's correction forward**:
+   the finding's title says *two gates*, and after Sprint 3 the honest number is **zero structural
+   gates plus three environment variables and a session**. Resolving a finding whose headline number
+   is about to change, without writing down what it changes to, is how a settled question comes
+   unsettled.
+2. **`scripts/finding-ownership.json` → delete the `E4-F011` key**, in this same commit. Not
+   optional: once the status is not `open`, a surviving entry is `stale_declaration`
+   (`scripts/lib/finding-ownership.mjs:130-136`) and `check-finding-ownership.mjs` exits 1 in the
+   always-on `policy` job. The two edits are one atomic change.
+3. **Do NOT leave it `owned` with a rewritten `ownerStillOpen`.** That is the other admissible
+   ending, and it is the wrong one here: `finding-ownership.mjs:118` only tests that the sentence is
+   non-empty (`hasReason`, `:53-55`), so a rewritten-but-stale sentence fails nothing forever. The
+   register is only worth what its prose is worth, and prose nothing checks has to be *retired*, not
+   *edited* (§2.3).
+
+**Verify in this commit:** `node scripts/check-finding-ownership.mjs` → OK, with the open count down
+by one from Step 1's number and `UNOWNED, on the record: E4-F010` still printed (E4-F010 is
+deliberately unowned and this ticket does not touch it).
 
 **Docs.**
 - `packages/worker-daemon/src/supervisor/provider.ts` header names the authority + the adapter.
@@ -833,7 +1211,7 @@ unweakened.
   the settled demotion. This is the one edit that stops the tree contradicting itself — that
   paragraph is currently the repo's only assertion the question is open.
 - **`docs/deploy/environment-variables.md`** gains `AOA_WORKER_SANDBOX_PROVIDER` and
-  `AOA_WORKER_E2B_TEMPLATE`, in the style of the `AOA_WORKER_DISPATCH_ENABLED` row (`:192`) — default,
+  `AOA_WORKER_E2B_TEMPLATE`, in the style of the existing `AOA_WORKER_DISPATCH_ENABLED` row — default,
   accepted values, and the fact that setting the provider switch without a template is a **refusal to
   boot**, not a degrade. **No guard will catch the omission:** brand-check guard 9 greps for literal
   `process.env\.AOA_[A-Z_]+` in `*.ts` (`pr.yml:648-663`), and these are read through the `PROVIDER_ENV`
@@ -844,9 +1222,10 @@ unweakened.
 - **`docs/replatform/current-main-crosswalk.md` CM-010 — LAST column ONLY.**
 
   **★ Do NOT add `DEP-010` to CM-010's owner cell.** The owner cell today is
-  `CLI-001, CLI-004, MIG-008, DEP-006, DEP-008` (`:26`) and it is **dominated by MIG-008**, which
-  depends on all four others (`program-design.md:1049`). `DEP-010`'s own `Depends on:` is
-  `DEP-000, WRK-004, CLI-001` (`:820`) and **nothing depends on DEP-010**, so adding it leaves the row
+  `CLI-001, CLI-004, MIG-008, DEP-006, DEP-008` (the **CM-010** row) and it is **dominated by
+  MIG-008**, which depends on all four others (`program-design.md`, `#### MIG-008` → `Depends on:`).
+  `DEP-010`'s own `Depends on:` is `DEP-000, WRK-004, CLI-001` (`#### DEP-010`) and **nothing depends
+  on DEP-010**, so adding it leaves the row
   with no dominator → `undeclaredUndominated` → `check-dependency-graph.mjs` **exit 1**
   (`lib/dependency-graph.mjs:135-147`; `check-dependency-graph.mjs:59-64`). The last column is prose
   and is never parsed as an owner list: the owner cell is found by an *"exclusively a ticket list"*
@@ -863,7 +1242,7 @@ unweakened.
 | `pnpm test:run` (or the five packages individually) | worker-keystore's project needs the built dist |
 | all five boundary checkers + self-tests | Step 9's byte-unchanged claim |
 | `node scripts/check-staging-manifest.mjs` + self-test | Step 10 |
-| `node scripts/check-finding-ownership.mjs` | Step 1 |
+| `node scripts/check-finding-ownership.mjs` | Steps 1 **and 11** — Step 1 deletes E6-F008/E6-F004, Step 11 deletes **E4-F011**. Both are `findings.md` + manifest in one commit, or the guard is red |
 | **`node scripts/check-gate-clause-wiring.mjs`** | **★ Step 6's declaration. Must be GREEN, not tolerated red.** Confirm the run prints `E7-1-coding-journey` on its `DORMANT, on the record:` line |
 | **`node scripts/check-test-inventory.mjs`** | **★ the three pin bumps (worker-daemon 132, worker-keystore 20)** |
 | **`node scripts/check-dependency-graph.mjs`** | **★ the crosswalk edit — must still report `4 undominated rows all declared`** |
@@ -871,7 +1250,7 @@ unweakened.
 | `node scripts/check-guard-inventory.mjs` | green unchanged: no new `scripts/check-*.mjs` |
 | `node scripts/check-ticket-graph-coverage.mjs` | pre-existing gate |
 
-**Commit:** `DEP-010: one authoritative provider port, documented where it was contradicted`
+**Commit:** `DEP-010: one authoritative provider port, documented where it was contradicted; close E4-F011`
 
 ---
 
@@ -881,6 +1260,7 @@ unweakened.
 |---|---|---|---|
 | `check-finding-ownership.mjs` | data | re-add a deleted entry | `stale_declaration` |
 | " | " | flip E6-F004 back to `open` | `undeclared_finding` |
+| " | " | **★ resolve `E4-F011` in `findings.md` while its manifest key survives (Step 11)** | **`stale_declaration` — the two edits are one atomic change (§2.3, Step 11)** |
 | **`check-gate-clause-wiring.mjs`** | **data** | **land `sandbox-provider.ts` without re-declaring E7-1** | **`unwired_but_now_has_caller` — the D1 blocker** |
 | " | " | lower `expectedReferences` by one | `unwired_but_now_has_caller` (the number is load-bearing) |
 | **`check-test-inventory.mjs`** | **data** | **omit any of the three pin bumps** | **`pinned_mismatch` … `— bump the pin`** |
@@ -888,6 +1268,7 @@ unweakened.
 | `check-worker-keystore-boundary.mjs` | **yes** | provider import from a non-`PROVIDER_HOST_PATH` file (incl. `bin/nested/`) | one-path violation |
 | " | " | drop the specifier from `ALLOWED_BARE` | allow-at-path fails |
 | " | " | manifest declares only the old two | `runtime dependencies must equal` |
+| **`check-worker-keystore-boundary.test.mjs`** | **yes** | **★ revert ONLY the shared `manifest()` fixture bump (`:31-44`), keeping the three-element pin and the real `package.json`** | **14 synthetic cases fail; `the REAL package on disk passes clean` stays green — the asymmetry that makes the fixture a same-commit requirement (Step 5)** |
 | " | " | **`E2B_API_KEY` in a runtime file (code)** | **zero-file credential ban** |
 | " | " | **`E2B_API_KEY` in a runtime file (comment only)** | **same — the scan is over raw source** |
 | `check-worker-daemon-boundary.mjs` | **no** | provider import in `supervisor/provider.ts` | `forbidden runtime import` |
@@ -904,9 +1285,9 @@ unweakened.
 | " | " | remove it from the `distributed-contract` list | *no failure today* — that job resolves nothing by that name; the line is symmetry, not necessity, and this row records that honestly |
 | `desktop-host.ts` resolve position | **yes** | move above the control branch | control/reset tests fail |
 | `compose-dispatch.ts:62` | **no** | `if (!input.provider)` → `if (false)` | shipped-default lock fails |
-| **`bin/worker-daemon.ts:349`** | **no** | **add an `else` that composes anything observable** | **the structural inertness lock fails — the primary §4 proof** |
+| **`bin/worker-daemon.ts:349`** | **no** | **add an `else` that supplies a `leasing`/`eventOutbox` lifecycle** | **the structural inertness lock fails — the shutdown step names move off `["health-server"]` (§4.1). The primary §4 proof** |
 | `bin/worker-daemon.ts:344` | **no** | `hasSelfModelReader` → `true` | supporting check fails (retires with slice 2b) |
-| **`bin/worker-daemon.ts:345`** | **no** | **`selfModel: null` → a valid self-model** | **the fourth gate, which had no falsifying test before revision 1** |
+| **`bin/worker-daemon.ts:345`** | **no** | **`selfModel: null` → a valid self-model, APPLIED WITH the `:344` mutation** | **reaches `{compose:true}` at the real root — the only prescribed state in which the structural lock is non-vacuous. ★ Alone it is inert (`compose-dispatch.ts:64` short-circuits while `:344` is `false`), and the *decision function's* fourth gate is already falsified at `compose-dispatch.test.ts:54-59`; what revision 1 lacked was a ROOT-LEVEL entry, not any test at all (§4.1)** |
 
 A guard whose failure nobody has seen is a guard nobody has tested — every positive control is
 applied, run, reverted, and its failure text transcribed into the result doc.
@@ -923,7 +1304,7 @@ applied, run, reverted, and its failure text transcribed into the result doc.
    it.** The first draft said "the manifest regenerates, so nothing drifts silently." That was wrong:
    `scripts/build-desktop-staging.mjs` **refuses to run** (`:21-30` — producing its link-free input is
    an unsolved packaging step) and CI executes only its unit test (`pr.yml:365`) — the same conclusion
-   go-book decision **D-3** reached independently (`GO-BOOK.md:404`). So:
+   go-book decision **D-3** reached independently (`GO-BOOK.md` **§8**). So:
    - **What is known:** the `e2b` closure is **36 packages, ~1,752 files, ~15.2 MiB unpruned** on this
      workspace (lockfile closure of `e2b@2.30.5`, measured at revision time). Post-prune it will be
      smaller by an uncomputable amount.
@@ -950,14 +1331,33 @@ applied, run, reverted, and its failure text transcribed into the result doc.
 4. **E6-F003 remains open and HIGH, by design.** Precondition written down so nobody re-derives it —
    including **which network** (`control-net`), and the warning that `docker-compose.d1.yml` uses
    `provider-ctl-net` to mean the opposite.
-5. **Split env source.** The root reads `deps.env`; the transport reads `process.env`. Identical in
-   production, and deliberate — it is what keeps the credential out of this package. It is also what
-   makes Step 6's default-loader test environment-sensitive, which is why that test passes an explicit
-   env with the key removed rather than trusting the ambient one.
+5. **★ Split env source — and revision 1's mitigation for it did not work.** The root reads
+   `deps.env`; the transport reads `process.env` (`real-transport.ts:53-59`, called from the
+   constructor at `:84`). Identical in production, and deliberate — it is what keeps the credential
+   out of this package. Revision 1 then claimed the split was *"what makes Step 6's default-loader
+   test environment-sensitive, which is why that test passes an explicit env with the key removed"*.
+   **The explicit env does not reach that read.** `RealE2bTransportOptions` (`:45-51`) has no `env`
+   field, and §3.2 forbids `worker-keystore` from forwarding a key it may not even name — so
+   filtering a *copy* of `process.env` changes nothing `requireApiKey` observes. Revision 2 fixes
+   this by changing the assertion, not the environment: the seventh Step 6 case now proves the
+   default loader resolves the real package (identity, credential-free) and the refusal-when-no-key
+   behaviour is left to the sixth case, which drives a throwing transport through the injected seam.
+   The explicit env stays, for `AOA_WORKER_SANDBOX_PROVIDER` / `AOA_WORKER_E2B_TEMPLATE` only, and
+   the test comment must say so — **a filter that reads as if it removes the credential is worse
+   than no filter.** The split itself remains a real residual: the day the transport is refactored
+   to read an injected env, the credential and the resolver finally agree on a source.
 6. **`AOA_WORKER_SANDBOX_PROVIDER` is a new operator-facing switch**, and **no guard enforces that it
    is documented** (§0.1). Step 11 adds both rows to `docs/deploy/environment-variables.md` by hand;
    a reviewer must check that it happened, because CI will not.
-7. **★ The DEP-000 harness still never drives the daemon's supervisor.** DEP-010 resolves E6-F008 in
+7. **★ `AOA_WORKER_PROVIDER_URL` is a name in the D1 compose that nothing reads, and Sprint 3 was
+   about to treat it as this ticket's gate.** See §10.2. Not a defect in DEP-010 — the variable
+   predates it and DEP-010 adds no reader — but the coordination it needs is written down there
+   rather than discovered when slice 2b's Step 9a declaration is authored.
+8. **★ The desktop lane has no deployment-surface guard, and after Sprint 3 that is the whole
+   exposure.** Step 10's invariant is real and container-only. §4.2 item 2 states the gap and who
+   inherits it. Recorded here so it is in the residual list a reviewer actually reads, not only in
+   the section about Sprint 3.
+9. **★ The DEP-000 harness still never drives the daemon's supervisor.** DEP-010 resolves E6-F008 in
    the `per-op → driver` direction only (§2.2a). There is no `driver → per-op` adapter, so
    `packages/sandbox-fake-provider` cannot stand in as the daemon's provider — and the repository
    therefore maintains **two independent provider doubles**: that one for the conformance suites, and
@@ -977,10 +1377,97 @@ applied, run, reverted, and its failure text transcribed into the result doc.
 | The composition root injects a real `E2bSandboxProvider` via the `provider` seam | Steps 3, 6, 7; Step 8 asserts `toBeInstanceOf` on what the root handed to bootstrap |
 | The boundary checker still forbids the daemon importing a provider | Step 9 controls 1–3 — byte-unchanged guard (`worker-daemon-boundary.mjs:53`), green checker, three positive controls |
 | The fake stays a leaf with no daemon surface (E6-F004's answer, mechanically) | Step 9 controls **4a + 4b**, both against `check-sandbox-fake-provider-boundary.mjs` — the guard that actually reads the fake |
-| A worker with no injected provider still refuses; the shipped default is provably inert | Step 4 (lock + 2 mutations), Step 8's structural lock (real boot, provider **and** flag, no loop composed), Step 10 (static deployment invariant across `environment` + `command`/`entrypoint`) |
-| Does NOT by itself turn dispatch on | §4.1's structural lock — **nothing consumes `compose === true`** (`bin/worker-daemon.ts:347-349`, no `else`); Step 8 mutation (a); Step 10. *(Not the `:344` literal, which Sprint 3 deletes.)* |
+| A worker with no injected provider still refuses; the shipped default is provably inert | Step 4 (lock + 2 mutations), Step 8's structural lock (real boot, provider **and** flag, **zero `startup:` steps and shutdown steps exactly `["health-server"]`**), Step 10 (static deployment invariant across `environment` + `command`/`entrypoint`) |
+| Does NOT by itself turn dispatch on | §4.1's structural lock — **nothing consumes `compose === true`** (`bin/worker-daemon.ts:347-349`, no `else`); Step 8 mutation (a); Step 10. *(Not the `:344` literal, which Sprint 3 deletes.)* **★ And §4.2, which records that this proof expires when Sprint 3 writes the `else` — the clause is provable exactly once, and the plan says so rather than letting a later reader assume it still holds.** |
 | Test: `compose:true` only with a real provider and the flag on | Step 8, driven by the **root-produced** provider; gates 3 and 4 falsified by mutations (b) and (c) |
 | Test: boundary run proving the daemon still cannot import | Step 9 |
 | Test: port reconciliation documented against E6-F008 | Steps 1 + 11, **and** §2.2b — the resolution text must either add the `PROVIDER_OPERATIONS` totality case or state in writing that D1/D2 supersede option (b) |
 | Resolves E6-F008 / E6-F004 / E6-F003 | §2 — resolved (one direction, §2.2), resolved (opposite answer, mechanically proven), explicitly deferred with its precondition and the correct network |
+| **★ Resolves E4-F011 (HIGH) — the finding whose register entry names DEP-010 as owner** | §2.3 (why it was missed and what the guard cannot check); **§4.3** (the written decision: which root gets a provider, what the flag defaults to there); §4.2 (what its "two gates" headline becomes after Sprint 3); Step 11 (`findings.md` → `resolved` **and** the manifest key deleted, one commit) |
+| **★ Hands Sprint 3 what this ticket breaks, in writing** | **§10** — the four WRK-008 slice 2b assertions falsified on arrival, and the `AOA_WORKER_PROVIDER_URL` naming call |
 | **CI is green on the commit that lands each step** | §6's standing rule + Step 11's gate table: `check-gate-clause-wiring.mjs`, `check-test-inventory.mjs`, `check-dependency-graph.mjs` all named, all in the **always-on** `policy` job (`pr.yml:124-126`) |
+
+---
+
+## ★ 10. What this ticket INVALIDATES downstream — read before Sprint 3
+
+Sprint 3 is **WRK-008 slice 2b**, and its design document was written **before this one existed**.
+The go-book runs it after (`GO-BOOK.md` §3, the spine; §4 *Sprint 3*). Four assertions **in that
+plan's body** are true of today's tree and false the moment DEP-010 lands.
+
+The reciprocal half is already written: `WRK-008-slice-2b-design.md` **§0.1 — "WRITTEN AGAINST THE
+PRE-DEP-010 TREE"** carries the same four rows with the reformulations, and its §5 now names the two
+files of ours that Sprint 3 must edit (§10.3). **The list is repeated here anyway**, because the
+failure mode is asymmetric: a Sprint 3 operator who opens 2b first finds the warning; one who
+arrives via this ticket's result doc, or via a red `policy` job, does not — and this is the ticket
+that moved the tree. If the two lists ever disagree, 2b's is the one that must move.
+
+### 10.1 The four
+
+| # | 2b's assertion | What this ticket does to it |
+|---|---|---|
+| 1 | **Step 8b's `"provider" in call === false`** — a spy on `deps.bootstrap` asserting the desktop root passes no `provider` key | Step 3 adds `provider: deps.provider` to the `bootstrap({...})` call at `desktop-host.ts:254-260`. The key is then **present with value `undefined`** on the shipped default, so `in` is `true` and the assertion goes red. It must become a **value** assertion — `call.provider === undefined` — under an explicitly built env with `AOA_WORKER_SANDBOX_PROVIDER` and `AOA_WORKER_E2B_TEMPLATE` removed |
+| 2 | **Step 9b's `check-boot-roots-provider-free.mjs`**, whose declared property is *"fails if any call site passes a `provider` key"* | `desktop-host.ts` will pass one. **This is the expensive one:** that guard lands in the **always-on `policy` job** (`.github/workflows/pr.yml:124-126` — gated on draft status only, no `changes.outputs.code` gate, no path filter), so it would be **red on every PR, docs-only ones included**. The property must be restated as *"no boot root constructs a provider **unconditionally**; the shipped default resolves to `{kind:"none"}`"* |
+| 3 | **2b §2's gate table, row 1, desktop cell** — *"**no** — E4-D01 makes it unconstructable here"* | E4-D01 still holds for the **daemon package** — `worker-daemon-boundary.mjs:53` is byte-unchanged by this ticket and Step 9 proves it with three positive controls. But the **keystore** root gains `bin/sandbox-provider.ts` and can construct one. **Gate 1 stops being structural on that root** and becomes an env resolution. §4.3 is the written decision that makes that acceptable; §4.2 is what it costs |
+| 4 | **Step 9a's D1 declaration**, which lists the provider gate as `providerUrl: "http://fake-provider:8080"` | This ticket's resolver never reads that variable. §10.2 |
+
+**★ Say the weakening out loud, because rows 1 and 2 are weaker than what 2b promised.** *"This root
+passes no provider"* is a property of the **shape of a call**, falsifiable only by a code change.
+*"This root's shipped default resolves to no provider"* is a property of a **value under one
+environment**, falsifiable by an environment variable. That is a real loss of strength, and it is
+precisely the trade E4-F011 forced this ticket to write down rather than absorb quietly (§4.3), and
+that §4.2 follows to its Sprint-3 conclusion.
+
+### 10.2 Naming — `AOA_WORKER_SANDBOX_PROVIDER` is authoritative; `AOA_WORKER_PROVIDER_URL` is dead env
+
+Slice 2b's Step 9a argues, correctly, that a D1 declaration guard parsing only
+`AOA_WORKER_DISPATCH_ENABLED` *"would have stayed green straight through the event it exists to
+catch"*, and therefore declares four gates per worker — one of them `providerUrl`, on the reasoning
+that *"the day DEP-010's composition root reads it, D1's gate 1 flips with zero diff to
+`docker-compose.d1.yml`"*. **That day does not arrive with this ticket, and 9a's declaration should
+be authored knowing it.** The authoritative answer, so 9a can be written once:
+
+| Variable | Read by | Status after DEP-010 |
+|---|---|---|
+| **`AOA_WORKER_SANDBOX_PROVIDER`** | `packages/worker-keystore/src/bin/sandbox-provider.ts` (`PROVIDER_ENV`), reached only from `runDesktopHost` | **THE provider switch.** Unset → `{kind:"none"}`, loader never called. This is the name a guard must parse |
+| **`AOA_WORKER_E2B_TEMPLATE`** | same file (`TEMPLATE_ENV`) | Required alongside it; the switch without a template is a **refusal to boot**, not a degrade |
+| **`AOA_WORKER_PROVIDER_URL`** | **nothing** | Set on both D1 workers (`docker-compose.d1.yml:304`, `:343`, commented *"declared provider execute API (fake), reachable directly"*). `grep -rn PROVIDER_URL` over `packages/`, `server/`, `scripts/` returns **zero** hits. **DEP-010 adds no reader**, and the resolver has no URL-shaped kind to add one to — `PROVIDER_KINDS` is `e2b` \| `none` |
+
+**And D1's gate 1 does not flip when this ticket lands, for a reason stronger than "nothing reads the
+variable".** The D1 workers run the **container** image: `docker/worker/Dockerfile` ends
+`CMD ["node", "dist/bin/worker-daemon.js"]`, and that image's runtime closure is
+`packages/worker-daemon` + `worker-protocol` + `pino` **only** (DEP-001, enforced by the daemon
+boundary checker). `worker-keystore` and `sandbox-e2b-provider` are not in the image, so
+`resolveSandboxProvider` is not reachable from a D1 worker process **at all** — regardless of which
+environment variables that compose file sets. A containerised worker acquiring a provider needs
+**E6-F003** (§2.1, §3.3 item 6), which stays open by design.
+
+**So 9a should declare `AOA_WORKER_PROVIDER_URL` as *present and inert*, and declare
+`AOA_WORKER_SANDBOX_PROVIDER` as *absent* — the gate that would actually have to move.** Declaring
+the wrong name is the same defect 9a was written to prevent, aimed one variable to the left; and
+declaring only the inert one would leave the real switch undeclared in both directions, which is
+strictly worse than declaring nothing, because the file would *look* comprehensive.
+
+### 10.3 A fifth item, this one already reciprocated: the public surface Step 2 publishes, Sprint 3 narrows
+
+Step 2 makes `decideDispatchComposition`, `DISPATCH_REFUSAL_MESSAGES` and the input/refusal types a
+**public export** of `packages/worker-daemon`, pinned by a new
+`packages/worker-daemon/src/__tests__/public-surface-dispatch.test.ts`. Slice 2b then **changes that
+surface**: it retires `no_self_model_reader` from `DispatchRefusalReason`, replaces
+`hasSelfModelReader` with `hasWorkerIdentity`, adds `hasEventOutboxPath`, and swaps `selfModel` for
+`selfModelRead`. Two artifacts of this ticket therefore have to move in Sprint 3:
+
+- `public-surface-dispatch.test.ts` — the pinned surface changes shape;
+- **Step 8's supporting case** (*"the same boot reports `no_self_model_reader`"*, landing in
+  `packages/worker-keystore/src/__tests__/desktop-host-provider.test.ts`) — it asserts a token that
+  slice 2b deletes.
+
+**This one is not a surprise in either direction.** §4.1 already demotes that case and §7 already
+marks its paired mutation *"demoted; retires with slice 2b"*, and 2b's §5 now carries a row for each
+of the two files. It is listed here only so the set is complete: the expectation was always agreed;
+what was unassigned was the edit, and it is now assigned to Sprint 3.
+
+A public surface that exists so a root **outside** the package can assert against it is exactly why
+Step 2 exists, and a later slice narrowing it is normal. It is a defect only when it is discovered
+as a red test rather than read in advance — which is the same sentence as §10.1 row 2, and the reason
+this whole section is in the plan rather than in a result doc.

@@ -146,9 +146,9 @@ the sprint that stops Sprint 1 from shipping a route nothing calls. Sprints 6–
 
 | Sprint | Plan | State |
 |---|---|---|
-| 1 | [`WRK-010-design.md`](./epics/E4-worker-daemon/tickets/WRK-010-design.md) | **slice 1 only.** complete, **revised after adversarial review** - 7 TDD steps, 2 owned guards + a guard-for-guard map of all 10 onto the SHIPPED authenticator (§3.4), 6 declared-equivalent mutants, acceptance mapping. Epic ownership called: **E4** (§0d) |
-| 2 | [`DEP-010-design.md`](./epics/E6-deployment-test-harness/tickets/DEP-010-design.md) | complete, **revised after adversarial review** - 12 steps; Step 0 is no longer a STOP but a **conditions check** against §8 D-3; three CI-red defects the draft would have shipped are fixed |
-| 3 | [`WRK-008-slice-2b-design.md`](./epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md) | complete, **revised after adversarial review** - 11 steps, 51 mutants, the D1 question answered, and the gate story corrected to **per boot root** (container 4, desktop 2) |
+| 1 | [`WRK-010-design.md`](./epics/E4-worker-daemon/tickets/WRK-010-design.md) | **slice 1 only.** complete, **revised after TWO adversarial review rounds** - 7 TDD steps, 2 owned guards + a guard-for-guard map of all 10 onto the SHIPPED authenticator (§3.4), **8 mutants / 8 killed / ZERO declared equivalents** (round 2 retracted six that do not compile - §7 Step 6), acceptance mapping with a per-clause **tier** column. Epic ownership called: **E4** (§0d). ★ Round 2 also established that Step 7 must leave **E4-F007 open** (§0e) |
+| 2 | [`DEP-010-design.md`](./epics/E6-deployment-test-harness/tickets/DEP-010-design.md) | complete, **revised after TWO adversarial review rounds** - 12 steps; Step 0 is no longer a STOP but a **conditions check** against §8 D-3; three CI-red defects the draft would have shipped are fixed; round 2 added §4.2 (**the inertness proof expires at Sprint 3**) and closed E4-F011 in substance, not just in the register |
+| 3 | [`WRK-008-slice-2b-design.md`](./epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md) | complete, **revised after TWO adversarial review rounds** - 11 steps, 53 mutants, a **§0.1 pre-DEP-010 preamble**, the D1 question answered, and the gate story corrected to **per boot root** (container 4, desktop **3** — round 2 caught the plan counting two under a table that said three) |
 | 2.5 | none — WRK-010 §9 scopes it | **write at sprint start.** Small, but it is the sprint that gives Sprint 1 a caller. Two known requirements are already written down in §4. |
 | 4-9 | scope + sequence only (§4) | **Step 1 of each sprint is: write the plan.** A plan written five sprints early goes stale, which is the exact failure this audit exists to fix. |
 
@@ -186,9 +186,15 @@ stores and passes them **unconditionally** on every non-control boot (`:114-125`
 `resolveCustody` makes `mounted_secret`-plus-a-store a fatal exit. So **any desktop that boots at
 all runs `os_keychain` with custody present** - gate 3 is already satisfied there, and gate 5 is
 reachable within ten minutes of a code. **The container stands on four gates; the desktop stands on
-two: gate 1 and the flag.** That is why §4 Sprint 2's acceptance clause is written the way it is:
+three: gate 1, the flag, and the event-outbox path.** That is why §4 Sprint 2's acceptance clause
+is written the way it is:
 the day DEP-010 puts a provider in that composition root, every installed desktop running the build
-is one env var from taking real leases. Filed as a finding, owned by DEP-010.
+is two env vars from taking real leases. Filed as **E4-F011**, owned by DEP-010.
+
+*(Round 2 corrected this count from two gates to three: the slice's own table marked the desktop as
+gated on the event-outbox path and the sentence underneath still said two. Both the plan and the
+register entry said two; the table was right. The substance is unchanged — one of the container's
+four gates is already satisfied on the desktop.)*
 
 ### One consequence worth reading before Sprint 3
 
@@ -256,8 +262,9 @@ proven still inert.**
 
 **Read this before writing the guard (§8 D-3).** `desktop-host.ts` hands the daemon both
 OS-custody stores on every non-control boot, so on the desktop the only thing standing between
-a composed provider and live dispatch is `AOA_WORKER_DISPATCH_ENABLED` — one env var, not the
-two gates the container path enjoys. "inert" therefore has a precise meaning here: the
+a composed provider and live dispatch is two environment variables —
+`AOA_WORKER_DISPATCH_ENABLED` and `AOA_WORKER_EVENT_OUTBOX_PATH` — where the container path also
+has a structural gate no env edit can open. "inert" therefore has a precise meaning here: the
 **shipped desktop default constructs no provider at all**, and a guard asserts it. Prove that,
 not merely that the flag is off.
 
@@ -307,7 +314,14 @@ at the 10-minute code-route boundary — Sprint 1 alone does not remove that cei
 go-book runs it after. Four of its assertions become false the moment Sprint 2 lands a provider in
 `desktop-host.ts`: Step 8b's `"provider" in call === false`, Step 9b's declared guard property,
 §2's "desktop gate 1 = no", and Step 9a's `AOA_WORKER_PROVIDER_URL` gate (DEP-010's resolver reads
-`AOA_WORKER_SANDBOX_PROVIDER` instead). Reformulate them **before** Sprint 3 starts, not inside it.
+`AOA_WORKER_SANDBOX_PROVIDER` instead — declare it dead env, not a gate). Reformulate them
+**before** Sprint 3 starts, not inside it; slice 2b's §0.1 carries the table.
+
+One thing round 2 *refuted* while doing this, worth knowing so nobody re-raises it: **D1's gate 1
+stays structural through Sprint 2.** The critic expected D1's provider gate to become an env var
+the guard does not declare; it does not, because `docker/worker/Dockerfile` runs the **container**
+root and DEP-010 touches only `desktop-host.ts`. The hazard class is real; that instance of it is
+not.
 
 **Largest risk in the whole plan, named:** D1's "worker" is currently a *harness script*, not
 the daemon. Turning dispatch on changes what those suites observe. Budget time to re-baseline.
