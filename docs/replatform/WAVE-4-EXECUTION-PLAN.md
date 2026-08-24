@@ -1,5 +1,31 @@
 # Wave 4 — consolidated execution plan (Lane A)
 
+> ### ★ UPDATE — WRK-008 slice 2a landed; two claims in this document are now WRONG
+>
+> **1. §4.2's "largest single risk in the plan" does not exist.** It warned that composing
+> the loop "turns dispatch on unconditionally, for every daemon running that build,
+> including both D1 workers, the moment it merges". It cannot. `SupervisorDeps.provider` is
+> REQUIRED; worker-daemon implements the `SandboxProvider` port **zero** times; the only
+> implementation depends ON worker-daemon (so importing it is an E4-D01 breach *and* a
+> cycle); and `sandbox-fake-provider` implements a different port. The shipped entrypoint
+> injects nothing and **cannot acquire a provider**, so dispatch is off *by construction*.
+> The flag shipped anyway, placed so it can actually fire (it gates composition GIVEN a
+> provider). See [`WRK-008-slice-2-result.md`](./epics/E4-worker-daemon/tickets/WRK-008-slice-2-result.md) §3.
+>
+> **2. §5's "three open questions" were four.** The fourth — *where does the daemon's
+> provider come from?* — is larger than the other three and made this slice's own stated
+> scope ("compose the loop into `bin/worker-daemon.ts`") **not implementable as written**.
+> The composition root lives OUTSIDE `packages/worker-daemon` and **does not exist**;
+> choosing where it lives is a package-topology decision with a release dimension
+> (DSK-003 also ships a desktop host), and it is not E4's to make alone. **It is now the
+> top unowned item in this wave.**
+>
+> **Slice 2 is therefore 2a (landed) + 2b (open).** 2a made the daemon explain its silence;
+> 2b threads the session lifecycle, calls `client.selfModelRead`, and constructs the
+> supervisor + poll loop. Step 3 (DAT-008 slice 5) still waits on 2b, for the reason §3
+> already gives: it would otherwise land on a path nothing executes.
+
+
 **As of** `docs/replatform-program` local tip `0293510f8` (`1334c8a90` pushed; the E4-D12 terrain
 is committed and awaiting a clean gate before push).
 **Scope:** the cutover critical path. Lane B (E8/E9) runs concurrently in `C:\e8` and is not
@@ -15,7 +41,7 @@ that, and **the plan as written scheduled neither**:
 | Blocker | Owner | State |
 |---|---|---|
 | Deferral #1 — a worker receives no provider credential | **DAT-008** (created this session) | slices 1–4 landed CI-green; 5, 6, 7 open |
-| **E4-D12 — the worker does not dispatch at all** | **UNOWNED** — see §2 | terrain done ([`E4-D12-live-dispatch-terrain.md`](./epics/E4-worker-daemon/tickets/E4-D12-live-dispatch-terrain.md)) |
+| **E4-D12 — the worker does not dispatch at all** | **WRK-008** (created; slice 1 + slice 2a LANDED, 2b open) | terrain done ([`E4-D12-live-dispatch-terrain.md`](./epics/E4-worker-daemon/tickets/E4-D12-live-dispatch-terrain.md)) |
 
 Both were found the same way: a mechanism that looks wired, isn't, and whose absence nothing
 detects. That is the programme's signature failure class, now on its third and fourth instance.
@@ -45,7 +71,9 @@ costs nothing and turns slice 5 from asserted to demonstrated. It also avoids ed
 
 ```
 1. WRK-008 slice 1   control-plane: worker-authenticated read of its own target profiles
-2. WRK-008 slice 2   daemon: self-model assembly + compose loop/supervisor    <- dispatch goes LIVE
+2. WRK-008 slice 2a  daemon: decision + flag + provider seam + self-model assembly  [LANDED]
+2b. WRK-008 slice 2b  session lifecycle + read + COMPOSE loop/supervisor  <- dispatch goes LIVE
+2c. THE COMPOSITION ROOT  a package outside worker-daemon must supply a provider  <- UNOWNED
 3. DAT-008 slice 5   worker redemption + env synthesis + canary seeding       <- now provable
 4. DAT-008 slice 7   warm-resume re-resolution                                <- gates MIG-005
 5. DAT-008 slice 6   deferral #3 on the placement side

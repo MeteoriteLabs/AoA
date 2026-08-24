@@ -121,6 +121,16 @@ parity test), self-model assembly, local branding via
 into `bin/worker-daemon.ts` and supply `leasing`. **This is the first time the daemon dispatches
 anything**, so it is where the risk is, not slice 1.
 
+> ★ **CORRECTION (WRK-008 slice 2 design).** The sentence above — *"compose `createPollLoop`
+> + `createSupervisor` into `bin/worker-daemon.ts`"* — is **not implementable as written**,
+> and this terrain missed why. `SupervisorDeps.provider` is REQUIRED; worker-daemon
+> implements the `SandboxProvider` port **zero** times; the only implementation
+> (`E2bSandboxProvider`) lives in a package that **depends on** worker-daemon, so importing
+> it is an E4-D01 breach *and* a dependency cycle; and `sandbox-fake-provider` implements the
+> *contract driver* port, not this one. **The daemon can never construct its own provider**,
+> so the composition root lives outside the package — and none exists. That is a FOURTH open
+> question, larger than the three below, and it is the reason slice 2 split into 2a/2b.
+
 **Open questions slice 2 must answer — these are the sizing risk, not the plumbing:**
 
 - **A target with no admin-set profile has none.** Enrolment alone does not produce a dispatchable
