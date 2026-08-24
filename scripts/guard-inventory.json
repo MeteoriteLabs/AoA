@@ -53,6 +53,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-finding-ownership.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow"
+    },
     "scripts/check-forbidden-tokens.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"

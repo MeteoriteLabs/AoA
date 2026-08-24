@@ -275,6 +275,18 @@ jobs:
           # other), so a repo-level guard is the only side that can see both.
           node scripts/check-worker-path-parity.mjs
 
+      - name: Finding ownership (an open finding must name an owner, or say it has none)
+        run: |
+          # Four blockers have reached the top of this programme's critical path
+          # unscheduled, and THREE were already written down - E4-F007 sat in findings.md
+          # at severity HIGH with Status: open while MIG-005/006/007 were being sequenced
+          # in front of it. Noticing had no consequence; this gives it one.
+          #
+          # Both commands in ONE step deliberately: two steps are two chances to run only
+          # one of them, and the one skipped is the one that failed.
+          node --test scripts/lib/__tests__/finding-ownership.test.mjs
+          node scripts/check-finding-ownership.mjs
+
       - name: Guard inventory (every check declares what runs it)
         run: |
           node --test scripts/lib/__tests__/guard-inventory.test.mjs

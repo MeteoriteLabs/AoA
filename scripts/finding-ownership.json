@@ -1,0 +1,38 @@
+{
+  "findings": {
+    "E4-F007": {
+      "status": "unowned",
+      "reason": "HIGH, and the top blocker on the Wave-4 critical path. A worker's session lives 15 min, the enrolment code route that mints it lives 10, and there is no device-session renewal route - so a worker is authority-less at T0+15min with no path back. Blocks WRK-008 slice 2b from producing a useful worker, blocks MIG-005/006/007 ACTIVE, and DSK-001's R1 called DSK-003's background host 'unshippable without it'. R1 recommended filing the successor 'now, before DSK-003 is planned'; DSK-003 shipped and it never was. AWAITING an ownership call: a server-side ticket in E3 (JOB-002's family, where the escalation was addressed) or E4 (where the finding lives, already reopened once for WRK-008). The fix is scoped: a device-proof-bound renewal endpoint, with IdentityLifecycle.acquireSession() already landed as the drop-in seam."
+    },
+    "E4-F008": {
+      "status": "owned",
+      "ticket": "WRK-008",
+      "ownerStillOpen": "Slice 2b - composing the poll loop and supervisor - is the live-dispatch wiring seam this finding names. Slices 1 and 2a have result docs; 2b does not exist yet.",
+      "reason": "The finding says 'resolve at the live-dispatch wiring ticket (post-WRK-005)'. That ticket did not exist when it was filed; it does now, and it is WRK-008. A rotated provider-constraint digest going stale on a long-lived worker must be reconciled against in-flight leases when 2b composes the loop."
+    },
+    "E6-F003": {
+      "status": "unowned",
+      "reason": "HIGH, and ORPHANED PAST ITS OWN RESOLUTION POINT: it says 'resolve at DEP-000', and DEP-000 has shipped. The networked driver API a worker's provider driver speaks over provider-ctl-net was never specified, so E6F-03's networked smoke has no worker->provider path. This is a sibling of the missing composition root - both are 'nothing connects a real worker to a real provider'. Needs a new owner; the natural one is whichever ticket takes the composition-root decision, since they answer the same question from two sides."
+    },
+    "E6-F004": {
+      "status": "unowned",
+      "reason": "MED-HIGH, also orphaned: 'resolve at DEP-000', and DEP-000 shipped. The stated resolution (sandbox-fake-provider imports the port from worker-daemon or a shared leaf, with the boundary check allowing that import) is unimplemented, and it is entangled with E6-F008 - the two ports question. Should be owned together with E6-F008 rather than separately, because fixing one without the other just moves the seam."
+    },
+    "E6-F005": {
+      "status": "accepted",
+      "reason": "LOW, documentation-only: add one line to the E6-D1-FOUNDATION gate noting that 'JOB-003 complete' transitively implies JOB-001/002/009 via the dep chain. The gate is closed and the dep chain is real; the missing sentence changes no behaviour and blocks nothing."
+    },
+    "E6-F006": {
+      "status": "accepted",
+      "reason": "LOW, and superseded by what actually shipped: DEP-000's acceptance named 'unschema-valid fixture rejected' and 'unknown op rejected' without dedicated RED files. The contract package now carries port-conformance, contract-nonvacuous and isolation-contract suites that exercise exactly those refusals. The gap was in the ticket's paperwork, not in the coverage."
+    },
+    "E6-F007": {
+      "status": "accepted",
+      "reason": "LOW, documentation-only: cite the drizzle --custom mechanism (E2-D01 precedent, Decision #122/C14) in DEP-003's RLS marker migration. DEP-003 shipped and the migrations exist; this is a citation, not a defect."
+    },
+    "E6-F008": {
+      "status": "unowned",
+      "reason": "MED, orphaned ('resolve before CLI-001/D2'; CLI-001 shipped) and STILL LIVE - it was hit head-on on 2026-08-24 designing WRK-008 slice 2. sandbox-provider-contract's SandboxProviderDriver and worker-daemon's SandboxProvider are structurally unrelated ports, which is precisely why sandbox-fake-provider cannot stand in as the daemon's provider and why the composition root has nothing to inject. Needs owning together with E6-F004 and the composition-root decision; the three are one question asked three ways."
+    }
+  }
+}
