@@ -37,6 +37,8 @@ import {
   type ArtifactCommitOperationResponseV1,
 } from "@armyofagents/worker-protocol";
 import { runInTenant } from "../db/tenant-context.js";
+import { logger } from "../middleware/logger.js";
+import { resolveStoredRetention } from "./artifact-retention-authority.js";
 import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js";
 import { resolveWorkerFenceContext } from "./worker-fence-context.js";
 import type { StorageProvider } from "../storage/types.js";
@@ -133,6 +135,26 @@ export function createArtifactCommitService(input: {
         });
         const prefixValid = manifest.objectKey.startsWith(prefix);
 
+        // Decided BEFORE the mutator call so the stored value is never the declared one.
+        const retentionDecision = resolveStoredRetention({
+          kind: manifest.kind,
+          declared: manifest.retention,
+        });
+        if (retentionDecision.declarationIgnored) {
+          // Observed, not swallowed: a disagreement means a buggy worker or an attempted
+          // downgrade. This is a LOG LINE, not an audit record — DE-11 claims retention is
+          // audited and nothing audits it; this ticket does not pretend to close that.
+          logger.warn(
+            {
+              artifactId: manifest.artifactId,
+              kind: manifest.kind,
+              declaredRetention: manifest.retention,
+              storedRetention: retentionDecision.retention,
+            },
+            "artifact retention declaration ignored — retention is control-plane-owned",
+          );
+        }
+
         let row;
         try {
           row = await repos.jobControl.commitArtifactVersion({
@@ -141,8 +163,16 @@ export function createArtifactCommitService(input: {
             objectKey: manifest.objectKey,
             contentType: manifest.contentType,
             kind: manifest.kind,
+            // `sensitivity` stays as declared DELIBERATELY: artifactSensitivitySchema is a
+            // single-valued literal, so the frozen schema already makes it unforgeable and
+            // deriving it here would compute a constant. If it ever gains a second value it
+            // must move to the control plane that day (DAT-010 §4).
             sensitivity: manifest.sensitivity,
-            retention: manifest.retention,
+            // ★ DAT-010 — retention is CONTROL-PLANE-OWNED, derived from the frozen `kind`,
+            // and the manifest's declaration is IGNORED. A worker choosing the retention of
+            // a browser_cookie_state / browser_storage_state artifact is a privilege the
+            // threat model must not grant: those bytes ARE a live session credential.
+            retention: retentionDecision.retention,
             declaredSizeBytes: manifest.sizeBytes,
             declaredSha256: manifest.sha256,
             actualSizeBytes,
