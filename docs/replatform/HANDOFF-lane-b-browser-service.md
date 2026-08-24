@@ -261,3 +261,72 @@ not evaluate what they guarded"*. Lane A closed four instances of that same clas
 (an image guard with no CI invocation; a guard blind to test files; a stale-authority guard; and an
 adversarial verifier that could not return "confirmed"). It is systemic, not incidental — see
 `docs/replatform/WAVE-4-RESEQUENCE.md` §0 and the `checks-that-nothing-runs` pattern.
+
+---
+
+## 10. YOUR BYTE-EGRESS ESCALATION IS ANSWERED — and there is a STOP in front of it
+
+Read [`DECISION-byte-egress-and-provider-topology.md`](./DECISION-byte-egress-and-provider-topology.md)
+in full. Summary, and what it means for BRW-003:
+
+**DECIDED: Option D.** The provider uploads directly to object storage under a **worker-minted**,
+short-lived, prefix-scoped presigned grant; the port carries a grant INBOUND and a reference
+OUTBOUND, never bytes. **Option B is rejected** (founder): desktop browser evidence must not become
+a second project, and your own reasoning is why — bypassing the cleanup-authority guarantee leaves
+it stated-and-false.
+
+**It is not a compromise; it is the declared architecture.**
+`docs/architecture/distributed-execution-authority.md:11` already says artifacts transfer "through
+short-lived prefix-scoped grants". Moving bytes through the port would be the DEVIATION. Your option
+set omitted the design the programme had already committed to — and your Option A was costed against
+a provider topology whose constraint lives in a file E8 does not own.
+
+**All four of your walls stay standing.** (a) the port needs no file operation — it carries a grant
+and a reference; (b) the command channel's byte exclusion is HONOURED, not amended; (c)
+`denyControlPlane` is irrelevant, object storage is not the control plane and the uploader is the
+provider, not the guest; (d) `E2bTransport.readFile` stays unsurfaced, used INSIDE the provider impl.
+The cleanup-authority no-customer-bytes proof is **untouched**, and bounded memory stops being a
+port problem.
+
+### ★ THREE THINGS THAT CHANGE YOUR DESIGN
+
+**1. There is an E4-D02 STOP in front of the byte movement.** REVISION 1 of that record: the
+provider OPERATION VOCABULARY is frozen — `OPTIONAL_PROVIDER_OPERATIONS = ["checkpoint","restore",
+"health"]` in `packages/worker-protocol/src/capabilities.ts:153`, and
+`sandbox-provider-contract/src/port.ts:4-9` says it "invents no operation". Advertisement is doubly
+pinned: `supportedOperations` fails the enum on an unknown value AND its length is capped at
+`PROVIDER_OPERATIONS.length` (`capabilities.ts:178`). So the export capability cannot be advertised
+without a frozen change. That is the Protocol/Schema Custodian's call, escalated, not taken.
+
+**2. It is TWO provider operations, not one.** `artifactTransferGrantRequestV1Schema`
+(`artifacts.ts:365-393`, FROZEN) requires **both** `expectedSha256` and `maxBytes` — neither
+optional. So the worker must know the digest and size BEFORE it can request a grant, and only the
+provider can see inside the sandbox. The flow is necessarily: digest-and-size → mint grant →
+export-under-grant → commit. A file that changes between the two steps fails closed at commit
+against the store-observed hash (`artifacts.ts:623-627`), so the shape is safe.
+
+**3. Evidence can be ORPHANED, and BRW-003 must say what that means for a session.** The fence is
+checked ONLY at mint (`artifact-transfer-grant.ts:83-90`); the issued grant carries no fence
+material. Lose the lease mid-flight and the PUT still succeeds — S3 knows nothing about fences —
+landing bytes in the ordinary attempt prefix, after which commit refuses `stale_fence`. DAT-006
+quarantine does NOT cover it (distinct `quarantine/` root). Lane A owns closing that window
+(DAT-009 slice 2); **you own what a partially-evidenced session reports to the founder.**
+
+### WHAT YOU CAN DESIGN NOW, AND WHAT WAITS
+
+**Design now** — none of this depends on the STOP: event metadata and payload bounding, artifact
+ordering tied to event sequence, retention and redaction policy, the reference→artifact commit
+shape, and the partial-evidence/orphan UX from (3).
+
+**Waits on the custodian** — only the byte-movement mechanism itself: the operation names, their
+argument shapes, and conformance.
+
+So BRW-003 is **partially unblocked**. If you would rather hold the whole ticket than design half of
+it, say so — but the metadata/ordering/retention half is the larger part of the spec and it has no
+dependency on how the bytes travel.
+
+### ALSO
+
+`local_disk` deployments have **no egress path at all** — `presignPut` is optional on the storage
+port and both grant services throw when absent. Browser evidence simply does not work there. That
+belongs in an operator runbook, and there isn't one.
