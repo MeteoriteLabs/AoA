@@ -45,6 +45,8 @@ const JOB_FENCE_PATH = fileURLToPath(
 const EXPECTED_GUARDED = [
   "acceptEvent",
   "authorizeArtifactCommit",
+  // DAT-009 slice 2 — the fenced grant-INTENT write at upload-grant mint.
+  "recordArtifactGrantIntent",
   "commitArtifactVersion",
   // DAT-003 — the fenced workspace-patch apply/review disposition mutator.
   "recordPatchApplyState",
@@ -221,7 +223,7 @@ describe("JOB-004 governed active-fence surface (static contract)", () => {
   const repositoryObject = returnedObjectLiteral(repositoryFactory);
   const methods = methodMembers(repositoryObject);
 
-  it("enumerates the exact seven guarded mutators as the shared closed surface", () => {
+  it("enumerates the exact eight guarded mutators as the shared closed surface", () => {
     expect([...GUARDED_JOB_MUTATORS].sort()).toEqual(EXPECTED_GUARDED);
     // The server-side mirror agrees byte-for-byte with the db-owned list.
     expect([...GOVERNED_FENCE_SURFACE].sort()).toEqual(EXPECTED_GUARDED);

@@ -58,6 +58,10 @@ export {
 export const GOVERNED_FENCE_SURFACE = [
   "acceptEvent",
   "authorizeArtifactCommit",
+  // DAT-009 slice 2 — the fenced grant-INTENT write at upload-grant mint (see
+  // GUARDED_JOB_MUTATORS). Records the object key so an orphaned upload is
+  // discoverable by its own record; the storage port cannot list.
+  "recordArtifactGrantIntent",
   // DAT-002 — fenced verified artifact-manifest commit (see GUARDED_JOB_MUTATORS).
   "commitArtifactVersion",
   // DAT-003 — fenced workspace-patch apply/review disposition (see GUARDED_JOB_MUTATORS).
