@@ -1,5 +1,16 @@
 # Wave 4 — consolidated execution plan (Lane A)
 
+> ### ★★★ BLOCKER — a worker cannot hold authority for more than 15 minutes
+>
+> Verified in code while mapping slice 2b: the enrollment **code route lives 10 minutes**, a
+> **session lives 15**, a session is minted **only** by enrollment, and **no device-session
+> renewal route exists**. A worker enrolled at T0 is authority-less at T0+15min with no path
+> back. This is `E4-F007` — **open, HIGH, and owned by no ticket** — and DSK-001's risk
+> register (R1) recommended filing the successor *"now, before DSK-003 is planned"*. DSK-003
+> shipped; it never was. **MIG-005/006/007 ACTIVE cannot cut over onto this**, and DSK-003's
+> desktop host is by its own design doc "unshippable without it".
+> See [`WAVE-4-BLOCKER-worker-session-lifetime.md`](./WAVE-4-BLOCKER-worker-session-lifetime.md).
+>
 > ### ★ UPDATE — WRK-008 slice 2a landed; two claims in this document are now WRONG
 >
 > **1. §4.2's "largest single risk in the plan" does not exist.** It warned that composing
