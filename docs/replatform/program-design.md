@@ -313,7 +313,7 @@ A ticket is assignable only when it includes:
 
 ## Groomed backlog
 
-The backlog contains 95 implementation tickets. Sizes are planning estimates: **S** is up to one agent-day, **M** is up to three. Each ticket is independently reviewable. Code-level file lists, signatures, and red/green commands are produced in the implementation plan for that epic.
+The backlog contains 105 implementation tickets (audited 2026-08-25 against the `#### ID` nodes in this document; the previous "95" was a stale hand-count). Of these, 88 ids have at least one ticket file and 17 are unbuilt backlog. Counting NODES is not the same as counting delivered CAPABILITY - see the epic exit-gate audit, which found ~17 gate clauses whose named production path has no caller. Sizes are planning estimates: **S** is up to one agent-day, **M** is up to three. Each ticket is independently reviewable. Code-level file lists, signatures, and red/green commands are produced in the implementation plan for that epic.
 
 ### E0 — Program foundation
 
@@ -633,6 +633,13 @@ The backlog contains 95 implementation tickets. Sizes are planning estimates: **
 - **Acceptance:** The built worker image contains no fake/test-double provider and no test tree of our own emitted output; the assertion is proven to FAIL against the pre-move image; images are reproducible from source (build outputs are excluded from the build context, so a file removed in source cannot keep shipping).
 - **Test:** Image-content assertions run in the D1 lane against the freshly built images — the lane that has both a Docker daemon and both images — verified as executing, not skipping.
 
+#### WRK-010 — Sustained worker authority via device-proof session renewal (M)
+
+- **Depends on:** JOB-002, WRK-002.
+- **Outcome:** A worker holds authority for as long as it stays healthy, without a human re-pasting an enrollment code. Closes finding E4-F007: the enrollment code route lives ten minutes and a session fifteen, and no route renews a device session, so a wired worker goes authority-less at T0+15min. A device-proof-bound renewal endpoint mints a fresh short-lived session from the worker's own device key; the long-lived material never leaves the host.
+- **Acceptance:** A worker with a valid device proof obtains a fresh session with no enrollment code and no human step; the renewal is refused for a revoked, disabled, or generation-superseded target with the same coarse code every other worker route uses; the endpoint is not mounted when distributed execution is off; the ten-minute code route is never consulted on the renewal path. The 15-minute ceiling on any single session is unchanged — renewal issues a NEW bounded session, it does not extend an old one.
+- **Test:** Unit admission matrix over the renewal decision (revoked / stale-generation / disabled / valid) plus embedded-PostgreSQL integration proving a device proof mints a session after the code route has lapsed, with a positive control proving the same proof is refused once the target is revoked.
+
 ### E5 — Workspaces, artifacts, secrets, and network policy
 
 #### DAT-001 — Immutable workspace snapshot format (M)
@@ -808,6 +815,12 @@ It unblocks JOB-004 through JOB-008, JOB-011 through JOB-014, and WRK-005 onward
 - **Acceptance:** Replicas cannot double-place/lease, exceed Organization capacity, or disagree on an accepted event/terminal result; polling is replica agnostic; replica loss preserves correctness and bounded progress; process-local admission state is forbidden.
 - **Test:** Concurrent submit/poll/lease/event with restart, partition, delayed commit, quota/placement race, lost ACK, shared rate-limit behavior, and cross-tenant adversarial traffic.
 
+#### DEP-010 — The provider seam: one authoritative port and a composition root that supplies it (M)
+
+- **Depends on:** DEP-000, WRK-004, CLI-001.
+- **Outcome:** A production process can construct a real sandbox provider and hand it to the worker daemon, so dispatch has something to run work in. Resolves finding E6-F008 (the contract package's provider-neutral `SandboxProviderDriver` and worker-daemon's per-op `SandboxProvider` are structurally distinct ports) by naming ONE authoritative port, and resolves findings E6-F004 (where the fake imports the port from) and E6-F003 (the networked driver API) as the same question. The worker daemon still constructs no provider itself (E4-D01 holds); the composition root lives outside the daemon package.
+- **Acceptance:** Exactly one port is authoritative and documented as such; the composition root injects a real `E2bSandboxProvider` into `bootstrapWorkerDaemon` via the `provider` seam; the boundary checker still forbids the daemon importing a provider; a worker with no injected provider still refuses to dispatch (the shipped default is unchanged and provably inert). This ticket wires the seam and the root; it does NOT by itself turn dispatch on (that is WRK-008 slice 2b behind its flag).
+- **Test:** Unit proof that the composition root produces a daemon whose dispatch decision is `compose:true` only when a real provider is injected and the flag is on; a boundary-check run proving the daemon package still cannot import the provider; the port-reconciliation documented against E6-F008.
 ### E7 — Coding/CLI workload on E2B
 
 #### CLI-001 — E2B provider implementation (M)
