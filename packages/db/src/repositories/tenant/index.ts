@@ -11,7 +11,7 @@
 // types (which erase at runtime). There is deliberately NO standalone unscoped
 // reader (e.g. `getAllJobs(db)`) — a raw cross-tenant helper would sidestep the
 // tenant context and forced RLS. Enforced by tenant-repository-surface.test.ts.
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt, sql } from "drizzle-orm";
 import type { Db } from "../../client.js";
 import { jobs, type Job, type NewJob } from "../../schema/jobs.js";
 import { jobAttempts, type JobAttempt, type NewJobAttempt } from "../../schema/job_attempts.js";
@@ -81,6 +81,42 @@ export interface JobArtifactsRepository {
    * used to prove object-existence when issuing a fence-independent download grant
    * (a committed artifact stays readable after lease loss). RLS scopes to the org. */
   findCommitted(input: { jobId: string; attempt: number; identifier: string }): Promise<JobArtifact | null>;
+  /**
+   * DAT-009 slice 2 §4.3 — expired grant intents, with the one fact the sweep decision
+   * cannot get from the row itself: whether a COMMITTED sibling exists for the same
+   * natural key.
+   *
+   * That flag is load-bearing. The granted and committed partial-unique keys are
+   * DISJOINT, so commit inserts a second row and the intent SURVIVES it, both naming the
+   * same object. Without the flag a sweeper would delete a committed artifact's bytes on
+   * the happy path.
+   */
+  findSweepCandidates(input: { before: Date; limit: number }): Promise<
+    Array<{
+      id: string;
+      status: string | null;
+      objectKey: string | null;
+      expiresAt: string | null;
+      hasCommittedSibling: boolean;
+    }>
+  >;
+  /**
+   * DAT-009 slice 2 §4.3 — transition a swept intent `granted` → `swept`.
+   *
+   * ★ DELIBERATELY NOT FENCE-GUARDED, and this is the whole point: the sweeper runs
+   * precisely WHEN THE FENCE IS GONE. A `guardActiveFence` here would refuse every real
+   * call, making the sweeper a guard that can never fire.
+   *
+   * Its safety therefore comes from two other places, not from a fence:
+   *   1. the `WHERE status = 'granted'` below, so this can ONLY ever move a granted row
+   *      and can never touch a committed or quarantined one, whatever the caller passes;
+   *   2. the caller having satisfied `isSweepEligible`, which refuses anything still
+   *      redeemable or committed.
+   *
+   * Stated here rather than left implicit, because an unguarded write next to a set of
+   * guarded ones is exactly how a second, quieter door gets built.
+   */
+  markSwept(input: { id: string }): Promise<JobArtifact | null>;
 }
 
 export interface JobSecretHandlesRepository {
@@ -224,6 +260,52 @@ export function tenantRepositories(tx: Db): TenantRepositories {
             eq(jobArtifacts.status, "committed"),
           ))
           .limit(1);
+        return row ?? null;
+      },
+      async findSweepCandidates(input) {
+        // The committed-sibling fact comes from an EXISTS over the SAME natural key the
+        // partial-uniques use. Correlated rather than a join so a granted row with no
+        // sibling is still returned (a join would need to be a LEFT JOIN and would
+        // duplicate on multiple committed versions).
+        const rows = await tx
+          .select({
+            id: jobArtifacts.id,
+            status: jobArtifacts.status,
+            objectKey: jobArtifacts.objectKey,
+            expiresAt: jobArtifacts.expiresAt,
+            hasCommittedSibling: sql<boolean>`EXISTS (
+              SELECT 1 FROM job_artifacts c
+              WHERE c.organization_id = ${jobArtifacts.organizationId}
+                AND c.job_id = ${jobArtifacts.jobId}
+                AND c.attempt IS NOT DISTINCT FROM ${jobArtifacts.attempt}
+                AND c.identifier = ${jobArtifacts.identifier}
+                AND c.status = 'committed'
+            )`,
+          })
+          .from(jobArtifacts)
+          .where(and(
+            eq(jobArtifacts.status, "granted"),
+            lt(jobArtifacts.expiresAt, input.before),
+          ))
+          .limit(input.limit);
+        return rows.map((r) => ({
+          id: r.id,
+          status: r.status,
+          objectKey: r.objectKey,
+          // The pure decision parses an ISO string; normalise here so the boundary
+          // between storage types and that decision stays in one place.
+          expiresAt: r.expiresAt ? new Date(r.expiresAt).toISOString() : null,
+          hasCommittedSibling: Boolean(r.hasCommittedSibling),
+        }));
+      },
+      async markSwept(input) {
+        // `status = 'granted'` in the WHERE is the structural guard: this can only ever
+        // move a granted row, never a committed or quarantined one. See the interface.
+        const [row] = await tx
+          .update(jobArtifacts)
+          .set({ status: "swept", updatedAt: sql`clock_timestamp()` })
+          .where(and(eq(jobArtifacts.id, input.id), eq(jobArtifacts.status, "granted")))
+          .returning();
         return row ?? null;
       },
     },
