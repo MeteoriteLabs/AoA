@@ -112,7 +112,7 @@ export class EventSequencer {
     return this.#seq + 1;
   }
 
-  async #emit(eventType: WorkerEventType, payload: unknown): Promise<WorkerEventV1> {
+  async #emit(eventType: WorkerEventType, payload: unknown, extensions: readonly unknown[] = []): Promise<WorkerEventV1> {
     this.#seq += 1;
     const withoutDigest = {
       protocolVersion: 1 as const,
@@ -126,7 +126,7 @@ export class EventSequencer {
       fenceToken: this.#identity.fenceToken,
       seq: this.#seq,
       occurredAt: this.#now(),
-      extensions: [] as const,
+      extensions,
       eventType,
       payload,
     };
@@ -184,6 +184,38 @@ export class EventSequencer {
     });
   }
 
+
+  /**
+   * `browser_observation` — BRW-003d-3.
+   *
+   * ★ DORMANT, and labelled so. `createSupervisor` has zero production callers, so
+   * nothing emits this yet; it is the API the browser runtime will use and a
+   * FORWARD GUARD, never a clause's proof.
+   *
+   * The FROZEN payload is `.strict()` with exactly three fields — artifactIds, url,
+   * title. Console lines and network summaries have nowhere else to go, so they
+   * ride `extensions`, which `#emit` now carries. Two properties come for free
+   * there and are worth stating: extensions are inside the canary scrub AND inside
+   * the digest, because both run over the whole event.
+   *
+   * Callers must pass INTEGERS. `canonical-json` rejects a float outright
+   * ("float is not allowed in the v1 subset"), and the parse in `#emit` runs before
+   * the wire — so an un-quantised duration fails the emit rather than rounding
+   * silently. Use `quantiseExtensionNumbers` on anything float-native.
+   */
+  browserObservation(input: {
+    artifactIds: readonly string[];
+    url: string | null;
+    title: string | null;
+    extensions?: readonly unknown[];
+  }): Promise<WorkerEventV1> {
+    return this.#emit(
+      "browser_observation",
+      { artifactIds: [...input.artifactIds], url: input.url, title: input.title },
+      input.extensions ?? [],
+    );
+  }
+
   /** The terminal attempt event (succeeded/failed/cancelled/expired). */
   terminal(input: {
     status: TerminalEventStatus;
@@ -198,4 +230,36 @@ export class EventSequencer {
       errorMessage: input.errorMessage ?? null,
     });
   }
+}
+
+/**
+ * Round every non-integer number in a wire-extension value to an integer.
+ *
+ * ★ WHY THIS IS NOT OPTIONAL SUGAR. A browser network summary is float-native —
+ * durations, timings, transfer rates — and the v1 canonical-JSON subset REJECTS
+ * floats outright. The failure mode is therefore a REJECTED EVENT, not a rounded
+ * number: the whole observation is lost, at emit time, for one fractional
+ * millisecond. Quantising at the boundary is what keeps the frozen constraint from
+ * turning ordinary telemetry into dropped evidence.
+ *
+ * Non-finite numbers (NaN, Infinity) are refused rather than coerced: they are a
+ * producer bug, and silently turning one into 0 would bury it in the data.
+ */
+export function quantiseExtensionNumbers<T>(value: T): T {
+  const walk = (node: unknown): unknown => {
+    if (typeof node === "number") {
+      if (!Number.isFinite(node)) {
+        throw new RangeError(`non-finite number cannot be quantised: ${String(node)}`);
+      }
+      return Math.round(node);
+    }
+    if (Array.isArray(node)) return node.map(walk);
+    if (node && typeof node === "object" && Object.getPrototypeOf(node) === Object.prototype) {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(node as Record<string, unknown>)) out[k] = walk(v);
+      return out;
+    }
+    return node;
+  };
+  return walk(value) as T;
 }

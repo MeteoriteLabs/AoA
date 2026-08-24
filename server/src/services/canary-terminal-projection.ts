@@ -121,6 +121,32 @@ function payloadOf(row: AttemptEventRow): Record<string, unknown> {
   return payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
 }
 
+/**
+ * BRW-003d-3 — the key the envelope's `extensions` ride under, INSIDE the payload.
+ *
+ * ★ INSIDE, deliberately. The frozen forbidden-key scan is KEYS-ONLY, so a
+ * credential sitting in an extension VALUE under an innocuous key is legal on the
+ * wire. The event egress redactor sweeps `event.payload`; extensions arriving as a
+ * SIBLING field would bypass it, and closing that would mean remembering a second
+ * redaction call at every egress. Folding them into the payload makes the coverage
+ * a structural property instead of a promise.
+ */
+export const PROJECTED_WIRE_EXTENSIONS_KEY = "wireExtensions";
+
+/**
+ * The envelope's `extensions`, or null when there are none to carry.
+ *
+ * The stored event is whatever was persisted, so a surprising shape must not cost
+ * the whole attempt's evidence — an unusable value is simply not carried. An EMPTY
+ * array is also "nothing to carry": inventing an empty artefact on every event
+ * makes every payload noisier for no information.
+ */
+function extensionsOf(row: AttemptEventRow): unknown[] | null {
+  const raw = row.event?.extensions;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  return raw;
+}
+
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
@@ -162,13 +188,23 @@ export function foldAttemptEvidence(input: {
     const payload = payloadOf(row);
     const stream = payload.stream;
     const message = payload.message;
+    const extensions = extensionsOf(row);
+    // Only build a new object when there is something to add: spreading on every
+    // event would copy every payload for no reason.
+    //
+    // A payload that already owns the key keeps its own value. The projection is
+    // not the place to resolve a collision with a frozen payload field, and
+    // clobbering would lose real data in order to carry metadata.
+    const projected = extensions && !(PROJECTED_WIRE_EXTENSIONS_KEY in payload)
+      ? { ...payload, [PROJECTED_WIRE_EXTENSIONS_KEY]: extensions }
+      : payload;
     return {
       eventId: row.eventId,
       seq: row.sequence,
       type: row.eventType,
       ...(stream === "stdout" || stream === "stderr" ? { stream } : {}),
       ...(typeof message === "string" ? { message } : {}),
-      payload,
+      payload: projected,
     };
   });
 
