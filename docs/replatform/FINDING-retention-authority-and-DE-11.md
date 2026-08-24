@@ -78,6 +78,53 @@ class instead of deleting it.
 
 So the retention follow-up must be resequenced: **fix the authority first, enforce second.**
 
+## ★★ 3b. REVISION 1 — §1 AND PART OF §2 ARE OVERSTATED. I misread the register.
+
+Written before acting on §5 step 1, because acting on the original §1 would have DAMAGED a
+correct document.
+
+**The register is a REQUIREMENTS record, not an as-built attestation.** Two facts I did not
+check before writing §1:
+
+- The Markdown register's column header is **"Required control"**, not "Control" — pinned in
+  code at `scripts/check-distributed-execution-foundation.mjs:189`
+  (`THREAT_REGISTER_HEADER = ["ID","Threat","Severity","Required control","Verification","Owner"]`).
+- The JSON's own `note` calls it an *"Authoritative machine-readable trust-crossing and
+  **control-ownership** record"* whose *"`ownerTickets` reference defined **backlog** tickets"*.
+  DE-11's owners are BRW-003/BRW-004/REL-001 — **unbuilt, by design**.
+
+So DE-11 states the control that is REQUIRED and names who owes it. That is a requirements
+register working correctly.
+
+**What §1 got wrong:** "a High-severity threat is recorded as CONTROLLED by four mechanisms,
+none of which are built", and "worse than an uncontrolled threat, because a reader stops
+looking". A reader sees "Required control" and three owner tickets. **Withdrawn.**
+
+**What §2 got wrong:** BRW-001's acceptance clause is *"Artifact retention is mandatory"*, and
+`BRW-001-result.md:43` satisfies it with a suite proving the map is **total over every frozen
+kind, credential-bearing kinds pinned to `ephemeral`, unknown kind fails safe**. That clause is
+about the function being total and unavoidable — which it was. Calling it "an acceptance closed
+by a function nothing calls" was unfair to it. **Withdrawn**, though "mandatory" reasonably
+reads as "applied", and it was not applied until DAT-010.
+
+**What still stands, unchanged:**
+
+- **Every factual observation in §1's table.** There is no TTL duration anywhere, the S3 PUT
+  carries no `ServerSideEncryption`, nothing purges, nothing reads the retention column. Those
+  are true; what was wrong was calling the register's statement of them a false claim.
+- **§3 in full — the authority inversion.** `artifact-commit.ts` stored the worker's declared
+  retention while the module forbidding exactly that had zero callers. That was the actionable
+  finding, and DAT-010 has fixed it.
+- **The ordering conclusion.** Enforcement before the authority fix would have enforced the
+  worker's choice.
+- The narrow residual: the JSON's per-field prose is present-tense ("sensitive browser
+  artifacts **are** encrypted and TTL-bounded") in a record whose rendered view says
+  "Required". Someone reading the JSON alone could misread it. **Minor, and NOT worth
+  rewriting a correct document over** — noted so a future reader is not re-alarmed.
+
+**Consequence: §5 step 1 is WITHDRAWN.** Do not "correct" DE-11. There is nothing there to
+correct; the mistake was mine.
+
 ## 4. `sensitivity` is decorative in v1, and that is fine
 
 `artifactSensitivitySchema = z.literal("restricted")` (`artifacts.ts:279-283`) is
