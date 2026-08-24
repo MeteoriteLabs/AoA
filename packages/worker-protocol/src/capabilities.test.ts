@@ -146,6 +146,20 @@ async function makePair(opts: {
   const reqs = clone(requirements);
   reqs.targetRequirements.providerConstraints = clone(ref);
   Object.assign(reqs, clone(opts.requirements ?? {}));
+  // ★ RE-APPLY THE SEALED REF, and this line is load-bearing.
+  //
+  // `Object.assign` above replaces `targetRequirements` WHOLESALE whenever a caller passes
+  // one, and callers build theirs from `clone(requirements.targetRequirements)` — the
+  // module-level base, whose `providerConstraints` digest is `"0".repeat(64)` and not the
+  // profile just sealed. So every override-based test was refused at step 2's job-ref check
+  // (`refsEqual(requirements.targetRequirements.providerConstraints, verified)`) BEFORE it
+  // ever reached the property it was named for.
+  //
+  // MEASURED, not theorised: with this line absent, deleting ANY of the five placement
+  // guards — allowed target class, allowed trust class, credential ceiling, locality
+  // ceiling, owner binding — left all three of their named tests PASSING. Each asserted a
+  // bare `toBe(false)` and got it from the wrong refusal.
+  reqs.targetRequirements.providerConstraints = clone(ref);
   const verified = await verifyAndBrandProviderConstraintProfileV1(profile, sha256hex);
   return { profile, verified, target, worker, requirements: reqs };
 }
@@ -588,6 +602,80 @@ describe("workerSatisfiesRequirements — intersection matching", () => {
   it("returns false when the target class / trust is outside the requirement's allowed set", async () => {
     const p1 = await makePair({ requirements: { targetRequirements: { ...clone(requirements.targetRequirements), allowedTargetClasses: ["organization_dedicated"] } } });
     expect(workerSatisfiesRequirements(p1.target as never, p1.verified!, p1.worker as never, p1.requirements as never)).toBe(false);
+  });
+
+  it("★ returns false when the profile's trust ceiling contradicts its own class row", async () => {
+    // managed_cloud's matrix row fixes trustClass = shared_isolated. A profile claiming
+    // organization_isolated for that class is INTERNALLY INCOHERENT, and the guard for it
+    // (`row.trustClass !== profile.trustCeiling`) had no test: allowedTrustClasses here
+    // deliberately ADMITS the claimed value, so the allowed-set check cannot mask this one.
+    const p = await makePair({
+      target: { trustCeiling: "organization_isolated" },
+      requirements: { targetRequirements: {
+        ...clone(requirements.targetRequirements),
+        allowedTargetClasses: ["managed_cloud"],
+        allowedTrustClasses: ["organization_isolated"],
+      } },
+    });
+    expect(workerSatisfiesRequirements(p.target as never, p.verified!, p.worker as never, p.requirements as never)).toBe(false);
+  });
+
+  it("★ returns false when only the TRUST class is outside the allowed set", async () => {
+    // The test above is named "class / trust" but only ever varied the CLASS, so deleting the
+    // trust check changed nothing. Here the class MATCHES and only the trust differs, so this
+    // assertion can fail for exactly one reason.
+    const p = await makePair({ requirements: { targetRequirements: {
+      ...clone(requirements.targetRequirements),
+      allowedTargetClasses: ["managed_cloud"],
+      allowedTrustClasses: ["organization_isolated"],
+    } } });
+    expect(workerSatisfiesRequirements(p.target as never, p.verified!, p.worker as never, p.requirements as never)).toBe(false);
+  });
+
+  it("★ returns false when ONLY the credential ceiling is exceeded", async () => {
+    // organization_dedicated credentials are ordered [none, platform_brokered,
+    // organization_brokered]. Ceiling platform_brokered, request organization_brokered =>
+    // exceeds. Locality is deliberately WITHIN its ceiling so it cannot mask the result.
+    const p = await makePair({
+      target: {
+        targetClass: "organization_dedicated", scope: "organization",
+        organizationId: ID.org, ownerPrincipalId: null,
+        trustCeiling: "organization_isolated",
+        credentialCeiling: "platform_brokered",
+        dataLocalityCeiling: "organization_target_only",
+      },
+      requirements: { targetRequirements: {
+        ...clone(requirements.targetRequirements),
+        allowedTargetClasses: ["organization_dedicated"],
+        allowedTrustClasses: ["organization_isolated"],
+        credentialKind: "organization_brokered",
+        dataLocality: "organization_target_only",
+      } },
+    });
+    expect(workerSatisfiesRequirements(p.target as never, p.verified!, p.worker as never, p.requirements as never)).toBe(false);
+  });
+
+  it("★ returns false when ONLY the locality ceiling is exceeded", async () => {
+    // The mirror image: credential is within its ceiling, locality exceeds. Together with the
+    // case above this replaces one fixture that violated BOTH at once - where deleting either
+    // guard left the other one firing and the test still passing.
+    const p = await makePair({
+      target: {
+        targetClass: "organization_dedicated", scope: "organization",
+        organizationId: ID.org, ownerPrincipalId: null,
+        trustCeiling: "organization_isolated",
+        credentialCeiling: "organization_brokered",
+        dataLocalityCeiling: "transfer_allowed",
+      },
+      requirements: { targetRequirements: {
+        ...clone(requirements.targetRequirements),
+        allowedTargetClasses: ["organization_dedicated"],
+        allowedTrustClasses: ["organization_isolated"],
+        credentialKind: "organization_brokered",
+        dataLocality: "organization_target_only",
+      } },
+    });
+    expect(workerSatisfiesRequirements(p.target as never, p.verified!, p.worker as never, p.requirements as never)).toBe(false);
   });
 
   it("returns false when the requested credential/locality exceeds the target's committed ceiling", async () => {
