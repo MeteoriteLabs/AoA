@@ -34,8 +34,17 @@ registerHooks({
     // basename collides with the guarded server service services/job-leasing.ts. That db-package
     // repository is always loaded and is NOT part of the flag-gated server graph, so exclude any
     // db-package repository specifier before the loose basename match.
-    const normalized = specifier.replaceAll("\\", "/");
-    const guarded = normalized.includes("/repositories/")
+    //
+    // ★ SECOND COLLISION, same shape (BRW-003d-1). `server/src/worker-control-body-limits.ts`
+    // contains "worker-control" in its PATH, and app.ts imports it at the top level so the
+    // body-limit constants are available before any flag is read. That file is deliberately
+    // import-safe: it imports ONLY `@armyofagents/worker-protocol` and nothing from the
+    // flag-gated graph — its own header says importing from routes/worker-control.js "would
+    // defeat that lazy load". So a flag-off startup that loads it has NOT loaded
+    // routes/worker-control.ts, and reporting it as such is a FALSE POSITIVE that turns a real
+    // invariant into a red nobody can act on. Excluded by exact filename, not by loosening the
+    // match: routes/worker-control.js must still be reported, and the flag-ON test proves it is.
+    const guarded = normalized.includes("/repositories/") || normalized.includes("worker-control-body-limits")
       ? undefined
       : guardedModules.find((name) => normalized.includes(name));
     if (guarded) {

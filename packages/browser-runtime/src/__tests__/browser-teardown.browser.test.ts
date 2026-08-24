@@ -114,8 +114,19 @@ async function startSession(name: string) {
     }),
   );
   const runnerJs = fileURLToPath(new URL("../../dist/runner.js", import.meta.url));
-  const child = spawn(process.execPath, [runnerJs, join(dir, "session.json")], { stdio: "ignore" });
-  return { profile, child };
+  // ★ stdio was "ignore", which made every startup failure UNDIAGNOSABLE. When the browser
+  // does not appear, the assertion can only say "the browser never started, so this test
+  // would prove nothing" - correct, and completely unactionable, because the one process
+  // that knows why was told to discard its output. The reap path in this file already
+  // applies the opposite principle (it dumps a `ps` listing so a failure distinguishes
+  // "slow" from "never"); the startup path did not.
+  const child = spawn(process.execPath, [runnerJs, join(dir, "session.json")], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const output: string[] = [];
+  child.stdout?.on("data", (chunk: unknown) => output.push(String(chunk)));
+  child.stderr?.on("data", (chunk: unknown) => output.push(String(chunk)));
+  return { profile, child, output };
 }
 
 /** Never leave an orphan behind: the Windows case deliberately creates one. */
@@ -151,9 +162,21 @@ linuxOnly("BRW-002 (c) — a GRACEFUL cancellation reaps the browser", () => {
     );
 
     const runnerJs = fileURLToPath(new URL("../../dist/runner.js", import.meta.url));
-    const child = spawn(process.execPath, [runnerJs, join(dir, "session.json")], { stdio: "ignore" });
+    // Same capture as `startSession` below, for the same reason: a startup failure here
+    // would otherwise be reported with no way to find out why.
+    const child = spawn(process.execPath, [runnerJs, join(dir, "session.json")], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const output: string[] = [];
+    child.stdout?.on("data", (chunk: unknown) => output.push(String(chunk)));
+    child.stderr?.on("data", (chunk: unknown) => output.push(String(chunk)));
     try {
       const started = await waitFor(async () => (await processesMentioning(profile)) > 0, 30_000);
+      if (!started) {
+        // eslint-disable-next-line no-console
+        console.error(`RUNNER OUTPUT (browser never appeared):
+${output.join("") || "(none)"}`);
+      }
       expect(started, "the browser never started, so this test would prove nothing").toBe(true);
 
       child.kill("SIGTERM");
@@ -170,9 +193,14 @@ linuxOnly("BRW-002 (c) — on LINUX, the target platform, SIGKILL reaps the brow
     // THE clause-(c) proof on the platform that matters: an E2B sandbox is Linux. Even an
     // uncatchable kill reaps the browser, because Chromium exits when the CDP pipe on fds
     // 3/4 reaches EOF. Sandbox destroy remains the outer backstop, not the only mechanism.
-    const { profile, child } = await startSession("linux-sigkill");
+    const { profile, child, output } = await startSession("linux-sigkill");
     try {
       const started = await waitFor(async () => (await processesMentioning(profile)) > 0, 30_000);
+      if (!started) {
+        // eslint-disable-next-line no-console
+        console.error(`RUNNER OUTPUT (browser never appeared):
+${output.join("") || "(none)"}`);
+      }
       expect(started, "the browser never started, so this test would prove nothing").toBe(true);
 
       child.kill("SIGKILL");
@@ -208,9 +236,14 @@ windowsOnly("BRW-002 (c) — on WINDOWS, SIGKILL ORPHANS the browser (developer 
     // Asserted so the platform difference is a TESTED fact rather than folklore. Windows is
     // not a deployment target for this runtime; this exists so a developer who sees a stray
     // chrome.exe knows it is expected here and NOT expected on Linux.
-    const { profile, child } = await startSession("win-sigkill");
+    const { profile, child, output } = await startSession("win-sigkill");
     try {
       const started = await waitFor(async () => (await processesMentioning(profile)) > 0, 30_000);
+      if (!started) {
+        // eslint-disable-next-line no-console
+        console.error(`RUNNER OUTPUT (browser never appeared):
+${output.join("") || "(none)"}`);
+      }
       expect(started, "the browser never started, so this test would prove nothing").toBe(true);
 
       child.kill("SIGKILL");

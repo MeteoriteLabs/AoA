@@ -22,7 +22,14 @@ export default defineConfig({
     //   - "browser opened listening port(s): 44893"  (containment, run 65b296ea2)
     //   - "the browser never started, so this test would prove nothing" (teardown, 701d860af)
     //
-    // Serialising the files closes both. It belongs here rather than as a CI flag so a
+    // ★ CORRECTION, measured on run 32727172193: serialising did NOT fix the teardown
+    // failure. With this in place the SIGKILL case still reported "the browser never
+    // started" after 30s, while the SIGTERM case in the SAME file started and reaped in
+    // 1.8s - so the observation helper works and contention is not the cause there. The
+    // containment hazard above is still real and this still closes it, but it is now one
+    // fix for one problem rather than the two it was first claimed to cover.
+    //
+    // It belongs here rather than as a CI flag so a
     // developer running the suite locally gets the same guarantee, and so it cannot be lost
     // by an edit to the workflow.
     fileParallelism: false,
