@@ -29,11 +29,25 @@ export interface ArtifactSweepCandidate {
   readonly objectKey: string | null;
   /** ISO-8601 grant expiry recorded at mint. Null on rows predating the intent record. */
   readonly expiresAt: string | null;
+  /**
+   * ★ Whether a COMMITTED row exists for this row's natural key
+   * (organization_id, job_id, attempt, identifier).
+   *
+   * Load-bearing, and the reason this field exists at all: the granted and committed
+   * partial-unique keys are DISJOINT, so a successful commit inserts a SECOND row rather
+   * than transitioning the first. The `granted` intent therefore SURVIVES commit, and
+   * both rows point at the SAME `objectKey`. Without this check the sweeper would wait
+   * for the intent to expire and then delete the object out from under a COMMITTED,
+   * immutable artifact that readers still trust — destroying data instead of collecting
+   * litter.
+   */
+  readonly hasCommittedSibling: boolean;
 }
 
 export type SweepRefusal =
   | "grant_still_redeemable"
   | "committed"
+  | "committed_sibling_exists"
   | "quarantined"
   | "no_expiry_recorded"
   | "no_object_key";
@@ -54,6 +68,9 @@ export type SweepDecision = { eligible: true } | { eligible: false; reason: Swee
  * is told.
  */
 export function sweepRefusalIsActionable(reason: SweepRefusal): boolean {
+  // `committed_sibling_exists` is an ordinary, expected outcome — the happy path leaves
+  // exactly this shape — so it is not actionable. The two below describe rows that can
+  // NEVER become eligible and would otherwise accumulate in silence.
   return reason === "no_expiry_recorded" || reason === "no_object_key";
 }
 
@@ -61,6 +78,9 @@ export function isSweepEligible(candidate: ArtifactSweepCandidate, now: Date): S
   // Terminal states first: neither is an orphan, and DAT-006 owns quarantine.
   if (candidate.status === "committed") return { eligible: false, reason: "committed" };
   if (candidate.status === "quarantined") return { eligible: false, reason: "quarantined" };
+  // ★ The intent SURVIVES its own commit (disjoint partial-unique keys), and both rows
+  // name the same object. Sweeping here would delete a committed artifact's bytes.
+  if (candidate.hasCommittedSibling) return { eligible: false, reason: "committed_sibling_exists" };
 
   if (!candidate.objectKey) return { eligible: false, reason: "no_object_key" };
 

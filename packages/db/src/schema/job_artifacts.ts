@@ -101,6 +101,22 @@ export const jobArtifacts = pgTable(
     quarantinedIdentityUnique: uniqueIndex("job_artifacts_quarantined_identity_uidx")
       .on(table.organizationId, table.jobId, table.attempt, table.identifier)
       .where(sql`status = 'quarantined'`),
+    // DAT-009 slice 2 — the GRANT-INTENT key. A `status='granted'` row is written at
+    // mint so an orphaned upload is discoverable BY ITS OWN RECORD rather than by
+    // scanning the bucket: the mint previously recorded nothing durable, and the storage
+    // port has no list operation, so a sweeper had nothing to ask. A THIRD disjoint
+    // partial-unique over the same natural key makes a replayed grant request a
+    // DO-NOTHING, exactly as the committed and quarantined keys above do. All three
+    // WHEREs are mutually exclusive, so a granted, a committed and a quarantined row for
+    // one natural key coexist as separate rows and none collide-updates another.
+    grantedIdentityUnique: uniqueIndex("job_artifacts_granted_identity_uidx")
+      .on(table.organizationId, table.jobId, table.attempt, table.identifier)
+      .where(sql`status = 'granted'`),
+    // DAT-009 slice 2 — the sweep lookup. The sweeper asks for granted rows whose
+    // expiry has passed; without this it is a full scan of the table as artifacts grow.
+    grantedExpiryIdx: index("job_artifacts_granted_expiry_idx")
+      .on(table.expiresAt)
+      .where(sql`status = 'granted'`),
     // TEN-004: composite org-scoped FK — an artifact's (organization_id, job_id)
     // must exist together in jobs(organization_id, id), so an artifact cannot be
     // owned by a different tenant than its job. The redundant single-column job FK was

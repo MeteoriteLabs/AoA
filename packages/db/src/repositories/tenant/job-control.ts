@@ -335,6 +335,35 @@ export interface JobControlRepository {
     input: ActiveFenceRequest & { identifier: string },
   ): Promise<JobArtifact>;
   /**
+   * DAT-009 slice 2 — record a GRANT INTENT at upload-grant mint time.
+   *
+   * Before this, the mint recorded NOTHING durable: it wrote no row and recorded no
+   * operation receipt, so the control plane had no record that an object key had ever
+   * been granted. Combined with a storage port that has no list operation, an orphaned
+   * upload — the bytes a dead fence's presigned PUT still lands, which commit then
+   * refuses as `stale_fence` — was undiscoverable by any means.
+   *
+   * The `status='granted'` row makes that orphan discoverable BY ITS OWN RECORD.
+   * Idempotent on the third disjoint partial-unique natural key (a replayed grant
+   * request returns the existing intent), exactly as the committed and quarantined
+   * writes above.
+   *
+   * Fence-guarded like every governed mutator here. The one production caller already
+   * holds the fence lock when it calls this, so in that path the guard is
+   * defence-in-depth rather than the live check — it is present so the mutator is safe
+   * for ANY caller, and because `GUARDED_JOB_MUTATORS` makes that structural rather
+   * than a convention someone has to remember.
+   */
+  recordArtifactGrantIntent(
+    input: ActiveFenceRequest & {
+      identifier: string;
+      objectKey: string;
+      expiresAt: Date;
+      expectedSha256: string;
+      maxBytes: number;
+    },
+  ): Promise<JobArtifact>;
+  /**
    * DAT-002 — the fenced, verified commit of a rich artifact manifest. Runs
    * `guardActiveFence` FIRST (a stale/terminal fence throws `JobFenceError` BEFORE
    * any hash/size check — the documented precedence), then verifies the manifest's
@@ -2542,6 +2571,46 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         identifier: input.identifier,
       }).returning();
       return row!;
+    },
+
+    async recordArtifactGrantIntent(input) {
+      await guardActiveFence(input);
+      // Idempotent on the `status='granted'` partial-unique natural key
+      // (organization_id, job_id, attempt, identifier), disjoint from the committed and
+      // quarantined keys — so a granted, a committed and a quarantined row for one
+      // natural key coexist and none collide-updates another.
+      const inserted = await tx.insert(jobArtifacts).values({
+        organizationId: input.organizationId,
+        jobId: input.jobId,
+        identifier: input.identifier,
+        objectKey: input.objectKey,
+        // The digest and size the grant was minted AGAINST, not observed bytes. Commit
+        // re-checks the store-observed values, so a drift between grant and upload
+        // fails closed there rather than being trusted from here.
+        sha256: input.expectedSha256,
+        sizeBytes: input.maxBytes,
+        attempt: input.attemptNumber,
+        leaseId: input.leaseId,
+        fenceToken: input.fence,
+        status: "granted",
+        expiresAt: input.expiresAt,
+      }).onConflictDoNothing({
+        target: [jobArtifacts.organizationId, jobArtifacts.jobId, jobArtifacts.attempt, jobArtifacts.identifier],
+        where: sql`status = 'granted'`,
+      }).returning();
+      if (inserted[0]) return inserted[0];
+
+      // Conflict → a grant was already minted for this artifact (replay). Return the
+      // existing intent unchanged: re-minting must not extend the sweep deadline, or a
+      // caller could keep an orphan alive indefinitely by asking again.
+      const [existing] = await tx.select().from(jobArtifacts).where(and(
+        eq(jobArtifacts.organizationId, input.organizationId),
+        eq(jobArtifacts.jobId, input.jobId),
+        eq(jobArtifacts.attempt, input.attemptNumber),
+        eq(jobArtifacts.identifier, input.identifier),
+        eq(jobArtifacts.status, "granted"),
+      )).limit(1);
+      return existing!;
     },
 
     async commitArtifactVersion(input) {

@@ -35,6 +35,9 @@
 export const GUARDED_JOB_MUTATORS = [
   "acceptEvent",
   "authorizeArtifactCommit",
+  // DAT-009 slice 2 — the grant-INTENT write at upload-grant mint. Fence-guarded so the
+  // mutator is safe for any caller, not only the mint (which already holds the lock).
+  "recordArtifactGrantIntent",
   // DAT-002 — the fenced verified-commit of a rich artifact manifest (fence-first,
   // then verify hash/size/prefix/tenant, then idempotent committed insert).
   "commitArtifactVersion",

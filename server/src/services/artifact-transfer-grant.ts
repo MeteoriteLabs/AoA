@@ -135,6 +135,21 @@ export function createArtifactTransferGrantService(input: {
             objectKey: body.expectedObjectKey,
             redaction: "secret",
           });
+          // DAT-009 slice 2 §4.2 — record the grant INTENT before returning it.
+          //
+          // ★ ORDER IS LOAD-BEARING. This runs INSIDE the same tenant transaction and
+          // BEFORE the response, so a failure here rolls the whole mint back and no
+          // grant is handed out. A grant returned but unrecorded is precisely the
+          // undiscoverable orphan this closes: the storage port has no list operation,
+          // so an object nobody recorded can never be found again.
+          await repos.jobControl.recordArtifactGrantIntent({
+            ...ctx.fenceIdentity,
+            identifier: body.artifactId,
+            objectKey: body.expectedObjectKey,
+            expiresAt,
+            expectedSha256: body.expectedSha256,
+            maxBytes: body.maxBytes,
+          });
           return artifactTransferGrantOperationResponseV1Schema.parse({
             protocolVersion: 1,
             correlationId: request.correlationId,
