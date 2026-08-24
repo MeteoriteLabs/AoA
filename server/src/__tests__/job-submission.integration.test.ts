@@ -512,6 +512,22 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(response.status).toBe(415);
     });
 
+    it("enforces the enrollment ceiling that nothing else enforces", async () => {
+      guard();
+      // enrollment is the only operation with no rawBody ceiling guard. While the
+      // express default (102,400) sat below its 256 KiB contract, bounding happened
+      // by ACCIDENT and was too strict. Raising the mount removed the accident, so
+      // without an explicit guard a 262,145..327,680-byte enrollment body would be
+      // accepted outright - on the unauthenticated pre-enrollment route.
+      const over = OPERATION_DESCRIPTORS.enrollment.maxRequestBytes + 8_000;
+      const response = await request(app)
+        .post("/api/worker-control/enroll")
+        .send({ p: "x".repeat(over) });
+      expect(response.status).toBe(400);
+      expect(response.body.protocolVersion).toBe(1);
+      expect(response.body.code).toBe("malformed");
+    });
+
     it("does not mount the raised limit while the flag is off", async () => {
       guard();
       // The gate is observable, so it is asserted rather than assumed. Middleware

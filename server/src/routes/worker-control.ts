@@ -207,6 +207,26 @@ export function workerControlRoutes(opts: {
       const code = req.header(WORKER_CONTROL_HEADERS.enrollmentCode);
       const proof = deviceProofHeaders(req);
       const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      // BRW-003d-1 — enrollment is the ONE operation with no ceiling guard; the
+      // other nine all compare rawBody.length to their descriptor. That was
+      // invisible while express's 100 KB default sat below enrollment's 256 KiB
+      // contract and did the (over-strict) bounding by accident. Raising the mount
+      // removed that accident, so without this the contract ceiling would be
+      // enforced by nothing at all — on the unauthenticated pre-enrollment route,
+      // whose code and device proof are only verified after the parse.
+      //
+      // BEFORE the credential check, matching the other nine handlers, where the
+      // size test is part of the same first gate as the schema parse and precedes
+      // the authorization header read. An oversized body is refused structurally,
+      // not as an identity decision.
+      //
+      // `malformed` rather than `payload_too_large`: enrollment's frozen vocabulary
+      // does not declare the latter, and emitting an undeclared code throws — see
+      // sizeRefusalCode.
+      if (rawBody && rawBody.length > OPERATION_DESCRIPTORS.enrollment.maxRequestBytes) {
+        sendWorkerProtocolError(req, res, "malformed", opts.now?.() ?? new Date());
+        return;
+      }
       if (!code || !proof || !rawBody) {
         sendWorkerProtocolError(req, res, "unauthorized", opts.now?.() ?? new Date());
         return;
