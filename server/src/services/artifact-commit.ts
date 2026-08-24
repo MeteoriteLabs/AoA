@@ -106,12 +106,30 @@ export function createArtifactCommitService(input: {
         });
 
       const response = await runInTenant(input.appDb, auth.organizationId, async (repos) => {
-        const ctx = await resolveWorkerFenceContext(repos, auth, {
-          leaseId: payload.leaseId,
-          jobId: payload.jobId,
-          attempt: payload.attempt,
-          fenceToken: payload.fenceToken,
-        }, maxHeartbeatAgeMs);
+        // ★ DAT-011 FIX (found by the live D1 lane, E6F-14). A stale fence is refused HERE,
+        // not by `commitArtifactVersion` below: `resolveWorkerFenceContext` looks the lease
+        // up BY THE PRESENTED FENCE TOKEN (`lockLeaseAckContext`), so a superseded fence
+        // finds no row and throws `JobLeasingError("stale_fence")` — which never reaches the
+        // catch further down where the sweep trigger originally sat.
+        //
+        // The result was that the sweep NEVER fired on a stale-fence refusal: the exact
+        // event it was designed around, and the exact moment an orphan is created. Grep
+        // verified the trigger had a caller; it could not tell me the caller was
+        // unreachable on this path. Only running it could.
+        let ctx;
+        try {
+          ctx = await resolveWorkerFenceContext(repos, auth, {
+            leaseId: payload.leaseId,
+            jobId: payload.jobId,
+            attempt: payload.attempt,
+            fenceToken: payload.fenceToken,
+          }, maxHeartbeatAgeMs);
+        } catch (error) {
+          if (error instanceof JobLeasingError && error.code === "stale_fence") {
+            sweepTrigger.trigger(auth.organizationId);
+          }
+          throw error;
+        }
 
         // Object existence + store-observed integrity, run ONLY AFTER the fence
         // IDENTITY is resolved (an unresolvable/foreign fence throws above, before the

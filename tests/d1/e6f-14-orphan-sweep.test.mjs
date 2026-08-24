@@ -176,8 +176,23 @@ test("E6F-14 live orphan sweep: fence lost mid-flight -> commit refuses -> the o
     createdAt: new Date().toISOString(),
   };
   const committed = stepResult(artifactCommit({ session: enrolled.session, ...staleFence, manifest, deviceKey }), "commit");
-  assert.equal(committed.body.outcome, "rejected", `commit must be REJECTED after fence loss: ${JSON.stringify(committed.body)}`);
-  assert.equal(committed.body.reason, "stale_fence", `refusal reason must be stale_fence: ${JSON.stringify(committed.body)}`);
+  // ★ A stale fence is refused at the AUTH layer, not as a `rejected` OUTCOME. Run 3 proved
+  // it: `resolveWorkerFenceContext` looks the lease up BY the presented fence token, so a
+  // superseded fence finds no row and throws `JobLeasingError("stale_fence")`, which the
+  // route renders as a top-level DENIAL envelope (`code`), never `{outcome:"rejected"}`.
+  //
+  // That distinction is not cosmetic — it is a PRODUCTION DEFECT this test found. The sweep
+  // trigger sat in the catch around `commitArtifactVersion`, which this path never reaches,
+  // so the sweep never fired on the very event it was designed for. Fixed in
+  // artifact-commit.ts; asserted here so it cannot silently regress.
+  assert.equal(
+    committed.body.code, "stale_fence",
+    `commit must be DENIED stale_fence after fence loss: ${JSON.stringify(committed.body)}`,
+  );
+  assert.equal(
+    committed.body.outcome, undefined,
+    `a stale fence is an auth-layer DENIAL, not a rejected outcome: ${JSON.stringify(committed.body)}`,
+  );
 
   // 7. ★ THE PROOF: the orphaned object is actually GONE from the store.
   const swept = waitForObjectGone(objectKey);
