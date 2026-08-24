@@ -21,6 +21,8 @@ const h = vi.hoisted(() => ({
   state: {
     canOrg: true as boolean,
     byTable: {} as Record<string, Array<Record<string, unknown>>>,
+    /** BRW-003d-4 — every `.limit(n)` the service asked the DB for, by table. */
+    limits: {} as Record<string, number[]>,
   },
 }));
 
@@ -63,9 +65,16 @@ vi.mock("../db/tenant-context.js", async () => {
   // result. So ordering is asserted in the embedded-Postgres tier, which really
   // sorts, and this tier keeps proving what it always proved: projection, tenant
   // scoping, and the caps.
-  const query = (rows: unknown[]) => ({
-    orderBy: () => query(rows),
-    limit: (n: number) => Promise.resolve(rows.slice(0, n)),
+  const query = (rows: unknown[], table: string) => ({
+    orderBy: () => query(rows, table),
+    limit: (n: number) => {
+      // RECORD the requested bound. Asserting only the RESPONSE length cannot see
+      // a missing `.limit()`, because the service slices afterwards anyway — the
+      // rows would still cross the wire from Postgres. A surviving mutant proved
+      // exactly that, so the property under test is what we ASK THE DATABASE FOR.
+      (h.state.limits[table] ??= []).push(n);
+      return Promise.resolve(rows.slice(0, n));
+    },
     then: (resolve: (v: unknown[]) => unknown, reject?: (e: unknown) => unknown) =>
       Promise.resolve(rows).then(resolve, reject),
   });
@@ -79,7 +88,7 @@ vi.mock("../db/tenant-context.js", async () => {
           );
           const cols = Object.keys(projection);
           const rows = src.map((r) => Object.fromEntries(cols.map((c) => [c, r[c]])));
-          return query(rows);
+          return query(rows, name);
         },
       }),
     }),
@@ -255,6 +264,7 @@ function makeApp(actor: unknown) {
 
 beforeEach(() => {
   h.state.canOrg = true;
+  h.state.limits = {};
   h.state.byTable = {
     jobs: [fullJob()],
     job_attempts: [fullAttempt()],
@@ -305,6 +315,19 @@ describe("JOB-008 operator controls — authority", () => {
 });
 
 describe("JOB-008 operator controls — redaction by projection", () => {
+
+  it("BRW-003d-4 asks the DATABASE for a bounded page, not just a bounded response", async () => {
+    // ★ A surviving mutant is why this exists. Deleting `.limit()` from the
+    // service still produced a capped RESPONSE, because the service slices
+    // afterwards — but every row would have crossed the wire from Postgres.
+    // Asserting the response length cannot see that; asserting the requested
+    // bound can.
+    await request(makeApp(boardAdmin)).get(
+      `/api/organizations/${ORG}/companies/${COMPANY}/jobs/${JOB}`,
+    );
+    expect(h.state.limits.job_events?.[0], "job_events read must be bounded").toBeGreaterThan(0);
+    expect(h.state.limits.job_artifacts?.[0], "job_artifacts read must be bounded").toBeGreaterThan(0);
+  });
   it("job list exposes safe fields and drops intent/policy/command secrets", async () => {
     const res = await request(makeApp(boardAdmin)).get(
       `/api/organizations/${ORG}/companies/${COMPANY}/jobs`,
