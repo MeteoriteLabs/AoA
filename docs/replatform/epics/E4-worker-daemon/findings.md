@@ -175,3 +175,63 @@ no provisioning path (it is inert until the loop is wired for live dispatch), bu
 fence-close proxy are the first modules composed at that seam. When live dispatch is wired, the owning
 ticket MUST reconcile a rotated provider-constraint digest against in-flight leases. Recorded here so
 it is not lost.
+
+## E4-F009 — `createStartupReconciler` is not composable at boot — one blocker, not two
+
+**Status:** `open` · Severity: MED · Source: WRK-008 slice 2b planning pass (2026-08-25), adversarial review round 2.
+
+`leaseCandidates` (`supervisor/startup-reconcile.ts:256-257`) has no durable local source: the
+event outbox persists **events**, not offers, so the lease-authority probe would run over `[]` on
+every boot — a reconciler that reconciles nothing, which is worse than an absent one because the
+gate clause it backs would read as satisfied.
+
+**Recorded because the draft deferral gave TWO reasons and one of them is false.**
+`ownershipSelector.organizationId` is **not** a blocker: it is carried on the self-model this slice
+already reads, and the frozen schema guarantees it non-null for organization- and owner-scoped
+targets (`worker-protocol/src/capabilities.ts:307-321`; D1's `worker-b` is
+`AOA_WORKER_TARGET_SCOPE: "organization"`). Wiring is **conditional on scope**, not impossible. A
+deferral standing on a false reason is a deferral nobody will re-examine.
+
+**Blocks:** E4 gate clause 3 (`E4-3-survives-restart`) staying `dormant` in the wiring register
+until a durable lease-candidate source exists.
+
+## E4-F010 — A composed worker cannot be OFFERED work — and would refuse it if it were
+
+**Status:** `open` · Severity: HIGH · Source: WRK-008 slice 2b planning pass (2026-08-25).
+
+Two independent halves, either of which alone is sufficient to make dispatch produce nothing:
+
+- **Server side.** `workers.profile_snapshot` has no update channel. Its only writers are
+  `worker-enrollment.ts:444` and `:470`, both on the enrolment path.
+- **Worker side.** `poll-loop.ts:538` runs `offerSatisfiesWorker` against the worker's **own**
+  `self.report`, and the only production hello builder emits `sandbox.*` capabilities with a
+  64-zero `policyHash` (`enrollment/desktop-hello.ts:144`, `:154`). The self-check therefore
+  returns `false` for **100% of offers**, independently of anything the server does.
+
+So a worker can enrol correctly, assemble a valid self-model, self-check correctly, and dispatch
+nothing, forever. **This is the finding that separates "dispatch composed" from "dispatch
+working".** The fixture hello (`poll-fixtures.ts:88-93`, `:134`) *does* include `workload.batch`,
+which is why a suite written against the fixture goes green over a hello production never builds —
+the trap is named in WRK-008 slice 2b §1.1(c).
+
+**Blocks:** any claim that a distributed worker executes real work; Sprint 5's single-journey
+proof; MIG-005/006/007 ACTIVE, which inherit it on top of [[E4-F007]].
+
+## E4-F011 — The desktop boot root is TWO gates from live dispatch, not four
+
+**Status:** `open` · Severity: HIGH · Source: WRK-008 slice 2b adversarial review (2026-08-25) — the review falsified the plan's own four-gate claim.
+
+`packages/worker-keystore/src/bin/desktop-host.ts:114-125` builds **both** OS-custody stores and
+`:254-260` passes them on every non-control, non-reset boot. `resolveCustody`
+(`worker-daemon/src/identity/device-identity-store.ts:128-133`) makes `mounted_secret`-plus-a-store
+a **fatal** refusal, so any desktop host that boots at all is running `os_keychain` with custody
+present, and `bin/worker-daemon.ts:267` is entered. Gate 3 (`no_worker_identity`) is therefore
+**already satisfied there**, and gate 5 (`no_session`) is reachable within ten minutes of a code.
+
+**The container stands on four gates. The desktop stands on two: `no_provider` and the flag.**
+DSK-003 ships that root as a signed installer, so the day a provider lands in it, every installed
+desktop running the build is one environment variable from taking real leases.
+
+**Consequence for DEP-010:** it may not put a provider in that composition root without an explicit,
+written decision about the flag's default on desktops. Its acceptance must prove the shipped desktop
+default constructs **no provider at all** — not merely that the flag is off.

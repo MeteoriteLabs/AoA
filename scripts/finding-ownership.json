@@ -41,6 +41,22 @@
       "ticket": "DEP-010",
       "ownerStillOpen": "DEP-010 has a design doc; no result doc. Sprint 2 of the go-book sequence, gated on WRK-010.",
       "reason": "DEP-010 is the ticket that names ONE authoritative port; the two-structurally-distinct-ports question is its opening move, not a side effect."
+    },
+    "E4-F009": {
+      "status": "owned",
+      "ticket": "WRK-008",
+      "ownerStillOpen": "Slice 2b is the ticket that would compose the reconciler; it has a design doc and no result doc. The finding is the written-down reason it defers, so it stays open until a durable lease-candidate source exists.",
+      "reason": "WRK-008 slice 2b is where createStartupReconciler would be composed, and its design defers exactly this. Filed now rather than at execution because the draft deferral stood on TWO reasons and one was false (ownershipSelector.organizationId IS available on the self-model); a deferral resting on a false reason is one nobody re-examines."
+    },
+    "E4-F010": {
+      "status": "unowned",
+      "reason": "HIGH, and deliberately unowned rather than force-fitted. It has two independent halves and NEITHER is fixed by any ticket now in the graph. Server half: workers.profile_snapshot has no update channel (only writers worker-enrollment.ts:444,470, both on the enrolment path) - candidate owner is an E3/JOB-family or MIG-001 ticket. Worker half: poll-loop.ts:538 self-checks against the worker's own hello, and the only production builder (desktop-hello.ts) emits sandbox.* with a 64-zero policyHash, so the check is false for 100% of offers - candidate owner is a WRK-family ticket. WRK-008 slice 2b explicitly files it rather than fixing it, which is the right call for that slice and leaves this open. WHAT IT BLOCKS: any claim that a distributed worker executes real work, Sprint 5's single-journey proof, and MIG-005/006/007 ACTIVE. The go-book records that Sprint 5 cannot pass until this is owned; the ticket that owns it should be written at Sprint 5 planning at the latest, and earlier if Sprint 3 surfaces it sooner."
+    },
+    "E4-F011": {
+      "status": "owned",
+      "ticket": "DEP-010",
+      "ownerStillOpen": "DEP-010 has a design doc and no result doc. The finding is the constraint on its acceptance, so it closes when DEP-010 ships with a guard proving the shipped desktop default constructs no provider.",
+      "reason": "DEP-010 is the ticket that puts a provider into a composition root, and desktop-host.ts IS that root. It therefore owns the decision this finding forces: it may not land a provider there without a written decision about the flag's default on desktops, and its acceptance must prove the shipped default constructs no provider at all rather than merely that the flag is off. Named as owner by WRK-008 slice 2b s9, which found it."
     }
   }
 }

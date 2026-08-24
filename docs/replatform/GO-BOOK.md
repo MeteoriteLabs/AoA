@@ -144,9 +144,9 @@ distributed agent. Sprints 6–9 scale it to every sink and agent type, then rel
 
 | Sprint | Plan | State |
 |---|---|---|
-| 1 | [`WRK-010-design.md`](./epics/E4-worker-daemon/tickets/WRK-010-design.md) | complete - 12 TDD steps, 10 guards, 30+ mutants, acceptance mapping |
-| 2 | [`DEP-010-design.md`](./epics/E6-deployment-test-harness/tickets/DEP-010-design.md) | complete - 12 steps, **Step 0 is a controller STOP** (see below) |
-| 3 | [`WRK-008-slice-2b-design.md`](./epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md) | complete - 11 steps, ~43 mutants, the D1 question answered |
+| 1 | [`WRK-010-design.md`](./epics/E4-worker-daemon/tickets/WRK-010-design.md) | complete, **revised after adversarial review** - 7 TDD steps, 2 owned guards + a guard-for-guard map of all 10 onto the SHIPPED authenticator (§3.4), 6 declared-equivalent mutants, acceptance mapping. Epic ownership called: **E4** (§0d) |
+| 2 | [`DEP-010-design.md`](./epics/E6-deployment-test-harness/tickets/DEP-010-design.md) | complete, **revised after adversarial review** - 12 steps; Step 0 is no longer a STOP but a **conditions check** against §8 D-3; three CI-red defects the draft would have shipped are fixed |
+| 3 | [`WRK-008-slice-2b-design.md`](./epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md) | complete, **revised after adversarial review** - 11 steps, 51 mutants, the D1 question answered, and the gate story corrected to **per boot root** (container 4, desktop 2) |
 | 4-9 | scope + sequence only (§4) | **Step 1 of each sprint is: write the plan.** A plan written five sprints early goes stale, which is the exact failure this audit exists to fix. |
 
 ### ★ Three things the planning pass found that change what you do
@@ -167,18 +167,38 @@ as the seam the renewal successor implements" and the blocker doc repeats it. `g
 those two documents. The real seam is `SessionStoreDeps.renew`. WRK-010 targets the real one and
 files the discrepancy - the fourth documented fact this programme has found with no code behind it.
 
-**3. Sprint 3 has a FOURTH gate nobody had written down.** The plan expected three (no provider,
-flag off, no self-model reader). There is a fourth: **no device key**. `MountedSecretKeyStore` is
+**3. Sprint 3 has SIX gates, not three - and they are not the same six on both shipped roots.**
+The plan expected three (no provider, flag off, no self-model reader). Reading the code found six:
+`no_provider`, `dispatch_disabled`, `no_worker_identity`, `no_event_outbox_path`, `no_session`,
+`no_self_model`. Two consequences, and the second is the one that changes what Sprint 2 does.
+
+*Consequence A - why Sprint 3 writes a whole identity/session module.* `MountedSecretKeyStore` is
 constructed nowhere outside tests, and `enrollOnce` deliberately DISCARDS the session (I13) so a
-token can never reach a log line. So "thread a session" is not passing a value along - no session
-exists after boot, by design. That is why Sprint 3 writes a whole identity/session module.
+token can never reach a log line. So "thread a session" is not passing a value along - after boot,
+by design, no session exists to thread.
+
+*Consequence B - the review found the four-gate claim FALSE on the second boot root, and nobody had
+noticed there were two.* `packages/worker-keystore/src/bin/desktop-host.ts` builds both OS-custody
+stores and passes them **unconditionally** on every non-control boot (`:114-125`, `:254-260`), and
+`resolveCustody` makes `mounted_secret`-plus-a-store a fatal exit. So **any desktop that boots at
+all runs `os_keychain` with custody present** - gate 3 is already satisfied there, and gate 5 is
+reachable within ten minutes of a code. **The container stands on four gates; the desktop stands on
+two: gate 1 and the flag.** That is why §4 Sprint 2's acceptance clause is written the way it is:
+the day DEP-010 puts a provider in that composition root, every installed desktop running the build
+is one env var from taking real leases. Filed as a finding, owned by DEP-010.
 
 ### One consequence worth reading before Sprint 3
 
-A composed worker still **cannot be OFFERED work**. The only production hello builder is
-deliberately unmatchable and `workers.profile_snapshot` has no update channel - so a worker can
-assemble a perfect self-model, self-check correctly, and be offered nothing, forever. Sprint 3
-files it as a HIGH finding rather than letting "dispatch composed" read as "dispatch working".
+A composed worker still **cannot be OFFERED work**, and would refuse the offer if it were. The
+only production hello builder is deliberately unmatchable (`poll-loop.ts:538` self-checks against
+the worker's OWN hello, which emits `sandbox.*` with a 64-zero `policyHash`) **and**
+`workers.profile_snapshot` has no update channel. Either half alone is sufficient: a worker can
+assemble a perfect self-model, self-check correctly, and dispatch nothing, forever.
+
+This is now **E4-F010** in `epics/E4-worker-daemon/findings.md`, filed into the register at planning
+time and carried as `unowned` **on purpose** - neither half is fixed by any ticket in the graph, and
+attaching it to Sprint 3 would be the false claim of ownership `check-finding-ownership.mjs` exists
+to prevent. It is the line between "dispatch composed" and "dispatch working".
 **Sprint 5 cannot pass until it is owned.**
 
 ---
@@ -201,9 +221,11 @@ lapsed; revoked/disabled/stale-generation each refuse with the same coarse code;
 absent when distributed execution is off.
 
 **Settled (§8 D-1, D-2):** the route reuses `createWorkerSessionAuthenticator`
-(`server/src/middleware/worker-session-auth.ts:109`), which already performs 9 of the 10
-authority guards including the `scope` check the original plan omitted. Because it adds no new
-authority logic, WRK-010 stays **one E4 ticket**. Nothing to decide at sprint start.
+(`server/src/middleware/worker-session-auth.ts:109`), which performs all ten authority guards
+including the `scope` check the original plan omitted — but which, unlike the thin function the
+plan first reached for, does **not** deny a platform-physical claim. That one denial is kept as
+guard R1 in the ticket. One re-used authenticator plus one denial is not a new authority system,
+so WRK-010 stays **one E4 ticket**. Nothing to decide at sprint start.
 
 ---
 
@@ -399,9 +421,9 @@ table and fix the plan.
 
 | # | Question | Disposition | Consequence for the plans |
 |---|---|---|---|
-| **D-1** | WRK-010: verify the renewal proof with `verifyWorkerOperationProof` (thin transport check) plus ten hand-written authority guards, or reuse `createWorkerSessionAuthenticator`? | **Reuse the authenticator** (`server/src/middleware/worker-session-auth.ts:109`). | It already performs **9 of the 10** guards — including the `scope` check (`:165`) the hand-written list **omitted**. Adopting it closes that hole by construction and removes a ten-guard drift surface. Cost: it **throws** `WorkerSessionError` with coarse codes instead of returning typed reasons, so nine distinct refusals collapse to one operator log line. Therefore the plan's **guard-ordering argument is deleted, not kept** — its only observable consumer was untested, which is precisely what review defect HIGH-2 flagged. |
-| **D-2** | Does WRK-010's server route belong in E3 (where sessions are minted) or E4 (where finding E4-F007 lives)? | **One ticket, stays in E4.** | Follows from D-1: reusing the E3-owned authenticator means the route adds **no new authority logic**, so there is nothing for an E3 ticket to own. No E3 node is created. |
-| **D-3** | DEP-010 needs the provider package inside `worker-keystore`, which `scripts/lib/worker-keystore-boundary.mjs` pins to two dependencies and calls a controller STOP. | **Approved**, on three real conditions. | The earlier approval leaned partly on the staging-manifest mitigation — that build **refuses to run**, so it mitigates nothing. Replaced by: (a) a `PROVIDER_HOST_PATH` confinement so exactly one file may name the provider; (b) the boundary checker is *tightened*, not merely widened, and its own test proves a second naming file fails; (c) the shipped desktop default stays provider-less and a guard asserts it. |
+| **D-1** | WRK-010: verify the renewal proof with `verifyWorkerOperationProof` (thin transport check) plus ten hand-written authority guards, or reuse `createWorkerSessionAuthenticator`? | **Reuse the authenticator** (`server/src/middleware/worker-session-auth.ts:109-210`). | It performs **nine of the ten in full, and the tenth (identity) in part** — the two unperformed arms are `workerId`/`targetId`, which `findSessionAuthority` is keyed by, so they can never differ — and, decisively, it performs the `scope` check (`:165`) the hand-written list **omitted**. **But it is not strictly stronger, and the difference is a security one:** `verifyWorkerOperationProof:50` denies a platform-physical claim outright; the authenticator does **not** — `claims.organizationId === null` takes the operator-DB branch at `:180-182` and returns a valid principal. Adopting it without noticing would have silently shipped platform-physical renewal against §9 of the plan. The revision keeps that denial as guard **R1** in the ticket's own pure admission function, which is now most of what that function still does. Second cost: refusals collapse into `WorkerSessionError`'s **two** codes (`:47-52`) — `target_revoked` from `verifyCurrent`, `unauthorized` from every `fail()` — so nineteen distinct conditions become two operator classes, not nine. Therefore the plan's guard-**ordering** argument is deleted, not kept: its only observable consumer was untested, which is exactly what review defect HIGH-2 flagged. |
+| **D-2** | Does WRK-010's server route belong in E3 (where sessions are minted) or E4 (where finding E4-F007 lives)? | **One ticket, stays in E4.** | Follows from D-1: reusing the E3-owned authenticator leaves the route with **one** authority guard of its own — R1, the platform-physical denial the authenticator drops — plus the identity half of the fresh claims. One denial is not an authority system, so there is nothing substantial for an E3 ticket to own. No E3 node is created. |
+| **D-3** | DEP-010 needs the provider package inside `worker-keystore`, which `scripts/lib/worker-keystore-boundary.mjs` pins to two dependencies and calls a controller STOP. | **Approved**, on three real conditions. | The earlier approval leaned partly on the staging-manifest mitigation — that build **refuses to run**, so it mitigates nothing. Replaced by: (a) a `PROVIDER_HOST_PATH` confinement so exactly one file may name the provider; (b) the boundary checker is *tightened*, not merely widened, and its own test proves a second naming file fails; (c) the shipped desktop default stays provider-less and a guard asserts it. **What it actually costs, measured** (the draft asserted "small" and never checked): the `e2b@2.30.5` lockfile closure is **36 packages, ~1,752 files, ~15.2 MiB unpruned**, entering the process that holds the device private key. The risk that carries is not size — it is the DSK-003 installer **secret scan**, which already has to prune pino's README and `@pinojs/redact`'s benchmarks. That handoff is now written down. DEP-010's Step 0 is therefore no longer a STOP but a **conditions check** against this row. |
 | **D-4** | All three plan-review finding sets (WRK-010, DEP-010, WRK-008/2b — 23 defects, 3 CI-blocking, 8 HIGH). | **Apply all.** | Revisions landed into the three design docs; see each plan's revision note. No defect is carried as accepted debt. |
 
 **What is NOT settled and is deliberately deferred to its own sprint:** the
