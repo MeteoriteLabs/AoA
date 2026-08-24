@@ -18,6 +18,7 @@
 // them to an HTTP protocol error; only fence/existence refusals are a 200 `rejected`.
 
 import type { Db } from "@armyofagents/db";
+import { resolveGrantTtlSeconds } from "./artifact-grant-ttl.js";
 import { JobFenceError as DbJobFenceError, type JobFenceErrorCode } from "@armyofagents/db";
 import {
   artifactTransferGrantOperationRequestV1Schema,
@@ -44,7 +45,13 @@ export function createArtifactTransferGrantService(input: {
   grantTtlSeconds?: number;
   maxHeartbeatAgeMs?: number;
 }) {
-  const grantTtlSeconds = Math.max(30, input.grantTtlSeconds ?? 300);
+  // DAT-009 slice 2 §4.1 — CLAMPED, not merely floored. This was
+  // `Math.max(30, input.grantTtlSeconds ?? 300)`: a floor, a default, and no ceiling, so
+  // the frozen schema (whose only temporal assertion is `expiresAt > issuedAt`) would have
+  // accepted a seven-day ordinary upload grant. The TTL is the ONLY revocation mechanism
+  // here — the issued grant carries no fence material and no revocation concept exists —
+  // so it is exactly the window in which a dead fence's PUT still lands.
+  const grantTtlSeconds = resolveGrantTtlSeconds(input.grantTtlSeconds);
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300_000);
 
   return {
