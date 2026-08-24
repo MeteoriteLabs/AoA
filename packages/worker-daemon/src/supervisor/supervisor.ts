@@ -110,7 +110,17 @@ export interface SupervisorDeps {
    * digest + durable outbox. The canary-seeding channel that populates this is the
    * inert E4-D12 seam; until then it is `[]` (verbatim emit, no secret-bearing
    * supervisor string exists yet — every terminal errorMessage is hardcoded null). */
-  readonly redactionCanaries?: readonly string[];
+  /**
+   * ★ REQUIRED, deliberately. This was `redactionCanaries?:` with a `?? []` fallback — an
+   * OMISSION-BY-DEFAULT in a REDACTION mechanism: a caller that simply forgot got no
+   * redaction at all, silently, and nothing anywhere would say so.
+   *
+   * A fail-open default in a security control is the worst kind of default, because the
+   * failure is invisible in exactly the case it matters. Passing `[]` is still allowed —
+   * but it now has to be TYPED OUT, which makes "this run has no canaries" a decision
+   * someone made rather than one they omitted.
+   */
+  readonly redactionCanaries: readonly string[];
   /**
    * CLI-003/D3 — an OPTIONAL run-observation source. When present, the supervisor
    * resolves it AFTER `execute` (with the exec result) and emits the captured
@@ -281,7 +291,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       // Scrub per-run secret canaries from the PRIMARY lifecycle stream too — not
       // only the fence-close denial stream — so redaction is uniform across every
       // sink that feeds the durable outbox (E4-D12 seeds the canaries; [] until then).
-      redactionCanaries: deps.redactionCanaries ?? [],
+      redactionCanaries: deps.redactionCanaries,
     });
     const spec = createSpecFor(handoff, run.labels);
 

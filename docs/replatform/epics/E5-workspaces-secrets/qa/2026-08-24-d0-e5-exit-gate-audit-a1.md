@@ -67,7 +67,27 @@ function scale: **a check that was never run, reported as a pass.**
 1. **Correct `HANDOFF-next-wave.md:40`** so the status reflects the gate rather than a ticket
    count. (Done in the same commit as this record.)
 2. **Gate owner decides** per clause: accept in-process evidence, or require D1 coverage.
-3. If D1 coverage is required, clauses 3 and 5 are the cheapest — real tests exist and would need
-   a D1 harness case plus a `campaign.env` nonce bump, exactly as `e6f-14` did.
-4. Clauses 1 and 7 are **not** closable by testing: they need production callers first.
-   `workspace: null` and DAT-007's deferred core are build items, not coverage gaps.
+3. **★ CORRECTION (same day, before anyone acted on it): there are no cheap clauses.** This
+   record originally said clauses 3 and 5 were "the cheapest — real tests exist and would need a
+   D1 harness case plus a nonce bump, exactly as `e6f-14` did". **That is wrong.** Checking what
+   would actually close them:
+
+   - **Patch conflict quarantine** — DAT-006's `runOrphanQuarantine` has no producer
+     (`quarantineCandidates` is never supplied and `deps.reconciler` is never wired at
+     `bin/worker-daemon.ts:311-313`), and DAT-003's `createResultCommitter` /
+     `buildWorkspacePatch` / `createPatchApplyService` have **zero production callers**.
+   - **Redaction** — `redactionCanaries` is `[]` at every production site, and
+     `createFenceAwareEgressProxy` has **zero callers**, so no secret value is ever resolved.
+     *Until a live egress path exists, redaction has no input and cannot be proven above unit
+     level.*
+
+   **So ALL FIVE non-passing clauses are build items, not coverage gaps.** Not one of them can be
+   closed by writing a D1 test, because in each case the production path does not execute. That
+   is a materially different — and more useful — statement than "some are cheap", and it points
+   at the same wall as everything else: nothing is wired to a live worker.
+
+4. **One thing here IS unblocked and worth doing on its own merits**, independent of the gate:
+   `SupervisorDeps.redactionCanaries` is **optional with `?? []`** (`supervisor.ts:113,284`) —
+   an omission-by-default in a *redaction* mechanism, where a caller that forgets silently gets
+   no redaction at all. That is a fail-OPEN default in a security control and should be a
+   compile error instead.

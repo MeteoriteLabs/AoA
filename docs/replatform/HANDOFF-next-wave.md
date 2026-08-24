@@ -37,7 +37,7 @@
 | **E2** Tenant kernel | 6 / 6 | ✅ complete |
 | **E3** Job control | 14 / 14 | ✅ complete |
 | **E4** Worker daemon | 7 / 7 | ✅ complete |
-| **E5** Workspaces/secrets | 7 / 7 tickets | ⚠️ **tickets done, EXIT GATE NOT MET** — 2 of 7 gate clauses pass in D1, 4 proven weakly, 1 not proven. See [the E5 exit-gate audit](./epics/E5-workspaces-secrets/qa/2026-08-24-d0-e5-exit-gate-audit-a1.md). `✅ complete` was a ticket count, not the gate. |
+| **E5** Workspaces/secrets | 7 / 7 tickets | ⚠️ **tickets done, EXIT GATE NOT MET** — 2 of 7 gate clauses pass in D1, 4 proven weakly, 1 not proven — and ALL FIVE are build items (nothing wired), not coverage gaps. See [the E5 exit-gate audit](./epics/E5-workspaces-secrets/qa/2026-08-24-d0-e5-exit-gate-audit-a1.md). `✅ complete` was a ticket count, not the gate. |
 | **E6** Deploy/test harness | 10 / 10 | ✅ complete |
 | **E7** Coding/CLI on E2B | 5 / 6 | CLI-001..005 ✅ + **keyed real-E2B lane 18/18 GREEN**; only **CLI-006 (gate)** remains |
 | **E8** Browser automation | 0 / 6 | blocked on CLI-006 |

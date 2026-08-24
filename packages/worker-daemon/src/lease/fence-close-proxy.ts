@@ -128,7 +128,17 @@ export interface FenceCloseProxyDeps {
   /** DAT-005 D4 — per-run secret canaries scrubbed from the proxy's `network_denied`
    * denial stream before the digest (defense in depth; a denial reason is
    * daemon-authored but the redaction chokepoint stays uniform across every sink). */
-  readonly redactionCanaries?: readonly string[];
+  /**
+   * ★ REQUIRED, deliberately. This was `redactionCanaries?:` with a `?? []` fallback — an
+   * OMISSION-BY-DEFAULT in a REDACTION mechanism: a caller that simply forgot got no
+   * redaction at all, silently, and nothing anywhere would say so.
+   *
+   * A fail-open default in a security control is the worst kind of default, because the
+   * failure is invisible in exactly the case it matters. Passing `[]` is still allowed —
+   * but it now has to be TYPED OUT, which makes "this run has no canaries" a decision
+   * someone made rather than one they omitted.
+   */
+  readonly redactionCanaries: readonly string[];
 }
 
 export class FenceCloseProxy implements GovernedEffectAuthority {
@@ -152,7 +162,7 @@ export class FenceCloseProxy implements GovernedEffectAuthority {
       sink: deps.eventSink,
       newEventId: deps.newEventId,
       now: deps.now,
-      redactionCanaries: deps.redactionCanaries ?? [],
+      redactionCanaries: deps.redactionCanaries,
     });
   }
 

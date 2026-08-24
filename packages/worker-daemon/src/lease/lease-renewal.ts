@@ -360,6 +360,18 @@ export function createLeaseRenewalDriver(deps: LeaseRenewalDriverDeps): LeaseRen
         identity,
         eventSink: deps.eventSink ?? NOOP_SINK,
         metrics: deps.metrics,
+        // ★ EXPLICITLY EMPTY, and that is the honest state — not a shrug.
+        //
+        // This site previously omitted the field entirely and silently received `[]` from a
+        // `?? []` fallback, so a renewal-path proxy redacted NOTHING and no reader could tell.
+        // Making the field required turned that omission into this line.
+        //
+        // It is still `[]` because there is nothing to put here yet: a canary can only come
+        // from a server-resolved secret value, and `createFenceAwareEgressProxy` — the only
+        // path that resolves one — has ZERO production callers. So redaction currently has no
+        // INPUT, not merely no coverage. When that seam is closed, the run's canaries must be
+        // threaded to here; this comment is the marker for that work.
+        redactionCanaries: [],
       }));
 
   const leases = new Map<string, LeaseState>();
