@@ -128,3 +128,31 @@ New findings use IDs `E1-F001`, `E1-F002`, and so on.
   - **(c) CI wiring.** `.github/workflows/pr.yml` adds a `Worker protocol package import smoke` step (`node scripts/check-worker-protocol-package.mjs`) to the `verify` job **after** its `pnpm build` step (`pnpm -r build` builds this leaf package), so the smoke can no longer silently rot; it is **not** placed in the dependency-free `policy` job.
   - **Verification on the fix revision:** smoke now exits 0 for the RIGHT reasons (zod provisioned + tolerant surface; no check disabled), 3× consecutively (D0-stable); `pnpm --filter @armyofagents/worker-protocol test:run` = 543/543 green; typecheck / build / `pnpm check:worker-protocol-boundary` all exit 0; the smoke cleans up its temp dirs and the worktree is byte-clean. Runtime wire-contract source is untouched.
   - **Independent reviewer re-gate (CONFIRMED RESOLVED, reviewed revision `233e65b2b22109b6758af337e65f5b36318faa4b`; reviewer did NOT author the fix).** Re-ran the smoke (exit 0) + 3× consecutive (all exit 0, no `wpp-` temp leftovers in `os.tmpdir()`, `git status` byte-clean); 543/543 package tests, typecheck, build, boundary all exit 0; `git diff --check` clean. **Adversarial proof the checks still ENFORCE** (each demonstrated to still FAIL when it should, via a fidelity-preserving parameterized copy of the real checker fed tampered package copies + the real fixture run against stub packages — the real package/fixtures were never mutated): **(a) tarball allow-list** — a package that ships `src/leak.js` → `tarball must not ship src` (exit 1); a `dist/sneaky.test.js` → `tarball must not ship test files`; a stray top-level `secret.txt` → `unexpected tarball entry` (all exit 1). **(b) undeclared runtime dep** — `dependencies` = `{zod,lodash}` → `packed runtime dependencies must equal ["zod"], got ["lodash","zod"]` (exit 1). **(c) deep-subpath encapsulation** — in a genuinely-provisioned consumer (real `dist` + real `zod`), `/dist/index.js`, `/src/version.js`, and `/package.json` each throw `ERR_PACKAGE_PATH_NOT_EXPORTED` (blocked by the `exports` map, NOT an incidental missing-module error) while the root import + `jobEnvelopeV1Schema.safeParse({})` run live. **(d) broken surface** — the tolerant `worker-consumer.mjs` still fails on a missing sampled export (`expected public export missing: jobEnvelopeV1Schema`), a wrong version constant (`PROTOCOL_VERSION must be 1`), a removed sampled export (`…missing: canonicalizeJsonV1`), AND a non-enforcing schema whose `safeParse({})` returns `success:true` (`empty object must fail jobEnvelopeV1Schema`) — proving the zod-exercise assertion is load-bearing, not cosmetic (all exit 1). **(e) zod not resolvable** — with the resolution anchor pointed at a dir with no reachable `zod`, the checker fails **CLOSED** (`cannot resolve the declared runtime dependency "zod" to provision offline`, exit 1), it does not silently skip the import. **zod is provisioned by OFFLINE COPY** (`createRequire().resolve` + `fs.cpSync` only; no `npm/pnpm install`, no `fetch`/`http` anywhere in the provisioning path) and is **load-bearing**: the same real fixture against the real package with `zod` absent dies at the root import with `ERR_MODULE_NOT_FOUND` (the exact E1-F007 root cause). Diff `9224bd771..233e65b2b` touches ONLY `scripts/check-worker-protocol-package.mjs`, `tests/fixtures/worker-protocol-import/worker-consumer.mjs`, `.github/workflows/pr.yml`, and this `findings.md` — `packages/worker-protocol/**` (wire contract), `tests/fixtures/worker-protocol-consumers/v1/**` (frozen fixture), and the PRT ledger are all untouched. CI step is inside the `verify` job after `Build` (`pnpm -r build` builds this leaf), NOT the dependency-free `policy` job; YAML parses. The fix restores the smoke by making the packaging genuinely correct — no check was weakened or disabled.
+
+## E1-F008 — the frozen matcher's five placement guards had NO falsifiable test
+
+**Status:** `resolved` (2026-08-24, test-only; no runtime source touched) · Severity: HIGH
+(the guard is the placement security boundary) · Source: WRK-008/DAT-008 terrain, while
+checking what inherited deferral #3's safety actually rests on.
+
+`workerSatisfiesRequirements` is the enforcement point for *"a worker CANNOT advertise its
+way into a higher trust / provider / credential / locality class"*. **Deleting any of five
+of its guards — allowed target class, allowed trust class, credential ceiling, locality
+ceiling, owner-principal comparison — left each guard's own named test PASSING.**
+
+**Cause:** `makePair` set the freshly-sealed provider ref on `reqs.targetRequirements`, and
+the next line, `Object.assign(reqs, opts.requirements)`, replaced `targetRequirements`
+wholesale for every override-based test. Those callers built theirs from the module-level
+base, whose digest is `"0".repeat(64)`, so the matcher refused at step 2's job-ref check
+before reaching the property under test. Every such test asserted a bare `toBe(false)` and
+got it from the wrong refusal.
+
+Two fixtures additionally masked their own guards: one test named "class / trust" only
+varied the class, and the ceiling test violated the credential AND locality ceilings at
+once. Fixed by re-applying the ref after the merge and splitting the combined fixtures;
+49 → 53 tests. 6 of 9 guards now die when deleted; the other 3 are documented equivalents.
+
+★ **Correction this forces on inherited deferral #3.** Its text says safety *"rests on the
+structural exclusion of `owner_desktop` routing"*. It does not — `owner_desktop` routing is
+supported (`job-placement-transaction.ts:300`). Safety rests on this matcher's per-candidate
+owner comparison, which was untested until now. The deferral named the wrong guard.

@@ -11,6 +11,17 @@
 > desktop host is by its own design doc "unshippable without it".
 > See [`WAVE-4-BLOCKER-worker-session-lifetime.md`](./WAVE-4-BLOCKER-worker-session-lifetime.md).
 >
+> ### ★★ INHERITED DEFERRAL #3 NAMES THE WRONG GUARD
+> 
+> Its text says safety *"rests on the structural exclusion of `owner_desktop` routing"*.
+> It does not: `owner_desktop` routing is supported (`job-placement-transaction.ts:300`).
+> Safety rests on the FROZEN matcher's per-candidate owner comparison
+> (`capabilities.ts:514`) — which had **no falsifiable test** until 2026-08-24, along with
+> four sibling placement guards. See `E1-F008`. The mint-side half of deferral #3
+> (`ownerAuthoritiesAgree`) was already closed by DAT-008 slice 1 and is mutation-proven,
+> so **DAT-008 slice 6 is delivered, not pending** — the plan's "straight to fail-first
+> TDD" row for it is out of date.
+> 
 > ### ★★ THE PROVIDER SEAM IS ONE QUESTION ASKED THREE WAYS — decide it once
 >
 > `scripts/check-finding-ownership.mjs` (TRACK-003) put the open findings in one place for
