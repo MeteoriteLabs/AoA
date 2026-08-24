@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DEFAULT_MAX_ARTIFACT_BYTES } from "../services/artifact-size-ceiling.js";
 
 // BRW-003d-5 — the SERVER-SIDE half of the commit-vector claim.
@@ -16,9 +16,15 @@ import { DEFAULT_MAX_ARTIFACT_BYTES } from "../services/artifact-size-ceiling.js
 // actually uses, so the reference and the server can no longer drift apart in
 // silence.
 
+// ★ Resolved from THIS FILE, never from process.cwd(). The first version used cwd
+// and passed when vitest ran inside `server/` while failing under the root
+// `pnpm test:run` that CI actually runs — a green local suite and a red lane, for
+// a path assumption rather than a behaviour.
 const FIXTURE = JSON.parse(
   readFileSync(
-    join(process.cwd(), "..", "tests", "fixtures", "artifact-commit", "v1", "vectors.json"),
+    fileURLToPath(
+      new URL("../../../tests/fixtures/artifact-commit/v1/vectors.json", import.meta.url),
+    ),
     "utf8",
   ),
 ) as {
