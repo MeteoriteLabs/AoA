@@ -162,6 +162,64 @@ until this fork is resolved**, because the operation it would conform is not exp
 (fence-window policy) and 3 (the worker-side consumer) are unaffected in their server-side halves
 and remain available.
 
+## ★★★ 4c. REVISION 2 — THE FROZEN CHANGE IS UNNECESSARY. Option (ii) was rejected for a FALSE reason.
+
+The founder authorised the E4-D02 frozen change. **It should not be made**, and the reason is an
+error in REVISION 1's own fork analysis.
+
+REVISION 1 rejected option (ii) — worker-daemon methods only, no frozen change — because the
+capability would be **"unadvertisable"**, so placement could not route a browser job to a target
+able to return its evidence. **That premise is false.**
+
+### `artifact.direct_upload` already exists, frozen, and means exactly this
+
+`KNOWN_WORKER_CAPABILITIES` (`capabilities.ts:47-60`) is the closed v1 capability vocabulary and
+already contains **`artifact.direct_upload`** — alongside `secret.proxy`,
+`provider.checkpoint_v1`, `sandbox.filtered_egress` and the rest. It is documented as part of the
+closed twelve in `PRT-006-result.md:17` and it appears in the frozen conformance vectors
+(`docs/contracts/worker-protocol/v1/conformance.json:1552,1608,1730,1769`).
+
+**Nothing in the application uses it.** It is a first-class advertisable slot that means precisely
+"this can upload an artifact directly" — which is Option D in four words.
+
+The matching path is complete without any change: a job declares
+`requiredCapabilities` (`job-leasing.ts:370`), a target advertises `capabilityCeiling`, and
+matching clamps one against the other. So placement CAN route on this today.
+
+### What that changes
+
+- **The capability is advertised through the existing frozen vocabulary**, not through a new
+  provider operation.
+- **The two operations live in `packages/worker-daemon`'s port**, which is not frozen — the
+  additive grant-in/reference-out change of §4.1.
+- **No E4-D02 STOP. No custodian. No D0-T04 corpus. No superseding E1 QA record or handoff.**
+
+### Why this matters more than the effort saved
+
+Measured during the terrain: `git diff b7a842870 HEAD -- packages/worker-protocol/src ':!*.test.ts'`
+is **EMPTY**. The frozen package's runtime source has **never been changed since the freeze**.
+This would have been the first.
+
+And the nearest precedent is a precedent for *refusing*. E3-F004 (`E3-job-control/findings.md:99-131`)
+records a legitimate need that made the frozen check fail; the operator decision was to *"keep the
+frozen fixture byte-identical but correct the checker"*, with *"changing the fixture … or bypassing
+the check is not authorized"*. **Four tickets — DAT-001, WRK-007, BRW-001, WRK-008 slice 1 — hit
+this fork and all four routed around it.** This is the fifth, and it routes around too.
+
+> **The lesson, for the third time this session: check whether the mechanism already exists before
+> costing a new one.** The real provider existed. The upload grant existed. The capability existed.
+> Each time the honest answer made the work smaller, and each time I had already written down a
+> plan that assumed otherwise.
+
+### What is still required
+
+`browserArtifactRetention`-style advertisement is not free of work: `artifact.direct_upload` must
+be **added to the relevant targets' `capabilityCeiling`** (server-owned, written by the existing
+admin `PUT …/placement-profile` route) and **declared in browser jobs' `requiredCapabilities`**.
+Both are data, not protocol.
+
+**DAT-009 slice 1 is UNBLOCKED** and no longer waits on a custodian.
+
 ## 5. Deployment prerequisite
 
 `presignPut`/`presignGet` are **optional** on the storage port (`server/src/storage/types.ts:62-67`)
