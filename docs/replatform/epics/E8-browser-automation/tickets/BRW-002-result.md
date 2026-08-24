@@ -1,7 +1,7 @@
 # BRW-002 — Sandbox-local Playwright runtime — RESULT
 
-**Epic:** E8 · **Lane:** B (`C:\e8`) · **Status:** IMPLEMENTATION COMPLETE — **gate not yet
-green (§8)**, with declared deferrals (§6)
+**Epic:** E8 · **Lane:** B (`C:\e8`) · **Status:** **COMPLETE — CI GREEN** at `e974364d2`
+(all 13 jobs, run conclusion `success`), with declared deferrals (§6)
 **Start SHA:** `d4a2c33f4` (design v2). Design v1 `3f96ffcb3` failed plan review and was
 rewritten — see §5.
 **Terrain:** [`BRW-002-terrain.md`](./BRW-002-terrain.md) · **Design:** [`BRW-002-design.md`](./BRW-002-design.md)
