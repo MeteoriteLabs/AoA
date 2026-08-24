@@ -15,12 +15,27 @@
 //
 //   host: writeFiles(runner + session.json) -> exec(node runner.js session.json)
 //   guest: THIS -> launchPersistentContext -> pipe on fds 3/4 -> drive -> persist -> close
-//   host: reads the NDJSON on stdout, then destroys the sandbox
+//   host: destroys the sandbox
 //
-// Output is NDJSON on stdout, one event per line, because the host's only channel back is the
-// command's stdout stream. Failure is reported as an event AND a non-zero exit: an exit code
-// alone loses the reason, and an event alone lets a failed session look successful to a
-// caller that only checks the code.
+// ★ CORRECTION (BRW-003). This header used to say "host: reads the NDJSON on stdout" and that
+// "the host's only channel back is the command's stdout stream". BOTH WERE FALSE, and shipping
+// them taught a contract that cannot hold:
+//
+//   * The worker-daemon `SandboxProvider` port is FROZEN (handoff §7, listed beside
+//     packages/worker-protocol) and its stated invariant is explicit — supervisor/provider.ts:169:
+//     "No stdout/stderr content crosses this boundary."
+//   * The E2B provider therefore returns placeholder `ref:stdout:<sandboxId>` values and DISCARDS
+//     the command's stdout. That is the invariant working, not a gap to widen.
+//
+// So nothing reads these lines today. They are kept because they are the right SHAPE — one
+// self-describing event per line, and a failure reported as BOTH an event and a non-zero exit,
+// since an exit code alone loses the reason while an event alone lets a failed session look
+// successful to a caller that only checks the code.
+//
+// BRW-003 carries these events to the host the way the architecture already provides for: the
+// FROZEN `event_upload` transport op, through the worker's EventSequencer, its durable outbox and
+// per-run secret redaction. A stdout pipe would have bypassed all three, so it was never merely
+// blocked — it was strictly worse than the path that already exists.
 import { readFile } from "node:fs/promises";
 import { createPlaywrightDriver } from "./playwright-driver.js";
 import { readListeningPorts } from "./listening-ports.js";

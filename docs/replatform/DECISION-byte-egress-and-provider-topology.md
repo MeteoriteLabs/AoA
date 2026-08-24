@@ -182,3 +182,52 @@ applying: a desktop provider implements the same capability against its own stor
   BRW-003 owns metadata, ordering, retention/redaction, and the reference→artifact commit.
 - **Lane A:** owns the port's additive grant-in/reference-out change (4.1), the fence-window policy
   (4.3), and the first production grant consumer (4.4).
+
+---
+
+## ★ 8. LANE B RE-VERIFICATION — two claims in this record do not hold
+
+Appended, not edited, so the original reasoning stays readable. Both were found while designing
+BRW-003 against this record, and both were verified by opening the files.
+
+### 8.1 §4.1's non-STOP exemption is WRONG — the worker-daemon port is ALSO frozen
+
+§4.1 concludes the additive grant-in/reference-out change "lands in `packages/worker-daemon`'s
+port — **not** in the frozen `packages/worker-protocol`, so it is not an E4-D02 STOP", and §7
+assigns it to Lane A.
+
+**The exemption does not hold.** `HANDOFF-lane-b-browser-service.md` §7 ("Frozen — never edit")
+lists, in one sentence: `packages/worker-protocol/`, **the worker-daemon `SandboxProvider` port**,
+and `docs/architecture/distributed-execution-threat-*`. The port is frozen in its own right, so
+"not worker-protocol" does not exempt it.
+
+**Consequence:** the grant-in/reference-out change is a **second Protocol/Schema Custodian STOP**,
+alongside the operation-vocabulary STOP already raised — not a Lane A implementation task. §7's
+assignment should move accordingly.
+
+### 8.2 The `stdoutRef` precedent is a NON-guarantee, and slice 7 is COMPLETE
+
+**(a)** §1/§4.1 justify the reference shape as "exactly what `stdoutRef`/`stderrRef` already do".
+`grep -a` finds `stdoutRef` **nowhere in `packages/worker-protocol`**. Its only definition is
+`packages/worker-daemon/src/supervisor/provider.ts:176` — an unbounded, unvalidated `string`: no
+length cap, no grammar, no zod schema, no resolver, and no production reader. The E2B provider
+emits literal placeholders (`ref:stdout:<sandboxId>`) and discards the stream. A 5 MB string
+satisfies that "reference". **An export reference modelled on it inherits a non-guarantee** and
+must instead be a bounded, strictly-validated scalar — the argument for it cannot be "analogous to
+stdoutRef".
+
+**(b)** §4.4 records the live grant → PUT → commit round-trip as a DAT-002 slice-7 non-goal.
+**Slice 7 is COMPLETE**: `DAT-002-live-minio-result.md:3` — "COMPLETE + Linux-CI-green",
+`d1-merge-train` run `31885553697` = success, 13/13; `tests/d1/e6f-05-live-minio.test.mjs` proves
+the https round-trip against MinIO-over-TLS plus a toxiproxy truncated-upload fail-closed case.
+The stale wording survives in `DAT-002-result.md:3`, never amended — that is the propagation path
+into this document. §4.4's conclusion (this is the first production CONSUMER) still stands; only
+its slice-7 premise is stale.
+
+### 8.3 What Lane B does with this
+
+Stream metadata does NOT need the port. It rides the frozen `event_upload` transport op
+(`packages/worker-protocol/src/transport.ts:762`) through the worker's existing `EventSequencer`,
+durable outbox and per-run redaction (`supervisor/redaction.ts`) — a stdout pipe would have
+bypassed all three. BRW-002's runner header claimed the host reads its NDJSON on stdout; that
+contract was false against the port's stated invariant (`provider.ts:169`) and is corrected.

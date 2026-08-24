@@ -72,14 +72,44 @@ desktop — not because Option A was disqualified by an out-of-process hop that 
 Can a presigned grant be minted for, and reached from, the **provider** side, and does the
 fence/scope survive that hop? If it fails, Option A returns, costed against out-of-process.
 
-**One thing this lane could not verify, flagged rather than asserted:** the live
-grant → PUT → commit round-trip is described at
-`packages/worker-daemon/src/transport/client.ts:54` as **DAT-002 slice 7**, "a documented CLI-003
-non-goal", with the route "provided for completeness so the commit path has its paired grant op on
-the client." No slice-7 evidence was found in `DAT-002-result.md`. The grant *schemas* and *routes*
-are real and frozen; whether the round-trip is *built* could not be confirmed here. That may widen
-the gate question from "does the fence survive the hop" to "can the round-trip complete at all".
+**★ CORRECTION — my earlier flag about DAT-002 was WRONG, and wrong in a way worth naming.** I
+reported "no slice-7 evidence found in `DAT-002-result.md`". That grep ran against
+`epics/E5-workspaces/` — **a path that does not exist**; the epic is `E5-workspaces-secrets`. I
+reported an absence from a file I never opened. Same failure as running an empty script and reading
+the silence as success: *a check that could not evaluate anything is not a check.*
 
+**The real position, from the actual document:**
+
+- **DAT-002 slices 1–6 are COMPLETE, adversarial-reviewed, all local gates green.** Both frozen ops
+  are implemented server-side — `artifact_transfer_grant` (scoped presigned upload/download grant)
+  and `artifact_commit` (fenced, verified commit) — plus a widened `job_artifacts`, the
+  `commitArtifactVersion` guarded mutator, S3 presigning, and an in-process MinIO-free integration
+  suite. Zero worker-protocol edits.
+- **The full fail-closed acceptance is proven IN-PROCESS**: prefix, hash, size, tenant, fence and
+  idempotency, plus four security regressions.
+- **★ SLICE 7 IS COMPLETE — the "deferred" claim above and below is STALE, and this lane got it
+  wrong THREE TIMES.** `DAT-002-live-minio-result.md:3`: **"COMPLETE + Linux-CI-green"**,
+  `d1-merge-train` run `31885553697` = success, **13/13**. `tests/d1/e6f-05-live-minio.test.mjs`
+  (tracked) proves a real https presigned PUT/GET round-trip against MinIO-over-TLS plus a
+  toxiproxy truncated-upload fail-closed case; `d1-merge-train.yml:192` runs it.
+
+  The sequence of errors is worth recording because each was a different flavour of the same
+  fault: (1) a `grep` against `epics/E5-workspaces/`, **a path that does not exist**, reported as
+  an absence; (2) the right epic but the wrong one of TWO result docs — `DAT-002-result.md:3`
+  still says "deferred" and was never amended, which is also how the wrong claim reached the
+  programme decision doc. **A check that cannot evaluate anything is not a check**, and neither is
+  reading one of two files and calling it the answer.
+
+
+**What this means for the gate:** the grant → commit machinery is real and proven, so Lane A's
+question is narrower than I implied — it is about the **provider-side hop** (can a grant be minted
+for and reached from the provider, does the fence/scope survive), NOT about whether the round-trip
+can complete at all. I widened the gate on a false premise.
+
+**Two DAT-002 findings BRW-003 must not regress**, both already fixed there: an upload grant must
+check the auth-org prefix before presigning (else a presigned PUT lands in a foreign org's
+namespace), and an upload grant must be REFUSED when a committed key already exists (else it
+overwrites immutable bytes a reader still trusts — Rule #7 / Decisions #43/#45).
 ---
 
 # DECISION REQUEST — how does a byte leave a sandbox?

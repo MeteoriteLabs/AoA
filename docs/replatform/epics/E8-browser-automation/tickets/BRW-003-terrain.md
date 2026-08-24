@@ -177,7 +177,7 @@ flush plus download persistence must fit inside.
 | screenshot / trace **capture** | ❌ does not exist |
 | large download | ❌ ceiling exists, transport does not (§1.5) |
 | retention | ❌ **nothing anywhere** — the only case with no mechanism at all |
-| stale fence | ⚠ quarantine built and constructed, candidate list has **no writer** |
+| stale fence | ❌ **TRIPLY DORMANT** — see the correction below |
 
 ## 7. The one thing that is genuinely solid
 
@@ -211,3 +211,74 @@ it does not, every D1 commit fails closed.
   produces exactly the bytes BRW-003 governs, with no sandbox, tenant boundary, artifact
   record, retention or redaction — and unlike everything above, **it has a live boot root**.
   BRW-008 retires it.
+
+---
+
+## ★ CORRECTIONS (post-decision re-verification) — three claims above are WRONG
+
+This terrain was written before the byte-egress decision. Adversarial re-verification found three
+load-bearing claims in it that do not hold. They are corrected here rather than silently edited,
+because other lanes read this file and a false terrain propagates.
+
+### 1. "quarantine built and constructed" is WRONG on both counts — the path is TRIPLY DORMANT
+
+The stale-fence row above said the quarantine path was built and constructed with only a missing
+candidate writer. Three independent gaps, each verified:
+
+1. **No uploader between grant and finalize.** `packages/worker-daemon/src/lease/quarantine.ts`
+   mints the grant and goes straight to finalize — `grantParsed.data.grant.url` is **never read**.
+   So `server/src/services/quarantine-finalize.ts:72-77` HEADs an object that was never PUT and
+   returns `rejected("malformed")` **100% of the time** against the real server.
+2. **No wired reconciler.** `packages/worker-daemon/src/bin/worker-daemon.ts:313` —
+   `deps.reconciler ? createStartupSteps(deps.reconciler) : []`, with the comment at `:311` saying
+   "no reconciler wired (the current default)". `createStartupReconciler(` has **zero production
+   call sites**.
+3. **No candidate writer** (the one gap the original row did name). `quarantineCandidates` is
+   supplied only by `__tests__/startup-quarantine-sweep.component.test.ts`.
+
+**Consequence for design:** writing a candidate list WITHOUT also inserting the PUT ships a feeder
+into a path that always rejects — a check that cannot succeed wearing the costume of one that can.
+Fix all three or ship none of them, and say which in the result doc.
+
+### 2. The MinIO `x-amz-checksum-sha256` question is ANSWERED — DAT-002 slice 7 is COMPLETE
+
+§7 above calls it "an untested hypothesis whether MinIO returns `x-amz-checksum-sha256` on
+HeadObject in the D1 topology". It is tested and it passes.
+
+`DAT-002-live-minio-result.md:3` — **"COMPLETE + Linux-CI-green"**, `d1-merge-train` run
+`31885553697` = success, **13/13**. `tests/d1/e6f-05-live-minio.test.mjs` (tracked, 22 KB) proves a
+real https presigned PUT/GET round-trip against MinIO-over-TLS plus a toxiproxy truncated-upload
+fail-closed case, and `d1-merge-train.yml:192` runs it.
+
+The stale "deferred" wording survives in `DAT-002-result.md:3`, which was never amended — that is
+the propagation path that put the wrong claim into this terrain AND into the programme decision
+doc. **This lane got it wrong three times in a row** (a grep against a non-existent epic path
+reported as an absence, then the right path but the wrong one of two result docs).
+
+**Consequence for design:** BRW-003 has a LIVE lane to prove a real round-trip. And the exporter
+must send the checksum headers ITSELF — the server sets `ChecksumAlgorithm: "SHA256"` and returns
+`headers: {}` (`server/src/storage/s3-provider.ts:120-142`). That knowledge exists in exactly one
+place today (`tests/d1/lib/e6f-harness.mjs` `putPresignedBytes`); a second implementation inside
+the exporter is a divergence waiting to happen and must be ONE shared helper with one test.
+
+### 3. ★ THE STDOUT CHANNEL DOES NOT EXIST — and BRW-002 shipped a header saying it does
+
+The Outcome's FIRST clause is "stream metadata", and this terrain never established how metadata
+reaches the host. It cannot reach it the way BRW-002 assumed.
+
+- The worker-daemon `SandboxProvider` port is **FROZEN** — handoff §7 lists it beside
+  `packages/worker-protocol/`, "never edit".
+- Its stated invariant (`packages/worker-daemon/src/supervisor/provider.ts:169`): **"No
+  stdout/stderr content crosses this boundary."** The provider returning placeholder
+  `ref:stdout:<id>` values and discarding stdout is the invariant WORKING, not a defect.
+- But `packages/browser-runtime/src/runner.ts:18-21` says "host: reads the NDJSON on stdout" and
+  "the host's only channel back is the command's stdout stream". **That contract is false.** The
+  runner writes events nothing can ever read.
+
+**Consequence for design:** stream metadata rides the FROZEN `event_upload` transport op
+(`packages/worker-protocol/src/transport.ts:762`), not the provider. The worker already has that
+whole path — `EventSequencer`, the WRK-006 durable outbox, and per-run redaction
+(`packages/worker-daemon/src/supervisor/redaction.ts`). A stdout pipe would have bypassed
+sequencing, durability AND secret redaction, so it was not merely blocked — it was worse than the
+path that already exists. BRW-003 emits worker events; BRW-002's runner header is corrected
+separately.
