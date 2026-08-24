@@ -698,6 +698,13 @@ The backlog contains 95 implementation tickets. Sizes are planning estimates: **
 - **Acceptance:** The check is asymmetric on purpose — a built ticket the authority cannot see is a FAILURE, while an id named here with no file yet is the BACKLOG and must not fail (19 such ids exist today); a combined filename such as `MIG-005-006-007-shadow-design.md` expands to every id it names; an empty result set is treated as a broken checker rather than a clean tree.
 - **Test:** Unit suite pinning each of those decisions, plus a proven fail-first run naming exactly the untracked ids.
 
+#### DAT-009 — Provider-side artifact export under a worker-minted grant (M)
+
+- **Depends on:** DAT-002, DAT-006.
+- **Outcome:** Implement the byte-egress decision (`DECISION-byte-egress-and-provider-topology.md`, Option D): the provider reads a file from inside its sandbox and PUTs it directly to object storage under a short-lived, prefix-scoped, worker-minted presigned grant, returning a reference. The `SandboxProvider` port gains a grant INBOUND and a reference OUTBOUND and **never** carries bytes. Unblocks BRW-003 and therefore BRW-005/006. **This is the FIRST production consumer of the DAT-002 grant pipeline** — `artifactTransferGrant` has zero production callers and the only real presigned PUT ever performed is the D1 harness.
+- **Acceptance:** The frozen request schema requires `expectedSha256` and `maxBytes`, so the capability is TWO operations — digest-and-size, then export-under-grant — never one; a file that changes between them fails closed at commit against the store-observed hash. The capability lives in `packages/sandbox-provider-contract` and is implemented per provider, so a desktop provider satisfies it against local storage; `E2bTransport.readFile` stays unsurfaced. The cleanup-authority no-customer-bytes guarantee is untouched, not amended. The fence window (a presigned PUT outlives the fence checked only at mint) is closed by a stated TTL plus either a sweeper or an explicitly accepted orphan policy.
+- **Test:** Contract conformance against the fake provider (no live sandbox), a fence-loss-mid-flight case proving the orphan policy, a digest-drift case proving commit refuses, and a `local_disk` case proving the path fails closed with an operator-actionable message.
+
 #### TRACK-002 — Execution census: a test file that nothing runs is not coverage (S)
 
 - **Depends on:** TRACK-001.
