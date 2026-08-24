@@ -151,14 +151,16 @@ distributed agent. Sprints 6–9 scale it to every sink and agent type, then rel
 
 ### ★ Three things the planning pass found that change what you do
 
-**1. Sprint 2 opens with a decision only you can make.** `worker-keystore` is pinned by
+**1. Sprint 2 widens the keystore boundary — APPROVED, see §8 D-3.** `worker-keystore` is pinned by
 `scripts/lib/worker-keystore-boundary.mjs` to exactly two dependencies, and the file says adding
 anything is **"a STOP for controller approval"** - because that package is injected INTO the
 daemon's process and holds the device private key. DEP-010 needs to add the provider package,
 which transitively pulls the `e2b` network SDK into that process. The plan asks for it explicitly
 and pays for it: a new `PROVIDER_HOST_PATH` confinement means only ONE file may name the provider,
-so the guard ends up **tighter**, not just wider. **If you refuse, the plan has a costed
-alternative** (a new `worker-desktop-host` package) - it is larger, and §3.4 says why.
+so the guard ends up **tighter**, not just wider. The approval rests on that confinement plus a
+provider-less shipped desktop default — **not** on the staging-manifest mitigation the plan
+originally cited, which turned out to be a build that refuses to run. The costed alternative (a
+new `worker-desktop-host` package) is recorded in the plan's §3.4 and is not being taken.
 
 **2. `IdentityLifecycle.acquireSession()` does not exist.** DSK-001's design says it "is landed
 as the seam the renewal successor implements" and the blocker doc repeats it. `grep` returns only
@@ -198,9 +200,10 @@ long-lived key never leaves the host.
 lapsed; revoked/disabled/stale-generation each refuse with the same coarse code; the route is
 absent when distributed execution is off.
 
-**Decision to confirm at sprint start:** the server route belongs in E3 (JOB-002's family,
-where sessions are minted) or E4 (where the finding lives). *Recommendation: authority in E3,
-client in E4.* Not a blocker — pick and record it.
+**Settled (§8 D-1, D-2):** the route reuses `createWorkerSessionAuthenticator`
+(`server/src/middleware/worker-session-auth.ts:109`), which already performs 9 of the 10
+authority guards including the `scope` check the original plan omitted. Because it adds no new
+authority logic, WRK-010 stays **one E4 ticket**. Nothing to decide at sprint start.
 
 ---
 
@@ -220,6 +223,13 @@ the daemon *still* cannot import one (boundary checker green); **and the shipped
 proven still inert.**
 
 **Hard constraint:** this sprint does **not** turn dispatch on.
+
+**Read this before writing the guard (§8 D-3).** `desktop-host.ts` hands the daemon both
+OS-custody stores on every non-control boot, so on the desktop the only thing standing between
+a composed provider and live dispatch is `AOA_WORKER_DISPATCH_ENABLED` — one env var, not the
+two gates the container path enjoys. "inert" therefore has a precise meaning here: the
+**shipped desktop default constructs no provider at all**, and a guard asserts it. Prove that,
+not merely that the flag is off.
 
 ---
 
@@ -378,3 +388,29 @@ thing it checks actually went wrong here.
   Sprint 3 possibly two (D1 re-baselining). Sprints 6–9 are multi-session.
 - **"Finish till the end" is Sprints 0–9** — many sessions. The milestone worth aiming at is
   **Sprint 5**, after which distributed execution is demonstrably real.
+
+---
+
+## 8. Decisions ledger — settled 2026-08-25, do not relitigate
+
+Each row was an open question when the Sprint 1–3 plans were first written. All are now
+closed. If a plan you are reading still argues one of these, the plan is stale — trust this
+table and fix the plan.
+
+| # | Question | Disposition | Consequence for the plans |
+|---|---|---|---|
+| **D-1** | WRK-010: verify the renewal proof with `verifyWorkerOperationProof` (thin transport check) plus ten hand-written authority guards, or reuse `createWorkerSessionAuthenticator`? | **Reuse the authenticator** (`server/src/middleware/worker-session-auth.ts:109`). | It already performs **9 of the 10** guards — including the `scope` check (`:165`) the hand-written list **omitted**. Adopting it closes that hole by construction and removes a ten-guard drift surface. Cost: it **throws** `WorkerSessionError` with coarse codes instead of returning typed reasons, so nine distinct refusals collapse to one operator log line. Therefore the plan's **guard-ordering argument is deleted, not kept** — its only observable consumer was untested, which is precisely what review defect HIGH-2 flagged. |
+| **D-2** | Does WRK-010's server route belong in E3 (where sessions are minted) or E4 (where finding E4-F007 lives)? | **One ticket, stays in E4.** | Follows from D-1: reusing the E3-owned authenticator means the route adds **no new authority logic**, so there is nothing for an E3 ticket to own. No E3 node is created. |
+| **D-3** | DEP-010 needs the provider package inside `worker-keystore`, which `scripts/lib/worker-keystore-boundary.mjs` pins to two dependencies and calls a controller STOP. | **Approved**, on three real conditions. | The earlier approval leaned partly on the staging-manifest mitigation — that build **refuses to run**, so it mitigates nothing. Replaced by: (a) a `PROVIDER_HOST_PATH` confinement so exactly one file may name the provider; (b) the boundary checker is *tightened*, not merely widened, and its own test proves a second naming file fails; (c) the shipped desktop default stays provider-less and a guard asserts it. |
+| **D-4** | All three plan-review finding sets (WRK-010, DEP-010, WRK-008/2b — 23 defects, 3 CI-blocking, 8 HIGH). | **Apply all.** | Revisions landed into the three design docs; see each plan's revision note. No defect is carried as accepted debt. |
+
+**What is NOT settled and is deliberately deferred to its own sprint:** the
+`dependency-graph` regex (§5 row 2 — widening was measured and breaks the crosswalk-dominance
+computation), and the four ticket families invisible to the coverage checker (§5 row 3).
+
+**Consequence, already applied:** D-2 and D-3 were the ownership calls
+`scripts/finding-ownership.json` was explicitly waiting on. With them made, the register reports
+**zero unowned findings** for the first time in the programme — E4-F007 → WRK-010,
+E6-F003/F004/F008 → DEP-010. The same edit corrected E4-F007's own text, which asserted
+`IdentityLifecycle.acquireSession()` was "already landed as the drop-in seam"; `grep` finds that
+name in two design documents and no source file (§3.1 item 2).
