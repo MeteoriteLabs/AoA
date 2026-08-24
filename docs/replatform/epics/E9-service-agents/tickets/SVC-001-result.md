@@ -1,7 +1,7 @@
 # SVC-001 — Desired-state service schema and API — RESULT
 
 **Epic:** E9 · **Lane:** B (`C:\e8`) · **Start SHA:** `70945d614` (design) · **Tip:** `2e7a8be15`
-**Status:** IMPLEMENTATION COMPLETE — gate not yet green at time of writing (see §7).
+**Status:** **COMPLETE — CI GREEN** at `e974364d2` (all 13 jobs, run conclusion `success`).
 **Docs:** [terrain](./SVC-001-terrain.md) · [design](./SVC-001-design.md)
 
 ---
@@ -201,17 +201,20 @@ job-control surface only when `distributedExecutionEnabled` and refuses owner fa
 **Local:** 104 tests green across the five affected suites; `migration-idempotency` 7/7;
 distributed-execution foundation PASS; guard + test inventories OK; typecheck clean.
 
-**CI:** `verify` is **GREEN** on `4f4892975` — 32 failures → 0 — together with `policy`,
-`migrations`, `e2e`, `e2e-pgvector`, `lint`, `brand-check`, `distributed-contract` and both
-`worker-protocol-contract-bytes` legs. The root cause is §3a.
+**CI: GREEN.** All 13 jobs pass on `e974364d2`, run conclusion `success` — `verify`, `browser`,
+`policy`, `migrations`, `e2e`, `e2e-pgvector`, `lint`, `brand-check`, `distributed-contract`,
+`changes`, both `worker-protocol-contract-bytes` legs, and `ci-required`.
 
-One job remains red and it is this lane's own: `browser`, on a single assertion — clause (c)'s
-SIGKILL-reaps test timed out at its 30s bound after **five consecutive green runs**. Not treated
-as a flake and not re-run: the bound was an arbitrary first guess, the job runs concurrently with
-the full `verify` suite on one runner, and the page under test is deliberately `/slow`. Raised to
-90s with a surviving-process dump on failure, so the next occurrence distinguishes "slow" from
-"never" — a bound that is too tight versus an invariant that is false. **The assertion itself is
-unchanged: reaping is still required to happen.**
+Getting there took two fixes after the implementation was done, both recorded above: the
+`POLICY_COUNTS` key-order defect (§3a) that took `verify` from 32 failures to 0, and the browser
+lane's SIGKILL-reaps bound, raised from an arbitrary 30s to 90s with a surviving-process dump on
+failure. The assertion was not weakened — reaping is still required; only the bound moved, and the
+next failure will say which of "slow" or "never" it is.
+
+The D1 nonce was bumped to `svc-001-service-generations` AFTER the last `server/src` change, per
+the rule that file keeps proving. The key-order fix in particular needs live proof: it governs
+whether a distributed-execution server starts at all, and it failed only on the flag-ON path that
+the D1 lane is the only thing to exercise.
 
 ## 8. Registration surfaces touched
 
