@@ -713,6 +713,14 @@ The backlog contains 95 implementation tickets. Sizes are planning estimates: **
 - **Test:** Table-driven derivation over all frozen kinds, a worker-declared-downgrade case, an unknown-kind fail-safe case, and the artifact-commit integration suite unchanged end to end.
 - **Note:** This makes the stored value TRUSTWORTHY; it does not make it EFFECTIVE. Nothing reads the column to act — that is the enforcement follow-up, which must NOT start before this ticket, or it would enforce the worker's choice.
 
+#### DAT-011 — Trigger the orphan sweep without enumerating tenants (S)
+
+- **Depends on:** DAT-009.
+- **Outcome:** DAT-009 slice 2 built an orphan sweep runner that nothing calls. A periodic sweeper would have to ENUMERATE ORGANIZATIONS, and the tenant repository boundary deliberately has no unscoped reader — building that enumeration for housekeeping would punch a hole in the tenancy model. Trigger the sweep instead from the `stale_fence` commit refusal (and from successful commits), which already runs inside the right tenant context.
+- **Acceptance:** The sweep never changes a commit outcome — a throwing sweep leaves the response identical; it is debounced per organization; and `isSweepEligible` is UNCHANGED, so the trigger decides when to look and never what qualifies (a refusal does not make its own object sweepable, because the grant stays redeemable until `expiresAt` and a retry could still re-PUT).
+- **Test:** Trigger on refusal and on success, a throwing-sweep isolation case, debounce hold and release, and an anti-vacuity case distinguishing "swept nothing" from "never ran".
+- **Residual, accepted deliberately:** an organization whose LAST artifact activity produced an orphan keeps it until that organization commits again. Bounded to one org's most recent orphan, and strictly better than today, where nothing is ever collected. If that becomes unacceptable the fix is an audited operator-scoped maintenance surface, NOT a quiet cross-tenant reader.
+
 #### TRACK-002 — Execution census: a test file that nothing runs is not coverage (S)
 
 - **Depends on:** TRACK-001.
