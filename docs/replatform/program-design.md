@@ -705,6 +705,14 @@ The backlog contains 95 implementation tickets. Sizes are planning estimates: **
 - **Acceptance:** The frozen request schema requires `expectedSha256` and `maxBytes`, so the capability is TWO operations — digest-and-size, then export-under-grant — never one; a file that changes between them fails closed at commit against the store-observed hash. The capability lives in `packages/sandbox-provider-contract` and is implemented per provider, so a desktop provider satisfies it against local storage; `E2bTransport.readFile` stays unsurfaced. The cleanup-authority no-customer-bytes guarantee is untouched, not amended. The fence window (a presigned PUT outlives the fence checked only at mint) is closed by a stated TTL plus either a sweeper or an explicitly accepted orphan policy.
 - **Test:** Contract conformance against the fake provider (no live sandbox), a fence-loss-mid-flight case proving the orphan policy, a digest-drift case proving commit refuses, and a `local_disk` case proving the path fails closed with an operator-actionable message.
 
+#### DAT-010 — Artifact retention becomes control-plane-owned at commit (S)
+
+- **Depends on:** DAT-002.
+- **Outcome:** `browser-artifact-retention.ts` states that retention is "control-plane-owned, and never caller- or worker-supplied", because "a caller or worker choosing the retention of a `browser_cookie_state` or `browser_storage_state` artifact is a privilege the threat model must not grant". `artifact-commit.ts` grants exactly that privilege — it stores `manifest.retention`, the worker's declared value — while the total, fail-safe function that exists to own the decision has ZERO production callers. Derive retention from the frozen `kind` at commit and ignore what the manifest claims.
+- **Acceptance:** A manifest declaring `audit` for a credential-bearing kind stores `ephemeral`; every one of the 12 frozen kinds derives its documented class; an unrecognised kind fails SAFE to the shortest class rather than the longest; a disagreement between the declared and derived class is observed rather than silently swallowed. `sensitivity` is deliberately unchanged — its frozen schema is single-valued, so deriving it would compute a constant.
+- **Test:** Table-driven derivation over all frozen kinds, a worker-declared-downgrade case, an unknown-kind fail-safe case, and the artifact-commit integration suite unchanged end to end.
+- **Note:** This makes the stored value TRUSTWORTHY; it does not make it EFFECTIVE. Nothing reads the column to act — that is the enforcement follow-up, which must NOT start before this ticket, or it would enforce the worker's choice.
+
 #### TRACK-002 — Execution census: a test file that nothing runs is not coverage (S)
 
 - **Depends on:** TRACK-001.
