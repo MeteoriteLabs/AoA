@@ -24,10 +24,15 @@
  * node:crypto). No `node:child_process`, no bare packages — the E4-D01 boundary.
  */
 
+import { createHash } from "node:crypto";
+
+import type { ArtifactUploadGrantV1 } from "@armyofagents/worker-protocol";
+
 import {
   labelsMatchSelector,
   SandboxNotFoundError,
   UnsupportedProviderOperation,
+  type ArtifactExportMode,
   type CheckpointMode,
   type CheckpointResult,
   type CleanupResult,
@@ -68,6 +73,12 @@ export interface FakeProviderScript {
   readonly optionalOperations?: readonly ("checkpoint" | "restore" | "health")[];
   readonly checkpointMode?: CheckpointMode;
   readonly healthMode?: HealthMode;
+  /** DAT-009 slice 1 — defaults to "none" so an unscripted double DECLINES rather than
+   * fabricating an export. A fabricated reference is byte-identical to a real one on every
+   * gate, which is the WRK-009 defect. */
+  readonly artifactExportMode?: ArtifactExportMode;
+  /** In-sandbox path -> the bytes the double pretends are there. */
+  readonly artifactFiles?: Readonly<Record<string, string>>;
   /** `create` never resolves (its resource is still registered as `creating`) →
    * the supervisor's deadline fires and it must tear the labeled resource down. */
   readonly hangCreate?: boolean;
@@ -177,6 +188,10 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
   ]);
   const checkpointMode: CheckpointMode = script.checkpointMode ?? "none";
   const healthMode: HealthMode = script.healthMode ?? "none";
+  const artifactExportMode: ArtifactExportMode = script.artifactExportMode ?? "none";
+  const artifactFiles: Readonly<Record<string, string>> = script.artifactFiles ?? {};
+  /** Object keys this double has "uploaded", so a test can assert an export happened. */
+  const exportedObjectKeys: string[] = [];
 
   // Seed resources (list/reconcile fixtures).
   for (const seed of script.seededResources ?? []) {
@@ -232,6 +247,29 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
   const provider: FakeSandboxProvider = {
     advertisedOperations: advertised,
     checkpointMode,
+    artifactExportMode,
+    exportedObjectKeys,
+
+    async digestArtifact(_sandboxId: string, path: string) {
+      if (artifactExportMode === "none") throw new UnsupportedProviderOperation("digest_artifact");
+      const body = artifactFiles[path];
+      // An unknown path FAILS. It must never fabricate a digest: the whole point of the digest
+      // step is that the grant is minted against a real file's hash and size.
+      if (body === undefined) throw new SandboxNotFoundError();
+      return {
+        sha256: createHash("sha256").update(body).digest("hex"),
+        sizeBytes: Buffer.byteLength(body),
+      };
+    },
+
+    async exportArtifact(_sandboxId: string, path: string, grant: ArtifactUploadGrantV1) {
+      if (artifactExportMode === "none") throw new UnsupportedProviderOperation("export_artifact");
+      if (artifactFiles[path] === undefined) throw new SandboxNotFoundError();
+      // Records only the OBJECT KEY. The grant is a bearer capability and is deliberately not
+      // retained anywhere a projection, log or assertion could surface it.
+      exportedObjectKeys.push(grant.objectKey);
+      return { objectKey: grant.objectKey };
+    },
     healthMode,
 
     async create(spec: CreateSandboxSpec, ctx: ProviderOpContext): Promise<CreateResult> {

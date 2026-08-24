@@ -27,8 +27,12 @@
 import {
   CORE_PROVIDER_OPERATIONS,
   type ProviderOperation,
+  type ArtifactUploadGrantV1,
 } from "@armyofagents/worker-protocol";
 import type {
+  ArtifactDigestResult,
+  ArtifactExportMode,
+  ArtifactExportResult,
   CheckpointMode,
   CheckpointResult,
   CleanupResult,
@@ -136,6 +140,16 @@ export class E2bSandboxProvider implements SandboxProvider {
   readonly advertisedOperations: ReadonlySet<ProviderOperation>;
   readonly checkpointMode: CheckpointMode;
   readonly healthMode: HealthMode;
+  /**
+   * DAT-009 slice 1 — declared `"none"` here DELIBERATELY.
+   *
+   * The transport already has `readFile`, so a real implementation is a small, provider-
+   * specific piece — but it is explicitly OUT OF SCOPE for slice 1 (`DAT-009-slice-1-design.md`
+   * §7). Declaring the mode honestly and declining is the correct interim state: a provider
+   * that CLAIMED support and then fabricated a reference would be the WRK-009 defect all over
+   * again, where a fabricated success is byte-identical to a real one on every gate.
+   */
+  readonly artifactExportMode: ArtifactExportMode = "none";
 
   /** Idempotency ledger: a stable create key → the recorded resource. A replayed
    * key returns the SAME sandbox and never provisions a second one. */
@@ -326,6 +340,20 @@ export class E2bSandboxProvider implements SandboxProvider {
       objectGrants: [],
       secrets: {},
     };
+  }
+
+  async digestArtifact(_sandboxId: string, _path: string, _ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
+    // See `artifactExportMode` above: honest decline, never a fabricated digest.
+    throw new UnsupportedProviderOperation("digest_artifact");
+  }
+
+  async exportArtifact(
+    _sandboxId: string,
+    _path: string,
+    _grant: ArtifactUploadGrantV1,
+    _ctx: ProviderOpContext,
+  ): Promise<ArtifactExportResult> {
+    throw new UnsupportedProviderOperation("export_artifact");
   }
 
   async checkpoint(sandboxId: string, _ctx: ProviderOpContext): Promise<CheckpointResult> {

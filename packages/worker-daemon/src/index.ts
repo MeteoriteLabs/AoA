@@ -356,6 +356,11 @@ export type {
   ProviderOpContext,
   CheckpointMode,
   HealthMode,
+  // DAT-009 slice 1 — the provider-side artifact export capability.
+  ArtifactExportMode,
+  ArtifactDigestResult,
+  ArtifactExportResult,
+  DeclinableOperation,
   SandboxState,
   CleanupStatus,
   StopOutcome,
