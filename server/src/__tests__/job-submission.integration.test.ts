@@ -12,7 +12,11 @@ import {
   createTenantAppDbConnection,
   type NonOwnerDbConnection,
 } from "@armyofagents/db";
-import { browserWorkloadV1Schema, serviceWorkloadV1Schema } from "@armyofagents/worker-protocol";
+import {
+  browserWorkloadV1Schema,
+  serviceWorkloadV1Schema,
+  OPERATION_DESCRIPTORS,
+} from "@armyofagents/worker-protocol";
 import type { StorageService } from "../storage/types.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import { provisionTenantAppRoleLoginSql, TENANT_APP_ROLE } from "../db/rls-tenant.js";
@@ -450,6 +454,65 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const flagOff = await request(flagOffApp).post("/api/worker-control/enroll").send({});
       expect(flagOn.status).toBe(401);
       expect(flagOff.status).toBe(404);
+    });
+
+    // ── BRW-003d-1 — the parser cliff, proven against the REAL app ──────────
+    // The unit tier proves the mechanism; only this tier proves app.ts actually
+    // wires it on the real URL. A mount whose path never matches would satisfy
+    // every other assertion in this ticket while parsing nothing.
+    it("accepts a legal event batch that the express default refused", async () => {
+      guard();
+      // ~200 KB: ~2x express's 100 KB default and ~21x INSIDE the frozen 4 MiB
+      // event_upload ceiling. Before the scoped mount this died in body-parser
+      // as 413 {error:"request entity too large"} — a plain object no worker
+      // client can classify, on an operation whose retry rule is
+      // `idempotent_retry` over a CLOSED error vocabulary.
+      const response = await request(app)
+        .post("/api/worker-control/events")
+        .send({ p: "x".repeat(200_000) });
+      // Reaching the handler is the point. The body is junk, so the handler
+      // answers `malformed` — but it answers in the PROTOCOL's shape.
+      expect(response.status).toBe(400);
+      expect(response.body.protocolVersion).toBe(1);
+      expect(response.body.code).toBe("malformed");
+    });
+
+    it("fires the event_upload ceiling guard that was provably dead", async () => {
+      guard();
+      // Above the frozen 4 MiB contract ceiling but below the mount's headroom.
+      // This band could not be reached at all before: express rejected at
+      // 102,400 bytes, so `rawBody.length > 4 MiB` was false by construction and
+      // the guard at worker-control.ts:442 could never evaluate true.
+      const over = OPERATION_DESCRIPTORS.event_upload.maxRequestBytes + 10_000;
+      const response = await request(app)
+        .post("/api/worker-control/events")
+        .send({ p: "x".repeat(over) });
+      expect(response.body.code).toBe("payload_too_large");
+      // NOT 413. `payload_too_large` is not in the 400/503/429/401 map, so it
+      // takes the 409 fallthrough — the shape a worker can actually classify.
+      expect(response.status).toBe(409);
+    });
+
+    it("does not mount the raised limit while the flag is off", async () => {
+      guard();
+      // The gate is observable, so it is asserted rather than assumed. Middleware
+      // runs before the 404 catch-all, so an UNGATED mount would parse the body
+      // and then 404. A GATED one leaves the path on the express default, which
+      // refuses first. 413 vs 404 is exactly the difference.
+      const response = await request(flagOffApp)
+        .post("/api/worker-control/events")
+        .send({ p: "x".repeat(200_000) });
+      expect(response.status).toBe(413);
+    });
+
+    it("does not raise the limit for paths outside worker-control", async () => {
+      guard();
+      // The mount must not become a blanket raise. Any other /api path must
+      // still refuse a 200 KB body at the express default.
+      const response = await request(app)
+        .post("/api/worker-control-not-a-real-path")
+        .send({ p: "x".repeat(200_000) });
+      expect(response.status).toBe(413);
     });
 
     it("collapses 32 concurrent identical submissions to one aggregate", async () => {
