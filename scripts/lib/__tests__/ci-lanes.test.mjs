@@ -340,3 +340,33 @@ test("POSITIVE (FIX 3): a failure()-guarded upload of the EVIDENCE bundle IS sat
   ].join("\n");
   assert.equal(uploadsEvidenceBundleOnFailure(byName), true, "guarded evidence upload (name contains 'evidence') IS satisfied");
 });
+
+test("★ the policy job may NOT be gated on changes.outputs.code", () => {
+  // The policy job carries the guards that reason over DOCUMENTS — the ticket graph, the
+  // guard inventory, and finding ownership. Their trigger IS a docs change: adding an open
+  // finding to findings.md is a docs-only diff. Code-gating this job means those guards
+  // stop running for exactly the change that should trip them, while the job still reports
+  // green because it was never asked. That is the same shape as the four blockers that
+  // reached the top of this programme's critical path unscheduled — and the guard that
+  // would have caught them lives in this job.
+  const wf = validWorkflows();
+  wf["pr.yml"].jobs.policy.if =
+    "needs.changes.outputs.code == 'true' && github.event_name != 'pull_request'";
+  const { violations } = evaluateCiLanes({ workflows: wf, requiredNeeds: REQUIRED_NEEDS });
+  assert.equal(
+    violations.some((v) => v.includes('"policy" job is gated on changes.outputs.code')),
+    true,
+    `expected a policy code-gating violation, got: ${JSON.stringify(violations)}`,
+  );
+});
+
+test("a policy job with no code gate is accepted", () => {
+  // The positive control: without it, the test above could pass because the fixture is
+  // invalid for some unrelated reason.
+  const { violations } = evaluateCiLanes({ workflows: validWorkflows(), requiredNeeds: REQUIRED_NEEDS });
+  assert.equal(
+    violations.some((v) => v.includes('"policy" job is gated')),
+    false,
+    `unexpected policy violation: ${JSON.stringify(violations)}`,
+  );
+});

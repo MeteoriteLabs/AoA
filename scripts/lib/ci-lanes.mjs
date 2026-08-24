@@ -120,6 +120,25 @@ export function evaluateCiLanes({ workflows, requiredNeeds } = {}) {
     const changesOutputs = new Set(Array.isArray(pr.changesOutputs) ? pr.changesOutputs : []);
     const ciRequired = pr.ciRequired;
 
+    // --- HARD RULE: `policy` must NOT be code-gated ---------------------------
+    //
+    // The policy job carries the guards that reason over DOCUMENTS: the ticket graph, the
+    // guard inventory, and finding ownership. Their trigger IS a docs change — adding an
+    // open finding to `findings.md`, or a ticket file with no node in the plan, is a
+    // docs-only diff. Gate this job on `changes.outputs.code` and those guards stop running
+    // for precisely the change that is supposed to trip them, while the job still reports
+    // green because it was never asked.
+    //
+    // This is not hypothetical: it is the same shape as the four blockers that reached the
+    // top of this programme's critical path unscheduled. The guard that would have caught
+    // them lives in this job.
+    const policyJob = jobs.policy;
+    if (policyJob && typeof policyJob.if === "string" && /changes\.outputs\.code/.test(policyJob.if)) {
+      violations.push(
+        `${PR_WORKFLOW}: the "policy" job is gated on changes.outputs.code — it carries the document-reasoning guards (ticket graph, guard inventory, finding ownership) whose trigger is a DOCS-only change, so code-gating them means they never run when it matters`,
+      );
+    }
+
     // --- ci-required aggregator must exist (the ONLY required check) ---------
     if (ciRequired == null || typeof ciRequired !== "object") {
       violations.push(
