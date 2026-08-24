@@ -122,9 +122,10 @@ not, because they share this branch and cancel each other's CI.
 
 ```
   SPINE — dormant to provably working
-  S1  WRK-010   worker stays logged in         (E4)   ── unblocks everything
-  S2  DEP-010   provider seam + composition    (E6/E4)
-  S3  WRK-008/2b dispatch goes LIVE            (E4)   ── first real job
+  S1   WRK-010/1  renewal ROUTE (server only)   (E4)   ── no callers yet
+  S2   DEP-010    provider seam + composition   (E6/E4)
+  S2.5 WRK-010/2  the route gets its CALLER     (E4)   ── or S1 was for nothing
+  S3   WRK-008/2b dispatch goes LIVE            (E4)   ── first real job
   S4  DAT-008/5,7 credentials reach the sandbox (E5)
   S5  CLI-006/D2  prove ONE real journey       (E7)   ── "it works" becomes TRUE
 
@@ -136,7 +137,8 @@ not, because they share this branch and cancel each other's CI.
 ```
 
 **Sprints 1–5 are the critical path.** After Sprint 5 you have a demonstrably working
-distributed agent. Sprints 6–9 scale it to every sink and agent type, then release.
+distributed agent. **Sprint 2.5 was added after the plans were reviewed as a set** — see §4; it is
+the sprint that stops Sprint 1 from shipping a route nothing calls. Sprints 6–9 scale it to every sink and agent type, then release.
 
 ---
 
@@ -144,9 +146,10 @@ distributed agent. Sprints 6–9 scale it to every sink and agent type, then rel
 
 | Sprint | Plan | State |
 |---|---|---|
-| 1 | [`WRK-010-design.md`](./epics/E4-worker-daemon/tickets/WRK-010-design.md) | complete, **revised after adversarial review** - 7 TDD steps, 2 owned guards + a guard-for-guard map of all 10 onto the SHIPPED authenticator (§3.4), 6 declared-equivalent mutants, acceptance mapping. Epic ownership called: **E4** (§0d) |
+| 1 | [`WRK-010-design.md`](./epics/E4-worker-daemon/tickets/WRK-010-design.md) | **slice 1 only.** complete, **revised after adversarial review** - 7 TDD steps, 2 owned guards + a guard-for-guard map of all 10 onto the SHIPPED authenticator (§3.4), 6 declared-equivalent mutants, acceptance mapping. Epic ownership called: **E4** (§0d) |
 | 2 | [`DEP-010-design.md`](./epics/E6-deployment-test-harness/tickets/DEP-010-design.md) | complete, **revised after adversarial review** - 12 steps; Step 0 is no longer a STOP but a **conditions check** against §8 D-3; three CI-red defects the draft would have shipped are fixed |
 | 3 | [`WRK-008-slice-2b-design.md`](./epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md) | complete, **revised after adversarial review** - 11 steps, 51 mutants, the D1 question answered, and the gate story corrected to **per boot root** (container 4, desktop 2) |
+| 2.5 | none — WRK-010 §9 scopes it | **write at sprint start.** Small, but it is the sprint that gives Sprint 1 a caller. Two known requirements are already written down in §4. |
 | 4-9 | scope + sequence only (§4) | **Step 1 of each sprint is: write the plan.** A plan written five sprints early goes stale, which is the exact failure this audit exists to fix. |
 
 ### ★ Three things the planning pass found that change what you do
@@ -216,6 +219,11 @@ code every ten minutes. That is not shippable, and every later sprint inherits i
 own device key and receives a fresh, still-15-minute-bounded session. No human step. The
 long-lived key never leaves the host.
 
+**★ This is SLICE 1 — server side only. It has no callers until Sprint 2.5.** Read that
+sentence twice: shipping it alone builds a route nothing calls, which is the exact shape of the
+17 unprovable gate clauses this programme's audit exists to fix. Sprint 1 does **not** close
+E4-F007; Sprint 2.5 does.
+
 **Gate to start:** none. **Done when:** a worker obtains a session after the code route has
 lapsed; revoked/disabled/stale-generation each refuse with the same coarse code; the route is
 absent when distributed execution is off.
@@ -255,6 +263,36 @@ not merely that the flag is off.
 
 ---
 
+### ★ Sprint 2.5 — WRK-010 slice 2: the renewal route gets its first caller
+**Epic E4 · design: write at sprint start (WRK-010 §9 already scopes it)**
+
+**Why this exists, and why it was nearly missed.** The completeness critic asked one question no
+single-plan reviewer could: *after all three sprints ship exactly as written, who calls the
+renewal route?* The answer was **nobody**. Sprint 1 is server-side; Sprint 3's composition wires
+`SessionStoreDeps.renew` to `Enroller.renew`, which is the **enrolment code replay** — its own
+module header says there is no dedicated renew route and that it only succeeds while the 10-minute
+code route is live. So Sprints 1 + 2 + 3 would have left the route with zero callers and the
+worker still losing authority at the code-route boundary: Sprint 1's product, built and unused.
+
+**What.** The worker-side renewal client, plus the one behavioural change that makes it usable:
+`SessionStore.ensureFresh` currently refreshes **only once the session is absent or already
+expired**, and its own docblock says it "is NOT a near-expiry renewal scheduler". The WRK-010
+route refuses an expired session by construction (`verifyWorkerSessionToken` fails
+`claims.exp <= now`). So a `renew` thunk pointed at the route from today's store fires exactly
+when the credential it must present is already dead. **Slice 2 adds the near-expiry threshold**,
+and it must be at least the **5-minute headroom** WRK-010 §3.5(i) derives — below that a
+proof-replay window of up to ~4.9 minutes opens.
+
+**Gate to start:** Sprints 1 and 2 green. **Done when:** the route has a production caller; a
+composed worker crosses T0+15min with a live session in an integration test; `E4-F007` moves to
+`resolved` **here, not in Sprint 1**.
+
+**Why 2.5 and not a renumber:** sprints 3-9 are referenced by number across the plans and the
+registers. A fractional insert costs one odd-looking label; a renumber costs a day of chasing
+stale references.
+
+---
+
 ### Sprint 3 — WRK-008 slice 2b: dispatch goes live
 **Epic E4 · design: `epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md`**
 
@@ -262,15 +300,32 @@ not merely that the flag is off.
 reconciler and event outbox, or defer them with a stated reason — E4 gate clauses 3 and 4
 depend on them).
 
-**Gate to start:** Sprints 1 **and** 2 green. Without WRK-010 a composed worker dies at
-T0+15min.
+**Gate to start:** Sprints 1, **2 and 2.5** green. Without slice 2 a composed worker still dies
+at the 10-minute code-route boundary — Sprint 1 alone does not remove that ceiling.
+
+**★ Written against the pre-Sprint-2 tree.** Slice 2b was planned before DEP-010 existed and the
+go-book runs it after. Four of its assertions become false the moment Sprint 2 lands a provider in
+`desktop-host.ts`: Step 8b's `"provider" in call === false`, Step 9b's declared guard property,
+§2's "desktop gate 1 = no", and Step 9a's `AOA_WORKER_PROVIDER_URL` gate (DEP-010's resolver reads
+`AOA_WORKER_SANDBOX_PROVIDER` instead). Reformulate them **before** Sprint 3 starts, not inside it.
 
 **Largest risk in the whole plan, named:** D1's "worker" is currently a *harness script*, not
 the daemon. Turning dispatch on changes what those suites observe. Budget time to re-baseline.
 
-**Done when:** with a provider injected **and** the flag on, a worker leases, executes, and
-reports; with either absent it is provably inert; `AOA_WORKER_DISPATCH_ENABLED` remains
-default-off. Promote E4-1/2 (and 3/4 if composed) to `wired` in the gate register.
+**Done when:** with a provider injected **and** the flag on, the daemon composes a real poll
+loop, supervisor, renewal driver and durable event outbox — giving `createPollLoop` and
+`createSupervisor` their first production callers in the programme's history; with either absent
+it is provably inert; `AOA_WORKER_DISPATCH_ENABLED` remains default-off.
+
+> **★ It does NOT mean "a worker leases, executes and reports."** An earlier version of this line
+> said that, and it is not achievable by the plan that runs this sprint. **E4-F010**: the worker
+> self-checks every offer against its own hello, and the only production hello builder emits a
+> 64-zero policy hash, so the check is `false` for **100% of offers** — before the server-side
+> profile-snapshot gap even matters. Slice 2b's own acceptance downgrades E4 clause 1 to
+> *reachability only*. Promote **E4-2** to `wired`; leave **E4-1** dormant, or promote it only
+> with a reason field that says what it cannot do — and note the wiring checker validates `wired`
+> on caller count alone and never reads that reason, so a caveat parked there is a caveat nobody
+> reads.
 
 ---
 
@@ -380,6 +435,8 @@ Not blockers; do not rediscover them.
 | **TRACK-003 / BRW-007 / BRW-008** | Shipped or scoped with no `#### ID` node. |
 | **E2's gate cites a failing revision** | `README.md:6` names `acf2b32fb`, which its own artifact table records as `blocked_external`, superseded by a pass at `9a5455071f8c`. |
 | **E6 clause 7** | The DEP-009 shared-admission proof **re-implements** the advisory-lock SQL inline in the test rather than calling `admitAttemptCapacity` — change the production key and the test stays green. |
+| **brand-check guard 9 is blind to the `ENV`-map convention** | `pr.yml:650-663` matches only literal `process.env.AOA_[A-Z_]+`, and `worker-daemon/src/config/config.ts` reads through an `ENV` map — so a new `AOA_WORKER_*` switch can ship undocumented with **no guard firing**. Three new operator-facing switches arrive in Sprints 2 and 3; two get documented by author discipline and one would not. The standing fix is to extend guard 9 to the map convention. |
+| **`check-execution-census` trips on any new `*.test.mjs`** | Not a defect — it is working as designed — but it is the guard most likely to redden a sprint that adds a script test and forgets `scripts/test-execution-census.json`. Sprint 3 adds two. |
 | **Kill switch has no write path** | `evaluateKillSwitches` is genuinely wired, but throwing it means hand-executed SQL, instance-wide per provider, no Organization or sink dimension. REL-005 scope. |
 
 ---
@@ -431,8 +488,15 @@ table and fix the plan.
 computation), and the four ticket families invisible to the coverage checker (§5 row 3).
 
 **Consequence, already applied:** D-2 and D-3 were the ownership calls
-`scripts/finding-ownership.json` was explicitly waiting on. With them made, the register reports
-**zero unowned findings** for the first time in the programme — E4-F007 → WRK-010,
-E6-F003/F004/F008 → DEP-010. The same edit corrected E4-F007's own text, which asserted
+`scripts/finding-ownership.json` was explicitly waiting on, and making them cleared every one of
+the four findings that had been parked — E4-F007 → WRK-010, E6-F003/F004/F008 → DEP-010.
+
+> **★ CORRECTION.** An earlier revision of this paragraph said the register reported *zero unowned
+> findings*. That was true for about an hour and is now false: filing **E4-F010** (a composed
+> worker cannot be offered work) added a HIGH that is `unowned` **on purpose**, because no ticket
+> in the graph fixes either half of it. `node scripts/check-finding-ownership.mjs` prints it on
+> every green run. The count that matters is not zero — it is *one, named, and visible*, which is
+> the whole point of the register. Caught by the completeness critic, in the paragraph headed "do
+> not relitigate", which is exactly where a stale claim does the most damage. The same edit corrected E4-F007's own text, which asserted
 `IdentityLifecycle.acquireSession()` was "already landed as the drop-in seam"; `grep` finds that
 name in two design documents and no source file (§3.1 item 2).

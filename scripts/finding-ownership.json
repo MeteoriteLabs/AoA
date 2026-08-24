@@ -3,7 +3,7 @@
     "E4-F007": {
       "status": "owned",
       "ticket": "WRK-010",
-      "ownerStillOpen": "WRK-010 has a design doc; no result doc. Sprint 1 of the go-book sequence, and nothing downstream is startable until it lands.",
+      "ownerStillOpen": "WRK-010 SLICE 1 (the server route) does not close this. The completeness critic established that after Sprints 1, 2 and 3 as originally sequenced the route would have had ZERO CALLERS -- slice 2b wires SessionStoreDeps.renew to Enroller.renew, the enrolment code replay, which only succeeds while the 10-minute code route is live. E4-F007's own statement of the defect ('a worker goes authority-less') therefore remains true until WRK-010 SLICE 2 ships the worker-side client plus the near-expiry threshold in SessionStore.ensureFresh. Closing it at slice 1 would convert a live problem into a settled one. Sequenced as go-book Sprint 2.5.",
       "reason": "The ownership call this entry was awaiting is made (go-book s8 D-2): ONE ticket, in E4, not a split across E3. The reason the E3-vs-E4 split lost its force is D-1 -- the renewal route reuses createWorkerSessionAuthenticator (server/src/middleware/worker-session-auth.ts:109), which already performs 9 of the 10 authority guards including the scope check at :165, so the route adds no new authority logic for an E3 ticket to own. CORRECTION to this entry's earlier text: IdentityLifecycle.acquireSession() is NOT 'already landed as the drop-in seam' -- grep finds that name in exactly two design documents and no source file. The real seam is SessionStoreDeps.renew, which is what WRK-010 targets."
     },
     "E4-F008": {
