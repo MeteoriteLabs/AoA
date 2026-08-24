@@ -38,6 +38,9 @@ import { createJobLeaseRenewalService } from "../services/job-fencing.js";
 import { createJobEventIngestService, type JobEventIngestTerminalHook } from "../services/job-events.js";
 import { createArtifactTransferGrantService } from "../services/artifact-transfer-grant.js";
 import { createArtifactCommitService } from "../services/artifact-commit.js";
+import { runInTenant } from "../db/tenant-context.js";
+import { createSweepTrigger } from "../services/artifact-sweep-trigger.js";
+import { runArtifactOrphanSweep } from "../services/artifact-orphan-sweeper.js";
 import { createQuarantineGrantService } from "../services/quarantine-grant.js";
 import { createQuarantineFinalizeService } from "../services/quarantine-finalize.js";
 import { createSecretBrokerService } from "../services/secret-broker.js";
@@ -109,7 +112,33 @@ export function workerControlRoutes(opts: {
   // to presign worker grants and headObject-verify commits.
   const storage = createStorageProviderFromConfig(loadConfig());
   const transferGrants = createArtifactTransferGrantService({ appDb: opts.appDb, storage });
-  const artifactCommits = createArtifactCommitService({ appDb: opts.appDb, storage, metrics: opts.jobControlMetrics });
+  // DAT-011 — the orphan sweep runs from artifact-commit events, because that is the only
+  // moment it can run inside the right tenant context without ENUMERATING ORGANIZATIONS,
+  // which the tenant boundary deliberately forbids. Best-effort: every error is swallowed
+  // and the commit outcome is never affected.
+  const artifactSweepTrigger = createSweepTrigger({
+    intervalMs: 5 * 60_000,
+    now: () => new Date(),
+    onError: (error, organizationId) => {
+      logger.warn({ err: error, organizationId }, "artifact orphan sweep failed (best-effort)");
+    },
+    runSweep: (organizationId, now) =>
+      runInTenant(opts.appDb, organizationId, async (repos) =>
+        runArtifactOrphanSweep({
+          now,
+          limit: 100,
+          findCandidates: (input) => repos.jobArtifacts.findSweepCandidates(input),
+          deleteObject: (objectKey) => storage.deleteObject({ objectKey }),
+          markSwept: async (id) => { await repos.jobArtifacts.markSwept({ id }); },
+        }),
+      ),
+  });
+  const artifactCommits = createArtifactCommitService({
+    appDb: opts.appDb,
+    storage,
+    metrics: opts.jobControlMetrics,
+    sweepTrigger: artifactSweepTrigger,
+  });
   // DAT-006 — device-authenticated orphan quarantine (distinct `quarantine/` prefix,
   // no live fence). The daemon already builds/signs/POSTs both ops (worker-daemon
   // WRK-007); these stand up the server end.

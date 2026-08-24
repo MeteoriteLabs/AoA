@@ -39,6 +39,7 @@ import {
 import { runInTenant } from "../db/tenant-context.js";
 import { logger } from "../middleware/logger.js";
 import { resolveStoredRetention } from "./artifact-retention-authority.js";
+import type { SweepTrigger } from "./artifact-sweep-trigger.js";
 import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js";
 import { resolveWorkerFenceContext } from "./worker-fence-context.js";
 import type { StorageProvider } from "../storage/types.js";
@@ -68,7 +69,14 @@ export function createArtifactCommitService(input: {
    * surface; the composition root threads the shared pino instance when distributed
    * execution is enabled. Emission is best-effort and never alters the commit path. */
   metrics?: JobControlMetrics;
+  /** DAT-011 — the orphan-sweep trigger. Same shape and same contract as `metrics`
+   * above: defaults to a NO-OP, is best-effort, and NEVER alters the commit path. A
+   * commit event is the only moment an orphan sweep can run inside the right tenant
+   * context without enumerating organizations, which the tenant boundary forbids. */
+  sweepTrigger?: SweepTrigger;
 }) {
+  // No-op default, so a composition root that has not wired the sweep changes nothing.
+  const sweepTrigger: SweepTrigger = input.sweepTrigger ?? { trigger() {}, async triggerAndWait() {} };
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300_000);
   const maxArtifactBytes = Math.max(1, input.maxArtifactBytes ?? 5 * 1024 ** 3);
   // Optional-chained (no NOOP VALUE import) so this module carries no runtime
@@ -181,11 +189,26 @@ export function createArtifactCommitService(input: {
             tenantValid,
           });
         } catch (error) {
-          if (error instanceof DbJobFenceError) return rejected(fenceReason(error.code));
+          if (error instanceof DbJobFenceError) {
+            // ★ DAT-011 — a `stale_fence` refusal is the exact moment an orphan exists: the
+            // bytes landed (commit was attempted, so the PUT completed) and the fence that
+            // authorised them is gone. Fire-and-forget; it cannot affect this response.
+            //
+            // It does NOT collect THIS object: the grant stays redeemable until `expiresAt`,
+            // so a retry could still re-PUT to the same key. `isSweepEligible` remains the
+            // single authority and is unchanged. This sweeps what has ALREADY expired.
+            sweepTrigger.trigger(auth.organizationId);
+            return rejected(fenceReason(error.code));
+          }
           if (error instanceof ArtifactCommitRejection) return rejected(verificationReason(error.reason));
           throw error;
         }
 
+        // ★ DAT-011 — also on SUCCESS, deliberately. Success is the common event, so it
+        // gives far more collection opportunities than refusals alone, and the sweep is a
+        // no-op when nothing has expired. This is what keeps the residual to "the org's last
+        // orphan" rather than "every orphan after the last refusal".
+        sweepTrigger.trigger(auth.organizationId);
         return artifactCommitOperationResponseV1Schema.parse({
           protocolVersion: 1,
           correlationId: request.correlationId,
