@@ -275,6 +275,16 @@ jobs:
           # other), so a repo-level guard is the only side that can see both.
           node scripts/check-worker-path-parity.mjs
 
+      - name: Gate-clause wiring (an epic may not claim a capability nothing calls)
+        run: |
+          # The 2026-08-25 exit-gate audit verdicted ~70 clauses across E0..E11 and found 17
+          # whose named production path has ZERO callers - inside epics reported `complete`.
+          # Every ticket doc was honest; the aggregation was not. This gives "epic complete"
+          # a mechanical meaning. Both commands in ONE step: two steps are two chances to run
+          # only the one that passed.
+          node --test scripts/lib/__tests__/gate-clause-wiring.test.mjs
+          node scripts/check-gate-clause-wiring.mjs
+
       - name: Finding ownership (an open finding must name an owner, or say it has none)
         run: |
           # Four blockers have reached the top of this programme's critical path

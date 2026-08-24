@@ -58,7 +58,7 @@
     },
     "scripts": {
       "mode": "pinned",
-      "count": 45
+      "count": 46
     },
     "server": {
       "mode": "floor",

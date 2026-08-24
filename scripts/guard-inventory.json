@@ -65,6 +65,10 @@
       "status": "ci",
       "reason": "policy job \u2014 pnpm check:frozen-worker-protocol-v1 plus its two self-tests. Wired 2026-08-22: it had existed only as an npm script nothing invoked, which also omitted the required --source-sha."
     },
+    "scripts/check-gate-clause-wiring.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow"
+    },
     "scripts/check-guard-inventory.mjs": {
       "status": "ci",
       "reason": "policy job \u2014 this guard checks the others, and is checked by the same rule it applies"

@@ -1,0 +1,95 @@
+{
+  "$comment": [
+    "Gate-clause wiring register. Seeded 2026-08-25 from the E0..E11 exit-gate audit.",
+    "wired   = a production path reaches the named symbol; the checker verifies it and fails on 0.",
+    "unwired = honestly dormant; reason must say what would have to change. Reported on green runs.",
+    "Claiming wired when nothing calls it is the defect this register exists to make impossible."
+  ],
+  "clauses": {
+    "E3-5-product-approval": {
+      "epic": "E3",
+      "status": "unwired",
+      "symbol": "jobApprovalBridge",
+      "reason": "JOB-010..014 parity bridge. Zero production callers; the legacy approval path still owns this. Wire when the sinks cut over (Sprint 6, MIG-005/006/007 ACTIVE)."
+    },
+    "E3-15-budget": {
+      "epic": "E3",
+      "status": "unwired",
+      "symbol": "jobBudgetCostBridge",
+      "reason": "Parity bridge with zero callers; budget/cost still flow through the legacy cost-event path. Wire at sink cutover (Sprint 6)."
+    },
+    "E3-17-output": {
+      "epic": "E3",
+      "status": "unwired",
+      "symbol": "jobOutputBridge",
+      "reason": "JOB-014 output projection has zero callers; task_outputs is still written by the legacy path. Wire at sink cutover (Sprint 6)."
+    },
+    "E3-18-revocation": {
+      "epic": "E3",
+      "status": "unwired",
+      "symbol": "createExecutionTargetRevocationFanout",
+      "reason": "revokeExecutionTarget writes a pending row, but the fanout that ACTS on it has zero callers, so a revoked target is not actively torn down. Needs a scheduler/consumer; sequence with Sprint 3 (dispatch live) since it only bites once workers run."
+    },
+    "E4-1-leases-through-protocol": {
+      "epic": "E4",
+      "status": "unwired",
+      "symbol": "createPollLoop",
+      "reason": "The shipped daemon composes no loop; dispatch is off by construction (no provider, flag off, no self-model reader). WRK-008 slice 2b (Sprint 3) composes it, after DEP-010 supplies a provider."
+    },
+    "E4-2-supervises-sandboxes": {
+      "epic": "E4",
+      "status": "unwired",
+      "symbol": "createSupervisor",
+      "reason": "Zero production callers; requires a SandboxProvider that no process can construct today. DEP-010 (Sprint 2) then WRK-008 slice 2b (Sprint 3)."
+    },
+    "E4-3-survives-restart": {
+      "epic": "E4",
+      "status": "unwired",
+      "symbol": "createStartupReconciler",
+      "reason": "Zero callers; bootstrapWorkerDaemon gates it on deps.reconciler which is never passed, so the startup pass runs nothing. Compose in Sprint 3 or defer with a stated reason."
+    },
+    "E4-4-event-outbox-replay": {
+      "epic": "E4",
+      "status": "unwired",
+      "symbol": "createEventOutboxDrain",
+      "reason": "Zero callers; deps.eventOutbox is never passed. Compose in Sprint 3 alongside the loop."
+    },
+    "E5-3-patch-quarantine": {
+      "epic": "E5",
+      "status": "unwired",
+      "symbol": "createPatchApplyService",
+      "reason": "Zero callers. Its sibling runOrphanQuarantine now has a producer (startup-reconcile) but that reconciler itself has no caller, so the clause is blocked on E4 wiring (Sprint 3), not on E5."
+    },
+    "E5-5-redaction": {
+      "epic": "E5",
+      "status": "unwired",
+      "symbol": "createFenceAwareEgressProxy",
+      "reason": "Zero callers; DAT-004/DAT-005 are built, correct and entirely unreachable from boot. This is the only path that resolves a secret VALUE, so redaction has no input. Wire with DAT-008 slice 5 (Sprint 4)."
+    },
+    "E7-1-coding-journey": {
+      "epic": "E7",
+      "status": "unwired",
+      "symbol": "E2bSandboxProvider",
+      "reason": "The package is in no other package.json dependency list, so no production process can construct it. DEP-010 (Sprint 2) gives the existing composition root a dependency path; the journey is proven in Sprint 5."
+    },
+    "E8-1-sandbox-local-browser": {
+      "epic": "E8",
+      "status": "unwired",
+      "symbol": "runBrowserSession",
+      "reason": "packages/browser-runtime has zero importers and is in no dependency list. The 1 known reference is runner.ts calling it INSIDE the package; runner.ts is the in-guest entrypoint and nothing stages it, so the capability is unreachable despite the non-zero count. Blocked on dispatch (Sprint 3) then BRW-004+ (Sprint 7).",
+      "expectedReferences": 1
+    },
+    "E10-1-drain": {
+      "epic": "E10",
+      "status": "unwired",
+      "symbol": "createDistributedExecutionDrain",
+      "reason": "Zero callers, and it calls assertRollbackSafe(organizationId) where every implementation takes a companyId. Fix and wire during sink cutover (Sprint 6)."
+    },
+    "E11-5-provider-kill-switch": {
+      "epic": "E11",
+      "status": "wired",
+      "symbol": "evaluateKillSwitches",
+      "reason": "Genuinely wired: called on the real poll path (job-leasing.ts) and by the warm-sandbox reaper. Residual, recorded in the wave doc: no write path (throwing it means hand-executed SQL) and it is instance-wide per provider with no Organization or sink dimension - REL-005 scope."
+    }
+  }
+}

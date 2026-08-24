@@ -189,6 +189,11 @@
       "workflow": "pr.yml",
       "step": "Finding ownership (an open finding must name an owner, or say it has none)"
     },
+    "scripts/lib/__tests__/gate-clause-wiring.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Gate-clause wiring (an epic may not claim a capability nothing calls)"
+    },
     "scripts/lib/__tests__/guard-inventory.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",
