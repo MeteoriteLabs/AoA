@@ -18,7 +18,7 @@ that unit tests, mutation testing and grep verification had all missed.
 | 4.2 | `recordArtifactGrantIntent` on the fence-guarded seam; mint writes it | ✅ |
 | 4.3 | `isSweepEligible` — the pure decision | ✅ |
 | 4.3 | `runArtifactOrphanSweep` — the runner | ✅ built |
-| 4.3 | **Anything that calls the runner** | ❌ **§6** |
+| 4.3 | **Anything that calls the runner** | ✅ **DAT-011** — see §6 |
 
 **Mutation: 20 mutants, 20 killed** (8 decision + 5 TTL + 7 runner). 34 unit tests. The
 `artifact-transfer-commit` integration suite was run **for real** against embedded
@@ -80,13 +80,18 @@ interface rather than left implicit.
 - **There is no GC of anything.** `deleteObject` has two call sites, both task attachments;
   no S3 lifecycle rule exists. Committed artifacts are never collected either.
 
-## ★ 6. THE GAP: nothing calls the sweeper, and why that is not a one-liner
+## ★ 6. THE GAP (CLOSED by DAT-011) — kept because the reasoning still governs
 
-The runner is built, tested and mutation-proven. **No production code invokes it.** That is
-the exact failure class this programme keeps finding, so it is stated here in its own
-section rather than buried.
+**As shipped, this slice's runner was invoked by nothing** — the exact failure class this
+programme keeps finding, which is why it had its own section rather than a footnote.
+DAT-011 closed it with the event-driven trigger, option (2) below, and
+`e6f-14-orphan-sweep` now proves the whole path live.
 
-It is not simply unwired. A periodic sweep must run **per organization** (`runInTenant`
+The analysis is retained because it is still the reason the sweeper is NOT scheduled, and
+because the live lane went on to prove the fix's first placement wrong: the trigger fired
+only on successful commits, never on the stale-fence refusal it was designed for.
+
+It was not simply unwired. A periodic sweep must run **per organization** (`runInTenant`
 scopes every query, and forced RLS filters on the tenant GUC), so a global sweeper needs to
 **enumerate organizations** — and the tenant repository boundary **deliberately has no
 unscoped reader**: *"a raw cross-tenant helper would sidestep the tenant context and forced
