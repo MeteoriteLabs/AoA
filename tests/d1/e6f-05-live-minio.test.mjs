@@ -220,7 +220,18 @@ test("E6F-05 live MinIO: grant(upload) -> PUT -> commit -> grant(download) -> GE
 
   // 9. The commit PERSISTED a job_artifacts row (owner-DB read-back).
   const persisted = stepResult(queryJobArtifact({ organizationId: ids.orgId, jobId: ids.jobId, identifier: artifactId }), "query-row");
-  assert.equal(persisted.rows.length, 1, `expected exactly one committed job_artifacts row: ${JSON.stringify(persisted)}`);
+  // DAT-009 slice 2 — the mint now also records a `status='granted'` INTENT row, so the
+  // natural key legitimately carries TWO rows (granted + committed) on a successful commit:
+  // the partial-unique keys are disjoint by design. This assertion always MEANT "exactly one
+  // COMMITTED row" (see its own message); it counted all rows only because intents did not
+  // exist. Filtering is therefore a correction, not a relaxation — and the intent row is
+  // asserted below rather than ignored.
+  const committedRows = persisted.rows.filter((r) => r.status === "committed");
+  assert.equal(committedRows.length, 1, `expected exactly one committed job_artifacts row: ${JSON.stringify(persisted)}`);
+  assert.equal(
+    persisted.rows.filter((r) => r.status === "granted").length, 1,
+    `the mint must also have recorded exactly one grant intent: ${JSON.stringify(persisted)}`,
+  );
   const row = persisted.rows[0];
   assert.equal(row.status, "committed", `row status: ${JSON.stringify(row)}`);
   assert.equal(row.object_key, objectKey, "row object_key");
@@ -426,5 +437,17 @@ test("E6F-05 live MinIO: toxiproxy-truncated upload never commits (fail-closed o
 
   // 9. NO job_artifacts row was persisted (every reject path throws BEFORE the insert).
   const persisted = stepResult(queryJobArtifact({ organizationId: ids.orgId, jobId: ids.jobId, identifier: artifactId }), "query-row");
-  assert.equal(persisted.rows.length, 0, `an incomplete upload must persist NO job_artifacts row: ${JSON.stringify(persisted)}`);
+  // DAT-009 slice 2 — same correction as the round-trip test above, and here it is the
+  // MORE interesting case: a truncated upload leaves the `granted` intent behind, and that
+  // is exactly right. That intent IS the orphan record, and it is what lets the sweep
+  // collect bytes a failed commit left in the store. Asserting it turns what would have
+  // been a weakening into a strengthening.
+  assert.equal(
+    persisted.rows.filter((r) => r.status === "committed").length, 0,
+    `an incomplete upload must persist NO COMMITTED job_artifacts row: ${JSON.stringify(persisted)}`,
+  );
+  assert.equal(
+    persisted.rows.filter((r) => r.status === "granted").length, 1,
+    `the grant intent must remain so the orphan is collectable: ${JSON.stringify(persisted)}`,
+  );
 });

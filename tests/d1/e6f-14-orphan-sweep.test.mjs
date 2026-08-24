@@ -161,6 +161,10 @@ test("E6F-14 live orphan sweep: fence lost mid-flight -> commit refuses -> the o
     organizationId: ids.orgId, companyId: ids.companyId, jobId: ids.jobId, attempt,
     artifactId, objectKey, sha256: sha256Hex, sizeBytes: bodyBytes.length,
     contentType: "application/octet-stream", kind: "log", sensitivity: "restricted", retention: "run",
+    // REQUIRED by the frozen manifest schema. Omitting it made the first live run answer
+    // `malformed` rather than `rejected` — a protocol-level refusal that never reached the
+    // fence check at all, so the test proved nothing about stale_fence.
+    createdAt: new Date().toISOString(),
   };
   const committed = stepResult(artifactCommit({ session: enrolled.session, ...fence, manifest, deviceKey }), "commit");
   assert.equal(committed.body.outcome, "rejected", `commit must be REJECTED after fence loss: ${JSON.stringify(committed.body)}`);
