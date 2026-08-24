@@ -553,3 +553,58 @@ describe("JOB-009 slice B deterministic placement policy", () => {
     }
   });
 });
+
+describe("JOB-009 candidateFits — guards with no counterpart in the frozen matcher", () => {
+  // ★ WHY THIS BLOCK EXISTS. A mutation sweep of `candidateFits` (10 guards, run against ten
+  // server suites with a LIVE positive control) killed only 3. Most survivors are genuine
+  // EQUIVALENTS — `workerSatisfiesRequirements` re-checks target id, device generation and
+  // revocation itself, so deleting the outer copy changes no outcome and no test can kill it.
+  //
+  // These three are different: the frozen matcher never sees `workerProfileHash`,
+  // `credentialOwnerPrincipalId` or `ownerMembershipActive`. Deleting any of them changed
+  // real behaviour and nothing failed. Each fixture below violates EXACTLY ONE rule, because
+  // a fixture that trips two guards proves neither (the lesson from E1-F008 on the same day).
+
+  it("★ rejects a worker snapshot that no longer hashes to its enrolled profile", () => {
+    // The comment on this guard says a caller may replace ONLY `worker.capacity` after session
+    // auth and every other member must still hash to the stored profile. `agentVersion` is
+    // chosen deliberately: neither the generation/target-id guard nor the frozen matcher reads
+    // it, so the hash check is the only thing that can refuse this candidate.
+    const base = candidate("managed_cloud", 1);
+    const tampered = {
+      ...base,
+      worker: { ...base.worker, agentVersion: "tampered-after-enrolment" },
+      // workerProfileHash deliberately NOT recomputed — that is the tampering.
+    };
+    expect(run({ candidates: [tampered] }).disposition).not.toBe("selected");
+  });
+
+  it("★ rejects an owner credential on a placement that is not owner-bound", () => {
+    // `credentialOwnerPrincipalId` is carried per JOB; the requirement here is
+    // platform_brokered, so no owner may be attached. The frozen matcher never reads this
+    // field, so this branch is the only thing standing between an owner-scoped credential and
+    // a shared target.
+    expect(run({ credentialOwnerPrincipalId: "job-009-owner" }).disposition).not.toBe("selected");
+  });
+
+  it("★ rejects an owner-scoped target whose owner membership is not active", () => {
+    // Scope `owner` requires a live membership. Requirements stay platform_brokered with a null
+    // required owner, so the owner-BOUND branch above is not entered and the matcher's owner
+    // block is skipped — leaving membership as the single reason this can be refused.
+    const inactive = candidate("owner_desktop", 30, { ownerMembershipActive: false });
+    expect(run({
+      requirements: requirements(["owner_desktop"]),
+      candidates: [inactive],
+    }).disposition).not.toBe("selected");
+  });
+
+  it("the same three candidates ARE selected once the single violation is removed", () => {
+    // The positive control for this block. Without it, all three assertions above could be
+    // passing because the fixtures are unplaceable for some unrelated reason.
+    expect(run({ candidates: [candidate("managed_cloud", 1)] }).disposition).toBe("selected");
+    expect(run({
+      requirements: requirements(["owner_desktop"]),
+      candidates: [candidate("owner_desktop", 30)],
+    }).disposition).toBe("selected");
+  });
+});
