@@ -110,6 +110,58 @@ round-trip as a documented CLI-003 non-goal (DAT-002 slice 7). The only real pre
 performed is the D1 harness. **A complete, tested server half says nothing about the caller half
 existing** — the failure shape this programme keeps re-learning.
 
+## ★ 4b. REVISION 1 — this IS an E4-D02 STOP. §4.1 said it was not, and that was wrong.
+
+Found while writing DAT-009 slice 1's design, by reading the contract package rather than
+reasoning about it.
+
+§4.1 concluded "not an E4-D02 STOP" from the fact that `ProviderOpContext` lives in
+`packages/worker-daemon`. That is true and it is not the binding constraint. **The provider
+OPERATION VOCABULARY is frozen:**
+
+- `PROVIDER_OPERATIONS`, `CORE_PROVIDER_OPERATIONS` and
+  `OPTIONAL_PROVIDER_OPERATIONS = ["checkpoint","restore","health"]` are all defined in
+  `packages/worker-protocol/src/capabilities.ts:125-153` — the FROZEN package.
+- The contract package states it plainly: it is defined "OVER the frozen E1 `PROVIDER_OPERATIONS`
+  vocabulary; **it invents no operation**" (`sandbox-provider-contract/src/port.ts:4-9`).
+- Advertisement is doubly pinned: `supportedOperations` is
+  `z.array(providerOperationSchema).min(CORE.length).max(PROVIDER_OPERATIONS.length)`
+  (`capabilities.ts:178`) — an unknown value fails the enum, and the array length ceiling is
+  fixed at the current vocabulary size.
+
+**So a provider capability that can be ADVERTISED cannot be added without changing the frozen
+protocol.**
+
+### The fork — for the Protocol/Schema Custodian, not for this lane
+
+**(i) Add `digest` + `export` to `OPTIONAL_PROVIDER_OPERATIONS`.** An E4-D02 STOP: custodian
+sign-off plus D0-T04 evidence. Gives real negotiation — a target profile advertises support, and
+placement can route a browser job only to a target that can return its evidence.
+
+**(ii) Add methods to worker-daemon's `SandboxProvider` only**, declining via the existing
+`UnsupportedProviderOperation`. No frozen change. But the capability is **unadvertisable**, so
+placement cannot route on it: a browser job lands on a non-exporting target, does all its work,
+and fails at the end with no evidence.
+
+**Recommendation: (i).** `OPTIONAL_PROVIDER_OPERATIONS` exists for exactly this shape —
+checkpoint/restore/health are the same thing: real capabilities that some providers have and
+others do not. And the `.max(PROVIDER_OPERATIONS.length)` ceiling shows the schema was written
+expecting that list to be authoritative. Option (ii) buys speed by making a capability invisible
+to the component whose job is to match work to capability, which is the same class of mistake as
+`buildDesktopHello` emitting a worker that can never be matched.
+
+**Rejected without further consideration:** carrying the export as an opaque `params` payload on
+an existing operation such as `execute`. It would hide a byte-moving capability inside a black-box
+map and make the port's "no bytes" property stated-but-false — the failure mode this whole decision
+exists to avoid.
+
+### Consequence for sequencing
+
+DAT-009 slice 1 (contract capability + fake provider + conformance) **cannot be built as specified
+until this fork is resolved**, because the operation it would conform is not expressible. Slices 2
+(fence-window policy) and 3 (the worker-side consumer) are unaffected in their server-side halves
+and remain available.
+
 ## 5. Deployment prerequisite
 
 `presignPut`/`presignGet` are **optional** on the storage port (`server/src/storage/types.ts:62-67`)
