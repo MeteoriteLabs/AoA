@@ -109,24 +109,77 @@ worker** — a different risk class from a missing artifact.
 `artifactId` but **not** `kind`, which is exactly why `artifact_prepared` must precede the grant —
 the control plane cannot refuse a kind it has not been told about.
 
-## 6. The export seam — a named interface, not a mechanism
+## 6. The export seam — ★ IT IS NO LONGER HYPOTHETICAL
 
-Byte movement stays behind the **E4-D02 STOP**. It is necessarily **two-phase**, because the frozen
-grant request requires **both** `expectedSha256` and `maxBytes` (`artifacts.ts:365-393`):
+DAT-009 slice 1 **shipped the capability** (Lane A), so this ticket designs against a real
+signature rather than a named interface awaiting a ruling. In
+`packages/worker-daemon/src/supervisor/provider.ts`:
 
+```ts
+type ArtifactExportMode = "none" | "grant_upload";
+
+digestArtifact(sandboxId, path, ctx): Promise<{ sha256, sizeBytes }>   // metadata ONLY
+exportArtifact(sandboxId, path, grant, ctx): Promise<{ objectKey }>    // a REFERENCE
+readonly artifactExportMode: ArtifactExportMode;
 ```
-digest-and-size  →  mint grant  →  export-under-grant  →  commit
-```
 
-This ticket builds **everything up to the seam** and writes the interface down, so the custodian's
-ruling is checked against a contract rather than a buried assumption. The reference is a **bounded,
-strictly-validated scalar** — explicitly NOT modelled on `stdoutRef`, which is an unbounded
-unvalidated string with no cap, grammar, schema, resolver or production reader.
+Three things this confirms about the design that were previously assumptions:
 
-**One shared presigned-PUT helper, one test.** The exporter must send `x-amz-checksum-sha256` itself
-(`s3-provider.ts:120-142` sets `ChecksumAlgorithm` and returns `headers: {}`). That knowledge lives
-in exactly one place today — `tests/d1/lib/e6f-harness.mjs` `putPresignedBytes` — and the harness runs
-as piped source text, so the helper must be simultaneously importable and embeddable.
+1. **Two-phase, as forced by the frozen grant request.** `digestArtifact` exists precisely because
+   `artifactTransferGrantRequestV1Schema` requires BOTH `expectedSha256` and `maxBytes` before a
+   grant can be minted, and only the provider can see inside the sandbox.
+2. **The reference is genuinely a reference.** `{ objectKey }` — a structured field, not a free
+   string. Strictly stronger than `stdoutRef`, which is an unbounded unvalidated string with no
+   cap, grammar, schema, resolver or production reader. The port's own comment states the property:
+   *"the digest step DESCRIBES the file, the export step MOVES it provider -> object storage, and
+   neither hands bytes to the daemon."*
+3. **No frozen change was needed.** Support is declared by `artifactExportMode`, NOT by
+   `advertisedOperations` — that set is typed to the frozen `ProviderOperation` union, so adding
+   to it would have been the E4-D02 STOP. The mode field routes around it without touching
+   `packages/worker-protocol`.
+
+### ★ THE GRANT IS A BEARER CAPABILITY — a handling rule, not a note
+
+The port says it outright: *"anyone holding it can write that object key until it expires"*, and
+`RedactedResourceProjection` — the only shape cleanup authority ever returns — excludes
+`objectGrants` alongside `command`/`env`/`logs`/`secrets`.
+
+**So a grant must never reach a projection, a log line, or an error message.** For BRW-003b that
+is concrete: the browser metadata events this ticket emits must not carry it, and the
+URL-stripping decision in §3 covers query strings generally — but a grant appearing in an error
+path would bypass that entirely. Asserted, not assumed.
+
+**One shared presigned-PUT helper, one test.** The exporter must send `x-amz-checksum-sha256`
+itself (`s3-provider.ts:120-142` sets `ChecksumAlgorithm` and returns `headers: {}`). That
+knowledge lives in exactly one place today — `tests/d1/lib/e6f-harness.mjs` `putPresignedBytes` —
+and the harness runs as piped source text, so the helper must be simultaneously importable and
+embeddable.
+
+## 6a. ★ DO NOT REQUIRE THE CAPABILITY — it makes every browser job UNPLACEABLE
+
+Verified by Lane A while attempting it, and it lands directly on this ticket.
+
+The frozen matcher computes `effective = capabilityCeiling ∩ reportedCapabilities` and then requires
+**every** entry of `requirements.capabilities` to be in that intersection, or `matches()` returns
+`false` (`capabilities.ts:481-489`). **Today nothing is on either side**: no target's
+`capabilityCeiling` contains `artifact.direct_upload`, and no worker reports it.
+
+So the one-line change at `job-submission.ts:143` — which currently sends `["browser.chromium"]` —
+would send **every browser job to a permanent no-match**. And it fails SILENTLY: the job never
+leases. That is the same silent-non-lease class BRW-001 exists to prevent, pointed at this epic.
+
+**Ordered prerequisites, ALL of which must land before requiring it:**
+
+1. a REAL provider implements export — `E2bSandboxProvider` currently declares
+   `artifactExportMode: "none"` and declines (DAT-009 slice 1 §4);
+2. targets advertise it in `capabilityCeiling` (operator action via the admin route);
+3. workers REPORT it in `reportedCapabilities` — and the daemon's only production hello builder is
+   `buildDesktopHello`, whose own header says it emits a worker that *"can never be matched work"*.
+
+**BRW-003b does NOT touch `requiredCapabilities`.** Requiring before advertising is the failure
+direction. The translation already passes `artifact.direct_upload` through verbatim
+(`job-placement.ts:181-185`) and fails closed on an unknown name, so nothing needs changing there
+either — the plumbing is pure data on both sides, waiting on the three steps above.
 
 ## 7. ★ Deployment prerequisite — the sandbox has no browser
 

@@ -329,20 +329,29 @@ applying: a desktop provider implements the same capability against its own stor
 Appended, not edited, so the original reasoning stays readable. Both were found while designing
 BRW-003 against this record, and both were verified by opening the files.
 
-### 8.1 §4.1's non-STOP exemption is WRONG — the worker-daemon port is ALSO frozen
+### 8.1 ★ WITHDRAWN — my "second Custodian STOP" claim was wrong, and Lane A was right
 
-§4.1 concludes the additive grant-in/reference-out change "lands in `packages/worker-daemon`'s
-port — **not** in the frozen `packages/worker-protocol`, so it is not an E4-D02 STOP", and §7
-assigns it to Lane A.
+**What I claimed:** that §4.1's exemption does not hold, because
+`HANDOFF-lane-b-browser-service.md` §7 ("Frozen — never edit") lists the worker-daemon
+`SandboxProvider` port alongside `packages/worker-protocol/`; therefore the grant-in/reference-out
+change was a second Protocol/Schema Custodian STOP rather than Lane A's to make.
 
-**The exemption does not hold.** `HANDOFF-lane-b-browser-service.md` §7 ("Frozen — never edit")
-lists, in one sentence: `packages/worker-protocol/`, **the worker-daemon `SandboxProvider` port**,
-and `docs/architecture/distributed-execution-threat-*`. The port is frozen in its own right, so
-"not worker-protocol" does not exempt it.
+**Why it was wrong.** That document is titled *"Lane B kickoff"* and addresses "you" throughout.
+§7 is a **LANE-B-SCOPED prohibition, not a global freeze** — it tells Lane B not to edit that port,
+which §7 of THIS record assigns to Lane A. I generalised a scoped instruction into a programme-wide
+one and escalated on the strength of it.
 
-**Consequence:** the grant-in/reference-out change is a **second Protocol/Schema Custodian STOP**,
-alongside the operation-vocabulary STOP already raised — not a Lane A implementation task. §7's
-assignment should move accordingly.
+**Demonstrated by the work landing:** DAT-009 slice 1 implemented the export capability in
+`packages/worker-daemon` with **`packages/worker-protocol` untouched** — no frozen change, no
+custodian STOP, no D0-T04 corpus — because `artifact.direct_upload` is an **already-existing frozen
+capability name**. `packages/sandbox-provider-contract` was left alone for the sharper reason that
+its driver is keyed by the frozen `ProviderOperation` union, so a conformance case there *would*
+have required a frozen change.
+
+**What survives:** the E4-D02 STOP on the OPERATION VOCABULARY is real and was correctly avoided —
+`OPTIONAL_PROVIDER_OPERATIONS` is frozen at three values and `supportedOperations` is doubly
+pinned, which is exactly why the two new methods are declared by an `artifactExportMode` field
+rather than added to `advertisedOperations`.
 
 ### 8.2 The `stdoutRef` precedent is a NON-guarantee, and slice 7 is COMPLETE
 
