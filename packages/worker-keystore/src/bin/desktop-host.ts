@@ -46,6 +46,7 @@ import { decodeEnrollmentReceipt, encodeEnrollmentReceipt } from "../receipt-env
  * same flag are two things to keep in step, which is the drift argued against for the
  * acknowledgement flag. Re-exported so every existing importer is unaffected. */
 import { RESET_IDENTITY_FLAG, resolveDesktopInvocation } from "./desktop-invocation.js";
+import { resolveSandboxProvider, type ProviderModuleLoader } from "./sandbox-provider.js";
 import {
   authorizeControlCommand,
   executeControlCommand,
@@ -92,6 +93,12 @@ export interface DesktopHostDeps {
    * own; the shipped `bin/aoa-worker-desktop` never sets it.
    */
   readonly provider?: SandboxProvider;
+  /**
+   * DEP-010 — the provider-module loader the resolver uses. OPTIONAL; absent, the resolver's
+   * default imports `@armyofagents/sandbox-e2b-provider` lazily. Injected by tests so the REAL
+   * provider can be paired with a MOCK transport without the SDK's credential path.
+   */
+  readonly loadProviderModule?: ProviderModuleLoader;
   /**
    * DSK-003 — the outward effects a control command needs.
    *
@@ -263,12 +270,31 @@ export async function runDesktopHost(deps: DesktopHostDeps): Promise<{ ok: boole
   // type-checker the standing guard against the two shapes diverging again.
   // DSK-003 — the background host writes to its own file. Task Scheduler has no native
   // redirection, so without this every line on the only supported platform went nowhere.
+  // DEP-010 — resolve a sandbox provider from the env and inject it, IMMEDIATELY BEFORE
+  // bootstrap. Placed here, AFTER the control and reset branches (both returned above), so a
+  // control command never spins up an SDK as a side effect and a reset never constructs a
+  // provider. A directly-injected `deps.provider` wins (tests, embedders); otherwise the
+  // resolver reads AOA_WORKER_SANDBOX_PROVIDER — unset ⇒ no provider, the shipped default. An
+  // explicitly-requested provider that CANNOT be built is a REFUSAL to boot, never a degrade to
+  // no-provider: the operator opted in, so honouring it silently as "off" would send them to
+  // rebuild a build that is already correct.
+  let provider = deps.provider;
+  if (provider === undefined) {
+    const resolution = await resolveSandboxProvider(deps.env, deps.loadProviderModule);
+    if (resolution.kind === "refused") {
+      log(`desktop host: sandbox provider requested but could not be built: ${resolution.reason}`);
+      deps.proc.exit(1);
+      return { ok: false };
+    }
+    if (resolution.kind === "provider") provider = resolution.provider;
+  }
+
   const result: BootstrapResult = await bootstrap({
     env: deps.env,
     proc: deps.proc,
     identityStore,
     receiptStore,
-    provider: deps.provider,
+    provider,
     logFilePath: resolveControlPaths(deps.env, deps.platform).logPath,
   });
 

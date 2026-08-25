@@ -17,7 +17,13 @@ import {
   type HealthServerHandle,
   type ProcessLike,
 } from "@armyofagents/worker-daemon";
-import { runDesktopHost } from "../bin/desktop-host.js";
+import {
+  runDesktopHost,
+  RESET_IDENTITY_FLAG,
+  RESET_ACKNOWLEDGEMENT_FLAG,
+} from "../bin/desktop-host.js";
+import { E2bSandboxProvider, createMockE2bTransport } from "@armyofagents/sandbox-e2b-provider";
+import type { ProviderModule, ProviderModuleLoader } from "../bin/sandbox-provider.js";
 
 const LOCAL = "C:\\Users\\t\\AppData\\Local";
 
@@ -118,3 +124,89 @@ async function bootDaemon(env: Env, provider?: unknown) {
     .filter((r): r is string => typeof r === "string");
   return { reasons };
 }
+
+// ─── Step 7 — the root resolves and injects a provider, AFTER control and reset ──────────────
+//
+// The injected module seam pairs the REAL provider with a MOCK transport, so no case reaches the
+// e2b credential path. The env opts in; a control command or a reset must NOT resolve at all.
+
+const OPT_IN = { AOA_WORKER_SANDBOX_PROVIDER: "e2b", AOA_WORKER_E2B_TEMPLATE: "base" };
+
+function providerSeam(over: Partial<ProviderModule> = {}): ProviderModuleLoader {
+  return async () => ({
+    E2bSandboxProvider: E2bSandboxProvider as never,
+    createRealE2bTransport: (() => createMockE2bTransport()) as never,
+    ...over,
+  });
+}
+
+const controlDeps = {
+  authorize: () => ({ allowed: true }),
+  resolveTarget: async () => ({ ok: true, pid: 42 }),
+  signal: async () => {},
+  readStatus: async () => ({ running: true }),
+  readLogTail: async () => "a log line",
+};
+
+describe("DEP-010 — the desktop root resolves and injects a provider", () => {
+  it("resolves a provider from the env and injects the REAL one into bootstrap", async () => {
+    const bootstrap = vi.fn(async () => ({ ok: true }));
+    const { proc } = fakeProc();
+    await runDesktopHost({
+      env: { LOCALAPPDATA: LOCAL, ...OPT_IN },
+      proc: proc as never, platform: "win32", argv: [],
+      createRunner: okRunner as never, bootstrap: bootstrap as never, log: () => {},
+      loadProviderModule: providerSeam(),
+    });
+    const passed = bootstrap.mock.calls[0]![0] as Record<string, unknown>;
+    expect(passed.provider).toBeInstanceOf(E2bSandboxProvider);
+  });
+
+  it("REFUSES to boot when an explicitly-requested provider cannot be built", async () => {
+    // An opt-in that cannot be honoured is a refusal, never a degrade. The propagated message
+    // names the credential (asserted only here, in a .test.ts the boundary scanner skips).
+    const bootstrap = vi.fn(async () => ({ ok: true }));
+    const { proc, exitCodes } = fakeProc();
+    const logs: string[] = [];
+    const out = await runDesktopHost({
+      env: { LOCALAPPDATA: LOCAL, ...OPT_IN },
+      proc: proc as never, platform: "win32", argv: [],
+      createRunner: okRunner as never, bootstrap: bootstrap as never, log: (m) => logs.push(m),
+      loadProviderModule: providerSeam({
+        createRealE2bTransport: (() => {
+          throw new Error("RealE2bTransport requires E2B_API_KEY (provider-control credential)");
+        }) as never,
+      }),
+    });
+    expect(out.ok).toBe(false);
+    expect(exitCodes).toEqual([1]);
+    expect(bootstrap).not.toHaveBeenCalled();
+    expect(logs.join("\n")).toContain("E2B_API_KEY");
+  });
+
+  it("a CONTROL command does NOT construct a provider — the resolve runs AFTER it", async () => {
+    const load = vi.fn(providerSeam());
+    const { proc } = fakeProc();
+    await runDesktopHost({
+      env: { LOCALAPPDATA: LOCAL, ...OPT_IN },
+      proc: proc as never, platform: "win32", argv: ["status", "--token=t"],
+      createRunner: okRunner as never, bootstrap: (async () => ({ ok: true })) as never, log: () => {},
+      loadProviderModule: load,
+      control: controlDeps as never,
+    });
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("--reset-identity does NOT construct a provider — the resolve runs AFTER it", async () => {
+    const load = vi.fn(providerSeam());
+    const { proc } = fakeProc();
+    await runDesktopHost({
+      env: { LOCALAPPDATA: LOCAL, ...OPT_IN },
+      proc: proc as never, platform: "win32",
+      argv: [RESET_IDENTITY_FLAG, RESET_ACKNOWLEDGEMENT_FLAG],
+      createRunner: okRunner as never, bootstrap: (async () => ({ ok: true })) as never, log: () => {},
+      loadProviderModule: load,
+    });
+    expect(load).not.toHaveBeenCalled();
+  });
+});
