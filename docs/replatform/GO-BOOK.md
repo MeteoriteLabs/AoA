@@ -197,7 +197,7 @@ provably cannot be offered work. Sprints 6–9 scale it to every sink and agent 
 | Sprint | Plan | State |
 |---|---|---|
 | 1 | [`WRK-010-design.md`](./epics/E4-worker-daemon/tickets/WRK-010-design.md) + [`WRK-010-result.md`](./epics/E4-worker-daemon/tickets/WRK-010-result.md) | **★ SHIPPED (slice 1), `c1c5530f5`.** Renewal ROUTE lands server-side with **ZERO callers on purpose**; **8 mutants / 8 killed / 0 survivors / 0 equivalents**; a 4-reviewer adversarial pass found **0 HIGH/BLOCKING** and 3 LOW (all fixed). **E4-F007 stays `open`** (§0e — closes at Sprint 2.5) and its manifest key is untouched; a new LOW **E4-F014** (DSK-001's phantom `IdentityLifecycle.acquireSession()`) is filed `unowned`. Local review needs `AOA_RUN_WIN_INTEGRATION=1` (six of nine clauses are embedded-PG-only). `verify` inherits the pre-Sprint-1 red (§2.0). |
-| 2 | [`DEP-010-design.md`](./epics/E6-deployment-test-harness/tickets/DEP-010-design.md) | complete, **revised after TWO adversarial review rounds** - 12 steps; Step 0 is no longer a STOP but a **conditions check** against §8 D-3; three CI-red defects the draft would have shipped are fixed; round 2 added §4.2 (**the inertness proof expires at Sprint 3**) and closed E4-F011 in substance, not just in the register |
+| 2 | [`DEP-010-design.md`](./epics/E6-deployment-test-harness/tickets/DEP-010-design.md) + [`DEP-010-result.md`](./epics/E6-deployment-test-harness/tickets/DEP-010-result.md) | **★ SHIPPED, `176eb5f8e … 6b2c27fb9`.** 12 fail-first steps, every guard mutation-proven by DELETION; **D-3's three conditions verified in what shipped**; the shipped desktop default constructs **NO provider** (proven by guard, not merely flag-off); even provider+flag composes no loop (§4.1 structural lock, **which expires at Sprint 3** — §4.2, Sprint 3 REPLACES not inherits). **E4-F011 (HIGH) resolved** + key deleted; **E6-F003 repointed** to new successor **DEP-011** (E4-F013); **E6-F008/F004 resolved**. A **5-reviewer adversarial pass found 0 HIGH/BLOCKING** (2 LOW comment fixes applied). `verify` inherits the pre-Sprint-2 red (§2.0). |
 | 3 | [`WRK-008-slice-2b-design.md`](./epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md) | complete, **revised after TWO adversarial review rounds** - 11 steps, 53 mutants, a **§0.1 pre-DEP-010 preamble**, the D1 question answered, and the gate story corrected to **per boot root** (container 4, desktop **3** — round 2 caught the plan counting two under a table that said three) |
 | 2.5 | none — WRK-010 §9 scopes it | **write at sprint start.** Small, but it is the sprint that gives Sprint 1 a caller. Two known requirements are already written down in §4. |
 | 2.75 | [`WRK-011-design.md`](./epics/E4-worker-daemon/tickets/WRK-011-design.md) | **complete plan, written 2026-08-25.** 10 fail-first steps (Step 0 is a POSITIVE CONTROL, on the E1-F008 precedent), **18 mutants, every one a DELETION, ZERO declared equivalents**, and an acceptance table with a per-clause **tier** column that names the two clauses it deliberately does NOT write. Owns **E4-F010**. ★ Its §0 corrects three of that finding's claims against the code and adds a **third blocker the finding never named** — the enrolled all-zero capacity — which fires *earlier* than either half it does. ★ Its §5.2 carries ONE open question for the §8 ledger (per-target vs per-worker activation): take it **before Step 1**, not during Step 7 — option (b) makes this L into XL |
@@ -330,7 +330,20 @@ so WRK-010 stays **one E4 ticket**. Nothing to decide at sprint start.
 ---
 
 ### Sprint 2 — DEP-010: the provider seam
-**Epic E6/E4 · node exists · design: `epics/E6-deployment-test-harness/tickets/DEP-010-design.md`**
+**Epic E6/E4 · ★ SHIPPED `176eb5f8e … 6b2c27fb9` · design + result: `epics/E6-deployment-test-harness/tickets/DEP-010-{design,result}.md`**
+
+**★ LANDED.** 12 fail-first steps, every guard mutation-proven by DELETION (with positive
+controls). Go-book §8 **D-3's three conditions verified in what shipped**: one-file
+`PROVIDER_HOST_PATH` confinement, a *tightened* checker (a zero-file credential ban whose own
+self-test proves a second naming file fails), and a provider-less shipped default asserted by a
+guard. **"Inert" proven the strict way** — the shipped desktop default constructs **no provider
+at all** (the resolver returns `{kind:"none"}` before the loader is called; Steps 4/6/8/10), and
+even provider+flag composes no loop (the §4.1 structural lock — which **expires at Sprint 3**,
+§4.2, and Sprint 3 must REPLACE not inherit). **E4-F011 (HIGH) resolved** + manifest key deleted;
+**E6-F003 repointed** to a filed successor **DEP-011** (E4-F013 — an open finding may not be left
+owned by shipped work); **E6-F008/E6-F004 resolved**. A **5-reviewer adversarial pass found 0
+HIGH/BLOCKING** (2 LOW comment fixes applied). `verify` inherits the pre-Sprint-2 red (§2.0),
+stated in the result doc. Everything below is the sprint AS SCOPED, kept as the record.
 
 **Why.** No production process can construct a sandbox provider. `E2bSandboxProvider` exists
 but is in **no** package's dependency list. Four open findings are one question:
