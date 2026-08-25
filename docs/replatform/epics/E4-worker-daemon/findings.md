@@ -164,6 +164,26 @@ the code TTL), a worker whose 15-min session nears expiry has no path to renew a
 any job longer than the session window will lose its lease and quarantine late output rather than run
 to completion. WRK-005 did NOT design around F007 client-side (per the finding's directive).
 
+**WRK-010 slice-1 addendum (2026-08-25 — the SERVER route lands; the finding stays open).** Slice 1
+ships a device-proof-bound renewal route, `POST /api/worker-control/session/renew`, that never
+touches the enrollment code table: a worker presenting a **live** session plus a fresh device-key
+proof receives a **new** 15-minute-bounded session. It reuses the shipped
+`createWorkerSessionAuthenticator` for nine of the ten authority guards and adds one of its own — a
+platform-physical denial (R1) the authenticator no longer performs for free. The option taken is the
+finding's **(c), AMENDED — proof PLUS a live session**, not its literal "device-proof-**only**"
+wording (`:148-149`): a proof-only endpoint would turn the device key into a bearer credential and
+force a thumbprint→organization routing table the tenant boundary forbids, so it was rejected; (a)
+unbinding the code-route TTL makes the one-time bootstrap code live forever, and (b) sliding the
+session on `poll` couples authority lifetime to work availability — both rejected. **What slice 1 does
+NOT change:** *nothing calls this route.* No sprint before Sprint 2.5 points `SessionStoreDeps.renew`
+(`identity/session.ts:55`) at it, so a worker still loses its path to a fresh session at the
+ten-minute code-route boundary — which is this finding's own statement of the defect. Marking it
+`resolved` here would convert a live problem into a settled one. **Closure owner: WRK-010 slice 2**,
+go-book §4 *"★ Sprint 2.5 — WRK-010 slice 2: the renewal route gets its first caller"*, which ships
+the worker-side client, the near-expiry threshold in `SessionStore.ensureFresh`, and the first-session
+acquisition (E4-F012). Slice 1 is the rollback unit: delete the route registration and the services
+are inert.
+
 ## E4-F008 — WRK-005 inherits the E4-D12 provisioning-refresh concern (loop-toward-live-dispatch)
 
 **Status:** `open` · resolve at **the live-dispatch wiring ticket (post-WRK-005)** · Severity: LOW
@@ -330,3 +350,32 @@ Needs its own RED test and a deleted-guard mutation before it lands.
 
 **Blocks:** nothing today. Recorded because this guard is the programme's backstop against exactly
 this failure, and it has a hole in it.
+
+## E4-F014 — DSK-001 documents `IdentityLifecycle.acquireSession()` as a landed seam, but no such symbol exists
+
+**Status:** `open` · Severity: LOW · Source: WRK-010 slice-1 terrain verification, 2026-08-25.
+
+DSK-001's design doc asserts a symbol that has no code behind it — the **fourth** time this programme
+has found a documented fact with nothing under it. `grep -rn "acquireSession" --include=*.ts` over
+`packages/` and `server/` returns **nothing**; `IdentityLifecycle` appears only in design documents.
+Two copies make the claim, and BOTH must be named because a remediation aimed at one would leave the
+other standing in the very document the finding is about:
+
+* `epics/E10-desktop/tickets/DSK-001-design.md:351` — *"`IdentityLifecycle.acquireSession()` is landed
+  as the seam the renewal successor implements without reshaping callers."*
+* `epics/E10-desktop/tickets/DSK-001-design.md:431` — *"`IdentityLifecycle.acquireSession()` is the
+  drop-in seam; the fix is a device-proof-bound renewal endpoint."*
+
+The real seam the renewal successor targets is **`SessionStoreDeps.renew`**
+(`packages/worker-daemon/src/identity/session.ts:55`), consumed via `createSessionProvider`
+(`packages/worker-daemon/src/poll/poll-loop.ts:382`). WRK-010 slice 1 designed against that real seam;
+the correction is already recorded verbatim in the `reason` field of the `E4-F007` key in
+`scripts/finding-ownership.json`. This finding tracks the phantom symbol **discretely** so the
+`:351`/`:431` claims are cross-referenced rather than only corrected inside another finding's prose.
+
+**DSK-001's design doc is NOT rewritten** — it is a dated record of a shipped ticket; the finding is
+the correction, and the document keeps its history.
+
+**Blocks:** nothing. It is a documentation inaccuracy in a shipped ticket's design doc, not a code
+defect. `unowned` because no product ticket is its natural owner — a remediation is a one-line
+cross-reference, not work any sprint carries.

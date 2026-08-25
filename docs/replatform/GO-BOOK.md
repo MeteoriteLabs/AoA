@@ -196,7 +196,7 @@ provably cannot be offered work. Sprints 6–9 scale it to every sink and agent 
 
 | Sprint | Plan | State |
 |---|---|---|
-| 1 | [`WRK-010-design.md`](./epics/E4-worker-daemon/tickets/WRK-010-design.md) | **slice 1 only.** complete, **revised after TWO adversarial review rounds** - 7 TDD steps, 2 owned guards + a guard-for-guard map of all 10 onto the SHIPPED authenticator (§3.4), **8 mutants / 8 killed / ZERO declared equivalents** (round 2 retracted six that do not compile - §7 Step 6), acceptance mapping with a per-clause **tier** column. Epic ownership called: **E4** (§0d). ★ Round 2 also established that Step 7 must leave **E4-F007 open** (§0e) |
+| 1 | [`WRK-010-design.md`](./epics/E4-worker-daemon/tickets/WRK-010-design.md) + [`WRK-010-result.md`](./epics/E4-worker-daemon/tickets/WRK-010-result.md) | **★ SHIPPED (slice 1), `c1c5530f5`.** Renewal ROUTE lands server-side with **ZERO callers on purpose**; **8 mutants / 8 killed / 0 survivors / 0 equivalents**; a 4-reviewer adversarial pass found **0 HIGH/BLOCKING** and 3 LOW (all fixed). **E4-F007 stays `open`** (§0e — closes at Sprint 2.5) and its manifest key is untouched; a new LOW **E4-F014** (DSK-001's phantom `IdentityLifecycle.acquireSession()`) is filed `unowned`. Local review needs `AOA_RUN_WIN_INTEGRATION=1` (six of nine clauses are embedded-PG-only). `verify` inherits the pre-Sprint-1 red (§2.0). |
 | 2 | [`DEP-010-design.md`](./epics/E6-deployment-test-harness/tickets/DEP-010-design.md) | complete, **revised after TWO adversarial review rounds** - 12 steps; Step 0 is no longer a STOP but a **conditions check** against §8 D-3; three CI-red defects the draft would have shipped are fixed; round 2 added §4.2 (**the inertness proof expires at Sprint 3**) and closed E4-F011 in substance, not just in the register |
 | 3 | [`WRK-008-slice-2b-design.md`](./epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md) | complete, **revised after TWO adversarial review rounds** - 11 steps, 53 mutants, a **§0.1 pre-DEP-010 preamble**, the D1 question answered, and the gate story corrected to **per boot root** (container 4, desktop **3** — round 2 caught the plan counting two under a table that said three) |
 | 2.5 | none — WRK-010 §9 scopes it | **write at sprint start.** Small, but it is the sprint that gives Sprint 1 a caller. Two known requirements are already written down in §4. |
@@ -293,7 +293,13 @@ WRK-011 has a result doc; it is still the line between "dispatch composed" and "
 ## 4. The sprints
 
 ### Sprint 1 — WRK-010: a worker stays logged in
-**Epic E4 · node exists · design: `epics/E4-worker-daemon/tickets/WRK-010-design.md`**
+**Epic E4 · ★ SHIPPED `c1c5530f5` · design + result: `epics/E4-worker-daemon/tickets/WRK-010-{design,result}.md`**
+
+**★ LANDED (slice 1, server-side).** The renewal route exists with **zero production callers, by
+design**; 8/8 mutants killed; a 4-reviewer adversarial pass found 0 HIGH/BLOCKING (3 LOW fixed).
+**E4-F007 stays `open`** (Sprint 2.5 closes it); a new LOW **E4-F014** records the DSK-001 phantom
+`IdentityLifecycle.acquireSession()` seam. `verify` inherits the pre-Sprint-1 red (§2.0), stated
+in the result doc. Everything below is the sprint AS IT WAS SCOPED, kept as the record.
 
 **Why first.** Today the enrollment code lives 10 minutes and a session 15, with **no
 renewal route** — so a wired worker goes authority-less at T0+15min and a human re-pastes a

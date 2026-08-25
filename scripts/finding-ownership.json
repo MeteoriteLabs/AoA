@@ -69,6 +69,10 @@
     "E4-F013": {
       "status": "unowned",
       "reason": "MED, and deliberately unowned: it is a hole in the ownership guard itself, so no product ticket is the natural owner and attaching it to one would be the same false-ownership move it describes. finding-ownership.mjs:118-120 tests only that ownerStillOpen is NON-EMPTY, so three live entries (E4-F008, E4-F009 -> WRK-008; E6-F003 -> DEP-010) will read as owned by shipped tickets the moment those tickets get result docs. The proposed fix is checkable -- when the owning ticket has a result doc, require a `successor` field naming a ticket that exists on disk -- but it is a guard change and needs its own RED test plus a deleted-guard mutation. Blocks nothing today."
+    },
+    "E4-F014": {
+      "status": "unowned",
+      "reason": "LOW, and deliberately unowned: a documentation inaccuracy in DSK-001's shipped design doc (it names IdentityLifecycle.acquireSession() as a landed seam at DSK-001-design.md:351 and :431; grep finds that symbol in no source .ts file). Filed by WRK-010 slice-1 terrain verification, the fourth documented-fact-with-no-code this programme has found. No product ticket is the natural owner -- remediation is a one-line cross-reference, not sprint work -- and the correction is already recorded in the E4-F007 reason above. The real seam is SessionStoreDeps.renew (packages/worker-daemon/src/identity/session.ts:55). Blocks nothing."
     }
   }
 }
