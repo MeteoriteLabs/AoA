@@ -6,6 +6,13 @@ branch `docs/replatform-program`, worktree `C:\e3`.
 
 **Read §1 and §2 once. Then jump to your sprint in §4** (Sprints 1-3 have full plans linked in §3.1).
 
+> **★ In a hurry? Go straight to §9.** It holds a **copy-paste prompt per sprint** — self-contained,
+> and each one ends by updating this document and the registers, so the next session starts from
+> what is true rather than from what was true when its plan was written.
+>
+> **Before Sprint 1, read §2.0.** The branch's required check cannot currently pass, and it is not
+> the Sprint-0 work.
+
 ---
 
 ## 1. What we are building, and where it actually stands
@@ -553,3 +560,205 @@ the four findings that had been parked — E4-F007 → WRK-010, E6-F003/F004/F00
 > not relitigate", which is exactly where a stale claim does the most damage. The same edit corrected E4-F007's own text, which asserted
 `IdentityLifecycle.acquireSession()` was "already landed as the drop-in seam"; `grep` finds that
 name in two design documents and no source file (§3.1 item 2).
+
+---
+
+## 9. Copy-paste sprint prompts
+
+One block per sprint. Copy it verbatim into a fresh session — each is self-contained and ends by
+updating this go-book and the registers, so the next session starts from truth rather than from
+what was true when the plan was written.
+
+**Two lines appear in every prompt on purpose.** *"Mutation-test every guard: DELETE it, do not
+rewrite it into an equivalent"* and *"if you find something that invalidates the plan's premise,
+STOP"* — the first because a guard nobody can falsify is this repo's most common defect, the second
+because it has already happened twice and both times the catch came from checking before building.
+
+### Sprint 1 — WRK-010 slice 1
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §2.0 (the CI blocker), §2 (the per-ticket process),
+   §4 Sprint 1, and §8 decisions D-1 and D-2 (SETTLED — do not relitigate them).
+2. docs/replatform/epics/E4-worker-daemon/tickets/WRK-010-design.md — the plan.
+   Start at §0: it lists corrections verified at tip, and §3.4 maps every authority
+   guard onto the shipped authenticator.
+
+Execute Sprint 1 (WRK-010 slice 1) end to end, following the plan's TDD steps in order.
+
+Binding rules:
+- Fail-first. Write the RED test, run it, confirm it fails for the RIGHT reason, then implement.
+- Mutation-test every guard you add: DELETE the guard — do not rewrite it into an equivalent —
+  run the named test, and confirm it goes red. Run a POSITIVE CONTROL first so you know the
+  harness measures anything at all.
+- packages/worker-protocol is FROZEN. Consuming it is fine; editing it is a STOP — come back and ask.
+- The route REUSES createWorkerSessionAuthenticator. Do not hand-write the authority guards.
+  Guard R1 — the platform-physical denial the authenticator does NOT perform — is yours to write.
+- E4-F007 STAYS OPEN. Slice 1 builds a route with no callers; Sprint 2.5 closes the finding.
+  Do not touch its status or its key in scripts/finding-ownership.json.
+
+When the code is green:
+- Run all five registers; every one must pass:
+  node scripts/check-ticket-graph-coverage.mjs
+  node scripts/check-finding-ownership.mjs
+  node scripts/check-guard-inventory.mjs
+  node scripts/check-gate-clause-wiring.mjs
+  node scripts/check-execution-census.mjs
+- Write epics/E4-worker-daemon/tickets/WRK-010-result.md: what shipped, what did NOT,
+  the mutation table, and every claim you could not prove.
+- Update GO-BOOK.md §3.1's Sprint 1 row and §4 Sprint 1 to what is now true.
+- Commit, push, and report CI honestly — including `verify`, which is red for reasons
+  that predate this sprint (§2.0). Do not raise its timeout to make it green.
+
+If you find something mid-sprint that invalidates the plan's premise, STOP and say so
+rather than absorbing it.
+```
+
+### Sprint 2 — DEP-010
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §2.0, §2, §4 Sprint 2, and §8 decision D-3.
+2. docs/replatform/epics/E6-deployment-test-harness/tickets/DEP-010-design.md.
+   Its §0 carries the citation convention, §2 the findings disposition, and §4.2 and §10
+   the two things that make this sprint dangerous.
+
+Execute Sprint 2 (DEP-010) end to end.
+
+Binding rules:
+- The keystore dependency-boundary widening is ALREADY APPROVED (§8 D-3) on three named
+  conditions. Do not re-ask for approval; DO verify all three hold in what you ship.
+- This sprint does NOT turn dispatch on. On the desktop, "inert" means the shipped default
+  constructs NO PROVIDER AT ALL, proven by a guard — not merely that the flag is off.
+- You own E4-F011. Closing it requires a WRITTEN decision naming which boot root gets a
+  provider and what the dispatch flag defaults to there. When you resolve it in
+  epics/E4-worker-daemon/findings.md, DELETE its key from scripts/finding-ownership.json in
+  the SAME commit — a manifest entry for a non-open finding fails the always-on policy job.
+- Mutation-test every guard: DELETE it, do not rewrite it. Positive control first.
+- Cite living documents (this go-book, findings registers) by SECTION AND ID, never by line.
+- §10 lists four WRK-008 slice 2b assertions this ticket invalidates. Leave that section
+  accurate — Sprint 3 reads it before it starts.
+
+When green: run all five registers, write DEP-010-result.md, update GO-BOOK.md §3.1's
+Sprint 2 row and §4 Sprint 2, commit, push, report CI honestly.
+
+If you find something that invalidates the plan's premise, STOP and say so.
+```
+
+### Sprint 2.5 — WRK-010 slice 2
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first:
+1. docs/replatform/GO-BOOK.md — §2.0, §2, §4 "Sprint 2.5", and the §3.1 note that this
+   sprint writes its own plan.
+2. docs/replatform/epics/E4-worker-daemon/tickets/WRK-010-design.md §9.1 — slice 2 is
+   already scoped there, including the two requirements below.
+3. WRK-010-result.md (Sprint 1's output) for what actually shipped.
+
+STEP 1 IS TO WRITE THE PLAN, to the same standard as the Sprint 1-3 designs: verified state
+at tip with citations, architecture, fail-first TDD steps, a mutation table, and an acceptance
+table mapping each clause to the test that proves it. Save it as
+epics/E4-worker-daemon/tickets/WRK-010-slice-2-design.md. Then execute it.
+
+Why this sprint exists — do not lose the thread: after Sprints 1, 2 and 3 as originally
+sequenced, the renewal route Sprint 1 built would have had ZERO CALLERS, because slice 2b
+wired the session's renew to Enroller.renew — the enrolment CODE REPLAY, which only survives
+the ~10-minute code route. This sprint is what makes Sprint 1 worth having.
+
+Two requirements are already established and must survive into the plan:
+- SessionStore.ensureFresh refreshes only when the session is absent or ALREADY EXPIRED, and
+  the renewal route refuses an expired session by construction. Slice 2 adds the near-expiry
+  threshold. Without it the thunk fires exactly when its credential is dead.
+- That threshold must be at least FIVE MINUTES of headroom, as an INVARIANT rather than a
+  scheduling preference — below it a proof-replay window of up to ~4.9 minutes opens
+  (WRK-010 §3.5(i) derives the arithmetic).
+
+E4-F007 RESOLVES HERE. In the same commit: flip its status in
+epics/E4-worker-daemon/findings.md AND delete its key from scripts/finding-ownership.json.
+Doing one without the other reddens the always-on policy job.
+
+When green: run all five registers, write the result doc, update GO-BOOK.md §3.1 and
+§4 Sprint 2.5, commit, push, report CI honestly.
+```
+
+### Sprint 3 — WRK-008 slice 2b
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §2.0, §2, §4 Sprint 3.
+2. docs/replatform/epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md, and its
+   §0.1 BEFORE anything else: this plan was written against the pre-DEP-010 tree, and §0.1
+   tables four of its own assertions that Sprint 2 invalidated.
+3. DEP-010-result.md §10 — the same four, from the other side.
+
+STEP 0: reformulate those four assertions against the tree as it now is, and confirm §2's
+per-root gate table still matches reality. Do this BEFORE any implementation. One of them is
+a guard that lands in the always-on policy job and would be red on every PR, docs-only ones
+included.
+
+Then execute the plan's TDD steps in order.
+
+Binding rules:
+- Sprints 1, 2 AND 2.5 must be green first. Without slice 2 a composed worker still dies at
+  the ~10-minute code-route boundary.
+- Mutation-test every guard: DELETE it, do not rewrite it. Positive control first.
+- packages/worker-protocol is FROZEN.
+- E4-F010 STAYS OPEN and unowned. Shipping this slice does not close it. Do not write an
+  acceptance clause that reads as "a worker leases, executes and reports" — the worker
+  self-checks every offer against its own hello and refuses effectively all of them.
+- Gate-clause promotion is a DELIBERATE decision, in the plan's Step 10. The wiring checker
+  validates a `wired` clause on caller count alone and never reads its `reason`, so a caveat
+  parked in a reason field is a caveat nothing surfaces.
+- This slice adds new *.test.mjs files: add them to scripts/test-execution-census.json in the
+  same commit or the always-on policy job goes red. It also adds a new AOA_WORKER_* switch
+  that brand-check cannot see — document it in docs/deploy/environment-variables.md.
+
+When green: run all five registers, write WRK-008-slice-2b-result.md, update GO-BOOK.md §3.1
+and §4 Sprint 3, commit, push, report CI honestly.
+
+Budget time to re-baseline the D1 lane. If you find something that invalidates the plan's
+premise, STOP and say so.
+```
+
+### Sprints 4-9 — the template
+
+These have scope and sequence but no implementation plan, deliberately: a plan written five
+sprints early goes stale, which is the failure this whole audit exists to fix. **Step 1 of each is
+to write the plan.** Substitute the bracketed parts from §4.
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first:
+1. docs/replatform/GO-BOOK.md — §2.0, §2 (the per-ticket process), §4 "[SPRINT HEADING]",
+   §5 (debt carried deliberately), and §8 (settled decisions).
+2. The result docs of the sprints before this one — they are the record of what actually
+   shipped, which is not always what their plans said.
+3. docs/replatform/epics/[EPIC]/findings.md and scripts/finding-ownership.json — anything
+   open and owned by this sprint's tickets is yours.
+
+STEP 1 IS TO WRITE THE PLAN, to the same standard as the Sprint 1-3 designs:
+- Verified state at tip. Open every file you cite and record the line. Where a document and
+  the code disagree, the code wins and you say so.
+- COUNT THE CALLERS of anything an acceptance clause depends on. A clause satisfied by a
+  function nothing calls is vacuous, and that is the defect this programme keeps shipping.
+- Fail-first TDD steps, a mutation table (DELETE each guard, never rewrite it), and an
+  acceptance table mapping every clause to the test that could turn RED.
+Save it as epics/[EPIC]/tickets/[TICKET]-design.md. Then execute it.
+
+Binding rules: packages/worker-protocol is FROZEN. All five registers must pass. Cite living
+documents by section and id, never by line.
+
+When green: write the result doc, update GO-BOOK.md §3.1 and the §4 entry for this sprint,
+commit, push, report CI honestly.
+
+If you find something that invalidates the sprint's premise, STOP and say so.
+```
