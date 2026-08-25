@@ -200,7 +200,7 @@ provably cannot be offered work. Sprints 6–9 scale it to every sink and agent 
 | 2 | [`DEP-010-design.md`](./epics/E6-deployment-test-harness/tickets/DEP-010-design.md) + [`DEP-010-result.md`](./epics/E6-deployment-test-harness/tickets/DEP-010-result.md) | **★ SHIPPED, `176eb5f8e … 6b2c27fb9`.** 12 fail-first steps, every guard mutation-proven by DELETION; **D-3's three conditions verified in what shipped**; the shipped desktop default constructs **NO provider** (proven by guard, not merely flag-off); even provider+flag composes no loop (§4.1 structural lock, **which expires at Sprint 3** — §4.2, Sprint 3 REPLACES not inherits). **E4-F011 (HIGH) resolved** + key deleted; **E6-F003 repointed** to new successor **DEP-011** (E4-F013); **E6-F008/F004 resolved**. A **5-reviewer adversarial pass found 0 HIGH/BLOCKING** (2 LOW comment fixes applied). `verify` inherits the pre-Sprint-2 red (§2.0). |
 | 3 | [`WRK-008-slice-2b-design.md`](./epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md) | complete, **revised after TWO adversarial review rounds** - 11 steps, 53 mutants, a **§0.1 pre-DEP-010 preamble**, the D1 question answered, and the gate story corrected to **per boot root** (container 4, desktop **3** — round 2 caught the plan counting two under a table that said three) |
 | 2.5 | [`WRK-010-slice-2-design.md`](./epics/E4-worker-daemon/tickets/WRK-010-slice-2-design.md) + [`WRK-010-slice-2-result.md`](./epics/E4-worker-daemon/tickets/WRK-010-slice-2-result.md) | **★ SHIPPED, `16c7dc705 … ` (through the result-doc commit).** The renewal route gets its FIRST production caller. Adopts WRK-010 §9.1.1's decided mechanism verbatim: the enrolment SINK (`onSessionMinted`, I13-safe — the outcome is unchanged) + `SessionStoreDeps.renew(current)` and a REQUIRED `bootstrap()` (E4-F012 becomes a compile error). Ships the worker-side device-proof renewal client, the ≥5-min near-expiry threshold (`RENEWAL_HEADROOM_MS`, the §3.5(i) invariant), and the production `createWorkerSessionLifecycle` the boot root composes when a provider + `AOA_WORKER_DISPATCH_ENABLED` are present. **Proven at embedded-PG with the REAL daemon lifecycle** (no fixture session): FIRST session from the sink, RENEWED from the route (`s1≠s0`), authority sustains past T0+15min, steady-state boot bootstraps via code replay. **12 mutants (11 killed + 1 type-level property), 0 survivors.** A **6-agent adversarial pass** (5 dimension reviewers + a completeness critic), a **refutation skeptic**, and an **independent codex pass** found 0 HIGH/BLOCKING (a MED "recovery-regression" reading was **refuted** — the session always outlives its code, so both recovery paths stop identically; and the poll loop is not composed until Sprint 3). **`E4-F007` and `E4-F012` RESOLVED** here (status flipped + keys deleted, same commit). The route's repeated near-expiry renewal in a RUNNING process is Sprint 3's poll-loop driver; the mechanism is built, wired, and proven here. `verify` inherits the pre-Sprint-2.5 red (§2.0). |
-| 2.75 | [`WRK-011-design.md`](./epics/E4-worker-daemon/tickets/WRK-011-design.md) | **complete plan, written 2026-08-25.** 10 fail-first steps (Step 0 is a POSITIVE CONTROL, on the E1-F008 precedent), **18 mutants, every one a DELETION, ZERO declared equivalents**, and an acceptance table with a per-clause **tier** column that names the two clauses it deliberately does NOT write. Owns **E4-F010**. ★ Its §0 corrects three of that finding's claims against the code and adds a **third blocker the finding never named** — the enrolled all-zero capacity — which fires *earlier* than either half it does. ★ Its §5.2 carries ONE open question for the §8 ledger (per-target vs per-worker activation): take it **before Step 1**, not during Step 7 — option (b) makes this L into XL |
+| 2.75 | [`WRK-011-design.md`](./epics/E4-worker-daemon/tickets/WRK-011-design.md) + [`WRK-011-result.md`](./epics/E4-worker-daemon/tickets/WRK-011-result.md) | **★ SHIPPED, `5c10a0f32 … ` (through the result-doc commit).** A worker can now be OFFERED work and can ACCEPT it: the atomic triple (`profile_snapshot` + `profile_hash` + a fresh session, mint before commit) on `POST /api/execution-targets/self/hello`, plus the provisioned `buildDesktopHello`/`deriveHelloProvisioning` and `client.selfHelloRefresh()`. **Proven at embedded-PG through the REAL `poll` service** (`no_work` precondition → refresh → `offer`; the daemon self-check admits the captured offer; old session dead; throwing-signer rollback). **18 mutants, 18 killed, 0 survivors** (M6 verified via the positive control; the platform-physical narrow is type-enforced). **§5.2 decision taken BEFORE Step 1 as §8 D-5 — option (a), per-target.** A **5-reviewer adversarial pass + completeness critic + skeptic + independent codex pass** found **0 HIGH/BLOCKING** in-house; 2 LOW coverage gaps fixed (a real-route HTTP success test A8; A6 tightened); codex's 3 HIGH all **refuted** (frozen matcher / dead-on-arrival session / declared non-goal), 1 MED **fixed** (platform-physical guard order), 1 MED **documented**. **E4-F010 RESOLVED** (status flipped + key deleted, same commit); new LOW **E4-F016** filed. `verify` inherits the pre-Sprint-2.75 red (§2.0). |
 | 4-9 | scope + sequence only (§4) | **Step 1 of each sprint is: write the plan.** A plan written five sprints early goes stale, which is the exact failure this audit exists to fix. |
 
 ### ★ Three things the planning pass found that change what you do
@@ -285,8 +285,12 @@ half, and attaching it to Sprint 3 would have been the false claim of ownership
 `check-finding-ownership.mjs` exists to prevent. **It is owned now: WRK-011, scheduled as Sprint
 2.75, which runs BEFORE Sprint 3.** So the line this section used to end on — *"Sprint 5 cannot pass
 until it is owned"* — is retired: ownership is settled, and what Sprint 5 needs is Sprint 2.75
-**shipped**, which is a stronger condition than owned. The finding itself **stays `open`** until
-WRK-011 has a result doc; it is still the line between "dispatch composed" and "dispatch working".
+**shipped**, which is a stronger condition than owned. **★ UPDATE 2026-08-25 — WRK-011 SHIPPED and
+E4-F010 is `resolved`** (status flipped + manifest key deleted in the result commit). The line between
+"dispatch composed" and "dispatch working" is now crossed on the offer/accept axis: a provisioned
+worker is offered work through the real `poll` service and its self-check admits the offer. What
+remains for Sprint 3 is *composing* the loop (`createPollLoop` still has zero production callers) and
+for Sprint 5 the one real E2B journey.
 
 ---
 
@@ -431,7 +435,23 @@ stale references. The same reasoning admits **2.75** below.
 ---
 
 ### ★ Sprint 2.75 — WRK-011: a worker can be OFFERED work, and can accept it
-**Epic E4 · node exists · design: `epics/E4-worker-daemon/tickets/WRK-011-design.md`**
+**Epic E4 · ★ SHIPPED · design + result: `epics/E4-worker-daemon/tickets/WRK-011-{design,result}.md`**
+
+**★ LANDED.** The §5.2 decision was taken **before Step 1** as go-book §8 **D-5** — option **(a)**,
+the target is the unit of admin intent, plus a structured `worker.hello.refreshed` audit record; the
+shipped admission function has exactly four guards and no activation column (option b, L→XL, rejected).
+The atomic triple lands on `POST /api/execution-targets/self/hello` (mint before commit, so a mint
+throw rolls the UPDATE back), proven at embedded-PG through the **real `poll` service** — `no_work`
+precondition → refresh → `offer`, the daemon self-check admits the captured offer, the old session is
+proven dead, a throwing signer leaves no committed refresh, and a real HTTP round-trip (session +
+device proof) returns 200 + a minted-session header. **18 mutants / 18 killed / 0 survivors.** A
+**5-reviewer + completeness-critic + skeptic + independent-codex** pass found **0 HIGH/BLOCKING**
+in-house (2 LOW coverage gaps fixed); codex's 3 HIGH were all **refuted** (the frozen matcher bounds
+the ceiling TOCTOU; a revoked worker's refreshed session is dead on arrival; the daemon's zero callers
+are the declared Sprint-3 deferral), 1 MED fixed, 1 MED documented. **E4-F010 RESOLVED** (status flipped
++ manifest key deleted, same commit); new LOW **E4-F016** filed. `gate-clause-wiring.json` untouched —
+`E4-1-leases-through-protocol` stays `unwired` (Sprint 3 promotes it). `verify` inherits the
+pre-Sprint-2.75 red (§2.0). Everything below is the sprint AS SCOPED, kept as the record.
 
 **Why.** Everything before this gives a worker durable *authority*; none of it makes it
 **matchable**. A desktop that enrols perfectly, on a target whose placement profile an administrator
@@ -720,7 +740,9 @@ the four findings that had been parked — E4-F007 → WRK-010, E6-F003/F004/F00
 > stale in exactly the way it warns about.** WRK-011 was written, owns it, and is sequenced as
 > **Sprint 2.75**; `scripts/finding-ownership.json` now carries it as `owned` and the register
 > prints **E4-F013** — a hole in the ownership guard itself — as the only remaining `unowned`
-> entry. **Ownership is not closure:** E4-F010 stays `open` until WRK-011 has a result doc. Nothing
+> entry. **★ CLOSED 2026-08-25 — WRK-011 SHIPPED and E4-F010 is `resolved`** (status flipped +
+> manifest key deleted in the same commit); the register's `unowned` list is now E4-F013/F014/F015
+> (a new LOW **E4-F016** was filed `accepted`). Nothing
 > above is deleted, because the record of a HIGH sitting deliberately unowned for a day is worth
 > more than a tidy paragraph. The same edit corrected E4-F007's own text, which asserted
 `IdentityLifecycle.acquireSession()` was "already landed as the drop-in seam"; `grep` finds that

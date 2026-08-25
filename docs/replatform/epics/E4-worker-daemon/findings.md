@@ -236,7 +236,27 @@ until a durable lease-candidate source exists.
 
 ## E4-F010 — A composed worker cannot be OFFERED work — and would refuse it if it were
 
-**Status:** `open` · Severity: HIGH · Source: WRK-008 slice 2b planning pass (2026-08-25).
+**Status:** `resolved` (WRK-011, go-book Sprint 2.75, 2026-08-25) · Severity: HIGH · Source: WRK-008 slice 2b planning pass (2026-08-25).
+
+> **★ RESOLUTION — WRK-011 closure, 2026-08-25** (`tickets/WRK-011-result.md`). All three blockers
+> are removed and the finding's own statement of the defect — *"a worker can enrol correctly, assemble
+> a valid self-model, self-check correctly, and dispatch nothing, forever"* — is now **false** on every
+> half.
+> - **The three §0 corrections stand:** the shipped hello emits **no** capabilities (not `sandbox.*`),
+>   which made the conclusion stronger; `profile_snapshot`'s one update channel was enrolment rotation,
+>   which a daemon can never travel twice; and "false for 100% of offers" was true of the code but
+>   **vacuous in production** (`createPollLoop` has zero production callers).
+> - **The THIRD blocker this entry never named** — the enrolled all-zero `capacity` as a hard
+>   `Math.min` ceiling at `job-leasing.ts:566` that empties the admissible-workload list *before* the
+>   matcher — is the one that fires first, and the refresh writes a **real** capacity into the snapshot.
+> - **What closes it:** the atomic triple (`profile_snapshot` + `profile_hash` + a fresh session move
+>   together in one transaction, mint before commit) on the new `POST /api/execution-targets/self/hello`
+>   route, plus the provisioned `buildDesktopHello`/`deriveHelloProvisioning`. Proven at embedded-PG
+>   through the **real `poll` service**: `no_work` precondition → refresh → `offer`; the daemon self-check
+>   admits that same captured offer.
+> - **What it does NOT claim** (WRK-011 §6.3): a composed daemon that polls/ACKs/supervises is Sprint 3
+>   (`createPollLoop` still has zero production callers), and one real journey on E2B is Sprint 5.
+>   `gate-clause-wiring.json E4-1-leases-through-protocol` stays `unwired`; Sprint 3 promotes it.
 
 Two independent halves, either of which alone is sufficient to make dispatch produce nothing:
 
@@ -475,3 +495,28 @@ means — *shipped union* (four), *landable* (four), or *total including runtime
 is the defect. This finding is the reason that rule exists.
 
 **Blocks:** nothing today. Recorded so the miscounting has a home instead of recurring.
+
+## E4-F016 — `desktop-hello`'s "capacity is not a safety property" comments are false on the poll path
+
+**Status:** `open` · Severity: LOW · Source: WRK-011 §0(d) + closure, 2026-08-25.
+
+Three comments assert the enrolled all-zero `capacity` is byte-stability decoration the matcher
+overwrites, so it is not a safety property:
+- `packages/worker-daemon/src/enrollment/desktop-hello.ts:28` — *"The all-zero capacity is kept for
+  byte-stability, not for safety."*
+- `desktop-hello.ts:145` — *"Kept for byte-stability. NOT a safety property — the matcher overwrites it."*
+- `packages/worker-daemon/src/__tests__/desktop-hello.test.ts` — the comment repeating the belief
+  (*"the matcher overwrites this, so the assertion above is documentation, NOT the guarantee"*).
+
+All three are **true of `evaluateStaticLeaseEligibility`** (which substitutes `NEUTRAL_LEASE_MATCHER_CAPACITY`,
+`job-lease-eligibility.ts:213`) and **false of the poll path**: WRK-011 §0(d) proved the stored capacity
+is a hard `Math.min` clamp at `job-leasing.ts:566`, so zero stored capacity empties the admissible
+workload list and returns zero candidates *before* the static matcher is reached. Capacity IS
+load-bearing on the live lease path — a third, earlier axis of unmatchability the comments deny.
+
+WRK-011 corrects the **code** they describe (a provisioned refresh now writes a real capacity) but a
+dated design/comment record is not silently rewritten mid-file — this finding is the correction.
+
+**Blocks:** nothing. A documentation inaccuracy inside shipped comments, not a code defect. Filed
+declared (a new open finding is born undeclared, and undeclared fails the ownership guard); it is
+`accepted` (LOW), the remediation being a three-line comment fix no sprint carries on its own.
