@@ -217,6 +217,20 @@ the trap is named in WRK-008 slice 2b §1.1(c).
 **Blocks:** any claim that a distributed worker executes real work; Sprint 5's single-journey
 proof; MIG-005/006/007 ACTIVE, which inherit it on top of [[E4-F007]].
 
+**Owner: WRK-011 (go-book Sprint 2.75).** `tickets/WRK-011-design.md` — *a provisioned worker can be
+OFFERED work and can ACCEPT it*. **One** ticket owns **both** halves: the server route is not inert on
+success (it replaces `profile_hash`, which kills the calling worker's own session at
+`worker-session-auth.ts:167`), so shipping the route without its first caller would leave a worker
+worse off than not calling it. **Status stays `open` — WRK-011 has a design doc and no result doc.**
+★ Read that design's §0 before citing this entry: it corrects three of the claims above against the
+code (the shipped hello emits **no** capabilities rather than `sandbox.*`, which makes the conclusion
+*stronger*; `profile_snapshot`'s one update channel is enrolment rotation, which a daemon can never
+travel twice; and "false for 100% of offers" is true of the code but **vacuous in production today**,
+since `createPollLoop` has zero production callers) and adds a **third** blocker this entry never
+named, firing earlier than either half above: the enrolled all-zero capacity is a hard `Math.min`
+ceiling at `job-leasing.ts:566`, so the admissible workload list is empty and
+`repositories/tenant/job-control.ts:1810-1812` returns zero candidates before the static matcher is reached.
+
 ## E4-F011 — The desktop boot root is THREE gates from live dispatch, not four
 
 **Status:** `open` · Severity: HIGH · Source: WRK-008 slice 2b adversarial review (2026-08-25) — the review falsified the plan's own four-gate claim.

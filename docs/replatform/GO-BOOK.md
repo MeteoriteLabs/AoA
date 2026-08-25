@@ -171,9 +171,10 @@ not, because they share this branch and cancel each other's CI.
   S1   WRK-010/1  renewal ROUTE (server only)   (E4)   ── no callers yet
   S2   DEP-010    provider seam + composition   (E6/E4)
   S2.5 WRK-010/2  the route gets its CALLER     (E4)   ── or S1 was for nothing
-  S3   WRK-008/2b dispatch COMPOSED (not live)  (E4)   ── see E4-F010
+  S2.75 WRK-011   a worker can be OFFERED work  (E4)   ── closes E4-F010
+  S3   WRK-008/2b dispatch COMPOSED (not live)  (E4)   ── composes on a worker S2.75 made matchable
   S4  DAT-008/5,7 credentials reach the sandbox (E5)
-  S5  CLI-006/D2  prove ONE real journey       (E7)   ── needs E4-F010 owned first
+  S5  CLI-006/D2  prove ONE real journey       (E7)   ── needs S2.75 SHIPPED, not just owned
 
   BREADTH — scale it out
   S6  MIG-005/6/7 ACTIVE, MIG-001              (E10)
@@ -184,7 +185,10 @@ not, because they share this branch and cancel each other's CI.
 
 **Sprints 1–5 are the critical path.** After Sprint 5 you have a demonstrably working
 distributed agent. **Sprint 2.5 was added after the plans were reviewed as a set** — see §4; it is
-the sprint that stops Sprint 1 from shipping a route nothing calls. Sprints 6–9 scale it to every sink and agent type, then release.
+the sprint that stops Sprint 1 from shipping a route nothing calls. **Sprint 2.75 was added when
+E4-F010 was traced to an actual fix** and that fix was written up as WRK-011 — it is the sprint that
+makes an offer *possible at all*, and without it Sprints 3 and 4 both execute against a fleet that
+provably cannot be offered work. Sprints 6–9 scale it to every sink and agent type, then release.
 
 ---
 
@@ -196,6 +200,7 @@ the sprint that stops Sprint 1 from shipping a route nothing calls. Sprints 6–
 | 2 | [`DEP-010-design.md`](./epics/E6-deployment-test-harness/tickets/DEP-010-design.md) | complete, **revised after TWO adversarial review rounds** - 12 steps; Step 0 is no longer a STOP but a **conditions check** against §8 D-3; three CI-red defects the draft would have shipped are fixed; round 2 added §4.2 (**the inertness proof expires at Sprint 3**) and closed E4-F011 in substance, not just in the register |
 | 3 | [`WRK-008-slice-2b-design.md`](./epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md) | complete, **revised after TWO adversarial review rounds** - 11 steps, 53 mutants, a **§0.1 pre-DEP-010 preamble**, the D1 question answered, and the gate story corrected to **per boot root** (container 4, desktop **3** — round 2 caught the plan counting two under a table that said three) |
 | 2.5 | none — WRK-010 §9 scopes it | **write at sprint start.** Small, but it is the sprint that gives Sprint 1 a caller. Two known requirements are already written down in §4. |
+| 2.75 | [`WRK-011-design.md`](./epics/E4-worker-daemon/tickets/WRK-011-design.md) | **complete plan, written 2026-08-25.** 10 fail-first steps (Step 0 is a POSITIVE CONTROL, on the E1-F008 precedent), **18 mutants, every one a DELETION, ZERO declared equivalents**, and an acceptance table with a per-clause **tier** column that names the two clauses it deliberately does NOT write. Owns **E4-F010**. ★ Its §0 corrects three of that finding's claims against the code and adds a **third blocker the finding never named** — the enrolled all-zero capacity — which fires *earlier* than either half it does. ★ Its §5.2 carries ONE open question for the §8 ledger (per-target vs per-worker activation): take it **before Step 1**, not during Step 7 — option (b) makes this L into XL |
 | 4-9 | scope + sequence only (§4) | **Step 1 of each sprint is: write the plan.** A plan written five sprints early goes stale, which is the exact failure this audit exists to fix. |
 
 ### ★ Three things the planning pass found that change what you do
@@ -252,19 +257,36 @@ gated on the event-outbox path and the sentence underneath still said two. Both 
 register entry said two; the table was right. The substance is unchanged — one of the container's
 four gates is already satisfied on the desktop.)*
 
-### One consequence worth reading before Sprint 3
+### One consequence worth reading before Sprint 3 — ★ SUPERSEDED by Sprint 2.75, kept as the record
+
+**Kept, not deleted:** this is the record of how the gap was found, and the sequence below only makes
+sense with it. What is superseded is the *ownership* claim in its last paragraph, not the diagnosis.
 
 A composed worker still **cannot be OFFERED work**, and would refuse the offer if it were. The
 only production hello builder is deliberately unmatchable (`poll-loop.ts:538` self-checks against
-the worker's OWN hello, which emits `sandbox.*` with a 64-zero `policyHash`) **and**
-`workers.profile_snapshot` has no update channel. Either half alone is sufficient: a worker can
+the worker's OWN hello, which carries a 64-zero `policyHash`) **and** `workers.profile_snapshot`
+has no update channel a running daemon can reach. Either half alone is sufficient: a worker can
 assemble a perfect self-model, self-check correctly, and dispatch nothing, forever.
 
-This is now **E4-F010** in `epics/E4-worker-daemon/findings.md`, filed into the register at planning
-time and carried as `unowned` **on purpose** - neither half is fixed by any ticket in the graph, and
-attaching it to Sprint 3 would be the false claim of ownership `check-finding-ownership.mjs` exists
-to prevent. It is the line between "dispatch composed" and "dispatch working".
-**Sprint 5 cannot pass until it is owned.**
+> **★ Two corrections, from WRK-011 §0, where this text and the code disagreed — the code wins.**
+> (1) The shipped hello emits **no capabilities at all**, not `sandbox.*`: `desktop-hello.ts:144`
+> takes `capabilitiesForIsolation(isolation ?? "none")`, which is `[]`, and the only production call
+> site passes no isolation. That makes the conclusion *stronger* — the ceiling ∩ reported
+> intersection is empty for **any** ceiling. (2) `profile_snapshot` does have one update channel —
+> enrolment **rotation** — but a daemon can never travel it twice, so the fix has to be a new
+> channel rather than a way to reach the old one. WRK-011 also found a **third** blocker neither
+> half names and that fires *first*: the enrolled all-zero capacity is a hard `Math.min` ceiling on
+> the polled capacity (`job-leasing.ts:566`), so the admissible workload list is empty and zero
+> lease candidates come back before the matcher this section is about is ever reached.
+
+This is **E4-F010** in `epics/E4-worker-daemon/findings.md`, filed into the register at planning time
+and carried as `unowned` for exactly as long as that was true — no ticket in the graph fixed either
+half, and attaching it to Sprint 3 would have been the false claim of ownership
+`check-finding-ownership.mjs` exists to prevent. **It is owned now: WRK-011, scheduled as Sprint
+2.75, which runs BEFORE Sprint 3.** So the line this section used to end on — *"Sprint 5 cannot pass
+until it is owned"* — is retired: ownership is settled, and what Sprint 5 needs is Sprint 2.75
+**shipped**, which is a stronger condition than owned. The finding itself **stays `open`** until
+WRK-011 has a result doc; it is still the line between "dispatch composed" and "dispatch working".
 
 ---
 
@@ -372,7 +394,59 @@ production caller; a worker crosses T0+15min still authorised; `E4-F007` moves t
 
 **Why 2.5 and not a renumber:** sprints 3-9 are referenced by number across the plans and the
 registers. A fractional insert costs one odd-looking label; a renumber costs a day of chasing
-stale references.
+stale references. The same reasoning admits **2.75** below.
+
+---
+
+### ★ Sprint 2.75 — WRK-011: a worker can be OFFERED work, and can accept it
+**Epic E4 · node exists · design: `epics/E4-worker-daemon/tickets/WRK-011-design.md`**
+
+**Why.** Everything before this gives a worker durable *authority*; none of it makes it
+**matchable**. A desktop that enrols perfectly, on a target whose placement profile an administrator
+has ratified, is invisible to the scheduler on **three** independent axes and would refuse an offer
+on a fourth. That is **E4-F010**, and it is not an edge case — it is the steady state of every worker
+this programme can currently produce. WRK-011 is the ticket that fixes it, and the only one in the
+graph that does.
+
+**What.** One ticket, both halves — the split is refused deliberately (plan §2.1). The server route
+is **not inert on success**: it replaces `profile_hash`, and by `worker-session-auth.ts:167` (plus
+`job-leasing.ts:259`/`:297`) that invalidates the *caller's own* session, so a worker that calls it
+and discards the response is **worse off than before it called**. A worker holding a live session and
+its enrolled device key presents a **refreshed hello** to a new **local** route — beside the
+self-model read, not an eleventh frozen worker-control operation — and if that hello stays inside the
+administrator-ratified ceiling, `profile_snapshot`, `profile_hash` and a fresh session move **inside
+one transaction**, with the mint *before* commit so a mint failure rolls the update back. The daemon
+builds that hello from the WRK-008 slice-1 self-model read, giving that route its **first production
+caller**, once per boot before it polls. No migration, no new column, no frozen-contract change.
+
+**★ Take the plan's §5.2 decision BEFORE Step 1, not during Step 7.** Inside a ratified ceiling this
+route lets an already-enrolled device flip itself from unmatchable to matchable with **no further
+operator action** — so an admin ratifying a profile for one future well-isolated device enables every
+device already enrolled on that target. The plan recommends (a) *the target is the unit of admin
+intent*, plus a structured audit record, and says plainly the call is not its own to make. It belongs
+in **§8's ledger**, at this sprint's planning. If (b) — a per-worker activation flag — is taken, the
+design changes materially: a fifth guard, a new column, a migration, and **L becomes XL**.
+
+**Gate to start:** Sprints 1, 2 and **2.5** green. **That is a hard dependency, not a preference.**
+The success response *is* a new session, and until Sprint 2.5 the daemon has nowhere to put one:
+`enroll-once.ts:310` drops the enrolment session in as many words (*"`result.session` is dropped here
+and never returned (I13)"*), and **E4-F012** records that nothing acquires a first session at all.
+Landed earlier, WRK-011 does not merely lack a caller — **its success path breaks any worker that
+calls it**, which is categorically different from Sprint 1's honest dormancy.
+
+**Done when:** a provisioned worker is **actually offered work**, proven through the **real `poll`
+service** behind a `no_work` precondition control rather than against the matcher in isolation, and
+the daemon's own `offerSatisfiesWorker` admits that same offer; both columns are proven to move
+together; the new session works and the **old one is proven dead**; a throwing signer leaves no
+committed refresh; and **E4-F010** moves to `resolved` with its key DELETED from
+`scripts/finding-ownership.json` **in the same commit** — the manifest fails the always-on `policy`
+job the moment a key outlives its open finding.
+
+> **★ What it does NOT mean.** Not "a composed daemon polls, ACKs and supervises": `createPollLoop`
+> still has **zero production callers** after this sprint, and Sprint 3 gives it its first. Not "work
+> executes end to end" — that is Sprint 5, on real E2B. Accordingly
+> `scripts/gate-clause-wiring.json` is **not touched here**: `E4-1-leases-through-protocol` stays
+> `unwired`, because caller count is the only thing that checker reads. Sprint 3 promotes it.
 
 ---
 
@@ -380,14 +454,20 @@ stale references.
 **Epic E4 · design: `epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md`**
 
 **Not "the moment it becomes real" — an earlier draft of this line said that and it is false.**
-E4-F010 means a composed worker is offered nothing and would refuse it anyway, so this sprint
-executes **zero jobs**. What it does is real and necessary: compose `createPollLoop` + `createSupervisor` (+ the startup
+It used to be false for a *second* reason as well: E4-F010 meant a composed worker was offered
+nothing and would refuse it anyway. **Sprint 2.75 removes that reason** — after WRK-011 the server
+offers a provisioned worker work and its self-check admits the offer. What remains true is the first
+reason: **composing is not demonstrating.** Dispatch stays default-off, credentials do not reach the
+sandbox until Sprint 4, and the one real journey is Sprint 5. What this sprint does is real and
+necessary: compose `createPollLoop` + `createSupervisor` (+ the startup
 reconciler and event outbox, or defer them with a stated reason — E4 gate clauses 3 and 4
 depend on them).
 
-**Gate to start:** Sprints 1, **2 and 2.5** green. Without slice 2 a composed worker still dies
+**Gate to start:** Sprints 1, **2, 2.5 and 2.75** green. Without slice 2 a composed worker still dies
 at the 10-minute code-route boundary — Sprint 1 alone does not remove that ceiling — and, per
-**E4-F012**, it cannot obtain a first session at all. Sprint 2.5 also now owns the production
+**E4-F012**, it cannot obtain a first session at all. Without **2.75** it composes a loop that can
+never be offered work (**E4-F010**), which is what forced the earlier drafts of this section to
+downgrade E4 clause 1 to reachability. Sprint 2.5 also now owns the production
 identity + `SessionStore` construction, so this sprint's §4 and Step 2 must be **re-scoped at
 Step 0** to compose on top of it rather than to build it.
 
@@ -397,6 +477,13 @@ go-book runs it after. Four of its assertions become false the moment Sprint 2 l
 §2's "desktop gate 1 = no", and Step 9a's `AOA_WORKER_PROVIDER_URL` gate (DEP-010's resolver reads
 `AOA_WORKER_SANDBOX_PROVIDER` instead — declare it dead env, not a gate). Reformulate them
 **before** Sprint 3 starts, not inside it; slice 2b's §0.1 carries the table.
+
+**★ And against the pre-Sprint-2.75 tree.** Slice 2b also *reasons from* E4-F010 in two places — its
+§9 gate-promotion row for `E4-1-leases-through-protocol` and its §2 gate story — both of which
+conclude the clause must stay `unwired` **because the worker refuses 100% of offers**. Sprint 2.75
+removes that premise. The disposition is now a decision to take **on evidence** (see this sprint's
+Done-when block), not a foregone downgrade: re-derive it at Step 0 rather than copying the plan's
+reason across.
 
 One thing round 2 *refuted* while doing this, worth knowing so nobody re-raises it: **D1's gate 1
 stays structural through Sprint 2.** The critic expected D1's provider gate to become an env var
@@ -412,15 +499,17 @@ loop, supervisor, renewal driver and durable event outbox — giving `createPoll
 `createSupervisor` their first production callers in the programme's history; with either absent
 it is provably inert; `AOA_WORKER_DISPATCH_ENABLED` remains default-off.
 
-> **★ It does NOT mean "a worker leases, executes and reports."** An earlier version of this line
-> said that, and it is not achievable by the plan that runs this sprint. **E4-F010**: the worker
-> self-checks every offer against its own hello, and the only production hello builder emits a
-> 64-zero policy hash, so the check is `false` for **100% of offers** — before the server-side
-> profile-snapshot gap even matters. Slice 2b's own acceptance downgrades E4 clause 1 to
-> *reachability only*. Promote **E4-2** to `wired`; leave **E4-1** dormant, or promote it only
-> with a reason field that says what it cannot do — and note the wiring checker validates `wired`
-> on caller count alone and never reads that reason, so a caveat parked there is a caveat nobody
-> reads.
+> **★ It still does NOT mean "a worker leases, executes and reports" — but the REASON changed, and
+> so does what you may promote.** Earlier versions of this line rested on **E4-F010**: the worker
+> self-checked every offer against an unmatchable hello, so the check was `false` for 100% of
+> offers and slice 2b downgraded E4 clause 1 to *reachability only*. **Sprint 2.75 closes that**, so
+> the downgrade is no longer forced and `E4-1-leases-through-protocol` becomes promotable **on
+> evidence** — evidence being a composed loop that actually took a lease in this sprint's own
+> suite, never caller count and never a caveat in a `reason` field (the wiring checker validates
+> `wired` on caller count alone and never reads that field). What remains true regardless: this
+> sprint composes and does not demonstrate. Do not promote **E4-2** on the strength of a composed
+> supervisor — production reaches the supervisor only after an ACK, so that clause needs an
+> actually-supervised sandbox, which is Sprint 5's journey.
 
 ---
 
@@ -544,7 +633,7 @@ change):
 | Guard | Fails when |
 |---|---|
 | `check-gate-clause-wiring.mjs` | a gate clause claims `wired` and nothing in production calls the symbol |
-| `check-finding-ownership.mjs` | an open finding has **no entry at all**, or its entry claims a ticket that does not exist / already shipped. **NOT** "has no owner": `status: "unowned"` with a reason is accepted by design, and two findings sit there right now — the guard's job is to make ownerlessness *visible*, not impossible |
+| `check-finding-ownership.mjs` | an open finding has **no entry at all**, or its entry claims a ticket that does not exist / already shipped. **NOT** "has no owner": `status: "unowned"` with a reason is accepted by design, and **one** finding sits there right now — **E4-F013**, a hole in the guard itself, which no product ticket is the natural owner of (E4-F010 left that list on 2026-08-25 when WRK-011 took it) — the guard's job is to make ownerlessness *visible*, not impossible |
 | `check-ticket-graph-coverage.mjs` | a ticket file exists with no `#### ID` node in the plan |
 | `check-guard-inventory.mjs` / `check-execution-census.mjs` | a check or test file exists that nothing runs |
 
@@ -592,7 +681,15 @@ the four findings that had been parked — E4-F007 → WRK-010, E6-F003/F004/F00
 > in the graph fixes either half of it. `node scripts/check-finding-ownership.mjs` prints it on
 > every green run. The count that matters is not zero — it is *one, named, and visible*, which is
 > the whole point of the register. Caught by the completeness critic, in the paragraph headed "do
-> not relitigate", which is exactly where a stale claim does the most damage. The same edit corrected E4-F007's own text, which asserted
+> not relitigate", which is exactly where a stale claim does the most damage.
+>
+> **★ FOLLOW-ON, 2026-08-25 — E4-F010 is no longer unowned, and this paragraph would have gone
+> stale in exactly the way it warns about.** WRK-011 was written, owns it, and is sequenced as
+> **Sprint 2.75**; `scripts/finding-ownership.json` now carries it as `owned` and the register
+> prints **E4-F013** — a hole in the ownership guard itself — as the only remaining `unowned`
+> entry. **Ownership is not closure:** E4-F010 stays `open` until WRK-011 has a result doc. Nothing
+> above is deleted, because the record of a HIGH sitting deliberately unowned for a day is worth
+> more than a tidy paragraph. The same edit corrected E4-F007's own text, which asserted
 `IdentityLifecycle.acquireSession()` was "already landed as the drop-in seam"; `grep` finds that
 name in two design documents and no source file (§3.1 item 2).
 
@@ -742,6 +839,92 @@ When green: run all five registers, write the result doc, update GO-BOOK.md §3.
 §4 Sprint 2.5, commit, push, report CI honestly.
 ```
 
+### Sprint 2.75 — WRK-011
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §2.0 (the CI blocker), §2 (the per-ticket process),
+   §4 "Sprint 2.75", and §8 (settled decisions).
+2. docs/replatform/epics/E4-worker-daemon/tickets/WRK-011-design.md — the plan. Start at §0:
+   it records the state verified at tip, corrects THREE of E4-F010's claims against the code,
+   and adds a THIRD blocker the finding never named that fires before either half it does.
+3. epics/E4-worker-daemon/findings.md — E4-F010. This sprint owns it and closes it.
+4. The result docs of Sprints 1, 2 and 2.5 — the record of what actually shipped, which is
+   not always what their plans said. In particular: where slice 2 put the SessionStore, since
+   that is where this route's response has to land.
+
+Execute Sprint 2.75 (WRK-011) end to end, following the plan's steps in order.
+
+BEFORE STEP 1, TAKE THE §5.2 DECISION and record it in GO-BOOK §8. Inside a ratified ceiling
+this route lets an ALREADY-ENROLLED device flip itself from unmatchable to matchable with no
+further operator action, so an admin ratifying a profile for one future device enables every
+device already on that target. Option (a) — the target is the unit of admin intent, plus a
+structured audit record — is what the plan recommends. Option (b) — a per-worker activation
+flag — adds a fifth guard, a column and a migration, and turns this from L into XL. Taking it
+at Step 7 is taking it by omission, which is the thing §5.2 exists to prevent.
+
+Binding rules:
+- Fail-first. Write the RED test, run it, confirm it fails FOR THE REASON WRITTEN DOWN, then
+  implement. A step whose RED fails for a different reason proved nothing — stop and find out why.
+- POSITIVE CONTROL FIRST, before any refusal case is built on the fixture, and every refusal
+  case asserts its SPECIFIC reason rather than a bare admit:false. E1-F008: five placement
+  guards passed their own named tests while DELETED, because every fixture was already
+  refusing earlier for an unrelated reason.
+- Mutation-test every guard: DELETE it, do not rewrite it into an equivalent. The plan lists
+  18, all deletions, ZERO declared equivalents. A mutant that will not COMPILE is not an
+  equivalent mutant and may not be counted — three plans in this programme have retracted
+  mutants on exactly that ground.
+- packages/worker-protocol is FROZEN, and this ticket CONSUMES it: the frozen hello schema is
+  a field of a server-local envelope, the same pattern WRK-008 slice 1 and WRK-010 slice 1
+  used. If review requires the refresh to become an ELEVENTH FROZEN worker-control operation,
+  or requires new fields on pollRequestV1Schema, STOP — that is a freeze decision for the §8
+  ledger, before any code is written. Do not "just add one field".
+- THE ATOMIC TRIPLE IS THE TICKET: profile_snapshot, profile_hash and the new session move
+  together or not at all, and the MINT HAPPENS INSIDE THE TRANSACTION so a mint throw rolls
+  the UPDATE back. One column without the other makes the worker permanently unplaceable
+  (job-placement.ts re-derives the digest); returning no session locks it out immediately with
+  no route back. Four of the mutants exist for exactly this.
+- The embedded-PostgreSQL suite is the ONLY evidence for five of the eleven acceptance
+  clauses, and on Windows it is describe.skipIf'd — which vitest renders as GREEN. Run it with
+  AOA_RUN_WIN_INTEGRATION=1 (PowerShell: $env:AOA_RUN_WIN_INTEGRATION = "1" on its own line),
+  or you have signed off five clauses against a run that evaluated nothing.
+- packages/worker-daemon is `pinned` at 131 in scripts/test-inventory.json. Adding daemon
+  tests without bumping it reds check-test-inventory.mjs; `server` is `floor` and does not bite.
+- Do NOT touch scripts/gate-clause-wiring.json. E4-1-leases-through-protocol stays `unwired`
+  after this ticket, because createPollLoop still has zero production callers. Sprint 3
+  promotes it. Writing anything else there is the false claim of wiring that checker exists
+  to prevent.
+- E4-F010 RESOLVES HERE. In the SAME commit: flip its status in
+  epics/E4-worker-daemon/findings.md AND delete its key from scripts/finding-ownership.json.
+  Doing one without the other reddens the always-on policy job. Also file the LOW for the two
+  desktop-hello.ts comments §0(d) falsifies, WITH its own manifest key in that same commit —
+  a new open finding is born undeclared, and undeclared fails.
+- Cite living documents (this go-book, findings registers, the ownership manifest) by SECTION
+  AND ID, never by line.
+
+When green:
+- Run all five registers; every one must pass:
+  node scripts/check-ticket-graph-coverage.mjs
+  node scripts/check-finding-ownership.mjs
+  node scripts/check-guard-inventory.mjs
+  node scripts/check-gate-clause-wiring.mjs
+  node scripts/check-execution-census.mjs
+- Write epics/E4-worker-daemon/tickets/WRK-011-result.md: what shipped; what it does NOT claim
+  (§6.3 — Sprint 3 composes the loop, Sprint 5 demonstrates the journey); the third blocker
+  E4-F010 never named; the §5.2 decision as taken, or as still open with who owes it; the
+  mutation line in the §8 form; that this route's dormancy is ONE conditional registration and
+  weaker than worker-control's structural non-mount; and every claim you could not prove.
+- Update GO-BOOK.md §3.1's 2.75 row and §4 Sprint 2.75 to what is now true, and delete the
+  E4-F010 caveat wherever shipping this made it false.
+- Commit, push, and report CI honestly — including `verify`, which is red for reasons that
+  predate this sprint (§2.0). Do not raise its timeout to make it green.
+
+If you find something mid-sprint that invalidates the plan's premise, STOP and say so rather
+than absorbing it.
+```
+
 ### Sprint 3 — WRK-008 slice 2b
 
 ```text
@@ -753,28 +936,39 @@ Read first, in this order:
    §0.1 BEFORE anything else: this plan was written against the pre-DEP-010 tree, and §0.1
    tables four of its own assertions that Sprint 2 invalidated.
 3. DEP-010-result.md §10 — the same four, from the other side.
+4. WRK-011-result.md — Sprint 2.75. It changes what a composed worker can be OFFERED, which
+   is the premise slice 2b's §9 E4-1 row and §2 gate story reason from.
 
 STEP 0: reformulate those four assertions against the tree as it now is, and confirm §2's
 per-root gate table still matches reality. Do this BEFORE any implementation. One of them is
 a guard that lands in the always-on policy job and would be red on every PR, docs-only ones
-included.
+included. Re-derive the two places that plan reasons from E4-F010 as well — its §9 E4-1
+promotion row and its §2 gate story — because Sprint 2.75 removed that premise.
 
 Then execute the plan's TDD steps in order.
 
 Binding rules:
-- Sprints 1, 2 AND 2.5 must be green first. Without slice 2 a composed worker still dies at
-  the ~10-minute code-route boundary.
+- Sprints 1, 2, 2.5 AND 2.75 must be green first. Without slice 2 a composed worker still dies
+  at the ~10-minute code-route boundary; without 2.75 (WRK-011) it composes a loop that can
+  never be offered work.
 - Mutation-test every guard: DELETE it, do not rewrite it. Positive control first.
 - packages/worker-protocol is FROZEN.
-- E4-F010 STAYS OPEN and unowned. Shipping this slice does not close it. Do not write an
-  acceptance clause that reads as "a worker leases, executes and reports" — the worker
-  self-checks every offer against its own hello and refuses effectively all of them.
+- E4-F010 IS OWNED BY WRK-011 AND CLOSES IN SPRINT 2.75, WHICH RUNS BEFORE THIS SPRINT. If it
+  is still `open` in epics/E4-worker-daemon/findings.md when you start, 2.75 has not shipped and
+  you are out of sequence — STOP and say so rather than re-scoping around it. Once it is closed,
+  this slice may be offered work; it still may not claim "a worker leases, executes and reports"
+  without a test that shows a composed loop actually taking a lease. Composing is not
+  demonstrating: Sprint 5 is the journey.
 - Gate-clause promotion is a DELIBERATE decision, in the plan's Step 10. The wiring checker
   validates a `wired` clause on caller count alone and never reads its `reason`, so a caveat
   parked in a reason field is a caveat nothing surfaces. In particular: do NOT promote
   E4-2 ("supervises only sandboxes") on the strength of a composed supervisor — production
-  reaches the supervisor only after an ACK, and the worker's own self-check refuses every
-  production offer before that (E4-F010). It would go green over zero supervised sandboxes.
+  reaches the supervisor only after an ACK, so that clause needs an ACTUALLY SUPERVISED
+  sandbox. (Until Sprint 2.75 the reason was E4-F010, which refused every production offer
+  before the supervisor was reached; that reason is gone, the clause's requirement is not.)
+  Promoted on composition alone it would go green over zero supervised sandboxes.
+  E4-1-leases-through-protocol is now promotable ON EVIDENCE — a composed loop that took a
+  lease in this sprint's own suite — rather than downgraded to reachability.
 - Sprint 2.5 now owns the production identity + SessionStore construction. Re-scope §4 and
   Step 2 at Step 0 to compose ON TOP of it rather than to build it.
 - E4-F008 and E4-F009 are owned by THIS TICKET. When you write the result doc, either resolve

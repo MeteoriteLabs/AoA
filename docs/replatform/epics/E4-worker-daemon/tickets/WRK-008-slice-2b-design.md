@@ -1,7 +1,10 @@
 # WRK-008 slice 2b — Design: compose the poll loop and supervisor so the daemon dispatches
 
 **Status:** DESIGN, **revision 3** — round-2 adversarial review plus the cross-plan completeness
-critic. Throughout this document *"the first draft"* means revision 1 and *"revision 2"* means the
+critic — **★ plus an `E4-F012` amendment (2026-08-25)**, which is not a fourth review pass but a
+targeted correction: an independent review found that the composed daemon cannot obtain a FIRST
+session, and WRK-010 §9.1.1 decided the fix. Everything it touches is marked. Throughout this
+document *"the first draft"* means revision 1 and *"revision 2"* means the
 version reviewed; every correction says which one it is correcting and why, because a design pass
 that quietly overwrites its own reasoning teaches the next reader nothing.
 **Start SHA:** the commit that adds this file.
@@ -10,8 +13,9 @@ that quietly overwrites its own reasoning teaches the next reader nothing.
 [`WRK-008-slice-2-result.md`](./WRK-008-slice-2-result.md) (landed as **2a**) ·
 [`E4-D12-live-dispatch-terrain.md`](./E4-D12-live-dispatch-terrain.md)
 **Depends on:** DEP-010 (a provider, Sprint 2) — SOFT · WRK-010 **slice 1** (the renewal route,
-Sprint 1) — SOFT · ★ **WRK-010 slice 2 (Sprint 2.5) — HARD for §4's session composition.** §3.2
-says why; §0.1 says what Sprint 2 changes underneath this document.
+Sprint 1) — SOFT · ★ **WRK-010 slice 2 (Sprint 2.5) — HARD for §4's session composition, and after
+`E4-F012` that means the whole session LIFECYCLE, not just the renewal body.** §3.2 says why; §0.1
+says what Sprint 2 changes underneath this document.
 **Sprint:** 3 (see `docs/replatform/GO-BOOK.md`)
 
 ---
@@ -20,7 +24,8 @@ says why; §0.1 says what Sprint 2 changes underneath this document.
 
 Slice 2a made the daemon *explain* why it does not dispatch. This slice makes the
 `compose: true` branch **reachable**: it threads a device identity, the production worker hello and
-a live session through boot, calls `client.selfModelRead` (zero callers since 2a), assembles the
+a session **store** through boot (★ `E4-F012`: whether that store can obtain a live session is
+Sprint 2.5's — §3.2, §4), calls `client.selfModelRead` (zero callers since 2a), assembles the
 `WorkerSelfModel`, and constructs the durable event outbox, the supervisor, the lease-renewal
 driver and the poll loop behind the existing default-OFF flag. After this slice `createPollLoop`
 and `createSupervisor` have their **first production callers in the programme's history**.
@@ -208,7 +213,7 @@ builds** — a suite passing against a worker that does not exist. Filed as a fi
 | 2 | `AOA_WORKER_DISPATCH_ENABLED=1` (`dispatch_disabled`) | editing env | yes, but gate 1 refuses first | yes, but gate 1 refuses first |
 | 3 | a device identity exists (`no_worker_identity`) | a root injecting OS-custody stores + enrolling | **no** — `mounted_secret`, no stores (§1.1b) | ★ **ALREADY SATISFIED** on every boot (§1.1b) |
 | 4 | `AOA_WORKER_EVENT_OUTBOX_PATH` is set (`no_event_outbox_path`) | editing env | yes, but 1/3 refuse first | ★ **yes — a real gate here**, though gate 1 refuses first. `runDesktopHost` forwards `env: deps.env` verbatim into the same `bootstrapWorkerDaemon` (`desktop-host.ts:254-260`), so both roots hit this gate identically, and Step 5 forbids a default. Contrast row 3, which is how this table marks a **non**-gate |
-| 5 | a live session (`no_session`) | a fresh enrolment code (WRK-010 **slice 2** removes the ceiling — §3.2) | needs 3 first | reachable within 10 min of code issuance (§3.2) |
+| 5 | a live session (`no_session`) | a fresh enrolment code **while the pre-2.5 code-replay body is wired** (WRK-010 **slice 2** removes the ceiling — §3.2). ★ `E4-F012`: once slice 2's device-proof body is wired, a code no longer fixes this gate at all — the first session comes from the enrolment **sink** or the bootstrap dependency (WRK-010 §9.1.1), and this row's "fixed by" moves with it | needs 3 first | reachable within 10 min of code issuance (§3.2) |
 | 6 | the target has an admin-set placement profile (`no_self_model`) | an org admin | needs 1–5 first | needs 1–5 first |
 
 **Of the four gates somebody has to LAND, the container stands on all four and the desktop on
@@ -325,7 +330,14 @@ needs no enrolment code at all — and not at `Enroller.renew`.
 > unusable by its only caller. Slice 2 adds the near-expiry threshold (WRK-010 §3.5(i) derives a
 > ≥5-minute headroom; below that a proof-replay window of up to ~4.9 minutes opens). **Step 2 below
 > composes `SessionStore` unchanged**, which is correct for this slice and is stated here rather
-> than composed over silently: 2b builds the seam, 2.5 changes when it fires.
+> than composed over silently: 2b builds the injection point, 2.5 changes when it fires.
+>
+> **★ And a second lifecycle change, added by `E4-F012` (WRK-010 §9.1.1): slice 2 also supplies the
+> FIRST session.** `enrollOnce` drops the enrolment session (`enroll-once.ts:310`) and this slice
+> composes `initial = null`, so with a device-proof body the first `ensureFresh()` has no bearer to
+> present. 2.5's resolution changes `SessionStoreDeps.renew` to take the session it is renewing and
+> adds a required bootstrap dependency alongside it — so *when it fires* is not the only thing that
+> moves. **The type this slice injects into is not the type slice 2 ships.**
 
 **The mechanism behind the box, verified against source.** Code route 10 min, session 15
 (`worker-enrollment.ts:22-23`); a session is minted **only** by enrolment; **and there is no
@@ -340,18 +352,37 @@ Worse for restarts: a worker restarted more than 10 minutes after its code was i
 steady state in `enrollOnce` (identity+receipt present ⇒ `skipped`, no network), so its **first**
 `ensureFresh()` 401s. It never obtains a session at all.
 
-**Decision: 2b hard-depends on WRK-010 SLICE 2 for what the thunk POINTS AT, and on nothing else.**
-The two halves used to be conflated. (1) The *seam* — one injected zero-argument thunk satisfying
-`SessionStoreDeps.renew` (`identity/session.ts:52-55`) — is 2b's to create, and 2b can build and
-test it with an injected fake. (2) The *body* it points at in production is slice 2's, and pointing
-it at `Enroller.renew` instead is not a degraded version of the same thing: it is a different
-mechanism with a ten-minute ceiling that leaves Sprint 1 with no caller. Dispatch being off by
-construction bounds the exposure, not the dishonesty.
+**Decision: 2b hard-depends on WRK-010 SLICE 2 for the session LIFECYCLE — not merely for what one
+thunk points at. ★ REVISED after `E4-F012`.** The two halves used to be conflated, and revision 3
+then under-corrected: it said *"the seam is one injected zero-argument thunk satisfying
+`SessionStoreDeps.renew` (`identity/session.ts:52-55`) — 2b's to create, testable with an injected
+fake"*, and that **is now false**. `E4-F012` established that a device-proof renewal thunk has
+nothing to present on the call that matters most — the first one — and WRK-010 §9.1.1 resolves it by
+changing the shape of the seam itself: **`SessionStoreDeps.renew` gains a `current: WorkerSession`
+parameter, and first-session acquisition becomes a SEPARATE, REQUIRED dependency.** So:
+
+* **(1) The lifecycle is Sprint 2.5's to define, and 2b composes ON TOP of it.** 2b does not build a
+  session lifecycle; it consumes one. The seam it creates is `createWorkerIdentity`'s injection
+  point (Step 2), and the shape of what gets injected is WRK-010 §9.1.1's, not this document's.
+* **(2) The *body* is slice 2's**, and pointing it at `Enroller.renew` instead is not a degraded
+  version of the same thing: it is a different mechanism with a ten-minute ceiling that leaves
+  Sprint 1 with no caller. Dispatch being off by construction bounds the exposure, not the
+  dishonesty.
+
+> **★ Why two adversarial rounds passed over this, stated because the shape recurs.** With the
+> **code-replay** body the zero-argument thunk really does mint a first session from nothing — the
+> enrol route takes a *code*, not a session — so every test and every read of the pre-2.5 fallback
+> is consistent. The precondition only bites once the body becomes a device-proof exchange **over a
+> live session**, i.e. exactly at the hand-off this document defers. A defect that is invisible on
+> the fallback and fatal on the production body is one no amount of reading the fallback will find.
 
 **What 2b owes in exchange — acceptance items, not good intentions:**
-- The `renew` thunk is the **named, single-line WRK-010 seam** (Step 2). DSK-001 described this as
-  `IdentityLifecycle.acquireSession()`; **that symbol does not exist in code** — it appears only in
-  two documents. 2b creates the seam for real.
+- The `renew` thunk is the **named WRK-010 seam** (Step 2) — ★ **no longer "single-line"**, and no
+  longer a thunk on its own: WRK-010 §9.1.1 pairs it with a required first-session acquisition
+  dependency. DSK-001 described this as `IdentityLifecycle.acquireSession()`; **that symbol does not
+  exist in code** — it appears only in two documents — but the *shape* it named is the one
+  `E4-F012` forces back into existence, which is worth recording rather than quietly re-deriving.
+  2b creates the injection point for real; 2.5 defines what fills it.
 - ★ **2b does NOT resolve `E4-F007`.** Sprint 2.5 does, and the finding's register entry already
   says so. Resolving it here would convert a live problem into a settled one on a worker that still
   loses authority at ten minutes.
@@ -375,9 +406,14 @@ createWorkerIdentity()              ← NEW: identity/worker-identity.ts
       │       └── ★ §1.1(c): this hello makes offerSatisfiesWorker FALSE for every offer.
       │           That is the honest composed worker. A fixture hello here would be a lie.
       ├─ SessionStore({now, renew, metrics, logger}, initial = null)
-      │       └── renew: () => renewSession()      ← ★ THE WRK-010 SEAM. ONE injected thunk,
+      │       └── renew: () => renewSession()      ← ★ THE WRK-010 SEAM, as 2b composes it TODAY:
       │                    ▲                          typed by SessionStoreDeps.renew
-      │                    │                          (identity/session.ts:52-55).
+      │                    │                          (identity/session.ts:52-55), zero-argument.
+      │                    │                          ★ SPRINT 2.5 CHANGES THIS TYPE — E4-F012 /
+      │                    │                          WRK-010 §9.1.1: renew takes (current:
+      │                    │                          WorkerSession) and a SEPARATE, REQUIRED
+      │                    │                          bootstrap dependency supplies the FIRST
+      │                    │                          session. Not "one thunk, swap the body".
       │                    │
       │                    ├── ★ SPRINT 2.5 (WRK-010 slice 2) — the PRODUCTION body: the
       │                    │   worker-side renewal client. A device proof over the live
@@ -414,8 +450,10 @@ persisted record, rather than receiving one.
 **★ Where the renewal CODE comes from, and what that costs — PRE-SPRINT-2.5 ONLY.** Everything in
 this subsection describes the fallback body (`Enroller.renew`) and evaporates the moment slice 2's
 device-proof client replaces it. It is kept because a reader who ships 2b before 2.5 is entitled to
-the full price list, and because "the seam is one thunk" is only credible if the expensive body is
-written down as well as the cheap one. `Enroller.renew` takes
+the full price list, and because a claim that the body is cheaply swappable is only credible if the
+expensive body is written down as well as the cheap one. (★ The wording here used to be *"the seam
+is one thunk"*; `E4-F012` retired it — WRK-010 §9.1.1, §7 clause 20. The price list is unaffected:
+it describes the pre-2.5 fallback, which is where the code read lives.) `Enroller.renew` takes
 `RenewInput extends EnrollInput`, which requires `code: string` (`enrollment/enroll.ts:106-113`).
 In steady state `enrollOnce` returns `skipped` at `enroll-once.ts:194-204` **before**
 `deps.readInput?.()` at `:207`, so **nothing in the composed path is already holding a code**. The
@@ -463,11 +501,32 @@ add it: `ensureFresh` refreshes only when the session is absent or **already exp
 (`:103-107`), and its docblock says it is not a near-expiry scheduler. Composing the store
 unchanged is the right call for 2b and the wrong call for a route that refuses expired sessions —
 which is why the threshold is slice 2's first line of work and not a footnote here (§3.2). It holds the token in a private field and never returns it in a loggable
-aggregate, so **I13 stays intact**. Changing `enrollOnce`'s return type to carry a session would
+aggregate, so **I13 stays intact**. Changing `enrollOnce`'s **return type** to carry a session would
 put a live bearer token one `logger.info` away from the log — the exact defect I13 prevents.
 
-**The session is minted lazily**, on first `ensureFresh()`: a daemon that composes but is never
-asked for a session never materialises the enrolment credential.
+> **★ That last sentence is still true, and `E4-F012` did NOT overturn it — read the distinction.**
+> WRK-010 §9.1.1 has `enrollOnce` gain an optional **sink** (`onSessionMinted?: (session:
+> WorkerSession) => void`), invoked where `result.session` is dropped today
+> (`enroll-once.ts:310`), and wired to the store. `EnrollmentOutcome` does **not** change: still
+> frozen, still the same key allowlist (`:146-154`), still no `session` and no `token` key. The
+> docblock's property is about the RETURNED AGGREGATE — *"a single `logger.info({ result })` would
+> put a live bearer token in the logs. Nothing downstream can log what it never receives"*
+> (`:140-145`) — and the outcome still never receives it. **A store is not a value anyone logs.**
+> This paragraph's argument for `SessionStore` over a return type therefore stands unchanged; what
+> changes is that the store now gets its first session from somewhere. ★ *How* the sink reaches a
+> store from the shipped boot root is not as simple as "wire it to `set()`" — enrolment runs strictly
+> before any store exists, and §10's box states the three options and their costs.
+
+**★ RETRACTED — *"the session is minted lazily, on first `ensureFresh()`"*.** Revision 3 said that,
+and `E4-F012` falsified it. With a device-proof renewal body there is nothing to mint *with* on the
+first call: the store is empty, the route requires a live bearer (`worker-session-auth.ts:125-126`),
+and an expired one is refused at `:100-101`. Even with the pre-2.5 code-replay body the claim only
+holds inside the ten-minute code-route window, and **not at all** on a restart past it — §3.2 says
+so in its own words (*"its **first** `ensureFresh()` 401s. It never obtains a session at all"*), so
+this document already contained the refutation of its own sentence. What survives is the narrower,
+true claim: **construction performs no acquisition** — a daemon that composes but is never asked for
+a session touches neither the network nor the code file. *Where the first session comes from* is
+Sprint 2.5's, per WRK-010 §9.1.1.
 
 ### 4.1 What gets composed, and what does not
 
@@ -476,7 +535,7 @@ asked for a session never materialises the enrolment credential.
 | `ConcurrencyLimiter` | ✅ | from `config.concurrency` |
 | Capacity probes | ✅ **NEW** | §1.1(a) — no production implementation exists |
 | `buildDesktopHello(...)` | ✅ | §4 — `assembleWorkerSelfModel` requires a `report`, and this is the only production builder (§1.1c) |
-| `SessionStore` + `SessionProvider` | ✅ **NEW** | §4 |
+| `SessionStore` + `SessionProvider` | ✅ **NEW** | §4. ★ **Composed on top of a session lifecycle Sprint 2.5 builds — this slice does not build one.** It constructs the store with `initial = null` and injects a renewal thunk; first-session acquisition and the `SessionStoreDeps.renew` signature are WRK-010 §9.1.1's (`E4-F012`), and they change the type this row injects into |
 | Self-model **reader** | ✅ **NEW** | `selfModelRead` gets its first caller. ★ The **assembler** is NOT new: `assembleWorkerSelfModel` already exists at `identity/self-model.ts:45` (2a shipped it with zero callers). Only `readWorkerSelfModel` is written here. |
 | `sha256Hex` as the assembler's `sha256Fn` | ✅ | `identity/device-proof.ts:101` — the existing production digest helper, not a new one |
 | `openEventOutboxStore` + `DurableWorkerEventSink` | ✅ | the sink is required; a no-op sink is a fail-open (§2). ★ **ONE instance, passed to BOTH the supervisor and the renewal driver** — see below |
@@ -647,8 +706,19 @@ identical value, and two construction sites are two things to keep byte-identica
 
 **★ `renewSession` is the WRK-010 seam**, and in production it is **slice 2's device-proof renewal
 client** (Sprint 2.5), not `Enroller.renew` — §3.2. `createWorkerIdentity` never constructs the body
-itself; it takes the thunk and hands it straight to `SessionStoreDeps.renew`, which is what makes
-"swapping it changes nothing else" an assertion rather than a hope.
+itself; it takes the thunk and hands it straight to `SessionStoreDeps.renew`.
+
+> **★ CORRECTED by `E4-F012` — "swapping it changes nothing else" is RETIRED, not weakened.**
+> Revision 3 called this *"ONE injected thunk — swapping it changes nothing else"* and made that an
+> asserted property. It is **false** under WRK-010 §9.1.1: slice 2 changes `SessionStoreDeps.renew`
+> to `(current: WorkerSession) => Promise<WorkerSession>` and adds a **separate, required**
+> first-session dependency, so swapping the body changes the injected *type* — `createWorkerIdentity`'s
+> parameter list moves with it, and a composition root that supplies only a renewal body will
+> **fail to compile**. That is the intended outcome (`E4-F012` survived two adversarial rounds
+> precisely because nothing forced the question), but it means 2b must stop advertising a
+> zero-cost swap. What 2b still owns and still asserts is the narrower property: **the body is
+> injected, never constructed here** — no code path in `createWorkerIdentity` builds a renewal
+> request, so slice 2 replaces the body without rewriting this module's logic, only its signature.
 
 **★ `readCode` is the enrolment-code thunk and is PRE-2.5 ONLY**, invoked per renew, never at
 construction — §4's "where the renewal CODE comes from". Once slice 2's client is the body, nothing
@@ -657,26 +727,38 @@ in the composed path reads a code and this parameter goes away with it.
 Tests: key re-derived from persisted DER; **★ the hello comes from `buildDesktopHello`, not a
 fixture** — asserted by equality against a direct call with the same record (§1.1c: this is what
 makes the composed worker's `offerSatisfiesWorker` honestly `false`, and a fixture hello here would
-silently make three acceptance rows green over a worker production never builds); **★ mints
-LAZILY** (constructing performs no renew **and no code read** — a spy on `readCode` at 0 calls);
-**★ POSITIVE CONTROL** — the first `get()` DOES mint, DOES read the code exactly once, and returns
-the live session (without it, laziness is indistinguishable from never-wired); same session while
+silently make three acceptance rows green over a worker production never builds); **★ acquires
+NOTHING AT CONSTRUCTION** (constructing performs no renew **and no code read** — a spy on `readCode`
+at 0 calls); **★ POSITIVE CONTROL** — the first `get()` DOES obtain a session, DOES read the code
+exactly once, and returns it (without it, laziness is indistinguishable from never-wired). ★ **This
+control passes only because the injected fake is a code-replay body, which mints from a *code*.
+`E4-F012`: with slice 2's device-proof body the first `get()` has no bearer to present and this
+control is exactly the test that would have caught it** — WRK-010 §9.1.1's S2-A1/S2-A3 are its
+real-database successors, and a fake session injected here proves neither; same session while
 live; **★ E4-F007** — a lapsed code route goes TERMINAL rather than spinning; a **transient**
 failure rethrows unchanged and the store does **not** stop (otherwise one blip retires a worker);
 **★ I13** — no returned value and no emitted log record contains the session token or the code;
-**★ the WRK-010 seam is ONE injected thunk** — swapping it changes nothing else, asserted rather
-than promised in prose: run the whole suite twice over two different thunk bodies (the code-replay
-fake and a device-proof fake) and assert **every non-renew behaviour is identical**. That is what
-makes "slice 2 replaces the body and nothing else moves" a checked property instead of a promise,
-and it is the one assertion in this step that is not PRE-2.5-conditional.
+**★ the renewal body is INJECTED, never constructed here** — asserted rather than promised in prose:
+run the whole suite twice over two different thunk bodies (the code-replay fake and a device-proof
+fake) and assert **every non-renew behaviour is identical**. ★ Note precisely what that proves and
+what it does not: it proves this module contains no body-specific logic, **not** that slice 2 is a
+drop-in — WRK-010 §9.1.1 changes the injected signature and adds a required first-session
+dependency, so this test's own fixtures move with it. The retired wording (*"ONE injected thunk —
+swapping it changes nothing else"*) is corrected in the box above and in §7 clause 20.
 
 > **★ Which of these tests are PRE-2.5 ONLY.** The `readCode` laziness pair, the positive control's
 > *"reads the code exactly once"* clause, and the `E4-F007` lapsed-code-route terminal case all
 > describe the code-replay body. Once slice 2's client is the thunk they are deleted, not adapted —
 > there is no code to read and no code route to lapse. The key re-derivation, the hello equality,
-> the mint-laziness, the transient-rethrow, the I13 assertion and the seam-substitution test above
-> are body-independent and survive.
-*Mutants (6):* fabricate an `initial` session; **pass `Date.now` instead of the injected `now`**;
+> the no-acquisition-at-construction assertion, the transient-rethrow, the I13 assertion and the
+> body-injection test above are body-independent and survive **in substance** — ★ but two of them
+> move mechanically at 2.5: the body-injection test's fixtures take the new `renew(current)`
+> signature, and the suite gains the first-session dependency `E4-F012` makes required. "Survives"
+> here means the property survives, not that the file compiles untouched.
+*Mutants (6):* fabricate an `initial` session (★ **2b-scoped**: this slice composes `initial = null`,
+so fabricating one is a lie. At 2.5 a first session arrives legitimately — from the sink or the
+bootstrap dependency, WRK-010 §9.1.1 — and this mutant must be **re-derived**, not carried forward.
+The count here is unchanged: 2b ships six); **pass `Date.now` instead of the injected `now`**;
 swallow the `EnrollmentError`; use `generateDeviceKey()` instead of the persisted DER; replace
 `createSessionProvider` with a raw `{get}` lacking the terminal wrap; **read the code eagerly at
 construction instead of per renew**.
@@ -1218,9 +1300,10 @@ posture from §1.1(b) and, if Sprint 2 has landed, that none of the three is str
 | 17 | capacity clamped to the server-owned ceiling | `dispatch-runtime.test.ts` |
 | 18 | shutdown stops leasing before draining | stop-order test |
 | 19 | WRK-010's ceiling surfaced at boot | the WARN test. ★ Applies **only** where the seam is pointed at the code replay, i.e. 2b shipped ahead of Sprint 2.5. With slice 2's client wired there is no ten-minute ceiling and the WARN is deleted, not silenced |
-| 20 | WRK-010's integration surface is one thunk | `worker-identity.test.ts` — the thunk is injected and handed straight to `SessionStoreDeps.renew` (`identity/session.ts:52-55`); swapping the body changes nothing else |
+| 20 | ★ **CORRECTED (`E4-F012`)** — WRK-010's renewal **body** is injected, never constructed here | `worker-identity.test.ts` — the thunk is injected and handed straight to `SessionStoreDeps.renew` (`identity/session.ts:52-55`), and the suite runs over two different bodies with identical non-renew behaviour. ★ The retired clause read *"the integration surface is one thunk … swapping the body changes nothing else"*. **False:** WRK-010 §9.1.1 changes `renew` to take `(current: WorkerSession)` and adds a **required** first-session dependency, so the injected type moves and a root supplying only a renewal body will not compile. 2b composes on top of a lifecycle 2.5 builds; it does not build one |
 | 20b | ★ the renewal code is read lazily and never logged | `worker-identity.test.ts` — `readCode` spy at 0 calls at construction, 1 on first `get()`, and the credential's single hop into a `code` key happens **inline in the `enroller.renew({...})` argument** and nowhere else (§4 property 2 — ★ the "keep the `enrollmentCode` name all the way to `RenewInput`" wording is retracted; the type forbids it). PRE-2.5 only |
 | 20c | ★ **the near-expiry gap is recorded, not composed over** | §3.2's note — `ensureFresh` (`identity/session.ts:103-107`) refreshes only when absent-or-expired and says so in its own docblock; this slice composes `SessionStore` unchanged, and Sprint 2.5 owns the threshold. No artifact here **on purpose**: an assertion that today's store lacks a threshold would be a test of the absence of slice 2 |
+| 20d | ★ **the FIRST-session gap is recorded too** (`E4-F012`) | §3.2 + §4's retraction. `enrollOnce` drops the enrolment session (`enroll-once.ts:310`) and this slice composes `initial = null`, so with a device-proof body the first `ensureFresh()` has no bearer to present (`worker-session-auth.ts:125-126`). **Owned by WRK-010 slice 2 and DECIDED there** (§9.1.1: a session sink on `enrollOnce`, a `renew(current)` signature, a required bootstrap dependency). No artifact here, for the same reason as 20c — and the proof is real-database by construction, so a fake session injected in this slice's unit tier could not carry it |
 | 21 | every new guard mutation-checked | **53** mutants, all compiling, all executed, none killed by timeout; recorded in the result doc with the 51 → 53 arithmetic (Step 11) |
 | 22 | `redactionCanaries: []` is a decision | the **typecheck** (Step 11) — a required field is a type-level property; the first draft cited a non-compiling "mutant", see Step 6's note |
 | 22b | ★ …and it is safe for the stated reason | Step 6's `observeRun === undefined` assertion |
@@ -1399,6 +1482,35 @@ not touch it and a re-enabled one recovers it rather than discarding it.
 > zero `identityStore.load()` calls past the presence probe on a refusing boot. The claim above is
 > true because of that choice, not in spite of it.
 
+> **★ AND THAT CHOICE COLLIDES WITH `E4-F012`'s SINK — recorded here because §10 is where it bites,
+> and because it is not answered by WRK-010 §9.1.1's one-line version of the wiring.** Verified
+> ordering in the shipped boot root: enrolment runs at `bin/worker-daemon.ts:267` (gated on
+> `keyStoreMode === "os_keychain"` **and** both stores; the call is `:274-284`), and
+> `decideDispatchComposition` runs at `:337` — **strictly after**. Zero residue requires the
+> `SessionStore` to be constructed *inside* the dispatch branch, i.e. later still. So *"production
+> wires `onSessionMinted` to the store's `set()`"* is **not directly executable at the only
+> production `enrollOnce` call site**: at the moment the sink would fire, no store exists. Three
+> ways out, each with a cost, and **Sprint 2.5 must pick one in writing** rather than discover it
+> at the keyboard:
+>
+> * **(a) construct the identity/store before enrolment** — reintroduces exactly the residue this
+>   box was written to prevent: a boot that refuses with `no_provider` derives a device key and
+>   builds a store for nothing;
+> * **(b) a boot-scope one-shot cell** the sink writes and the composition later passes as
+>   `initial` — no early store, but a live bearer token then sits in a boot-scope variable on
+>   **every** `os_keychain` boot, including ones that refuse. That is new residue of a
+>   security-relevant kind, and the cell would need the store's own non-loggable shape (private
+>   field, nothing that serializes);
+> * **(c) compute the dispatch decision BEFORE enrolment** — it is pure over config values — and
+>   pass `onSessionMinted` **only** when the daemon will compose, so a refusing boot has no sink by
+>   construction. Cost: a reordering of `bootstrapWorkerDaemon`, in the file Step 7 already edits.
+>
+> Two facts bound the problem and belong next to it: on `mounted_secret` custody — **every shipped
+> compose file** — the enrolment block at `:267` never runs, so the sink is structurally absent
+> there; and a steady-state boot returns `skipped` at `enroll-once.ts:194-204` **before** the
+> network call, so nothing is minted to sink. On both of those paths the **bootstrap dependency**,
+> not the sink, is the only first-session source (WRK-010 §9.1.1, cost item 6).
+
 **What rollback does NOT undo:** an event batch already ACKed by the control plane. That is correct —
 those events are the record of work that actually ran.
 
@@ -1411,9 +1523,13 @@ those events are the record of work that actually ran.
   — and that, after DEP-010, has three **environment variables** and no structural gate at all
   (§0.1).
 - **Session renewal — WRK-010 SLICE 2, i.e. Sprint 2.5, which is a HARD dependency of §4 and not an
-  out-of-scope item.** What is out of scope is the *body* of the thunk: 2b creates and tests the
-  seam, slice 2 supplies the device-proof renewal client and the near-expiry threshold in
-  `SessionStore.ensureFresh`. ★ If 2b ships first, it inherits §4's admission that the composed
+  out-of-scope item.** What is out of scope is the *session lifecycle itself*: 2b creates and tests
+  the injection point and **composes on top of** a lifecycle slice 2 builds. Slice 2 supplies the
+  device-proof renewal client, the near-expiry threshold in `SessionStore.ensureFresh`, and — ★
+  added by `E4-F012`, decided in WRK-010 §9.1.1 — **first-session acquisition**: a session sink on
+  `enrollOnce`, a `renew(current: WorkerSession)` signature, and a required bootstrap dependency.
+  The last of those changes the type this slice injects into, so *"2b builds the seam, 2.5 swaps the
+  body"* is retired wording (§3.2, Step 2, §7 clause 20). ★ If 2b ships first, it inherits §4's admission that the composed
   daemon re-reads an enrolment code at arbitrary later times, keeps the ten-minute ceiling, and
   leaves WRK-010's route with zero production callers. **2b does not resolve `E4-F007` under any
   ordering.**

@@ -4,6 +4,10 @@
 **ADVANCES — does not close — finding:** `E4-F007` (`epics/E4-worker-daemon/findings.md:130`,
 **stays `open`**, HIGH). ★ Read §0(e) before touching the register: this is **slice 1**, and the
 finding's own statement of the defect is still true after it ships. Slice 2 closes it.
+**DECIDES — for slice 2 to execute — finding:** `E4-F012` (the renewal route cannot mint a FIRST
+session). The resolution is **§9.1.1**: a session **sink** on `enrollOnce` (I13 unchanged — the
+outcome still carries no token) plus a `renew(current: WorkerSession)` signature and a required
+bootstrap dependency. Slice 1 ships no code for it; slice 2 executes it.
 **Blocker record:** `docs/replatform/WAVE-4-BLOCKER-worker-session-lifetime.md`
 **Depends on:** JOB-002 (enrollment + session mint), WRK-002 (daemon session store)
 **Size:** M · **server-side only.** The daemon client is WRK-010 slice 2 (§9, scoped in §9.1).
@@ -935,11 +939,14 @@ Write a `**WRK-010 slice-1 addendum**` beneath it recording, in this order:
 * the option taken: **(c), amended — proof PLUS a live session**, why the finding's literal
   "proof-only" wording (`findings.md:148-149`) was *not* implemented (§2.1), and why (a) and (b)
   were rejected;
-* **what it does NOT change**, in one unambiguous sentence: *nothing calls this route.* Slice 2b
-  wires `SessionStoreDeps.renew` to `Enroller.renew`, the enrolment code replay
-  (`packages/worker-daemon/src/enrollment/enroll.ts:119`, header `:4-15`), so a worker still loses
-  its path to a fresh session at the ten-minute code-route boundary — which is this finding's own
-  statement of the defect;
+* **what it does NOT change**, in one unambiguous sentence: *nothing calls this route.* **No sprint
+  before 2.5 points `SessionStoreDeps.renew` at it**, so a worker still loses its path to a fresh
+  session at the ten-minute code-route boundary — which is this finding's own statement of the
+  defect. (Write it in that form. An earlier draft of this bullet named slice 2b as the sprint that
+  wires `renew` to `Enroller.renew`; go-book §4 *"★ Sprint 2.5"* has since moved the production
+  session wiring OUT of slice 2b, so that mechanism is stale. The conclusion is unchanged, and the
+  stale mechanism must not be written into a durable register — a findings entry is not a narrative,
+  and a register carrying a retracted mechanism is the exact failure this register exists to stop.);
 * the closure condition and its owner: **WRK-010 slice 2**, go-book §4 *"★ Sprint 2.5"*.
 
 Leave `**Status:** open`. Leave the `escalated to E3/JOB-002` line alone — it is history, and
@@ -1025,7 +1032,7 @@ labelled a transport refusal; the guard-2 acceptance row is gone.
 
 | Not delivered | Owner | Why |
 |---|---|---|
-| **The daemon client** — `SESSION_RENEW_PATH`, `renewSession()` on the transport, wiring `SessionStoreDeps.renew` (`identity/session.ts:55`) to it in place of the enroll replay, and a near-expiry schedule | **WRK-010 slice 2 = go-book Sprint 2.5** — scoped in §9.1 | The acceptance is entirely server-side, and E4 already splits this way (WRK-008 1/2). Until it lands, this route exists and nothing calls it — which is the rollback unit, **and which is why E4-F007 stays open** (§0e). |
+| **The daemon client** — `SESSION_RENEW_PATH`, `renewSession()` on the transport, wiring `SessionStoreDeps.renew` (`identity/session.ts:55`) to it in place of the enroll replay, **a first-session acquisition path (§9.1.1 — `E4-F012`; `SessionStoreDeps.renew` changes signature and `enrollOnce` gains a session sink)**, and a near-expiry schedule | **WRK-010 slice 2 = go-book Sprint 2.5** — scoped in §9.1 and §9.1.1 | The acceptance is entirely server-side, and E4 already splits this way (WRK-008 1/2). Until it lands, this route exists and nothing calls it — which is the rollback unit, **and which is why E4-F007 stays open** (§0e). |
 | **Renewal HEADROOM ≥ 5 minutes before the presented session's expiry** | **WRK-010 slice 2 — an invariant, not a preference** | §3.5(i) / §9.1(2). |
 | **Renewal for a platform PHYSICAL session** | follow-up / DEP-00x | Its authority lives behind `acquirePlatformTargetAuthorityExclusive`, a materially different transaction shape. **This is now an enforced refusal (guard R1), not an inherited one** — §3.5(ii). Shared-platform TENANT workers **are** covered. |
 | **Resurrecting a fully expired session** | not planned | §2.1. |
@@ -1042,6 +1049,10 @@ that step 1 of a sprint is writing the plan — so this section is not that plan
 requirements **already established** by this ticket's own analysis, so that the slice-2 author
 inherits them rather than rediscovering them.
 
+**Read §9.1.1 first.** (1) and (2) below are about *when* the thunk fires and *how much headroom*
+it needs. §9.1.1 is about whether it can fire **at all** on the first call — `E4-F012`, decided,
+and the one requirement here that changes a shipped type signature.
+
 **(1) `SessionStore.ensureFresh` must gain a near-expiry threshold. Without it, a `renew` thunk
 pointed at this route fires exactly when the credential it must present is already dead.**
 `ensureFresh` (`packages/worker-daemon/src/identity/session.ts:103-107`) returns the current
@@ -1050,7 +1061,7 @@ expired**; its docblock at `:96-102` says so in terms — *"This is NOT a near-e
 scheduler (E4-D11: there is no sustained renewal)"*. The WRK-010 route refuses an expired session
 by construction: the authenticator calls `verifyWorkerSessionToken`, which fails
 `claims.exp <= nowSeconds` at `worker-session-auth.ts:100` (§0b). Those two facts are
-incompatible. So the seam is one injected thunk, but it is **not** a drop-in: pointing
+incompatible. So the store's refresh POLICY moves with the thunk — it is **not** a drop-in: pointing
 `SessionStoreDeps.renew` at `renewSession()` while the store's refresh policy is unchanged
 produces a worker that renews only after it has already lost authority — 401, `SessionStopped`,
 re-enrolment required. The threshold, the module docblock at `:1-31` (whose `:5` states as a fact
@@ -1077,6 +1088,173 @@ in `scripts/check-worker-path-parity.mjs` (`:26-35`), which is what makes the fr
 checked property instead of a sentence; a bump of `packages/worker-daemon` in
 `scripts/test-inventory.json`, which is **`pinned`** rather than `floor` and so does not
 self-heal; and the closure of **E4-F007**, which is slice 2's to write (§0e).
+
+### ★ 9.1.1 `E4-F012`, DECIDED — where slice 2's FIRST session comes from, and why this does NOT re-open I13
+
+**The problem, restated from the register.** This route renews a session **by presenting one**. The
+composed daemon holds none. `enrollOnce` drops the enrolment session — the comment says it in those
+words, *"`result.session` is dropped here and never returned (I13)"*
+(`packages/worker-daemon/src/enrollment/enroll-once.ts:310`) — and WRK-008 slice 2b composes
+`SessionStore(..., initial = null)`, so the **first** `ensureFresh()` falls through the live-session
+return at `identity/session.ts:105` into `forceRefresh()` at `:106`, which calls `#deps.renew()` at
+`:129` with nothing to
+present. The route refuses that by construction: the authenticator's `^Bearer\s+([^\s]+)$` match
+`fail()`s at `server/src/middleware/worker-session-auth.ts:125-126`, and even a stale token dies on
+`claims.exp <= nowSeconds` at `:100-101`.
+
+**The decision (2026-08-25). Two changes. Neither is a re-opening of I13, and the reason is that
+I13's invariant is narrower than *"the session must not exist"* — the source says so itself.** The
+`EnrollmentOutcome` docblock at `enroll-once.ts:140-145`:
+
+> *The outcome. A frozen object with a fixed key allowlist and NO session or token key — I13.
+> `EnrollResult` is a plain object literal containing `session.token`, so a single
+> `logger.info({ result })` would put a live bearer token in the logs. Nothing downstream can log
+> what it never receives.*
+
+Read what that protects: **the return value** — the thing a caller logs wholesale — and the named
+hazard is literally `logger.info({ result })`. The session already exists in memory inside
+`enrollOnce`: `result` is live from the `enroller.renew({...})` await at `:273` to the frozen return
+at `:311-319`. I13 has never forbidden that, and nothing below changes it.
+
+**Change 1 — `enrollOnce` gains a SINK, not a return.** Add one optional dependency to
+`EnrollOnceDeps` (`enroll-once.ts:119-138`):
+
+```ts
+/** Invoked with the freshly minted session, at the point it is otherwise dropped. */
+readonly onSessionMinted?: (session: WorkerSession) => void;
+```
+
+invoked at `:310` — where `result.session` is discarded today — and in production wired to
+`SessionStore`'s existing `set()` (`identity/session.ts:88-90`). **`EnrollmentOutcome` is
+UNCHANGED**: still `Object.freeze`d at `:311`, still the same seven-key allowlist at `:146-154`,
+still no `session` and no `token` key. *"Nothing downstream can log what it never receives"* stays
+**literally true of the outcome**, because the outcome still never receives it. A store is not a
+value anyone logs: `SessionStore` holds the token in the private `#current` field
+(`identity/session.ts:66`) and the one place it is read into a log record reads `prev?.targetId`
+only (`:152`). A later reader must not mistake this for a weakening of I13 — the property was
+always about the returned aggregate, and the returned aggregate does not move.
+
+> **★ One thing this decision does NOT settle, found while writing it up: *which* store `set()` is
+> called on, and when.** In the shipped boot root enrolment runs at
+> `packages/worker-daemon/src/bin/worker-daemon.ts:267` (call at `:274-284`) and
+> `decideDispatchComposition` runs at `:337` — **strictly after** — while WRK-008 slice 2b §10's
+> zero-residue rule requires the `SessionStore` to be constructed *inside* the dispatch branch,
+> later still. At the instant the sink fires, **no store exists**. So *"production wires it to the
+> store's `set()`"* is the intent, not yet the wiring. Slice 2's plan must choose, in writing, among:
+> **(a)** construct the identity/store before enrolment — reintroduces the residue slice 2b §10
+> exists to prevent; **(b)** a boot-scope one-shot cell handed to the composition as `initial` — no
+> early store, but a live token then sits in a boot-scope variable on refusing boots too, and the
+> cell needs the store's own non-loggable shape; **(c)** compute the (pure) dispatch decision
+> **before** enrolment and pass `onSessionMinted` only when the daemon will compose. This does not
+> reopen anything above — the sink is still the right mechanism and I13 still holds under all three
+> — but an unstated ordering is how a decision becomes a defect at the keyboard.
+
+**Change 2 — `SessionStoreDeps.renew` takes the session it is renewing.**
+
+```ts
+readonly renew: (current: WorkerSession) => Promise<WorkerSession>;
+```
+
+Today it takes **zero arguments** (`identity/session.ts:55`), which is precisely why *"what happens
+when there is no session?"* was answerable only by a reviewer noticing. `forceRefresh` already binds
+`const prev = this.#current` at `:127`, so the non-null case is a one-token change at `:129`
+(`renew(prev)`). The **no-session** case then has nowhere to go except a **separate, named
+dependency** — a bootstrap acquisition the compiler forces the composition root to supply. That is
+the whole point of the change: it converts `E4-F012` from a defect a careful reader must catch into
+one that **does not compile**. This seam survived two adversarial review rounds; a type is a better
+reviewer than a third round.
+
+**Note the deliberate asymmetry, because it is the mechanism, not an accident.** The sink is
+**optional** so that deleting its wiring still compiles and is therefore *killable by a test*
+(mutant **S2-M1** below). The bootstrap dependency is **required** so that deleting it *cannot* compile.
+The residual risk is stated rather than hidden: an optional sink means a future composition root
+that forgets it typechecks clean, and only the first-session acceptance clause stops that.
+
+**What this costs — plainly, six items:**
+
+1. **A published type changes shape.** `SessionStoreDeps` is exported from the package
+   (`packages/worker-daemon/src/index.ts:259`, alongside `SessionStore` at `:258`), so this is a
+   public-surface change of `packages/worker-daemon`, not an internal refactor.
+2. **Every construction site must be updated.** There are **seven** `new SessionStore(` sites in the
+   tree and **all seven are tests** — `__tests__/session-renewal.test.ts:84`, `:153`, `:206`,
+   `:234`; `__tests__/session-revocation.test.ts:46`, `:82`;
+   `__tests__/poll-session-terminal.component.test.ts:67`. **Zero production callers exist today**,
+   so slice 2's own composition is the first, and the compile break is entirely in the test tier.
+   That is cheap — but it is cheap *because* nothing composes the store yet, which is the same fact
+   `E4-F012` is about.
+3. **It falsifies WRK-008 slice 2b's *"ONE injected thunk — swapping it changes nothing else"*.**
+   That claim is load-bearing in that document (§4's diagram, Step 2's seam-substitution test, §7
+   clause 20) and is corrected there in the same change as this one. `E4-F012` note (b) predicted
+   exactly this.
+4. **Slice 2 touches a file it does not own.** `enroll-once.ts` is DSK-001's coordinator, with five
+   orderings its own header calls load-bearing (`:12-41`). The change is additive and optional and
+   moves no ordering — but `__tests__/enroll-once.test.ts` (25 `enrollOnce(` call sites) must keep
+   its I13 assertions green and gain one for the sink.
+5. **Two acquisition paths mean two failure policies, and the second must be decided rather than
+   inherited.** `forceRefresh` stops the store permanently on an `EnrollmentError` with
+   `stopAndBackoff` (`identity/session.ts:133-138`), emitting `reenrollment_required`. A *bootstrap*
+   failure is a different event on a different route; slice 2's plan must say what it does, in
+   writing, and not acquire the renewal policy by proximity.
+6. **★ The sink is NOT the general first-session source — it is the ENROLLING boot's.** Two facts,
+   both verified: (i) a steady-state boot short-circuits at `enroll-once.ts:194-204` (`identity` and
+   `receipt` both present ⇒ `skipped: true`) **before** the network call at `:273`, so no session is
+   minted and the sink cannot fire — WRK-008 slice 2b §3.2 already says such a worker *"never
+   obtains a session at all"*; and (ii) the sole production `enrollOnce` call site is gated on
+   `config.keyStoreMode === "os_keychain" && deps.identityStore && deps.receiptStore`
+   (`packages/worker-daemon/src/bin/worker-daemon.ts:267`, call at `:274-284`), so on
+   `mounted_secret` custody — the mode **every shipped compose file uses** — enrolment does not run
+   and the sink is structurally absent. **So change (2) is not belt-and-braces for change (1). It is
+   the load-bearing half on every boot after the first and on every container.** A plan that ships
+   the sink alone would fix the first boot of one root and leave the defect standing everywhere
+   else.
+
+   Related, and worth one line because this programme's rule is to count callers: **`SessionStore.set`
+   (`identity/session.ts:88-90`) has zero callers in the package today** — the method the sink wires
+   to is dead code, and nothing currently proves it works. The clauses below are what make it live.
+
+**Acceptance clauses slice 2 must carry.** All of these are **embedded-PostgreSQL** tier, and that
+is not a preference: **a test that injects a fake session proves none of them.** Injecting
+`initial = <fixture session>` bypasses the acquisition being tested, and injecting a fake `renew`
+body bypasses the authenticator that refuses an absent bearer (`worker-session-auth.ts:125-126`) —
+which is exactly how slice 2b's positive control passes today while the composed daemon cannot
+obtain a session at all.
+
+| # | Clause | Evidence |
+|---|---|---|
+| S2-A1 | a composed daemon on its **enrolling** boot obtains its **FIRST** session from the sink | real enrol against the embedded-PG control plane, then a route call the shipped authenticator **admits** — no fixture session anywhere in the fixture chain |
+| S2-A2 | …and then obtains a **RENEWED** one from **this ticket's route** | second token from the renewal route, `s1 !== s0` and `iat` strictly greater, admitted by the same authenticator (§8's "renewal issues a NEW session" row, now with a real caller) |
+| S2-A3 | a daemon booting in **steady state** (identity + receipt on disk ⇒ `skipped: true`, no network) obtains its first session from the **bootstrap dependency**, not the sink | same tier; the sink is asserted **not called** on this path. Without this clause the sink looks like the answer and is not (cost item 6) |
+| S2-A4 | I13 still holds **with the sink wired** | `Object.keys(outcome)` equals the `:146-154` allowlist, and no emitted log record contains the token — asserted on the path where `onSessionMinted` fired |
+
+S2-A1 and S2-A2 together are the clause the go-book's Sprint 2.5 line actually promises — *"the
+renewal route gets its first caller"* — and neither is provable in the unit tier. **§10 R6 applies
+to all four**: on Windows a default `pnpm test` reports the embedded-PG file as skipped, i.e. green,
+so slice 2's sign-off needs `AOA_RUN_WIN_INTEGRATION=1` on that line exactly as §7's command block
+does.
+
+**Mutation — one that must kill, and one that must NOT be counted.**
+
+| # | Mutant | Killed by | Reachable in production? |
+|---|---|---|---|
+| S2-M1 | **delete the sink wiring** at the composition root (`onSessionMinted` not passed to `enrollOnce`) | **S2-A1 goes RED** — the store stays empty and the first route call presents no bearer | **yes** — this is precisely the shipped state today |
+
+**It is numbered `S2-M1`, not `M9`, deliberately.** §7 Step 6's tally — *"eight mutants, eight
+killed, ZERO survivors"* — is **slice 1's** and does not move: slice 1 writes no daemon code, so it
+cannot carry this mutant. Adding it to that count would be the aggregation error this document
+spends §8 warning about.
+
+`S2-M1` compiles, because the dependency is optional by design (above) — which is what makes it a
+mutant rather than a type-level property.
+
+**And the one that does not count.** Deleting the bootstrap dependency from `SessionStoreDeps`
+**fails to compile** at every construction site (a missing required member — `TS2345`/`TS2741`).
+Under this repo's convention that is **not a killed mutant and not a documented equivalent**: §7
+Step 6 of this document states the rule — *"A documented equivalent mutant that does not compile is
+not an equivalent mutant"* — and WRK-008 slice 2b §7 row 22 applies its positive form, naming the
+**typecheck** as the proving artifact for a required-field property. So slice 2 reports it as a
+type-level property with the typecheck as its artifact, and counts it in **neither** the numerator
+nor the denominator. Counting a compile error as a kill inflates the score with something no harness
+evaluated; it is the same error in the opposite direction as declaring an unwritable equivalent.
 
 ## 10. Risks
 
