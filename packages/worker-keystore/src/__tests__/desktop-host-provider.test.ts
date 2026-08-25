@@ -163,11 +163,24 @@ describe("DEP-010 — the provider arrives, and composition still happens nowher
     }
   });
 
-  it("★ STRUCTURAL LOCK: a root-produced provider + flag=1 composes NO supervisor and NO poll loop", async () => {
-    // The §4.1 primary proof. Even at the point where the DECISION would return compose:true,
+  it("★ STRUCTURAL LOCK: a root-produced provider + flag=1 composes NO lifecycle-registered loop", async () => {
+    // The §4.1 primary proof. Even where the DECISION would return compose:true,
     // bootstrapWorkerDaemon composes nothing, because bin/worker-daemon.ts has no `else` on
     // dispatch.compose. Observed on what it already logs — not on BootstrapResult, which carries
     // no field distinguishing a composed loop from an uncomposed one.
+    //
+    // ★ WHAT THE OBSERVABLES PROVE, PRECISELY: no supervisor/poll-loop composed through a lifecycle
+    // SEAM that registers a startup or shutdown step. Per design §4.1, a bare `else` composing a loop
+    // into a LOCAL variable and fire-and-forget-starting it would move NEITHER observable — but that
+    // is not the change slice 2b makes: 2b restructures :355-380 to build the steps from the composed
+    // loop, which DOES register shutdown steps and IS caught here. That is why the §7 load-bearing
+    // mutation is an `else` that ASSIGNS a lifecycle dep, not a bare one.
+    //
+    // ★ THIS PROOF EXPIRES AT SPRINT 3 (design §4.2). The moment WRK-008 slice 2b writes that `else`,
+    // the structural lock is gone and this test must be REWRITTEN, not inherited — a Sprint-3 operator
+    // editing bin/worker-daemon.ts:347-380 owns rewriting this case. After 2b the desktop's inertness
+    // rests on the remaining gates (unset env switches + runtime conditions), a strictly WEAKER
+    // property Sprint 3 must label as such.
     const provider = await rootProducedProvider(OPT_IN, providerSeam());
     const { records, result } = await bootDaemon(daemonEnv({ AOA_WORKER_DISPATCH_ENABLED: "1" }), provider);
     // (i) zero `startup:` step lines — startupSteps is [] with no deps.reconciler.
