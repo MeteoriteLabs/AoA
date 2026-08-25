@@ -71,6 +71,24 @@ describe("digestHello", () => {
     const parsed = workerHelloV1Schema.parse(reordered);
     expect(digestHello(parsed)).toBe(digestHello(hello()));
   });
+
+  it("★ is stable across a key-reordered body THROUGH the envelope schema (M11 — the envelope must PARSE the hello, not passthrough)", () => {
+    // This is the mutation-load-bearing case: the digest's stability rests on
+    // `selfHelloRequestSchema.hello` being the FROZEN schema (which normalizes key order),
+    // not a passthrough. If M11 replaces it with a passthrough, the reordered body keeps its
+    // order and this digest diverges — exactly what job-placement.ts:543 would then never
+    // re-derive. The earlier case parses in the TEST, so it cannot see a missing envelope parse.
+    const reordered = {
+      policyHash: helloFields.policyHash, capacity: helloFields.capacity,
+      reportedCapabilities: helloFields.reportedCapabilities, platform: helloFields.platform,
+      supportedProtocol: helloFields.supportedProtocol, agentVersion: helloFields.agentVersion,
+      deviceGeneration: helloFields.deviceGeneration, targetId: helloFields.targetId,
+      workerId: helloFields.workerId, protocolVersion: helloFields.protocolVersion,
+    };
+    const a = selfHelloRequestSchema.parse({ protocolVersion: 1, correlationId: CORRELATION_ID, hello: reordered });
+    const b = selfHelloRequestSchema.parse({ protocolVersion: 1, correlationId: CORRELATION_ID, hello: helloFields });
+    expect(digestHello(a.hello)).toBe(digestHello(b.hello));
+  });
 });
 
 describe("selfHelloRequestSchema", () => {
