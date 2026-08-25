@@ -62,6 +62,12 @@ import type { JobControlMetrics } from "../services/job-control-metrics.js";
 import { readDistributedExecutionDeploymentFlag } from "../config/distributed-execution.js";
 import { createWorkerAdmissionRateLimiter } from "../services/worker-admission-rate-limit.js";
 import { deviceProofHeaders } from "./worker-proof-headers.js";
+import { createWorkerSessionAuthenticator } from "../middleware/worker-session-auth.js";
+import {
+  createWorkerSessionRenewalService,
+  sessionRenewRequestSchema,
+  SESSION_RENEW_DESCRIPTOR,
+} from "../services/worker-session-renewal.js";
 
 const uuid = z.string().uuid();
 
@@ -160,6 +166,20 @@ export function workerControlRoutes(opts: {
   // across replicas observes one limit. Fail-CLOSED (a shared-store error denies). This
   // route is mounted only under AOA_DISTRIBUTED_EXECUTION_ENABLED, so the limiter is dormant.
   const pollRateLimiter = createWorkerAdmissionRateLimiter({ appDb: opts.appDb });
+  // WRK-010 — the device-proof session-renewal surface. ONE authenticator, constructed
+  // once per router (mirroring createWorkerEnrollmentService above). The route calls the
+  // authenticator DIRECTLY, never requireWorkerHeartbeatAuthority, so the legacy bearer
+  // credential class that predates device proofs can never reach a freshly-minted session.
+  const sessionRenewal = createWorkerSessionRenewalService({
+    authenticator: createWorkerSessionAuthenticator({
+      appDb: opts.appDb,
+      operatorDb: opts.operatorDb,
+      sessionSigningKey: opts.sessionSigningKey,
+      now: opts.now,
+    }),
+    sessionSigningKey: opts.sessionSigningKey,
+    now: opts.now,
+  });
 
   router.post(
     "/organizations/:organizationId/execution-targets/:targetId/enrollment-codes",
@@ -273,6 +293,82 @@ export function workerControlRoutes(opts: {
         action: "worker.enrollment.failed",
         reasonCode: "worker_enrollment_internal_unavailable",
       }, "worker enrollment unavailable");
+      sendWorkerProtocolError(req, res, "internal_unavailable", opts.now?.() ?? new Date());
+    }
+  });
+
+  // WRK-010 — a worker exchanges a LIVE session + a fresh device proof for a NEW bounded
+  // one, on a route that never touches the enrollment code table. NO identifier in the URL
+  // or body: identity comes entirely from the authenticated principal, so cross-tenant reach
+  // is answered by construction. Singular `/session/renew` (no id) so it can never be misread
+  // as a sibling of `/leases/:leaseId/renew`, which is a fence and a different thing.
+  router.post("/worker-control/session/renew", async (req, res) => {
+    // Set BEFORE any work: isEnrollmentWorkerControlPath matches only /enroll, so without
+    // this an error escaping to the global handler renders the generic AoA error shape
+    // instead of the worker-protocol envelope (error-handler.ts:34).
+    res.locals.workerProtocolV1 = true;
+    try {
+      const parsed = sessionRenewRequestSchema.safeParse(req.body);
+      const authorization = req.header("authorization");
+      const proof = deviceProofHeaders(req);
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      // Size gate BEFORE the credential read, matching the nine operation handlers: an
+      // oversized body is refused structurally, not as an identity decision.
+      if (!parsed.success || (rawBody && rawBody.length > SESSION_RENEW_DESCRIPTOR.maxRequestBytes)) {
+        sendWorkerProtocolError(req, res, "malformed", opts.now?.() ?? new Date());
+        return;
+      }
+      if (!authorization || !proof || !rawBody) {
+        sendWorkerProtocolError(req, res, "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      const outcome = await sessionRenewal.renew({
+        authorization,
+        rawBody,
+        proof,
+        method: req.method,
+        path: req.originalUrl,
+        correlationId: parsed.data.correlationId,
+      });
+      if (outcome.outcome === "renewed") {
+        // Same response header enrollment sets, so the daemon transport reads a renewed
+        // session exactly as it reads an enrolled one.
+        res.setHeader(WORKER_CONTROL_HEADERS.session, outcome.session);
+        logger.info({
+          action: "worker.session.renewed",
+          reasonCode: "worker_session_renewed",
+        }, "worker session renewed");
+        res.status(200).json({
+          protocolVersion: 1,
+          outcome: "renewed",
+          expiresAt: outcome.expiresAt,
+          deviceGeneration: outcome.deviceGeneration,
+          serverTime: (opts.now?.() ?? new Date()).toISOString(),
+        });
+        return;
+      }
+      if (outcome.outcome === "refused") {
+        // Coarse `unauthorized` (401) on the wire for every refusal; the log carries the
+        // two-valued discriminant (§5) so "revoked/stale/disabled" and "credential mismatch"
+        // send an operator to genuinely different places without becoming a wire oracle.
+        logger.warn({
+          action: "worker.session.renewal_denied",
+          reasonCode: `worker_session_renewal_${outcome.logReason}`,
+        }, "worker session renewal denied");
+        sendWorkerProtocolError(req, res, "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      // A mint failure is a server defect, not a fact about the caller.
+      logger.error({
+        action: "worker.session.renewal.failed",
+        reasonCode: "worker_session_renewal_internal_unavailable",
+      }, "worker session renewal unavailable");
+      sendWorkerProtocolError(req, res, "internal_unavailable", opts.now?.() ?? new Date());
+    } catch (error) {
+      logger.error({
+        action: "worker.session.renewal.failed",
+        reasonCode: "worker_session_renewal_internal_unavailable",
+      }, "worker session renewal unavailable");
       sendWorkerProtocolError(req, res, "internal_unavailable", opts.now?.() ?? new Date());
     }
   });

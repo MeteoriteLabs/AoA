@@ -233,6 +233,25 @@ describe("I22 clause 2 — flag-off, the worker-control surface is not mounted a
     expect(mountedInsideAFlagBlock(appSource, "workerControlRoutes(")).toBe(true);
   });
 
+  it("★ WRK-010: the session-renew route is REGISTERED in worker-control.ts (dormant by absence)", () => {
+    // Dormancy for the renewal route is a CONJUNCTION, and only (a) is this ticket's:
+    //   (a) the registration lives in routes/worker-control.ts — OWNED here: red before
+    //       Step 4 landed, and red again the day someone relocates it onto a router app.ts
+    //       mounts UNCONDITIONALLY (which would break dormancy without touching this needle
+    //       via app.ts, so the needle has to be the registration itself).
+    //   (b) app.ts mounts workerControlRoutes only inside the flag block — green today (:233).
+    //   (c) app.ts mounts workerControlRoutes exactly once — green today (:247-248).
+    // (b) and (c) are PRE-EXISTING, green on the shipped boot root, and cannot be reddened by
+    // this ticket's diff. They are restated here BY REFERENCE so the conjunction is visible in
+    // one place; neither is the clause — (a) is. A dormancy row backed only by (b)/(c) would be
+    // a gate satisfied before the ticket started.
+    const workerControlSource = readSource("..", "routes", "worker-control.ts");
+    expect(workerControlSource).toContain("/worker-control/session/renew");
+    // (b) and (c), restated by reference:
+    expect(mountedInsideAFlagBlock(appSource, "workerControlRoutes(")).toBe(true);
+    expect(appSource.split("workerControlRoutes(").length - 1).toBe(1);
+  });
+
   it("mounts the DEVICE LISTING inside that block too (D17 / D-D5)", () => {
     // Lane D's listing is flag-gated BY CONSTRUCTION rather than by a guard — the
     // opposite of F27, which needed an explicit desktop refusal because its router sits
