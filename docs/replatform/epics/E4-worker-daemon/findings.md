@@ -231,7 +231,7 @@ named, firing earlier than either half above: the enrolled all-zero capacity is 
 ceiling at `job-leasing.ts:566`, so the admissible workload list is empty and
 `repositories/tenant/job-control.ts:1810-1812` returns zero candidates before the static matcher is reached.
 
-## E4-F011 — The desktop boot root is THREE gates from live dispatch, not four
+## E4-F011 — One of the container's four landable gates is ALREADY SATISFIED on the desktop boot root
 
 **Status:** `open` · Severity: HIGH · Source: WRK-008 slice 2b adversarial review (2026-08-25) — the review falsified the plan's own four-gate claim.
 
@@ -252,9 +252,16 @@ landing a change. Six outstanding on the container, five on the desktop.
 > desktop as gated on `AOA_WORKER_EVENT_OUTBOX_PATH` (`runDesktopHost` forwards `env` verbatim into
 > the same bootstrap, so both roots hit that gate identically) and then counted the desktop at two
 > in the sentence below the table. The table was right. The finding's *substance* is unchanged — one
-> of the container's four gates is already satisfied on the desktop — only the count moved.
-DSK-003 ships that root as a signed installer, so the day a provider lands in it, every installed
-desktop running the build is one environment variable from taking real leases.
+> of the container's four gates is already satisfied on the desktop — only the count moved. **And it
+> moved again:** the title said THREE while the body said the full list is SIX, and the sentence
+> below said *one environment variable* — three numbers for one quantity inside a single register
+> entry. The title now states the invariant instead of a count, because the invariant is what does
+> not change. **Say which enumeration you mean, every time.**
+
+DSK-003 ships that root as a signed installer, so the day a provider lands in it, an installed
+desktop running the build is **two environment variables** — `AOA_WORKER_DISPATCH_ENABLED` and
+`AOA_WORKER_EVENT_OUTBOX_PATH` — plus a live session and an admin-set placement profile away from
+taking real leases, where the container additionally has a structural gate no env edit can open.
 
 **Consequence for DEP-010:** it may not put a provider in that composition root without an explicit,
 written decision about the flag's default on desktops. Its acceptance must prove the shipped desktop
