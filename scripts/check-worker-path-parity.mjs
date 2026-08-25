@@ -32,6 +32,14 @@ const PAIRS = [
     mount: "/api",
     serverRoute: "/execution-targets/self/placement-profile",
   },
+  {
+    name: "session renewal (WRK-010 slice 2)",
+    daemonFile: "packages/worker-daemon/src/transport/client.ts",
+    daemonConst: "SESSION_RENEW_PATH",
+    serverFile: "server/src/routes/worker-control.ts",
+    mount: "/api",
+    serverRoute: "/worker-control/session/renew",
+  },
 ];
 
 function readConstant(file, name) {

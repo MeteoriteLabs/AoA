@@ -255,18 +255,24 @@ export type { EnrollmentTicket } from "./enrollment/ticket.js";
 
 export { deriveEnrollmentIdempotencyKey } from "./enrollment/idempotency.js";
 
-export { SessionStore, SessionStoppedError, REENROLLMENT_REQUIRED_METRIC } from "./identity/session.js";
+export { SessionStore, SessionStoppedError, REENROLLMENT_REQUIRED_METRIC, RENEWAL_HEADROOM_MS } from "./identity/session.js";
 export type { SessionStoreDeps } from "./identity/session.js";
+
+// WRK-010 slice 2 — the worker-side device-proof session renewal client.
+export { createSessionRenewer } from "./identity/session-renewal.js";
+export type { SessionRenewerDeps } from "./identity/session-renewal.js";
 
 export {
   POLL_PATH,
   LEASE_ACK_BASE_PATH,
   QUARANTINE_GRANT_PATH,
   QUARANTINE_FINALIZE_PATH,
+  SESSION_RENEW_PATH,
+  SESSION_RENEW_DESCRIPTOR,
   leaseAckPath,
   leaseRenewPath,
 } from "./transport/client.js";
-export type { WorkerOperationHttpRequest, WorkerOperationHttpResponse } from "./transport/client.js";
+export type { WorkerOperationHttpRequest, WorkerOperationHttpResponse, SessionRenewHttpResponse } from "./transport/client.js";
 
 // --- WRK-003: poll, ACK, and capability advertisement ------------------------
 

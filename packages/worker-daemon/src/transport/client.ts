@@ -80,6 +80,25 @@ export const SELF_MODEL_READ_DESCRIPTOR = Object.freeze({
 });
 
 /**
+ * WRK-010 slice 2 — the device-proof session RENEWAL route.
+ *
+ * ★ NOT a frozen wire op (E4-D02 keeps `WORKER_PROTOCOL_OPERATIONS` a closed ten), so this
+ * is a LOCAL operation with a LOCAL descriptor, the same shape slice 1 gave the server side
+ * (`services/worker-session-renewal.ts` `SESSION_RENEW_DESCRIPTOR`). The path is duplicated
+ * from the server route and the `/api` mount is PART of the signed contract — the device proof
+ * is signed OVER this exact string, so a drift is a signature that can never verify, not a 404.
+ * Pinned by `scripts/check-worker-path-parity.mjs`, never by comment.
+ */
+export const SESSION_RENEW_PATH = "/api/worker-control/session/renew";
+
+/** Local descriptor for the renewal request: a version, an audience literal and one UUID —
+ * larger is not one of ours. Mirrors the server descriptor (2 KiB / 10s). */
+export const SESSION_RENEW_DESCRIPTOR = Object.freeze({
+  maxRequestBytes: 2 * 1024,
+  timeoutMs: 10_000,
+});
+
+/**
  * The lease-ack route path for `leaseId`. The device proof MUST be signed over
  * this EXACT string — it is the request path the server verifies against
  * (`req.originalUrl`). `leaseId` is a UUID, so encoding is a no-op, but we encode
@@ -150,6 +169,17 @@ export interface WorkerOperationHttpResponse {
   readonly body: unknown;
 }
 
+/**
+ * A renewal response (WRK-010 slice 2). Like a dual-authed operation on the way OUT (Bearer
+ * session + device proof), but like enroll on the way BACK: the NEW session token arrives in
+ * the `aoa-worker-session` HEADER, so — unlike `postOperation` — this response carries it.
+ */
+export interface SessionRenewHttpResponse {
+  readonly status: number;
+  readonly body: unknown;
+  readonly sessionHeader: string | null;
+}
+
 export interface ControlPlaneClient {
   /** The enroll path the proof must be signed over (equals the request path). */
   readonly path: string;
@@ -167,6 +197,8 @@ export interface ControlPlaneClient {
   readonly artifactTransferGrantPath: string;
   /** The self-model read path the proof must be signed over (WRK-008 slice 2, LOCAL op). */
   readonly selfModelReadPath: string;
+  /** The session-renewal path the proof must be signed over (WRK-010 slice 2, LOCAL op). */
+  readonly sessionRenewPath: string;
   /** The lease-ack path for `leaseId` (the proof must be signed over it). */
   leaseAckPath(leaseId: string): string;
   /** The lease-renew path for `leaseId` (the proof must be signed over it, WRK-005). */
@@ -193,6 +225,10 @@ export interface ControlPlaneClient {
   /** POST a device-authenticated read of this worker's own self-model (LOCAL op, 64 KiB / 15s).
    * A 304 is a legitimate outcome (the caller sent a matching `knownSelfModelHash`). */
   selfModelRead(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
+  /** POST a device-proof session RENEWAL (LOCAL op, 2 KiB / 10s, WRK-010 slice 2). Presents the
+   * live session as Bearer + a fresh device proof; on 200 the NEW session token is in the
+   * `aoa-worker-session` response header. */
+  sessionRenew(request: WorkerOperationHttpRequest): Promise<SessionRenewHttpResponse>;
 }
 
 export interface ControlPlaneClientOptions {
@@ -218,6 +254,8 @@ export interface ControlPlaneClientOptions {
   readonly artifactCommitTimeoutMs?: number;
   /** Client timeout for artifact_transfer_grant; defaults to the descriptor's 15s. */
   readonly artifactTransferGrantTimeoutMs?: number;
+  /** Client timeout for session_renew; defaults to the renewal descriptor's 10s (WRK-010 slice 2). */
+  readonly sessionRenewTimeoutMs?: number;
 }
 
 export function createControlPlaneClient(opts: ControlPlaneClientOptions): ControlPlaneClient {
@@ -236,6 +274,7 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
   const artifactCommitTimeoutMs = opts.artifactCommitTimeoutMs ?? OPERATION_DESCRIPTORS.artifact_commit.timeoutMs;
   const artifactTransferGrantTimeoutMs =
     opts.artifactTransferGrantTimeoutMs ?? OPERATION_DESCRIPTORS.artifact_transfer_grant.timeoutMs;
+  const sessionRenewTimeoutMs = opts.sessionRenewTimeoutMs ?? SESSION_RENEW_DESCRIPTOR.timeoutMs;
 
   /** POST a dual-authed worker operation (poll / lease_ack / lease_renew /
    * quarantine_*); classify transport failures the same way the enroll path does
@@ -308,6 +347,7 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
     artifactCommitPath: ARTIFACT_COMMIT_PATH,
     artifactTransferGrantPath: ARTIFACT_TRANSFER_GRANT_PATH,
     selfModelReadPath: SELF_MODEL_READ_PATH,
+    sessionRenewPath: SESSION_RENEW_PATH,
     leaseAckPath,
     leaseRenewPath,
     selfModelRead(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
@@ -318,6 +358,51 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
         SELF_MODEL_READ_DESCRIPTOR.maxRequestBytes,
         request,
       );
+    },
+    async sessionRenew(request: WorkerOperationHttpRequest): Promise<SessionRenewHttpResponse> {
+      // Dual-authed like poll on the way out (Bearer session + device proof), but the NEW
+      // session arrives in the response HEADER like enroll — so this reads that header rather
+      // than reusing `postOperation`, which discards it.
+      if (request.bytes.byteLength > SESSION_RENEW_DESCRIPTOR.maxRequestBytes) {
+        throw new ControlPlaneTransportError(
+          "request_too_large",
+          `session_renew request exceeds the ${SESSION_RENEW_DESCRIPTOR.maxRequestBytes}-byte descriptor ceiling`,
+        );
+      }
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+        authorization: `Bearer ${request.sessionToken}`,
+        ...request.proofHeaders,
+      };
+      if (request.requestId !== undefined) {
+        headers[WORKER_CONTROL_HEADERS.requestId] = request.requestId;
+      }
+      let response: Response;
+      try {
+        response = await doFetch(new URL(SESSION_RENEW_PATH, opts.baseUrl).toString(), {
+          method: "POST",
+          headers,
+          body: new Uint8Array(request.bytes),
+          signal: AbortSignal.timeout(sessionRenewTimeoutMs),
+        });
+      } catch (err) {
+        const name = err instanceof Error ? err.name : "";
+        if (name === "TimeoutError" || name === "AbortError") {
+          throw new ControlPlaneTransportError("timeout", "session_renew request timed out");
+        }
+        throw new ControlPlaneTransportError("network", "session_renew request transport failure");
+      }
+      const sessionHeader = response.headers.get(WORKER_CONTROL_HEADERS.session);
+      const text = await response.text();
+      let body: unknown = null;
+      if (text.length > 0) {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = null;
+        }
+      }
+      return { status: response.status, body, sessionHeader };
     },
     poll(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
       return postOperation("poll", POLL_PATH, pollTimeoutMs, OPERATION_DESCRIPTORS.poll.maxRequestBytes, request);
