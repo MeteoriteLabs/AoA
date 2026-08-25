@@ -492,6 +492,38 @@ function checkProviderControlBoundary(services, v) {
   }
 }
 
+/**
+ * DEP-010 — dispatch stays OFF by default on every worker surface.
+ *
+ * The shipped composition is inert (no provider constructed; the flag defaults off), and NO
+ * staging worker may carry the switches that would turn it on. Spans `environment` AND
+ * `command`/`entrypoint` — parity with checkProviderControlBoundary, because a value delivered
+ * inline is a value delivered. NOTE: CONTAINER-only (the staging compose). The desktop lane has
+ * no equivalent deployment-surface guard, and after Sprint 3 removes the structural gate that
+ * gap is the whole exposure (DEP-010 design §4.2 item 2).
+ */
+export const DISPATCH_SWITCH_ENVS = ["AOA_WORKER_DISPATCH_ENABLED", "AOA_WORKER_SANDBOX_PROVIDER"];
+
+function checkDispatchDefaultOff(services, v) {
+  for (const name of WORKER_SERVICES) {
+    const svc = services[name];
+    if (!svc) continue;
+    for (const key of DISPATCH_SWITCH_ENVS) {
+      if (hasEnvKey(svc, key)) {
+        v.push(`DISPATCH-DEFAULT VIOLATION: worker '${name}' declares '${key}' in 'environment' — dispatch stays OFF by default; no staging worker may set the switches that turn it on (DEP-010)`);
+      }
+      // Inline-injection vector — the same command/entrypoint join idiom as the provider-control
+      // boundary above.
+      for (const field of ["command", "entrypoint"]) {
+        const joined = asArray(svc?.[field]).map(String).join(" ") + " " + (typeof svc?.[field] === "string" ? svc[field] : "");
+        if (joined.includes(key)) {
+          v.push(`DISPATCH-DEFAULT VIOLATION: worker '${name}' names '${key}' in '${field}' (inline-injection vector) — dispatch stays OFF by default (DEP-010)`);
+        }
+      }
+    }
+  }
+}
+
 /** §2.6 — all mutable configuration documented (runner supplies the documented set). */
 function checkEnvDocumented(services, documentedEnvKeys, v) {
   for (const [name, svc] of Object.entries(services)) {
@@ -606,6 +638,7 @@ export function evaluateStagingManifestInvariants(compose, options = {}) {
   checkWorkerDrain(services, v);
   checkSharedAdmission(services, v);
   checkProviderControlBoundary(services, v);
+  checkDispatchDefaultOff(services, v);
   checkAutoscalingBounded(services, v);
   checkFailureDomains(services, v);
   checkExternalPointers(compose, v);

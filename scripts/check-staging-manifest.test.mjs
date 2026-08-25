@@ -320,6 +320,37 @@ test("REJECT (§2.5): the control-plane attached to provider-ctl-net (provider-c
   assert.ok(anyMatch(violations, /provider-ctl-net/i), violations.join("\n"));
 });
 
+// DEP-010 — dispatch stays OFF by default: no staging worker may set the switches that would
+// turn it on. Spans `environment` AND `command`/`entrypoint`, parity with the provider-control
+// boundary above — a value delivered inline is a value delivered.
+test("REJECT (DEP-010): AOA_WORKER_DISPATCH_ENABLED on a worker's environment", () => {
+  const c = clone(validCompose());
+  c.services["worker-a1"].environment.AOA_WORKER_DISPATCH_ENABLED = "1";
+  const { violations } = evalValid(c);
+  assert.ok(anyMatch(violations, /DISPATCH-DEFAULT/i), violations.join("\n"));
+});
+
+test("REJECT (DEP-010): AOA_WORKER_DISPATCH_ENABLED in a worker's command (inline)", () => {
+  const c = clone(validCompose());
+  c.services["worker-a1"].command = ["sh", "-c", "AOA_WORKER_DISPATCH_ENABLED=1 exec worker"];
+  const { violations } = evalValid(c);
+  assert.ok(anyMatch(violations, /DISPATCH-DEFAULT/i), violations.join("\n"));
+});
+
+test("REJECT (DEP-010): AOA_WORKER_SANDBOX_PROVIDER on a worker's environment", () => {
+  const c = clone(validCompose());
+  c.services["worker-a1"].environment.AOA_WORKER_SANDBOX_PROVIDER = "e2b";
+  const { violations } = evalValid(c);
+  assert.ok(anyMatch(violations, /DISPATCH-DEFAULT/i), violations.join("\n"));
+});
+
+test("REJECT (DEP-010): AOA_WORKER_SANDBOX_PROVIDER in a worker's entrypoint (inline)", () => {
+  const c = clone(validCompose());
+  c.services["worker-a1"].entrypoint = ["sh", "-c", "AOA_WORKER_SANDBOX_PROVIDER=e2b exec worker"];
+  const { violations } = evalValid(c);
+  assert.ok(anyMatch(violations, /DISPATCH-DEFAULT/i), violations.join("\n"));
+});
+
 // §2.6 — all mutable configuration documented.
 test("REJECT (§2.6): an undocumented render env key", () => {
   const c = clone(validCompose());
