@@ -566,6 +566,22 @@ export type {
 export { createStartupSteps, runStartupSteps } from "./lifecycle/startup-steps.js";
 export type { StartupStep, StartupReconciler, StartupLogger } from "./lifecycle/startup-steps.js";
 
+// WRK-008 slice 2 / DEP-010 (Sprint 2) — the dispatch-composition decision.
+//
+// PUBLIC on purpose. The composition root that supplies the `provider` input lives OUTSIDE
+// this package (`packages/worker-keystore/src/bin/desktop-host.ts`): the daemon DEFINES the
+// `SandboxProvider` port and cannot import an implementation of it (E4-D01), so the root that
+// injects one is a separate package. That root must be able to assert the shipped default
+// resolves to `no_provider` — which requires importing the decision and its frozen refusal
+// map from the barrel rather than a private lifecycle module. WRK-008 slice 2b narrows this
+// surface (DEP-010 design §10.3).
+export { decideDispatchComposition, DISPATCH_REFUSAL_MESSAGES } from "./lifecycle/compose-dispatch.js";
+export type {
+  DispatchRefusalReason,
+  DispatchCompositionDecision,
+  DispatchCompositionInput,
+} from "./lifecycle/compose-dispatch.js";
+
 // --- DAT-001: immutable workspace snapshot producer --------------------------
 
 export {
