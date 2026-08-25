@@ -997,8 +997,10 @@ Binding rules:
   clauses, and on Windows it is describe.skipIf'd — which vitest renders as GREEN. Run it with
   AOA_RUN_WIN_INTEGRATION=1 (PowerShell: $env:AOA_RUN_WIN_INTEGRATION = "1" on its own line),
   or you have signed off five clauses against a run that evaluated nothing.
-- packages/worker-daemon is `pinned` at 131 in scripts/test-inventory.json. Adding daemon
-  tests without bumping it reds check-test-inventory.mjs; `server` is `floor` and does not bite.
+- packages/worker-daemon is `pinned` in scripts/test-inventory.json (the exact count moves
+  every sprint that adds daemon tests — read the current value, do not trust a number quoted
+  here). Adding daemon tests without bumping it reds check-test-inventory.mjs; `server` is
+  `floor` and does not bite.
 - Do NOT touch scripts/gate-clause-wiring.json. E4-1-leases-through-protocol stays `unwired`
   after this ticket, because createPollLoop still has zero production callers. Sprint 3
   promotes it. Writing anything else there is the false claim of wiring that checker exists
