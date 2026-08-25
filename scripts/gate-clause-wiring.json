@@ -70,7 +70,8 @@
       "epic": "E7",
       "status": "unwired",
       "symbol": "E2bSandboxProvider",
-      "reason": "The package is in no other package.json dependency list, so no production process can construct it. DEP-010 (Sprint 2) gives the existing composition root a dependency path; the journey is proven in Sprint 5."
+      "expectedReferences": 2,
+      "reason": "DEP-010 (Sprint 2) gives the desktop composition root a dependency path and a one-file construction seam (packages/worker-keystore/src/bin/sandbox-provider.ts) -- the 2 references below are that seam: its ProviderModule interface property and the `new mod.E2bSandboxProvider(...)` construction. STILL UNREACHABLE in a shipped boot: construction requires AOA_WORKER_SANDBOX_PROVIDER=e2b plus AOA_WORKER_E2B_TEMPLATE, and even a provider-bearing daemon composes no supervisor -- bin/worker-daemon.ts:347-349 has no `else` on dispatch.compose. Promote when WRK-008 slice 2b (Sprint 3) composes the loop; the coding journey is proven in Sprint 5. The number is typed out, not computed, so a later reference still fires unwired_but_now_has_caller."
     },
     "E8-1-sandbox-local-browser": {
       "epic": "E8",
