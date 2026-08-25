@@ -701,7 +701,17 @@ One block per sprint. Copy it verbatim into a fresh session — each is self-con
 updating this go-book and the registers, so the next session starts from truth rather than from
 what was true when the plan was written.
 
-**Two lines appear in every prompt on purpose.** *"Mutation-test every guard: DELETE it, do not
+**Every prompt now carries an adversarial-review step, and it is the most load-bearing paragraph
+in this section.** Every real defect this programme has found came from the same shape: independent
+reviewers, then a **skeptic told to refute** each HIGH — which killed 7 of 11 findings in one pass,
+three of the four kills being strawman readings of work that already handled the case — and, for
+anything whose deliverable is a document, a **completeness critic** told to ask only what is
+missing across the set. The prompts describe that behaviour rather than naming a skill, deliberately:
+the house plan format (`epics/<EPIC>/tickets/<TICKET>-design.md` plus a `#### ID` node in
+`program-design.md`) is what `check-ticket-graph-coverage.mjs` enforces, and a general-purpose
+plan-writing skill will put a good plan in the wrong place and turn that register red.
+
+**Two more lines appear in every prompt on purpose.** *"Mutation-test every guard: DELETE it, do not
 rewrite it into an equivalent"* and *"if you find something that invalidates the plan's premise,
 STOP"* — the first because a guard nobody can falsify is this repo's most common defect, the second
 because it has already happened twice and both times the catch came from checking before building.
@@ -730,6 +740,21 @@ Binding rules:
   Guard R1 — the platform-physical denial the authenticator does NOT perform — is yours to write.
 - E4-F007 STAYS OPEN. Slice 1 builds a route with no callers; Sprint 2.5 closes the finding.
   Do not touch its status or its key in scripts/finding-ownership.json.
+
+
+BEFORE you call it done, run an ADVERSARIAL REVIEW with subagents. This is not optional polish.
+It is the step that has caught a real, often-HIGH defect on every ticket in this programme, and
+no single reader has yet matched it.
+- Spawn INDEPENDENT reviewers, one per dimension you actually changed. Each checks claims
+  against source and reports only what it verified by opening the file. Zero findings is a
+  respected answer; inventing findings to look thorough is not.
+- For every HIGH or BLOCKING finding, spawn a SKEPTIC told to REFUTE it, and to default to
+  "refuted" if it cannot reproduce the finding from the cited source. In this repo roughly three
+  in four such findings DIE on inspection — they are strawman readings of work that already
+  handled the case. Fix only what survives, and say which ones you killed and why.
+- Do NOT delegate this to a plan-writing or auto-fixing skill. The house format and the
+  fail-first / delete-the-guard mutation discipline above are stricter, and they are what the
+  registers and CI actually check.
 
 When the code is green:
 - Run all five registers; every one must pass:
@@ -778,6 +803,21 @@ Binding rules:
   disagree. Change its manifest STATUS, not only its reason — a non-empty `ownerStillOpen`
   string is all the guard checks, so a deferred finding left as `owned` by a shipped ticket
   reads as owned by nobody and fails nothing (E4-F013).
+
+
+BEFORE you call it done, run an ADVERSARIAL REVIEW with subagents. This is not optional polish.
+It is the step that has caught a real, often-HIGH defect on every ticket in this programme, and
+no single reader has yet matched it.
+- Spawn INDEPENDENT reviewers, one per dimension you actually changed. Each checks claims
+  against source and reports only what it verified by opening the file. Zero findings is a
+  respected answer; inventing findings to look thorough is not.
+- For every HIGH or BLOCKING finding, spawn a SKEPTIC told to REFUTE it, and to default to
+  "refuted" if it cannot reproduce the finding from the cited source. In this repo roughly three
+  in four such findings DIE on inspection — they are strawman readings of work that already
+  handled the case. Fix only what survives, and say which ones you killed and why.
+- Do NOT delegate this to a plan-writing or auto-fixing skill. The house format and the
+  fail-first / delete-the-guard mutation discipline above are stricter, and they are what the
+  registers and CI actually check.
 
 When green: run all five registers, write DEP-010-result.md, update GO-BOOK.md §3.1's
 Sprint 2 row and §4 Sprint 2, commit, push, report CI honestly.
@@ -834,6 +874,33 @@ Three further requirements are already established and must survive into the pla
 E4-F007 AND E4-F012 RESOLVE HERE. For each, in the same commit: flip its status in
 epics/E4-worker-daemon/findings.md AND delete its key from scripts/finding-ownership.json.
 Doing one without the other reddens the always-on policy job.
+
+
+BEFORE you call it done, run an ADVERSARIAL REVIEW with subagents. This is not optional polish.
+It is the step that has caught a real, often-HIGH defect on every ticket in this programme, and
+no single reader has yet matched it.
+- Spawn INDEPENDENT reviewers, one per dimension you actually changed. Each checks claims
+  against source and reports only what it verified by opening the file. Zero findings is a
+  respected answer; inventing findings to look thorough is not.
+- For every HIGH or BLOCKING finding, spawn a SKEPTIC told to REFUTE it, and to default to
+  "refuted" if it cannot reproduce the finding from the cited source. In this repo roughly three
+  in four such findings DIE on inspection — they are strawman readings of work that already
+  handled the case. Fix only what survives, and say which ones you killed and why.
+- Do NOT delegate this to a plan-writing or auto-fixing skill. The house format and the
+  fail-first / delete-the-guard mutation discipline above are stricter, and they are what the
+  registers and CI actually check.
+
+AND — because this sprint's deliverable is a DOCUMENT that everything downstream depends on —
+add a COMPLETENESS CRITIC after the reviewers: a subagent told "do NOT re-review the plan; ask
+what is MISSING, and whether what this sprint BUILDS matches what the next sprint CONSUMES, by
+name, signature and package." That question, and only that question, is what caught the defect
+that would otherwise have left Sprint 1's renewal route with zero callers.
+
+Worth it here, optional elsewhere: ONE independent pass from a different tool —
+`codex exec --sandbox read-only "<your review brief>"` in C:\e3. An independent reviewer found a
+BLOCKING defect that two in-house adversarial rounds had missed, by tracing the FIRST call
+instead of the contract and by counting the rows of a table instead of trusting the sentence
+underneath it.
 
 When green: run all five registers, write the result doc, update GO-BOOK.md §3.1 and
 §4 Sprint 2.5, commit, push, report CI honestly.
@@ -903,6 +970,33 @@ Binding rules:
   a new open finding is born undeclared, and undeclared fails.
 - Cite living documents (this go-book, findings registers, the ownership manifest) by SECTION
   AND ID, never by line.
+
+
+BEFORE you call it done, run an ADVERSARIAL REVIEW with subagents. This is not optional polish.
+It is the step that has caught a real, often-HIGH defect on every ticket in this programme, and
+no single reader has yet matched it.
+- Spawn INDEPENDENT reviewers, one per dimension you actually changed. Each checks claims
+  against source and reports only what it verified by opening the file. Zero findings is a
+  respected answer; inventing findings to look thorough is not.
+- For every HIGH or BLOCKING finding, spawn a SKEPTIC told to REFUTE it, and to default to
+  "refuted" if it cannot reproduce the finding from the cited source. In this repo roughly three
+  in four such findings DIE on inspection — they are strawman readings of work that already
+  handled the case. Fix only what survives, and say which ones you killed and why.
+- Do NOT delegate this to a plan-writing or auto-fixing skill. The house format and the
+  fail-first / delete-the-guard mutation discipline above are stricter, and they are what the
+  registers and CI actually check.
+
+AND — because this sprint's deliverable is a DOCUMENT that everything downstream depends on —
+add a COMPLETENESS CRITIC after the reviewers: a subagent told "do NOT re-review the plan; ask
+what is MISSING, and whether what this sprint BUILDS matches what the next sprint CONSUMES, by
+name, signature and package." That question, and only that question, is what caught the defect
+that would otherwise have left Sprint 1's renewal route with zero callers.
+
+Worth it here, optional elsewhere: ONE independent pass from a different tool —
+`codex exec --sandbox read-only "<your review brief>"` in C:\e3. An independent reviewer found a
+BLOCKING defect that two in-house adversarial rounds had missed, by tracing the FIRST call
+instead of the contract and by counting the rows of a table instead of trusting the sentence
+underneath it.
 
 When green:
 - Run all five registers; every one must pass:
@@ -978,6 +1072,21 @@ Binding rules:
   same commit or the always-on policy job goes red. It also adds a new AOA_WORKER_* switch
   that brand-check cannot see — document it in docs/deploy/environment-variables.md.
 
+
+BEFORE you call it done, run an ADVERSARIAL REVIEW with subagents. This is not optional polish.
+It is the step that has caught a real, often-HIGH defect on every ticket in this programme, and
+no single reader has yet matched it.
+- Spawn INDEPENDENT reviewers, one per dimension you actually changed. Each checks claims
+  against source and reports only what it verified by opening the file. Zero findings is a
+  respected answer; inventing findings to look thorough is not.
+- For every HIGH or BLOCKING finding, spawn a SKEPTIC told to REFUTE it, and to default to
+  "refuted" if it cannot reproduce the finding from the cited source. In this repo roughly three
+  in four such findings DIE on inspection — they are strawman readings of work that already
+  handled the case. Fix only what survives, and say which ones you killed and why.
+- Do NOT delegate this to a plan-writing or auto-fixing skill. The house format and the
+  fail-first / delete-the-guard mutation discipline above are stricter, and they are what the
+  registers and CI actually check.
+
 When green: run all five registers, write WRK-008-slice-2b-result.md, update GO-BOOK.md §3.1
 and §4 Sprint 3, commit, push, report CI honestly.
 
@@ -1013,6 +1122,33 @@ Save it as epics/[EPIC]/tickets/[TICKET]-design.md. Then execute it.
 
 Binding rules: packages/worker-protocol is FROZEN. All five registers must pass. Cite living
 documents by section and id, never by line.
+
+
+BEFORE you call it done, run an ADVERSARIAL REVIEW with subagents. This is not optional polish.
+It is the step that has caught a real, often-HIGH defect on every ticket in this programme, and
+no single reader has yet matched it.
+- Spawn INDEPENDENT reviewers, one per dimension you actually changed. Each checks claims
+  against source and reports only what it verified by opening the file. Zero findings is a
+  respected answer; inventing findings to look thorough is not.
+- For every HIGH or BLOCKING finding, spawn a SKEPTIC told to REFUTE it, and to default to
+  "refuted" if it cannot reproduce the finding from the cited source. In this repo roughly three
+  in four such findings DIE on inspection — they are strawman readings of work that already
+  handled the case. Fix only what survives, and say which ones you killed and why.
+- Do NOT delegate this to a plan-writing or auto-fixing skill. The house format and the
+  fail-first / delete-the-guard mutation discipline above are stricter, and they are what the
+  registers and CI actually check.
+
+AND — because this sprint's deliverable is a DOCUMENT that everything downstream depends on —
+add a COMPLETENESS CRITIC after the reviewers: a subagent told "do NOT re-review the plan; ask
+what is MISSING, and whether what this sprint BUILDS matches what the next sprint CONSUMES, by
+name, signature and package." That question, and only that question, is what caught the defect
+that would otherwise have left Sprint 1's renewal route with zero callers.
+
+Worth it here, optional elsewhere: ONE independent pass from a different tool —
+`codex exec --sandbox read-only "<your review brief>"` in C:\e3. An independent reviewer found a
+BLOCKING defect that two in-house adversarial rounds had missed, by tracing the FIRST call
+instead of the contract and by counting the rows of a table instead of trusting the sentence
+underneath it.
 
 When green: write the result doc, update GO-BOOK.md §3.1 and the §4 entry for this sprint,
 commit, push, report CI honestly.
