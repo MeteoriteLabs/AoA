@@ -89,7 +89,10 @@ function provisionedHello(overrides: Partial<WorkerHelloV1> = {}): WorkerHelloV1
     protocolVersion: 1, workerId: WORKER, targetId: TARGET, deviceGeneration: 1,
     agentVersion: "wrk011", supportedProtocol: { min: 1, max: 1 },
     platform: { os: "linux", arch: "x64", runtime: "desktop" },
-    reportedCapabilities: ["workload.batch", "sandbox.process_isolated"],
+    // ONLY workload.batch — a "none"-isolation desktop cannot provide sandbox.* (DSK-003),
+    // and the daemon self-check (Step 8c) reports exactly this via deriveHelloProvisioning,
+    // so the captured offer must be satisfiable by workload.batch alone (§10 non-goal).
+    reportedCapabilities: ["workload.batch"],
     capacity: { batchSlots: 2, browserSessionSlots: 0, serviceSlots: 0, freeCpuMillis: 2_000, freeMemoryMiB: 4_096, freeDiskMiB: 8_192 },
     policyHash: POLICY_HASH,
     ...overrides,
@@ -244,7 +247,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           ${{ kind: "one_shot", operationId: jobId, operationKind: "extraction" }},
           'system', 'wrk011-test', 'worker', ${WORKER}, ${workload},
           ${"5".repeat(64)}, ${{ policyId: "job-submission-default", version: 1 }}, ${POLICY_HASH},
-          ${{ workloadType: "batch", requiredCapabilities: ["sandbox.process_isolated"] }},
+          ${{ workloadType: "batch", requiredCapabilities: [] }},
           ${{ policyId: "job-submission-default", policyVersion: 1, requestedTarget: TARGET }},
           ${availableAt}, 50, 'queued', 3, ${availableAt}, ${availableAt})`;
       await admin`INSERT INTO job_attempts
