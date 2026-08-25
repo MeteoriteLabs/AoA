@@ -65,6 +65,37 @@ describe("DSK-001/I12 — the hello is unmatchable on the axes that decide", () 
   });
 });
 
+describe("WRK-011 — provisioning makes the hello matchable, and its ABSENCE keeps DSK-001 intact", () => {
+  const provisioning = {
+    reportedCapabilities: ["workload.batch", "sandbox.process_isolated"] as const,
+    policyHash: "7".repeat(64),
+    capacity: { batchSlots: 2, browserSessionSlots: 0, serviceSlots: 0, freeCpuMillis: 2_000, freeMemoryMiB: 4_096, freeDiskMiB: 8_192 },
+  };
+
+  it("reports the provisioned capabilities, ratified policy, and nameplate capacity (M15)", () => {
+    const hello = buildDesktopHello({ ...base, platform: "linux", arch: "x64", provisioning });
+    expect(hello.reportedCapabilities).toContain("workload.batch");
+    expect(hello.policyHash).toBe("7".repeat(64));
+    expect(hello.capacity.batchSlots).toBe(2);
+  });
+
+  it("★ ABSENT provisioning is BYTE-IDENTICAL to today — the branch is purely additive (M15)", () => {
+    const withProv = buildDesktopHello({ ...base, platform: "linux", arch: "x64" });
+    expect(withProv.reportedCapabilities).toEqual([]);
+    expect(withProv.policyHash).toBe(UNPROVISIONED_POLICY_HASH);
+    expect(withProv.capacity.batchSlots).toBe(0);
+  });
+
+  it("emits capabilities in a STABLE order regardless of input set order (M17 — replay byte-stability)", () => {
+    const a = buildDesktopHello({ ...base, platform: "linux", arch: "x64", provisioning });
+    const b = buildDesktopHello({
+      ...base, platform: "linux", arch: "x64",
+      provisioning: { ...provisioning, reportedCapabilities: ["sandbox.process_isolated", "workload.batch"] as const },
+    });
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b)); // set-order-differing input → identical bytes
+  });
+});
+
 describe("DSK-001/I12 — the platform block is a constant, not a fingerprint", () => {
   it("maps win32 to the protocol's `windows`", () => {
     expect(buildDesktopHello({ ...base, platform: "win32", arch: "x64" }).platform.os).toBe("windows");

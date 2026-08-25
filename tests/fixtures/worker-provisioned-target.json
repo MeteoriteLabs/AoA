@@ -1,5 +1,5 @@
 {
-  "_comment": "WRK-011 shared fixture — ratified target profile pair read by BOTH the server integration suite and the daemon self-check test. `leaseOffer` is written by the server integration suite (Step 7) and read by the daemon test (Step 8c). Regenerate with scripts/wrk011-gen-fixture.mts.",
+  "_comment": "WRK-011 shared fixture — a ratified target profile pair read by BOTH the server integration suite (worker-hello-refresh.integration.test.ts) and the daemon self-check test (hello-provisioning.test.ts). Both parse it through the FROZEN schemas and VERIFY the digests, so a canonical-algo drift reds both. `providerConstraintProfile.digest` = sha256(canonicalProviderConstraintProfileDigestInputV1(profile-without-digest)); `registeredProfileHash` = sha256(canonicalizeJsonV1(registeredProfile)). `leaseOffer` is a REAL offer captured by re-running the server integration suite with AOA_WRK011_CAPTURE=1 (Step 7), read by the daemon self-check (Step 8c).",
   "ids": {
     "organizationId": "b0000000-0000-4000-8000-000000000001",
     "targetId": "b0000000-0000-4000-8000-000000000003",
@@ -61,10 +61,10 @@
   "leaseOffer": {
     "protocolVersion": 1,
     "workerId": "b0000000-0000-4000-8000-000000000005",
-    "leaseId": "27977dd9-f444-43bb-a1e3-0632d9dd5864",
-    "fenceToken": "dglnBIuwke760ngFu8OaLlUghc94staf-Y_PgysJ-4Q",
-    "ackDeadline": "2026-08-25T15:24:38.540Z",
-    "expiresAt": "2026-08-25T15:29:23.540Z",
+    "leaseId": "83d17ff1-dee5-4757-b171-e9f6c3efa011",
+    "fenceToken": "ZmygWkLwI-_6jbga9ng_bvD1cMX2f04x68oMWK2zr9E",
+    "ackDeadline": "2026-08-25T15:29:06.565Z",
+    "expiresAt": "2026-08-25T15:33:51.565Z",
     "job": {
       "protocolVersion": 1,
       "jobId": "b6100000-0000-4000-8000-000000000001",
@@ -84,9 +84,9 @@
           "principalId": "b0000000-0000-4000-8000-000000000005"
         }
       },
-      "createdAt": "2026-08-25T15:23:23.474Z",
-      "notBefore": "2026-08-25T15:23:23.474Z",
-      "deadline": "2026-08-25T15:34:23.540Z",
+      "createdAt": "2026-08-25T15:27:51.481Z",
+      "notBefore": "2026-08-25T15:27:51.481Z",
+      "deadline": "2026-08-25T15:38:51.565Z",
       "inputHash": "5555555555555555555555555555555555555555555555555555555555555555",
       "policyHash": "7777777777777777777777777777777777777777777777777777777777777777",
       "placement": {
@@ -120,8 +120,7 @@
         "configArtifactId": null
       },
       "requiredCapabilities": [
-        "workload.batch",
-        "sandbox.process_isolated"
+        "workload.batch"
       ],
       "workspace": null,
       "secretHandles": [],

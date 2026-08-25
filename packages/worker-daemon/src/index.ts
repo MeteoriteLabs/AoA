@@ -235,6 +235,10 @@ export {
   DESKTOP_RUNTIME_LABEL,
   FIRST_ENROLLMENT_DEVICE_GENERATION,
 } from "./enrollment/desktop-hello.js";
+export type { HelloProvisioning } from "./enrollment/desktop-hello.js";
+
+// WRK-011 — fold a self-model read response into the provisioning a matchable hello reports.
+export { deriveHelloProvisioning, SUPERVISABLE_WORKLOAD_CAPABILITIES } from "./enrollment/hello-provisioning.js";
 
 // DSK-002 Lane B — isolation capability detection + the frozen-vocabulary mapping.
 export {
@@ -271,6 +275,8 @@ export {
   QUARANTINE_FINALIZE_PATH,
   SESSION_RENEW_PATH,
   SESSION_RENEW_DESCRIPTOR,
+  SELF_HELLO_PATH,
+  SELF_HELLO_DESCRIPTOR,
   leaseAckPath,
   leaseRenewPath,
 } from "./transport/client.js";

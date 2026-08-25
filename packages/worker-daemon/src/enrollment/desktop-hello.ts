@@ -28,14 +28,36 @@
 // The all-zero capacity is kept for byte-stability, not for safety.
 
 import {
+  KNOWN_WORKER_CAPABILITIES,
   MIN_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
   workerHelloV1Schema,
+  type WorkerCapability,
+  type WorkerCapacity,
   type WorkerHelloV1,
 } from "@armyofagents/worker-protocol";
 
 import { WORKER_VERSION } from "../config/config.js";
 import { capabilitiesForIsolation, type IsolationMechanism } from "./isolation-capabilities.js";
+
+/**
+ * WRK-011 — the facts a PROVISIONED desktop reports once an admin has ratified a placement
+ * profile for its target: the capabilities it can actually provide (already intersected with
+ * the ratified ceiling by `deriveHelloProvisioning`), the ratified policy hash it has synced,
+ * and its nameplate capacity. Absent ⇒ the hello is byte-identical to an unprovisioned one.
+ */
+export interface HelloProvisioning {
+  readonly reportedCapabilities: readonly WorkerCapability[];
+  readonly policyHash: string;
+  readonly capacity: WorkerCapacity;
+}
+
+/** Emit capabilities in a STABLE order (KNOWN_WORKER_CAPABILITIES order) so a replayed hello
+ * is byte-identical regardless of the set order the caller passed. */
+function sortedCapabilities(capabilities: readonly WorkerCapability[]): WorkerCapability[] {
+  const order = new Map(KNOWN_WORKER_CAPABILITIES.map((cap, i) => [cap, i] as const));
+  return [...capabilities].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+}
 
 /**
  * The opaque runtime label. A CONSTANT, never `process.version`: `runtime` is a
@@ -101,6 +123,14 @@ export function buildDesktopHello(input: {
    * answer (D4).
    */
   isolation?: IsolationMechanism;
+  /**
+   * WRK-011. When PRESENT, this hello reports the provisioned capabilities/policy/capacity
+   * (a device that an admin's ratified profile now makes matchable). When ABSENT, the hello
+   * is BYTE-IDENTICAL to the unprovisioned one DSK-001 shipped — the branch is purely
+   * additive, which is what keeps the DSK-001/I12 unmatchability guarantee true by default
+   * (design §6.1, §8 M15). Same replay discipline as `isolation`: passed in, never probed.
+   */
+  provisioning?: HelloProvisioning;
 }): WorkerHelloV1 {
   const os = OS_BY_PLATFORM[input.platform];
   if (!os) {
@@ -141,16 +171,20 @@ export function buildDesktopHello(input: {
     //
     // `desktop-hello.test.ts` asserts this directly, so the guarantee is a test rather
     // than a paragraph: if any `workload.*` name ever appears here, that test fails.
-    reportedCapabilities: [...capabilitiesForIsolation(input.isolation ?? "none")],
+    reportedCapabilities: input.provisioning
+      ? sortedCapabilities(input.provisioning.reportedCapabilities)
+      : [...capabilitiesForIsolation(input.isolation ?? "none")],
     // Kept for byte-stability. NOT a safety property — the matcher overwrites it.
-    capacity: {
-      batchSlots: 0,
-      browserSessionSlots: 0,
-      serviceSlots: 0,
-      freeCpuMillis: 0,
-      freeMemoryMiB: 0,
-      freeDiskMiB: 0,
-    },
-    policyHash: UNPROVISIONED_POLICY_HASH,
+    capacity: input.provisioning
+      ? input.provisioning.capacity
+      : {
+          batchSlots: 0,
+          browserSessionSlots: 0,
+          serviceSlots: 0,
+          freeCpuMillis: 0,
+          freeMemoryMiB: 0,
+          freeDiskMiB: 0,
+        },
+    policyHash: input.provisioning ? input.provisioning.policyHash : UNPROVISIONED_POLICY_HASH,
   });
 }

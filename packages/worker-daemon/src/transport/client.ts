@@ -99,6 +99,24 @@ export const SESSION_RENEW_DESCRIPTOR = Object.freeze({
 });
 
 /**
+ * WRK-011 — the device-proof self-hello-REFRESH route.
+ *
+ * ★ NOT a frozen wire op (E4-D02 keeps the ten closed), so a LOCAL op with a LOCAL
+ * descriptor, mounted beside the self-model read rather than under `/api/worker-control/`.
+ * The path is duplicated from the server route and the `/api` mount is PART of the signed
+ * contract — the device proof is signed OVER this exact string, so a drift is a signature
+ * that can never verify, not a 404. Pinned by `scripts/check-worker-path-parity.mjs`.
+ */
+export const SELF_HELLO_PATH = "/api/execution-targets/self/hello";
+
+/** Local descriptor for the refresh request (one hello). Mirrors the server descriptor
+ * (`services/worker-hello-refresh.ts` SELF_HELLO_DESCRIPTOR) and the self-model read: 64 KiB / 15s. */
+export const SELF_HELLO_DESCRIPTOR = Object.freeze({
+  maxRequestBytes: 64 * 1024,
+  timeoutMs: 15_000,
+});
+
+/**
  * The lease-ack route path for `leaseId`. The device proof MUST be signed over
  * this EXACT string — it is the request path the server verifies against
  * (`req.originalUrl`). `leaseId` is a UUID, so encoding is a no-op, but we encode
@@ -199,6 +217,8 @@ export interface ControlPlaneClient {
   readonly selfModelReadPath: string;
   /** The session-renewal path the proof must be signed over (WRK-010 slice 2, LOCAL op). */
   readonly sessionRenewPath: string;
+  /** The self-hello-refresh path the proof must be signed over (WRK-011, LOCAL op). */
+  readonly selfHelloRefreshPath: string;
   /** The lease-ack path for `leaseId` (the proof must be signed over it). */
   leaseAckPath(leaseId: string): string;
   /** The lease-renew path for `leaseId` (the proof must be signed over it, WRK-005). */
@@ -229,6 +249,10 @@ export interface ControlPlaneClient {
    * live session as Bearer + a fresh device proof; on 200 the NEW session token is in the
    * `aoa-worker-session` response header. */
   sessionRenew(request: WorkerOperationHttpRequest): Promise<SessionRenewHttpResponse>;
+  /** POST a device-proof self-hello REFRESH (LOCAL op, 64 KiB / 15s, WRK-011). Presents the
+   * live session as Bearer + a fresh device proof; on 200 the NEW session token is in the
+   * `aoa-worker-session` response header (like renewal). A 204 means the refresh was a no-op. */
+  selfHelloRefresh(request: WorkerOperationHttpRequest): Promise<SessionRenewHttpResponse>;
 }
 
 export interface ControlPlaneClientOptions {
@@ -275,6 +299,7 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
   const artifactTransferGrantTimeoutMs =
     opts.artifactTransferGrantTimeoutMs ?? OPERATION_DESCRIPTORS.artifact_transfer_grant.timeoutMs;
   const sessionRenewTimeoutMs = opts.sessionRenewTimeoutMs ?? SESSION_RENEW_DESCRIPTOR.timeoutMs;
+  const selfHelloTimeoutMs = SELF_HELLO_DESCRIPTOR.timeoutMs;
 
   /** POST a dual-authed worker operation (poll / lease_ack / lease_renew /
    * quarantine_*); classify transport failures the same way the enroll path does
@@ -348,6 +373,7 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
     artifactTransferGrantPath: ARTIFACT_TRANSFER_GRANT_PATH,
     selfModelReadPath: SELF_MODEL_READ_PATH,
     sessionRenewPath: SESSION_RENEW_PATH,
+    selfHelloRefreshPath: SELF_HELLO_PATH,
     leaseAckPath,
     leaseRenewPath,
     selfModelRead(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
@@ -391,6 +417,51 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
           throw new ControlPlaneTransportError("timeout", "session_renew request timed out");
         }
         throw new ControlPlaneTransportError("network", "session_renew request transport failure");
+      }
+      const sessionHeader = response.headers.get(WORKER_CONTROL_HEADERS.session);
+      const text = await response.text();
+      let body: unknown = null;
+      if (text.length > 0) {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = null;
+        }
+      }
+      return { status: response.status, body, sessionHeader };
+    },
+    async selfHelloRefresh(request: WorkerOperationHttpRequest): Promise<SessionRenewHttpResponse> {
+      // Dual-authed like poll on the way out (Bearer session + device proof), but the NEW
+      // session arrives in the response HEADER like renewal — so this reads that header rather
+      // than reusing `postOperation`, which discards it. Same shape as `sessionRenew`.
+      if (request.bytes.byteLength > SELF_HELLO_DESCRIPTOR.maxRequestBytes) {
+        throw new ControlPlaneTransportError(
+          "request_too_large",
+          `self_hello_refresh request exceeds the ${SELF_HELLO_DESCRIPTOR.maxRequestBytes}-byte descriptor ceiling`,
+        );
+      }
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+        authorization: `Bearer ${request.sessionToken}`,
+        ...request.proofHeaders,
+      };
+      if (request.requestId !== undefined) {
+        headers[WORKER_CONTROL_HEADERS.requestId] = request.requestId;
+      }
+      let response: Response;
+      try {
+        response = await doFetch(new URL(SELF_HELLO_PATH, opts.baseUrl).toString(), {
+          method: "POST",
+          headers,
+          body: new Uint8Array(request.bytes),
+          signal: AbortSignal.timeout(selfHelloTimeoutMs),
+        });
+      } catch (err) {
+        const name = err instanceof Error ? err.name : "";
+        if (name === "TimeoutError" || name === "AbortError") {
+          throw new ControlPlaneTransportError("timeout", "self_hello_refresh request timed out");
+        }
+        throw new ControlPlaneTransportError("network", "self_hello_refresh request transport failure");
       }
       const sessionHeader = response.headers.get(WORKER_CONTROL_HEADERS.session);
       const text = await response.text();

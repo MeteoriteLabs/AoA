@@ -40,6 +40,14 @@ const PAIRS = [
     mount: "/api",
     serverRoute: "/worker-control/session/renew",
   },
+  {
+    name: "self-hello refresh (WRK-011)",
+    daemonFile: "packages/worker-daemon/src/transport/client.ts",
+    daemonConst: "SELF_HELLO_PATH",
+    serverFile: "server/src/routes/execution-targets.ts",
+    mount: "/api",
+    serverRoute: "/execution-targets/self/hello",
+  },
 ];
 
 function readConstant(file, name) {
