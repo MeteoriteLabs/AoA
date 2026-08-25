@@ -10,7 +10,7 @@
  *     fresh device proof to the WRK-010 renewal route
  *     (`POST /api/worker-control/session/renew`) and receive a NEW 15-minute
  *     session. No enrollment code, no 10-minute ceiling. The route REFUSES an
- *     expired session by construction (`worker-session-auth.ts:100-101`), so this
+ *     expired session by construction (`worker-session-auth.ts:103`), so this
  *     is fired BEFORE expiry — see `ensureFresh` + `RENEWAL_HEADROOM_MS`.
  *   - `bootstrap()` — FIRST-session acquisition when the store holds none: the
  *     enrollment code REPLAY (re-enroll with the SAME code + retained idempotency

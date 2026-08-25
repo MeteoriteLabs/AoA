@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   decideDispatchComposition,
+  shouldComposeSession,
   DISPATCH_REFUSAL_MESSAGES,
   type DispatchRefusalReason,
 } from "../lifecycle/compose-dispatch.js";
@@ -124,5 +125,23 @@ describe("WRK-008 slice 2 — decideDispatchComposition", () => {
       ].map((d) => (d.compose ? "composed" : d.reason)),
     );
     expect(reasons.size).toBe(4);
+  });
+});
+
+describe("WRK-010 slice 2 — shouldComposeSession (the weaker session-lifecycle gate)", () => {
+  it("composes ONLY with a provider AND the flag on — NEVER on the shipped default (no provider)", () => {
+    expect(shouldComposeSession({ provider: PROVIDER, dispatchEnabled: true })).toBe(true);
+    expect(shouldComposeSession({ provider: PROVIDER, dispatchEnabled: false })).toBe(false);
+    expect(shouldComposeSession({ provider: undefined, dispatchEnabled: true })).toBe(false);
+    expect(shouldComposeSession({ provider: undefined, dispatchEnabled: false })).toBe(false);
+  });
+
+  it("is strictly WEAKER than decideDispatchComposition: it ignores the self-model gates", () => {
+    // A session is a prerequisite to reading the self-model, so the lifecycle must compose
+    // with a provider + flag even while decideDispatchComposition still refuses (no reader yet).
+    expect(shouldComposeSession({ provider: PROVIDER, dispatchEnabled: true })).toBe(true);
+    expect(
+      decideDispatchComposition({ provider: PROVIDER, dispatchEnabled: true, hasSelfModelReader: false, selfModel: null }).compose,
+    ).toBe(false);
   });
 });

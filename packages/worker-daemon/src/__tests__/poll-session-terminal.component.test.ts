@@ -6,6 +6,18 @@
  * the code route has lapsed, STOPS and surfaces `reenrollment_required` via the
  * reused WRK-002 SessionStore terminal path — it does NOT busy-spin re-polling a
  * dead session.
+ *
+ * ★ WRK-010 slice 2 / SPRINT 3 RE-BASELINING NOTE. This suite wires BOTH SessionStore
+ * seams (`renew` and `bootstrap`) to the enrolment CODE REPLAY, so `forceRefresh`'s
+ * presence routing recovers via the replay regardless of which arm it takes — that is
+ * the PRE-slice-2 `recover()` semantics, preserved here on purpose. In the composed
+ * PRODUCTION daemon Sprint 3 builds, `renew` is the device-proof RENEWAL ROUTE
+ * (`createSessionRenewer`), which REFUSES a server-rejected session (401 → stop) rather
+ * than replaying a code. The two agree in every reachable case (a truly-expired session
+ * always has an already-lapsed code, so both stop — CODE_TTL 10m < SESSION_TTL 15m), but
+ * the `outcome="recovered"` case below models the replay body, not the route body. When
+ * Sprint 3 threads the real renewer into `createPollLoop`, RE-BASELINE these recovery
+ * cases against a fake that models the renewal route (the go-book's D1 re-baselining).
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";

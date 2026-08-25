@@ -286,9 +286,11 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
     // SESSION LIFECYCLE BEFORE enrolment, and construct it here, so the enrolment SINK has a store
     // to write into on the enrolling boot. A NON-composing boot (the shipped default: no provider)
     // constructs no store and passes NO sink, so `result.session` is dropped exactly as before and
-    // I13 is byte-identical to the pre-slice-2 tree. The lifecycle's `renew` thunk is the renewal
-    // route's FIRST production caller; construction itself acquires nothing (the eager first read
-    // is below, after enrolment). Sprint 3 threads `lifecycle.store` into the poll loop.
+    // I13 is byte-identical to the pre-slice-2 tree. The lifecycle's `renew` thunk WIRES the renewal
+    // route into production — it is the route's first production caller CODE PATH; construction itself
+    // acquires nothing (the eager first read is below, after enrolment). The repeated near-expiry
+    // renewal that actually DRIVES `renew` in a running process is Sprint 3's poll loop, which threads
+    // `lifecycle.store` in (E4-F007 resolution; WRK-010-slice-2-design.md §3.3/§11 R1).
     const composeSession = shouldComposeSession({
       provider: deps.provider,
       dispatchEnabled: config.dispatchEnabled,

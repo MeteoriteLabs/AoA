@@ -425,11 +425,12 @@ other standing in the very document the finding is about:
   drop-in seam; the fix is a device-proof-bound renewal endpoint."*
 
 The real seam the renewal successor targets is **`SessionStoreDeps.renew`**
-(`packages/worker-daemon/src/identity/session.ts:55`), consumed via `createSessionProvider`
-(`packages/worker-daemon/src/poll/poll-loop.ts:382`). WRK-010 slice 1 designed against that real seam;
-the correction is already recorded verbatim in the `reason` field of the `E4-F007` key in
-`scripts/finding-ownership.json`. This finding tracks the phantom symbol **discretely** so the
-`:351`/`:431` claims are cross-referenced rather than only corrected inside another finding's prose.
+(`packages/worker-daemon/src/identity/session.ts`), which WRK-010 slice 1 designed against and slice 2
+shipped the device-proof renewal client against (see the E4-F007 resolution above). This finding
+tracks the phantom symbol **discretely** so the `:351`/`:431` claims are cross-referenced rather than
+only corrected inside another finding's prose. *(Its earlier text pointed at the `E4-F007` key in
+`scripts/finding-ownership.json`; that key was deleted when E4-F007 resolved, so the pointer now names
+the E4-F007 finding section here instead — the same two-copies rot this finding is about.)*
 
 **DSK-001's design doc is NOT rewritten** — it is a dated record of a shipped ticket; the finding is
 the correction, and the document keeps its history.
