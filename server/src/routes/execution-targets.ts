@@ -45,6 +45,13 @@ import {
   admitSelfModelRead,
   selfModelRefusalWireCode,
 } from "../services/worker-self-model-admission.js";
+import { registeredTargetProfileV1Schema } from "@armyofagents/worker-protocol";
+import {
+  SELF_HELLO_DESCRIPTOR,
+  createWorkerHelloRefreshService,
+  selfHelloRequestSchema,
+  type SelfHelloRequest,
+} from "../services/worker-hello-refresh.js";
 
 const uuidParam = z.string().uuid();
 const selfModelReadBody = z.object({
@@ -441,6 +448,128 @@ export function executionTargetRoutes(opts: {
           providerConstraintProfile: selfModel.providerConstraintProfile,
           serverTime: (opts.workerSession?.now?.() ?? new Date()).toISOString(),
         });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // WRK-011 (Sprint 2.75) — a worker REFRESHES its enrolled self-model. A worker that
+  // still holds a live session and can still sign with its enrolled device key presents a
+  // provisioned hello; if it stays inside the admin-ratified ceiling, `profile_snapshot`,
+  // `profile_hash` and a fresh session move together in ONE transaction (the mint before
+  // commit, so a mint throw rolls the UPDATE back). This closes E4-F010 — the only channel
+  // by which an already-enrolled worker can become matchable without an operator re-paste.
+  //
+  // Mounted beside the self-model read (NOT under /worker-control/): it is a LOCAL op with a
+  // LOCAL descriptor, not an eleventh frozen worker-control operation (E4-D02). Same URL
+  // discipline as the self-model read — no identifier in path or body; identity comes from
+  // the authenticated principal, so cross-tenant reach is answered by construction.
+  //
+  // ★ DORMANCY IS WEAKER HERE than under /worker-control/ (design §3.3): executionTargetRoutes
+  // is mounted OUTSIDE the distributed-execution flag block (app.ts), so this route's absence
+  // when the composition is off rests on ONE conditional registration — the `if (opts.workerSession)`
+  // below — not on a structural non-mount. `desktop-disabled.negative.test.ts` proves it by
+  // SOURCE SCAN (the strongest available proof given app.ts:588), and says so.
+  if (opts.workerSession) router.post(
+    "/execution-targets/self/hello",
+    requireWorkerHeartbeatAuthority(opts.db, opts.workerSession),
+    validate(selfHelloRequestSchema),
+    async (req, res, next) => {
+      try {
+        const workerSession = opts.workerSession!;
+        const nowFn = () => workerSession.now?.() ?? new Date();
+        const authority = (req as Request & {
+          workerHeartbeatAuthority?:
+            | { kind: "legacy"; targetId: string; organizationId: string }
+            | { kind: "session"; principal: VerifiedTargetPrincipal };
+        }).workerHeartbeatAuthority!;
+
+        // Every refusal answers the SAME coarse code (§5.3): the reason reaches the operator
+        // log, never the wire, so this route cannot become an oracle for target existence or
+        // configuration state.
+        const deny = (code: "unauthorized" | "malformed" | "internal_unavailable" = "unauthorized") => {
+          sendWorkerProtocolError(req, res, code, nowFn());
+        };
+
+        // Size gate before any DB read (the descriptor's maxRequestBytes is strictly below the
+        // global 20mb limit, so this guard is reachable rather than dead code — §Step 3).
+        const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+        if (rawBody && rawBody.length > SELF_HELLO_DESCRIPTOR.maxRequestBytes) {
+          deny("malformed");
+          return;
+        }
+
+        // Layer 0 (§5.1): a legacy rotatable worker token carries NO device proof and may not
+        // perform a durable snapshot WRITE. Refuse it before touching the database. M1.
+        if (authority.kind !== "session") {
+          deny();
+          return;
+        }
+
+        const { hello } = req.body as SelfHelloRequest;
+
+        // The admin-ratified ceiling: capabilityCeiling + policyHash from the registered
+        // target profile. Absent/unparseable ⇒ `ratified: null` ⇒ profile_unratified.
+        const selfModel = await loadWorkerSelfModel(opts.db, authority.principal.targetId);
+        const parsedProfile = selfModel?.registeredProfile
+          ? registeredTargetProfileV1Schema.safeParse(selfModel.registeredProfile)
+          : null;
+        const ratified = parsedProfile?.success
+          ? { capabilityCeiling: parsedProfile.data.capabilityCeiling, policyHash: parsedProfile.data.policyHash }
+          : null;
+
+        const service = createWorkerHelloRefreshService({
+          appDb: workerSession.appDb,
+          sessionSigningKey: workerSession.sessionSigningKey,
+          now: nowFn,
+        });
+        const outcome = await service.refresh({ principal: authority.principal, hello, ratified });
+
+        if (outcome.outcome === "refreshed") {
+          // Same response header enrolment/renewal set, so the daemon transport reads a
+          // refreshed session exactly as it reads an enrolled or renewed one.
+          res.setHeader(WORKER_CONTROL_HEADERS.session, outcome.session);
+          // D-5 structured audit record: the target is the unit of admin intent, so a device
+          // flipping itself matchable inside a ratified ceiling must be visible to review.
+          logger.info({
+            action: "worker.hello.refreshed",
+            organizationId: authority.principal.organizationId,
+            executionTargetId: authority.principal.targetId,
+            workerId: authority.principal.workerId,
+            oldProfileHash: authority.principal.profileHash,
+            newProfileHash: outcome.profileHash,
+            reportedCapabilities: hello.reportedCapabilities,
+            scope: "org_scoped",
+          }, "worker hello refreshed");
+          res.status(200).json({
+            protocolVersion: 1,
+            profileHash: outcome.profileHash,
+            serverTime: nowFn().toISOString(),
+          });
+          return;
+        }
+        if (outcome.outcome === "unchanged") {
+          res.status(204).end();
+          return;
+        }
+        if (outcome.outcome === "refused") {
+          logger.warn({
+            action: "worker.hello.refresh_denied",
+            executionTargetId: authority.principal.targetId,
+            reasonCode: `worker_hello_refresh_${outcome.logReason}`,
+          }, "worker hello refresh denied");
+          // Coarse `unauthorized` on the wire for EVERY refused reason (§5.3, Step 1
+          // exhaustiveness); the two-valued+ discriminant lives only in the log above.
+          deny("unauthorized");
+          return;
+        }
+        // A mint/DB defect is a server answer (503), not a fact about the caller.
+        logger.error({
+          action: "worker.hello.refresh.failed",
+          reasonCode: "worker_hello_refresh_internal_unavailable",
+        }, "worker hello refresh unavailable");
+        deny("internal_unavailable");
       } catch (err) {
         next(err);
       }

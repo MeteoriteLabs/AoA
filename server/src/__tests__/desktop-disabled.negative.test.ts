@@ -286,6 +286,38 @@ describe("I22 clause 2 — flag-off, the worker-control surface is not mounted a
   });
 });
 
+describe("WRK-011 — the self-hello-refresh route is dormant when distributed execution is off", () => {
+  // ★ WEAKER than /worker-control/'s dormancy, and this test says so (design §3.3).
+  // executionTargetRoutes is mounted OUTSIDE app.ts's flag block (app.ts:588), so the
+  // hello-refresh route's absence flag-off rests on ONE conditional registration —
+  // `if (opts.workerSession) router.post("/execution-targets/self/hello", …)` — not on a
+  // structural non-mount. Proving it by SOURCE SCAN is the strongest available proof; a
+  // 404-on-an-unmounted-router test would only prove express's router, not the property.
+  const routesSource = readSource("..", "routes", "execution-targets.ts");
+  const HELLO_PATH = '"/execution-targets/self/hello"';
+
+  // True iff the `router.post(` registering `pathLiteral` is immediately preceded by the
+  // `if (opts.workerSession)` conditional (M18 deletes that conditional).
+  const registrationGuardedByWorkerSession = (pathLiteral: string): boolean => {
+    const at = routesSource.indexOf(pathLiteral);
+    expect(at, `${pathLiteral} is not registered at all`).toBeGreaterThan(0);
+    const post = routesSource.lastIndexOf("router.post(", at);
+    expect(post).toBeGreaterThan(0);
+    return routesSource.slice(Math.max(0, post - 40), post).includes("if (opts.workerSession)");
+  };
+
+  it("★ registers the hello-refresh route ONLY under if (opts.workerSession) (M18)", () => {
+    expect(routesSource).toContain(HELLO_PATH);
+    expect(registrationGuardedByWorkerSession(HELLO_PATH)).toBe(true);
+  });
+
+  it("proves the scan is non-vacuous: the ALWAYS-mounted heartbeat route is NOT behind that guard", () => {
+    // If this ever flips true, either the heartbeat route was gated (a behaviour change) or
+    // the scan is matching the wrong registration — both worth a red.
+    expect(registrationGuardedByWorkerSession('"/execution-targets/heartbeat"')).toBe(false);
+  });
+});
+
 describe("I22 clause 5 — no desktop option can reach the environments UI", () => {
   // `ui/` contains ~104 occurrences of "desktop" and every one is a responsive
   // breakpoint ("desktop tier", "desktop width"), so a grep-based check would be pure

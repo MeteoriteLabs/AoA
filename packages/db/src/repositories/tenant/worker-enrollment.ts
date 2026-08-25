@@ -102,6 +102,22 @@ export interface WorkerEnrollmentRepository {
     profileSnapshot: Record<string, unknown>;
     enrolledAt: Date;
   }): Promise<boolean>;
+  /**
+   * WRK-011 — replace the enrolled self-model snapshot and its digest TOGETHER, on an
+   * already-enrolled worker holding a live session. Unlike `rotateWorker` it does NOT touch
+   * `deviceGeneration`, `devicePublicKey`, `deviceThumbprint`, `status`, `revokedAt` or
+   * `enrolledAt` — a refresh re-states dynamic claims, it does not re-enrol. `expectedProfileHash`
+   * is a compare-and-set so two concurrent refreshes cannot interleave into a snapshot/hash
+   * pair from different helloes (§7 Step 2). Returns true iff exactly one row moved.
+   */
+  refreshWorkerProfile(input: {
+    workerId: string;
+    executionTargetId: string;
+    expectedProfileHash: string;
+    profileSnapshot: Record<string, unknown>;
+    profileHash: string;
+    now: Date;
+  }): Promise<boolean>;
   advanceTargetGeneration(input: {
     executionTargetId: string;
     expectedGeneration: number;
@@ -324,6 +340,18 @@ export function createWorkerEnrollmentRepository(tx: Db): WorkerEnrollmentReposi
       }).where(and(
         eq(workers.id, input.id),
         eq(workers.deviceGeneration, input.expectedGeneration),
+      )).returning({ id: workers.id });
+      return rows.length === 1;
+    },
+    async refreshWorkerProfile(input) {
+      const rows = await tx.update(workers).set({
+        profileSnapshot: input.profileSnapshot,
+        profileHash: input.profileHash,
+        updatedAt: input.now,
+      }).where(and(
+        eq(workers.id, input.workerId),
+        eq(workers.executionTargetId, input.executionTargetId),
+        eq(workers.profileHash, input.expectedProfileHash),
       )).returning({ id: workers.id });
       return rows.length === 1;
     },
