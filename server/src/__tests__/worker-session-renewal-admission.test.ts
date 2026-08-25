@@ -82,9 +82,14 @@ describe("admitSessionRenewal — positive controls (the fixture ADMITS before a
 describe("admitSessionRenewal — R1 (platform-physical) and R2 (shared-platform authority)", () => {
   it("R1 arm 1 (REACHABLE): a null-org principal is refused platform_physical_unsupported", () => {
     // A platform PHYSICAL session authenticates through the operator DB
-    // (worker-session-auth.ts:180-182) with organizationId === null. The transport
-    // verifier used to refuse it for us; the authenticator does not, so R1 must.
-    const decision = admitSessionRenewal(input({ principalOrganizationId: null, principalScope: "platform" }));
+    // (worker-session-auth.ts:180-182) with organizationId === null. The transport verifier
+    // used to refuse it for us; the authenticator does not, so R1 must.
+    // ★ ISOLATES ARM 1: scope is left at the fixture's "organization", NOT "platform" — so
+    // ONLY the `=== null` arm can fire. If this case carried scope "platform", arm 2 would
+    // mask a deleted arm 1 and Step 6's M1 mutant would survive unnoticed (the mirror image
+    // of the M2 trap). This shape is unreachable in production (assertClaims pins the two
+    // together) but the pure function is directly constructible.
+    const decision = admitSessionRenewal(input({ principalOrganizationId: null }));
     expect(decision.admit).toBe(false);
     if (decision.admit) return;
     expect(decision.refusal).toBe("platform_physical_unsupported");
