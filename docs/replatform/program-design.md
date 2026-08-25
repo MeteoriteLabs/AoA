@@ -825,9 +825,15 @@ It unblocks JOB-004 through JOB-008, JOB-011 through JOB-014, and WRK-005 onward
 #### DEP-010 — The provider seam: one authoritative port and a composition root that supplies it (M)
 
 - **Depends on:** DEP-000, WRK-004, CLI-001.
-- **Outcome:** A production process can construct a real sandbox provider and hand it to the worker daemon, so dispatch has something to run work in. Resolves finding E6-F008 (the contract package's provider-neutral `SandboxProviderDriver` and worker-daemon's per-op `SandboxProvider` are structurally distinct ports) by naming ONE authoritative port, and resolves findings E6-F004 (where the fake imports the port from) and E6-F003 (the networked driver API) as the same question. The worker daemon still constructs no provider itself (E4-D01 holds); the composition root lives outside the daemon package.
+- **Outcome:** A production process can construct a real sandbox provider and hand it to the worker daemon, so dispatch has something to run work in. Resolves finding E6-F008 (the contract package's provider-neutral `SandboxProviderDriver` and worker-daemon's per-op `SandboxProvider` are structurally distinct ports) by naming ONE authoritative port, and resolves E6-F004 (where the fake imports the port from). It **NARROWS** E6-F003 (the networked driver API) — DEP-010 answers *which port* the driver speaks but **DEFERS** the containerized wire to successor **DEP-011**, wiring the desktop/self-hosted lane only. The worker daemon still constructs no provider itself (E4-D01 holds); the composition root lives outside the daemon package.
 - **Acceptance:** Exactly one port is authoritative and documented as such; the composition root injects a real `E2bSandboxProvider` into `bootstrapWorkerDaemon` via the `provider` seam; the boundary checker still forbids the daemon importing a provider; a worker with no injected provider still refuses to dispatch (the shipped default is unchanged and provably inert). This ticket wires the seam and the root; it does NOT by itself turn dispatch on (that is WRK-008 slice 2b behind its flag).
 - **Test:** Unit proof that the composition root produces a daemon whose dispatch decision is `compose:true` only when a real provider is injected and the flag is on; a boundary-check run proving the daemon package still cannot import the provider; the port-reconciliation documented against E6-F008.
+
+#### DEP-011 — The containerized worker→provider networked wire (E6-F003 successor) (scope)
+
+- **Depends on:** DEP-010.
+- **Outcome:** Specify the request/response wire a containerized worker's provider driver speaks to `adapter-manager` over `control-net` — the half of E6-F003 that DEP-010 deferred. Filed at DEP-010 completion so E6-F003 is owned by a ticket that exists and has not shipped (finding E4-F013), not left `owned` by shipped DEP-010. Becomes required only when a containerized worker under `docker-compose.staging.yml` must dispatch; `adapter-manager` has zero implementation today, so specifying the wire now would be a spec against an unimplemented peer for an unbuilt caller. Owns finding E6-F003.
+- **Acceptance:** Written at sprint start (post-Sprint-5), against the tree as it exists then; no result doc until the wire is built. E6-F003 stays open (HIGH) until then.
 ### E7 — Coding/CLI workload on E2B
 
 #### CLI-001 — E2B provider implementation (M)

@@ -253,7 +253,7 @@ ceiling at `job-leasing.ts:566`, so the admissible workload list is empty and
 
 ## E4-F011 — One of the container's four landable gates is ALREADY SATISFIED on the desktop boot root
 
-**Status:** `open` · Severity: HIGH · Source: WRK-008 slice 2b adversarial review (2026-08-25) — the review falsified the plan's own four-gate claim.
+**Status:** `resolved` (DEP-010, Sprint 2) · Severity: HIGH · Source: WRK-008 slice 2b adversarial review (2026-08-25) — the review falsified the plan's own four-gate claim.
 
 `packages/worker-keystore/src/bin/desktop-host.ts:114-125` builds **both** OS-custody stores and
 `:254-260` passes them on every non-control, non-reset boot. `resolveCustody`
@@ -286,6 +286,32 @@ taking real leases, where the container additionally has a structural gate no en
 **Consequence for DEP-010:** it may not put a provider in that composition root without an explicit,
 written decision about the flag's default on desktops. Its acceptance must prove the shipped desktop
 default constructs **no provider at all** — not merely that the flag is off.
+
+**Resolution (DEP-010, Sprint 2).** DEP-010 supplied the written decision this finding demanded and
+the guards its acceptance required. The decision (DEP-010 design §4.3): exactly one boot root gets a
+provider *path*, and it is `desktop-host.ts`; the container root (`bin/worker-daemon.ts`, the
+`docker/worker/Dockerfile` `CMD`) structurally **cannot** have one — its DEP-001 image closure is
+worker-daemon + worker-protocol + `pino` only, and the daemon boundary checker pins its runtime deps
+so it may not name a provider package at all (E4-D01). On the desktop root the provider switch
+`AOA_WORKER_SANDBOX_PROVIDER` defaults **UNSET** and the resolver returns `{kind:"none"}` **before
+calling the loader**, so the shipped default constructs **no provider at all** — not merely that the
+flag is off (`resolveSandboxProvider`, DEP-010 Step 6; proven by the loader-never-called case and the
+structural-lock guard, DEP-010 Steps 4/6/7/8/10). `AOA_WORKER_DISPATCH_ENABLED` defaults **OFF**
+through the daemon's own parser (`config.ts` `parseDispatchEnabled`) because `runDesktopHost` forwards
+`deps.env` verbatim; DEP-010 ships no per-root default for it.
+
+This resolves the **decision** the finding forced on DEP-010; it does not close the underlying
+exposure, and DEP-010 design **§4.2** hands that forward in writing. The invariant in this entry's
+title is unchanged: one of the container's landable gates is already satisfied on the desktop
+(custody). The **structural** gate — that nothing consumes `compose === true` because
+`bin/worker-daemon.ts` has no `else` — is DEP-010's primary proof of inertness, and it **expires**
+when WRK-008 slice 2b (Sprint 3) writes that `else`. After Sprint 3 the desktop's inertness rests on
+the remaining gates — unset environment switches plus runtime conditions (an absent live session, an
+absent admin-set placement profile) — and there is no deployment-surface guard on the desktop lane
+for those switches (§4.2 item 2), which becomes the whole exposure once the structural gate is gone.
+**Say which enumeration you mean, every time:** this resolution records the invariant and the handoff,
+deliberately not a gate count, because the counts filed against this finding were retracted and the
+invariant is what does not move.
 
 ## E4-F012 — The renewal route cannot mint a FIRST session, and nothing in the plan set acquires one
 

@@ -11,19 +11,22 @@
 // importing this module (the fake does exactly that, keeping its runtime
 // dependency set to `@armyofagents/worker-protocol` + `zod` + Node built-ins).
 //
-// IMPORTANT — this is NOT worker-daemon's `SandboxProvider`, and it does not (yet)
-// validate a real provider implementing that port. worker-daemon's
-// `SandboxProvider` (`packages/worker-daemon/src/supervisor/provider.ts`) is a
-// PER-OPERATION method surface (`create`/`execute`/`cancel`/`kill`/`destroy`/
-// `list`/`inspect`/`reconcileCleanup` + optional `checkpoint`/`restore`/`health`,
-// each its own method taking real supervisor context). This `SandboxProviderDriver`
-// is a DIFFERENT shape: a single provider-neutral `invoke(op, args)` dispatcher.
-// The two are structurally distinct; nothing here imports worker-daemon and this
-// contract makes NO claim that any real provider satisfying the per-op port
-// conforms. Reconciling the two — a shared-leaf relocation of one port, or a
-// tested adapter from the per-op `SandboxProvider` onto this `invoke`-driver — is
-// an OPEN item to resolve before CLI-001/D2 (tracked as finding E6-F008), not
-// done here.
+// SETTLED (DEP-010, Sprint 2, decision D2 — finding E6-F008 RESOLVED). This is NOT
+// worker-daemon's authoritative `SandboxProvider`, and it is deliberately not meant
+// to be. worker-daemon's `SandboxProvider`
+// (`packages/worker-daemon/src/supervisor/provider.ts`) is a PER-OPERATION method
+// surface (`create`/`execute`/`cancel`/`kill`/`destroy`/`list`/`inspect`/
+// `reconcileCleanup` + optional `checkpoint`/`restore`/`health`, each its own method
+// taking real supervisor context) and is THE authoritative provider port of record
+// (D1). This `SandboxProviderDriver` is a DIFFERENT shape — a single
+// provider-neutral `invoke(op, args)` dispatcher — DEMOTED to a conformance-harness
+// surface: the two conformance suites (`runSandboxProviderContract`,
+// `runSandboxIsolationConformance`) drive it, and nothing in production speaks it.
+// The two are bridged in ONE direction only — authoritative per-op → harness driver
+// — through the shipped `perOpToInvokeDriver` adapter
+// (`packages/sandbox-e2b-provider/src/per-op-adapter.ts`); there is no driver → per-op
+// adapter, by design (a fabricating provider must never sit one import from a
+// production path). Nothing here imports worker-daemon.
 // -----------------------------------------------------------------------------
 
 import {
