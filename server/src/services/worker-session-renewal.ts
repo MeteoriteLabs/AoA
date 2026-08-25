@@ -182,10 +182,15 @@ export function createWorkerSessionRenewalService(deps: {
       });
       if (!decision.admit) return { outcome: "refused", logReason: decision.refusal };
 
-      // The mint in its OWN try. A WorkerSessionError from HERE (the ceiling assertion
-      // tripping) is a SERVER defect, not a fact about the caller — it must NOT collapse
-      // into the `unauthorized` bucket the authenticator error uses, or a healthy worker is
-      // told it is unauthorized for our bug and stops permanently. Answer internal_unavailable.
+      // The mint in its OWN try. ★ This catch is DEFENSIVE and UNREACHABLE in production:
+      // WORKER_SESSION_RENEWAL_TTL_MS === SESSION_MAX_MS makes exp-iat exactly 900, so the ceiling
+      // assertion (worker-session-auth.ts:80) never trips, and assertClaims cannot fail for an
+      // identity the authenticator already validated. It exists so that a FUTURE defect — the
+      // ceiling assertion tripping, a bad key — is a SERVER answer (internal_unavailable, 503), not
+      // a fact about the caller: it must NOT collapse into the `unauthorized` bucket the
+      // authenticator error uses, or a healthy worker would be told it is unauthorized for our bug
+      // and stop permanently. Killed by an INJECTED-mint test seam (not a reachable condition), the
+      // same discipline the two unreachable admission guards get.
       try {
         const minted = mint(decision.identity, now());
         return { outcome: "renewed", ...minted };

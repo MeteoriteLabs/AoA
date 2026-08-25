@@ -239,8 +239,13 @@ describe("I22 clause 2 — flag-off, the worker-control surface is not mounted a
     //       Step 4 landed, and red again the day someone relocates it onto a router app.ts
     //       mounts UNCONDITIONALLY (which would break dormancy without touching this needle
     //       via app.ts, so the needle has to be the registration itself).
-    //   (b) app.ts mounts workerControlRoutes only inside the flag block — green today (:233).
-    //   (c) app.ts mounts workerControlRoutes exactly once — green today (:247-248).
+    //   (b) app.ts mounts workerControlRoutes only inside the flag block — green today, asserted
+    //       by the standing test "mounts workerControlRoutes only inside the distributed-execution
+    //       flag block" in this describe.
+    //   (c) app.ts mounts workerControlRoutes exactly once — green today, asserted by the standing
+    //       test "does NOT mount it anywhere else" in this describe.
+    // (cited by construct, not line: an inserted test shifts line numbers, and this programme has
+    // been bitten by stale line references.)
     // (b) and (c) are PRE-EXISTING, green on the shipped boot root, and cannot be reddened by
     // this ticket's diff. They are restated here BY REFERENCE so the conjunction is visible in
     // one place; neither is the clause — (a) is. A dormancy row backed only by (b)/(c) would be

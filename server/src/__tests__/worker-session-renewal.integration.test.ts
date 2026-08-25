@@ -503,6 +503,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
     });
 
     it("★ refuses a platform PHYSICAL session, and RENEWS a shared-platform TENANT worker", async () => {
+      const warnSpy = vi.spyOn(logger, "warn");
       // Ratify the platform placement profile + enroll the PHYSICAL device on the shared target.
       const provider = placementProviderProfile();
       await ratifyPlatformExecutionTargetPlacementProfile({
@@ -514,6 +515,14 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       // and admitSessionRenewal R1 refuses it.
       const physicalRefused = await renew({ session: physical.session, keys: physical.keys, proofId: "platform-physical" });
       expect(physicalRefused.status, JSON.stringify(physicalRefused.body)).toBe(401);
+      // ★ ISOLATE THE MECHANISM to R1, not merely "some 401". The physical session PASSES the
+      // authenticator (findSessionAuthority admits it via the operator branch); only admission R1
+      // refuses it, logging the discriminating reason. Without this a regression that moved the
+      // refusal EARLIER (e.g. verifyCurrent throwing target_revoked) would still show 401 and pass
+      // — the E1-F008 "right answer, wrong mechanism" trap. The sibling reasons are proven not to
+      // fire by the shared-platform TENANT renewal below (200), which shares this same operator path.
+      expect(warnSpy.mock.calls.map((c) => (c[0] as { reasonCode?: string })?.reasonCode))
+        .toContain("worker_session_renewal_platform_physical_unsupported");
 
       // A shared-platform TENANT worker (org-scoped, platform target) shares the physical device
       // key. Its authority resolves the shared-platform authority → R2 passes → renews.
