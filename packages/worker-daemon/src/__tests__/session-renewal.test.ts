@@ -86,7 +86,12 @@ describe("session recovery — lost-response replay within the code window", () 
         now: () => clock,
         logger,
         metrics,
+        // WRK-010 slice 2: the code replay is now `bootstrap` (first-session
+        // acquisition). `renew` (the device-proof route) is wired to the same body
+        // here so these pre-slice-2 STOP/recovery cases keep their behaviour under
+        // `forceRefresh`'s presence routing — a distinct-spy test proves the routing.
         renew: async () => (await enroller.renew({ hello, code: CODE, idempotencyKey: first.idempotencyKey })).session,
+        bootstrap: async () => (await enroller.renew({ hello, code: CODE, idempotencyKey: first.idempotencyKey })).session,
       },
       null, // lost response: no session persisted
     );
@@ -155,7 +160,12 @@ describe("session recovery — code route expiry is terminal (re-enrollment requ
         now: () => clock,
         logger,
         metrics,
+        // WRK-010 slice 2: the code replay is now `bootstrap` (first-session
+        // acquisition). `renew` (the device-proof route) is wired to the same body
+        // here so these pre-slice-2 STOP/recovery cases keep their behaviour under
+        // `forceRefresh`'s presence routing — a distinct-spy test proves the routing.
         renew: async () => (await enroller.renew({ hello, code: CODE, idempotencyKey: first.idempotencyKey })).session,
+        bootstrap: async () => (await enroller.renew({ hello, code: CODE, idempotencyKey: first.idempotencyKey })).session,
       },
       first.session,
     );
@@ -207,6 +217,9 @@ describe("session store — rotation detection", () => {
       {
         now: () => clock,
         renew: async () => ({ ...base, token: `t${generation}`, deviceGeneration: generation }),
+        // #current stays live here, so forceRefresh always routes to renew; bootstrap
+        // is required by the type and never reached on this path.
+        bootstrap: async () => ({ ...base, token: `t${generation}`, deviceGeneration: generation }),
       },
       base,
     );
@@ -235,6 +248,9 @@ describe("session store — rotation detection", () => {
       {
         now: () => clock,
         renew: async () => {
+          throw new EnrollmentError("internal_unavailable", false, false, "temporary");
+        },
+        bootstrap: async () => {
           throw new EnrollmentError("internal_unavailable", false, false, "temporary");
         },
       },

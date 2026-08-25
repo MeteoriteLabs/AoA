@@ -47,6 +47,7 @@ describe("session-revocation — stop + backoff on a revoked/replaced generation
       {
         now: () => clock,
         renew: async () => (await enroller.renew({ hello, code: CODE, idempotencyKey: first.idempotencyKey })).session,
+        bootstrap: async () => (await enroller.renew({ hello, code: CODE, idempotencyKey: first.idempotencyKey })).session,
       },
       first.session,
     );
@@ -83,6 +84,7 @@ describe("session-revocation — stop + backoff on a revoked/replaced generation
       {
         now: () => clock,
         renew: async () => (await enroller.renew({ hello, code: CODE, idempotencyKey: first.idempotencyKey })).session,
+        bootstrap: async () => (await enroller.renew({ hello, code: CODE, idempotencyKey: first.idempotencyKey })).session,
       },
       first.session,
     );

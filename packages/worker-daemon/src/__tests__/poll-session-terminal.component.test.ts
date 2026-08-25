@@ -68,6 +68,7 @@ async function buildHarness(
     {
       now: () => clock.t,
       renew: () => enroller.renew({ hello, code: CODE, idempotencyKey: first.idempotencyKey }).then((r) => r.session),
+      bootstrap: () => enroller.renew({ hello, code: CODE, idempotencyKey: first.idempotencyKey }).then((r) => r.session),
       metrics,
       logger,
     },
