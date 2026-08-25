@@ -88,6 +88,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@armyofagents/worker-daemon": "workspace:*",
     "@types/diff": "^8.0.0",
     "@types/express": "^5.0.0",
     "@types/express-serve-static-core": "^5.0.0",
