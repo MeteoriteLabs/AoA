@@ -65,7 +65,49 @@ export function helloRefreshRefusalWireCode(_r: HelloRefusalReason): "unauthoriz
 }
 
 export function admitHelloRefresh(input: HelloRefreshInput): HelloRefreshDecision {
-  const profileHash = input.digestOf(input.hello);
+  // profile_unratified — no admin has ratified a placement profile for this target.
+  // RETRYABLE in spirit (an admin may configure it later, §5.3), but coarse `unauthorized`
+  // on the wire like every other refusal; a worker re-reads its self-model and tries again.
+  if (!input.ratified) return { admit: false, reason: "profile_unratified" };
+
+  const h = input.hello;
+
+  // G1 — identity. The presented hello must be ABOUT this worker. The generation arm is
+  // not decoration: the matcher compares `worker.deviceGeneration !== profile.deviceGeneration`
+  // (capabilities.ts:460) and placement compares it to the registry generation
+  // (job-placement.ts:533), so a snapshot at the wrong generation is unplaceable in exactly
+  // the way this ticket exists to end. The hello's own ids are a CLAIM checked against the
+  // principal, never a second identity source (§3.4).
+  if (
+    String(h.workerId) !== input.principal.workerId ||
+    String(h.targetId) !== input.principal.targetId ||
+    h.deviceGeneration !== input.principal.targetGeneration
+  ) {
+    return { admit: false, reason: "identity_mismatch" };
+  }
+
+  // G2 — capability ceiling, as a SUBSET and not an intersection. Refuse, do not clamp
+  // (§2.2): the durable snapshot must record only claims the device was entitled to make,
+  // and the refusal names an ungranted capability for the operator log. The `ceiling.has`
+  // conjunct is what makes this a subset rather than set-equality (design §8 M6).
+  const ceiling = new Set(input.ratified.capabilityCeiling.map(String));
+  for (const cap of h.reportedCapabilities) {
+    if (!ceiling.has(String(cap))) return { admit: false, reason: "capability_not_granted" };
+  }
+
+  // G3 — policy coherence (an ANTI-STALENESS check, not an authorisation one, §4.2). The
+  // matcher demands `worker.policyHash === profile.policyHash` (capabilities.ts:475), so a
+  // snapshot that fails this could never match anything; refusing turns a silent permanent
+  // non-match into a named, retryable refusal a daemon acts on by re-reading its self-model.
+  if (String(h.policyHash) !== String(input.ratified.policyHash)) {
+    return { admit: false, reason: "policy_stale" };
+  }
+
+  // G4 — idempotency. When the computed digest already equals the row's hash the refresh is
+  // a no-op: write nothing, mint nothing (§4.2). Without it every boot of every worker
+  // rewrites the row and mints a session — a fleet restart becomes a session-churn storm
+  // against a table under FORCE RLS.
+  const profileHash = input.digestOf(h);
   if (profileHash === input.currentProfileHash) return { admit: true, changed: false };
   return { admit: true, changed: true, profileHash };
 }

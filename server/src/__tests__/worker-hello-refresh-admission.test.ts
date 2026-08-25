@@ -68,4 +68,68 @@ describe("admitHelloRefresh — positive control", () => {
     const decision = admitHelloRefresh(input({ currentProfileHash: INJECTED_DIGEST }));
     expect(decision).toEqual({ admit: true, changed: false });
   });
+
+  it("ADMITS a strict SUBSET of the ceiling (anti-vacuity for G2 — a subset must not be refused)", () => {
+    const decision = admitHelloRefresh(
+      input({
+        ratified: { capabilityCeiling: ["workload.batch", "workload.service", "sandbox.process_isolated"], policyHash: RATIFIED_POLICY_HASH },
+        hello: hello({ reportedCapabilities: ["workload.batch"] }),
+      }),
+    );
+    expect(decision).toEqual({ admit: true, changed: true, profileHash: INJECTED_DIGEST });
+  });
+});
+
+describe("admitHelloRefresh — the four guards, each with its SPECIFIC reason", () => {
+  it("profile_unratified when no admin has ratified a profile", () => {
+    expect(admitHelloRefresh(input({ ratified: null }))).toEqual({ admit: false, reason: "profile_unratified" });
+  });
+
+  // G1 identity — three arms, each with the OTHER two fields CORRECT so the case cannot
+  // pass for the wrong reason (design §7 Step 1).
+  it("G1 arm A — identity_mismatch on workerId (targetId + generation correct)", () => {
+    expect(
+      admitHelloRefresh(input({ hello: hello({ workerId: "33333333-3333-4333-8333-333333333333" }) })),
+    ).toEqual({ admit: false, reason: "identity_mismatch" });
+  });
+  it("G1 arm B — identity_mismatch on targetId (workerId + generation correct)", () => {
+    expect(
+      admitHelloRefresh(input({ hello: hello({ targetId: "44444444-4444-4444-8444-444444444444" }) })),
+    ).toEqual({ admit: false, reason: "identity_mismatch" });
+  });
+  it("G1 arm C — identity_mismatch on deviceGeneration (workerId + targetId correct)", () => {
+    expect(
+      admitHelloRefresh(input({ hello: hello({ deviceGeneration: 4 }) })),
+    ).toEqual({ admit: false, reason: "identity_mismatch" });
+  });
+
+  // G2 ceiling — one ungranted capability among several granted ones.
+  it("G2 — capability_not_granted for a capability outside the ceiling", () => {
+    expect(
+      admitHelloRefresh(
+        input({
+          ratified: { capabilityCeiling: ["workload.batch", "workload.service"], policyHash: RATIFIED_POLICY_HASH },
+          hello: hello({ reportedCapabilities: ["workload.batch", "sandbox.process_isolated"] }),
+        }),
+      ),
+    ).toEqual({ admit: false, reason: "capability_not_granted" });
+  });
+
+  // G3 policy — a hash differing by one nibble.
+  it("G3 — policy_stale when the hello policy hash differs from the ratified one", () => {
+    expect(
+      admitHelloRefresh(input({ hello: hello({ policyHash: "b" + "a".repeat(63) }) })),
+    ).toEqual({ admit: false, reason: "policy_stale" });
+  });
+});
+
+describe("helloRefreshRefusalWireCode — exhaustiveness (every reason is coarse `unauthorized`)", () => {
+  it.each<HelloRefusalReason>([
+    "identity_mismatch",
+    "capability_not_granted",
+    "policy_stale",
+    "profile_unratified",
+  ])("maps %s to unauthorized on the wire", (reason) => {
+    expect(helloRefreshRefusalWireCode(reason)).toBe("unauthorized");
+  });
 });
