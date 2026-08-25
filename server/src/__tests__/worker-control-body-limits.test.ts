@@ -12,6 +12,7 @@ import {
   WORKER_CONTROL_EVENTS_PATH,
   WORKER_CONTROL_PATH_PREFIX,
 } from "../worker-control-body-limits.js";
+import { SESSION_RENEW_DESCRIPTOR } from "../services/worker-session-renewal.js";
 
 // BRW-003d-1 — the parser cliff.
 //
@@ -36,6 +37,16 @@ describe("BRW-003d-1 worker-control body limits are DERIVED from the frozen cont
         `${op} declares ${declared} bytes but its path mounts ${mounted}`,
       ).toBeGreaterThan(declared);
     }
+  });
+
+  it("★ WRK-010: the LOCAL session-renew descriptor mounts STRICTLY BELOW the prefix limit", () => {
+    // The session-renew route lives under the shared /api/worker-control prefix, so its
+    // effective express body limit is WORKER_CONTROL_BODY_LIMIT_BYTES. Its descriptor is
+    // LOCAL (not a frozen operation), so the loop above — which iterates
+    // WORKER_PROTOCOL_OPERATIONS — cannot see it. If the descriptor's ceiling ever reaches
+    // or exceeds the mount, express refuses first, the handler's own size guard stays dead,
+    // and the refusal keeps the wrong (non-protocol) shape. Kills mutant M8.
+    expect(SESSION_RENEW_DESCRIPTOR.maxRequestBytes).toBeLessThan(WORKER_CONTROL_BODY_LIMIT_BYTES);
   });
 
   it("derives each limit from the descriptors rather than hand-typing a number", () => {

@@ -12,7 +12,10 @@ import { verifyDeviceProof, type DeviceProofHeaders } from "../services/worker-d
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SESSION_MAX_MS = 15 * 60_000;
+// Exported for WRK-010: the renewal service binds its TTL to this constant so "the
+// ceiling" and "what renewal issues" cannot drift. `export` is the WHOLE of the
+// middleware diff — no behaviour change.
+export const SESSION_MAX_MS = 15 * 60_000;
 
 export interface WorkerSessionClaims {
   aud: "device_session";
