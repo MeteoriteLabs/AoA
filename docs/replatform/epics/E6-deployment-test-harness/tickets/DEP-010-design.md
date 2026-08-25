@@ -608,6 +608,7 @@ untouched `deps`, so the shutdown names stay `["health-server"]` and the mutant 
 2b's real change is not a bare `else` either — it restructures `:355-380` to build those steps from
 the composed loop.) So mutation (a) must be written as an `else` that **assigns a lifecycle dep** —
 e.g. `deps.leasing = <a fake leasing lifecycle>` (or `deps.reconciler` / `deps.eventOutbox`) — which
+> **Implementer note (mutant a):** `deps.leasing`/`deps.reconciler`/`deps.eventOutbox` are `readonly` on `BootstrapDeps`, so the mutation is `(deps as any).leasing = <fake>` to compile — standard for a mutation edit, no effect on killability.
 the post-if-block `const` at `:362` then reads, moving (ii) from `["health-server"]` to something
 longer. That is a mutation with a *real, defined* kill, and it is stated as the mechanism rather than
 left to "compose anything observable", which the `const`-after-the-block structure makes false.
@@ -1248,9 +1249,10 @@ in Steps 4, 6, 7, 8 and 10. Do all three parts together:
 
 **Verify in this commit:** `node scripts/check-finding-ownership.mjs` → OK, with the open count down
 by one from Step 1's number. Whatever the checker prints on its `UNOWNED, on the record:` line, the
-requirement is that **no NEW unowned finding appears and `E4-F011` is not among them** — the `unowned`
-set today is `E4-F013` and `E4-F014` (E4-F010 is now `owned` by WRK-011, not unowned). Deleting the
-E4-F011 key must not add it to that line.
+requirement is that **no NEW unowned finding appears and `E4-F011` is not among them** — read the
+current `unowned` set off the checker's own output at execution time rather than a number pinned
+here, since it drifts as findings are filed (E4-F010 is now `owned` by WRK-011, not unowned).
+Deleting the E4-F011 key must not add it to that line.
 
 **Docs.**
 - `packages/worker-daemon/src/supervisor/provider.ts` header names the authority + the adapter.
