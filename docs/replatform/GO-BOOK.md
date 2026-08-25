@@ -805,10 +805,14 @@ Binding rules:
 - Cite living documents (this go-book, findings registers) by SECTION AND ID, never by line.
 - §10 lists four WRK-008 slice 2b assertions this ticket invalidates. Leave that section
   accurate — Sprint 3 reads it before it starts.
-- E6-F003 is currently `owned` by this ticket while §2 marks it explicitly DEFERRED. Those
-  disagree. Change its manifest STATUS, not only its reason — a non-empty `ownerStillOpen`
-  string is all the guard checks, so a deferred finding left as `owned` by a shipped ticket
-  reads as owned by nobody and fails nothing (E4-F013).
+- E6-F003 is `owned` by this ticket, and the plan's §2 keeps it that way (correct — a ticket
+  that will act on it owns it). But DEP-010 DEFERS it rather than resolving it, so at completion
+  you must REPOINT its manifest `ticket` to a successor that exists on disk (file one if none
+  does) — NOT leave it owned by this shipped ticket with only a rewritten reason. A non-empty
+  `ownerStillOpen` string is all the guard checks, so a deferred finding left owned by a shipped
+  ticket reads as owned by nobody and fails nothing (E4-F013). Same duty for any gate count you
+  write: label which enumeration you mean — shipped-union (4), landable (4), or total incl.
+  runtime (6); a bare number is the defect (E4-F015).
 
 
 BEFORE you call it done, run an ADVERSARIAL REVIEW with subagents. This is not optional polish.
