@@ -79,6 +79,60 @@ describe("admitSessionRenewal — positive controls (the fixture ADMITS before a
   });
 });
 
+describe("admitSessionRenewal — R1 (platform-physical) and R2 (shared-platform authority)", () => {
+  it("R1 arm 1 (REACHABLE): a null-org principal is refused platform_physical_unsupported", () => {
+    // A platform PHYSICAL session authenticates through the operator DB
+    // (worker-session-auth.ts:180-182) with organizationId === null. The transport
+    // verifier used to refuse it for us; the authenticator does not, so R1 must.
+    const decision = admitSessionRenewal(input({ principalOrganizationId: null, principalScope: "platform" }));
+    expect(decision.admit).toBe(false);
+    if (decision.admit) return;
+    expect(decision.refusal).toBe("platform_physical_unsupported");
+  });
+
+  it("R1 arm 2 (UNREACHABLE — assertClaims pins scope↔org): scope 'platform' with a NON-NULL org is still refused", () => {
+    // ★ This shape cannot occur in production: assertClaims pins
+    // (scope === 'platform') === (organizationId === null) at worker-session-auth.ts:69.
+    // It is a real test of code that is really there, NOT evidence the refusal ever fires
+    // in production. The NON-NULL org is load-bearing: with a null org, arm 1 would fire
+    // and this case would pass for the wrong reason (Step 6 M2 would survive unnoticed).
+    const decision = admitSessionRenewal(input({
+      principalOrganizationId: ORG_ID,
+      principalScope: "platform",
+    }));
+    expect(decision.admit).toBe(false);
+    if (decision.admit) return;
+    expect(decision.refusal).toBe("platform_physical_unsupported");
+  });
+
+  it("R2 (UNREACHABLE — authenticator never returns platform target w/o authority): platform target, no shared authority is refused", () => {
+    // ★ Also unreachable (§4.2): a principal surviving R1 with targetScope 'platform'
+    // ALWAYS carries a resolved sharedPlatformAuthority (worker-session-auth.ts:186-205).
+    // Written and mutation-killed as defence-in-depth for a future refactor that drops
+    // the operator read — NOT counted as coverage of a live condition.
+    const decision = admitSessionRenewal(input({
+      principalScope: "organization",
+      principalTargetScope: "platform",
+      hasSharedPlatformAuthority: false,
+    }));
+    expect(decision.admit).toBe(false);
+    if (decision.admit) return;
+    expect(decision.refusal).toBe("platform_authority_unresolved");
+  });
+
+  it("ANTI-VACUITY: hasSharedPlatformAuthority is IGNORED for a NON-platform target (admits)", () => {
+    // A guard that fired for every target would pass the R2 case above AND break every
+    // organization-scoped worker in production (M4). This pins that R2 is conjoined on
+    // targetScope === 'platform'.
+    const decision = admitSessionRenewal(input({
+      principalScope: "owner",
+      principalTargetScope: "owner",
+      hasSharedPlatformAuthority: false,
+    }));
+    expect(decision.admit).toBe(true);
+  });
+});
+
 describe("sessionRenewalRefusalWireCode — every refusal is coarse `unauthorized` on the wire", () => {
   it("maps both refusals to unauthorized (exhaustiveness)", () => {
     const refusals: SessionRenewalRefusal[] = [

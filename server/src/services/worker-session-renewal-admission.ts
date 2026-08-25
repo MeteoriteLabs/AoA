@@ -80,14 +80,38 @@ export function sessionRenewalRefusalWireCode(_r: SessionRenewalRefusal): "unaut
 }
 
 export function admitSessionRenewal(input: SessionRenewalInput): SessionRenewalDecision {
-  // ★ STEP 1 SKELETON — no guards yet. R1/R2 land in Step 2 and REPLACE the two casts below
-  //   with a real platform-physical refusal that narrows `scope` and `organizationId`. Until
-  //   then this always admits, which is exactly what makes Step 2's refusal RED fall over.
-  const scope = input.principalScope as "organization" | "owner";
+  // R1. A platform PHYSICAL identity may not renew here (design §3.5(ii), §9). This USED to be
+  //     free: verifyWorkerOperationProof denies it at the transport (worker-operation-proof.ts:50).
+  //     The authenticator does NOT — it serves platform physical via the operator DB at
+  //     worker-session-auth.ts:180-182 — so the refusal has to be written down.
+  //
+  //     Narrowing here is what types the mint: `scope` below cannot be "platform".
+  //
+  //     Arm 2 (`principalScope === "platform"` with a non-null org) is UNREACHABLE:
+  //     assertClaims pins (scope === "platform") === (organizationId === null) at
+  //     worker-session-auth.ts:69, so the two arms never disagree in production. Written
+  //     because it costs one `||`, and mutation-killed by a directly-constructed input.
+  if (input.principalOrganizationId === null || input.principalScope === "platform") {
+    return refuse("platform_physical_unsupported");
+  }
+  const scope: "organization" | "owner" = input.principalScope;
+
+  // R2. A SHARED platform target's real device lives in the operator database. The
+  //     authenticator only attaches `sharedPlatformAuthority` AFTER proving it
+  //     (worker-session-auth.ts:186-205). Absent here means that proof did not run, so refuse
+  //     rather than mint on unverified authority.
+  //
+  //     UNREACHABLE today (§4.2): a principal surviving R1 with targetScope "platform" always
+  //     carries a resolved authority. Defence-in-depth for a future refactor that drops the
+  //     operator read — NOT counted as coverage of a live condition.
+  if (input.principalTargetScope === "platform" && !input.hasSharedPlatformAuthority) {
+    return refuse("platform_authority_unresolved");
+  }
+
   return { admit: true, identity: {
     aud: "device_session",
     sub: input.workerId,
-    organizationId: input.principalOrganizationId as string,
+    organizationId: input.principalOrganizationId,
     targetId: input.targetId,
     generation: input.generation,
     scope,
