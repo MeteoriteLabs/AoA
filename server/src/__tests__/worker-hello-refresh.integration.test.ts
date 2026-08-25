@@ -9,7 +9,7 @@
 // AOA_RUN_WIN_INTEGRATION=1, or you have signed off five clauses against a run that
 // evaluated nothing. Linux CI runs it unconditionally.
 
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, sign as edSign } from "node:crypto";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,7 +38,8 @@ import {
   createWorkerHelloRefreshService,
   digestHello,
 } from "../services/worker-hello-refresh.js";
-import { verifyWorkerSessionToken, type VerifiedTargetPrincipal } from "../middleware/worker-session-auth.js";
+import { createWorkerSessionToken, verifyWorkerSessionToken, type VerifiedTargetPrincipal } from "../middleware/worker-session-auth.js";
+import { WORKER_CONTROL_HEADERS } from "@armyofagents/shared";
 import { executionTargetRoutes } from "../routes/execution-targets.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { createWorkerToken, hashWorkerToken } from "../services/execution-targets.js";
@@ -203,7 +204,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
     });
 
     // Reset the target + worker to a fresh UNPROVISIONED enrolment before each test.
-    async function seedUnprovisioned(opts?: { ratified?: boolean; legacyTokenHash?: string }): Promise<void> {
+    async function seedUnprovisioned(opts?: { ratified?: boolean; legacyTokenHash?: string; devicePublicKey?: string; deviceThumbprint?: string }): Promise<void> {
+      const devicePublicKey = opts?.devicePublicKey ?? "wrk011-public-key";
+      const deviceThumbprint = opts?.deviceThumbprint ?? THUMBPRINT;
       const un = unprovisionedHello();
       await admin`DELETE FROM job_outbox`;
       await admin`DELETE FROM job_attempts`;
@@ -226,8 +229,8 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         (id, scope, organization_id, execution_target_id, target_authority_key, device_public_key,
          device_thumbprint, device_generation, profile_hash, profile_snapshot, enrolled_at,
          last_seen_at, label, status)
-        VALUES (${WORKER}, 'organization', ${ORG}, ${TARGET}, ${AUTHORITY_KEY}, 'wrk011-public-key',
-          ${THUMBPRINT}, 1, ${digestHello(un)}, ${un as unknown as Record<string, unknown>}, clock_timestamp(),
+        VALUES (${WORKER}, 'organization', ${ORG}, ${TARGET}, ${AUTHORITY_KEY}, ${devicePublicKey},
+          ${deviceThumbprint}, 1, ${digestHello(un)}, ${un as unknown as Record<string, unknown>}, clock_timestamp(),
           clock_timestamp(), 'WRK-011 worker', 'enrolled')`;
     }
 
@@ -386,12 +389,11 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       }
     });
 
-    it("A6: unratified target over the REAL route — an admin has ratified NO profile → coarse unauthorized (401)", async () => {
-      await seedUnprovisioned({ ratified: false });
+    it("A6: an unratified target refuses with the SPECIFIC reason profile_unratified (service-level)", async () => {
       const oldHash = digestHello(unprovisionedHello());
-      // Drive the service against a target whose registered_profile is null.
       const outcome = await service().refresh({ principal: principal(oldHash), hello: provisionedHello(), ratified: null });
       expect(outcome.outcome).toBe("refused");
+      if (outcome.outcome === "refused") expect(outcome.logReason).toBe("profile_unratified");
     });
 
     it("A7: a LEGACY worker token cannot refresh — the route refuses it before any DB write (kills M1)", async () => {
@@ -405,6 +407,61 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       // and the row is untouched.
       const row = await rowProfile();
       expect(row.hash).toBe(digestHello(unprovisionedHello()));
+    });
+
+    it("A8: the REAL route, session + device proof → 200, a minted session header binding the NEW hash, and the row updated", async () => {
+      // The end-to-end HTTP success path: this is the ONLY test that exercises the route's
+      // production glue — validate(selfHelloRequestSchema) PARSING the raw body before the
+      // digest (the M11 property in production), loadWorkerSelfModel → the ratified parse, the
+      // service call, and the aoa-worker-session response header. A1-A6 drive the service.
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const pubDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      const pubB64 = pubDer.toString("base64url");
+      const thumbprint = createHash("sha256").update(pubDer).digest("hex");
+      await seedUnprovisioned({ devicePublicKey: pubB64, deviceThumbprint: thumbprint });
+
+      const oldHash = digestHello(unprovisionedHello());
+      const iat = Math.floor(Date.now() / 1000);
+      const session = createWorkerSessionToken(SIGNING_KEY, {
+        aud: "device_session", sub: WORKER, organizationId: ORG, targetId: TARGET, generation: 1,
+        scope: "organization", deviceThumbprint: thumbprint, profileHash: oldHash,
+        iat, exp: iat + 10 * 60,
+      });
+
+      const PATH = "/api/execution-targets/self/hello";
+      const correlationId = crypto.randomUUID();
+      const body = { protocolVersion: 1, correlationId, hello: provisionedHello() };
+      // The proof signs the digest of the SERIALIZED body; superagent JSON-encodes the object
+      // with the same JSON.stringify, so this digest equals what express.json captures as rawBody.
+      // (Sending a Buffer instead flips content-type to octet-stream, so express.json never
+      // captures rawBody and the authenticator rejects — that cost a debugging round.)
+      const bodyDigest = createHash("sha256").update(JSON.stringify(body)).digest("hex");
+      const issuedAt = new Date().toISOString();
+      const proofId = `proof-${crypto.randomUUID()}`;
+      const canonical = ["AOA-DEVICE-PROOF-V1", "POST", PATH, bodyDigest, correlationId, issuedAt, proofId].join("\n");
+      const signature = edSign(null, Buffer.from(canonical), privateKey).toString("base64url");
+
+      const res = await request(httpApp)
+        .post(PATH)
+        .set("authorization", `Bearer ${session}`)
+        .set(WORKER_CONTROL_HEADERS.proofVersion, "1")
+        .set(WORKER_CONTROL_HEADERS.publicKey, pubB64)
+        .set(WORKER_CONTROL_HEADERS.signature, signature)
+        .set(WORKER_CONTROL_HEADERS.issuedAt, issuedAt)
+        .set(WORKER_CONTROL_HEADERS.proofId, proofId)
+        .set(WORKER_CONTROL_HEADERS.requestId, correlationId)
+        .send(body);
+
+      expect(res.status).toBe(200);
+      const newHash = digestHello(provisionedHello());
+      expect(res.body).toMatchObject({ protocolVersion: 1, profileHash: newHash });
+      // The minted session is on the response header and verifies with the NEW hash.
+      const headerSession = res.headers[WORKER_CONTROL_HEADERS.session];
+      expect(typeof headerSession).toBe("string");
+      expect(verifyWorkerSessionToken(SIGNING_KEY, headerSession as string).profileHash).toBe(newHash);
+      // And the durable row moved — proving the route (not just the service) committed the triple.
+      const row = await rowProfile();
+      expect(row.hash).toBe(newHash);
     });
   },
 );
