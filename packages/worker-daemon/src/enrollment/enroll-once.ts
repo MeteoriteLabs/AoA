@@ -40,7 +40,7 @@
 // builds a byte-identical body either way; the server decides fresh-vs-replay
 // from `consumedAt`.
 
-import { createEnroller, type Enroller } from "./enroll.js";
+import { createEnroller, type Enroller, type WorkerSession } from "./enroll.js";
 import type { ControlPlaneClient } from "../transport/client.js";
 import { buildDesktopHello } from "./desktop-hello.js";
 import { deriveEnrollmentIdempotencyKey } from "./idempotency.js";
@@ -135,6 +135,16 @@ export interface EnrollOnceDeps {
    * injecting here does not weaken I3.
    */
   readonly createEnrollerFn?: (deps: { keyStore: ReturnType<typeof frozenDeviceKeyView>; client: ControlPlaneClient }) => Enroller;
+  /**
+   * WRK-010 slice 2 (`E4-F012`) — a SINK for the freshly-minted enrolment session, invoked at
+   * the point `result.session` is otherwise dropped (below). OPTIONAL by design: a composition
+   * root that omits it still compiles (so the omission is a killable test, not a type error),
+   * and every non-composing boot — the shipped default — passes nothing and behaves exactly as
+   * before. This is NOT a re-opening of I13: `EnrollmentOutcome` is UNCHANGED (still frozen,
+   * still the same key allowlist, still no session/token key), and the invariant I13 protects is
+   * the RETURNED AGGREGATE — a store is not a value anyone logs. See WRK-010 §9.1.1.
+   */
+  readonly onSessionMinted?: (session: WorkerSession) => void;
 }
 
 /**
@@ -307,7 +317,11 @@ export async function enrollOnce(deps: EnrollOnceDeps): Promise<EnrollmentOutcom
     );
   }
 
-  // `result.session` is dropped here and never returned (I13).
+  // `result.session` is dropped from the RETURNED OUTCOME here and never returned (I13). WRK-010
+  // slice 2 (`E4-F012`) hands it to the store via the sink FIRST — a store, not a loggable value,
+  // so the outcome below is byte-for-byte what it always was (frozen, no session/token key).
+  deps.onSessionMinted?.(result.session);
+
   return Object.freeze({
     enrolled: true,
     minted,

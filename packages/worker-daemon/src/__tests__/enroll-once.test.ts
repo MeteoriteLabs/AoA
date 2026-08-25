@@ -242,6 +242,38 @@ describe("DSK-001/I13 — the session token never escapes", () => {
   });
 });
 
+describe("WRK-010 slice 2 / E4-F012 — the enrolment session SINK (S2-M10, S2-A4 unit half)", () => {
+  it("invokes onSessionMinted ONCE with the minted session on the enrolling path", async () => {
+    const onSessionMinted = vi.fn();
+    const out = await enrollOnce(deps({ onSessionMinted }));
+    expect(out.skipped).toBe(false);
+    expect(onSessionMinted).toHaveBeenCalledTimes(1);
+    // The sink receives the real session — the token the outcome must NEVER carry.
+    expect(onSessionMinted.mock.calls[0][0].token).toBe("SESSION-TOKEN-MUST-NOT-ESCAPE");
+  });
+
+  it("keeps I13 intact WITH the sink wired: the outcome still has no session/token key", async () => {
+    const out = await enrollOnce(deps({ onSessionMinted: () => {} }));
+    expect(JSON.stringify(out)).not.toContain("SESSION-TOKEN-MUST-NOT-ESCAPE");
+    expect(Object.keys(out)).not.toContain("session");
+    expect(Object.keys(out)).not.toContain("token");
+    expect(Object.isFrozen(out)).toBe(true);
+  });
+
+  it("does NOT invoke the sink on the steady-state (skipped) path — no session is minted", async () => {
+    const identityStore = memoryStore<DeviceIdentityRecord>();
+    const receiptStore = memoryStore();
+    // First boot enrols and persists identity + receipt.
+    await enrollOnce(deps({ identityStore, receiptStore }));
+    // Second boot: identity + receipt on disk ⇒ skipped:true, before any network. The sink
+    // must not fire — the first session on this path comes from the bootstrap dependency.
+    const onSessionMinted = vi.fn();
+    const out = await enrollOnce(deps({ identityStore, receiptStore, onSessionMinted }));
+    expect(out.skipped).toBe(true);
+    expect(onSessionMinted).not.toHaveBeenCalled();
+  });
+});
+
 describe("DSK-001 — a target mismatch is refused, not silently re-enrolled", () => {
   it("refuses when the persisted identity belongs to a different target", async () => {
     const identityStore = memoryStore<DeviceIdentityRecord>(
