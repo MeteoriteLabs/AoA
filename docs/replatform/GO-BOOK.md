@@ -856,8 +856,8 @@ Work in the git worktree C:\e3 on branch docs/replatform-program.
 Read first:
 1. docs/replatform/GO-BOOK.md — §2.0, §2, §4 "Sprint 2.5", and the §3.1 note that this
    sprint writes its own plan.
-2. docs/replatform/epics/E4-worker-daemon/tickets/WRK-010-design.md §9.1 — slice 2 is
-   already scoped there, including the two requirements below.
+2. docs/replatform/epics/E4-worker-daemon/tickets/WRK-010-design.md §9.1 (when the thunk
+   fires, how much headroom) AND §9.1.1 (the E4-F012 first-session decision — adopt it).
 3. WRK-010-result.md (Sprint 1's output) for what actually shipped.
 
 STEP 1 IS TO WRITE THE PLAN, to the same standard as the Sprint 1-3 designs: verified state
@@ -870,13 +870,17 @@ sequenced, the renewal route Sprint 1 built would have had ZERO CALLERS, because
 wired the session's renew to Enroller.renew — the enrolment CODE REPLAY, which only survives
 the ~10-minute code route. This sprint is what makes Sprint 1 worth having.
 
-ANSWER E4-F012 FIRST — it is a DECISION, not plumbing, and the plan is not writable until it
-is made. enroll-once.ts:310 discards the enrolment session on purpose ("result.session is
-dropped here and never returned (I13)"), SessionStoreDeps.renew takes ZERO arguments, and the
-renewal route's authenticator refuses a request with no bearer. So a composed daemon has
-nothing to present on its FIRST ensureFresh(). Options are in the finding; each either
-re-opens I13 (a bearer must never reach a log line) or changes the SessionStoreDeps contract.
-Pick one, write the security argument, then plan.
+E4-F012's MECHANISM IS ALREADY DECIDED — do not re-derive it. WRK-010 §9.1.1 ("E4-F012,
+DECIDED") records the full decision with its security argument: (1) enrollOnce gains a session
+SINK (not a return), so the enrolment session reaches the store without ever entering the
+loggable EnrollmentOutcome — I13's invariant is about the RETURN VALUE, and §9.1.1 quotes the
+source docblock proving it; (2) SessionStoreDeps.renew changes signature from zero args to
+renew(current: WorkerSession), so the no-session first call becomes a compiler error rather than
+something a reviewer must catch. ADOPT that mechanism. Your remaining job is to IMPLEMENT and
+PROVE it, and to close any residual §9.1.1 flags — in particular, be explicit in the plan about
+where the FIRST session comes from on every boot path the composed daemon actually takes (the
+sink fires at enrolment; state what happens on a boot that does not re-enrol), so "the route has
+a production caller" is genuinely reachable and not just compile-clean.
 
 THIS SPRINT OWNS THE PRODUCTION SESSION WIRING. The production identity + SessionStore
 construction moves here from WRK-008 slice 2b — otherwise this sprint's own acceptance
