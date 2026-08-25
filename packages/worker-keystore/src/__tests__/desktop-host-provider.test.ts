@@ -12,6 +12,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   bootstrapWorkerDaemon,
+  decideDispatchComposition,
   type Env,
   type Logger,
   type HealthServerHandle,
@@ -102,17 +103,19 @@ function daemonEnv(overrides: Env = {}): Env {
   };
 }
 
-/** Boot the REAL daemon with a capturing logger and a stubbed health server, and return the
- * structured `reason` fields it logged (the dispatch refusal is a FIELD, not only prose). */
+/** Boot the REAL daemon with a capturing logger and a stubbed health server. Captures the
+ * structured log records (fields + message) so both the dispatch REASON and the startup/
+ * shutdown STEP names are observable, plus the BootstrapResult so a test can drive shutdown. */
 async function bootDaemon(env: Env, provider?: unknown) {
-  const records: Array<{ fields: unknown }> = [];
+  const records: Array<{ fields: Record<string, unknown>; message?: unknown }> = [];
   const logger = {
-    info: (fields: unknown) => { records.push({ fields }); },
+    info: (fields: Record<string, unknown>, message?: unknown) => { records.push({ fields, message }); },
     warn: () => {}, error: () => {}, flush: async () => {},
   } as unknown as Logger;
   const health = { close: async () => {} } as unknown as HealthServerHandle;
-  const proc: ProcessLike = { once: () => {}, exit: () => {} };
-  await bootstrapWorkerDaemon({
+  const exitCalls: number[] = [];
+  const proc: ProcessLike = { once: () => {}, exit: (c: number) => { exitCalls.push(c); } };
+  const result = await bootstrapWorkerDaemon({
     env,
     proc,
     provider: provider as never,
@@ -122,8 +125,71 @@ async function bootDaemon(env: Env, provider?: unknown) {
   const reasons = records
     .map((r) => (r.fields as { reason?: string } | undefined)?.reason)
     .filter((r): r is string => typeof r === "string");
-  return { reasons };
+  return { records, reasons, result, exitCalls };
 }
+
+/** Run the ROOT with a capturing bootstrap and return exactly the provider it produced —
+ * `undefined` on the shipped default, a real E2bSandboxProvider on the opt-in path. */
+async function rootProducedProvider(extraEnv: Record<string, string>, load: ProviderModuleLoader): Promise<unknown> {
+  const bootstrap = vi.fn(async () => ({ ok: true }));
+  const { proc } = fakeProc();
+  await runDesktopHost({
+    env: { LOCALAPPDATA: LOCAL, ...extraEnv },
+    proc: proc as never, platform: "win32", argv: [],
+    createRunner: okRunner as never, bootstrap: bootstrap as never, log: () => {},
+    loadProviderModule: load,
+  });
+  return (bootstrap.mock.calls[0]![0] as Record<string, unknown>).provider;
+}
+
+describe("DEP-010 — the provider arrives, and composition still happens nowhere", () => {
+  it("root-produced provider ⇒ compose (flag on) / dispatch_disabled (flag off), via the REAL decision", async () => {
+    const provider = await rootProducedProvider(OPT_IN, providerSeam());
+    expect(
+      decideDispatchComposition({ provider: provider as never, dispatchEnabled: true, hasSelfModelReader: true, selfModel: {} as never }),
+    ).toEqual({ compose: true });
+    expect(
+      decideDispatchComposition({ provider: provider as never, dispatchEnabled: false, hasSelfModelReader: true, selfModel: {} as never }),
+    ).toEqual({ compose: false, reason: "dispatch_disabled" });
+  });
+
+  it("the shipped shape yields NO provider ⇒ no_provider for BOTH flag values", async () => {
+    const provider = await rootProducedProvider({}, providerSeam());
+    expect(provider).toBeUndefined();
+    for (const dispatchEnabled of [true, false]) {
+      expect(
+        decideDispatchComposition({ provider: provider as never, dispatchEnabled, hasSelfModelReader: true, selfModel: null }),
+      ).toEqual({ compose: false, reason: "no_provider" });
+    }
+  });
+
+  it("★ STRUCTURAL LOCK: a root-produced provider + flag=1 composes NO supervisor and NO poll loop", async () => {
+    // The §4.1 primary proof. Even at the point where the DECISION would return compose:true,
+    // bootstrapWorkerDaemon composes nothing, because bin/worker-daemon.ts has no `else` on
+    // dispatch.compose. Observed on what it already logs — not on BootstrapResult, which carries
+    // no field distinguishing a composed loop from an uncomposed one.
+    const provider = await rootProducedProvider(OPT_IN, providerSeam());
+    const { records, result } = await bootDaemon(daemonEnv({ AOA_WORKER_DISPATCH_ENABLED: "1" }), provider);
+    // (i) zero `startup:` step lines — startupSteps is [] with no deps.reconciler.
+    const startupLines = records.filter((r) => typeof r.message === "string" && (r.message as string).startsWith("startup:"));
+    expect(startupLines).toEqual([]);
+    // (ii) shutdown step names EXACTLY ["health-server"] — no lease-stop/-drain, no event-outbox-*.
+    await result.shutdown!("SIGTERM");
+    const shutdownSteps = records
+      .filter((r) => (r.fields as { signal?: string }).signal !== undefined && (r.fields as { step?: string }).step !== undefined)
+      .map((r) => (r.fields as { step: string }).step);
+    expect(shutdownSteps).toEqual(["health-server"]);
+  });
+
+  it("supporting: the same boot reports no_self_model_reader — proving the provider ARRIVED", async () => {
+    // Not no_provider (the provider arrived) and not no_self_model (the build has no reader yet).
+    // WRK-008 slice 2b retires this reason; §7 marks the paired mutation "demoted; retires with 2b".
+    const provider = await rootProducedProvider(OPT_IN, providerSeam());
+    const { reasons } = await bootDaemon(daemonEnv({ AOA_WORKER_DISPATCH_ENABLED: "1" }), provider);
+    expect(reasons).toContain("no_self_model_reader");
+    expect(reasons).not.toContain("no_provider");
+  });
+});
 
 // ─── Step 7 — the root resolves and injects a provider, AFTER control and reset ──────────────
 //
