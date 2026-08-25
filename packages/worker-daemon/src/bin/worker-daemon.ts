@@ -42,6 +42,7 @@ import { createControlPlaneClient } from "../transport/client.js";
 import {
   decideDispatchComposition,
   DISPATCH_REFUSAL_MESSAGES,
+  shouldComposeSession,
 } from "../lifecycle/compose-dispatch.js";
 import type { SandboxProvider } from "../supervisor/provider.js";
 import {
@@ -50,6 +51,10 @@ import {
   type EnrollmentOutcome,
 } from "../enrollment/enroll-once.js";
 import { readEnrollmentInput } from "../enrollment/enrollment-input.js";
+import {
+  createWorkerSessionLifecycle,
+  type WorkerSessionLifecycle,
+} from "../identity/worker-session-lifecycle.js";
 
 /** The subset of `process` the entrypoint needs; injected for tests. */
 export interface ProcessLike {
@@ -160,6 +165,11 @@ export interface BootstrapDeps {
   readonly createClient?: typeof createControlPlaneClient;
   readonly readFileText?: (path: string) => string;
   readonly enrollOnceFn?: typeof enrollOnce;
+  /**
+   * WRK-010 slice 2 — the production session lifecycle factory. Injected only for tests; the
+   * default builds the real `SessionStore` + renewal client + bootstrap.
+   */
+  readonly createLifecycleFn?: typeof createWorkerSessionLifecycle;
 }
 
 export interface BootstrapResult {
@@ -268,19 +278,48 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
     const runEnrollment = deps.enrollOnceFn ?? enrollOnce;
     const makeClient = deps.createClient ?? createControlPlaneClient;
     const readFileText = deps.readFileText ?? ((path: string) => readFileSync(path, "utf8"));
+    // One client + one lazy code reader, shared by enrolment and the session lifecycle.
+    const client = makeClient({ baseUrl: config.controlPlaneBaseUrl });
+    const readInput = () => readEnrollmentInput(config.enrollmentCodeSource, deps.env, readFileText);
+
+    // WRK-010 slice 2 (go-book Sprint 2.5) — option (c): decide whether this daemon composes its
+    // SESSION LIFECYCLE BEFORE enrolment, and construct it here, so the enrolment SINK has a store
+    // to write into on the enrolling boot. A NON-composing boot (the shipped default: no provider)
+    // constructs no store and passes NO sink, so `result.session` is dropped exactly as before and
+    // I13 is byte-identical to the pre-slice-2 tree. The lifecycle's `renew` thunk is the renewal
+    // route's FIRST production caller; construction itself acquires nothing (the eager first read
+    // is below, after enrolment). Sprint 3 threads `lifecycle.store` into the poll loop.
+    const composeSession = shouldComposeSession({
+      provider: deps.provider,
+      dispatchEnabled: config.dispatchEnabled,
+    });
+    const lifecycle: WorkerSessionLifecycle | undefined = composeSession
+      ? (deps.createLifecycleFn ?? createWorkerSessionLifecycle)({
+          identityStore: deps.identityStore,
+          client,
+          now: () => Date.now(),
+          readInput,
+          platform: process.platform,
+          arch: process.arch,
+          metrics,
+          logger,
+        })
+      : undefined;
 
     let outcome: EnrollmentOutcome;
     try {
       outcome = await runEnrollment({
         identityStore: deps.identityStore,
         receiptStore: deps.receiptStore,
-        client: makeClient({ baseUrl: config.controlPlaneBaseUrl }),
+        client,
         // A THUNK, not a resolved value: the credential materializes only when a
         // ticket is actually needed, so an already-enrolled device never brings
         // one into memory.
-        readInput: () => readEnrollmentInput(config.enrollmentCodeSource, deps.env, readFileText),
+        readInput,
         platform: process.platform,
         arch: process.arch,
+        // WRK-010 slice 2 — fires only on the ENROLLING boot; undefined on a non-composing boot.
+        onSessionMinted: lifecycle?.onSessionMinted,
       });
     } catch (err) {
       // The survivable branch is deliberately NARROW: only a network failure on
@@ -320,6 +359,31 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
           ? "worker-daemon already enrolled; skipping control-plane enrollment"
           : "worker-daemon enrolled",
       );
+    }
+
+    // WRK-010 slice 2 — eagerly acquire the FIRST session, so first-session acquisition is
+    // GENUINELY REACHABLE in production, not merely compile-clean: the sink path on the enrolling
+    // boot, the bootstrap code-replay on a steady-state boot within the code window. Fail-soft
+    // (§3.4.1): a terminal store runs idle pending re-enrollment (a steady-state boot AFTER the
+    // code window — the named §11 R2 gap); a transient failure is retried by Sprint 3's poll loop.
+    // Repeated near-expiry renewals (the renewal route in a running process) are Sprint 3's driver.
+    if (lifecycle) {
+      try {
+        const acquired = await lifecycle.store.ensureFresh();
+        logger.info(
+          { expiresAtMs: acquired.expiresAtMs, deviceGeneration: acquired.deviceGeneration },
+          "worker-daemon session acquired",
+        );
+      } catch (err) {
+        if (lifecycle.store.isStopped()) {
+          logger.error(
+            { err },
+            "worker-daemon session terminal at boot; running idle — operator re-enrollment required",
+          );
+        } else {
+          logger.warn({ err }, "worker-daemon first session not acquired yet (transient); will retry");
+        }
+      }
     }
   }
 

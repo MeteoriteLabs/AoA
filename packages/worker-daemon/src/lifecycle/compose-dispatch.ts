@@ -66,6 +66,28 @@ export function decideDispatchComposition(
   return { compose: true };
 }
 
+/**
+ * WRK-010 slice 2 — should this daemon compose the SESSION LIFECYCLE?
+ *
+ * ★ DELIBERATELY WEAKER than `decideDispatchComposition`. Acquiring a session is a
+ * PREREQUISITE to reading the self-model (the read needs an authenticated session), so the
+ * lifecycle composes on the two hard gates — a provider and the flag — WITHOUT the
+ * `hasSelfModelReader`/`selfModel` gates the full dispatch decision also needs. Gating the
+ * lifecycle on `decideDispatchComposition().compose` would construct NOTHING in Sprint 2.5
+ * (`hasSelfModelReader` is `false` until Sprint 3) and leave the renewal route with a
+ * compile-clean but unreachable caller — the exact defect this sprint exists to close.
+ *
+ * Both predicates read the same `provider`/`dispatchEnabled`, so they can never disagree about
+ * the first two gates. On the shipped default (no provider) this is `false`: no store, no sink,
+ * no session in memory — enrolment behaves byte-identically to the pre-slice-2 tree.
+ */
+export function shouldComposeSession(input: {
+  provider: SandboxProvider | undefined;
+  dispatchEnabled: boolean;
+}): boolean {
+  return !!input.provider && input.dispatchEnabled;
+}
+
 /** Operator-facing text for each refusal. Kept beside the decision so a new reason
  * cannot be added without an answer to "what does the operator do about it". */
 export const DISPATCH_REFUSAL_MESSAGES: Readonly<Record<DispatchRefusalReason, string>> =
