@@ -228,8 +228,10 @@ a **fatal** refusal, so any desktop host that boots at all is running `os_keycha
 present, and `bin/worker-daemon.ts:267` is entered. Gate 3 (`no_worker_identity`) is therefore
 **already satisfied there**, and gate 5 (`no_session`) is reachable within ten minutes of a code.
 
-**The container stands on four gates. The desktop stands on three: `no_provider`, the flag, and
-`no_event_outbox_path`.**
+**Of the four gates somebody has to LAND, the container stands on all four and the desktop on
+three: `no_provider`, the flag, and `no_event_outbox_path`.** The full gate list is **six** — a live
+session and an admin-set placement profile gate dispatch just as hard, they are simply not fixed by
+landing a change. Six outstanding on the container, five on the desktop.
 
 > **★ CORRECTED 2026-08-25.** This entry was filed saying **two**, copying the number from WRK-008
 > slice 2b before its own round-2 review caught the contradiction: that plan's gate table marks the
@@ -243,3 +245,67 @@ desktop running the build is one environment variable from taking real leases.
 **Consequence for DEP-010:** it may not put a provider in that composition root without an explicit,
 written decision about the flag's default on desktops. Its acceptance must prove the shipped desktop
 default constructs **no provider at all** — not merely that the flag is off.
+
+## E4-F012 — The renewal route cannot mint a FIRST session, and nothing in the plan set acquires one
+
+**Status:** `open` · Severity: HIGH · Source: independent codex review, 2026-08-25 — found after two adversarial review rounds had passed over the same seam.
+
+WRK-008 slice 2b composes `new SessionStore(..., initial = null)` and says the first session is
+"minted lazily, on first `ensureFresh()`". Trace it:
+
+1. `enroll-once.ts:310` — **`result.session` is dropped here and never returned (I13)**, in those
+   words. So after enrolment the composed daemon holds no session.
+2. `SessionStore.ensureFresh` (`identity/session.ts:100-106`) returns the current session if live,
+   otherwise calls `forceRefresh()` → `this.#deps.renew()`. With `initial = null` the **first** call
+   goes straight to `renew()`.
+3. `SessionStoreDeps.renew` (`identity/session.ts:50-55`) takes **zero arguments** by contract.
+4. The WRK-010 route's authenticator requires a live bearer: `createWorkerSessionAuthenticator`
+   matches `^Bearer\s+…$` and `fail()`s when absent (`worker-session-auth.ts:125-127`), then
+   `verifyWorkerSessionToken` rejects `exp <= now` (`:98-101`).
+
+**So a `renew` thunk pointed at the renewal route has nothing to present on the call that matters
+most — the first one.** The route renews a session by construction; it cannot create one. Slice 2b's
+positive control passes only because it injects a fake that ignores that precondition.
+
+**This is not a plumbing bug, it is a decision.** I13 discards the enrolment session deliberately so
+a bearer token can never reach a log line. Acquiring a first session means one of:
+
+* **(a)** `enrollOnce` gains a narrow, deliberate way to hand the session to the store — not to a
+  logger, not to a return value that flows anywhere else. This is a **re-opening of I13** and needs
+  its own security argument, not a refactor.
+* **(b)** a separate bootstrap acquisition path, distinct from `renew`, with `SessionStoreDeps`
+  changed accordingly. Note this falsifies slice 2b's claim that the seam is "ONE injected thunk —
+  swapping it changes nothing else".
+* **(c)** the route learns to mint, which re-opens the enrolment-code problem WRK-010 exists to
+  close. Recorded for completeness; not recommended.
+
+**Owner: WRK-010 slice 2 (go-book Sprint 2.5).** It is the sprint that owns session lifecycle, and it
+cannot meet its own "the route has a production caller" acceptance clause without answering this.
+
+**Blocks:** WRK-010 slice 2's acceptance; WRK-008 slice 2b's self-model read and every runtime
+composition downstream of it, all of which sit behind a session the composed daemon cannot obtain.
+
+## E4-F013 — `ownerStillOpen` is unvalidated free text, so a finding can stay falsely owned by a shipped ticket
+
+**Status:** `open` · Severity: MED · Source: independent codex review, 2026-08-25.
+
+`scripts/lib/finding-ownership.mjs:118-120` fails an entry whose owning ticket already has a
+`-result.md` **unless** `ownerStillOpen` is a non-empty string. Non-emptiness is the entire test.
+So the escape hatch that exists for "the ticket shipped but the finding legitimately survives it"
+also silently covers "nobody moved this and nobody noticed".
+
+**Three live instances, all of which go false the moment their owner ships:**
+
+* `E4-F008` and `E4-F009` are `owned` by **WRK-008**. Slice 2b's own text says F008 *survives* the
+  slice and should be re-pointed at a future refresh ticket, and F009 waits on an unnamed durable
+  lease-candidate source. Neither plan step transfers ownership.
+* `E6-F003` is `owned` by **DEP-010** while DEP-010 §2 marks it **explicitly deferred**; the planned
+  manifest edit rewrites only its `reason`, leaving `status: "owned"`.
+
+**Proposed fix, checkable:** when the owning ticket has a result doc, require a `successor` field
+naming a ticket that exists on disk — the same existence check `owner_ticket_missing` already does.
+Then "it survives its owner" must name who inherits it, and a shipped-and-forgotten finding fails.
+Needs its own RED test and a deleted-guard mutation before it lands.
+
+**Blocks:** nothing today. Recorded because this guard is the programme's backstop against exactly
+this failure, and it has a hole in it.

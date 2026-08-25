@@ -171,9 +171,9 @@ not, because they share this branch and cancel each other's CI.
   S1   WRK-010/1  renewal ROUTE (server only)   (E4)   ── no callers yet
   S2   DEP-010    provider seam + composition   (E6/E4)
   S2.5 WRK-010/2  the route gets its CALLER     (E4)   ── or S1 was for nothing
-  S3   WRK-008/2b dispatch goes LIVE            (E4)   ── first real job
+  S3   WRK-008/2b dispatch COMPOSED (not live)  (E4)   ── see E4-F010
   S4  DAT-008/5,7 credentials reach the sandbox (E5)
-  S5  CLI-006/D2  prove ONE real journey       (E7)   ── "it works" becomes TRUE
+  S5  CLI-006/D2  prove ONE real journey       (E7)   ── needs E4-F010 owned first
 
   BREADTH — scale it out
   S6  MIG-005/6/7 ACTIVE, MIG-001              (E10)
@@ -232,8 +232,18 @@ stores and passes them **unconditionally** on every non-control boot (`:114-125`
 `resolveCustody` makes `mounted_secret`-plus-a-store a fatal exit. So **any desktop that boots at
 all runs `os_keychain` with custody present** - gate 3 is already satisfied there, and gate 5 is
 reachable within ten minutes of a code. **The container stands on four gates; the desktop stands on
-three: gate 1, the flag, and the event-outbox path.** That is why §4 Sprint 2's acceptance clause
-is written the way it is:
+three of the four that somebody has to LAND: gate 1, the flag, and the event-outbox path.**
+
+> **★ Read that count precisely — it is a subset, not the whole list.** Slice 2b's §2 table has
+> **six** rows. Four are things somebody lands (a provider, the flag, custody + enrolment, the
+> outbox path); the other two are runtime state — a live session, and an admin-set placement
+> profile — and they gate dispatch just as hard. So the container has six outstanding conditions
+> and the desktop five; "four and three" counts only the landable subset. Two review rounds put a
+> number under that table that did not match it (first two, then three); an independent review
+> caught that the table itself says six. The lesson is the same every time: **an aggregate sentence
+> that contradicts the detail directly above it.**
+
+That is why §4 Sprint 2's acceptance clause is written the way it is:
 the day DEP-010 puts a provider in that composition root, every installed desktop running the build
 is two env vars from taking real leases. Filed as **E4-F011**, owned by DEP-010.
 
@@ -281,8 +291,10 @@ lapsed; revoked/disabled/stale-generation each refuse with the same coarse code;
 absent when distributed execution is off.
 
 **Settled (§8 D-1, D-2):** the route reuses `createWorkerSessionAuthenticator`
-(`server/src/middleware/worker-session-auth.ts:109`), which performs all ten authority guards
-including the `scope` check the original plan omitted — but which, unlike the thin function the
+(`server/src/middleware/worker-session-auth.ts:109`), which performs **nine of the ten authority
+guards in full and the tenth (identity) in part** — including the `scope` check the original plan
+omitted, and skipping only the `workerId`/`targetId` arms, which are the query keys
+`findSessionAuthority` selects on and so can never differ. Unlike the thin function the
 plan first reached for, does **not** deny a platform-physical claim. That one denial is kept as
 guard R1 in the ticket. One re-used authenticator plus one denial is not a new authority system,
 so WRK-010 stays **one E4 ticket**. Nothing to decide at sprint start.
@@ -336,9 +348,27 @@ when the credential it must present is already dead. **Slice 2 adds the near-exp
 and it must be at least the **5-minute headroom** WRK-010 §3.5(i) derives — below that a
 proof-replay window of up to ~4.9 minutes opens.
 
-**Gate to start:** Sprints 1 and 2 green. **Done when:** the route has a production caller; a
-composed worker crosses T0+15min with a live session in an integration test; `E4-F007` moves to
-`resolved` **here, not in Sprint 1**.
+**★ And a second thing, found later and bigger: the route cannot mint a FIRST session.**
+`enroll-once.ts:310` discards the enrolment session on purpose — *"`result.session` is dropped here
+and never returned (I13)"* — so a composed daemon starts with none. `SessionStoreDeps.renew` takes
+**zero arguments**, and the route's authenticator refuses a request with no bearer
+(`worker-session-auth.ts:125-127`). So the first `ensureFresh()` has nothing to present on the one
+call that matters most. Filed as **E4-F012**, owned by this sprint. **It is a decision, not
+plumbing** — I13 exists so a bearer can never reach a log line, and every route to a first session
+either re-opens that or changes the `SessionStoreDeps` contract. Answer it in the plan, with a
+security argument, before writing code.
+
+**★ This sprint owns the production session wiring — Sprint 3 does not.** As first written, Sprint
+2.5's done-condition ("a production caller") was **unreachable**: the only production `SessionStore`
+construction lives in slice 2b, which runs *after*. That is a cycle. Resolution: **the production
+identity + `SessionStore` construction moves here**, and Sprint 3 composes the poll loop and
+supervisor on top of a session lifecycle that already works. Slice 2b's §4 and Step 2 must be
+re-scoped accordingly at Sprint 3's Step 0.
+
+**Gate to start:** Sprints 1 and 2 green. **Done when:** a composed daemon obtains its **first**
+session and then a **renewed** one from the route, both in an integration test; the route has a
+production caller; a worker crosses T0+15min still authorised; `E4-F007` moves to `resolved`
+**here, not in Sprint 1**; `E4-F012` closes.
 
 **Why 2.5 and not a renumber:** sprints 3-9 are referenced by number across the plans and the
 registers. A fractional insert costs one odd-looking label; a renumber costs a day of chasing
@@ -346,15 +376,20 @@ stale references.
 
 ---
 
-### Sprint 3 — WRK-008 slice 2b: dispatch goes live
+### Sprint 3 — WRK-008 slice 2b: dispatch gets COMPOSED
 **Epic E4 · design: `epics/E4-worker-daemon/tickets/WRK-008-slice-2b-design.md`**
 
-**The moment it becomes real.** Compose `createPollLoop` + `createSupervisor` (+ the startup
+**Not "the moment it becomes real" — an earlier draft of this line said that and it is false.**
+E4-F010 means a composed worker is offered nothing and would refuse it anyway, so this sprint
+executes **zero jobs**. What it does is real and necessary: compose `createPollLoop` + `createSupervisor` (+ the startup
 reconciler and event outbox, or defer them with a stated reason — E4 gate clauses 3 and 4
 depend on them).
 
 **Gate to start:** Sprints 1, **2 and 2.5** green. Without slice 2 a composed worker still dies
-at the 10-minute code-route boundary — Sprint 1 alone does not remove that ceiling.
+at the 10-minute code-route boundary — Sprint 1 alone does not remove that ceiling — and, per
+**E4-F012**, it cannot obtain a first session at all. Sprint 2.5 also now owns the production
+identity + `SessionStore` construction, so this sprint's §4 and Step 2 must be **re-scoped at
+Step 0** to compose on top of it rather than to build it.
 
 **★ Written against the pre-Sprint-2 tree.** Slice 2b was planned before DEP-010 existed and the
 go-book runs it after. Four of its assertions become false the moment Sprint 2 lands a provider in
@@ -509,7 +544,7 @@ change):
 | Guard | Fails when |
 |---|---|
 | `check-gate-clause-wiring.mjs` | a gate clause claims `wired` and nothing in production calls the symbol |
-| `check-finding-ownership.mjs` | an open finding has no owner, or claims a ticket that does not exist / already shipped |
+| `check-finding-ownership.mjs` | an open finding has **no entry at all**, or its entry claims a ticket that does not exist / already shipped. **NOT** "has no owner": `status: "unowned"` with a reason is accepted by design, and two findings sit there right now — the guard's job is to make ownerlessness *visible*, not impossible |
 | `check-ticket-graph-coverage.mjs` | a ticket file exists with no `#### ID` node in the plan |
 | `check-guard-inventory.mjs` / `check-execution-census.mjs` | a check or test file exists that nothing runs |
 
@@ -642,6 +677,10 @@ Binding rules:
 - Cite living documents (this go-book, findings registers) by SECTION AND ID, never by line.
 - §10 lists four WRK-008 slice 2b assertions this ticket invalidates. Leave that section
   accurate — Sprint 3 reads it before it starts.
+- E6-F003 is currently `owned` by this ticket while §2 marks it explicitly DEFERRED. Those
+  disagree. Change its manifest STATUS, not only its reason — a non-empty `ownerStillOpen`
+  string is all the guard checks, so a deferred finding left as `owned` by a shipped ticket
+  reads as owned by nobody and fails nothing (E4-F013).
 
 When green: run all five registers, write DEP-010-result.md, update GO-BOOK.md §3.1's
 Sprint 2 row and §4 Sprint 2, commit, push, report CI honestly.
@@ -671,15 +710,31 @@ sequenced, the renewal route Sprint 1 built would have had ZERO CALLERS, because
 wired the session's renew to Enroller.renew — the enrolment CODE REPLAY, which only survives
 the ~10-minute code route. This sprint is what makes Sprint 1 worth having.
 
-Two requirements are already established and must survive into the plan:
+ANSWER E4-F012 FIRST — it is a DECISION, not plumbing, and the plan is not writable until it
+is made. enroll-once.ts:310 discards the enrolment session on purpose ("result.session is
+dropped here and never returned (I13)"), SessionStoreDeps.renew takes ZERO arguments, and the
+renewal route's authenticator refuses a request with no bearer. So a composed daemon has
+nothing to present on its FIRST ensureFresh(). Options are in the finding; each either
+re-opens I13 (a bearer must never reach a log line) or changes the SessionStoreDeps contract.
+Pick one, write the security argument, then plan.
+
+THIS SPRINT OWNS THE PRODUCTION SESSION WIRING. The production identity + SessionStore
+construction moves here from WRK-008 slice 2b — otherwise this sprint's own acceptance
+("the route has a production caller") is unreachable, because the only production SessionStore
+lives in a sprint that runs after this one. Say so in the plan; Sprint 3 re-scopes at its Step 0.
+
+Three further requirements are already established and must survive into the plan:
 - SessionStore.ensureFresh refreshes only when the session is absent or ALREADY EXPIRED, and
   the renewal route refuses an expired session by construction. Slice 2 adds the near-expiry
   threshold. Without it the thunk fires exactly when its credential is dead.
 - That threshold must be at least FIVE MINUTES of headroom, as an INVARIANT rather than a
   scheduling preference — below it a proof-replay window of up to ~4.9 minutes opens
   (WRK-010 §3.5(i) derives the arithmetic).
+- Acceptance must prove BOTH transitions against a real database: a composed daemon obtaining
+  its FIRST session, and then a RENEWED one from the route. A test that injects a fake session
+  proves neither — slice 2b's positive control does exactly that today.
 
-E4-F007 RESOLVES HERE. In the same commit: flip its status in
+E4-F007 AND E4-F012 RESOLVE HERE. For each, in the same commit: flip its status in
 epics/E4-worker-daemon/findings.md AND delete its key from scripts/finding-ownership.json.
 Doing one without the other reddens the always-on policy job.
 
@@ -716,7 +771,15 @@ Binding rules:
   self-checks every offer against its own hello and refuses effectively all of them.
 - Gate-clause promotion is a DELIBERATE decision, in the plan's Step 10. The wiring checker
   validates a `wired` clause on caller count alone and never reads its `reason`, so a caveat
-  parked in a reason field is a caveat nothing surfaces.
+  parked in a reason field is a caveat nothing surfaces. In particular: do NOT promote
+  E4-2 ("supervises only sandboxes") on the strength of a composed supervisor — production
+  reaches the supervisor only after an ACK, and the worker's own self-check refuses every
+  production offer before that (E4-F010). It would go green over zero supervised sandboxes.
+- Sprint 2.5 now owns the production identity + SessionStore construction. Re-scope §4 and
+  Step 2 at Step 0 to compose ON TOP of it rather than to build it.
+- E4-F008 and E4-F009 are owned by THIS TICKET. When you write the result doc, either resolve
+  them or TRANSFER them to a named successor ticket that exists on disk. A non-empty
+  `ownerStillOpen` string is all the guard checks, so leaving them is silent (E4-F013).
 - This slice adds new *.test.mjs files: add them to scripts/test-execution-census.json in the
   same commit or the always-on policy job goes red. It also adds a new AOA_WORKER_* switch
   that brand-check cannot see — document it in docs/deploy/environment-variables.md.

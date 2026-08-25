@@ -211,9 +211,18 @@ builds** — a suite passing against a worker that does not exist. Filed as a fi
 | 5 | a live session (`no_session`) | a fresh enrolment code (WRK-010 **slice 2** removes the ceiling — §3.2) | needs 3 first | reachable within 10 min of code issuance (§3.2) |
 | 6 | the target has an admin-set placement profile (`no_self_model`) | an org admin | needs 1–5 first | needs 1–5 first |
 
-**The container stands on four gates. The desktop stands on three: gate 1, the flag, and the outbox
-path.** That is the correction §1.1(b) makes, and it is the reason §8's "four simultaneous changes"
-answer is scoped to D1 and says so.
+**Of the four gates somebody has to LAND, the container stands on all four and the desktop on
+three: gate 1, the flag, and the outbox path.** That is the correction §1.1(b) makes, and it is the
+reason §8's "four simultaneous changes" answer is scoped to D1 and says so.
+
+> **★★ THIRD CORRECTION TO THIS SENTENCE, and this time to its FRAME.** Revision 2 said *two* under
+> a table that implied three. Revision 3 said *three* — right about the landable subset, and still
+> wrong as a sentence, because it read as the count of the table above it and **the table has six
+> rows.** Gates 5 (`no_session`) and 6 (`no_self_model`) gate dispatch exactly as hard as the other
+> four; they are simply not fixed by landing a change. So: **six outstanding conditions on the
+> container, five on the desktop; four landable and three landable respectively.** An independent
+> review caught this after two adversarial rounds had passed over it. Say which enumeration you mean
+> every single time — this document has now got that wrong three ways.
 
 > **★ The count in this sentence must match row 4, and in revision 2 it did not.** The table
 > introduced gate 4 and marked the desktop as gated on it; the sentence underneath then counted the

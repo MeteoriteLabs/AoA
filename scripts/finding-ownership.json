@@ -57,6 +57,16 @@
       "ticket": "DEP-010",
       "ownerStillOpen": "DEP-010 has a design doc and no result doc. The finding is the constraint on its acceptance, so it closes when DEP-010 ships with a guard proving the shipped desktop default constructs no provider.",
       "reason": "DEP-010 is the ticket that puts a provider into a composition root, and desktop-host.ts IS that root. It therefore owns the decision this finding forces: it may not land a provider there without a written decision about the flag's default on desktops, and its acceptance must prove the shipped default constructs no provider at all rather than merely that the flag is off. Named as owner by WRK-008 slice 2b s9, which found it."
+    },
+    "E4-F012": {
+      "status": "owned",
+      "ticket": "WRK-010",
+      "ownerStillOpen": "WRK-010 slice 2 (go-book Sprint 2.5) has no design doc yet; slice 1 does not touch it. The finding closes when a composed daemon can obtain its FIRST session, which is that sprint's acceptance clause.",
+      "reason": "WRK-010 owns session lifecycle, and slice 2's stated acceptance -- 'the route has a production caller' -- is unreachable until this is answered. The answer is a DECISION, not plumbing: I13 discards the enrolment session on purpose so a bearer can never reach a log line, and every route to a first session either re-opens that or changes the SessionStoreDeps contract. Found by an independent codex review after two adversarial rounds had passed over the same seam."
+    },
+    "E4-F013": {
+      "status": "unowned",
+      "reason": "MED, and deliberately unowned: it is a hole in the ownership guard itself, so no product ticket is the natural owner and attaching it to one would be the same false-ownership move it describes. finding-ownership.mjs:118-120 tests only that ownerStillOpen is NON-EMPTY, so three live entries (E4-F008, E4-F009 -> WRK-008; E6-F003 -> DEP-010) will read as owned by shipped tickets the moment those tickets get result docs. The proposed fix is checkable -- when the owning ticket has a result doc, require a `successor` field naming a ticket that exists on disk -- but it is a guard change and needs its own RED test plus a deleted-guard mutation. Blocks nothing today."
     }
   }
 }
