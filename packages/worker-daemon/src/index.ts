@@ -258,9 +258,11 @@ export { deriveEnrollmentIdempotencyKey } from "./enrollment/idempotency.js";
 export { SessionStore, SessionStoppedError, REENROLLMENT_REQUIRED_METRIC, RENEWAL_HEADROOM_MS } from "./identity/session.js";
 export type { SessionStoreDeps } from "./identity/session.js";
 
-// WRK-010 slice 2 — the worker-side device-proof session renewal client.
+// WRK-010 slice 2 — the worker-side device-proof session renewal client + lifecycle.
 export { createSessionRenewer } from "./identity/session-renewal.js";
 export type { SessionRenewerDeps } from "./identity/session-renewal.js";
+export { createWorkerSessionLifecycle } from "./identity/worker-session-lifecycle.js";
+export type { WorkerSessionLifecycleDeps, WorkerSessionLifecycle } from "./identity/worker-session-lifecycle.js";
 
 export {
   POLL_PATH,
