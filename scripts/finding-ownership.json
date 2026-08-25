@@ -15,14 +15,8 @@
     "E6-F003": {
       "status": "owned",
       "ticket": "DEP-010",
-      "ownerStillOpen": "DEP-010 has a design doc; no result doc. Sprint 2 of the go-book sequence, gated on WRK-010.",
-      "reason": "The natural owner named in this entry -- 'whichever ticket takes the composition-root decision' -- now exists and is DEP-010. It specifies the worker->provider path over the control network that E6F-03's networked smoke has no route for."
-    },
-    "E6-F004": {
-      "status": "owned",
-      "ticket": "DEP-010",
-      "ownerStillOpen": "DEP-010 has a design doc; no result doc. Sprint 2 of the go-book sequence, gated on WRK-010.",
-      "reason": "Owned together with E6-F008 as this entry asks, by DEP-010: naming ONE authoritative provider port is the same decision as deciding where sandbox-fake-provider imports it from."
+      "ownerStillOpen": "DEP-010 NARROWED this finding and DEFERS it -- it answers WHICH PORT a networked worker->provider driver speaks (D1: worker-daemon's per-op SandboxProvider, transport-agnostic) but does NOT build the wire (the request/response shapes a container worker speaks to adapter-manager). DEP-010 wires the desktop/self-hosted lane only. The wire becomes REQUIRED the moment a containerized worker under docker-compose.staging.yml must dispatch: staging forbids E2B_API_KEY on any worker, so a container worker's provider cannot be key-backed and MUST be networked, reaching adapter-manager over control-net -- NOT provider-ctl-net, which is adapter-manager-only and a hard PROVIDER-CONTROL VIOLATION for a worker (docker-compose.d1.yml overloads that name to mean the opposite). No consumer exists today (adapter-manager has zero implementation; no worker dispatches), so specifying a wire against an unimplemented peer for an unbuilt caller is deferred by design. At DEP-010 completion this ticket field is REPOINTED to the successor DEP-011 that builds the wire -- a reason-only rewrite would leave an open finding owned by a shipped ticket, which reads as owned by nobody (E4-F013).",
+      "reason": "The composition-root decision this entry was awaiting is made by DEP-010 (go-book s8 D-3, decisions D1/D2). That decision resolved E6-F008 and E6-F004 and REMOVED their entanglement with E6-F003, narrowing this finding from 'one of three ports' to 'the containerized worker->provider wire'. DEP-010 owns the narrowing and defers the wire to a successor (DEP-011)."
     },
     "E6-F005": {
       "status": "accepted",
@@ -35,12 +29,6 @@
     "E6-F007": {
       "status": "accepted",
       "reason": "LOW, documentation-only: cite the drizzle --custom mechanism (E2-D01 precedent, Decision #122/C14) in DEP-003's RLS marker migration. DEP-003 shipped and the migrations exist; this is a citation, not a defect."
-    },
-    "E6-F008": {
-      "status": "owned",
-      "ticket": "DEP-010",
-      "ownerStillOpen": "DEP-010 has a design doc; no result doc. Sprint 2 of the go-book sequence, gated on WRK-010.",
-      "reason": "DEP-010 is the ticket that names ONE authoritative port; the two-structurally-distinct-ports question is its opening move, not a side effect."
     },
     "E4-F009": {
       "status": "owned",
