@@ -26,6 +26,7 @@ import {
   bootstrapWorkerDaemon,
   type BootstrapResult,
   type ProcessLike,
+  type SandboxProvider,
 } from "@armyofagents/worker-daemon";
 
 import { resolveVaultRefs } from "../blob-path.js";
@@ -80,6 +81,17 @@ export interface DesktopHostDeps {
   readonly createRunner?: () => CommandRunner;
   readonly bootstrap?: typeof bootstrapWorkerDaemon;
   readonly log?: (message: string) => void;
+  /**
+   * DEP-010 — the sandbox provider this root injects into the daemon.
+   *
+   * ★ ABSENT FOR THE SHIPPED BINARY. The default desktop boot passes none, and the
+   * daemon then refuses to compose dispatch with `no_provider`. A provider arrives on
+   * this seam ONLY when an operator opts in via `AOA_WORKER_SANDBOX_PROVIDER` (Step 7's
+   * resolver builds it), and even then dispatch stays off by the flag. A directly-set
+   * value here overrides the resolver, for tests and for an embedder that composes its
+   * own; the shipped `bin/aoa-worker-desktop` never sets it.
+   */
+  readonly provider?: SandboxProvider;
   /**
    * DSK-003 — the outward effects a control command needs.
    *
@@ -256,6 +268,7 @@ export async function runDesktopHost(deps: DesktopHostDeps): Promise<{ ok: boole
     proc: deps.proc,
     identityStore,
     receiptStore,
+    provider: deps.provider,
     logFilePath: resolveControlPaths(deps.env, deps.platform).logPath,
   });
 
