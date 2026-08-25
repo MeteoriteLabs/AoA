@@ -17,11 +17,22 @@
  * in a subdirectory inherited the permission.)
  *
  * Policy:
- *   - The manifest declares EXACTLY `@armyofagents/worker-daemon` and
- *     `@armyofagents/worker-protocol`. Adding anything is a STOP for controller
- *     approval — a native keychain binding (keytar, @napi-rs/keyring) must never
- *     arrive here by accident, because this package is injected INTO the daemon's
- *     process.
+ *   - The manifest declares EXACTLY `@armyofagents/sandbox-e2b-provider`,
+ *     `@armyofagents/worker-daemon` and `@armyofagents/worker-protocol`. Adding
+ *     anything else is a STOP for controller approval — a native keychain binding
+ *     (keytar, @napi-rs/keyring) must never arrive here by accident, because this
+ *     package is injected INTO the daemon's process. The provider package was added
+ *     under go-book §8 decision D-3 (Sprint 2 / DEP-010), which PAYS FOR the widening
+ *     by making this checker TIGHTER, not merely wider — the two rules below.
+ *   - `@armyofagents/sandbox-e2b-provider` (whose transitive closure pulls the `e2b`
+ *     network SDK into this key-holding process) may be named from EXACTLY ONE runtime
+ *     source PATH, `src/bin/sandbox-provider.ts` — a full package-relative path, not a
+ *     basename, so a same-named file in a subdirectory cannot inherit the permission.
+ *   - The provider-control credential `E2B_API_KEY` may appear in ZERO runtime source
+ *     files here — not "one host file", zero. This package has no legitimate reason to
+ *     name the credential (the transport reads it itself; DEP-006 confinement), and the
+ *     scan is over RAW source, so even a comment naming it is a violation. Mirrors
+ *     `sandbox-e2b-provider-boundary.mjs`'s raw-source credential scan.
  *   - `node:child_process` (and the bare `child_process`) may be imported from
  *     EXACTLY ONE runtime source PATH, `src/command-runner.ts`.
  *   - Non-literal imports and the `node:module` createRequire bridge are rejected,
@@ -44,7 +55,7 @@ import {
 export { classifyRuntimeSourceFileName };
 
 /**
- * Runtime dependencies this leaf may declare — EXACTLY these two, pre-sorted so a
+ * Runtime dependencies this leaf may declare — EXACTLY these three, pre-sorted so a
  * `.sort()`ed manifest key list compares by value.
  *
  * The dependency arrow points keystore → daemon and never the reverse: the
@@ -52,8 +63,13 @@ export { classifyRuntimeSourceFileName };
  * and `scripts/check-worker-daemon-boundary.mjs` rejects a bare specifier the
  * moment a file under `packages/worker-daemon/src` names it. So the host composes
  * this package in; the daemon never imports it.
+ *
+ * `@armyofagents/sandbox-e2b-provider` was added under go-book §8 D-3 (DEP-010): the
+ * host resolves a real provider and injects it, but ONLY the one confined file below
+ * may name that package, and the credential it fronts may not be named at all.
  */
 export const REQUIRED_RUNTIME_DEPENDENCIES = [
+  "@armyofagents/sandbox-e2b-provider",
   "@armyofagents/worker-daemon",
   "@armyofagents/worker-protocol",
 ];
@@ -69,6 +85,30 @@ export const REQUIRED_RUNTIME_DEPENDENCIES = [
  * dangerous capability, one file" has to mean one PATH.
  */
 export const SUBPROCESS_HOST_PATH = "src/command-runner.ts";
+
+/**
+ * The provider package, and the SINGLE runtime source path allowed to name it (DEP-010, D-3).
+ *
+ * Modelled on SUBPROCESS_HOST_PATH — a full package-relative path, not a basename, for the
+ * same reason: a same-named file in a subdirectory must not inherit the permission. The
+ * package's transitive closure pulls the `e2b` network SDK into this key-holding process, so
+ * "one dangerous capability, one file" applies here exactly as it does to subprocess spawn.
+ * The confined file (`bin/sandbox-provider.ts`) uses a LITERAL DYNAMIC import so the SDK is
+ * not loaded on the default boot that constructs no provider.
+ */
+export const PROVIDER_SPECIFIER = "@armyofagents/sandbox-e2b-provider";
+export const PROVIDER_HOST_PATH = "src/bin/sandbox-provider.ts";
+
+/**
+ * Provider-control credential tokens banned from EVERY runtime source file here (DEP-010, D-3).
+ *
+ * Not "one host file" — ZERO. The credential is read by the transport in the e2b leaf (DEP-006
+ * confinement); this package composes the provider without ever touching the key, so its NAME
+ * has no business in the key-holding package. Scanned over RAW source in
+ * `evaluateRuntimeSourceImports`, so even a comment naming it counts — the same rule as
+ * `sandbox-e2b-provider-boundary.mjs`'s CREDENTIAL_TOKEN scan.
+ */
+export const FORBIDDEN_CREDENTIAL_TOKENS = ["E2B_API_KEY"];
 
 /**
  * The banned boolean-absence oracle, matched as a CODE TOKEN.
@@ -92,6 +132,10 @@ const SUBPROCESS_SPECIFIERS = new Set(["child_process", "node:child_process"]);
 
 const NODE_BUILTINS = new Set(builtinModules);
 const ALLOWED_BARE = new Set([
+  // The provider specifier is allowed here, but ONLY after the PROVIDER_HOST_PATH check in
+  // evaluateRuntimeSourceImports has passed — that check runs first and rejects it from any
+  // other file, so membership here grants nothing outside `src/bin/sandbox-provider.ts`.
+  PROVIDER_SPECIFIER,
   "@armyofagents/worker-daemon",
   "@armyofagents/worker-protocol",
 ]);
@@ -149,6 +193,19 @@ export function evaluateRuntimeSourceImports({ relPath, absPath, sourceRoot, sou
       );
       continue;
     }
+    // DEP-010 (D-3) — provider confinement: ONLY `bin/sandbox-provider.ts` may name the
+    // provider package. Keyed on the FULL package-relative path (a basename check would let a
+    // subdirectory copy inherit permission), so the `e2b` SDK enters this key-holding process
+    // from one reviewable file and nowhere else. Runs BEFORE the allow-list so a rejected path
+    // never reaches it.
+    if (value === PROVIDER_SPECIFIER && packageRelative !== PROVIDER_HOST_PATH) {
+      errors.push(
+        `${relPath}: ${JSON.stringify(value)} may be imported ONLY from ${PROVIDER_HOST_PATH} — ` +
+          "the provider package pulls the e2b network SDK into the key-holding process, so it is " +
+          "confined to ONE PATH",
+      );
+      continue;
+    }
     if (isAllowedBareImport(value)) continue;
     errors.push(`${relPath}: forbidden runtime import ${JSON.stringify(value)}`);
   }
@@ -174,6 +231,19 @@ export function evaluateRuntimeSourceImports({ relPath, absPath, sourceRoot, sou
         "permission-denied probe reads as 'never enrolled' and the daemon mints a " +
         "second identity the server denies forever. Use the errno-discriminating statSync probe",
     );
+  }
+  // DEP-010 (D-3) — the provider-control credential's NAME may not appear in ANY runtime source
+  // file here. Scanned over RAW source (not the tokenizer), so a comment counts too: unlike the
+  // existsSync explanation, this package has no legitimate reason to write the credential name
+  // even in prose. The transport reads it (DEP-006 confinement); the keystore never touches it.
+  for (const token of FORBIDDEN_CREDENTIAL_TOKENS) {
+    if (source.includes(token)) {
+      errors.push(
+        `${relPath}: the provider-control credential ${JSON.stringify(token)} must not appear in ANY ` +
+          "worker-keystore runtime source (ZERO files, not one) — this package is injected into the " +
+          "daemon's key-holding process and never reads the credential; the transport does (DEP-006)",
+      );
+    }
   }
   return errors;
 }

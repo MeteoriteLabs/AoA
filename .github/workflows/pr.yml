@@ -749,6 +749,12 @@ jobs:
           # typecheck resolve them via package exports → ./dist); build them here.
           pnpm --filter @armyofagents/worker-daemon build
           pnpm --filter @armyofagents/sandbox-provider-contract build
+          # DEP-010: worker-keystore now depends on @armyofagents/sandbox-e2b-provider
+          # (a dist-only leaf) via a LITERAL DYNAMIC import in bin/sandbox-provider.ts.
+          # worker-keystore's tsc --noEmit needs the .d.ts and its vitest project needs the
+          # .js, and Typecheck/Run tests run BEFORE Build — so build it here (after its own
+          # worker-daemon + sandbox-provider-contract deps, above).
+          pnpm --filter @armyofagents/sandbox-e2b-provider build
 
       - name: Typecheck
         run: pnpm -r typecheck
@@ -1171,6 +1177,11 @@ jobs:
           pnpm --filter @armyofagents/sandbox-fake-provider build
           pnpm --filter @armyofagents/worker-daemon build
           pnpm --filter @armyofagents/sandbox-provider-contract build
+          # DEP-010: mirrored from the `verify` pre-build list to keep the two lists
+          # identical (they have been kept in step since CLI-001). Symmetry, not necessity:
+          # this job resolves nothing named @armyofagents/sandbox-e2b-provider through
+          # worker-keystore, so the line is a future-drift guard rather than a fix.
+          pnpm --filter @armyofagents/sandbox-e2b-provider build
 
       - name: Distributed-execution foundation + fixture-determinism contracts
         run: node scripts/check-distributed-execution-foundation.mjs

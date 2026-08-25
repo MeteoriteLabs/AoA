@@ -25,6 +25,7 @@
     "test:run": "vitest run"
   },
   "dependencies": {
+    "@armyofagents/sandbox-e2b-provider": "workspace:*",
     "@armyofagents/worker-daemon": "workspace:*",
     "@armyofagents/worker-protocol": "workspace:*"
   },

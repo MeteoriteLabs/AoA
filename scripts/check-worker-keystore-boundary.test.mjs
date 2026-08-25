@@ -35,6 +35,9 @@ function manifest(over = {}) {
     private: true,
     type: "module",
     dependencies: {
+      // DEP-010 (D-3): the provider dep the host resolves and injects. Every case built through
+      // `checkTree` stands on this default, so the three-element pin lives here, not per-case.
+      "@armyofagents/sandbox-e2b-provider": "workspace:*",
       "@armyofagents/worker-daemon": "workspace:*",
       "@armyofagents/worker-protocol": "workspace:*",
     },
@@ -163,6 +166,58 @@ test("ACCEPTS the word inside a COMMENT — explaining the bug must stay legal",
   assert.deepEqual(policyErrors, []);
 });
 
+// ─── DEP-010 — the provider package is confined to ONE PATH, and the credential is banned ───
+//
+// The widening (a third runtime dependency, @armyofagents/sandbox-e2b-provider) is PAID FOR by
+// making the guard tighter, per go-book §8 D-3 condition (b): the dangerous package may be named
+// from EXACTLY ONE file, and the provider-control credential may be named from ZERO — not "one
+// host file", zero, because this package has no legitimate reason to carry the credential's name.
+
+test("ACCEPTS the provider package imported from the ONE confinement path", async () => {
+  const { policyErrors } = await checkTree({
+    files: { ...clean, "bin/sandbox-provider.ts": 'const m = await import("@armyofagents/sandbox-e2b-provider");\n' },
+  });
+  assert.deepEqual(policyErrors, []);
+});
+
+test("REJECTS the provider package imported from any OTHER runtime file", async () => {
+  for (const name of ["bin/desktop-host.ts", "identity-store.ts"]) {
+    const { policyErrors } = await checkTree({
+      files: { ...clean, [name]: 'const m = await import("@armyofagents/sandbox-e2b-provider");\n' },
+    });
+    assert.equal(policyErrors.length, 1, `${name} should be rejected`);
+    assert.match(policyErrors[0], /may be imported ONLY from src\/bin\/sandbox-provider\.ts/);
+  }
+});
+
+test("REJECTS a SAME-NAMED provider file in a subdirectory — the confinement is a PATH, not a basename", async () => {
+  // The exact hole the SUBPROCESS_HOST_PATH history taught: a basename check let
+  // `src/anything/command-runner.ts` inherit spawn permission. The provider path keys on the
+  // full package-relative path for the same reason.
+  const { policyErrors } = await checkTree({
+    files: { ...clean, "bin/nested/sandbox-provider.ts": 'const m = await import("@armyofagents/sandbox-e2b-provider");\n' },
+  });
+  assert.equal(policyErrors.length, 1);
+  assert.match(policyErrors[0], /may be imported ONLY from src\/bin\/sandbox-provider\.ts/);
+});
+
+test("REJECTS the provider-control credential token in CODE", async () => {
+  const { policyErrors } = await checkTree({
+    files: { ...clean, "outcome.ts": "const k = process.env.E2B_API_KEY;\n" },
+  });
+  assert.ok(policyErrors.some((e) => e.includes("E2B_API_KEY")), JSON.stringify(policyErrors));
+});
+
+test("REJECTS the provider-control credential token in a COMMENT — the scan is over RAW source", async () => {
+  // Unlike existsSync (whose explanation stays legal), the credential's NAME must not live in
+  // this key-holding package at ALL. This is the case that passes by accident if the scan
+  // tokenizes instead of reading bytes; it mirrors sandbox-e2b-provider-boundary.mjs's raw scan.
+  const { policyErrors } = await checkTree({
+    files: { ...clean, "outcome.ts": "// the transport reads E2B_API_KEY itself; never named here\nexport const x = 1;\n" },
+  });
+  assert.ok(policyErrors.some((e) => e.includes("E2B_API_KEY")), JSON.stringify(policyErrors));
+});
+
 test("REJECTS a native keychain binding added as a runtime dependency", async () => {
   // The package is injected INTO the daemon's process; keytar arriving here by
   // accident is precisely what the daemon's own two-dependency pin forbids.
@@ -171,6 +226,10 @@ test("REJECTS a native keychain binding added as a runtime dependency", async ()
       files: clean,
       pkg: manifest({
         dependencies: {
+          // The provider dep is present, so the ONLY difference from the required set is the
+          // keychain binding — otherwise this case would pass even if the keychain ban were
+          // removed (the set would still be wrong for the MISSING provider).
+          "@armyofagents/sandbox-e2b-provider": "workspace:*",
           "@armyofagents/worker-daemon": "workspace:*",
           "@armyofagents/worker-protocol": "workspace:*",
           [dep]: "^1.0.0",

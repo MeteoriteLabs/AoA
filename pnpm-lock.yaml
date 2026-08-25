@@ -656,6 +656,9 @@ importers:
 
   packages/worker-keystore:
     dependencies:
+      '@armyofagents/sandbox-e2b-provider':
+        specifier: workspace:*
+        version: link:../sandbox-e2b-provider
       '@armyofagents/worker-daemon':
         specifier: workspace:*
         version: link:../worker-daemon
