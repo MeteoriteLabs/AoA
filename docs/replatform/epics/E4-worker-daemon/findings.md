@@ -129,7 +129,7 @@ all resolved except one deferred defense-in-depth nit:
 
 ## E4-F007 — JOB-002 provides no sustained worker-session renewal (10-min code route < 15-min session) — ESCALATION to E3/JOB-002
 
-**Status:** `open` · escalated to **E3/JOB-002** · Severity: HIGH (blocks long-running workers; does NOT block WRK-002 CORE) · Source: WRK-002 adversarial review (CONFIRMED blocking, reframed per [[E4-D11]]).
+**Status:** `resolved` (WRK-010 slice 2, go-book Sprint 2.5) · was HIGH · Source: WRK-002 adversarial review (CONFIRMED blocking, reframed per [[E4-D11]]).
 
 The as-built JOB-002 enroll/session contract cannot sustain a worker session beyond the
 enrollment code-route window:
@@ -183,6 +183,25 @@ go-book §4 *"★ Sprint 2.5 — WRK-010 slice 2: the renewal route gets its fir
 the worker-side client, the near-expiry threshold in `SessionStore.ensureFresh`, and the first-session
 acquisition (E4-F012). Slice 1 is the rollback unit: delete the route registration and the services
 are inert.
+
+**WRK-010 slice-2 resolution (2026-08-25 — the finding closes here, not at slice 1).** Slice 2 shipped
+the worker-side half slice 1 lacked: the device-proof renewal CLIENT
+(`packages/worker-daemon/src/identity/session-renewal.ts` `createSessionRenewer`, wired to
+`ControlPlaneClient.sessionRenew` → the slice-1 route), a near-expiry threshold in
+`SessionStore.ensureFresh` (`identity/session.ts` `RENEWAL_HEADROOM_MS = 5 min`, the ≥5-min
+proof-replay-window invariant §3.5(i) requires), and the production session lifecycle
+(`identity/worker-session-lifecycle.ts` `createWorkerSessionLifecycle`) that the boot root composes
+when a provider + `AOA_WORKER_DISPATCH_ENABLED` are present — giving the route its FIRST production
+caller. Proven against a real database with the real daemon lifecycle
+(`server/src/__tests__/worker-session-lifecycle.integration.test.ts`, embedded-PG): a composed daemon
+obtains its FIRST session (from the enrolment sink, or from the bootstrap code replay on a
+steady-state boot), then a RENEWED one from THIS route (`s1 !== s0`, `iat`/`exp` strictly greater),
+and authority sustains past the original T0+15min expiry. The near-expiry renewal in a RUNNING process
+is driven by Sprint 3's poll loop (`createPollLoop`), which this slice does not compose; the mechanism
+is built, wired, and proven here. A residual, DIFFERENT gap remains and is NOT this finding: a cold
+restart AFTER the code window (no live session, no live code, sessions not persisted) still needs
+re-enrolment — a session-persistence concern owned by no ticket in this sprint's scope
+(WRK-010-slice-2-design.md §11 R2). `E4-F012` closes in the same commit set.
 
 ## E4-F008 — WRK-005 inherits the E4-D12 provisioning-refresh concern (loop-toward-live-dispatch)
 
@@ -315,7 +334,7 @@ invariant is what does not move.
 
 ## E4-F012 — The renewal route cannot mint a FIRST session, and nothing in the plan set acquires one
 
-**Status:** `open` · Severity: HIGH · Source: independent codex review, 2026-08-25 — found after two adversarial review rounds had passed over the same seam.
+**Status:** `resolved` (WRK-010 slice 2, go-book Sprint 2.5) · was HIGH · Source: independent codex review, 2026-08-25 — found after two adversarial review rounds had passed over the same seam.
 
 WRK-008 slice 2b composes `new SessionStore(..., initial = null)` and says the first session is
 "minted lazily, on first `ensureFresh()`". Trace it:
@@ -351,6 +370,19 @@ cannot meet its own "the route has a production caller" acceptance clause withou
 
 **Blocks:** WRK-010 slice 2's acceptance; WRK-008 slice 2b's self-model read and every runtime
 composition downstream of it, all of which sit behind a session the composed daemon cannot obtain.
+
+**WRK-010 slice-2 resolution (2026-08-25).** Both halves of the decided mechanism (WRK-010 §9.1.1)
+shipped. **Change 1 — the SINK, option (a) without re-opening I13:** `enrollOnce` gained an OPTIONAL
+`onSessionMinted?(session)` fired at `enroll-once.ts:310` where `result.session` is otherwise dropped;
+`EnrollmentOutcome` is byte-for-byte unchanged (still frozen, still the seven-key allowlist, no
+`session`/`token`), so the invariant I13 protects — the returned aggregate — does not move. **Change 2
+— option (b), the SEPARATE bootstrap dependency:** `SessionStoreDeps.renew` now takes `(current:
+WorkerSession)` and a REQUIRED `bootstrap()` supplies the first session; `forceRefresh` routes
+`prev !== null ? renew(prev) : bootstrap()`, so "no first session" is a COMPILE error at every
+construction site, not a review catch (proven: the daemon typecheck fails without `bootstrap`). The
+first session's origin on every boot path is tabled in WRK-010-slice-2-design.md §6 and proven at
+embedded-PG: the ENROLLING boot's sink and the STEADY-STATE boot's bootstrap code replay. Resolved in
+the same commit set as `E4-F007`.
 
 ## E4-F013 — `ownerStillOpen` is unvalidated free text, so a finding can stay falsely owned by a shipped ticket
 

@@ -46,7 +46,7 @@
     },
     "packages/worker-daemon": {
       "mode": "pinned",
-      "count": 132
+      "count": 136
     },
     "packages/worker-keystore": {
       "mode": "pinned",
