@@ -150,14 +150,17 @@ export function createWorkerHelloRefreshService(deps: {
         digestOf: digestHello,
       });
       if (!decision.admit) return { outcome: "refused", logReason: decision.reason };
-      if (!decision.changed) return { outcome: "unchanged" };
 
-      // Platform PHYSICAL (organizationId === null) is a §10 non-goal. This narrow is
-      // TYPE-ENFORCED: `runInTenant` below requires a non-null organizationId, so deleting
-      // it is a compile error (the typecheck is its artifact — no mutant is counted). A
-      // shared-platform TENANT worker has a non-null org and IS covered.
+      // Platform PHYSICAL (organizationId === null) is a §10 non-goal, refused UNIFORMLY —
+      // BEFORE the no-op short-circuit, so a null-org principal presenting its current hello
+      // gets a refusal rather than a 204 (codex review, guard-ordering fix). This narrow is
+      // also TYPE-ENFORCED: `runInTenant` below requires a non-null organizationId, so deleting
+      // it is a compile error (the typecheck is its artifact). A shared-platform TENANT worker
+      // has a non-null org and IS covered.
       const organizationId = principal.organizationId;
       if (organizationId === null) return { outcome: "refused", logReason: "platform_physical_unsupported" };
+
+      if (!decision.changed) return { outcome: "unchanged" };
       const scope: "organization" | "owner" = principal.scope === "owner" ? "owner" : "organization";
 
       const at = now();
