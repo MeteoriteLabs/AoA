@@ -137,7 +137,7 @@ A line number into a document that is still being written is a claim with a half
 | `AOA_WORKER_DISPATCH_ENABLED` is default-OFF, refuses an unrecognised value | `packages/worker-daemon/src/config/config.ts:69`, `:150-162` **(was cited `:142-162`)** |
 | The `compose:true` branch **does not exist** — that is WRK-008 slice 2b | `bin/worker-daemon.ts:337-349` **(was cited `:331-350`)**; the `if (!dispatch.compose)` at `:347-349` has **no `else`** |
 | `hasSelfModelReader` is hardcoded `false` — and there is a SECOND hardcoded falsy beside it | `bin/worker-daemon.ts:344`; `selfModel: null` at `:345` |
-| …and `hasSelfModelReader` is scaffolding Sprint 3 removes | `compose-dispatch.ts:44` — "This reason retires when 2b lands"; `GO-BOOK.md` **§3** (the spine: `S3  WRK-008/2b dispatch goes LIVE`) and **§4** *Sprint 3* |
+| …and `hasSelfModelReader` is scaffolding Sprint 3 removes | `compose-dispatch.ts:44` — "This reason retires when 2b lands"; `GO-BOOK.md` **§3** (the spine: `S3  WRK-008/2b dispatch COMPOSED (not live)`) and **§4** *Sprint 3* |
 | Staging forbids `E2B_API_KEY` on every worker; it lives only on `adapter-manager` | `docker-compose.staging.yml:23-28`, `:316-323`; `scripts/lib/staging-manifest-invariants.mjs:120`, `:436-493` **(was cited `:436-470`; the command/entrypoint arm is `:476-481`)** |
 | `adapter-manager` has **zero implementation** | `docs/replatform/DECISION-byte-egress-and-provider-topology.md` **§4 residual 4.2** |
 | The findings register is CI-enforced; a stale entry FAILS | `scripts/lib/finding-ownership.mjs:132-136` **(was cited `:129-136`)**; `.github/workflows/pr.yml:288-298` |
@@ -247,8 +247,8 @@ anything. §2.3 is that row.
 |---|---|
 | **E6-F008** — two structurally distinct ports | **RESOLVED, one direction only.** D1 names the authority; D2 states the driver's retained role; the mechanism shipped in CLI-001. §2.2 states what is NOT bought and what the resolution text must therefore say. Status `open → resolved`; entry **deleted** from `scripts/finding-ownership.json`. |
 | **E6-F004** — where the fake imports the port from | **RESOLVED, with the OPPOSITE answer to the one proposed.** The finding said the fake should import the port from worker-daemon and the boundary should allow it. **Rejected.** The fake implements the *harness* port, so it needs no import; it stays structural and `sandbox-fake-provider-boundary.mjs:45` stays **exactly** `["@armyofagents/worker-protocol","zod"]`. Widening it would put the daemon's whole surface inside a leaf whose entire point is that it has none. Proved mechanically by Step 9's control #4 — **against the fake's own guard**, which is a different guard from #2 (see Step 9). |
-| **E6-F003** — the networked driver API | **EXPLICITLY DEFERRED.** Half is answered by D1 and recorded; half is not, and this ticket does not pretend otherwise. See §2.1. |
-| **★ E4-F011** (HIGH) — *the desktop boot root is TWO gates from live dispatch, not four* | **RESOLVED, but only because §4.3 writes the decision the guards cannot express.** The provider half of its bar is already built (Step 4's lock, Step 6's *loader never called*, Step 7's control/`--reset-identity` cases, Step 8's structural lock). The half nobody had done is the sentence: **which boot root(s) get a provider, and what the dispatch flag defaults to there.** §4.3 states it. Status `open → resolved` in `epics/E4-worker-daemon/findings.md`; entry **deleted** from `scripts/finding-ownership.json` — **in Step 11, not Step 1** (§2.3 says why). |
+| **E6-F003** — the networked driver API | **EXPLICITLY DEFERRED, and currently OWNED by DEP-010 in the manifest.** Half is answered by D1 and recorded; the wire itself is not, and this ticket does not pretend otherwise. Because DEP-010 defers rather than resolves it, DEP-010's completion must **repoint** its manifest key to the successor that builds the wire (not merely rewrite its `reason`) — §2.1. See §2.1. |
+| **★ E4-F011** (HIGH) — *one of the container's four landable gates is already satisfied on the desktop boot root* | **RESOLVED, but only because §4.3 writes the decision the guards cannot express.** The provider half of its bar is already built (Step 4's lock, Step 6's *loader never called*, Step 7's control/`--reset-identity` cases, Step 8's structural lock). The half nobody had done is the sentence: **which boot root(s) get a provider, and what the dispatch flag defaults to there.** §4.3 states it. Status `open → resolved` in `epics/E4-worker-daemon/findings.md` (cited by section/heading, never by line); entry **deleted** from `scripts/finding-ownership.json` — **in Step 11, not Step 1** (§2.3 says why). |
 
 ### 2.1 E6-F003 in full — because "deferred" without a reason is how it got orphaned once already
 
@@ -291,10 +291,23 @@ surface, so that worker's provider **cannot** be key-backed and **must** be netw
 `adapter-manager` over `control-net`. **DEP-010 therefore wires the desktop/self-hosted lane only**,
 and §3.3 states that as a consequence, not an oversight.
 
-**Register action.** Stays `open`/`unowned` (permitted for HIGH; may never be `accepted`). Its
-`reason` is rewritten to: the narrowed question (a wire, not a port), the removed entanglement, the
-precondition above, and the correct network — with the d1-vs-staging overload called out in one
-clause so the next reader does not have to rediscover it.
+**Register action.** Stays `open` (permitted for HIGH; may never be `accepted`). It is **not
+unowned**: `scripts/finding-ownership.json` currently carries E6-F003 as `status: "owned",
+ticket: "DEP-010"` — this ticket — because DEP-010 is the composition-root decision the entry was
+waiting on. Its `ownerStillOpen`/`reason` are rewritten to: the narrowed question (a wire, not a
+port), the removed entanglement, the precondition above, and the correct network — with the
+d1-vs-staging overload called out in one clause so the next reader does not have to rediscover it.
+
+**★ But a reason-only rewrite is not enough, and that is finding E4-F013.** DEP-010 *defers* E6-F003;
+it does not build the wire. The ownership guard fires `stale_declaration` only when a manifest key's
+status is not `open` (`finding-ownership.mjs:130-136`); it does **not** fire when an `open` entry
+names a ticket that has since shipped, because `:118` only tests that `ownerStillOpen` is non-empty
+(`hasReason`, `:53-55`). So the moment `DEP-010-result.md` lands, E6-F003 would read as `owned` by a
+shipped ticket that never resolved it — the exact false-ownership hole E4-F013 describes, which names
+`E6-F003 -> DEP-010` as one of its three live instances. **DEP-010's completion must therefore
+REPOINT E6-F003's manifest `ticket` to the successor that actually builds the containerized wire (the
+E6-F003 precondition above), not merely rewrite its prose.** Repoint, because the finding stays open;
+delete only belongs to a finding this ticket resolves.
 
 ### 2.2 ★ What "E6-F008 resolved" does NOT buy — recorded before the entry is deleted
 
@@ -376,11 +389,15 @@ Flipping it to `resolved` in Step 1 would claim a guard three commits before it 
 same shape as the mitigation revision 1 deleted. Step 11 is the first commit at which the sentence
 is true.
 
-**And note what closing it does NOT claim.** E4-F011's headline — *"TWO gates from live dispatch"* —
-is a statement about the desktop's gate count, and §4.2 records that this ticket plus Sprint 3
-drives that count to **zero structural gates**. Resolving the finding closes the *decision* it
-demanded of DEP-010. It does not close the underlying exposure, which §4.2 hands forward in writing
-rather than leaving inside a finding whose title will read as reassuring and be out of date.
+**And note what closing it does NOT claim.** E4-F011 was **filed** with a "two gates" headline and
+that count has since been **retracted** — the finding's title now states the invariant (*one of the
+container's four landable gates is already satisfied on the desktop*) precisely because the count
+kept moving. §4.2 records, in the six-gate model the finding now uses, that this ticket plus Sprint 3
+drives the desktop's **structural** gate count to **zero** while five gates remain (three landable
+env vars, plus a live session and an admin-set placement profile as runtime conditions). Resolving
+the finding closes the *decision* it demanded of DEP-010. It does not close the underlying exposure,
+which §4.2 hands forward in writing rather than leaving inside a finding whose count would read as
+reassuring and be out of date.
 
 ---
 
@@ -536,10 +553,11 @@ this ticket for, which is the part no guard in this repository can produce.
 The first draft proved inertness by keying on `hasSelfModelReader: false`
 (`bin/worker-daemon.ts:344`). That literal is **documented scaffolding that Sprint 3 deletes**:
 `compose-dispatch.ts:44` says in so many words *"This reason retires when 2b lands"*, and slice 2b is
-**Sprint 3** (`GO-BOOK.md` §3, the spine line `S3  WRK-008/2b dispatch goes LIVE`; §4 *Sprint 3*).
-*Revision 1 said "the very next sprint" and that is no longer true* — the go-book inserted **Sprint
-2.5** (WRK-010 slice 2, the renewal route's first caller) between this ticket and 2b, which buys one
-sprint of margin and changes nothing about the argument. A lock whose mutation target is removed by a
+**Sprint 3** (`GO-BOOK.md` §3, the spine line `S3  WRK-008/2b dispatch COMPOSED (not live)`; §4
+*Sprint 3*). *Revision 1 said "the very next sprint" and that is no longer true* — the go-book
+inserted **two** sprints between this ticket and 2b: **Sprint 2.5** (WRK-010 slice 2, the renewal
+route's first caller) and **Sprint 2.75** (WRK-011, the self-model refresh), which buys two sprints
+of margin and changes nothing about the argument. A lock whose mutation target is removed by a
 later ticket stops locking anything the moment that ticket lands, silently — nobody re-derives what a
 deleted line was holding up.
 
@@ -581,10 +599,18 @@ already logs, and both named so mutation (a) has a fixed target:
 > On the shipped shape the recorded names must be **exactly `["health-server"]`** — no
 > `lease-stop`, no `lease-drain`, no `event-outbox-stop`/`-flush`/`-close`.
 
-Mutation (a) — *add an `else` that composes anything observable* — must be written as an `else` that
-supplies a `leasing`/`eventOutbox` lifecycle, so it moves (ii) from `["health-server"]` to something
-longer. That is a mutation with a defined kill, rather than one defined to be catchable by whatever
-assertion happens to get written.
+**★ REVISION 2 — the mutant's MECHANISM, pinned, because the obvious `else` does not move (i) or
+(ii).** Observables (i) and (ii) read `deps.reconciler` (`:355`), `deps.leasing` and `deps.eventOutbox`
+(`:362-363`) — and those three `const`s are declared **after** the `if (!dispatch.compose)` block,
+not inside it. An `else` at `:349` that composes a supervisor or poll loop **into a local variable**
+therefore changes neither observable: `leaseSteps`/`outboxSteps`/`startupSteps` still read the
+untouched `deps`, so the shutdown names stay `["health-server"]` and the mutant does not fail. (Slice
+2b's real change is not a bare `else` either — it restructures `:355-380` to build those steps from
+the composed loop.) So mutation (a) must be written as an `else` that **assigns a lifecycle dep** —
+e.g. `deps.leasing = <a fake leasing lifecycle>` (or `deps.reconciler` / `deps.eventOutbox`) — which
+the post-if-block `const` at `:362` then reads, moving (ii) from `["health-server"]` to something
+longer. That is a mutation with a *real, defined* kill, and it is stated as the mechanism rather than
+left to "compose anything observable", which the `const`-after-the-block structure makes false.
 
 **The `:344` mutation is DEMOTED to a supporting check.** Keep it (it is cheap and it documents
 today's behaviour), but it is no longer what §9 maps the acceptance clause to.
@@ -614,20 +640,31 @@ that `else`,** which is the whole point of Sprint 3 and which this plan already 
 marks mutation (a) *"the mutation slice 2b will make for real"*). So DEP-010's headline acceptance —
 *does not by itself turn dispatch on* — is provable exactly once, and then it is gone.
 
-**What is left holding the line after Sprint 3, stated plainly:**
+**What is left holding the line after Sprint 3, stated plainly** — in the **six-gate model** the
+`E4-F011` finding now uses (six gates total: **four landable** — provider, flag, custody+enrolment,
+outbox path — and **two runtime conditions** — a live session, an admin-set placement profile; the
+container stands on all six, the desktop already satisfies custody so **five** remain):
 
-| Before Sprint 3 | After Sprint 3 |
+| Before Sprint 3 (desktop) | After Sprint 3 (desktop) |
 |---|---|
 | **A structural gate** — no `else` exists, so `compose:true` cannot compose anything, whatever the environment says | **No structural gate.** The `else` exists and composes a real poll loop, supervisor, renewal driver and event outbox |
-| plus `AOA_WORKER_SANDBOX_PROVIDER` unset | `AOA_WORKER_SANDBOX_PROVIDER` unset |
-| plus `AOA_WORKER_DISPATCH_ENABLED` unset | `AOA_WORKER_DISPATCH_ENABLED` unset |
-| — | `AOA_WORKER_EVENT_OUTBOX_PATH` unset (slice 2b's new gate; **not** defaulted to a path) |
-| — | plus a live session |
+| plus `AOA_WORKER_SANDBOX_PROVIDER` unset (`no_provider`, landable) | `AOA_WORKER_SANDBOX_PROVIDER` unset (`no_provider`) |
+| plus `AOA_WORKER_DISPATCH_ENABLED` unset (`dispatch_disabled`, landable) | `AOA_WORKER_DISPATCH_ENABLED` unset (`dispatch_disabled`) |
+| — | `AOA_WORKER_EVENT_OUTBOX_PATH` unset (`no_event_outbox_path`, slice 2b's new landable gate; **not** defaulted to a path) |
+| — | plus a live session absent (`no_session`, a **runtime condition**, not an env var) |
+| — | plus an admin-set placement profile absent (`no_self_model`, a **runtime condition** fixed by an org admin, **not** an env var, and it does **not** retire with slice 2b — only `no_self_model_reader` does) |
 
-**After Sprint 3 the shipped desktop's inertness rests on environment variables and zero structural
-gates.** Three env vars and a session — every one of them a thing an operator, an installer, a
-service definition or a support script can set. E4-F011's *"two gates"* becomes **no gates**; the
-count is not two, and it is not three, it is zero-plus-configuration.
+The identity gate (`no_worker_identity`) is not on that list because any desktop that boots at all
+already satisfies it — E4-F011's own invariant.
+
+**After Sprint 3 the shipped desktop's inertness rests on those five remaining gates, and the
+structural one is gone.** Three of the five are unset environment variables (provider, flag, outbox
+path) — things an operator, an installer, a service definition or a support script can set. The
+other two are runtime conditions: an absent live session and an absent admin-set placement profile,
+neither of which an env var controls. E4-F011's retracted *"two gates"* count is exactly why the
+finding's title now states the invariant rather than a number — **say which enumeration you mean,
+every time**: the desktop's *landable* gates after custody are three (provider, flag, outbox path),
+its total remaining gates are five, and its *structural* gates are zero.
 
 **Three consequences, none of which are this ticket's to fix, all of which are this ticket's to
 write down:**
@@ -681,15 +718,16 @@ empty → `false`, `"0"` → `false`, `"1"` → `true`, anything else → a **st
 silent disable. DEP-010 ships no default, no override and no per-root special case for this flag. The
 desktop's default is the daemon's default because the desktop passes the daemon's env through.
 
-**(4) The honest reading of "two gates", now that a provider path exists there.** E4-F011's own
+**(4) The honest reading of the gate count, now that a provider path exists there.** E4-F011's own
 analysis is right about the custody half: `desktop-host.ts` builds both OS-custody stores on every
 non-control boot and passes them at `:254-260`, so `bin/worker-daemon.ts:267`
 (`config.keyStoreMode === "os_keychain" && deps.identityStore && deps.receiptStore`) is entered and
 **the identity gate is already satisfied on any desktop that boots at all** — that gate is
 `no_worker_identity` in slice 2b's vocabulary and does not exist as a refusal reason today
 (`compose-dispatch.ts` ships four: `no_provider`, `dispatch_disabled`, `no_self_model_reader`,
-`no_self_model`). After DEP-010 the desktop's remaining refusals on the shipped default are
-**(1) no provider, because the switch is unset, and (2) the flag, which is off** — and, until
+`no_self_model`). The finding's retracted "two gates" number is why its title now states that
+invariant rather than a count. After DEP-010 the desktop's remaining refusals on the shipped default
+are **(1) no provider, because the switch is unset, and (2) the flag, which is off** — and, until
 Sprint 3, the structural fact that nothing consumes `compose === true`. **§4.2 records what that count becomes after Sprint 3
 and why the number in the finding's title will be stale.** That is the reason E4-F011 is resolved
 *with* §4.2 rather than by §4.3 alone: closing a finding whose headline number is about to change,
@@ -707,8 +745,8 @@ does not require an explicit opt-in. None is in this ticket, and none should be 
 | File | Change |
 |---|---|
 | `epics/E6-deployment-test-harness/findings.md` | E6-F008 + E6-F004 → `resolved`; E6-F008's resolution states the §2.2b branch taken; E6-F003 body rewritten to the narrowed question **on `control-net`** |
-| **`epics/E4-worker-daemon/findings.md`** | **★ REQUIRED — `E4-F011` → `resolved`, citing §4.3 (the written decision) and §4.2 (what its "two gates" headline becomes after Sprint 3). Landed in Step 11, not Step 1 — §2.3 says why** |
-| `scripts/finding-ownership.json` | delete E6-F008, E6-F004 (Step 1); **delete `E4-F011` (Step 11)**; rewrite E6-F003 reason |
+| **`epics/E4-worker-daemon/findings.md`** | **★ REQUIRED — `## E4-F011` → `Status: resolved`, citing §4.3 (the written decision) and §4.2 (what its retracted headline count becomes after Sprint 3, in the six-gate model — state the invariant, never a bare number). Landed in Step 11, not Step 1 — §2.3 says why** |
+| `scripts/finding-ownership.json` | delete E6-F008, E6-F004 (Step 1); **delete `E4-F011` (Step 11)**; rewrite E6-F003 `ownerStillOpen`/`reason` (Step 1) and **repoint E6-F003's `ticket` to its successor at DEP-010 completion** (§2.1, E4-F013 — DEP-010 defers, does not resolve, E6-F003) |
 | **`scripts/gate-clause-wiring.json`** | **★ REQUIRED — `E7-1-coding-journey` re-declared. Without this, `policy` goes red.** See Step 6 |
 | **`scripts/test-inventory.json`** | **★ REQUIRED — `packages/worker-daemon` 131 → 132; `packages/worker-keystore` 18 → 20.** Bumped in the same commits that add the files |
 | **`.github/workflows/pr.yml`** | **★ REQUIRED — `pnpm --filter @armyofagents/sandbox-e2b-provider build` appended to the `verify` pre-build list (`:743-751`); mirrored into the `distributed-contract` list (`:1168-1173`) for symmetry** |
@@ -784,8 +822,10 @@ and its evidence should not be separated by a commit boundary. It adds no file, 
 Run `node scripts/check-finding-ownership.mjs` → **FAIL** twice with `stale_declaration`
 (`finding-ownership.mjs:132-136`).
 
-**GREEN.** Delete both entries from `scripts/finding-ownership.json`; rewrite `E6-F003.reason` to the
-narrowed question + the §2.1 precondition + the correct network. Re-run → **PASS**.
+**GREEN.** Delete the E6-F008 and E6-F004 entries from `scripts/finding-ownership.json`; rewrite
+E6-F003's `ownerStillOpen`/`reason` to the narrowed question + the §2.1 precondition + the correct
+network, leaving it `status: "owned", ticket: "DEP-010"` (it stays open, so its key stays; the
+**repoint** to a successor happens at DEP-010 completion, §2.1). Re-run → **PASS**.
 
 **Mutation.** Re-add E6-F008 → must fail `stale_declaration`. Flip E6-F004 back to `open` in
 `findings.md` → must fail `undeclared_finding`. Both directions, then restore.
@@ -1111,7 +1151,7 @@ tests must fail. Revert.
 
 | # | Mutation | Required failure | Note |
 |---|---|---|---|
-| a | Add an `else` branch at `bin/worker-daemon.ts:349` that composes anything observable | the structural-lock case must fail | **this is the load-bearing one** — it is the mutation slice 2b will make for real |
+| a | Add an `else` branch at `bin/worker-daemon.ts:349` that **assigns a lifecycle dep** — `deps.leasing = <a fake leasing lifecycle>` (or `deps.reconciler`/`deps.eventOutbox`), the only mechanism an `else` there can use to reach an observable (§4.1: the `const`s at `:355`/`:362-363` read `deps` *after* the block, so a locally-composed loop moves nothing) | the structural-lock case must fail — the recorded shutdown `step` names move off `["health-server"]`. **Reached only with (b)+(c) also applied**, since `compose === true` is otherwise unreachable at the root | **this is the load-bearing one** — it is the shape of the mutation slice 2b will make for real (which restructures `:355-380` rather than merely inserting an `else`) |
 | b | `hasSelfModelReader: false → true` at `:344` | the supporting `no_self_model_reader` case must fail | demoted; retires with slice 2b |
 | c | `selfModel: null` → a valid `WorkerSelfModel` at `:345` | with (b) also applied, the decision reaches `{compose:true}` and mutation (a)'s absence is what still holds the line | closes the fourth gate, which had **no** falsifying test before revision 1 |
 
@@ -1186,11 +1226,16 @@ in Steps 4, 6, 7, 8 and 10. Do all three parts together:
    (DEP-001's image closure + `worker-daemon-boundary.mjs:53`); on the desktop root the provider
    switch defaults UNSET and the loader is never called, and `AOA_WORKER_DISPATCH_ENABLED` defaults
    OFF through the daemon's own parser (`config.ts:69`, `:150-162`) because `runDesktopHost` forwards
-   `deps.env` verbatim* — i.e. §4.3, in the register's voice. **And carry §4.2's correction forward**:
-   the finding's title says *two gates*, and after Sprint 3 the honest number is **zero structural
-   gates plus three environment variables and a session**. Resolving a finding whose headline number
-   is about to change, without writing down what it changes to, is how a settled question comes
-   unsettled.
+   `deps.env` verbatim* — i.e. §4.3, in the register's voice. **And carry §4.2's framing forward by
+   stating the invariant, not a count.** The `## E4-F011` entry's title already states the invariant
+   (*one of the container's four landable gates is already satisfied on the desktop*), and its body
+   already carries the six-gate model (four landable + two runtime conditions). Do **not** write any
+   bare gate-count number — "two gates", "zero gates", "three env vars and a session" — into that
+   entry: those counts were retracted hours ago, and re-introducing one regresses a register that was
+   corrected to say *"say which enumeration you mean, every time."* Resolve E4-F011 by recording that
+   DEP-010 supplied the written decision (§4.3) and the guards the finding's acceptance demanded, and
+   that §4.2 hands the post-Sprint-3 structural-gate loss forward — then **delete the manifest key**
+   (part 2). Cite `findings.md` by section/heading (`## E4-F011`), never by line.
 2. **`scripts/finding-ownership.json` → delete the `E4-F011` key**, in this same commit. Not
    optional: once the status is not `open`, a surviving entry is `stale_declaration`
    (`scripts/lib/finding-ownership.mjs:130-136`) and `check-finding-ownership.mjs` exits 1 in the
@@ -1202,8 +1247,10 @@ in Steps 4, 6, 7, 8 and 10. Do all three parts together:
    *edited* (§2.3).
 
 **Verify in this commit:** `node scripts/check-finding-ownership.mjs` → OK, with the open count down
-by one from Step 1's number and `UNOWNED, on the record: E4-F010` still printed (E4-F010 is
-deliberately unowned and this ticket does not touch it).
+by one from Step 1's number. Whatever the checker prints on its `UNOWNED, on the record:` line, the
+requirement is that **no NEW unowned finding appears and `E4-F011` is not among them** — the `unowned`
+set today is `E4-F013` and `E4-F014` (E4-F010 is now `owned` by WRK-011, not unowned). Deleting the
+E4-F011 key must not add it to that line.
 
 **Docs.**
 - `packages/worker-daemon/src/supervisor/provider.ts` header names the authority + the adapter.
@@ -1285,7 +1332,7 @@ deliberately unowned and this ticket does not touch it).
 | " | " | remove it from the `distributed-contract` list | *no failure today* — that job resolves nothing by that name; the line is symmetry, not necessity, and this row records that honestly |
 | `desktop-host.ts` resolve position | **yes** | move above the control branch | control/reset tests fail |
 | `compose-dispatch.ts:62` | **no** | `if (!input.provider)` → `if (false)` | shipped-default lock fails |
-| **`bin/worker-daemon.ts:349`** | **no** | **add an `else` that supplies a `leasing`/`eventOutbox` lifecycle** | **the structural inertness lock fails — the shutdown step names move off `["health-server"]` (§4.1). The primary §4 proof** |
+| **`bin/worker-daemon.ts:349`** | **no** | **add an `else` that ASSIGNS a lifecycle dep — `deps.leasing = <fake leasing lifecycle>` (or `deps.reconciler`/`deps.eventOutbox`), applied WITH (b)+(c) so `compose === true` is reached** | **the structural inertness lock fails — `leaseSteps` at `:362` reads the assigned dep and the shutdown step names move off `["health-server"]` (§4.1). A locally-composed loop would NOT fail: the `const`s read `deps` after the if-block. The primary §4 proof** |
 | `bin/worker-daemon.ts:344` | **no** | `hasSelfModelReader` → `true` | supporting check fails (retires with slice 2b) |
 | **`bin/worker-daemon.ts:345`** | **no** | **`selfModel: null` → a valid self-model, APPLIED WITH the `:344` mutation** | **reaches `{compose:true}` at the real root — the only prescribed state in which the structural lock is non-vacuous. ★ Alone it is inert (`compose-dispatch.ts:64` short-circuits while `:344` is `false`), and the *decision function's* fourth gate is already falsified at `compose-dispatch.test.ts:54-59`; what revision 1 lacked was a ROOT-LEVEL entry, not any test at all (§4.1)** |
 
@@ -1374,16 +1421,16 @@ applied, run, reverted, and its failure text transcribed into the result doc.
 | Plan acceptance | Proven by |
 |---|---|
 | Exactly one port is authoritative and documented as such | §1 D1/D2; Step 1; Step 11 (the two headers stop contradicting) |
-| The composition root injects a real `E2bSandboxProvider` via the `provider` seam | Steps 3, 6, 7; Step 8 asserts `toBeInstanceOf` on what the root handed to bootstrap |
+| The composition root injects a real `E2bSandboxProvider` via the `provider` seam | Steps 3 and 7 capture `deps.provider` through the `capturingBootstrap()` spy and assert the resolved provider reaches `bootstrap(...)`; Step 6's non-vacuity case asserts the resolved provider is a real `E2bSandboxProvider` via `advertisedOperations.has("create")` |
 | The boundary checker still forbids the daemon importing a provider | Step 9 controls 1–3 — byte-unchanged guard (`worker-daemon-boundary.mjs:53`), green checker, three positive controls |
 | The fake stays a leaf with no daemon surface (E6-F004's answer, mechanically) | Step 9 controls **4a + 4b**, both against `check-sandbox-fake-provider-boundary.mjs` — the guard that actually reads the fake |
 | A worker with no injected provider still refuses; the shipped default is provably inert | Step 4 (lock + 2 mutations), Step 8's structural lock (real boot, provider **and** flag, **zero `startup:` steps and shutdown steps exactly `["health-server"]`**), Step 10 (static deployment invariant across `environment` + `command`/`entrypoint`) |
 | Does NOT by itself turn dispatch on | §4.1's structural lock — **nothing consumes `compose === true`** (`bin/worker-daemon.ts:347-349`, no `else`); Step 8 mutation (a); Step 10. *(Not the `:344` literal, which Sprint 3 deletes.)* **★ And §4.2, which records that this proof expires when Sprint 3 writes the `else` — the clause is provable exactly once, and the plan says so rather than letting a later reader assume it still holds.** |
-| Test: `compose:true` only with a real provider and the flag on | Step 8, driven by the **root-produced** provider; gates 3 and 4 falsified by mutations (b) and (c) |
+| Test: `compose:true` only with a real provider and the flag on | Step 8, driven by the **root-produced** provider; gate 3 (`no_self_model_reader`) is falsified by mutation (b), and gate 4 (`no_self_model`) only at the root by **(b)+(c) jointly** — (c) alone is inert because `compose-dispatch.ts:64` short-circuits on `!hasSelfModelReader` before `:65` reads `selfModel` (§4.1, §7) |
 | Test: boundary run proving the daemon still cannot import | Step 9 |
 | Test: port reconciliation documented against E6-F008 | Steps 1 + 11, **and** §2.2b — the resolution text must either add the `PROVIDER_OPERATIONS` totality case or state in writing that D1/D2 supersede option (b) |
 | Resolves E6-F008 / E6-F004 / E6-F003 | §2 — resolved (one direction, §2.2), resolved (opposite answer, mechanically proven), explicitly deferred with its precondition and the correct network |
-| **★ Resolves E4-F011 (HIGH) — the finding whose register entry names DEP-010 as owner** | §2.3 (why it was missed and what the guard cannot check); **§4.3** (the written decision: which root gets a provider, what the flag defaults to there); §4.2 (what its "two gates" headline becomes after Sprint 3); Step 11 (`findings.md` → `resolved` **and** the manifest key deleted, one commit) |
+| **★ Resolves E4-F011 (HIGH) — the finding whose register entry names DEP-010 as owner** | §2.3 (why it was missed and what the guard cannot check); **§4.3** (the written decision: which root gets a provider, what the flag defaults to there); §4.2 (what its retracted headline count becomes after Sprint 3, in the six-gate model — state the invariant, never a bare number); Step 11 (`findings.md` → `resolved` **and** the manifest key deleted, one commit) |
 | **★ Hands Sprint 3 what this ticket breaks, in writing** | **§10** — the four WRK-008 slice 2b assertions falsified on arrival, and the `AOA_WORKER_PROVIDER_URL` naming call |
 | **CI is green on the commit that lands each step** | §6's standing rule + Step 11's gate table: `check-gate-clause-wiring.mjs`, `check-test-inventory.mjs`, `check-dependency-graph.mjs` all named, all in the **always-on** `policy` job (`pr.yml:124-126`) |
 
@@ -1401,6 +1448,14 @@ files of ours that Sprint 3 must edit (§10.3). **The list is repeated here anyw
 failure mode is asymmetric: a Sprint 3 operator who opens 2b first finds the warning; one who
 arrives via this ticket's result doc, or via a red `policy` job, does not — and this is the ticket
 that moved the tree. If the two lists ever disagree, 2b's is the one that must move.
+
+**★ One register handoff runs the OTHER way — Sprint 3 relies on it, not the reverse.** DEP-010's
+Step 11 flips `E4-F011` to `resolved` in `findings.md` **and deletes its `E4-F011` key** from
+`scripts/finding-ownership.json`. Slice 2b's own body cites E4-F011 as *"closes only when DEP-010's
+own acceptance proves the shipped desktop default constructs no provider"* and leaves the finding
+`open` with its key intact (it is DEP-010's to close, not 2b's). So by the time Sprint 3 runs,
+DEP-010 has already resolved E4-F011 and removed its manifest key — a downstream effect Sprint 3
+cites and depends on, listed here so a Sprint 3 operator does not re-open it or re-file its key.
 
 ### 10.1 The four
 

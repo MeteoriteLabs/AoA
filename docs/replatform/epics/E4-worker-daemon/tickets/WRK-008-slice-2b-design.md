@@ -15,20 +15,27 @@ that quietly overwrites its own reasoning teaches the next reader nothing.
 **Depends on:** DEP-010 (a provider, Sprint 2) — SOFT · WRK-010 **slice 1** (the renewal route,
 Sprint 1) — SOFT · ★ **WRK-010 slice 2 (Sprint 2.5) — HARD for §4's session composition, and after
 `E4-F012` that means the whole session LIFECYCLE, not just the renewal body.** §3.2 says why; §0.1
-says what Sprint 2 changes underneath this document.
-**Sprint:** 3 (see `docs/replatform/GO-BOOK.md`)
+says what Sprint 2 changes underneath this document. · ★ **WRK-011 (Sprint 2.75) — HARD.** It closes
+`E4-F010` and makes the worker MATCHABLE; this slice composes ON TOP of it, threading WRK-011's
+provisioning into the hello it self-checks with. **Step 0** re-scopes §4 and Step 2 against both
+predecessors; without it this slice ships WRK-011's daemon half with zero callers.
+**Sprint:** 3 (see `docs/replatform/GO-BOOK.md`), which runs **after** Sprint 2.75 (WRK-011)
 
 ---
 
 ## 0. What this slice is, in one paragraph
 
 Slice 2a made the daemon *explain* why it does not dispatch. This slice makes the
-`compose: true` branch **reachable**: it threads a device identity, the production worker hello and
-a session **store** through boot (★ `E4-F012`: whether that store can obtain a live session is
-Sprint 2.5's — §3.2, §4), calls `client.selfModelRead` (zero callers since 2a), assembles the
+`compose: true` branch **reachable**: it threads a device identity, the **provisioned** worker hello
+(★ Step 0: composed ON TOP of WRK-010 slice 2's session lifecycle and WRK-011's provisioning, not
+built here) and a session **store** through boot (★ `E4-F012`: the store and its first live session
+are Sprint 2.5's — §3.2, §4), calls `client.selfModelRead`, assembles the
 `WorkerSelfModel`, and constructs the durable event outbox, the supervisor, the lease-renewal
 driver and the poll loop behind the existing default-OFF flag. After this slice `createPollLoop`
-and `createSupervisor` have their **first production callers in the programme's history**.
+and `createSupervisor` have their **first production callers in the programme's history**. ★ Note
+`client.selfModelRead` is **not** in that list: WRK-011 (Sprint 2.75) gives it its first production
+caller (WRK-011 §6.2, reading the provisioning facts), one sprint before this one — §0.2 corrects
+the "zero callers" wording revision 3 carried.
 
 **It does not turn dispatch on.** Every gate that holds today still holds for **both** shipped boot
 roots, and §8 proves that with executable artifacts rather than a paragraph.
@@ -36,8 +43,10 @@ roots, and §8 proves that with executable artifacts rather than a paragraph.
 > **★ Read §1.1(b) before §8.** There are **two** production boot roots — the container
 > (`bin/worker-daemon.ts:398`) and the desktop (`bin/desktop-host.ts` → `aoa-worker-desktop`) — and
 > they do not stand on the same number of gates. The desktop injects OS custody on every boot, so
-> the identity gate is **already satisfied there**. The container's four-gate posture is real; it
-> is not the whole picture, and an earlier revision of this document asserted it as if it were.
+> the identity gate is **already satisfied there**. The container's **four-LANDABLE-gate** posture
+> is real (of **six** total — four you land plus two runtime conditions, §2); it is not the whole
+> picture, and an earlier revision of this document asserted it as if it were. Say which set every
+> time: the desktop is **three** landable of **five** total (custody already satisfied).
 
 ---
 
@@ -104,6 +113,55 @@ expectation is agreed; only the edit was unassigned. Both are now in §5.
 
 ---
 
+## ★ 0.2 TWO SPRINTS RUN BEFORE THIS ONE — read this before §1.1(c), §4 and Step 2
+
+This document was first drafted before **Sprint 2.5 (WRK-010 slice 2)** and **Sprint 2.75
+(WRK-011)** existed. The go-book now sequences both between Sprint 2 and this slice, and each
+changes the tree this slice composes against. Neither is optional; both are **HARD** predecessors.
+**Step 0 (below, in §6) is the scoping gate that re-scopes §4 and Step 2 against them** — the
+go-book §4 Sprint 3 checklist orders exactly that. The two re-scopings:
+
+**(A) Sprint 2.5 owns the production identity + `SessionStore` construction — this slice does not
+build one.** The go-book states it flatly (§4 Sprint 3 checklist): *"Sprint 2.5 now owns the
+production identity + SessionStore construction … compose ON TOP of it rather than … build it."* So
+2b does not construct `SessionStore`, does not derive the device key **for the session**, and does
+not author the `initial = null` / renewal-thunk wiring — Sprint 2.5 built that lifecycle (the
+`renew(current: WorkerSession)` signature, the required first-session bootstrap dependency, the
+near-expiry threshold — all WRK-010 §9.1.1's). 2b receives that lifecycle and threads it into the
+poll loop. **Anywhere below still reading as 2b constructing `SessionStore(..., initial = null)` —
+§4's diagram, Step 2, Step 6, Step 7, §7 row 7b, §10's zero-residue box — is pre-2.5 wording; the
+construction and its zero-residue obligation are Sprint 2.5's, and this slice composes over the
+result.** (§3.2 already carries the lifecycle detail; §0.2(A) is the ownership line the go-book made
+authoritative.)
+
+**(B) Sprint 2.75 (WRK-011) makes the worker MATCHABLE, and this slice composes its provisioning.**
+WRK-011 **owns and closes `E4-F010`** (`scripts/finding-ownership.json` key `E4-F010` reads
+`owned`/`WRK-011`; it flips `findings.md` to `resolved` and deletes the manifest key in its own
+result commit). It ships `packages/worker-daemon/src/enrollment/hello-provisioning.ts` — fold a
+self-model read into a `HelloProvisioning` — and an **optional** `provisioning` input on
+`buildDesktopHello` that is byte-identical when absent (WRK-011 §6.1). WRK-011's file list touches
+**no composition root** (WRK-011 §3.1), and its §6.3 hands *"the composed sequence poll → offer →
+self-check → ACK → supervise"* to **this** sprint. So:
+
+- The hello this slice threads into `PollLoopDeps.self` must carry WRK-011's **provisioning** —
+  folded from the self-model read via `hello-provisioning.ts` — **not** the bare
+  `buildDesktopHello({workerId, targetId, deviceGeneration, platform, arch})`. Composing the bare
+  hello would ship a worker that still self-rejects 100% of offers (the **pre-2.75** state §1.1(c)
+  records) in the sprint whose predecessor exists to make it matchable — the exact zero-caller
+  failure WRK-011 was written to avoid.
+- **This slice owns the wiring WRK-011 left uncomposed:** calling `client.selfHelloRefresh()` at
+  boot (refresh the snapshot + take the new session bound to the new `profile_hash`) before polling,
+  and folding the provisioning into the assembled `WorkerSelfModel`. WRK-011 built the daemon and
+  server halves; composing them into the boot sequence is E4-D12's live-dispatch seam, which is this
+  slice.
+- **Reconciled downstream:** §1.1(c)'s "false for 100% of offers" is the pre-2.75 fact and is marked
+  so; §4's diagram note folds provisioning; the **Step 6 self-check test can no longer assert
+  `offerSatisfiesWorker === false`** for a valid `workload.batch` offer — it asserts the mirror
+  WRK-011 Step 8(c) pins (`true` over the provisioned self-model, `false` over an **unprovisioned**
+  one as the negative control); §7 rows 8b/12 and Step 10's `E4-1` disposition move with it.
+
+---
+
 ## ★ 1. Verified state — where slice 2a actually left the tree
 
 | # | Fact | Evidence |
@@ -113,7 +171,7 @@ expectation is agreed; only the edit was unassigned. Both are now in §5.
 | 3 | `compose: true` is **unreachable** — the decision is called with two hardcoded literals | `bin/worker-daemon.ts:337-346` (`hasSelfModelReader: false, selfModel: null`) |
 | 4 | `createPollLoop` has zero production callers | `poll/poll-loop.ts:469` + one `index.ts` re-export |
 | 5 | `createSupervisor` has zero production callers | `supervisor/supervisor.ts:161` |
-| 6 | `client.selfModelRead` exists and has zero callers | `transport/client.ts:313` |
+| 6 | `client.selfModelRead` exists and has zero callers **at this document's tip** (★ WRK-011/Sprint 2.75 gives it its FIRST production caller, before this slice — §0.2(B), WRK-011 §6.2) | `transport/client.ts:313` |
 | 7 | `SupervisorDeps.provider` REQUIRED; `redactionCanaries` REQUIRED (no `?? []`) | `supervisor/supervisor.ts:88`, `:123` |
 | 8 | `PollLoopDeps` needs client, self, key, session, limiter, measure, supervisor, backoff | `poll/poll-loop.ts:438-454` |
 | 9 | The startup reconciler is gated on a dep nothing supplies | `bin/worker-daemon.ts:355` |
@@ -166,7 +224,7 @@ invocation (`:398`) satisfies zero of.
 > and neither is a change somebody lands. **Note the direction of the correction:** three
 > *understates* nothing. Saying "two" made the desktop sound **closer** to live dispatch than the
 > code has it, so the fix moves the risk posture down, not up. What it repairs is a number recorded
-> in a HIGH finding (`E4-F011`, `findings.md:220-232`) and a number that would have sent the DEP-010
+> in a HIGH finding (`E4-F011` in `findings.md`) and a number that would have sent the DEP-010
 > implementer looking for dispatch after flipping one variable and finding
 > `no_event_outbox_path` instead.
 
@@ -177,12 +235,26 @@ because `EnrollResult` is a plain literal containing `session.token` and one
 So "thread a SESSION so `selfModelRead` can be called" is not passing a value along: **no session
 exists after boot, by design, on either root.** §4 says where it comes from without regressing I13.
 
-**(c) A composed worker cannot be offered work — and it would REJECT the offer anyway. Neither is
-this slice's to fix.** The only production hello builder is `buildDesktopHello`, whose header says
-it exists to emit a desktop that *"can never be matched work"* (`enrollment/desktop-hello.ts:7-8`):
-its `reportedCapabilities` are `sandbox.*` only (`:144` → `capabilitiesForIsolation`), so
-`ceiling ∩ reported` can never contain the `workload.<type>` name the frozen matcher requires, and
-its `policyHash` is 64 zeros (`:53`, `:154`).
+**(c) ★ PRE-2.75 STATE — read `E4-F010`, now OWNED and CLOSED by WRK-011 (Sprint 2.75), which runs
+before this slice.** Everything in this subsection describes the tree BEFORE Sprint 2.75. It is kept
+because it is the fact the composed hello must *stop* being true of, and because §4/Step 6 assert
+the provisioned replacement against it. **A composed worker built with the BARE hello cannot be
+offered work — and would REJECT the offer anyway.** The only production hello builder is
+`buildDesktopHello`, whose header says it exists to emit a desktop that *"can never be matched
+work"* (`enrollment/desktop-hello.ts:7-8`): with no `isolation` argument (the only production call
+site, `enroll-once.ts:255-261`, passes none) its `reportedCapabilities` is the **empty array** —
+`[...capabilitiesForIsolation(input.isolation ?? "none")]` at `:144`, and
+`CAPABILITIES_BY_MECHANISM.none` is `[]` (`isolation-capabilities.ts:50`). ★ **Not `sandbox.*`** —
+revision 3 said `sandbox.*`, which is what the builder emits under `docker`/`os_native` isolation,
+never under the shipped `none`; WRK-011 §0(a) makes the same correction, and the conclusion is
+*stronger*: `ceiling ∩ reported` is empty for **any** ceiling, so it can never contain the
+`workload.<type>` name the frozen matcher requires. Its `policyHash` is 64 zeros (`:53`, `:154`).
+
+★ **What WRK-011 changes:** it lets a worker present a **provisioned** hello (capabilities inside
+the admin-ratified ceiling, the ratified `policyHash`, a nameplate capacity) over a new route, so
+the stored snapshot becomes matchable. **This slice composes THAT hello** (§0.2(B), Step 0), not the
+bare one — so the two consequences below hold for the bare hello and are exactly what Step 6's
+provisioned self-check must NOT reproduce.
 
 Two consequences, and the second is the one the first draft missed:
 
@@ -190,18 +262,20 @@ Two consequences, and the second is the one the first draft missed:
   `worker-enrollment.ts:444,470` — **there is no update channel**, so no offer is ever produced.
 - **★ Worker side.** `poll-loop.ts:538` runs `offerSatisfiesWorker(deps.self, capacity, offer)`
   before ACKing, and that is the SAME frozen `workerSatisfiesRequirements`
-  (`poll/capacity.ts:143-157`) over the worker's own `self.report`. Composed with the only hello
-  production builds, **the worker's own defense-in-depth check returns `false` for 100% of
+  (`poll/capacity.ts:143-157`) over the worker's own `self.report`. Composed with the **bare**
+  hello (pre-2.75), **the worker's own defense-in-depth check returns `false` for 100% of
   offers** — even a hand-crafted one. Every poll would emit `poll{outcome:"incompatible"}` and
   nothing would ever be ACKed.
 
-**This is why §4.1 and §5 name the hello source explicitly, and why Step 6 asserts it.** The
-fixture hello (`__tests__/support/poll-fixtures.ts:88-93` `REPORTED_CAPABILITIES`, which *does*
+**This is why §4.1 and §5 name the hello source explicitly, and why Step 6 asserts it.** ★ Post-2.75
+the honest composed hello is the **provisioned** one — real facts folded from the self-model read
+via `hello-provisioning.ts` (§0.2(B)), not a hand-crafted test fixture. Reaching for the poll
+**fixture** hello (`__tests__/support/poll-fixtures.ts:88-93` `REPORTED_CAPABILITIES`, which *does*
 contain `workload.batch`, and `:134` `policyHash: POLICY_HASH` — the same constant the registered
-target profile commits at `:110`) is built precisely so `offerSatisfiesWorker` "returns a
-meaningful boolean" (`:10`). Reaching for it
-in the composition tests would turn §7 rows 8, 12 and 17 green **over a hello production never
-builds** — a suite passing against a worker that does not exist. Filed as a finding (§9).
+target profile commits at `:110`) would still be a lie: a fixture is not what boot builds. Step 6
+therefore asserts the composed `self.report` is the **provisioned production hello**
+`createWorkerIdentity` builds from the folded self-model, and drives `offerSatisfiesWorker` over
+*that*, never over `poll-fixtures`.
 
 ---
 
@@ -394,6 +468,15 @@ parameter, and first-session acquisition becomes a SEPARATE, REQUIRED dependency
 
 ## ★ 4. Architecture — where the session comes from without regressing I13
 
+> **★ READ §0.2 AND STEP 0 FIRST — this diagram is drawn against the PRE-2.5 / PRE-2.75 tree.** Two
+> things below are re-scoped by predecessors that now run before this slice, and the corrections are
+> §0.2's, not this diagram's: **(A)** the `SessionStore` construction is **Sprint 2.5's**, not this
+> slice's (go-book §4 Sprint 3 checklist) — read `SessionStore(..., initial = null)` here as "the
+> lifecycle Sprint 2.5 constructs, which this slice threads in"; **(B)** the hello
+> `createWorkerIdentity` builds must carry **WRK-011's provisioning** (folded from the self-model
+> read), so `offerSatisfiesWorker` ADMITS a valid offer — the `FALSE for every offer` annotation
+> below is the pre-2.75 bare-hello fact, kept only to show what the provisioning must overturn.
+
 ```
 enrollOnce (unchanged)              ← still returns NO session (I13 intact)
       │
@@ -401,11 +484,13 @@ enrollOnce (unchanged)              ← still returns NO session (I13 intact)
       │                                   └─ deviceKeyFromPkcs8Der(...) ──► DeviceKey
       ▼
 createWorkerIdentity()              ← NEW: identity/worker-identity.ts
-      ├─ buildDesktopHello({workerId, targetId, deviceGeneration, platform, arch})
+      ├─ buildDesktopHello({workerId, targetId, deviceGeneration, platform, arch,
+      │       │              provisioning})   ← ★ POST-2.75: provisioning folded from the self-model
       │       ▲   enrollment/desktop-hello.ts:87 — THE SAME BUILDER enroll-once.ts:255 uses.
-      │       └── ★ §1.1(c): this hello makes offerSatisfiesWorker FALSE for every offer.
-      │           That is the honest composed worker. A fixture hello here would be a lie.
-      ├─ SessionStore({now, renew, metrics, logger}, initial = null)
+      │       └── ★ §0.2(B): WITH provisioning, offerSatisfiesWorker is TRUE for a valid offer.
+      │           (Pre-2.75, the BARE hello made it FALSE for every offer — §1.1(c).)
+      │           The provisioned hello is real production data, not a test fixture.
+      ├─ SessionStore({now, renew, metrics, logger}, initial = null)   ← ★ CONSTRUCTED BY SPRINT 2.5 (§0.2A)
       │       └── renew: () => renewSession()      ← ★ THE WRK-010 SEAM, as 2b composes it TODAY:
       │                    ▲                          typed by SessionStoreDeps.renew
       │                    │                          (identity/session.ts:52-55), zero-argument.
@@ -535,8 +620,8 @@ Sprint 2.5's, per WRK-010 §9.1.1.
 | `ConcurrencyLimiter` | ✅ | from `config.concurrency` |
 | Capacity probes | ✅ **NEW** | §1.1(a) — no production implementation exists |
 | `buildDesktopHello(...)` | ✅ | §4 — `assembleWorkerSelfModel` requires a `report`, and this is the only production builder (§1.1c) |
-| `SessionStore` + `SessionProvider` | ✅ **NEW** | §4. ★ **Composed on top of a session lifecycle Sprint 2.5 builds — this slice does not build one.** It constructs the store with `initial = null` and injects a renewal thunk; first-session acquisition and the `SessionStoreDeps.renew` signature are WRK-010 §9.1.1's (`E4-F012`), and they change the type this row injects into |
-| Self-model **reader** | ✅ **NEW** | `selfModelRead` gets its first caller. ★ The **assembler** is NOT new: `assembleWorkerSelfModel` already exists at `identity/self-model.ts:45` (2a shipped it with zero callers). Only `readWorkerSelfModel` is written here. |
+| `SessionStore` + `SessionProvider` | ✅ **consumed** | §4, §0.2(A). ★ **Sprint 2.5 OWNS the `SessionStore` construction (go-book §4 Sprint 3 checklist); this slice does NOT build one — it threads the constructed lifecycle into the poll loop.** First-session acquisition, the `initial` seed and the `SessionStoreDeps.renew` signature are all WRK-010 §9.1.1's (`E4-F012`). Anywhere below that still shows `SessionStore(..., initial = null)` being built here is pre-2.5 wording (§0.2A) |
+| Self-model **reader** | ✅ **NEW** | ★ `selfModelRead`'s **first** production caller is WRK-011 (Sprint 2.75, §0.2(B)); this slice adds the composition-path caller (`readWorkerSelfModel`, to assemble `PollLoopDeps.self`). The **assembler** is NOT new: `assembleWorkerSelfModel` already exists at `identity/self-model.ts:45` (2a shipped it with zero callers). Only `readWorkerSelfModel` is written here. |
 | `sha256Hex` as the assembler's `sha256Fn` | ✅ | `identity/device-proof.ts:101` — the existing production digest helper, not a new one |
 | `openEventOutboxStore` + `DurableWorkerEventSink` | ✅ | the sink is required; a no-op sink is a fail-open (§2). ★ **ONE instance, passed to BOTH the supervisor and the renewal driver** — see below |
 | `createEventOutboxDrain` | ✅ | **E4 gate clause 4** |
@@ -627,8 +712,8 @@ Paths are relative to `packages/worker-daemon/src` unless the package is named.
 `selfModel`) · `config/config.ts` (`AOA_WORKER_EVENT_OUTBOX_PATH`) · `bin/worker-daemon.ts` (thread
 identity → decide → read → decide → compose → register lifecycles) · `index.ts` (barrels) ·
 `__tests__/support/fake-control-plane.ts` (the self-model route) ·
-`scripts/gate-clause-wiring.json` (`E4-2/4` → `wired`; `E4-1` and `E4-3` stay `unwired` with
-rewritten reasons — see Step 10 and §4.2) ·
+`scripts/gate-clause-wiring.json` (`E4-4` → `wired`; `E4-1`, `E4-2` and `E4-3` stay `unwired` —
+`E4-1`/`E4-2` with `expectedReferences: 1` and rewritten reasons — see Step 10 and §4.2) ·
 `scripts/guard-inventory.json` · `.github/workflows/pr.yml` · `scripts/test-inventory.json`
 
 **★ Modified, and added in revision 3 — §5 previously presented itself as exhaustive and was not:**
@@ -682,6 +767,33 @@ owns it — which is also the side that would break it.
 
 Each step is **RED → GREEN → mutants**, committed separately.
 
+### ★ Step 0 — the scoping gate (NO CODE): re-scope §4 and Step 2 against the two predecessors
+The go-book §4 Sprint 3 checklist orders this before any code: *"Re-scope §4 and Step 2 at Step 0 to
+compose ON TOP of"* Sprint 2.5, and Sprint 2.75 (WRK-011) adds a second re-scoping. **The full
+statement is §0.2; this step is the gate that makes reading it a committed action, not a footnote.**
+Before writing Step 1, confirm on disk:
+
+1. **Sprint 2.5 (WRK-010 slice 2) has SHIPPED** (its result doc is on disk) and the `SessionStore` +
+   identity lifecycle it owns exists in source — this slice **consumes** it, does not construct it
+   (§0.2A). If it has not, you are out of sequence; STOP.
+2. **Sprint 2.75 (WRK-011) has SHIPPED** — `E4-F010` is `resolved` with its manifest key deleted
+   (`scripts/finding-ownership.json`), and `packages/worker-daemon/src/enrollment/hello-provisioning.ts`
+   + `buildDesktopHello`'s `provisioning` input exist (§0.2B). If not, you are out of sequence; STOP
+   — composing the bare hello would ship WRK-011's daemon half with an unmatchable worker, the exact
+   failure Sprint 2.75 exists to prevent.
+3. **Re-scope the affected sections to match**, per §0.2's two blanket corrections: §4's diagram,
+   Step 2, Step 6, Step 7 and §7 row 7b treat `SessionStore` as **Sprint 2.5's construction** this
+   slice threads in; §4 and **Step 6** compose and self-check the **provisioned** hello — Step 6's
+   `offerSatisfiesWorker` ADMITS a valid offer and its mirror over the unprovisioned hello REFUSES
+   (the shape WRK-011 Step 8(c) pins) — never the bare one and never a poll fixture.
+
+**What this slice OWNS that WRK-011 left uncomposed:** the boot sequence that calls
+`client.selfHelloRefresh()` (refresh the snapshot, take the new session bound to the new
+`profile_hash`) before polling, folds the provisioning into the assembled `WorkerSelfModel`, and
+threads that model into `PollLoopDeps.self`. WRK-011 built both halves and its file list touches no
+composition root (WRK-011 §3.1, §6.3); wiring them into boot is E4-D12's live-dispatch seam, which
+is this slice.
+
 ### Step 1 — the production capacity probes
 `createHostCapacityProbes({cpuCount, freeMemoryBytes, diskFree})`, each wrapped in
 `zeroOnThrow`. **★ Every probe fails to ZERO.** A throwing probe is a host quirk (an unusual
@@ -694,14 +806,26 @@ Plus: the result satisfies the frozen `workerCapacitySchema` through `measureCap
 `MILLIS_PER_CORE`.
 
 ### Step 2 — the worker identity + session lifecycle (**the WRK-010 seam**)
+
+> **★ RE-SCOPED BY §0.2 / Step 0 — read this before the paragraph below.** As written, this step has
+> 2b construct `SessionStore(..., initial = null)`. **Sprint 2.5 now owns that construction**
+> (§0.2A, go-book §4 Sprint 3 checklist), so in the executed slice `createWorkerIdentity` **receives**
+> the constructed session lifecycle rather than building it; the `initial` seed and the
+> `SessionStoreDeps.renew` signature are WRK-010 §9.1.1's. And the hello it builds must carry
+> **WRK-011's `provisioning`** (§0.2B), so `buildDesktopHello({…, provisioning})`, not the bare call.
+> The rest of this step (key re-derivation from persisted bytes, hello-here-not-in-the-reader,
+> no-acquisition-at-construction) is body-independent and stands.
+
 `createWorkerIdentity({record, platform, arch, now, readCode, renewSession, metrics, logger})` →
 `{key, workerId, targetId, deviceGeneration, hello, session, store}`. Re-derives the key from the
 **persisted** bytes (the same rule enroll-once follows, so an envelope round-trip bug surfaces on
-first boot rather than after the server committed). `SessionStore` with `initial = null`.
+first boot rather than after the server committed). `SessionStore` with `initial = null` — ★ per the
+box above, constructed by Sprint 2.5 and threaded in here, not built by this slice.
 
-**★ It also builds the hello**, via `buildDesktopHello` — the same function `enroll-once.ts:255`
-uses, from the same persisted record. It lives here rather than in the reader because both the
-reader (`assembleWorkerSelfModel`'s `report`) and any future renewal (`RenewInput.hello`) need the
+**★ It also builds the hello**, via `buildDesktopHello({…, provisioning})` — the same function
+`enroll-once.ts:255` uses, from the same persisted record, ★ now with WRK-011's folded provisioning
+(§0.2B). It lives here rather than in the reader because both the reader
+(`assembleWorkerSelfModel`'s `report`) and any future renewal (`RenewInput.hello`) need the
 identical value, and two construction sites are two things to keep byte-identical.
 
 **★ `renewSession` is the WRK-010 seam**, and in production it is **slice 2's device-proof renewal
@@ -725,9 +849,10 @@ construction — §4's "where the renewal CODE comes from". Once slice 2's clien
 in the composed path reads a code and this parameter goes away with it.
 
 Tests: key re-derived from persisted DER; **★ the hello comes from `buildDesktopHello`, not a
-fixture** — asserted by equality against a direct call with the same record (§1.1c: this is what
-makes the composed worker's `offerSatisfiesWorker` honestly `false`, and a fixture hello here would
-silently make three acceptance rows green over a worker production never builds); **★ acquires
+fixture** — asserted by equality against a direct call with the same record **and (post-2.75) the
+same folded `provisioning`** (§0.2B): this is what makes the composed worker's `offerSatisfiesWorker`
+honestly *matchable* on the real provisioned facts, where a poll fixture would silently make three
+acceptance rows green over a worker production never builds; **★ acquires
 NOTHING AT CONSTRUCTION** (constructing performs no renew **and no code read** — a spy on `readCode`
 at 0 calls); **★ POSITIVE CONTROL** — the first `get()` DOES obtain a session, DOES read the code
 exactly once, and returns it (without it, laziness is indistinguishable from never-wired). ★ **This
@@ -775,7 +900,7 @@ construction instead of per renew**.
 > `expiresAtMs` and assert the store re-mints. Clause 21's *"all compiling"* stays true on the
 > record.
 
-### Step 3 — the self-model reader (`selfModelRead` gets its first caller)
+### Step 3 — the self-model reader (`selfModelRead`'s composition-path caller; ★ its FIRST caller is WRK-011/Sprint 2.75)
 Harness first: add the self-model route to `fake-control-plane.ts`, mirroring the client's vendored
 constant so the proof is verified over the **exact** path it signs — a fake accepting a proof over
 a different path would hide the one failure mode the repo-level parity guard exists for.
@@ -926,9 +1051,15 @@ SAME durable store the supervisor does** (drive a post-close denial through
 `driver.proxyFor(leaseId)` and read the row back — the assertion §4.1.1 exists for); **★ an event
 the supervisor emits is DURABLE before it is drainable** (the one property neither component's own
 tests can observe); **★ the outbox is recovered at composition**; **★ `redactionCanaries` is `[]`
-and `observeRun` is `undefined`**; **★ `self.report` is the hello `createWorkerIdentity` built, and
-`offerSatisfiesWorker` over it returns `false` for an otherwise-valid `workload.batch` offer** —
-§1.1(c) made executable, and the test that fails the day someone reaches for `poll-fixtures`;
+and `observeRun` is `undefined`**; **★ `self.report` is the PROVISIONED hello `createWorkerIdentity`
+built** (from the folded self-model, §0.2B) — asserted by identity against a direct
+`buildDesktopHello({…, provisioning})` call, never a `poll-fixtures` fixture; **★ POST-2.75:
+`offerSatisfiesWorker` over that provisioned `self.report` returns `TRUE` for an otherwise-valid
+`workload.batch` offer parsed through `leaseOfferV1Schema`, and `FALSE` for the same offer against an
+UNPROVISIONED `self.report`** (the negative control that distinguishes a working matcher from a
+permissive one — WRK-011 Step 8(c)'s mirror). ★ This **replaces** revision 3's `offerSatisfiesWorker
+=== false` assertion, which was the pre-2.75 bare-hello fact and is now false: WRK-011 makes the
+provisioned worker matchable (§0.2B, §1.1c), so the composed worker ADMITS a valid offer;
 limiter ceilings from config with live slots; **★ capacity clamped**; stop order.
 *Mutants (6):* `supervisor: renewal` → `supervisor`; move recovery after the sink; drop `ceiling`;
 drop `kek` from the sink but keep it on the drain; **drop the driver's `eventSink`** (it compiles,
@@ -1066,15 +1197,26 @@ Cases:
   `AOA_WORKER_DISPATCH_ENABLED`, no provider switch) driven through the REAL
   `bootstrapWorkerDaemon` with the real stores — refusing with **exactly** `no_provider`.
 - **★ THE REFUSAL-TOKEN LADDER — this replaces revision 2's positive control, which was
-  unsatisfiable as specified.** Three assertions on the same real `bootstrapWorkerDaemon`, adding
+  unsatisfiable as specified.** **TWO** assertions on the same real `bootstrapWorkerDaemon`, adding
   one variable at a time and pinning the **exact** token each time:
   1. shipped env ⇒ exactly `no_provider`;
   2. **+ a provider + the flag ⇒ exactly `no_event_outbox_path`.** This one carries §1.1(b)'s whole
      point as an executable fact: reaching gate 4 means gate 3 **did not refuse**, i.e. the device
      identity is already there on this root. It is a stronger statement than the old positive
-     control and it needs no control plane;
-  3. **+ `AOA_WORKER_EVENT_OUTBOX_PATH` ⇒ exactly `no_session`** — the third env var, and the point
-     at which the remaining gates stop being things anybody *sets*.
+     control and it needs no control plane.
+  > **★ Why there is NO rung 3 — revision 3 wrote one that cannot go green.** That rung read
+  > *"+ `AOA_WORKER_EVENT_OUTBOX_PATH` ⇒ exactly `no_session`"*. It is unsatisfiable in this suite.
+  > Step 4's mapping table (`selfModelRead`) produces `no_session` **only** from a
+  > `refused{session_terminal}` read result, and `identity/session.ts:133-138` produces
+  > `session_terminal` **only** on an `EnrollmentError` with `stopAndBackoff` — a **401 from a
+  > control plane**. With the outbox path added and no control plane, the renewal attempt fails as a
+  > **transient/connection error**, which the read maps to `refused{unavailable}` → **`no_self_model`,
+  > not `no_session`** (Step 4's table). To pin `no_session` here the keystore suite would need a
+  > **fake control plane returning a 401** — gates 5 and 6 need exactly that, and §5 does not budget
+  > one for `packages/worker-keystore` (it is why the 8b test cannot live beside the daemon suite,
+  > whose `__tests__/support/fake-control-plane.ts` is daemon-side). Rung 2 is the last token this
+  > setup can pin **exactly**, so the ladder stops there. Deterministic proof of `no_session` /
+  > `no_self_model` is 8a's job, on the side where the fake control plane lives.
 - a control command (`status`) and `--reset-identity` each return **without** calling `bootstrap`
   at all (`bin/desktop-host.ts:132-160`, `:164-245`) — the two argv paths that must never fall
   through to a boot.
@@ -1196,22 +1338,25 @@ register was built to prevent, re-committed one level down. Therefore:
 
 | Clause | Symbol | Disposition |
 |---|---|---|
-| `E4-2-supervises-sandboxes` | `createSupervisor` | → **`wired`**. The clause is *"supervises only sandboxes"*, and that is exactly what the composition does: the supervisor takes the injected `SandboxProvider` and no `observeRun`. True without qualification |
-| `E4-4-event-outbox-replay` | `createEventOutboxDrain` | → **`wired`**. The clause is *"replays its encrypted outbox"*; Step 6 recovers at composition and `drain.start()` runs. True without qualification |
-| `E4-1-leases-through-protocol` | `createPollLoop` | ★ **stays `unwired`, with `expectedReferences: 1`** and a reason naming `E4-F010`. It acquires exactly one production caller (`lifecycle/dispatch-runtime.ts`), which the acknowledged count absorbs, so the guard stays silent about the known reference **and still fires the moment a second appears** — the mechanic `E8-1-sandbox-local-browser` already uses for `runBrowserSession` (`gate-clause-wiring.json:75-81`). The clause says *leases*; a worker whose own `offerSatisfiesWorker` returns `false` for **100% of offers** (§1.1c) does not lease. Claiming `wired` here asserts a leasing capability that cannot lease, with the disclaimer in a field nothing reads |
+| `E4-2-supervises-sandboxes` | `createSupervisor` | ★ **stays `unwired`, with `expectedReferences: 1`** and a reason. Revision 3 promoted it to `wired` / *"true without qualification"*; the go-book §4 Sprint 3 checklist **explicitly prohibits** that. The clause is *"supervises only sandboxes"*, and production reaches the supervisor **only after an ACK**: `poll-loop.ts:538` self-checks the offer and returns `{kind:"continue"}` before `ackLease` at `:549`, and the supervisor is reached only via `trackHandoff` at `:559` — after a successful ACK. Composing `createSupervisor` gives it one production caller (`lifecycle/dispatch-runtime.ts`) but **no production ACK path exists at this sprint's tip** (that is the composed *poll → offer → ACK → supervise* sequence this slice wires but does not demonstrate). `wired` here asserts a supervising capability that never supervises, into a field the checker never reads. It needs an **actually-supervised sandbox**, which is Sprint 5's journey. `expectedReferences: 1` absorbs the composition's one caller and still fires on a second |
+| `E4-4-event-outbox-replay` | `createEventOutboxDrain` | → **`wired`**. The clause is *"replays its encrypted outbox"*; Step 6 recovers at composition and `drain.start()` runs at boot, independently of leasing or ACK. True without qualification |
+| `E4-1-leases-through-protocol` | `createPollLoop` | ★ **stays `unwired`, with `expectedReferences: 1`** and a reason. It acquires exactly one production caller (`lifecycle/dispatch-runtime.ts`), which the acknowledged count absorbs, so the guard stays silent about the known reference **and still fires the moment a second appears** — the mechanic `E8-1-sandbox-local-browser` already uses for `runBrowserSession` (`gate-clause-wiring.json:75-81`). ★ **The reason is NOT "E4-F010 unowned/unmatchable"** — WRK-011 (Sprint 2.75) closes E4-F010 before this slice, so the worker IS matchable here (§0.2(B)). The honest reason is that this slice **composes** the loop but does not **demonstrate** a lease actually being taken in its own suite; per the go-book §4 Sprint 3 checklist, `E4-1` is promotable **on evidence** — a composed loop that took a lease in this sprint's suite — never on caller count and never on a caveat in a `reason` field. Composing is not demonstrating; Sprint 5 is the journey |
 | `E4-3-survives-restart` | `createStartupReconciler` | stays `unwired`, reason rewritten per §4.2 (ONE blocker: `leaseCandidates`) |
 
-**Why not promote `E4-1` and rely on the reason.** Because the promote-check is the only mechanism
-that keeps a dormant clause visible: `unwired` clauses are printed by name on every green run,
-deliberately (`check-gate-clause-wiring.mjs:130-135`), while `wired` ones vanish into a count. The
-honest register keeps `E4-1` in the list that gets printed until E4-F010 is fixed — and E4-F010 is
-`unowned`, so nothing else in the graph will notice.
+**Why not promote `E4-1` or `E4-2` and rely on the reason.** Because the promote-check is the only
+mechanism that keeps a dormant clause visible: `unwired` clauses are printed by name on every green
+run, deliberately (`check-gate-clause-wiring.mjs:130-135`), while `wired` ones vanish into a count.
+The honest register keeps both clauses in the printed list until a sprint **demonstrates** a lease
+taken and a sandbox supervised (Sprint 5), rather than resting on the fact that the loop and
+supervisor are *composed*.
 
 **What the reasons must still say**, because the guard's header is explicit that a count > 0 is
-*"NECESSARY BUT NOT SUFFICIENT for reachability"*: for `E4-2` and `E4-4`, that "reachable" means
-"reachable from a boot root", **not** "runs by default" — dispatch is still off by construction.
-And — ★ because §1.1(b) makes it materially different per root — that the CONTAINER holds four of
-the gates and the DESKTOP **three** (§2). A reason field that averaged the two roots into one
+*"NECESSARY BUT NOT SUFFICIENT for reachability"*: for `E4-4` (the only clause this slice promotes),
+that "reachable" means "reachable from a boot root", **not** "runs by default" — dispatch is still
+off by construction.
+And — ★ because §1.1(b) makes it materially different per root — that the CONTAINER holds four
+**landable** gates and the DESKTOP **three** landable (§2's six/five total, four/three landable
+split). A reason field that averaged the two roots into one
 number would be the same class of half-truth as the `unwired_but_now_has_caller` error this guard
 exists to raise; and revision 2 asked for **two**, which was the wrong number as well as the wrong
 place.
@@ -1247,11 +1392,35 @@ commit and there is no mechanism behind it. Run `node scripts/check-execution-ce
 `node scripts/check-guard-inventory.mjs` locally before pushing; both are in the always-on `policy`
 job, which has no docs-only skip.
 
+**★ Finding disposition — `E4-F008` AND `E4-F009`, both owned by WRK-008, in the result commit.**
+`scripts/finding-ownership.json` names **WRK-008** as owner of both (`E4-F008`: reconcile a rotated
+provider-constraint digest against in-flight leases; `E4-F009`: `createStartupReconciler` needs a
+durable lease-candidate source). Neither is fixed by this slice — §9.1 keeps `E4-F008` open, §4.2
+keeps `E4-F009` open. `finding-ownership.mjs:118` checks only that `ownerStillOpen` is a **non-empty
+string** (the `E4-F013` hole), so the moment WRK-008 has a result doc **both keys read as
+owned-and-handled while nothing handled them** — silent false ownership. The result commit MUST
+therefore, for **each** of `E4-F008` and `E4-F009`, do exactly one of:
+
+- **resolve** it — flip `findings.md` to `resolved` and **delete** the manifest key — only if the
+  work is genuinely done (it is not, for either, in this slice); or
+- **transfer** it to a **named successor ticket that EXISTS on disk** — re-point the manifest
+  `ticket` to that file and record the mechanism (§9.1's for `E4-F008`; §4.2's `leaseCandidates`
+  blocker for `E4-F009`) in its register entry.
+
+★ **No such successor ticket exists on disk today** (the tickets/ directory carries WRK-001..011 and
+the E4-D12 terrain doc, none of which owns a self-model refresh channel or a durable lease-candidate
+source). So this disposition is a **gating action for the result doc**: file the successor
+ticket(s) first, then transfer. Leaving either key on a shipped WRK-008 is the exact `E4-F013`
+failure and is not an option. `check-finding-ownership.mjs` will not catch it — that is why the step
+is spelled out here rather than left to the guard.
+
 Result doc §1 states **which renewal body the seam is pointed at** — slice 2's client (Sprint 2.5),
 or, if 2b shipped ahead of it, the code replay together with all five consequences §3.2 lists; §2
-states §1.1(c) **including the worker-side self-check**; §3 states the desktop root's **three**-gate
-posture from §1.1(b) and, if Sprint 2 has landed, that none of the three is structural any more;
-§4 states the `E4-F008` disposition from §9.
+states §1.1(c) **including the worker-side self-check**, and that this slice composes WRK-011's
+**provisioned** hello (Sprint 2.75) so the self-check ADMITS a valid offer rather than refusing it;
+§3 states the desktop root's **three-landable-gate** posture from §1.1(b) and, if Sprint 2 has
+landed, that none of the three landable gates is structural any more; §4 states the `E4-F008` **and**
+`E4-F009` dispositions from the step above.
 
 ---
 
@@ -1262,14 +1431,15 @@ posture from §1.1(b) and, if Sprint 2 has landed, that none of the three is str
 > outbox — first production callers for `createPollLoop`, `createSupervisor` and
 > `createEventOutboxDrain` in the programme's history — and with either absent it is **provably**
 > inert. **It does NOT mean "a worker leases, executes and reports."** An earlier version of the
-> go-book's Sprint 3 line said that; `E4-F010` makes it false, and this document establishes why
-> (§1.1c): `poll-loop.ts:538` self-checks every offer against the worker's own hello, the only
-> production hello builder emits `sandbox.*` capabilities with a 64-zero `policyHash`, and so
-> `offerSatisfiesWorker` is `false` for **100% of offers** — before the server-side
-> `profile_snapshot` gap even matters. Row 12 records that as *not claimed* rather than as a caveat,
-> and Step 10 explains why a caveat would have been invisible. A design document whose acceptance
-> table is more optimistic than its own §1.1 is the aggregation failure the gate-clause register
-> exists to catch, one level down.
+> go-book's Sprint 3 line said that. ★ The reason is **no longer `E4-F010`** — WRK-011 (Sprint 2.75)
+> closes it before this slice, so the composed worker is **matchable** and `offerSatisfiesWorker`
+> ADMITS a valid offer (§0.2B, rows 8b/12). The reason "done" here still excludes leasing is that
+> this slice **composes** the loop, supervisor and driver but does not **demonstrate** a lease taken
+> or a sandbox supervised in its own suite: `E4-1` and `E4-2` are promotable **on evidence** (a lease
+> actually taken, a sandbox actually supervised — Sprint 5's journey), never on caller count. Rows 12
+> and 13 record that as *not claimed* rather than as a caveat, and Step 10 explains why a caveat
+> would have been invisible. A design document whose acceptance table over-claims what it composed is
+> the aggregation failure the gate-clause register exists to catch, one level down.
 
 | # | Clause | Proving artifact |
 |---|---|---|
@@ -1280,18 +1450,18 @@ posture from §1.1(b) and, if Sprint 2 has landed, that none of the three is str
 | 5 | D1 cannot be enabled without an attributable change **on any of the four gates** | `check-d1-dispatch-declared.mjs` (9a) + its self-test |
 | 5b | ★ **the DESKTOP root still refuses, and its shipped default resolves to no provider** | `desktop-host-refuses-dispatch.test.ts` (8b) — spy on `deps.bootstrap`, **`call.provider === undefined`** under an explicitly-built env with `AOA_WORKER_SANDBOX_PROVIDER`/`AOA_WORKER_E2B_TEMPLATE` removed (★ **not** `"provider" in call`; §0.1 item 1), composed spy at 0 calls |
 | 5c | ★ …and it stays that way | `check-boot-roots-provider-free.mjs` (9b) — declared boot roots, both directions, property = **"no root constructs a provider unconditionally; the shipped default resolves to none"** (§0.1 item 2). ★ Weaker than revision 2's property, and knowingly so |
-| 5d | ★ **the desktop's remaining gate count is stated, not implied — and it is THREE** | 8b's refusal-token ladder, whose **rung 2** (`provider + flag ⇒ exactly no_event_outbox_path`) is the executable proof that gate 3 is already satisfied on this root, + §1.1(b) + §2's per-root column. Revision 2 cited a positive control that could not be reached (§8b's note) |
+| 5d | ★ **the desktop's remaining gate count is stated, not implied — THREE landable of five total** | 8b's **two-rung** refusal-token ladder, whose **rung 2** (`provider + flag ⇒ exactly no_event_outbox_path`) is the executable proof that gate 3 is already satisfied on this root, + §1.1(b) + §2's per-root column. ★ There is no rung 3: `no_session` needs a 401 from a control plane the keystore suite does not budget (§8b's note); revision 3's rung 3 was unsatisfiable and is dropped |
 | 6 | `no_self_model_reader` retires | `compose-dispatch.test.ts` "the placeholder reason is GONE" |
 | 7 | `hasSelfModelReader` becomes real | `dispatch-composition-2b.test.ts` read-attempted + its negative twin |
 | 7b | ★ the identity gate leaves **zero residue** on a refusing boot | Step 7's `hasWorkerIdentity` boolean (derived from the enrolment outcome, not a second store read) + "no key derived, no `SessionStore`" on a `no_provider` refusal + zero `identityStore` calls under `mounted_secret` + Step 7 mutant 7 |
-| 8 | `client.selfModelRead` acquires a caller | `self-model-read.component.test.ts` — real socket, real proof, branded result |
-| 8b | ★ **the composed `self.report` is the PRODUCTION hello** | Step 2's equality-against-`buildDesktopHello` test + Step 6's `offerSatisfiesWorker === false` test |
+| 8 | `client.selfModelRead` acquires its composition-path caller (★ not its FIRST — WRK-011/Sprint 2.75 is) | `self-model-read.component.test.ts` — real socket, real proof, branded result |
+| 8b | ★ **the composed `self.report` is the PROVISIONED production hello, and it is MATCHABLE** | Step 2's equality-against-`buildDesktopHello({…, provisioning})` test + Step 6's `offerSatisfiesWorker === TRUE` (provisioned) / `=== false` (unprovisioned negative control) test — ★ replaces revision 3's `=== false`-only assertion, which was the pre-2.75 bare-hello fact (§0.2B) |
 | 9 | the proof is signed over the served path | same suite + parity guard + Step 3 mutant 6 |
 | 10 | a tampered profile fails closed | same suite |
 | 11 | a failed read leaves the daemon healthy and inert (2a Q3) | `dispatch-composition-2b.test.ts` |
 | 11b | ★ a dead session is reported as `no_session`, never as "ask an admin" | Step 4's precedence test + the `/admin/i` assertion + Step 4 mutant 8 |
-| 12 | **E4 clause 1** — leases through the protocol | ★ **NOT CLAIMED.** `dispatch-runtime.test.ts` proves `createPollLoop` is composed and reachable; `E4-1` stays **`unwired` with `expectedReferences: 1`** and a reason naming `E4-F010` (Step 10). The clause says *leases*, and row 8b records that the composed worker self-rejects **100%** of offers (§1.1c). Promoting it would assert a leasing capability that cannot lease, into a field the checker never reads |
-| 13 | **E4 clause 2** — supervises only sandboxes | `dispatch-runtime.test.ts`: `createSupervisor` is composed with the injected provider and NO `observeRun`, and the loop's handoffs reach it through the driver (Step 6 mutant 1) + `E4-2: wired` — true without qualification |
+| 12 | **E4 clause 1** — leases through the protocol | ★ **NOT CLAIMED.** `dispatch-runtime.test.ts` proves `createPollLoop` is composed and reachable; `E4-1` stays **`unwired` with `expectedReferences: 1`** (Step 10). ★ The reason is **NOT** "E4-F010 / unmatchable" — WRK-011 (Sprint 2.75) closes E4-F010 first, so the composed worker IS matchable (row 8b). The clause says *leases*, and this slice **composes** the loop but does not **demonstrate** a lease being taken in its own suite; per the go-book §4 Sprint 3 checklist, `E4-1` is promotable **on evidence** (a lease actually taken here), never on caller count or a caveat in a `reason` field — Sprint 5 is the journey |
+| 13 | **E4 clause 2** — supervises only sandboxes | `dispatch-runtime.test.ts`: `createSupervisor` is composed with the injected provider and NO `observeRun`, and the loop's handoffs reach it through the driver (Step 6 mutant 1). ★ `E4-2` stays **`unwired` with `expectedReferences: 1`** (Step 10): the supervisor is reached only after an ACK (`poll-loop.ts:549`/`:559`), and no production ACK path exists at this sprint's tip — composing is not supervising. NOT promoted |
 | 14 | **E4 clause 4** — replays its encrypted outbox | durable-before-drainable + recovered-at-composition + `E4-4: wired` — true without qualification |
 | 14c | ★ **a caveat is not parked where nothing reads it** | Step 10's disposition table. `evaluateGateClauseWiring` validates a `wired` entry on caller count alone (`lib/gate-clause-wiring.mjs:81-88`); `reason` is unrequired, unread and unprinted there, and only `unwired` clauses are named on a green run (`check-gate-clause-wiring.mjs:130-135`) |
 | 14b | ★ the renewal driver's denial events reach the SAME durable store | Step 6's `proxyFor` round-trip test + Step 6 mutant 5 |
@@ -1402,17 +1572,22 @@ red, and so that nobody re-derives "they just compete for offers" from the earli
 | Id | Severity | Statement |
 |---|---|---|
 | `E4-F009` | MED | **`createStartupReconciler` is not composable at boot — for ONE reason.** `leaseCandidates` (`supervisor/startup-reconcile.ts:256-257`) has no durable local source: the outbox persists events, not offers, so the lease-authority probe would run over `[]` every boot. `ownershipSelector.organizationId` is **NOT** a blocker — it is on the self-model this slice reads and the frozen schema guarantees it non-null for org- and owner-scoped targets (`worker-protocol/src/capabilities.ts:307-321`); wiring is conditional on scope, not impossible. E4 clause 3 waits on a durable lease-candidate source. |
-| `E4-F010` | HIGH | **A composed worker cannot be offered work — and would refuse it if it were.** *Server side:* `workers.profile_snapshot` has no update channel (only writers `worker-enrollment.ts:444,470`). *Worker side:* `poll-loop.ts:538` runs `offerSatisfiesWorker` over the worker's OWN `self.report`, and the only production hello builder emits `sandbox.*` capabilities with a 64-zero `policyHash` (`enrollment/desktop-hello.ts:144`, `:154`) — so the self-check returns `false` for **100% of offers**, independently of anything the server does. A worker can assemble a perfect self-model, self-check correctly, and dispatch nothing, forever. MIG-005/006/007 ACTIVE inherit this on top of E4-F007. |
-| `E4-F011` | HIGH | **The desktop boot root is THREE gates from live dispatch, not four.** `worker-keystore/src/bin/desktop-host.ts:114-125` builds both OS-custody stores and `:254-260` passes them on every boot; `resolveCustody` (`identity/device-identity-store.ts:128-133`) makes `mounted_secret` + stores a fatal refusal, so **any desktop host that boots is running `os_keychain` with custody present** and `bin/worker-daemon.ts:267` is entered. `no_provider`, the flag and `no_event_outbox_path` remain. DEP-010 must not land a provider in that root without an explicit decision about the flag's default on desktops. **Owner: DEP-010.** ★ **The filed entry (`findings.md:220-232`) says TWO in its title and body** — the number this slice introduced and §1.1(b)/§2 now correct. §5 lists the register edit; status, key and owner do not move |
+| `E4-F010` | HIGH | **A composed worker cannot be offered work — and would refuse it if it were. ★ NOW OWNED AND CLOSED by WRK-011 (Sprint 2.75), which runs BEFORE this slice.** *Server side:* `workers.profile_snapshot`'s only writers are `worker-enrollment.ts:444,470` — one enrolment-rotation channel a daemon can never re-travel (WRK-011 §0(c)). *Worker side:* `poll-loop.ts:538` runs `offerSatisfiesWorker` over the worker's OWN `self.report`, and the shipped hello emits an **empty `reportedCapabilities`** — `[...capabilitiesForIsolation(input.isolation ?? "none")]` at `enrollment/desktop-hello.ts:144` with `CAPABILITIES_BY_MECHANISM.none = []` (`isolation-capabilities.ts:50`), and a 64-zero `policyHash` (`:154`). ★ **Not `sandbox.*`** — that is the `docker`/`os_native` output, never the shipped `none`; WRK-011 §0(a) makes the same correction, and the conclusion is *stronger* (`ceiling ∩ reported` is empty for any ceiling). So the self-check returns `false` for **100% of offers**. WRK-011 closes both halves plus a third capacity blocker it names (§0(d)): it resolves the finding in `findings.md` and DELETES the `E4-F010` manifest key in its own result commit. **This slice composes WRK-011's PROVISIONED hello** (§0.2(B), Step 0) — the state this row describes is the tree BEFORE Sprint 2.75. MIG-005/006/007 ACTIVE inherit this until WRK-011 ships. |
+| `E4-F011` | HIGH | **The desktop boot root is THREE LANDABLE gates from live dispatch (of five total; custody is already satisfied), not four.** `worker-keystore/src/bin/desktop-host.ts:114-125` builds both OS-custody stores and `:254-260` passes them on every boot; `resolveCustody` (`identity/device-identity-store.ts:128-133`) makes `mounted_secret` + stores a fatal refusal, so **any desktop host that boots is running `os_keychain` with custody present** and `bin/worker-daemon.ts:267` is entered. `no_provider`, the flag and `no_event_outbox_path` remain. DEP-010 must not land a provider in that root without an explicit decision about the flag's default on desktops. **Owner: DEP-010.** ★ **The `E4-F011` entry in `findings.md` now states the INVARIANT** (one of the container's four landable gates is already satisfied on the desktop) rather than a bare count — this slice and §1.1(b)/§2 use the same six-gate model (four landable + two runtime). §5 lists no register edit here; status, key and owner do not move |
 
 **★ These three were filed into `docs/replatform/epics/E4-worker-daemon/findings.md` at planning
 time, not deferred to execution**, with entries in `scripts/finding-ownership.json`. They are facts
 about the tree as it stands today, and this programme's own worst failure mode is a HIGH that was
 noticed, written into a design document, and never reached a register where anything could fail
-because of it. E4-F009 and E4-F011 are `owned` (WRK-008 and DEP-010). **E4-F010 is `unowned` on the
-record** — neither half of it is fixed by any ticket now in the graph, and force-fitting it onto this
-slice would be exactly the false claim of ownership the guard exists to prevent. Do not close it by
-shipping 2b.
+because of it. E4-F009 and E4-F011 are `owned` (WRK-008 and DEP-010). ★ **E4-F010 is now `owned` —
+by WRK-011** (`scripts/finding-ownership.json` key `E4-F010` reads `owned`/`WRK-011`; revision 3 of
+this document said `unowned`, and `check-finding-ownership.mjs` now prints only `E4-F013`). It is
+**still `open`**, because WRK-011 has a design doc and no result doc — nothing has shipped, so a
+provisioned/matchable worker does not exist at THIS document's tip. But WRK-011 is **Sprint 2.75**,
+which runs before this slice, so by the time 2b executes E4-F010 is resolved and its manifest key
+deleted (WRK-011 §7 Step 9). **This slice therefore neither owns nor closes E4-F010** — it composes
+on top of the matchable worker WRK-011 delivers (§0.2(B), Step 0). Do not touch its status or key
+here; do not reason from "unowned" (the pre-Sprint-2.75 record); and do not force-fit it onto 2b.
 
 ### ★ 9.1 `E4-F008` — owned by WRK-008, and revision 2 of this document never mentioned it
 
@@ -1436,8 +1611,12 @@ seam the finding named, and the seam now exists — but the reconciliation does 
 **Two things keep it LOW rather than promoting it.** First, the direction of failure is closed:
 `workerSatisfiesRequirements` compares the worker's verified constraints against **both** the
 target's registered ref and the job's requested ref (`worker-protocol/src/capabilities.ts:466-467`),
-so a stale digest makes the worker **unmatchable**, not wrongly matched. Second, `E4-F010` means the
-worker is unmatchable anyway today, so there is no window in which a lease is in flight at all.
+so a stale digest makes the worker **unmatchable**, not wrongly matched — the robust reason, which
+does not depend on any other ticket. ★ Second, historically: while `E4-F010` was open the worker was
+unmatchable anyway, so there was no in-flight-lease window at all. WRK-011 (Sprint 2.75) closes
+`E4-F010`, so that second reason lapses once a provisioned worker can lease — but the first reason
+(direction closed) keeps `E4-F008` LOW regardless, which is why the recommendation to re-point it at
+a self-model-refresh ticket stands rather than resolving it here.
 
 **What closes it, and it is not this ticket:** a self-model refresh channel (a periodic or
 poll-triggered re-read) plus a stated policy for leases in flight when the digest changes —
@@ -1445,8 +1624,11 @@ finish the run under the old constraints, or fence it. Both are design decisions
 radius, and neither is a line in a composition ticket. **Recommendation: re-point `E4-F008` at the
 ticket that adds the refresh channel, and record the mechanism above in its register entry so the
 next reader does not have to re-derive it.** Leaving it on WRK-008 through 2b's result doc would be
-the false claim of ownership `check-finding-ownership.mjs` exists to prevent — the same call §9
-makes for `E4-F010`, in the opposite direction.
+the false claim of ownership `check-finding-ownership.mjs` exists to prevent — and because
+`finding-ownership.mjs:118` checks only that `ownerStillOpen` is a **non-empty string** (the
+`E4-F013` hole), the moment WRK-008 has a result doc this key would read as owned-and-handled while
+nothing handled it. **The result-doc step that forces the disposition is Step 11's new
+finding-disposition item** (below), which covers `E4-F008` and `E4-F009` together.
 
 ---
 
@@ -1462,7 +1644,7 @@ unwind.
 | **1** | unset the flag, restart | identical to a 2a-era boot | one restart |
 | 1b | ★ unset `AOA_WORKER_EVENT_OUTBOX_PATH`, restart | `no_event_outbox_path`, and no outbox file is opened | one restart |
 | 2 | the composition root stops passing `provider` | `no_provider` regardless of env | a host redeploy. ★ **After Sprint 2 this is depth 1 on the desktop, not depth 2** — unsetting `AOA_WORKER_SANDBOX_PROVIDER` reaches the same state with one restart, because gate 1 stopped being structural there (§0.1) |
-| 3 | revert the commit | tree returns to 2a; `E4-2`/`E4-4` back to `unwired`; `E4-1`'s `expectedReferences` back to `0`; `E4-3` unchanged | a build |
+| 3 | revert the commit | tree returns to 2a; `E4-4` back to `unwired`; `E4-1`'s and `E4-2`'s `expectedReferences` back to `0`; `E4-3` unchanged | a build |
 
 **Why the flag is a genuine rollback rather than a partial one.** Composition is the *last* thing boot
 does before signal registration, and everything it builds is constructed **inside**
@@ -1539,9 +1721,12 @@ those events are the record of work that actually ran.
   refresh channel.
 - **The startup reconciler** — §4.2, ONE named structural blocker (the second was withdrawn on a
   re-read of the frozen schema).
-- **A matchable worker hello / a `profile_snapshot` update channel** — §1.1(c), filed as `E4-F010`.
-  This slice deliberately composes the *unmatchable* production hello rather than something that
-  would make the acceptance table green.
+- **A matchable worker hello / a `profile_snapshot` update channel** — ★ **owned and delivered by
+  WRK-011 (Sprint 2.75), not out of scope for the programme; only for THIS slice's authorship.**
+  WRK-011 ships the `self/hello` refresh route, the provisioned builder and `hello-provisioning.ts`,
+  and closes `E4-F010`. This slice **consumes** them (§0.2B, Step 0): it composes the **provisioned**
+  (matchable) hello WRK-011 makes possible and wires `selfHelloRefresh` into boot. It does not author
+  the refresh route or the provisioning fold.
 - **DAT-008 slice 5.** Between 2b and slice 5 a composed daemon starts a CLI with **no credential**
   and the run fails auth. Both the distributed flag and the rollout dial are default-off, so there is
   no production exposure — but the intermediate state is real, and the result doc says so rather than

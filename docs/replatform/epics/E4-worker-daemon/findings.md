@@ -379,3 +379,40 @@ the correction, and the document keeps its history.
 **Blocks:** nothing. It is a documentation inaccuracy in a shipped ticket's design doc, not a code
 defect. `unowned` because no product ticket is its natural owner — a remediation is a one-line
 cross-reference, not work any sprint carries.
+
+## E4-F015 — The gate count is prose with no single source of truth, and the obvious checker is unsound
+
+**Status:** `open` · Severity: MED · Source: readiness-audit follow-up, 2026-08-25.
+
+The readiness audit named "nothing counts gates" as the riskiest unwritten risk and proposed a
+~20-line checker: read the `DispatchRefusalReason` union from source and fail when a document states
+a different total. **That checker is unsound as specified**, for two reasons found by reading the
+source:
+
+1. **The shipped union has FOUR members** (`no_provider`, `dispatch_disabled`,
+   `no_self_model_reader`, `no_self_model` — `packages/worker-daemon/src/lifecycle/compose-dispatch.ts:22-26`).
+   The "six gates" every doc discusses is the **post-slice-2b** model; the three extra tokens
+   (`no_worker_identity`, `no_event_outbox_path`, `no_session`) **do not exist in source yet**. A
+   checker reading the union would fail on *correct* docs that discuss the future six.
+
+2. **No single source enumerates the six.** The six-gate model conflates the composition-refusal
+   union with *runtime* conditions — a live session and an admin-set placement profile — that are
+   not composition refusals at all. There is nothing to read.
+
+So "count the gates" is genuinely prose, which is *why* it keeps being miscounted (four instances
+this programme, one of them three different numbers inside a single register entry — the E4-F011
+history above).
+
+**What IS sound, and worth its own ticket:** a declaration-based guard that pins the *shipped*
+union to an exact declared set, so the person who adds `no_session` et al. in slice 2b must update
+the declaration — at which point every doc that described "the shipped union" becomes reviewable.
+The existing unit test (`packages/worker-daemon/src/__tests__/compose-dispatch.test.ts:103-108`)
+does NOT do this: it iterates a hand-listed array, so a fifth member added to the union but not the
+array still passes. Wiring a new `check-*.mjs` also touches `guard-inventory`, `execution-census`
+and `pr.yml`, so it is not a drive-by edit.
+
+**Interim rule (no checker):** any document stating a gate count MUST label which enumeration it
+means — *shipped union* (four), *landable* (four), or *total including runtime* (six). A bare number
+is the defect. This finding is the reason that rule exists.
+
+**Blocks:** nothing today. Recorded so the miscounting has a home instead of recurring.

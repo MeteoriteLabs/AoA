@@ -73,6 +73,10 @@
     "E4-F014": {
       "status": "unowned",
       "reason": "LOW, and deliberately unowned: a documentation inaccuracy in DSK-001's shipped design doc (it names IdentityLifecycle.acquireSession() as a landed seam at DSK-001-design.md:351 and :431; grep finds that symbol in no source .ts file). Filed by WRK-010 slice-1 terrain verification, the fourth documented-fact-with-no-code this programme has found. No product ticket is the natural owner -- remediation is a one-line cross-reference, not sprint work -- and the correction is already recorded in the E4-F007 reason above. The real seam is SessionStoreDeps.renew (packages/worker-daemon/src/identity/session.ts:55). Blocks nothing."
+    },
+    "E4-F015": {
+      "status": "unowned",
+      "reason": "MED, deliberately unowned: it documents that the gate-count checker the readiness audit recommended is UNSOUND (the shipped DispatchRefusalReason union has four members, the six-gate model is post-slice-2b prose no single source enumerates), and scopes the sound alternative (a declaration-based pin of the shipped union) which needs its own ticket because wiring a new check-*.mjs touches guard-inventory + execution-census + pr.yml. No product ticket is its natural owner. The interim rule -- label which enumeration any gate count means -- lives in the finding. Blocks nothing."
     }
   }
 }
