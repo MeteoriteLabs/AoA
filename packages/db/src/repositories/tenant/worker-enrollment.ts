@@ -344,6 +344,16 @@ export function createWorkerEnrollmentRepository(tx: Db): WorkerEnrollmentReposi
       return rows.length === 1;
     },
     async refreshWorkerProfile(input) {
+      // Serialize with every other target-authority write (rotate/revoke/ratify) BEFORE the
+      // mutation, in the same target -> worker -> exclusive order those writers use, so a refresh
+      // cannot interleave with a concurrent revocation/rotation. The `expectedProfileHash` CAS
+      // below still guards two concurrent refreshes; this lock guards refresh-vs-other-authority.
+      await configurePlatformTargetAuthorityLockTimeout(tx);
+      await tx.select({ id: executionTargets.id }).from(executionTargets)
+        .where(eq(executionTargets.id, input.executionTargetId)).limit(1).for("update");
+      await tx.select({ id: workers.id }).from(workers)
+        .where(eq(workers.id, input.workerId)).limit(1).for("update");
+      await acquirePlatformTargetAuthorityExclusive(tx, input.executionTargetId);
       const rows = await tx.update(workers).set({
         profileSnapshot: input.profileSnapshot,
         profileHash: input.profileHash,

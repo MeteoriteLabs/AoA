@@ -5344,6 +5344,10 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       "packages/db/src/repositories/tenant/worker-enrollment.ts#heartbeatSharedPlatformTarget:executionTargets:lastSeenAt,updatedAt:last_seen_only",
       "packages/db/src/repositories/tenant/worker-enrollment.ts#heartbeatSharedPlatformTarget:workers:lastSeenAt,updatedAt:last_seen_only",
       "packages/db/src/repositories/tenant/worker-enrollment.ts#ratifyPlacementProfile:executionTargets:providerConstraintProfile,registeredProfile,registeredProfileHash,updatedAt:authority",
+      // WRK-011 self-hello refresh: a WORKER-row authority write. It now proves the
+      // target -> worker -> exclusive lock order inline (directOrder), so it is a reviewed
+      // authority writer, not an exempt delegate.
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#refreshWorkerProfile:workers:profileHash,profileSnapshot,updatedAt:authority",
       "packages/db/src/repositories/tenant/worker-enrollment.ts#retireBootstrapCredential:executionTargets:updatedAt,workerTokenHash:authority",
       "packages/db/src/repositories/tenant/worker-enrollment.ts#revokeTargetAuthority:executionTargets:deviceGeneration,status,updatedAt,workerTokenHash:authority",
       "packages/db/src/repositories/tenant/worker-enrollment.ts#revokeTargetAuthority:workers:revokedAt,status,updatedAt:authority",

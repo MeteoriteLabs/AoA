@@ -246,12 +246,15 @@ No HIGH survived against the deliverable. Not delegated to a plan-writing or aut
   the 5 composed-journey cases green (`AOA_RUN_WIN_INTEGRATION=1` for the integration siblings; the
   composed-journey test itself is a pure component test needing no flag).
 - **`verify` inherits the §2.0 red** (the pre-Sprint-0 timeout regression — NOT raised, NOT masked). It also
-  carries a **second, pre-existing red** that predates this step and is out of CLI-006/D2 scope:
-  `server/src/__tests__/job-leasing-contract.test.ts` "enforces an exhaustive authority-writer allowlist"
-  fails because WRK-011's `refreshWorkerProfile` (an authority writer to `workers`) is missing from that
-  contract's hardcoded `expected` allowlist (lines ≈5336-5362). Confirmed from source; CLI-007-result §7
-  reproduced it on the clean tree. Recorded here; a follow-up owns the one-line allowlist review (Sprint-2.75
-  debt, not this step's).
+  carried a **second, pre-existing red** — `server/src/__tests__/job-leasing-contract.test.ts` "enforces an
+  exhaustive authority-writer allowlist" — which this session **FIXED** (finding **E4-F017**, `resolved`).
+  WRK-011's `refreshWorkerProfile` was an authority writer to `workers` that skipped the mandated
+  target→worker→exclusive lock (not just the allowlist entry); it now proves the lock order inline (the same
+  order `lockPlatformAuthorityForMutation` uses), the reviewed allowlist entry is added, and the guard is NOT
+  weakened. Mutation-proven (M-lock: delete the exclusive acquire → the exact "must prove … exclusive"
+  violation returns); WRK-011's 8 embedded-PG integration tests stay green with the lock. After this, the ONLY
+  remaining `verify` red is the deferred §2.0 timeout. **★ Gotcha re-learned:** committing the fix BEFORE
+  mutation-testing — a `git checkout` to revert a mutant eats an uncommitted fix in the same file.
 
 ---
 

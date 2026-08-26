@@ -528,3 +528,31 @@ dated design/comment record is not silently rewritten mid-file — this finding 
 **Blocks:** nothing. A documentation inaccuracy inside shipped comments, not a code defect. Filed
 declared (a new open finding is born undeclared, and undeclared fails the ownership guard); it is
 `accepted` (LOW), the remediation being a three-line comment fix no sprint carries on its own.
+
+## E4-F017 — WRK-011's `refreshWorkerProfile` is an authority writer that skips the mandated target→worker→exclusive lock
+
+**Status:** `resolved` (Sprint 5 Step 1 follow-up, 2026-08-26) · Severity: MED · Source: CLI-006/D2 Step 1 CI diagnosis — the `job-leasing-contract.test.ts` "exhaustive authority-writer allowlist" is a REAL, deterministic red on `docs/replatform-program`, independent of the §2.0 `verify` timeout.
+
+WRK-011 landed `refreshWorkerProfile` (`packages/db/src/repositories/tenant/worker-enrollment.ts`) as an
+authority write to `workers` (`profileHash`, `profileSnapshot`, `updatedAt`), but it acquired **only** a
+`runInTenant` (RLS) context + a compare-and-set on `expectedProfileHash` — **not** the
+`target → worker → exclusive` platform-target-authority lock that `job-leasing-contract.test.ts` mandates for
+every authority writer (via `directOrder`/`delegatedOrder`). Its caller
+(`server/src/services/worker-hello-refresh.ts` `createWorkerHelloRefreshService.refresh`) does **not** acquire
+the lock either. The contract test flagged it two ways: (a) missing from the reviewed `expected` allowlist, and
+(b) `refreshWorkerProfile must prove target → worker → named exclusive authority before every mutation`.
+
+**Concurrency shape.** The CAS serializes two concurrent refreshes (the loser gets `refresh_conflict`), but
+NOT a refresh racing a concurrent target revocation/rotation/ratification — the exact defense-in-depth the
+per-target exclusive lock provides. WRK-011 §6 documented a bounded revoke-vs-refresh edge (codex-H2, refuted
+as *session dead-on-arrival*); the contract does not accept "bounded by CAS" for an authority writer.
+
+**Resolved** by adding the lock INLINE in `refreshWorkerProfile` (the `directOrder` path), in the same
+`target row FOR UPDATE → worker row FOR UPDATE → acquirePlatformTargetAuthorityExclusive` order the reviewed
+`lockPlatformAuthorityForMutation` helper uses (so no deadlock vs the other authority writers), plus the
+reviewed `expected`-allowlist entry. **Not weakened** (no exemption added). Proven: the contract test goes
+green with the lock and RED under M-lock (delete the exclusive acquire → the exact `must prove … exclusive`
+violation returns); WRK-011's 8 embedded-PG integration tests (incl. the concurrent `refresh_conflict` and the
+throwing-signer rollback) stay green with the lock; `packages/db` typechecks. Out of CLI-006/D2's own scope,
+fixed opportunistically because it reddens `verify` on its own — the ONE `verify` red besides the deferred
+§2.0 timeout.
