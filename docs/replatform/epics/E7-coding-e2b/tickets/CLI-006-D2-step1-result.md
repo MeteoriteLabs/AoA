@@ -187,22 +187,26 @@ A dedicated adversarial security reviewer (source-only) traced every hop and cou
 that completes the DISTRIBUTED journey** — never the composed loop, the fake provider, the keyed
 provider-primitive lane, or a green-by-skip lane. Step 1 does not spring the trap.
 
-**The real-E2B leg is the OPERATOR's action (a provider secret + real spend + outward-facing).** The session
-does not trigger it. `workflow_dispatch` is unavailable on this branch (the keyed workflow is absent on
-`origin/main` — verified), so the ONLY trigger is the sentinel push:
+**The keyed provider lane — DISPATCHED and GREEN on real E2B (2026-08-26).** The operator's `E2B_API_KEY` was
+in repo secrets, so this session fired the sentinel push (`.github/keyed-e2b-trigger` re-trigger #4 →
+`keyed-e2b-conformance.yml`; `workflow_dispatch` is unavailable off `main`). **Cited dispatched run
+[32995765059](https://github.com/MeteoriteLabs/AoA/actions/runs/32995765059) — `keyed-e2b: completed/success`,
+19 tests PASSED / 0 skipped** (the cases RAN — `E2B_API_KEY: ***` present + masked, so the go-book "must PASS,
+not skip" bar is met). The **CLI-006/D2 artifact-commit / patch-integrity case PASSED** on real E2B (*"stages a
+base, produces a real patch, and its declared result hash reproduces"*), alongside CLI-001 (create→execute→
+inspect-redacted→destroy→reconcile + TTL), CLI-002 (stage/mutate/read), CLI-003 (stream/cancel/timeout/
+lost-ACK), CLI-004 (cleanup reconciliation), and the managed-secret rehearsal incl. *"tenant-probe-fails: the
+provider-control credential never crosses the neutral seam"*. **No `E2B_API_KEY`/redeemed value appears in any
+log** (GitHub masks the secret; the tenant-probe case asserts the seam). This proves the **provider/adapter
+PRIMITIVES on real E2B** — the provider legs of stage/execute/stream/produce/cancel/audit.
 
-```bash
-# operator, with E2B_API_KEY already in repo secrets:
-printf '\nkeyed-e2b re-trigger (Sprint 5 Step 2): CLI-006/D2 real-E2B journey.\n' >> .github/keyed-e2b-trigger
-git commit -am "keyed-e2b: fire Sprint 5 Step 2 real-E2B journey" && git push origin docs/replatform-program
-```
-
-Capture: run id/URL; the keyed suite result (the artifact-commit case must PASS, not skip); confirmation no
-`E2B_API_KEY`/redeemed value appears in any log. **This keyed lane proves the provider/adapter PRIMITIVES on
-real E2B — it does NOT promote E7-1.** The E7-1-promoting run is the **staging/testing-instance canary
-campaign** the E7 exit gate names (`docker-compose.staging.yml` / `testing.armyofagents.org`) — an operator
-campaign with real spend, which also needs Leg B's journey-assertion wiring. **Until a dispatched run of THAT
-is cited, E7-1 stays `unwired` and the real-E2B leg is UNPROVEN.**
+**It does NOT promote E7-1.** `E7-1-coding-journey` stays **`unwired`**: the keyed lane proves provider
+primitives, NOT the DISTRIBUTED journey (create/schedule/lease/review through the control plane). The
+E7-1-promoting run is the **staging/testing-instance canary campaign** the E7 exit gate names
+(`docker-compose.staging.yml` / `testing.armyofagents.org`) — an operator campaign with real spend, which also
+needs **Leg B Part 2** (the live-fence credential resolve). **Until a dispatched run of THAT distributed
+journey on real E2B is cited, E7-1 stays `unwired`.** Honest end-state: the **provider hops are now proven on
+real E2B (run 32995765059); the full distributed journey on real E2B remains owed.**
 
 ---
 

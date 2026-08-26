@@ -637,8 +637,12 @@ loop that actually took a lease and ran a task", so **`E4-1-leases-through-proto
 critic ruled the promotion defensible, not a vacuous green). **`E7-1-coding-journey` STAYS `unwired`** —
 Step 1 uses a fake provider + a fake control plane, so it reaches no real E2B, by design.
 
-**★ Step 2 (real E2B) is the OPERATOR's, and remains OWED.** The keyed lane proves provider primitives
-on real E2B (dispatch prepared, `CLI-006-D2-step1-result.md` §6) but does NOT promote E7-1; the
+**★ Step 2 (real E2B) — the keyed PROVIDER lane is now DISPATCHED + GREEN; the DISTRIBUTED journey remains
+OWED.** With the operator's `E2B_API_KEY` in repo secrets, this session fired the sentinel and the keyed lane
+ran on real E2B — **cited run [32995765059](https://github.com/MeteoriteLabs/AoA/actions/runs/32995765059),
+19/19 PASSED / 0 skipped**, incl. the CLI-006/D2 artifact-commit case, key masked, tenant-probe seam held
+(`CLI-006-D2-step1-result.md` §6). This proves the provider/adapter primitives on real E2B but does NOT
+promote E7-1 (it never runs the distributed create/schedule/lease/review); the
 E7-1-promoting run is the **staging/testing-instance canary campaign** (real spend). **Leg B Part 1 is
 LANDED** — the composed `createPollLoop` leases a real server-minted attempt over a REAL embedded-PG control
 plane (`composed-loop-real-server.integration.test.ts`), upgrading E4-1's evidence off the in-process double;
