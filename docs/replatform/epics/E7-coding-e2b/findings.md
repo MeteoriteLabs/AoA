@@ -2,7 +2,7 @@
 
 ## E7-F001 — The canary mints no execution-secret handle, so the canary sandbox receives no provider credential
 
-**Status:** open
+**Status:** open · **Owner:** CLI-007 (`epics/E7-coding-e2b/tickets/CLI-007-design.md`)
 **Severity:** HIGH
 **Filed:** Sprint 5 (CLI-006/D2 execution), 2026-08-26, by terrain re-verification of the CLI-006 ↔ DAT-008 seam.
 

@@ -890,6 +890,13 @@ It unblocks JOB-004 through JOB-008, JOB-011 through JOB-014, and WRK-005 onward
 - **Acceptance:** MIG-008 has reconciled legacy environment leases/resources and moved provider-control authority before the rollout flag can transfer the first live execution. Create task, schedule, lease, stage, execute, stream, produce patch, review, retry, cancel, audit, and operator inspection all succeed; existing non-canary tenants remain on the legacy path.
 - **Test:** D1 full failure matrix and D2 real E2B journey.
 
+#### CLI-007 — A canary-aware credential path for the coding journey (S)
+
+- **Depends on:** CLI-006, DAT-008.
+- **Outcome:** The canary sandbox receives a real provider credential so the coding journey's execute hop can run a credentialed task. Closes finding E7-F001: the canary credential binding is four explicit nulls (for replay-stable placement digests), so the DAT-008 mint refuses on owner-authority disagreement and no handle is written — the canary CLI has no key even on real E2B. The fix is a canary-aware mint that authorizes a Company-key `provider_key` handle for a canary run whose owner authority is established without a personal `credentialKind`.
+- **Acceptance:** A canary placement mints a Company-key handle and the lease envelope carries a non-empty `secretHandles`; the placement-digest replay invariant still holds; the mint's owner-authority gate is unchanged in strength; fail-closed preserved (no owner authority ⇒ no handle, visible degrade, no key in prompt/event/log). Unblocks but does not promote E7-1 (that needs a cited dispatched real-E2B run).
+- **Test:** Unit mint/owner-authority matrix + placement-digest replay proof + embedded-PG canary placement showing a non-empty handle set; the real-E2B leg is Sprint 5's operator-dispatched journey.
+
 ### E8 — Browser automation
 
 #### BRW-001 — Browser-session job and policy extensions (M)

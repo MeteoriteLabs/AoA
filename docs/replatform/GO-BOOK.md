@@ -174,7 +174,8 @@ not, because they share this branch and cancel each other's CI.
   S2.75 WRK-011   a worker can be OFFERED work  (E4)   ── closes E4-F010
   S3   WRK-008/2b dispatch COMPOSED (not live)  (E4)   ── composes on a worker S2.75 made matchable
   S4  DAT-008/5,7 credentials reach the sandbox (E5)
-  S5  CLI-006/D2  prove ONE real journey       (E7)   ── needs S2.75 SHIPPED, not just owned
+  S5  CLI-006/D2  prove ONE real journey       (E7)   ── harness ready; journey BLOCKED by E7-F001
+  S5a CLI-007     canary gets a real credential (E7)   ── the code blocker; unblocks the S5 journey
 
   BREADTH — scale it out
   S6  MIG-005/6/7 ACTIVE, MIG-001              (E10)
@@ -1370,6 +1371,86 @@ When green (to the extent the session CAN close it):
   the exact operator step still owed if the dispatched run is not yet in hand.
 - Update GO-BOOK §3.1 and §4 Sprint 5 to what is now true — including, honestly, if the real-E2B
   leg is still pending an operator-dispatched run.
+- Commit, push, report CI honestly (verify inherits the §2.0 red; do not raise its timeout).
+
+If you find something mid-sprint that invalidates the premise, STOP and say so.
+```
+
+### Sprint 5a — CLI-007: give the canary a real credential (unblocks the journey)
+
+**The one code blocker between "harness ready" and a provable real-E2B journey.** Sprint 5
+found and filed E7-F001: the canary sandbox gets no provider credential, so the execute hop
+can't run a credentialed task even on real E2B. This ticket fixes that. It is **pure code — no
+E2B key, no dispatched run, no operator step.** Once it lands, Sprint 5's journey becomes
+runnable (that run, with your key, is the separate step that finally promotes E7-1).
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §2.0 (the CI blocker), §2 (the per-ticket process), §8 (D-1..D-5).
+2. docs/replatform/epics/E7-coding-e2b/findings.md — E7-F001, the finding this ticket owns.
+   It traces the mechanism end to end. RE-VERIFY every path:line it cites against the tree as
+   it is now — the finding was filed at tip 88c6a8b66 and the tree moves.
+3. docs/replatform/epics/E7-coding-e2b/tickets/CLI-007-design.md — the scoping doc: what this
+   ticket must NOT do (do not just set credentialKind non-null — it breaks placement-digest
+   replay; do not weaken the mint's owner-authority gate), and the shape of the fix.
+4. The DAT-008 result docs (Sprint 4) and CLI-006-design.md / CLI-006-result.md — the credential
+   path this rides on, and why the canary binding is four explicit nulls.
+
+STEP 1 IS TO WRITE THE FULL DESIGN, to the Sprint 1-3 standard (verified state at tip with
+path:line citations, architecture, fail-first TDD steps, a mutation table with DELETE-not-rewrite
+guards + a positive control first, and an acceptance table mapping every clause to a test that
+could turn RED). Overwrite CLI-007-design.md with it. Then execute.
+
+THE FIX, and its three hard constraints (all provable, all in the acceptance table):
+- A canary placement must mint a Company-key `provider_key` execution-secret handle (or an
+  explicitly reasoned equivalent) so the canary lease envelope carries a NON-EMPTY secretHandles
+  and the worker redeems a real credential in the sandbox. The Company already configures a
+  model-provider key (Decision #104); the canary rides that COMPANY authority, never a personal
+  subscription credentialKind. Establishing the canary's owner authority belongs in the preflight
+  (canary-preflight.ts), per CLI-006.
+- The PLACEMENT-DIGEST REPLAY INVARIANT MUST STILL HOLD — a canary places to the same digest
+  across attempts. Breaking it is the exact failure mode this ticket exists to avoid; prove it
+  holds with a test, and make a mutant that breaks replay turn that test red.
+- The MINT'S OWNER-AUTHORITY GATE STAYS FAIL-CLOSED AND UNCHANGED IN STRENGTH — it still refuses
+  a genuine disagreement. The canary now presents a LEGITIMATE owner authority; you do not remove
+  or loosen the check. A mutant that lets a null through must turn a test red.
+
+Binding rules:
+- Sprints 1-5 green first. Fail-first: RED for the reason written down, then implement.
+- Mutation-test every guard by DELETION, positive control first.
+- packages/worker-protocol is FROZEN. A new frozen worker-control op or a new field on a frozen
+  schema is a §8 freeze decision BEFORE any code — do not "just add a field".
+- NEVER serialize a provider key or redeemed secret into a prompt, event, protocol message, or
+  log line (Decision #104). Prove the canary key never leaves the sandbox and never reaches a
+  log — the S4 canary seeding is your tripwire; a planted leak must be caught.
+- Fail-closed is the invariant: a canary that cannot establish owner authority gets NO handle and
+  degrades visibly — it never double-executes or leaks.
+- Cite living documents (this go-book, findings registers, the manifest) by SECTION AND ID, never
+  by line. New *.test.mjs → test-execution-census in the same commit; new AOA_* switch →
+  environment-variables.md; bump the worker-daemon/server test-inventory pin from its CURRENT
+  value (read the file).
+
+BEFORE you call it done, run the ADVERSARIAL REVIEW with subagents — the step that has caught a
+real, often-HIGH defect on every ticket in this programme.
+- Independent reviewers, one per dimension changed; each reports only what it verified from source.
+- A SKEPTIC per HIGH/BLOCKING, told to REFUTE and default to "refuted" if it cannot reproduce the
+  finding from source (~3 in 4 die on inspection here).
+- A COMPLETENESS CRITIC: "does the canary now get a credential WITHOUT breaking replay or
+  weakening the gate, and does the security argument hold that the Company key never leaves the
+  sandbox and never reaches a log?"
+- Do NOT delegate to a plan-writing or auto-fixing skill.
+
+When green:
+- Run all five registers; every one must pass.
+- E7-F001 RESOLVES HERE: in the SAME commit, flip its status in
+  epics/E7-coding-e2b/findings.md AND delete its key from scripts/finding-ownership.json. Doing
+  one without the other reddens the always-on policy job.
+- Write CLI-007-result.md: what shipped; the mutation line; the replay-invariant proof; the
+  security argument; and — explicitly — that this UNBLOCKS but does NOT promote E7-1 (that still
+  needs a cited dispatched real-E2B run of the full journey).
+- Update GO-BOOK §3.1 and §4 (note that the journey is now runnable, E7-1 still pending its run).
 - Commit, push, report CI honestly (verify inherits the §2.0 red; do not raise its timeout).
 
 If you find something mid-sprint that invalidates the premise, STOP and say so.
