@@ -2,9 +2,36 @@
 
 ## E7-F001 — The canary mints no execution-secret handle, so the canary sandbox receives no provider credential
 
-**Status:** open · **Owner:** CLI-007 (`epics/E7-coding-e2b/tickets/CLI-007-design.md`)
+**Status:** resolved · **Owner:** CLI-007 (`epics/E7-coding-e2b/tickets/CLI-007-design.md`, result `CLI-007-result.md`)
 **Severity:** HIGH
 **Filed:** Sprint 5 (CLI-006/D2 execution), 2026-08-26, by terrain re-verification of the CLI-006 ↔ DAT-008 seam.
+**Correction (2026-08-26, CLI-007 adversarial review).** The original mechanism below is INCOMPLETE: it named
+only guard 4 (`owner_authority_disagreement`) as the canary's block, but a real canary refuses one gate earlier,
+at guard 2 (`executor_not_agent`). The mint gated the EXECUTOR on `executorPrincipalKind === "agent"`, yet NO
+execution source ever stamps an `"agent"` executor — the frozen executor authority (Decision #121) makes
+`task_run`/`crew_run`/`one_shot` executors `worker`/`sandbox`; `"agent"` is only ever a *requester* kind
+(`job-control.ts` `taskSourceIsAdmitted` → `{kind:"worker", id: agentId}`). So the mint had never minted for
+ANY real run — a pre-existing DAT-008 slice-1 gap on which this canary-specific finding sat. The original trace
+reached guard 4 only because it assumed an `"agent"` executor. **Both gates are the fix.**
+
+**Resolved:** Sprint 5a (CLI-007), 2026-08-26. The canary (and every real coding-agent run) now mints a Company
+`provider_key` handle. Two corrections landed together:
+1. **Guard 2 (executor gate).** `isAgentBackedExecutorKind` (`execution-secret-handle-mint.ts`) admits the real
+   agent-backed execution kinds (`worker`/`sandbox`, per Decision #121); the real coding gate is guard 3 (v1
+   adapter scope) plus the agent-binding lookup keyed on `executorPrincipalId`, so a `worker`/`sandbox` run whose
+   principal is not a v1 coding agent (browser/service/commander/system) still refuses. The mint runner's
+   binding-load gate uses the same predicate.
+2. **Guard 4 (owner authority).** The MIG-008 preflight emits the Company ownership authority
+   (`credentialAuthority: "company_api_key"`, only on `ok`), `resolveRunExecutionOwner` threads it as
+   `mintCredentialAuthority`, and the mint sources its `credentialKind` from that out-of-band authority
+   (`canary-mint-authority.ts` `mintCredentialKindFor`) — WITHOUT touching the four-null placement binding, so
+   the replay digest stays byte-identical and the owner-authority gate is unchanged in strength.
+
+Proven at embedded-PG (`job-placement.integration.test.ts` `[CLI-007]`) using the REAL executor shape
+(`executor_principal_kind = 'worker'`, `executor_principal_id` = the coding agent): the canary places to the
+same digest across attempts and mints exactly one `provider_key` handle; the no-authority control mints none
+(fail-closed). This UNBLOCKS but does NOT promote E7-1 (that still needs a cited dispatched real-E2B run of the
+full journey — go-book §4 Sprint 5).
 
 **What.** The composed canary placement path **never mints an execution-secret handle**, so the
 canary lease envelope carries `secretHandles: []`, the worker redeems nothing, and a coding CLI

@@ -47,7 +47,9 @@ export type CanonicalProviderBinding =
 export interface ExecutionSecretMintInput {
   readonly deploymentMode: string;
   readonly adapterType: string;
-  /** `jobs.executor_principal_kind` — only an agent run stages a model credential. */
+  /** `jobs.executor_principal_kind` — only an agent-owned run stages a model credential;
+   * per Decision #121 that is a `worker`/`sandbox` executor, never `agent`
+   * (see `isAgentBackedExecutorKind`). */
   readonly executorPrincipalKind: string;
   /** `companyKeyTargetForAdapter(adapterType)`; null when the adapter has no company key. */
   readonly providerKeyTarget: ProviderKeyTarget | null;
@@ -106,6 +108,27 @@ export function isActionableMintRefusal(reason: ExecutionSecretMintRefusal): boo
 }
 
 /**
+ * The executor-principal kinds that back an agent-owned run which stages a model
+ * credential (CLI-007, correcting E7-F001's guard-2 misdiagnosis).
+ *
+ * A coding-agent run does NOT execute as `executorPrincipalKind: "agent"` — the FROZEN
+ * executor authority (Decision #121, `distributed-execution-legacy-parity.json`) declares
+ * `task_run`/`crew_run`/`one_shot` executors as `worker`/`sandbox`; `"agent"` is only ever
+ * a *requester* kind (`job-control.ts` `taskSourceIsAdmitted` → `{kind:"worker", id: agentId}`).
+ * The original guard checked `=== "agent"`, so it refused EVERY real run — the mint never
+ * fired on any source. This admits the real agent-backed execution kinds and lets the REAL
+ * coding gate run downstream: guard 3 (the v1 adapter scope) plus the agent binding lookup
+ * keyed on `executorPrincipalId`. A `worker`/`sandbox` run whose principal is not a v1 coding
+ * agent (e.g. a `commander_turn` sandbox carrying a run id, a `service`/`browser` run, a
+ * `system` job) loads no binding → adapter `""` → guard 3 refuses. The legacy literal `agent`
+ * is kept admitted so the gate stays a superset of the historical assumption; no production
+ * source stamps it today.
+ */
+export function isAgentBackedExecutorKind(kind: string): boolean {
+  return kind === "agent" || kind === "worker" || kind === "sandbox";
+}
+
+/**
  * Deferral #3 — the owner check must not be tautological.
  *
  * The inherited deferral records that `credentialOwnerId` and
@@ -133,8 +156,10 @@ export function decideExecutionSecretHandle(input: ExecutionSecretMintInput): Ex
   //    hunting for a misconfiguration that does not exist.
   if (!isCloudSandboxMode(input.deploymentMode)) return refuse("not_cloud_deployment");
 
-  // 2. Only an agent run stages a model credential.
-  if (input.executorPrincipalKind !== "agent") return refuse("executor_not_agent");
+  // 2. Only an agent-owned run stages a model credential. Per Decision #121 that run
+  //    executes as `worker`/`sandbox` (never `agent`); the REAL coding gate is guard 3
+  //    plus the binding lookup, so a non-coding worker/sandbox still refuses below.
+  if (!isAgentBackedExecutorKind(input.executorPrincipalKind)) return refuse("executor_not_agent");
 
   // 3. The v1 sandboxed-coding adapter scope (`claude_local` + `codex_local`).
   //    NOTE this gate admits on the adapter's disposition bucket and does NOT read

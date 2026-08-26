@@ -3,18 +3,23 @@
 // CLI-006 (Task 1) — the credential binding a canary attempt presents to placement.
 //
 // DECISION: this resolver asserts NOTHING about which provider credential the run
-// uses. It returns the same constant for every Organization, Company, job and
-// source kind. That is not a placeholder and not a degraded fallback — it is the
-// only claim that is TRUE at this seam today, for three independent reasons:
+// uses at PLACEMENT. It returns the same constant for every Organization, Company,
+// job and source kind. That is not a placeholder and not a degraded fallback — the
+// binding is the sole credential input to the placement REPLAY digest and to target
+// ROUTING, and it must stay a stable, routing-neutral constant for three reasons:
 //
-//   1. NO CREDENTIAL IS DELIVERED TO THE CANARY. (Corrected Sprint 5, E7-F001: the
-//      original "no production path mints job_secret_handles" is now stale — DAT-008
-//      landed the writer, job-placement-transaction.ts:367, and the envelope advertises
-//      handles, job-leasing.ts:601-613, for NON-canary agent runs.) A CANARY still
-//      mints none: this binding's `credentialKind: null` trips the mint's owner-authority
-//      gate (execution-secret-handle-mint.ts:122-127, :149-151) -> owner_authority_disagreement
-//      -> no handle -> the canary sandbox gets no key. So a binding that named a
-//      credential would still be describing a delivery that does not happen.
+//   1. THE CREDENTIAL IS DELIVERED OUT OF BAND, NOT THROUGH THE BINDING (CLI-007,
+//      E7-F001). A canary now DOES mint a Company `provider_key` handle: the Company
+//      ownership authority the mint needs ("company_api_key") is established by the
+//      MIG-008 preflight and threaded to the DAT-008 mint via
+//      `PlaceJobAttemptInput.mintCredentialAuthority` (see canary-mint-authority.ts),
+//      AFTER the digest is computed and the replay early-return has fired. So the
+//      binding never has to name a credential: naming one here would change the digest
+//      and re-open routing, and the mint authority reaches the mint another way.
+//      (Historic note: before CLI-007 the four-null binding's `credentialKind: null`
+//      tripped the mint's owner-authority gate → owner_authority_disagreement → no
+//      handle; that WAS E7-F001, and it is what CLI-007 fixed without touching this
+//      constant.)
 //   2. THE INPUTS DO NOT EXIST YET. The only functions that can authorize a
 //      credential (`resolveProviderCredential`, `resolveAgentSubscriptionEnvironment`)
 //      need `provider`, `adapterType`, `agentId`, `executionTargetId`, `currentEnv`
@@ -47,8 +52,13 @@
 // `placementInputDigest`/`placementPolicyDigest` (job-placement.ts:315 → :333-335),
 // and a changed digest on retry throws `placement_already_decided`
 // (job-placement-transaction.ts:211-217) → `transfer_error` → permanent legacy
-// fallback for that run. Credential-generation freshness belongs to the preflight
-// gate, which already owns it (canary-preflight.ts:138-155).
+// fallback for that run. The canary's Company mint authority does NOT belong here for
+// that reason — it rides the out-of-band `mintCredentialAuthority` channel (CLI-007),
+// established by the preflight, which already owns credential-generation freshness
+// (canary-preflight.ts). Even a routing-neutral constant such as `"company_api_key"`
+// belongs there, not here: on the binding it would change the digest value and make
+// the mint's owner-authority cross-check assert Company authority WITHOUT the preflight
+// having verified it.
 
 import type { JobPlacementCredentialBinding } from "./job-placement.js";
 

@@ -29,6 +29,7 @@ import {
   isActionableMintRefusal,
   type ExecutionSecretMintRefusal,
 } from "./execution-secret-handle-mint.js";
+import { mintCredentialKindFor } from "./canary-mint-authority.js";
 import { logger } from "../middleware/logger.js";
 
 const SOURCE_KINDS = new Set<string>(EXECUTION_SOURCE_KINDS);
@@ -371,10 +372,19 @@ export async function placeJobAttemptTransaction(
             executorPrincipalKind: context.job.executorPrincipalKind,
             executorPrincipalId: context.job.executorPrincipalId,
             placementOwner: decision.owner,
-            // The SECOND, independently-derived owner authority (deferral #3): this
-            // comes from the job's own credential-binding resolution, not from the
-            // routed target's profile that produced `decision.owner`.
-            credentialKind: authority.credentialBinding.credentialKind,
+            // The SECOND, independently-derived owner authority (deferral #3): normally
+            // the job's own credential-binding resolution, not the routed target's
+            // profile that produced `decision.owner`. CLI-007 (E7-F001): a canary rides
+            // its preflight-ESTABLISHED Company authority (`input.mintCredentialAuthority`,
+            // "company_api_key") instead of the four-null binding, so the mint can issue a
+            // Company `provider_key` handle — WITHOUT that authority ever touching the
+            // digest (it is read here, after the decision is persisted) or the binding
+            // (unchanged, so replay stays byte-stable). Still independent of Authority A
+            // (`decision.owner`), so `ownerAuthoritiesAgree` stays a real cross-check.
+            credentialKind: mintCredentialKindFor(
+              input.mintCredentialAuthority,
+              authority.credentialBinding.credentialKind,
+            ),
             targetGeneration: decision.targetGeneration,
           });
           // The refusal reason is the whole point of computing one. Discarding it made

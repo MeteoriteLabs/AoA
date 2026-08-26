@@ -21,6 +21,7 @@ import {
   createCanaryPreflight,
   type CanaryPreflightStore,
 } from "../services/canary-preflight.js";
+import { CANARY_CREDENTIAL_AUTHORITY } from "../services/canary-mint-authority.js";
 import {
   resourceKeyForLease,
   resourceKeyForPlatformDefaultEnv,
@@ -333,5 +334,35 @@ describe("CLI-006 D2 — canary preflight (fail-closed, org-wide, recomputed)", 
     expect(new Set(calls)).toEqual(
       new Set(["listOrganizationCompanyIds", "listLeases", "platformDefaultEnv", "listRecords", "currentKeyGeneration"]),
     );
+  });
+});
+
+// CLI-007 (E7-F001) — the preflight is where the canary's Company mint authority is
+// ESTABLISHED. It already verifies the Company holds provider-control authority
+// (`currentKeyGeneration !== null`); on `ok` it now EMITS the ownership class the mint
+// rides. A refusal emits none — the authority cannot be established, so nothing
+// downstream can mint (fail-closed by SHAPE, not by a flag a caller could ignore).
+describe("CLI-007 — the preflight establishes the canary's Company mint authority", () => {
+  it("emits `credentialAuthority: company_api_key` on OK, after the provider-control-authority check passes", async () => {
+    const preflight = createCanaryPreflight({ store: cleanStore() });
+    const result = await preflight.check({ organizationId: ORG });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.credentialAuthority).toBe(CANARY_CREDENTIAL_AUTHORITY);
+    expect(result.credentialAuthority).toBe("company_api_key");
+  });
+
+  // Fail-closed by shape: the authority the mint reads only ever exists on an OK
+  // result, so a Company whose provider-control authority has NOT moved cannot leak a
+  // usable authority into the mint.
+  it("emits NO credentialAuthority when the gate refuses (provider-control authority not moved)", async () => {
+    const preflight = createCanaryPreflight({
+      store: withStore({ currentKeyGeneration: async () => null }),
+    });
+    const result = await preflight.check({ organizationId: ORG });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("credential_authority_not_moved");
+    expect((result as { credentialAuthority?: unknown }).credentialAuthority).toBeUndefined();
   });
 });

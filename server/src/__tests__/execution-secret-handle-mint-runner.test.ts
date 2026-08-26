@@ -144,6 +144,30 @@ describe("mintExecutionSecretHandleForPlacement", () => {
     expect(stub.loadAgentAdapterBinding).not.toHaveBeenCalled();
   });
 
+  // CLI-007 (E7-F001 guard-2 correction): a real coding-agent task_run is stamped
+  // `executor_principal_kind = "worker"` with the agent id in `executor_principal_id`
+  // (Decision #121). The runner must look the binding up under that real shape and mint.
+  it("mints for a coding-agent run stamped as a `worker` executor (the real shape)", async () => {
+    const { stub, inserted } = repo({ adapterType: "claude_local", adapterConfig: {} });
+    const outcome = await mintExecutionSecretHandleForPlacement(stub, {
+      ...BASE, executorPrincipalKind: "worker", executorPrincipalId: "agent-1",
+    });
+    expect(outcome).toMatchObject({ minted: true, refKind: "provider_key" });
+    expect(stub.loadAgentAdapterBinding).toHaveBeenCalledWith({ companyId: "co-1", agentId: "agent-1" });
+    expect(inserted[0]).toMatchObject({ refKind: "provider_key", refId: "provider:anthropic" });
+  });
+
+  // A worker/sandbox whose principal is NOT a coding agent (missing binding) still refuses
+  // at the v1-adapter gate — so the widened guard 2 does not open the mint to non-coding runs.
+  it("refuses a `worker` executor whose principal is not a coding agent", async () => {
+    const { stub } = repo(null); // loadAgentAdapterBinding returns null → adapter "" → guard 3
+    const outcome = await mintExecutionSecretHandleForPlacement(stub, {
+      ...BASE, executorPrincipalKind: "worker", executorPrincipalId: "not-an-agent",
+    });
+    expect(outcome).toEqual({ minted: false, reason: "adapter_not_v1_scope" });
+    expect(stub.loadAgentAdapterBinding).toHaveBeenCalledWith({ companyId: "co-1", agentId: "not-an-agent" });
+  });
+
   it("mints nothing when the agent row is missing", async () => {
     // A missing agent leaves the adapter type empty, so the v1-scope gate refuses
     // first. That is the fail-closed direction AND it is non-disclosing: the refusal

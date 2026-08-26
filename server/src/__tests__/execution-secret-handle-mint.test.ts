@@ -112,10 +112,23 @@ describe("decideExecutionSecretHandle — refusals", () => {
       .toMatchObject({ mint: true });
   });
 
-  it("refuses when the executor principal is not an agent", () => {
-    for (const kind of ["user", "system", "service", "service_instance"]) {
+  it("refuses when the executor principal does not back an agent-owned run", () => {
+    // CLI-007: browser_worker + service_instance are real EXECUTOR kinds (browser/service
+    // runs) that must never stage a model credential; user/system are non-execution kinds.
+    for (const kind of ["user", "system", "service", "service_instance", "browser_worker"]) {
       expect(decideExecutionSecretHandle(input({ executorPrincipalKind: kind })))
         .toEqual({ mint: false, reason: "executor_not_agent" });
+    }
+  });
+
+  // CLI-007 (E7-F001 guard-2 correction): a coding-agent run executes as `worker`/`sandbox`
+  // (Decision #121), NEVER as `executorPrincipalKind: "agent"`. The mint must admit those
+  // real kinds, else it refuses every real run (which is what E7-F001's guard-2 misdiagnosis
+  // masked). `agent` stays admitted as a defensive superset.
+  it("admits the real agent-backed execution kinds (worker/sandbox) and mints", () => {
+    for (const kind of ["worker", "sandbox", "agent"]) {
+      expect(decideExecutionSecretHandle(input({ executorPrincipalKind: kind })))
+        .toMatchObject({ mint: true, refKind: "provider_key" });
     }
   });
 

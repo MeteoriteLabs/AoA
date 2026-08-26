@@ -21,6 +21,7 @@ import * as resolverNamespace from "../services/execution-target-resolver.js";
 import * as placementNamespace from "../services/job-placement.js";
 import { provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
 import { runInTenant } from "../db/tenant-context.js";
+import { getDeploymentMode, setDeploymentMode } from "../config/deployment-mode.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 
 type EmbeddedPostgresInstance = {
@@ -1291,5 +1292,134 @@ integration("JOB-009 slice A schema and role boundaries", () => {
         WHERE id = ${attemptId}`,
       `${invalid.disposition}/${invalid.mode}/${invalid.eligible}`).rejects.toThrow();
     }
+  });
+
+  // ── CLI-007 (E7-F001) — the canary mints a Company provider_key handle ─────────
+  //
+  // The FOUR-NULL canary binding routes to the shared pool (managed_cloud) exactly as
+  // before, so the placement digest is byte-stable and routing is unchanged. CLI-007
+  // supplies the Company ownership authority OUT OF BAND (`mintCredentialAuthority`),
+  // so the DAT-008 mint issues a Company `provider_key` handle. Without that authority
+  // the four-null binding presents credentialKind:null → the mint refuses
+  // (owner_authority_disagreement) → no handle: the exact E7-F001 state.
+  const CANARY_AGENT = "9a000000-0000-4000-8000-0000000000c7";
+  function canaryService(binding?: {
+    credentialId: string | null;
+    credentialKind: "company_api_key" | "personal_subscription" | null;
+    executionTargetSlug: string | null;
+    pinnedTargetId: string | null;
+  }) {
+    const { app, operator } = guard();
+    const factory = (placementNamespace as Record<string, unknown>).createJobPlacementService as (
+      value: unknown,
+    ) => { place(value: unknown): Promise<Record<string, unknown>> };
+    return factory({
+      appDb: app.db,
+      operatorDb: operator.db,
+      deploymentMode: "local_trusted",
+      deploymentEnabled: true,
+      resolveOrganizationPolicy: () => ({ enabled: true, mode: "active" }),
+      resolveWorkloadPolicy: () => true,
+      // The REAL canary binding: four explicit nulls. Never company_api_key here.
+      resolveCredentialBinding: () =>
+        binding ?? { credentialId: null, credentialKind: null, executionTargetSlug: null, pinnedTargetId: null },
+    });
+  }
+  async function placeCanary(input: {
+    jobId: string;
+    attemptId: string;
+    mintCredentialAuthority?: "company_api_key";
+    binding?: Parameters<typeof canaryService>[0];
+  }) {
+    const service = canaryService(input.binding);
+    // The mint reads the PROCESS deployment mode (getDeploymentMode), independent of the
+    // placement service's mode. A canary campaign runs on cloud_auth, where the Company
+    // model-provider key is staged (Decision #104). Restore afterwards.
+    const previousMode = getDeploymentMode();
+    setDeploymentMode("cloud_auth");
+    try {
+      return await service.place({
+        organizationId: ORG_A,
+        companyId: COMPANY_A,
+        jobId: input.jobId,
+        attemptId: input.attemptId,
+        now: new Date("2026-08-10T10:00:05.000Z"),
+        maxHeartbeatAgeMs: 30_000,
+        mintCredentialAuthority: input.mintCredentialAuthority,
+      });
+    } finally {
+      setDeploymentMode(previousMode);
+    }
+  }
+
+  it("[CLI-007] mints a Company provider_key handle for a canary, replay-stable, no leaked value", async () => {
+    const { admin } = guard();
+    // A v1 coding agent with NO per-agent provider key → the mint falls back to the
+    // Company key (provider_key), which is the canary's intended credential.
+    await admin`INSERT INTO agents (id, company_id, name, adapter_type, adapter_config)
+      VALUES (${CANARY_AGENT}, ${COMPANY_A}, 'CLI-007 canary coding agent', 'claude_local', ${{}})`;
+
+    // (A8) WITH the out-of-band authority → one provider_key handle is minted.
+    const mintedJob = "98000000-0000-4000-8000-0000000000c7";
+    const mintedAttempt = "99000000-0000-4000-8000-0000000000c7";
+    await seedJob({ jobId: mintedJob, attemptId: mintedAttempt, targetClass: "managed_cloud" });
+    // The REAL executor stamping a `task_run` produces (job-control.ts taskSourceIsAdmitted):
+    // kind "worker", id = the coding agent's id. NOT "agent" — no execution source ever
+    // stamps an "agent" EXECUTOR (Decision #121). The mint must key off this real shape.
+    await admin`UPDATE jobs SET executor_principal_kind = 'worker', executor_principal_id = ${CANARY_AGENT}
+      WHERE id = ${mintedJob}`;
+    const decision = await placeCanary({
+      jobId: mintedJob,
+      attemptId: mintedAttempt,
+      mintCredentialAuthority: "company_api_key",
+    });
+    expect(decision, JSON.stringify(decision)).toMatchObject({
+      disposition: "selected",
+      targetClass: "managed_cloud",
+      leaseEligible: true,
+    });
+    const handles = await admin`SELECT ref_kind, ref_id, materialization, materialization_target, use_policy
+      FROM job_secret_handles WHERE job_id = ${mintedJob}`;
+    expect(handles.length).toBe(1);
+    expect(handles[0]).toMatchObject({
+      ref_kind: "provider_key",
+      materialization: "env",
+      use_policy: "sandbox_local_only",
+    });
+    // The handle points at the Company key by NAME (a reference), and the env target is
+    // an env var NAME. Neither is a secret value (Decision #104).
+    expect(String(handles[0].ref_id)).toMatch(/^provider:/);
+    expect(String(handles[0].materialization_target).length).toBeGreaterThan(0);
+    expect(JSON.stringify(handles[0])).not.toMatch(/sk-ant|sk-[A-Za-z0-9]{8}/);
+
+    // (A9) REPLAY: re-placing the same attempt returns the SAME decision (same digest)
+    // and does NOT mint a second handle — the placement replay invariant holds.
+    const replay = await placeCanary({
+      jobId: mintedJob,
+      attemptId: mintedAttempt,
+      mintCredentialAuthority: "company_api_key",
+    });
+    expect(replay.inputDigest).toBe(decision.inputDigest);
+    expect(replay).toEqual(decision);
+    const afterReplay = await admin`SELECT id FROM job_secret_handles WHERE job_id = ${mintedJob}`;
+    expect(afterReplay.length).toBe(1);
+  });
+
+  it("[CLI-007] mints NO handle when the canary presents no authority — the E7-F001 fail-closed state", async () => {
+    const { admin } = guard();
+    await admin`INSERT INTO agents (id, company_id, name, adapter_type, adapter_config)
+      VALUES (${"9a000000-0000-4000-8000-0000000000c8"}, ${COMPANY_A}, 'CLI-007 unauthorized canary', 'claude_local', ${{}})
+      ON CONFLICT (id) DO NOTHING`;
+    const job = "98000000-0000-4000-8000-0000000000c8";
+    const attempt = "99000000-0000-4000-8000-0000000000c8";
+    await seedJob({ jobId: job, attemptId: attempt, targetClass: "managed_cloud" });
+    await admin`UPDATE jobs SET executor_principal_kind = 'worker',
+      executor_principal_id = ${"9a000000-0000-4000-8000-0000000000c8"} WHERE id = ${job}`;
+    // Same four-null binding, but NO out-of-band authority: the mint sees credentialKind
+    // null and refuses (owner_authority_disagreement) — the delivery gap E7-F001 filed.
+    const decision = await placeCanary({ jobId: job, attemptId: attempt });
+    expect(decision).toMatchObject({ disposition: "selected", leaseEligible: true });
+    const handles = await admin`SELECT id FROM job_secret_handles WHERE job_id = ${job}`;
+    expect(handles.length).toBe(0);
   });
 });

@@ -45,12 +45,6 @@
     "E4-F016": {
       "status": "accepted",
       "reason": "LOW, documentation-only: three desktop-hello comments (desktop-hello.ts:28, :145, and the repeating comment in desktop-hello.test.ts) assert the enrolled all-zero capacity is byte-stability decoration the matcher overwrites, i.e. not a safety property. True of evaluateStaticLeaseEligibility (NEUTRAL_LEASE_MATCHER_CAPACITY, job-lease-eligibility.ts:213) but FALSE of the poll path: WRK-011 s0(d) proved the stored capacity is a hard Math.min clamp at job-leasing.ts:566, so zero stored capacity empties the admissible workload list before the static matcher. WRK-011 corrects the CODE the comments describe (a provisioned refresh writes a real capacity); a dated comment record is not silently rewritten mid-file, so this is the correction. Blocks nothing; remediation is a three-line comment fix no sprint carries."
-    },
-    "E7-F001": {
-      "status": "owned",
-      "ticket": "CLI-007",
-      "ownerStillOpen": "CLI-007 has a scoping design and no result doc. It closes when a canary placement mints a Company-key provider_key handle (non-empty secretHandles) without breaking the placement-digest replay invariant or weakening the mint's owner-authority gate.",
-      "reason": "The ownership call E7-F001 was awaiting is made: CLI-007 (E7 epic) owns the canary-aware credential path. The finding is architectural \u2014 enriching the four-null canary binding with a non-null credentialKind is explicitly forbidden by CLI-006 (re-opens owner routing, breaks digest replay), so the fix is a canary-aware mint riding the Company key, which is a decision with a blast radius and its own ticket rather than a line in the D2 lane."
     }
   }
 }

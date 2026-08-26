@@ -41,6 +41,7 @@ import {
   type LegacyLeaseInput,
   type ReconciliationRecord,
 } from "./legacy-resource-reconciliation.js";
+import { CANARY_CREDENTIAL_AUTHORITY } from "./canary-mint-authority.js";
 
 /**
  * The READ-ONLY slice of MIG-008 state this gate needs. It deliberately excludes
@@ -72,7 +73,18 @@ export type CanaryPreflightRefusalReason =
   | "preflight_error";
 
 export type CanaryPreflightResult =
-  | { readonly ok: true; readonly companyIds: readonly string[] }
+  | {
+      readonly ok: true;
+      readonly companyIds: readonly string[];
+      /**
+       * CLI-007 (E7-F001) — the Company ownership authority a canary rides at the DAT-008
+       * mint, EMITTED here because this is where it is verified (`currentKeyGeneration`
+       * moved, below). Present ONLY on `ok`; a refusal carries none, so a canary whose
+       * provider-control authority has not moved cannot present a usable authority to the
+       * mint (fail-closed by shape). See `canary-mint-authority.ts`.
+       */
+      readonly credentialAuthority: typeof CANARY_CREDENTIAL_AUTHORITY;
+    }
   | {
       readonly ok: false;
       readonly reason: CanaryPreflightRefusalReason;
@@ -173,7 +185,9 @@ export function createCanaryPreflight(deps: { store: CanaryPreflightStore }): Ca
           }
         }
 
-        return { ok: true, companyIds };
+        // Every Company under the Organization has closed reconciliation at a current
+        // provider-control key generation — so the canary rides the Company key.
+        return { ok: true, companyIds, credentialAuthority: CANARY_CREDENTIAL_AUTHORITY };
       } catch (error) {
         // Fail closed on unreadability — an unreadable gate is a closed gate.
         return refuse(

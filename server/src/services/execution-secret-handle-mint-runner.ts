@@ -17,6 +17,7 @@ import { getDeploymentMode } from "../config/deployment-mode.js";
 import { canonicalizeBinding, companyKeyTargetForAdapter } from "./secrets.js";
 import {
   decideExecutionSecretHandle,
+  isAgentBackedExecutorKind,
   type CanonicalProviderBinding,
   type ExecutionSecretMintDecision,
 } from "./execution-secret-handle-mint.js";
@@ -100,8 +101,11 @@ export async function mintExecutionSecretHandleForPlacement(
 
   // The agent lookup is deliberately AFTER nothing and BEFORE the decision, but the
   // decision re-checks the executor kind itself: this runner must not become a second
-  // place where "is this an agent run?" is answered.
-  const agent = input.executorPrincipalKind === "agent"
+  // place where "is this an agent run?" is answered. An agent-owned coding run executes
+  // as `worker`/`sandbox` (Decision #121, never `agent`), and its `executorPrincipalId`
+  // IS the agent id (`taskSourceIsAdmitted` → `{kind:"worker", id: agentId}`); so we load
+  // the binding for those kinds too and let the load result + guard 3 decide coding-ness.
+  const agent = isAgentBackedExecutorKind(input.executorPrincipalKind)
     ? await repo.loadAgentAdapterBinding({ companyId: input.companyId, agentId: input.executorPrincipalId })
     : null;
 

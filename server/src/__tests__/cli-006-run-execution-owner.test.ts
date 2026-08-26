@@ -42,7 +42,7 @@ const input = {
 function deps(overrides: Partial<RunExecutionOwnerDeps> = {}): RunExecutionOwnerDeps {
   return {
     resolveRunRolloutState: () => "canary",
-    preflight: { check: async () => ({ ok: true, companyIds: [COMPANY] }) },
+    preflight: { check: async () => ({ ok: true, companyIds: [COMPANY], credentialAuthority: "company_api_key" }) },
     convert: {
       convertRunToJob: async () => ({
         converted: true,
@@ -64,6 +64,38 @@ describe("CLI-006 D3 — resolveRunExecutionOwner (one decision, fail-safe to le
     if (result.owner !== "distributed") throw new Error("unreachable");
     expect(result.jobId).toBe(JOB);
     expect(result.attemptId).toBe(ATTEMPT);
+  });
+
+  // CLI-007 (E7-F001): the preflight-established Company mint authority is THREADED to
+  // placement out of band, so the DAT-008 mint can issue a Company provider_key handle
+  // for the canary. It is never derived here and never touches the placement digest.
+  it("threads the preflight's credentialAuthority to placement as mintCredentialAuthority", async () => {
+    const place = vi.fn(async () => ({ disposition: "selected", leaseEligible: true }));
+    const result = await createRunExecutionOwnerResolver(
+      deps({ placement: { place } }),
+    ).resolve(input);
+    expect(result.owner).toBe("distributed");
+    expect(place.mock.calls[0][0]).toMatchObject({ mintCredentialAuthority: "company_api_key" });
+  });
+
+  // Fail-closed / non-canary isolation: a refused preflight never places, so no mint
+  // authority is ever threaded behind a gate that did not open.
+  it("threads NO mint authority when the preflight refuses (nothing places)", async () => {
+    const place = vi.fn();
+    await createRunExecutionOwnerResolver(
+      deps({
+        preflight: {
+          check: async () => ({
+            ok: false,
+            reason: "credential_authority_not_moved",
+            companyId: COMPANY,
+            detail: "no key generation",
+          }),
+        },
+        placement: { place },
+      }),
+    ).resolve(input);
+    expect(place).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -208,7 +240,7 @@ describe("CLI-006 D3 — resolveRunExecutionOwner (one decision, fail-safe to le
         preflight: {
           check: async () => {
             order.push("preflight");
-            return { ok: true, companyIds: [COMPANY] };
+            return { ok: true, companyIds: [COMPANY], credentialAuthority: "company_api_key" };
           },
         },
         convert: {

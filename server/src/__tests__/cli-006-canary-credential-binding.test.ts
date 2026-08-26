@@ -1,11 +1,13 @@
 // CLI-006 (Task 1) — the canary credential binding asserts nothing, on purpose.
 //
-// These tests exist to stop a future edit from "enriching" the binding. Every
-// field is null because that is the only claim TRUE at this seam: the lease
-// envelope ships `secretHandles: []` (job-leasing.ts:349) and no production path
-// mints `job_secret_handles`, so a distributed canary receives no provider
-// credential at all. A binding naming one would describe a delivery that does not
-// happen.
+// These tests exist to stop a future edit from "enriching" the binding — they are the
+// REPLAY + ROUTING guard for CLI-007 (E7-F001). The canary DOES now receive a Company
+// provider_key credential, but it is delivered OUT OF BAND (the preflight-established
+// `mintCredentialAuthority`, see canary-mint-authority.ts), never through this binding.
+// Every field must stay null because the binding is the sole credential input to the
+// placement replay digest AND to target routing: a non-null value here would change the
+// digest value (breaking replay against already-placed attempts) and/or re-open owner
+// routing. So enriching it is exactly the forbidden change CLI-007 was scoped to avoid.
 //
 // The safety argument is structural, not a predicate: every job hardcodes
 // `requestedTarget: null` (job-submission.ts:134-138), so with all four fields

@@ -47,24 +47,37 @@ to the DAT-008 mint call as `credentialKind: authority.credentialBinding.credent
 
 The mint (`execution-secret-handle-mint.ts:129-181`) decides in order:
 
-| # | Guard | Canary coding run | Source |
+| # | Guard | Real canary coding run | Source |
 |---|---|---|---|
 | 1 | `isCloudSandboxMode(deploymentMode)` | **pass** (`cloud_auth`) | `execution-secret-handle-mint.ts:134`; `sandbox-coding-disposition.ts:138-140` |
-| 2 | `executorPrincipalKind === "agent"` | **pass** (task_run → coding agent; `job-submission.ts:284`) | `:137` |
-| 3 | `gateCodingAdapterDispatch(adapterType).admitted` | **pass** (`claude_local`/`codex_local` are `v1`) | `:142-144`; `sandbox-coding-disposition.ts:48-51,169-186` |
+| 2 | executor gate | **REFUSE (original)** — a `task_run` is stamped executor `"worker"`, not `"agent"` | `:137`; `job-control.ts` `taskSourceIsAdmitted:1505`; Decision #121 |
+| 3 | `gateCodingAdapterDispatch(adapterType).admitted` | would pass (`claude_local`/`codex_local` are `v1`) | `:142-144`; `sandbox-coding-disposition.ts:48-51,169-186` |
 | 4 | `ownerAuthoritiesAgree(placementOwner, credentialKind)` | **REFUSE — `credentialKind === null`** | `:149-151`; `ownerAuthoritiesAgree :122-127` |
 | 5 | `placementOwner === "owner_desktop"` | would pass (`managed_cloud`) | `:152` |
 | 6 | `providerKeyTarget` non-null | would pass (`companyKeyTargetForAdapter` → `provider:anthropic`) | `:157`; `secrets.ts:254-262` |
 | 7 | provider binding split | would mint **`provider_key`** (canary agent sets no per-agent key) | `:159-180`; `mint-runner.ts:104-121` |
 
-**The sole block is guard 4: `credentialKind: null` makes `ownerAuthoritiesAgree` return `false`
-(`:123`, the null arm), so the mint refuses `owner_authority_disagreement` (`:149-151`).** Guards 5-7
-are already satisfied for a canary coding run — the mint has a complete Company-key `provider_key` path
-(`:173-180`), it is simply never reached.
+**★ CORRECTION (CLI-007 adversarial review — the review caught a misdiagnosis in the E7-F001 filing and in
+an earlier draft of this doc).** There are **TWO** blocks, not one, and guard 2 fires FIRST:
 
-`owner_authority_disagreement` is an **actionable** refusal (`isActionableMintRefusal`, `:104-106`), so a
-canary placement also emits `job.execution_secret_mint.refused` (`job-placement-transaction.ts:385-393`)
-— a "should be impossible" owner-disagreement warning firing as the *steady state* of every canary.
+- **Guard 2 (executor gate).** The original mint refused unless `executorPrincipalKind === "agent"`, but NO
+  execution source ever stamps an `"agent"` EXECUTOR: the frozen executor authority (Decision #121,
+  `distributed-execution-legacy-parity.json`) makes `task_run`/`crew_run`/`one_shot` executors `worker`/`sandbox`
+  (`job-control.ts` `taskSourceIsAdmitted:1505` → `{kind:"worker", id: agentId}`); `"agent"` is only ever a
+  *requester* kind. So a real canary refuses at guard 2 and never reaches guard 4 — and this is a **pre-existing
+  DAT-008 slice-1 gap**: the mint had never minted for ANY real run of any source. (An earlier draft of this
+  table said guard 2 "passes … task_run → coding agent" and cited `job-submission.ts:284` — the very line that
+  stamps `"worker"`. That was the inverted claim.)
+- **Guard 4 (owner authority).** Once guard 2 admits, the four-null binding's `credentialKind: null` makes
+  `ownerAuthoritiesAgree` return `false` (`:123`, the null arm) → refuse `owner_authority_disagreement`
+  (`:149-151`) — the canary-specific block E7-F001 named.
+
+**CLI-007 fixes BOTH** (§2 and §2b). Guards 3/5/6/7 are already satisfied for a canary coding run — the mint
+has a complete Company-key `provider_key` path (`:173-180`); it was simply unreachable behind two gates.
+
+`owner_authority_disagreement` is an **actionable** refusal (`isActionableMintRefusal`, `:104-106`); before the
+fix a canary that got PAST guard 2 would emit `job.execution_secret_mint.refused`
+(`job-placement-transaction.ts:385-393`).
 
 `placementOwner` (guard 4's Authority A) is `decision.owner = selected.registry.targetClass`
 (`job-placement.ts:653`). For a canary the four-null binding routes to the shared pool
@@ -195,6 +208,38 @@ invariant `"company_api_key"`, never `"personal_subscription"`.
 
 Plus the resolution bookkeeping in §10.
 
+### 2b. The second fix — the executor gate (guard 2), added after the adversarial review
+
+The adversarial-review composition pass (and a refute-first skeptic that could not kill it) found that a real
+canary never reaches guard 4: it refuses at guard 2 (`executor_not_agent`) because the mint gated the EXECUTOR on
+`executorPrincipalKind === "agent"`, a value no execution source ever produces (Decision #121). This is a
+pre-existing DAT-008 slice-1 gap; the guard-4 fix alone is dead code on a real run. The scope was expanded (with
+sign-off) to fix it:
+
+- `server/src/services/execution-secret-handle-mint.ts` — new pure predicate `isAgentBackedExecutorKind(kind)` =
+  `kind ∈ {"worker","sandbox","agent"}` (the real agent-backed coding execution kinds per Decision #121; `"agent"`
+  kept as a defensive superset). Guard 2 becomes `if (!isAgentBackedExecutorKind(...)) return refuse("executor_not_agent")`.
+- `server/src/services/execution-secret-handle-mint-runner.ts` — the agent-binding load gate uses the same
+  predicate, and `executorPrincipalId` is the agent id for those kinds (`taskSourceIsAdmitted` →
+  `{kind:"worker", id: agentId}`).
+
+**Why this is safe (does not open the mint to non-coding runs):** the REAL coding gate is guard 3
+(`gateCodingAdapterDispatch` admits only `claude_local`/`codex_local`) **plus** the binding lookup. A
+`worker`/`sandbox` run whose `executorPrincipalId` is not a v1 coding agent — a `commander_turn` sandbox carrying a
+run id, a `service`/`browser` run, a `system` job — loads no binding → adapter `""` → guard 3 refuses. Existing
+mint refusals for `user`/`system`/`service`/`service_instance`/`browser_worker` are preserved. **Blast radius,
+measured:** the mint only runs on a `selected/active/lease-eligible` placement inside `placeJobAttemptTransaction`,
+and the ONLY production composition of that path is the canary `ownerResolver` (`index.ts:1170/1193`;
+`placeJobAttempt` has no production caller). So today the widened gate takes effect **only for canary runs** — the
+exact target — and generalizes correctly if/when a non-canary distributed placement is composed (the DAT-008 mint
+finally firing for real coding runs is its stated purpose).
+
+**Proof:** the embedded-PG `[CLI-007]` cases were switched from a manufactured `executor_principal_kind = 'agent'`
+to the REAL `'worker'` + the coding agent id — RED before this fix (guard 2 refuses → zero handles), GREEN after.
+Pure-decision tests admit `worker`/`sandbox` and refuse `browser_worker`; a runner test mints for a `worker`
+executor and refuses a `worker` with no coding binding. The predicate is mutation-proven (positive control +
+revert-to-`"agent"`-only turns the real-kind tests RED).
+
 ---
 
 ## 3. What this deliberately does NOT do, and one doc-vs-disk correction
@@ -288,8 +333,9 @@ All unit steps run on Windows in `C:\e3` (`cd server && npx vitest run <file>`).
    the canary case and the stored-handle→`toSecretHandleRefs` ref; assert neither contains a secret *value*
    (only `secretName`/env-var name/handleId), and that `refKind === "provider_key"`. RED before wiring only if
    it depends on the seam; otherwise it is a standing security assertion. GREEN.
-5. **RED — integration round-trip (A8/A9/A10).** In a focused embedded-PG test
-   (`cli-007-canary-mint.integration.test.ts` or an added case in `job-placement.integration.test.ts`): seed a
+5. **RED — integration round-trip (A8/A9/A10).** As added `[CLI-007]` cases in
+   `job-placement.integration.test.ts` (embedded-PG, reusing its seeded platform target/worker + tenant
+   provisioning): seed a
    canary Organization/Company (reconciliation closed + `currentKeyGeneration` set), a `pooled_gvisor` target
    + enrolled worker, a `claude_local` agent + a queued agent job, then place with
    `mintCredentialAuthority:"company_api_key"`. Assert (A8) exactly one `job_secret_handles` row
@@ -335,7 +381,7 @@ and showing the suite then fails.
 | A4 | Minted handle + envelope carry only references, never a value | `cli-007-canary-credential.test.ts` |
 | A6 | Binding stays four nulls (replay + routing) | `cli-006-canary-credential-binding.test.ts` (existing; mutation M-REPLAY) |
 | A7 | Gate still refuses null/disagreement (unchanged strength) | `execution-secret-handle-mint.test.ts` (existing; mutation M-GATE) |
-| A8 | A canary placement mints one `provider_key` handle; envelope `secretHandles` non-empty | `cli-007-canary-mint.integration.test.ts` (embedded-PG) |
+| A8 | A canary placement mints one `provider_key` handle; envelope `secretHandles` non-empty | `job-placement.integration.test.ts` `[CLI-007]` (embedded-PG) |
 | A9 | Replay: place twice → identical `placementInputDigest`, exactly one handle | same integration test |
 | A10 | No changed server path logs a value; canary `mint.refused` warning stops | integration + assertion on the refusal-warning path |
 

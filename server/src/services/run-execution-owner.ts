@@ -30,6 +30,7 @@ import type { SubmitJobSource } from "@armyofagents/shared";
 import type { BridgeActor } from "./job-admission-bridge.js";
 import type { CanaryPreflight } from "./canary-preflight.js";
 import type { JobConvertOrchestrator } from "./job-convert-orchestrator.js";
+import type { JobPlacementCredentialBinding } from "./job-placement.js";
 import type { RunRolloutState } from "../config/distributed-execution-rollout-source.js";
 
 /** The minimal placement surface this decision needs (E3-owned service, injected). */
@@ -39,6 +40,13 @@ export interface RunExecutionPlacement {
     attemptId: string;
     organizationId: string;
     companyId: string;
+    /**
+     * CLI-007 (E7-F001) — the canary's preflight-established Company ownership authority
+     * for the DAT-008 mint, threaded out of band from the placement credential binding so
+     * it never enters the replay digest or target routing. Omitted for every non-canary
+     * run, where the mint sources `credentialKind` from the binding exactly as before.
+     */
+    mintCredentialAuthority?: JobPlacementCredentialBinding["credentialKind"];
   }): Promise<{ disposition: string; leaseEligible?: boolean }>;
 }
 
@@ -261,6 +269,10 @@ export function createRunExecutionOwnerResolver(
           attemptId,
           organizationId,
           companyId: actor.companyId,
+          // CLI-007: the authority the preflight ESTABLISHED (step 2) rides to the mint
+          // here. `gate` is the ok variant by this point, so it always carries it; a
+          // refused gate returned legacy above and never reaches placement.
+          mintCredentialAuthority: gate.credentialAuthority,
         });
         if (decision.disposition !== "selected" || decision.leaseEligible !== true) {
           // The run goes legacy, so the slot this convert claimed must go back — otherwise the

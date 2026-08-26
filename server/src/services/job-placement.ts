@@ -374,6 +374,14 @@ export interface PlaceJobAttemptInput {
   maxHeartbeatAgeMs: number;
   /** @deprecated ignored: rollout authority is resolved by the server service. */
   rollout?: DecideJobPlacementInput["rollout"];
+  /**
+   * CLI-007 (E7-F001) — an out-of-band Company ownership authority for the DAT-008 mint
+   * only (the canary path). It is NOT part of the credential binding, so it never enters
+   * `authorityFacts` / the placement digest and never affects target routing; it is
+   * consumed solely at the mint call, after the decision is persisted. Omitted for every
+   * non-canary run → the mint sources `credentialKind` from the binding, unchanged.
+   */
+  mintCredentialAuthority?: JobPlacementCredentialBinding["credentialKind"];
 }
 
 export interface JobPlacementServiceInput extends Omit<PlaceJobAttemptInput, "appDb" | "operatorDb" | "rollout"> {}
