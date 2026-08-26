@@ -171,5 +171,22 @@ commit; the fixes are themselves tested.
 (3 tests, run on Windows with `AOA_RUN_WIN_INTEGRATION=1`) green. All five registers + worker
 path-parity (4 pairs, now incl. the descriptor cross-check) + test-inventory (146) green.
 
-<!-- CI: filled after push -->
+**CI — PR run `32942379969`, SHA `39dc8c293`.** Every job green **except `verify`**, which inherits
+the pre-Sprint-4 red documented in §2.0 (a `verify`-timeout regression that predates Sprint 0 — the
+bisect is not this sprint's work, and its timeout was NOT raised to mask it):
+
+| Job | | Job | |
+|---|---|---|---|
+| `changes` | ✅ | `e2e` | ✅ |
+| `policy` | ✅ | `e2e-pgvector` | ✅ |
+| `brand-check` | ✅ (no undocumented `AOA_*`) | `migrations` | ✅ |
+| `lint` | ✅ | `browser` | ✅ |
+| `distributed-contract` | ✅ | `worker-protocol-contract-bytes` (ubuntu + windows) | ✅ (frozen wire untouched) |
+| `verify` | ⏱ inherits the §2.0 red | `ci-required` | red *because* `verify` is required |
+
+`worker-protocol-contract-bytes` green on both platforms confirms "no protocol change" is verified,
+not asserted. The two new unit files run inside `verify` on Linux; because `verify` times out
+(§2.0), their Linux CI pass is not observable there — they are proven locally (Windows + embedded-PG
+integration with `AOA_RUN_WIN_INTEGRATION=1`), and the `policy` green proves every register + the
+path/descriptor parity guard pass in CI.
 
