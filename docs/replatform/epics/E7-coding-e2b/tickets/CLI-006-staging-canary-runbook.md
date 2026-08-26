@@ -28,9 +28,10 @@ assumed.
 `docker-compose.staging.yml` is a **deployment-INTENT manifest**, render-checked only
 (`scripts/check-staging-manifest.mjs`, `tests/d1/e6f-12-staging-render.test.mjs`); `docs/deploy/staging.md`
 § (closing) explicitly **defers real multi-host / external-store bring-up to "the deploy pipeline
-(`scripts/deploy/*`) / a REL ticket."** `.github/workflows/deploy-testing.yml` stands up the single-node
-`cloud_auth` **app** at `testing.armyofagents.org` (server + one Postgres), **NOT** the two-control-plane
-/ four-worker / adapter-manager distributed fleet this journey needs.
+(`scripts/deploy/*`) / a REL ticket."** `.github/workflows/deploy-testing.yml` stands up a single-node
+**app** at `testing.armyofagents.org` (server + one Postgres; default `deployment_mode: authenticated`,
+`cloud_auth` selectable), **NOT** the two-control-plane / four-worker / adapter-manager distributed fleet
+this journey needs.
 
 **Consequence:** arming the canary is an operator **infrastructure** step (stand up the fleet against
 external DB/S3/realtime), not merely a config flip. This runbook gives the config + campaign steps; the
@@ -72,8 +73,9 @@ Two env vars, BOTH required (the ENABLED flag is checked **first**, so the map a
   {"organizations":{"<CANARY_ORG_ID>":{"mode":"canary","workloads":["batch"]}}}
   ```
 
-  `"batch"` is the coding workload (`run-execution-owner.ts` passes `workloadType:"batch"`; all four
-  cutover sinks resolve to `batch`). `["*"]` also works. **Rollback = delete the key or set
+  `"batch"` is the coding workload (the heartbeat seam passes `HEARTBEAT_TASK_RUN_WORKLOAD_TYPE = "batch"`
+  — `heartbeat-distributed-rollout.ts` — into `resolveRunRolloutState`; all four cutover sinks resolve to
+  `batch`). `["*"]` also works. **Rollback = delete the key or set
   `"active"`** — no code change. (Note the forward-compat trap: an OLD binary predating CLI-006 throws
   on `"canary"` at startup, or on a live edit fails CLOSED to legacy — so roll back by removing the key,
   never by downgrading the binary.)
