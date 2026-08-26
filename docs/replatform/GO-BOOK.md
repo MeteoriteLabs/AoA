@@ -1323,14 +1323,31 @@ Read first, in this order:
    its triggers (`workflow_dispatch` + a sentinel-file push path) and that it is NOT in
    `ci-required`.
 
-THE JOURNEY TO PROVE (one org's coding task, on real E2B):
+★ STATE AT SPRINT START (post-CLI-007). E7-F001 is RESOLVED — Sprint 5a (CLI-007) fixed the
+mint's guard 2 AND guard 4, so a real canary now mints a Company `provider_key` handle and the
+worker redeems a real credential in the sandbox. The last CODE blocker is gone; the journey is
+runnable. Re-verify that at Step 0 (E7-F001 should be `resolved` in the findings register and
+absent from the ownership manifest) — if it is still open you are out of sequence, STOP.
+
+THE JOURNEY TO PROVE (one org's coding task):
 create → schedule → lease → stage → execute → stream → produce → review → cancel → audit.
 
-STEP 1: if CLI-006 already delivers the harness, WRITE A SHORT EXECUTION PLAN (not a full
-design) naming each hop, the evidence each produces, and the single dispatched run that ties
-them together. If a hop has no wiring yet, that hop is the work — plan and build it fail-first
-to the Sprint 1–3 standard. Where a hop is only exercised by the keyed lane, say so; a local
-mock is NOT evidence for it.
+★ DO IT IN TWO STEPS — cheap first, then spend the operator's key. This ordering exists because
+CLI-007 found a gap (the mint never minted for a real run) that only surfaced on the REAL
+executor path, not on a manufactured one. Prove it free before spending real E2B.
+
+STEP 1 — THE FULL JOURNEY ON THE D1 FAKE-PROVIDER LANE, end to end, no key, no spend. Now that
+the canary mints a credential, drive create→…→audit against the D1 fake provider and prove every
+hop with real evidence (not a per-hop mock). This is itself a milestone: it is what lets E4-1
+(leases-through-protocol) and any other clause be promoted ON EVIDENCE — a composed loop that
+actually took a lease and ran a task. If a hop is still unwired, that hop is the work — build it
+fail-first to the Sprint 1–3 standard.
+
+STEP 2 — THE REAL-E2B DISPATCH (operator-owned). Only once Step 1 is green end to end, prepare
+the dispatch (the workflow input, the sentinel file, the exact `gh workflow run
+keyed-e2b-conformance.yml` command) and hand it to the operator, OR trigger it yourself if a run
+is available — triggering does not require the key, the run reads it from repo secrets. A local
+mock is NOT evidence for a keyed hop.
 
 ★★★ THE BOUNDARY — WHAT THE SESSION DOES vs WHAT THE OPERATOR DOES. State this in the plan and
 hold to it:
