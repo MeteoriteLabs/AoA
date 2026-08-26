@@ -1174,6 +1174,86 @@ Budget time to re-baseline the D1 lane. If you find something that invalidates t
 premise, STOP and say so.
 ```
 
+### Sprint 4 — DAT-008 slices 5 and 7: credentials reach the sandbox
+
+**First of the scope-only sprints. Step 1 is WRITE THE PLAN(S).** The generic 4–9 template
+below still applies; this card fills in the E5 specifics so you do not have to.
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §2.0 (the CI blocker), §2 (the per-ticket process),
+   §4 "Sprint 4", §5 (debt carried deliberately), and §8 (settled decisions D-1..D-5).
+2. The DAT-008 PARENT design in docs/replatform/epics/E5-.../ (find it under the E5 epic;
+   the server half — handle minted at placement, advertised in the lease envelope, resolve
+   route live — is already done; this sprint is the WORKER half).
+3. The result docs of Sprints 1, 2, 2.5, 2.75 and 3 — the record of what actually shipped.
+   In particular WRK-008-slice-2b-result.md: it composed createPollLoop + createSupervisor,
+   which is what slice 7 (warm resume) would attach to IF it exists.
+
+STEP 1 IS TO WRITE TWO PER-SLICE DESIGN DOCS, to the same standard as the Sprint 1-3 plans
+(verified state at tip with path:line citations, architecture, fail-first TDD steps, a
+mutation table with DELETE-not-rewrite guards + a positive control first, and an acceptance
+table mapping every clause to a test that could turn RED). Save them under the E5 epic's
+tickets/ directory, each with a matching "#### <ID>" node in program-design.md (or
+check-ticket-graph-coverage.mjs reds). Then execute them.
+
+TWO TERRAIN FACTS TO RE-VERIFY AT STEP 0 — the scope note is written from a pre-Sprint-3
+tree and Sprint 3 changed the composition:
+- SLICE 5 (worker redemption + env synthesis + canary seeding): worker-daemon still has ZERO
+  runtime references to `secretHandle` (verified post-S3) — the gap is real, this is the work.
+  And `redactionCanaries` is now a REQUIRED field on the fence-close proxy
+  (`lease/fence-close-proxy.ts:141`), no longer `?? []`. Confirm whether it is threaded
+  PER-RUN or still PER-SUPERVISOR before seeding anything — slice 5 must make it per-run.
+- SLICE 7 (warm-resume re-resolution): the scope note says "provider.restore has no
+  production caller." That may have changed — `supervisor/effect-authority.ts:96` calls
+  `this.#provider.restore(...)`, and Sprint 3 composed the supervisor. CHECK whether that path
+  is now reachable from a production caller. If warm resume STILL has no production mechanism
+  (no lease pause/resume), slice 7 has nothing to attach to — SAY SO and defer it rather than
+  building against an absent mechanism. Do not invent the mechanism to give slice 7 a target.
+
+Binding rules:
+- Sprint 3 green first. Fail-first: RED for the reason written down, then implement.
+- Mutation-test every guard by DELETION, positive control first. A credential-redemption path
+  that fails OPEN is the worst defect class here — a denied redemption must fail CLOSED, and a
+  mutant that deletes the fail-closed branch must turn a test red.
+- packages/worker-protocol is FROZEN. A new frozen worker-control operation or a new field on
+  an existing frozen schema is a §8 freeze decision BEFORE any code — do not "just add a field".
+- Never serialize a provider key or a redeemed secret into a prompt, a protocol message, an
+  event, or a log line (Decision #104 / the redaction discipline). The canary seeding exists to
+  catch exactly that; prove it catches a planted leak.
+- Cite living documents (this go-book, findings registers, the manifest) by SECTION AND ID,
+  never by line.
+- New *.test.mjs files → add to scripts/test-execution-census.json in the same commit. New
+  AOA_* switch → document it in docs/deploy/environment-variables.md (brand-check guard 9 is
+  blind to the ENV-map convention). Bump the worker-daemon test-inventory pin from its CURRENT
+  value (read the file — it moves every sprint).
+
+BEFORE you call it done, run an ADVERSARIAL REVIEW with subagents — the step that has caught a
+real, often-HIGH defect on every ticket in this programme.
+- Independent reviewers, one per dimension you changed; each reports only what it verified by
+  opening source. Zero findings is a respected answer.
+- For every HIGH/BLOCKING, a SKEPTIC told to REFUTE it, defaulting to "refuted" if it cannot
+  reproduce the finding from source — ~3 in 4 die on inspection here.
+- Because each deliverable includes a PLAN, add a COMPLETENESS CRITIC: "do NOT re-review the
+  plan; ask what is MISSING, and whether what this sprint BUILDS (a redeemed handle reaching a
+  sandbox) matches what Sprint 5's journey CONSUMES, by name, signature and package."
+- Do NOT delegate to a plan-writing or auto-fixing skill — the house format and the
+  DELETE-the-guard mutation discipline are stricter, and they are what the registers and CI check.
+
+When green:
+- Run all five registers; every one must pass.
+- Write a result doc per slice: what shipped; whether slice 7 had a mechanism to attach to or
+  was deferred and why; the mutation line; which E5 gate clause (E5-5) you promoted and on what
+  evidence; and every claim you could not prove.
+- Update GO-BOOK.md §3.1 and §4 Sprint 4 to what is now true.
+- Commit, push, and report CI honestly — including `verify`, red for reasons predating this
+  sprint (§2.0). Do not raise its timeout to mask it.
+
+If you find something mid-sprint that invalidates the plan's premise, STOP and say so.
+```
+
 ### Sprints 4-9 — the template
 
 These have scope and sequence but no implementation plan, deliberately: a plan written five
