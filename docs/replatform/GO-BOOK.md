@@ -701,6 +701,14 @@ every implementation takes a `companyId`.
 
 **Write the terrain + design at sprint start** against the code as it exists then.
 
+**★ Terrain-verified 2026-08-27** (`qa/2026-08-27-breadth-terrain-audit.md`). All claims hold. Three
+additions for the plan: (1) there are **five** parity bridges, not three — `jobAuditBridge` is also
+zero-caller and tracked by **no** gate clause; (2) the drain needs more than the `organizationId`/
+`companyId` rename — `listActiveAttempts` has **no SQL impl**, and `createExecutionTargetRevocationFanout`
+(E3-18) is zero-caller with a live producer; (3) **Deferral #1** (no provider credential) blocks the
+sinks going *active*. Favorable: MIG-002's per-sink dial shipped, so "one sink at a time" is now
+actually expressible.
+
 ---
 
 ### Sprint 7 — browser agents
@@ -714,6 +722,13 @@ reachable from a boot root."* **That is false today** — `cli-mode.ts:347` spaw
 `npx @playwright/mcp --headless` whenever `browser_use` is enabled, reached from
 `heartbeat-mcp.ts:165` and `aoa-agents/runner.ts:795`. Either close it or rewrite the clause.
 
+**★ Terrain-verified 2026-08-27** (`qa/2026-08-27-breadth-terrain-audit.md`). Still live — and worse
+than the note says: the "no host-side spawn" clause has **zero automated coverage**. The wiring
+register tracks only the positive `runBrowserSession` symbol, not this negative clause, so
+`check-gate-clause-wiring.mjs` cannot catch it and it stays green-by-absence while false. The guard
+that would flag it is **BRW-008's anti-orphan check, which does not exist** (no ticket, no node).
+Also: Sprint 3 did **not** deliver `browser-runtime`'s execution path — it still has zero importers.
+
 **Write designs at sprint start.**
 
 ---
@@ -724,6 +739,13 @@ reachable from a boot root."* **That is false today** — `cli-mode.ts:347` spaw
 SVC-001 landed the storage half. The immutable-generation guarantee is currently enforced
 only by table grants — **no code writes `service_generations`**, so it describes a property
 of an empty table. Long-running services need dispatch (Sprint 3) plus health/restart/drain.
+
+**★ Terrain-verified 2026-08-27** (`qa/2026-08-27-breadth-terrain-audit.md`). All claims hold, with
+one sharpening: **service dispatch is not reachable at all yet** — the daemon is batch-only
+(`SUPERVISABLE_WORKLOAD_CAPABILITIES = ["workload.batch"]`, `serviceSlots: 0`), so **enabling
+`workload.service` dispatch is a prerequisite step before** health/restart/drain, not a given. And
+E9 has **no gate-clause entry** in the wiring register — create one so a false "E9 complete" can be
+caught the way E3-E11 are.
 
 **Write designs at sprint start.**
 
@@ -740,6 +762,12 @@ have never been written, and `check-distributed-execution-foundation.mjs` accept
 **Two jobs:** write the REL tickets, **and** make the foundation checker require the named
 release-test ticket to *exist on disk*. That flips E0 from falsely-green to honestly-red
 until E11 lands. Same move as the gate-clause guard, one level up.
+
+**★ Terrain-verified 2026-08-27** (`qa/2026-08-27-breadth-terrain-audit.md`). All claims hold; the
+crux is pinned: `check-distributed-execution-foundation.mjs:745-751` accepts any non-empty
+`releaseTest` string (or a `REL-\d+`-shaped `ownerTicket`) **without checking the ticket file
+exists**. Only **REL-004** is written; REL-001/002/003/005 are plan nodes only. The fix is a
+non-existence check — two lines from honest.
 
 ---
 
