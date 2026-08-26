@@ -1583,12 +1583,12 @@ When green (to the extent the session CAN close it):
 If you find something mid-sprint that invalidates the premise, STOP and say so.
 ```
 
-### CI hardening — parallelize `verify` + tidy memory (one clean-up session before S6)
+### CI hardening — parallelize `verify` (retire the §2.0 timeout before S6)
 
 **Retire the §2.0 CI drag before the breadth sprints.** `verify` is one 60-min job that times out
 on volume (~165 embedded-PG integration tests, one lane); after E4-F017 the timeout is its ONLY red
-reason. Shard it into a parallel matrix so `ci-required` goes green, then do a quick memory
-consolidation. **Self-contained — no operator step, no real spend.**
+reason. Shard it into a parallel matrix so `ci-required` goes green. **Self-contained — no operator
+step, no real spend.** (The MEMORY.md consolidation is already done — not part of this session.)
 
 ```text
 Work in the git worktree C:\e3 on branch docs/replatform-program.
@@ -1644,11 +1644,6 @@ BEFORE you call it done, run the ADVERSARIAL REVIEW with subagents:
   genuinely cannot construct one.
 - A completeness check: is any test file now in zero shards, or in two?
 Do NOT delegate to a plan-writing or auto-fixing skill.
-
-FINAL STEP — MEMORY CONSOLIDATION. Invoke the consolidate-memory skill (/consolidate-memory) to
-merge duplicates, fix stale facts, and prune the MEMORY.md index, which is near its size limit. This
-is housekeeping on the AI memory files, separate from the code change; do it last so it cannot
-interfere with the CI work.
 
 When green:
 - Run all five registers; every one must pass.
