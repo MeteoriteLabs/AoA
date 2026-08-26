@@ -1083,6 +1083,13 @@ This is a named partial gate, not a ticket and not E10 completion. It requires J
 - **Acceptance:** Every live or paused legacy lease/resource has one immutable mapping or terminal cleanup record; active effect authority is never translated into a distributed fence; warm agent and Commander leases, ephemeral one-shot/crew leases, workspace/preview references, and failed cleanup are covered. Provider credentials move from the current server-side runtime into the adapter-management boundary with rotation, old-key denial, kill, and cleanup continuity. No unmapped or unattributable resource remains at closure.
 - **Test:** Status/provider/owner inventory, active/paused/released/failed rows, warm reaper races, lost provider responses, workspace/preview mapping, credential rotation/revocation, old-key denial, current cleanup authority, cutover rollback before ownership transfer, and final zero-resource reconciliation.
 
+#### MIG-009 — Distributed-execution drain: rollback-safe teardown (S)
+
+- **Depends on:** JOB-014, MIG-002.
+- **Outcome:** Make `createDistributedExecutionDrain` correct so a rollback can cancel in-flight distributed attempts safely. Closes the sink-agnostic drain holes finding E10-F001 carves out as Sprint 6's one unblocked item: the `assertRollbackSafe` org/Company grain bug (currently a dead, cancel-nothing lever — it throws before the receipt query), the missing `listActiveAttempts` SQL, and unexercised drain statuses. Cuts over NO sink and needs no credential path.
+- **Acceptance:** Per-Company rollback-safety (an org with any pending authoritative-cost receipt on any of its Companies is skipped; a clean org is drained); `listActiveAttempts` returns the distinct in-flight `(company, job)` set over `job_attempts`; `cancelled`/`no_active_lease` counted, terminal/not-found excluded; the existing drain tests reworked for the new `DrainDeps` shape. Promotion of `E10-1-drain` either lands on an M-proven production caller OR stays `unwired` with a reason (kill-switch write path is REL-005) — the acceptance accepts either, never a vacuous wired.
+- **Test:** Unit rollback-safety matrix (clean org drains, receipt-bearing org skips) + embedded-PG `listActiveAttempts` over seeded attempts + the drain status coverage; positive control first, grain + SQL guards mutation-proven by deletion.
+
 ### E11 — Hardening and beta release
 
 #### REL-001 — End-to-end cross-tenant and secret-exposure gate (M)

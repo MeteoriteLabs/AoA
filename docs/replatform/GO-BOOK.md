@@ -710,6 +710,8 @@ crew (agent-backed, may ride the mint, but shadow-refused on admission) → Comm
 credential class, largest). Details + citations in `qa/2026-08-27-breadth-terrain-audit.md` and
 E10-F001.
 
+**★ The executable first unit is [MIG-009 — the drain fix](./epics/E10-desktop-migration-realtime/tickets/MIG-009-drain-design.md)** (review-verified; §9 has its prompt). The sink cutovers wait on the shared prerequisites (routing seam + mint-runner generalization), which are scoped when Sprint 6 is next.
+
 **Also here:** promote the E3 parity bridges (`jobApprovalBridge`, `jobBudgetCostBridge`,
 `jobOutputBridge`) — all currently zero-caller — and fix
 `createDistributedExecutionDrain`, which calls `assertRollbackSafe(organizationId)` where
@@ -1698,6 +1700,79 @@ When green:
 
 If you find something mid-session that invalidates the premise (e.g. the slowness IS a hang), STOP
 and say so rather than sharding around it.
+```
+
+### Sprint 6 (first unit) — MIG-009: fix the distributed-execution drain (the one unblocked item)
+
+**Sprint 6's sinks are all blocked (E10-F001) — this is the one landable piece.** A rollback-safe
+drain, sink-agnostic, no credential path needed. Its design is **written and review-verified**;
+execute it. **Pure code — no operator step, no spend.**
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §2.0 (the CI blocker), §2 (the per-ticket process), §4 Sprint 6,
+   §5 (the E10-1-drain + kill-switch debt rows), §8 (decisions).
+2. docs/replatform/epics/E10-desktop-migration-realtime/findings.md — E10-F001: no sink cuts over
+   today; the drain is the one unblocked, sink-agnostic Sprint-6 item. This ticket does NOT cut
+   over any sink and needs NO credential path.
+3. docs/replatform/epics/E10-desktop-migration-realtime/tickets/MIG-009-drain-design.md — the FULL
+   design (review-verified). Its ★ banner lists three Step-0 precision fixes to apply. Follow the
+   design's TDD steps.
+
+STEP 0: re-verify the design's ~25 path:line citations at tip (the tree moves), and apply the
+banner's three fixes: (a) M-grain reddens only in Step 5 (the REAL budget-cost bridge), not the
+unit lane — the unit `vi.fn` no-op won't throw on an org id; (b) the store's RLS `runInTenant`
+pattern comes from the bridges, not canary-preflight-store (which reads the owner db); (c) the
+citation drift (`TERMINAL_ATTEMPT_STATUSES` = job-fence.ts:60, `requestCancellation` = job-control.ts
+:3207-3312).
+
+Execute the three unconditional correctness fixes:
+- GRAIN (load-bearing): per-Company rollback-safety. Add listOrganizationCompanyIds to the drain
+  deps (reuse the existing canary primitive), re-type assertRollbackSafe to per-Company, enumerate
+  the org's Companies and assert each — a pending authoritative-cost receipt on ANY Company skips
+  the WHOLE org. This closes the sibling-Company fail-open. (The CURRENT org/Company mismatch fails
+  CLOSED — a dead cancel-nothing lever — so prove the fix by a "a clean org DOES get drained"
+  positive control, never a "drains unsafely" assertion, which can't reproduce.)
+- listActiveAttempts SQL: a new tenant-scoped store over job_attempts, notInArray(terminal),
+  selectDistinct(company_id, job_id), NO FOR UPDATE (requestCancellation takes its own per-job lock).
+- Status coverage: count `cancelled` and `no_active_lease`; exclude terminal/not-found.
+
+Binding rules:
+- Fail-first: RED for the reason written down, then implement. POSITIVE CONTROL FIRST.
+- Mutation-test every guard by DELETION (never rewrite to an equivalent). The grain guard and the
+  SQL are load-bearing; M-grain's kill is in Step 5 (real bridge), not the unit lane.
+- The EXISTING drain tests (job-distributed-drain.test.ts, all five) need REWORK for the new
+  DrainDeps shape (new required listOrganizationCompanyIds; assertRollbackSafe re-keyed org->Company)
+  — this is not just the `cancelled` case. Do not assume the pre-existing mocks stay valid.
+- E10-1-drain PROMOTION: DEFER by default — keep it `unwired` and only rewrite its reason. There is
+  no clean `drainAll` production caller in scope (the operator kill-switch write path is REL-005;
+  boot/SIGTERM/sweeper are the WRONG triggers — they'd cancel in-flight work on every restart). Do
+  NOT compose createDistributedExecutionDrain in index.ts just to flip the caller count to >=1 —
+  that forces a vacuous `wired` green, the exact anti-pattern the register exists to catch. Promote
+  ONLY if a genuine M-proven admin-teardown invocation lands in this ticket; otherwise stay unwired
+  with the reason. The acceptance table accepts either outcome.
+- packages/worker-protocol is FROZEN. Cite living documents by section/id, never by line. Any new
+  *.test.mjs -> test-execution-census same commit; new store/service file -> no register touches it
+  unless it's a check-*.mjs or *.test.mjs.
+
+BEFORE you call it done, run the ADVERSARIAL REVIEW with subagents (the design already had one pass;
+this verifies the IMPLEMENTATION): independent reviewer(s) on the grain fix + SQL from source; a
+SKEPTIC on "can the drain still cancel-nothing or drain-unsafely after the fix"; a completeness check
+that the reworked tests actually exercise the new dep shape. Do NOT delegate to a plan-writing or
+auto-fixing skill.
+
+When green:
+- Run all five registers; every one must pass. E10-1-drain stays unwired (or promotes on a real
+  caller) — never a vacuous wired.
+- Write MIG-009-drain-result.md: the fixes, the mutation line, the promotion decision (defer or
+  promote + why), and the reworked-test note.
+- Update GO-BOOK §3.1 (add a MIG-009 row) and §4 Sprint 6 + §5 (the drain debt is retired), and
+  E10-F001 if the drain shipping changes anything it says.
+- Commit, push, report CI honestly (verify inherits the §2.0 red; do not raise its timeout).
+
+If you find something mid-ticket that invalidates the premise, STOP and say so.
 ```
 
 ### Sprints 4-9 — the template
