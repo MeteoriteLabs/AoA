@@ -171,8 +171,9 @@ describeKeyed("CLI-006/D2 — real E2B (keyed) — artifact commit / patch integ
       ]);
 
       // A REAL, deterministic "coding edit" inside REAL E2B: derive the post-edit
-      // tree from the staged base, hash base + result + an independent re-derivation
-      // + a DIFFERENT base, and (if diffutils is present) emit the unified patch.
+      // tree from the staged base, hash base + result + a deterministic re-derivation
+      // of the result from the same base + a DIFFERENT base, and (if diffutils is
+      // present) emit the unified patch.
       // Only POSIX/coreutils tools (printf/sed/sha256sum/cut) are relied on for the
       // integrity core; the diff is best-effort. runCommand serialises {command,args}
       // through the (mutation-pinned) shellJoin, so the script survives intact.
@@ -195,7 +196,10 @@ describeKeyed("CLI-006/D2 — real E2B (keyed) — artifact commit / patch integ
         envVars: {},
         timeoutMs: 30_000,
       });
+      // The whole `&&`-chain ends in `> report.txt`; any aborted step yields a
+      // non-zero exit, so exit-0 is a real precondition, not just "did not time out".
       expect(run.timedOut).toBe(false);
+      expect(run.exitCode).toBe(0);
 
       const report = new TextDecoder().decode(await transport.readFile(sandboxId, "/home/user/report.txt"));
       const field = (k: string): string => {

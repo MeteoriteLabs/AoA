@@ -15,7 +15,9 @@ export interface PatchIntegrityFacts {
   declaredBaseHash: string;
   /** sha256 of the post-edit tree, declared by the patch. */
   declaredResultHash: string;
-  /** sha256 of an INDEPENDENT re-application of the same edit to a fresh base. */
+  /** sha256 of a re-application of the same edit to the (same, declared) base —
+   *  proves the patch's declared result hash is reproducible/deterministic (D2-06),
+   *  not that a DIFFERENT base was used. */
   reproducedResultHash: string;
   /** sha256 of a DIFFERENT base tree the patch was not authored against. */
   foreignBaseHash: string;

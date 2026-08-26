@@ -7,10 +7,14 @@
 // source kind. That is not a placeholder and not a degraded fallback — it is the
 // only claim that is TRUE at this seam today, for three independent reasons:
 //
-//   1. NO CREDENTIAL IS DELIVERED. The lease envelope ships `secretHandles: []`
-//      (job-leasing.ts:349) and no production path mints `job_secret_handles`.
-//      A distributed canary receives no provider key at all, so a binding that
-//      named one would be describing a delivery that does not happen.
+//   1. NO CREDENTIAL IS DELIVERED TO THE CANARY. (Corrected Sprint 5, E7-F001: the
+//      original "no production path mints job_secret_handles" is now stale — DAT-008
+//      landed the writer, job-placement-transaction.ts:367, and the envelope advertises
+//      handles, job-leasing.ts:601-613, for NON-canary agent runs.) A CANARY still
+//      mints none: this binding's `credentialKind: null` trips the mint's owner-authority
+//      gate (execution-secret-handle-mint.ts:122-127, :149-151) -> owner_authority_disagreement
+//      -> no handle -> the canary sandbox gets no key. So a binding that named a
+//      credential would still be describing a delivery that does not happen.
 //   2. THE INPUTS DO NOT EXIST YET. The only functions that can authorize a
 //      credential (`resolveProviderCredential`, `resolveAgentSubscriptionEnvironment`)
 //      need `provider`, `adapterType`, `agentId`, `executionTargetId`, `currentEnv`

@@ -75,6 +75,11 @@ describe("evaluatePatchIntegrity", () => {
       foreignBaseHash: FOREIGN,
     });
     expect(v.ok).toBe(false);
+    // Every sub-check must fail closed on a malformed digest — otherwise a
+    // non-sha256 value could satisfy `isRealEdit`/`baseMismatchIsDetectable` by mere
+    // string-inequality. Asserting all three kills the `wellFormed &&` guard on each.
     expect(v.reproducesResult).toBe(false);
+    expect(v.isRealEdit).toBe(false);
+    expect(v.baseMismatchIsDetectable).toBe(false);
   });
 });

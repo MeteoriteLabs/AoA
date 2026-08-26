@@ -45,6 +45,10 @@
     "E4-F016": {
       "status": "accepted",
       "reason": "LOW, documentation-only: three desktop-hello comments (desktop-hello.ts:28, :145, and the repeating comment in desktop-hello.test.ts) assert the enrolled all-zero capacity is byte-stability decoration the matcher overwrites, i.e. not a safety property. True of evaluateStaticLeaseEligibility (NEUTRAL_LEASE_MATCHER_CAPACITY, job-lease-eligibility.ts:213) but FALSE of the poll path: WRK-011 s0(d) proved the stored capacity is a hard Math.min clamp at job-leasing.ts:566, so zero stored capacity empties the admissible workload list before the static matcher. WRK-011 corrects the CODE the comments describe (a provisioned refresh writes a real capacity); a dated comment record is not silently rewritten mid-file, so this is the correction. Blocks nothing; remediation is a three-line comment fix no sprint carries."
+    },
+    "E7-F001": {
+      "status": "unowned",
+      "reason": "HIGH, deliberately unowned: no ticket in the graph makes the canary MINT a provider credential. The canary credential binding returns credentialKind:null by design (canary-credential-binding.ts:59-64), which trips DAT-008's mint owner-authority gate (execution-secret-handle-mint.ts:122-127,149-151) -> owner_authority_disagreement -> no handle -> the canary sandbox gets no key (hop 5 inert even on real E2B). The fix is a canary-aware credential path (authorize a Company-key provider_key handle for a canary agent run without a personal_subscription credentialKind), an architectural decision with a blast radius: enriching the four-null binding is explicitly forbidden (canary-credential-binding.ts:39-47 -- re-opens owner routing, breaks placement-digest replay), and credential-generation freshness is the preflight's job (canary-preflight.ts). It is the same bound CLI-006-result.md deferral 2 already records; this finding corrects that deferral's stale mechanism (job_secret_handles now HAS a writer) and makes the real one visible. Blocks E7-1's full-journey credential hop; a real-E2B canary campaign must know the coding CLI cannot authenticate until this is owned."
     }
   }
 }
