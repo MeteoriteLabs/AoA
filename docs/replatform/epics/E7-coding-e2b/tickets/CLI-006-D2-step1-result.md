@@ -127,14 +127,39 @@ server side (CLI-006 D1 40/40 + `job-leasing.integration.test.ts` + `job-placeme
 *"the E4-1/E4-2 promotion is DEFENSIBLE, not a vacuous-green trap … a real embedded-PG server leg is not
 strictly required to make the worker-scoped promotion honest."*
 
-**The one gap this evidence does not close — named as owed.** The offer is a hand-enqueued, schema-valid
-fixture (`fake.enqueuePoll` + `compatibleOffer()`), not a lease minted by the real server's placement over a
-live fence. Closing that (a real embedded-PG control plane offering the composed worker a real lease, still
-with a fake provider — "Leg B" in the design) is **owed**, and folds into Step 2's staging-canary substrate
-(§6). It is not required for the worker-scoped E4-1/E4-2 promotion, and it is not sufficient for E7-1 (which
-needs real E2B).
+**The counterparty caveat — now closed for the lease by Leg B Part 1.** In the composed-journey test the
+offer is a hand-enqueued, schema-valid fixture (`fake.enqueuePoll`), not a lease minted by the real server.
+**Leg B Part 1 closes that** (`server/src/__tests__/composed-loop-real-server.integration.test.ts`, §4a): the
+SAME `createPollLoop` leases a **real server-minted attempt** over the **real embedded-PG worker-control
+routes** — a real device proof + session against real placement. What remains owed is **Leg B Part 2** (the
+credential resolve over a **live fence** → a real `resolved` value), the DAT-008 slice 5 §8 residual, which
+folds into Step 2's staging-canary substrate (§6). Neither Part is required for the worker-scoped E4-1/E4-2
+promotion, and neither is sufficient for E7-1 (which needs real E2B).
 
 `E4-3` (survives-restart) and `E5-3` (patch-quarantine) are untouched — this step wires neither.
+
+### 4a. Leg B Part 1 — the composed loop leases from the REAL server (E4-1 evidence upgraded)
+
+`server/src/__tests__/composed-loop-real-server.integration.test.ts` (embedded-PostgreSQL, run with
+`AOA_RUN_WIN_INTEGRATION=1` + on Linux CI) drives the SAME `createPollLoop` against the **real** server:
+embedded-PG + the real `workerControlRoutes`, a real device proof + a minted session, and a seeded
+lease-eligible attempt (the WRK-011 seed recipe, provisioned; the shared `worker-provisioned-target.json`
+fixture is the contract on both sides). One cycle: the composed loop polls the real `/api/worker-control/poll`,
+is OFFERED the seeded attempt, self-checks the frozen offer, and ACKs over the real
+`/api/worker-control/leases/:id/ack`, handing off to a collecting seam.
+
+- **The ACK is proven server-specific, not merely the offer.** `offerLease` leaves the attempt/lease
+  `'offered'`; only `activateLeaseAck` (on a real, fully-authenticated ACK) flips the attempt to `'leased'` +
+  the lease to `'active'` + writes a `lease_ack` receipt — which the test asserts.
+- **Non-vacuous:** a **negative control** (no lease-eligible attempt ⇒ no offer ⇒ no handoff, no lease row)
+  proves the offer is real; and a **dist-rebuilt M1** (skip the ACK POST, then `pnpm --filter worker-daemon
+  build` — because the server test imports the **built** package, so a src edit alone has NO effect: a real
+  go-book anchor-match gotcha, recorded) reddens the happy case with `expected 'offered' to be 'leased'`,
+  proving the ACK assertions anchor the real ACK. Src reverted + dist rebuilt + verified green.
+
+This upgrades E4-1's evidence from a protocol-faithful in-process double to a **real control plane**: the
+server's minted lease genuinely reaches the composed worker. **Leg B Part 2** (the credential resolve over a
+live fence) is NOT built — it is DAT-008 slice 5 §8's explicitly-deferred residual (§9).
 
 ---
 
@@ -232,10 +257,11 @@ No HIGH survived against the deliverable. Not delegated to a plan-writing or aut
 
 ## 9. What I could not prove / owed
 
-1. **Leg B — the composed worker against a REAL embedded-PG control plane** (real server offers the lease, real
-   resolve over a live fence). Not built; the pieces exist (Style A `createApp` + Style B device-proof worker
-   client) but no test joins them. Owed, and folded into Step 2's staging-canary substrate. Not required for
-   the worker-scoped E4-1/E4-2 promotion (§4).
+1. **Leg B Part 1 — DONE (§4a).** The composed loop leases a real server-minted attempt over the real
+   embedded-PG control plane. **Leg B Part 2 — the credential resolve over a LIVE fence** (a real `resolved`
+   value) is NOT built: it is DAT-008 slice 5 §8's explicitly-deferred residual (needs an active fence + a
+   minted `job_secret_handles` row + a Company provider-key secret store aligned in one harness). Owed, and
+   folded into Step 2's staging-canary substrate. Not required for the worker-scoped E4-1/E4-2 promotion.
 2. **The full DISTRIBUTED journey on REAL E2B (E7-1).** Owed to the operator-dispatched staging-canary campaign
    (§6). Until a dispatched run is cited, E7-1 stays `unwired`.
 3. **A redaction TRIPWIRE on the composed path.** The composed path has no leak source, so redaction cannot be
