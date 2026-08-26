@@ -693,17 +693,22 @@ change nothing. Cutting over means the sink actually routes to the distributed p
 **One sink at a time, each with its own soak. Do not batch.** Each owes its own rollback
 evidence (gate clause 3 was explicitly not ticked for the three shadow sinks).
 
-**★ ORDER CORRECTED 2026-08-27 (E10-F001) — lead with EXTRACTION, not Commander.** The original
-"MIG-005 (Commander) first, lowest blast radius" ordering was refuted by the MIG-005 design + a
-3-reviewer pass: blast radius is the wrong axis once the binding constraint is **credential-readiness**.
-Only **MIG-007 (extraction / `one_shot`)** is buildable today — it already resolves the Company key
-and sandbox-executes (`one-shot-sandbox-cli.ts`), and was the sole shadow-admissible sink. **MIG-006
-(crew)** rides the same Company-key ladder ("mirrors the org path"). **MIG-005 (Commander)** is the
-ONLY sink with no mint path (the mint *refuses* `commander_turn`) and is **blocked** on a per-user
-`provider_connection` credential ticket that does not exist. So: **MIG-007 (extraction) → MIG-006
-(crew) → MIG-005 (Commander, blocked, last) → MIG-001.** The **drain fix is separate and unblocked**
-— ship it on its own (below), regardless of sink order. Commander's block is filed as **E10-F001**;
-its credential work shares E5's `DEFERRAL-1-credential` wiring plus net-new per-user minting.
+**★ RE-SCOPED 2026-08-27 (E10-F001) — no sink is buildable today; the real work is shared
+prerequisites + the drain.** Making the first two cutover designs (MIG-005 Commander, MIG-007
+extraction) and reviewing them established that **none** of the three sinks can cut over yet. They
+share two unbuilt prerequisites — (1) distributed transfer routing exists only for `task_run`
+(`run-execution-owner.ts`), and (2) the mint refuses every non-agent-coding run at guard 3
+(`execution-secret-handle-mint.ts`), which is the SAME gate for `commander_turn`, `one_shot`, `service`,
+`browser`, `system`. (An earlier version of this note said "lead with extraction because it rides the
+mint" — the MIG-007 design proved that false: extraction's agentless principal refuses at guard 3 too,
+AND extraction has a sync→async result-return blocker that would drop every extracted item.) **So Sprint
+6's actual first tickets are the shared-prerequisite work** (a routing seam for non-`task_run` sources +
+a mint-runner generalization to mint a Company key for an agentless run), **plus the sink-agnostic drain
+fix, which is the only immediately-landable item.** Per-sink readiness, smallest gap first: extraction
+(Company-key mint-runner change, but thin value — already sandboxed — and the result-return blocker) →
+crew (agent-backed, may ride the mint, but shadow-refused on admission) → Commander (net-new per-user
+credential class, largest). Details + citations in `qa/2026-08-27-breadth-terrain-audit.md` and
+E10-F001.
 
 **Also here:** promote the E3 parity bridges (`jobApprovalBridge`, `jobBudgetCostBridge`,
 `jobOutputBridge`) — all currently zero-caller — and fix
