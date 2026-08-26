@@ -205,19 +205,27 @@ re-enrolment — a session-persistence concern owned by no ticket in this sprint
 
 ## E4-F008 — WRK-005 inherits the E4-D12 provisioning-refresh concern (loop-toward-live-dispatch)
 
-**Status:** `open` · resolve at **the live-dispatch wiring ticket (post-WRK-005)** · Severity: LOW
+**Status:** `open` · owned by **WRK-012** (repointed from WRK-008 at slice-2b completion) · Severity: LOW
 (inert today) · Source: WRK-005.
 
-WRK-005 is "wiring the loop toward live dispatch," so it inherits the E4-D12 provisioning-refresh
-concern: a rotated provider-constraint digest can go stale on a long-lived worker. WRK-005 itself adds
-no provisioning path (it is inert until the loop is wired for live dispatch), but the renewal driver +
-fence-close proxy are the first modules composed at that seam. When live dispatch is wired, the owning
-ticket MUST reconcile a rotated provider-constraint digest against in-flight leases. Recorded here so
-it is not lost.
+A rotated provider-constraint digest can go stale on a long-lived worker. **WRK-008 slice 2b composed
+the loop** — the seam this finding named — but reads the self-model **once at boot** and never re-reads
+it (`composeDispatchRuntime` clamps capacity to `resourceCeiling` at composition time;
+`PollLoopDeps.self` is a plain value), so a mid-life provider-constraint rotation cannot be observed or
+reconciled against in-flight leases. **★ REPOINTED to WRK-012 at slice-2b completion** (2026-08-26):
+leaving it `owned` by shipped WRK-008 would read as owned by nobody (E4-F013). WRK-012 (a filed scoping
+stub) adds the self-model **refresh channel** + a lease-in-flight policy. LOW because the direction of
+failure is closed: a stale digest makes the worker **unmatchable**, not wrongly matched
+(`capabilities.ts:466-467`) — a reason independent of E4-F010 (which WRK-011 closed).
 
 ## E4-F009 — `createStartupReconciler` is not composable at boot — one blocker, not two
 
-**Status:** `open` · Severity: MED · Source: WRK-008 slice 2b planning pass (2026-08-25), adversarial review round 2.
+**Status:** `open` · owned by **WRK-013** (repointed from WRK-008 at slice-2b completion) · Severity: MED · Source: WRK-008 slice 2b planning pass (2026-08-25), adversarial review round 2.
+
+**★ REPOINTED to WRK-013 at slice-2b completion** (2026-08-26): slice 2b DEFERRED
+`createStartupReconciler` for the one real blocker below and shipped, so leaving E4-F009 `owned` by
+WRK-008 would read as owned by nobody (E4-F013). WRK-013 (a filed scoping stub) adds the durable
+lease-candidate source and composes the reconciler.
 
 `leaseCandidates` (`supervisor/startup-reconcile.ts:256-257`) has no durable local source: the
 event outbox persists **events**, not offers, so the lease-authority probe would run over `[]` on

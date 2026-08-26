@@ -647,6 +647,18 @@ The backlog contains 105 implementation tickets (audited 2026-08-25 against the 
 - **Acceptance:** A provisioned worker is actually OFFERED work, proven through the real `poll` service behind a `no_work` precondition control rather than against the matcher in isolation, and the daemon's own `offerSatisfiesWorker` admits that same offer; snapshot and hash move in one write, a refresh returns a usable session, and the OLD session is proven dead; a mint that throws leaves no committed refresh; a worker cannot write a capability outside the administrator-ratified ceiling and a legacy worker token — which carries no device proof — cannot refresh at all; a no-op refresh writes nothing and mints nothing; the route is not registered when distributed execution is off; and the unprovisioned desktop stays unmatchable under the DSK-001 assertions, unmodified. It does NOT claim a composed daemon polls, ACKs and supervises (`createPollLoop` still has zero production callers after this ticket — that is WRK-008 slice 2b), nor that work executes end to end (CLI-006/D2).
 - **Test:** Unit admission matrix over the four guards with a positive control asserted BEFORE any refusal case is built on the fixture (E1-F008: five placement guards passed their own named tests while deleted, because every fixture was refusing earlier for an unrelated reason), plus an embedded-PostgreSQL suite driving poll → refresh → poll on one seeded org and its refusal matrix, plus a daemon-side unit proving the self-check admits the offer that suite captured — parsed through the frozen `leaseOfferV1Schema` and shared as a fixture, since the two packages cannot import each other.
 
+#### WRK-012 — A self-model refresh channel for a long-lived worker (E4-F008 successor) (scope)
+
+- **Depends on:** WRK-008.
+- **Outcome:** Add a self-model refresh channel (a periodic or poll-triggered re-read of `client.selfModelRead` that updates `PollLoopDeps.self`) plus a stated policy for leases in flight when the provider-constraint digest rotates (finish under the old constraints, or fence). WRK-008 slice 2b reads the self-model ONCE at boot and never re-reads it, so a mid-life provider-constraint rotation cannot be observed. Filed at WRK-008 completion so E4-F008 is owned by a ticket that exists and has not shipped (finding E4-F013), not left `owned` by shipped WRK-008. Owns finding E4-F008. LOW: the direction of failure is closed (a stale digest makes the worker unmatchable, not wrongly matched — `capabilities.ts:466-467`).
+- **Acceptance:** Written at sprint start (post-Sprint-5), against the tree as it exists then; no result doc until the channel is built. E4-F008 stays open (LOW) until then.
+
+#### WRK-013 — A durable lease-candidate source for the startup reconciler (E4-F009 successor) (scope)
+
+- **Depends on:** WRK-008.
+- **Outcome:** Add a durable local store of accepted lease offers a restarting daemon can replay into `StartupReconcilerDeps.leaseCandidates`, then compose `createStartupReconciler` at boot (conditionally on an org/owner-scoped target) and promote E4-3-survives-restart. WRK-008 slice 2b deferred the reconciler for ONE real blocker: `leaseCandidates` has no durable local source (the outbox persists events, not offers), so the lease-authority probe would run over `[]` every boot — a guard that evaluated nothing. Filed at WRK-008 completion so E4-F009 is owned by a ticket that exists and has not shipped (E4-F013). Owns finding E4-F009.
+- **Acceptance:** Written at sprint start (post-Sprint-5); no result doc until the source is built. E4-F009 stays open (MED) until then.
+
 ### E5 — Workspaces, artifacts, secrets, and network policy
 
 #### DAT-001 — Immutable workspace snapshot format (M)

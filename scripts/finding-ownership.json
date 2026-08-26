@@ -2,9 +2,9 @@
   "findings": {
     "E4-F008": {
       "status": "owned",
-      "ticket": "WRK-008",
-      "ownerStillOpen": "Slice 2b - composing the poll loop and supervisor - is the live-dispatch wiring seam this finding names. Slices 1 and 2a have result docs; 2b does not exist yet.",
-      "reason": "The finding says 'resolve at the live-dispatch wiring ticket (post-WRK-005)'. That ticket did not exist when it was filed; it does now, and it is WRK-008. A rotated provider-constraint digest going stale on a long-lived worker must be reconciled against in-flight leases when 2b composes the loop."
+      "ticket": "WRK-012",
+      "ownerStillOpen": "REPOINTED from WRK-008 to WRK-012 at WRK-008 slice 2b completion. Slice 2b composed the loop (the seam this finding named) but reads the self-model ONCE at boot and never re-reads it, so a mid-life provider-constraint rotation cannot be reconciled. WRK-012 is the filed scoping stub (ticket file + #### WRK-012 program node, no result doc) that adds the refresh channel + the lease-in-flight policy. Leaving it on shipped WRK-008 would read as owned by nobody (E4-F013).",
+      "reason": "WRK-008 slice 2b is where the live-dispatch seam was composed, but the reconciliation of a rotated provider-constraint digest against in-flight leases is a self-model REFRESH channel + a lease-in-flight policy — design decisions with a blast radius, not a line in a composition ticket. LOW: the direction of failure is closed (a stale digest makes the worker unmatchable, not wrongly matched — capabilities.ts:466-467). Repointed to WRK-012 (E6/E4 pattern: DEP-011)."
     },
     "E6-F003": {
       "status": "owned",
@@ -26,9 +26,9 @@
     },
     "E4-F009": {
       "status": "owned",
-      "ticket": "WRK-008",
-      "ownerStillOpen": "Slice 2b is the ticket that would compose the reconciler; it has a design doc and no result doc. The finding is the written-down reason it defers, so it stays open until a durable lease-candidate source exists.",
-      "reason": "WRK-008 slice 2b is where createStartupReconciler would be composed, and its design defers exactly this. Filed now rather than at execution because the draft deferral stood on TWO reasons and one was false (ownershipSelector.organizationId IS available on the self-model); a deferral resting on a false reason is one nobody re-examines."
+      "ticket": "WRK-013",
+      "ownerStillOpen": "REPOINTED from WRK-008 to WRK-013 at WRK-008 slice 2b completion. Slice 2b DEFERRED createStartupReconciler for ONE real blocker: leaseCandidates has no durable local source (the outbox persists events, not offers), so the lease-authority probe would run over [] every boot. WRK-013 is the filed scoping stub that adds the durable lease-candidate source and composes the reconciler. Leaving it on shipped WRK-008 would read as owned by nobody (E4-F013).",
+      "reason": "WRK-008 slice 2b composed the loop but deferred the reconciler; reconstructing accepted lease offers from durable local state is its own ticket, not a line in a composition ticket. The ownershipSelector.organizationId concern was withdrawn (it IS on the self-model for org/owner-scoped targets). Repointed to WRK-013 (E6/E4 pattern: DEP-011)."
     },
     "E4-F013": {
       "status": "unowned",
