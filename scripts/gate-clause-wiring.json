@@ -34,25 +34,27 @@
       "epic": "E4",
       "status": "unwired",
       "symbol": "createPollLoop",
-      "reason": "The shipped daemon composes no loop; dispatch is off by construction (no provider, flag off, no self-model reader). WRK-008 slice 2b (Sprint 3) composes it, after DEP-010 supplies a provider."
+      "expectedReferences": 2,
+      "reason": "WRK-008 slice 2b COMPOSES the poll loop (composeDispatchRuntime is its first production caller: the import + the seam-default = 2 references), but does not DEMONSTRATE a lease actually being taken in its own suite. The reason is NOT 'E4-F010 / unmatchable' — WRK-011 (Sprint 2.75) closed E4-F010 before this slice, so the composed worker IS matchable (offerSatisfiesWorker admits a valid offer). Per the go-book Sprint 3 checklist, E4-1 is promotable ON EVIDENCE — a composed loop that took a lease in this sprint's suite — never on caller count and never on a caveat in this field. Composing is not demonstrating; Sprint 5 is the journey. expectedReferences absorbs the two known references and STILL fires the moment a third appears."
     },
     "E4-2-supervises-sandboxes": {
       "epic": "E4",
       "status": "unwired",
       "symbol": "createSupervisor",
-      "reason": "Zero production callers; requires a SandboxProvider that no process can construct today. DEP-010 (Sprint 2) then WRK-008 slice 2b (Sprint 3)."
+      "expectedReferences": 2,
+      "reason": "WRK-008 slice 2b composes the supervisor (composeDispatchRuntime: import + seam-default = 2 references), but production reaches the supervisor ONLY after an ACK (poll-loop.ts:538 self-checks and returns {kind:'continue'} before ackLease at :549; the supervisor is reached only via trackHandoff at :559), and NO production ACK path exists at this sprint's tip. Promoting on a composed supervisor would go green over ZERO supervised sandboxes. It needs an actually-supervised sandbox — Sprint 5's journey. NOT promoted."
     },
     "E4-3-survives-restart": {
       "epic": "E4",
       "status": "unwired",
       "symbol": "createStartupReconciler",
-      "reason": "Zero callers; bootstrapWorkerDaemon gates it on deps.reconciler which is never passed, so the startup pass runs nothing. Compose in Sprint 3 or defer with a stated reason."
+      "reason": "DEFERRED (WRK-008 slice 2b §4.2), for ONE blocker: StartupReconcilerDeps.leaseCandidates (supervisor/startup-reconcile.ts:256-257) has no durable local source — the outbox persists EVENTS, not offers, so the lease-authority probe would run over [] every boot (a guard that passes because it evaluated nothing). ownershipSelector.organizationId is NOT a blocker — it is on the self-model this slice reads and the frozen schema guarantees it non-null for org/owner-scoped targets. E4-3 waits on a durable lease-candidate source (finding E4-F009)."
     },
     "E4-4-event-outbox-replay": {
       "epic": "E4",
-      "status": "unwired",
+      "status": "wired",
       "symbol": "createEventOutboxDrain",
-      "reason": "Zero callers; deps.eventOutbox is never passed. Compose in Sprint 3 alongside the loop."
+      "reason": "Genuinely wired by WRK-008 slice 2b: composeDispatchRuntime opens the outbox store, recovers it (uploading->pending) at composition, and runtime.start() runs drain.start() at boot — independently of leasing or ACK. 'Reachable' here means reachable FROM A BOOT ROOT, not 'runs by default': dispatch is still off by construction (default-OFF flag). True without qualification."
     },
     "E5-3-patch-quarantine": {
       "epic": "E5",
