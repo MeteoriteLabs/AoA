@@ -176,6 +176,7 @@ not, because they share this branch and cancel each other's CI.
   S4  DAT-008/5,7 credentials reach the sandbox (E5)
   S5  CLI-006/D2  prove ONE real journey       (E7)   ── ★ STEP 1 GREEN: E4-1/E4-2 WIRED on evidence; E7-1 still needs the operator real-E2B run (Step 2)
   S5a CLI-007     canary gets a real credential (E7)   ── ★ SHIPPED; E7-F001 resolved; unblocks S5 (E7-1 still needs its run)
+  S5b canary campaign  full journey on real E2B    (E7)   ── the E7-1 promoter; live staging + real spend (operator)
 
   BREADTH — scale it out
   S6  MIG-005/6/7 ACTIVE, MIG-001              (E10)
@@ -1483,6 +1484,90 @@ When green:
   security argument; and — explicitly — that this UNBLOCKS but does NOT promote E7-1 (that still
   needs a cited dispatched real-E2B run of the full journey).
 - Update GO-BOOK §3.1 and §4 (note that the journey is now runnable, E7-1 still pending its run).
+- Commit, push, report CI honestly (verify inherits the §2.0 red; do not raise its timeout).
+
+If you find something mid-sprint that invalidates the premise, STOP and say so.
+```
+
+### Sprint 5b — the staging-canary campaign (the E7-1 promoter, the last mile)
+
+**This finishes the milestone.** Sprint 5 proved the worker layer real (E4-1/E4-2 wired) and the
+provider hops on real E2B. What's left is the JOINED journey — create→schedule→lease→execute→
+review on a real E2B sandbox through the distributed path — which promotes **E7-1** and only then
+makes "distributed execution works" true. **This is a live-infrastructure campaign with real
+spend, not a pure code session.** Hold the operator/session boundary below; do not fake a green.
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §2.0, §2, §4 "Sprint 5" (the "Still owed" note), §8.
+2. docs/replatform/epics/E7-coding-e2b/tickets/CLI-006-D2-result.md — §5 names the owed
+   staging-canary campaign and the substrate. This sprint executes that.
+3. CLI-006-design.md / CLI-006-seam-plan.md — the journey hops.
+4. The result docs of Sprints 5 and 5a — E4-1/E4-2 are wired on evidence; CLI-007 made the
+   canary mint a real credential. Those are the pieces this campaign joins on real E2B.
+5. docker-compose.staging.yml and any testing.armyofagents.org deploy notes — the real-E2B
+   distributed substrate this campaign runs on (dormant until armed).
+
+STEP 0 — SEQUENCE + SUBSTRATE CHECK. Confirm E4-1/E4-2 are `wired` and E7-1 is still `unwired`
+(else out of sequence, STOP). Then establish, from source and config, exactly what arming a
+canary Organization on the staging substrate requires: the rollout dial (canary mode), the
+preflight's Company provider-key generation (CLI-007's authority), a real enrolled worker, and
+the E2B key on that substrate. Write it down as a RUNBOOK before touching anything.
+
+THE JOURNEY TO PROVE ON REAL E2B (one canary Organization):
+create → schedule → lease → stage → execute → stream → produce → review → cancel → audit,
+with the credential resolved over a LIVE FENCE (Leg B Part 2 — DAT-008 §8's residual folds in
+here: a real fence + a minted handle + a Company provider-key store aligned in one harness).
+
+★★★ THE OPERATOR/SESSION BOUNDARY — state it in the runbook and hold it:
+- The SESSION may: verify every hop's wiring against source; build/repair any missing journey
+  harness fail-first to the Sprint 1-3 standard; run everything that runs without live staging
+  or a real key (unit, embedded-PG); prepare the EXACT campaign steps (arm the canary Org,
+  enroll the worker, run the journey, where the evidence lands); and, if a dispatched
+  staging run exists, READ its evidence.
+- Only the OPERATOR can: stand up / reach the staging substrate, arm the canary Organization,
+  authorize the real E2B spend, and run the campaign. The E2B key is a provider secret — never
+  ask the session to enter or handle it. If the session cannot reach the live substrate, STOP
+  at that boundary, hand the operator the runbook + the exact commands + what evidence to
+  capture, and say plainly "the E7-1 leg is unproven until a cited staging-canary run exists."
+  Do NOT mock-substitute a real-E2B journey.
+
+★★★ E7-1 PROMOTION — THE PROGRAMME'S CENTRAL VACUOUS-GREEN TRAP, at its highest-stakes moment.
+Promote E7-1-coding-journey to `wired` ONLY on a CITED dispatched real-E2B run that actually
+completed the DISTRIBUTED journey (create/schedule/lease/review) end to end — never on the keyed
+provider lane (that proves primitives, not the journey), never on a D1 fake-provider run, never
+on a local harness. If no such run exists, E7-1 STAYS `unwired` and the honest end-state is
+"campaign harness + runbook ready, staging run owed" — a legitimate, respected outcome, not a
+failure. "Any claim of real-E2B coverage must cite a dispatched run" (go-book §4 Sprint 5).
+
+Binding rules:
+- Sprints 1-5 + 5a green first. Fail-first; mutation-test new guards by DELETION, positive
+  control first.
+- packages/worker-protocol is FROZEN.
+- NEVER serialize a provider key or redeemed secret into a prompt, event, protocol message, or
+  log (Decision #104). The S4 canary seeding is the tripwire; prove a planted leak is caught,
+  and prove the live-fence resolve puts the value ONLY inside the sandbox.
+- Fail-closed everywhere: a canary that cannot establish authority or resolve a credential gets
+  no run, degrades visibly, never double-executes.
+- Cite living documents by SECTION AND ID, never by line. New *.test.mjs → test-execution-census
+  same commit; new AOA_* switch → environment-variables.md; bump pins from CURRENT values.
+
+BEFORE you call it done, run the ADVERSARIAL REVIEW: independent reviewers per changed dimension;
+a SKEPTIC to REFUTE each HIGH (default refuted if not reproducible); and a COMPLETENESS CRITIC:
+"does the evidence chain actually reach real E2B through the DISTRIBUTED journey, or does it stop
+at a mock/keyed-lane/D1 boundary that is being passed off as the journey?" Do NOT delegate to a
+plan-writing or auto-fixing skill.
+
+When green (to the extent the session CAN close it):
+- Run all five registers.
+- Write CLI-006-campaign-result.md (or extend the D2 result): which hops are proven on real E2B
+  through the distributed journey (with the dispatched run id), which are proven only locally,
+  whether E7-1 was promoted and on what cited evidence, and the exact operator steps still owed
+  if the staging run is not yet in hand.
+- Update GO-BOOK §3.1 and §4 Sprint 5 to what is now true — honestly, including if E7-1 is still
+  pending an operator-run staging campaign.
 - Commit, push, report CI honestly (verify inherits the §2.0 red; do not raise its timeout).
 
 If you find something mid-sprint that invalidates the premise, STOP and say so.
