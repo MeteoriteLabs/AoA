@@ -48,6 +48,14 @@ const PAIRS = [
     mount: "/api",
     serverRoute: "/execution-targets/self/hello",
   },
+  {
+    name: "execution-secret resolve (DAT-008 slice 5)",
+    daemonFile: "packages/worker-daemon/src/transport/client.ts",
+    daemonConst: "EXECUTION_SECRET_RESOLVE_PATH",
+    serverFile: "server/src/routes/worker-control.ts",
+    mount: "/api",
+    serverRoute: "/worker-control/execution-secrets/resolve",
+  },
 ];
 
 function readConstant(file, name) {

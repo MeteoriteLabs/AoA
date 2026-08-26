@@ -69,6 +69,7 @@ import {
 } from "../poll/poll-loop.js";
 import type { EffectFence } from "../supervisor/effect-authority.js";
 import type { EventDeliveryIdentity, WorkerEventSink } from "../supervisor/events.js";
+import type { RunCanaryCoordinator } from "../supervisor/run-canaries.js";
 import {
   FenceCloseProxy,
   type FenceCloseReason,
@@ -306,6 +307,13 @@ export interface LeaseRenewalDriverDeps extends OperationRandomness {
   readonly eventSink?: WorkerEventSink;
   /** Factory for the per-lease fence-close proxy (tests inject a spy). */
   readonly makeFenceProxy?: (fence: EffectFence, identity: EventDeliveryIdentity) => GovernedEffectAuthority;
+  /**
+   * DAT-008 slice 5 — the per-lease canary coordinator shared with the supervisor. When present the
+   * proxy captures the lease's LIVE canary array, which the supervisor seeds (before create) with
+   * the run's redeemed secret values — so the proxy's `network_denied` stream is scrubbed of them
+   * too (uniform redaction). Absent = `[]` (the historical state; nothing to redact).
+   */
+  readonly canaryCoordinator?: RunCanaryCoordinator;
 }
 
 export interface LeaseRenewalDriver extends SupervisorSeam {
@@ -360,18 +368,13 @@ export function createLeaseRenewalDriver(deps: LeaseRenewalDriverDeps): LeaseRen
         identity,
         eventSink: deps.eventSink ?? NOOP_SINK,
         metrics: deps.metrics,
-        // ★ EXPLICITLY EMPTY, and that is the honest state — not a shrug.
-        //
-        // This site previously omitted the field entirely and silently received `[]` from a
-        // `?? []` fallback, so a renewal-path proxy redacted NOTHING and no reader could tell.
-        // Making the field required turned that omission into this line.
-        //
-        // It is still `[]` because there is nothing to put here yet: a canary can only come
-        // from a server-resolved secret value, and `createFenceAwareEgressProxy` — the only
-        // path that resolves one — has ZERO production callers. So redaction currently has no
-        // INPUT, not merely no coverage. When that seam is closed, the run's canaries must be
-        // threaded to here; this comment is the marker for that work.
-        redactionCanaries: [],
+        // ★ DAT-008 slice 5 — the seam is closed. When a coordinator is present the proxy captures
+        // this lease's LIVE canary array; the supervisor `push`es the run's redeemed secret values
+        // into that same array BEFORE create (before any emit on either stream), so the proxy's
+        // post-close `network_denied` stream is scrubbed of them too — uniform redaction across
+        // every sink. Absent (unit/non-driver builds) → `[]`, the honest historical state: nothing
+        // redeems a value there, so there is nothing to redact.
+        redactionCanaries: deps.canaryCoordinator ? deps.canaryCoordinator.ensure(fence.leaseId) : [],
       }));
 
   const leases = new Map<string, LeaseState>();
@@ -438,6 +441,9 @@ export function createLeaseRenewalDriver(deps: LeaseRenewalDriverDeps): LeaseRen
       state.proxy.close("completed");
     }
     leases.delete(state.leaseId);
+    // DAT-008 slice 5 — drop the lease's coordinator entry so the map cannot grow without bound.
+    // The proxy still holds its captured array reference, so this never un-seeds a live proxy.
+    deps.canaryCoordinator?.release(state.leaseId);
   }
 
   /** Recover the session after a renew 401. Returns `ok` to retry the SAME key,

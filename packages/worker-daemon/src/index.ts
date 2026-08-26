@@ -117,6 +117,19 @@ export type {
   EnrollHttpRequest,
   EnrollHttpResponse,
 } from "./transport/client.js";
+export { EXECUTION_SECRET_RESOLVE_PATH, EXECUTION_SECRET_RESOLVE_DESCRIPTOR } from "./transport/client.js";
+
+// DAT-008 slice 5 — worker-side secret redemption (used by the composed dispatch runtime and by
+// the server-side integration proof of the real resolve round-trip).
+export {
+  PROVIDER_AUTH_ENV_TARGETS,
+  SecretMaterializationError,
+  UnknownSecretTargetError,
+  classifyResolveResponse,
+  createRedeemer,
+  synthesiseRunSecrets,
+} from "./lease/secret-redemption.js";
+export type { RedeemFn, ResolveClassification, RunFenceContext } from "./lease/secret-redemption.js";
 
 export { createEnroller, EnrollmentError, mapErrorStatus, DEFAULT_SESSION_TTL_MS } from "./enrollment/enroll.js";
 export type {

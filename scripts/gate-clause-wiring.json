@@ -64,9 +64,9 @@
     },
     "E5-5-redaction": {
       "epic": "E5",
-      "status": "unwired",
-      "symbol": "createFenceAwareEgressProxy",
-      "reason": "Zero callers; DAT-004/DAT-005 are built, correct and entirely unreachable from boot. This is the only path that resolves a secret VALUE, so redaction has no input. Wire with DAT-008 slice 5 (Sprint 4)."
+      "status": "wired",
+      "symbol": "synthesiseRunSecrets",
+      "reason": "DAT-008 slice 5 (go-book Sprint 4) gives redaction a real INPUT and a production caller. The old symbol createFenceAwareEgressProxy was the DAT-005 EGRESS proxy (Direction B), which DAT-008's Direction A (env + sandbox_local_only) never uses; re-pointed to the worker function that redeems the handle and returns the values that become per-run canaries. synthesiseRunSecrets is referenced by composeDispatchRuntime (dispatch-runtime.ts) behind the default-OFF flag, and the redaction is PROVEN by a planted-leak test on BOTH streams (supervisor-secret-materialization.test.ts: a seeded secret in a lifecycle log AND in a fence-close network_denied is scrubbed to the marker; an unseeded control leaks it verbatim). What remains for Sprint 5 is a real sandbox authenticating over live E2B (parent DAT-008 design §9 limit 3) — the wiring checker reads caller count, not this field, so that residual lives in the test evidence."
     },
     "E7-1-coding-journey": {
       "epic": "E7",

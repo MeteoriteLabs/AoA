@@ -117,6 +117,28 @@ export const SELF_HELLO_DESCRIPTOR = Object.freeze({
 });
 
 /**
+ * DAT-008 slice 5 — the sandbox-local execution-secret RESOLVE route.
+ *
+ * ★ NOT a frozen wire op (E4-D02 keeps `WORKER_PROTOCOL_OPERATIONS` a closed ten), so a LOCAL op
+ * with a LOCAL descriptor, mounted under `/api/worker-control/`. The path is duplicated from the
+ * server route and the `/api` mount is PART of the signed contract — the device proof is signed
+ * OVER this exact string, so a drift is a signature that can never verify, not a 404. Pinned by
+ * `scripts/check-worker-path-parity.mjs`.
+ *
+ * Unlike renewal/self-hello, the resolved VALUE returns in the response BODY (not a header), so
+ * this reuses `postOperation`. The worker MUST branch on the body's `outcome` — a `denied` outcome
+ * is also HTTP 200 (server: `worker-control.ts` `denyMalformed`), so a status check would fail OPEN.
+ */
+export const EXECUTION_SECRET_RESOLVE_PATH = "/api/worker-control/execution-secrets/resolve";
+
+/** Local descriptor for the resolve request. Mirrors the server descriptor
+ * (`services/execution-secret-resolve.ts` EXECUTION_SECRET_RESOLVE_DESCRIPTOR): 4 KiB / 10s. */
+export const EXECUTION_SECRET_RESOLVE_DESCRIPTOR = Object.freeze({
+  maxRequestBytes: 4 * 1024,
+  timeoutMs: 10_000,
+});
+
+/**
  * The lease-ack route path for `leaseId`. The device proof MUST be signed over
  * this EXACT string — it is the request path the server verifies against
  * (`req.originalUrl`). `leaseId` is a UUID, so encoding is a no-op, but we encode
@@ -219,6 +241,8 @@ export interface ControlPlaneClient {
   readonly sessionRenewPath: string;
   /** The self-hello-refresh path the proof must be signed over (WRK-011, LOCAL op). */
   readonly selfHelloRefreshPath: string;
+  /** The execution-secret resolve path the proof must be signed over (DAT-008 slice 5, LOCAL op). */
+  readonly executionSecretResolvePath: string;
   /** The lease-ack path for `leaseId` (the proof must be signed over it). */
   leaseAckPath(leaseId: string): string;
   /** The lease-renew path for `leaseId` (the proof must be signed over it, WRK-005). */
@@ -253,6 +277,12 @@ export interface ControlPlaneClient {
    * live session as Bearer + a fresh device proof; on 200 the NEW session token is in the
    * `aoa-worker-session` response header (like renewal). A 204 means the refresh was a no-op. */
   selfHelloRefresh(request: WorkerOperationHttpRequest): Promise<SessionRenewHttpResponse>;
+  /** POST a device-authenticated execution-secret resolve (LOCAL op, 4 KiB / 10s, DAT-008 slice 5).
+   * Presents the live session as Bearer + a fresh device proof; on 200 the body carries either
+   * `{outcome:"resolved", envTarget, value}` OR `{outcome:"denied", reason}` — the caller MUST
+   * branch on `outcome`, since a denial is ALSO HTTP 200. The value returns in the body (not a
+   * header), so this reuses `postOperation`. */
+  resolveExecutionSecret(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
 }
 
 export interface ControlPlaneClientOptions {
@@ -316,7 +346,8 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
       | "event_upload"
       | "artifact_commit"
       | "artifact_transfer_grant"
-      | "self_model_read",
+      | "self_model_read"
+      | "execution_secret_resolve",
     targetPath: string,
     perOpTimeoutMs: number,
     maxBytes: number,
@@ -374,8 +405,18 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
     selfModelReadPath: SELF_MODEL_READ_PATH,
     sessionRenewPath: SESSION_RENEW_PATH,
     selfHelloRefreshPath: SELF_HELLO_PATH,
+    executionSecretResolvePath: EXECUTION_SECRET_RESOLVE_PATH,
     leaseAckPath,
     leaseRenewPath,
+    resolveExecutionSecret(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
+      return postOperation(
+        "execution_secret_resolve",
+        EXECUTION_SECRET_RESOLVE_PATH,
+        EXECUTION_SECRET_RESOLVE_DESCRIPTOR.timeoutMs,
+        EXECUTION_SECRET_RESOLVE_DESCRIPTOR.maxRequestBytes,
+        request,
+      );
+    },
     selfModelRead(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
       return postOperation(
         "self_model_read",

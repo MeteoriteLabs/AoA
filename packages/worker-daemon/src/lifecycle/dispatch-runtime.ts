@@ -27,6 +27,7 @@ import {
 import {
   createPollLoop,
   createSessionProvider,
+  type LeaseHandoff,
   type PollLoopController,
   type SessionProvider,
   type SupervisorSeam,
@@ -34,6 +35,8 @@ import {
 import { ConcurrencyLimiter } from "../poll/concurrency.js";
 import { createHostCapacityProbes, defaultHostProbeReaders } from "../poll/host-probes.js";
 import { createSupervisor } from "../supervisor/supervisor.js";
+import { createRunCanaryCoordinator } from "../supervisor/run-canaries.js";
+import { createRedeemer, synthesiseRunSecrets } from "../lease/secret-redemption.js";
 import { createLeaseRenewalDriver, createRealRenewalSchedule } from "../lease/lease-renewal.js";
 import { openEventOutboxStore, type DurableEventStore } from "../events/event-outbox-store.js";
 import { DurableWorkerEventSink } from "../events/durable-event-sink.js";
@@ -121,13 +124,44 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
   // (1) RECOVER before the supervisor can emit into the store.
   drain.recover();
 
-  // NO observeRun: the one hook that would carry sandbox stdout/stderr into the event stream is
-  // deliberately absent, which is what makes `redactionCanaries: []` safe (nothing to redact).
+  // DAT-008 slice 5 — the per-lease canary coordinator, shared by the supervisor and the driver's
+  // fence-close proxy so ONE redemption seeds BOTH event streams (per-run, before create).
+  const canaryCoordinator = createRunCanaryCoordinator();
+
+  // DAT-008 slice 5 — per-run secret materialisation: redeem the envelope's `env`/`sandbox_local_only`
+  // handles via the LOCAL resolve route (device proof + the live session), synthesise the sandbox
+  // env, and return the redeemed values to seed as canaries. Fails CLOSED inside the supervisor.
+  const materializeRunSecrets = async (
+    handoff: LeaseHandoff,
+  ): Promise<{ env: Record<string, string>; canaries: readonly string[] }> => {
+    const workerSession = await session.get();
+    const redeem = createRedeemer({
+      client: deps.client,
+      key: deps.key,
+      session: workerSession,
+      fence: {
+        workerId: String(handoff.offer.workerId),
+        jobId: String(handoff.offer.job.jobId),
+        attempt: handoff.offer.job.attempt,
+        leaseId: handoff.leaseId,
+        fenceToken: String(handoff.fenceToken),
+      },
+    });
+    return synthesiseRunSecrets(handoff.offer.job.secretHandles ?? [], redeem);
+  };
+
+  // `redactionCanaries: []` is the construction-time PREFIX; the run's real canaries are seeded
+  // PER-RUN into the coordinator's per-lease array (below), never at construction — so no
+  // construction-time secret exists and a forgotten seeding cannot fail open. observeRun stays
+  // absent (no sandbox stdout/stderr rides the stream yet), but the redeemed provider key does now
+  // transit the supervisor transiently, which is exactly what the per-run canaries scrub.
   const supervisor = makeSupervisor({
     provider: deps.provider,
     identity,
     eventSink,
     redactionCanaries: [],
+    materializeRunSecrets,
+    canaryCoordinator,
     logger: deps.logger,
     metrics: deps.metrics,
   });
@@ -141,6 +175,7 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     supervisor,
     schedule: makeSchedule(),
     eventSink,
+    canaryCoordinator,
     logger: deps.logger,
     metrics: deps.metrics,
   });

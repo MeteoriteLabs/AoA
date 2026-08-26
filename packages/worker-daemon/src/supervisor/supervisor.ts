@@ -44,6 +44,7 @@ import {
   type ResourceLabels,
   type SandboxProvider,
 } from "./provider.js";
+import type { RunCanaryCoordinator } from "./run-canaries.js";
 
 /** CLI-003/D3 — a captured stdout/stderr/system log line to turn into a `log` event. */
 export interface RunObservationLogEntry {
@@ -129,6 +130,26 @@ export interface SupervisorDeps {
    * a throw is logged and never fails the run.
    */
   readonly observeRun?: (input: { handoff: LeaseHandoff; exec: ExecuteResult }) => RunObservation | Promise<RunObservation>;
+  /**
+   * DAT-008 slice 5 — PER-RUN secret materialisation. Given a handoff, redeems the envelope's
+   * `env`/`sandbox_local_only` handles and returns the sandbox `env` plus the redeemed values (to
+   * seed as per-run redaction canaries). Absent (the default) = no secrets, `env` stays `{}` —
+   * byte-identical pre-slice-5 behaviour. A THROW or a TIMEOUT fails the attempt CLOSED: a durable
+   * terminal is emitted and cleanup escalated, and NO sandbox is created.
+   */
+  readonly materializeRunSecrets?: (handoff: LeaseHandoff) => Promise<{ env: Record<string, string>; canaries: readonly string[] }>;
+  /**
+   * DAT-008 slice 5 — the per-lease canary coordinator shared with the fence-close proxy, so ONE
+   * redemption seeds BOTH event streams. Absent = the supervisor uses its own per-run array
+   * (seeded from `redactionCanaries`); the proxy sink is simply not fed (unit/non-driver builds).
+   */
+  readonly canaryCoordinator?: RunCanaryCoordinator;
+  /**
+   * DAT-008 slice 5 (R6) — the redemption budget, in ms. CARVED FROM `createDeadlineMs` (clamped to
+   * it) and SUBTRACTED from the create budget, so a slow control plane cannot extend the run's wall
+   * clock. Default 5000.
+   */
+  readonly secretRedeemDeadlineMs?: number;
 }
 
 export type SupervisorRunStatus = "succeeded" | "failed" | "cancelled" | "create_timeout";
@@ -166,6 +187,9 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   const createDeadlineMs = deps.createDeadlineMs ?? 30_000;
   const opDeadlineMs = deps.opDeadlineMs ?? 60_000;
   const cleanupDeadlineMs = deps.cleanupDeadlineMs ?? 30_000;
+  // DAT-008 slice 5 (R6): the redemption budget is CARVED FROM the create budget — never larger —
+  // so redeem + create together stay within `createDeadlineMs`.
+  const secretRedeemDeadlineMs = Math.min(deps.secretRedeemDeadlineMs ?? 5_000, createDeadlineMs);
   const schedule = deps.setTimeoutFn ?? ((fn, ms) => setTimeout(fn, ms));
   const cancelTimer = deps.clearTimeoutFn ?? ((h) => clearTimeout(h));
 
@@ -202,11 +226,13 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     };
   }
 
-  function createSpecFor(handoff: LeaseHandoff, labels: ResourceLabels): CreateSandboxSpec {
+  function createSpecFor(handoff: LeaseHandoff, labels: ResourceLabels, env: Readonly<Record<string, string>>): CreateSandboxSpec {
     const workload = handoff.offer.job.workload as Record<string, unknown>;
     const command = typeof workload.command === "string" ? workload.command : handoff.offer.job.workloadType;
     const args = Array.isArray(workload.args) ? (workload.args as unknown[]).map(String) : [];
-    return { resourceLabels: labels, command, args, env: {}, workloadType: handoff.offer.job.workloadType };
+    // DAT-008 slice 5 — `env` is the redeemed provider-credential map (M2). Empty when no
+    // `env`/`sandbox_local_only` handle rides the envelope, preserving pre-slice-5 behaviour.
+    return { resourceLabels: labels, command, args, env, workloadType: handoff.offer.job.workloadType };
   }
 
   async function withDeadline<T>(op: Promise<T>, deadlineMs: number): Promise<T | typeof TIMEOUT> {
@@ -283,22 +309,66 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   }
 
   async function runLifecycle(handoff: LeaseHandoff, run: ActiveRun): Promise<void> {
+    // DAT-008 slice 5 — the PER-RUN canary array. When a coordinator is present the fence-close
+    // proxy captures this SAME array (by leaseId) at construction, so seeding it once — before
+    // create, before any emit — scrubs BOTH the lifecycle stream (this sequencer) and the proxy's
+    // post-close `network_denied` stream. `deps.redactionCanaries` (composed `[]`) is the prefix,
+    // so no construction-time secret ever exists; the run's secrets are seeded per-run below.
+    const runCanaries: string[] = deps.canaryCoordinator
+      ? deps.canaryCoordinator.ensure(handoff.leaseId)
+      : [...(deps.redactionCanaries ?? [])];
     const events = new EventSequencer({
       identity: deliveryIdentity(handoff),
       sink: deps.eventSink,
       newEventId,
       now: nowIso,
-      // Scrub per-run secret canaries from the PRIMARY lifecycle stream too — not
-      // only the fence-close denial stream — so redaction is uniform across every
-      // sink that feeds the durable outbox (E4-D12 seeds the canaries; [] until then).
-      redactionCanaries: deps.redactionCanaries,
+      redactionCanaries: runCanaries,
     });
-    const spec = createSpecFor(handoff, run.labels);
 
-    // 1. create — raced against its deadline (a hung create escalates cleanup).
+    // 0. materialize secrets — redeem the envelope's `env`/`sandbox_local_only` handles under a
+    // deadline CARVED FROM the create budget (R6). FAIL CLOSED: any denial/timeout/throw emits a
+    // durable terminal and escalates cleanup WITHOUT creating a sandbox — a partial/empty env would
+    // burn a provider round-trip and surface a misleading auth error much later.
+    let env: Readonly<Record<string, string>> = {};
+    let secretElapsedMs = 0;
+    if (deps.materializeRunSecrets) {
+      const t0 = now();
+      let mat;
+      try {
+        mat = await withDeadline(deps.materializeRunSecrets(handoff), secretRedeemDeadlineMs);
+      } catch (err) {
+        deps.logger?.warn(
+          { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels) },
+          "supervisor: secret redemption failed — failing the attempt closed",
+        );
+        await events.terminal({ status: "failed", exitCode: null, errorCode: "secret_redemption_failed", errorMessage: null });
+        await escalateCleanup(run, "secret_redemption_error");
+        return;
+      }
+      if (mat === TIMEOUT) {
+        deps.logger?.warn(
+          { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels) },
+          "supervisor: secret redemption deadline exceeded — failing the attempt closed",
+        );
+        await events.terminal({ status: "failed", exitCode: null, errorCode: "secret_redemption_timeout", errorMessage: null });
+        await escalateCleanup(run, "secret_redemption_timeout");
+        return;
+      }
+      // Seed the run's redeemed values BEFORE create and BEFORE any emit that could carry one
+      // (M7 ordering). Because `runCanaries` is the array both sinks captured, this one push feeds
+      // the lifecycle stream AND the fence-close proxy stream.
+      runCanaries.push(...mat.canaries);
+      env = mat.env;
+      secretElapsedMs = now() - t0;
+    }
+    const spec = createSpecFor(handoff, run.labels, env);
+
+    // 1. create — raced against its deadline, REDUCED by the redemption time so redeem + create stay
+    // within `createDeadlineMs` (R6 "subtracted, not added").
+    const createBudget = Math.max(0, createDeadlineMs - secretElapsedMs);
     let created;
     try {
-      created = await withDeadline(run.effect.create(spec, ctx()), createDeadlineMs);
+      created = await withDeadline(run.effect.create(spec, ctx()), createBudget);
     } catch (err) {
       emitOp("create", "failed");
       await events.terminal({ status: "failed", exitCode: null, errorCode: "create_failed", errorMessage: null });
