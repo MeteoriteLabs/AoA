@@ -32,7 +32,7 @@
     },
     "E4-F013": {
       "status": "unowned",
-      "reason": "MED, and deliberately unowned: it is a hole in the ownership guard itself, so no product ticket is the natural owner and attaching it to one would be the same false-ownership move it describes. finding-ownership.mjs:118-120 tests only that ownerStillOpen is NON-EMPTY, so three live entries (E4-F008, E4-F009 -> WRK-008; E6-F003 -> DEP-010) will read as owned by shipped tickets the moment those tickets get result docs. The proposed fix is checkable -- when the owning ticket has a result doc, require a `successor` field naming a ticket that exists on disk -- but it is a guard change and needs its own RED test plus a deleted-guard mutation. Blocks nothing today."
+      "reason": "MED, and deliberately unowned: it is a hole in the ownership guard itself, so no product ticket is the natural owner and attaching it to one would be the same false-ownership move it describes. finding-ownership.mjs:118-120 tests only that ownerStillOpen is NON-EMPTY, so an entry can read as owned by a shipped ticket the moment that ticket gets a result doc (the reason E4-F008/E4-F009 were repointed off shipped WRK-008 to the on-disk stubs WRK-012/WRK-013 by author discipline, and E6-F003 off DEP-010 to DEP-011 — the guard did not force it). The proposed fix is checkable -- when the owning ticket has a result doc, require a `successor` field naming a ticket that exists on disk -- but it is a guard change and needs its own RED test plus a deleted-guard mutation. Blocks nothing today."
     },
     "E4-F014": {
       "status": "unowned",
