@@ -723,9 +723,26 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    # Full server + ui + embedded-PG integration suites now run ~37 min (test
-    # phase alone), and the build step needs ~8 more — 45 left no margin (a green
-    # 17.4k-test run was canceled mid-build at 45m18s). 60 adds durable headroom.
+    # Sharded into a parallel matrix — see docs/replatform/CI-VERIFY-PARALLELIZATION.md.
+    # The `Run tests` step ran the whole monorepo suite (vitest over all 25
+    # projects[]) in ONE lane: ~56 min at vitest maxForks=2, which capped out at 60
+    # on 5+ consecutive runs (GO-BOOK §2.0) — a VOLUME problem (156+ embedded-PG
+    # integration files, one lane), not a hang (the suite runs to completion).
+    # `vitest run --shard=i/4` splits the file set across 4 runners so each shard
+    # lands ~28 min. fail-fast:false so a red shard does NOT cancel its siblings —
+    # we want the full picture. Aggregation stays correct: ci-required's
+    # R_VERIFY = needs.verify.result is `success` ONLY if EVERY leg succeeds, so a
+    # single shard failure still fails the required gate (no pass-by-skip) — the
+    # same matrix-into-ci-required pattern worker-protocol-contract-bytes already
+    # relies on. Do NOT add continue-on-error (it would let a failed leg report
+    # success).
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # UNCHANGED — a PER-SHARD cap now; each shard lands far under it. Do NOT raise:
+    # a shard that still can't finish under 60 is a signal to shard finer or to
+    # investigate a slow test, never to raise the cap (GO-BOOK §2.0).
     timeout-minutes: 60
 
     steps:
@@ -771,7 +788,20 @@ jobs:
         run: pnpm -r typecheck
 
       - name: Run tests
-        run: pnpm test:run
+        # Invoke vitest DIRECTLY via `pnpm exec` (the same form the browser lane
+        # uses), NOT `pnpm test:run -- --shard=…`: pnpm 9.15.4 forwards the `--`
+        # literally, so `pnpm test:run -- --shard=1/4` runs `vitest run -- --shard=1/4`
+        # and vitest's cac parser treats everything after the bare `--` as non-option
+        # passthrough — the shard flag is SILENTLY IGNORED and every shard runs the
+        # whole suite (proven on run 33012727670: 4 shards each ~52 min, no split).
+        # `pnpm exec vitest run --shard=…` passes the flag cleanly.
+        #
+        # The --shard denominator MUST equal the matrix length above (4). vitest
+        # 3.2.6 hashes each spec's project-relative path and slices a disjoint
+        # partition, so the 4 shards' union is exactly the full file set — no spec
+        # dropped, none run twice (verified on the PR: Σ per-shard Test Files =
+        # single-lane count; check-test-inventory unchanged).
+        run: pnpm exec vitest run --shard=${{ matrix.shard }}/4
 
       - name: Build
         run: pnpm build
