@@ -1583,6 +1583,84 @@ When green (to the extent the session CAN close it):
 If you find something mid-sprint that invalidates the premise, STOP and say so.
 ```
 
+### CI hardening — parallelize `verify` + tidy memory (one clean-up session before S6)
+
+**Retire the §2.0 CI drag before the breadth sprints.** `verify` is one 60-min job that times out
+on volume (~165 embedded-PG integration tests, one lane); after E4-F017 the timeout is its ONLY red
+reason. Shard it into a parallel matrix so `ci-required` goes green, then do a quick memory
+consolidation. **Self-contained — no operator step, no real spend.**
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §2.0 (the verify timeout — do NOT raise it), §2 (the per-ticket
+   process), §5 (debt), and the CI-platform notes in §1/the CI status section.
+2. docs/replatform/CI-VERIFY-PARALLELIZATION.md — the scoping doc: the measured problem, the
+   hard "do NOT"s (don't raise the timeout, don't break the ci-required wiring, no paths filter),
+   the fix shape, and the acceptance.
+3. .github/workflows/pr.yml — the `verify` job (~:729) and the `ci-required` aggregator (~:1316,
+   its `needs` lists `verify` BY NAME, and it computes the verdict from needs.*.result). Read
+   how R_VERIFY is derived.
+4. vitest.config.ts — the single `projects: [...]` run and `pool: "forks"`.
+
+STEP 0 — DIAGNOSTIC (before any workflow edit). Confirm the slowness is VOLUME, not a single
+pathological/hung test: verify went from ~40 min green (b296d9ee9) to ~60 min around 2026-08-24.
+Measure the per-file / per-project timing enough to (a) rule out a hang and (b) balance the shards.
+If you find a real hang or a pathological test, STOP, file it as a finding, and bring it back —
+sharding must not hide it.
+
+STEP 1 — WRITE THE PLAN to the Sprint 1-3 standard (verified CI state with the exact pr.yml lines,
+the matrix design justified by your measured timing, the ci-required wiring analysis, and an
+acceptance table). Overwrite CI-VERIFY-PARALLELIZATION.md with it (it lives outside epics/tickets,
+so no graph node is needed). Then execute.
+
+THE FIX — shard `verify` into a parallel matrix (`vitest run --shard=i/N`), N chosen from your
+measured timing so the slowest shard is comfortably under an UN-RAISED cap. fail-fast: false so a
+red shard does not cancel the others.
+
+THE THREE HARD CONSTRAINTS (all provable, all in the acceptance table):
+- The timeout is NOT raised. If a shard still can't finish under cap, that is a signal to shard
+  finer or to investigate a slow test — never to raise the cap.
+- ci-required STILL fails on a real failure. This is the security-critical part: a matrix surfaces
+  as several check runs, and a mis-wire can let a shard failure pass through as pass-by-skip. PROVE
+  it: temporarily force one shard to fail (e.g. a throwaway `expect(false)` on a branch) on a scratch
+  push, confirm ci-required goes RED, then remove it. Do not land the proof, land the evidence.
+- No test file is silently dropped. The union of the shards must equal today's full set — the
+  execution-census / test-inventory guards must stay green, and the total count must not fall.
+
+Binding rules:
+- Only `verify` changes. Do NOT touch e2e/e2e-pgvector/keyed lanes, and do NOT add a
+  paths/paths-ignore trigger filter (route conditional execution through ci-required).
+- packages/worker-protocol is FROZEN (you are not touching it; noted for completeness).
+- Cite living documents by SECTION AND ID, never by line. Any new script/test file that a policy
+  guard tracks (*.test.mjs → execution-census; check-*.mjs → guard-inventory) must be registered in
+  the same commit.
+
+BEFORE you call it done, run the ADVERSARIAL REVIEW with subagents:
+- An independent reviewer that reads the pr.yml diff and confirms, from the workflow semantics, that
+  a shard failure reaches ci-required (no pass-by-skip) and that fail-fast:false is set.
+- A SKEPTIC told to find a way a broken shard could report green — default "refuted" only if it
+  genuinely cannot construct one.
+- A completeness check: is any test file now in zero shards, or in two?
+Do NOT delegate to a plan-writing or auto-fixing skill.
+
+FINAL STEP — MEMORY CONSOLIDATION. Invoke the consolidate-memory skill (/consolidate-memory) to
+merge duplicates, fix stale facts, and prune the MEMORY.md index, which is near its size limit. This
+is housekeeping on the AI memory files, separate from the code change; do it last so it cannot
+interfere with the CI work.
+
+When green:
+- Run all five registers; every one must pass.
+- Update GO-BOOK §2.0 and §5: the verify timeout debt is RETIRED (or, if the diagnostic found a real
+  hang, narrow §2.0 to that filed finding instead of claiming it fixed).
+- Commit, push, and WATCH the real CI run: confirm every verify shard goes green and ci-required
+  passes for the first time in the programme. Report the shard wall-clocks honestly.
+
+If you find something mid-session that invalidates the premise (e.g. the slowness IS a hang), STOP
+and say so rather than sharding around it.
+```
+
 ### Sprints 4-9 — the template
 
 These have scope and sequence but no implementation plan, deliberately: a plan written five
