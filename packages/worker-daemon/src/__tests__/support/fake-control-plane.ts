@@ -78,6 +78,11 @@ const QUARANTINE_GRANT_PATH = "/api/worker-control/quarantine/grant";
 const QUARANTINE_FINALIZE_PATH = "/api/worker-control/quarantine/finalize";
 // WRK-006: the event-upload route (audience worker_run; mirrors the client).
 const EVENT_UPLOAD_PATH = "/api/worker-control/events";
+// DAT-008 slice 5 / CLI-006 D2 Step 1: the LOCAL execution-secret resolve route
+// (audience worker_run; mirrors the client's EXECUTION_SECRET_RESOLVE_PATH). A
+// denial is ALSO HTTP 200 (`{outcome:"denied"}`), so a status-only worker check
+// would fail open — the fake models that gotcha faithfully.
+const EXECUTION_SECRET_RESOLVE_PATH = "/api/worker-control/execution-secrets/resolve";
 
 /** The lease-renew window the fake selects on a `renewed` outcome. */
 const DEFAULT_RENEW_WINDOW_MS = 60_000;
@@ -314,6 +319,13 @@ export interface FakeControlPlane {
   eventUploadKeys(): readonly string[];
   /** The cumulative acceptedThroughSeq the plane recorded for a stream. */
   eventStreamAcceptedThrough(streamKey: string): number;
+  // --- DAT-008 slice 5 execution-secret resolve controls ---
+  /** Seed a `resolved` outcome for a handle id (the LOCAL resolve route returns its
+   * envTarget+value). A handle with NO seeded resolution is `denied` — the fail-closed
+   * path the worker branches on. */
+  seedSecretResolution(handleId: string, resolution: { readonly envTarget: string; readonly value: string }): void;
+  /** How many resolve requests the plane has answered for a handle id. */
+  resolveCountFor(handleId: string): number;
   expireSession(token: string): void;
   expireCode(code: string): void;
   revokeTarget(): void;
@@ -489,6 +501,9 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
   const quarantineRecordList: FakeQuarantineRecord[] = [];
   const eventUploadDirectives: FakeEventUploadDirective[] = [];
   const eventUploadRecordList: FakeEventUploadRecord[] = [];
+  // DAT-008 slice 5 execution-secret resolve: seeded `resolved` outcomes + per-handle request counts.
+  const secretResolutions = new Map<string, { envTarget: string; value: string }>();
+  const resolveRequestCounts = new Map<string, number>();
   // Cumulative per-stream watermark the plane has accepted through.
   const eventStreamAccepted = new Map<string, number>();
   let eventUploadRequestCount = 0;
@@ -640,6 +655,10 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     }
     if (method === "POST" && pathname === EVENT_UPLOAD_PATH) {
       await handleEventUpload(req, res, url, method);
+      return;
+    }
+    if (method === "POST" && pathname === EXECUTION_SECRET_RESOLVE_PATH) {
+      await handleExecutionSecretResolve(req, res, url, method);
       return;
     }
     record(method, url, 404, "not_found", null, null);
@@ -1744,6 +1763,64 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     }
   }
 
+  // DAT-008 slice 5 / CLI-006 D2 Step 1 — the LOCAL execution-secret resolve. Dual-authenticated
+  // (Bearer session + a fresh device proof over the resolve path), then answered from the seeded
+  // resolution table. A denial is HTTP 200 with `{outcome:"denied"}` — the fail-open gotcha the
+  // worker's body-keyed classifier defends against. The request body carries its own correlationId
+  // (like poll/ack) and the handleId whose value is being resolved.
+  async function handleExecutionSecretResolve(req: IncomingMessage, res: ServerResponse, url: string, method: string): Promise<void> {
+    let status = 200;
+    let outcome = "resolved";
+    let recordedProofId: string | null = null;
+    let recordedThumbprint: string | null = null;
+    const finish = (): void => record(method, url, status, outcome, recordedProofId, recordedThumbprint);
+
+    const rawBody = await readBody(req);
+    const proof = readProofHeaders(req);
+    recordedProofId = proof?.proofId ?? null;
+    const parsedBody = safeJson(rawBody) as Record<string, unknown> | null;
+    const correlationId = typeof parsedBody?.correlationId === "string" ? parsedBody.correlationId : "";
+    const auth = authenticateOperation(req, method, url, rawBody, correlationId, proof);
+    if (!auth.ok) {
+      recordedThumbprint = auth.thumbprint;
+      status = auth.status;
+      outcome = "unauthorized";
+      operationError(res, auth.status, auth.code, correlationId);
+      finish();
+      return;
+    }
+    recordedThumbprint = auth.thumbprint;
+
+    const handleId = typeof parsedBody?.handleId === "string" ? parsedBody.handleId : "";
+    resolveRequestCounts.set(handleId, (resolveRequestCounts.get(handleId) ?? 0) + 1);
+    const seeded = secretResolutions.get(handleId);
+    if (seeded === undefined) {
+      // No seeded resolution ⇒ DENY (HTTP 200). The worker must fail the run closed.
+      status = 200;
+      outcome = "denied";
+      sendJson(res, 200, {
+        protocolVersion: 1,
+        correlationId,
+        serverTime: new Date(now()).toISOString(),
+        outcome: "denied",
+        reason: "unknown_handle",
+      });
+      finish();
+      return;
+    }
+    status = 200;
+    outcome = "resolved";
+    sendJson(res, 200, {
+      protocolVersion: 1,
+      correlationId,
+      serverTime: new Date(now()).toISOString(),
+      outcome: "resolved",
+      envTarget: seeded.envTarget,
+      value: seeded.value,
+    });
+    finish();
+  }
+
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${address.port}`;
@@ -1863,6 +1940,12 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     },
     eventStreamAcceptedThrough(streamKey: string): number {
       return eventStreamAccepted.get(streamKey) ?? 0;
+    },
+    seedSecretResolution(handleId: string, resolution: { envTarget: string; value: string }): void {
+      secretResolutions.set(handleId, { ...resolution });
+    },
+    resolveCountFor(handleId: string): number {
+      return resolveRequestCounts.get(handleId) ?? 0;
     },
     expireSession(token: string): void {
       const session = sessions.get(token);

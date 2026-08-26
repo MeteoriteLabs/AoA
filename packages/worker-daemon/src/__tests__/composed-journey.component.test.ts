@@ -45,6 +45,23 @@ const CODE = "composed-journey-code";
 /** The fake provider derives the sandbox id from the offer's job/attempt/lease labels. */
 const SANDBOX_ID = `fake-sbx-${POLL_FIXTURE_IDS.job}-1-${POLL_FIXTURE_IDS.lease}`;
 
+/** A CLI-007-shaped Company provider_key handle: an `env` capability delivered `sandbox_local_only`
+ * into an allowlisted provider-auth env var. This is what the canary now mints (CLI-007). */
+const SECRET_HANDLE = {
+  handleId: POLL_FIXTURE_IDS.secretHandle,
+  materialization: { kind: "env", target: "ANTHROPIC_API_KEY" },
+  usePolicy: "sandbox_local_only",
+} as const;
+/** A synthetic fixture value — never a real key. The S4 canary tripwire proves it never logs. */
+const REDEEMED_VALUE = "sk-ant-fixture-composed-journey-000";
+
+/** A live-window offer carrying the CLI-007 secret handle on its job envelope. */
+function credentialOffer() {
+  const offer = liveOffer();
+  (offer.job as Record<string, unknown>).secretHandles = [SECRET_HANDLE];
+  return offer;
+}
+
 let fake: FakeControlPlane;
 let workDir: string;
 let runtime: DispatchRuntime | null;
@@ -68,12 +85,18 @@ afterEach(async () => {
   rmSync(workDir, { recursive: true, force: true });
 });
 
-async function waitFor(predicate: () => boolean, timeoutMs = 8000): Promise<void> {
+/**
+ * Wait up to `timeoutMs` for `predicate`, RESOLVING to whether it became true (never throws).
+ * The specifics are then asserted explicitly, so a mutant that skips a hop is killed by a clear
+ * assertion — never by an unrelated suite deadline (go-book §2.2).
+ */
+async function settle(predicate: () => boolean, timeoutMs = 6000): Promise<boolean> {
   const start = Date.now();
   while (!predicate()) {
-    if (Date.now() - start > timeoutMs) throw new Error("timeout waiting for the composed run to complete");
+    if (Date.now() - start > timeoutMs) return false;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+  return true;
 }
 
 /** A live-window offer (the fixture's ackDeadline/expiresAt are historical). */
@@ -123,7 +146,7 @@ describe("composed-journey.component — createPollLoop + createSupervisor take 
     runtime = await composeWith(liveOffer(), provider);
     runtime.start();
 
-    await waitFor(() => fake.ackCountFor(POLL_FIXTURE_IDS.lease) === 1 && provider.callCount("destroy") === 1);
+    await settle(() => fake.ackCountFor(POLL_FIXTURE_IDS.lease) === 1 && provider.callCount("destroy") === 1);
 
     // E4-1: the composed loop took a real lease through the protocol (one ACK, for the offered lease).
     expect(fake.ackCountFor(POLL_FIXTURE_IDS.lease)).toBe(1);
@@ -145,15 +168,56 @@ describe("composed-journey.component — createPollLoop + createSupervisor take 
     runtime = await composeWith(liveOffer(), provider);
     runtime.start();
 
-    await waitFor(() => fake.ackCountFor(POLL_FIXTURE_IDS.lease) === 1 && provider.callCount("destroy") === 1);
+    await settle(() => fake.ackCountFor(POLL_FIXTURE_IDS.lease) === 1 && provider.callCount("destroy") === 1);
     // Force the durable outbox to upload before asserting (the drain is otherwise timer-paced).
     await runtime.eventOutbox.flush();
 
-    await waitFor(() => fake.eventUploads().some((u) => u.count >= 2), 4000);
+    await settle(() => fake.eventUploads().some((u) => u.count >= 2), 4000);
     const uploaded = fake.eventUploads();
     // attempt_started + terminal were uploaded (the fake plane independently recomputes each digest,
     // so a re-stamp bug would 400 here rather than pass).
     const total = uploaded.reduce((sum, u) => sum + u.count, 0);
     expect(total).toBeGreaterThanOrEqual(2);
+  });
+
+  it("★ credential (CLI-007) — the composed loop REDEEMS the handle into the sandbox env, and the value never leaks", async () => {
+    fake.seedSecretResolution(SECRET_HANDLE.handleId, { envTarget: "ANTHROPIC_API_KEY", value: REDEEMED_VALUE });
+    const provider = createFakeSandboxProvider({});
+    runtime = await composeWith(credentialOffer(), provider);
+    runtime.start();
+
+    await settle(() => fake.ackCountFor(POLL_FIXTURE_IDS.lease) === 1 && provider.callCount("destroy") === 1);
+
+    // The lease was taken and the credentialed run completed.
+    expect(fake.ackCountFor(POLL_FIXTURE_IDS.lease)).toBe(1);
+    const ops = provider.calls().filter((c) => !c.replayed).map((c) => c.op);
+    expect(ops).toEqual(["create", "execute", "destroy"]);
+
+    // The redeemed value reached the sandbox env: job.secretHandles → resolveExecutionSecret →
+    // synthesiseRunSecrets → createSpecFor(spec.env) → provider.create. Exactly one resolve.
+    expect(fake.resolveCountFor(SECRET_HANDLE.handleId)).toBe(1);
+    expect(provider.peek(SANDBOX_ID)?.env.ANTHROPIC_API_KEY).toBe(REDEEMED_VALUE);
+
+    // Decision #104 — the redeemed value appears in NO drained event body (the S4 canary tripwire
+    // is armed on the composed path: the same synthesiseRunSecrets return that populated spec.env
+    // also seeds the per-run redaction canary). The redaction MECHANISM itself is proven on both
+    // streams with a planted-leak positive control by DAT-008 slice 5.
+    await runtime.eventOutbox.flush();
+    expect(JSON.stringify(fake.eventUploads())).not.toContain(REDEEMED_VALUE);
+  });
+
+  it("★ fail-closed — a DENIED redemption fails the run: no sandbox is ever created", async () => {
+    // No seeded resolution ⇒ the fake plane denies the handle ⇒ synthesiseRunSecrets throws ⇒ the
+    // supervisor fails the attempt CLOSED before create (DAT-008's core invariant, on the composed path).
+    const provider = createFakeSandboxProvider({});
+    runtime = await composeWith(credentialOffer(), provider);
+    runtime.start();
+
+    // The lease is still taken (redemption happens INSIDE the supervisor, after the ACK).
+    await settle(() => fake.ackCountFor(POLL_FIXTURE_IDS.lease) === 1 && fake.resolveCountFor(SECRET_HANDLE.handleId) >= 1);
+    expect(fake.ackCountFor(POLL_FIXTURE_IDS.lease)).toBe(1);
+    // Give the (failing) supervise a moment to settle, then assert NO sandbox was created.
+    await settle(() => provider.callCount("create") > 0, 500);
+    expect(provider.callCount("create")).toBe(0);
   });
 });
