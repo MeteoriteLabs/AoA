@@ -145,11 +145,12 @@ async function rootProducedProvider(extraEnv: Record<string, string>, load: Prov
 describe("DEP-010 — the provider arrives, and composition still happens nowhere", () => {
   it("root-produced provider ⇒ compose (flag on) / dispatch_disabled (flag off), via the REAL decision", async () => {
     const provider = await rootProducedProvider(OPT_IN, providerSeam());
+    const selfModelRead = { kind: "ok", selfModel: {} } as never;
     expect(
-      decideDispatchComposition({ provider: provider as never, dispatchEnabled: true, hasSelfModelReader: true, selfModel: {} as never }),
-    ).toEqual({ compose: true });
+      decideDispatchComposition({ provider: provider as never, dispatchEnabled: true, hasWorkerIdentity: true, hasEventOutboxPath: true, selfModelRead }),
+    ).toEqual({ compose: true, selfModel: {} });
     expect(
-      decideDispatchComposition({ provider: provider as never, dispatchEnabled: false, hasSelfModelReader: true, selfModel: {} as never }),
+      decideDispatchComposition({ provider: provider as never, dispatchEnabled: false, hasWorkerIdentity: true, hasEventOutboxPath: true, selfModelRead }),
     ).toEqual({ compose: false, reason: "dispatch_disabled" });
   });
 
@@ -158,7 +159,7 @@ describe("DEP-010 — the provider arrives, and composition still happens nowher
     expect(provider).toBeUndefined();
     for (const dispatchEnabled of [true, false]) {
       expect(
-        decideDispatchComposition({ provider: provider as never, dispatchEnabled, hasSelfModelReader: true, selfModel: null }),
+        decideDispatchComposition({ provider: provider as never, dispatchEnabled, hasWorkerIdentity: true, hasEventOutboxPath: true, selfModelRead: null }),
       ).toEqual({ compose: false, reason: "no_provider" });
     }
   });
@@ -194,13 +195,17 @@ describe("DEP-010 — the provider arrives, and composition still happens nowher
     expect(shutdownSteps).toEqual(["health-server"]);
   });
 
-  it("supporting: the same boot reports no_self_model_reader — proving the provider ARRIVED", async () => {
-    // Not no_provider (the provider arrived) and not no_self_model (the build has no reader yet).
-    // WRK-008 slice 2b retires this reason; §7 marks the paired mutation "demoted; retires with 2b".
+  it("supporting: the same boot reports no_worker_identity — proving the provider ARRIVED", async () => {
+    // ★ slice 2b RETIRES `no_self_model_reader` (DEP-010 §7 marked this "demoted; retires with
+    // 2b"). This `daemonEnv` is `mounted_secret` with no custody stores, so the enrolment block
+    // never runs: with the provider present and the flag on, gate 3 (`no_worker_identity`) is the
+    // deepest remaining fact — a BUILD/packaging problem, NOT `no_self_model` (an admin's job) and
+    // NOT `no_provider` (the provider arrived).
     const provider = await rootProducedProvider(OPT_IN, providerSeam());
     const { reasons } = await bootDaemon(daemonEnv({ AOA_WORKER_DISPATCH_ENABLED: "1" }), provider);
-    expect(reasons).toContain("no_self_model_reader");
+    expect(reasons).toContain("no_worker_identity");
     expect(reasons).not.toContain("no_provider");
+    expect(reasons).not.toContain("no_self_model_reader");
   });
 });
 

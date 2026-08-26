@@ -17,20 +17,24 @@ import {
   decideDispatchComposition,
   DISPATCH_REFUSAL_MESSAGES,
   type DispatchRefusalReason,
+  type SelfModelReadResult,
 } from "../index.js";
 import { createFakeSandboxProvider } from "./support/fake-provider.js";
+import type { WorkerSelfModel } from "../poll/capacity.js";
 
-describe("DEP-010 — decideDispatchComposition on the package barrel", () => {
+const OK: SelfModelReadResult = { kind: "ok", selfModel: {} as WorkerSelfModel };
+
+describe("decideDispatchComposition on the package barrel (DEP-010 surface, narrowed by 2b)", () => {
   it("the shipped-shape input (no provider) refuses with no_provider", () => {
-    // This is exactly the input `bin/worker-daemon.ts` builds on the shipped default:
-    // no provider injected. The deepest fact wins, so the reason is no_provider even
-    // with the flag flipped on and a reader claimed.
+    // Exactly the input `bin/worker-daemon.ts` builds on the shipped default: no provider.
+    // The deepest fact wins, so the reason is no_provider even with every later gate on.
     expect(
       decideDispatchComposition({
         provider: undefined,
         dispatchEnabled: true,
-        hasSelfModelReader: true,
-        selfModel: null,
+        hasWorkerIdentity: true,
+        hasEventOutboxPath: true,
+        selfModelRead: OK,
       }),
     ).toEqual({ compose: false, reason: "no_provider" });
   });
@@ -43,16 +47,18 @@ describe("DEP-010 — decideDispatchComposition on the package barrel", () => {
       decideDispatchComposition({
         provider,
         dispatchEnabled: true,
-        hasSelfModelReader: true,
-        selfModel: {} as never,
+        hasWorkerIdentity: true,
+        hasEventOutboxPath: true,
+        selfModelRead: OK,
       }),
-    ).toEqual({ compose: true });
+    ).toEqual({ compose: true, selfModel: OK.kind === "ok" ? OK.selfModel : undefined });
     expect(
       decideDispatchComposition({
         provider,
         dispatchEnabled: false,
-        hasSelfModelReader: true,
-        selfModel: {} as never,
+        hasWorkerIdentity: true,
+        hasEventOutboxPath: true,
+        selfModelRead: OK,
       }),
     ).toEqual({ compose: false, reason: "dispatch_disabled" });
   });
@@ -61,7 +67,9 @@ describe("DEP-010 — decideDispatchComposition on the package barrel", () => {
     const reasons: DispatchRefusalReason[] = [
       "no_provider",
       "dispatch_disabled",
-      "no_self_model_reader",
+      "no_worker_identity",
+      "no_event_outbox_path",
+      "no_session",
       "no_self_model",
     ];
     for (const reason of reasons) expect(DISPATCH_REFUSAL_MESSAGES[reason]).toBeTruthy();

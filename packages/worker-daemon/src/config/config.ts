@@ -42,6 +42,10 @@ export interface WorkerConfig {
    * flag is what stands between "someone wrote a composition root" and "every daemon
    * running that build starts taking real leases". */
   readonly dispatchEnabled: boolean;
+  /** `AOA_WORKER_EVENT_OUTBOX_PATH`. `null` when unset — NOT defaulted to a path (a default the
+   * container cannot write would turn every inert boot into a failure). The durable event outbox
+   * opens here; absence is a dispatch REFUSAL (`no_event_outbox_path`), never a no-op sink. */
+  readonly eventOutboxPath: string | null;
   readonly concurrency: {
     readonly batch: number;
     readonly browser: number;
@@ -67,6 +71,7 @@ export const ENV = {
   keyStoreMode: "AOA_WORKER_KEY_STORE_MODE",
   targetScope: "AOA_WORKER_TARGET_SCOPE",
   dispatchEnabled: "AOA_WORKER_DISPATCH_ENABLED",
+  eventOutboxPath: "AOA_WORKER_EVENT_OUTBOX_PATH",
   concurrencyBatch: "AOA_WORKER_CONCURRENCY_BATCH",
   concurrencyBrowser: "AOA_WORKER_CONCURRENCY_BROWSER",
   concurrencyService: "AOA_WORKER_CONCURRENCY_SERVICE",
@@ -167,6 +172,9 @@ export function loadWorkerConfig(env: Env): WorkerConfig {
   const keyStoreMode = parseEnumEnv(env, ENV.keyStoreMode, KEY_STORE_MODES);
   const targetScope = parseEnumEnv(env, ENV.targetScope, TARGET_SCOPES);
   const dispatchEnabled = parseDispatchEnabled(env);
+  // Whitespace is ABSENCE: `openEventOutboxStore("")` would open an anonymous DB that vanishes
+  // on restart. `|| null` (NOT `?? null`) folds empty/whitespace to null.
+  const eventOutboxPath = env[ENV.eventOutboxPath]?.trim() || null;
 
   const concurrency = Object.freeze({
     batch: parseIntEnv(env, ENV.concurrencyBatch, { defaultValue: 1, min: 0, max: 10000 }),
@@ -206,6 +214,7 @@ export function loadWorkerConfig(env: Env): WorkerConfig {
     keyStoreMode,
     targetScope,
     dispatchEnabled,
+    eventOutboxPath,
     concurrency,
     pollTimeoutMs,
     backoff,

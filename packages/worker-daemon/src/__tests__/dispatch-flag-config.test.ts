@@ -52,3 +52,28 @@ describe("WRK-008 slice 2 — dispatch flag", () => {
     expect(ENV.dispatchEnabled).toBe("AOA_WORKER_DISPATCH_ENABLED");
   });
 });
+
+describe("WRK-008 slice 2b — AOA_WORKER_EVENT_OUTBOX_PATH", () => {
+  it("is NULL when absent — NOT defaulted to a path", () => {
+    // A default path the container cannot write turns every existing deployment's inert
+    // boot into a failure. Killed by: default to "outbox.db".
+    expect(load().eventOutboxPath).toBeNull();
+  });
+
+  it("is the trimmed path when set", () => {
+    expect(load({ [ENV.eventOutboxPath]: "/var/lib/aoa/outbox.db" }).eventOutboxPath).toBe(
+      "/var/lib/aoa/outbox.db",
+    );
+  });
+
+  it("★ treats whitespace as ABSENCE (null), never an anonymous in-memory database", () => {
+    // openEventOutboxStore("") would open a DB that vanishes on restart — a durable outbox
+    // that is not durable. Killed by: `|| null` → `?? null` (which returns "" for whitespace).
+    expect(load({ [ENV.eventOutboxPath]: "" }).eventOutboxPath).toBeNull();
+    expect(load({ [ENV.eventOutboxPath]: "   " }).eventOutboxPath).toBeNull();
+  });
+
+  it("is surfaced in the ENV name map so it is documented, never logged with a value", () => {
+    expect(ENV.eventOutboxPath).toBe("AOA_WORKER_EVENT_OUTBOX_PATH");
+  });
+});

@@ -274,6 +274,12 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   // dressed up as a proven guard. It stays because the property is guarded one
   // layer out, and if that gate is ever loosened, the absence of this line would
   // silently switch enrolment on for the mode every shipped container uses.
+  // WRK-008 slice 2b (Step 7) — the identity gate takes a BOOLEAN, not the identity, so the
+  // record load + key derivation stay INSIDE the compose branch (zero residue on a refusing
+  // boot — §10). This is set from the enrolment OUTCOME already in scope, never a second
+  // `identityStore.load()`: a container leaves it `false` without touching anything (the block
+  // below is never entered), and both exits that imply an identity set it true.
+  let workerIdentityPresent = false;
   if (config.keyStoreMode === "os_keychain" && deps.identityStore && deps.receiptStore) {
     const runEnrollment = deps.enrollOnceFn ?? enrollOnce;
     const makeClient = deps.createClient ?? createControlPlaneClient;
@@ -338,6 +344,9 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
           { err, workerId: err.workerId, targetId: err.targetId },
           "worker-daemon could not obtain authority; running idle with the existing device identity",
         );
+        // The device HAS an identity (that is what makes this branch survivable) — the read
+        // just could not be authorized. Gate 3 is satisfied; a later gate decides dispatch.
+        workerIdentityPresent = true;
       } else {
         logger.error({ err }, "worker-daemon enrollment failed; refusing to start");
         // `.catch(() => {})` matters: a rejected close would otherwise escape
@@ -361,6 +370,8 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
           ? "worker-daemon already enrolled; skipping control-plane enrollment"
           : "worker-daemon enrolled",
       );
+      // Enrolled or already-enrolled ⇒ a device identity exists on disk. Gate 3 satisfied.
+      workerIdentityPresent = true;
     }
 
     // WRK-010 slice 2 — eagerly acquire the FIRST session, so first-session acquisition is
@@ -400,18 +411,22 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   // the concurrency limiter, capacity probes and event outbox threaded through, which is
   // its own pass. Until then a provider-bearing host still gets an honest answer, and the
   // one thing that CANNOT happen is silent non-dispatch.
+  // ★ Step 7 (below) does the full two-pass wiring: cheap gates first, then — only if the
+  // first answer is exactly `no_self_model` — the authenticated self-model read + second
+  // decision + composition. This first pass carries `selfModelRead: null` ("not attempted")
+  // and the real `hasWorkerIdentity`/`hasEventOutboxPath` values.
   const dispatch = decideDispatchComposition({
     provider: deps.provider,
     dispatchEnabled: config.dispatchEnabled,
-    // Slice 2b reads this over `client.selfModelRead`, which needs the session lifecycle
-    // threaded through. Until then no reader exists, and saying so is the whole point:
-    // reporting `no_self_model` here would send an operator to ask an admin for a
-    // placement profile that may already be set.
-    hasSelfModelReader: false,
-    selfModel: null,
+    hasWorkerIdentity: workerIdentityPresent,
+    hasEventOutboxPath: config.eventOutboxPath !== null,
+    selfModelRead: null,
   });
   if (!dispatch.compose) {
-    logger.info({ reason: dispatch.reason }, DISPATCH_REFUSAL_MESSAGES[dispatch.reason]);
+    logger.info(
+      { reason: dispatch.reason, ...(dispatch.logPayload ?? {}) },
+      DISPATCH_REFUSAL_MESSAGES[dispatch.reason],
+    );
   }
 
   // WRK-007: the one-shot startup reconciliation pass runs ONCE here — after the

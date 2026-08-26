@@ -72,16 +72,18 @@ describe("WRK-008 slice 2 — the daemon reports why it does not dispatch", () =
     expect(reasons).toContain("dispatch_disabled");
   });
 
-  it("★ flag ON + provider still refuses — and names the BUILD, not the operator", async () => {
-    // Slice 2b is what makes this compose. Until then the honest answer is that this
-    // build cannot read a self-model — NOT that the target is misconfigured, which would
-    // send someone to an admin for a profile that may already be set.
+  it("★ flag ON + provider still refuses — and names the BUILD (no device identity), not the operator", async () => {
+    // ★ slice 2b: `no_self_model_reader` is RETIRED. This boot is `mounted_secret` with no
+    // injected custody stores, so the enrolment block never runs and gate 3 fires:
+    // `no_worker_identity` — a build/packaging fact — NOT `no_self_model`, which would send
+    // someone to an admin for a placement profile that may already be set.
     const { reasons } = await boot(
       baseEnv({ AOA_WORKER_DISPATCH_ENABLED: "1" }),
       createFakeSandboxProvider({}),
     );
-    expect(reasons).toContain("no_self_model_reader");
+    expect(reasons).toContain("no_worker_identity");
     expect(reasons).not.toContain("no_self_model");
+    expect(reasons).not.toContain("no_self_model_reader");
   });
 
   it("the reason is a structured FIELD, not only prose in the message", async () => {

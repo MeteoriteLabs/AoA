@@ -594,6 +594,8 @@ export type {
   DispatchRefusalReason,
   DispatchCompositionDecision,
   DispatchCompositionInput,
+  SelfModelReadResult,
+  SelfModelReadRefusal,
 } from "./lifecycle/compose-dispatch.js";
 
 // --- DAT-001: immutable workspace snapshot producer --------------------------

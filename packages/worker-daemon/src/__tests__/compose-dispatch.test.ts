@@ -1,15 +1,15 @@
-// WRK-008 slice 2 — the dispatch-composition decision.
+// WRK-008 slice 2b — the dispatch-composition decision, now over SIX gates.
 //
 // This is the function that answers "is this daemon going to take work, and if not, why
-// not". It is a DECISION WITH A REASON rather than a boolean for the same reason
-// `isSweepEligible` is: the reason is the operator-facing answer to "why is my worker
-// idle", and a boolean throws it away at exactly the moment someone needs it.
+// not". It is a DECISION WITH A REASON (and a structured log payload) rather than a
+// boolean, because the reason is the operator-facing answer to "why is my worker idle" and
+// each of the six gates has a DIFFERENT fix in a different place.
 //
-// ★ The row that matters most is `provider present + flag off`. Absence of a provider
-// already makes dispatch impossible by construction (see the design §1-2), so a flag
-// tested only against the shipped binary would be a guard that can never fire — this
-// programme's signature defect. These tests reach the flag by injection, which is the
-// only way it is currently reachable at all.
+// ★ slice 2b retires `no_self_model_reader` (2a's placeholder — the build now HAS a reader)
+// and splits the read-derived answers into `no_session` (re-enrol THIS device) and
+// `no_self_model` (an admin sets a placement profile). Reporting a dead session as "ask an
+// admin" is the single most misleading message available, and §3.2 makes a dead session the
+// MOST likely refusal on any worker older than its ten-minute code route.
 
 import { describe, expect, it } from "vitest";
 
@@ -18,130 +18,145 @@ import {
   shouldComposeSession,
   DISPATCH_REFUSAL_MESSAGES,
   type DispatchRefusalReason,
+  type SelfModelReadResult,
+  type SelfModelReadRefusal,
 } from "../lifecycle/compose-dispatch.js";
 import { createFakeSandboxProvider } from "./support/fake-provider.js";
+import type { WorkerSelfModel } from "../poll/capacity.js";
 
 const PROVIDER = createFakeSandboxProvider({});
-// The decision never reads the self-model's contents — only whether one was obtained.
-// Typed through `unknown` so this suite does not have to build a branded profile to
-// test a presence check; the assembly path is covered by its own suite.
-const SELF = {} as never;
+const SELF = {} as WorkerSelfModel; // the decision never reads its contents, only ok vs refused
+const OK: SelfModelReadResult = { kind: "ok", selfModel: SELF };
+const refused = (reason: SelfModelReadRefusal): SelfModelReadResult => ({ kind: "refused", reason });
 
-describe("WRK-008 slice 2 — decideDispatchComposition", () => {
-  it("composes when a provider, the flag and a self-model are all present", () => {
-    expect(
-      decideDispatchComposition({ provider: PROVIDER, dispatchEnabled: true, hasSelfModelReader: true, selfModel: SELF }),
-    ).toEqual({ compose: true });
+// Every earlier gate satisfied, so the gate under test is the one that decides.
+const ALL_ON = {
+  provider: PROVIDER,
+  dispatchEnabled: true,
+  hasWorkerIdentity: true,
+  hasEventOutboxPath: true,
+  selfModelRead: OK,
+} as const;
+
+describe("decideDispatchComposition — six gates, deepest fact first", () => {
+  it("POSITIVE CONTROL: all six satisfied ⇒ composes, carrying the self-model", () => {
+    expect(decideDispatchComposition(ALL_ON)).toEqual({ compose: true, selfModel: SELF });
   });
 
-  it("★ refuses when the flag is off EVEN THOUGH a provider is present", () => {
-    // The non-vacuous row. Without it the flag would only ever be observed in the state
-    // where the provider is absent — where the answer is already no.
+  it("gate 1 — no provider (a BUILD fact) wins over every later gate", () => {
     expect(
-      decideDispatchComposition({ provider: PROVIDER, dispatchEnabled: false, hasSelfModelReader: true, selfModel: SELF }),
+      decideDispatchComposition({
+        ...ALL_ON,
+        provider: undefined,
+        dispatchEnabled: false,
+        hasWorkerIdentity: false,
+        hasEventOutboxPath: false,
+        selfModelRead: null,
+      }),
+    ).toEqual({ compose: false, reason: "no_provider" });
+  });
+
+  it("gate 2 — dispatch_disabled wins over identity/outbox/read", () => {
+    expect(
+      decideDispatchComposition({
+        ...ALL_ON,
+        dispatchEnabled: false,
+        hasWorkerIdentity: false,
+        hasEventOutboxPath: false,
+        selfModelRead: null,
+      }),
     ).toEqual({ compose: false, reason: "dispatch_disabled" });
   });
 
-  it("★ refuses when no provider is injected, whatever the flag says", () => {
-    // Dispatch cannot be turned on by environment alone. This is the shipped binary.
-    expect(
-      decideDispatchComposition({ provider: undefined, dispatchEnabled: true, hasSelfModelReader: true, selfModel: SELF }),
-    ).toEqual({ compose: false, reason: "no_provider" });
-    expect(
-      decideDispatchComposition({ provider: undefined, dispatchEnabled: false, hasSelfModelReader: true, selfModel: SELF }),
-    ).toEqual({ compose: false, reason: "no_provider" });
-  });
-
-  it("★ refuses when the target has no self-model — enrolment alone is not enough", () => {
-    // Q1, asserted on purpose: an admin must set a placement profile on the target.
-    expect(
-      decideDispatchComposition({ provider: PROVIDER, dispatchEnabled: true, hasSelfModelReader: true, selfModel: null }),
-    ).toEqual({ compose: false, reason: "no_self_model" });
-  });
-
-  it("★ reports the DEEPEST fact first when several refusals apply at once", () => {
-    // Ordering is a deliberate operator-experience decision, not an accident of writing
-    // the `if`s in some order:
-    //
-    //   no_provider     — a BUILD fact. No amount of configuration fixes it, so naming
-    //                     anything else first sends the operator to flip a flag that
-    //                     cannot help.
-    //   dispatch_disabled — an explicit operator choice. Reporting a missing profile for
-    //                     a worker deliberately switched off would be noise.
-    //   no_self_model   — an admin action on the target, and only actionable once the
-    //                     worker is otherwise able and willing to dispatch.
-    expect(
-      decideDispatchComposition({ provider: undefined, dispatchEnabled: false, hasSelfModelReader: true, selfModel: null }),
-    ).toEqual({ compose: false, reason: "no_provider" });
-    expect(
-      decideDispatchComposition({ provider: PROVIDER, dispatchEnabled: false, hasSelfModelReader: true, selfModel: null }),
-    ).toEqual({ compose: false, reason: "dispatch_disabled" });
-  });
-
-  it("★ reports no_self_model_reader when the BUILD cannot read one — not no_self_model", () => {
-    // The two are different problems with different owners. Collapsing them would send an
-    // operator to ask an admin for a placement profile that may already exist, for a
-    // worker whose real problem is that this build has no reader wired at all.
+  it("gate 3 — no_worker_identity is DISTINCT from no_self_model (different owners)", () => {
     expect(
       decideDispatchComposition({
-        provider: PROVIDER,
-        dispatchEnabled: true,
-        hasSelfModelReader: false,
-        selfModel: null,
+        ...ALL_ON,
+        hasWorkerIdentity: false,
+        hasEventOutboxPath: false,
+        selfModelRead: null,
       }),
-    ).toEqual({ compose: false, reason: "no_self_model_reader" });
-    // Even with a self-model somehow in hand, no reader means the build is not wired.
-    expect(
-      decideDispatchComposition({
-        provider: PROVIDER,
-        dispatchEnabled: true,
-        hasSelfModelReader: false,
-        selfModel: SELF,
-      }),
-    ).toEqual({ compose: false, reason: "no_self_model_reader" });
+    ).toEqual({ compose: false, reason: "no_worker_identity" });
   });
 
-  it("every refusal reason has an operator-facing message", () => {
-    // A reason with no message is a reason nobody can act on.
+  it("gate 4 — no_event_outbox_path (an env edit on THIS host)", () => {
+    expect(
+      decideDispatchComposition({ ...ALL_ON, hasEventOutboxPath: false, selfModelRead: null }),
+    ).toEqual({ compose: false, reason: "no_event_outbox_path" });
+  });
+
+  it("gate 5 — a dead session maps to no_session, NOT no_self_model", () => {
+    expect(
+      decideDispatchComposition({ ...ALL_ON, selfModelRead: refused("session_terminal") }),
+    ).toEqual({
+      compose: false,
+      reason: "no_session",
+      logPayload: { readRefusal: "session_terminal" },
+    });
+  });
+
+  it("gate 6 — a genuinely missing profile maps to no_self_model; the read was attempted", () => {
+    expect(
+      decideDispatchComposition({ ...ALL_ON, selfModelRead: refused("no_profile") }),
+    ).toEqual({
+      compose: false,
+      reason: "no_self_model",
+      logPayload: { readRefusal: "no_profile" },
+    });
+    // unassemblable + unavailable also collapse to no_self_model, sub-reason in the payload.
+    expect(decideDispatchComposition({ ...ALL_ON, selfModelRead: refused("unassemblable") })).toEqual({
+      compose: false,
+      reason: "no_self_model",
+      logPayload: { readRefusal: "unassemblable" },
+    });
+    expect(decideDispatchComposition({ ...ALL_ON, selfModelRead: refused("unavailable") })).toEqual({
+      compose: false,
+      reason: "no_self_model",
+      logPayload: { readRefusal: "unavailable" },
+    });
+  });
+
+  it("null selfModelRead (the read was NOT ATTEMPTED — first pass) ⇒ no_self_model {attempted:false}", () => {
+    expect(decideDispatchComposition({ ...ALL_ON, selfModelRead: null })).toEqual({
+      compose: false,
+      reason: "no_self_model",
+      logPayload: { attempted: false },
+    });
+  });
+
+  it("★ the placeholder reason no_self_model_reader is GONE — no message mentions slice 2b", () => {
+    expect((DISPATCH_REFUSAL_MESSAGES as Record<string, string>).no_self_model_reader).toBeUndefined();
+    for (const message of Object.values(DISPATCH_REFUSAL_MESSAGES)) {
+      expect(message).not.toMatch(/slice 2b/i);
+    }
+  });
+
+  it("★ a dead session (no_session) NEVER produces a message that points at an admin", () => {
+    // §3.2: a dead session is the most likely refusal in practice; pointing it at an admin
+    // for a placement profile that is fine is the worst message available.
+    expect(DISPATCH_REFUSAL_MESSAGES.no_session).not.toMatch(/admin/i);
+    // ...whereas no_self_model DOES name the admin, because that is who fixes it.
+    expect(DISPATCH_REFUSAL_MESSAGES.no_self_model).toMatch(/admin/i);
+  });
+
+  it("every refusal reason has a distinct operator-facing message", () => {
     const reasons: DispatchRefusalReason[] = [
       "no_provider",
       "dispatch_disabled",
-      "no_self_model_reader",
+      "no_worker_identity",
+      "no_event_outbox_path",
+      "no_session",
       "no_self_model",
     ];
-    for (const reason of reasons) {
-      expect(DISPATCH_REFUSAL_MESSAGES[reason]).toBeTruthy();
-    }
+    for (const reason of reasons) expect(DISPATCH_REFUSAL_MESSAGES[reason]).toBeTruthy();
     expect(new Set(Object.values(DISPATCH_REFUSAL_MESSAGES)).size).toBe(reasons.length);
-  });
-
-  it("distinguishes every refusal — a boolean would collapse these", () => {
-    const reasons = new Set(
-      [
-        decideDispatchComposition({ provider: undefined, dispatchEnabled: true, hasSelfModelReader: true, selfModel: SELF }),
-        decideDispatchComposition({ provider: PROVIDER, dispatchEnabled: false, hasSelfModelReader: true, selfModel: SELF }),
-        decideDispatchComposition({ provider: PROVIDER, dispatchEnabled: true, hasSelfModelReader: true, selfModel: null }),
-        decideDispatchComposition({ provider: PROVIDER, dispatchEnabled: true, hasSelfModelReader: false, selfModel: null }),
-      ].map((d) => (d.compose ? "composed" : d.reason)),
-    );
-    expect(reasons.size).toBe(4);
   });
 });
 
-describe("WRK-010 slice 2 — shouldComposeSession (the weaker session-lifecycle gate)", () => {
-  it("composes ONLY with a provider AND the flag on — NEVER on the shipped default (no provider)", () => {
+describe("WRK-010 slice 2 — shouldComposeSession (the weaker session-lifecycle gate) is UNCHANGED", () => {
+  it("composes ONLY with a provider AND the flag on — never on the shipped default", () => {
     expect(shouldComposeSession({ provider: PROVIDER, dispatchEnabled: true })).toBe(true);
     expect(shouldComposeSession({ provider: PROVIDER, dispatchEnabled: false })).toBe(false);
     expect(shouldComposeSession({ provider: undefined, dispatchEnabled: true })).toBe(false);
-    expect(shouldComposeSession({ provider: undefined, dispatchEnabled: false })).toBe(false);
-  });
-
-  it("is strictly WEAKER than decideDispatchComposition: it ignores the self-model gates", () => {
-    // A session is a prerequisite to reading the self-model, so the lifecycle must compose
-    // with a provider + flag even while decideDispatchComposition still refuses (no reader yet).
-    expect(shouldComposeSession({ provider: PROVIDER, dispatchEnabled: true })).toBe(true);
-    expect(
-      decideDispatchComposition({ provider: PROVIDER, dispatchEnabled: true, hasSelfModelReader: false, selfModel: null }).compose,
-    ).toBe(false);
   });
 });
