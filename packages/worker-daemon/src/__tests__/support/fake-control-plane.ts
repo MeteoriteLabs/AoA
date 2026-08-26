@@ -66,6 +66,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 
 export const DEFAULT_ENROLL_PATH = "/api/worker-control/enroll";
 export const POLL_PATH = "/api/worker-control/poll";
+/** WRK-008 slice 2b — the self-model read route (must match the client's SELF_MODEL_READ_PATH). */
+export const SELF_MODEL_READ_PATH_FAKE = "/api/execution-targets/self/placement-profile";
 const LEASE_ACK_RE = /^\/api\/worker-control\/leases\/([^/]+)\/ack$/;
 // WRK-005: the renew action hangs off the same lease base as ack.
 const LEASE_RENEW_RE = /^\/api\/worker-control\/leases\/([^/]+)\/renew$/;
@@ -131,6 +133,19 @@ export type FakePollDirective =
   | { readonly kind: "error"; readonly status: number; readonly code: ProtocolErrorCode; readonly retryAfterMs?: number | null }
   | { readonly kind: "socket" }
   | { readonly kind: "hang" };
+
+/** WRK-008 slice 2b — a programmed self-model read response (FIFO). Consumed by
+ * `handleSelfModelRead` AFTER the request is dual-authenticated, so an `unauthorized`
+ * directive models a server 401 on an OTHERWISE-valid read (the recovery-driver case). */
+export type FakeSelfModelDirective =
+  | {
+      readonly kind: "ok";
+      readonly registeredProfile: unknown;
+      readonly providerConstraintProfile: unknown;
+      readonly selfModelHash?: string;
+    }
+  | { readonly kind: "error"; readonly status: number }
+  | { readonly kind: "unauthorized" };
 
 /**
  * A programmed ACK response (FIFO), mirroring `FakePollDirective`. Consumed by
@@ -245,6 +260,8 @@ export interface FakeControlPlane {
   replaceGeneration(code: string, generation: number): void;
   // --- WRK-003 poll/ack controls ---
   enqueuePoll(directive: FakePollDirective): void;
+  /** WRK-008 slice 2b — program the next self-model read response (FIFO). */
+  enqueueSelfModel(directive: FakeSelfModelDirective): void;
   enqueueAck(directive: FakeAckDirective): void;
   /** Force EVERY poll to respond 401 `unauthorized` (models a session that
    * authenticates on enroll but is persistently rejected on poll/ack — clock
@@ -448,6 +465,7 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
   const ackDirectives: FakeAckDirective[] = [];
   const ackRecords: FakeAckRecord[] = [];
   const renewDirectives: FakeRenewDirective[] = [];
+  const selfModelDirectives: FakeSelfModelDirective[] = [];
   const renewRecords: FakeRenewRecord[] = [];
   // WRK-007 (D6): per-`leaseId` authority table (keyed), consulted before the FIFO.
   const leaseAuthority = new Map<string, FakeLeaseAuthorityEntry>();
@@ -579,6 +597,10 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     }
     if (method === "POST" && pathname === POLL_PATH) {
       await handlePoll(req, res, url, method);
+      return;
+    }
+    if (method === "POST" && pathname === SELF_MODEL_READ_PATH_FAKE) {
+      await handleSelfModelRead(req, res, url, method);
       return;
     }
     const ackMatch = LEASE_ACK_RE.exec(pathname);
@@ -778,6 +800,60 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     if (thumbprint === null) return { ok: false, status: 401, code: "unauthorized", thumbprint: null };
     if (thumbprint !== session.deviceThumbprint) return { ok: false, status: 401, code: "unauthorized", thumbprint };
     return { ok: true, session, thumbprint };
+  }
+
+  // WRK-008 slice 2b — the self-model read. Dual-authenticated (Bearer + fresh device proof over
+  // the read path); the FIFO directive queue then models the server's answer. `unauthorized`
+  // models a 401 on an otherwise-valid read (drives the reader's one-shot recovery).
+  async function handleSelfModelRead(req: IncomingMessage, res: ServerResponse, url: string, method: string): Promise<void> {
+    let status = 200;
+    let outcome = "self_model";
+    let recordedProofId: string | null = null;
+    let recordedThumbprint: string | null = null;
+    const finish = (): void => record(method, url, status, outcome, recordedProofId, recordedThumbprint);
+
+    const rawBody = await readBody(req);
+    const proof = readProofHeaders(req);
+    recordedProofId = proof?.proofId ?? null;
+    // The self-model read body is strict `{protocolVersion:1, knownSelfModelHash?}` — the
+    // correlationId travels in the request-id header, NOT the body (unlike poll/ack).
+    const correlationId = header(req, WORKER_CONTROL_HEADERS.requestId);
+    const auth = authenticateOperation(req, method, url, rawBody, correlationId, proof);
+    if (!auth.ok) {
+      recordedThumbprint = auth.thumbprint;
+      status = auth.status;
+      outcome = "unauthorized";
+      operationError(res, auth.status, auth.code, correlationId);
+      finish();
+      return;
+    }
+    recordedThumbprint = auth.thumbprint;
+
+    const directive: FakeSelfModelDirective = selfModelDirectives.shift() ?? { kind: "error", status: 404 };
+    if (directive.kind === "unauthorized") {
+      status = 401;
+      outcome = "unauthorized";
+      operationError(res, 401, "unauthorized", correlationId);
+      finish();
+      return;
+    }
+    if (directive.kind === "error") {
+      status = directive.status;
+      outcome = "error";
+      protocolError(res, directive.status, "not_found", correlationId);
+      finish();
+      return;
+    }
+    status = 200;
+    outcome = "self_model";
+    sendJson(res, 200, {
+      protocolVersion: 1,
+      selfModelHash: directive.selfModelHash ?? "a".repeat(64),
+      registeredProfile: directive.registeredProfile,
+      providerConstraintProfile: directive.providerConstraintProfile,
+      serverTime: new Date(now()).toISOString(),
+    });
+    finish();
   }
 
   async function handlePoll(req: IncomingMessage, res: ServerResponse, url: string, method: string): Promise<void> {
@@ -1617,6 +1693,9 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     },
     enqueuePoll(directive: FakePollDirective): void {
       pollDirectives.push(directive);
+    },
+    enqueueSelfModel(directive: FakeSelfModelDirective): void {
+      selfModelDirectives.push(directive);
     },
     enqueueAck(directive: FakeAckDirective): void {
       ackDirectives.push(directive);
