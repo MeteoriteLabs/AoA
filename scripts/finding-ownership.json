@@ -45,6 +45,10 @@
     "E4-F016": {
       "status": "accepted",
       "reason": "LOW, documentation-only: three desktop-hello comments (desktop-hello.ts:28, :145, and the repeating comment in desktop-hello.test.ts) assert the enrolled all-zero capacity is byte-stability decoration the matcher overwrites, i.e. not a safety property. True of evaluateStaticLeaseEligibility (NEUTRAL_LEASE_MATCHER_CAPACITY, job-lease-eligibility.ts:213) but FALSE of the poll path: WRK-011 s0(d) proved the stored capacity is a hard Math.min clamp at job-leasing.ts:566, so zero stored capacity empties the admissible workload list before the static matcher. WRK-011 corrects the CODE the comments describe (a provisioned refresh writes a real capacity); a dated comment record is not silently rewritten mid-file, so this is the correction. Blocks nothing; remediation is a three-line comment fix no sprint carries."
+    },
+    "E10-F001": {
+      "status": "unowned",
+      "reason": "HIGH, deliberately unowned: it is a re-sequencing + credential-gap finding, not a defect any current ticket fixes. The MIG-005 cutover design + 3-reviewer pass established that credential-readiness (not blast radius) orders Sprint 6's sinks, and the order reverses to extraction(MIG-007) < crew(MIG-006) < Commander(MIG-005). Extraction already resolves the Company key and sandbox-executes (one-shot-sandbox-cli.ts:1-19); Commander has no mint path (execution-secret-handle-mint.ts:122 refuses commander_turn). The Commander flip needs a per-user provider_connection mint (Decision #117 territory) that shares E5 DEFERRAL-1-credential's envelope/worker-resolution/fence-proxy wiring plus net-new per-user work. A real MIG node should own it when Commander is next in sequence; attaching it to an extraction/crew cutover now would be false ownership. Does not block extraction or crew."
     }
   }
 }

@@ -691,8 +691,19 @@ Today MIG-005/6/7 are **shadow observers** — they record a probe beside the le
 change nothing. Cutting over means the sink actually routes to the distributed path.
 
 **One sink at a time, each with its own soak. Do not batch.** Each owes its own rollback
-evidence (gate clause 3 was explicitly not ticked for the three shadow sinks). Order:
-MIG-005 (Commander, lowest blast radius) → MIG-006 (crew) → MIG-007 (extraction) → MIG-001.
+evidence (gate clause 3 was explicitly not ticked for the three shadow sinks).
+
+**★ ORDER CORRECTED 2026-08-27 (E10-F001) — lead with EXTRACTION, not Commander.** The original
+"MIG-005 (Commander) first, lowest blast radius" ordering was refuted by the MIG-005 design + a
+3-reviewer pass: blast radius is the wrong axis once the binding constraint is **credential-readiness**.
+Only **MIG-007 (extraction / `one_shot`)** is buildable today — it already resolves the Company key
+and sandbox-executes (`one-shot-sandbox-cli.ts`), and was the sole shadow-admissible sink. **MIG-006
+(crew)** rides the same Company-key ladder ("mirrors the org path"). **MIG-005 (Commander)** is the
+ONLY sink with no mint path (the mint *refuses* `commander_turn`) and is **blocked** on a per-user
+`provider_connection` credential ticket that does not exist. So: **MIG-007 (extraction) → MIG-006
+(crew) → MIG-005 (Commander, blocked, last) → MIG-001.** The **drain fix is separate and unblocked**
+— ship it on its own (below), regardless of sink order. Commander's block is filed as **E10-F001**;
+its credential work shares E5's `DEFERRAL-1-credential` wiring plus net-new per-user minting.
 
 **Also here:** promote the E3 parity bridges (`jobApprovalBridge`, `jobBudgetCostBridge`,
 `jobOutputBridge`) — all currently zero-caller — and fix
