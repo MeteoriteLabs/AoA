@@ -118,9 +118,13 @@ that substrate; the campaign and its spend are the operator's.
 
 - **Five registers green** on the tip (`gate-clause-wiring`, `finding-ownership` — now 11 open / 4
   unowned incl. E7-F001, `ticket-graph-coverage`, `guard-inventory`, `execution-census`).
-- **Seven always-on policy checkers green** (`check-distributed-execution-foundation`,
-  `check-forbidden-tokens`, `check-worker-daemon-boundary`, `check-sandbox-e2b-provider-boundary`,
-  `check-sandbox-coding-disposition`, `check-ci-lanes`, `check-staging-manifest`).
+- **The `policy` gate job** — its register/boundary/finding-ownership/gate-clause steps passed on CI
+  on the first push (`c0e4426c4`, steps 1–22). One step failed: **"Test-suite inventory"**
+  (`check-test-inventory.mjs`) — a policy-job guard **outside the five registers** that pins
+  per-package test-file counts; the new `patch-integrity.test.ts` took `sandbox-e2b-provider` 8→9.
+  Fixed by bumping the pin (`bef0fb505`, `--write`), verified green locally (2645 files / 18 trees).
+  The lesson: a test-file add/remove must bump `scripts/test-inventory.json`, and the full policy
+  checker set is broader than the five registers.
 - **`sandbox-e2b-provider`**: 44 pass / 19 keyed-skip; `tsc` clean; boundary checker PASS.
 - **`verify` inherits the §2.0 red** (pre-Sprint-0 CI timeout regression). Not raised, not masked.
 
