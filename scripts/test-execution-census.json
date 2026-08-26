@@ -179,6 +179,16 @@
       "workflow": "pr.yml",
       "step": "Embedded-secret scan self-test (DSK-003)"
     },
+    "scripts/lib/__tests__/boot-roots-provider-free.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Dispatch-composition declaration guards (WRK-008 slice 2b)"
+    },
+    "scripts/lib/__tests__/d1-dispatch-declared.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Dispatch-composition declaration guards (WRK-008 slice 2b)"
+    },
     "scripts/lib/__tests__/execution-census.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",

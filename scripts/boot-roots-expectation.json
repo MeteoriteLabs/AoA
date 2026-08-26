@@ -1,0 +1,21 @@
+{
+  "$comment": [
+    "WRK-008 slice 2b Step 9b — the repository's worker boot roots and their provider posture.",
+    "A boot root is a file that obtains bootstrapWorkerDaemon. Enumerated by scanning the worker",
+    "bin directories; a root the scan finds that is not declared here FAILS (the important",
+    "direction). providerPosture 'none' = passes no provider key; 'resolver' = passes a provider",
+    "produced by resolverFile, whose default MUST be {kind:'none'} (resolverNoneMarker)."
+  ],
+  "roots": {
+    "packages/worker-daemon/src/bin/worker-daemon.ts": {
+      "providerPosture": "none",
+      "reason": "The CONTAINER root. bootstrapWorkerDaemon({env, proc}) passes no provider key, and E4-D01 forbids worker-daemon from importing a provider — so gate 1 is STRUCTURAL here and DEP-010 left this root untouched."
+    },
+    "packages/worker-keystore/src/bin/desktop-host.ts": {
+      "providerPosture": "resolver",
+      "resolverFile": "packages/worker-keystore/src/bin/sandbox-provider.ts",
+      "resolverNoneMarker": "return { kind: \"none\" };",
+      "reason": "The DESKTOP root. It passes a provider RESOLVED by resolveSandboxProvider (DEP-010), whose default (AOA_WORKER_SANDBOX_PROVIDER unset/empty/none) returns {kind:'none'} — so the shipped default resolves to no provider. The provider is confined to PROVIDER_HOST_PATH (DEP-010's boundary checker)."
+    }
+  }
+}

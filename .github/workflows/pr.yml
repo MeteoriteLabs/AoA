@@ -323,6 +323,17 @@ jobs:
           node --test scripts/lib/__tests__/execution-census.test.mjs
           node scripts/check-execution-census.mjs
 
+      - name: Dispatch-composition declaration guards (WRK-008 slice 2b)
+        run: |
+          # 9a: the D1 workers cannot enable dispatch on ANY of the four landable gates without an
+          # attributable compose diff. 9b: no boot root constructs a provider unconditionally, and
+          # a quietly-added third root cannot slip past. Self-test + checker in ONE step: two steps
+          # are two chances to run only the one that passed.
+          node --test scripts/lib/__tests__/d1-dispatch-declared.test.mjs
+          node scripts/check-d1-dispatch-declared.mjs
+          node --test scripts/lib/__tests__/boot-roots-provider-free.test.mjs
+          node scripts/check-boot-roots-provider-free.mjs
+
       - name: Previously-unrun guard self-tests (TRACK-002)
         run: |
           # These five were invoked by NOTHING until TRACK-002. Each is the self-test for a
