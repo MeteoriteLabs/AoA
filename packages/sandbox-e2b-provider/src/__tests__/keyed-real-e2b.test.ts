@@ -139,6 +139,96 @@ describeKeyed("CLI-002/D6 — real E2B (keyed) — a fake CLI modifies a KNOWN f
   });
 });
 
+describeKeyed("CLI-006/D2 — real E2B (keyed) — artifact commit / patch integrity", () => {
+  // D2-02's sixth class ("artifact commit") and D2-06 ("patches reproduce the
+  // declared base/result hashes and never auto-apply on base mismatch), against
+  // REAL E2B — the class the keyed lane was missing (success/cancel/timeout/lost-
+  // ACK/leaked-resource were covered; artifact-commit was not). It stages a base
+  // file, runs a REAL edit that produces a genuine patch, and reads the four
+  // content digests back out of the sandbox. `evaluatePatchIntegrity` (pinned
+  // no-key by patch-integrity.test.ts) is the authority on the observed digests.
+  //
+  // SCOPE: this proves the PROVIDER leg of "produce" only — a real, deterministic
+  // patch artifact in a real sandbox. It does NOT exercise the server-side fenced
+  // apply guard (conflict_quarantine) in server/src/services/patch-apply.ts, which
+  // needs the tenant DB + fence + storage and is covered by
+  // patch-apply.integration.test.ts on the distributed substrate. The full
+  // distributed journey on real E2B remains unproven (E7-1 stays unwired).
+  it("stages a base, produces a real patch, and its declared result hash reproduces", async () => {
+    const { RealE2bTransport } = await import("../real-transport.js");
+    const { evaluatePatchIntegrity } = await import("../patch-integrity.js");
+    const transport = new RealE2bTransport();
+    const { sandboxId } = await transport.create({
+      templateId: TEMPLATE,
+      timeoutMs: 60_000,
+      metadata: {},
+      envVars: {},
+    });
+    try {
+      // Stage a KNOWN base tree (the CLI-002 D1 staging primitive).
+      await transport.writeFiles(sandboxId, [
+        { path: "/home/user/base.txt", bytes: new TextEncoder().encode("original\n") },
+      ]);
+
+      // A REAL, deterministic "coding edit" inside REAL E2B: derive the post-edit
+      // tree from the staged base, hash base + result + an independent re-derivation
+      // + a DIFFERENT base, and (if diffutils is present) emit the unified patch.
+      // Only POSIX/coreutils tools (printf/sed/sha256sum/cut) are relied on for the
+      // integrity core; the diff is best-effort. runCommand serialises {command,args}
+      // through the (mutation-pinned) shellJoin, so the script survives intact.
+      const script = [
+        "cd /home/user",
+        "B=$(sha256sum base.txt | cut -d' ' -f1)",
+        "sed 's/original/patched/' base.txt > result.txt",
+        "R=$(sha256sum result.txt | cut -d' ' -f1)",
+        "sed 's/original/patched/' base.txt > result2.txt",
+        "R2=$(sha256sum result2.txt | cut -d' ' -f1)",
+        "printf 'different\\n' > other.txt",
+        "M=$(sha256sum other.txt | cut -d' ' -f1)",
+        "if command -v diff >/dev/null 2>&1; then HASDIFF=1; else HASDIFF=0; fi",
+        "{ printf 'BASE=%s\\nRESULT=%s\\nRESULT2=%s\\nMISMATCH=%s\\nDIFF_AVAILABLE=%s\\nDIFF_START\\n' \"$B\" \"$R\" \"$R2\" \"$M\" \"$HASDIFF\"; if [ \"$HASDIFF\" = 1 ]; then diff -u base.txt result.txt || true; fi; printf 'DIFF_END\\n'; } > report.txt",
+      ].join(" && ");
+      const run = await transport.runCommand({
+        sandboxId,
+        command: "sh",
+        args: ["-c", script],
+        envVars: {},
+        timeoutMs: 30_000,
+      });
+      expect(run.timedOut).toBe(false);
+
+      const report = new TextDecoder().decode(await transport.readFile(sandboxId, "/home/user/report.txt"));
+      const field = (k: string): string => {
+        const m = report.match(new RegExp(`^${k}=(.*)$`, "m"));
+        return m ? m[1].trim() : "";
+      };
+      const verdict = evaluatePatchIntegrity({
+        declaredBaseHash: field("BASE"),
+        declaredResultHash: field("RESULT"),
+        reproducedResultHash: field("RESULT2"),
+        foreignBaseHash: field("MISMATCH"),
+      });
+      // A real, deterministic patch: result differs from base, the declared result
+      // hash reproduces, and a foreign base is distinguishable from the declared base.
+      expect(verdict, `report was:\n${report}`).toEqual({
+        isRealEdit: true,
+        reproducesResult: true,
+        baseMismatchIsDetectable: true,
+        ok: true,
+      });
+
+      // The patch ARTIFACT itself, when diffutils is present: a genuine unified diff.
+      if (field("DIFF_AVAILABLE") === "1") {
+        const diffBody = report.slice(report.indexOf("DIFF_START") + "DIFF_START\n".length, report.indexOf("DIFF_END"));
+        expect(diffBody).toContain("-original");
+        expect(diffBody).toContain("+patched");
+      }
+    } finally {
+      await transport.terminate(sandboxId).catch(() => {});
+    }
+  });
+});
+
 describeKeyed("CLI-001/D4 — real E2B (keyed) — real TTL enforcement", () => {
   it("a short-TTL sandbox actually expires (never hangs)", async () => {
     const { RealE2bTransport } = await import("../real-transport.js");

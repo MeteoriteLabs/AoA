@@ -134,19 +134,21 @@ green); the case lives in the existing `*.test.ts` (no new `*.test.mjs` → no c
 
 ## 6. The dispatch — prepared, then STOP at the boundary
 
-The real-E2B leg is triggered by the operator, two equivalent ways:
+The real-E2B leg is triggered by the operator. **`workflow_dispatch` is NOT available on this
+branch** — `keyed-e2b-conformance.yml` lives only on `docs/replatform-program`, not on the default
+branch (`main`), and GitHub exposes `workflow_dispatch` only from the default branch (verified:
+`git ls-tree origin/main` has no keyed workflow). So `gh workflow run` will not fire it here. **The
+sentinel-file push is the only trigger:**
 
-- **Push/sentinel:** append a line to `.github/keyed-e2b-trigger` and push to `docs/replatform-program`
-  (the `paths:` trigger fires the lane with the bare `base` template and the repo `E2B_API_KEY`).
-- **Manual dispatch (preferred, allows a template):**
-
-```bash
-gh workflow run keyed-e2b-conformance.yml --ref docs/replatform-program -f e2b_template=aoa-base
-```
+- Append a line to **`.github/keyed-e2b-trigger`** and push to `docs/replatform-program`. The
+  workflow's `push` `paths:` filter fires the lane. A push run carries no `inputs`, so
+  `E2B_TEMPLATE` resolves to `""` → the bare **`base`** template; `secrets.E2B_API_KEY` is a repo
+  secret available on any branch.
 
 **What the operator must have in place:** `E2B_API_KEY` in repo secrets (a provider secret — the
-session never handles it), and, for the artifact-commit case, an E2B template whose base image has
-`git` (the `aoa-base` template, or the bare `base` if it already ships `git`; see `e2b/README.md`).
+session never handles it). No special template is needed: the artifact-commit case relies only on
+coreutils (`printf`/`sed`/`sha256sum`/`cut`), with the unified-diff assertion self-guarded on
+`command -v diff`, so the bare `base` image suffices (it needs **no** `git`).
 
 **What to capture from the dispatched run:** the run id/URL; the keyed suite result (pass/skip counts;
 the artifact-commit case must PASS, not skip); and confirmation the redaction assertions
