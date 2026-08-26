@@ -319,6 +319,8 @@ export interface FakeControlPlane {
   eventUploadKeys(): readonly string[];
   /** The cumulative acceptedThroughSeq the plane recorded for a stream. */
   eventStreamAcceptedThrough(streamKey: string): number;
+  /** The decrypted event BODIES the drain has uploaded (the real payloads, not just metadata). */
+  eventBodies(): readonly unknown[];
   // --- DAT-008 slice 5 execution-secret resolve controls ---
   /** Seed a `resolved` outcome for a handle id (the LOCAL resolve route returns its
    * envTarget+value). A handle with NO seeded resolution is `denied` — the fail-closed
@@ -504,6 +506,9 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
   // DAT-008 slice 5 execution-secret resolve: seeded `resolved` outcomes + per-handle request counts.
   const secretResolutions = new Map<string, { envTarget: string; value: string }>();
   const resolveRequestCounts = new Map<string, number>();
+  // The decrypted event BODIES the drain uploaded (not just the metadata in eventUploadRecordList),
+  // so a no-leak assertion can scan the real event payloads — CLI-006 D2 Step 1.
+  const uploadedEventBodies: unknown[] = [];
   // Cumulative per-stream watermark the plane has accepted through.
   const eventStreamAccepted = new Map<string, number>();
   let eventUploadRequestCount = 0;
@@ -1669,6 +1674,8 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     };
     const streamKey = eventStreamKey(batch as never);
     const events = batch.events;
+    // Retain the decrypted event bodies so a test can scan the actual payloads (not just metadata).
+    for (const e of events) uploadedEventBodies.push(e);
     const firstSeq = Number(events[0]!.seq);
     const lastSeq = Number(events[events.length - 1]!.seq);
     eventUploadRecordList.push({
@@ -1940,6 +1947,9 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     },
     eventStreamAcceptedThrough(streamKey: string): number {
       return eventStreamAccepted.get(streamKey) ?? 0;
+    },
+    eventBodies(): readonly unknown[] {
+      return uploadedEventBodies;
     },
     seedSecretResolution(handleId: string, resolution: { envTarget: string; value: string }): void {
       secretResolutions.set(handleId, { ...resolution });

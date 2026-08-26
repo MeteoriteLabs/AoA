@@ -32,17 +32,15 @@
     },
     "E4-1-leases-through-protocol": {
       "epic": "E4",
-      "status": "unwired",
+      "status": "wired",
       "symbol": "createPollLoop",
-      "expectedReferences": 2,
-      "reason": "WRK-008 slice 2b COMPOSES the poll loop (composeDispatchRuntime is its first production caller: the import + the seam-default = 2 references), but does not DEMONSTRATE a lease actually being taken in its own suite. The reason is NOT 'E4-F010 / unmatchable' — WRK-011 (Sprint 2.75) closed E4-F010 before this slice, so the composed worker IS matchable (offerSatisfiesWorker admits a valid offer). Per the go-book Sprint 3 checklist, E4-1 is promotable ON EVIDENCE — a composed loop that took a lease in this sprint's suite — never on caller count and never on a caveat in this field. Composing is not demonstrating; Sprint 5 is the journey. expectedReferences absorbs the two known references and STILL fires the moment a third appears."
+      "reason": "PROMOTED ON EVIDENCE — Sprint 5 Step 1 (CLI-006/D2). packages/worker-daemon/src/__tests__/composed-journey.component.test.ts drives composeDispatchRuntime with its REAL factories through ONE lease: createPollLoop polls, self-checks the frozen offer, and ACKs over the real lease-ack POST (fake.ackCountFor(lease)===1 for the offered lease), then hands off to a supervised run. This is 'a composed loop that took a lease in this sprint's suite' — never caller count. The traversal is the REAL protocol (real pollOnce, frozen leaseOfferV1Schema, real ackLease, a device proof the counterparty verifies INDEPENDENTLY); the counterparty is the protocol-faithful in-process control-plane double (support/fake-control-plane.ts), not real E2B. The SERVER-side leasing/placement that mints the offer is proven separately on the D1 lane (CLI-006, 40/40) + server/src/__tests__/job-leasing.integration.test.ts. Mutation-proven non-vacuous (CLI-006-D2-step1-result.md §3): M0 (positive control) reddens the whole test; M1 (skip the ACK POST) reddens ONLY this E4-1 lease case while the E4-2 supervise case stays green; M2 (remove the handoff) is the mirror — E4-1 green, E4-2 red. The full DISTRIBUTED journey on REAL E2B remains E7-1 (unwired)."
     },
     "E4-2-supervises-sandboxes": {
       "epic": "E4",
-      "status": "unwired",
+      "status": "wired",
       "symbol": "createSupervisor",
-      "expectedReferences": 2,
-      "reason": "WRK-008 slice 2b composes the supervisor (composeDispatchRuntime: import + seam-default = 2 references), but production reaches the supervisor ONLY after an ACK (poll-loop.ts:538 self-checks and returns {kind:'continue'} before ackLease at :549; the supervisor is reached only via trackHandoff at :559), and NO production ACK path exists at this sprint's tip. Promoting on a composed supervisor would go green over ZERO supervised sandboxes. It needs an actually-supervised sandbox — Sprint 5's journey. NOT promoted."
+      "reason": "PROMOTED ON EVIDENCE — Sprint 5 Step 1 (CLI-006/D2). In composed-journey.component.test.ts a REAL ACK (poll-loop trackHandoff after ackLease) reaches createSupervisor, which runs the sandbox lifecycle create -> execute (tenant command INSIDE the sandbox) -> destroy (provider ops === [create,execute,destroy]) and drains a digest-valid terminal event. It also redeems the CLI-007-minted provider_key handle into spec.env (fail-closed when denied). This is an actually-supervised sandbox reached after an ACK — the exact bar this clause named. The sandbox is the per-op fake provider (support/fake-provider.ts, implements SandboxProvider); a REAL E2B sandbox is E7-1 (unwired). Mutation-proven (CLI-006-D2-step1-result.md §3): M2 (remove trackHandoff) reddens ONLY this E4-2 supervise case while the E4-1 lease case stays green; M3 (drop synthesiseRunSecrets) reddens the credential + fail-closed cases; M5 (no-op the drain) isolates the stream."
     },
     "E4-3-survives-restart": {
       "epic": "E4",

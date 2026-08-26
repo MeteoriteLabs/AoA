@@ -141,21 +141,31 @@ async function composeWith(offer: Record<string, unknown>, provider: FakeSandbox
 }
 
 describe("composed-journey.component — createPollLoop + createSupervisor take ONE lease and run it", () => {
-  it("★ E4-1/E4-2 — the composed loop LEASES (real ACK) then SUPERVISES create→execute→destroy", async () => {
+  // E4-1 and E4-2 are asserted in SEPARATE cases (not one) so a mutation isolates each anchor at the
+  // case level: M-E42 (remove trackHandoff at poll-loop.ts:559) leaves the E4-1 lease case GREEN
+  // (the ACK still fires) and reddens ONLY the E4-2 supervise case (no create/execute/destroy).
+  it("★ E4-1 — the composed loop LEASES: real self-check + ACK over the real protocol", async () => {
     const provider = createFakeSandboxProvider({});
     runtime = await composeWith(liveOffer(), provider);
     runtime.start();
 
-    await settle(() => fake.ackCountFor(POLL_FIXTURE_IDS.lease) === 1 && provider.callCount("destroy") === 1);
+    await settle(() => fake.ackCountFor(POLL_FIXTURE_IDS.lease) === 1);
 
-    // E4-1: the composed loop took a real lease through the protocol (one ACK, for the offered lease).
+    // The composed loop took a real lease through the protocol (one ACK, for the offered lease).
     expect(fake.ackCountFor(POLL_FIXTURE_IDS.lease)).toBe(1);
     expect(fake.acks()[0]).toMatchObject({ leaseId: POLL_FIXTURE_IDS.lease, workerId: POLL_FIXTURE_IDS.worker });
+  });
 
-    // E4-2: a real ACK reached the supervisor, which ran the sandbox lifecycle.
+  it("★ E4-2 — a real ACK reaches createSupervisor, which runs create→execute(inside)→destroy", async () => {
+    const provider = createFakeSandboxProvider({});
+    runtime = await composeWith(liveOffer(), provider);
+    runtime.start();
+
+    await settle(() => provider.callCount("destroy") === 1);
+
+    // A real ACK reached the supervisor, which ran the sandbox lifecycle.
     const ops = provider.calls().filter((c) => !c.replayed).map((c) => c.op);
     expect(ops).toEqual(["create", "execute", "destroy"]);
-
     // The tenant command ran INSIDE the sandbox (the offer's workload), never spawned in-process.
     expect(provider.executionsOf(SANDBOX_ID)).toEqual([
       { command: "codex", args: ["exec", "--json"], insideSandbox: true },
@@ -198,12 +208,20 @@ describe("composed-journey.component — createPollLoop + createSupervisor take 
     expect(fake.resolveCountFor(SECRET_HANDLE.handleId)).toBe(1);
     expect(provider.peek(SANDBOX_ID)?.env.ANTHROPIC_API_KEY).toBe(REDEEMED_VALUE);
 
-    // Decision #104 — the redeemed value appears in NO drained event body (the S4 canary tripwire
-    // is armed on the composed path: the same synthesiseRunSecrets return that populated spec.env
-    // also seeds the per-run redaction canary). The redaction MECHANISM itself is proven on both
-    // streams with a planted-leak positive control by DAT-008 slice 5.
+    // Decision #104 — the redeemed value reaches ONLY the sandbox env, never the uploaded event
+    // stream. Scan the DECRYPTED event BODIES the drain uploaded (not just the upload metadata).
+    // The assertion is NON-VACUOUS by its positive control: the emitted attempt_started carries the
+    // sandboxId, so the bodies DO contain real event content — and the redeemed value is NOT among
+    // it. Honest scope: the composed happy path never STREAMS the value (no observeRun/stdout yet),
+    // so this is a CONTAINMENT check on the composed path, not a redaction proof. The redaction
+    // MECHANISM for an emitted value is proven on BOTH streams with a planted-leak positive control
+    // by DAT-008 slice 5 (supervisor-secret-materialization.test.ts); the per-run canary tripwire is
+    // armed here (synthesiseRunSecrets returns the value as env AND as a canary from one call).
     await runtime.eventOutbox.flush();
-    expect(JSON.stringify(fake.eventUploads())).not.toContain(REDEEMED_VALUE);
+    await settle(() => fake.eventBodies().length >= 2, 3000);
+    const bodies = JSON.stringify(fake.eventBodies());
+    expect(bodies).toContain(SANDBOX_ID); // positive control: the bodies carry real emitted content
+    expect(bodies).not.toContain(REDEEMED_VALUE); // the credential value is absent from the stream
   });
 
   it("★ fail-closed — a DENIED redemption fails the run: no sandbox is ever created", async () => {
