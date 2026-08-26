@@ -312,8 +312,15 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     // DAT-008 slice 5 — the PER-RUN canary array. When a coordinator is present the fence-close
     // proxy captures this SAME array (by leaseId) at construction, so seeding it once — before
     // create, before any emit — scrubs BOTH the lifecycle stream (this sequencer) and the proxy's
-    // post-close `network_denied` stream. `deps.redactionCanaries` (composed `[]`) is the prefix,
-    // so no construction-time secret ever exists; the run's secrets are seeded per-run below.
+    // post-close `network_denied` stream.
+    //
+    // ★ NOTE ON `deps.redactionCanaries`: it is honoured ONLY on the no-coordinator fallback path
+    // (unit/non-driver builds). On the coordinator path it is deliberately NOT merged, because the
+    // proxy shares the coordinator's array BY REFERENCE and a merge would need a new array the
+    // proxy would not see. This is safe today because the sole production composition passes
+    // `redactionCanaries: []` (`dispatch-runtime.ts`). If a construction-time canary is ever needed
+    // ALONGSIDE a coordinator, pre-seed the coordinator's per-lease array — do NOT re-add a prefix
+    // here, or the proxy stream would silently lose it.
     const runCanaries: string[] = deps.canaryCoordinator
       ? deps.canaryCoordinator.ensure(handoff.leaseId)
       : [...(deps.redactionCanaries ?? [])];

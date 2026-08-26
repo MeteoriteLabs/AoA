@@ -26,19 +26,36 @@ import {
   type DeviceRecordStore,
   type WorkerSession,
 } from "@armyofagents/worker-daemon";
+import {
+  EXECUTION_SECRET_RESOLVE_PATH,
+} from "@armyofagents/worker-daemon";
 import { secretHandleRefSchema, type SecretHandleRef } from "@armyofagents/worker-protocol";
+import { WORKER_CONTROL_HEADERS } from "@armyofagents/shared";
 import { provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
 import { workerControlRoutes } from "../routes/worker-control.js";
 import { createWorkerEnrollmentService } from "../services/worker-enrollment.js";
+import { verifyWorkerOperationProof } from "../middleware/worker-operation-proof.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
 // ★ DAT-008 slice 5 (go-book Sprint 4) — the WORKER'S redeem client round-trips against the REAL
-// resolve route. This proves the cross-package wire the unit tests fake: the device proof signed
-// OVER the resolve path VERIFIES server-side, the live session is accepted as Bearer, the real
-// broker + fence-first authz run, and the worker FAILS CLOSED on a denial (which the route returns
-// as HTTP 200, not a 4xx — a status-only worker would fail open). The RESOLVED-path value return
-// over a live fence + real E2B is Sprint 5's journey (parent §9 limit 3); here we prove the wire +
-// the fail-closed classification against the real server, end to end.
+// resolve route. Two properties are proven, and they are proven SEPARATELY on purpose:
+//
+//  (1) The device proof the worker signs OVER the resolve path cryptographically VERIFIES against
+//      the enrolled device + the live session — and is PATH-BOUND (the same proof over a different
+//      path is refused). This is proven DIRECTLY by capturing what the worker sends and feeding it
+//      to `verifyWorkerOperationProof` (a positive + negative control), because the route itself
+//      deliberately COLLAPSES an auth failure and a fence failure into the SAME coarse `denied`
+//      (a no-oracle property, worker-control.ts catch → denyMalformed) — so a response-level
+//      assertion alone could not tell "proof verified, fence denied" from "proof failed" (the exact
+//      E1-F008 refusal-without-a-positive-control trap). The path is ALSO pinned by the CI
+//      `check-worker-path-parity.mjs` guard.
+//  (2) The worker's real HTTP round-trip reaches the route through the real device-proof + session
+//      middleware and the worker FAILS CLOSED on the resulting denial — which the route returns as
+//      HTTP 200, not a 4xx, so a status-only worker would fail OPEN.
+//
+// The RESOLVED-path value return over a live fence + real E2B is Sprint 5's journey (parent §9
+// limit 3); here we prove the wire, the proof-over-path binding, and the fail-closed classification
+// against the real server, end to end.
 
 const SIGNING_KEY = "test-signing-key-at-least-32-bytes";
 const ORG_A = "71000000-0000-4000-8000-000000000001";
@@ -253,12 +270,11 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const code = await issueCode();
       const identityStore = memoryStore<DeviceIdentityRecord>();
       const receiptStore = memoryStore<DeviceEnrollmentReceipt>();
-      const client = createControlPlaneClient({ baseUrl });
       let session: WorkerSession | null = null;
       const outcome = await enrollOnce({
         identityStore,
         receiptStore,
-        client,
+        client: createControlPlaneClient({ baseUrl }),
         readInput: () => ({ targetId: TARGET_A, enrollmentCode: code }),
         platform: process.platform,
         arch: process.arch,
@@ -272,7 +288,20 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(identity, "enrolment must persist a device identity").not.toBeNull();
       expect(session, "the sink must have delivered a session").not.toBeNull();
       const key = deviceKeyFromPkcs8Der(Buffer.from(identity!.privateKeyPkcs8Der));
-      return { client, key, session: session! };
+      // The redeem client uses a CAPTURING fetch so the test can verify the exact signed request
+      // server-side (the route collapses auth/fence failures, so the response can't distinguish them).
+      const box: { captured: { headers: Record<string, string>; body: Buffer } | null } = { captured: null };
+      const client = createControlPlaneClient({
+        baseUrl,
+        fetchImpl: async (url: string | URL | Request, init?: RequestInit) => {
+          box.captured = {
+            headers: init!.headers as Record<string, string>,
+            body: Buffer.from(init!.body as Uint8Array),
+          };
+          return fetch(url as string, init);
+        },
+      });
+      return { client, key, session: session!, box };
     }
 
     it("device proof over the resolve path VERIFIES and a no-fence handle is DENIED (200, not 401)", async () => {
@@ -288,6 +317,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           leaseId: "8f000000-0000-4000-8000-000000000def",
           fenceToken: "no-such-fence",
         },
+        now: () => clock,
       });
       // A `denied` classification (not `malformed`) proves the response was HTTP 200 with
       // outcome:"denied" — i.e. the device proof VERIFIED (else 401 → `malformed`) and the
@@ -310,10 +340,59 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           leaseId: "8f000000-0000-4000-8000-000000000def",
           fenceToken: "no-such-fence",
         },
+        now: () => clock,
       });
       await expect(synthesiseRunSecrets([envHandle(handleId)], redeem)).rejects.toBeInstanceOf(
         SecretMaterializationError,
       );
+    });
+
+    it("POSITIVE + NEGATIVE control: the worker's proof VERIFIES over the resolve path, and is PATH-BOUND", async () => {
+      const { client, key, session, box } = await enrolledWorker();
+      const redeem = createRedeemer({
+        client,
+        key,
+        session,
+        fence: {
+          workerId: session.workerId,
+          jobId: "8f000000-0000-4000-8000-000000000abc",
+          attempt: 1,
+          leaseId: "8f000000-0000-4000-8000-000000000def",
+          fenceToken: "no-such-fence",
+        },
+        now: () => clock,
+      });
+      await redeem("9f000000-0000-4000-8000-000000000fed");
+      const cap = box.captured;
+      expect(cap, "the capturing fetch must have recorded the request").not.toBeNull();
+      const proof = {
+        version: cap!.headers[WORKER_CONTROL_HEADERS.proofVersion],
+        publicKey: cap!.headers[WORKER_CONTROL_HEADERS.publicKey],
+        signature: cap!.headers[WORKER_CONTROL_HEADERS.signature],
+        issuedAt: cap!.headers[WORKER_CONTROL_HEADERS.issuedAt],
+        proofId: cap!.headers[WORKER_CONTROL_HEADERS.proofId],
+      };
+      const correlationId = JSON.parse(cap!.body.toString("utf8")).correlationId as string;
+      const verifyOver = (path: string) =>
+        verifyWorkerOperationProof({
+          sessionSigningKey: SIGNING_KEY,
+          authorization: cap!.headers.authorization,
+          rawBody: cap!.body,
+          proof,
+          method: "POST",
+          path,
+          correlationId,
+          now: new Date(clock),
+        });
+
+      // POSITIVE: over the EXACT resolve path the daemon signs, the proof verifies to this worker.
+      const principal = verifyOver(EXECUTION_SECRET_RESOLVE_PATH);
+      expect(principal.workerId).toBe(session.workerId);
+
+      // NEGATIVE: the SAME proof over a DIFFERENT path is refused — the proof is path-bound, so a
+      // daemon that signed the wrong path would never verify (a 404-shaped drift the parity guard
+      // also catches). This is the discriminator the response-level `denied` assertion lacks.
+      expect(() => verifyOver("/api/worker-control/execution-secrets/WRONG")).toThrow();
     });
   },
 );

@@ -55,8 +55,32 @@ const PAIRS = [
     serverFile: "server/src/routes/worker-control.ts",
     mount: "/api",
     serverRoute: "/worker-control/execution-secrets/resolve",
+    // ★ The LOCAL descriptor is hand-duplicated on both sides. The path is not the whole contract:
+    // a one-sided edit to the size ceiling or timeout would drift SILENTLY (a worker body over the
+    // server's ceiling → denyMalformed on every resolve). Cross-check the numbers too.
+    daemonDescriptor: { file: "packages/worker-daemon/src/transport/client.ts", const: "EXECUTION_SECRET_RESOLVE_DESCRIPTOR" },
+    serverDescriptor: { file: "server/src/services/execution-secret-resolve.ts", const: "EXECUTION_SECRET_RESOLVE_DESCRIPTOR" },
   },
 ];
+
+/** Evaluate a small integer expression (`4 * 1024`, `10_000`) — no `eval`, digits + `*` only. */
+function evalIntExpr(expr) {
+  const parts = String(expr).replace(/_/g, "").trim().split("*").map((p) => Number.parseInt(p.trim(), 10));
+  if (parts.length === 0 || parts.some((n) => !Number.isFinite(n))) return null;
+  return parts.reduce((a, b) => a * b, 1);
+}
+
+/** Extract `{maxRequestBytes, timeoutMs}` from a named descriptor const (values may be expressions). */
+function readDescriptorNumbers(file, constName) {
+  const text = readFileSync(path.join(ROOT, file), "utf8");
+  const start = text.indexOf(`${constName} =`);
+  if (start < 0) return null;
+  const block = text.slice(start, start + 400);
+  const maxM = block.match(/maxRequestBytes:\s*([0-9_ *]+)/);
+  const toM = block.match(/timeoutMs:\s*([0-9_ *]+)/);
+  if (!maxM || !toM) return null;
+  return { maxRequestBytes: evalIntExpr(maxM[1]), timeoutMs: evalIntExpr(toM[1]) };
+}
 
 function readConstant(file, name) {
   const text = readFileSync(path.join(ROOT, file), "utf8");
@@ -94,6 +118,18 @@ for (const pair of PAIRS) {
       `${pair.name}: ${pair.serverFile} no longer registers ${JSON.stringify(pair.serverRoute)} ` +
         "(searched with comments stripped, so a mention in a comment does not count)",
     );
+  }
+  if (pair.daemonDescriptor && pair.serverDescriptor) {
+    const d = readDescriptorNumbers(pair.daemonDescriptor.file, pair.daemonDescriptor.const);
+    const s = readDescriptorNumbers(pair.serverDescriptor.file, pair.serverDescriptor.const);
+    if (!d || !s) {
+      failures.push(`${pair.name}: descriptor ${!d ? pair.daemonDescriptor.const : pair.serverDescriptor.const} not found/parseable`);
+    } else if (d.maxRequestBytes !== s.maxRequestBytes || d.timeoutMs !== s.timeoutMs) {
+      failures.push(
+        `${pair.name}: descriptor DRIFT — daemon ${JSON.stringify(d)} vs server ${JSON.stringify(s)} ` +
+          "(a one-sided ceiling/timeout edit; the daemon body would be refused or the timeout mismatched)",
+      );
+    }
   }
 }
 

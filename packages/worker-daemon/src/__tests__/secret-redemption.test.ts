@@ -244,5 +244,10 @@ describe("createRedeemer — client round-trip + bounded retry (R7)", () => {
     // the body echoes the run fence + handle
     const body = JSON.parse(req.bytes.toString("utf8"));
     expect(body).toMatchObject({ audience: "worker_run", jobId: FENCE.jobId, leaseId: FENCE.leaseId, handleId: HANDLE_A });
+    // ★ EXACT key set — the server schema is `.strict()`, so an EXTRA field would make every resolve
+    // 400 (→ denyMalformed) while a `toMatchObject` unit test stayed green. Pin the field set.
+    expect(Object.keys(body).sort()).toEqual(
+      ["attempt", "audience", "correlationId", "fenceToken", "handleId", "jobId", "leaseId", "protocolVersion", "workerId"],
+    );
   });
 });
