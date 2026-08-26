@@ -1273,6 +1273,85 @@ When green:
 If you find something mid-sprint that invalidates the plan's premise, STOP and say so.
 ```
 
+### Sprint 5 — prove ONE real journey (CLI-006 / the D2 lane)
+
+**The milestone: after this, "distributed execution works" is a TRUE statement — not a
+composed one.** Unlike S1–S4, this sprint **cannot finish headless**: the real-E2B green
+needs the operator's E2B key and a **dispatched** run of `keyed-e2b-conformance.yml`, which is
+`workflow_dispatch`-triggered and deliberately **not** part of `ci-required`. The session does
+everything up to that line; the dispatched run is the operator's action. See the ★ boundary
+below.
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §2.0, §2, §4 "Sprint 5", §5 (debt), §8 (D-1..D-5).
+2. docs/replatform/epics/E7-coding-e2b/tickets/CLI-006-design.md, CLI-006-result.md, and
+   CLI-006-seam-plan.md — the coding-journey ticket already exists; this sprint RUNS its D2
+   lane end to end on REAL E2B, it does not re-invent it.
+3. The result docs of Sprints 1–4 — the composed loop (S3), the provisioning that makes a
+   worker matchable (S2.75), and the redeemed-credential path (S4) are the pieces the journey
+   now threads together.
+4. .github/workflows/keyed-e2b-conformance.yml — the dispatch-triggered real-E2B lane. Note
+   its triggers (`workflow_dispatch` + a sentinel-file push path) and that it is NOT in
+   `ci-required`.
+
+THE JOURNEY TO PROVE (one org's coding task, on real E2B):
+create → schedule → lease → stage → execute → stream → produce → review → cancel → audit.
+
+STEP 1: if CLI-006 already delivers the harness, WRITE A SHORT EXECUTION PLAN (not a full
+design) naming each hop, the evidence each produces, and the single dispatched run that ties
+them together. If a hop has no wiring yet, that hop is the work — plan and build it fail-first
+to the Sprint 1–3 standard. Where a hop is only exercised by the keyed lane, say so; a local
+mock is NOT evidence for it.
+
+★★★ THE BOUNDARY — WHAT THE SESSION DOES vs WHAT THE OPERATOR DOES. State this in the plan and
+hold to it:
+- The SESSION may: build/repair every hop's wiring; run everything that runs without a live
+  E2B key (unit, embedded-PG, contract); prepare the dispatch (the workflow input, the
+  sentinel file, the exact `gh workflow run keyed-e2b-conformance.yml` command); and, once a
+  dispatched run exists, READ its logs/artifacts as the evidence.
+- Only the OPERATOR can: supply the E2B key (a provider secret — never ask the session to
+  enter or handle it) and TRIGGER the dispatched run. If the key/run is not available in-
+  session, STOP at the dispatch boundary, hand the operator the exact command + what to
+  capture, and say plainly "the real-E2B leg is unproven until a dispatched run is cited." Do
+  NOT fabricate, assume, or mock-substitute a real-E2B pass.
+
+★★★ E7-1 PROMOTION IS THE VACUOUS-GREEN TRAP OF THE WHOLE PROGRAMME. E7-1-coding-journey is
+`unwired` with expectedReferences: 2. Promote it to `wired` ONLY on a CITED dispatched real-E2B
+run that actually completed the journey — never on a composed loop, a local fake provider, or a
+skipped/green-by-skip lane. The go-book §4 Sprint 5 says it in one line: "Any claim of real-E2B
+coverage must cite a dispatched run." If no dispatched run exists yet, E7-1 STAYS unwired and
+the sprint is "harness ready, journey unproven" — an honest state, not a failure.
+
+Binding rules:
+- Sprint 4 green first. Fail-first; mutation-test new guards by DELETION, positive control first.
+- packages/worker-protocol is FROZEN.
+- Never serialize a provider key or redeemed secret into a prompt, event, protocol message, or
+  log (Decision #104). The S4 canary seeding is your tripwire — a planted leak must be caught.
+- Cite living documents by SECTION AND ID, never by line. New *.test.mjs → test-execution-census
+  in the same commit; new AOA_* switch → environment-variables.md; bump the worker-daemon
+  test-inventory pin from its CURRENT value.
+
+BEFORE you call it done, run the ADVERSARIAL REVIEW: independent reviewers per changed
+dimension; a SKEPTIC to REFUTE each HIGH (default refuted if not reproducible from source); and
+— because the deliverable includes a plan and an end-to-end claim — a COMPLETENESS CRITIC asked
+"what hop is proven only by a mock, and does the evidence chain actually reach real E2B?" Do NOT
+delegate to a plan-writing or auto-fixing skill.
+
+When green (to the extent the session CAN close it):
+- Run all five registers.
+- Write CLI-006 / D2 result notes: which hops are proven on real E2B (with the dispatched run
+  id), which are proven only locally, whether E7-1 was promoted and on what cited evidence, and
+  the exact operator step still owed if the dispatched run is not yet in hand.
+- Update GO-BOOK §3.1 and §4 Sprint 5 to what is now true — including, honestly, if the real-E2B
+  leg is still pending an operator-dispatched run.
+- Commit, push, report CI honestly (verify inherits the §2.0 red; do not raise its timeout).
+
+If you find something mid-sprint that invalidates the premise, STOP and say so.
+```
+
 ### Sprints 4-9 — the template
 
 These have scope and sequence but no implementation plan, deliberately: a plan written five
