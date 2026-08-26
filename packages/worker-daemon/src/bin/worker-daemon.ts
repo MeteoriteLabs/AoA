@@ -38,13 +38,23 @@ import {
   type DeviceIdentityRecord,
   type DeviceRecordStore,
 } from "../identity/device-identity-store.js";
-import { createControlPlaneClient } from "../transport/client.js";
+import { createControlPlaneClient, type ControlPlaneClient } from "../transport/client.js";
 import {
   decideDispatchComposition,
   DISPATCH_REFUSAL_MESSAGES,
   shouldComposeSession,
 } from "../lifecycle/compose-dispatch.js";
 import type { SandboxProvider } from "../supervisor/provider.js";
+import { composeDispatchRuntime, type DispatchRuntime } from "../lifecycle/dispatch-runtime.js";
+import { readWorkerSelfModel } from "../identity/self-model-read.js";
+import { refreshSelfHello } from "../identity/self-hello-refresh.js";
+import { createWorkerIdentity } from "../identity/worker-identity.js";
+import { deriveHelloProvisioning } from "../enrollment/hello-provisioning.js";
+import { buildDesktopHello } from "../enrollment/desktop-hello.js";
+import { deviceKeyFromPkcs8Der } from "../identity/device-key.js";
+import { createSessionProvider } from "../poll/poll-loop.js";
+import { sha256Hex } from "../identity/device-proof.js";
+import type { WorkerCapacity } from "@armyofagents/worker-protocol";
 import {
   enrollOnce,
   EnrollmentAuthorityError,
@@ -170,6 +180,12 @@ export interface BootstrapDeps {
    * default builds the real `SessionStore` + renewal client + bootstrap.
    */
   readonly createLifecycleFn?: typeof createWorkerSessionLifecycle;
+  /**
+   * ★ WRK-008 slice 2b OBSERVATION seam (not a behaviour seam). Overrides
+   * `composeDispatchRuntime` so a test can prove the composition was NOT entered on a refusing
+   * boot (spy at 0 calls) — the only way "the shipped binary still refuses" is falsifiable.
+   */
+  readonly composeDispatch?: typeof composeDispatchRuntime;
 }
 
 export interface BootstrapResult {
@@ -280,12 +296,18 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   // `identityStore.load()`: a container leaves it `false` without touching anything (the block
   // below is never entered), and both exits that imply an identity set it true.
   let workerIdentityPresent = false;
+  // ★ WRK-008 slice 2b (Sprint 2.5 GAP-1) — HOISTED so the dispatch branch below can thread
+  // `lifecycle.store` into the poll loop and reach the same `client` for the self-model read +
+  // self-hello refresh. Both stay `undefined` on a non-composing boot (the shipped default).
+  let lifecycle: WorkerSessionLifecycle | undefined;
+  let controlPlaneClient: ControlPlaneClient | undefined;
   if (config.keyStoreMode === "os_keychain" && deps.identityStore && deps.receiptStore) {
     const runEnrollment = deps.enrollOnceFn ?? enrollOnce;
     const makeClient = deps.createClient ?? createControlPlaneClient;
     const readFileText = deps.readFileText ?? ((path: string) => readFileSync(path, "utf8"));
     // One client + one lazy code reader, shared by enrolment and the session lifecycle.
     const client = makeClient({ baseUrl: config.controlPlaneBaseUrl });
+    controlPlaneClient = client;
     const readInput = () => readEnrollmentInput(config.enrollmentCodeSource, deps.env, readFileText);
 
     // WRK-010 slice 2 (go-book Sprint 2.5) — option (c): decide whether this daemon composes its
@@ -301,7 +323,7 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
       provider: deps.provider,
       dispatchEnabled: config.dispatchEnabled,
     });
-    const lifecycle: WorkerSessionLifecycle | undefined = composeSession
+    lifecycle = composeSession
       ? (deps.createLifecycleFn ?? createWorkerSessionLifecycle)({
           identityStore: deps.identityStore,
           client,
@@ -411,10 +433,12 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   // the concurrency limiter, capacity probes and event outbox threaded through, which is
   // its own pass. Until then a provider-bearing host still gets an honest answer, and the
   // one thing that CANNOT happen is silent non-dispatch.
-  // ★ Step 7 (below) does the full two-pass wiring: cheap gates first, then — only if the
-  // first answer is exactly `no_self_model` — the authenticated self-model read + second
-  // decision + composition. This first pass carries `selfModelRead: null` ("not attempted")
-  // and the real `hasWorkerIdentity`/`hasEventOutboxPath` values.
+  // ★ Step 7 — the decision function is called TWICE, and that is the design. The self-model
+  // read is an authenticated round trip; performing it before the cheap gates would waste it. So
+  // the SAME pure function decides first with `selfModelRead: null` ("not attempted"), and because
+  // both read-derived reasons are LAST, a first answer of exactly `no_self_model` means every
+  // earlier gate passed and only the read remains. `no_session` can NEVER come out of the first
+  // call. The bin never re-implements the gate order — two copies would drift.
   const dispatch = decideDispatchComposition({
     provider: deps.provider,
     dispatchEnabled: config.dispatchEnabled,
@@ -422,11 +446,118 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
     hasEventOutboxPath: config.eventOutboxPath !== null,
     selfModelRead: null,
   });
-  if (!dispatch.compose) {
+
+  let runtime: DispatchRuntime | undefined;
+  // ★ The read is the ONLY remaining gate exactly when the first answer is `no_self_model` — that
+  // is the whole reason for the two-pass shape. This boolean is the load-bearing guard: deleting
+  // the `reason === "no_self_model"` check makes it fire for a cheaper refusal (e.g. `no_provider`),
+  // where the invariant below then throws rather than composing on a half-built daemon.
+  const readIsTheOnlyRemainingGate = !dispatch.compose && dispatch.reason === "no_self_model";
+  if (readIsTheOnlyRemainingGate) {
+    // Invariant: `no_self_model` on the FIRST pass ⟺ every cheap gate passed, so a provider + flag
+    // (⟹ lifecycle), an outbox path, identity custody and a control-plane client are ALL present.
+    // Fail loudly if a future refactor breaks that — never compose on a partial daemon.
+    if (lifecycle === undefined || controlPlaneClient === undefined || config.eventOutboxPath === null || deps.identityStore === undefined) {
+      throw new Error("worker-daemon: no_self_model reached without every cheap-gate dependency present (invariant broken)");
+    }
+    // The identity itself (record load + PKCS8 re-derivation) is constructed INSIDE this branch,
+    // so a boot that refuses earlier derives no device key — the "zero residue" §10 earns.
+    const record = deps.identityStore.load();
+    if (record !== null) {
+      const key = deviceKeyFromPkcs8Der(record.privateKeyPkcs8Der);
+      const sessionProvider = createSessionProvider(lifecycle.store);
+      const bareHello = buildDesktopHello({
+        workerId: record.workerId,
+        targetId: record.targetId,
+        deviceGeneration: record.deviceGeneration,
+        platform: process.platform,
+        arch: process.arch,
+      });
+      const read = await readWorkerSelfModel({
+        client: controlPlaneClient,
+        session: sessionProvider,
+        key,
+        report: bareHello,
+        sha256Fn: sha256Hex,
+      });
+      const dispatch2 = decideDispatchComposition({
+        provider: deps.provider,
+        dispatchEnabled: config.dispatchEnabled,
+        hasWorkerIdentity: true,
+        hasEventOutboxPath: true,
+        selfModelRead: read,
+      });
+      if (dispatch2.compose) {
+        // ★ Fold WRK-011's provisioning into the assembled model and REFRESH the server snapshot
+        // (§0.2B). The nameplate capacity is the server-owned ceiling; the poll re-measures + the
+        // server Math.min's it. The refresh is best-effort: a failure leaves the snapshot stale
+        // (offered nothing) but the daemon healthy and inert.
+        const rc = dispatch2.selfModel.verifiedProviderConstraints.resourceCeiling;
+        const nameplate: WorkerCapacity = {
+          batchSlots: config.concurrency.batch,
+          browserSessionSlots: config.concurrency.browser,
+          serviceSlots: config.concurrency.service,
+          freeCpuMillis: rc.cpuMillis,
+          freeMemoryMiB: rc.memoryMiB,
+          freeDiskMiB: rc.diskMiB,
+        };
+        const provisioning = deriveHelloProvisioning({
+          selfModelResponse: { registeredProfile: dispatch2.selfModel.registeredTargetProfile },
+          isolation: "none",
+          capacity: nameplate,
+        });
+        const identity = createWorkerIdentity({ record, platform: process.platform, arch: process.arch, provisioning });
+        const current = lifecycle.store.current();
+        if (current !== null) {
+          const refreshed = await refreshSelfHello({ client: controlPlaneClient, current, key, hello: identity.hello });
+          if (refreshed !== null) lifecycle.store.set(refreshed);
+        }
+        const composeRuntime = deps.composeDispatch ?? composeDispatchRuntime;
+        runtime = await composeRuntime({
+          provider: deps.provider!,
+          self: { ...dispatch2.selfModel, report: identity.hello },
+          key,
+          store: lifecycle.store,
+          client: controlPlaneClient,
+          eventOutboxPath: config.eventOutboxPath,
+          concurrency: config.concurrency,
+          backoff: config.backoff,
+          workDir: process.cwd(),
+          logger,
+          metrics,
+        });
+        // ★ NOT awaited beyond composition: a terminal poll-loop stop does not exit the process;
+        // the daemon stays UP serving health, the same "healthy and inert" degradation.
+        runtime.start();
+        logger.info(
+          { workerId: identity.workerId, targetId: identity.targetId },
+          "worker-daemon dispatch COMPOSED; leasing through the poll loop",
+        );
+      } else {
+        logger.info(
+          { reason: dispatch2.reason, ...(dispatch2.logPayload ?? {}) },
+          DISPATCH_REFUSAL_MESSAGES[dispatch2.reason],
+        );
+      }
+    } else {
+      logger.info({ reason: "no_worker_identity" }, DISPATCH_REFUSAL_MESSAGES.no_worker_identity);
+    }
+  } else if (!dispatch.compose) {
     logger.info(
       { reason: dispatch.reason, ...(dispatch.logPayload ?? {}) },
       DISPATCH_REFUSAL_MESSAGES[dispatch.reason],
     );
+  }
+
+  // ★ Two leasing lifecycles is a double-lease hazard. Reachable only by injection.
+  if (runtime !== undefined && deps.leasing !== undefined) {
+    logger.error(
+      {},
+      "worker-daemon composed a dispatch runtime AND an external leasing seam was injected; refusing to run two leasing lifecycles",
+    );
+    await health.close().catch(() => {});
+    deps.proc.exit(1);
+    return { ok: false, config, logger, metrics };
   }
 
   // WRK-007: the one-shot startup reconciliation pass runs ONCE here — after the
@@ -440,8 +571,14 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   // stop; WRK-005 inserts renewal-stop between them when a renewal driver is
   // composed. When no loop is wired (the current default — see `leasing` above),
   // the only stop step is the health server.
-  const leaseSteps = deps.leasing ? createLeaseLifecycleSteps(deps.leasing, deps.renewal) : [];
-  const outboxSteps = deps.eventOutbox ? createEventOutboxShutdownSteps(deps.eventOutbox) : [];
+  // ★ Step 7 — when a runtime is COMPOSED, its lifecycles drive shutdown (leasing stops before
+  // draining, renewal timers stop between them, the outbox flushes then closes). Otherwise the
+  // injected seams (tests) or nothing (the shipped default) apply.
+  const leasing = runtime?.leasing ?? deps.leasing;
+  const renewal = runtime?.renewal ?? deps.renewal;
+  const eventOutbox = runtime?.eventOutbox ?? deps.eventOutbox;
+  const leaseSteps = leasing ? createLeaseLifecycleSteps(leasing, renewal) : [];
+  const outboxSteps = eventOutbox ? createEventOutboxShutdownSteps(eventOutbox) : [];
   const shutdown = createShutdownHandler({
     steps: [
       ...leaseSteps,

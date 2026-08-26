@@ -68,6 +68,8 @@ export const DEFAULT_ENROLL_PATH = "/api/worker-control/enroll";
 export const POLL_PATH = "/api/worker-control/poll";
 /** WRK-008 slice 2b — the self-model read route (must match the client's SELF_MODEL_READ_PATH). */
 export const SELF_MODEL_READ_PATH_FAKE = "/api/execution-targets/self/placement-profile";
+/** WRK-008 slice 2b — the self-hello refresh route (must match the client's SELF_HELLO_PATH). */
+export const SELF_HELLO_PATH_FAKE = "/api/execution-targets/self/hello";
 const LEASE_ACK_RE = /^\/api\/worker-control\/leases\/([^/]+)\/ack$/;
 // WRK-005: the renew action hangs off the same lease base as ack.
 const LEASE_RENEW_RE = /^\/api\/worker-control\/leases\/([^/]+)\/renew$/;
@@ -144,6 +146,14 @@ export type FakeSelfModelDirective =
       readonly providerConstraintProfile: unknown;
       readonly selfModelHash?: string;
     }
+  | { readonly kind: "error"; readonly status: number }
+  | { readonly kind: "unauthorized" };
+
+/** WRK-008 slice 2b — a programmed self-hello refresh response (FIFO). `refreshed` mints a
+ * NEW session on the response header; `unchanged` is a 204 no-op. */
+export type FakeSelfHelloDirective =
+  | { readonly kind: "refreshed" }
+  | { readonly kind: "unchanged" }
   | { readonly kind: "error"; readonly status: number }
   | { readonly kind: "unauthorized" };
 
@@ -262,6 +272,8 @@ export interface FakeControlPlane {
   enqueuePoll(directive: FakePollDirective): void;
   /** WRK-008 slice 2b — program the next self-model read response (FIFO). */
   enqueueSelfModel(directive: FakeSelfModelDirective): void;
+  /** WRK-008 slice 2b — program the next self-hello refresh response (FIFO). */
+  enqueueSelfHello(directive: FakeSelfHelloDirective): void;
   enqueueAck(directive: FakeAckDirective): void;
   /** Force EVERY poll to respond 401 `unauthorized` (models a session that
    * authenticates on enroll but is persistently rejected on poll/ack — clock
@@ -466,6 +478,7 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
   const ackRecords: FakeAckRecord[] = [];
   const renewDirectives: FakeRenewDirective[] = [];
   const selfModelDirectives: FakeSelfModelDirective[] = [];
+  const selfHelloDirectives: FakeSelfHelloDirective[] = [];
   const renewRecords: FakeRenewRecord[] = [];
   // WRK-007 (D6): per-`leaseId` authority table (keyed), consulted before the FIFO.
   const leaseAuthority = new Map<string, FakeLeaseAuthorityEntry>();
@@ -601,6 +614,10 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     }
     if (method === "POST" && pathname === SELF_MODEL_READ_PATH_FAKE) {
       await handleSelfModelRead(req, res, url, method);
+      return;
+    }
+    if (method === "POST" && pathname === SELF_HELLO_PATH_FAKE) {
+      await handleSelfHelloRefresh(req, res, url, method);
       return;
     }
     const ackMatch = LEASE_ACK_RE.exec(pathname);
@@ -853,6 +870,77 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
       providerConstraintProfile: directive.providerConstraintProfile,
       serverTime: new Date(now()).toISOString(),
     });
+    finish();
+  }
+
+  // WRK-008 slice 2b — the self-hello refresh. Dual-authenticated; `refreshed` mints a fresh
+  // session bound to the SAME device on the `aoa-worker-session` header (the old one is not
+  // revoked here — the real server invalidates it via the profile_hash change, out of scope
+  // for the fake, which the daemon test simply does not reuse).
+  async function handleSelfHelloRefresh(req: IncomingMessage, res: ServerResponse, url: string, method: string): Promise<void> {
+    let status = 200;
+    let outcome = "self_hello";
+    let recordedProofId: string | null = null;
+    let recordedThumbprint: string | null = null;
+    const finish = (): void => record(method, url, status, outcome, recordedProofId, recordedThumbprint);
+
+    const rawBody = await readBody(req);
+    const proof = readProofHeaders(req);
+    recordedProofId = proof?.proofId ?? null;
+    const correlationId = header(req, WORKER_CONTROL_HEADERS.requestId);
+    const auth = authenticateOperation(req, method, url, rawBody, correlationId, proof);
+    if (!auth.ok) {
+      recordedThumbprint = auth.thumbprint;
+      status = auth.status;
+      outcome = "unauthorized";
+      operationError(res, auth.status, auth.code, correlationId);
+      finish();
+      return;
+    }
+    recordedThumbprint = auth.thumbprint;
+
+    const directive: FakeSelfHelloDirective = selfHelloDirectives.shift() ?? { kind: "refreshed" };
+    if (directive.kind === "unauthorized") {
+      status = 401;
+      outcome = "unauthorized";
+      operationError(res, 401, "unauthorized", correlationId);
+      finish();
+      return;
+    }
+    if (directive.kind === "error") {
+      status = directive.status;
+      outcome = "error";
+      protocolError(res, directive.status, "malformed", correlationId);
+      finish();
+      return;
+    }
+    if (directive.kind === "unchanged") {
+      status = 204;
+      outcome = "unchanged";
+      res.writeHead(204);
+      res.end();
+      finish();
+      return;
+    }
+    // refreshed: mint a NEW session bound to the same device.
+    const token = `sess_${sha256Hex(`selfhello:${auth.session.token}:${now()}:${Math.random()}`)}`;
+    sessions.set(token, {
+      token,
+      deviceThumbprint: auth.session.deviceThumbprint,
+      targetId: auth.session.targetId,
+      deviceGeneration: auth.session.deviceGeneration,
+      workerId: auth.session.workerId,
+      expiresAtMs: now() + sessionTtlMs,
+    });
+    lastSession = token;
+    status = 200;
+    outcome = "refreshed";
+    sendJson(
+      res,
+      200,
+      { protocolVersion: 1, profileHash: "b".repeat(64), serverTime: new Date(now()).toISOString() },
+      { [WORKER_CONTROL_HEADERS.session]: token },
+    );
     finish();
   }
 
@@ -1696,6 +1784,9 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     },
     enqueueSelfModel(directive: FakeSelfModelDirective): void {
       selfModelDirectives.push(directive);
+    },
+    enqueueSelfHello(directive: FakeSelfHelloDirective): void {
+      selfHelloDirectives.push(directive);
     },
     enqueueAck(directive: FakeAckDirective): void {
       ackDirectives.push(directive);
