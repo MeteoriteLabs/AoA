@@ -771,7 +771,18 @@ register tracks only the positive `runBrowserSession` symbol, not this negative 
 that would flag it is **BRW-008's anti-orphan check, which does not exist** (no ticket, no node).
 Also: Sprint 3 did **not** deliver `browser-runtime`'s execution path — it still has zero importers.
 
-**Write designs at sprint start.**
+**★ Reframed 2026-08-27 (scoping audit `qa/2026-08-27-sprint7-e8-scoping.md`).** E8's browser
+*features* are substantially built by the parallel Lane B effort (`C:\e8` — BRW-001/002/003a/b/003d-*
+shipped); the remaining feature tickets are Lane B's (BRW-004) or live-infra-blocked (BRW-005/006/007,
+BRW-003c). So the one clean, unowned, session-buildable main-sequence unit is **the anti-orphan
+GUARD** (not the fix): `BRW-hostspawn-gate` — a boot-root browser-spawn guard in trackable-strict
+owned-deferral form (the missing check the note above names). Its design is **written + 4-agent
+review-verified** (v2 closed two real anti-vacuity holes — a second spawn in the declared file, and
+the `packages/adapters` host config-writers the first scan missed); §9 "Sprint 7 (unit 1)" has the
+prompt. It does NOT close the spawn (BRW-008 proper owns that, gated on the governed path). Filed under
+a graph-inert slug (the REL-FOUNDATION-GATE precedent), so BRW-008 stays a clean unstarted ticket.
+
+**Write designs at sprint start** (for the browser *features* — Lane B's track; the guard above is done).
 
 ---
 
@@ -1986,6 +1997,88 @@ When green:
   — whether the live rehearsal is owed (it is, unless an operator run is cited).
 - Update GO-BOOK §3.1 (add the S9 unit-2 row) and §4 Sprint 9 to what is now true.
 - Commit, push, report CI honestly (code=true PR → the full heavy suite gates it).
+
+If you find something mid-ticket that invalidates the premise, STOP and say so.
+```
+
+### Sprint 7 (unit 1) — BRW-hostspawn-gate: catch the host-side browser spawn (guard, not fix)
+
+**Sprint 7's browser FEATURES are Lane B's (`C:\e8`) or live-infra-blocked — this is the one clean,
+unowned, session-buildable unit.** The host-side `@playwright/mcp` spawn (`cli-mode.ts:347`) is live,
+reachable from four boot roots, and E8's "no host-side browser spawn" exit clause is false-in-fact +
+uncovered. This adds the anti-orphan guard that makes it catchable/regression-proof — in
+trackable-strict owned-deferral form — **without closing the spawn** (forbidden before the governed
+path is proven). Design is written + **4-agent review-verified** (v2, both anti-vacuity holes closed).
+**Pure guard/docs — no runtime code, no live infra, no spend.**
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §4 "Sprint 7", §2 (the per-ticket process), §5 (debt), §8.
+2. docs/replatform/qa/2026-08-27-sprint7-e8-scoping.md — why this guard is the one unowned unit
+   (Lane B owns the browser features; the security clause is uncovered).
+3. docs/replatform/epics/E8-browser-automation/tickets/BRW-hostspawn-gate-design.md — the FULL v2
+   design. Read the enumeration section (spawn-granular + widened scope), the 7 evaluator arms
+   (A0-A6), the fail-first TDD, the mutation table, and the "THREE same-commit register entries".
+   NOTE the name is a graph-INERT slug on purpose — do NOT rename it to BRW-008 and do NOT add a
+   program-design node (that reds ticket-graph + dependency-graph; the rename is the whole point).
+
+STEP 0: re-verify citations at tip (lines rot; identifiers stable). Confirm green-at-rest inputs:
+`grep -oE "@playwright/mcp|PLAYWRIGHT_MCP_PACKAGE" server/src/services/internal-agent/cli-mode.ts` = 3;
+nothing under packages/adapters carries the signature.
+
+BUILD THE GUARD TRIO (mirror scripts/check-boot-roots-provider-free.mjs, fail-first, POSITIVE CONTROL
+FIRST, mutation-test each arm by DELETION):
+- scripts/check-boot-roots-browser-spawn-free.mjs — driver: owns fs discovery
+  (discoverHostSpawnSites + countSignatureOccurrences), guarded main() so the suite imports discovery.
+- scripts/lib/boot-roots-browser-spawn-free.mjs — PURE evaluator evaluateBrowserSpawnFree, no fs.
+- scripts/browser-spawn-expectation.json — deferral manifest
+  {deferredHostSpawns: {"<path>": {owner:"BRW-008", reason, signatureOccurrences}}}; declare
+  cli-mode.ts with signatureOccurrences: 3.
+- scripts/lib/__tests__/boot-roots-browser-spawn-free.test.mjs — node --test suite.
+The load-bearing mechanics (the v2 fixes — do NOT regress them):
+- SPAWN-GRANULAR (A6): the manifest pins signatureOccurrences PER FILE and the evaluator reds on ANY
+  deviation. A SECOND host spawn in the already-declared cli-mode.ts bumps the count 3→≥4 → RED (the
+  v1 file-keyed set-op stayed green — that was the defect). Removal drops the count → stale RED.
+- WIDENED SCOPE: SCAN_ROOTS = ["server/src","packages/adapters"] to cover the codex/opencode host
+  config-writers (codex-config-toml.ts renderMcpBlock, opencode-config-json.ts) that ALSO emit host
+  MCP command/args from boot roots — EXCLUDE packages/browser-runtime (raw Playwright, governed).
+- The 7 arms A0 manifest-fail-closed / A1 vacuous-scan / A2 unreadable / A3 undeclared / A4 stale /
+  A5 malformed / A6 count-mismatch — each a killing test + a DELETE-mutant.
+
+THREE same-commit register entries (omit any → policy reds on the guard itself):
+- scripts/guard-inventory.json — new check-*.mjs, {status:"ci", reason:"invoked by a workflow"}.
+- scripts/test-execution-census.json — new *.test.mjs, {status:"runs", workflow:"pr.yml", step:"<name>"};
+  the run: block must NAME the test file path.
+- scripts/test-inventory.json — bump `scripts` count 48→49 (the new .test.mjs; delta is exactly +1).
+Add ONE policy-job step in .github/workflows/pr.yml (self-test + checker in ONE run block, beside the
+boot-roots sibling). GREEN at rest by construction.
+
+README (F4 — do NOT overclaim): leave docs/replatform/epics/E8-browser-automation/README.md:7
+UNCHANGED (it's a legitimate not-yet-met exit condition). If you add a note, scope it: the guard fails
+on any NEW, UNDECLARED @playwright/mcp host spawn; the existing cli-mode.ts spawn REMAINS a declared
+BRW-008-owned deferral until BRW-008 removes it; the guarantee is SCOPED to the @playwright/mcp
+signature, not every host browser spawn. NEVER write "enforced" — that re-creates the false-green.
+
+Binding rules:
+- NOT closing the spawn (BRW-008 proper owns that, gated on the governed path — scope-addendum). This
+  is the guard only. build-mcp-config.test.ts:87 asserts the spawn EXISTS — coexist, do not contradict.
+- packages/worker-protocol FROZEN. Cite living docs by section/id, never by line.
+
+BEFORE done, run the ADVERSARIAL REVIEW with subagents (the design had a 4-agent pass; verify the
+IMPLEMENTATION): a reviewer on the guard from source; a SKEPTIC on "can a new host spawn still evade —
+a 2nd spawn in the declared file, a spawn in packages/adapters, a non-signature mechanism"; a
+completeness critic that the 3 register entries + the policy step are byte-consistent and every arm is
+mutation-killed. Do NOT delegate to a plan-writing or auto-fixing skill.
+
+When green:
+- Run all five registers + node scripts/check-boot-roots-browser-spawn-free.mjs (exit 0 at rest).
+- Write BRW-hostspawn-gate-result.md: the guard, the mutation line, the count-arm at-rest value, the
+  two closed evasions, and the residual (signature-scoped; non-@playwright/mcp owned by BRW-008).
+- Update GO-BOOK §3.1 (add the Sprint 7 unit-1 row) and §4 Sprint 7 to what is now true.
+- Commit, push, report CI honestly (code=true PR → the full heavy suite gates it; the guard itself is
+  a pure fs scan and touches no runtime code).
 
 If you find something mid-ticket that invalidates the premise, STOP and say so.
 ```
