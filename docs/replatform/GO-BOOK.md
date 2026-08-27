@@ -106,6 +106,85 @@ substantive remaining work is **operator-gated (the E7-1 fleet, the REL-003 DR r
 (S7/S8 features)**, not more session units. The 12 open findings (`finding-ownership.json` + §5) are
 the tracked-debt ledger; most are blocked on those same deps, a handful are the cheap closures above.
 
+### ★ The critical path, on one page (the sequencing map)
+
+§1.5 is the **narrative** (status + timeline). This is the **dependency graph** — every remaining
+item, ordered by what-blocks-what, each tagged by its gate: **`OP`** = operator/live-infra (the
+session can never do it), **`SESS`** = session-buildable, **`LANE B`** = the parallel `C:\e8` track.
+Register-sourced (`gate-clause-wiring.json` + `finding-ownership.json`), reconciled 2026-08-28.
+
+```mermaid
+flowchart TD
+  V["evidence-verifier A<br/>acceptance harness · SESS · NOW"]:::sess
+  C0["staging-deploy pipeline<br/>deploy docker-compose.staging.yml<br/>OP · unticketed · the #1 unlock"]:::op
+  D11["DEP-011 worker→adapter-manager wire<br/>SESS · bites only at the fleet"]:::sess
+  C2["fleet deployed + armed<br/>E2B key · canary · cap&gt;1 · enrolled worker<br/>OP"]:::op
+  C3["E7-1 campaign — 1 real-E2B run<br/>OP dispatches"]:::op
+  CW["E7-1 = wired ✅"]:::done
+  BR["wire projection bridges<br/>jobApproval / jobBudgetCost / jobOutput<br/>SESS · zero-caller today"]:::sess
+  RT["S6 shared prereqs<br/>routing seam + mint-runner generalization<br/>SESS · shared with Lane B"]:::sess
+  SK["S6 sink cutover<br/>crew → extraction → Commander<br/>SESS + credential work"]:::sess
+  DR["drain wired (E10-1)<br/>SESS"]:::sess
+  R5["REL-005 — private-beta close<br/>SESS + OP"]:::mix
+  LB["Lane B: S7 browser BRW-004..008<br/>+ S8 service SVC-002..007<br/>LANE B · not ours"]:::laneb
+  R1["REL-001 / REL-002"]:::mix
+  DBR["DBR-001 aoa db:restore entrypoint<br/>SESS"]:::sess
+  R3["REL-003 live DR rehearsal (RPO/RTO)<br/>OP"]:::op
+
+  V -.->|de-risks| C3
+  C0 --> C2
+  D11 --> C2
+  C2 --> C3 --> CW --> BR --> SK
+  RT --> SK
+  SK --> DR --> R5
+  LB --> R1 --> R5
+  DBR --> R3
+  C2 --> R3
+
+  classDef op fill:#fde68a,stroke:#b45309,color:#111827;
+  classDef sess fill:#bbf7d0,stroke:#15803d,color:#111827;
+  classDef laneb fill:#bfdbfe,stroke:#1d4ed8,color:#111827;
+  classDef done fill:#e5e7eb,stroke:#374151,color:#111827;
+  classDef mix fill:#e9d5ff,stroke:#7e22ce,color:#111827;
+```
+
+**The whole backlog, gate-tagged and dependency-ordered:**
+
+| Band | Item | Gate | Blocked by | Size |
+|------|------|------|-----------|------|
+| **Frontier (buildable now)** | Evidence-verifier A — the E7-1 acceptance harness | `SESS` | — | S |
+| | E6-F005 · E6-F007 · E4-F014 — doc-only closures | `SESS` | — | XS |
+| | E4-F015 — resolve **if** obviated (verify the Record pins the union) | `SESS` | — | XS |
+| **Critical path (the spine)** | **C0 · staging-deploy pipeline** (deploy the staging compose) | `OP` | — | **L** |
+| | C1 · DEP-011 worker→adapter-manager provider wire (E6-F003, HIGH) | `SESS` | bites at C0 | M |
+| | C2 · fleet deployed + armed (E2B key, canary, cap>1, worker) | `OP` | C0 | M |
+| | C3 · E7-1 campaign — one real-E2B distributed run → **E7-1 wired** | `OP` | C2 | S |
+| | C4 · wire the projection bridges (jobApproval/Budget/Output) | `SESS` | C3 | M |
+| | C5 · S6 shared prereqs — routing seam + mint-runner generalization | `SESS` | C3 | L |
+| | C6 · S6 sink cutover — crew → extraction → Commander (E10-F001) | `SESS`+cred | C4, C5 | L |
+| | C7 · drain wired (E10-1-drain) | `SESS` | C6 | S |
+| | C8 · REL-005 — kill-switch write-path + drain trigger | `SESS`+`OP` | C7, all REL | M |
+| **Parallel — Lane B** | S7 browser BRW-004..008 · S8 service SVC-002..007 | `LANE B` | dispatch-live | L |
+| | REL-001 / REL-002 | mix | S7/S8 | M |
+| **Operator DR** | DBR-001 · `aoa db:restore` entrypoint (E11-F002 session half) | `SESS` | — | S |
+| | REL-003 · live DR rehearsal (measured RPO/RTO) | `OP` | C2, DBR-001 | M |
+| **Deferred daemon stubs (LOW, fail-closed)** | WRK-012 self-model refresh + lease-in-flight (E4-F008) | `SESS` | — | M |
+| | WRK-013 durable lease-candidate + startup reconciler (E4-F009 → unblocks E5-3) | `SESS` | — | M |
+| | E3-18 revocation-fanout consumer | `SESS` | dispatch-live | M |
+
+**The one thing to see:** every substantive session item (**C4–C8** — bridges, sinks, drain, close)
+is dammed behind **C3** (E7-1 wired), which is dammed behind **C0** (the operator staging-deploy
+pipeline). So the honest sequence is:
+
+- **Session, now** — build **evidence-verifier A** + sweep the doc closures (F-band). Optionally
+  DBR-001 and the WRK stubs, but those are LOW / fail-closed. **This is the entire session frontier.**
+- **Operator, the real unlock** — scope + build **C0**. One act (the fleet) converts a nearly-dry
+  backlog into the full C4–C8 chain. **Highest leverage in the programme.**
+- **Lane B, parallel** — S7/S8 features (not ours); they share C5's routing seam (build it once).
+
+We are **one operator action away** from the session work becoming rich again. Until then, plan C0 in
+detail (it's the bottleneck) and keep the F-band as session fill — everything below C3 is scope-only.
+
 ---
 
 ## 2. How to run a sprint (read once, applies to every sprint)
@@ -944,14 +1023,14 @@ Not blockers; do not rediscover them.
 
 | Item | State |
 |---|---|
-| **Security guards with no falsifiable test** | `egress-policy.ts:199` is a **real fail-open** (deleting the fail-closed guard passes the suite — reproduced). Also `worker-session-auth` (22 of 25 guards deletable, unverified on Linux), `worker-device-proof` (Ed448 accepted; garbage `issuedAt` makes the skew window vacuous), `policy.ts` path grammar. **All protect the DORMANT path — fix before Sprint 3, not after.** |
+| **Security guards with no falsifiable test** | `egress-policy.ts:199` is a **real fail-open** (deleting the fail-closed guard passes the suite — reproduced). Also `worker-session-auth` (22 of 25 guards deletable, unverified on Linux), `worker-device-proof` (Ed448 accepted; garbage `issuedAt` makes the skew window vacuous), `policy.ts` path grammar. **All protect the DORMANT path — fix before live dispatch (E7-1 / a real distributed run), not after — the path is still dormant.** |
 | **dependency-graph regex** | `[A-Z]{3,4}` cannot match `TRACK`, so the checker that stops graph drift is blind to TRACK-001/002. Widening to `{2,5}` was **measured**: it fails the self-test and the checker, because the crosswalk-dominance computation shares the regex. Needs its own ticket. |
 | **6 ticket families invisible to the coverage checker** | `GATE-clause-3-rollback`, `DEFERRAL-1-credential`, `E4-D12-live-dispatch`, `CLI-realE2B-hardening`, `REL-FOUNDATION-GATE`, `BRW-hostspawn-gate` — no 3-digit id, so the checker skips them (both `expandTicketIdsFromFilename` and `parseAuthorityNodes` require `\d{3}`). Three are the Wave-3/4 blocker artifacts; `REL-FOUNDATION-GATE` (S9 unit 1) and `BRW-hostspawn-gate` (S7 unit 1) are graph-inert **by design** — their enforcement is the CLI checker in the `policy` job, not a coverage node. |
 | **TRACK-003 / BRW-007 / BRW-008** | Shipped or scoped with no `#### ID` node. |
 | **E2's gate cites a failing revision** | `README.md:6` names `acf2b32fb`, which its own artifact table records as `blocked_external`, superseded by a pass at `9a5455071f8c`. |
 | **E6 clause 7** | The DEP-009 shared-admission proof **re-implements** the advisory-lock SQL inline in the test rather than calling `admitAttemptCapacity` — change the production key and the test stays green. |
-| **brand-check guard 9 is blind to the `ENV`-map convention** | `pr.yml:650-663` matches only literal `process.env.AOA_[A-Z_]+`, and `worker-daemon/src/config/config.ts` reads through an `ENV` map — so a new `AOA_WORKER_*` switch can ship undocumented with **no guard firing**. Three new operator-facing switches arrive in Sprints 2 and 3; two get documented by author discipline and one would not. The standing fix is to extend guard 9 to the map convention. |
-| **`check-execution-census` trips on any new `*.test.mjs`** | Not a defect — it is working as designed — but it is the guard most likely to redden a sprint that adds a script test and forgets `scripts/test-execution-census.json`. Sprint 3 adds two. |
+| **brand-check guard 9 is blind to the `ENV`-map convention** | `pr.yml:650-663` matches only literal `process.env.AOA_[A-Z_]+`, and `worker-daemon/src/config/config.ts` reads through an `ENV` map — so a new `AOA_WORKER_*` switch can ship undocumented with **no guard firing**. Three new operator-facing switches arrived in Sprints 2 and 3; two were documented by author discipline and one was not. The standing fix is to extend guard 9 to the map convention. |
+| **`check-execution-census` trips on any new `*.test.mjs`** | Not a defect — it is working as designed — but it is the guard most likely to redden a sprint that adds a script test and forgets `scripts/test-execution-census.json`. Sprint 3 added two. |
 | **Kill switch has no write path** | `evaluateKillSwitches` is genuinely wired, but throwing it means hand-executed SQL, instance-wide per provider, no Organization or sink dimension. REL-005 scope. |
 
 **Retired 2026-08-27:** the `verify` 60-min timeout drag (§2.0). `verify` was sharded into a 4-way
@@ -1387,8 +1466,7 @@ When green:
   weaker than worker-control's structural non-mount; and every claim you could not prove.
 - Update GO-BOOK.md §3.1's 2.75 row and §4 Sprint 2.75 to what is now true, and delete the
   E4-F010 caveat wherever shipping this made it false.
-- Commit, push, and report CI honestly — including `verify`, which is red for reasons that
-  predate this sprint (§2.0). Do not raise its timeout to make it green.
+- Commit, push, report CI honestly (`verify` is now a sharded matrix — §2.0 RESOLVED, so `ci-required` should PASS; a red shard is a real failure to own, not an inherited timeout).
 
 If you find something mid-sprint that invalidates the plan's premise, STOP and say so rather
 than absorbing it.
@@ -1543,8 +1621,7 @@ When green:
   was deferred and why; the mutation line; which E5 gate clause (E5-5) you promoted and on what
   evidence; and every claim you could not prove.
 - Update GO-BOOK.md §3.1 and §4 Sprint 4 to what is now true.
-- Commit, push, and report CI honestly — including `verify`, red for reasons predating this
-  sprint (§2.0). Do not raise its timeout to mask it.
+- Commit, push, report CI honestly (`verify` is now a sharded matrix — §2.0 RESOLVED, so `ci-required` should PASS; a red shard is a real failure to own, not an inherited timeout).
 
 If you find something mid-sprint that invalidates the plan's premise, STOP and say so.
 ```
@@ -1810,6 +1887,11 @@ If you find something mid-sprint that invalidates the premise, STOP and say so.
 ```
 
 ### CI hardening — parallelize `verify` (retire the §2.0 timeout before S6)
+
+> **★ SHIPPED 2026-08-27 (PR #327, `9d01e5c32` shard + `18d3331f1` merge) — historical prompt,
+> kept as the record.** `verify` is a 4-shard matrix and §2.0 is RESOLVED; `ci-required` goes
+> green. Do not re-run this prompt — the work is done. See §2.0 and the §3.1/§5 "Retired
+> 2026-08-27" notes.
 
 **Retire the §2.0 CI drag before the breadth sprints.** `verify` is one 60-min job that times out
 on volume (~165 embedded-PG integration tests, one lane); after E4-F017 the timeout is its ONLY red
