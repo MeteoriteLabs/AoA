@@ -385,6 +385,21 @@ for Sprint 5 the one real E2B journey.
 
 ## 4. The sprints
 
+**★ Sequence at a glance (updated 2026-08-28 — status detail in §1.5, per-unit ship rows in §3.1):**
+
+| Sprint | Status | The sequence, honestly |
+|---|---|---|
+| **1 – 5a** | ✅ **SHIPPED** | The mechanism + coding path (WRK-010/011/008, DEP-010, DAT-008, CLI-001..007); `E4-1`/`E4-2` promoted `wired` on evidence. |
+| **5 / 5b** | ✅ harness SHIPPED · 🟡 **E7-1 OWED** | The journey harness + the staging-canary runbook are built; the **real-E2B distributed run is owed to the operator** (fleet not deployed). Promotes `E7-1`. |
+| **6** | 🟡 **PARTIAL** | MIG-009 drain ✅. The cutover **sinks are BLOCKED** (E10-F001): crew RIDES the mint (iff a v1 provider) = the cleanest sink, but the cutover needs the zero-caller projection bridges + E7-1. |
+| **7** | 🟡 **PARTIAL** | BRW-hostspawn-gate ✅ (the host-spawn guard). The browser **features (BRW-004..008) are Lane B's track** / live-infra. |
+| **8** | 🚫 **BLOCKED** | SVC-001 (storage) only; **SVC-002..007 need the service-dispatch enable** (the daemon is batch-only). The E9 gate-clause guard is **premature** (no real symbol until SVC-002). |
+| **9** | 🟡 **PARTIAL** | Units 1/2/3 ✅ (REL-FOUNDATION-GATE, REL-003 core, foundation-suite-unrun). **REL-001/002/005 BLOCKED** on S7/S8 + downstream deps. |
+
+**The frontier is now OPERATOR + Lane B, not session units** (see §1.5): the highest-leverage next move
+is the operator **E7-1 staging-fleet deploy + campaign** (§9 "Sprint 5b"), which cascades furthest —
+it promotes E7-1 and is the prerequisite for the bridge-wiring → crew cutover → the other sinks.
+
 ### Sprint 1 — WRK-010: a worker stays logged in
 **Epic E4 · ★ SHIPPED `c1c5530f5` · design + result: `epics/E4-worker-daemon/tickets/WRK-010-{design,result}.md`**
 
