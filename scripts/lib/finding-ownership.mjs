@@ -57,7 +57,7 @@ function hasReason(value) {
 /**
  * @param {{
  *   findings?: Array<{id: string, status: string, severity?: string, title?: string}>,
- *   declared?: Record<string, {status: string, ticket?: string, reason?: string, ownerStillOpen?: string}>,
+ *   declared?: Record<string, {status: string, ticket?: string, reason?: string, ownerStillOpen?: string, successor?: string}>,
  *   ticketIds?: string[],
  *   completedTicketIds?: string[],   // tickets with a result doc — i.e. shipped
  * }} input
@@ -113,10 +113,30 @@ export function evaluateFindingOwnership(input) {
       // is still open, so failing outright would have produced a false positive on the very
       // first real entry — and a guard that cries wolf gets switched off, which is a worse
       // outcome than no guard. So the rule is not "you may not name a shipped ticket"; it is
-      // "if you name one, say IN WRITING what part of it is still open." Nobody can write
-      // that sentence honestly when the answer is "nothing", which is the case this catches.
-      if (completed.has(entry.ticket) && !hasReason(entry.ownerStillOpen)) {
-        problems.push({ kind: "owner_ticket_already_complete", finding: finding.id, detail: entry.ticket });
+      // "if you name one, say IN WRITING what part of it is still open (ownerStillOpen) AND
+      // name the ticket that inherits the residual (successor)." (E4-F013.)
+      //
+      // ownerStillOpen is PROSE — nobody can write it honestly when the answer is "nothing".
+      // successor is a CHECKABLE POINTER, held to the SAME existence bar owner_ticket_missing
+      // uses: it must exist on disk, must not be the shipped owner itself (that re-opens the
+      // exact hole one field over — mirrors dependency-graph.mjs's `dep === id` self-check),
+      // and must not have shipped either (a shipped successor is the same hole one level down).
+      // The check is EXISTENCE-ONLY: it forces a real ticket node+dep skeleton (the graph
+      // guards do the rest), but it cannot verify the named ticket is the CORRECT inheritor —
+      // that stays author/review responsibility.
+      if (completed.has(entry.ticket)) {
+        if (!hasReason(entry.ownerStillOpen)) {
+          problems.push({ kind: "owner_ticket_already_complete", finding: finding.id, detail: entry.ticket });
+        }
+        if (!hasReason(entry.successor)) {
+          problems.push({ kind: "successor_missing", finding: finding.id, detail: entry.ticket });
+        } else if (entry.successor === entry.ticket) {
+          problems.push({ kind: "successor_is_self", finding: finding.id, detail: entry.successor });
+        } else if (!tickets.has(entry.successor)) {
+          problems.push({ kind: "successor_not_on_disk", finding: finding.id, detail: entry.successor });
+        } else if (completed.has(entry.successor)) {
+          problems.push({ kind: "successor_already_complete", finding: finding.id, detail: entry.successor });
+        }
       }
       continue;
     }

@@ -414,7 +414,32 @@ the same commit set as `E4-F007`.
 
 ## E4-F013 — `ownerStillOpen` is unvalidated free text, so a finding can stay falsely owned by a shipped ticket
 
-**Status:** `open` · Severity: MED · Source: independent codex review, 2026-08-25.
+**Status:** `resolved` (E4-F013 ownership-successor ticket, 2026-08-27) · was MED · Source: independent codex review, 2026-08-25.
+
+**Resolution (`epics/E4-worker-daemon/tickets/E4-F013-ownership-successor-design.md`).** The
+`ownerStillOpen`-only escape hatch in `finding-ownership.mjs` is replaced by a **five-arm chain** that
+runs when `entry.status === "owned"` **and** `completed.has(entry.ticket)`, each arm a RED test in
+`finding-ownership.test.mjs` plus a DELETE mutation:
+`!hasReason(ownerStillOpen)` → `owner_ticket_already_complete` (**kept verbatim** — the V2 calibration
+"has a result doc ≠ finished" is intact); `!hasReason(successor)` → `successor_missing`;
+`successor === entry.ticket` → `successor_is_self` (a shipped owner naming ITSELF re-opens the exact
+hole, mirroring `dependency-graph.mjs`'s `dep === id` self-check); `!tickets.has(successor)` →
+`successor_not_on_disk` (reuses the `owner_ticket_missing` existence set); `completed.has(successor)` →
+`successor_already_complete` (a shipped successor is the same hole one level down). The one owned entry
+the new branch reaches at rest — **E11-F002 → REL-003**, the only owned entry whose ticket has a result
+doc — gains `successor: "DBR-001"`, a filed on-disk scoping stub
+(`epics/E11-hardening-release/tickets/DBR-001-design.md` + a `#### DBR-001` program node depending on
+REL-003, invisible to the REL-keyed release gate) for the owed `aoa db:restore` entrypoint + live DR
+rehearsal; E11-F002 stays **open** — the migration makes its survival-past-a-shipped-owner *checkable*,
+it does not resolve it. The successor check is **existence-only**: it machine-forces a real ticket
+node + dep skeleton (the graph guards do the rest) but cannot verify the named ticket is the *correct*
+inheritor — that stays author/review responsibility. E4-F013's own resolution is the standard two-step
+flip-and-delete (Status → `resolved` **and** its `finding-ownership.json` key removed in the same
+commit). Original text below.
+
+---
+
+**Status (original):** `open` · Severity: MED · Source: independent codex review, 2026-08-25.
 
 `scripts/lib/finding-ownership.mjs:118-120` fails an entry whose owning ticket already has a
 `-result.md` **unless** `ownerStillOpen` is a non-empty string. Non-emptiness is the entire test.

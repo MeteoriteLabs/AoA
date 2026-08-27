@@ -1160,6 +1160,12 @@ Release dependencies above are the cloud-managed core, not permission to adverti
 
 Removing a row from the manifest disables its flags and claims; it does not waive a failed invariant for a capability that remains advertised.
 
+#### DBR-001 — Operator database-restore entrypoint + live DR-restore rehearsal (E11-F002 successor) (scope)
+
+- **Depends on:** REL-003.
+- **Outcome:** Land a real operator restore entrypoint (an `aoa db:restore` command or an exercised, barrel-exported harness wrapper over `runDatabaseRestore`/`pg_restore`) and exercise it in a live staging DR rehearsal that records measured RPO/RTO. REL-003 shipped the DR verification core + runbook, but `runDatabaseRestore` (`packages/db/src/backup-lib.ts`) has ZERO production/CLI callers, is not barrel-exported, and no `aoa db:restore` exists — so the restore leg has no operator invocation. Filed at REL-003 completion so E11-F002 is owned by a ticket that exists and has not shipped (finding E4-F013), not left with a shipped owner and only prose. Owns finding E11-F002.
+- **Acceptance:** Written at sprint start; no result doc until the entrypoint lands and the live rehearsal exercises it. E11-F002 stays open (MED) until then.
+
 ## Parallel execution waves
 
 ### Wave 0 — Foundation lock
