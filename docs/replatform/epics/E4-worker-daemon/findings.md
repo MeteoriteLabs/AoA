@@ -494,7 +494,7 @@ cross-reference, not work any sprint carries.
 
 ## E4-F015 — The gate count is prose with no single source of truth, and the obvious checker is unsound
 
-**Status:** `open` · Severity: MED · Source: readiness-audit follow-up, 2026-08-25.
+**Status:** `resolved` (obviated 2026-08-28) · Severity: MED · Source: readiness-audit follow-up, 2026-08-25.
 
 The readiness audit named "nothing counts gates" as the riskiest unwritten risk and proposed a
 ~20-line checker: read the `DispatchRefusalReason` union from source and fail when a document states
@@ -528,6 +528,15 @@ means — *shipped union* (four), *landable* (four), or *total including runtime
 is the defect. This finding is the reason that rule exists.
 
 **Blocks:** nothing today. Recorded so the miscounting has a home instead of recurring.
+
+**★ RESOLVED — obviated 2026-08-28.** The "sound alternative worth its own ticket" already exists in
+source: `DISPATCH_REFUSAL_MESSAGES: Readonly<Record<DispatchRefusalReason, string>>`
+(`compose-dispatch.ts:124`) is a TOTAL `Record` over the shipped union (`compose-dispatch.ts:36`), so a
+new union member with no message is a `tsc` error — a declaration-based pin of the shipped union, and
+strictly stronger than the hand-listed array test this finding criticized (which passes on an un-added
+member). No `check-*.mjs` is warranted; wiring one would only duplicate the compiler. The interim label
+rule (state which enumeration a gate count means) stands as documentation guidance. Verified against
+source + human-decided (not on prose alone); ownership key deleted in the same commit (C4).
 
 ## E4-F016 — `desktop-hello`'s "capacity is not a safety property" comments are false on the poll path
 

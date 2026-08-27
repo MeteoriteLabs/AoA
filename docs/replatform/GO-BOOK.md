@@ -78,7 +78,7 @@ guards/residuals.
   batch-only capability is a constant and the routing symbols are wired-for-batch, so a clause would be
   vacuous) and **E4-F015 is OBVIATED** (the `DispatchRefusalReason` union is already compile-time-pinned
   by the total `DISPATCH_REFUSAL_MESSAGES` Record + `tsc`; a runtime guard would just duplicate the
-  compiler). The **E10 keystone crux is SETTLED but the cutover is BLOCKED**: E10-F001 corrected
+  compiler) — **resolved 2026-08-28**. The **E10 keystone crux is SETTLED but the cutover is BLOCKED**: E10-F001 corrected
   2026-08-28 — crew RIDES the mint (iff a v1 provider: anthropic/openai, not google/opencode), so crew
   is the cleanest first sink; but the crew *cutover* (the routing-seam + the sink flip) needs the
   zero-caller projection bridges + E7-1, so its seam-decision is inert-until-fleet and not worth
@@ -103,8 +103,9 @@ guards/residuals.
 **Honest read:** the session-driven cadence has delivered what it can — the mechanism (E0–E6), the
 coding path (E7 code-complete), the guard/register layer, and the reconciliation/corrections. The
 substantive remaining work is **operator-gated (the E7-1 fleet, the REL-003 DR rig) and Lane-B-gated
-(S7/S8 features)**, not more session units. The 12 open findings (`finding-ownership.json` + §5) are
-the tracked-debt ledger; most are blocked on those same deps, a handful are the cheap closures above.
+(S7/S8 features)**, not more session units. The 11 open findings (`finding-ownership.json` + §5) are
+the tracked-debt ledger (E4-F015 resolved 2026-08-28 — obviated); most are blocked on those same deps,
+a handful are the cheap closures above.
 
 ### ★ The critical path, on one page (the sequencing map)
 
@@ -154,7 +155,6 @@ flowchart TD
 |------|------|------|-----------|------|
 | **Frontier (buildable now)** | Evidence-verifier A — the E7-1 acceptance harness | `SESS` | — | S |
 | | E6-F005 · E6-F007 · E4-F014 — doc-only closures | `SESS` | — | XS |
-| | E4-F015 — resolve **if** obviated (verify the Record pins the union) | `SESS` | — | XS |
 | **Critical path (the spine)** | **C0 · staging-deploy pipeline** (deploy the staging compose) | `OP` | — | **L** |
 | | C1 · DEP-011 worker→adapter-manager provider wire (E6-F003, HIGH) | `SESS` | bites at C0 | M |
 | | C2 · fleet deployed + armed (E2B key, canary, cap>1, worker) | `OP` | C0 | M |
