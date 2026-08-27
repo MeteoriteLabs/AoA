@@ -56,8 +56,9 @@
       "step": "Shared device-proof canonicalization vectors"
     },
     "scripts/check-distributed-execution-foundation.test.mjs": {
-      "status": "unrun",
-      "reason": "RED as of 2026-08-24: 141 tests, failing with \"mutation did not remove additionalProperties:false\" \u2014 its own makeFixture mutation helper is a no-op, so the test correctly reports it cannot evaluate what it guards. Wiring it red would block the shared branch. TO WIRE: fix the mutation helper (own ticket), then move it into the policy job. This is the single highest-value item in this manifest."
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Distributed execution foundation contracts"
     },
     "scripts/check-egress-bypass-vectors.test.mjs": {
       "status": "runs",
