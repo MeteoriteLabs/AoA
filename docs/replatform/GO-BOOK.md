@@ -1886,6 +1886,89 @@ When green (to the extent the session CAN close it):
 If you find something mid-sprint that invalidates the premise, STOP and say so.
 ```
 
+### evidence-verifier A — the E7-1 distributed-run promotion gate
+
+The session-buildable de-risk for the E7-1 campaign (campaign plan §4.A): a read-only verifier that
+mechanizes the promotion rule so the gate cannot flip on a legacy fallback or an inert handoff. Builds +
+tests with NO fleet and NO real key; only its *execution input* (a real dispatched run) is operator-time.
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §1.5 / §1.6 (E7-1 is OWED; this unit builds its ACCEPTANCE HARNESS,
+   it does NOT run a campaign and does NOT flip the E7-1 gate), and §2 (the per-ticket process).
+2. docs/replatform/epics/E7-coding-e2b/tickets/e7-1-evidence-verifier-design.md — the plan (v2,
+   post-adversarial-review). §2 = the five clauses, §3 = the {store}-port shape, §4 = the fixture
+   table, §6 = security, §8 = what the review already found (do NOT relitigate §8).
+3. docs/replatform/qa/2026-08-28-e7-1-campaign-plan.md §4.A + §6 — why A exists + the promotion rule.
+4. server/src/services/canary-preflight.ts + canary-preflight-store.ts — the EXACT shape to mirror
+   (a pure { store } service + a separate drizzle adapter; the CLAUDE.md drizzle-ESM test split).
+
+Execute this unit end to end, TDD, following the design's §4 fixture table (a–j) in order.
+
+Binding rules:
+- Fail-first. Write each RED fixture as a PURE store-fixture unit (no embedded-PG, no drizzle — exactly
+  like cli-006-canary-preflight.test.ts), run it, confirm it fails for the RIGHT reason, then implement.
+- Clause 5 (job-kernel corroboration) is LOAD-BEARING — it is the whole reason v2 exists (v1 would have
+  blessed a distributed HANDOFF no worker ever ran). As STEP 0, ground every clause-5 SELECT against the
+  live schema: open packages/db/src/schema/{job_attempts,leases,job_events,job_projection_receipts}.ts and
+  confirm exact column + enum names before writing the adapter. The proof of "a worker actually leased+ran"
+  is the durable leases row + a job_events attempt_started event + an applied attempt_terminal projection
+  receipt — TERMINAL-AGNOSTIC (the golden journey ends in a deliberate cancel; do NOT gate on final
+  job_attempts.status). Tenant-match every corroborating row on company_id.
+- Clause 4 uses LEAK-SPECIFIC matchers (provider-key sk-(ant-)?…, explicit E2B e2b_[A-Za-z0-9]{16,} +
+  literal E2B_API_KEY[=:], connection-string URIs, PEM) on the RIGHT surfaces (job_events + task_outputs +
+  the run-summary issue_comments body + the raw heartbeat_runs text fields incl detected_outputs). It NEVER
+  quotes the matched value — a failure reports {surface, fieldOrEventId, matchedClass, count} only. Add a
+  test asserting no planted secret appears anywhere in VerifyResult or printed output. Do NOT use the
+  over-redactor re-redaction diff as a hard gate — the fields are raw at rest and the egress redactor
+  false-positives on clean runs (§8). Surface broad heuristic hits as advisory, not a hard fail.
+- Mutation discipline: each fixture must redden for EXACTLY ONE clause. Hand-DELETE each clause (do not
+  rewrite it into an equivalent), re-run, confirm the mapping b→1, c→2, d→3, e/f→4, g/h→5. Run a POSITIVE
+  CONTROL first. The clause-4 fixtures MUST plant a value the chosen matcher actually catches — assert
+  that in the test setup, else clause 4 is vacuous (this repo's signature defect).
+- SHAPE: mirror canary-preflight exactly — a pure server/src/services/e7-distributed-run-verifier.ts taking
+  { store: E7RunVerifierStore } (NO drizzle import) + a separate e7-distributed-run-verifier-store.ts
+  drizzle adapter (the only file importing schema). The CLI goes at server/src/cli/… via a package.json
+  script — NOT scripts/(check|verify)-*.mjs (trips check-guard-inventory) and NOT a *.test.mjs (trips
+  check-execution-census).
+- SECURITY: A never receives or logs the E2B key / redeemed value (Decision #104). No secret value crosses
+  the store port. Leak-class matchers only; never print a raw match.
+- A FLIPS NO GATE. Do NOT touch scripts/gate-clause-wiring.json's E7-1-coding-journey status — it stays
+  `unwired` until an operator cites a real dispatched distributed run. Building A does not promote E7-1.
+- packages/worker-protocol is FROZEN. Consuming it is fine; editing it is a STOP — come back and ask.
+
+BEFORE you call it done, run an ADVERSARIAL REVIEW with subagents. This is not optional polish; it caught
+BLOCKER-level false-PASS and security defects in this very design's v1.
+- Spawn INDEPENDENT reviewers, one per dimension you changed. Each checks claims against source and reports
+  only what it verified by opening the file. Zero findings is a respected answer.
+- For every HIGH/BLOCKING finding, spawn a SKEPTIC told to REFUTE it and to default to "refuted" if it
+  cannot reproduce the finding from the cited source. Fix only what survives; say what you killed and why.
+- Do NOT delegate this to a plan-writing or auto-fixing skill — the house format and the delete-the-guard
+  mutation discipline are stricter, and they are what the registers and CI actually check.
+
+When the code is green:
+- Run all five registers; every one must pass. The slug e7-1-evidence-verifier is graph-inert (no
+  ^[A-Z]{2,5}-\d{3} id), so NO program-design node is needed — confirm check-ticket-graph-coverage stays
+  green without one:
+  node scripts/check-ticket-graph-coverage.mjs
+  node scripts/check-finding-ownership.mjs
+  node scripts/check-guard-inventory.mjs
+  node scripts/check-gate-clause-wiring.mjs
+  node scripts/check-execution-census.mjs
+  If a new file trips guard-inventory or the census, fix its PLACEMENT (CLI out of scripts/, test as
+  vitest) — do NOT add a spurious registration.
+- Write epics/E7-coding-e2b/tickets/e7-1-evidence-verifier-result.md: what shipped, the fixture/mutation
+  table, and every claim you could not prove.
+- Update GO-BOOK.md §1.6 (drop A from the Frontier band — it is built) and note it in §1.5.
+- Commit, push, report CI honestly (`verify` is a 4-shard matrix — §2.0 RESOLVED, so ci-required should
+  PASS; a red shard is a real failure to own, not an inherited timeout).
+
+If you find something mid-build that invalidates the design's premise, STOP and say so rather than
+absorbing it.
+```
+
 ### CI hardening — parallelize `verify` (retire the §2.0 timeout before S6)
 
 > **★ SHIPPED 2026-08-27 (PR #327, `9d01e5c32` shard + `18d3331f1` merge) — historical prompt,
