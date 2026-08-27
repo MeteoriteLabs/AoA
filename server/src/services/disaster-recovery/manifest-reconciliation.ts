@@ -17,7 +17,7 @@
 // invents no new vocabulary (D3). Fail-closed throughout (D2): an object the store
 // cannot checksum is `hash_unverifiable`, never `verified`.
 
-import { expectedAttemptObjectPrefix, QUARANTINE_REASONS } from "@armyofagents/worker-protocol";
+import { expectedAttemptObjectPrefix, isSafeWorkspacePath, QUARANTINE_REASONS } from "@armyofagents/worker-protocol";
 import type { HeadObjectResult } from "../../storage/types.js";
 
 /**
@@ -90,14 +90,17 @@ function classifyObject(
   row: RecoveredManifestRow,
   probe: HeadObjectResult | undefined,
 ): ReconciliationDisposition {
-  // A-G4 (scope / DE-23): the key must be a safe key under this row's own
-  // org/job/attempt prefix. A key outside it is a foreign/misplaced object.
+  // A-G4 (scope / DE-23): the key must be a SAFE relative POSIX key under this
+  // row's own org/job/attempt prefix — the exact `objectKeyHasPrefix` semantics the
+  // FROZEN worker-protocol commit schema enforces (no `..`/absolute/backslash/NUL,
+  // and a non-empty suffix after the prefix). A key outside it, or an unsafe key a
+  // compromised restore planted, is a foreign/misplaced object, never `verified`.
   const prefix = expectedAttemptObjectPrefix({
     organizationId: row.organizationId,
     jobId: row.jobId,
     attempt: row.attempt,
   });
-  if (!(row.objectKey.startsWith(prefix) && row.objectKey.length > prefix.length)) {
+  if (!(isSafeWorkspacePath(row.objectKey) && row.objectKey.startsWith(prefix) && row.objectKey.length > prefix.length)) {
     return "wrong_prefix";
   }
   // A-G1 (existence): a probe reporting the object absent (or no probe at all) is

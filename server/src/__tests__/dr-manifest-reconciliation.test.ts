@@ -92,6 +92,19 @@ describe("evaluateRecoveredManifestReconciliation", () => {
     expect(result.quarantined).toEqual([foreignKey]);
   });
 
+  it("I3 (defense-in-depth): an UNSAFE key under the prefix (a `..` segment a compromised restore planted) is wrong_prefix", () => {
+    // Starts with the correct prefix and is longer, but is not a safe relative
+    // POSIX key — the frozen commit schema would have rejected it, so a recovered
+    // manifest carrying it is a corrupted/compromised restore. Probe MATCHES so only
+    // the safe-path arm of the scope guard can fire.
+    const unsafeKey = `organizations/${ORG}/jobs/${JOB}/attempts/1/../evil.txt`;
+    const rows = [row({ objectKey: unsafeKey })];
+    const result = evaluateRecoveredManifestReconciliation(rows, probesFor(rows));
+    expect(result.objects[0]!.disposition).toBe("wrong_prefix");
+    expect(result.verdict).toBe("failed");
+    expect(result.promoted).toEqual([]);
+  });
+
   it("I4: a probe reporting the object absent is missing, verdict failed", () => {
     const rows = [row()];
     const probes = probesFor(rows, { [rows[0]!.objectKey]: probe({ exists: false }) });
