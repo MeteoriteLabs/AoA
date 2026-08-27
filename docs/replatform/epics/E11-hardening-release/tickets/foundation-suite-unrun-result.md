@@ -234,7 +234,7 @@ No HIGH/BLOCKING; the one MED was a doc-hygiene gap, fixed in this same work; th
 | # | Criterion | Status |
 |---|---|---|
 | 1 | Suite green on Windows | ✅ 182/182 after the pin |
-| 2 | Suite green on Linux (proven, not assumed) | ⏳ the proving PR's `policy` run (`ready_for_review`) adjudicates before merge; STEP-0 LF proof is 182/182 |
+| 2 | Suite green on Linux (proven, not assumed) | ✅ the proving PR's ([#328](https://github.com/MeteoriteLabs/AoA/pull/328)) `policy` job ran the wired suite on `ubuntu-latest`: the 3 formerly-CRLF tests ✔ pass and `tests 182 · pass 182 · fail 0` (run `33093021826`, policy job `98590600858`); full `code=true` suite + `ci-required` green |
 | 3 | Each of the 3 mutate self-checks actually mutates | ✅ per-test green; RED→GREEN watched |
 | 4 | Wired into `policy`, required via `ci-required` | ✅ step names the path; `ci-required.needs` includes `policy` |
 | 5 | Census flipped + byte-consistent, same commit | ✅ `runs`/`pr.yml`/exact step; census checker green |
@@ -254,3 +254,13 @@ No HIGH/BLOCKING; the one MED was a doc-hygiene gap, fixed in this same work; th
   oversight.
 - Line numbers in `.mjs`/`.yml`/`.json` were re-read at execution start; none had rotted (only the
   design commit landed since the design tip).
+
+## 10. Landing
+
+Two commits landed on `docs/replatform-program` via the proving PR
+[#328](https://github.com/MeteoriteLabs/AoA/pull/328) (rebase-merge, so the shared-branch SHAs differ
+from the branch SHAs): `630e7e9d5` (the pin) then `0a093e6ae` (the wiring + census flip + docs +
+result). The PR's full `code=true` suite was green — `policy` 1m15s, all four `verify` shards, `e2e`
+16m29s, `e2e-pgvector`, `migrations`, `lint`, `brand-check`, `browser`, both `worker-protocol-contract-bytes`
+platforms, and `ci-required` — with `distributed-contract` class-gated to skip. No non-CRLF failure;
+the STEP-0 determination is confirmed on a real Linux runner.
