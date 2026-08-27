@@ -17,17 +17,23 @@ the session executed.
 
 ## 0. Outcome in one paragraph
 
-`verify` is a single Ubuntu job whose `Run tests` step (`pnpm test:run` → `vitest run` over all 25
-`projects[]`) is ~56 min of wall-clock at `maxForks = availableParallelism/2 = 2` — right at the
-`timeout-minutes: 60` cap, which is why it has capped out on 5+ consecutive runs (GO-BOOK §2.0). The
-diagnostic (Part 2) proves the slowness is **volume** (156+ embedded-PG integration files, one lane),
-**not a hang** — the suite runs to completion. The fix (Part 3) turns `verify` into a
-**`fail-fast: false` shard matrix** of 4 legs, each running `vitest run --shard=i/4` on its own
-runner, so the ~56 min test load splits ~4 ways and every shard finishes far under an **un-raised**
-60-min cap. The security-critical `ci-required` wiring is **untouched** and already correct for a
-matrix (Part 4): `needs.verify.result` is `success` only if **every** leg succeeds, and the same
-in-repo pattern (`worker-protocol-contract-bytes`) is already a required matrix check. Proven, not
-assumed, by forcing one shard red and watching `ci-required` go red (Part 6).
+> **OUTCOME (2026-08-27): `ci-required` is GREEN** — PR #327, run `33037143412`, all four `verify`
+> shards pass in 12.8–16.2 min. Getting there took more than sharding: STEP 0's "volume, not a hang"
+> call was **partly wrong** (see §2 + §8). Executing the matrix completed the suite for the first time
+> in weeks and exposed two pre-existing, timeout-masked defects — a real **hang** in `job-submission`
+> (fixed) and a real **failure** in the sentinel fixture (fixed). Sharding + those two fixes = green.
+
+`verify` is a single Ubuntu job whose `Run tests` step (`vitest run` over all 25 `projects[]`) is
+~56 min of wall-clock at `maxForks = availableParallelism/2 = 2` — right at the `timeout-minutes: 60`
+cap, which is why it has capped out on 5+ consecutive runs (GO-BOOK §2.0). The slowness is **mostly
+volume** (156+ embedded-PG integration files, one lane) but ALSO contained a non-deterministic hang
+(§2/§8 correction). The fix (Part 3) turns `verify` into a **`fail-fast: false` shard matrix** of 4
+legs, each running `pnpm exec vitest run --shard=i/4` on its own runner, so the ~56 min test load
+splits ~4 ways and every shard finishes far under an **un-raised** 60-min cap. The security-critical
+`ci-required` wiring is **untouched** and already correct for a matrix (Part 4): `needs.verify.result`
+is `success` only if **every** leg succeeds, and the same in-repo pattern
+(`worker-protocol-contract-bytes`) is already a required matrix check. Proven, not assumed — a shard
+failure turned `ci-required` red organically (a real failure, no forced-fail run needed; §8).
 
 ---
 
@@ -263,23 +269,51 @@ run IDs and outcomes are recorded in the Evidence appendix.
 
 | # | Criterion | How proven | Result |
 |---|---|---|---|
-| A1 | `verify` runs as a `fail-fast:false` matrix; every shard well under an **un-raised** 60-min cap | PR CI: per-shard wall-clocks | *(Evidence)* |
-| A2 | A **forced single-shard failure turns `ci-required` RED** — no pass-by-skip | Part 4 semantics + Part 6 empirical run | *(Evidence)* |
-| A3 | `fail-fast: false` set → a red shard does not cancel siblings | pr.yml diff + proof run (shards 2–4 finished green while shard 1 was red) | *(Evidence)* |
-| A4 | Total test COUNT unchanged; union of shards = full set | Σ per-shard "Test Files" = single-lane 2442; `check-test-inventory` unchanged (2649/18) | *(Evidence)* |
-| A5 | `timeout-minutes` NOT raised | diff: `timeout-minutes: 60` unchanged | ✓ (static) |
-| A6 | Only `verify` changes; no `paths:` filter; e2e/pgvector/keyed lanes untouched | diff scope + `check-ci-lanes` green | *(Evidence)* |
-| A7 | Five registers + `check-ci-lanes` + `check-test-inventory` green | local run pre+post edit; CI `policy` job | *(Evidence)* |
+| A1 | `verify` runs as a `fail-fast:false` matrix; every shard well under an **un-raised** 60-min cap | run `33037143412`: shards 12.8 / 13.7 / 13.8 / 16.2 min (max 16.2 ≈ 73% under 60) | ✅ |
+| A2 | A single-shard failure turns `ci-required` RED — no pass-by-skip | run `33019158926`: shard 1 failed (real) + shard 2 cancelled → `verify` aggregate `failure` → `ci-required` RED. Proven **organically** by a genuine failure, no forced-fail run needed | ✅ |
+| A3 | `fail-fast: false` set → a red shard does not cancel siblings | pr.yml diff; run `33019158926`: shards 3/4 finished green while shard 1 failed and shard 2 hung | ✅ |
+| A4 | Total test COUNT unchanged; union of shards = full set | run `33037143412`: Σ `Test Files` = 618+618+618+616 = **2470** (exact disjoint partition); `check-test-inventory` unchanged | ✅ |
+| A5 | `timeout-minutes` NOT raised | diff: `timeout-minutes: 60` unchanged | ✅ |
+| A6 | No `paths:` filter; `e2e`/`e2e-pgvector`/keyed lanes untouched | diff scope + `check-ci-lanes` green | ✅ |
+| A7 | Five registers + `check-ci-lanes` + `check-test-inventory` green | run pre+post edit; CI `policy` job | ✅ |
+| A8 | `ci-required` GREEN (the goal) | run `33037143412`: all 4 shards + `ci-required` PASS | ✅ |
 
-**Non-goals** (unchanged from scope): fixing any actual failing test (none after E4-F017); touching
-`e2e`/`e2e-pgvector`/keyed lanes; raising the cap; adding a trigger `paths:` filter or a second
-branch-protection-required job.
+**Scope note (revised).** The original scope said "only `verify` changes / file, don't fix." Executing
+the matrix revealed two pre-existing, timeout-masked defects (a hang + a real failure) that block green
+regardless of sharding; on the board operator's decision ("fix both, drive to green") this PR ALSO
+carries their fixes — `job-control-module-load-sentinel.mjs` (restore the deleted line) and
+`redact-sensitive.ts` + its unit test (cap logged strings at 8192). Non-goals still honoured: cap NOT
+raised, no trigger `paths:` filter, no second required job, `e2e`/`e2e-pgvector`/keyed lanes untouched.
 
 ---
 
-## 8. Evidence appendix (filled from the PR's own CI)
+## 8. Evidence appendix (from the PR's own CI, PR #327)
 
-- Diagnostic source runs: **32823687389** (completed `failure`, 59 min, full log — volume proof),
-  **32989635543** (representative cap-out, step timings).
-- Proof run (forced shard-1 fail): _run id, per-shard conclusions, `ci-required` = RED_ — TO FILL.
-- Real green run: _run id, per-shard wall-clocks, Σ Test Files, `ci-required` = PASS_ — TO FILL.
+Diagnostic source runs: **32823687389** (single-lane, completed `failure`, 59 min, full log),
+**32989635543** (representative cap-out, step timings).
+
+CI history on PR #327 (each cancelled the previous via concurrency):
+
+| Run | What it proved |
+|---|---|
+| `33012727670` | **Found the pnpm `--` bug.** Every shard ran `vitest run "--" "--shard=…"` (shard flag ignored) → all 4 ran the full suite ~52 min. Fixed to `pnpm exec vitest run --shard=…`. |
+| `33017378238` | Probe (`vitest list --filesOnly --shard`) — list does NOT apply `--shard` (all shards reported 2470); the run path does. Invalid probe, discarded. |
+| `33019158926` | **Real 4-shard run — the partition is exact and sharding parallelizes cleanly** (shards 1/3/4 = 618/618/616 files, ~13.4–13.9 min), AND it revealed the two timeout-masked defects: shard 1 = 5 real failures (`normalized` ReferenceError), shard 2 = **HUNG** on `job-submission` (9/618 files, 42 min silence → 60-min cap). `ci-required` correctly RED off the real failure — **the aggregation-reaches-ci-required proof happened organically, with a genuine failure (no forced-fail run needed).** |
+| **`33037143412`** | **GREEN.** With both defects fixed: `verify (1)` 16.2 m, `verify (2)` 13.8 m, `verify (3)` 12.8 m, `verify (4)` 13.7 m — all **success**; `ci-required` **PASS** (first time in the programme). |
+
+**Union / no-drop:** per-shard `Test Files` = 618 + 618 + 618 + 616 = **2470**, an exact disjoint
+partition (matches the single-lane count); `check-test-inventory` unchanged. **Slowest shard 16.2 min
+= ~73% under the un-raised 60-min cap.**
+
+### Revised diagnostic (honest correction)
+
+STEP 0 concluded "volume, not a hang" from the one complete run (32823687389). That was **wrong**:
+the slowness was PART volume (sharded away cleanly) and PART a real, non-deterministic **hang** in
+`job-submission.integration.test.ts` — its 4 MB-payload size-ceiling tests logged the full rejected
+body, and serializing that multi-MB log line through the vitest fork IPC stalled a worker past the
+patched 600 s birpc timeout. The single-lane run had 8-min gaps there and got lucky (recovered);
+sharding's reordering pushed it into a 42-min hang → cap. Plus a real failure (the sentinel
+ReferenceError). **Both were invisible because the timeout meant verify never completed.** Fixes
+(same PR): restore the deleted `const normalized` line; cap logged strings at 8192 chars in
+`redact-sensitive.ts` (a real log-hygiene / DoS-surface fix, not a test workaround). Filed findings
+also cover a shard-denominator static guard the review flagged.

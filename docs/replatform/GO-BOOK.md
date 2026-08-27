@@ -51,11 +51,29 @@ distributed worker, proven once" is **Sprints 1–5**.
 
 ## 2. How to run a sprint (read once, applies to every sprint)
 
-### ★ 2.0 READ THIS BEFORE SPRINT 1 — `verify` cannot currently go green on this branch
+### ★ 2.0 — `verify`: RESOLVED 2026-08-27 (sharded + two timeout-masked bugs fixed → `ci-required` green)
 
-**A sprint is not done until CI is green, and right now CI cannot be green.** The `verify` job
-has hit its `timeout-minutes: 60` cap on **five consecutive runs**, and `ci-required` correctly
-fails as a result (`verify=cancelled (required for code changes)`).
+**RESOLVED — `ci-required` is green for the first time in the programme.** PR #327 (run
+`33037143412`): all four `verify` shards pass in **12.8–16.2 min**, `ci-required` **PASS**. `verify`
+was one job running the whole vitest suite in a single lane (~56 min at `maxForks=2`), capping out at
+`timeout-minutes: 60` on 5+ consecutive runs. It is now a `fail-fast:false` shard matrix of 4 legs
+(`pnpm exec vitest run --shard=i/4`); the 60-min cap is **unchanged** (now a per-shard cap). Full
+plan + evidence: `docs/replatform/CI-VERIFY-PARALLELIZATION.md`.
+
+**The timeout was masking two real, pre-existing failures** (verify had not *completed* since
+~2026-08-24, so CI never reported them). Sharding surfaced both; both are fixed in the same PR:
+1. `job-control-module-load-sentinel.mjs` threw `ReferenceError: normalized is not defined`
+   (`e7b58cec3` deleted the `const normalized = specifier…` line but kept using it) → 5 failing tests
+   in `distributed-execution-db-startup.integration.test.ts`.
+2. `redact-sensitive.ts` logged request-body strings verbatim, so a 4 MB oversized-payload field
+   (`job-submission` size-ceiling tests) became a multi-MB log line that stalled a vitest fork past
+   the birpc timeout and **HUNG** a whole shard (42 min of silence → cap). Logged strings are now
+   capped at 8192 chars. **Lesson: the "slowness" was PART volume and PART a real hang — a single
+   complete run does NOT prove "no hang"; the STEP-0 diagnostic that trusted one completed run was
+   wrong on this, and only executing the sharded matrix exposed it.**
+
+The diagnostic record below (how the regression was first found) is kept for the audit trail; its
+"do not raise `timeout-minutes`" instruction still holds and was honoured (the cap was not raised).
 
 | Run | SHA | `verify` wall clock | Outcome |
 |---|---|---|---|
@@ -786,6 +804,12 @@ Not blockers; do not rediscover them.
 | **brand-check guard 9 is blind to the `ENV`-map convention** | `pr.yml:650-663` matches only literal `process.env.AOA_[A-Z_]+`, and `worker-daemon/src/config/config.ts` reads through an `ENV` map — so a new `AOA_WORKER_*` switch can ship undocumented with **no guard firing**. Three new operator-facing switches arrive in Sprints 2 and 3; two get documented by author discipline and one would not. The standing fix is to extend guard 9 to the map convention. |
 | **`check-execution-census` trips on any new `*.test.mjs`** | Not a defect — it is working as designed — but it is the guard most likely to redden a sprint that adds a script test and forgets `scripts/test-execution-census.json`. Sprint 3 adds two. |
 | **Kill switch has no write path** | `evaluateKillSwitches` is genuinely wired, but throwing it means hand-executed SQL, instance-wide per provider, no Organization or sink dimension. REL-005 scope. |
+
+**Retired 2026-08-27:** the `verify` 60-min timeout drag (§2.0). `verify` was sharded into a 4-way
+`fail-fast:false` matrix (`pnpm exec vitest run --shard=i/4`, cap unchanged), and the two failures the
+timeout had been masking were fixed (the `normalized` ReferenceError and the `redact-sensitive`
+multi-MB-body hang). `ci-required` now goes green (PR #327, run `33037143412`). No longer carried
+debt. Plan + evidence: `docs/replatform/CI-VERIFY-PARALLELIZATION.md`.
 
 ---
 
