@@ -1,0 +1,39 @@
+# E11 Hardening & Release — findings
+
+Findings filed against Epic E11. Every OPEN finding must have a declaration in
+`scripts/finding-ownership.json` (the `check-finding-ownership` register fails otherwise:
+a new open finding is born `undeclared_finding`). `unowned` with a reason is legitimate —
+it makes an unscheduled item visible rather than impossible.
+
+## E11-F001 — the "flip strict, two lines from honest" release-gate framing predates CI going green
+
+**Status:** `open` · Severity: LOW · Filed 2026-08-27 by REL-FOUNDATION-GATE (S9 unit 1) terrain verification.
+
+Two living documents describe the E0 release-test fix as a free "flip the checker strict,
+accept honestly-red" change:
+
+- `docs/replatform/qa/2026-08-27-breadth-terrain-audit.md` (Sprint 9 section): *"make the
+  checker require the named release-test ticket to exist (flips E0 to honestly-red until E11
+  lands)."*
+- The same audit's *"30/30 Critical/High trust crossings name REL-001/002/003/005"* is
+  imprecise. Parsed at tip, **6 of the 30 crossings name the WRITTEN REL-004** (and would pass
+  a strict existence check); only **24** name *only* unwritten tickets. A strict flip reds 24,
+  not 30.
+
+Both were written when `ci-required` was already red (the GO-BOOK §2.0 60-min `verify`
+timeout), so a foundation-checker red was **free** — it changed a gate that was red anyway.
+**§2.0 was RESOLVED 2026-08-27 (PR #327): `ci-required` is green, and a red required check now
+BREAKS the gate.** The foundation checker runs as a step of the always-on `policy` job
+(`.github/workflows/pr.yml`), which `ci-required` requires unconditionally, so a hard-strict
+"require the ticket to exist" flip would red a required check on **every** PR until all four
+unwritten REL tickets land — a self-inflicted merge freeze, not "honest red". REL-001/002 are
+blocked on Sprints 7/8 and REL-005 on all of them, so "until they exist" is the rest of the
+programme.
+
+**Resolution recorded, not owed.** REL-FOUNDATION-GATE (S9 unit 1) ships the *trackable-strict*
+gate instead: a named REL ticket is admissible if its `<id>-design.md` exists on disk OR it is
+declared, with a reason, in `docs/architecture/distributed-execution-release-tests.json`. That
+ships **0-error at rest** (6 admit on written REL-004, 24 on manifest-deferral) while making the
+24 unwritten release tests machine-tracked debt. GO-BOOK §4 Sprint 9 and §5 were corrected in
+review round 2; this finding records that the **dated** 2026-08-27 terrain audit still carries
+the pre-CI-green framing (a dated QA snapshot is not silently rewritten). Blocks nothing.

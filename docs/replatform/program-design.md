@@ -1092,6 +1092,25 @@ This is a named partial gate, not a ticket and not E10 completion. It requires J
 
 ### E11 — Hardening and beta release
 
+#### REL-FOUNDATION-GATE — E0 release-test gate stops accepting a bare string (S9 unit 1)
+
+- **Note (INERT node, human traceability only).** This id has no 3-digit segment, so it is
+  invisible to `check-ticket-graph-coverage` and to the foundation checker's own
+  `parseProgramTicketIds` — it is here so a reader browsing E11 sees the unit, and is **not** a
+  coverage-forced or enforced node. Its real enforcement is the CLI checker
+  `scripts/check-distributed-execution-foundation.mjs` at rest in the always-on `policy` job.
+- **Depends on:** nothing shipped; it depends on REL-001/002/003/005 *not* existing yet — the
+  state it makes honest. It is a prerequisite of, not blocked by, those tickets.
+- **Outcome:** Replace the checker's bare-string release-test acceptance with a trackable-strict
+  admissibility gate — every REL ticket a Critical/High crossing names must exist on disk **or**
+  be declared, with a reason, in `docs/architecture/distributed-execution-release-tests.json`.
+- **Acceptance:** ships 0-error at rest (6 crossings admit on written REL-004, 24 on manifest
+  deferral); a named-but-unwritten-and-undeclared ticket reds; the manifest self-cleans (a
+  deferral for a now-written ticket reds; an absent manifest fails closed). `ci-required` stays
+  green while E0 becomes honest.
+- **Test:** `scripts/check-distributed-execution-foundation.test.mjs` (M0–M8, every guard
+  mutation-killed by deletion).
+
 #### REL-001 — End-to-end cross-tenant and secret-exposure gate (M)
 
 - **Depends on:** BRW-006, SVC-007, TEN-005, DEP-008.

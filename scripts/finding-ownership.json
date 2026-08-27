@@ -49,6 +49,10 @@
     "E10-F001": {
       "status": "unowned",
       "reason": "HIGH, deliberately unowned: making the first two Sprint-6 cutover designs (MIG-005 Commander, MIG-007 extraction) + reviews established that NO sink is buildable today. All three refuse at the mint's guard 3 (agentless/non-v1-coding principal; execution-secret-handle-mint.ts ~:167) and all three need distributed routing that only task_run has. The MIG-007 design corrected an earlier overstatement that extraction 'rides the mint' \u2014 it does not (agentless operationId), and it adds a sync->async result-return blocker that would drop every extracted item. Per-sink gap size: extraction (Company-key mint-runner change + thin value) < crew (agent-backed, shadow-refused on admission) < Commander (net-new per-user credential class). The real Sprint 6 work is the SHARED prerequisites (routing seam + mint-runner generalization) + the sink-agnostic drain (the only landable item), not a sink flip. No current ticket fixes these; force-fitting onto one sink would be false ownership."
+    },
+    "E11-F001": {
+      "status": "unowned",
+      "reason": "LOW, deliberately unowned: it records that the 2026-08-27 breadth terrain audit (Sprint 9 section, docs/replatform/qa/2026-08-27-breadth-terrain-audit.md) still carries the pre-CI-green 'make the checker require the named release-test ticket to exist (flips E0 to honestly-red until E11 lands)' framing plus the imprecise '30/30 name REL-001/002/003/005' count (6 name the WRITTEN REL-004; only 24 name only-unwritten tickets). Both predate GO-BOOK \u00a72.0's resolution (PR #327) that made ci-required green \u2014 after which a hard-strict foundation-checker red BREAKS a required check on every PR (the checker is a step of the always-on policy job). REL-FOUNDATION-GATE (S9 unit 1) ships the trackable-strict gate that corrects this at rest; the finding records that the dated QA snapshot is not silently rewritten. 'owned' is impossible \u2014 the non-numeric id REL-FOUNDATION-GATE is not a findTicketIds ticket, so it would red owner_ticket_missing. Blocks nothing."
     }
   }
 }
