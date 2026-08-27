@@ -334,6 +334,16 @@ jobs:
           node --test scripts/lib/__tests__/boot-roots-provider-free.test.mjs
           node scripts/check-boot-roots-provider-free.mjs
 
+      - name: Browser-spawn boot-root guard (BRW-hostspawn-gate)
+        run: |
+          # No host-side browser spawn may be reachable from a boot root except the single
+          # declared, BRW-008-owned deferral (the current cli-mode.ts @playwright/mcp spawn,
+          # signatureOccurrences 3). A new undeclared spawn, a SECOND spawn injected into the
+          # declared file (count deviation), a stale deferral, a malformed entry, or an
+          # unreadable source fails this step. Self-test + checker in ONE step.
+          node --test scripts/lib/__tests__/boot-roots-browser-spawn-free.test.mjs
+          node scripts/check-boot-roots-browser-spawn-free.mjs
+
       - name: Previously-unrun guard self-tests (TRACK-002)
         run: |
           # These five were invoked by NOTHING until TRACK-002. Each is the self-test for a

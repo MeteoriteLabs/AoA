@@ -148,6 +148,16 @@ A site is any `*.ts` file under a scan root, excluding `*.test.ts` / `*.d.ts` / 
 content (read from disk) contains **any** signature substring; its `occurrences` is the total count
 of non-overlapping signature matches (`countSignatureOccurrences`).
 
+> **★ Execution correction (see `BRW-hostspawn-gate-result.md`).** The `SCAN_ROOTS` above and the F3
+> "covers every host config-writer surface" claim below were **under-scoped**: they missed
+> `packages/adapter-utils`, the shared `McpServerSpec` / `mergeExternalMcpServers` library that
+> `cli-mode.ts` itself imports — a sibling of `packages/adapters` a two-root scan never enters, so a
+> host `@playwright/mcp` spec relocated there would escape (an adversarial-skeptic finding on the
+> implementation). The shipped guard widens the scope to `SCAN_ROOTS = ["server/src", "packages"]` with
+> `packages/browser-runtime` excluded via `EXCLUDED_SUBTREES`, closing the whole sibling-package class;
+> and it also excludes `*.spec.ts` (the repo's `isTestFile` convention). Green at rest in both scopes —
+> nothing under `packages/` carries the signature today. T13 pins the `adapter-utils` inclusion.
+
 **Why FILE-path enumeration alone is insufficient — the F2 defect this arm fixes.** A manifest keyed
 only on file path, with a set-difference evaluator, is GREEN the moment a **second** host spawn is
 injected into the **already-declared** `cli-mode.ts` (a second

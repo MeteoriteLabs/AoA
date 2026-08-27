@@ -4,6 +4,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-boot-roots-browser-spawn-free.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow"
+    },
     "scripts/check-boot-roots-provider-free.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"

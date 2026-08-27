@@ -179,6 +179,11 @@
       "workflow": "pr.yml",
       "step": "Embedded-secret scan self-test (DSK-003)"
     },
+    "scripts/lib/__tests__/boot-roots-browser-spawn-free.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Browser-spawn boot-root guard (BRW-hostspawn-gate)"
+    },
     "scripts/lib/__tests__/boot-roots-provider-free.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",
