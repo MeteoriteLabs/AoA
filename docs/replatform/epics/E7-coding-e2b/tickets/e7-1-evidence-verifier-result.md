@@ -1,7 +1,8 @@
 # evidence-verifier A — result
 
-**Status:** SHIPPED (code-complete, CI pending) · **Worktree:** `C:\e3` · **Branch:** `docs/replatform-program`
-**Start SHA (design v2):** `8da7d7d9e` · **Implementation SHA:** `225e83f1f`
+**Status:** SHIPPED + CI-GREEN · **Worktree:** `C:\e3` · **Branch:** `docs/replatform-program`
+**Start SHA (design v2):** `8da7d7d9e` · **Implementation SHAs:** `225e83f1f` (foundation) + `2cc204d91` (review fixes)
+**CI:** run `33119607467` — `ci-required` **success**; all four `verify` shards green + e2e/e2e-pgvector/migrations/policy/brand-check/lint/distributed-contract/browser green.
 **Slug:** `e7-1-evidence-verifier` (graph-inert — no `^[A-Z]{2,5}-\d{3}` id, so no ticket-graph node; mirrors `BRW-hostspawn-gate`).
 
 > **A flips NO gate.** `scripts/gate-clause-wiring.json`'s `E7-1-coding-journey` stays `unwired`.
