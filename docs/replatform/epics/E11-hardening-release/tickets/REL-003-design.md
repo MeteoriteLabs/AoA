@@ -420,8 +420,9 @@ and is retained ≥180 days per `test-gates.md` RET-01):**
    (`wrong`/`hash_mismatch`/`missing`), **none promoted/served**.
 8. **Restore rollout (DR07).** Rolling-deploy the candidate across the ≥4 workers (parallelism 1) —
    verify N-1 workers keep serving; re-enroll one worker (`advanceTargetGeneration`) and revoke one
-   (`revokeTargetAuthority`) → the revoked worker's next governed request is refused within the
-   D5/DSK timing.
+   (`revokeExecutionTarget` — the durable operator cutoff row, per B1; `revokeTargetAuthority` only
+   bumps the generation + flips status) → the revoked worker's next governed request is refused
+   within the D5/DSK timing.
 9. **Rollback exercise (timed).** Flip the MIG-002 dial back to legacy (no restart) and, for the
    schema, restore the pre-0188 snapshot (or `revert0188` if single-org). **Assert deleting the
    marker row alone is NOT the rollback** (the tenant tables persist). Record rollback recovery
