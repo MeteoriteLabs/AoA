@@ -2241,6 +2241,82 @@ If you find something mid-ticket that invalidates the premise (e.g. a real non-C
 STOP and say so.
 ```
 
+### E4-F013 — close the ownership-guard hole (a shipped owner must name a checkable successor)
+
+**Hardens the programme's own finding-ownership backstop.** Today its escape hatch for "owner
+shipped but finding survives" accepts *any prose* (`ownerStillOpen` non-empty), so a
+shipped-and-forgotten finding hides. The fix requires a checkable on-disk `successor`. **Small,
+pure-logic guard + one bounded manifest migration.** Design is **2-agent review-verified**; the
+review caught a merge-blocker + a self-bypass — both in the C-corrections below.
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §2 (the per-ticket process), §5 (debt), §8.
+2. docs/replatform/epics/E4-worker-daemon/findings.md — ## E4-F013 (the finding + its own
+   "Proposed fix, checkable").
+3. docs/replatform/epics/E4-worker-daemon/tickets/E4-F013-ownership-successor-design.md — the FULL
+   design. Read its "★★ Review round 2" banner (C1-C6) FIRST — those are the fixes — then §1 (the
+   guard change), §2 (the DBR-001 migration), §3 (fail-first + mutation), §4 (acceptance).
+
+STEP 0 (C4 STOP): re-verify at tip. Confirm E11-F002→REL-003 is STILL the ONLY owned entry whose
+ticket has a *-result.md. If any of WRK-012/013/DEP-011 (or another owned entry) has SHIPPED a result
+doc since, it ALSO needs a filed successor in this landing, or STOP and report.
+
+THE GUARD CHANGE (scripts/lib/finding-ownership.mjs) — when `owned && completed.has(entry.ticket)`,
+the full chain, EACH a RED test + a DELETE mutant (fail-first, positive control first):
+- `!hasReason(ownerStillOpen)` → owner_ticket_already_complete  (KEEP verbatim; calibration intact)
+- `!hasReason(successor)`      → successor_missing
+- `successor === entry.ticket` → successor_is_self          ← C2: the self-bypass. A shipped owner
+  naming ITSELF re-opens the exact hole; mirror dependency-graph.mjs's `dep === id` self-check.
+- `!tickets.has(successor)`    → successor_not_on_disk       (reuse the owner_ticket_missing check)
+- `completed.has(successor)`   → successor_already_complete  ← C3: a shipped successor is the same
+  hole one level down; `completed` is already in scope (free strengthening).
+The runner (check-finding-ownership.mjs) change is EXPLAIN-map-only.
+
+THE MIGRATION (bounded to E11-F002):
+- File the successor stub DBR-001 (DataBase Restore) in epics/E11-hardening-release/tickets:
+  DBR-001-design.md + a `#### DBR-001 — <scope>` node in program-design.md with
+  `- **Depends on:** REL-003.` (the leading bullet + trailing period; REL-003 is a real node). It is a
+  GENUINE scoping stub (scope = the missing `aoa db:restore` entrypoint + the owed live DR rehearsal;
+  owns E11-F002), NOT a fig-leaf — the review verified the residual is real. NON-REL id on purpose:
+  DBR-001 is invisible to the REL-FOUNDATION-GATE release gate (verify: no REL_OWNER_RE/deferral-manifest
+  interaction).
+- Add `"successor": "DBR-001"` to E11-F002 (KEEP status owned + ticket REL-003 + ownerStillOpen; stays open).
+
+C1 (MERGE-BLOCKER — the design's §1 was WRONG): the new `successor_missing` branch BREAKS two EXISTING
+tests in finding-ownership.test.mjs (`:40-53` expects one kind; `:67-70` expects `.ok===true`) — both
+completed-owner-no-successor. UPDATE both fixtures (add a valid on-disk successor; `:40-53` expects both
+kinds or gains a successor). The suite runs in policy → a literal implementation ships RED. Extend the
+existing test (no census bump — it is already census-declared) with the new-arm RED tests too.
+
+Binding rules:
+- Resolve E4-F013 in the SAME landing commit: flip its findings.md `**Status:**` → resolved AND DELETE
+  its scripts/finding-ownership.json key (else stale_declaration reds).
+- Green at rest: `node scripts/check-finding-ownership.mjs` exit 0 + all five registers + the extended
+  suite green. C5: note in the guard comment that the successor check is existence-only (a real
+  node+dep skeleton is machine-forced; the semantic "right inheritor" stays author/review).
+- No census bump (extend existing test); no guard-inventory change (guard already registered); the
+  design-doc slug + DBR-001 land graph-consistent (DBR-001 file+node together). worker-protocol FROZEN.
+  Cite living docs by section/id.
+
+BEFORE done, run the ADVERSARIAL REVIEW with subagents (the design had a 2-agent pass; verify the
+IMPLEMENTATION): a reviewer that the 5-arm chain + the two existing-test fixes are correct and no
+register moves; a SKEPTIC on "can a shipped-and-forgotten finding STILL pass" (self / shipped-successor
+/ unrelated-successor); a completeness check that every arm has a killing test + a DELETE mutant. Do
+NOT delegate to a plan-writing or auto-fixing skill.
+
+When green:
+- Run all five registers + the extended finding-ownership suite + node scripts/check-finding-ownership.mjs.
+- Write E4-F013-ownership-successor-result.md: the 5-arm chain, the mutation line, the DBR-001 stub, the
+  two existing-test fixes, and the existence-only limit.
+- Update GO-BOOK §3.1 (add the row) + §5 (E4-F013 retired from the ledger) + §1.5 if it lists E4-F013.
+- Commit, push, report CI honestly (code=true → full heavy suite).
+
+If you find something mid-ticket that invalidates the premise, STOP and say so.
+```
+
 ### Sprints 4-9 — the template
 
 These have scope and sequence but no implementation plan, deliberately: a plan written five
