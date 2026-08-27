@@ -2140,6 +2140,81 @@ When green:
 If you find something mid-ticket that invalidates the premise, STOP and say so.
 ```
 
+### Sprint 9 (hardening) — foundation-suite-unrun: run the checker's own tests in CI
+
+**Closes REL-FOUNDATION-GATE's residual** (§0h: "enforced-at-rest, not against-regression"). The
+foundation checker runs in `policy`, but its own 182-test mutation suite runs in NO CI job — so a
+re-vacuation of the checker would be caught by nothing. This wires the suite in. **Small, low-risk,
+pure guard/docs — no runtime code.** The suite is **182/182 green under LF (proven Linux-equivalent)**;
+the 3 Windows-local failures are CRLF-only (fixture/doc sources are LF-in-git, CRLF in a Windows tree,
+vs LF-based mutate find-strings). Design is **2-agent review-verified**.
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §1.5 CURRENT STATUS, §2 (the per-ticket process), §5 (debt), §8.
+2. docs/replatform/epics/E11-hardening-release/tickets/foundation-suite-unrun-design.md — the FULL
+   design. Read its "★★ Review round 2" banner (corrections C1-C2) FIRST, then §0 (the CRLF root
+   cause + the CI gap), §1 (the eol=lf pin scope), §2 (the proof-gated sequencing), §3 (fail-first +
+   positive control), §4 (CI wiring + census flip).
+
+STEP 0: re-verify at tip. Confirm the 3 CRLF failures + that LF sources make the suite 182/182 green
+(`for f in docs/architecture/distributed-execution-lifecycles.md docs/architecture/distributed-execution-authority.md
+tests/fixtures/distributed-execution/schema-v1.json; do perl -i -pe 's/\r\n/\n/g' "$f"; done`, run
+`node --test scripts/check-distributed-execution-foundation.test.mjs`, then `git checkout --` those
+files). If any NON-CRLF failure appears, STOP — the unit becomes "fix real test bugs first" (§0d).
+
+DO THE THREE THINGS:
+- PIN eol=lf (Option A) for the sources makeFixture mutates with LF find-strings:
+  `docs/architecture/distributed-execution-*` + `tests/fixtures/distributed-execution/**`. Add the
+  scoped `.gitattributes` rule + `git add --renormalize` (index is already LF → zero content delta,
+  verify). This makes Windows-local green; it does NOT change Linux CI (already LF). Do NOT pin
+  decisions.md/program-design.md/crosswalk.md (their mutates are single-line or CRLF-tolerant regex —
+  §1.1).
+- WIRE the suite into the `policy` job: add `node --test scripts/check-distributed-execution-foundation.test.mjs`
+  to the EXISTING "Distributed execution foundation contracts" step (`pr.yml`), keeping the step NAME
+  byte-identical (the census `step` must match). Pair it with the CLI, like every sibling checker.
+- FLIP the census: `scripts/test-execution-census.json` entry for the suite → {status:"runs",
+  workflow:"pr.yml", step:"Distributed execution foundation contracts"} — drop the stale/misdiagnosed
+  `reason` (a `runs` entry needs none). Same commit as the wiring.
+
+C1 (HIGH — the sequencing safeguard): §2 proves green-before-wiring via the proving PR's own `policy`
+run. `policy` is DRAFT-GATED — a draft PR renders it SKIPPED (skip-as-success, a phantom green). So
+the proving PR MUST be marked ready_for_review so `policy` actually RUNS green before merge. Land the
+pin+renormalize first (provably inert); wire behind that PR's real Linux policy run. Do NOT direct-push
+the wiring (pr.yml doesn't trigger on feature-branch pushes → zero policy checks).
+
+C2 (MED — close the trackers, correct the root cause): this unit's landing must not leave the
+"makeFixture helper is a no-op" MISDIAGNOSIS alive (it's CRLF, not a helper bug). In the same work:
+mark RESOLVED + correct the root cause in (a) REL-FOUNDATION-GATE-design.md §0h, and (b) GO-BOOK's
+§1.5 BUILDABLE-NOW row, the §5 "foundation suite unrun" debt row, and the residual narratives.
+
+Binding rules:
+- Fail-first: watch each of the 3 mutate self-checks go RED→GREEN and ACTUALLY mutate. POSITIVE
+  CONTROL: prove the now-running suite CATCHES a real checker regression — delete a checker guard
+  (schema-closed / heading / authority-row) and watch its test RED, then restore (§3.2).
+- Only execution-census moves (the flip). No new check-*.mjs (guard-inventory untouched); no new
+  *.test.mjs (test-inventory unchanged); .gitattributes tracked by no register. The slug is graph-inert.
+- packages/worker-protocol FROZEN. Cite living docs by section/id, never by line.
+
+BEFORE done, run the ADVERSARIAL REVIEW with subagents (the design had a 2-agent pass; verify the
+IMPLEMENTATION): a reviewer that the pin+wiring+flip are byte-consistent and no register moved; a
+SKEPTIC on "can the wired suite red policy on Linux (a non-CRLF/flake/CI-time failure)"; a completeness
+check that the positive control genuinely reds on a deleted guard + the trackers are corrected. Do NOT
+delegate to a plan-writing or auto-fixing skill.
+
+When green:
+- Run all five registers + node --test the suite (182/182) + node scripts/check-distributed-execution-foundation.mjs.
+- Write foundation-suite-unrun-result.md: the CRLF root cause (correcting the census misdiagnosis), the
+  pin, the wiring, the census flip, the positive-control line, and the closed trackers.
+- Update GO-BOOK §3.1 (add the row) + §5 (retire the debt) + §1.5, and REL-FOUNDATION-GATE §0h.
+- Commit, push (the proving PR ready_for_review, per C1), report CI honestly (code=true → full suite).
+
+If you find something mid-ticket that invalidates the premise (e.g. a real non-CRLF Linux failure),
+STOP and say so.
+```
+
 ### Sprints 4-9 — the template
 
 These have scope and sequence but no implementation plan, deliberately: a plan written five
