@@ -817,9 +817,12 @@ lands and removes its deferral, the checker collapses into the pure existence ch
 wanted. Full design + the review-round-2 corrections:
 `epics/E11-hardening-release/tickets/REL-FOUNDATION-GATE-design.md`; §9 has the copy-paste prompt.
 
-**Sprint 9 does NOT complete in one pass.** Only **unit 1** (the gate) and **unit 2** (REL-003,
-dependency-ready DR/migration rehearsal — deps DEP-006/MIG-002/E10-REALTIME-FOUNDATION all landed)
-are buildable today. REL-001/002 hard-block on Sprints 7/8 (BRW-006/SVC-006/007) and REL-005 on all of
+**Sprint 9 does NOT complete in one pass.** Only **unit 1** (the gate — SHIPPED CI-green) and **unit 2**
+(REL-003, dependency-ready DR/migration rehearsal — deps DEP-006/MIG-002/E10-REALTIME-FOUNDATION all
+landed) are buildable today. **Unit 2's design is now written + 3-agent review-verified** (its design
+doc + the gate self-clean are committed; §9 "Sprint 9 (unit 2)" has the copy-paste prompt); it has a
+session-buildable verification core + an operator-owed live staging rehearsal, promoted only on a cited
+run. REL-001/002 hard-block on Sprints 7/8 (BRW-006/SVC-006/007) and REL-005 on all of
 them — a green gate is **NOT** license to attempt them (the §2.4 STOP trap against absent workloads).
 **Residual named by the review:** the foundation checker's own test suite is `unrun` and wired into
 no CI job, so the gate ships enforced-at-rest but **not against-regression** (the CLI passes at rest
@@ -1902,6 +1905,84 @@ When green:
   orchestrator in review round 2 — confirm they match what shipped, don't re-litigate.
 - Commit, push, report CI honestly: this is a code=true PR, so ci-required also requires
   verify/lint/e2e/e2e-pgvector/migrations/browser — green is contingent on the whole suite (C5).
+
+If you find something mid-ticket that invalidates the premise, STOP and say so.
+```
+
+### Sprint 9 (unit 2) — REL-003: the DR + migration rehearsal (buildable core + operator runbook)
+
+**The second landable S9 unit.** Unlike unit 1 (a checker fix), REL-003 is a *real* DR/migration
+rehearsal: a **session-buildable verification core** (pure verifiers + embedded-PG scenarios over
+already-wired guards, fail-first + mutation-tested) **plus an operator-owed live staging rehearsal**
+that alone supplies the measured RPO/RTO and real backup/restore. Its design is **written + 3-agent
+review-verified**; the design doc and the gate self-clean (deferral removed) are **already committed** —
+execute the buildable core + the runbook. **Not a pure-code session: hold the operator boundary.**
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §4 "Sprint 9", §2 (the per-ticket process), §5 (debt), §8.
+2. docs/replatform/epics/E11-hardening-release/tickets/REL-003-design.md — the FULL design. Read its
+   "★★ Review round 2" banner (corrections C1-C4, B1-B3) FIRST — those are the fixes to apply — then
+   §2 (the buildable-vs-operator boundary), §5/§6 (the fail-first lanes + mutation table), §9 (the
+   operator runbook), §11 (the E11-F002 finding).
+
+STEP 0: re-verify the design's citations at tip (line numbers rot). The gate self-clean is ALREADY
+DONE (the prep commit removed deferred["REL-003"] and landed the design; DE-20/DE-23 now admit via
+disk) — do NOT re-remove it. Apply the banner corrections, the load-bearing ones being:
+- C1 (CI-breaking): the E11-F002 finding-ownership entry key is `ticket`, NOT `owner_ticket`
+  (`"E11-F002": { "status": "owned", "ticket": "REL-003", "reason": … }`) — a wrong key reds `policy`.
+- B1: the durable `execution_target_revocations` cutoff row is written by `revokeExecutionTarget`
+  (execution-targets.ts, via job-operations.ts), NOT `revokeTargetAuthority` (which only bumps the
+  generation + flips status). Assert the record row against the right function or the test asserts a
+  row nothing in that path writes.
+- C2: mobility is DISABLED in the initial coding release, so the acceptance's MIG-004 prerequisite is
+  inapplicable — state it in the boundary + promotion rule.
+- B2: `checkRolloutPolicy` is private — drive the exported `evaluateStagingManifestInvariants`.
+
+BUILD THE VERIFICATION CORE (fail-first, POSITIVE CONTROL FIRST, mutation-test each new guard by
+DELETION):
+- Lane A: the NEW pure `evaluateRecoveredManifestReconciliation(manifest, probes)` over
+  `job_artifacts status='committed'` × `HeadObjectResult` — bytes/hash/size/scope/prefix/exists,
+  missing/corrupt→quarantine-classify, missing-required→verdict-fails, promoted-set excluded (I1-I7).
+- Lane B: stale-fence rejection after restore drives the wired `classifyFence` (embedded-PG).
+- Lane C: the NEW pure `evaluateRollbackCompleteness` + marker-deletion-negative + the real
+  `revert0188` refusals (embedded-PG).
+- Lane D: N-1 rollout via the exported `evaluateStagingManifestInvariants` (fixture compose).
+- Lane E: re-enroll (`advanceTargetGeneration`) + revoke (`revokeExecutionTarget` writes the cutoff;
+  `revokeTargetAuthority` bumps gen/status) after restore, pre-restore-gen fence stale (embedded-PG).
+
+PREPARE THE OPERATOR RUNBOOK (do NOT fake it): the live staging DB + object-store backup/restore, the
+pre-0188 snapshot→prior-release→candidate rehearsal, live missing/corrupt injection, timed rollback,
+and measured RPO/RTO vs D5-DR02 (RPO ≤15 min) / DR03 (RTO ≤4 h). Name the exact restore invocation
+(E11-F002: there is no `aoa db:restore` — the runbook wraps `runDatabaseRestore`/`pg_restore`).
+
+★★ THE OPERATOR/SESSION BOUNDARY — hold it. The SESSION builds + proves the verifiers and prepares
+the runbook. Only the OPERATOR runs the live staging rehearsal and authorizes any spend. REL-003
+promotes to done ONLY on a CITED live-rehearsal run — never on embedded-PG/fixture/mock. Honest
+end-state: "verifiers + runbook shipped; the staging rehearsal is owed." Do NOT mock-substitute it.
+
+Binding rules:
+- File E11-F002 (`owned`, `ticket:REL-003`) + its byte-equal findings.md entry in the same commit
+  (C1 format). Resolving it later = flip Status + DELETE the key in the SAME commit (C4).
+- The `#### REL-003` node already exists — no node add. Tests are vitest `*.test.ts` — no
+  execution-census bump; no new `check-*.mjs` — no guard-inventory bump (verify at tip).
+- packages/worker-protocol is FROZEN. NEVER serialize a provider key / redeemed secret into a prompt,
+  event, protocol message, or log (Decision #104). Cite living documents by section/id, never by line.
+
+BEFORE you call it done, run the ADVERSARIAL REVIEW with subagents (the design had a 3-agent pass;
+this verifies the IMPLEMENTATION): independent reviewer(s) on the new verifiers from source; a SKEPTIC
+on "can a corrupt/missing object slip the reconciler, or a stale fence be admitted after restore"; a
+completeness critic that every acceptance clause maps to a green test OR a runbook step, and every new
+guard is mutation-killed. Do NOT delegate to a plan-writing or auto-fixing skill.
+
+When green:
+- Run all five registers; every one must pass.
+- Write REL-003-result.md: the verifiers + mutation line, E11-F002 filed, the runbook, and — honestly
+  — whether the live rehearsal is owed (it is, unless an operator run is cited).
+- Update GO-BOOK §3.1 (add the S9 unit-2 row) and §4 Sprint 9 to what is now true.
+- Commit, push, report CI honestly (code=true PR → the full heavy suite gates it).
 
 If you find something mid-ticket that invalidates the premise, STOP and say so.
 ```
