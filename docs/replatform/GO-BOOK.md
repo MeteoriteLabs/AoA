@@ -10,8 +10,10 @@ branch `docs/replatform-program`, worktree `C:\e3`.
 > and each one ends by updating this document and the registers, so the next session starts from
 > what is true rather than from what was true when its plan was written.
 >
-> **Before Sprint 1, read §2.0.** The branch's required check cannot currently pass, and it is not
-> the Sprint-0 work.
+> **CI is green.** As of 2026-08-27 (PR #327) `verify` is a 4-shard matrix and §2.0 is RESOLVED —
+> `ci-required` passes. A red shard is now a REAL failure to own, not an inherited timeout. (The
+> §3.1 rows below say "inherits the §2.0 red" as an accurate record of each sprint's ship-time
+> state; that condition is now retired.)
 
 ---
 
@@ -975,8 +977,9 @@ When the code is green:
 - Write epics/E4-worker-daemon/tickets/WRK-010-result.md: what shipped, what did NOT,
   the mutation table, and every claim you could not prove.
 - Update GO-BOOK.md §3.1's Sprint 1 row and §4 Sprint 1 to what is now true.
-- Commit, push, and report CI honestly — including `verify`, which is red for reasons
-  that predate this sprint (§2.0). Do not raise its timeout to make it green.
+- Commit, push, and report CI honestly. **`verify` is now a 4-shard matrix and §2.0 is RESOLVED
+  (as of 2026-08-27, PR #327) — `ci-required` should PASS.** If a shard goes red, it is a REAL
+  failure this sprint must own (not an inherited timeout); investigate, don't dismiss it.
 
 If you find something mid-sprint that invalidates the plan's premise, STOP and say so
 rather than absorbing it.
@@ -1484,7 +1487,7 @@ When green (to the extent the session CAN close it):
   the exact operator step still owed if the dispatched run is not yet in hand.
 - Update GO-BOOK §3.1 and §4 Sprint 5 to what is now true — including, honestly, if the real-E2B
   leg is still pending an operator-dispatched run.
-- Commit, push, report CI honestly (verify inherits the §2.0 red; do not raise its timeout).
+- Commit, push, report CI honestly (`verify` is now a sharded matrix — §2.0 RESOLVED, so `ci-required` should PASS; a red shard is a real failure to own, not an inherited timeout).
 
 If you find something mid-sprint that invalidates the premise, STOP and say so.
 ```
@@ -1564,7 +1567,7 @@ When green:
   security argument; and — explicitly — that this UNBLOCKS but does NOT promote E7-1 (that still
   needs a cited dispatched real-E2B run of the full journey).
 - Update GO-BOOK §3.1 and §4 (note that the journey is now runnable, E7-1 still pending its run).
-- Commit, push, report CI honestly (verify inherits the §2.0 red; do not raise its timeout).
+- Commit, push, report CI honestly (`verify` is now a sharded matrix — §2.0 RESOLVED, so `ci-required` should PASS; a red shard is a real failure to own, not an inherited timeout).
 
 If you find something mid-sprint that invalidates the premise, STOP and say so.
 ```
@@ -1648,7 +1651,7 @@ When green (to the extent the session CAN close it):
   if the staging run is not yet in hand.
 - Update GO-BOOK §3.1 and §4 Sprint 5 to what is now true — honestly, including if E7-1 is still
   pending an operator-run staging campaign.
-- Commit, push, report CI honestly (verify inherits the §2.0 red; do not raise its timeout).
+- Commit, push, report CI honestly (`verify` is now a sharded matrix — §2.0 RESOLVED, so `ci-required` should PASS; a red shard is a real failure to own, not an inherited timeout).
 
 If you find something mid-sprint that invalidates the premise, STOP and say so.
 ```
@@ -1794,7 +1797,7 @@ When green:
   promote + why), and the reworked-test note.
 - Update GO-BOOK §3.1 (add a MIG-009 row) and §4 Sprint 6 + §5 (the drain debt is retired), and
   E10-F001 if the drain shipping changes anything it says.
-- Commit, push, report CI honestly (verify inherits the §2.0 red; do not raise its timeout).
+- Commit, push, report CI honestly (`verify` is now a sharded matrix — §2.0 RESOLVED, so `ci-required` should PASS; a red shard is a real failure to own, not an inherited timeout).
 
 If you find something mid-ticket that invalidates the premise, STOP and say so.
 ```
