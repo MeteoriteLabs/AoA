@@ -199,9 +199,9 @@ not, because they share this branch and cancel each other's CI.
   S5b canary campaign  full journey on real E2B    (E7)   ── the E7-1 promoter; live staging + real spend (operator)
 
   BREADTH — scale it out
-  S6  MIG-005/6/7 ACTIVE, MIG-001              (E10)
-  S7  BRW-004/5/6 (+007/008)                   (E8)
-  S8  SVC-002..007                             (E9)
+  S6  MIG-009 drain SHIPPED; sinks BLOCKED (E10-F001)     (E10)
+  S7  BRW-hostspawn-gate SHIPPED; features = Lane B       (E8)
+  S8  E9 gate-clause guard buildable; SVC-002.. blocked   (E9)
   S9  REL-001/002/003/005 + re-open E0         (E11/E0)
 ```
 
@@ -214,7 +214,7 @@ provably cannot be offered work. Sprints 6–9 scale it to every sink and agent 
 
 ---
 
-## ★ 3.1 Sprint 1-3 have FULL implementation plans; 4-9 do not, deliberately
+## ★ 3.1 Sprint 1-3 had FULL up-front plans; 4+ are planned just-in-time, per unit (several now shipped)
 
 | Sprint | Plan | State |
 |---|---|---|
@@ -231,7 +231,7 @@ provably cannot be offered work. Sprints 6–9 scale it to every sink and agent 
 | 7 (unit 1) | [`BRW-hostspawn-gate-{design,result}.md`](./epics/E8-browser-automation/tickets/BRW-hostspawn-gate-design.md) | **★ SHIPPED (Sprint 7 first unit — the one clean, unowned, session-buildable unit; the browser FEATURES are Lane B's or live-infra-blocked), `eed9fdd35 … ` (through the result-doc commit).** The anti-orphan **guard** makes E8's false-in-fact "no host-side browser spawn reachable from a boot root" clause **catchable + regression-proof** in trackable-strict owned-deferral form, **green at rest** — WITHOUT closing the spawn (BRW-008 proper owns that, gated on the governed path). The host `@playwright/mcp` spawn (`cli-mode.ts`, reachable from 4 boot roots) is a single declared **BRW-008-owned deferral** pinned at `signatureOccurrences: 3`; the **spawn-granular** arm A6 reds on ANY occurrence deviation — **a SECOND spawn injected into the already-declared file** (the v1 file-keyed set-op's defect) raises the count 3→4 → RED (proven LIVE), removal lowers it → RED. **12 mutants killed by DELETION, 0 survivors** (positive control FIRST — T0 watched RED before the evaluator existed). A **3-agent adversarial pass on the IMPLEMENTATION** (correctness / evasion-skeptic / completeness critic) found **0 correctness bugs** and **1 REAL evasion**: the skeptic's **V3-adapter-utils** sibling-package gap — `cli-mode.ts` already imports the shared `McpServerSpec` lib from `packages/adapter-utils`, a sibling of `packages/adapters` a two-root scan never enters, so a spawn relocated there would escape — **FIXED** by widening `SCAN_ROOTS` to `server/src` + all of `packages/` (minus the governed `browser-runtime`), closing the whole class; also excluded `.spec.ts` (repo `isTestFile` convention). Residuals named honestly (signature-scoped; the textual-proxy loop, review-backstop calibration, and non-`@playwright/mcp` mechanisms are **owner BRW-008**). Three same-commit register entries (guard-inventory 39→40, execution-census 52→53/48→49, test-inventory `scripts` 48→**49**) + ONE `policy` step; the slug is **graph-INERT** (no ticket-graph/dependency-graph node, no `program-design.md` edit); `README.md:7` **UNCHANGED (F4 — never "enforced")**; `check-gate-clause-wiring` positive-only, no new entry. No runtime code, no migration, no `worker-protocol` change (FROZEN), no new `AOA_*`; coexists with `build-mcp-config.test.ts` (which asserts the spawn EXISTS). `code=true` PR → `ci-required` rides the full heavy suite; the guard is a pure fs scan, green at rest. |
 | 9 (unit 1) | [`REL-FOUNDATION-GATE-{design,result}.md`](./epics/E11-hardening-release/tickets/REL-FOUNDATION-GATE-design.md) | **★ SHIPPED (Sprint 9 first unit — the one landable, ships-green unit), `e8e1975a5 … ` (through the result-doc commit).** The E0 foundation checker no longer accepts a bare string as a release test. `crossingHasReleaseTest` (bare-string / any `REL-\d+`-shaped owner) is replaced by a **trackable-strict admissibility gate**: a Critical/High crossing must NAME a REL ticket, and EVERY named REL ticket must exist on disk (`<id>-design.md`) **or** be declared, with a reason, in a NEW manifest `docs/architecture/distributed-execution-release-tests.json`. The manifest declares the four unwritten tickets (REL-001/002/003/005; REL-003's is **transitional**, removed in unit 2); REL-004 is written and NOT declared. Manifest-hygiene guards: **stale** (a deferral whose design doc now exists), **malformed** (no reason), **unreferenced** (named by no crossing); an **absent manifest fails closed**. **★ HEADLINE: makes E0 honest WITHOUT re-reddening `ci-required`** — ships **0-error at rest** (6 crossings admit on written REL-004, 24 on manifest-deferral), so `policy` → `ci-required` stays green while the 24 unwritten release tests become **machine-tracked debt**; each REL ticket's landing is forced to retire its own deferral. **NOT a hard-strict flip** (option b), which would red 24 crossings → `policy` → `ci-required` on every PR — proven from source (the M2 mutant *is* that state). **9 mutants killed by DELETION, 0 survivors** (M0 positive-control first — its no-op leaves the rest-CLI green, demonstrating the §0h residual: enforced-at-rest, not against-regression; M5 diagnostic-with-backstop documented; M8 isolated by a design-doc-only REL-006 fixture because REL-004 has both design+result docs). `makeFixture` extended to copy the E11 tickets dir + manifest into the fixture root (§3.4 trap avoided — no fail-open-on-missing). A **3-agent adversarial pass** (0-error-at-rest + hard-strict-reds source reviewer / refutation skeptic / M0–M8 + finding⇄ownership completeness critic) found **0 HIGH/BLOCKING**. **E11-F001 filed** (`unowned`, LOW): the dated 2026-08-27 terrain audit still carries the pre-CI-green "flips E0 to honestly-red" framing. **Residual named, not folded in** (§0h): the checker's own suite is `unrun` + in no CI job → the gate is not enforced against a re-vacuation regression; fixing the `additionalProperties` no-op + moving the suite into `policy` is a candidate later S9 hardening unit (GO-BOOK §5, the census's "single highest-value item"). No REL-001/002/003/005 test written (units 2–5, dependency-blocked). No migration; no `worker-protocol` change (FROZEN); no new `AOA_*`. `ci-required` green **contingent on the full `code=true` suite** (this PR touches `scripts/*.mjs` + `finding-ownership.json`). |
 | 9 (unit 2) | [`REL-003-{design,result}.md`](./epics/E11-hardening-release/tickets/REL-003-design.md) + [`REL-003-dr-rehearsal-runbook.md`](./epics/E11-hardening-release/tickets/REL-003-dr-rehearsal-runbook.md) | **★ VERIFICATION CORE + OPERATOR RUNBOOK SHIPPED; the live staging rehearsal is OWED (the honest Sprint-5b end-state, NOT a failure), `1519b650c … ` (through the result-doc commit).** The DR/migration rehearsal is drawn as a session-buildable verification core + an operator-owed live leg. **Two NEW pure verifiers, mutation-tested by DELETION (positive-control FIRST):** Lane A `evaluateRecoveredManifestReconciliation` (over `job_artifacts status='committed'` × `HeadObjectResult` — bytes/hash/size/scope, missing/corrupt→FROZEN `QUARANTINE_REASONS`, missing-required blocks the verdict, promoted-set excludes non-verified, fail-closed on an unverifiable checksum; the scope guard uses the exact FROZEN `objectKeyHasPrefix` incl. `isSafeWorkspacePath`; **12 tests**) + the anti-orphan harness `runManifestReconciliation` (I8); and Lane C-pure `evaluateRollbackCompleteness` (marker-deletion-only refused = DE-20, accepted needs a real revert, empty fail-closed; **6 tests**). **A 7/7 + C 3/3 = 10/10 new-guard mutants killed, 0 survivors.** **Three reuse lanes, each with a positive control that the DR scenario reaches the ALREADY-WIRED guard (no new guard, D7):** Lane B (embedded-PG — the REAL `guardActiveFence`→`classifyFence` gate; active fence ADMITTED, expired/absent-row/gen-bump refused = I9+I13-fence), Lane C-embedded (marker-delete leaves the 0188 schema intact + real `revert0188` refusal = I10/I11), Lane D (the real `docker-compose.staging.yml` passes the EXPORTED `evaluateStagingManifestInvariants` at parallelism 1 + FROZEN-v1 N/N-1 baseline via `negotiateProtocolVersion` = I12), Lane E (advanceTargetGeneration re-enroll; **`revokeExecutionTarget` writes the durable `execution_target_revocations` cutoff while `revokeTargetAuthority` writes none = the B1 correction** = I13). **31 tests / 6 files green** (pure lanes everywhere; embedded-PG Linux-gated, Issue #114, verified locally with `AOA_RUN_WIN_INTEGRATION=1`). **Gate self-clean intact** — `deferred["REL-003"]` already removed by the prep commit; DE-20/DE-23 admit via disk; foundation checker PASS. **E11-F002 filed** (`owned` REL-003, key `ticket` not `owner_ticket` = C1, `ownerStillOpen` set): `runDatabaseRestore` has ZERO prod/CLI callers, is not barrel-exported, and no `aoa db:restore` exists — the runbook names the exact `runDatabaseRestore`/`pg_restore` invocation. Review-round-2 corrections applied (C1-C4, B1-B3). **A 3-agent adversarial pass on the IMPLEMENTATION** (source verifier / refutation skeptic / completeness critic) found **0 HIGH/BLOCKING surviving**: the verifier's 1 MED (dropped `isSafeWorkspacePath`) was FIXED, the skeptic REFUTED every fail-open (2 caveats hardened), the critic PASSED all clause→test/step, invariant, mutation, and boundary checks. **REL-003 does NOT promote to done** — `E7-1` + every dormant clause untouched; it promotes only on a CITED live-staging rehearsal run. No migration; no `worker-protocol` change (FROZEN); no new `AOA_*`; no census/guard-inventory bump. `code=true` PR → `ci-required` rides the full heavy suite. |
-| 6-9 | scope + sequence only (§4) | **Step 1 of each sprint is: write the plan.** A plan written four sprints early goes stale, which is the exact failure this audit exists to fix. |
+| rest of 6–9 | scope + sequence only (§4) | **★ UPDATED** — shipped since: S6 MIG-009 drain, S7-unit1 BRW-hostspawn-gate, S9-unit1 REL-FOUNDATION-GATE, S9-unit2 REL-003 core (rows 230-233). **Still unwritten:** Sprint 8 (E9 — a buildable gate-clause guard unit + the blocked SVC feature chain), the E10 cutover sinks (blocked, E10-F001), REL-001/002/005 (blocked on S7/S8 + deps). **Step 1 of each remaining unit is: write the plan** just-in-time, so it can't go stale. |
 
 ### ★ Three things the planning pass found that change what you do
 
@@ -709,10 +709,14 @@ E7-1. **After this sprint, "distributed execution works" is a true statement.**
 ---
 
 ### Sprint 6 — cut over the execution sinks
-**Epic E10 · MIG-005/006/007 ACTIVE (create tickets), MIG-001 (node exists, no file)**
+**Epic E10 · ★ UPDATED — MIG-009 drain SHIPPED (S6 unit 1); the cutover SINKS are BLOCKED (E10-F001)**
 
-Today MIG-005/6/7 are **shadow observers** — they record a probe beside the legacy call and
-change nothing. Cutting over means the sink actually routes to the distributed path.
+MIG-005/6/7 are **shadow observers** (record a probe beside the legacy call, change nothing). Cutover
+was found **not buildable today** (E10-F001): the mint refuses every non-`task_run` source at guard 3
+and distributed routing exists only for `task_run` — so the real Sprint-6 work is the shared **routing
+seam + mint-runner generalization**. MIG-005-cutover (Commander) and MIG-007-cutover (extraction) have
+designs concluding not-buildable / not-recommended; MIG-006 (crew) is unbuilt. The one landable item —
+the sink-agnostic drain (MIG-009) — SHIPPED.
 
 **One sink at a time, each with its own soak. Do not batch.** Each owes its own rollback
 evidence (gate clause 3 was explicitly not ticked for the three shadow sinks).
@@ -765,12 +769,13 @@ reachable from a boot root."* **That is false today** — `cli-mode.ts:347` spaw
 `npx @playwright/mcp --headless` whenever `browser_use` is enabled, reached from
 `heartbeat-mcp.ts:165` and `aoa-agents/runner.ts:795`. Either close it or rewrite the clause.
 
-**★ Terrain-verified 2026-08-27** (`qa/2026-08-27-breadth-terrain-audit.md`). Still live — and worse
-than the note says: the "no host-side spawn" clause has **zero automated coverage**. The wiring
-register tracks only the positive `runBrowserSession` symbol, not this negative clause, so
-`check-gate-clause-wiring.mjs` cannot catch it and it stays green-by-absence while false. The guard
-that would flag it is **BRW-008's anti-orphan check, which does not exist** (no ticket, no node).
-Also: Sprint 3 did **not** deliver `browser-runtime`'s execution path — it still has zero importers.
+**★ Terrain-verified 2026-08-27, then RESOLVED-in-part.** The spawn is still live (closing it is
+BRW-008 proper, gated on the governed path). But the "no host-side spawn" clause is **no longer
+uncovered** — the guard that "did not exist" **now exists and is wired**:
+`check-boot-roots-browser-spawn-free.mjs` (BRW-hostspawn-gate, SHIPPED `eed9fdd35`, a `policy`-job
+step) makes it catchable + regression-proof in owned-deferral form. `check-gate-clause-wiring.mjs`
+stays positive-symbol-only, so the dedicated guard IS the coverage. Sprint 3 did **not** deliver
+`browser-runtime`'s execution path — it still has zero importers (E8-1 governed path `unwired`).
 
 **★ Reframed 2026-08-27 (scoping audit `qa/2026-08-27-sprint7-e8-scoping.md`).** E8's browser
 *features* are substantially built by the parallel Lane B effort (`C:\e8` — BRW-001/002/003a/b/003d-*
@@ -800,9 +805,12 @@ only by table grants — **no code writes `service_generations`**, so it describ
 of an empty table. Long-running services need dispatch (Sprint 3) plus health/restart/drain.
 
 **★ Terrain-verified 2026-08-27** (`qa/2026-08-27-breadth-terrain-audit.md`). All claims hold, with
-one sharpening: **service dispatch is not reachable at all yet** — the daemon is batch-only
-(`SUPERVISABLE_WORKLOAD_CAPABILITIES = ["workload.batch"]`, `serviceSlots: 0`), so **enabling
-`workload.service` dispatch is a prerequisite step before** health/restart/drain, not a given. And
+one sharpening: **service dispatch is not reachable at all yet** — the daemon is batch-only because
+the capability intersection filters the admin ceiling to `{workload.batch}`
+(`SUPERVISABLE_WORKLOAD_CAPABILITIES = ["workload.batch"]`, `hello-provisioning.ts`), so
+`workload.service` is **never advertised** — NOT a zero slot count (the daemon's `concurrency.service`
+default is 1). So **enabling `workload.service` dispatch is a prerequisite step before**
+health/restart/drain, not a given. And
 E9 has **no gate-clause entry** in the wiring register — create one so a false "E9 complete" can be
 caught the way E3-E11 are.
 
@@ -813,12 +821,14 @@ caught the way E3-E11 are.
 ### Sprint 9 — hardening and release
 **Epic E11/E0 · REL-FOUNDATION-GATE (unit 1, SHIPPED) → REL-003 (unit 2, SHIPPED — verifiers + runbook; live rehearsal owed) → REL-001/002/005 (blocked on S7/S8)**
 
-**Read this before planning:** E0's gate passes because all **30 of 30** Critical/High trust
-crossings *name* a REL release test — but `check-distributed-execution-foundation.mjs:745-751`
-accepts a non-empty *string* (or a `REL-\d+`-shaped `ownerTicket`) as proof and never checks the
-ticket file exists. **6** of the 30 name the written **REL-004**; the other **24** name
-REL-001/002/003/005, which have **never been written**. So E0 reports PASS over 24 unwritten release
-gates, and will keep doing so.
+**Read this before planning.** ★ UPDATED 2026-08-27 — units 1 and 2 SHIPPED; the paragraph below is
+the pre-unit-1 history, kept for context. **Originally:** all 30 Critical/High crossings merely
+*named* a REL release test and `check-distributed-execution-foundation.mjs` accepted a non-empty
+string without checking the ticket existed — a vacuous PASS over 24 unwritten gates. **Now:** unit 1
+(REL-FOUNDATION-GATE) replaced that with a trackable-strict gate — a named REL ticket must exist on
+disk OR be declared, with a reason, in `distributed-execution-release-tests.json`; the bare-string
+path is gone. **REL-003 and REL-004 are written** (shipped, rows 232-233); REL-001/002/005 remain
+declared deferrals, blocked on Sprints 7/8 + downstream REL deps (see §3.1 and §5).
 
 **Unit 1 is the checker fix — but NOT the naive "require exist on disk" flip.** ★ CORRECTED
 2026-08-27 (review round 2): a hard-strict flip would red the always-on `policy` job
@@ -860,7 +870,7 @@ Not blockers; do not rediscover them.
 |---|---|
 | **Security guards with no falsifiable test** | `egress-policy.ts:199` is a **real fail-open** (deleting the fail-closed guard passes the suite — reproduced). Also `worker-session-auth` (22 of 25 guards deletable, unverified on Linux), `worker-device-proof` (Ed448 accepted; garbage `issuedAt` makes the skew window vacuous), `policy.ts` path grammar. **All protect the DORMANT path — fix before Sprint 3, not after.** |
 | **dependency-graph regex** | `[A-Z]{3,4}` cannot match `TRACK`, so the checker that stops graph drift is blind to TRACK-001/002. Widening to `{2,5}` was **measured**: it fails the self-test and the checker, because the crosswalk-dominance computation shares the regex. Needs its own ticket. |
-| **5 ticket families invisible to the coverage checker** | `GATE-clause-3-rollback`, `DEFERRAL-1-credential`, `E4-D12-live-dispatch`, `CLI-realE2B-hardening`, `REL-FOUNDATION-GATE` — no 3-digit id, so the checker skips them (both `expandTicketIdsFromFilename` and `parseAuthorityNodes` require `\d{3}`). Three are the Wave-3/4 blocker artifacts; `REL-FOUNDATION-GATE` (S9 unit 1) is graph-inert **by design** — its enforcement is the CLI checker in the `policy` job, not a coverage node. |
+| **6 ticket families invisible to the coverage checker** | `GATE-clause-3-rollback`, `DEFERRAL-1-credential`, `E4-D12-live-dispatch`, `CLI-realE2B-hardening`, `REL-FOUNDATION-GATE`, `BRW-hostspawn-gate` — no 3-digit id, so the checker skips them (both `expandTicketIdsFromFilename` and `parseAuthorityNodes` require `\d{3}`). Three are the Wave-3/4 blocker artifacts; `REL-FOUNDATION-GATE` (S9 unit 1) and `BRW-hostspawn-gate` (S7 unit 1) are graph-inert **by design** — their enforcement is the CLI checker in the `policy` job, not a coverage node. |
 | **Foundation checker's own test suite is `unrun` + in no CI job** | `check-distributed-execution-foundation.test.mjs` is RED at tip (one `additionalProperties:false` mutate no-op; the general `mutate` mechanism works — `valid: the real repository passes` is green) and kept out of `policy` (`status:"unrun"` in `test-execution-census.json`). So S9 unit 1's release-test gate ships enforced-at-rest but its M0–M8 regression tests don't run in CI. The census calls fixing the mutate no-op + moving the suite into `policy` **"the single highest-value item"** — a candidate S9 hardening unit. |
 | **TRACK-003 / BRW-007 / BRW-008** | Shipped or scoped with no `#### ID` node. |
 | **E2's gate cites a failing revision** | `README.md:6` names `acf2b32fb`, which its own artifact table records as `blocked_external`, superseded by a pass at `9a5455071f8c`. |
@@ -922,7 +932,7 @@ table and fix the plan.
 
 **What is NOT settled and is deliberately deferred to its own sprint:** the
 `dependency-graph` regex (§5 row 2 — widening was measured and breaks the crosswalk-dominance
-computation), and the four ticket families invisible to the coverage checker (§5 row 3).
+computation), and the six ticket families invisible to the coverage checker (§5 row 3).
 
 **Consequence, already applied:** D-2 and D-3 were the ownership calls
 `scripts/finding-ownership.json` was explicitly waiting on, and making them cleared every one of
