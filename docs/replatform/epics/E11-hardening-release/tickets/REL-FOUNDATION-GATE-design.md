@@ -80,6 +80,24 @@ of which would cost the execution author a red run or a silent vacuity:
 
 ### 0(h) — NEW residual (the review's highest-value finding): the gate is enforced AT REST but not AGAINST REGRESSION
 
+> **★ RESOLVED 2026-08-27 — foundation-suite-unrun (S9 hardening unit).** This residual is closed. The
+> suite now runs in the `policy` job (`pr.yml`, existing step **"Distributed execution foundation
+> contracts"**, paired with the CLI like every sibling checker) and its census entry is flipped
+> `unrun`→`runs`, so `ci-required` now carries a **required** regression signal for the checker's own
+> guards. Positive control confirmed before wiring: deleting the heading / authority-row /
+> additionalProperties guard reds its now-running test. **Root-cause correction (the census + this
+> paragraph both misdiagnosed it):** the suite was NOT red because of a "helper no-op." The `makeFixture`
+> mutate helpers are correct. The failures were **CRLF working-tree bytes vs LF find-strings** on a
+> Windows checkout (`core.autocrlf=true`): the fixtures/architecture docs are LF-in-git but materialize
+> as CRLF locally, so the LF `String.replace(…"\n"…)` finds were no-ops and the `assert.notEqual(mutated,
+> original)` self-checks fired *before the checker ran*. There were **3** such cases (not one), all one
+> class; the checker itself is CRLF-tolerant, so **179/182 passed on Windows and the suite is 182/182
+> green under LF** — the form Linux CI checks out, which is why it was green on CI and red only on
+> Windows-local. Fixed by a scoped `.gitattributes eol=lf` pin of the distributed-execution fixtures +
+> architecture-doc family (zero committed content delta — the index was already LF) plus the CI wiring
+> above; no test-logic change. See `foundation-suite-unrun-{design,result}.md`. The paragraph below is
+> kept verbatim as the record of the misdiagnosis it corrects.
+
 The foundation checker's own test suite `scripts/check-distributed-execution-foundation.test.mjs` is
 `status:"unrun"` in `scripts/test-execution-census.json` and is **wired into no CI job** (only the
 CLI `node scripts/check-…mjs` runs, at `pr.yml:161`). It is RED at tip for a **pre-existing, unrelated**
