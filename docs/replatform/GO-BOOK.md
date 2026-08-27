@@ -49,6 +49,47 @@ proven, ~17 proven weakly, ~17 not proven, **17 unprovable (no caller)**. `ci-re
 green-capable again as of Sprint 0. The distance from here to "an agent runs on a real
 distributed worker, proven once" is **Sprints 1–5**.
 
+### ★ CURRENT STATUS & forward timeline (reconciled 2026-08-27)
+
+The paragraph above is the **pre-Sprint-1 census**. After Sprints 1–5b + S6/S7-1/S9-1/S9-2 (ground-truth
+reconciliation of E7–E11): **the distributed-execution mechanism is BUILT and proven for coding
+agents.** What remains is breadth (other workload classes), two owed live-infra runs, and a set of
+guards/residuals.
+
+- **✅ DONE (verified):** E0–E6 (the whole mechanism — wire protocol, tenant kernel, job control, worker
+  daemon, workspaces/secrets, deploy harness); **E7** CLI-001..007 (code-complete); **E10-desktop**
+  DSK-001..004; **E10 realtime foundation + drain** (MIG-002/003/008/shadow/009); **E8** Lane-B features
+  (BRW-001/002/003*) + BRW-hostspawn-gate; **E9** SVC-001 (storage half only); **E11** REL-004(+C/D) /
+  REL-FOUNDATION-GATE / REL-003 core / GATE-clause-3-rollback. Sprints S1–S5b, S6, S7-1, S9-1, S9-2.
+- **🟡 OWED — built, needs a live-infra run (OPERATOR, not session):** **E7-1** staging-canary campaign
+  (real-E2B distributed coding journey; code-complete, blocked only on the staging fleet being
+  deployed) → promotes E7-1 `unwired`→`wired`; **REL-003** DR staging rehearsal (measured RPO/RTO;
+  E11-F002 — the `aoa db:restore` entrypoint half is session-buildable).
+- **🚫 BLOCKED (absent features/deps):** REL-001 (BRW-006/S7 + SVC-007/S8), REL-002 (SVC-006/S8),
+  REL-005 (all REL + kill-switch write path); **E10 cutover sinks** (MIG-005/006/007 — need the routing
+  seam + mint generalization, E10-F001); **E9 SVC-002..007** (service dispatch unreachable); **E8-1
+  governed browser path** + BRW-004..008 (Lane B).
+- **🔨 BUILDABLE NOW (session, no live infra) — best first:** (1) ★ **foundation-suite-unrun** — repair
+  the `additionalProperties` mutate no-op + wire `check-distributed-execution-foundation.test.mjs` into
+  `policy` (the census's "single highest-value item"; closes REL-FOUNDATION-GATE's
+  enforced-at-rest-not-against-regression gap); (2) **E9 gate-clause-wiring guard** (the S7-mirror; a
+  graph-inert guard so a false "E9 complete" is catchable — §4 Sprint 8 asks for it); (3) **E10
+  routing-seam + mint-generalization** (the honest Sprint-6 keystone that UNBLOCKS the sinks; bigger,
+  real feature); (4) cheap finding closures E6-F005/E6-F007/E4-F014 + guard hardening E4-F013/E4-F015.
+
+**Forward timeline (dependency order, not calendar):**
+1. **Now, in parallel (session-buildable):** foundation-suite-unrun · E9 guard · the cheap finding closures.
+2. **Keystones that unblock breadth:** the E10 routing-seam + mint-generalization → the E10 cutover
+   sinks; the E9 service-dispatch enable (supervisor) → SVC-002..007; the E8 governed browser path →
+   BRW-004..008.
+3. **Operator legs (whenever infra is up):** deploy the staging fleet → run the **E7-1 campaign**; stand
+   up D5 staging → run the **REL-003 DR rehearsal**.
+4. **Last (gated on all the above):** REL-001 (after BRW-006 + SVC-007) · REL-002 (after SVC-006) ·
+   REL-005 (after REL-001/002/003/004 + the kill-switch write path) — the private-beta close.
+
+The 13 open findings (`finding-ownership.json` + §5) are the tracked-debt ledger; most are blocked on
+the same absent consumers/deps above, a handful are the cheap closures in (4)/(1).
+
 ---
 
 ## 2. How to run a sprint (read once, applies to every sprint)
