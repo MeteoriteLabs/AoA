@@ -34,6 +34,7 @@
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
     "oauth:force-expiry": "tsx scripts/force-mcp-oauth-expiry.ts",
     "oauth:rollback-v2": "tsx scripts/rollback-mcp-oauth-v2.ts",
+    "verify:e7-1-distributed-run": "tsx server/src/cli/verify-e7-1-distributed-run.ts",
     "db:backup": "./scripts/backup-db.sh",
     "aoa": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
