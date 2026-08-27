@@ -70,33 +70,41 @@ guards/residuals.
   REL-005 (all REL + kill-switch write path); **E10 cutover sinks** (MIG-005/006/007 — need the routing
   seam + mint generalization, E10-F001); **E9 SVC-002..007** (service dispatch unreachable); **E8-1
   governed browser path** + BRW-004..008 (Lane B).
-- **🔨 BUILDABLE NOW (session, no live infra) — best first:** (1) **E9 gate-clause-wiring guard** (the
-  S7-mirror; a graph-inert guard so a false "E9 complete" is catchable — §4 Sprint 8 asks for it); (2)
-  **E10 routing-seam + mint-generalization** (the honest Sprint-6 keystone that UNBLOCKS the sinks;
-  bigger, real feature); (3) cheap finding closures E6-F005/E6-F007/E4-F014 + guard hardening
-  E4-F015 (**E4-F013 ✅ shipped 2026-08-27** — the ownership guard's own `ownerStillOpen`-is-free-text
-  hole is closed by a five-arm successor chain + the DBR-001 stub for E11-F002; see §3.1).
-  **✅ Shipped 2026-08-27 (S9-3, foundation-suite-unrun):** the census's former "single
-  highest-value item" is done — but its root cause was **CRLF working-tree vs LF find-strings** on a
-  Windows checkout, **NOT** the `additionalProperties` mutate no-op the census reason and
-  REL-FOUNDATION-GATE §0h had misdiagnosed (the helpers are correct; 3 cases, all one class; 182/182
-  green under LF = the Linux-CI form). Pinned the distributed-execution fixtures + architecture docs
-  `eol=lf` (zero committed content delta) and wired `check-distributed-execution-foundation.test.mjs`
-  into the `policy` job (census flipped `unrun`→`runs`), closing REL-FOUNDATION-GATE's
-  enforced-at-rest-not-against-regression gap.
+- **🔨 BUILDABLE NOW (session) — ★ the well is nearly dry (updated 2026-08-28).** The
+  guard/register-hardening layer is SOLID and mostly shipped: **E4-F013 ✅** (ownership-guard
+  successor chain + DBR-001 stub) and **foundation-suite-unrun ✅** (S9-3, the checker's own suite now
+  runs in `policy`) landed. The two remaining guard candidates did **NOT survive scoping**: **E9
+  gate-clause guard is PREMATURE** (no real service-execution symbol to track until SVC-002 lands — the
+  batch-only capability is a constant and the routing symbols are wired-for-batch, so a clause would be
+  vacuous) and **E4-F015 is OBVIATED** (the `DispatchRefusalReason` union is already compile-time-pinned
+  by the total `DISPATCH_REFUSAL_MESSAGES` Record + `tsc`; a runtime guard would just duplicate the
+  compiler). The **E10 keystone crux is SETTLED but the cutover is BLOCKED**: E10-F001 corrected
+  2026-08-28 — crew RIDES the mint (iff a v1 provider: anthropic/openai, not google/opencode), so crew
+  is the cleanest first sink; but the crew *cutover* (the routing-seam + the sink flip) needs the
+  zero-caller projection bridges + E7-1, so its seam-decision is inert-until-fleet and not worth
+  building alone (see `qa/2026-08-28-e10-keystone-scoping.md`). **What's left session-buildable is LOW
+  value:** the cheap doc closures (E6-F005 / E6-F007 / E4-F014).
 
-**Forward timeline (dependency order, not calendar):**
-1. **Now, in parallel (session-buildable):** E9 guard · the cheap finding closures. (foundation-suite-unrun ✅ shipped 2026-08-27, S9-3.)
-2. **Keystones that unblock breadth:** the E10 routing-seam + mint-generalization → the E10 cutover
-   sinks; the E9 service-dispatch enable (supervisor) → SVC-002..007; the E8 governed browser path →
-   BRW-004..008.
-3. **Operator legs (whenever infra is up):** deploy the staging fleet → run the **E7-1 campaign**; stand
-   up D5 staging → run the **REL-003 DR rehearsal**.
-4. **Last (gated on all the above):** REL-001 (after BRW-006 + SVC-007) · REL-002 (after SVC-006) ·
-   REL-005 (after REL-001/002/003/004 + the kill-switch write path) — the private-beta close.
+**Forward timeline — ★ the frontier is now OPERATOR + Lane B, not session units (updated 2026-08-28):**
+1. **★ THE KEYSTONE UNLOCK — operator, highest leverage: deploy the staging fleet → run the E7-1
+   campaign** (§9 "Sprint 5b" + `CLI-006-staging-canary-runbook.md`). One operator act promotes E7-1
+   AND is the prerequisite for wiring the zero-caller projection bridges → the crew cutover (E10) → the
+   other sinks. It unblocks the most downstream work of anything remaining.
+2. **Lane B (parallel track, `C:\e8`): S7/S8 features** — browser BRW-004..008 + service SVC-002..007.
+   These unblock REL-001 (BRW-006/SVC-007), REL-002 (SVC-006), and the E9 service-dispatch enable — and
+   they share the SAME routing-seam prerequisite as E10 (build it once, source-agnostic).
+3. **After the fleet + bridges (session-buildable THEN):** wire the projection bridges → the **crew
+   cutover** (crew = cleanest sink for a v1-provider company) → the other sink cutovers.
+4. **Operator DR (any time staging is up):** the **REL-003 DR rehearsal** (measured RPO/RTO), now owned
+   by the DBR-001 stub.
+5. **Last (gated on 1–4):** REL-001 (after S7/S8) · REL-002 (after SVC-006) · REL-005 (after all REL +
+   the kill-switch write path) — the private-beta close.
 
-The 12 open findings (`finding-ownership.json` + §5) are the tracked-debt ledger; most are blocked on
-the same absent consumers/deps above, a handful are the cheap closures in BUILDABLE-NOW item (3).
+**Honest read:** the session-driven cadence has delivered what it can — the mechanism (E0–E6), the
+coding path (E7 code-complete), the guard/register layer, and the reconciliation/corrections. The
+substantive remaining work is **operator-gated (the E7-1 fleet, the REL-003 DR rig) and Lane-B-gated
+(S7/S8 features)**, not more session units. The 12 open findings (`finding-ownership.json` + §5) are
+the tracked-debt ledger; most are blocked on those same deps, a handful are the cheap closures above.
 
 ---
 
