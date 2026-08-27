@@ -23,7 +23,10 @@ can cut over today** — they share unbuilt prerequisites, and each adds a per-s
    `one_shot`, `service`, `browser`, and `system` — the clean "extraction rides the mint, Commander
    doesn't" distinction the first draft of this finding drew is **false**; both refuse at guard 3.
 
-**Per-sink gaps, smallest first (this is the corrected readiness order):**
+**Per-sink gaps.** ★ Readiness order superseded 2026-08-28: **CREW is the cleanest first sink** (it
+rides the mint for a v1-provider company — see the crew bullet), then extraction (mint-runner change but
+a result-return blocker that drops every item — not recommended), then Commander (largest). The
+"extraction smallest" framing below understated extraction's sync→async result-return blocker.
 - **Extraction (`one_shot`, MIG-007):** credential fix is the SMALLEST in class — it needs the **Company**
   key, which the mint already knows how to produce; the gap is that extraction's principal is an agentless
   `operationId`, so the mint-runner needs to mint a Company key for an agentless one_shot run (a
@@ -35,9 +38,19 @@ can cut over today** — they share unbuilt prerequisites, and each adds a per-s
   items** — a data-loss bug, not honest dormancy. And Q2: extraction ALREADY runs in an isolated E2B
   sandbox with the Company key, so the cutover's value is thin-to-negative (fleet placement for a
   latency-sensitive, system-initiated path).
-- **Crew (`crew_run`, MIG-006):** agent-backed (its principal is an agent id, so it MAY pass the mint's
-  guard 3 if the agent uses a v1 coding adapter), but it was refused `source_not_admitted` in shadow — an
-  admission-authority gap — plus the routing. Not yet fully traced; likely a middle case.
+- **Crew (`crew_run`, MIG-006) — ★ CORRECTED 2026-08-28: crew RIDES the mint (it does NOT refuse at
+  guard 3), and is the CLEANEST first sink.** Its principal is stamped `{kind:"worker", id: agentId}`
+  (`job-shadow-admissibility.ts:136` → `internalRunSourceIsAdmitted`, `job-control.ts:1529`), so guard 2
+  admits `worker` and — **iff the company's crew provider is a v1 coding adapter** — guard 3 admits and
+  the mint issues a Company `provider_key` (`execution-secret-handle-mint{,-runner}.ts`). The v1 axis is
+  a whole-company setting, not an edge: `resolve-crew-adapter.ts` maps `anthropic→claude_local` /
+  `openai→codex_local` (RIDE) but `google→gemini_local` / `opencode→opencode_local` (REFUSE
+  `adapter_not_v1_scope`). The shadow `source_not_admitted` was a **fixture artifact** — no crew runs
+  were seeded (`MIG-005-006-007-shadow-result.md:107,110-112`) — NOT an admission-authority gap. So
+  crew's ONLY blockers are the routing seam + the zero-caller projection bridges (`jobOutputBridge` et
+  al., E3-17) + E7-1 — **none of them the mint.** Already pinned by shipped tests (no new test needed):
+  `job-submission.integration.test.ts:77-99,307` (the `{worker, agentId}` stamp), `mint.test.ts:128-133`
+  (worker→`provider_key`), `mint.test.ts:138` (non-v1→refuse).
 - **Commander (`commander_turn`, MIG-005):** the LARGEST gap — a net-new per-user `provider_connection`
   credential class (Decision #117 territory), not the Company key; plus routing; plus it is
   interactive/sync.
