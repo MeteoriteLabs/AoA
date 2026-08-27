@@ -9,9 +9,15 @@
 // fence-revoking `requestCancellation` (JOB-006). It is NOT a bulk UPDATE: a late worker
 // result for a revoked fence is rejected `stale_fence` by the guarded mutators.
 //
-// Rollback safety (Invariant 6/7): before draining an org it consults `assertRollbackSafe`
-// — if an authoritative-cost receipt is still pending for the org, that org's drain step
-// is REFUSED (skipped), so a committed charge can never be erased by the disable pass.
+// Rollback safety (Invariant 6/7, MIG-009): before draining an org it resolves EVERY
+// Company under the Organization and consults the per-Company `assertRollbackSafe` for
+// each — if an authoritative-cost receipt is still pending for ANY Company (including a
+// SIBLING of the one an attempt belongs to), that org's whole drain step is REFUSED
+// (skipped), so a committed charge can never be erased by the disable pass. The gate is
+// per-Company because an Organization holds many Companies and the receipt authority the
+// bridges own is Company-keyed; an org-keyed gate would either miss a sibling Company's
+// pending receipt (fail-open) or, against the real bridges, resolve no Company→Org edge
+// for an org id and throw for every org (fail-closed — a dead cancel-nothing lever).
 //
 // Given the static flag model, disable is env+restart-driven with this explicit drain
 // pass at teardown/admin trigger (a runtime toggle that drains without a bounce is a
@@ -36,6 +42,10 @@ export interface DistributedExecutionDrainDeps {
     limit: number;
     statementTimeoutMs: number;
   }): Promise<string[]>;
+  /** Resolve every Company under ONE Organization (reuses the canary-preflight primitive).
+   * The rollback gate asserts safety per Company, so an org that resolves to zero Companies
+   * has no attempts to drain and records a clean no-op. */
+  listOrganizationCompanyIds(organizationId: string): Promise<readonly string[]>;
   /** Enumerate the non-terminal attempts for ONE org (the missing per-org iterator). */
   listActiveAttempts(organizationId: string): Promise<DistributedExecutionActiveAttempt[]>;
   /** Fence-revoking graceful cancel of ONE job (JOB-006 requestCancellation). */
@@ -46,8 +56,9 @@ export interface DistributedExecutionDrainDeps {
     reason: string;
     graceful: boolean;
   }): Promise<CancellationOutcome>;
-  /** Refuse (throw) the org's drain step while an authoritative-cost receipt is pending. */
-  assertRollbackSafe(organizationId: string): Promise<void>;
+  /** Refuse (throw) the drain while an authoritative-cost receipt is pending for THIS
+   * Company. Keyed by Company, matching every concrete bridge implementation. */
+  assertRollbackSafe(companyId: string): Promise<void>;
 }
 
 export interface DistributedExecutionDrainResult {
@@ -112,10 +123,31 @@ export function createDistributedExecutionDrain(
         for (const organizationId of organizationIds) {
           organizationsScanned += 1;
 
-          // Rollback-safety gate: an org with a pending authoritative-cost receipt is
-          // refused — do NOT enumerate or cancel any of its attempts.
+          // Rollback-safety gate (MIG-009), per Company. FIRST resolve the org's Company
+          // set — if it cannot be read we cannot prove rollback safety, so we fail CLOSED
+          // (skip, never drain an org whose Company set is unknown). A separate guard from
+          // the assert loop so an unreadable Company set never falls through into a drain.
+          let companyIds: readonly string[];
           try {
-            await deps.assertRollbackSafe(organizationId);
+            companyIds = await deps.listOrganizationCompanyIds(organizationId);
+          } catch {
+            skippedOrganizations.push(organizationId);
+            perOrganization.push({
+              organizationId,
+              skipped: true,
+              reason: "enumerate_companies_error",
+              cancelled: 0,
+            });
+            continue;
+          }
+
+          // THEN assert rollback-safety for EVERY Company. A pending authoritative-cost
+          // receipt on ANY Company — including a sibling of the one an attempt belongs to —
+          // refuses the WHOLE org: do NOT enumerate or cancel any of its attempts.
+          try {
+            for (const companyId of companyIds) {
+              await deps.assertRollbackSafe(companyId);
+            }
           } catch {
             skippedOrganizations.push(organizationId);
             perOrganization.push({
