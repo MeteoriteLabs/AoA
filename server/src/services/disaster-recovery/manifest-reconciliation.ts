@@ -108,11 +108,12 @@ function classifyObject(
   if (!probe || probe.exists !== true) {
     return "missing";
   }
-  // A-G5 (fail-closed, D2): the store could not supply a checksum. An unverifiable
-  // object is never `verified` — a recovery cannot pass on bytes it could not
-  // integrity-check. Checked BEFORE the hash compare so `undefined` is not read as
-  // an ordinary mismatch.
-  if (probe.checksumSha256 === undefined) {
+  // A-G5 (fail-closed, D2): the store could not supply a checksum (undefined, or an
+  // empty string a future provider might emit). An unverifiable object is never
+  // `verified` — a recovery cannot pass on bytes it could not integrity-check.
+  // Checked BEFORE the hash compare so an absent checksum is not read as an ordinary
+  // mismatch. Falsy (not `=== undefined`) so an empty checksum fails closed too.
+  if (!probe.checksumSha256) {
     return "hash_unverifiable";
   }
   // A-G2 (hash): the restored bytes must hash to the recorded sha256.

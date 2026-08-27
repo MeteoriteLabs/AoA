@@ -123,6 +123,14 @@ describe("evaluateRecoveredManifestReconciliation", () => {
     expect(result.verdict).toBe("failed");
   });
 
+  it("I5 (fail-closed): an EMPTY-string checksum is also hash_unverifiable, never verified", () => {
+    const rows = [row()];
+    const probes = probesFor(rows, { [rows[0]!.objectKey]: probe({ checksumSha256: "" }) });
+    const result = evaluateRecoveredManifestReconciliation(rows, probes);
+    expect(result.objects[0]!.disposition).toBe("hash_unverifiable");
+    expect(result.verdict).toBe("failed");
+  });
+
   it("I6: verdict is recovered iff EVERY row is verified — one missing among many still fails", () => {
     const good = row({ artifactId: "art-good", objectKey: keyFor(ORG, 1, "good.txt") });
     const bad = row({ artifactId: "art-bad", objectKey: keyFor(ORG, 2, "bad.txt"), attempt: 2 });
