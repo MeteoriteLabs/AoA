@@ -44,6 +44,7 @@ registerHooks({
     // routes/worker-control.ts, and reporting it as such is a FALSE POSITIVE that turns a real
     // invariant into a red nobody can act on. Excluded by exact filename, not by loosening the
     // match: routes/worker-control.js must still be reported, and the flag-ON test proves it is.
+    const normalized = specifier.replaceAll("\\", "/");
     const guarded = normalized.includes("/repositories/") || normalized.includes("worker-control-body-limits")
       ? undefined
       : guardedModules.find((name) => normalized.includes(name));
