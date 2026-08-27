@@ -72,7 +72,7 @@ all nine).
 | M4 | stale-deferral guard | M4 `deferred["REL-004"]` case | case reds |
 | M5 | malformed-deferral guard | M5 `{}` case | case reds — **diagnostic kill, backstopped** (see note) |
 | M6 | unreferenced-deferral guard | M6 `REL-777` case | case reds |
-| M7 | absent-manifest fail-open (discard `readOrError` missing push) | M7 `rmSync` case | case reds |
+| M7 | absent-manifest fail-open (discard `readOrError` missing push) | M7 `rmSync` case | case reds — **diagnostic kill, backstopped** (see note) |
 | M8 | existence keyed on `-result.md` not `-design.md` | M8 `REL-006-design.md` fixture case | case reds — **isolated kill, see note** |
 
 **M5 note (anchor-matched equivalence proof).** M5's kill is *diagnostic*: deleting the
@@ -83,6 +83,8 @@ that the `{}` fixture produces **both** the malformed diagnostic AND 14 crossing
 REL-001 errors total). Deleting BOTH the malformed guard AND the `isDeferred` reason-check
 (presence-only) fails the `{}` entry **open** — the pair is jointly the fail-closed mechanism.
 Not an equivalent mutant: M5 alone is killed.
+
+**M7 note (same shape as M5 — diagnostic kill, backstopped).** M7's kill is *diagnostic*, structurally identical to M5: the M7 case asserts the specific `distributed-execution-release-tests.json: missing` substring, and discarding the `readOrError` missing-push removes exactly that diagnostic. The fail-closed *behavior* is backstopped — with the manifest absent, `loadReleaseTestManifest` returns `deferred → {}`, so the crossing-level `!isDeferred` check still reds the 24 declared crossings and the CLI still exits 1. The `: missing` push is load-bearing as the EXPLICIT fail-closed signal: it is the only signal that would fire if the register ever had zero Critical/High crossings (nothing for the crossing-level backstop to red). Killed by the specific-substring assertion; behavior backstopped. (Surfaced by the completeness reviewer, who noted M5 carried this note and M7 did not.)
 
 **M8 note (why the dedicated fixture is load-bearing).** Under M8, `valid: the real repository
 passes` **still passes** — REL-004 has *both* a design doc and a result doc, so result-keying
@@ -149,6 +151,15 @@ relevant cases individually).
   the 3 pre-existing failures (176 pass / 3 fail; my 15 targeted cases all green).
 - All five registers green: `gate-clause-wiring`, `finding-ownership` (E11-F001 UNOWNED, on the
   record), `ticket-graph-coverage`, `guard-inventory`, `execution-census` (no bump).
-- Adversarial review (independent 0-error-at-rest + hard-strict-reds reviewer, refutation
-  skeptic, completeness critic on M0–M8 + finding⇄ownership byte-consistency): recorded below /
-  in the ship commit message.
+- **Adversarial review — 3 independent subagents, 0 HIGH/BLOCKING, 0 defects in the code.**
+  (1) *0-error-at-rest + hard-strict-reds reviewer*: PASS on both — rest-green across the checker
+  + all five registers, and a hard-strict variant proven from source to red (24 errors → exit 1
+  → `policy` unconditionally reds `ci-required` on every PR, with exact `pr.yml` line numbers).
+  (2) *Refutation skeptic*: every ships-red angle REFUTED (checker exit 0; no BOM, `JSON.parse`
+  tolerates CRLF; path resolution keys off `root`; inert node doesn't pollute parsing; the 3
+  pre-existing suite failures proven pre-existing at parent `149f4df9a` and absent from CI's
+  `node --test` list). (3) *Completeness critic*: all 9 guards M0–M8 individually killed by a
+  named case (empirically confirmed, no survivors / no false kills / no loose assertions),
+  finding⇄ownership byte-consistency intact, `owned` proven impossible. **One minor doc fix
+  applied:** the M7 backstop note above (the critic observed M5 carried it and M7 did not) — a
+  documentation asymmetry, not a code defect.
