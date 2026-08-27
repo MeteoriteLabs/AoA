@@ -59,6 +59,10 @@ const REL = {
   // FND-007
   legacyParity: "docs/architecture/distributed-execution-legacy-parity.json",
   crosswalk: "docs/replatform/current-main-crosswalk.md",
+  // REL-FOUNDATION-GATE (S9 unit 1): the E11 tickets dir is the existence source
+  // and the deferral manifest is the tracked-debt source for the release-test gate.
+  relTicketsDir: "docs/replatform/epics/E11-hardening-release/tickets",
+  releaseTests: "docs/architecture/distributed-execution-release-tests.json",
 };
 
 function makeFixture(t, mutate) {
@@ -102,6 +106,9 @@ function makeFixture(t, mutate) {
     // FND-007
     legacyParityPath: path.join(root, REL.legacyParity),
     crosswalkPath: path.join(root, REL.crosswalk),
+    // REL-FOUNDATION-GATE
+    relTicketsDir: path.join(root, REL.relTicketsDir),
+    releaseTestsPath: path.join(root, REL.releaseTests),
   };
   fs.copyFileSync(path.join(repoRoot, REL.json), files.jsonPath);
   fs.copyFileSync(path.join(repoRoot, REL.md), files.mdPath);
@@ -138,6 +145,17 @@ function makeFixture(t, mutate) {
   // FND-007: copy the legacy-parity authority + the current-main crosswalk.
   fs.copyFileSync(path.join(repoRoot, REL.legacyParity), files.legacyParityPath);
   fs.copyFileSync(path.join(repoRoot, REL.crosswalk), files.crosswalkPath);
+  // REL-FOUNDATION-GATE: copy the E11 tickets dir (existence source) + the
+  // release-test deferral manifest, so the strict release-test gate resolves
+  // BOTH new inputs against the fixture root, not the real tree (design §3.4).
+  // Skipping this is the trap: the checker would read the real tickets dir/manifest
+  // and `valid: an unmutated fixture copy passes` would break — the wrong "fix"
+  // (fail-open on missing inputs) silently reintroduces the vacuous green.
+  fs.mkdirSync(path.dirname(files.relTicketsDir), { recursive: true });
+  fs.cpSync(path.join(repoRoot, REL.relTicketsDir), files.relTicketsDir, {
+    recursive: true,
+  });
+  fs.copyFileSync(path.join(repoRoot, REL.releaseTests), files.releaseTestsPath);
   if (mutate) mutate(files);
   return root;
 }
@@ -613,9 +631,190 @@ test("threat crossing: removing a Critical/High release test fails", async (t) =
   });
   const { errors } = await runCheck(root);
   assert.ok(
-    hasError(errors, `crossing DE-14 is Critical but has no release test`),
+    hasError(errors, `crossing DE-14 is Critical but names no REL release-test ticket`),
     report(errors),
   );
+});
+
+// --- REL-FOUNDATION-GATE (S9 unit 1): trackable-strict release-test gate ------
+//
+// The bare-string acceptance at crossingHasReleaseTest let a Critical/High crossing
+// satisfy the E0 release-test contract by NAMING a REL ticket that was never written.
+// These cases prove the strict gate: every named REL ticket must EXIST on disk
+// (docs/replatform/epics/E11-hardening-release/tickets/<id>-design.md) OR be declared,
+// with a reason, in docs/architecture/distributed-execution-release-tests.json.
+// Each guard is mutation-killed by DELETION — see the ticket's §8 mutation table.
+
+test("release-gate: a Critical crossing naming only an unwritten, undeclared REL ticket is refused (positive control / M0)", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath, releaseTestsPath }) => {
+    const j = readJson(threatControlsPath);
+    // DE-14 is Critical with a non-REL owner (FND-005). Point its releaseTest at
+    // REL-001 only, then REMOVE REL-001's deferral so it is neither on disk nor declared.
+    const de14 = j.crossings.find((c) => c.id === "DE-14");
+    assert.ok(de14, "fixture must contain DE-14");
+    de14.releaseTest = "REL-001 adversarial gate";
+    writeJson(threatControlsPath, j);
+    const m = readJson(releaseTestsPath);
+    delete m.deferred["REL-001"];
+    writeJson(releaseTestsPath, m);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "names release-test ticket REL-001 which neither exists on disk"),
+    report(errors),
+  );
+});
+
+test("release-gate: removing a deferral reds every crossing naming that unwritten ticket (M2 — the hard-red state option (b) would ship)", async (t) => {
+  const root = makeFixture(t, ({ releaseTestsPath }) => {
+    const m = readJson(releaseTestsPath);
+    // REL-001 is named by 14 Critical/High crossings at tip (design C2). Removing
+    // its deferral is exactly option (b)'s hard-red state for those crossings.
+    delete m.deferred["REL-001"];
+    writeJson(releaseTestsPath, m);
+  });
+  const { errors } = await runCheck(root);
+  // Assert on the substring, not a fragile exact count (the crossing set can grow).
+  const reds = errors.filter((e) =>
+    e.includes("names release-test ticket REL-001 which neither exists on disk"),
+  );
+  assert.ok(reds.length >= 1, report(errors));
+});
+
+test("release-gate: a Critical crossing whose releaseTest names no REL ticket is refused (M3 — closes the arbitrary-string loophole)", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    const j = readJson(threatControlsPath);
+    // DE-14 is Critical with a non-REL owner (FND-005); a non-empty string that
+    // names no REL ticket must NOT satisfy the release-test contract.
+    const de14 = j.crossings.find((c) => c.id === "DE-14");
+    assert.ok(de14, "fixture must contain DE-14");
+    de14.releaseTest = "manual smoke";
+    writeJson(threatControlsPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "crossing DE-14 is Critical but names no REL release-test ticket"),
+    report(errors),
+  );
+});
+
+test("release-gate: EVERY named REL ticket is checked — a bogus REL-999 alongside a real one is refused", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    const j = readJson(threatControlsPath);
+    const de14 = j.crossings.find((c) => c.id === "DE-14");
+    assert.ok(de14, "fixture must contain DE-14");
+    // REL-001 is deferred (admissible); REL-999 is backed by nothing.
+    de14.releaseTest = "REL-001 gate plus REL-999 phantom";
+    writeJson(threatControlsPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "names release-test ticket REL-999 which neither exists on disk"),
+    report(errors),
+  );
+  // The real, deferred REL-001 is still admitted — only REL-999 is flagged.
+  assert.ok(
+    !hasError(errors, "names release-test ticket REL-001 which neither exists"),
+    report(errors),
+  );
+});
+
+test("release-gate: a deferral for a now-written ticket is refused — self-cleaning (M4)", async (t) => {
+  const root = makeFixture(t, ({ releaseTestsPath }) => {
+    const m = readJson(releaseTestsPath);
+    // REL-004 has a design doc on disk, so declaring it deferred is stale.
+    m.deferred["REL-004"] = { reason: "should not be here — REL-004 is written" };
+    writeJson(releaseTestsPath, m);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "deferral REL-004 is stale"), report(errors));
+});
+
+test("release-gate: a deferral without a reason is refused (M5)", async (t) => {
+  const root = makeFixture(t, ({ releaseTestsPath }) => {
+    const m = readJson(releaseTestsPath);
+    m.deferred["REL-001"] = {}; // no reason
+    writeJson(releaseTestsPath, m);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `deferral REL-001 must be an object with a non-empty "reason"`),
+    report(errors),
+  );
+});
+
+test("release-gate: a deferral named by no crossing is refused (M6 — no ghost deferrals)", async (t) => {
+  const root = makeFixture(t, ({ releaseTestsPath }) => {
+    const m = readJson(releaseTestsPath);
+    m.deferred["REL-777"] = { reason: "a ghost ticket no crossing names" };
+    writeJson(releaseTestsPath, m);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "deferral REL-777 is named by no Critical/High crossing"),
+    report(errors),
+  );
+});
+
+test("release-gate: an absent manifest fails closed, not open (M7)", async (t) => {
+  const root = makeFixture(t, ({ releaseTestsPath }) => fs.rmSync(releaseTestsPath));
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${REL.releaseTests}: missing`), report(errors));
+});
+
+test("release-gate: an absent E11 tickets dir fails closed (existence source missing)", async (t) => {
+  const root = makeFixture(t, ({ relTicketsDir }) =>
+    fs.rmSync(relTicketsDir, { recursive: true, force: true }),
+  );
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${REL.relTicketsDir}: missing`), report(errors));
+});
+
+test("release-gate: existence keys on the DESIGN doc, resolved against the fixture root (M8 + C4 root-relative)", async (t) => {
+  const root = makeFixture(t, ({ relTicketsDir, threatControlsPath }) => {
+    // A REL-006 design doc exists ONLY in this fixture (no result doc; absent from
+    // the real tree). If the checker keyed on the result doc, or read the real tree
+    // via a cwd-relative readdir, REL-006 would not be seen and the crossing would red.
+    fs.writeFileSync(path.join(relTicketsDir, "REL-006-design.md"), "# REL-006 design\n");
+    const j = readJson(threatControlsPath);
+    const de14 = j.crossings.find((c) => c.id === "DE-14"); // Critical, non-REL owner
+    assert.ok(de14, "fixture must contain DE-14");
+    de14.releaseTest = "REL-006 fixture-only gate";
+    writeJson(threatControlsPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    !hasError(errors, "names release-test ticket REL-006 which neither exists on disk"),
+    report(errors),
+  );
+});
+
+test("release-gate: a manifest that is not valid JSON is refused", async (t) => {
+  const root = makeFixture(t, ({ releaseTestsPath }) =>
+    fs.writeFileSync(releaseTestsPath, "{ not json", "utf8"),
+  );
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${REL.releaseTests}: invalid JSON`), report(errors));
+});
+
+test("release-gate: a manifest with a non-numeric version is refused", async (t) => {
+  const root = makeFixture(t, ({ releaseTestsPath }) => {
+    const m = readJson(releaseTestsPath);
+    m.version = "1";
+    writeJson(releaseTestsPath, m);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${REL.releaseTests}: missing numeric "version"`), report(errors));
+});
+
+test("release-gate: a manifest whose `deferred` is not an object is refused", async (t) => {
+  const root = makeFixture(t, ({ releaseTestsPath }) => {
+    const m = readJson(releaseTestsPath);
+    m.deferred = [];
+    writeJson(releaseTestsPath, m);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${REL.releaseTests}: missing object "deferred"`), report(errors));
 });
 
 test("threat parity: a JSON crossing id omitted from the Markdown register fails", async (t) => {

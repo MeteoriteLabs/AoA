@@ -138,6 +138,11 @@ const LATE_OUTPUT_HEADING = "## Late and orphan output";
 const THREAT_MODEL_MD = "docs/architecture/distributed-execution-threat-model.md";
 const THREAT_CONTROLS_JSON = "docs/architecture/distributed-execution-threat-controls.json";
 const PROGRAM_DESIGN_MD = "docs/replatform/program-design.md";
+// REL-FOUNDATION-GATE (GO-BOOK S9 unit 1): the E11 release-test tickets dir is the
+// existence source, and the deferral manifest is the tracked-debt source, for the
+// trackable-strict release-test gate that replaces the bare-string acceptance below.
+const REL_TICKETS_DIR = "docs/replatform/epics/E11-hardening-release/tickets";
+const RELEASE_TESTS_JSON = "docs/architecture/distributed-execution-release-tests.json";
 
 // Step-1 presence gate: the Markdown render must carry these literal fragments.
 const THREAT_MODEL_FRAGMENTS = [
@@ -182,6 +187,9 @@ const THREAT_KNOWN_LANES = new Set(["D0", "D1", "D2", "D3", "D4", "D5", "D6"]);
 // A release test is required for every crossing at these severities.
 const THREAT_RELEASE_SEVERITIES = new Set(["Critical", "High"]);
 const REL_OWNER_RE = /^REL-\d+$/;
+// A REL-* release-test ticket token, matched either as an owner id or inside the
+// free-text `releaseTest` field. Global so `String.prototype.match` returns every token.
+const REL_TOKEN_RE = /REL-\d+/g;
 // A backlog ticket ID token (used both to parse program-design.md and owner cells).
 const TICKET_ID_RE = /[A-Z][A-Z0-9]*-\d+/g;
 
@@ -742,12 +750,145 @@ async function parseProgramTicketIds(root, errors) {
   return ids;
 }
 
-/** Does a crossing carry a release test (a REL-* owner or a releaseTest field)? */
-function crossingHasReleaseTest(c) {
-  const relOwner = Array.isArray(c.ownerTickets)
-    && c.ownerTickets.some((t) => typeof t === "string" && REL_OWNER_RE.test(t));
-  const releaseField = typeof c.releaseTest === "string" && c.releaseTest.trim() !== "";
-  return relOwner || releaseField;
+/**
+ * REL-FOUNDATION-GATE (S9 unit 1). The set of REL-* release-test ticket ids a
+ * crossing NAMES — from a REL-* owner ticket and/or a REL token inside the
+ * free-text `releaseTest` field.
+ */
+function namedReleaseTickets(c) {
+  const owners = Array.isArray(c.ownerTickets)
+    ? c.ownerTickets.filter((t) => typeof t === "string" && REL_OWNER_RE.test(t))
+    : [];
+  const field = typeof c.releaseTest === "string" ? c.releaseTest.match(REL_TOKEN_RE) || [] : [];
+  return new Set([...owners, ...field]);
+}
+
+/**
+ * A Critical/High crossing's release test is ADMISSIBLE iff it NAMES at least one
+ * REL ticket and EVERY named REL ticket is admissible: its `<id>-design.md` exists
+ * on disk (`written`) OR it is declared in the deferral manifest with a non-empty
+ * reason (`deferred`). This replaces the vacuous bare-string acceptance that let a
+ * crossing satisfy the release-test contract by naming a ticket nobody wrote.
+ *
+ * ★ READ BEFORE WEAKENING. Returning without an error when a named ticket is
+ * neither written nor declared is exactly the vacuous green this function was
+ * rewritten to remove (REL-FOUNDATION-GATE §1). An ABSENT manifest is a refusal,
+ * not an empty allow-list (§3.4) — `deferred` arrives `{}` in that case and every
+ * named, unwritten ticket reds.
+ */
+function checkCrossingReleaseTest(c, label, written, deferred, errors) {
+  const named = namedReleaseTickets(c);
+  if (named.size === 0) {
+    errors.push(
+      `${THREAT_CONTROLS_JSON}: crossing ${label} is ${c.severity} but names no REL release-test ticket (no REL-* owner ticket and no REL-* token in the "releaseTest" field)`,
+    );
+    return;
+  }
+  for (const id of named) {
+    const onDisk = written.has(id);
+    const entry = deferred[id];
+    const isDeferred =
+      entry != null &&
+      typeof entry === "object" &&
+      !Array.isArray(entry) &&
+      typeof entry.reason === "string" &&
+      entry.reason.trim() !== "";
+    if (!onDisk && !isDeferred) {
+      errors.push(
+        `${THREAT_CONTROLS_JSON}: crossing ${label} names release-test ticket ${id} which neither exists on disk (${REL_TICKETS_DIR}/${id}-design.md) nor is declared deferred in ${RELEASE_TESTS_JSON}`,
+      );
+    }
+  }
+}
+
+/**
+ * REL tickets WRITTEN on disk — a `<REL-ID>-design.md` under the E11 tickets dir.
+ * Existence is keyed on the DESIGN doc (the ticket's Start SHA, GO-BOOK §2.2), not
+ * the result doc (REL-FOUNDATION-GATE §3.2). Lane files (`REL-004-lane-C-design.md`)
+ * do not match the anchored pattern — a lane is not a top-level ticket. An absent or
+ * unreadable dir is a fail-closed error, not a silent empty set.
+ */
+async function parseWrittenRelTickets(root, errors) {
+  let names;
+  try {
+    names = await readdir(path.join(root, REL_TICKETS_DIR));
+  } catch (err) {
+    if (err && err.code === "ENOENT") errors.push(`${REL_TICKETS_DIR}: missing`);
+    else errors.push(`${REL_TICKETS_DIR}: unreadable (${(err && err.code) || "error"})`);
+    return new Set();
+  }
+  const written = new Set();
+  for (const name of names) {
+    const m = /^(REL-\d+)-design\.md$/.exec(name);
+    if (m) written.add(m[1]);
+  }
+  return written;
+}
+
+/**
+ * Load the release-test deferral manifest's `deferred` object. An ABSENT or
+ * unreadable manifest is a FAIL (`readOrError` pushes `: missing`) and returns `{}`
+ * — fail-closed, so no crossing can admit an unwritten ticket via deferral (§3.4).
+ * Structural problems (bad JSON, non-object, missing numeric `version`, missing
+ * object `deferred`) each push an error; per-entry `reason` validation is the
+ * manifest-hygiene `malformed` guard in validateReleaseTestDeferrals.
+ */
+async function loadReleaseTestManifest(root, errors) {
+  const raw = await readOrError(root, RELEASE_TESTS_JSON, errors);
+  if (raw == null) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    errors.push(`${RELEASE_TESTS_JSON}: invalid JSON (${err.message})`);
+    return {};
+  }
+  if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    errors.push(`${RELEASE_TESTS_JSON}: must be a JSON object`);
+    return {};
+  }
+  if (typeof parsed.version !== "number") {
+    errors.push(`${RELEASE_TESTS_JSON}: missing numeric "version"`);
+  }
+  if (parsed.deferred == null || typeof parsed.deferred !== "object" || Array.isArray(parsed.deferred)) {
+    errors.push(`${RELEASE_TESTS_JSON}: missing object "deferred"`);
+    return {};
+  }
+  return parsed.deferred;
+}
+
+/**
+ * Manifest-hygiene guards, each mirroring a named finding-ownership guard:
+ *   malformed    — a deferral with no non-empty `reason`
+ *   stale        — a deferral whose `<id>-design.md` now EXISTS (the ticket shipped;
+ *                  its entry MUST be removed in the landing commit — self-cleaning)
+ *   unreferenced — a deferral named by no Critical/High crossing (a ghost)
+ * `namedByCrossings` is the set of REL tickets named by Critical/High crossings.
+ */
+function validateReleaseTestDeferrals(deferred, written, namedByCrossings, errors) {
+  for (const id of Object.keys(deferred)) {
+    const entry = deferred[id];
+    if (
+      entry == null ||
+      typeof entry !== "object" ||
+      Array.isArray(entry) ||
+      typeof entry.reason !== "string" ||
+      entry.reason.trim() === ""
+    ) {
+      errors.push(`${RELEASE_TESTS_JSON}: deferral ${id} must be an object with a non-empty "reason"`);
+      continue;
+    }
+    if (written.has(id)) {
+      errors.push(
+        `${RELEASE_TESTS_JSON}: deferral ${id} is stale — its design doc exists on disk (${REL_TICKETS_DIR}/${id}-design.md); remove the deferral`,
+      );
+    }
+    if (!namedByCrossings.has(id)) {
+      errors.push(
+        `${RELEASE_TESTS_JSON}: deferral ${id} is named by no Critical/High crossing in ${THREAT_CONTROLS_JSON}; remove the unreferenced deferral`,
+      );
+    }
+  }
 }
 
 /**
@@ -757,7 +898,7 @@ function crossingHasReleaseTest(c) {
  * a release test for every Critical/High crossing. Returns the set of JSON
  * crossing IDs (for Markdown parity) or null when the array is unusable.
  */
-function validateThreatCrossings(crossings, validTicketIds, errors) {
+function validateThreatCrossings(crossings, validTicketIds, written, deferred, errors) {
   const jsonIds = new Set();
   for (let idx = 0; idx < crossings.length; idx += 1) {
     const c = crossings[idx];
@@ -811,9 +952,10 @@ function validateThreatCrossings(crossings, validTicketIds, errors) {
       }
     }
 
-    // Release test for Critical/High.
-    if (typeof c.severity === "string" && THREAT_RELEASE_SEVERITIES.has(c.severity) && !crossingHasReleaseTest(c)) {
-      errors.push(`${THREAT_CONTROLS_JSON}: crossing ${label} is ${c.severity} but has no release test (no REL-* owner ticket and no non-empty "releaseTest" field)`);
+    // Release test for Critical/High — REL-FOUNDATION-GATE trackable-strict gate:
+    // the named REL ticket must exist on disk or be declared deferred with a reason.
+    if (typeof c.severity === "string" && THREAT_RELEASE_SEVERITIES.has(c.severity)) {
+      checkCrossingReleaseTest(c, label, written, deferred, errors);
     }
   }
   return jsonIds;
@@ -912,6 +1054,10 @@ async function validateThreatModel(root, errors) {
   const md = await requireFile(root, THREAT_MODEL_MD, THREAT_MODEL_FRAGMENTS, errors);
   const rawJson = await readOrError(root, THREAT_CONTROLS_JSON, errors);
   const validTicketIds = await parseProgramTicketIds(root, errors);
+  // REL-FOUNDATION-GATE (S9 unit 1): the two inputs the trackable-strict release-test
+  // gate resolves against `root` — REL tickets written on disk, and the deferral manifest.
+  const writtenRelTickets = await parseWrittenRelTickets(root, errors);
+  const deferredReleaseTests = await loadReleaseTestManifest(root, errors);
 
   let controls = null;
   if (rawJson != null) {
@@ -938,7 +1084,22 @@ async function validateThreatModel(root, errors) {
 
   let jsonIds = null;
   if (crossings != null) {
-    jsonIds = validateThreatCrossings(crossings, validTicketIds, errors);
+    jsonIds = validateThreatCrossings(crossings, validTicketIds, writtenRelTickets, deferredReleaseTests, errors);
+    // Manifest hygiene (stale / malformed / unreferenced) needs the set of REL
+    // tickets named by Critical/High crossings — the crossings the gate enforces.
+    const namedByCrossings = new Set();
+    for (const c of crossings) {
+      if (
+        c != null &&
+        typeof c === "object" &&
+        !Array.isArray(c) &&
+        typeof c.severity === "string" &&
+        THREAT_RELEASE_SEVERITIES.has(c.severity)
+      ) {
+        for (const id of namedReleaseTickets(c)) namedByCrossings.add(id);
+      }
+    }
+    validateReleaseTestDeferrals(deferredReleaseTests, writtenRelTickets, namedByCrossings, errors);
   }
 
   if (md != null && crossings != null && jsonIds != null) {
