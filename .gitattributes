@@ -70,3 +70,14 @@ server/src/realtime/live-events-ws.ts text eol=lf diff
 # zero or more directories, so these cover both scripts/x.mjs and scripts/lib/x.mjs.
 scripts/**/*.mjs text eol=lf
 scripts/**/*.sh text eol=lf
+
+# The distributed-execution foundation fixtures and architecture docs are copied
+# verbatim into the mutation harness's temp --root and mutated with LF-based
+# find-strings (check-distributed-execution-foundation.test.mjs). A CRLF Windows
+# checkout makes those finds no-ops, so three mutation self-checks fail locally
+# while Linux CI (LF) passes. Pin LF so the corpus mutates identically on every
+# platform, and so the census `runs` flip is honest cross-platform. The index is
+# already LF for every file here, so this changes only Windows working-tree bytes
+# (Linux CI is unaffected). (foundation-suite-unrun)
+tests/fixtures/distributed-execution/** text eol=lf
+docs/architecture/distributed-execution-* text eol=lf
