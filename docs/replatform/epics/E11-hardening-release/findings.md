@@ -37,3 +37,25 @@ ships **0-error at rest** (6 admit on written REL-004, 24 on manifest-deferral) 
 24 unwritten release tests machine-tracked debt. GO-BOOK §4 Sprint 9 and §5 were corrected in
 review round 2; this finding records that the **dated** 2026-08-27 terrain audit still carries
 the pre-CI-green framing (a dated QA snapshot is not silently rewritten). Blocks nothing.
+
+## E11-F002 — the database restore path has no operator entrypoint
+
+**Status:** `open` · Severity: **MED** · Owner: **REL-003** · Filed 2026-08-27 by REL-003 (S9 unit 2) terrain verification.
+
+`runDatabaseRestore` (`packages/db/src/backup-lib.ts`) is exported from that module and
+unit-tested, but has **zero production/CLI callers** — verified at tip, the only references are
+`*.test.ts` (`packages/db/src/__tests__/backup-lib-non-system-schemas.test.ts`) plus a string
+reference in `server/src/__tests__/job-leasing-contract.test.ts`. It is **not** re-exported from
+the `@armyofagents/db` barrel (`packages/db/src/index.ts` exports `runDatabaseBackup` but not the
+restore), and there is **no `aoa db:restore` command** (`aoa db:backup` exists —
+`cli/src/commands/db-backup.ts`). A DR ticket whose acceptance says "prove database … restore"
+therefore has no operator invocation for the restore leg — the one clause satisfied by a function
+nothing calls (the DSK-002 / REL-004 "count the callers" lesson).
+
+**Resolution (in REL-003 scope):** the DR rehearsal runbook
+(`docs/replatform/epics/E11-hardening-release/tickets/REL-003-dr-rehearsal-runbook.md`, step 4)
+names the exact restore invocation — a thin harness calling `runDatabaseRestore({ connectionString,
+backupFile })`, or `pg_restore` for the custom-format dump — since there is no `aoa db:restore`.
+The finding resolves when a real operator restore entrypoint (an `aoa db:restore` command or an
+exercised harness wrapper) lands **and** the live staging rehearsal exercises it (the owed leg).
+Owned by REL-003.

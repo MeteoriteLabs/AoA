@@ -53,6 +53,12 @@
     "E11-F001": {
       "status": "unowned",
       "reason": "LOW, deliberately unowned: it records that the 2026-08-27 breadth terrain audit (Sprint 9 section, docs/replatform/qa/2026-08-27-breadth-terrain-audit.md) still carries the pre-CI-green 'make the checker require the named release-test ticket to exist (flips E0 to honestly-red until E11 lands)' framing plus the imprecise '30/30 name REL-001/002/003/005' count (6 name the WRITTEN REL-004; only 24 name only-unwritten tickets). Both predate GO-BOOK \u00a72.0's resolution (PR #327) that made ci-required green \u2014 after which a hard-strict foundation-checker red BREAKS a required check on every PR (the checker is a step of the always-on policy job). REL-FOUNDATION-GATE (S9 unit 1) ships the trackable-strict gate that corrects this at rest; the finding records that the dated QA snapshot is not silently rewritten. 'owned' is impossible \u2014 the non-numeric id REL-FOUNDATION-GATE is not a findTicketIds ticket, so it would red owner_ticket_missing. Blocks nothing."
+    },
+    "E11-F002": {
+      "status": "owned",
+      "ticket": "REL-003",
+      "ownerStillOpen": "REL-003 has a result doc (the verification core Lane A-E shipped + the DR rehearsal runbook), but E11-F002 stays OPEN because the restore leg is the owed operator leg: it resolves only when a real operator restore entrypoint (an `aoa db:restore` command or an exercised harness wrapper) lands AND the live staging rehearsal exercises it. Until then runDatabaseRestore has zero production callers. This is the WRK-008-style has-a-result-doc-but-part-still-open case the ownership guard's calibration allows. The runbook names the exact runDatabaseRestore/pg_restore invocation as the interim.",
+      "reason": "MED: the database restore path has no operator entrypoint. Discovered by REL-003 (S9 unit 2) terrain: runDatabaseRestore (packages/db/src/backup-lib.ts) is exported from that module but has zero production/CLI callers, is NOT barrel-exported from @armyofagents/db, and no `aoa db:restore` command exists (aoa db:backup does). A DR ticket whose acceptance says 'prove database restore' thus has no operator invocation for the restore leg. Owned by REL-003, whose runbook (REL-003-dr-rehearsal-runbook.md step 4) wraps the invocation explicitly; resolves when a real restore entrypoint lands and the live rehearsal exercises it. Resolve = flip findings.md Status + DELETE this key in the SAME commit (C4)."
     }
   }
 }
