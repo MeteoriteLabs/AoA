@@ -19,6 +19,18 @@
 // pending receipt (fail-open) or, against the real bridges, resolve no Company→Org edge
 // for an org id and throw for every org (fail-closed — a dead cancel-nothing lever).
 //
+// ★ The gate is currently FORWARD-LOOKING. The live budget-cost bridge writes the
+// `authoritative_cost` receipt with status `applied` ATOMICALLY with the charge (one tenant
+// transaction), so no durable `pending` authoritative-cost window exists in production today —
+// `assertRollbackSafe`'s pending-count is always 0 and never throws on the real path. The
+// IMMEDIATE production value of the per-Company grain fix is therefore eliminating the
+// org-keyed DEAD LEVER (the pre-fix drain, wired, would throw at Company→Org resolution and
+// cancel nothing on every run); today a committed charge is un-erasable by charge atomicity +
+// the fact that `requestCancellation` only UPDATEs status (never deletes a cost_events row or
+// its receipt). The gate becomes load-bearing the moment a two-phase pending→applied
+// authoritative-cost projection is introduced — and it is proven correct against a seeded
+// pending receipt in the integration test.
+//
 // Given the static flag model, disable is env+restart-driven with this explicit drain
 // pass at teardown/admin trigger (a runtime toggle that drains without a bounce is a
 // documented follow-up).
@@ -48,7 +60,12 @@ export interface DistributedExecutionDrainDeps {
   listOrganizationCompanyIds(organizationId: string): Promise<readonly string[]>;
   /** Enumerate the non-terminal attempts for ONE org (the missing per-org iterator). */
   listActiveAttempts(organizationId: string): Promise<DistributedExecutionActiveAttempt[]>;
-  /** Fence-revoking graceful cancel of ONE job (JOB-006 requestCancellation). */
+  /** Fence-revoking graceful cancel of ONE job (JOB-006 requestCancellation). Deliberately
+   * narrower than the repo's `RequestCancellationInput`: the wiring adapter (REL-005) must
+   * supply a STABLE `commandId` derived from the jobId (mirroring the budget bridge's
+   * `commandId: input.fence.jobId`) plus `now`, so a drain re-run dedups to ONE cancel
+   * command per job — a per-call random id would queue duplicate cancels and break the
+   * idempotent re-run this drain relies on. */
   requestCancellation(input: {
     organizationId: string;
     companyId: string;
@@ -168,6 +185,9 @@ export function createDistributedExecutionDrain(
           try {
             attempts = await deps.listActiveAttempts(organizationId);
           } catch {
+            // Skip-and-continue, recorded in BOTH lists like the rollback/enumerate-companies
+            // skips above, so a re-run trigger keying off `skippedOrganizations` sees this org.
+            skippedOrganizations.push(organizationId);
             perOrganization.push({ organizationId, skipped: true, reason: "enumerate_error", cancelled: 0 });
             continue;
           }

@@ -153,6 +153,39 @@ describe("MIG-009 flag-disable drain (per-Company rollback gate → requestCance
     expect(result.cancelled).toBe(1);
   });
 
+  it("skips (fail-closed) when listActiveAttempts throws, records it in BOTH lists, and continues", async () => {
+    const orgsPages = [[ORG_A, ORG_B], []];
+    const listActiveAttempts = vi.fn(async (organizationId: string) => {
+      if (organizationId === ORG_A) throw new Error("statement timeout");
+      return [attempt(ORG_B, CO_B1, "job-b1")];
+    });
+    const requestCancellation = vi.fn(async () => queued());
+    const drain = createDistributedExecutionDrain({
+      listAdmittedOrganizationIds: vi.fn(async () => orgsPages.shift() ?? []),
+      listOrganizationCompanyIds: vi.fn(async (organizationId: string) =>
+        organizationId === ORG_A ? [CO_A1] : [CO_B1],
+      ),
+      listActiveAttempts,
+      requestCancellation,
+      assertRollbackSafe: vi.fn(async () => {}),
+    });
+    const result = await drain.drainAll();
+
+    // ORG_A passed the rollback gate but its attempt read failed → skipped (not drained),
+    // recorded in BOTH skippedOrganizations and perOrganization (consistent with the other
+    // skip paths); ORG_B still drains — one bad org never aborts the sweep.
+    expect(result.skippedOrganizations).toContain(ORG_A);
+    expect(result.perOrganization).toContainEqual({
+      organizationId: ORG_A,
+      skipped: true,
+      reason: "enumerate_error",
+      cancelled: 0,
+    });
+    expect(requestCancellation).toHaveBeenCalledTimes(1);
+    expect(requestCancellation.mock.calls[0]![0].organizationId).toBe(ORG_B);
+    expect(result.cancelled).toBe(1);
+  });
+
   it("paginates admitted orgs with an advancing cursor", async () => {
     const pages: Record<string, string[]> = {
       null: [ORG_A],
