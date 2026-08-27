@@ -49,6 +49,10 @@ can cut over today** — they share unbuilt prerequisites, and each adds a per-s
   tickets to scope before any sink flips.
 - **The drain fix is the one genuinely unblocked, landable Sprint 6 item** (sink-agnostic; the MIG-005
   design's drain analysis is reviewer-verified and carries to its own ticket). Ship it independently.
+  **★ SHIPPED 2026-08-27 (MIG-009):** the per-Company rollback grain + the real `listActiveAttempts`
+  SQL landed and are proven at embedded-PG; the drain is correct when wired, and `E10-1-drain` stays
+  `unwired` (its `drainAll` trigger is REL-005 scope). This does **not** change the finding: the drain
+  is sink-agnostic and no sink cutover is unblocked by it — every point below still holds.
 - **Extraction's cutover is NOT recommended even once unblocked** (thin value; already sandboxed with the
   Company key). Crew and Commander cutovers wait on their credential + routing work.
 

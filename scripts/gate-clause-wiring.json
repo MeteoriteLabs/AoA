@@ -84,7 +84,7 @@
       "epic": "E10",
       "status": "unwired",
       "symbol": "createDistributedExecutionDrain",
-      "reason": "Zero callers, and it calls assertRollbackSafe(organizationId) where every implementation takes a companyId. Fix and wire during sink cutover (Sprint 6)."
+      "reason": "MIG-009 FIXED the two correctness defects and proved them at embedded-PG (server/src/__tests__/job-distributed-drain.integration.test.ts): (1) the rollback-safety grain is now per-Company (was assertRollbackSafe(organizationId) against a Company-keyed gate — an interface lie that fails CLOSED against the real bridge; the drain now enumerates every Company under the org via listOrganizationCompanyIds and asserts each, so a pending authoritative-cost receipt on ANY Company skips the whole org, closing the sibling-Company fail-open); (2) the missing listActiveAttempts SQL now exists (server/src/services/job-distributed-drain-store.ts — tenant-scoped runInTenant read, notInArray(TERMINAL), selectDistinct by job). The untested drain statuses (cancelled + no_active_lease) are covered. The drain is CORRECT WHEN WIRED. It stays UNWIRED (zero production callers by design): promoting to wired needs an honest drainAll INVOCATION — a real operator teardown / kill-switch write path — which is REL-005 scope (boot/SIGTERM/sweeper are the WRONG triggers; they'd cancel in-flight work on every restart). Composing createDistributedExecutionDrain in index.ts without a drainAll trigger would flip the caller count to >=1 and force a vacuous 'wired', the exact anti-pattern this register catches. Count stays 0 until REL-005 lands the trigger."
     },
     "E11-5-provider-kill-switch": {
       "epic": "E11",
