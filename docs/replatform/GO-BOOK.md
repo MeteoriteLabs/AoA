@@ -792,22 +792,39 @@ caught the way E3-E11 are.
 ---
 
 ### Sprint 9 — hardening and release
-**Epic E11/E0 · REL-001, REL-002, REL-003 (dependency-ready), REL-005**
+**Epic E11/E0 · REL-FOUNDATION-GATE (unit 1) → REL-003 (unit 2, dependency-ready) → REL-001/002/005 (blocked on S7/S8)**
 
-**Read this before planning:** E0's gate passed on the strength of REL-001/002/003/005 being
-*named* as the release test for **30 of 30** Critical/High trust crossings. Four of those five
-have never been written, and `check-distributed-execution-foundation.mjs` accepts a non-empty
-*string* as proof — it reports PASS and will keep doing so.
+**Read this before planning:** E0's gate passes because all **30 of 30** Critical/High trust
+crossings *name* a REL release test — but `check-distributed-execution-foundation.mjs:745-751`
+accepts a non-empty *string* (or a `REL-\d+`-shaped `ownerTicket`) as proof and never checks the
+ticket file exists. **6** of the 30 name the written **REL-004**; the other **24** name
+REL-001/002/003/005, which have **never been written**. So E0 reports PASS over 24 unwritten release
+gates, and will keep doing so.
 
-**Two jobs:** write the REL tickets, **and** make the foundation checker require the named
-release-test ticket to *exist on disk*. That flips E0 from falsely-green to honestly-red
-until E11 lands. Same move as the gate-clause guard, one level up.
+**Unit 1 is the checker fix — but NOT the naive "require exist on disk" flip.** ★ CORRECTED
+2026-08-27 (review round 2): a hard-strict flip would red the always-on `policy` job
+(`pr.yml:161`) → `ci-required` on **every** PR until all four unwritten REL tickets land. Since §2.0's
+timeout is RESOLVED (PR #327), a red required check now **BREAKS** the gate — the earlier "flips E0 to
+honestly-red until E11 lands / two lines from honest" framing predates CI going green and is now
+**wrong; DO NOT act on it.** The resolution is a **trackable-strict gate** (the `finding-ownership`
+`unowned`-with-reason pattern, one level up): a named REL ticket is admissible if its `-design.md`
+exists OR is declared, with a reason, in a new deferral manifest
+`docs/architecture/distributed-execution-release-tests.json`. It ships **0-error at rest** (6 pass on
+written REL-004, 24 on manifest-deferral — verified + adversarially reviewed), so `ci-required` stays
+green while E0 becomes honest (the 24 unwritten tests = machine-tracked debt). When each REL ticket
+lands and removes its deferral, the checker collapses into the pure existence check the old framing
+wanted. Full design + the review-round-2 corrections:
+`epics/E11-hardening-release/tickets/REL-FOUNDATION-GATE-design.md`; §9 has the copy-paste prompt.
 
-**★ Terrain-verified 2026-08-27** (`qa/2026-08-27-breadth-terrain-audit.md`). All claims hold; the
-crux is pinned: `check-distributed-execution-foundation.mjs:745-751` accepts any non-empty
-`releaseTest` string (or a `REL-\d+`-shaped `ownerTicket`) **without checking the ticket file
-exists**. Only **REL-004** is written; REL-001/002/003/005 are plan nodes only. The fix is a
-non-existence check — two lines from honest.
+**Sprint 9 does NOT complete in one pass.** Only **unit 1** (the gate) and **unit 2** (REL-003,
+dependency-ready DR/migration rehearsal — deps DEP-006/MIG-002/E10-REALTIME-FOUNDATION all landed)
+are buildable today. REL-001/002 hard-block on Sprints 7/8 (BRW-006/SVC-006/007) and REL-005 on all of
+them — a green gate is **NOT** license to attempt them (the §2.4 STOP trap against absent workloads).
+**Residual named by the review:** the foundation checker's own test suite is `unrun` and wired into
+no CI job, so the gate ships enforced-at-rest but **not against-regression** (the CLI passes at rest
+under both the vacuous and the strict form); fixing that — the census's "single highest-value item"
+(the `additionalProperties` mutate no-op + move the suite into `policy`) — is a candidate later S9
+hardening unit.
 
 ---
 
@@ -819,7 +836,8 @@ Not blockers; do not rediscover them.
 |---|---|
 | **Security guards with no falsifiable test** | `egress-policy.ts:199` is a **real fail-open** (deleting the fail-closed guard passes the suite — reproduced). Also `worker-session-auth` (22 of 25 guards deletable, unverified on Linux), `worker-device-proof` (Ed448 accepted; garbage `issuedAt` makes the skew window vacuous), `policy.ts` path grammar. **All protect the DORMANT path — fix before Sprint 3, not after.** |
 | **dependency-graph regex** | `[A-Z]{3,4}` cannot match `TRACK`, so the checker that stops graph drift is blind to TRACK-001/002. Widening to `{2,5}` was **measured**: it fails the self-test and the checker, because the crosswalk-dominance computation shares the regex. Needs its own ticket. |
-| **4 ticket families invisible to the coverage checker** | `GATE-clause-3-rollback`, `DEFERRAL-1-credential`, `E4-D12-live-dispatch`, `CLI-realE2B-hardening` — no 3-digit id, so the checker skips them. Three are the Wave-3/4 blocker artifacts. |
+| **5 ticket families invisible to the coverage checker** | `GATE-clause-3-rollback`, `DEFERRAL-1-credential`, `E4-D12-live-dispatch`, `CLI-realE2B-hardening`, `REL-FOUNDATION-GATE` — no 3-digit id, so the checker skips them (both `expandTicketIdsFromFilename` and `parseAuthorityNodes` require `\d{3}`). Three are the Wave-3/4 blocker artifacts; `REL-FOUNDATION-GATE` (S9 unit 1) is graph-inert **by design** — its enforcement is the CLI checker in the `policy` job, not a coverage node. |
+| **Foundation checker's own test suite is `unrun` + in no CI job** | `check-distributed-execution-foundation.test.mjs` is RED at tip (one `additionalProperties:false` mutate no-op; the general `mutate` mechanism works — `valid: the real repository passes` is green) and kept out of `policy` (`status:"unrun"` in `test-execution-census.json`). So S9 unit 1's release-test gate ships enforced-at-rest but its M0–M8 regression tests don't run in CI. The census calls fixing the mutate no-op + moving the suite into `policy` **"the single highest-value item"** — a candidate S9 hardening unit. |
 | **TRACK-003 / BRW-007 / BRW-008** | Shipped or scoped with no `#### ID` node. |
 | **E2's gate cites a failing revision** | `README.md:6` names `acf2b32fb`, which its own artifact table records as `blocked_external`, superseded by a pass at `9a5455071f8c`. |
 | **E6 clause 7** | The DEP-009 shared-admission proof **re-implements** the advisory-lock SQL inline in the test rather than calling `admitAttemptCapacity` — change the production key and the test stays green. |
@@ -1800,6 +1818,89 @@ When green:
 - Update GO-BOOK §3.1 (add a MIG-009 row) and §4 Sprint 6 + §5 (the drain debt is retired), and
   E10-F001 if the drain shipping changes anything it says.
 - Commit, push, report CI honestly (`verify` is now a sharded matrix — §2.0 RESOLVED, so `ci-required` should PASS; a red shard is a real failure to own, not an inherited timeout).
+
+If you find something mid-ticket that invalidates the premise, STOP and say so.
+```
+
+### Sprint 9 (first unit) — REL-FOUNDATION-GATE: stop E0 accepting a bare string
+
+**Sprint 9's release tests are mostly blocked (REL-001/002 on S7/S8, REL-005 on all) — this is the
+one landable unit.** It flips the E0 foundation checker from vacuous-green (24 named-but-unwritten
+release tests pass today) to honest, WITHOUT the naive hard-strict flip that would red `ci-required`
+on every PR. Its design is **written and review-verified (3-way adversarial pass)**; execute it.
+**Pure guard/docs — no operator step, no spend.** This is a `code=true` PR, so it rides the full CI
+suite, not just `policy`.
+
+```text
+Work in the git worktree C:\e3 on branch docs/replatform-program.
+
+Read first, in this order:
+1. docs/replatform/GO-BOOK.md — §4 "Sprint 9" (the CORRECTED framing: trackable-strict, NOT a
+   hard-strict flip — that breaks ci-required), §2 (the per-ticket process), §5 (the two new debt
+   rows: the 5-family coverage-invisibility and the foundation-suite-unrun residual), §8.
+2. docs/replatform/epics/E11-hardening-release/tickets/REL-FOUNDATION-GATE-design.md — the FULL
+   design. Read its "★★ Review round 2" banner (corrections C1-C8) and §0(h) (the residual) FIRST;
+   they are the fixes to fold in. Then follow §4 (the decision function), §7 (the RED/GREEN steps),
+   §8 (the mutation table).
+
+STEP 0: re-verify the design's ~30 path:line citations at tip (the tree moves) and apply the
+banner's C1-C8. The load-bearing ones: (C1) the graph node is INERT — REL-FOUNDATION-GATE has no
+3-digit id, so it reds no coverage checker; add a `#### REL-FOUNDATION-GATE` heading only for human
+traceability, never claim it is enforced. (C2) REL-001 is named by 14 crossings, not 10 — assert on
+the error substring, not a count. (C3) the finding you file MUST be `## E11-F001 — <title>` (em-dash
+or hyphen, NEVER a colon) + `**Status:** open`, with a byte-equal `E11-F001` key in
+scripts/finding-ownership.json, status `unowned` (forced — the non-numeric id makes `owned` red
+owner_ticket_missing), in the SAME commit. (C4) resolve both new inputs against `root`, not cwd.
+
+THE CHANGE — the trackable-strict gate (design option c):
+- Replace crossingHasReleaseTest with an admissibility gate: a Critical/High crossing must NAME a REL
+  ticket, and EVERY named REL ticket must either have its <id>-design.md on disk OR be declared, with
+  a non-empty reason, in a NEW manifest docs/architecture/distributed-execution-release-tests.json.
+- Create that manifest declaring the four unwritten tickets (REL-001/002/003/005) with reasons;
+  REL-004 is written, so it is NOT declared. Note in REL-003's reason that its deferral is
+  transitional (removed in unit 2). Add the manifest-hygiene guards (stale / malformed / unreferenced,
+  §3.3). An ABSENT manifest is a FAIL, not an empty allow-list (fail-closed, §3.4).
+- Extend makeFixture (check-distributed-execution-foundation.test.mjs) to copy the E11 tickets dir +
+  the manifest into the fixture root — §3.4 is the trap: without it, `valid: an unmutated fixture
+  copy passes` breaks, and the wrong "fix" (fail-open on missing inputs) reintroduces the vacuous
+  green. Do NOT do that.
+
+Binding rules:
+- SHIPS 0-ERROR AT REST — this is the whole point; a hard-strict flip (require-exist, no deferrals)
+  reds `policy` -> `ci-required` on every PR and is FORBIDDEN. Prove rest-green with
+  `node scripts/check-distributed-execution-foundation.mjs` (exit 0) after every step.
+- Fail-first: RED for the reason written down, then implement. POSITIVE CONTROL FIRST (M0: neuter the
+  gate to a no-op, watch the "undeclared+nonexistent -> error" case fail to fire).
+- Mutation-test every guard by DELETION (never rewrite to an equivalent). Run the RELEVANT test cases
+  INDIVIDUALLY via `node --test --test-name-pattern="…"` — the full suite is RED at tip for a
+  pre-existing unrelated reason (the additionalProperties mutate no-op) and is wired into no CI job
+  (§0h). `valid: the real repository passes` is the truest green signal and passes in isolation.
+- THE RESIDUAL (§0h) is real, not a blocker: the gate ships enforced-at-rest but not
+  against-regression (the CLI passes at rest under BOTH the vacuous and strict form; only the unwired
+  M0-M8 cases catch a re-vacuation). Do NOT fold the suite-wiring into this unit — name it in the
+  result doc + GO-BOOK §5 as a candidate later S9 hardening unit (the census's "highest-value item").
+- Do NOT write any REL-001/002/003/005 test — that is units 2-5, dependency-blocked (§0d). A green
+  gate is NOT license to attempt them.
+- packages/worker-protocol is FROZEN. Cite living documents by section/id, never by line. This unit
+  adds NO new *.test.mjs (it extends the existing one) -> verify no execution-census bump is needed;
+  the new .json is a data input, tracked by no register.
+
+BEFORE you call it done, run the ADVERSARIAL REVIEW with subagents (the design had a 3-way pass; this
+verifies the IMPLEMENTATION): an independent reviewer that the checker is 0-error at rest AND that a
+hard-strict variant would red (from source, not assertion); a SKEPTIC told to construct any ships-red
+scenario (default refuted if not reproducible); a completeness check that every guard (M0-M8) is
+killed by a case and the finding+ownership pairing is byte-consistent. Do NOT delegate to a
+plan-writing or auto-fixing skill.
+
+When green:
+- Run all five registers; every one must pass.
+- Write REL-FOUNDATION-GATE-result.md: what shipped, the mutation line (N killed / 0 survivors, with
+  the anchor-matched note), the finding filed, and — as a HEADLINE — this unit makes E0 honest
+  WITHOUT re-reddening ci-required; the four unwritten release tests are now tracked debt.
+- Update GO-BOOK §3.1 (add the S9 unit-1 ship row). §4 Sprint 9 and §5 were already corrected by the
+  orchestrator in review round 2 — confirm they match what shipped, don't re-litigate.
+- Commit, push, report CI honestly: this is a code=true PR, so ci-required also requires
+  verify/lint/e2e/e2e-pgvector/migrations/browser — green is contingent on the whole suite (C5).
 
 If you find something mid-ticket that invalidates the premise, STOP and say so.
 ```
