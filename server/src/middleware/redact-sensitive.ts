@@ -50,6 +50,15 @@ function isSensitiveKey(key: string): boolean {
 }
 
 function redactInternal(value: unknown, depth: number): unknown {
+  // Cap oversized strings FIRST, at ANY depth. A string is a leaf, so the
+  // object-depth cutoff below must never reach it — if the `depth >= MAX_DEPTH`
+  // branch's `return value` fired for a deeply-nested multi-MB string it would be
+  // logged verbatim, reproducing the exact log/fork-IPC stall this cap prevents.
+  if (typeof value === "string") {
+    return value.length > MAX_STRING_LENGTH
+      ? `${value.slice(0, MAX_STRING_LENGTH)}[redacted: ${value.length - MAX_STRING_LENGTH} more chars truncated]`
+      : value;
+  }
   if (depth >= MAX_DEPTH) {
     // Only mark as truncated if we'd actually be descending into something.
     if (value !== null && typeof value === "object") {
@@ -58,11 +67,6 @@ function redactInternal(value: unknown, depth: number): unknown {
     return value;
   }
   if (value === null || value === undefined) return value;
-  if (typeof value === "string") {
-    return value.length > MAX_STRING_LENGTH
-      ? `${value.slice(0, MAX_STRING_LENGTH)}[redacted: ${value.length - MAX_STRING_LENGTH} more chars truncated]`
-      : value;
-  }
   if (typeof value !== "object") return value;
 
   if (Array.isArray(value)) {

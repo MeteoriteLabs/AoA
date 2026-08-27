@@ -190,6 +190,19 @@ describe("redactSensitiveBodyFields", () => {
     expect(result.items[0].blob).toBe(`${"z".repeat(8192)}[redacted: 808 more chars truncated]`);
   });
 
+  it("truncates an oversized string even at/below the object-depth cutoff (MAX_DEPTH=8)", () => {
+    // Regression (Codex review): the string cap must run BEFORE the `depth >= MAX_DEPTH`
+    // branch, or a deeply-nested multi-MB string hits its `return value` and is logged
+    // verbatim — reproducing the fork-IPC stall the cap exists to prevent. `big` sits at
+    // depth 8 (a->b->c->d->e->f->g->h), exactly the boundary the old ordering mishandled.
+    const big = "q".repeat(10_000);
+    const deep = { a: { b: { c: { d: { e: { f: { g: { h: big } } } } } } } };
+    const result = redactSensitiveBodyFields(deep) as {
+      a: { b: { c: { d: { e: { f: { g: { h: string } } } } } } };
+    };
+    expect(result.a.b.c.d.e.f.g.h).toBe(`${"q".repeat(8192)}[redacted: 1808 more chars truncated]`);
+  });
+
   it("does not mutate the input object", () => {
     const input = { password: "x", profile: { token: "y" } };
     const snapshot = JSON.parse(JSON.stringify(input));
