@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import {
   createE7DistributedRunVerifier,
   formatVerifyResult,
+  detectHardLeakClasses,
   type E7RunVerifierStore,
   type E7RunRow,
   type E7AttemptRow,
@@ -36,6 +37,9 @@ const LEASE_ID = "66666666-6666-4666-8666-666666666666";
 const PROVIDER_KEY_LEAK = "sk-ant-api03ABCDEFabcdef0123456789"; // provider-key class
 const E2B_KEY_VALUE = "e2b_0123456789abcdefghijKLMN"; // e2b_ + >=16 alnum
 const E2B_LEAK_LINE = `E2B_API_KEY=${E2B_KEY_VALUE}`; // literal assignment + value
+// A BARE e2b_ key with NO `E2B_API_KEY=` prefix — exercises the `e2b_key` value arm
+// in ISOLATION (the assignment arm cannot fire on it), so deleting that arm reddens.
+const BARE_E2B_VALUE = "e2b_0123456789abcdefghijMNOP";
 const BROAD_ONLY_TOKEN = "sess_abcdefghij0123456789ABCD"; // pattern-7 broad, NOT a hard class
 
 function run(overrides: Partial<E7RunRow> = {}): E7RunRow {
@@ -304,6 +308,28 @@ describe("evidence-verifier A — clause 4 leak specificity + no-leak invariant"
     expect(JSON.stringify(result)).not.toContain(BROAD_ONLY_TOKEN); // still never quoted
   });
 
+  it("a BARE e2b_ key (no E2B_API_KEY= prefix) FAILS clause 4 via the e2b_key value arm in isolation", async () => {
+    // Anti-vacuity: the bare value trips the `e2b_key` value arm and NOT the
+    // assignment arm — so deleting the `e2b_key` matcher makes this fixture redden
+    // (without it, the earlier E2B fixtures still pass via the assignment arm).
+    expect(detectHardLeakClasses(BARE_E2B_VALUE)).toContain("e2b_key");
+    expect(detectHardLeakClasses(BARE_E2B_VALUE)).not.toContain("e2b_api_key_assignment");
+    expect(detectHardLeakClasses(BARE_E2B_VALUE)).not.toContain("provider_key");
+    const verifier = createE7DistributedRunVerifier({
+      store: goldenStore({
+        events: [
+          event("attempt_started"),
+          event("log", { eventId: "bare-e2b", payload: { note: `spawned sandbox ${BARE_E2B_VALUE}` } }),
+          event("terminal"),
+        ],
+      }),
+    });
+    const result = await verifier.verify({ runId: RUN_ID });
+    expect(result.ok).toBe(false);
+    expect(clauses(result)).toEqual(new Set([4]));
+    expect(JSON.stringify(result)).not.toContain(BARE_E2B_VALUE);
+  });
+
   it("a connection-string URI in a scan surface FAILS clause 4", async () => {
     const conn = "postgresql://user:hunter2@db.internal:5432/app";
     const verifier = createE7DistributedRunVerifier({
@@ -329,6 +355,10 @@ describe("evidence-verifier A — clause 4 leak specificity + no-leak invariant"
       }),
     });
     const result = await verifier.verify({ runId: RUN_ID });
+    // Positive control: the scanner MUST have actually fired clause 4 — otherwise the
+    // absence assertions below would pass vacuously (nothing matched, nothing to leak).
+    expect(result.ok).toBe(false);
+    expect(result.failures.filter((f) => f.clause === 4).length).toBeGreaterThanOrEqual(2);
     const printed = formatVerifyResult(result);
     for (const blob of [JSON.stringify(result), printed]) {
       expect(blob).not.toContain(PROVIDER_KEY_LEAK);
@@ -359,7 +389,10 @@ describe("evidence-verifier A — expected org/company assertion + read-only sur
     expect(result.ok).toBe(true);
   });
 
-  it("calls ONLY read methods (no mutating member is ever invoked)", async () => {
+  // The port type exposes only reads, so "no mutation" is a compile-time guarantee.
+  // What this test guards is that verify() drops NO evidence source — if it stopped
+  // consulting one (e.g. listLeases), the called-set would shrink and this reddens.
+  it("consults all 7 read evidence sources and drops none", async () => {
     const calls: string[] = [];
     const base = goldenStore();
     const store: E7RunVerifierStore = {

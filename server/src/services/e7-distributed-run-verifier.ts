@@ -251,6 +251,18 @@ function safeStringify(value: unknown): string {
   }
 }
 
+/**
+ * Which HARD leak classes does this text trip? Returns matched-CLASS names only —
+ * never the matched value. Exposed so a test can assert (anti-vacuity) that a planted
+ * value trips a SPECIFIC arm in isolation — e.g. a bare `e2b_<16+>` value must trip
+ * `e2b_key` and NOT the `e2b_api_key_assignment` arm, so the value arm is not tested
+ * only by proxy through the assignment arm. Uses `String.match` (not `.test()`) so the
+ * global regexes' `lastIndex` never carries between calls.
+ */
+export function detectHardLeakClasses(text: string): string[] {
+  return HARD_LEAK_MATCHERS.filter((m) => text.match(m.re) !== null).map((m) => m.matchedClass);
+}
+
 interface HardHit {
   readonly surface: string;
   readonly fieldOrEventId: string;

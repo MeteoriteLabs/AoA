@@ -182,12 +182,15 @@ export function createDrizzleE7RunVerifierStore(db: Db): E7RunVerifierStore {
       }
 
       // NOTE — the run-summary `issue_comments` body is deliberately NOT scanned here.
-      // issue_comments carries no run linkage (it is issue-scoped, authorType='system'),
-      // so attributing one to THIS distributed run is indirect and would risk scanning a
-      // SIBLING run's summary — a cross-run false HARD-fail. The comment body is a derived
-      // VIEW of data A already scans at its SOURCE (detected_outputs above, task_outputs,
+      // A run-summary comment carries NO column identifying the RUN that authored it — it
+      // is issue-scoped with authorType='system' (the one run↔comment pointer that exists,
+      // heartbeat_runs.issueCommentSatisfiedByCommentId, is the reverse ask-human-ANSWER
+      // link, not a run-summary key, and is unused in server/src). So attributing a summary
+      // to THIS distributed run is indirect and would risk scanning a SIBLING run's summary
+      // on the same task — a cross-run false HARD-fail. The comment body is a derived VIEW
+      // of data A already scans at its SOURCE (detected_outputs above, task_outputs,
       // run.error), so nothing leak-relevant is lost. Scoped SHOULD-surface per design §7
-      // open-Q2. Revisit if a run→comment key is added.
+      // open-Q2. Revisit if a run→summary-comment key is added.
 
       return surfaces;
     },

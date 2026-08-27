@@ -89,7 +89,11 @@ guards/residuals.
 1. **★ THE KEYSTONE UNLOCK — operator, highest leverage: deploy the staging fleet → run the E7-1
    campaign** (§9 "Sprint 5b" + `CLI-006-staging-canary-runbook.md`). One operator act promotes E7-1
    AND is the prerequisite for wiring the zero-caller projection bridges → the crew cutover (E10) → the
-   other sinks. It unblocks the most downstream work of anything remaining.
+   other sinks. It unblocks the most downstream work of anything remaining. **The session-buildable
+   de-risk is now BUILT: evidence-verifier A** (`pnpm verify:e7-1-distributed-run <runId>`) — the
+   acceptance harness that refuses to bless a legacy fallback or an inert (never-leased) handoff, so the
+   operator cites a mechanized verdict instead of eyeballing a column. It **flips no gate** (E7-1 stays
+   `unwired`); see `epics/E7-coding-e2b/tickets/e7-1-evidence-verifier-result.md`.
 2. **Lane B (parallel track, `C:\e8`): S7/S8 features** — browser BRW-004..008 + service SVC-002..007.
    These unblock REL-001 (BRW-006/SVC-007), REL-002 (SVC-006), and the E9 service-dispatch enable — and
    they share the SAME routing-seam prerequisite as E10 (build it once, source-agnostic).
@@ -116,7 +120,7 @@ Register-sourced (`gate-clause-wiring.json` + `finding-ownership.json`), reconci
 
 ```mermaid
 flowchart TD
-  V["evidence-verifier A<br/>acceptance harness · SESS · NOW"]:::sess
+  V["evidence-verifier A ✅ BUILT<br/>acceptance harness · SESS"]:::done
   C0["staging-deploy pipeline<br/>deploy docker-compose.staging.yml<br/>OP · unticketed · the #1 unlock"]:::op
   D11["DEP-011 worker→adapter-manager wire<br/>SESS · bites only at the fleet"]:::sess
   C2["fleet deployed + armed<br/>E2B key · canary · cap&gt;1 · enrolled worker<br/>OP"]:::op
@@ -153,7 +157,7 @@ flowchart TD
 
 | Band | Item | Gate | Blocked by | Size |
 |------|------|------|-----------|------|
-| **Frontier (buildable now)** | Evidence-verifier A — the E7-1 acceptance harness | `SESS` | — | S |
+| **Frontier (buildable now)** | ~~Evidence-verifier A — the E7-1 acceptance harness~~ ✅ **BUILT** (`pnpm verify:e7-1-distributed-run`; flips no gate) | `SESS` | — | done |
 | | E6-F005 · E6-F007 · E4-F014 — doc-only closures | `SESS` | — | XS |
 | **Critical path (the spine)** | **C0 · staging-deploy pipeline** (deploy the staging compose) | `OP` | — | **L** |
 | | C1 · DEP-011 worker→adapter-manager provider wire (E6-F003, HIGH) | `SESS` | bites at C0 | M |
@@ -176,8 +180,9 @@ flowchart TD
 is dammed behind **C3** (E7-1 wired), which is dammed behind **C0** (the operator staging-deploy
 pipeline). So the honest sequence is:
 
-- **Session, now** — build **evidence-verifier A** + sweep the doc closures (F-band). Optionally
-  DBR-001 and the WRK stubs, but those are LOW / fail-closed. **This is the entire session frontier.**
+- **Session, now** — **evidence-verifier A is BUILT** (`225e83f1f`; `pnpm verify:e7-1-distributed-run`).
+  What remains session-side: sweep the doc closures (F-band); optionally DBR-001 and the WRK stubs, but
+  those are LOW / fail-closed. **The session frontier is nearly dry.**
 - **Operator, the real unlock** — scope + build **C0**. One act (the fleet) converts a nearly-dry
   backlog into the full C4–C8 chain. **Highest leverage in the programme.**
 - **Lane B, parallel** — S7/S8 features (not ours); they share C5's routing seam (build it once).
