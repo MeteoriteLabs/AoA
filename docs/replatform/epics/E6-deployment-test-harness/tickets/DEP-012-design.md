@@ -626,3 +626,250 @@ lane-AGNOSTIC (`supervisor.ts:528`), so B1's claim is B1-scoped and landmine 6 D
 rule + B2 corrected; S1.5 reconciled); (2) capability VERSIONING — a `v` discriminant added now so B2's
 coarse-identity extension is a clean `v:2` bump (B1 item 1). Nice-to-haves folded: out-of-band capability
 injection + the optional envelope field (item 5), the `check-test-inventory` re-pin (B8).
+
+---
+
+# Slice 1 · Unit B2 (Wave α) — the teardown ops + redaction (the rest of the gated wire)
+
+**Status:** design (2026-08-29, post-recon + **fork DECIDED → compose**, founder sign-off). Builds on the
+SHIPPED Unit B1 (the signed-capability `execute` gate). Scope: the 6 remaining gated ops' **server-side
+mechanism** — the 4 teardown ops + redacted `inspect`/`list` — component-tested (driver↔server), parallel to
+B1. On `v:1`. **4-agent adversarial review applied (§B2.9)** — the gate collapse rule corrected (surface transients,
+fixing a teardown sandbox-leak), exhaustive fail-closed routing, the compose rationale fixed to vacuity,
+redaction/synthesis hardened. **This is the first WAVE** — one design → one review → one §9 → one build session
+covering ~6 ops.
+
+## B2.0 — the resolved fork + the recon findings (2026-08-29, verified against source)
+
+**The CleanupAuthority-coexistence fork RESOLVED → (compose)** (founder sign-off). The recon proved (edit) —
+hash-comparing in `cleanup-authority.ts` — is NOT localizable: the desktop and networked lanes feed
+`#requireOwned` (`cleanup-authority.ts:154-167`) DIFFERENT shapes (desktop: raw `InspectResult.resourceLabels`,
+no hash — `e2b-provider.ts:330-342`; networked: `RedactedResourceProjection` with only a hash). A literal
+`resourceLabelsHash` compare **denies ALL desktop teardown** (`:162` fails → containment breaks), and making it
+clean forces the authoritative port `inspect()` (`provider.ts:352`) to redacted-only — which **collides with
+B1's shipped gate** (deliberately field-wise per R2, `execute-gate.ts:84`) + the conformance adapter
+(`per-op-adapter.ts:216,375`). **(compose)** — the networked lane injects a `CleanupAuthority` variant that
+trusts the authoritative server gate, leaving the shared authority, the port, the desktop lane, and B1 all
+UNTOUCHED. **★ Why the worker-side check is redundant (review R4 — the PRECISE reason, correcting the "different
+shapes" wording above):** under B2's driver `InspectResult` synthesis (B2.2 item 5) the networked lane feeds
+`#requireOwned` a FULL `InspectResult` whose `resourceLabels` the driver built FROM `cap.ownedLabels` — so
+`labelsEqual(detail.resourceLabels, this.#resourceLabels)` tautologically PASSES (own-vs-own), and a genuinely
+foreign id is denied by the SERVER first. The worker-side check is **VACUOUS**, not shape-incompatible. **★
+DEP-011 must build the compose variant as a no-op/trust — NOT a `resourceLabelsHash` compare** (the synthesis
+makes that unnecessary and wrong).
+
+**★ The fork's IMPLEMENTATION is DEP-011's, not B2's.** The coexistence is only *exercised* when the daemon
+composes the networked lane (`CleanupAuthority` is constructed lane-agnostically at `supervisor.ts:528` +
+`startup-reconcile.ts:418`, wrapping `deps.provider`). Wave α is component-level (driver↔server) and never runs
+through the supervisor, so **B2 builds the server-side mechanism; the worker-side variant + its factory seam
+(`deps.makeCleanupAuthority ?? …`, boundary-clean) land in DEP-011** — the same split B1 used for the daemon
+inject.
+
+**★ The reconcile orphan-sweep — a genuine DEP-011 decision, NOT B2's (recon landmine 1).** `reconcile.ts:85` +
+`startup-reconcile.ts:349` call `deps.provider.list()` DIRECTLY (bypassing `CleanupAuthority`) and consume
+`summary.hasLiveLease` + raw labels + `summary.state` — NONE of which `RedactedResourceProjection`
+(`provider.ts:394-400`) carries — then `reconcileCleanup()` across a COARSE scope (multiple jobs/leases) a
+single-`ownedLabels` `v:1` capability cannot authorize. So the networked `list` has TWO incompatible consumer
+shapes (redacted single-resource for CleanupAuthority; raw coarse-summary for reconcile). Neither fork resolves
+it — it is "does the networked worker run its own reconcile, or delegate to a server-side reaper?" **Deferred to
+DEP-011.**
+
+**★ `v:1` is SUFFICIENT for B2 (recon Q2).** `v:1`'s `ownedLabels` already carries the coarse identity
+(`organizationId/targetId/workerId`, `capability.ts:43-49`) the narrow `CleanupAuthority.list` selector needs
+(`cleanup-authority.ts:193-198`), and the fine `labelsEqual` filter (`:203`) derives from the same tuple. `v:2`
+is forced ONLY by coarse-scope enumeration (the reconcile case above) — deferred with it.
+
+## B2.1 — verified terrain (recon 2026-08-29)
+
+- **The 4 teardown ops** (`cancel/kill/destroy/reconcile_cleanup`) each gate through `#requireOwned` then
+  dispatch, returning NON-sensitive results (`cancel/kill`→`StopResult`, `destroy/reconcileCleanup`→`CleanupResult`,
+  `provider.ts:221-229`, `cleanup-authority.ts:218-233`). Over the wire each = B1's `gateExecute` EXACTLY (verify
+  → AM-local `inspect` → collapse-all-throws → field-wise owned-check → dispatch), differing only in the
+  dispatched method — so B2 = **generalize `gateExecute` over the op fn + 4 thin wrappers**.
+- **The redaction** — `#redact` (`cleanup-authority.ts:169-183`) = `{sandboxId, resourceLabelsHash:
+  hashResourceLabels(labels), generation, state, providerOpId}`. The server hosts the provider so it has the
+  full `InspectResult`/`ResourceSummary` AM-local (`e2b-provider.ts:319-343,:300-316`); it redacts server-side
+  exactly as `#redact` (import `hashResourceLabels` from `@armyofagents/worker-daemon`, the B1 pattern). **No new
+  codec path** — `encodeOkResponse` is result-agnostic `JSON.stringify` (`codec.ts:104-106`); a redacted
+  projection serializes with zero new code.
+- **The redacted `CleanupAuthority.inspect` has no production caller** (test-only); **`list`** feeds
+  `escalateCleanup` (`supervisor.ts:262`, uses only `.sandboxId`). (The RAW `provider.inspect` DOES have prod
+  callers — `#requireOwned`, B1's gate — so B2's AM-local-inspect-then-redact plan is already PROVEN in
+  production, review R3.) No production code reads the sensitive `InspectResult` fields — they exist solely to
+  make redaction non-vacuous (`provider.ts:253-258`).
+- **The driver** holds `#capability` (`driver.ts:78`), attaches it via `#post` (`:151-166`, `op` typed
+  `"create"|"execute"` — widen); the 6 methods currently throw `UnsupportedProviderOperation` (`:112-129`).
+- **★ Port-type divergence (recon landmine 5):** `NetworkedProviderDriver implements SandboxProvider`
+  (`driver.ts:67`), but the port's `inspect(): Promise<InspectResult>` / `list(): Promise<ListResult>`
+  (`provider.ts:351-352`) cannot be honored over the redacting wire. B2 must decide how the driver satisfies the
+  port type — see B2.2 item 4.
+
+## B2.2 — what it builds
+
+1. **A generalized owned-op gate** — refactor B1's `gateExecute` into `gateOwnedOp(deps, sandboxId, ctx,
+   capability, dispatch)`: verify capability (fail-closed) → `provider.inspect(sandboxId)` AM-local → **the
+   inspect-catch MIRRORS `#requireOwned` EXACTLY** (`cleanup-authority.ts:158-161`): `SandboxNotFoundError` → the
+   uniform `ResourceNotAvailableError`; **any OTHER inspect fault (transient/non-NotFound) is RETHROWN as its own
+   class, NOT collapsed.** ★ This CORRECTS B1's shipped `execute-gate.ts:78-80` collapse-ALL (review R1): for the
+   IDEMPOTENT teardown ops, collapsing a TRANSIENT to `ResourceNotAvailableError` makes `CleanupAuthority.converge`
+   (`cleanup-authority.ts:300-301`) read it as "vanished → success" and LEAK the sandbox; a transient is
+   existence-orthogonal, so surfacing it distinctly stays oracle-safe. Then the field-wise owned-check —
+   `labelsEqual(detail.resourceLabels, cap.ownedLabels) && detail.generation === cap.ownedLabels.deviceGeneration`
+   (**BOTH** clauses — review R3, matching `cleanup-authority.ts:203` + B1's gate) → `dispatch()` on the allow
+   path. **`dispatch()` stays OUTSIDE the inspect-collapse `try`** — a dispatch-path fault (egress-denied,
+   mid-flight not-found) propagates as ITS OWN class; only the OWNERSHIP decision collapses (review R1 — B1's
+   tests never asserted this; B2.4 adds it). `execute` becomes `gateOwnedOp(…, () => provider.execute(input,ctx))`;
+   the collapse refinement changes execute's transient-inspect behavior (transient → surfaced, not RNA) — verified
+   oracle-safe, no B1 test asserts it.
+2. **The 4 teardown ops on the server** — `cancel/kill/destroy/reconcile_cleanup` via `gateOwnedOp(…, () =>
+   provider.<op>(sandboxId, ctx))` (non-sensitive `StopResult`/`CleanupResult`). **`destroy` is dual-authority**
+   (`EffectAuthority.destroy` happy-path + `CleanupAuthority.destroy` escalation) — uniform server gating is
+   correct (the server can't tell which authority dispatched) and does NOT regress the happy path (review R1: a
+   happy-path destroy is owned exactly when execute is; a refusal at `supervisor.ts:492` safely escalates). The
+   ASYMMETRY — the escalation caller (`cleanup-authority.ts:300`) reads a refusal as success — is handled by item
+   1's surface-transients rule + recorded for DEP-011 (B2.6).
+3. **`inspect` (redacted)** — `gateOwnedOp` owns-checks by fetching the detail; the inspect route RETURNS
+   `redact(that ALREADY-FETCHED detail)` — NEVER `provider.inspect` raw, NEVER the full detail (review R2: a naive
+   `dispatch = () => provider.inspect` leaks on the allow path). **`list` (scoped + redacted)** — a DISTINCT
+   pattern: verify → `provider.list({ownershipSelector: <coarse fields of cap.ownedLabels>})` AM-local → filter
+   **`labelsEqual(r.resourceLabels, cap.ownedLabels) && r.generation === cap.ownedLabels.deviceGeneration`** (BOTH
+   clauses, review R3) → `redact` each → `RedactedResourceProjection[]`. Narrow single-tuple list (own resources
+   only); coarse-scope enumeration is the deferred reconcile/`v:2` case.
+4. **★ EXHAUSTIVE fail-closed routing (review R1+R2 — load-bearing).** On a GATED server (a `controlPlanePublicKey`
+   is pinned) EVERY gate-required op — `execute` + the 4 teardown + `inspect`/`list` — routes THROUGH the gate;
+   there is **NO raw `handler` fallback reachable for any of them.** The current `op === "execute" && gated ? gate
+   : handler` (`server.ts:110-118`) must widen to route ALL gated ops, else a `cancel`/`inspect` on a gated server
+   falls through to a raw handler → ungated dispatch / unredacted `env`+`secrets` over the wire. The 5 NEW ops have
+   **NO Map handler at all** — on an UNGATED (keyless) server they `404` ("operation not available",
+   `server.ts:99-104`), NEVER a raw `provider.inspect`/`list`. Only `execute` keeps its keyless-ungated handler
+   (Unit A back-compat). So `inspect`/`list` can NEVER return raw over the wire, gated or keyless.
+5. **The 6 driver methods + the port-type synthesis.** Implement the 6 (attach capability, POST, deserialize).
+   `inspect`/`list` satisfy the port by SYNTHESIZING a port-shaped result from the caller's OWN labels
+   (`cap.ownedLabels`) + the server's redacted projection: `InspectResult{resourceLabels: cap.ownedLabels, state
+   + generation FROM THE PROJECTION (never invented — review R2), sandboxId, providerOpId, EMPTY sensitive
+   fields}` (F2-clean — own labels only). **`list` → `ResourceSummary[]` must ALSO synthesize `hasLiveLease`**
+   (faithfully `proj.state === "running"`, matching `e2b-provider.ts:308`) + `nextPageToken` — NOT a hardcoded
+   default (review R2/R4): no B2 consumer reads `hasLiveLease` (`escalateCleanup` uses only `.sandboxId`), but a
+   fabricated value would mislead DEP-011's reconcile consumer — recorded in B2.6.
+6. **The component test** (runs on a GATED server, like B1's gate tests) — for all 6 ops: OWNED → dispatch + the
+   right result; FOREIGN → uniform error, NOT dispatched (spy); MISSING capability → refused (fail-closed);
+   **`inspect`/`list` wire bytes carry NO raw labels / sensitive fields** (assert the serialized bytes); `list`
+   returns only the caller's own resources (a mixed-owner mock); **★ an ALLOW-PATH dispatch fault** (owned-check
+   passes, then `provider.<op>` throws egress-denied/transient) → the ORIGINAL class crosses, NOT the uniform
+   error (review R1); a **transient INSPECT fault** → surfaced distinctly, NOT collapsed; and on an UNGATED server
+   the 5 new ops `404`.
+
+## B2.3 — where things live + the cross-lane rule
+
+- All new code is `adapter-manager` (the gate generalization + the 6 op handlers + the redaction helper) +
+  `provider-wire` (the 6 driver methods + widen `#post`). **`cleanup-authority.ts` + worker-daemon + the port
+  UNTOUCHED** (the compose fork keeps them so; assert in the result, as B1). The redaction imports
+  `hashResourceLabels` from `@armyofagents/worker-daemon` (already exported, the B1 pattern).
+- The **coexistence direction is (compose)** — RECORDED here; the worker-side variant + the `deps.makeCleanupAuthority`
+  factory seam are **DEP-011** (where the networked lane is composed). B2 does not touch the supervisor.
+- Capability stays **`v:1`** (out-of-band injection on the driver, per B1; now attached to all 6 gated ops).
+
+## B2.4 — TDD (fail-first; the wave builds ~6 ops in one session)
+
+1. Refactor `gateExecute` → `gateOwnedOp`; **the inspect-catch mirrors `#requireOwned` (`SandboxNotFoundError` →
+   uniform; RETHROW others)** + `dispatch()` OUTSIDE the collapse-try (RED: refactor); re-run B1's gate tests GREEN.
+2. Each teardown op — own-sandbox dispatch (RED per op) → wire through `gateOwnedOp`.
+3. Each teardown op — foreign-sandbox → uniform error, NOT dispatched (spy) + missing-capability refused (RED).
+4. **★ Allow-path dispatch fault** (execute + each teardown): owned-check passes, then `provider.<op>` throws
+   egress-denied/transient → the ORIGINAL class crosses, NOT the uniform error (RED — B1 never tested this).
+5. **★ Transient INSPECT fault** → surfaced distinctly (not collapsed), so a teardown converge would retry (RED).
+   (Needs the mock to direct a non-NotFound inspect fault — confirm reachable in Step 0.)
+6. `inspect` — owned → redact the ALREADY-FETCHED detail; the wire bytes carry no raw labels / sensitive fields (RED).
+7. `list` — scoped query with BOTH filter clauses → only the caller's own resources, each redacted; foreign
+   resources excluded (mixed-owner mock) (RED).
+8. Driver — the 6 methods over the wire; `inspect`/`list` return the port-satisfying synthesized shape (`state` +
+   `generation` FROM the projection; `hasLiveLease = state==="running"`) (RED).
+9. **★ Exhaustive routing** — GATED server + a teardown/inspect/list request with NO capability → uniform refusal,
+   NOT dispatched; UNGATED server + the 5 new ops → `404` (never raw); `execute` keeps its keyless handler (RED).
+10. Mutation sweep — the gate's clauses (the `SandboxNotFoundError`-vs-rethrow arm, BOTH owned-check clauses, the
+    capability-required guard, the redaction — assert no sensitive field survives) → a test kills each.
+
+## B2.5 — fences (what it is NOT)
+
+- **The worker-side coexistence IMPLEMENTATION is DEP-011** — B2 records the (compose) direction; it does NOT
+  build the `makeCleanupAuthority` seam or the networked variant, and does NOT touch `supervisor.ts` /
+  `startup-reconcile.ts` / `cleanup-authority.ts`.
+- **The reconcile orphan-sweep coexistence is DEP-011** (does the networked worker reconcile, or a server-side
+  reaper?) — B2's `list` is the NARROW single-tuple list only; coarse-scope enumeration is deferred.
+- **`v:2` is deferred** — `v:1` suffices for B2; `v:2` ships with the coarse-scope/reconcile case.
+- **No real E2B** (MockE2bTransport, Slice 3), **no mTLS/deploy** (Slice 5), **no real mint** (DEP-011/deploy),
+  **NOT through the daemon** (component-level), **no TOCTOU fix** (Slice 3, stated by B1).
+
+## B2.6 — what DEP-011 inherits from B2 (the recorded decisions)
+
+- Coexistence = **(compose)**: inject a networked `CleanupAuthority` variant (worker-side `#requireOwned` a no-op
+  trusting the server gate) via a new `deps.makeCleanupAuthority` factory seam at `supervisor.ts:528` +
+  `startup-reconcile.ts:418` (boundary-clean).
+- The reconcile orphan-sweep shape (networked-worker reconcile vs server-side reaper) + `v:2` coarse-scope
+  capability — DEP-011's call. **★ Over the networked gate `reconcile_cleanup` INVERTS its idempotent semantics
+  (review R1):** in-process an already-gone teardown returns `CleanupResult{cleanupStatus}` (never throws,
+  `e2b-provider.ts:282-295`), but the gate turns an already-gone id into a thrown `ResourceNotAvailableError`,
+  and `reconcile.ts:93`'s un-guarded direct call would ABORT the whole sweep on such a throw. DEP-011's reconcile
+  design must guard the direct calls and must NOT read a redacted `list`'s synthesized `hasLiveLease` (`=
+  state==="running"`, review R2 — fabricated; no B2 consumer reads it, a reconcile consumer would) as
+  authoritative.
+- **★ The teardown escalation asymmetry (review R1):** the happy-path `destroy` caller (`supervisor.ts:509`)
+  safely escalates on a gate refusal, but `CleanupAuthority.converge` (`cleanup-authority.ts:300`) reads the same
+  refusal as "vanished → success". B2's item-1 rule (surface transients; only genuine not-found/mismatch →
+  uniform) keeps this correct at the SERVER; DEP-011's compose variant must not re-introduce a
+  refusal-means-success collapse.
+- The driver's port-satisfying synthesized `inspect`/`list` (B2.2 item 5) is what the compose variant consumes —
+  built as a **no-op/trust** (NOT a `resourceLabelsHash` compare — the synthesis makes that wrong, B2.0).
+
+## B2.7 — guards (run the WHOLE set)
+
+- No new package (both already registered from Unit A). The five registers + `check-worker-daemon-boundary`
+  (UNTOUCHED — assert; the redaction only IMPORTS `hashResourceLabels`) + `check-sandbox-e2b-provider-boundary` +
+  `check-test-inventory` (NEW test files → `--write` re-pin; no over-reach) + `check-boot-roots-provider-free`.
+  NOT `check-image-deps-stages` / `dockerfile-static` (no image). No new `vitest.config.ts` `projects[]` / root
+  `Dockerfile` COPY (no new package).
+
+## B2.8 — open questions for the 3-agent adversarial review
+
+1. **The generalized gate** — does `gateOwnedOp` byte-preserve B1's `execute` behavior (re-run B1's gate tests)?
+   Any op where the AM-local inspect + field-wise owned-check is NOT the right gate (esp. `destroy`'s dual
+   authority, `reconcile_cleanup`'s direct-provider callers)?
+2. **The redaction airtightness** — does the server-side redact EVER let a raw label / sensitive field cross
+   (inspect AND list)? Assert the serialized wire bytes. Does `list`'s filter correctly exclude foreign
+   resources (a mock with mixed-owner sandboxes)?
+3. **The port-type synthesis** — is reconstructing `InspectResult` from `cap.ownedLabels` + the redacted
+   projection F2-clean AND port-correct? Does it ever fabricate a wrong `state`/`generation` (must come from the
+   server's projection, not the capability)?
+4. **`v:1` sufficiency** — is the narrow single-tuple `list` genuinely enough for B2's surface, or does any
+   B2-scoped caller need the coarse-scope enumeration that forces `v:2`?
+5. **Fail-closed parity** — do all 6 gated ops refuse on a missing/invalid capability exactly like execute (the
+   R2 fall-open), and does the keyless-server ungated posture (Unit A) still hold for the new ops?
+6. **Guards** — does generalizing `execute-gate.ts` + adding the ops trip any register, and does the
+   `check-test-inventory` re-pin stay within the two packages?
+
+## B2.9 — Review round — 4-agent adversarial pass (2026-08-29), all verified against source
+
+**R1 — gate/ops (the load-bearing catch).** B1's collapse-ALL-inspect-throws, carried onto the IDEMPOTENT
+teardown ops, is LEAK-MASKING: a transient inspect fault → uniform `ResourceNotAvailableError` →
+`CleanupAuthority.converge` reads "vanished → success" → the sandbox LEAKS. Fix (applied, B2.2 item 1): make
+`gateOwnedOp` a FAITHFUL `#requireOwned` mirror — `SandboxNotFoundError` → uniform; RETHROW transients
+(existence-orthogonal, oracle-safe) so converge retries. Also: `dispatch()` outside the collapse-try + an
+allow-path dispatch-error test (B1 never tested it). REFUTED: the happy-path `destroy` refusal (uniform gating is
+correct; a refusal safely escalates) + reconcile-as-a-B2-blocker; the escalation asymmetry is recorded for
+DEP-011 (B2.6).
+
+**R2 — redaction/leak.** The gated boundary is provably safe (the projection is an explicit 5-field literal, not
+a spread; the `list` filter excludes foreign resources; the port-type synthesis can't fabricate a wrong
+`state`/`generation` — provably equal on the allow path). PRIMARY catch: the keyless-posture redaction bypass —
+if `inspect`/`list` follow B1's keyless-ungated pattern they return raw `env`/`secrets`. Fix (applied, B2.2 item
+4): the 5 new ops are GATED-ONLY (no raw handler; keyless → 404). Plus: redact the ALREADY-FETCHED detail;
+synthesize `list`'s `hasLiveLease = state==="running"` (B2.6 inheritance); the generation clause in the filter.
+
+**R3 — terrain.** 8/8 claims confirmed. Applied: the `list`/gate carry BOTH `labelsEqual` + the generation clause
+(matching `cleanup-authority.ts:203` + B1); the "inspect has no prod caller" wording clarified (it's the redacted
+`CleanupAuthority.inspect`; the raw `provider.inspect` is prod-proven).
+
+**R4 — scope/wave-sizing.** Deferrals confirmed (component-level; the reconcile-sweep is F2-FORCED; `v:1`
+sufficient). **Wave right-sized — keep unified** (B2's net-new security surface is smaller than B1's). Fix
+(applied, B2.0): the compose rationale was wrong — the worker-side check is VACUOUS under the driver synthesis,
+not shape-incompatible; DEP-011 must build the compose variant as no-op/trust, not a hash-compare.
