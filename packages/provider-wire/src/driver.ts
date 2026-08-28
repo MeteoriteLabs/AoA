@@ -38,16 +38,20 @@ import type {
   ListResult,
   ProviderOperation,
   ProviderOpContext,
+  RedactedResourceProjection,
+  ResourceLabels,
+  ResourceSummary,
   RestoreResult,
   SandboxProvider,
   StopResult,
 } from "@armyofagents/worker-daemon";
 import type { ArtifactUploadGrantV1 } from "@armyofagents/worker-protocol";
 import { CORE_PROVIDER_OPERATIONS } from "@armyofagents/worker-protocol";
-import { UnsupportedProviderOperation } from "@armyofagents/sandbox-e2b-provider/errors.js";
+import { ResourceNotAvailableError, UnsupportedProviderOperation } from "@armyofagents/sandbox-e2b-provider/errors.js";
 
 import { decodeOpResponse, encodeOpRequest } from "./codec.js";
 import type { OwnedLabelsCapability } from "./capability.js";
+import type { RedactedListResult } from "./projection.js";
 
 export interface NetworkedProviderDriverOptions {
   /** The adapter-manager base URL, e.g. `http://adapter-manager:PORT`. */
@@ -107,26 +111,46 @@ export class NetworkedProviderDriver implements SandboxProvider {
     return this.#post<ExecuteResult>("execute", input, ctx, this.#capability);
   }
 
-  // --- not built until Unit B (the ownership gate + the six gate-required ops) ------
+  // --- the gate-required teardown ops (DEP-012 Unit B2) -----------------------------
+  // Each attaches the owned-labels capability and POSTs; the server verifies + owned-checks
+  // + dispatches (or refuses with the uniform ResourceNotAvailableError). The results
+  // (StopResult/CleanupResult) are NON-sensitive, so they cross byte-identically.
 
-  async cancel(_sandboxId: string, _ctx: ProviderOpContext): Promise<StopResult> {
-    throw new UnsupportedProviderOperation("cancel");
+  async cancel(sandboxId: string, ctx: ProviderOpContext): Promise<StopResult> {
+    return this.#post<StopResult>("cancel", sandboxId, ctx, this.#capability);
   }
-  async kill(_sandboxId: string, _ctx: ProviderOpContext): Promise<StopResult> {
-    throw new UnsupportedProviderOperation("kill");
+  async kill(sandboxId: string, ctx: ProviderOpContext): Promise<StopResult> {
+    return this.#post<StopResult>("kill", sandboxId, ctx, this.#capability);
   }
-  async destroy(_sandboxId: string, _ctx: ProviderOpContext): Promise<CleanupResult> {
-    throw new UnsupportedProviderOperation("destroy");
+  async destroy(sandboxId: string, ctx: ProviderOpContext): Promise<CleanupResult> {
+    return this.#post<CleanupResult>("destroy", sandboxId, ctx, this.#capability);
   }
-  async list(_input: ListInput, _ctx: ProviderOpContext): Promise<ListResult> {
-    throw new UnsupportedProviderOperation("list");
+  async reconcileCleanup(sandboxId: string, ctx: ProviderOpContext): Promise<CleanupResult> {
+    return this.#post<CleanupResult>("reconcile_cleanup", sandboxId, ctx, this.#capability);
   }
-  async inspect(_sandboxId: string, _ctx: ProviderOpContext): Promise<InspectResult> {
-    throw new UnsupportedProviderOperation("inspect");
+
+  // --- the gate-required redacted reads (DEP-012 Unit B2) ----------------------------
+  // The wire carries a REDACTED projection ONLY (hashed labels, no env/secrets/command).
+  // The port demands the full InspectResult / ResourceSummary, so the driver SYNTHESIZES a
+  // port-shaped result from the caller's OWN labels (cap.ownedLabels — provably equal to
+  // the target on the allow path) + the server's projection: resourceLabels from the
+  // capability (F2-clean — own labels only), state + generation FROM THE PROJECTION (never
+  // invented), and EMPTY sensitive fields. The redacting wire can honor the port no other way.
+
+  async inspect(sandboxId: string, ctx: ProviderOpContext): Promise<InspectResult> {
+    const projection = await this.#post<RedactedResourceProjection>("inspect", sandboxId, ctx, this.#capability);
+    return this.#synthesizeInspect(projection);
   }
-  async reconcileCleanup(_sandboxId: string, _ctx: ProviderOpContext): Promise<CleanupResult> {
-    throw new UnsupportedProviderOperation("reconcile_cleanup");
+
+  async list(input: ListInput, ctx: ProviderOpContext): Promise<ListResult> {
+    const redacted = await this.#post<RedactedListResult>("list", input, ctx, this.#capability);
+    return {
+      providerOpId: redacted.providerOpId,
+      resources: redacted.resources.map((p) => this.#synthesizeSummary(p)),
+      nextPageToken: redacted.nextPageToken,
+    };
   }
+
   async checkpoint(_sandboxId: string, _ctx: ProviderOpContext): Promise<CheckpointResult> {
     throw new UnsupportedProviderOperation("checkpoint");
   }
@@ -149,7 +173,7 @@ export class NetworkedProviderDriver implements SandboxProvider {
   }
 
   async #post<R>(
-    op: "create" | "execute",
+    op: ProviderOperation,
     args: unknown,
     ctx: ProviderOpContext,
     capability?: OwnedLabelsCapability,
@@ -163,5 +187,46 @@ export class NetworkedProviderDriver implements SandboxProvider {
     // non-JSON / non-envelope body (e.g. a bare 500) surfaces as a WireProtocolError,
     // never as a silent success.
     return decodeOpResponse<R>(await res.text());
+  }
+
+  /** The caller's OWN labels, or a fail-closed refusal. Only reached AFTER a successful
+   * decode of a gated read — the server refuses (and #post throws) when no capability is
+   * carried — so `#capability` is defined here; the guard is defense-in-depth. */
+  #ownedLabels(): ResourceLabels {
+    if (this.#capability === undefined) throw new ResourceNotAvailableError();
+    return this.#capability.ownedLabels;
+  }
+
+  /** Reconstruct the port's InspectResult from own labels + the redacted projection.
+   * F2-clean: own labels only; state/generation FROM the projection; sensitive fields EMPTY. */
+  #synthesizeInspect(projection: RedactedResourceProjection): InspectResult {
+    return {
+      providerOpId: projection.providerOpId,
+      sandboxId: projection.sandboxId,
+      resourceLabels: this.#ownedLabels(),
+      generation: projection.generation,
+      state: projection.state,
+      command: "",
+      env: {},
+      logs: [],
+      workspaceBytes: 0,
+      objectGrants: [],
+      secrets: {},
+    };
+  }
+
+  /** Reconstruct a port ResourceSummary from own labels + a redacted row. `hasLiveLease`
+   * is SYNTHESIZED faithfully (`state === "running"`, matching e2b-provider.ts:308) — never
+   * a hardcoded default; no B2 consumer reads it, but a DEP-011 reconcile consumer would.
+   * `nextPageToken` (on the ListResult) is whatever the server sent — null for B2's narrow
+   * list (the server exposes no cursor; skeptic F1) — passed through, never invented here. */
+  #synthesizeSummary(projection: RedactedResourceProjection): ResourceSummary {
+    return {
+      sandboxId: projection.sandboxId,
+      resourceLabels: this.#ownedLabels(),
+      generation: projection.generation,
+      state: projection.state,
+      hasLiveLease: projection.state === "running",
+    };
   }
 }

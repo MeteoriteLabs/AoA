@@ -85,11 +85,21 @@ guards/residuals.
   closes the **cross-tenant code-execution** hole Unit A left open; 33 new tests / 11 clauses mutation-killed;
   worker-daemon + `cleanup-authority.ts` untouched; 4-reviewer+skeptic pass found one LOW fail-closed gap
   [non-finite `expiresAt`], fixed —
-  [`DEP-012-unit-b1-result.md`](./epics/E6-deployment-test-harness/tickets/DEP-012-unit-b1-result.md)).
-  **Still unbuilt:** DEP-012 **Unit B2** (the teardown ops `cancel/kill/destroy/reconcile` gated +
-  `inspect`/`list` redaction to `RedactedResourceProjection`), the real **control-plane keypair + mint**
-  (DEP-011/deploy), and **DEP-011**'s through-the-daemon composition seam, then Slices 3–5 (real E2B,
-  credential crossing, conformance, deploy). WRK-015's Part 2 (a CI-exercised d1 first-enrol proof) **SPLIT to
+  [`DEP-012-unit-b1-result.md`](./epics/E6-deployment-test-harness/tickets/DEP-012-unit-b1-result.md)) →
+  **Unit B2 ✅ SHIPPED** (the **rest of the gated wire** — the 4 teardown ops
+  `cancel/kill/destroy/reconcile_cleanup` gated + `inspect`/`list` redacted to `RedactedResourceProjection`
+  server-side, so **NO** raw `InspectResult`/env/secrets ever crosses; B1's `gateExecute` generalized to
+  `gateOwnedOp`, its inspect-catch now a FAITHFUL `#requireOwned` mirror [transients SURFACED, not collapsed —
+  correcting a teardown sandbox-leak]; EXHAUSTIVE fail-closed routing [the 5 new ops 404 on a keyless server,
+  never raw]; the driver's port-satisfying `inspect`/`list` synthesis; on `v:1`; 29 new tests / 12 clauses
+  mutation-killed; worker-daemon + `cleanup-authority.ts` + supervisor untouched; 4-reviewer+skeptic pass found
+  one LOW cross-tenant `nextPageToken` cursor leak, fixed [`list` now exposes no cursor, mirroring
+  `CleanupAuthority.list`] —
+  [`DEP-012-unit-b2-result.md`](./epics/E6-deployment-test-harness/tickets/DEP-012-unit-b2-result.md)).
+  **Still unbuilt:** the real **control-plane keypair + mint** (DEP-011/deploy), and **DEP-011**'s
+  through-the-daemon composition seam (incl. the `(compose)` no-op/trust `CleanupAuthority` variant + the
+  reconcile idempotent-inversion guard B2 recorded), then Slices 3–5 (real E2B, credential crossing,
+  conformance, deploy). WRK-015's Part 2 (a CI-exercised d1 first-enrol proof) **SPLIT to
   WRK-017** at its own Step-0 gate — the d1 harness has NO worker-enrol flow and adding one is large
   (platform-scope seed + ticket-file delivery + a multi-phase bring-up; see WRK-015-result.md); WRK-017 is
   NOT on the E7-1 critical path (the campaign enrols one worker at campaign time). The mechanism links
@@ -130,10 +140,13 @@ Reconciled verdicts, each cited to source in that doc:
   ticket **WRK-015 ✅ SHIPPED** (the validator is now platform-aware; the d1 first-enrol proof split to
   WRK-017); **3.7 provider transport** (`adapter-manager` declared in the staging compose, no build produces
   it) → new server ticket **DEP-012**, with **DEP-011** (the worker→provider wire, E6-F003) repointed onto it.
-  **DEP-012 Slice 1 is now PLUMBING + the security gate: Unit A ✅ (create+execute wire) + Unit B1 ✅
-  (`execute`'s signed-capability server-side ownership gate — cross-tenant exec closed over the wire).**
-  Remaining on 3.7: Unit B2 (teardown + redaction) + the real control-plane mint + DEP-011's daemon seam +
-  Slices 3–5 (real E2B, credential crossing, deploy) — still unbuilt.
+  **DEP-012 Slice 1 is now PLUMBING + the FULL gated wire: Unit A ✅ (create+execute wire) + Unit B1 ✅
+  (`execute`'s signed-capability server-side ownership gate — cross-tenant exec closed) + Unit B2 ✅ (the 4
+  teardown ops gated + `inspect`/`list` redacted server-side — the gated wire is COMPLETE; no raw
+  `InspectResult`/env/secrets crosses, exhaustive fail-closed routing).**
+  Remaining on 3.7: the real control-plane mint + DEP-011's daemon seam (incl. the `(compose)` no-op/trust
+  `CleanupAuthority` variant + the reconcile guard B2 recorded) + Slices 3–5 (real E2B, credential crossing,
+  deploy) — still unbuilt.
 
 So **TIER 0 is buildable code — WRK-014 + WRK-015 + DEP-012/DEP-011 — then the operator deploy**, not a
 mostly-unowned multi-link programme. The mechanism (session/hello/self-model/loop) is built and waiting.
@@ -150,8 +163,9 @@ get their first REAL exercise = Sprint 5 / E7-1 on real E2B → C0 deploy → ca
 1. **★ TIER 0 (session/code — the current build front):** **WRK-014 container identity (the hard gate) —
    ✅ BUILT-INERT** (the `file_record` custody mode + `FileRecordStore` + container host, shipped unwired;
    CMD/compose untouched) → **WRK-015 POSIX input ✅ SHIPPED** (the platform-aware validator; the d1
-   first-enrol proof split to **WRK-017**, off the critical path) → **DEP-012 adapter-manager + DEP-011 wire
-   (the one TIER-0 link still unbuilt).** The provider-topology contract is
+   first-enrol proof split to **WRK-017**, off the critical path) → **DEP-012 adapter-manager: Slice 1 Units
+   A + B1 + B2 ✅ SHIPPED (the FULL server-side gated wire — create/execute/teardown/inspect/list); the real
+   control-plane mint + DEP-011 daemon seam + Slices 3–5 remain.** The provider-topology contract is
    settled (`qa/2026-08-28-adapter-manager-scope.md` §8, credential=(i)); the mechanism links
    (session/hello/self-model/loop) are already built + composed behind the default-off flag and get their
    first REAL exercise at E7-1.
@@ -187,7 +201,7 @@ Register-sourced (`gate-clause-wiring.json` + `finding-ownership.json`), reconci
 flowchart TD
   V["evidence-verifier A ✅ BUILT<br/>acceptance harness · SESS"]:::done
   C0["staging-deploy pipeline<br/>deploy docker-compose.staging.yml<br/>OP · unticketed · downstream of Tier 0"]:::op
-  D11["★ TIER 0 — WRK-014 ✅ · WRK-015 ✅ · DEP-012 Unit A ✅ + Unit B1 ✅ (wire + execute gate) · Unit B2 + Slices 3–5 + DEP-011 wire (remaining)<br/>SESS/CODE · gates the fleet (mechanism links 3.3–3.6 already owned)"]:::sess
+  D11["★ TIER 0 — WRK-014 ✅ · WRK-015 ✅ · DEP-012 Unit A ✅ + Unit B1 ✅ + Unit B2 ✅ (the FULL gated wire) · real mint + Slices 3–5 + DEP-011 wire (remaining)<br/>SESS/CODE · gates the fleet (mechanism links 3.3–3.6 already owned)"]:::sess
   C2["fleet deployed + armed<br/>E2B key · canary · cap&gt;1 · enrolled worker<br/>OP"]:::op
   C3["E7-1 campaign — 1 real-E2B run<br/>OP dispatches"]:::op
   CW["E7-1 = wired ✅"]:::done
@@ -224,7 +238,7 @@ flowchart TD
 |------|------|------|-----------|------|
 | **Frontier (buildable now)** | ~~Evidence-verifier A — the E7-1 acceptance harness~~ ✅ **BUILT** (`pnpm verify:e7-1-distributed-run`; flips no gate) | `SESS` | — | done |
 | | E6-F005 · E6-F007 · E4-F014 — doc-only closures | `SESS` | — | XS |
-| **★ Critical path — Tier 0 (session/code, the build front)** | WRK-014 **✅ BUILT-INERT** → WRK-015 **✅ SHIPPED** (d1 proof → WRK-017, off-path) → DEP-012 adapter-manager **Slice 1 Unit A ✅ (create/execute wire) + Unit B1 ✅ (signed-capability execute gate)** → **Unit B2** (teardown + redaction) + Slices 3–5 (real provider / credential / deploy) + **DEP-011** wire (E6-F003) — the remaining Tier-0 code; contract settled (scope §8) | `SESS` | — | L |
+| **★ Critical path — Tier 0 (session/code, the build front)** | WRK-014 **✅ BUILT-INERT** → WRK-015 **✅ SHIPPED** (d1 proof → WRK-017, off-path) → DEP-012 adapter-manager **Slice 1 Unit A ✅ (create/execute wire) + Unit B1 ✅ (signed-capability execute gate) + Unit B2 ✅ (teardown + `inspect`/`list` redaction — the FULL gated wire)** → real control-plane mint + Slices 3–5 (real provider / credential / deploy) + **DEP-011** wire (E6-F003) — the remaining Tier-0 code; contract settled (scope §8) | `SESS` | — | L |
 | | **C0 · staging-deploy pipeline** (deploy the staging compose) | `OP` | Tier 0 | **L** |
 | | C2 · fleet deployed + armed (E2B key, canary, cap>1, worker) | `OP` | C0 | M |
 | | C3 · E7-1 campaign — one real-E2B distributed run → **E7-1 wired** | `OP` | C2 | S |

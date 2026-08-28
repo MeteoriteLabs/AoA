@@ -189,8 +189,12 @@ describe("execute gate — the oracle collapse (byte-identical refusals)", () =>
     expect(foreignBody).toBe(UNIFORM_ERR_BODY);
   });
 
-  it("a NON-NotFound inspect fault ALSO collapses to the uniform error (all inspect throws collapse)", async () => {
-    // A provider whose inspect throws a generic (non-SandboxNotFound) fault for one id.
+  it("a NON-NotFound inspect fault is SURFACED distinctly, NOT collapsed to the uniform error (B2 correction)", async () => {
+    // ★ B2 CORRECTS B1's collapse-ALL: gateOwnedOp mirrors #requireOwned EXACTLY —
+    // SandboxNotFoundError -> uniform, but any OTHER (transient) inspect fault is RETHROWN
+    // as its own class. A transient is existence-orthogonal (oracle-safe), and collapsing
+    // it would let the idempotent teardown converge read "vanished -> success" and LEAK the
+    // sandbox. So the fault must NOT be byte-identical to the ownership refusal.
     class InspectFaultProvider extends E2bSandboxProvider {
       override async inspect(sandboxId: string, ctx: ProviderOpContext): ReturnType<E2bSandboxProvider["inspect"]> {
         if (sandboxId === "sbx-fault") throw new Error("transport blew up");
@@ -210,8 +214,13 @@ describe("execute gate — the oracle collapse (byte-identical refusals)", () =>
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ args: { sandboxId: "sbx-fault", command: "x", args: [], env: {} }, ctx: ctx(), capability: mint() }),
       });
-      // Byte-identical to every other ownership refusal (the fourth collapse arm).
-      expect(await res.text()).toBe(UNIFORM_ERR_BODY);
+      const text = await res.text();
+      // Surfaced distinctly — the transient is NOT the uniform ownership refusal.
+      expect(text).not.toBe(UNIFORM_ERR_BODY);
+      // It crosses as its own (non-RNA) class — the original error name, never a spurious ok.
+      const parsed = JSON.parse(text) as { err?: { name?: string }; ok?: unknown };
+      expect(parsed.ok).toBeUndefined();
+      expect(parsed.err?.name).toBe("Error");
     } finally {
       await new Promise<void>((resolve, reject) => faultServer.close((err) => (err ? reject(err) : resolve())));
     }
