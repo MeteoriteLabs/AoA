@@ -90,11 +90,16 @@ guards/residuals.
 **★ CORRECTION (2026-08-28, C0 adversarial review — verified against source):** the frontier is **NOT
 dry** and E7-1 is **NOT one operator act away.** The staging fleet **cannot execute a canary run even when
 deployed** — its provider broker `adapter-manager` has **zero implementation** (a manifest fiction: no
-code/image/Dockerfile) and the containerized worker→provider wire **E6-F003/DEP-011 is unbuilt**. So a
-**TIER 0 of unbuilt CODE** (build adapter-manager + ship DEP-011) sits ABOVE the deploy. The "operator +
-Lane B" framing below is superseded on this point. Real order: **[Tier 0: adapter-manager + DEP-011 —
-session/code] → [C0: deploy — operator] → [campaign] → [verify A].** Full analysis:
-`qa/2026-08-28-c0-staging-deploy-scope.md` §0.
+code/image/Dockerfile) and the containerized worker→provider wire **E6-F003/DEP-011 is unbuilt**. And it
+is bigger than that: the adapter-manager review surfaced **`WAVE-4-RESEQUENCE.md`**, which already mapped
+the live-worker-dispatch chain E7-1 needs as **SEVEN links, FOUR unowned** (container identity, session
+acquisition, POSIX enrolment input, a matchable hello) — adapter-manager (the provider transport) is only
+one. So **TIER 0 is a multi-link, mostly-unowned programme, not two tickets.** WAVE-4-RESEQUENCE's own
+order (still right): **(0) fix the tracking + reconcile the chain → (1) provider-topology decision + the
+adapter-manager contract [DONE — `qa/2026-08-28-adapter-manager-scope.md`, credential=(i)] → (2) container
+identity → (3) session + POSIX input → (4) matchable hello → (5) self-model + start seam → adapter-manager
+BUILD → C0 deploy → campaign → verify A.** The "operator + Lane B / one operator act" framing below is
+superseded. Full analysis: `qa/2026-08-28-c0-staging-deploy-scope.md` §0 + `…adapter-manager-scope.md` §9.
 
 **Forward timeline (updated 2026-08-28):**
 1. **★ THE KEYSTONE UNLOCK — operator, highest leverage: deploy the staging fleet → run the E7-1
