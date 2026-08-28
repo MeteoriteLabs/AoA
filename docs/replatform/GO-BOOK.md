@@ -187,7 +187,7 @@ Register-sourced (`gate-clause-wiring.json` + `finding-ownership.json`), reconci
 flowchart TD
   V["evidence-verifier A ✅ BUILT<br/>acceptance harness · SESS"]:::done
   C0["staging-deploy pipeline<br/>deploy docker-compose.staging.yml<br/>OP · unticketed · downstream of Tier 0"]:::op
-  D11["★ TIER 0 — WRK-014 identity ✅ BUILT-INERT · WRK-015 POSIX ✅ SHIPPED · adapter-manager DEP-012 + DEP-011 wire (last unbuilt)<br/>SESS/CODE · gates the fleet (mechanism links 3.3–3.6 already owned)"]:::sess
+  D11["★ TIER 0 — WRK-014 ✅ · WRK-015 ✅ · DEP-012 Unit A ✅ + Unit B1 ✅ (wire + execute gate) · Unit B2 + Slices 3–5 + DEP-011 wire (remaining)<br/>SESS/CODE · gates the fleet (mechanism links 3.3–3.6 already owned)"]:::sess
   C2["fleet deployed + armed<br/>E2B key · canary · cap&gt;1 · enrolled worker<br/>OP"]:::op
   C3["E7-1 campaign — 1 real-E2B run<br/>OP dispatches"]:::op
   CW["E7-1 = wired ✅"]:::done
@@ -224,7 +224,7 @@ flowchart TD
 |------|------|------|-----------|------|
 | **Frontier (buildable now)** | ~~Evidence-verifier A — the E7-1 acceptance harness~~ ✅ **BUILT** (`pnpm verify:e7-1-distributed-run`; flips no gate) | `SESS` | — | done |
 | | E6-F005 · E6-F007 · E4-F014 — doc-only closures | `SESS` | — | XS |
-| **★ Critical path — Tier 0 (session/code, the build front)** | WRK-014 container identity (the hard gate) **✅ BUILT-INERT** → WRK-015 POSIX enrolment input **✅ SHIPPED** (d1 first-enrol proof → WRK-017, off the critical path) → adapter-manager server DEP-012 + DEP-011 worker→provider wire (E6-F003) — the one Tier-0 link still unbuilt; contract settled (scope §8) | `SESS` | — | L |
+| **★ Critical path — Tier 0 (session/code, the build front)** | WRK-014 **✅ BUILT-INERT** → WRK-015 **✅ SHIPPED** (d1 proof → WRK-017, off-path) → DEP-012 adapter-manager **Slice 1 Unit A ✅ (create/execute wire) + Unit B1 ✅ (signed-capability execute gate)** → **Unit B2** (teardown + redaction) + Slices 3–5 (real provider / credential / deploy) + **DEP-011** wire (E6-F003) — the remaining Tier-0 code; contract settled (scope §8) | `SESS` | — | L |
 | | **C0 · staging-deploy pipeline** (deploy the staging compose) | `OP` | Tier 0 | **L** |
 | | C2 · fleet deployed + armed (E2B key, canary, cap>1, worker) | `OP` | C0 | M |
 | | C3 · E7-1 campaign — one real-E2B distributed run → **E7-1 wired** | `OP` | C2 | S |
@@ -241,20 +241,23 @@ flowchart TD
 | | WRK-013 durable lease-candidate + startup reconciler (E4-F009 → unblocks E5-3) | `SESS` | — | M |
 | | E3-18 revocation-fanout consumer | `SESS` | dispatch-live | M |
 
-**The one thing to see:** the mechanism is built; the campaign is gated on **Tier 0** (WRK-014 ✅ BUILT-INERT
-→ WRK-015 ✅ SHIPPED → DEP-012/DEP-011 — the one remaining unbuilt session/code link), then the operator deploy (C0), then the
-run. Everything downstream (**C4–C8**: bridges, sinks, drain, close) is dammed behind **E7-1 wired**.
+**The one thing to see:** the mechanism is built; the campaign is gated on **Tier 0** (WRK-014 ✅ + WRK-015 ✅
++ DEP-012 Unit A ✅ + Unit B1 ✅ → the remaining DEP-012 Unit B2 + Slices 3–5 + DEP-011 wire), then the operator
+deploy (C0), then the run. Everything downstream (**C4–C8**: bridges, sinks, drain, close) is dammed behind
+**E7-1 wired**.
 
-- **Session, now** — continue **Tier 0**: **WRK-014 ✅ BUILT-INERT** (the hard gate — the `file_record`
-  custody mode + `FileRecordStore` + container host, shipped unwired) and **WRK-015 ✅ SHIPPED** (the POSIX
-  enrolment-input validator — the container-path crash-loop hazard is gone; a real container can present a
-  `/worker/...` ticket path). The remaining Tier-0 code link is **DEP-012/DEP-011**. The CI-exercised d1
-  first-enrol proof is **WRK-017** (WRK-015 Part 2 split; a compose `command:` override, not a CMD repoint),
-  off the critical path. **evidence-verifier A is already BUILT** and waiting to bless the first run. Cheap
-  fill: the doc closures (E6-F005 / E6-F007 /
-  E4-F014).
+- **Session, now** — **Tier 0** is deep in: **WRK-014 ✅** (container identity — `file_record` custody +
+  `FileRecordStore` + container host) + **WRK-015 ✅** (POSIX enrolment input) + **DEP-012 Slice 1 Unit A ✅**
+  (the create/execute wire plumbing — `provider-wire` + `adapter-manager`, over the key-less mock) + **Unit B1
+  ✅** (the signed-capability **`execute` ownership gate** — cross-tenant code-exec closed OVER THE WIRE;
+  `cleanup-authority.ts` + worker-daemon untouched). **Next: DEP-012 Unit B2** (the 4 teardown ops
+  `cancel/kill/destroy/reconcile` gated + `inspect`/`list` redaction + the CleanupAuthority-coexistence fork).
+  The d1 first-enrol proof **WRK-017** (WRK-015 Part 2 split; a compose `command:` override, not a CMD repoint)
+  is still open, off the critical path. **evidence-verifier A is already BUILT** and waiting to bless the first
+  run. Cheap fill: the doc closures (E6-F005 / E6-F007 / E4-F014).
 - **Operator, after Tier 0** — deploy the fleet (C0) → run the campaign → flip E7-1. The fleet alone cannot
-  execute a canary run until Tier 0 lands (adapter-manager currently unimplemented).
+  execute a canary run until Tier 0 lands (adapter-manager's wire + `execute` gate are IN; the teardown +
+  redaction, the real provider, and deploy remain).
 - **Lane B, parallel** — S7/S8 features (`C:\e8`); they share C5's routing seam (build it once).
 
 Full analysis: `qa/2026-08-28-worker-dispatch-chain-reconciled.md` (the chain) ·
@@ -553,10 +556,11 @@ for Sprint 5 the one real E2B journey.
 | **8** | 🚫 **BLOCKED** | SVC-001 (storage) only; **SVC-002..007 need the service-dispatch enable** (the daemon is batch-only). The E9 gate-clause guard is **premature** (no real symbol until SVC-002). |
 | **9** | 🟡 **PARTIAL** | Units 1/2/3 ✅ (REL-FOUNDATION-GATE, REL-003 core, foundation-suite-unrun). **REL-001/002/005 BLOCKED** on S7/S8 + downstream deps. |
 
-**The frontier is TIER 0 — session/code, not operator-only** (reconciled 2026-08-28; see §1.5): the
-distributed-worker mechanism links are built + composed behind the flag, so the honest remainder before
-the E7-1 cloud campaign is **three code links — WRK-014 (container identity, the hard gate) → WRK-015
-(POSIX input) → DEP-012 adapter-manager + DEP-011 wire** — THEN the operator staging-fleet deploy +
+**The frontier is TIER 0 — session/code, not operator-only** (reconciled 2026-08-28, updated 2026-08-29; see §1.5): the
+distributed-worker mechanism links are built + composed behind the flag, and the identity + wire links have
+SHIPPED — **WRK-014 ✅ + WRK-015 ✅ + DEP-012 Slice 1 Unit A ✅ (create/execute wire) + Unit B1 ✅ (signed-capability
+execute gate)**. The honest remainder before the E7-1 cloud campaign is **DEP-012 Unit B2 (teardown + redaction)
++ Slices 3–5 (real provider / credential / deploy) + DEP-011 wire** — THEN the operator staging-fleet deploy +
 campaign (which promotes E7-1 and is the prerequisite for the bridge-wiring → crew cutover → the other
 sinks). Lane B (S7/S8) runs in parallel.
 
