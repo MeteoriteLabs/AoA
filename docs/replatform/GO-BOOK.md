@@ -71,8 +71,10 @@ guards/residuals.
   seam + mint generalization, E10-F001); **E9 SVC-002..007** (service dispatch unreachable); **E8-1
   governed browser path** + BRW-004..008 (Lane B).
 - **🔨 BUILDABLE NOW (session) — ★ NOT dry (superseded by the C0 review — see the §1.5 correction).** The
-  real session frontier is **TIER 0: adapter-manager (0 impl; needs a new ticket) + DEP-011 (E6-F003 wire)**
-  — substantial unbuilt code that gates the whole campaign. Beyond that, the
+  real session frontier is **TIER 0: WRK-014 container identity + WRK-015 POSIX enrolment input + the
+  adapter-manager server DEP-012 + DEP-011 (E6-F003 wire)** — three unbuilt code links that gate the whole
+  campaign (the session/hello/self-model/loop links are already owned — see the §1.5 reconciliation
+  correction). Beyond that, the
   guard/register-hardening layer is SOLID and mostly shipped: **E4-F013 ✅** (ownership-guard
   successor chain + DBR-001 stub) and **foundation-suite-unrun ✅** (S9-3, the checker's own suite now
   runs in `policy`) landed. The two remaining guard candidates did **NOT survive scoping**: **E9
@@ -87,19 +89,38 @@ guards/residuals.
   building alone (see `qa/2026-08-28-e10-keystone-scoping.md`). **What's left session-buildable is LOW
   value:** the cheap doc closures (E6-F005 / E6-F007 / E4-F014).
 
-**★ CORRECTION (2026-08-28, C0 adversarial review — verified against source):** the frontier is **NOT
-dry** and E7-1 is **NOT one operator act away.** The staging fleet **cannot execute a canary run even when
-deployed** — its provider broker `adapter-manager` has **zero implementation** (a manifest fiction: no
-code/image/Dockerfile) and the containerized worker→provider wire **E6-F003/DEP-011 is unbuilt**. And it
-is bigger than that: the adapter-manager review surfaced **`WAVE-4-RESEQUENCE.md`**, which already mapped
-the live-worker-dispatch chain E7-1 needs as **SEVEN links, FOUR unowned** (container identity, session
-acquisition, POSIX enrolment input, a matchable hello) — adapter-manager (the provider transport) is only
-one. So **TIER 0 is a multi-link, mostly-unowned programme, not two tickets.** WAVE-4-RESEQUENCE's own
-order (still right): **(0) fix the tracking + reconcile the chain → (1) provider-topology decision + the
-adapter-manager contract [DONE — `qa/2026-08-28-adapter-manager-scope.md`, credential=(i)] → (2) container
-identity → (3) session + POSIX input → (4) matchable hello → (5) self-model + start seam → adapter-manager
-BUILD → C0 deploy → campaign → verify A.** The "operator + Lane B / one operator act" framing below is
-superseded. Full analysis: `qa/2026-08-28-c0-staging-deploy-scope.md` §0 + `…adapter-manager-scope.md` §9.
+**★ CORRECTION (2026-08-28, C0 review + WAVE-4 STEP-0 RECONCILIATION — verified against source):** the
+frontier is **NOT dry** and E7-1 is **NOT one operator act away** — but the chain is **materially shorter
+than the "seven links, four unowned" framing**, and that framing is now retired. `WAVE-4-RESEQUENCE.md`
+(the 7-link map) is a **snapshot dated 2026-08-23**; Sprints **2.5 / 2.75 / 3 landed 2026-08-25/26,
+AFTER it**, and they own four of its links. STEP 0 (fix the tracking + re-derive every no-owner claim
+from the current tree) is **DONE** — [`qa/2026-08-28-worker-dispatch-chain-reconciled.md`](./qa/2026-08-28-worker-dispatch-chain-reconciled.md).
+Reconciled verdicts, each cited to source in that doc:
+
+- **Now OWNED** (moved since the snapshot, composed behind the default-off flag, real exercise owed to
+  Sprint 5): **3.3 session acquisition** (WRK-010 slice 2 — `onSessionMinted` sink + device-proof
+  renewal), **3.4 matchable hello** (WRK-011 — real `self/hello` route + provisioned matchable hello +
+  the `profile_snapshot` update channel), **3.5 self-model read** (WRK-008 slice 1 server +
+  slice 2b daemon `readWorkerSelfModel`), **3.6 loop composition** (WRK-008 slice 2b —
+  `composeDispatchRuntime.start()` calls `pollLoop.run()`; `bin/worker-daemon.ts:531` — WAVE-4's "no
+  start seam" is stale).
+- **STILL unowned / unbuilt** — the true TIER-0 remainder, **three links, not four-plus**: **3.1 container
+  identity** (`MountedSecretKeyStore` has zero prod constructors; a container never enrols) → new ticket
+  **WRK-014**; **3.2 POSIX enrolment input** (`assertLocalAbsolutePath` is Windows-only) → new ticket
+  **WRK-015**; **3.7 provider transport** (`adapter-manager` declared in the staging compose, no build
+  produces it) → new server ticket **DEP-012**, with **DEP-011** (the worker→provider wire, E6-F003)
+  repointed onto it.
+
+So **TIER 0 is buildable code — WRK-014 + WRK-015 + DEP-012/DEP-011 — then the operator deploy**, not a
+mostly-unowned multi-link programme. The mechanism (session/hello/self-model/loop) is built and waiting.
+Reconciled order: **(0) fix tracking + reconcile [DONE] → (1) provider-topology contract [DONE —
+`qa/2026-08-28-adapter-manager-scope.md` §8, credential=(i)] → (2) WRK-014 container identity (the hard
+gate) → (3) WRK-015 POSIX input → (4) DEP-012 adapter-manager + DEP-011 wire → the composed links (3.3–3.6)
+get their first REAL exercise = Sprint 5 / E7-1 on real E2B → C0 deploy → campaign → verify A.** The
+"operator + Lane B / one operator act" framing below is superseded. Full analysis:
+`qa/2026-08-28-worker-dispatch-chain-reconciled.md` (the reconciliation) +
+`qa/2026-08-28-adapter-manager-scope.md` §8/§9 (the settled provider contract) +
+`qa/2026-08-28-c0-staging-deploy-scope.md` §0.
 
 **Forward timeline (updated 2026-08-28):**
 1. **★ THE KEYSTONE UNLOCK — operator, highest leverage: deploy the staging fleet → run the E7-1
@@ -138,7 +159,7 @@ Register-sourced (`gate-clause-wiring.json` + `finding-ownership.json`), reconci
 flowchart TD
   V["evidence-verifier A ✅ BUILT<br/>acceptance harness · SESS"]:::done
   C0["staging-deploy pipeline<br/>deploy docker-compose.staging.yml<br/>OP · unticketed · downstream of Tier 0"]:::op
-  D11["★ TIER 0 — adapter-manager (0 impl) + DEP-011 wire<br/>SESS/CODE · UNBUILT · gates the fleet"]:::sess
+  D11["★ TIER 0 — WRK-014 identity + WRK-015 POSIX + adapter-manager DEP-012 + DEP-011 wire<br/>SESS/CODE · UNBUILT · gates the fleet (mechanism links 3.3–3.6 already owned)"]:::sess
   C2["fleet deployed + armed<br/>E2B key · canary · cap&gt;1 · enrolled worker<br/>OP"]:::op
   C3["E7-1 campaign — 1 real-E2B run<br/>OP dispatches"]:::op
   CW["E7-1 = wired ✅"]:::done
@@ -176,7 +197,7 @@ flowchart TD
 | **Frontier (buildable now)** | ~~Evidence-verifier A — the E7-1 acceptance harness~~ ✅ **BUILT** (`pnpm verify:e7-1-distributed-run`; flips no gate) | `SESS` | — | done |
 | | E6-F005 · E6-F007 · E4-F014 — doc-only closures | `SESS` | — | XS |
 | **Critical path (the spine)** | **C0 · staging-deploy pipeline** (deploy the staging compose) | `OP` | — | **L** |
-| **★ Tier 0 (unbuilt code — gates the campaign)** | adapter-manager (0 impl; needs a ticket) + DEP-011 worker→provider wire (E6-F003, HIGH) | `SESS` | — | L |
+| **★ Tier 0 (unbuilt code — gates the campaign)** | WRK-014 container identity (hard gate) + WRK-015 POSIX enrolment input + adapter-manager server DEP-012 + DEP-011 worker→provider wire (E6-F003, HIGH) — nodes filed 2026-08-28 | `SESS` | — | L |
 | | C2 · fleet deployed + armed (E2B key, canary, cap>1, worker) | `OP` | C0 | M |
 | | C3 · E7-1 campaign — one real-E2B distributed run → **E7-1 wired** | `OP` | C2 | S |
 | | C4 · wire the projection bridges (jobApproval/Budget/Output) | `SESS` | C3 | M |
@@ -199,7 +220,9 @@ pipeline). So the honest sequence is:
 - **Session, now** — **evidence-verifier A is BUILT** (`225e83f1f`; `pnpm verify:e7-1-distributed-run`).
   What remains session-side: sweep the doc closures (F-band); optionally DBR-001 and the WRK stubs, but
   those are LOW / fail-closed. **★ CORRECTION (C0 review): the frontier is NOT dry — TIER 0
-  (adapter-manager + DEP-011, unbuilt code) gates the campaign; see `qa/2026-08-28-c0-staging-deploy-scope.md`.**
+  (WRK-014/WRK-015 container identity + POSIX input + adapter-manager DEP-012/DEP-011, unbuilt code) gates
+  the campaign; the mechanism links (3.3–3.6) are owned — see `qa/2026-08-28-worker-dispatch-chain-reconciled.md`
+  and `qa/2026-08-28-c0-staging-deploy-scope.md`.**
 - **The real unlock is TIER 0, then C0** — first build **adapter-manager + ship DEP-011** (session/code),
   THEN the operator deploys **C0**. The fleet alone cannot execute a canary run (adapter-manager
   unimplemented). **Highest leverage: Tier 0.**

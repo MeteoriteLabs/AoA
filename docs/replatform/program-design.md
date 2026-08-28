@@ -659,6 +659,18 @@ The backlog contains 105 implementation tickets (audited 2026-08-25 against the 
 - **Outcome:** Add a durable local store of accepted lease offers a restarting daemon can replay into `StartupReconcilerDeps.leaseCandidates`, then compose `createStartupReconciler` at boot (conditionally on an org/owner-scoped target) and promote E4-3-survives-restart. WRK-008 slice 2b deferred the reconciler for ONE real blocker: `leaseCandidates` has no durable local source (the outbox persists events, not offers), so the lease-authority probe would run over `[]` every boot — a guard that evaluated nothing. Filed at WRK-008 completion so E4-F009 is owned by a ticket that exists and has not shipped (E4-F013). Owns finding E4-F009.
 - **Acceptance:** Written at sprint start (post-Sprint-5); no result doc until the source is built. E4-F009 stays open (MED) until then.
 
+#### WRK-014 — Container device identity: a `mounted_secret` custody key-load + enrolment path (scope)
+
+- **Depends on:** WRK-002.
+- **Outcome:** Give a containerized (`mounted_secret`) worker a device identity and key — the first BUILD of the live-worker-dispatch chain and the hard gate on every later link (`WAVE-4-RESEQUENCE.md` §3.1, SPIKE F1). Re-verified from source at tip: `MountedSecretKeyStore` (`identity/key-store.ts:61`) has ZERO production constructors (only `__tests__/`); the only production `DeviceRecordStore` (`createOsRecordStore`, `worker-keystore/src/identity-store.ts:114`) is injected only by `desktop-host.ts:133,139`, a package the worker image (`docker/worker/Dockerfile`, closure = worker-daemon+worker-protocol+pino) never copies; the container runs `bin/worker-daemon.js` in `mounted_secret`, and the enrolment block is gated `os_keychain && identityStore && receiptStore` (`bin/worker-daemon.ts:304`), so a container never enrols, generates no key, and holds no identity. No ticket owned this: WRK-002/DSK-001..004/WRK-008/010/011 all compose ON TOP of an `os_keychain` identity. Filed so the graph can see the chain's hard gate (it had no ticket and no node — WAVE-4-RESEQUENCE §4).
+- **Acceptance:** Written at sprint start (WAVE-4-RESEQUENCE §5 step 2 — the first BUILD), against the tree as it exists then; no result doc until a container can obtain and re-load a device key. Blocks nothing shipped (the distributed flag is off; the legacy in-process path is unaffected).
+
+#### WRK-015 — POSIX enrolment-code input for a Linux container worker (scope)
+
+- **Depends on:** WRK-014.
+- **Outcome:** Accept a POSIX absolute enrolment-ticket path for a Linux container (`WAVE-4-RESEQUENCE.md` §3.2, SPIKE F5). Re-verified at tip: `assertLocalAbsolutePath` (`enrollment-input.ts`, a DSK-001 Windows deliverable) normalizes `/`→`\` and requires `/^[A-Za-z]:\\/`, so the `{kind:"path"}` arm rejects every POSIX absolute path (`/worker/state/ticket`) with `EnrollmentInputError`. The fix is not loosening a denylist but stating the accepted POSIX shape positively, preserving the file's three security properties (locality check BEFORE the read; no failure echoes the input; the `enrollmentCode` logger-redaction name). Sits BEHIND WRK-014 — the enrolment block never executes on a container until identity exists (WAVE-4-RESEQUENCE §3.2 "unreachable until 3.1"), so a POSIX fix sequenced first would exercise nothing.
+- **Acceptance:** Written at sprint start (post-WRK-014, the same container-enablement step); no result doc until a POSIX enrolment path is accepted. Blocks nothing shipped.
+
 ### E5 — Workspaces, artifacts, secrets, and network policy
 
 #### DAT-001 — Immutable workspace snapshot format (M)
@@ -843,9 +855,15 @@ It unblocks JOB-004 through JOB-008, JOB-011 through JOB-014, and WRK-005 onward
 
 #### DEP-011 — The containerized worker→provider networked wire (E6-F003 successor) (scope)
 
+- **Depends on:** DEP-010, DEP-012.
+- **Outcome:** Specify the request/response wire a containerized worker's provider driver speaks to `adapter-manager` over `control-net` — the half of E6-F003 that DEP-010 deferred. Filed at DEP-010 completion so E6-F003 is owned by a ticket that exists and has not shipped (finding E4-F013), not left `owned` by shipped DEP-010. Becomes required only when a containerized worker under `docker-compose.staging.yml` must dispatch; its peer `adapter-manager` (the server that terminates this wire) had zero implementation and no owning ticket, so specifying the wire alone was a spec against an unimplemented peer for an unbuilt caller — hence the deferral. That peer is now the tracked node **DEP-012** (the adapter-manager server), which DEP-011 depends on: the two are one seam, two ends, co-designed. Owns finding E6-F003.
+- **Acceptance:** Written at sprint start (post the earlier chain builds), against the tree as it exists then; no result doc until the wire is built. E6-F003 stays open (HIGH) until then.
+
+#### DEP-012 — adapter-manager: the out-of-process networked provider host (scope)
+
 - **Depends on:** DEP-010.
-- **Outcome:** Specify the request/response wire a containerized worker's provider driver speaks to `adapter-manager` over `control-net` — the half of E6-F003 that DEP-010 deferred. Filed at DEP-010 completion so E6-F003 is owned by a ticket that exists and has not shipped (finding E4-F013), not left `owned` by shipped DEP-010. Becomes required only when a containerized worker under `docker-compose.staging.yml` must dispatch; `adapter-manager` has zero implementation today, so specifying the wire now would be a spec against an unimplemented peer for an unbuilt caller. Owns finding E6-F003.
-- **Acceptance:** Written at sprint start (post-Sprint-5), against the tree as it exists then; no result doc until the wire is built. E6-F003 stays open (HIGH) until then.
+- **Outcome:** Build `adapter-manager` — the seventh chain link (`WAVE-4-RESEQUENCE.md` §3.7). The real `E2bSandboxProvider` may not run in the worker container: `staging-manifest-invariants.mjs` `checkProviderControlBoundary` (`:436`) machine-enforces `E2B_API_KEY` + `provider-ctl-net` membership as EXACTLY the `adapter-manager` service, so the containerized worker's `deps.provider` must be a networked driver (DEP-011) that RPCs each op to a separate host holding the key. `docker-compose.staging.yml:316` DECLARES that service (image `aoa-adapter-manager:staging`) but no build produces it — zero source, no Dockerfile, no wire, no worker client. This node is the server DEP-011 was waiting on (previously unowned — WAVE-4-RESEQUENCE §3.7 / §4). It hosts the same authoritative per-op `SandboxProvider` port DEP-010 named, moved across a process boundary so the credential + E2B egress live on one isolated surface. Depends on DEP-010 (the port + composition-root decision, which transitively carries CLI-001's `E2bSandboxProvider`); DEP-011 is repointed onto it.
+- **Acceptance:** Written at sprint start (the adapter-manager BUILD comes after the earlier chain links per WAVE-4-RESEQUENCE §5); no result doc until the server lands. The provider-topology CONTRACT is SETTLED in [`qa/2026-08-28-adapter-manager-scope.md`](qa/2026-08-28-adapter-manager-scope.md) §8 (credential=(i); redacted-projection wire; no streaming slice; durable idempotency ledger; Slices 1–5) and is not re-opened; only the build is deferred.
 ### E7 — Coding/CLI workload on E2B
 
 #### CLI-001 — E2B provider implementation (M)

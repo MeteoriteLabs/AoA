@@ -201,6 +201,18 @@ Then Tier 1 (C0 deploy) → the E7-1 campaign → evidence-verifier A.
 
 ## 9. ★ THE REFRAME — adapter-manager is ONE of ~7 links (WAVE-4-RESEQUENCE), not the last blocker
 
+> **★ SUPERSEDED (terrain only) — see [`2026-08-28-worker-dispatch-chain-reconciled.md`](./2026-08-28-worker-dispatch-chain-reconciled.md).**
+> The per-link OWNERSHIP verdicts below are quoted from WAVE-4-RESEQUENCE's **2026-08-23** snapshot and
+> are STALE: Sprints 2.5 / 2.75 / 3 (landed 2026-08-25/26, after that snapshot) moved **3.3 session
+> acquisition, 3.4 matchable hello, 3.5 self-model read, and 3.6 loop composition** to OWNED (composed
+> behind the default-off flag; `composeDispatchRuntime.start()` calls `pollLoop.run()`, so the "start
+> seam missing" claim is false). The genuinely unowned/unbuilt remainder is **three** links — 3.1
+> container identity (→ WRK-014), 3.2 POSIX enrolment input (→ WRK-015), and 3.7 provider transport
+> (→ this ticket's server, DEP-012, + DEP-011 wire) — not four-plus. This §9 restated the snapshot
+> without reconciling it against those sprints; the reconciliation doc is the record of ownership at
+> tip. **§8 (the SETTLED provider-topology CONTRACT) is a decision, not a terrain claim, and is
+> UNAFFECTED.**
+
 The completeness review surfaced `docs/replatform/WAVE-4-RESEQUENCE.md` — a **pre-existing terrain doc**
 (from a 27-agent probe) that already sequenced the live-worker-dispatch chain the E7-1 cloud campaign needs.
 Verified against it: the chain is **seven links**, and adapter-manager (the "provider transport", §3.7 —
