@@ -97,7 +97,8 @@ path returns an err envelope, never a spurious ok" component test (an object-lit
 | `check-boot-roots-provider-free` | ✅ OK — 3 boot roots, none constructs a provider unconditionally (adapter-manager has no bin / names no `bootstrapWorkerDaemon`). |
 | `check-sandbox-e2b-provider-boundary` | ✅ PASS — the exports-map change is source-neutral; the dependency list + credential confinement are untouched. |
 | `check-test-inventory` | ✅ OK — pinned the two new trees ONLY (`floor` 1 each); the `--write` over-reach into unrelated `packages/db`/`server` floors was reverted (DSK-003 no-over-reach). |
-| `check-image-deps-stages` / `dockerfile-static.test` | **NOT run — Unit A adds no image/Dockerfile.** Both fire at Slice 5. A green run here is **not** image coverage. |
+| `check-image-deps-stages` / `dockerfile-static.test` / split-image deps | ✅ still green — Unit A adds **no image**, so the split worker/control-plane images do NOT list the new packages (they are not in either image's runtime closure), and the static checks are unaffected. A green run here is **not** image coverage. |
+| **Dockerfile deps-stage validator (CI-inline `policy` step)** | ⚠️ **caught a real miss — now fixed.** The design's "no Dockerfile impact" note covered `check-image-deps-stages`/`dockerfile-static` but MISSED the inline `policy` step "Validate Dockerfile deps stage", which requires **every** workspace `package.json` to be `COPY`'d in the ROOT `Dockerfile`'s `deps` stage (independent of whether the package ships an image — the monorepo installs the whole workspace there). Fixed: added the two `COPY` lines. Reproduced the exact validator locally → `missing=0`. This surfaced only on CI (`policy` red) because it is a `pr.yml` shell step, not a `check-*.mjs` script — the WRK-014 missed-guard class, in a new guise. |
 
 ## 5. The Unit-B fork left OPEN (do not read Unit A as covering it)
 
@@ -134,7 +135,8 @@ Unit A deliberately does **not** settle these — they are Unit B's own design�
 **New:** `packages/provider-wire/{package.json,tsconfig.json,vitest.config.ts,src/index.ts,src/codec.ts,src/driver.ts,src/__tests__/codec.test.ts}`;
 `packages/adapter-manager/{package.json,tsconfig.json,vitest.config.ts,src/index.ts,src/server.ts,src/__tests__/component.test.ts}`.
 **Changed:** `packages/sandbox-e2b-provider/package.json` (+3 subpath exports); `vitest.config.ts` (+2 projects);
-`scripts/test-inventory.json` (+2 pins).
+`scripts/test-inventory.json` (+2 pins); `Dockerfile` (+2 deps-stage `COPY` lines — the inline `policy`
+validator, see §4); `pnpm-lock.yaml` (the 2 new workspace packages).
 
 ## 8. Adversarial review (4 dimension reviewers + 1 skeptic) — outcome
 

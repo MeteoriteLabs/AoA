@@ -66,6 +66,11 @@ COPY packages/sandbox-provider-contract/package.json packages/sandbox-provider-c
 COPY packages/browser-runtime/package.json packages/browser-runtime/
 COPY packages/sandbox-e2b-provider/package.json packages/sandbox-e2b-provider/
 COPY packages/worker-keystore/package.json packages/worker-keystore/
+# DEP-012 Slice 1 · Unit A — the networked provider seam (shared wire + the adapter-manager
+# host). Component-level today; listed here because the deps-stage validator requires EVERY
+# workspace package.json, independent of whether the package ships its own image.
+COPY packages/provider-wire/package.json packages/provider-wire/
+COPY packages/adapter-manager/package.json packages/adapter-manager/
 COPY patches/ patches/
 RUN pnpm install --frozen-lockfile
 
