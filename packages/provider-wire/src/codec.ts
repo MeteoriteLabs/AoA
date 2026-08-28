@@ -19,10 +19,13 @@
 
 import type { ProviderOpContext } from "@armyofagents/worker-daemon";
 import {
+  ResourceNotAvailableError,
   SandboxEgressDeniedError,
   SandboxNotFoundError,
   UnsupportedProviderOperation,
 } from "@armyofagents/sandbox-e2b-provider/errors.js";
+
+import type { OwnedLabelsCapability } from "./capability.js";
 
 /**
  * A wire-transport / protocol failure that is NOT one of the modelled provider
@@ -37,10 +40,20 @@ export class WireProtocolError extends Error {
   }
 }
 
-/** The request envelope every op crosses in: opaque `args` + the op context. */
+/**
+ * The request envelope every op crosses in: opaque `args` + the op context, plus
+ * an OPTIONAL owned-labels `capability` (DEP-012 Unit B1).
+ *
+ * ★ The capability is OPTIONAL on the envelope so `create`'s `{args, ctx}` body stays
+ * BYTE-IDENTICAL (Unit A) — `create` is gate-free and omits it. But `execute` REQUIRES
+ * it: the adapter-manager execute gate refuses when it is absent or unverifiable (it
+ * NEVER dispatches on absence). `decodeOpRequest` carries a present capability THROUGH
+ * (it no longer silently drops extras — the R2 fall-open) and rejects a malformed one.
+ */
 export interface OpRequestEnvelope {
   readonly args: unknown;
   readonly ctx: ProviderOpContext;
+  readonly capability?: OwnedLabelsCapability;
 }
 
 /** The serialized error shape. `name` selects the class; the optional STRUCTURED fields
@@ -57,8 +70,10 @@ export interface SerializedError {
 
 // ---- request codec (client encodes, server decodes) -------------------------
 
-export function encodeOpRequest(args: unknown, ctx: ProviderOpContext): string {
-  const envelope: OpRequestEnvelope = { args, ctx };
+export function encodeOpRequest(args: unknown, ctx: ProviderOpContext, capability?: OwnedLabelsCapability): string {
+  // The capability key is emitted ONLY when present, so a create request (no
+  // capability) is byte-identical to the Unit-A `{ args, ctx }` body.
+  const envelope: OpRequestEnvelope = capability === undefined ? { args, ctx } : { args, ctx, capability };
   return JSON.stringify(envelope);
 }
 
@@ -71,6 +86,15 @@ export function decodeOpRequest(body: string): OpRequestEnvelope {
   }
   if (!isRecord(parsed) || !("args" in parsed) || !isValidCtx(parsed.ctx)) {
     throw new WireProtocolError("request body is missing a valid { args, ctx } envelope");
+  }
+  // Carry a PRESENT capability through (no longer a silently-dropped extra — R2). A
+  // present-but-MALFORMED capability is a wire error, never carried as junk. Absence is
+  // fine here (op-agnostic); the execute route enforces presence for `execute`.
+  if ("capability" in parsed && parsed.capability !== undefined) {
+    if (!isValidCapability(parsed.capability)) {
+      throw new WireProtocolError("request body carries a malformed capability");
+    }
+    return { args: parsed.args, ctx: parsed.ctx, capability: parsed.capability };
   }
   return { args: parsed.args, ctx: parsed.ctx };
 }
@@ -123,6 +147,13 @@ export function serializeError(err: unknown): SerializedError {
   if (err instanceof SandboxNotFoundError) {
     return { name: err.name, message: err.message };
   }
+  // The UNIFORM ownership-gate denial (DEP-012 Unit B1). It carries NO discriminant —
+  // its message is fixed by the class, so a foreign/not-found/verify-fail refusal all
+  // serialize byte-identically (the oracle collapse). Explicit here (not via the generic
+  // Error fallthrough) so it is SYMMETRIC with reconstructError and mutation-visible.
+  if (err instanceof ResourceNotAvailableError) {
+    return { name: err.name, message: err.message };
+  }
   // Anything else is not a modelled domain error — carry only its name/message; the
   // decoder maps an unrecognised name to a generic WireProtocolError.
   if (err instanceof Error) {
@@ -147,6 +178,10 @@ export function reconstructError(raw: unknown): Error {
     }
     case "SandboxNotFoundError":
       return new SandboxNotFoundError();
+    case "ResourceNotAvailableError":
+      // SYMMETRIC with serializeError: miss this and the uniform gate denial silently
+      // degrades to WireProtocolError on decode, breaking the oracle collapse.
+      return new ResourceNotAvailableError();
     case "SandboxEgressDeniedError": {
       const destinationClass = typeof raw.destinationClass === "string" ? raw.destinationClass : "";
       return new SandboxEgressDeniedError(destinationClass);
@@ -164,4 +199,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isValidCtx(value: unknown): value is ProviderOpContext {
   return isRecord(value) && typeof value.deadlineMs === "number" && typeof value.idempotencyKey === "string";
+}
+
+/**
+ * Structural validation of a wire capability. It confirms only the SHAPE (an ordered
+ * label tuple + version/audience/expiry/sig of the right primitive types) — the
+ * SIGNATURE is verified by the adapter-manager verify against the pinned public key.
+ * A malformed capability is rejected here so junk never reaches the gate as if valid.
+ */
+function isValidCapability(value: unknown): value is OwnedLabelsCapability {
+  if (!isRecord(value)) return false;
+  if (typeof value.v !== "number" || typeof value.audience !== "string") return false;
+  if (typeof value.expiresAt !== "number" || typeof value.sig !== "string") return false;
+  const labels = value.ownedLabels;
+  if (!isRecord(labels)) return false;
+  return (
+    typeof labels.organizationId === "string" &&
+    typeof labels.targetId === "string" &&
+    typeof labels.workerId === "string" &&
+    typeof labels.jobId === "string" &&
+    typeof labels.attempt === "number" &&
+    typeof labels.leaseId === "string" &&
+    typeof labels.deviceGeneration === "number"
+  );
 }

@@ -16,3 +16,11 @@ export type { OpRequestEnvelope, SerializedError } from "./codec.js";
 
 export { NetworkedProviderDriver } from "./driver.js";
 export type { NetworkedProviderDriverOptions } from "./driver.js";
+
+export {
+  OWNED_LABELS_CAPABILITY_AUDIENCE,
+  OWNED_LABELS_CAPABILITY_VERSION,
+  buildOwnedLabelsCapabilityCanonical,
+  signOwnedLabelsCapability,
+} from "./capability.js";
+export type { OwnedLabelsCapability, OwnedLabelsCapabilitySignedFields } from "./capability.js";

@@ -10,7 +10,7 @@
     },
     "packages/adapter-manager": {
       "mode": "floor",
-      "count": 1
+      "count": 3
     },
     "packages/adapter-utils": {
       "mode": "floor",
@@ -34,7 +34,7 @@
     },
     "packages/provider-wire": {
       "mode": "floor",
-      "count": 1
+      "count": 3
     },
     "packages/sandbox-e2b-provider": {
       "mode": "pinned",

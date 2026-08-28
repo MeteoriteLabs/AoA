@@ -47,12 +47,21 @@ import { CORE_PROVIDER_OPERATIONS } from "@armyofagents/worker-protocol";
 import { UnsupportedProviderOperation } from "@armyofagents/sandbox-e2b-provider/errors.js";
 
 import { decodeOpResponse, encodeOpRequest } from "./codec.js";
+import type { OwnedLabelsCapability } from "./capability.js";
 
 export interface NetworkedProviderDriverOptions {
   /** The adapter-manager base URL, e.g. `http://adapter-manager:PORT`. */
   readonly baseUrl: string;
   /** Injectable fetch (default: the global). Tests spy on the network hop through it. */
   readonly fetch?: typeof fetch;
+  /**
+   * The owned-labels capability the driver attaches to GATE-REQUIRED ops (DEP-012
+   * Unit B1: `execute`). Sourced OUT-OF-BAND — the `SandboxProvider` port
+   * `execute(input, ctx)` has NO capability slot, so it is injected here (the container
+   * composition root / DEP-011 supplies the control-plane-minted token), NOT threaded
+   * through the caller. `create` stays gate-free and never attaches it.
+   */
+  readonly capability?: OwnedLabelsCapability;
 }
 
 export class NetworkedProviderDriver implements SandboxProvider {
@@ -66,13 +75,16 @@ export class NetworkedProviderDriver implements SandboxProvider {
 
   readonly #baseUrl: string;
   readonly #fetch: typeof fetch;
+  readonly #capability?: OwnedLabelsCapability;
 
   constructor(options: NetworkedProviderDriverOptions) {
     this.#baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.#fetch = options.fetch ?? fetch;
+    this.#capability = options.capability;
   }
 
   async create(spec: CreateSandboxSpec, ctx: ProviderOpContext): Promise<CreateResult> {
+    // create is GATE-FREE — no capability attached (the body stays Unit-A byte-identical).
     return this.#post<CreateResult>("create", spec, ctx);
   }
 
@@ -90,7 +102,9 @@ export class NetworkedProviderDriver implements SandboxProvider {
         stderrRef: `ref:stderr:${input.sandboxId}`,
       };
     }
-    return this.#post<ExecuteResult>("execute", input, ctx);
+    // execute is GATE-REQUIRED — attach the owned-labels capability (undefined when the
+    // driver was constructed without one; the server then refuses with the uniform error).
+    return this.#post<ExecuteResult>("execute", input, ctx, this.#capability);
   }
 
   // --- not built until Unit B (the ownership gate + the six gate-required ops) ------
@@ -134,11 +148,16 @@ export class NetworkedProviderDriver implements SandboxProvider {
     throw new UnsupportedProviderOperation("export_artifact");
   }
 
-  async #post<R>(op: "create" | "execute", args: unknown, ctx: ProviderOpContext): Promise<R> {
+  async #post<R>(
+    op: "create" | "execute",
+    args: unknown,
+    ctx: ProviderOpContext,
+    capability?: OwnedLabelsCapability,
+  ): Promise<R> {
     const res = await this.#fetch(`${this.#baseUrl}/op/${op}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: encodeOpRequest(args, ctx),
+      body: encodeOpRequest(args, ctx, capability),
     });
     // Body-driven: the codec decides ok vs err vs garbled regardless of HTTP status. A
     // non-JSON / non-envelope body (e.g. a bare 500) surfaces as a WireProtocolError,

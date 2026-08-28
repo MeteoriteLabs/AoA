@@ -3,3 +3,7 @@
 
 export { createProviderServer } from "./server.js";
 export type { CreateProviderServerOptions } from "./server.js";
+
+export { CapabilityVerificationError, verifyOwnedLabelsCapability } from "./capability-verify.js";
+export { gateExecute } from "./execute-gate.js";
+export type { ExecuteGateDeps } from "./execute-gate.js";

@@ -24,12 +24,26 @@
 // -----------------------------------------------------------------------------
 
 import { createServer, type Server, type ServerResponse } from "node:http";
+import type { KeyObject } from "node:crypto";
 
 import type { CreateSandboxSpec, ExecuteInput, ProviderOpContext, SandboxProvider } from "@armyofagents/worker-daemon";
 import { WireProtocolError, decodeOpRequest, encodeErrResponse, encodeOkResponse } from "@armyofagents/provider-wire/codec";
 
+import { gateExecute } from "./execute-gate.js";
+
 export interface CreateProviderServerOptions {
   readonly provider: SandboxProvider;
+  /**
+   * The pinned control-plane PUBLIC key (DEP-012 Unit B1). When PRESENT, `execute` is
+   * GATED: every execute request must carry a valid owned-labels capability whose labels
+   * + generation match the target sandbox, else the uniform ResourceNotAvailableError.
+   * When ABSENT the server is UNGATED — Unit A's component-test-only / NOT deploy-safe
+   * posture (S1.4), admissible solely for the single-tenant loopback test. Slice 5's
+   * deploy ordering assertion enforces that a real deployment configures the key.
+   */
+  readonly controlPlanePublicKey?: KeyObject;
+  /** Injectable ms-epoch clock for the capability expiry check (default: Date.now). */
+  readonly now?: () => number;
 }
 
 type OpHandler = (args: unknown, ctx: ProviderOpContext) => Promise<unknown>;
@@ -38,11 +52,16 @@ const OP_ROUTE = /^\/op\/([a-z_]+)$/;
 
 export function createProviderServer(options: CreateProviderServerOptions): Server {
   const { provider } = options;
+  const controlPlanePublicKey = options.controlPlanePublicKey;
+  const now = options.now ?? (() => Date.now());
+  // GATED iff a control-plane public key is pinned. Ungated is Unit A's not-deploy-safe
+  // posture — see CreateProviderServerOptions.controlPlanePublicKey.
+  const gated = controlPlanePublicKey !== undefined;
 
-  // Unit A wires create + execute ONLY. A Map (not an object literal) so an inherited
-  // prototype key like `constructor`/`__proto__` can NEVER resolve to a handler and return
-  // a spurious ok — the wire types are TRUSTED here in Unit A (single-tenant loopback);
-  // Unit B adds validation + the ownership gate.
+  // A Map (not an object literal) so an inherited prototype key like
+  // `constructor`/`__proto__` can NEVER resolve to a handler and return a spurious ok.
+  // When gated, `execute` is routed through the ownership gate below instead of this
+  // ungated handler (which remains the Unit-A / keyless-server behavior).
   const handlers = new Map<string, OpHandler>([
     ["create", (args, ctx) => provider.create(args as CreateSandboxSpec, ctx)],
     ["execute", (args, ctx) => provider.execute(args as ExecuteInput, ctx)],
@@ -83,8 +102,20 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
             sendJson(res, 404, encodeErrResponse(new WireProtocolError(`operation not available in this slice: ${op}`)));
             return;
           }
-          const { args, ctx } = decodeOpRequest(body);
-          const result = await handler(args, ctx);
+          const { args, ctx, capability } = decodeOpRequest(body);
+          // GATED execute goes through the server-side ownership gate (verify capability
+          // -> AM-local inspect -> field-wise owned-check -> dispatch), NOT the ungated
+          // handler. A refusal throws the uniform ResourceNotAvailableError, caught below
+          // and coded back symmetrically. Every other op (create today) uses its handler.
+          const result =
+            op === "execute" && gated
+              ? await gateExecute(
+                  { provider, controlPlanePublicKey: controlPlanePublicKey!, now },
+                  args as ExecuteInput,
+                  ctx,
+                  capability,
+                )
+              : await handler(args, ctx);
           sendJson(res, 200, encodeOkResponse(result));
         } catch (err) {
           // The provider's domain errors (SandboxNotFoundError / SandboxEgressDeniedError /
