@@ -248,7 +248,11 @@ on the fork.
 - **NOT through the daemon** — no `deps.provider` inject, no dispatch gate, no `AOA_WORKER_PROVIDER_URL`
   consumer, no new `AOA_WORKER_SANDBOX_PROVIDER` kind (all DEP-011).
 
-## S1.5 Unit B — scoping (its own design→review, written at Unit-B sprint start)
+## S1.5 Unit B — scoping (SUPERSEDED — Unit B is now fully designed at "# Slice 1 · Unit B" below; fork RESOLVED → A · signed capability)
+
+> **Note:** the bullets below are the early Unit-A-era scoping. Unit B's real design is the `# Slice 1 · Unit B`
+> section (B0–B10). In particular, "edit `cleanup-authority.ts:154-205` per the fork" is now a **B2** concern
+> (under A, B1's execute gate leaves `cleanup-authority.ts` untouched — see the B1 cross-lane rule).
 
 - **Settle the ownership fork (P server-relocate vs Q client-hash)** with a 3-agent adversarial review +
   human sign-off, as the credential fork got. **The fork must cover `execute`, not just teardown/inspect/list**
@@ -362,3 +366,263 @@ forward-notes** (for that author): do NOT reuse D1's `provider-ctl-net` semantic
 D1 hardening patterns only); adding `docker/adapter-manager/Dockerfile` needs new entries in
 `check-image-deps-stages` `IMAGES` + `dockerfile-static.test`, or the image ships deps-unchecked; and the wire
 SPEC lands in DEP-012 (provider-wire) while E6-F003 (worker-side consumption) stays owned by DEP-011.
+
+---
+
+# Slice 1 · Unit B — the ownership gate + redaction (the security unit)
+
+**Status:** design (2026-08-28, post-recon + **fork DECIDED**). Ownership fork RESOLVED → **A · signed
+capability** (founder sign-off 2026-08-28). Sub-sliced: this section designs **B1** (the capability +
+`execute`'s server-side gate — the worst hole) in full and scopes **B2** (teardown + redaction). **4-agent
+adversarial review applied (§B10)** — the capability reshaped hash→ordered-tuple (field-wise gate), made
+mandatory/fail-closed, both collapse arms + symmetric codec, the mint-cost corrected, cross-lane framing fixed.
+Precondition: Unit A shipped (the wire plumbing exists).
+
+## B0 — the resolved fork (recon 2026-08-28, verified against source)
+
+The first-draft "P vs Q" collapsed under recon. **Pure client-side Q is REFUTED:** it cannot gate `execute`
+(fence-only at `effect-authority.ts:87-90`, denied by `cleanup-authority.ts:130`; a client-side check runs on
+the worker *before* the request, so a misbehaving worker omits it and sends a foreign `sandboxId` the ungated
+server runs — cross-tenant code exec), and it cannot collapse the existence oracle over the wire (the server
+can't decide "found-but-not-yours" without the caller's labels). **So the gate is server-side — forced.**
+
+The real trade was *how `adapter-manager` learns whose sandbox is whose*:
+- **(A) Signed capability [CHOSEN].** The control plane mints a short-lived signed token binding the worker's
+  own ordered label TUPLE; `adapter-manager` verifies ONE signature (control-plane public key) — no DB, no
+  session keys. Proven-identity, unforgeable, keeps the credential host minimal, cleanly namespaces the
+  idempotency ledger (Slice 3). *(The sane form of the original "P" — P-delegate.)*
+- (B) Asserted owned-hash — **rejected**: authorizes on the worker *knowing* its own labels (defense-by-secrecy),
+  sound only while raw labels never leak. Cheaper, fragile.
+- (C) Relocate the full auth + tenant DB onto `adapter-manager` — **rejected**: imports the control-plane trust
+  surface onto the isolated credential host, defeating the boundary.
+
+**The identity crux (recon):** `adapter-manager` cannot know the caller's owned labels today — the wire is
+`{args, ctx}` with zero identity (`provider-wire/src/codec.ts:41-44`), and it has no DB/session key by design.
+The server CAN derive owned labels from an authenticated worker (`worker-fence-context.ts:120-134` builds an
+`ActiveFenceRequest` — a SUPERSET from which the `ResourceLabels` tuple is derived) — but only inside a tenant DB
+transaction behind a JWT + Ed25519 device-proof (`worker-operation-proof.ts:34-76`). A is the delegate form: the
+control plane (which already holds the fence/labels) signs them into a capability; `adapter-manager` verifies
+with just a public key. **The VERIFY is a cheap, DB-free ~15-line `node:crypto` check + a pure `labelsEqual`
+(review R1 CONFIRMED — no auth-surface import); the MINT is the real cost — a NET-NEW control-plane Ed25519
+keypair + provisioning/rotation (there is NO reusable control-plane signer; NOT "reuse"), deferred to
+DEP-011/deploy. This mint delta does NOT flip A-vs-B (B saves only the keypair and keeps its secrecy weakness).**
+
+## B0.1 — verified terrain (recon 2026-08-28)
+
+- **`#requireOwned`** (`cleanup-authority.ts:154-167`): `inspect(sandboxId)` → `labelsEqual(detail.resourceLabels,
+  #resourceLabels) && detail.generation === #targetGeneration` → full detail (never leaves the CleanupAuthority
+  unredacted); `SandboxNotFoundError` OR mismatch → the **uniform** `ResourceNotAvailableError` (`:159,:164`). The per-worker
+  "owned" state is the constructor's `#resourceLabels` + `#targetGeneration` (`:99-100`).
+- **`ResourceLabels`** = `{organizationId, targetId, workerId, jobId, attempt, leaseId, deviceGeneration}`
+  (`provider.ts:113-121`); `labelsEqual` is field-wise (`:131-141`); `hashResourceLabels` is an unsalted keyless
+  SHA-256 over the tuple (`:158-169`).
+- **`execute` is fence-only** (`effect-authority.ts:87-90`) — a server-side gate reuses `#requireOwned`'s
+  inspect+compare AM-local (the provider exposes the target's raw labels + generation via `inspect`,
+  `e2b-provider.ts:319-343`). The ONLY missing input is the caller's owned identity → the capability supplies it.
+- **`RedactedResourceProjection`** = `{sandboxId, resourceLabelsHash, generation, state, providerOpId}`
+  (`provider.ts:394-400`) — the shape `inspect`/`list` must cross as (B2).
+- **The wire has NO identity slot** (`codec.ts:41-44`) and NO `ResourceNotAvailableError` in its vocab
+  (`codec.ts:116-157`) — both are net-new in Unit B.
+- **`cleanup-authority.ts` stays UNTOUCHED for B1** — under A the execute gate is NEW `adapter-manager` code. But
+  `CleanupAuthority` is lane-AGNOSTIC (`supervisor.ts:528`, not just the desktop lane); B1 is clean only because
+  `execute` bypasses it (fence-only `EffectAuthority`; `CleanupAuthority` denies execute, `:130`). B2's teardown
+  coexistence still needs resolving — **landmine 6 DEFERS to B2, it does not dissolve** (see the cross-lane rule).
+
+## B0.2 — sub-slice plan
+
+Unit B is L-sized (net-new capability infra + 6 gated ops + redaction). It splits:
+- **B1 (this design) — the capability + `execute`'s server-side gate.** Closes the WORST hole (cross-tenant
+  code exec) and builds the shared security infra: the capability verify, the AM-local owned-check, the uniform
+  wire error, the server-side oracle-collapse. Component-tested.
+- **B2 (scoped, §B7) — the teardown ops + redaction.** `cancel/kill/destroy/reconcile_cleanup` gated (reuse
+  B1's capability) + `inspect`/`list` redacted to `RedactedResourceProjection` server-side + `list` re-homing.
+
+## B1 — what it builds
+
+1. **The owned-labels capability** (a new `provider-wire` schema type). A signed token
+   `{ v: 1, audience: "adapter-manager", ownedLabels: ResourceLabels, expiresAt, sig }` — it carries the caller's
+   OWN ordered label TUPLE (not a hash), so the gate compares FIELD-WISE like `#requireOwned` (review R2: gating
+   on the space-joined `hashResourceLabels` is a canonicalization bypass — two tuples with a space in a field
+   collide; the hash was built for logging, not authz). The caller's own labels in a SIGNED token are no
+   disclosure (F2 redaction concerns OTHER workers' labels via inspect/list). The `v` discriminant is MANDATORY
+   forward-compat (review R4: B2 extends the capability with coarse identity for `list`; a bare canonical-struct
+   signature is not additive-tolerant — version it now or every B1 token breaks at B2). Signed with a **NET-NEW
+   control-plane Ed25519 keypair** (review R1: there is NO reusable control-plane signer — the session signer is
+   symmetric HMAC, the device-proof signer is the WORKER's + transport-bound; author a fresh detached-Ed25519
+   signer from the in-repo `node:crypto` primitives — `device-key.ts:61` `generateKeyPairSync("ed25519")`,
+   `sign(null,·)`/`verify(null,·)`, the `device-proof.ts` canonicalizer pattern). **Unit B builds VERIFY + a TEST
+   keypair only** — the real keypair + provisioning/rotation + the mint (in the fenced `resolveExecutionSecret`
+   reply where JWT+device-proof-verified labels already exist, `secret-redemption.ts:160-187`) are DEP-011/deploy
+   cost: real, deferred, and NOT "reuse."
+2. **The verify path on `adapter-manager`** (a fresh ~15-line `node:crypto` fn, DB-free — review R1 CONFIRMED
+   cheap + separable, no auth-surface import): load the pinned control-plane PUBLIC key once
+   (`createPublicKey({format:"der",type:"spki"})`, assert `ed25519`); rebuild the canonical over ALL signed
+   fields (`v`,`audience`,`ownedLabels`,`expiresAt` — an UNAMBIGUOUS serialization: length-prefixed or
+   `JSON.stringify` of a fixed field order, NEVER a space-join); `verify(null, canonical, pub, sig)`; check
+   `audience === "adapter-manager"` + `expiresAt > now`. Fail-closed (bad sig / expired / wrong audience →
+   refuse) **BEFORE any provider call** — the ordering is load-bearing (review R2: a verify failure must be
+   identical for own/foreign/not-found ids so it leaks nothing).
+3. **`execute`'s server-side gate** — after verify, before dispatch: `provider.inspect(sandboxId)` AM-local (the
+   server's in-process provider, NOT a wire op) → the target's raw labels + generation; then MIRROR
+   `#requireOwned` FIELD-FOR-FIELD (`cleanup-authority.ts:154-167`): `labelsEqual(target.resourceLabels,
+   cap.ownedLabels) && target.generation === cap.ownedLabels.deviceGeneration` → allow; **reproduce BOTH collapse
+   arms** — a `SandboxNotFoundError` from `inspect` maps to the SAME uniform `ResourceNotAvailableError` as a
+   label/generation mismatch (`:159` and `:164`), so a foreign-but-existing sandbox is indistinguishable from
+   not-found. Collapse ALL `inspect` throws to the uniform error (review R2: `#requireOwned` rethrows non-NotFound
+   at `:160`; over the wire a distinct transient-fault error is existence-orthogonal, but collapse it for
+   airtightness — and keep `serializeError`'s verbatim `message` forwarding from leaking transport detail).
+4. **The MANDATORY capability field + the uniform wire error.** The capability is a **first-class, REQUIRED**
+   field on `OpRequestEnvelope` (`codec.ts:41-44`) validated in `decodeOpRequest` (`:65-76`); `execute` **REFUSES
+   with the uniform error when it is absent or unverifiable — NEVER dispatches on absence** (review R2 the
+   fall-open: today `decodeOpRequest` silently DROPS extra fields, so a gate that engages only when a capability
+   is present is bypassed by a Unit-A-shaped envelope carrying none). Add `ResourceNotAvailableError`
+   **SYMMETRICALLY** to `serializeError` AND `reconstructError` (`codec.ts:116-157`) — it is the authoritative
+   worker-daemon class (`cleanup-authority.ts:65`) already re-exported from the codec's existing import site
+   (`@armyofagents/sandbox-e2b-provider/errors.js:20`); miss the `reconstructError` case and it silently degrades
+   to `WireProtocolError` on decode, breaking the uniform error.
+5. **The driver carries the capability** — sourced OUT-OF-BAND (the port `execute(input, ctx)` has no capability
+   slot, `provider.ts:347`; inject via the driver constructor/config, NOT the `EffectAuthority` caller). The
+   capability is an **OPTIONAL** envelope field so `create`'s `{args, ctx}` stays byte-identical (Unit A's 17
+   tests green): `create` omits it (gate-free), `execute` requires it. B2 attaches it to the gated ops.
+6. **The component test** — mints a TEST capability (test keypair); proves: own-sandbox `execute` allowed;
+   **foreign-sandbox `execute` → uniform `ResourceNotAvailableError`, byte-identical to not-found (the
+   oracle-collapse), transport NOT hit** (a spy — gate before dispatch); **MISSING capability → REFUSED (the
+   fall-open guard), not dispatched**; bad-sig / expired / wrong-audience → refused; the no-sensitive-crossing
+   assertion extended (the capability carries the caller's OWN labels — signed, non-secret — never another's).
+
+## B1 — where things live + the cross-lane rule (review R4 — corrected)
+
+- The capability schema lives in `provider-wire` (shared); the verify + gate live in `adapter-manager`.
+- **`cleanup-authority.ts` is UNTOUCHED FOR B1 — but this is B1-scoped, not a general claim.**
+  `CleanupAuthority` is constructed LANE-AGNOSTICALLY (`supervisor.ts:528`, wrapping `deps.provider` every run) —
+  the networked lane does NOT bypass it. B1 is safe because `execute` routes through the fence-only
+  `EffectAuthority` (`supervisor.ts:417`, `effect-authority.ts:87-90`) and `CleanupAuthority` *denies* execute
+  outright (`cleanup-authority.ts:130`) — so B1's execute gate is genuinely net-new `adapter-manager` code and
+  the worker-side execute path is unchanged. **This does NOT generalize to B2:** `#requireOwned` needs a FULL
+  `InspectResult` (raw labels for `labelsEqual`, `:162`) the F2 redacting wire will NOT carry — so B2/DEP-011
+  must EITHER edit `cleanup-authority.ts` to hash-compare via the `resourceLabelsHash` getter (`:110-112`) OR
+  change the networked supervisor composition so teardown does not re-check ownership worker-side. (This
+  supersedes S1.5's bare "edit `cleanup-authority.ts:154-205` per the fork" — under A that edit is a B2 concern,
+  not B1; **landmine 6 DEFERS to B2, it does not dissolve.**)
+- The control-plane keypair + real mint are DEP-011/deploy — B1 is verify-only + a test mint (the
+  component-level posture Unit A used).
+- **Decision #104:** the capability carries owned LABELS (the caller's own identity) + expiry, never a
+  provider/model key or a redeemed secret; the codec must not log the `sig`.
+
+## B1 — TDD (fail-first)
+
+1. Capability schema + a test signer/verifier: sign→verify round-trips over the canonical of ALL fields; a
+   tampered field (any of `v`/`audience`/`ownedLabels`/`expiresAt`) fails verify (RED: no verify).
+2. `adapter-manager` verify: valid → `ownedLabels`; bad-sig / expired / wrong-audience → refuse (RED).
+3. Codec: `ResourceNotAvailableError` round-trips SYMMETRICALLY (encode→decode preserves the class) (RED: decode
+   maps it to `WireProtocolError`); the capability is a REQUIRED envelope field (`decodeOpRequest` rejects an
+   `execute` request carrying none) (RED: extras silently dropped).
+4. `execute` gate — own sandbox: capability `ownedLabels` `labelsEqual` the created sandbox → allowed (RED).
+5. `execute` gate — foreign sandbox: `ownedLabels` ≠ target labels → uniform `ResourceNotAvailableError`,
+   transport NOT hit (spy) (RED).
+6. `execute` gate — MISSING capability → refused with the uniform error, NOT dispatched (the fall-open guard)
+   (RED).
+7. Oracle-collapse: foreign-existing, genuinely-not-found, AND a non-NotFound inspect fault all yield the SAME
+   `ResourceNotAvailableError`, byte-identical (RED: distinct errors) → the server-side collapse.
+8. Mutation sweep: mutate EACH gate/verify clause individually (labelsEqual, generation, expiry, audience,
+   sig-verify, the missing-capability guard, EACH collapse arm) → a test kills each ("mutate each arm",
+   [[wrk-015-posix-validator]]).
+
+## B1 — fences (what it is NOT)
+
+- **No real control-plane mint + no real keypair** — B1 verifies + tests with a test-minted capability; the real
+  keypair/provisioning/rotation + the mint are DEP-011/deploy.
+- **No teardown ops, no redaction** — `cancel/kill/destroy/reconcile/inspect/list` stay throwing
+  `UnsupportedProviderOperation` (Unit A's state) → B2.
+- **`cleanup-authority.ts` + worker-daemon UNTOUCHED FOR B1** — the execute gate is new `adapter-manager` code
+  (see the cross-lane rule; the B2 teardown coexistence is B2/DEP-011's, not B1's).
+- **★ The `execute` gate is NOT atomic with dispatch (TOCTOU) — a Slice-3 must-fix, not live in B1** (review R2).
+  `inspect` then `execute` is check-then-act across two round-trips. Against the mock it is safe (ids are
+  monotonic, never reused — `mock-transport.ts:81-83`; labels are immutable-at-create, no relabel path; a
+  re-lease mints a NEW id, orphaning the old with its original labels). The residual is real-provider `sandboxId`
+  REUSE (validated-as-mine, destroyed, reassigned to a foreign tenant before dispatch): B1 STATES the
+  id-non-reuse assumption; closing it (provider-atomic compare-and-execute, or a per-`sandboxId` lease/lock, or a
+  proven non-reuse invariant) + the §S1.5 Slice-5 ordering assertion (foreign id → uniform error) is a Slice-3
+  must-fix.
+- **No mTLS/peer-allowlist/net-seg** — Slice 5. A transport peer check ≠ the application-layer capability.
+- **No real E2B** — MockE2bTransport (Slice 3 swaps it).
+- **NOT through the daemon** — component-level (DEP-011).
+
+## B2 — scoping (its own design→review, at B2 sprint start)
+
+- `cancel/kill/destroy/reconcile_cleanup` gated (reuse B1's capability + the AM-local owned-check + the uniform
+  error + the collapse).
+- `inspect`/`list` return `RedactedResourceProjection` ONLY, redacted server-side (the full `InspectResult` /
+  raw `ResourceSummary` never cross); `list`'s `ownershipSelector` needs the caller's COARSE identity
+  (`organizationId/targetId/workerId`) — so B2 EXTENDS the capability to carry those (a NEW `v:2`, additive over
+  B1's ordered `ownedLabels`; the `v` discriminant B1 mandates makes this a clean bump, not a break).
+- **★ Resolve the worker-side `CleanupAuthority` coexistence (review R4):** under A the networked lane's teardown
+  either edits `cleanup-authority.ts:154-205` to hash-compare (`resourceLabelsHash` getter `:110-112`) OR changes
+  the networked supervisor composition so teardown does not re-check ownership worker-side (the server gate is
+  authoritative). B2/DEP-011's decision — its own design→review.
+- Apply the uniform-`ResourceNotAvailableError` collapse to every gated op.
+- Slice-3 idempotency ledger namespaced by the capability's authenticated identity.
+
+## B8 — guards (run the WHOLE set)
+
+- B1 extends `provider-wire` + `adapter-manager` (NO new package) → **no new `vitest.config.ts` `projects[]`
+  entry and no new root-`Dockerfile` deps-stage `COPY`** (the Unit-A CI-miss lesson applies only to a NEW
+  package — R4 CONFIRMED both packages already in `vitest.config.ts:24` + `Dockerfile:72-73`). The five
+  registers + `check-worker-daemon-boundary` (untouched — assert) + `check-sandbox-e2b-provider-boundary` +
+  `check-test-inventory` (B1 adds NEW test files → an inventory `--write` re-pin IS required; do not over-reach,
+  the DSK-003 lesson) + `check-boot-roots-provider-free`. NOT `check-image-deps-stages` / `dockerfile-static`
+  (no image). **But re-run the inline `policy` "Validate Dockerfile deps stage" mentally** — it only fires for a
+  new package, which B1 does not add.
+
+## B9 — open questions for the 3-agent adversarial review
+
+1. **The capability format + the SPECIFIC signer** to reuse (the Ed25519 device-proof signer? the session-JWT
+   signer?) — verifiable by `adapter-manager` with just a public key, WITHOUT importing the control-plane auth
+   surface? Is a compact detached-signature-over-a-canonical-struct feasible with the existing infra?
+2. **Granularity** — per-request capability (stateless server, simplest) vs per-connection handshake (fewer
+   bytes, needs connection state). B1 proposes per-request; is that sound for the real transport?
+3. **TOCTOU** — `inspect(sandboxId)` then `execute`: can the target's labels/generation change between the check
+   and the dispatch (a re-lease / generation bump) such that a stale-but-valid capability executes in a
+   now-foreign sandbox? Does the check need to be atomic with dispatch?
+4. **Oracle-collapse airtightness** — does ANY error path (transport fault, egress-denied, a capability-verify
+   failure) leak existence distinct from `ResourceNotAvailableError`? Enumerate every server response for a
+   foreign vs not-found vs own sandbox.
+5. **Regression** — does adding `ResourceNotAvailableError` to the codec + the capability field break Unit A's
+   17 tests or the no-sensitive-crossing (the capability carries a HASH + generation — confirm no raw labels /
+   no secret)?
+6. **Is the hash-only capability strong enough** — `hashResourceLabels` is unsalted keyless SHA-256; the
+   capability's unforgeability rests on the SIGNATURE (not the hash's secrecy), so a known hash is fine. Confirm
+   the signature is what gates, and a replayed capability is bounded by `expiresAt` (+ audience).
+
+## B10 — Review round — 4-agent adversarial pass (2026-08-28), all verified against source
+
+**R1 — capability feasibility (the crux, protecting the A decision).** CONFIRMED A's core premise: the VERIFY is
+a cheap, DB-free ~15-line `node:crypto` Ed25519 check + a pure label compare, importable into `adapter-manager`
+with no new dep and no auth-surface/DB reach (guard-enforced). REFUTED the "reuse the existing signer" language:
+there is NO reusable control-plane signer (session = symmetric HMAC; device-proof = the worker's, transport-bound)
+— A needs a NET-NEW control-plane Ed25519 keypair + provisioning, deferred to DEP-011/deploy. Verdict: **A stands**
+(the mint delta does not flip A-vs-B). Applied: B0 mint-cost corrected; B1 item 1 net-new-keypair language + the
+in-repo primitives to author the signer.
+
+**R2 — gate security (the hardening).** Directionally sound (forgery + replay denied, collapse achievable), with
+real must-fixes, all applied: (1) the space-joined `hashResourceLabels` gate is a canonicalization BYPASS →
+capability now carries the ORDERED TUPLE, gate is FIELD-WISE `labelsEqual` (B1 items 1/3); (2) missing-capability
+FALL-OPEN (the codec drops extras) → capability MANDATORY, `execute` refuses on absence (B1 item 4); (3) both
+collapse arms (`SandboxNotFoundError` → uniform) + collapse ALL inspect throws (B1 item 3); (4)
+`ResourceNotAvailableError` SYMMETRIC in `serializeError` + `reconstructError` (B1 item 4); (5) TOCTOU — not live
+in B1 (mock ids monotonic, labels immutable), the real-provider id-reuse residual stated + deferred to Slice 3
+(B1 fences); (6) pin the signed struct — every field inside the sig (B1 item 2).
+
+**R3 — terrain.** All 7 terrain claims CONFIRMED. The two-generations question resolved (`InspectResult.generation`
+is derived from `deviceGeneration`, so the field-wise gate is faithful); `cleanup-authority.ts`-untouchable
+verified via the export chain (`ResourceNotAvailableError`/`hashResourceLabels`/`labelsEqual` all already
+exported; the error flows through the codec's existing import site). Applied the two wording tightenings
+(never-leaves→unredacted; 1:1→superset). The hash-canonicalization note dissolved by R2's field-wise fix.
+
+**R4 — scope/cross-lane.** CONFIRMED B1's sub-slice coherence (the gate uses in-process `provider.inspect`, no
+B2 wire op) + the guards (both packages already registered from Unit A → no new `projects[]`/Dockerfile COPY).
+Two must-fixes applied: (1) the "cleanup-authority untouched" framing over-reached — `CleanupAuthority` is
+lane-AGNOSTIC (`supervisor.ts:528`), so B1's claim is B1-scoped and landmine 6 DEFERS to B2 (B0.1 + cross-lane
+rule + B2 corrected; S1.5 reconciled); (2) capability VERSIONING — a `v` discriminant added now so B2's
+coarse-identity extension is a clean `v:2` bump (B1 item 1). Nice-to-haves folded: out-of-band capability
+injection + the optional envelope field (item 5), the `check-test-inventory` re-pin (B8).
