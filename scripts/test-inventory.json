@@ -8,6 +8,10 @@
       "mode": "pinned",
       "count": 4
     },
+    "packages/adapter-manager": {
+      "mode": "floor",
+      "count": 1
+    },
     "packages/adapter-utils": {
       "mode": "floor",
       "count": 29
@@ -25,6 +29,10 @@
       "count": 57
     },
     "packages/plugins": {
+      "mode": "floor",
+      "count": 1
+    },
+    "packages/provider-wire": {
       "mode": "floor",
       "count": 1
     },

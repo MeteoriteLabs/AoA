@@ -9,6 +9,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./e2b-provider.js": {
+      "types": "./dist/e2b-provider.d.ts",
+      "import": "./dist/e2b-provider.js"
+    },
+    "./mock-transport.js": {
+      "types": "./dist/mock-transport.d.ts",
+      "import": "./dist/mock-transport.js"
+    },
+    "./errors.js": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.js"
     }
   },
   "files": [

@@ -200,6 +200,15 @@ WAVE-4 §3.7 stands, re-verified at tip:
 repointed onto it. The provider-topology contract is settled in the adapter-manager scope §8 and is not
 relitigated here — only the build is filed as deferred.
 
+**★ UPDATE (2026-08-28) — DEP-012 Slice 1 · Unit A BUILT (component-level).** The **create + execute wire
+plumbing** now exists: `packages/provider-wire/` (the codec + the networked `SandboxProvider` driver) +
+`packages/adapter-manager/` (the `createProviderServer({provider})` host), proven driver ↔ server over the
+key-less `MockE2bTransport` (15 tests, 6/6 mutants killed; [`DEP-012-unit-a-result.md`](../epics/E6-deployment-test-harness/tickets/DEP-012-unit-a-result.md)).
+worker-daemon is untouched. **Still unbuilt:** Unit B (the ownership fork + `execute`'s server-side gate +
+the six gate-required ops + redaction), DEP-011's through-the-daemon composition seam, and Slices 3–5 (real
+E2B, credential crossing, conformance, deploy/image). So 3.7 is **partially built** — the wire is de-risked;
+the gate + the deploy are not.
+
 ---
 
 ## 3. What was added to the tracking (STEP 0 deliverable)
