@@ -11,6 +11,10 @@
       "providerPosture": "none",
       "reason": "The CONTAINER root. bootstrapWorkerDaemon({env, proc}) passes no provider key, and E4-D01 forbids worker-daemon from importing a provider — so gate 1 is STRUCTURAL here and DEP-010 left this root untouched."
     },
+    "packages/worker-daemon/src/bin/container-host.ts": {
+      "providerPosture": "none",
+      "reason": "WRK-014 — the file_record CONTAINER host root. Its invokedDirectly guard calls runContainerHost({env, proc}), which passes no provider; the optional deps.provider is a test/embedder seam and is undefined for the shipped binary. E4-D01 forbids worker-daemon from importing a provider (there is no resolver here, unlike the desktop root), so gate 1 is STRUCTURAL, exactly as on worker-daemon.ts. Landed INERT: the Dockerfile CMD still runs worker-daemon.js; WRK-015 repoints it."
+    },
     "packages/worker-keystore/src/bin/desktop-host.ts": {
       "providerPosture": "resolver",
       "resolverFile": "packages/worker-keystore/src/bin/sandbox-provider.ts",

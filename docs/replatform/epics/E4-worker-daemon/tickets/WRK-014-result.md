@@ -76,7 +76,25 @@ check-guard-inventory        : OK (40 — no new check-*.mjs)
 check-gate-clause-wiring     : OK (5 wired / 9 dormant — WRK-014 flips NO clause; enrol-not-dispatch)
 check-execution-census       : OK (unchanged — new tests are vitest *.test.ts, not *.test.mjs)
 check-dependency-graph       : OK (114 tickets, 0 dangling, 0 cycles; WRK-016 edge → WRK-014 clean)
+check-test-inventory         : OK (packages/worker-daemon pin bumped 147 → 149 — my 2 new *.test.ts)
+check-boot-roots-provider-free : OK (container-host.ts declared providerPosture "none" — a new boot root)
 ```
+
+**★ Two guards §6 MISSED, caught by the FIRST CI `policy` red (honest correction).** §6 said "new `*.ts`
++ `*.test.ts` trip neither guard-inventory nor the census" — true, but INCOMPLETE. The `policy` job also runs:
+- `check-test-inventory.mjs`, which PINS the `packages/worker-daemon` test-file count (exact). My two new
+  `*.test.ts` files failed it. Fixed by bumping ONLY that pin (147 → 149); I explicitly REVERTED the
+  `--write`'s over-reach into two unrelated `floor` trees (`packages/db`, `server` — pre-existing legal
+  drift where the tree grew above its floor), per the [[dsk-003]] "a deletion can hide in an inventory
+  bump" lesson.
+- `check-boot-roots-provider-free.mjs`, which enumerates every file obtaining `bootstrapWorkerDaemon`.
+  `container-host.ts` is a NEW boot root, so it had to be DECLARED in `boot-roots-expectation.json` with
+  `providerPosture: "none"` (structural — E4-D01 forbids worker-daemon importing a provider; the shipped
+  `runContainerHost({env,proc})` passes none). The guard doing its job: a new boot root cannot slip in
+  silently.
+
+Both fixed in the follow-up commit; the ENTIRE `policy` suite (every `check-*.mjs` runner + `--test` unit
+suite) then runs green locally, so the second CI push is validated against the same checks CI runs.
 
 No migration; `packages/worker-protocol` untouched (FROZEN); no runtime code wires dispatch.
 
