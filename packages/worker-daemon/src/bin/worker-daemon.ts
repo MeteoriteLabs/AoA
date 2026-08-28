@@ -281,8 +281,10 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   // `mounted_secret` reaches none of this: every deployed compose file uses that
   // mode with no stores, so the `&& deps.identityStore && deps.receiptStore`
   // conjunct is already false for it, and row 3 of the I11 truth table guarantees
-  // zero shipped-container behaviour change. WRK-015 flips a canary container to
-  // `file_record`; this ticket lands the arm inert.
+  // zero shipped-container behaviour change. WRK-015 shipped the POSIX enrolment-
+  // input fix (a container can now present a `/worker/...` ticket path); WRK-017
+  // flips a d1 worker to `file_record` via a compose `command:` override. This
+  // ticket lands the arm inert.
   //
   // HONEST NOTE ON THIS CONDITION (rewritten for WRK-014 — §9). The mode arm is
   // now the REAL enrol discriminator: it names EXACTLY the two custody modes that

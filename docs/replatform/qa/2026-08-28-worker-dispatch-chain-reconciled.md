@@ -22,7 +22,7 @@ current tree with a citation per verdict:
 | # | Link | WAVE-4 (2026-08-23) | **Current tree** | Owner (at tip) |
 |---|------|---------------------|------------------|----------------|
 | 3.1 | Container identity | NO OWNER | at reconcile NO OWNER → **WRK-014 BUILT-INERT** (later same day) | **WRK-014 (built, unwired)** |
-| 3.2 | POSIX enrolment input | NO OWNER | **NO OWNER** (unchanged) | **none → WRK-015 (new)** |
+| 3.2 | POSIX enrolment input | NO OWNER | **NO OWNER** (unchanged) | **WRK-015 ✅ SHIPPED** (Part 2 d1 proof → WRK-017) |
 | 3.3 | Session acquisition | NO OWNER | **OWNED** — mechanism shipped; one restart residual | WRK-010 slice 2 |
 | 3.4 | Matchable hello | NO OWNER | **OWNED** | WRK-011 (+ WRK-008 slice 2b) |
 | 3.5 | Self-model read | HALF OWNED | **OWNED** (both halves) | WRK-008 slice 1 + slice 2b |
@@ -76,8 +76,11 @@ defect WAVE-4 §0 warns about does not recur here: these are direct source reads
 > `Uint8Array`-safe codec, and a `runContainerHost` that reads `AOA_WORKER_STATE_DIR`, asserts the state
 > dir writable pre-socket, builds the stores and injects them. It landed **UNWIRED** — the Dockerfile CMD
 > still runs `worker-daemon.js` and no compose switched to `file_record` — so no deployed container
-> changed. **WRK-015 activates it** (the POSIX enrolment-input fix + the CMD repoint + a canary compose
-> switch). See `WRK-014-result.md`. 3.1 moves from "unowned" to "owned, built-inert".
+> changed. **WRK-015 shipped the POSIX enrolment-input fix** (the validator-level crash-loop hazard is
+> gone); **activating the container path on d1** (a compose `command:` override onto `container-host.js` —
+> NOT a CMD repoint, per Correction 1 — plus a first-enrol proof) is **WRK-017** (WRK-015 Part 2 split; the
+> d1 harness has no worker-enrol flow). See `WRK-014-result.md` / `WRK-015-result.md`. 3.1 moves from
+> "unowned" to "owned, built-inert".
 
 WAVE-4 §3.1 stands, re-verified at tip:
 - `MountedSecretKeyStore` (`packages/worker-daemon/src/identity/key-store.ts:61`) has **zero production
@@ -96,15 +99,22 @@ WAVE-4 §3.1 stands, re-verified at tip:
 passes `resolveCustody` with no key behind it. The hard gate on all later links — nothing downstream
 runs on a container until this exists. **Now tracked: `#### WRK-014` + `WRK-014-design.md`.**
 
-### 3.2 POSIX enrolment input — **STILL UNOWNED** (confirmed) → **WRK-015 (new)**
+### 3.2 POSIX enrolment input — **✅ SHIPPED (WRK-015, 2026-08-28)**
 
-WAVE-4 §3.2 stands, re-verified at tip: `assertLocalAbsolutePath`
-(`packages/worker-daemon/src/enrollment/enrollment-input.ts`) normalizes `/`→`\` and requires
-`/^[A-Za-z]:\\/`, so the `{kind:"path"}` arm throws `EnrollmentInputError` for every POSIX absolute
-path (`/worker/state/ticket`). It is a DSK-001 (Windows) deliverable; the `{kind:"env"}` arm is
-platform-neutral but the path arm is Windows-only. No ticket owns "state the accepted POSIX shape."
-**Verdict: unowned.** Sits behind 3.1 (the enrolment block never runs on a container until identity
-exists). **Now tracked: `#### WRK-015` + `WRK-015-design.md`, `Depends on: WRK-014`.**
+WAVE-4 §3.2 stood, re-verified at reconcile: `assertLocalAbsolutePath`
+(`packages/worker-daemon/src/enrollment/enrollment-input.ts`) normalized `/`→`\` and required
+`/^[A-Za-z]:\\/`, so the `{kind:"path"}` arm threw `EnrollmentInputError` for every POSIX absolute
+path (`/worker/state/ticket`). It was a DSK-001 (Windows) deliverable; the `{kind:"env"}` arm is
+platform-neutral but the path arm was Windows-only. **WRK-015 SHIPPED the fix:** `assertLocalAbsolutePath`
+is now platform-aware (an optional `platform` param, mirroring `file-custody.ts`), threaded from
+`readEnrollmentInput`. `win32` → the drive-letter arm, unchanged; else → a POSIX arm that mirrors
+`worker-protocol/policy.ts isSandboxSecretFilePath`'s SHAPE (bound, no backslash/control bytes, no
+empty/`.`/`..` segments) MINUS the fixed root PLUS an explicit leading-`/` check — stated positively, not a
+loosened denylist, preserving the three DSK-001 security properties (locality BEFORE the read, content-free
+faults, the `enrollmentCode` redaction name). **Part 2 — the CI-exercised d1 first-enrol proof — SPLIT to
+WRK-017** at WRK-015's Step-0 gate (the d1 harness has no worker-enrol flow; see `WRK-015-result.md`). **Now
+tracked: `#### WRK-015` (shipped) + `WRK-015-result.md`; `#### WRK-017` + `WRK-017-design.md` for the d1
+proof.**
 
 ### 3.3 Session acquisition — **MOVED to OWNED** (WRK-010 slice 2), with one unowned restart residual
 
@@ -222,8 +232,11 @@ already-known operator deploy:
 
 1. **WRK-014 — container identity (3.1). ✅ BUILT-INERT (2026-08-28).** The hard gate; the first BUILD.
    Shipped the `file_record` custody mode + `FileRecordStore` + container host, UNWIRED (CMD/compose
-   untouched). `SESS`/code — done. **WRK-015 (2) activates it.**
-2. **WRK-015 — POSIX enrolment input (3.2).** Same container-enablement step, after identity. `SESS`/code.
+   untouched). `SESS`/code — done. **WRK-015 (2) shipped the POSIX validator; WRK-017 wires the container
+   path on d1.**
+2. **WRK-015 — POSIX enrolment input (3.2). ✅ SHIPPED (2026-08-28).** Same container-enablement step, after
+   identity; the platform-aware validator. `SESS`/code — done. Part 2 (the CI-exercised d1 first-enrol proof)
+   split to **WRK-017** at the Step-0 gate (the d1 harness has no worker-enrol flow), off the critical path.
 3. **DEP-012 — adapter-manager server (3.7) + DEP-011 — the worker→provider wire.** The out-of-process
    provider the container's `deps.provider` RPCs to. `SESS`/code; contract settled (scope §8).
 4. **Then the composed links get their first REAL exercise:** with a container that can enrol (1,2) and a

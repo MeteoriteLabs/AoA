@@ -21,7 +21,11 @@
 // it performs no locality check. Reading a UNC path is an authenticated SMB round
 // trip to a host somebody else chose: it leaks the fact and timing of an
 // enrolment, and it invites a hostile file. Rejecting after the read would be
-// pointless — the round trip has already happened.
+// pointless — the round trip has already happened. The check is platform-aware
+// (WRK-015): a drive-letter arm on win32, a `/`-rooted arm on POSIX so a real
+// container can enrol — see `assertLocalAbsolutePath` for why accepting an
+// arbitrary POSIX absolute path is safe (the read is INERT) and the
+// operator-sourced invariant it rests on.
 //
 // **No failure ever echoes what was read.** A malformed ticket file must not put
 // its bytes into an exception that then lands in a log or a crash report. The
@@ -51,23 +55,70 @@ export class EnrollmentInputError extends Error {
  * Reject anything that is not a plain local absolute path.
  *
  * Deliberately an allowlist of one shape rather than a denylist of hostile ones:
- * a denylist over Windows path syntax is a losing game (`\\?\UNC\`, `//`,
- * `\\.\`, mapped drives, `\??\`), and the legitimate case is narrow enough to
- * state positively.
+ * a denylist over path syntax is a losing game (`\\?\UNC\`, `//`, `\\.\`, mapped
+ * drives, `\??\`), and the legitimate case is narrow enough to state positively.
+ *
+ * PLATFORM-AWARE (mirrors `identity/file-custody.ts` `ownerOnlyViolation`): the
+ * `platform` default is `process.platform`, injected so BOTH arms are testable on
+ * either OS — the win32 arm was previously the only one, so every POSIX absolute
+ * path was rejected and a container crash-looped here the instant it enrolled
+ * (SPIKE F5). `win32` → the drive-letter arm, unchanged; else → the POSIX arm.
+ *
+ * WHY ACCEPTING AN ARBITRARY POSIX ABSOLUTE PATH IS SAFE HERE — it is NOT
+ * confinement (there is no fixed root). It is that the read is INERT: its result
+ * flows only into `decodeEnrollmentTicket` (a strict `aoa_tkt_<base64url>` codec)
+ * and every failure is content-free, so even a symlink to `/etc/shadow` yields a
+ * content-free `EnrollmentInputError` — plus check-before-read, a single-use
+ * 10-minute code, and an operator-owned mount. The INVARIANT this rests on:
+ * `EnrollmentCodeSource` must stay operator/config-sourced, NEVER wire/remote-
+ * sourced. If an untrusted channel could ever set the path, this becomes an
+ * arbitrary-file-read primitive with no confinement backstop. (`/dev`, `/proc`,
+ * symlinks and network mounts are valid absolute paths and OUT of scope —
+ * honest parity with the win32 arm, which has the identical residual via a
+ * junction/reparse point under a `C:\` root.)
  */
-function assertLocalAbsolutePath(path: string): void {
+function assertLocalAbsolutePath(path: string, platform: NodeJS.Platform = process.platform): void {
   if (path.length === 0) throw new EnrollmentInputError("path is empty");
-  const normalized = path.replace(/\//g, "\\");
-  if (normalized.startsWith("\\\\")) {
-    // Covers UNC (`\\host\share`), the long-path UNC form (`\\?\UNC\...`), and
-    // the device namespace (`\\.\pipe\...`).
-    throw new EnrollmentInputError("path is not local (UNC or device namespace)");
+
+  if (platform === "win32") {
+    const normalized = path.replace(/\//g, "\\");
+    if (normalized.startsWith("\\\\")) {
+      // Covers UNC (`\\host\share`), the long-path UNC form (`\\?\UNC\...`), and
+      // the device namespace (`\\.\pipe\...`).
+      throw new EnrollmentInputError("path is not local (UNC or device namespace)");
+    }
+    // A drive-letter absolute path is the only accepted shape. A relative path
+    // resolves against whatever cwd the host happened to start in, which is not
+    // something an enrolment should depend on.
+    if (!/^[A-Za-z]:\\/.test(normalized)) {
+      throw new EnrollmentInputError("path is not an absolute local path");
+    }
+    return;
   }
-  // A drive-letter absolute path is the only accepted shape. A relative path
-  // resolves against whatever cwd the host happened to start in, which is not
-  // something an enrolment should depend on.
-  if (!/^[A-Za-z]:\\/.test(normalized)) {
+
+  // POSIX arm — mirrors `worker-protocol/policy.ts isSandboxSecretFilePath`'s
+  // SHAPE (bound, leading segment, no backslash, no control bytes, no empty/`.`/
+  // `..` segments) MINUS the fixed sandbox root, PLUS an explicit leading-`/`
+  // check. That function's `startsWith(ROOT)` line did DOUBLE DUTY — confinement
+  // AND absoluteness (its segment loop `.slice(1)` assumes a leading `/`) — so
+  // "minus the root" would naively ACCEPT a relative path (`"rel/x".slice(1)` →
+  // `["l","x"]`). The leading-`/` check restores absoluteness. `worker-protocol`
+  // is FROZEN, so this MIRRORS the shape rather than calling it (it is also
+  // module-private).
+  if (path.length > 1024) throw new EnrollmentInputError("path is too long");
+  if (path.charCodeAt(0) !== 0x2f) {
+    // Not `/`-rooted: a relative path resolves against an unpredictable cwd.
     throw new EnrollmentInputError("path is not an absolute local path");
+  }
+  if (path.includes("\\")) throw new EnrollmentInputError("path contains a backslash");
+  for (let i = 0; i < path.length; i += 1) {
+    const c = path.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f) throw new EnrollmentInputError("path contains a control byte");
+  }
+  const segments = path.slice(1).split("/"); // drop the leading "/"
+  for (const seg of segments) {
+    if (seg.length === 0) throw new EnrollmentInputError("path contains an empty segment"); // "//" or trailing "/"
+    if (seg === "." || seg === "..") throw new EnrollmentInputError("path contains a traversal segment");
   }
 }
 
@@ -89,6 +140,10 @@ export function readEnrollmentInput(
   source: EnrollmentCodeSource,
   env: Record<string, string | undefined>,
   readFileText: (path: string) => string,
+  // Threaded to `assertLocalAbsolutePath` so the container (POSIX) and desktop
+  // (win32) arms are both testable on either OS. Defaulted, so the composition-
+  // root thunk (`bin/worker-daemon.ts:321`) stays a 3-arg call.
+  platform: NodeJS.Platform = process.platform,
 ): EnrollmentInput {
   let raw: string;
   if (source.kind === "env") {
@@ -100,7 +155,7 @@ export function readEnrollmentInput(
     raw = value;
   } else {
     // BEFORE the read. A rejection afterwards has already leaked the attempt.
-    assertLocalAbsolutePath(source.path);
+    assertLocalAbsolutePath(source.path, platform);
     try {
       raw = readFileText(source.path);
     } catch {

@@ -46,8 +46,10 @@ out of the daemon because it lives in `worker-keystore` outside the daemon's 2-d
 
 **★ WRK-014 lands the code but does NOT flip the entrypoint.** If it repointed the Dockerfile CMD now, every
 deployed `mounted_secret` container would enter enrolment and hit `readEnrollmentInput` on its POSIX
-code-path, which `assertLocalAbsolutePath` rejects (Windows-only) → `exit(1)` → crash-loop. So WRK-014 ships
-provably-correct-but-inert; **WRK-015 activates** (POSIX fix + CMD repoint + compose mode switch). WRK-014's
+code-path, which `assertLocalAbsolutePath` rejects (Windows-only **at WRK-014 time; WRK-015 shipped the POSIX
+arm**) → `exit(1)` → crash-loop. So WRK-014 ships provably-correct-but-inert; **WRK-015 shipped the POSIX fix,
+and WRK-017 activates the container path** (a compose `command:` override — NOT a CMD repoint, per WRK-015
+Correction 1). WRK-014's
 tests use the env-arm code + the new mode directly.
 
 1. **`FileRecordStore<T>`** (`worker-daemon/src/identity/file-record-store.ts`) — a `DeviceRecordStore<T>`
@@ -189,7 +191,8 @@ verdict, not the load, is the pre-socket guarantee.
   `DeviceRecordStore`) → **distinct `file_record` mode** (§3), not an in-place amendment. Preserves the three
   mutation-hardened `mounted_secret` guards. **Verified** (`device-identity-store.ts:104-134`).
 - **HIGH (security) — repointing the CMD in WRK-014 crash-loops every POSIX compose** → **WRK-014 lands
-  inert; WRK-015 activates** (§1, §5). **Verified** (`assertLocalAbsolutePath` Windows-only).
+  inert; WRK-015 shipped the POSIX fix, WRK-017 activates the container path** (§1, §5). **Verified** at
+  WRK-014 time (`assertLocalAbsolutePath` was Windows-only; WRK-015 made it platform-aware).
 - **HIGH (completeness) — the volume mandate doesn't survive the replicated staging fleet** (`replicas:2`,
   autoscale) → **singleton canary now; replicated-fleet granularity DEFERRED to WRK-016** (§4). **Verified**
   (`docker-compose.staging.yml` `deploy.replicas`).

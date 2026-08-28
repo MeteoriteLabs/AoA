@@ -9,8 +9,10 @@
 //
 // ★ INERT. WRK-014 does NOT repoint the Dockerfile CMD (still `worker-daemon.js`)
 // and does NOT switch any compose's mode. These tests exercise the host + the new
-// `file_record` custody directly; WRK-015 activates the container path (the POSIX
-// enrolment-input fix + the CMD repoint + the compose switch).
+// `file_record` custody directly. WRK-015 shipped the POSIX enrolment-input fix;
+// WRK-017 wires the container path on d1 via a compose `command:` override (NOT a
+// CMD repoint — per Correction 1, that would crash-loop still-`mounted_secret`
+// containers).
 
 import { existsSync, mkdtempSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

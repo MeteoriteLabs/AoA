@@ -72,8 +72,13 @@ guards/residuals.
   governed browser path** + BRW-004..008 (Lane B).
 - **🔨 SESSION FRONTIER — TIER 0 + residuals.** The current build front is **TIER 0** (the forward
   sequence above): **WRK-014 ✅ BUILT-INERT** (container identity — the hard gate; shipped provably-correct-
-  but-unwired, the CMD/compose untouched), then **WRK-015 POSIX input (NEXT — activates the container path)
-  + adapter-manager DEP-012/DEP-011** — two remaining unbuilt code links; the mechanism links
+  but-unwired, the CMD/compose untouched) and **WRK-015 ✅ SHIPPED** (the POSIX enrolment-input validator —
+  `assertLocalAbsolutePath` is now platform-aware, so the container-path crash-loop hazard is removed and a
+  real container can present a `/worker/...` ticket path). The one remaining TIER-0 code link is
+  **adapter-manager DEP-012/DEP-011**. WRK-015's Part 2 (a CI-exercised d1 first-enrol proof) **SPLIT to
+  WRK-017** at its own Step-0 gate — the d1 harness has NO worker-enrol flow and adding one is large
+  (platform-scope seed + ticket-file delivery + a multi-phase bring-up; see WRK-015-result.md); WRK-017 is
+  NOT on the E7-1 critical path (the campaign enrols one worker at campaign time). The mechanism links
   (session/hello/self-model/loop) are already owned. Beyond
   Tier 0, the
   guard/register-hardening layer is SOLID and mostly shipped: **E4-F013 ✅** (ownership-guard
@@ -105,12 +110,13 @@ Reconciled verdicts, each cited to source in that doc:
   slice 2b daemon `readWorkerSelfModel`), **3.6 loop composition** (WRK-008 slice 2b —
   `composeDispatchRuntime.start()` calls `pollLoop.run()`; `bin/worker-daemon.ts:531` — WAVE-4's "no
   start seam" is stale).
-- **STILL unowned / unbuilt** — the true TIER-0 remainder, **three links, not four-plus**: **3.1 container
-  identity** (`MountedSecretKeyStore` has zero prod constructors; a container never enrols) → new ticket
-  **WRK-014**; **3.2 POSIX enrolment input** (`assertLocalAbsolutePath` is Windows-only) → new ticket
-  **WRK-015**; **3.7 provider transport** (`adapter-manager` declared in the staging compose, no build
-  produces it) → new server ticket **DEP-012**, with **DEP-011** (the worker→provider wire, E6-F003)
-  repointed onto it.
+- **STILL unowned / unbuilt** — the true TIER-0 remainder as of the reconciliation, **three links**: **3.1
+  container identity** (`MountedSecretKeyStore` has zero prod constructors; a container never enrols) → ticket
+  **WRK-014 ✅ SHIPPED inert**; **3.2 POSIX enrolment input** (`assertLocalAbsolutePath` was Windows-only) →
+  ticket **WRK-015 ✅ SHIPPED** (the validator is now platform-aware; the d1 first-enrol proof split to
+  WRK-017); **3.7 provider transport** (`adapter-manager` declared in the staging compose, no build produces
+  it) → new server ticket **DEP-012**, with **DEP-011** (the worker→provider wire, E6-F003) repointed onto it
+  — the one TIER-0 link still unbuilt.
 
 So **TIER 0 is buildable code — WRK-014 + WRK-015 + DEP-012/DEP-011 — then the operator deploy**, not a
 mostly-unowned multi-link programme. The mechanism (session/hello/self-model/loop) is built and waiting.
@@ -126,8 +132,9 @@ get their first REAL exercise = Sprint 5 / E7-1 on real E2B → C0 deploy → ca
 **Forward sequence (reconciled 2026-08-28 — the honest order):**
 1. **★ TIER 0 (session/code — the current build front):** **WRK-014 container identity (the hard gate) —
    ✅ BUILT-INERT** (the `file_record` custody mode + `FileRecordStore` + container host, shipped unwired;
-   CMD/compose untouched) → **WRK-015 POSIX input (NEXT — activates the container path)** → DEP-012
-   adapter-manager + DEP-011 wire.** The provider-topology contract is
+   CMD/compose untouched) → **WRK-015 POSIX input ✅ SHIPPED** (the platform-aware validator; the d1
+   first-enrol proof split to **WRK-017**, off the critical path) → **DEP-012 adapter-manager + DEP-011 wire
+   (the one TIER-0 link still unbuilt).** The provider-topology contract is
    settled (`qa/2026-08-28-adapter-manager-scope.md` §8, credential=(i)); the mechanism links
    (session/hello/self-model/loop) are already built + composed behind the default-off flag and get their
    first REAL exercise at E7-1.
@@ -163,7 +170,7 @@ Register-sourced (`gate-clause-wiring.json` + `finding-ownership.json`), reconci
 flowchart TD
   V["evidence-verifier A ✅ BUILT<br/>acceptance harness · SESS"]:::done
   C0["staging-deploy pipeline<br/>deploy docker-compose.staging.yml<br/>OP · unticketed · downstream of Tier 0"]:::op
-  D11["★ TIER 0 — WRK-014 identity ✅ BUILT-INERT · WRK-015 POSIX (NEXT) + adapter-manager DEP-012 + DEP-011 wire<br/>SESS/CODE · gates the fleet (mechanism links 3.3–3.6 already owned)"]:::sess
+  D11["★ TIER 0 — WRK-014 identity ✅ BUILT-INERT · WRK-015 POSIX ✅ SHIPPED · adapter-manager DEP-012 + DEP-011 wire (last unbuilt)<br/>SESS/CODE · gates the fleet (mechanism links 3.3–3.6 already owned)"]:::sess
   C2["fleet deployed + armed<br/>E2B key · canary · cap&gt;1 · enrolled worker<br/>OP"]:::op
   C3["E7-1 campaign — 1 real-E2B run<br/>OP dispatches"]:::op
   CW["E7-1 = wired ✅"]:::done
@@ -200,7 +207,7 @@ flowchart TD
 |------|------|------|-----------|------|
 | **Frontier (buildable now)** | ~~Evidence-verifier A — the E7-1 acceptance harness~~ ✅ **BUILT** (`pnpm verify:e7-1-distributed-run`; flips no gate) | `SESS` | — | done |
 | | E6-F005 · E6-F007 · E4-F014 — doc-only closures | `SESS` | — | XS |
-| **★ Critical path — Tier 0 (session/code, the build front)** | WRK-014 container identity (the hard gate) **✅ BUILT-INERT** → WRK-015 POSIX enrolment input **(NEXT — activates the container path)** → adapter-manager server DEP-012 + DEP-011 worker→provider wire (E6-F003) — nodes filed 2026-08-28; contract settled (scope §8) | `SESS` | — | L |
+| **★ Critical path — Tier 0 (session/code, the build front)** | WRK-014 container identity (the hard gate) **✅ BUILT-INERT** → WRK-015 POSIX enrolment input **✅ SHIPPED** (d1 first-enrol proof → WRK-017, off the critical path) → adapter-manager server DEP-012 + DEP-011 worker→provider wire (E6-F003) — the one Tier-0 link still unbuilt; contract settled (scope §8) | `SESS` | — | L |
 | | **C0 · staging-deploy pipeline** (deploy the staging compose) | `OP` | Tier 0 | **L** |
 | | C2 · fleet deployed + armed (E2B key, canary, cap>1, worker) | `OP` | C0 | M |
 | | C3 · E7-1 campaign — one real-E2B distributed run → **E7-1 wired** | `OP` | C2 | S |
@@ -218,14 +225,16 @@ flowchart TD
 | | E3-18 revocation-fanout consumer | `SESS` | dispatch-live | M |
 
 **The one thing to see:** the mechanism is built; the campaign is gated on **Tier 0** (WRK-014 ✅ BUILT-INERT
-→ WRK-015 → DEP-012/DEP-011 — the remaining unbuilt session/code), then the operator deploy (C0), then the
+→ WRK-015 ✅ SHIPPED → DEP-012/DEP-011 — the one remaining unbuilt session/code link), then the operator deploy (C0), then the
 run. Everything downstream (**C4–C8**: bridges, sinks, drain, close) is dammed behind **E7-1 wired**.
 
 - **Session, now** — continue **Tier 0**: **WRK-014 ✅ BUILT-INERT** (the hard gate — the `file_record`
-  custody mode + `FileRecordStore` + container host, shipped unwired). **WRK-015 is NEXT** (the POSIX
-  enrolment-input fix that ACTIVATES the container path — repoint the CMD + switch a canary compose to
-  `file_record`; before it, a live container on the POSIX file arm crash-loops). **evidence-verifier A is
-  already BUILT** and waiting to bless the first run. Cheap fill: the doc closures (E6-F005 / E6-F007 /
+  custody mode + `FileRecordStore` + container host, shipped unwired) and **WRK-015 ✅ SHIPPED** (the POSIX
+  enrolment-input validator — the container-path crash-loop hazard is gone; a real container can present a
+  `/worker/...` ticket path). The remaining Tier-0 code link is **DEP-012/DEP-011**. The CI-exercised d1
+  first-enrol proof is **WRK-017** (WRK-015 Part 2 split; a compose `command:` override, not a CMD repoint),
+  off the critical path. **evidence-verifier A is already BUILT** and waiting to bless the first run. Cheap
+  fill: the doc closures (E6-F005 / E6-F007 /
   E4-F014).
 - **Operator, after Tier 0** — deploy the fleet (C0) → run the campaign → flip E7-1. The fleet alone cannot
   execute a canary run until Tier 0 lands (adapter-manager currently unimplemented).

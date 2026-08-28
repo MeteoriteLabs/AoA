@@ -13,12 +13,16 @@
 // `--reset-identity`, so a bad identity crash-loops loudly rather than silently
 // re-minting one the server will deny forever (§4).
 //
-// ★ LANDS INERT. The Dockerfile CMD still runs `worker-daemon.js`; WRK-015
-// repoints it to `container-host.js` (with the POSIX enrolment-input fix) and
-// switches a canary container's compose mode to `file_record`. Repointing here,
-// before that fix, would crash-loop every deployed POSIX container on
-// `assertLocalAbsolutePath` (Windows-only). So this ships provably-correct-but-
-// unwired; the tests drive `runContainerHost` and the `file_record` mode directly.
+// ★ LANDS INERT (WRK-014). The image CMD still runs `worker-daemon.js`; nothing
+// switches a deployed worker to `file_record` or to this host. WRK-015 Part 1
+// landed the POSIX enrolment-input fix, so `assertLocalAbsolutePath` no longer
+// rejects a container's `/worker/...` ticket path — the validator-level crash-loop
+// hazard is gone. WIRING the container path on d1 (a compose `command:` override
+// on ONE worker + a CI-exercised first-enrol proof — NOT an image-CMD repoint,
+// which would crash-loop every still-`mounted_secret` container because this host
+// injects stores unconditionally and `resolveCustody("mounted_secret", stores)`
+// refuses) is deferred to WRK-017 (WRK-015 Part 2 split; d1 harness has no worker-
+// enrol flow). Until then the tests drive `runContainerHost` + `file_record` directly.
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
