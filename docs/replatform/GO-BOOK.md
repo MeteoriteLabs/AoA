@@ -49,7 +49,7 @@ proven, ~17 proven weakly, ~17 not proven, **17 unprovable (no caller)**. `ci-re
 green-capable again as of Sprint 0. The distance from here to "an agent runs on a real
 distributed worker, proven once" is **Sprints 1–5**.
 
-### ★ CURRENT STATUS & forward timeline (reconciled 2026-08-27)
+### ★ CURRENT STATUS & forward sequence (reconciled 2026-08-28)
 
 The paragraph above is the **pre-Sprint-1 census**. After Sprints 1–5b + S6/S7-1/S9-1/S9-2 (ground-truth
 reconciliation of E7–E11): **the distributed-execution mechanism is BUILT and proven for coding
@@ -70,11 +70,10 @@ guards/residuals.
   REL-005 (all REL + kill-switch write path); **E10 cutover sinks** (MIG-005/006/007 — need the routing
   seam + mint generalization, E10-F001); **E9 SVC-002..007** (service dispatch unreachable); **E8-1
   governed browser path** + BRW-004..008 (Lane B).
-- **🔨 BUILDABLE NOW (session) — ★ NOT dry (superseded by the C0 review — see the §1.5 correction).** The
-  real session frontier is **TIER 0: WRK-014 container identity + WRK-015 POSIX enrolment input + the
-  adapter-manager server DEP-012 + DEP-011 (E6-F003 wire)** — three unbuilt code links that gate the whole
-  campaign (the session/hello/self-model/loop links are already owned — see the §1.5 reconciliation
-  correction). Beyond that, the
+- **🔨 SESSION FRONTIER — TIER 0 + residuals.** The current build front is **TIER 0** (the forward
+  sequence above): **WRK-014 container identity + WRK-015 POSIX input + adapter-manager DEP-012/DEP-011** —
+  three unbuilt code links; the mechanism links (session/hello/self-model/loop) are already owned. Beyond
+  Tier 0, the
   guard/register-hardening layer is SOLID and mostly shipped: **E4-F013 ✅** (ownership-guard
   successor chain + DBR-001 stub) and **foundation-suite-unrun ✅** (S9-3, the checker's own suite now
   runs in `policy`) landed. The two remaining guard candidates did **NOT survive scoping**: **E9
@@ -122,24 +121,25 @@ get their first REAL exercise = Sprint 5 / E7-1 on real E2B → C0 deploy → ca
 `qa/2026-08-28-adapter-manager-scope.md` §8/§9 (the settled provider contract) +
 `qa/2026-08-28-c0-staging-deploy-scope.md` §0.
 
-**Forward timeline (updated 2026-08-28):**
-1. **★ THE KEYSTONE UNLOCK — operator, highest leverage: deploy the staging fleet → run the E7-1
-   campaign** (§9 "Sprint 5b" + `CLI-006-staging-canary-runbook.md`). **Once TIER 0 ships** (adapter-manager + DEP-011), the deploy + campaign promotes E7-1
-   AND is the prerequisite for wiring the zero-caller projection bridges → the crew cutover (E10) → the
-   other sinks. It unblocks the most downstream work of anything remaining. **The session-buildable
-   de-risk is now BUILT: evidence-verifier A** (`pnpm verify:e7-1-distributed-run <runId>`) — the
-   acceptance harness that refuses to bless a legacy fallback or an inert (never-leased) handoff, so the
-   operator cites a mechanized verdict instead of eyeballing a column. It **flips no gate** (E7-1 stays
-   `unwired`); see `epics/E7-coding-e2b/tickets/e7-1-evidence-verifier-result.md`.
-2. **Lane B (parallel track, `C:\e8`): S7/S8 features** — browser BRW-004..008 + service SVC-002..007.
-   These unblock REL-001 (BRW-006/SVC-007), REL-002 (SVC-006), and the E9 service-dispatch enable — and
-   they share the SAME routing-seam prerequisite as E10 (build it once, source-agnostic).
-3. **After the fleet + bridges (session-buildable THEN):** wire the projection bridges → the **crew
-   cutover** (crew = cleanest sink for a v1-provider company) → the other sink cutovers.
-4. **Operator DR (any time staging is up):** the **REL-003 DR rehearsal** (measured RPO/RTO), now owned
-   by the DBR-001 stub.
-5. **Last (gated on 1–4):** REL-001 (after S7/S8) · REL-002 (after SVC-006) · REL-005 (after all REL +
-   the kill-switch write path) — the private-beta close.
+**Forward sequence (reconciled 2026-08-28 — the honest order):**
+1. **★ TIER 0 (session/code — the current build front):** **WRK-014 container identity (the hard gate)
+   → WRK-015 POSIX input → DEP-012 adapter-manager + DEP-011 wire.** The provider-topology contract is
+   settled (`qa/2026-08-28-adapter-manager-scope.md` §8, credential=(i)); the mechanism links
+   (session/hello/self-model/loop) are already built + composed behind the default-off flag and get their
+   first REAL exercise at E7-1.
+2. **C0 — operator deploy:** stand up the staging fleet — one Postgres DB + the `aoa_app`/`aoa_operator`
+   role logins, S3/realtime, the E2B key on adapter-manager, a host; **`docker compose up`, not swarm**
+   (`qa/2026-08-28-c0-staging-deploy-scope.md`).
+3. **E7-1 campaign (operator):** arm the canary Org → dispatch ONE real-E2B coding run →
+   `pnpm verify:e7-1-distributed-run <runId>` (**evidence-verifier A** blesses it — a mechanized verdict,
+   not an eyeballed column; it flips no gate) → cite the green → flip `E7-1-coding-journey` → `wired`.
+4. **Then (unlocked, session):** wire the zero-caller projection bridges → the **S6 sink cutover** (crew
+   first — rides the mint for a v1-provider company) → drain wired → REL-005.
+5. **Parallel — Lane B (`C:\e8`):** S7 browser BRW-004..008 + S8 service SVC-002..007 → unblock REL-001
+   (BRW-006/SVC-007), REL-002 (SVC-006), the E9 service-dispatch enable (shares E10's routing seam).
+6. **Operator DR (any time staging is up):** the **REL-003 DR rehearsal** (RPO/RTO); DBR-001 owns the
+   `aoa db:restore` entrypoint. **Last:** REL-005 — the private-beta close (after all REL + the
+   kill-switch write path).
 
 **Honest read:** the session-driven cadence has delivered what it can — the mechanism (E0–E6), the
 coding path (E7 code-complete), the guard/register layer, and the reconciliation/corrections. The
@@ -196,8 +196,8 @@ flowchart TD
 |------|------|------|-----------|------|
 | **Frontier (buildable now)** | ~~Evidence-verifier A — the E7-1 acceptance harness~~ ✅ **BUILT** (`pnpm verify:e7-1-distributed-run`; flips no gate) | `SESS` | — | done |
 | | E6-F005 · E6-F007 · E4-F014 — doc-only closures | `SESS` | — | XS |
-| **Critical path (the spine)** | **C0 · staging-deploy pipeline** (deploy the staging compose) | `OP` | — | **L** |
-| **★ Tier 0 (unbuilt code — gates the campaign)** | WRK-014 container identity (hard gate) + WRK-015 POSIX enrolment input + adapter-manager server DEP-012 + DEP-011 worker→provider wire (E6-F003, HIGH) — nodes filed 2026-08-28 | `SESS` | — | L |
+| **★ Critical path — Tier 0 (session/code, the build front)** | WRK-014 container identity (the hard gate) → WRK-015 POSIX enrolment input → adapter-manager server DEP-012 + DEP-011 worker→provider wire (E6-F003) — nodes filed 2026-08-28; contract settled (scope §8) | `SESS` | — | L |
+| | **C0 · staging-deploy pipeline** (deploy the staging compose) | `OP` | Tier 0 | **L** |
 | | C2 · fleet deployed + armed (E2B key, canary, cap>1, worker) | `OP` | C0 | M |
 | | C3 · E7-1 campaign — one real-E2B distributed run → **E7-1 wired** | `OP` | C2 | S |
 | | C4 · wire the projection bridges (jobApproval/Budget/Output) | `SESS` | C3 | M |
@@ -213,24 +213,20 @@ flowchart TD
 | | WRK-013 durable lease-candidate + startup reconciler (E4-F009 → unblocks E5-3) | `SESS` | — | M |
 | | E3-18 revocation-fanout consumer | `SESS` | dispatch-live | M |
 
-**The one thing to see:** every substantive session item (**C4–C8** — bridges, sinks, drain, close)
-is dammed behind **C3** (E7-1 wired), which is dammed behind **C0** (the operator staging-deploy
-pipeline). So the honest sequence is:
+**The one thing to see:** the mechanism is built; the campaign is gated on **Tier 0** (WRK-014 → WRK-015 →
+DEP-012/DEP-011 — unbuilt session/code), then the operator deploy (C0), then the run. Everything downstream
+(**C4–C8**: bridges, sinks, drain, close) is dammed behind **E7-1 wired**.
 
-- **Session, now** — **evidence-verifier A is BUILT** (`225e83f1f`; `pnpm verify:e7-1-distributed-run`).
-  What remains session-side: sweep the doc closures (F-band); optionally DBR-001 and the WRK stubs, but
-  those are LOW / fail-closed. **★ CORRECTION (C0 review): the frontier is NOT dry — TIER 0
-  (WRK-014/WRK-015 container identity + POSIX input + adapter-manager DEP-012/DEP-011, unbuilt code) gates
-  the campaign; the mechanism links (3.3–3.6) are owned — see `qa/2026-08-28-worker-dispatch-chain-reconciled.md`
-  and `qa/2026-08-28-c0-staging-deploy-scope.md`.**
-- **The real unlock is TIER 0, then C0** — first build **adapter-manager + ship DEP-011** (session/code),
-  THEN the operator deploys **C0**. The fleet alone cannot execute a canary run (adapter-manager
-  unimplemented). **Highest leverage: Tier 0.**
-- **Lane B, parallel** — S7/S8 features (not ours); they share C5's routing seam (build it once).
+- **Session, now** — build **Tier 0** (WRK-014 is next: the hard gate — a `mounted_secret` container holds
+  no identity/key, so it can never enrol). **evidence-verifier A is already BUILT** and waiting to bless
+  the first run. Cheap fill: the doc closures (E6-F005 / E6-F007 / E4-F014).
+- **Operator, after Tier 0** — deploy the fleet (C0) → run the campaign → flip E7-1. The fleet alone cannot
+  execute a canary run until Tier 0 lands (adapter-manager currently unimplemented).
+- **Lane B, parallel** — S7/S8 features (`C:\e8`); they share C5's routing seam (build it once).
 
-The campaign is gated on **TIER 0 (unbuilt session/code: adapter-manager + DEP-011), then the operator
-deploy** — not one operator action. **The session frontier is rich again: Tier 0 is real code.** See
-`qa/2026-08-28-c0-staging-deploy-scope.md` for the tiered decomposition.
+Full analysis: `qa/2026-08-28-worker-dispatch-chain-reconciled.md` (the chain) ·
+`qa/2026-08-28-adapter-manager-scope.md` §8 (the settled provider contract) ·
+`qa/2026-08-28-c0-staging-deploy-scope.md` (the deploy decomposition).
 
 ---
 
@@ -522,9 +518,12 @@ for Sprint 5 the one real E2B journey.
 | **8** | 🚫 **BLOCKED** | SVC-001 (storage) only; **SVC-002..007 need the service-dispatch enable** (the daemon is batch-only). The E9 gate-clause guard is **premature** (no real symbol until SVC-002). |
 | **9** | 🟡 **PARTIAL** | Units 1/2/3 ✅ (REL-FOUNDATION-GATE, REL-003 core, foundation-suite-unrun). **REL-001/002/005 BLOCKED** on S7/S8 + downstream deps. |
 
-**The frontier is now OPERATOR + Lane B, not session units** (see §1.5): the highest-leverage next move
-is the operator **E7-1 staging-fleet deploy + campaign** (§9 "Sprint 5b"), which cascades furthest —
-it promotes E7-1 and is the prerequisite for the bridge-wiring → crew cutover → the other sinks.
+**The frontier is TIER 0 — session/code, not operator-only** (reconciled 2026-08-28; see §1.5): the
+distributed-worker mechanism links are built + composed behind the flag, so the honest remainder before
+the E7-1 cloud campaign is **three code links — WRK-014 (container identity, the hard gate) → WRK-015
+(POSIX input) → DEP-012 adapter-manager + DEP-011 wire** — THEN the operator staging-fleet deploy +
+campaign (which promotes E7-1 and is the prerequisite for the bridge-wiring → crew cutover → the other
+sinks). Lane B (S7/S8) runs in parallel.
 
 ### Sprint 1 — WRK-010: a worker stays logged in
 **Epic E4 · ★ SHIPPED `c1c5530f5` · design + result: `epics/E4-worker-daemon/tickets/WRK-010-{design,result}.md`**
