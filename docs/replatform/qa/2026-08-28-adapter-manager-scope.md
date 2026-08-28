@@ -157,6 +157,76 @@ Then Tier 1 (C0 deploy) → the E7-1 campaign → evidence-verifier A.
    bottleneck or a blast-radius concern for a multi-tenant cloud, and does the per-run credential model
    keep tenants isolated across a shared broker?
 
-## 8. Review round
+## 8. Review round — three-agent adversarial pass (2026-08-28), all verified against source
 
-*(pending — adversarial pass on the credential decision, the wire/redaction boundary, and the first-slice de-risk)*
+**Decisions settled + corrections:**
+- **★ Credential fork RESOLVED → (i)** (worker redeems, sends the key to adapter-manager over the
+  mutually-authenticated internal hop). My v1 lean (ii) was wrong: redemption is bound to the worker's own
+  device identity (`secret-broker.ts` `request.workerId !== auth.workerId → unauthorized`; device-proof
+  thumbprint binding) — adapter-manager cannot stand in without a new delegation that makes one shared
+  broker the standing minter of every tenant's key (worse blast radius). (i) adds one mTLS control-net leg
+  to a path the value already crosses (the resolve response) and is already canary-scrubbed.
+- **★ MANDATORY wire rule (F2, both reviewers):** the wire's `inspect`/`list` return **redacted
+  projections only**; the full `InspectResult` (env/secrets/command/logs/objectGrants) must NEVER cross —
+  redact adapter-manager-local, and move the CleanupAuthority ownership check to a **label hash**
+  (`resourceLabelsHash` exists) or an AM-local owned/not-owned verdict. This decision lands **inside Slice
+  1**, so §1's "authorities untouched" is false for the inspect/list path — reconcile the wording.
+- **★ Delete the streaming slice** (completeness A + wire F4, verified `e2b-provider.ts:248`): the port's
+  `execute` is **unary and byte-free** (opaque `stdoutRef`/`stderrRef`; the stream is discarded). Streaming
+  customer bytes across the provider wire would **re-introduce the E5 byte-egress the boundary forbids**.
+  Live output rides the already-frozen `event_upload` outbox, not this wire. C-stream is
+  adapter-manager-local (it consumes stdout locally into the ref model) — not a slice.
+- **Slice 1 hosts `new E2bSandboxProvider({ transport: new MockE2bTransport() })`** — the real per-op
+  provider over the key-less mock (wire F1). The D1 `createFakeSandboxProvider` is the *invoke-driver*
+  shape, not the per-op port, and the per-op namesake is the WRK-009-removed "fabricates success" fake —
+  hosting it resurrects what WRK-009 excised. This is strictly better: Slice 3 becomes a pure
+  `MockE2bTransport → RealE2bTransport` swap of the *same* hosted provider. Only D1's
+  container/health/net-seg/peer-allowlist harness is reused — **not** the `/invoke` envelope.
+- **Add a durable idempotency ledger component** (wire F3): `E2bSandboxProvider.#idempotency` is an
+  in-memory map; out-of-process, adapter-manager restarts independently of the worker → a replayed `create`
+  double-provisions. Persist `idempotencyKey → {sandboxId,resourceLabels}`; scope with Slice 3.
+- **Slice 1 is COMPONENT-LEVEL** (driver ↔ server in an integration test); nothing dispatches *through the
+  daemon* until the composition seam (a `AOA_WORKER_PROVIDER_URL` consumer + `deps.provider` inject + the
+  two-pass dispatch gate chain) is built — itself non-trivial, and it belongs to DEP-011/worker-daemon, not
+  adapter-manager (wire F5).
+- **Correctly greenfield** (completeness C): the World-1 server-side `sandbox-provider-runtime.ts` (the
+  PR-#320 `cloud_auth` lease-oriented host) is the **legacy sink being migrated away**, NOT reusable. But
+  the E2B SDK integration is done (`real-transport.ts`), so hosting the real provider is near-zero E2B work.
+- **No routing capability** (completeness D): the 12-name capability vocabulary is frozen; `AOA_WORKER_PROVIDER_URL`
+  is the lever, and a provider-less-worker placement is backstopped by `decideDispatchComposition`'s
+  `no_provider` refusal at dispatch (DEP-011's remit).
+- **Epic: E6, alongside DEP-011** (completeness F): adapter-manager (server) + DEP-011 (worker wire) are one
+  seam, two ends; DEP-011 is fixed in E6 (`Depends on: DEP-010`, owns E6-F003). A new `#### <ID>` node in
+  E6, `Depends on: DEP-010`, DEP-011 repointed onto it.
+
+## 9. ★ THE REFRAME — adapter-manager is ONE of ~7 links (WAVE-4-RESEQUENCE), not the last blocker
+
+The completeness review surfaced `docs/replatform/WAVE-4-RESEQUENCE.md` — a **pre-existing terrain doc**
+(from a 27-agent probe) that already sequenced the live-worker-dispatch chain the E7-1 cloud campaign needs.
+Verified against it: the chain is **seven links**, and adapter-manager (the "provider transport", §3.7 —
+"the architecture is DECIDED and MACHINE-ENFORCED; the service does not exist") is only one:
+
+`identity → enrolment input → SESSION ACQUISITION → matchable hello → self-model read → loop composition → provider transport`
+
+**Four links have NO OWNER** (WAVE-4-RESEQUENCE §3): container identity (3.1 — the hard gate on all later
+links), POSIX enrolment input (3.2), session acquisition for an already-enrolled device (3.3, a *new* link
+the campaign plan never named), and a matchable worker hello (3.4 — the only producer `buildDesktopHello`
+is "deliberately unmatchable" and burns a one-shot snapshot). Self-model (3.5) is half-owned (WRK-008);
+loop composition (3.6) partially (the start seam — `bootstrapWorkerDaemon` never calls `.run()`). Plus a
+**tracking gap**: `program-design.md` cannot see several shipped tickets, so its dependency guard is blind
+and every "no owner" claim needs re-deriving.
+
+**WAVE-4-RESEQUENCE §5's own recommended order** (still the right sequence): **(0) fix the tracking** — add
+the missing tickets + re-run the dependency guard + re-derive the no-owner claims (cheapest; everything
+depends on it); **(1) the provider-topology decision + the adapter-manager contract** — *this scope +
+§8 IS that step*; **(2) container identity; (3) session + POSIX input; (4) matchable hello; (5) self-model
+client + start seam**; then the adapter-manager BUILD (Slices 1–5 above) + DEP-011's composition seam, then
+C0 deploy, then the campaign.
+
+**Honest consequence:** the E7-1 cloud campaign is **substantially further off than "build adapter-manager"**
+— it is a multi-link, mostly-unowned programme WAVE-4-RESEQUENCE recommends sequencing deliberately with an
+owner per link. **Building adapter-manager Slice 1 now would be building a link deep in a chain that is not
+even tracked, whose consumer (a dispatching worker) does not yet exist** — the exact "wire against an
+unimplemented peer for an unbuilt caller" failure DEP-011 was deferred to avoid. **So the honest first
+step is WAVE-4-RESEQUENCE step 0 (fix the tracking + reconcile the chain), not an adapter-manager build.**
+This scope stands as the step-1 provider-topology contract, ready for when the chain reaches it.
