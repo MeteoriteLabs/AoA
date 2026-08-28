@@ -70,7 +70,9 @@ guards/residuals.
   REL-005 (all REL + kill-switch write path); **E10 cutover sinks** (MIG-005/006/007 — need the routing
   seam + mint generalization, E10-F001); **E9 SVC-002..007** (service dispatch unreachable); **E8-1
   governed browser path** + BRW-004..008 (Lane B).
-- **🔨 BUILDABLE NOW (session) — ★ the well is nearly dry (updated 2026-08-28).** The
+- **🔨 BUILDABLE NOW (session) — ★ NOT dry (superseded by the C0 review — see the §1.5 correction).** The
+  real session frontier is **TIER 0: adapter-manager (0 impl; needs a new ticket) + DEP-011 (E6-F003 wire)**
+  — substantial unbuilt code that gates the whole campaign. Beyond that, the
   guard/register-hardening layer is SOLID and mostly shipped: **E4-F013 ✅** (ownership-guard
   successor chain + DBR-001 stub) and **foundation-suite-unrun ✅** (S9-3, the checker's own suite now
   runs in `policy`) landed. The two remaining guard candidates did **NOT survive scoping**: **E9
@@ -85,9 +87,18 @@ guards/residuals.
   building alone (see `qa/2026-08-28-e10-keystone-scoping.md`). **What's left session-buildable is LOW
   value:** the cheap doc closures (E6-F005 / E6-F007 / E4-F014).
 
-**Forward timeline — ★ the frontier is now OPERATOR + Lane B, not session units (updated 2026-08-28):**
+**★ CORRECTION (2026-08-28, C0 adversarial review — verified against source):** the frontier is **NOT
+dry** and E7-1 is **NOT one operator act away.** The staging fleet **cannot execute a canary run even when
+deployed** — its provider broker `adapter-manager` has **zero implementation** (a manifest fiction: no
+code/image/Dockerfile) and the containerized worker→provider wire **E6-F003/DEP-011 is unbuilt**. So a
+**TIER 0 of unbuilt CODE** (build adapter-manager + ship DEP-011) sits ABOVE the deploy. The "operator +
+Lane B" framing below is superseded on this point. Real order: **[Tier 0: adapter-manager + DEP-011 —
+session/code] → [C0: deploy — operator] → [campaign] → [verify A].** Full analysis:
+`qa/2026-08-28-c0-staging-deploy-scope.md` §0.
+
+**Forward timeline (updated 2026-08-28):**
 1. **★ THE KEYSTONE UNLOCK — operator, highest leverage: deploy the staging fleet → run the E7-1
-   campaign** (§9 "Sprint 5b" + `CLI-006-staging-canary-runbook.md`). One operator act promotes E7-1
+   campaign** (§9 "Sprint 5b" + `CLI-006-staging-canary-runbook.md`). **Once TIER 0 ships** (adapter-manager + DEP-011), the deploy + campaign promotes E7-1
    AND is the prerequisite for wiring the zero-caller projection bridges → the crew cutover (E10) → the
    other sinks. It unblocks the most downstream work of anything remaining. **The session-buildable
    de-risk is now BUILT: evidence-verifier A** (`pnpm verify:e7-1-distributed-run <runId>`) — the
@@ -121,8 +132,8 @@ Register-sourced (`gate-clause-wiring.json` + `finding-ownership.json`), reconci
 ```mermaid
 flowchart TD
   V["evidence-verifier A ✅ BUILT<br/>acceptance harness · SESS"]:::done
-  C0["staging-deploy pipeline<br/>deploy docker-compose.staging.yml<br/>OP · unticketed · the #1 unlock"]:::op
-  D11["DEP-011 worker→adapter-manager wire<br/>SESS · bites only at the fleet"]:::sess
+  C0["staging-deploy pipeline<br/>deploy docker-compose.staging.yml<br/>OP · unticketed · downstream of Tier 0"]:::op
+  D11["★ TIER 0 — adapter-manager (0 impl) + DEP-011 wire<br/>SESS/CODE · UNBUILT · gates the fleet"]:::sess
   C2["fleet deployed + armed<br/>E2B key · canary · cap&gt;1 · enrolled worker<br/>OP"]:::op
   C3["E7-1 campaign — 1 real-E2B run<br/>OP dispatches"]:::op
   CW["E7-1 = wired ✅"]:::done
@@ -160,7 +171,7 @@ flowchart TD
 | **Frontier (buildable now)** | ~~Evidence-verifier A — the E7-1 acceptance harness~~ ✅ **BUILT** (`pnpm verify:e7-1-distributed-run`; flips no gate) | `SESS` | — | done |
 | | E6-F005 · E6-F007 · E4-F014 — doc-only closures | `SESS` | — | XS |
 | **Critical path (the spine)** | **C0 · staging-deploy pipeline** (deploy the staging compose) | `OP` | — | **L** |
-| | C1 · DEP-011 worker→adapter-manager provider wire (E6-F003, HIGH) | `SESS` | bites at C0 | M |
+| **★ Tier 0 (unbuilt code — gates the campaign)** | adapter-manager (0 impl; needs a ticket) + DEP-011 worker→provider wire (E6-F003, HIGH) | `SESS` | — | L |
 | | C2 · fleet deployed + armed (E2B key, canary, cap>1, worker) | `OP` | C0 | M |
 | | C3 · E7-1 campaign — one real-E2B distributed run → **E7-1 wired** | `OP` | C2 | S |
 | | C4 · wire the projection bridges (jobApproval/Budget/Output) | `SESS` | C3 | M |
@@ -182,13 +193,16 @@ pipeline). So the honest sequence is:
 
 - **Session, now** — **evidence-verifier A is BUILT** (`225e83f1f`; `pnpm verify:e7-1-distributed-run`).
   What remains session-side: sweep the doc closures (F-band); optionally DBR-001 and the WRK stubs, but
-  those are LOW / fail-closed. **The session frontier is nearly dry.**
-- **Operator, the real unlock** — scope + build **C0**. One act (the fleet) converts a nearly-dry
-  backlog into the full C4–C8 chain. **Highest leverage in the programme.**
+  those are LOW / fail-closed. **★ CORRECTION (C0 review): the frontier is NOT dry — TIER 0
+  (adapter-manager + DEP-011, unbuilt code) gates the campaign; see `qa/2026-08-28-c0-staging-deploy-scope.md`.**
+- **The real unlock is TIER 0, then C0** — first build **adapter-manager + ship DEP-011** (session/code),
+  THEN the operator deploys **C0**. The fleet alone cannot execute a canary run (adapter-manager
+  unimplemented). **Highest leverage: Tier 0.**
 - **Lane B, parallel** — S7/S8 features (not ours); they share C5's routing seam (build it once).
 
-We are **one operator action away** from the session work becoming rich again. Until then, plan C0 in
-detail (it's the bottleneck) and keep the F-band as session fill — everything below C3 is scope-only.
+The campaign is gated on **TIER 0 (unbuilt session/code: adapter-manager + DEP-011), then the operator
+deploy** — not one operator action. **The session frontier is rich again: Tier 0 is real code.** See
+`qa/2026-08-28-c0-staging-deploy-scope.md` for the tiered decomposition.
 
 ---
 
