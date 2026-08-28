@@ -278,18 +278,24 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   //
   // Gated on the MODE rather than on the custody verdict, because the verdict is
   // a pure yes/no and deliberately carries neither a mode nor the stores (A1 §1).
-  // `mounted_secret` therefore reaches none of this: every deployed compose file
-  // uses that mode, and row 3 of the I11 truth table guarantees zero shipped-
-  // container behaviour change.
+  // `mounted_secret` reaches none of this: every deployed compose file uses that
+  // mode with no stores, so the `&& deps.identityStore && deps.receiptStore`
+  // conjunct is already false for it, and row 3 of the I11 truth table guarantees
+  // zero shipped-container behaviour change. WRK-015 flips a canary container to
+  // `file_record`; this ticket lands the arm inert.
   //
-  // HONEST NOTE ON THIS CONDITION. Since `resolveCustody` now REFUSES
-  // `mounted_secret` with any store injected (row 2, added because a mutation
-  // showed nothing had ever tested that pair), the mode check here is redundant
-  // by construction: this line is unreachable with `mounted_secret`. A mutation
-  // removing it therefore SURVIVES, and it is recorded as a survivor rather than
-  // dressed up as a proven guard. It stays because the property is guarded one
-  // layer out, and if that gate is ever loosened, the absence of this line would
-  // silently switch enrolment on for the mode every shipped container uses.
+  // HONEST NOTE ON THIS CONDITION (rewritten for WRK-014 — §9). The mode arm is
+  // now the REAL enrol discriminator: it names EXACTLY the two custody modes that
+  // enrol — `os_keychain` (desktop) and `file_record` (container) — and each
+  // disjunct is load-bearing. Delete the `os_keychain` arm and the os_keychain
+  // enrol test reddens; delete the `file_record` arm and the WRK-014 container
+  // enrol test reddens. What still SURVIVES is deleting the WHOLE mode check
+  // (leaving only the store conjunct): `resolveCustody` already refuses
+  // `mounted_secret` WITH stores pre-socket (exit 1) and passes it only WITHOUT
+  // stores, so a store-bearing `mounted_secret` can never reach this line — the
+  // mode check is defence-in-depth for that one gate being loosened, not a
+  // separately-killable guard. So it is honest to keep, and honest to record that
+  // the all-or-nothing mutation survives while each named-mode arm does not.
   // WRK-008 slice 2b (Step 7) — the identity gate takes a BOOLEAN, not the identity, so the
   // record load + key derivation stay INSIDE the compose branch (zero residue on a refusing
   // boot — §10). This is set from the enrolment OUTCOME already in scope, never a second
@@ -301,7 +307,11 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   // self-hello refresh. Both stay `undefined` on a non-composing boot (the shipped default).
   let lifecycle: WorkerSessionLifecycle | undefined;
   let controlPlaneClient: ControlPlaneClient | undefined;
-  if (config.keyStoreMode === "os_keychain" && deps.identityStore && deps.receiptStore) {
+  if (
+    (config.keyStoreMode === "os_keychain" || config.keyStoreMode === "file_record") &&
+    deps.identityStore &&
+    deps.receiptStore
+  ) {
     const runEnrollment = deps.enrollOnceFn ?? enrollOnce;
     const makeClient = deps.createClient ?? createControlPlaneClient;
     const readFileText = deps.readFileText ?? ((path: string) => readFileSync(path, "utf8"));

@@ -71,8 +71,10 @@ guards/residuals.
   seam + mint generalization, E10-F001); **E9 SVC-002..007** (service dispatch unreachable); **E8-1
   governed browser path** + BRW-004..008 (Lane B).
 - **🔨 SESSION FRONTIER — TIER 0 + residuals.** The current build front is **TIER 0** (the forward
-  sequence above): **WRK-014 container identity + WRK-015 POSIX input + adapter-manager DEP-012/DEP-011** —
-  three unbuilt code links; the mechanism links (session/hello/self-model/loop) are already owned. Beyond
+  sequence above): **WRK-014 ✅ BUILT-INERT** (container identity — the hard gate; shipped provably-correct-
+  but-unwired, the CMD/compose untouched), then **WRK-015 POSIX input (NEXT — activates the container path)
+  + adapter-manager DEP-012/DEP-011** — two remaining unbuilt code links; the mechanism links
+  (session/hello/self-model/loop) are already owned. Beyond
   Tier 0, the
   guard/register-hardening layer is SOLID and mostly shipped: **E4-F013 ✅** (ownership-guard
   successor chain + DBR-001 stub) and **foundation-suite-unrun ✅** (S9-3, the checker's own suite now
@@ -122,8 +124,10 @@ get their first REAL exercise = Sprint 5 / E7-1 on real E2B → C0 deploy → ca
 `qa/2026-08-28-c0-staging-deploy-scope.md` §0.
 
 **Forward sequence (reconciled 2026-08-28 — the honest order):**
-1. **★ TIER 0 (session/code — the current build front):** **WRK-014 container identity (the hard gate)
-   → WRK-015 POSIX input → DEP-012 adapter-manager + DEP-011 wire.** The provider-topology contract is
+1. **★ TIER 0 (session/code — the current build front):** **WRK-014 container identity (the hard gate) —
+   ✅ BUILT-INERT** (the `file_record` custody mode + `FileRecordStore` + container host, shipped unwired;
+   CMD/compose untouched) → **WRK-015 POSIX input (NEXT — activates the container path)** → DEP-012
+   adapter-manager + DEP-011 wire.** The provider-topology contract is
    settled (`qa/2026-08-28-adapter-manager-scope.md` §8, credential=(i)); the mechanism links
    (session/hello/self-model/loop) are already built + composed behind the default-off flag and get their
    first REAL exercise at E7-1.
@@ -159,7 +163,7 @@ Register-sourced (`gate-clause-wiring.json` + `finding-ownership.json`), reconci
 flowchart TD
   V["evidence-verifier A ✅ BUILT<br/>acceptance harness · SESS"]:::done
   C0["staging-deploy pipeline<br/>deploy docker-compose.staging.yml<br/>OP · unticketed · downstream of Tier 0"]:::op
-  D11["★ TIER 0 — WRK-014 identity + WRK-015 POSIX + adapter-manager DEP-012 + DEP-011 wire<br/>SESS/CODE · UNBUILT · gates the fleet (mechanism links 3.3–3.6 already owned)"]:::sess
+  D11["★ TIER 0 — WRK-014 identity ✅ BUILT-INERT · WRK-015 POSIX (NEXT) + adapter-manager DEP-012 + DEP-011 wire<br/>SESS/CODE · gates the fleet (mechanism links 3.3–3.6 already owned)"]:::sess
   C2["fleet deployed + armed<br/>E2B key · canary · cap&gt;1 · enrolled worker<br/>OP"]:::op
   C3["E7-1 campaign — 1 real-E2B run<br/>OP dispatches"]:::op
   CW["E7-1 = wired ✅"]:::done
@@ -196,7 +200,7 @@ flowchart TD
 |------|------|------|-----------|------|
 | **Frontier (buildable now)** | ~~Evidence-verifier A — the E7-1 acceptance harness~~ ✅ **BUILT** (`pnpm verify:e7-1-distributed-run`; flips no gate) | `SESS` | — | done |
 | | E6-F005 · E6-F007 · E4-F014 — doc-only closures | `SESS` | — | XS |
-| **★ Critical path — Tier 0 (session/code, the build front)** | WRK-014 container identity (the hard gate) → WRK-015 POSIX enrolment input → adapter-manager server DEP-012 + DEP-011 worker→provider wire (E6-F003) — nodes filed 2026-08-28; contract settled (scope §8) | `SESS` | — | L |
+| **★ Critical path — Tier 0 (session/code, the build front)** | WRK-014 container identity (the hard gate) **✅ BUILT-INERT** → WRK-015 POSIX enrolment input **(NEXT — activates the container path)** → adapter-manager server DEP-012 + DEP-011 worker→provider wire (E6-F003) — nodes filed 2026-08-28; contract settled (scope §8) | `SESS` | — | L |
 | | **C0 · staging-deploy pipeline** (deploy the staging compose) | `OP` | Tier 0 | **L** |
 | | C2 · fleet deployed + armed (E2B key, canary, cap>1, worker) | `OP` | C0 | M |
 | | C3 · E7-1 campaign — one real-E2B distributed run → **E7-1 wired** | `OP` | C2 | S |
@@ -213,13 +217,16 @@ flowchart TD
 | | WRK-013 durable lease-candidate + startup reconciler (E4-F009 → unblocks E5-3) | `SESS` | — | M |
 | | E3-18 revocation-fanout consumer | `SESS` | dispatch-live | M |
 
-**The one thing to see:** the mechanism is built; the campaign is gated on **Tier 0** (WRK-014 → WRK-015 →
-DEP-012/DEP-011 — unbuilt session/code), then the operator deploy (C0), then the run. Everything downstream
-(**C4–C8**: bridges, sinks, drain, close) is dammed behind **E7-1 wired**.
+**The one thing to see:** the mechanism is built; the campaign is gated on **Tier 0** (WRK-014 ✅ BUILT-INERT
+→ WRK-015 → DEP-012/DEP-011 — the remaining unbuilt session/code), then the operator deploy (C0), then the
+run. Everything downstream (**C4–C8**: bridges, sinks, drain, close) is dammed behind **E7-1 wired**.
 
-- **Session, now** — build **Tier 0** (WRK-014 is next: the hard gate — a `mounted_secret` container holds
-  no identity/key, so it can never enrol). **evidence-verifier A is already BUILT** and waiting to bless
-  the first run. Cheap fill: the doc closures (E6-F005 / E6-F007 / E4-F014).
+- **Session, now** — continue **Tier 0**: **WRK-014 ✅ BUILT-INERT** (the hard gate — the `file_record`
+  custody mode + `FileRecordStore` + container host, shipped unwired). **WRK-015 is NEXT** (the POSIX
+  enrolment-input fix that ACTIVATES the container path — repoint the CMD + switch a canary compose to
+  `file_record`; before it, a live container on the POSIX file arm crash-loops). **evidence-verifier A is
+  already BUILT** and waiting to bless the first run. Cheap fill: the doc closures (E6-F005 / E6-F007 /
+  E4-F014).
 - **Operator, after Tier 0** — deploy the fleet (C0) → run the campaign → flip E7-1. The fleet alone cannot
   execute a canary run until Tier 0 lands (adapter-manager currently unimplemented).
 - **Lane B, parallel** — S7/S8 features (`C:\e8`); they share C5's routing seam (build it once).

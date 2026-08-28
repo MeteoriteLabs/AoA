@@ -133,6 +133,24 @@ export function resolveCustody(
     }
     return { kind: "ok" };
   }
+  if (mode === "file_record") {
+    // WRK-014 §3 — the DISTINCT container-custody mode (added because v1's
+    // "amend `mounted_secret` to admit a DeviceRecordStore" was infeasible: both
+    // params are typed `DeviceRecordStore`, so this function cannot tell a
+    // record store from a key store — a `DeviceKeyStore` can never reach here).
+    //
+    // Unlike `mounted_secret`, a `file_record` container DECLARES it will persist
+    // an identity, so BOTH stores are required. Exactly one is the torn-config
+    // hazard (an identity with nowhere to write its receipt, or vice versa); none
+    // is a misconfigured host. Both → ok; anything else → refuse, pre-socket.
+    if (!identityStore) {
+      return { kind: "refuse", reason: "keyStoreMode is file_record but no identity store was injected" };
+    }
+    if (!receiptStore) {
+      return { kind: "refuse", reason: "keyStoreMode is file_record but no receipt store was injected" };
+    }
+    return { kind: "ok" };
+  }
   // An unknown mode fails closed. A future mode this build does not understand
   // must not silently fall back to a weaker custody model.
   return { kind: "refuse", reason: `unknown keyStoreMode ${JSON.stringify(mode)}` };

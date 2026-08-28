@@ -21,7 +21,7 @@ current tree with a citation per verdict:
 
 | # | Link | WAVE-4 (2026-08-23) | **Current tree** | Owner (at tip) |
 |---|------|---------------------|------------------|----------------|
-| 3.1 | Container identity | NO OWNER | **NO OWNER** (unchanged) | **none → WRK-014 (new)** |
+| 3.1 | Container identity | NO OWNER | at reconcile NO OWNER → **WRK-014 BUILT-INERT** (later same day) | **WRK-014 (built, unwired)** |
 | 3.2 | POSIX enrolment input | NO OWNER | **NO OWNER** (unchanged) | **none → WRK-015 (new)** |
 | 3.3 | Session acquisition | NO OWNER | **OWNED** — mechanism shipped; one restart residual | WRK-010 slice 2 |
 | 3.4 | Matchable hello | NO OWNER | **OWNED** | WRK-011 (+ WRK-008 slice 2b) |
@@ -69,6 +69,15 @@ defect WAVE-4 §0 warns about does not recur here: these are direct source reads
 ## 2. Link by link — reconciled
 
 ### 3.1 Container identity — **STILL UNOWNED** (confirmed; the hard gate) → **WRK-014 (new)**
+
+> **★ Update (2026-08-28, later same day): WRK-014 is now BUILT-INERT.** The verdict below (unowned at
+> reconcile) drove the ticket. WRK-014 shipped the fix: a distinct `file_record` custody mode +
+> `resolveCustody` arm, a crash-atomic `FileRecordStore` (identity persisted inline) + the daemon's own
+> `Uint8Array`-safe codec, and a `runContainerHost` that reads `AOA_WORKER_STATE_DIR`, asserts the state
+> dir writable pre-socket, builds the stores and injects them. It landed **UNWIRED** — the Dockerfile CMD
+> still runs `worker-daemon.js` and no compose switched to `file_record` — so no deployed container
+> changed. **WRK-015 activates it** (the POSIX enrolment-input fix + the CMD repoint + a canary compose
+> switch). See `WRK-014-result.md`. 3.1 moves from "unowned" to "owned, built-inert".
 
 WAVE-4 §3.1 stands, re-verified at tip:
 - `MountedSecretKeyStore` (`packages/worker-daemon/src/identity/key-store.ts:61`) has **zero production
@@ -211,8 +220,9 @@ Reconciled, this is shorter and differently-shaped than WAVE-4 implied. The mech
 are composed and waiting behind the default-off flag; the true remaining work is three links plus the
 already-known operator deploy:
 
-1. **WRK-014 — container identity (3.1).** The hard gate; the first BUILD. Until a container has a device
-   key, nothing downstream runs on it. `SESS`/code.
+1. **WRK-014 — container identity (3.1). ✅ BUILT-INERT (2026-08-28).** The hard gate; the first BUILD.
+   Shipped the `file_record` custody mode + `FileRecordStore` + container host, UNWIRED (CMD/compose
+   untouched). `SESS`/code — done. **WRK-015 (2) activates it.**
 2. **WRK-015 — POSIX enrolment input (3.2).** Same container-enablement step, after identity. `SESS`/code.
 3. **DEP-012 — adapter-manager server (3.7) + DEP-011 — the worker→provider wire.** The out-of-process
    provider the container's `deps.provider` RPCs to. `SESS`/code; contract settled (scope §8).
@@ -236,6 +246,12 @@ smaller programme than the snapshot framing.
   a first-dispatch blocker — a fresh enrolment always gets a session, so the E7-1 campaign does not need
   it. Whoever builds WRK-014 should decide whether container session-persistence subsumes it. Flagged for
   visibility; a future unit may file it (a WRK successor) if resilience becomes a release gate.
+  **★ WRK-014 decided (2026-08-28): NOT subsumed.** `FileRecordStore` persists the IDENTITY + receipt
+  durably (so a restarted container replays enrolment and re-acquires a session WITHIN the code window),
+  but it does NOT persist the session itself — a cold restart AFTER the code window still requires
+  re-enrolment, exactly as on the desktop. The gap is unchanged and remains WRK-010-slice-2's residual (a
+  future WRK successor if it becomes a release gate). The E7-1 singleton canary uses a fresh enrolment, so
+  it is not on the critical path.
 - **Real daemon→real-server round-trips (3.4/3.5/3.6):** the daemon-side callers are proven over a **fake
   control plane** (daemon suite — real socket + real device proof, fake server) and the server-side
   routes over **embedded-PG with a synthetic client** (server suite); no test exercises the real daemon

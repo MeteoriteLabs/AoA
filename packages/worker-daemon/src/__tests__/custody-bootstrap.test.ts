@@ -143,6 +143,33 @@ describe("DSK-001/I11 — resolveCustody is pure and total", () => {
   });
 });
 
+describe("WRK-014/§3 — resolveCustody gains a distinct file_record arm", () => {
+  const store = { load: () => null, saveIfAbsent: () => "stored" as const, clear: () => {} };
+
+  it("accepts file_record when BOTH stores are present", () => {
+    expect(resolveCustody("file_record", store, store).kind).toBe("ok");
+  });
+
+  it("REFUSES file_record with exactly one store (the torn-config hazard)", () => {
+    expect(resolveCustody("file_record", store, undefined).kind).toBe("refuse");
+    expect(resolveCustody("file_record", undefined, store).kind).toBe("refuse");
+  });
+
+  it("REFUSES file_record with no stores — unlike bare mounted_secret, this is a misconfiguration", () => {
+    // A `file_record` container declares it WILL persist an identity; arriving
+    // with no stores is a broken host, not the inert-ok that store-less
+    // `mounted_secret` deliberately stays.
+    expect(resolveCustody("file_record", undefined, undefined).kind).toBe("refuse");
+  });
+
+  it("leaves the mounted_secret arm UNCHANGED — store-less still ok, any store still refused", () => {
+    // The three mutation-hardened mounted_secret cases must not move.
+    expect(resolveCustody("mounted_secret", undefined, undefined).kind).toBe("ok");
+    expect(resolveCustody("mounted_secret", store, undefined).kind).toBe("refuse");
+    expect(resolveCustody("mounted_secret", undefined, store).kind).toBe("refuse");
+  });
+});
+
 describe("DSK-001/I11 — a CONTRADICTORY custody configuration dies pre-socket", () => {
   // Plan §4/D3 row 2, which did not ship: `mounted_secret` returned `ok` no
   // matter what was injected. A mutation exposed it — removing the keyStoreMode

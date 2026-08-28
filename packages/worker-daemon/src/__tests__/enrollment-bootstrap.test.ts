@@ -116,6 +116,23 @@ describe("DSK-001/D4 — the daemon enrols, and only when it has custody", () =>
     expect(enrollOnceFn).toHaveBeenCalledTimes(1);
   });
 
+  it("calls enrollOnce exactly once under file_record (WRK-014 — the container enrol path)", async () => {
+    // WRK-014: a `file_record` container with both stores enters the SAME enrol
+    // block as `os_keychain`. This is the gate arm the ticket adds.
+    const enrollOnceFn = vi.fn(async () => OUTCOME);
+    const { proc, exitCodes } = fakeProc();
+    const d = deps({
+      env: baseEnv({ AOA_WORKER_KEY_STORE_MODE: "file_record" }),
+      enrollOnceFn: enrollOnceFn as never,
+    });
+    const result = await bootstrapWorkerDaemon({
+      ...d.args, proc, createLogger: recordingLogger([]),
+    } as never);
+    expect(result.ok).toBe(true);
+    expect(exitCodes).toEqual([]);
+    expect(enrollOnceFn).toHaveBeenCalledTimes(1);
+  });
+
   it("does NOT enrol under mounted_secret — shipped-container behaviour is unchanged", async () => {
     // Row 3 of the I11 truth table. Every deployed compose file uses this mode,
     // so an enrolment attempt here would be a live behaviour change to running

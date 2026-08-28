@@ -17,8 +17,12 @@ import { parseEnumEnv, parseIntEnv, parseUnitFloatEnv, type Env } from "./env.js
  */
 export const WORKER_VERSION = "0.1.0";
 
-/** Device-key custody mode (WRK-002 binds concrete stores). */
-export const KEY_STORE_MODES = ["mounted_secret", "os_keychain"] as const;
+/** Device-key custody mode (WRK-002 binds concrete stores).
+ *
+ * WRK-014 adds `file_record`: a filesystem-backed `DeviceRecordStore` a container
+ * host injects so a `mounted_secret`-class container can persist a device
+ * IDENTITY (not just a key) and enrol. See `resolveCustody`'s `file_record` arm. */
+export const KEY_STORE_MODES = ["mounted_secret", "os_keychain", "file_record"] as const;
 export type KeyStoreMode = (typeof KEY_STORE_MODES)[number];
 
 /** Registered-target scope the worker enrolls under (it can only narrow). */
