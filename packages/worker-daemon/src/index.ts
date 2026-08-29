@@ -71,6 +71,14 @@ export type { Metrics } from "./metrics/metrics.js";
 export { bootstrapWorkerDaemon } from "./bin/worker-daemon.js";
 export type { BootstrapDeps, BootstrapResult, ProcessLike } from "./bin/worker-daemon.js";
 
+// DEP-011 Slice 2b — the CONTAINER composition host (WRK-014) is PUBLIC so the outside
+// networked-host root (`@armyofagents/worker-networked-host`) can compose device custody +
+// the `file_record` state-dir probe via its injectable `bootstrap` seam, WITHOUT re-exporting
+// the custody internals (`FileRecordStore`, the record codecs stay private). The outside root
+// wraps `bootstrap` to add `makeRunProvider`; worker-daemon still cannot import a provider (E4-D01).
+export { runContainerHost } from "./bin/container-host.js";
+export type { ContainerHostDeps } from "./bin/container-host.js";
+
 // --- WRK-002: device identity, transport, enrollment, and session ------------
 
 export { WORKER_CONTROL_HEADERS } from "./transport/headers.js";
@@ -609,6 +617,11 @@ export type {
   DispatchCompositionInput,
   SelfModelReadResult,
   SelfModelReadRefusal,
+  // DEP-011 Slice 2b — the per-run networked provider factory TYPE. PUBLIC so the outside
+  // networked-host root can annotate its factory-builder's return type (giving the inline
+  // `({ capability }) => …` its param type via the annotation, satisfying noImplicitAny
+  // without importing the worker-daemon-local `OwnedLabelsCapabilityLike` by name).
+  MakeRunProvider,
 } from "./lifecycle/compose-dispatch.js";
 
 // --- DAT-001: immutable workspace snapshot producer --------------------------

@@ -20,6 +20,12 @@
       "resolverFile": "packages/worker-keystore/src/bin/sandbox-provider.ts",
       "resolverNoneMarker": "return { kind: \"none\" };",
       "reason": "The DESKTOP root. It passes a provider RESOLVED by resolveSandboxProvider (DEP-010), whose default (AOA_WORKER_SANDBOX_PROVIDER unset/empty/none) returns {kind:'none'} — so the shipped default resolves to no provider. The provider is confined to PROVIDER_HOST_PATH (DEP-010's boundary checker)."
+    },
+    "packages/worker-networked-host/src/bin/networked-host.ts": {
+      "providerPosture": "resolver",
+      "resolverFile": "packages/worker-networked-host/src/resolve-provider-url.ts",
+      "resolverNoneMarker": "return { kind: \"none\" };",
+      "reason": "DEP-011 Slice 2b — the CONTAINER networked-provider root. It supplies a per-run makeRunProvider factory RESOLVED by resolveProviderUrl, whose default (AOA_WORKER_PROVIDER_URL unset/empty/whitespace) returns {kind:'none'} — so the shipped default resolves to NO provider and the bin boots exactly as the inert container-host default. The networked driver lives OUTSIDE worker-daemon (E4-D01 holds); the factory is threaded via the container host's bootstrap seam. Ships INERT: no image runs this bin (Slice 5)."
     }
   }
 }

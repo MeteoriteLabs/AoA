@@ -739,3 +739,371 @@ plumbing, zero-capability fail-closed, and the short-run happy path.
 
 **Design is GO for the §9 build prompt** — 2a is honest-cleanup-only (orphans measured, never masked); the
 server-side reaper is the next scoped slice.
+
+---
+
+# Slice 2b — the containerized worker composition ROOT (the outside bin that supplies `makeRunProvider`)
+
+**Status:** design (2026-08-30, post-recon). Awaiting the 3-agent adversarial review (§2b.7). Ships INERT (the
+container worker stays dispatch-off in staging; the go-live flag flip + the split-image home are Slice 5). Supplies
+the `makeRunProvider` factory impl that Slice 2a's worker-daemon side already accepts through its DEEP layers.
+
+## 2b.0 — ★ two premise corrections from the recon (load-bearing)
+
+1. **The daemon BIN does NOT yet accept `makeRunProvider`.** Slice 2a threaded it through `SupervisorDeps`
+   (`supervisor.ts:107`), `ComposeDispatchRuntimeDeps` (`dispatch-runtime.ts:73`), and the gate FUNCTIONS
+   (`compose-dispatch.ts:103,:133`) — but NOT through `bootstrapWorkerDaemon`/`BootstrapDeps`. The bin passes only
+   `deps.provider` at all four sites (`worker-daemon.ts:334,:454,:495,:529` — note `provider: deps.provider!` at
+   `:529`). So a container injecting ONLY `makeRunProvider` is refused `no_provider` at the FIRST bin gate. 2a's
+   tests drove `composeDispatchRuntime` directly, bypassing the bin, so this gap was never exercised. → 2b-i.
+2. **`AOA_WORKER_PROVIDER_URL` already exists** — set (DEAD) in `docker-compose.d1.yml:304,343` +
+   `d1-dispatch-expectation.json` (`present`, "read by NO code"). 2b's bin is its FIRST code reader; the d1
+   `present` gate stays green (do not touch the d1 compose).
+
+## 2b.1 — the SUB-SLICE cut (mirror 2a's inside/outside)
+
+- **2b-i (INSIDE worker-daemon, inert, boundary-clean):** thread `makeRunProvider?` through `BootstrapDeps` + the
+  four bin sites; export `runContainerHost` + `ContainerHostDeps` from the worker-daemon barrel (so the outside
+  package composes custody via the existing `bootstrap` injection seam). No new package; no Dockerfile/boot-root
+  churn. Prove with a bin test: a `makeRunProvider`-only boot passes the provider gate (still inert — flag off).
+- **2b-ii (OUTSIDE):** the new package `packages/worker-networked-host` + bin (reads `AOA_WORKER_PROVIDER_URL`,
+  builds the factory, calls `runContainerHost` with the bootstrap injector) + `BIN_DIRS` extension +
+  `boot-roots-expectation.json` declaration + the combined-root `./Dockerfile` COPY + the env doc.
+
+## 2b.2 — 2b-i: what it builds
+
+- Add `makeRunProvider?: (input:{ handoff: LeaseHandoff; capability?: OwnedLabelsCapabilityLike }) => SandboxProvider`
+  to `BootstrapDeps` (`worker-daemon.ts:174`, alongside `provider?`; thread via the existing `MakeRunProvider`
+  alias, `compose-dispatch.ts:31`, not a re-inlined function type), and feed it to all four sites: `shouldComposeSession`
+  (`:334`), the two `decideDispatchComposition` calls (`:454,:495`), and `composeRuntime` (`:529` — replace
+  `provider: deps.provider!` with `provider: deps.provider, makeRunProvider: deps.makeRunProvider`; the `!` is a
+  type-honesty removal, not a runtime fix). ★ **All four move in LOCKSTEP (review F3):** `shouldComposeSession`
+  (`:334`) is coupled to the `:472` invariant — thread the two `decideDispatchComposition` + `composeRuntime` but
+  SKIP `shouldComposeSession` and a container boot gets `lifecycle undefined` while the first
+  `decideDispatchComposition` passes the provider gate → `readIsTheOnlyRemainingGate` true → the `:472-474`
+  invariant THROWS "invariant broken". The gate FUNCTIONS already handle `!provider && !makeRunProvider ⇒
+  no_provider` (2a) — 2b-i just feeds them the field.
+- **Export `runContainerHost` + `ContainerHostDeps` from `worker-daemon/src/index.ts`** (grep-confirmed NOT
+  exported; worker-daemon has no subpath exports). This lets the outside package reuse the container custody path
+  (`FileRecordStore` + the writability probe + the re-mint guard, `container-host.ts:102-135`) via its injectable
+  `bootstrap` seam — WITHOUT re-exporting `FileRecordStore`/the codecs (keep the custody internals private).
+- **Boundary-clean:** all 2b-i edits use LOCAL types (`makeRunProvider`'s `OwnedLabelsCapabilityLike` is the
+  worker-daemon-local type from 2a) — no cross-package import → `check-worker-daemon-boundary` stays green.
+
+## 2b.3 — 2b-ii: the new package + bin
+
+- **`packages/worker-networked-host`** — runtime deps EXACTLY `@armyofagents/worker-daemon` +
+  `@armyofagents/provider-wire` (`provider-capability` is transitive via provider-wire, and `OwnedLabelsCapability`
+  is re-exported from `provider-wire/index.ts:28` — NO direct dep needed). **No `pnpm -r build` cycle** (the
+  Slice-2a lesson): the new package is a LEAF consumer (nothing depends on it), downstream of everything — the
+  cycle (a package devDepping its own downstream consumers) cannot recur.
+- **The bin** (the boot root): a `resolveProviderUrl(env)` returning the URL or a `none` marker when
+  `AOA_WORKER_PROVIDER_URL` is unset (mirror `sandbox-provider.ts:72-104`'s `{kind:"none"|...}` shape + the
+  `resolverNoneMarker` literal); when set, call `runContainerHost({ env, proc, bootstrap: (d) =>
+  bootstrapWorkerDaemon({ ...d, makeRunProvider: ({ capability }) => { … } }) })`. ★ Write the factory INLINE as
+  the property value (review F2) — a standalone `const makeRunProvider = …` fails `noImplicitAny` (its
+  `{capability}` has no reachable named type: neither `MakeRunProvider` nor `OwnedLabelsCapabilityLike` is
+  barrel-exported), while inline the property's contextual type supplies the wide param. (Alternative: 2b-i also
+  `export type { MakeRunProvider }` and annotate the const.) The boot-root file MUST name `bootstrapWorkerDaemon`
+  (else the scan declares-but-can't-find → stale FAIL).
+- **★ The type bridge — RE-VALIDATE, do not blind-cast (review F1).** `makeRunProvider`'s wider
+  `OwnedLabelsCapabilityLike` (`v:number`, `audience:string`) is NOT assignable to
+  `NetworkedProviderDriverOptions.capability: OwnedLabelsCapability` (`v:1`, `audience:"adapter-manager"` literals).
+  The upstream `isOwnedLabelsCapabilityShape` (2a) validated only the WIDE shape (`typeof v === "number"`), NOT the
+  literals — so `capability as OwnedLabelsCapability` is an UNCHECKED down-cast (a future `v:2` — planned,
+  `capability.ts:32-34` — would be silently re-labelled `v:1`, erasing the compiler's forward-compat guard). FIX:
+  re-validate the literals at the factory and narrow WITHOUT a cast:
+  `if (capability?.v !== OWNED_LABELS_CAPABILITY_VERSION || capability.audience !== OWNED_LABELS_CAPABILITY_AUDIENCE)
+  throw/route-fail-closed; new NetworkedProviderDriver({ …, capability })` (both consts are reachable from
+  `@armyofagents/provider-wire`, already a 2b dep). NOTE the failure lands in `accept`'s catch as a generic
+  `lifecycle_error`, NOT the diagnosable `no_run_capability` terminal — route the mismatch to that fail-closed
+  path or record the coarser terminal.
+
+## 2b.4 — guards (the recon checklist — several are invisible to local `check-*.mjs`)
+
+- **`check-boot-roots-provider-free`** — extend `BIN_DIRS` (`:24-27`) with `packages/worker-networked-host/src/bin`
+  AND declare the new root in `boot-roots-expectation.json` (posture `"resolver"`, a `resolverFile`, a
+  `resolverNoneMarker`). Declare-without-scan → stale FAIL; scan-without-declare → undeclared FAIL — do BOTH.
+- **★ the combined-root `./Dockerfile` inline awk** (`pr.yml:422-460` — the Slice-1/DEP-012-Unit-A gotcha,
+  INVISIBLE to local checks): add `COPY packages/worker-networked-host/package.json …` or `policy` reds.
+- **★ `check-execution-census` + the root `vitest.config.ts projects[]` edit (review F1 — the MISSED guard, the
+  β2/Slice-1 failure class).** A NEW package with a `.test.ts` + its own `vitest.config.ts` MUST be added to the
+  hand-maintained root `vitest.config.ts` `projects[]`, or the required `policy` job reds `vitest_project_missing`
+  / `vitest_config_not_in_projects` (`execution-census.mjs:116-139`; the Slice-1 precedent added
+  `packages/provider-capability` at `vitest.config.ts:24`). Scaffold `packages/worker-networked-host/vitest.config.ts`
+  + `tsconfig.json` AND add the package to the root `projects[]`. (`check-test-inventory --write` is a DIFFERENT
+  guard — the file-count pin — and does NOT cover `projects[]` membership.)
+- **`check-image-deps-stages` — do NOT touch `docker/worker/Dockerfile`.** The split worker image is EXACTLY
+  worker-daemon + worker-protocol + pino (E4-D01); adding the networked host balloons the closure and breaks the
+  exact-closure check. The host's IMAGE HOME is a Slice-5 decision (separate image / E4-D01 widening) — 2b ships
+  inert, no image runs its bin.
+- **`checkEnvDocumented`** — add `AOA_WORKER_PROVIDER_URL` to `docs/deploy/environment-variables.md`. Not firing
+  yet (no staging service sets it), a HARD gate at Slice 5.
+- `checkDispatchDefaultOff` — leave untouched (not a switch); do NOT flip (Slice 5). `check-d1-dispatch-declared` —
+  leave the d1 compose unchanged. `check-gate-clause-wiring` — the host names `NetworkedProviderDriver`, NOT
+  `E2bSandboxProvider` → E7-1 stays at 4. `check-test-inventory` — `--write` re-pin. `worker-keystore-boundary` —
+  do NOT host in worker-keystore.
+
+## 2b.5 — the component tests
+
+- **2b-i:** a bin test that a `makeRunProvider`-only boot passes the `no_provider` gate (inert — flag off / no
+  server), mirroring the existing bin tests. Assert the four sites now pass `makeRunProvider`.
+- **2b-ii:** a construction test — given `AOA_WORKER_PROVIDER_URL`, the resolver yields a `makeRunProvider` whose
+  product is a `NetworkedProviderDriver` with the right `baseUrl` + capability (NO real AM server — the driver's
+  construction is inert; I/O only on an op call). The `none` path when the URL is unset.
+
+## 2b.6 — fences
+
+The split worker image (Slice 5); `checkDispatchDefaultOff` (Slice 5); the real go-live (Slice 5); the d1 compose;
+worker-keystore (the 3-dep pin). Ships INERT. NO `DEP-011-*-result.md` (E6-F003 open + owned; result note in this
+doc). The worker-daemon internals stay boundary-clean (2b-i uses only local types).
+
+## 2b.7 — review outcome (2 agents, 2026-08-30, every finding verified against source)
+
+Two reviewers (bin-threading/type-bridge; guards/cycle). The mechanism is SOUND — the bin-threading gap is real +
+completely enumerated (no fifth site), the `runContainerHost` custody reuse via the `bootstrap` seam is clean, and
+2b-i is inert + boundary-clean + desktop-byte-identical (all CONFIRMED). Findings folded above:
+- **F-census (HIGH — the MISSED guard, β2/Slice-1 class):** a new package needs the root `vitest.config.ts
+  projects[]` edit or `check-execution-census` reds `policy`. → §2b.4.
+- **F-cast (MED):** `capability as OwnedLabelsCapability` is an UNCHECKED down-cast (the upstream guard validated
+  only the wide shape, not the `v:1` literal — a planned `v:2` would be silently mislabelled). → §2b.3 re-validate
+  the literals, no cast; route the mismatch fail-closed.
+- **F-compile (MED):** the standalone-const factory fails `noImplicitAny` (no reachable named param type). → §2b.3
+  write the factory INLINE (or export `MakeRunProvider`).
+- **F-invariant-coupling (LOW):** `shouldComposeSession` is coupled to the `:472` invariant — all four bin sites
+  in LOCKSTEP. → §2b.2.
+- Nits folded: the `!` is at `:529` (not `:531`); the `!`-removal is type-honesty not a runtime fix; thread via
+  the `MakeRunProvider` alias.
+
+**Confirmed SOUND:** boot-root lockstep; the combined-root `./Dockerfile` COPY (the invisible awk); leaving the
+split worker image untouched (E4-D01); the no-cycle (leaf consumer); gate-clause-wiring (E7-1 stays 4);
+`checkEnvDocumented` (Slice-5-scoped); the d1 `present` gate.
+
+**Design is GO for the §9 build prompt** — 2b-i (thread the bin + export `runContainerHost`) then 2b-ii (the new
+`worker-networked-host` package + bin + boot-root + Dockerfile COPY + vitest project + env doc).
+
+## 2b.8 — BUILD RESULT (2026-08-30, ships INERT)
+
+Built exactly as designed; every §2b decision held against the repo (no STOP-and-report). Ships INERT — nothing
+runs the new bin, no gate flipped.
+
+**2b-i (INSIDE worker-daemon, boundary-clean).** Added `makeRunProvider?: MakeRunProvider` to `BootstrapDeps`
+(via the `compose-dispatch.ts:31` alias — no re-inlined type) and threaded it at all FOUR bin sites in LOCKSTEP:
+`shouldComposeSession` (`:334`), the two `decideDispatchComposition` (`:454`/`:495`), and `composeRuntime`
+(`:529` — `provider: deps.provider!` → `provider: deps.provider, makeRunProvider: deps.makeRunProvider`, the `!`
+gone as type-honesty). Exported `runContainerHost` + `ContainerHostDeps` from the barrel (custody internals stay
+private) so the outside package composes via the existing `bootstrap` seam. Also exported the `MakeRunProvider`
+TYPE (the §2b.3 sanctioned alternative) so the outside factory-builder annotates its return type cleanly.
+`check-worker-daemon-boundary` PASS (only local types + the local alias crossed).
+
+**2b-ii (OUTSIDE).** New LEAF `packages/worker-networked-host` — runtime deps EXACTLY
+`{@armyofagents/worker-daemon, @armyofagents/provider-wire}` (provider-capability transitive; `OwnedLabelsCapability`
+re-exported). `resolveProviderUrl(env)` mirrors `sandbox-provider.ts`'s `{kind:"none"|"url"}`; the bin
+`src/bin/networked-host.ts` (names `bootstrapWorkerDaemon`) wraps `runContainerHost`'s `bootstrap` seam to inject
+`makeNetworkedRunProvider(url)`. **★ The type bridge — F-cast fix, implemented as designed but with ONE correction:**
+property-level narrowing (`capability.v !== OWNED_LABELS_CAPABILITY_VERSION`) does NOT re-type the whole
+`OwnedLabelsCapabilityLike` object (it is a single interface, not a discriminated union), so passing `capability`
+as-is still sees `v: number` (a real `tsc` error, not the design's assumed clean narrow). The cast-free bridge
+that WORKS: re-validate the literals (throw/fail-closed on mismatch or absence — lands as the coarse
+`lifecycle_error`), then REBUILD the leaf `OwnedLabelsCapability` from the PINNED literal consts + the validated
+fields. Behaviourally a no-op (proven equal); type-wise honest, no `as`. A planned `v:2` is still rejected (the
+forward-compat guard the blind down-cast would have erased).
+
+**Guards (several invisible to local `check-*.mjs`).** `BIN_DIRS` + `boot-roots-expectation.json` extended in
+LOCKSTEP (posture `resolver`, `resolverFile = resolve-provider-url.ts`, marker `return { kind: "none" };`) →
+boot-roots now 4 roots, all non-unconditional. Combined-root `./Dockerfile` deps stage got the
+`COPY packages/worker-networked-host/package.json …` line (the pr.yml:422-460 awk — verified locally by
+simulating the awk: `missing=0`). Root `vitest.config.ts projects[]` += the package → `check-execution-census`
+PASS. `AOA_WORKER_PROVIDER_URL` documented (env doc). `check-test-inventory --write` re-pinned. UNTOUCHED as
+fenced: `docker/worker/Dockerfile` (E4-D01 exact closure), `checkDispatchDefaultOff`, the d1 compose,
+worker-keystore. `check-gate-clause-wiring` E7-1 stays 4 (host names `NetworkedProviderDriver`, not
+`E2bSandboxProvider`). Desktop path BYTE-IDENTICAL (provider-only threads `makeRunProvider: undefined` → gate
+behaviour unchanged; `composeRuntime` gets the same effective args the `!` produced).
+
+**Tests.** worker-daemon `dep-011-slice-2b-bin.test.ts` (4) — a makeRunProvider-only boot composes through all
+four sites (composeDispatch args prove `provider: undefined, makeRunProvider: <fn>`), and the gate passes on the
+factory alone (mounted_secret → `no_worker_identity`, flag-off → `dispatch_disabled`, both NOT `no_provider`).
+worker-networked-host `make-run-provider.test.ts` (6) — resolver none/url; a URL yields a `NetworkedProviderDriver`
+bound to the right baseUrl + capability (observed on the wire via an injected fetch, construction inert); the
+three fail-closed edges (absent / `v:2` / wrong-audience). No new `DEP-011-*-result.md` (E6-F003) — this note IS
+the record.
+
+---
+
+# The server-side sandbox REAPER — Slice A (the pure INERT reconcile)
+
+**Status:** design (2026-08-30, post-recon). Awaiting the 3-agent adversarial review (§R.7). Ships INERT (flips
+no gate; no loop wired; the real liveness oracle + the trigger are Slices B/C). Option-A reclamation: the
+adapter-manager (the E2B key-holder, the sandbox OWNER) reclaims ORPHANED tenant sandboxes that a worker created
+but could not tear down (its lease-bound cap expired — Slice 2a's honest orphan). This is what 2a's
+`{outcome:"orphaned"}` hands off to. **Fork-INDEPENDENT:** Slice A takes the liveness oracle as an INJECTED
+dependency, so the pull-vs-push channel decision (§R.0) is deferred to Slice B.
+
+## R.0 — the architecture (confirmed) + the deferred fork
+
+**The reaper reclaims DIRECTLY, server-local, inside the adapter-manager — NOT through the gated wire, NOT via a
+capability.** The AM host holds the raw `provider` in-process (`server.ts:93-94`); the blessed precedent
+`create-gate.ts` `teardownLoser` already calls `provider.destroy(sandboxId, ctx)` directly, server-local,
+bypassing the gate, for exactly "the deploy-owed crash-orphan class" (`:108-118`); the worker `reconcile.ts`
+(WRK-004) is the same shape (raw `list` + raw `reconcileCleanup`, no capability, `:75-114`). The gate is for
+UNTRUSTED workers over the wire; the reaper is inside the trust boundary. Two facts also make the capability route
+unavailable: the AM CANNOT mint (it holds only the control-plane PUBLIC key — verify-only), and the gated wire
+CANNOT fleet-enumerate (`gateList` suppresses the cursor as a cross-tenant oracle, `owned-op-gate.ts:200-206`). So
+the sweep MUST use the raw server-local `provider.list`.
+
+**★ The deferred fork (Slice B, NOT Slice A): how the in-AM reaper learns DB terminal-lease truth.** The AM has NO
+`DATABASE_URL` and `check-adapter-manager-boundary` FORBIDS a DB client (the runtime-dep set is an exact 3-package
+allow-list). The control-plane has the DB but NOT the E2B key, and the DB stores no provider `sandboxId`. So the
+correlation is inherently two-surface. **Pull** (the AM asks the CP a read-only "are these leases terminal?" query
+over control-net — the AM's first outbound client, boundary-clean via the global `fetch`) vs **push** (persist the
+sandboxId into the DB so the CP self-detects — but the CP still can't destroy, so it needs a wire-client + minted
+per-orphan caps: three net-new things vs one). LEAN: **pull.** Slice A does NOT decide this — the oracle is a
+function.
+
+## R.1 — verified terrain
+
+- **`provider.list`** (the port, frozen) returns `ResourceSummary` = `{ sandboxId, resourceLabels{org,target,
+  worker,job,attempt,lease,deviceGeneration}, generation, state, hasLiveLease }` (`provider.ts:233-239`). ★
+  `hasLiveLease` is a PROVIDER-state proxy (`state === "running"`, `e2b-provider.ts:308`) — NOT a DB lease check;
+  it MISSES the running+terminal-lease strand (the exact orphan case). So the predicate MUST be DB-truth.
+- **The reconcile precedents:** worker `reconcile.ts` (paginated `list` → `isOrphan` [default `!hasLiveLease`,
+  `:73`] → `reconcileCleanup`) and `startup-reconcile.ts` (a one-shot boot pass; "INERT until wired — nothing here
+  starts a loop", `:18-19`; SNAPSHOT-FIRST because the provider cursor is a sandboxId that shifts if you destroy
+  mid-scan, `:341-344`; fail-closed three-way keep/kill/unknown, `:376-404`).
+- **The DB truth the oracle will read (Slice B):** `leases.status` / `jobAttempts.status` vs
+  `TERMINAL_ATTEMPT_STATUSES` / the `executionTargets.deviceGeneration` cutoff — exactly what `reapExpiredLeases`
+  already reads (`job-control.ts:3396-3435`, generation cutoff `:1113-1119`). Slice A models this as an injected
+  `isOrphan(summary) => "orphan" | "live" | "unknown"`.
+- **Boundary:** `check-adapter-manager-boundary` (`adapter-manager-boundary.mjs:72-76,230`) pins the AM runtime
+  deps to EXACTLY `[provider-wire, sandbox-e2b-provider, worker-daemon]`. Slice A adds NO dep (the raw provider +
+  an injected oracle function + worker-daemon types/`hashResourceLabels`, all allow-listed). Stays green. NO
+  metric surface exists in the AM (net-new — R.2 returns counts, defers emission to Slice C).
+- **★ The invariants the correctness rests on (review F4 — state them):** (a) `provider.create` mints a FRESH
+  sandboxId every time (`create-gate.ts:89`), and (b) the orphan predicate (terminal lease / superseded
+  generation) is MONOTONIC (neither reverts). Together these — NOT snapshot-first — close the "destroy a re-used
+  sandbox" hazard: a snapshot sandboxId is the SAME logical sandbox at reclaim (a new run has a new id), and an
+  `"orphan"` verdict can never go stale into `"live"`. Snapshot-first ONLY addresses the cursor-shift. (c)
+  `provider.list` ignores `ownershipSelector` → the sweep is GLOBAL (R.2). Slice B's oracle MUST PRESERVE
+  monotonicity (never classify on a field that can flip back).
+
+## R.2 — what Slice A builds (reshaped by the review — the oracle contract is the safety spine)
+
+A PURE `reconcileReaper({ provider, resolveTruth, makeCtx, now, pageSize?, logger? }): Promise<{ reaped: number;
+skipped: number; unknown: number; failed: number }>` in the adapter-manager (a new module; NOT the wire path). It
+RETURNS counts + logs them — it does NOT emit a closed-label metric (review — the AM has NO metric surface, and
+worker-daemon's `Metrics` `outcome` set is CLOSED and throws on `reaped`/`skipped`/`unknown`; the /metrics surface
++ any registration is Slice C). `makeCtx: () => ProviderOpContext` is the injected op-context source (both
+`list(input, ctx)` and `reconcileCleanup(id, ctx)` REQUIRE it — a stable idempotencyKey per sweep; the
+`reconcile.ts:50-51,:93` precedent). One pass:
+1. **Snapshot the fleet FIRST** — page the raw `provider.list({ ownershipSelector: <placeholder>, pageSize },
+   makeCtx())` to a full in-memory `ResourceSummary[]` BEFORE any destroy (the cursor is a sandboxId a mid-scan
+   destroy would shift; `startup-reconcile.ts:341-344`). ★ `ownershipSelector` is a REQUIRED `ListInput` field
+   (`provider.ts:241-245`) the reaper must supply as a placeholder — the FLEET-WIDE sweep works because
+   `E2bSandboxProvider.list` IGNORES it (`e2b-provider.ts:297-299`); this is an IMPL behavior, NOT a port
+   guarantee (R.1). The sweep is therefore GLOBAL across all tenants → fail-closed matters instance-wide.
+2. **★ Structural pre-filter FIRST, before the oracle (review F1 — the mass-kill guard that needs no Slice B):**
+   any summary with structurally-invalid labels — missing `leaseId`/`organizationId`/`jobId`, or the
+   `generation === 0` sentinel (`E2bSandboxProvider.list` defaults `deviceGeneration ?? 0` and `labels = {}` on a
+   parse failure, `e2b-provider.ts:118-120,:306`) — is classified `unknown`/SKIP WITHOUT calling `resolveTruth`. A
+   sandbox the provider cannot coherently label must NEVER be reclaimed on inference.
+3. **★ The oracle contract = POSITIVE CONFIRMATION OF DEATH (review F1/F3 — the safety spine).** Model the oracle
+   as a BATCH prefetch (pull is async): `resolveTruth(summaries) => Promise<Map<sandboxId, "orphan"|"live"|
+   "unknown">>` (snapshot-first, then ONE query over the snapshot's leaseIds; NOT a per-summary sync call). The
+   map MUST be a POSITIVE confirmed-DEAD set — `"orphan"` ONLY on a CONFIRMED terminal lease/attempt OR a CONFIRMED
+   superseded generation; **EVERY other state — row absent, leaseId unresolvable, query indeterminate, CP
+   unreachable — DEFAULTS to `"unknown"`/skip.** NEVER a negative `leaseId ∉ live-set` inference (that mass-kills a
+   just-created sandbox the query hasn't observed yet). This is the precedent's `state==="dead"` positive check +
+   unknown-default (`startup-reconcile.ts:182,:386-393`), lifted into the CONTRACT so Slice B cannot re-open it.
+4. **Reclaim + per-target containment (review F2):** for each `"orphan"`, `provider.reconcileCleanup(sandboxId,
+   makeCtx())` wrapped in a PER-TARGET try/catch (like `startup-reconcile.ts:365-371`, NOT `reconcile.ts:93`'s
+   unwrapped loop). READ `result.cleanupStatus`: `success` → `reaped`; `failed` (transient — the LIVE sandbox
+   survives) → the `failed` bucket, RETRIED next pass, NEVER counted as reaped (`teardownLoser` SWALLOWS its error
+   — the wrong accounting to copy); a caught throw → `failed`. `"live"`/`"unknown"` → `skipped`. A single failure
+   never aborts the sweep. Already-gone = success (idempotent, `e2b-provider.ts:287-288`).
+5. **Any-generation reclaim:** server-local (no gate owned-check), so an `"orphan"` is reclaimed keyed on DB
+   terminal/superseded REGARDLESS of `generation` — the OPPOSITE of the gate's generation-equality
+   (`owned-op-gate.ts:154`); safe because `provider.create` mints a FRESH id (R.1) so a superseded-gen orphan's
+   distinct id can never be the live new-gen run.
+
+## R.3 — fences
+
+Slice A is the pure reconcile ONLY. NO liveness CHANNEL (the AM→CP query / the sandboxId persistence — Slice B, the
+fork). NO trigger/loop wired (Slice C — a `setInterval` in the AM bin behind a flag, cadence < the E2B create-TTL
+backstop). NO compose/deploy. NO DB dep on the AM (boundary + topology forbid). NO new wire op (the port is
+frozen; `list`/`reconcileCleanup` exist). Ships INERT (nothing calls `reconcileReaper` in production yet). NO
+`DEP-011-*-result.md` (E6-F003 open + owned; result note in this doc).
+
+## R.4 — the component test + mutation sweep
+
+Prove `reconcileReaper` against a FAKE provider (a seeded fleet — orphan/live/unknown, some already-gone, some
+STRUCTURALLY-INVALID [missing leaseId / `generation:0`], some transient-`failed`) + a FAKE `resolveTruth` oracle.
+Assert: (a) only `"orphan"` summaries get `reconcileCleanup`; (b) `"live"`/`"unknown"` are SKIPPED — the
+fail-closed core; (c) **structurally-invalid summaries are SKIPPED WITHOUT calling `resolveTruth`** (the mass-kill
+pre-filter); (d) snapshot-first — a fleet mutated during the scan doesn't skip/double-handle; (e) a transient
+`cleanupStatus:"failed"` is counted `failed` (RETRIED), NEVER `reaped` (the LIVE sandbox survives); (f) a
+per-target throw is contained (the sweep continues, that target → `failed`); (g) already-gone = success; (h) an
+any-generation orphan (superseded `generation`) IS reclaimed. Mutation sweep: `"unknown"`→destroy (mass-kill →
+killed by (b)); the oracle returns `"orphan"` for a structurally-invalid summary (→ killed by (c)'s
+pre-filter-skip); reclaim-in-scan-loop not snapshot-first (cursor shift → killed by (d)); count a `failed` as
+`reaped` (→ killed by (e)); an uncaught throw aborting the sweep (→ killed by (f)); a generation-equality gate on
+the reaper (superseded orphan skipped → killed by (h)).
+
+## R.5 — guards
+
+`check-adapter-manager-boundary` (NO new runtime dep — the raw provider + injected functions + allow-listed
+worker-daemon types → green); **`check-gate-clause-wiring`** — the reaper names the abstract `SandboxProvider`
+port, NOT `E2bSandboxProvider` (keep the literal token out of NON-test source), and `reconcileCleanup`/`list` are
+NOT declared symbols → E7-1 stays at 4 (review CONFIRMED); `check-execution-census` — GREEN unchanged (the AM is
+ALREADY a vitest project and the new `.test.ts` is not a `scripts/`/`docker/` `.test.mjs`); `check-test-inventory`
+(--write re-pin for the new AM `.test.ts`); `check-finding-ownership` (NO result doc). ★ NO worker-daemon change
+(R.2 RETURNS counts — it does NOT touch `metrics.ts`'s closed set, so no `check-worker-daemon-boundary` / metric
+registration is pulled in). NOT boot-roots / image / the combined-root Dockerfile (no new package, no bin change).
+Run the WHOLE policy set.
+
+## R.8 — review outcome (2 agents, 2026-08-30, every finding verified against source)
+
+Two reviewers (correctness; boundary/guards). The two highest-value claims HELD: **inertness is genuinely sound**
+(the AM bin never calls the reaper), and **the boundary + gate-clause + finding-ownership stories are correct**.
+The authority model (direct server-local reclaim, mirroring `teardownLoser`), snapshot-first, `hasLiveLease`
+rejection, and any-generation were all CONFIRMED. Findings folded above:
+- **F1 (HIGH) — the oracle contract was fail-OPEN at its edges.** The mass-kill vector is absent/unparseable rows +
+  negative inference (NOT a clean CP partition): `list` defaults `generation:0`/`labels:{}` on a bad record and
+  ignores the selector (GLOBAL fleet). → R.2 POSITIVE-confirmation-of-death + `unknown`-default + the structural
+  pre-filter (skip before the oracle).
+- **F2 (MED) — partial-failure + accounting.** A thrown cleanup would abort the sweep; a transient `failed` counted
+  as `reaped` masks a surviving live sandbox. → R.2 per-target containment + a `failed` bucket + read `cleanupStatus`.
+- **F3 (MED) — the oracle seam.** Pull is async; a per-summary sync `isOrphan` is the wrong shape and the map
+  DIRECTION is the fail-closed hinge. → R.2 batch `resolveTruth => Map` + the positive-confirmed-dead mandate.
+- **F-metric (MED) — the AM has NO metric surface**, and worker-daemon's `outcome` set is CLOSED (the 2a trap). →
+  R.2 returns counts + logs; emission deferred to Slice C.
+- **F-ctx (LOW-MED)** — `list`/`reconcileCleanup` require a `ProviderOpContext`. → R.2 `makeCtx` (the `reconcile.ts`
+  precedent).
+- **F-selector (LOW-MED)** — the global-fleet sweep depends on an `E2bSandboxProvider` quirk (a required-but-ignored
+  `ownershipSelector`), not a port guarantee. → R.1/R.2 stated; a true fleet-list affordance is owed.
+- **F-invariants (LOW)** — fresh-ids + monotonic-predicate (the real reason the re-use TOCTOU is a non-issue). → R.1.
+
+**Design is GO for the §9 build prompt** — Slice A is the pure, fail-closed, oracle-injected reconcile; the pull
+channel (Slice B, the fork) + the trigger/metric surface (Slice C) come after.
+
+## R.6 — what Slices B/C inherit (recorded)
+
+**Slice B (the correlation channel — the fork):** the real `isOrphan` — pull (an AM→CP read-only lease-liveness
+endpoint + the AM's global-`fetch` client, boundary-clean) or push (a DB `sandboxId` column + a CP→AM path). The
+one deploy/boundary-sensitive piece. **Slice C (trigger + deploy):** the `setInterval` loop in the AM bin behind a
+flag; cadence < the E2B create-TTL (`opDeadlineMs`, 60s default) so it reclaims before the interim TTL backstop,
+covering the §2a.5-F3 gap (a long run refreshes the lease but NOT the set-once sandbox TTL); the compose/env; the
+Slice-5 deploy-ordering.
+
+## R.7 — open questions for the review
+
+1. **Server-local reclaim is correct + sufficient.** Is the direct `provider.reconcileCleanup` (bypassing the
+   gate, mirroring `teardownLoser`/`reconcile.ts`) the right authority model, and does it stay boundary-clean (no
+   new AM dep)?
+2. **The fail-closed predicate.** Is `"unknown"→skip` genuinely safe (no path mass-kills live sandboxes on a CP
+   partition), and is `hasLiveLease` correctly REJECTED as insufficient (it misses the running+terminal strand)?
+3. **Snapshot-first.** Is the cursor-shift hazard (destroy mid-scan) correctly handled by snapshotting the full
+   fleet before any reclaim?
+4. **Any-generation.** Is reclaiming a superseded-generation orphan correct (the reaper is the owner, not a gated
+   worker), and does it not accidentally re-impose the gate's generation-equality?
+5. **Guards + inertness.** Does the new `provider.reconcileCleanup` production caller trip `check-gate-clause-wiring`
+   (β2 lesson), and does Slice A ship genuinely inert (no loop, no channel, oracle injected)?

@@ -58,11 +58,15 @@
     },
     "packages/worker-daemon": {
       "mode": "pinned",
-      "count": 152
+      "count": 153
     },
     "packages/worker-keystore": {
       "mode": "pinned",
       "count": 21
+    },
+    "packages/worker-networked-host": {
+      "mode": "floor",
+      "count": 1
     },
     "packages/worker-protocol": {
       "mode": "pinned",

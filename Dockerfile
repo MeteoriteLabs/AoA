@@ -73,6 +73,10 @@ COPY packages/provider-wire/package.json packages/provider-wire/
 COPY packages/adapter-manager/package.json packages/adapter-manager/
 # DEP-011 §1.2.0 — the node:crypto-only owned-labels-capability leaf (server mints through it).
 COPY packages/provider-capability/package.json packages/provider-capability/
+# DEP-011 Slice 2b — the CONTAINER networked-provider composition root. Listed here because the
+# deps-stage validator requires EVERY workspace package.json; the combined image does not run its
+# bin (its image home is a Slice-5 decision; the split worker image stays E4-D01-exact).
+COPY packages/worker-networked-host/package.json packages/worker-networked-host/
 COPY patches/ patches/
 RUN pnpm install --frozen-lockfile
 

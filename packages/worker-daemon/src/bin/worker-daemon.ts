@@ -43,6 +43,7 @@ import {
   decideDispatchComposition,
   DISPATCH_REFUSAL_MESSAGES,
   shouldComposeSession,
+  type MakeRunProvider,
 } from "../lifecycle/compose-dispatch.js";
 import type { SandboxProvider } from "../supervisor/provider.js";
 import { composeDispatchRuntime, type DispatchRuntime } from "../lifecycle/dispatch-runtime.js";
@@ -172,6 +173,20 @@ export interface BootstrapDeps {
    * exactly as `leasing`/`renewal`/`reconciler` already are.
    */
   readonly provider?: SandboxProvider;
+  /**
+   * DEP-011 Slice 2b — the CONTAINER worker's per-run networked provider factory.
+   *
+   * The container alternative to `provider`: worker-daemon defines the `SandboxProvider`
+   * port and cannot construct any implementation (E4-D01), and the networked driver lives
+   * OUTSIDE this package too — so a container composition root
+   * (`@armyofagents/worker-networked-host`) injects this factory, which builds a per-run
+   * driver over the run's minted owned-labels capability AFTER redemption. ABSENT for the
+   * shipped binary exactly like `provider`; the boot's provider gate is satisfied by EITHER
+   * `provider` OR `makeRunProvider`, and neither ⇒ inert `no_provider`. Threaded via the
+   * `MakeRunProvider` alias (not a re-inlined type) so the four bin sites and the gate
+   * functions share ONE shape.
+   */
+  readonly makeRunProvider?: MakeRunProvider;
   readonly createClient?: typeof createControlPlaneClient;
   readonly readFileText?: (path: string) => string;
   readonly enrollOnceFn?: typeof enrollOnce;
@@ -333,6 +348,7 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
     // `lifecycle.store` in (E4-F007 resolution; WRK-010-slice-2-design.md §3.3/§11 R1).
     const composeSession = shouldComposeSession({
       provider: deps.provider,
+      makeRunProvider: deps.makeRunProvider,
       dispatchEnabled: config.dispatchEnabled,
     });
     lifecycle = composeSession
@@ -453,6 +469,7 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   // call. The bin never re-implements the gate order — two copies would drift.
   const dispatch = decideDispatchComposition({
     provider: deps.provider,
+    makeRunProvider: deps.makeRunProvider,
     dispatchEnabled: config.dispatchEnabled,
     hasWorkerIdentity: workerIdentityPresent,
     hasEventOutboxPath: config.eventOutboxPath !== null,
@@ -494,6 +511,7 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
       });
       const dispatch2 = decideDispatchComposition({
         provider: deps.provider,
+        makeRunProvider: deps.makeRunProvider,
         dispatchEnabled: config.dispatchEnabled,
         hasWorkerIdentity: true,
         hasEventOutboxPath: true,
@@ -526,7 +544,13 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
         }
         const composeRuntime = deps.composeDispatch ?? composeDispatchRuntime;
         runtime = await composeRuntime({
-          provider: deps.provider!,
+          // DEP-011 Slice 2b — pass EXACTLY the injected provider path: the desktop `provider`
+          // OR the container `makeRunProvider` (composeDispatchRuntime forwards both to the
+          // supervisor, which fail-fasts if both are set; the boot gate above refused if neither).
+          // The `!` is gone — `provider` is now legitimately optional (a makeRunProvider-only boot
+          // reaches here with `provider === undefined`), so asserting non-null was a type lie.
+          provider: deps.provider,
+          makeRunProvider: deps.makeRunProvider,
           self: { ...dispatch2.selfModel, report: identity.hello },
           key,
           store: lifecycle.store,

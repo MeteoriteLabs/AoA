@@ -24,6 +24,8 @@ const expectationPath = path.join(repoRoot, "scripts", "boot-roots-expectation.j
 const BIN_DIRS = [
   "packages/worker-daemon/src/bin",
   "packages/worker-keystore/src/bin",
+  // DEP-011 Slice 2b — the CONTAINER networked-provider composition root.
+  "packages/worker-networked-host/src/bin",
 ];
 const BOOTSTRAP_IDENTIFIER = "bootstrapWorkerDaemon";
 
