@@ -26,6 +26,11 @@ import type { DeviceKey } from "../identity/device-key.js";
 import { signDeviceProof } from "../identity/device-proof.js";
 import type { WorkerSession } from "../enrollment/enroll.js";
 import {
+  isOwnedLabelsCapabilityShape,
+  ownedLabelsCapabilityIdentity,
+  type OwnedLabelsCapabilityLike,
+} from "./owned-labels-capability.js";
+import {
   ControlPlaneTransportError,
   type ControlPlaneClient,
   type WorkerOperationHttpResponse,
@@ -46,7 +51,18 @@ export const PROVIDER_AUTH_ENV_TARGETS: ReadonlySet<string> = new Set(["ANTHROPI
 /** The classification of ONE resolve round-trip. Only `resolved` proceeds; everything else fails
  * the attempt closed. Modelled on `RenewAttempt` (lease-renewal.ts). */
 export type ResolveClassification =
-  | { readonly kind: "resolved"; readonly envTarget: string; readonly value: string }
+  | {
+      readonly kind: "resolved";
+      readonly envTarget: string;
+      readonly value: string;
+      /**
+       * DEP-011 Slice 2a — the control-plane-minted owned-labels capability the server (Slice 1)
+       * now rides on the `resolved` reply. OPTIONAL + OPAQUE: read through the vendored shape-guard
+       * (a malformed one is treated as ABSENT, never carried as junk), verified server-side. Absent
+       * on desktop/self-hosted (no CP key) — byte-identical pre-DEP-011 behaviour.
+       */
+      readonly ownedLabelsCapability?: OwnedLabelsCapabilityLike;
+    }
   | { readonly kind: "denied"; readonly reason: string }
   | { readonly kind: "transport" }
   | { readonly kind: "malformed" };
@@ -94,6 +110,12 @@ export function classifyResolveResponse(res: WorkerOperationHttpResponse): Resol
     const envTarget = body.envTarget;
     const value = body.value;
     if (typeof envTarget === "string" && envTarget.length > 0 && typeof value === "string" && value.length > 0) {
+      // DEP-011 Slice 2a — carry a PRESENT + WELL-SHAPED capability through; a malformed one is
+      // treated as ABSENT (never carried as junk, never failing the resolve — it is optional).
+      const cap = body.ownedLabelsCapability;
+      if (isOwnedLabelsCapabilityShape(cap)) {
+        return { kind: "resolved", envTarget, value, ownedLabelsCapability: cap };
+      }
       return { kind: "resolved", envTarget, value };
     }
     return { kind: "malformed" }; // resolved-but-empty is not a usable credential
@@ -113,9 +135,17 @@ export function classifyResolveResponse(res: WorkerOperationHttpResponse): Resol
 export async function synthesiseRunSecrets(
   handles: readonly SecretHandleRef[],
   redeem: RedeemFn,
-): Promise<{ env: Record<string, string>; canaries: string[] }> {
+): Promise<{ env: Record<string, string>; canaries: string[]; capability?: OwnedLabelsCapabilityLike }> {
   const env: Record<string, string> = {};
   const canaries: string[] = [];
+  // DEP-011 Slice 2a — the run mints N times (once per resolvable handle), so N caps ride the N
+  // resolves. They share ONE fence identity, so their `ownedLabels`/`v`/`audience` are provably
+  // identical; only `expiresAt`/`sig` can differ by a few ms. DEDUP + fail-closed on that identity
+  // tuple ONLY (review MED-3): a DIVERGENT `ownedLabels` is a mint/fence bug and fails the run
+  // closed; a benign ms-delta keeps the LONGER-LIVED (max `expiresAt`) cap. All-absent (desktop,
+  // no CP key) → undefined, a no-op the supervisor's networked branch treats as fail-closed and the
+  // desktop branch ignores.
+  let capability: OwnedLabelsCapabilityLike | undefined;
   for (const handle of handles) {
     if (handle.materialization.kind !== "env" || handle.usePolicy !== "sandbox_local_only") continue;
     const target = handle.materialization.target;
@@ -127,8 +157,31 @@ export async function synthesiseRunSecrets(
     }
     env[target] = outcome.value;
     canaries.push(outcome.value);
+    if (outcome.ownedLabelsCapability !== undefined) {
+      capability = foldCapability(capability, outcome.ownedLabelsCapability);
+    }
   }
-  return { env, canaries };
+  return capability === undefined ? { env, canaries } : { env, canaries, capability };
+}
+
+/**
+ * Fold a freshly-redeemed capability into the run's accumulator: on the FIRST one, take it; on a
+ * later one, its identity tuple (`ownedLabels`/`v`/`audience`) MUST match — a divergence fails the
+ * run CLOSED (a mint/fence integrity failure) — and the LONGER-LIVED (`expiresAt`) survives so the
+ * worker keeps the most non-expired cap for teardown.
+ */
+function foldCapability(
+  current: OwnedLabelsCapabilityLike | undefined,
+  next: OwnedLabelsCapabilityLike,
+): OwnedLabelsCapabilityLike {
+  if (current === undefined) return next;
+  if (ownedLabelsCapabilityIdentity(current) !== ownedLabelsCapabilityIdentity(next)) {
+    throw new SecretMaterializationError(
+      "capability_identity_divergence",
+      "two per-handle capabilities disagree on ownedLabels/v/audience — a mint/fence integrity failure",
+    );
+  }
+  return next.expiresAt > current.expiresAt ? next : current;
 }
 
 // --- The client-backed redeemer -----------------------------------------------

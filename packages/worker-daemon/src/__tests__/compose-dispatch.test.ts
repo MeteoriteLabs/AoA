@@ -160,3 +160,26 @@ describe("WRK-010 slice 2 — shouldComposeSession (the weaker session-lifecycle
     expect(shouldComposeSession({ provider: undefined, dispatchEnabled: true })).toBe(false);
   });
 });
+
+// DEP-011 Slice 2a — the networked `makeRunProvider` factory satisfies the provider gate.
+const MAKE_RUN_PROVIDER = () => PROVIDER;
+
+describe("DEP-011 Slice 2a — the provider gate accepts a makeRunProvider factory", () => {
+  it("gate 1 — NEITHER provider NOR makeRunProvider ⇒ no_provider", () => {
+    expect(
+      decideDispatchComposition({ ...ALL_ON, provider: undefined, makeRunProvider: undefined }),
+    ).toEqual({ compose: false, reason: "no_provider" });
+  });
+
+  it("a container worker with ONLY makeRunProvider (no desktop provider) passes the provider gate and composes", () => {
+    expect(
+      decideDispatchComposition({ ...ALL_ON, provider: undefined, makeRunProvider: MAKE_RUN_PROVIDER }),
+    ).toEqual({ compose: true, selfModel: SELF });
+  });
+
+  it("shouldComposeSession composes on a makeRunProvider factory alone (the container lane)", () => {
+    expect(shouldComposeSession({ provider: undefined, makeRunProvider: MAKE_RUN_PROVIDER, dispatchEnabled: true })).toBe(true);
+    expect(shouldComposeSession({ provider: undefined, makeRunProvider: MAKE_RUN_PROVIDER, dispatchEnabled: false })).toBe(false);
+    expect(shouldComposeSession({ provider: undefined, makeRunProvider: undefined, dispatchEnabled: true })).toBe(false);
+  });
+});

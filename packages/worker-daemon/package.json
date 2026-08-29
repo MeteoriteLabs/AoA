@@ -29,6 +29,10 @@
     "pino": "^9.6.0"
   },
   "devDependencies": {
+    "@armyofagents/adapter-manager": "workspace:*",
+    "@armyofagents/provider-capability": "workspace:*",
+    "@armyofagents/provider-wire": "workspace:*",
+    "@armyofagents/sandbox-e2b-provider": "workspace:*",
     "@types/node": "^24.6.0",
     "typescript": "^5.7.3",
     "vitest": "^3.2.6"

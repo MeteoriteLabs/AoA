@@ -33,9 +33,10 @@ import {
   SANDBOX_OP_METRIC,
   type Metrics,
 } from "../metrics/metrics.js";
-import { CleanupAuthority } from "./cleanup-authority.js";
+import { CleanupAuthority, ResourceNotAvailableError } from "./cleanup-authority.js";
 import { EffectAuthority, type EffectFence } from "./effect-authority.js";
 import { EventSequencer, type EventDeliveryIdentity, type WorkerEventSink } from "./events.js";
+import { createNoopProvider } from "./noop-provider.js";
 import {
   hashResourceLabels,
   type CreateSandboxSpec,
@@ -45,6 +46,7 @@ import {
   type SandboxProvider,
 } from "./provider.js";
 import type { RunCanaryCoordinator } from "./run-canaries.js";
+import type { OwnedLabelsCapabilityLike } from "../lease/owned-labels-capability.js";
 
 /** CLI-003/D3 — a captured stdout/stderr/system log line to turn into a `log` event. */
 export interface RunObservationLogEntry {
@@ -86,7 +88,23 @@ export interface WorkerSupervisionIdentity {
 }
 
 export interface SupervisorDeps {
-  readonly provider: SandboxProvider;
+  /**
+   * The DESKTOP/in-process provider (the `E2bSandboxProvider` on the self-hosted lane).
+   * OPTIONAL since DEP-011 Slice 2a: a CONTAINER worker instead injects `makeRunProvider`
+   * (a per-run networked driver factory) — exactly ONE of `provider`/`makeRunProvider`
+   * may be set, and `!provider && !makeRunProvider` is a `no_provider` refusal upstream
+   * (`compose-dispatch.ts`). Fail-fast at construction if both are present.
+   */
+  readonly provider?: SandboxProvider;
+  /**
+   * DEP-011 Slice 2a — the PER-RUN networked provider FACTORY (a TYPE here; the impl comes
+   * from the OUTSIDE composition root, DEP-011 Slice 2b). The capability does not exist at
+   * `buildRun`, so the container branch builds NO-OP null-object authorities there and REBUILDS
+   * the real authorities over `makeRunProvider({handoff, capability})` INSIDE `runLifecycle`
+   * AFTER redemption. SYNC (no `await` between the two authority reassignments — §2a.3). REQUIRES
+   * `materializeRunSecrets` (the rebuild only runs inside its block) — fail-fast pairing them.
+   */
+  readonly makeRunProvider?: (input: { handoff: LeaseHandoff; capability?: OwnedLabelsCapabilityLike }) => SandboxProvider;
   readonly identity: WorkerSupervisionIdentity;
   readonly eventSink: WorkerEventSink;
   readonly metrics?: Metrics;
@@ -137,7 +155,9 @@ export interface SupervisorDeps {
    * byte-identical pre-slice-5 behaviour. A THROW or a TIMEOUT fails the attempt CLOSED: a durable
    * terminal is emitted and cleanup escalated, and NO sandbox is created.
    */
-  readonly materializeRunSecrets?: (handoff: LeaseHandoff) => Promise<{ env: Record<string, string>; canaries: readonly string[] }>;
+  readonly materializeRunSecrets?: (
+    handoff: LeaseHandoff,
+  ) => Promise<{ env: Record<string, string>; canaries: readonly string[]; capability?: OwnedLabelsCapabilityLike }>;
   /**
    * DAT-008 slice 5 — the per-lease canary coordinator shared with the fence-close proxy, so ONE
    * redemption seeds BOTH event streams. Absent = the supervisor uses its own per-run array
@@ -169,17 +189,43 @@ export interface Supervisor extends SupervisorSeam {
 interface ActiveRun {
   readonly leaseId: string;
   readonly labels: ResourceLabels;
-  readonly effect: EffectAuthority;
-  readonly cleanup: CleanupAuthority;
+  readonly fence: EffectFence;
+  // MUTABLE (DEP-011 Slice 2a §2a.3): the networked branch builds NO-OP null-object
+  // authorities at `buildRun` and REBUILDS the real ones over the per-run driver AFTER
+  // redemption. NEVER unset (a `TypeError`-and-map-leak the null-object prevents); the
+  // two reassignments are SYNCHRONOUS (no `await` between) so a concurrent cancel sees
+  // both-no-op or both-real, never a half-swap.
+  effect: EffectAuthority;
+  cleanup: CleanupAuthority;
   readonly makeCtx: () => ProviderOpContext;
   sandboxId: string | null;
   cancelled: boolean;
   cleanedUp: boolean;
+  /** True on the container/networked branch (`makeRunProvider`) — routes teardown through
+   * the HONEST TRUST cleanup (clock-first, orphan-on-expiry, RNA-skew re-check). */
+  readonly networked: boolean;
+  /** The per-run capability's absolute ms-epoch expiry, set when the networked authorities are
+   * rebuilt. The clock-first teardown compares it to the supervisor `now` (§2a.5). */
+  capExpiresAt: number | null;
 }
 
 const TIMEOUT = Symbol("create-deadline");
 
 export function createSupervisor(deps: SupervisorDeps): Supervisor {
+  // DEP-011 Slice 2a — FAIL FAST at construction (review F4/F5):
+  //  (a) EXACTLY one of `provider`/`makeRunProvider` may be set — both is a misconfig
+  //      (which authority does `buildRun` build?).
+  //  (b) `makeRunProvider` REQUIRES `materializeRunSecrets`: the post-redemption rebuild
+  //      runs ONLY inside the `if (deps.materializeRunSecrets)` block, so pairing them
+  //      without it would leave the no-op authorities in place forever (a silent
+  //      fail-safe-but-wrong misconfig). Pair them or fail now, loudly.
+  if (deps.provider && deps.makeRunProvider) {
+    throw new Error("createSupervisor: provider and makeRunProvider are mutually exclusive (set exactly one)");
+  }
+  if (deps.makeRunProvider && !deps.materializeRunSecrets) {
+    throw new Error("createSupervisor: makeRunProvider requires materializeRunSecrets (the per-run authorities rebuild after redemption)");
+  }
+  const networked = deps.makeRunProvider !== undefined;
   const now = deps.now ?? (() => Date.now());
   const nowIso = deps.nowIso ?? (() => new Date().toISOString());
   const newEventId = deps.newEventId ?? randomUUID;
@@ -290,7 +336,14 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     // genuine convergence is never double-run (idempotent-destroy purpose intact).
     run.cleanedUp = true;
 
-    const status = await run.cleanup.converge(targets, () => ctx());
+    // DEP-011 Slice 2a §2a.5 — the NETWORKED branch is the HONEST TRUST variant: NEVER the
+    // gate-masking `converge` (which reads the uniform RNA as "gone → success" and would mask a
+    // LIVE, billing sandbox behind a lease-expired cap). `convergeNetworked` is clock-first with an
+    // RNA skew re-check and records a DISTINCT `orphaned` outcome, never calling the RNA-means-gone
+    // `converge`.
+    const status = run.networked
+      ? await convergeNetworked(run, targets)
+      : await run.cleanup.converge(targets, () => ctx());
     const stage = run.cleanup.escalationStage();
     deps.metrics?.inc(CLEANUP_ESCALATION_METRIC, { escalation_stage: stage });
     deps.metrics?.inc(CLEANUP_OUTCOME_METRIC, { outcome: status });
@@ -302,9 +355,64 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         cleanupEpoch: run.cleanup.cleanupEpoch(),
         escalationStage: stage,
         cleanupStatus: status,
+        // §2a.5 F1 — a DISTINCT escalateCleanup log field the deferred reaper's leak-rate signal reads.
+        orphaned: status === "orphaned",
         reason,
       },
       "supervisor: cleanup converged",
+    );
+  }
+
+  /**
+   * DEP-011 Slice 2a §2a.5 — the HONEST TRUST teardown for the NETWORKED branch (Option A). The
+   * worker holds the cap + its `expiresAt` and its OWN clock, so the decision is the worker's, NOT
+   * the gate's ambiguous RNA:
+   *  - CLOCK-FIRST: if the cap is expired on the worker clock, a gated teardown is doomed — record
+   *    an `orphaned` outcome WITHOUT touching the gate (never a false `success`).
+   *  - On a returned uniform RNA from an attempted (valid-at-issue) op, RE-READ the clock (skew-safe):
+   *    expired-during-round-trip ⇒ `orphaned`; STILL valid ⇒ a valid cap + RNA means the sandbox is
+   *    genuinely GONE ⇒ `success`. RNA is consulted ONLY here, and only after the clock says the cap
+   *    should still work.
+   * Hard reclamation of a live orphan is the deferred server-side reaper's job (Option A); this is the
+   * worker's honest best-effort teardown while the cap is valid.
+   */
+  async function convergeNetworked(run: ActiveRun, targets: string[]): Promise<"success" | "failed" | "orphaned"> {
+    if (run.capExpiresAt === null || !(run.capExpiresAt > now())) return "orphaned";
+    let aggregate: "success" | "failed" = "success";
+    for (const sandboxId of targets) {
+      try {
+        const result = await run.cleanup.destroy(sandboxId, ctx());
+        if (result.cleanupStatus !== "success") aggregate = "failed";
+      } catch (err) {
+        if (err instanceof ResourceNotAvailableError) {
+          // Skew re-check: expired-in-flight ⇒ orphan (do NOT read RNA as "gone"); still-valid ⇒
+          // genuinely gone ⇒ nothing to reclaim (a success for this target).
+          if (!(run.capExpiresAt > now())) return "orphaned";
+          continue;
+        }
+        throw err;
+      }
+    }
+    return aggregate;
+  }
+
+  /** DEP-011 Slice 2a §2a.5 — record an HONEST orphan without touching the gate: the cap is expired
+   * (on the worker clock), so a gated teardown is doomed. A DISTINCT `orphaned` cleanup outcome +
+   * log field (never `success`, never `failed`); the deferred server-side reaper reclaims the live
+   * sandbox. Consumes the cleanup latch so no later pass double-handles it. */
+  function recordOrphan(run: ActiveRun, reason: string): void {
+    run.cleanedUp = true;
+    deps.metrics?.inc(CLEANUP_OUTCOME_METRIC, { outcome: "orphaned" });
+    deps.logger?.warn(
+      {
+        leaseId: run.leaseId,
+        resourceLabelsHash: hashResourceLabels(run.labels),
+        deviceGeneration: run.labels.deviceGeneration,
+        cleanupStatus: "orphaned",
+        orphaned: true,
+        reason,
+      },
+      "supervisor: networked capability expired before teardown — recording an HONEST orphan (server-side reaper owns reclamation)",
     );
   }
 
@@ -367,6 +475,35 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       runCanaries.push(...mat.canaries);
       env = mat.env;
       secretElapsedMs = now() - t0;
+
+      // DEP-011 Slice 2a — the NETWORKED branch: the per-run capability now exists, so REBUILD the
+      // real per-run authorities over `makeRunProvider({handoff, capability})`, replacing the no-op
+      // null-object ones (§2a.3). This is the ONLY place the container worker's real provider is
+      // constructed — the capability does not exist at `buildRun`.
+      if (networked) {
+        const capability = mat.capability;
+        if (capability === undefined) {
+          // FAIL CLOSED (§2a.6): a networked run that resolves handles but gets NO capability must
+          // NEVER build a driver with `capability: undefined` (refused at the gate on every op — a
+          // mislabeled `create_failed`). Emit a diagnosable terminal; the no-op authorities handle
+          // cleanup safely (nothing created).
+          deps.logger?.warn(
+            { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels) },
+            "supervisor: networked run resolved no owned-labels capability — failing the attempt closed",
+          );
+          await events.terminal({ status: "failed", exitCode: null, errorCode: "no_run_capability", errorMessage: null });
+          await escalateCleanup(run, "no_run_capability");
+          return;
+        }
+        // SYNCHRONOUS SWAP (§2a.3): `makeRunProvider` is sync and NO `await` separates the two
+        // reassignments, so a concurrent cancel/onLeaseLost reaching `escalateCleanup` sees EITHER
+        // both no-op OR both real — never a half-swap.
+        const driver = deps.makeRunProvider!({ handoff, capability });
+        const rebuilt = buildAuthorities(driver, run.labels, run.fence);
+        run.effect = rebuilt.effect;
+        run.cleanup = rebuilt.cleanup;
+        run.capExpiresAt = capability.expiresAt;
+      }
     }
     const spec = createSpecFor(handoff, run.labels, env);
 
@@ -488,6 +625,15 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     await events.terminal({ status, exitCode: exec.exitCode, errorCode, errorMessage });
 
     // 5. destroy UNDER EFFECT AUTHORITY (happy-path reclaim).
+    // DEP-011 Slice 2a §2a.5 — PROACTIVE clock-first check on the networked branch: the cap is
+    // lease-clamped + never re-minted, so a run longer than its TTL reaches here with an EXPIRED
+    // cap. A gated destroy would be doomed (uniform RNA), and routing that RNA into the `:catch`
+    // below would risk the masked-strand. Record an HONEST orphan DIRECTLY and return — the run
+    // terminal already emitted `succeeded` above; the orphan is a DISTINCT cleanup outcome.
+    if (run.networked && run.capExpiresAt !== null && !(run.capExpiresAt > now())) {
+      recordOrphan(run, "cap_expired_before_happy_destroy");
+      return;
+    }
     try {
       const destroyed = await run.effect.destroy(created.sandboxId, ctx());
       emitOp("destroy", destroyed.cleanupStatus === "success" ? "success" : "failed");
@@ -511,6 +657,29 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     }
   }
 
+  /** Build the effect + cleanup authorities over `provider` for `labels`/`fence`. Used for
+   * BOTH the desktop real provider (at `buildRun`, byte-identical) and — on the networked
+   * branch — the null-object provider (at `buildRun`) then the real per-run driver (rebuilt
+   * in `runLifecycle` after redemption). */
+  function buildAuthorities(
+    provider: SandboxProvider,
+    labels: ResourceLabels,
+    fence: EffectFence,
+  ): { effect: EffectAuthority; cleanup: CleanupAuthority } {
+    return {
+      effect: new EffectAuthority(provider, fence),
+      cleanup: new CleanupAuthority({
+        provider,
+        resourceLabels: labels,
+        targetGeneration: labels.deviceGeneration,
+        fence,
+        deadline: now() + cleanupDeadlineMs,
+        epoch: 0,
+        now,
+      }),
+    };
+  }
+
   function buildRun(handoff: LeaseHandoff): ActiveRun {
     const labels = labelsFor(handoff);
     const fence: EffectFence = {
@@ -521,23 +690,24 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       deviceGeneration: labels.deviceGeneration,
       observedSeq: 0,
     };
+    // DESKTOP (`deps.provider`): build the REAL authorities here — byte-identical to
+    // pre-DEP-011. NETWORKED (`deps.makeRunProvider`): the capability does not exist yet,
+    // so build NO-OP null-object authorities over `createNoopProvider()` (never unset —
+    // §2a.3); `runLifecycle` REBUILDS them over the real per-run driver after redemption.
+    const initialProvider = deps.provider ?? createNoopProvider();
+    const { effect, cleanup } = buildAuthorities(initialProvider, labels, fence);
     return {
       leaseId: handoff.leaseId,
       labels,
-      effect: new EffectAuthority(deps.provider, fence),
-      cleanup: new CleanupAuthority({
-        provider: deps.provider,
-        resourceLabels: labels,
-        targetGeneration: labels.deviceGeneration,
-        fence,
-        deadline: now() + cleanupDeadlineMs,
-        epoch: 0,
-        now,
-      }),
+      fence,
+      effect,
+      cleanup,
       makeCtx: ctx,
       sandboxId: null,
       cancelled: false,
       cleanedUp: false,
+      networked,
+      capExpiresAt: null,
     };
   }
 

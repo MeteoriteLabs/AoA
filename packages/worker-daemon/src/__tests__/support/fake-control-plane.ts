@@ -324,8 +324,13 @@ export interface FakeControlPlane {
   // --- DAT-008 slice 5 execution-secret resolve controls ---
   /** Seed a `resolved` outcome for a handle id (the LOCAL resolve route returns its
    * envTarget+value). A handle with NO seeded resolution is `denied` — the fail-closed
-   * path the worker branches on. */
-  seedSecretResolution(handleId: string, resolution: { readonly envTarget: string; readonly value: string }): void;
+   * path the worker branches on. DEP-011 Slice 2a — an OPTIONAL `ownedLabelsCapability`
+   * is echoed OPAQUELY on the `resolved` reply (the fake cannot import the mint — the test
+   * mints it with a test keypair and seeds it here), modelling Slice 1's server-side mint. */
+  seedSecretResolution(
+    handleId: string,
+    resolution: { readonly envTarget: string; readonly value: string; readonly ownedLabelsCapability?: unknown },
+  ): void;
   /** How many resolve requests the plane has answered for a handle id. */
   resolveCountFor(handleId: string): number;
   expireSession(token: string): void;
@@ -504,7 +509,7 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
   const eventUploadDirectives: FakeEventUploadDirective[] = [];
   const eventUploadRecordList: FakeEventUploadRecord[] = [];
   // DAT-008 slice 5 execution-secret resolve: seeded `resolved` outcomes + per-handle request counts.
-  const secretResolutions = new Map<string, { envTarget: string; value: string }>();
+  const secretResolutions = new Map<string, { envTarget: string; value: string; ownedLabelsCapability?: unknown }>();
   const resolveRequestCounts = new Map<string, number>();
   // The decrypted event BODIES the drain uploaded (not just the metadata in eventUploadRecordList),
   // so a no-leak assertion can scan the real event payloads — CLI-006 D2 Step 1.
@@ -1824,6 +1829,8 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
       outcome: "resolved",
       envTarget: seeded.envTarget,
       value: seeded.value,
+      // DEP-011 Slice 2a — echo the OPAQUE minted capability when seeded (Slice 1's server mint).
+      ...(seeded.ownedLabelsCapability !== undefined ? { ownedLabelsCapability: seeded.ownedLabelsCapability } : {}),
     });
     finish();
   }
@@ -1951,7 +1958,10 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     eventBodies(): readonly unknown[] {
       return uploadedEventBodies;
     },
-    seedSecretResolution(handleId: string, resolution: { envTarget: string; value: string }): void {
+    seedSecretResolution(
+      handleId: string,
+      resolution: { envTarget: string; value: string; ownedLabelsCapability?: unknown },
+    ): void {
       secretResolutions.set(handleId, { ...resolution });
     },
     resolveCountFor(handleId: string): number {

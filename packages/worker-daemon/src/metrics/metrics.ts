@@ -134,6 +134,14 @@ export const CLOSED_LABEL_VALUES: Readonly<Record<string, ReadonlySet<string>>> 
     "unsupported",
     "ignored",
     "stopped",
+    // DEP-011 Slice 2a — the HONEST-cleanup orphan outcome (Option A): a live tenant
+    // sandbox the worker could NOT tear down because its lease-clamped capability
+    // expired. DISTINCT from BOTH `success` (never mask a live strand) AND `failed`
+    // (a failed teardown attempt) — it is the leak-rate signal the deferred
+    // server-side reaper consumes. A CLOSED value, registered here (the metrics
+    // `outcome` key is a closed allow-list — DEP-011 §2a.11 records this as a
+    // build deviation from the design's "open string" wording).
+    "orphaned",
   ]),
   workload: new Set(["batch", "browser_session", "service"]),
   bucket: new Set(["lt_1s", "lt_5s", "lt_30s", "gte_30s"]),

@@ -22,7 +22,13 @@
 // most misleading message available for the single most likely refusal (§3.2).
 
 import type { SandboxProvider } from "../supervisor/provider.js";
+import type { OwnedLabelsCapabilityLike } from "../lease/owned-labels-capability.js";
+import type { LeaseHandoff } from "../poll/poll-loop.js";
 import type { WorkerSelfModel } from "../poll/capacity.js";
+
+/** DEP-011 Slice 2a — the container worker's per-run networked provider factory type (the impl is
+ * supplied by the OUTSIDE composition root, Slice 2b; worker-daemon names only the TYPE). */
+export type MakeRunProvider = (input: { handoff: LeaseHandoff; capability?: OwnedLabelsCapabilityLike }) => SandboxProvider;
 
 /** The four coarse outcomes the self-model read collapses to (Step 3). 401/403/404 all fold
  * to `no_profile` so the route is never an oracle; a terminal session is `session_terminal`;
@@ -53,6 +59,13 @@ export type DispatchCompositionDecision =
 export interface DispatchCompositionInput {
   /** Injected by a composition root outside this package; `undefined` for the shipped binary. */
   readonly provider: SandboxProvider | undefined;
+  /**
+   * DEP-011 Slice 2a — the CONTAINER worker's alternative to `provider`: a per-run networked
+   * driver factory (its impl lives in the outside root, Slice 2b). The provider gate is satisfied
+   * by EITHER `provider` OR `makeRunProvider`; `!provider && !makeRunProvider ⇒ no_provider`.
+   * `undefined` for the shipped binary (which passes neither ⇒ inert `no_provider`).
+   */
+  readonly makeRunProvider?: MakeRunProvider;
   /** `AOA_WORKER_DISPATCH_ENABLED`. Default OFF — see the module header. */
   readonly dispatchEnabled: boolean;
   /**
@@ -85,7 +98,9 @@ export interface DispatchCompositionInput {
 export function decideDispatchComposition(
   input: DispatchCompositionInput,
 ): DispatchCompositionDecision {
-  if (!input.provider) return { compose: false, reason: "no_provider" };
+  // DEP-011 Slice 2a — the provider gate is satisfied by EITHER the desktop `provider` OR the
+  // container `makeRunProvider` factory. Neither ⇒ the shipped-binary `no_provider` refusal.
+  if (!input.provider && !input.makeRunProvider) return { compose: false, reason: "no_provider" };
   if (!input.dispatchEnabled) return { compose: false, reason: "dispatch_disabled" };
   if (!input.hasWorkerIdentity) return { compose: false, reason: "no_worker_identity" };
   if (!input.hasEventOutboxPath) return { compose: false, reason: "no_event_outbox_path" };
@@ -109,14 +124,16 @@ export function decideDispatchComposition(
  * ★ DELIBERATELY WEAKER than `decideDispatchComposition`. Acquiring a session is a
  * PREREQUISITE to reading the self-model, so the lifecycle composes on the two hard gates —
  * a provider and the flag — WITHOUT the identity/outbox/read gates the full dispatch decision
- * also needs. Both predicates read the same `provider`/`dispatchEnabled`, so they can never
- * disagree about the first two gates. On the shipped default (no provider) this is `false`.
+ * also needs. Both predicates read the same provider-gate (`provider` OR `makeRunProvider`, DEP-011
+ * Slice 2a) + `dispatchEnabled`, so they can never disagree about the first two gates. On the
+ * shipped default (neither provider) this is `false`.
  */
 export function shouldComposeSession(input: {
   provider: SandboxProvider | undefined;
+  makeRunProvider?: MakeRunProvider;
   dispatchEnabled: boolean;
 }): boolean {
-  return !!input.provider && input.dispatchEnabled;
+  return (!!input.provider || !!input.makeRunProvider) && input.dispatchEnabled;
 }
 
 /** Operator-facing text for each refusal. Kept beside the decision so a new reason cannot be

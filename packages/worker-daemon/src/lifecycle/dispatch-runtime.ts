@@ -43,6 +43,7 @@ import { DurableWorkerEventSink } from "../events/durable-event-sink.js";
 import { createEventOutboxDrain } from "../events/event-outbox-drain.js";
 import { deriveKekFromDeviceKey } from "../events/event-outbox-kek.js";
 import type { SandboxProvider } from "../supervisor/provider.js";
+import type { OwnedLabelsCapabilityLike } from "../lease/owned-labels-capability.js";
 import type { DeviceKey } from "../identity/device-key.js";
 import type { SessionStore } from "../identity/session.js";
 import type { ControlPlaneClient } from "../transport/client.js";
@@ -58,7 +59,18 @@ import type {
 const NO_RESERVATION: CapacityReservation = { cpuMillis: 0, memoryMiB: 0, diskMiB: 0 };
 
 export interface ComposeDispatchRuntimeDeps {
-  readonly provider: SandboxProvider;
+  /**
+   * The DESKTOP/in-process provider. OPTIONAL since DEP-011 Slice 2a: a CONTAINER worker instead
+   * injects `makeRunProvider` (a per-run networked driver factory). EXACTLY one of
+   * `provider`/`makeRunProvider` is set — the supervisor fail-fasts on both, and the boot's
+   * `decideDispatchComposition`/`shouldComposeSession` gate `!provider && !makeRunProvider ⇒
+   * no_provider`.
+   */
+  readonly provider?: SandboxProvider;
+  /** DEP-011 Slice 2a — the per-run networked provider FACTORY (a TYPE here; the impl comes from the
+   * outside composition root, Slice 2b). Passed through to the supervisor, which builds a per-run
+   * driver over the run's minted capability AFTER redemption. */
+  readonly makeRunProvider?: (input: { handoff: LeaseHandoff; capability?: OwnedLabelsCapabilityLike }) => SandboxProvider;
   /** The PROVISIONED self-model (matchable): its `report` is the provisioned hello. */
   readonly self: WorkerSelfModel;
   readonly key: DeviceKey;
@@ -133,7 +145,7 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
   // env, and return the redeemed values to seed as canaries. Fails CLOSED inside the supervisor.
   const materializeRunSecrets = async (
     handoff: LeaseHandoff,
-  ): Promise<{ env: Record<string, string>; canaries: readonly string[] }> => {
+  ): Promise<{ env: Record<string, string>; canaries: readonly string[]; capability?: OwnedLabelsCapabilityLike }> => {
     const workerSession = await session.get();
     const redeem = createRedeemer({
       client: deps.client,
@@ -155,8 +167,13 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
   // construction-time secret exists and a forgotten seeding cannot fail open. observeRun stays
   // absent (no sandbox stdout/stderr rides the stream yet), but the redeemed provider key does now
   // transit the supervisor transiently, which is exactly what the per-run canaries scrub.
+  // DEP-011 Slice 2a — pass EXACTLY the injected provider path through to the supervisor: the
+  // DESKTOP `provider` OR the container `makeRunProvider` (the supervisor fail-fasts if both, and
+  // the boot gate refuses if neither). `materializeRunSecrets` is always present here, so the
+  // makeRunProvider⟹materializeRunSecrets pairing (supervisor fail-fast F5) is satisfied.
   const supervisor = makeSupervisor({
     provider: deps.provider,
+    makeRunProvider: deps.makeRunProvider,
     identity,
     eventSink,
     redactionCanaries: [],

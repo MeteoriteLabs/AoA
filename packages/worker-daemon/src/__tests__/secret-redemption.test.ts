@@ -146,6 +146,90 @@ describe("synthesiseRunSecrets — env synthesis, allowlist, fail-closed", () =>
   });
 });
 
+// -----------------------------------------------------------------------------
+// DEP-011 Slice 2a — the owned-labels-capability threading (classify + synthesise).
+// -----------------------------------------------------------------------------
+
+const CAP_LABELS = {
+  organizationId: "org-1",
+  targetId: "tgt-1",
+  workerId: "wkr-1",
+  jobId: "job-1",
+  attempt: 1,
+  leaseId: "lease-1",
+  deviceGeneration: 7,
+} as const;
+
+function capLike(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { v: 1, audience: "adapter-manager", ownedLabels: { ...CAP_LABELS }, expiresAt: 2_000_000, sig: "sig-a", ...overrides };
+}
+
+describe("classifyResolveResponse — DEP-011 owned-labels-capability threading", () => {
+  it("a resolved reply carrying a VALID capability threads it onto the classification", () => {
+    const cap = capLike();
+    const c = classifyResolveResponse({
+      status: 200,
+      body: { protocolVersion: 1, outcome: "resolved", envTarget: "ANTHROPIC_API_KEY", value: "sk-live", ownedLabelsCapability: cap },
+    });
+    expect(c.kind).toBe("resolved");
+    if (c.kind === "resolved") expect(c.ownedLabelsCapability).toEqual(cap);
+  });
+
+  it("a resolved reply with NO capability stays resolved WITHOUT one (byte-identical desktop)", () => {
+    const c = classifyResolveResponse({
+      status: 200,
+      body: { protocolVersion: 1, outcome: "resolved", envTarget: "ANTHROPIC_API_KEY", value: "sk-live" },
+    });
+    expect(c.kind).toBe("resolved");
+    if (c.kind === "resolved") expect(c.ownedLabelsCapability).toBeUndefined();
+  });
+
+  it("a resolved reply with a MALFORMED capability is still resolved, cap treated as ABSENT (junk never carried)", () => {
+    const c = classifyResolveResponse({
+      status: 200,
+      body: { protocolVersion: 1, outcome: "resolved", envTarget: "ANTHROPIC_API_KEY", value: "sk-live", ownedLabelsCapability: { v: "1", sig: 1 } },
+    });
+    expect(c.kind).toBe("resolved");
+    if (c.kind === "resolved") expect(c.ownedLabelsCapability).toBeUndefined();
+  });
+});
+
+describe("synthesiseRunSecrets — DEP-011 capability dedup + fail-closed", () => {
+  function resolvedWithCap(cap?: Record<string, unknown>): RedeemFn {
+    return async () => ({ kind: "resolved", envTarget: "ANTHROPIC_API_KEY", value: "sk-live", ownedLabelsCapability: cap } as never);
+  }
+
+  it("all-absent (no capability on any handle) → capability is undefined (desktop no-op)", async () => {
+    const out = await synthesiseRunSecrets([envHandle(HANDLE_A)], resolvedWithCap(undefined));
+    expect(out.capability).toBeUndefined();
+  });
+
+  it("a single capability is threaded through", async () => {
+    const cap = capLike();
+    const out = await synthesiseRunSecrets([envHandle(HANDLE_A)], resolvedWithCap(cap));
+    expect(out.capability).toEqual(cap);
+  });
+
+  it("two handles, SAME ownedLabels/v/audience but differing expiresAt/sig → dedup to ONE (keeps a non-expired), never fail-closed", async () => {
+    const caps = [capLike({ expiresAt: 2_000_000, sig: "sig-a" }), capLike({ expiresAt: 2_000_050, sig: "sig-b" })];
+    let n = 0;
+    const redeem: RedeemFn = async () => ({ kind: "resolved", envTarget: "ANTHROPIC_API_KEY", value: `v-${n}`, ownedLabelsCapability: caps[n++] } as never);
+    const out = await synthesiseRunSecrets([envHandle(HANDLE_A), envHandle(HANDLE_B)], redeem);
+    expect(out.capability).toBeDefined();
+    // the ms-delta on expiresAt/sig must NOT fail the run closed (review MED-3)
+    expect(out.capability!.ownedLabels).toEqual(CAP_LABELS);
+  });
+
+  it("two handles with DIVERGENT ownedLabels tuples → FAIL CLOSED (throws)", async () => {
+    const caps = [capLike(), capLike({ ownedLabels: { ...CAP_LABELS, jobId: "job-OTHER" } })];
+    let n = 0;
+    const redeem: RedeemFn = async () => ({ kind: "resolved", envTarget: "ANTHROPIC_API_KEY", value: `v-${n}`, ownedLabelsCapability: caps[n++] } as never);
+    await expect(synthesiseRunSecrets([envHandle(HANDLE_A), envHandle(HANDLE_B)], redeem)).rejects.toBeInstanceOf(
+      SecretMaterializationError,
+    );
+  });
+});
+
 const SESSION: WorkerSession = {
   token: "live-session-token",
   workerId: "11111111-1111-4111-8111-111111111111",
