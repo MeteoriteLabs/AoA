@@ -60,10 +60,12 @@ export interface NetworkedProviderDriverOptions {
   readonly fetch?: typeof fetch;
   /**
    * The owned-labels capability the driver attaches to GATE-REQUIRED ops (DEP-012
-   * Unit B1: `execute`). Sourced OUT-OF-BAND — the `SandboxProvider` port
-   * `execute(input, ctx)` has NO capability slot, so it is injected here (the container
-   * composition root / DEP-011 supplies the control-plane-minted token), NOT threaded
-   * through the caller. `create` stays gate-free and never attaches it.
+   * Unit B1: `execute` + the teardown/read ops; Slice 3 · β1 adds `create`). Sourced
+   * OUT-OF-BAND — the `SandboxProvider` port ops have NO capability slot, so it is
+   * injected here (the container composition root / DEP-011 supplies the control-plane-
+   * minted token), NOT threaded through the caller. On a KEYED server `create` now
+   * carries it (the create-gate verifies + label-matches + namespaces the ledger); an
+   * UNGATED server ignores it (create's Unit-A body is byte-identical when it is absent).
    */
   readonly capability?: OwnedLabelsCapability;
 }
@@ -88,8 +90,12 @@ export class NetworkedProviderDriver implements SandboxProvider {
   }
 
   async create(spec: CreateSandboxSpec, ctx: ProviderOpContext): Promise<CreateResult> {
-    // create is GATE-FREE — no capability attached (the body stays Unit-A byte-identical).
-    return this.#post<CreateResult>("create", spec, ctx);
+    // create is GATE-REQUIRED on a KEYED server (DEP-012 Slice 3 · β1) — attach the
+    // owned-labels capability (undefined when the driver was constructed without one;
+    // an ungated server ignores it and keeps create's Unit-A byte-identical body, while
+    // a gated server refuses on absence with the uniform error). ONE-arg change: `#post`
+    // already types `op: ProviderOperation` and threads an optional capability.
+    return this.#post<CreateResult>("create", spec, ctx, this.#capability);
   }
 
   async execute(input: ExecuteInput, ctx: ProviderOpContext): Promise<ExecuteResult> {

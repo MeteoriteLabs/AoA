@@ -48,12 +48,21 @@ import {
 import type { OwnedLabelsCapability, RedactedListResult } from "@armyofagents/provider-wire";
 
 import { verifyOwnedLabelsCapability } from "./capability-verify.js";
+import type { KeyedMutex } from "./keyed-mutex.js";
 
 export interface OwnedOpGateDeps {
   readonly provider: SandboxProvider;
   readonly controlPlanePublicKey: KeyObject;
   /** ms-epoch clock for the capability expiry check. */
   readonly now: () => number;
+  /**
+   * The AM-local per-`sandboxId` TOCTOU lock (DEP-012 Slice 3 · β1). `gateOwnedOp`
+   * holds it across inspect -> dispatch so THIS instance can't interleave a
+   * check-time-of-use gap on one sandbox. Acquired AFTER verify (an unauthenticated
+   * caller must not acquire a lock). HONESTLY PARTIAL — no cross-replica / E2B-reassign
+   * reach (deploy-owed, β1.6). `gateList` has no single-sandbox target, so it is unlocked.
+   */
+  readonly sandboxLock: KeyedMutex;
 }
 
 /**
@@ -63,7 +72,7 @@ export interface OwnedOpGateDeps {
  * nothing about the sandbox. Shared by `gateOwnedOp` and `gateList` so the fail-closed
  * posture is identical across every gate-required op.
  */
-function verifyOrUniform(
+export function verifyOrUniform(
   capability: OwnedLabelsCapability | undefined,
   controlPlanePublicKey: KeyObject,
   now: number,
@@ -114,29 +123,41 @@ export async function gateOwnedOp<R>(
   capability: OwnedLabelsCapability | undefined,
   dispatch: (detail: InspectResult) => Promise<R>,
 ): Promise<R> {
-  const { provider, controlPlanePublicKey, now } = deps;
+  const { provider, controlPlanePublicKey, now, sandboxLock } = deps;
 
-  // 1. Verify FIRST, before any provider call (fail-closed).
+  // 1. Verify FIRST, before any provider call AND OUTSIDE the lock (fail-closed — an
+  //    unauthenticated caller must never acquire a per-sandboxId lock; the crafted
+  //    sandboxId keys the lock map, so an unverified caller could otherwise grow it).
   const ownedLabels = verifyOrUniform(capability, controlPlanePublicKey, now());
 
-  // 2. Resolve the target AM-local. MIRROR #requireOwned: SandboxNotFoundError -> the
-  //    uniform error; RETHROW any OTHER (transient) inspect fault as its own class.
-  let detail: InspectResult;
-  try {
-    detail = await provider.inspect(sandboxId, ctx);
-  } catch (err) {
-    if (err instanceof SandboxNotFoundError) throw new ResourceNotAvailableError();
-    throw err; // transient / non-NotFound — existence-orthogonal, surfaced distinctly
-  }
+  // 2. The TOCTOU lock spans inspect -> owned-check -> dispatch so THIS instance can't
+  //    interleave the check-to-use gap on one sandbox. Released in runExclusive's finally
+  //    (on resolve OR throw); the key evicts on drain. PARTIAL: no cross-replica / E2B
+  //    TTL-reassign reach (deploy-owed, β1.6).
+  //    ★ CAUTION for future dispatchers: every wired `dispatch` here is a direct
+  //    `provider.*` call (never re-entering `gateOwnedOp` on the SAME sandboxId). A future
+  //    dispatcher that re-entered this lock on the same key would self-deadlock — keep
+  //    dispatchers non-re-entrant, or key any inner gate on a different id.
+  return sandboxLock.runExclusive(sandboxId, async () => {
+    // Resolve the target AM-local. MIRROR #requireOwned: SandboxNotFoundError -> the
+    // uniform error; RETHROW any OTHER (transient) inspect fault as its own class.
+    let detail: InspectResult;
+    try {
+      detail = await provider.inspect(sandboxId, ctx);
+    } catch (err) {
+      if (err instanceof SandboxNotFoundError) throw new ResourceNotAvailableError();
+      throw err; // transient / non-NotFound — existence-orthogonal, surfaced distinctly
+    }
 
-  // 3. Field-wise owned-check (BOTH clauses — labels AND generation). A mismatch is
-  //    refused IDENTICALLY to not-found.
-  if (!labelsEqual(detail.resourceLabels, ownedLabels) || detail.generation !== ownedLabels.deviceGeneration) {
-    throw new ResourceNotAvailableError();
-  }
+    // Field-wise owned-check (BOTH clauses — labels AND generation). A mismatch is
+    // refused IDENTICALLY to not-found.
+    if (!labelsEqual(detail.resourceLabels, ownedLabels) || detail.generation !== ownedLabels.deviceGeneration) {
+      throw new ResourceNotAvailableError();
+    }
 
-  // 4. Allow — dispatch OUTSIDE the inspect-collapse try. A dispatch fault is ITS OWN class.
-  return dispatch(detail);
+    // Allow — dispatch OUTSIDE the inspect-collapse try. A dispatch fault is ITS OWN class.
+    return dispatch(detail);
+  });
 }
 
 /**

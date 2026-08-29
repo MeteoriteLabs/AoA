@@ -104,9 +104,15 @@ function mint(
   );
 }
 
-/** Create a sandbox with the given labels via an UNGATED driver (create is gate-free). */
+/**
+ * Create a sandbox with the given labels. Now that a GATED server GATES `create`
+ * (β1), the setup mints + attaches a capability whose ownedLabels MATCH the labels
+ * it creates — the caller creates only its OWN-labeled sandbox. A FOREIGN-labeled
+ * setup thus mints its OWN foreign capability (the foreign sandbox created AS the
+ * foreign tenant — the correct model), NOT the owner's.
+ */
 async function createSandbox(labels: ResourceLabels): Promise<string> {
-  const driver = new NetworkedProviderDriver({ baseUrl });
+  const driver = new NetworkedProviderDriver({ baseUrl, capability: mint({ ownedLabels: labels }) });
   const r = await driver.create(specFor(labels), ctx({ idempotencyKey: `c-${labels.workerId}` }));
   return r.sandboxId;
 }
@@ -242,7 +248,8 @@ describe("execute gate — the oracle collapse (byte-identical refusals)", () =>
     await new Promise<void>((resolve) => skewServer.listen(0, "127.0.0.1", resolve));
     const skewUrl = `http://127.0.0.1:${(skewServer.address() as AddressInfo).port}`;
     try {
-      const createDriver = new NetworkedProviderDriver({ baseUrl: skewUrl });
+      // create is GATED on a keyed server (β1) — attach a matching capability.
+      const createDriver = new NetworkedProviderDriver({ baseUrl: skewUrl, capability: mint() });
       const { sandboxId } = await createDriver.create(specFor(OWNED), ctx({ idempotencyKey: "c-skew" }));
       // labels match OWNED exactly, but inspect reports generation 1007 != owned deviceGeneration 7.
       const driver = new NetworkedProviderDriver({ baseUrl: skewUrl, capability: mint() });

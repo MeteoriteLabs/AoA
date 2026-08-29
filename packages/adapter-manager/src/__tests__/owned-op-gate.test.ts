@@ -122,8 +122,13 @@ function mint(
     privateKey,
   );
 }
+// Now that a GATED server GATES `create` (β1), the setup mints + attaches a capability
+// whose ownedLabels MATCH the labels it creates (the caller creates only its OWN-labeled
+// sandbox). FOREIGN / SAME_COARSE setups mint their OWN foreign capability — the foreign
+// sandbox created AS the foreign tenant. Against an UNGATED server the capability is inert
+// (create keeps its raw keyless handler), so the same helper serves both.
 async function createSandbox(labels: ResourceLabels, url: string = baseUrl): Promise<string> {
-  const driver = new NetworkedProviderDriver({ baseUrl: url });
+  const driver = new NetworkedProviderDriver({ baseUrl: url, capability: mint({ ownedLabels: labels }) });
   const r = await driver.create(specFor(labels), ctx({ idempotencyKey: `c-${labels.workerId}-${labels.leaseId}` }));
   return r.sandboxId;
 }

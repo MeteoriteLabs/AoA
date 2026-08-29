@@ -22,6 +22,9 @@
 
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { KeyObject } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type {
   CreateSandboxSpec,
@@ -34,6 +37,9 @@ import { WireProtocolError, decodeOpRequest, encodeErrResponse, encodeOkResponse
 import type { OwnedLabelsCapability } from "@armyofagents/provider-wire";
 
 import { gateList, gateOwnedOp, redactProjection, type OwnedOpGateDeps } from "./owned-op-gate.js";
+import { gateCreate, type CreateGateDeps } from "./create-gate.js";
+import { IdempotencyLedger } from "./idempotency-ledger.js";
+import { KeyedMutex } from "./keyed-mutex.js";
 
 export interface CreateProviderServerOptions {
   readonly provider: SandboxProvider;
@@ -49,16 +55,31 @@ export interface CreateProviderServerOptions {
   readonly controlPlanePublicKey?: KeyObject;
   /** Injectable ms-epoch clock for the capability expiry check (default: Date.now). */
   readonly now?: () => number;
+  /**
+   * The durable idempotency ledger's runtime directory (DEP-012 Slice 3 · β1). Used
+   * ONLY on a GATED server — every gated `create` records `(identity, idempotencyKey)`
+   * here. A real deployment (β2) points it at a configured, out-of-tree volume (a
+   * shared volume across replicas is deploy-owed). When omitted on a gated server it
+   * defaults to a fresh OS temp dir (component-test posture — per-instance, ephemeral,
+   * out-of-tree); an ungated server never constructs a ledger at all.
+   */
+  readonly idempotencyLedgerDir?: string;
 }
 
 type OpHandler = (args: unknown, ctx: ProviderOpContext) => Promise<unknown>;
 
 const OP_ROUTE = /^\/op\/([a-z_]+)$/;
 
-// The gate-required ops. On a GATED server every one routes through the ownership gate;
-// none has a raw handler. `execute` is BOTH gate-required AND keyless-handler-backed (so an
-// UNGATED server keeps Unit A's back-compat execute); the other five are GATED-ONLY.
+// The gate-required ops. On a GATED server every one routes through a gate; none is
+// reached by a raw handler when gated. `create` + `execute` are BOTH gate-required AND
+// keyless-handler-backed (so an UNGATED server keeps Unit A's back-compat create +
+// execute); the other five are GATED-ONLY. `create` uses the DISTINCT create-gate
+// (verify -> spec-label match -> the durable ledger), NOT `gateOwnedOp`.
+//
+// ★ `create` joins the set AND the `routeGated` switch in the SAME change (β1.2 R2): the
+// set and the switch move together, else a gated `create` falls to the `default` reject.
 const GATE_REQUIRED_OPS: ReadonlySet<string> = new Set([
+  "create",
   "execute",
   "cancel",
   "kill",
@@ -85,8 +106,23 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
     ["execute", (args, ctx) => provider.execute(args as ExecuteInput, ctx)],
   ]);
 
+  // The durable ledger + the per-(identity,key) create mutex exist ONLY on a gated
+  // server (the create-gate's idempotency authority). The ledger dir is configured, or
+  // defaults to a fresh OS temp dir (out-of-tree — never the repo, β1.7).
+  const createGateDeps: CreateGateDeps | null = gated
+    ? {
+        provider,
+        controlPlanePublicKey: controlPlanePublicKey!,
+        now,
+        ledger: new IdempotencyLedger({
+          dir: options.idempotencyLedgerDir ?? mkdtempSync(join(tmpdir(), "aoa-am-ledger-")),
+        }),
+        createLock: new KeyedMutex(),
+      }
+    : null;
+
   const gateDeps: OwnedOpGateDeps | null = gated
-    ? { provider, controlPlanePublicKey: controlPlanePublicKey!, now }
+    ? { provider, controlPlanePublicKey: controlPlanePublicKey!, now, sandboxLock: new KeyedMutex() }
     : null;
 
   // Route a gate-required op THROUGH the ownership gate (only reachable when gated).
@@ -98,6 +134,11 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
   ): Promise<unknown> {
     const deps = gateDeps!;
     switch (op) {
+      case "create": {
+        // The DISTINCT create-gate (no inspect): verify -> spec-label match -> the
+        // durable ledger -> provider.create with a stripped key. NOT gateOwnedOp.
+        return gateCreate(createGateDeps!, args as CreateSandboxSpec, ctx, capability);
+      }
       case "execute": {
         const input = args as ExecuteInput;
         return gateOwnedOp(deps, input.sandboxId, ctx, capability, () => provider.execute(input, ctx));
