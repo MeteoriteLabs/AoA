@@ -7,18 +7,21 @@
 // is module-PRIVATE. So worker-daemon VENDORS a local structural type
 // (`OwnedLabelsCapabilityLike`) + a local shape-guard (`isOwnedLabelsCapabilityShape`).
 //
-// This contract PINS the vendored guard against the REAL minted capability (the
-// `.test.ts` is excluded from the boundary scan, so it MAY import the leaf) — the
-// "vendor + pin" pattern `secret-redemption.ts` already uses for the resolve request
-// body. A guard that drifts from the real shape (accepts a malformed cap, or rejects
-// a real one) fails here.
+// This contract PINS the vendored guard to the FROZEN real capability SHAPE — the
+// ordered-7-label tuple + v/audience/expiresAt/sig of the exact primitive types that
+// `provider-wire/codec.ts`'s private `isValidCapability` (and the leaf's
+// `OwnedLabelsCapability`) require. The fixture is built to that exact shape; a guard
+// that drifts (accepts a malformed cap, or rejects a real-shaped one) fails here.
+//
+// ★ The fixture is HAND-BUILT (not minted): the real mint lives in
+// `@armyofagents/provider-capability`, and depending on it from worker-daemon would
+// create a `pnpm -r build` ORDER cycle (that leaf builds FROM worker-daemon). The
+// real cap↔real gate crossing is proven end-to-end in the adapter-manager component
+// test (`dep-011-slice-2a-crossing.component.test.ts`), which already sits below that
+// leaf with no cycle.
 // -----------------------------------------------------------------------------
 
-import { generateKeyPairSync } from "node:crypto";
-
 import { describe, expect, it } from "vitest";
-
-import { signOwnedLabelsCapability } from "@armyofagents/provider-capability";
 
 import { isOwnedLabelsCapabilityShape } from "../lease/owned-labels-capability.js";
 import type { ResourceLabels } from "../supervisor/provider.js";
@@ -33,17 +36,15 @@ const LABELS: ResourceLabels = {
   deviceGeneration: 7,
 };
 
-function realCapability() {
-  const { privateKey } = generateKeyPairSync("ed25519");
-  return signOwnedLabelsCapability(
-    { v: 1, audience: "adapter-manager", ownedLabels: LABELS, expiresAt: 1_000_000 },
-    privateKey,
-  );
+/** A capability of the EXACT frozen shape (`v:1`/`audience:"adapter-manager"`, the ordered
+ * 7-label tuple, an integer `expiresAt`, a base64url `sig`). */
+function realShapedCapability(): Record<string, unknown> {
+  return { v: 1, audience: "adapter-manager", ownedLabels: { ...LABELS }, expiresAt: 1_000_000, sig: "c2ln" };
 }
 
-describe("isOwnedLabelsCapabilityShape — the vendored guard pinned to the real cap", () => {
-  it("ACCEPTS a real minted capability", () => {
-    expect(isOwnedLabelsCapabilityShape(realCapability())).toBe(true);
+describe("isOwnedLabelsCapabilityShape — the vendored guard pinned to the frozen cap shape", () => {
+  it("ACCEPTS a real-shaped capability", () => {
+    expect(isOwnedLabelsCapabilityShape(realShapedCapability())).toBe(true);
   });
 
   it("REJECTS non-records", () => {
@@ -54,7 +55,7 @@ describe("isOwnedLabelsCapabilityShape — the vendored guard pinned to the real
   });
 
   it("REJECTS a capability missing or mistyping each top-level field", () => {
-    const good = realCapability();
+    const good = realShapedCapability();
     for (const drop of ["v", "audience", "expiresAt", "sig", "ownedLabels"] as const) {
       const bad: Record<string, unknown> = { ...good };
       delete bad[drop];
@@ -68,7 +69,7 @@ describe("isOwnedLabelsCapabilityShape — the vendored guard pinned to the real
   });
 
   it("REJECTS a capability whose ownedLabels drop or mistype any of the 7 fields", () => {
-    const good = realCapability();
+    const good = realShapedCapability();
     for (const drop of Object.keys(LABELS) as (keyof ResourceLabels)[]) {
       const labels: Record<string, unknown> = { ...LABELS };
       delete labels[drop];

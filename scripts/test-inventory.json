@@ -10,7 +10,7 @@
     },
     "packages/adapter-manager": {
       "mode": "floor",
-      "count": 9
+      "count": 10
     },
     "packages/adapter-utils": {
       "mode": "floor",

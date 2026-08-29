@@ -634,37 +634,55 @@ FALSE: `metrics.ts`'s `outcome` key is a CLOSED per-key value allow-list (`CLOSE
 (`SupervisorRunStatus`) is untouched (frozen); the orphan is a cleanup-outcome metric + a distinct
 `orphaned`/`cleanupStatus:"orphaned"` log field, never a new status/terminal.
 
-**Test harness — DEVIATION from §2a.9's single-drive wording (reported).** §2a.9 drives everything through one
-`composeDispatchRuntime`. The reshaped test splits by what each assertion needs: **PART A** drives the FULL
-`composeDispatchRuntime` → `makeRunProvider` → `NetworkedProviderDriver` → an in-process GATED
-`createProviderServer({ provider: E2bSandboxProvider(MockE2bTransport), controlPlanePublicKey })` for the live
-crossing — (a) cap VERIFIES at the gate, (b) the model key CROSSES into the provider create env (a capturing
-mock transport — the "provider.peek"), (c) value+sig ABSENT from the drained events AND a logger spy (+ positive
-controls), (d) a denied redeem ⇒ no cap ⇒ the factory is NEVER called ⇒ no create crosses. **PART B** drives
-`createSupervisor` DIRECTLY (injected clock + deferred redemption) for the timing-sensitive supervisor logic —
-fail-fast, driver-built-post-redemption, zero-capability fail-closed, (e) cancel MID-REDEMPTION (null-object, no
-`TypeError`, `activeRunCount()===0`), (f) expired-cap happy-destroy → `orphaned` (converge never called), (f2)
-expired-cap escalateCleanup → `orphaned` CLOCK-FIRST, (g) genuinely-gone (cap valid on re-read) → `success`. Both
-are worker-daemon `.test.ts` files and `E2bSandboxProvider` is named ONLY there (excluded from
-`check-gate-clause-wiring` → E7-1 stays `unwired` at 4). This is STRICTLY safer/more deterministic than one
-compose drive and preserves every assertion.
+**★ BLOCKER (design vs repo) — the daemon devDep on its own consumers is a `pnpm -r build` ORDER CYCLE.** §2a.1
+said the `.test.ts` "may import provider-wire/adapter-manager/provider-capability as DEVdeps … no tsc
+project-reference cycle — neither package uses `references`." True for tsc `references`, but WRONG for the actual
+build: CI's `pnpm build` is `pnpm -r build`, which orders by ALL package.json deps INCLUDING devDeps. Those three
+(and `sandbox-e2b-provider`) all build FROM `worker-daemon`, so a worker-daemon devDep on them is a CYCLE — pnpm
+then ordered `adapter-manager` before its own `sandbox-e2b-provider`/`provider-wire` deps and `pnpm build` FAILED
+(`Cannot find module '@armyofagents/sandbox-e2b-provider'`). This RED the `e2e`/`verify` build step (caught on the
+first push). The design under-weighted this; the fix is to NOT create the cycle.
 
-**Tests + mutation.** New: `owned-labels-capability-guard.contract.test.ts` (4), `dep-011-slice-2a.component.test.ts`
-(10). Extended: `secret-redemption.test.ts` (+7 for classify/synthesise threading+dedup), `compose-dispatch.test.ts`
-(+3 for the `makeRunProvider` gate). Whole worker-daemon suite GREEN (145 files / 898 tests, 1 pre-existing skip);
-`composed-journey` + `supervisor-happy` + `supervisor-secret-materialization` UNCHANGED (desktop byte-identical).
-Mutation sweep 6/6 killed against source: driver-at-buildRun (factory-call assertions), broken null-object /
-"unset" authorities (e→TypeError), escalateCleanup routed through the masking converge (f2→false success),
-RNA-without-clock-re-check (g→false orphan), proactive-check removed (f), dedup-on-whole-cap (synthesise
-fail-closed); plus fail-fast (both-set) and log-the-payload (c) by construction.
+**Test harness (the fix + the §2a.9 single-drive deviation).** The test is SPLIT across the boundary the cycle
+forbids: **the worker seam stays in a worker-daemon `.test.ts` with ZERO cross-package devDeps** (fakes only —
+`createSupervisor` driven directly with `makeRunProvider` → a `createFakeSandboxProvider`, injected clock +
+deferred redemption): fail-fast (both-set / makeRunProvider-without-materialize), driver-built-POST-redemption
+(factory-call assertions), (b) the model key CROSSES into the per-run provider's create env (`provider.peek`),
+(c) value+sig ABSENT from the supervisor's events AND a logger spy (+ positive controls), (d) zero-capability
+fail-closed, (e) cancel MID-REDEMPTION (null-object, no `TypeError`, `activeRunCount()===0`), (f) expired-cap
+happy-destroy → `orphaned` (converge never called), (f2) expired-cap escalateCleanup → `orphaned` CLOCK-FIRST,
+(g) genuinely-gone (cap valid on re-read) → `success`. **The REAL minted-cap ↔ REAL gated-server crossing (a: the
+cap VERIFIES at the real create-gate; b: the model key + sig ride the real `NetworkedProviderDriver` wire into
+`E2bSandboxProvider`'s env) is proven in a NEW adapter-manager `.test.ts`** (`dep-011-slice-2a-crossing.component.test.ts`),
+which already depends on worker-daemon + provider-wire + sandbox-e2b-provider and dev-depends on
+provider-capability — a top-level consumer with NO cycle — plus its fail-closed cases (no-cap / expired-cap /
+foreign-labels each refused with the uniform `ResourceNotAvailableError`, no sandbox created). `E2bSandboxProvider`
+is named ONLY in `.test.ts` files (excluded from `check-gate-clause-wiring` → E7-1 stays `unwired` at 4). The
+contract test hand-builds the frozen cap SHAPE (dropping the leaf import, same cycle reason). Net: every assertion
+(a)–(g) is preserved and the crossing is still proven against the REAL gate — the split is the boundary the repo's
+build order requires, strictly safer than the cycle-inducing single-package drive.
+
+**Tests + mutation.** New (worker-daemon): `owned-labels-capability-guard.contract.test.ts` (4, hand-built shape),
+`dep-011-slice-2a.component.test.ts` (8, the worker seam). New (adapter-manager):
+`dep-011-slice-2a-crossing.component.test.ts` (4, the real gated crossing + fail-closed). Extended:
+`secret-redemption.test.ts` (+7 classify/synthesise threading+dedup), `compose-dispatch.test.ts` (+3 the
+`makeRunProvider` gate). worker-daemon has NO cross-package devDeps (cycle avoided). Whole worker-daemon suite GREEN
+(145 files / 896+1skip); adapter-manager GREEN (10 files / 103); `composed-journey` + `supervisor-happy` +
+`supervisor-secret-materialization` UNCHANGED (desktop byte-identical). `pnpm build` (full `-r`) exits 0 (cycle
+resolved). Mutation sweep 6/6 killed against source (verified by reverting each): driver-at-buildRun (factory-call
+assertions), broken null-object / "unset" authorities (e→`TypeError`), escalateCleanup routed through the masking
+converge (f2→false success), RNA-without-clock-re-check (g→false orphan), proactive-check removed (f), plus
+dedup-on-whole-cap (synthesise fail-closed), fail-fast (both-set), and the real gate refusing a no-cap/expired/
+foreign create (adapter-manager fail-closed).
 
 **Guards (WHOLE policy set GREEN).** `check-worker-daemon-boundary` PASS (local-type + vendored guard; NO leaf
-import in runtime source — devDeps don't count, `evaluateManifest` pins only runtime deps); `check-gate-clause-wiring`
-OK (E7-1 stays dormant at 4 — `E2bSandboxProvider` named only in `.test.`); `check-finding-ownership` OK (NO
-result doc — E6-F003 stays open + owned by DEP-011); `check-test-inventory --write` re-pinned; `check-dependency-graph`,
-`check-adapter-manager-boundary`, `check-sandbox-e2b-provider-boundary`, `check-secret-resolve-vectors` (unperturbed),
-`check-execution-census`, `check-image-deps-stages` (N/A — no new package in 2a) all GREEN. Graph typecheck GREEN for
-worker-daemon + provider-wire + adapter-manager + provider-capability + sandbox-e2b-provider.
+import in runtime source; worker-daemon declares NO cross-package dep at all); `check-gate-clause-wiring` OK (E7-1
+stays dormant at 4 — `E2bSandboxProvider` named only in `.test.` files); `check-finding-ownership` OK (NO result
+doc — E6-F003 stays open + owned by DEP-011); `check-test-inventory --write` re-pinned; `check-adapter-manager-boundary`
+(the crossing test is a `.test.ts`, provider-capability is an existing devDep), `check-dependency-graph`,
+`check-sandbox-e2b-provider-boundary`, `check-secret-resolve-vectors` (unperturbed), `check-execution-census`,
+`check-image-deps-stages` (N/A — no new package) all GREEN. Full `pnpm build` GREEN + graph typecheck GREEN for
+worker-daemon + adapter-manager + provider-wire + provider-capability + sandbox-e2b-provider.
 
 **Fences honoured.** No container bin / new package / `AOA_WORKER_PROVIDER_URL` / boot-root (2b); no
 `checkDispatchDefaultOff` change / mTLS / real keypair (Slice 5); no server-side reaper (next slice — 2a RECORDS

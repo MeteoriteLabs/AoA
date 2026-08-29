@@ -709,18 +709,6 @@ importers:
         specifier: ^9.6.0
         version: 9.14.0
     devDependencies:
-      '@armyofagents/adapter-manager':
-        specifier: workspace:*
-        version: link:../adapter-manager
-      '@armyofagents/provider-capability':
-        specifier: workspace:*
-        version: link:../provider-capability
-      '@armyofagents/provider-wire':
-        specifier: workspace:*
-        version: link:../provider-wire
-      '@armyofagents/sandbox-e2b-provider':
-        specifier: workspace:*
-        version: link:../sandbox-e2b-provider
       '@types/node':
         specifier: ^24.6.0
         version: 24.12.0

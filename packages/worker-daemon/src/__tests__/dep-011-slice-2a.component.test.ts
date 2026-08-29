@@ -1,76 +1,45 @@
 // -----------------------------------------------------------------------------
-// DEP-011 Slice 2a — the per-run networked provider factory + capability threading
-// + the credential crossing (worker side). Ships INERT.
+// DEP-011 Slice 2a — the WORKER side: the per-run provider factory seam, the
+// capability threading, the null-object late-binding (§2a.3) and the honest-cleanup
+// timing (§2a.5). Ships INERT.
 //
-// PART A drives a REAL `composeDispatchRuntime` (poll → ack → supervise) with
-// `makeRunProvider = ({capability}) => new NetworkedProviderDriver(...)` pointed at
-// an IN-PROCESS GATED `createProviderServer({ provider: E2bSandboxProvider(mock),
-// controlPlanePublicKey })`. The capability is minted IN THIS `.test.ts` (a TEST
-// keypair; `signOwnedLabelsCapability` — the fake control-plane is boundary-scanned
-// and cannot import the mint, so it echoes the OPAQUE cap the test seeds). This is
-// the whole crossing: the redeemed model key rides `create`'s `env` and the cap
-// `sig` rides the create over the wire; the value + sig must NEVER reach the drained
-// event stream or the worker logs.
-//
-// PART B drives `createSupervisor` DIRECTLY with `makeRunProvider` + a hand-fed
-// handoff + an injected clock, to exercise the honest-cleanup timing (§2a.5) and the
-// null-object late-binding (§2a.3) deterministically: fail-fast construction, the
-// zero-capability fail-closed, a cancel delivered MID-REDEMPTION, an expired-cap
-// teardown recording a DISTINCT `orphaned` (never `success`/`failed`, converge never
-// called), and a genuinely-gone sandbox → `success` (not a false orphan).
-//
-// E2bSandboxProvider is named ONLY in this `.test.ts` (excluded from
-// `check-gate-clause-wiring` → E7-1 stays at 4) and imported via SUBPATHS so the
-// real-transport / `e2b` SDK stay out of the module closure.
+// This drives `createSupervisor` DIRECTLY with `makeRunProvider` + a hand-fed handoff
+// + an injected clock, so the timing-sensitive supervisor logic is deterministic. The
+// per-run provider is a FAKE (the real `NetworkedProviderDriver` lives OUTSIDE the
+// daemon's boundary — §2a.1 — and importing it here would create a `pnpm -r build`
+// cycle). The REAL minted-cap ↔ REAL gated-server crossing (a: cap verifies, b: the
+// model key crosses the wire into the provider) is proven end-to-end in the
+// adapter-manager component test `dep-011-slice-2a-crossing.component.test.ts`, which
+// sits below the provider-wire/e2b/provider-capability cluster with no cycle. Here we
+// prove the WORKER seam: the driver is built AFTER redemption, the model key reaches
+// the per-run provider's create env (provider.peek), the value + cap sig NEVER leak to
+// the supervisor's events or logs, and every abnormal path is null-object-safe.
 // -----------------------------------------------------------------------------
 
-import { generateKeyPairSync } from "node:crypto";
-import type { AddressInfo } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, expect, it } from "vitest";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-import { signOwnedLabelsCapability } from "@armyofagents/provider-capability";
-import { NetworkedProviderDriver } from "@armyofagents/provider-wire";
-import type { OwnedLabelsCapability } from "@armyofagents/provider-wire";
-import { E2bSandboxProvider } from "@armyofagents/sandbox-e2b-provider/e2b-provider.js";
-import { MockE2bTransport } from "@armyofagents/sandbox-e2b-provider/mock-transport.js";
-import { createProviderServer } from "@armyofagents/adapter-manager";
-
-import { composeDispatchRuntime, type DispatchRuntime } from "../lifecycle/dispatch-runtime.js";
 import { createSupervisor } from "../supervisor/supervisor.js";
 import { SandboxNotFoundError, type SandboxProvider } from "../supervisor/provider.js";
 import { NoopProviderReachedError } from "../supervisor/noop-provider.js";
 import { createMetrics } from "../metrics/metrics.js";
-import { SessionStore } from "../identity/session.js";
 import type { Logger } from "../logging/logger.js";
 import type { OwnedLabelsCapabilityLike } from "../lease/owned-labels-capability.js";
 import { createFakeSandboxProvider } from "./support/fake-provider.js";
-import { startFakeControlPlane, type FakeControlPlane } from "./support/fake-control-plane.js";
-import {
-  compatibleOffer,
-  enrollFixtureWorker,
-  enrollmentCodeConfig,
-  fixtureProbes,
-  makeSelfModel,
-  POLL_FIXTURE_IDS,
-} from "./support/poll-fixtures.js";
+import { POLL_FIXTURE_IDS } from "./support/poll-fixtures.js";
 import { collectingSink, handoffLabels, makeHandoff, SUPERVISOR_IDENTITY } from "./support/supervisor-fixtures.js";
 
-const ENV_METADATA_KEY = "__aoa_env"; // METADATA_KEYS.env (not exported; white-box pin)
 const REDEEMED_VALUE = "sk-ant-fixture-dep011-2a-000";
-
-const SECRET_HANDLE = {
-  handleId: POLL_FIXTURE_IDS.secretHandle,
-  materialization: { kind: "env", target: "ANTHROPIC_API_KEY" },
-  usePolicy: "sandbox_local_only",
-} as const;
-
-/** The exact labels `labelsFor(handoff)` produces for the fixture offer — the cap's `ownedLabels`
- * must equal this or the create-gate rejects EVERY networked create. */
+const CAP_SIG = "dep011-2a-cap-sig-marker";
+/** The fake provider derives this id from the handoff's job/attempt/lease labels. */
+const SANDBOX_ID = `fake-sbx-${POLL_FIXTURE_IDS.job}-1-${POLL_FIXTURE_IDS.lease}`;
+/** The exact labels `labelsFor(handoff)` produces — the cap's `ownedLabels`. */
 const RUN_LABELS = handoffLabels();
+
+/** A cap-like object (the fake provider is un-gated, so no real signature is needed — the real
+ * cap↔gate verification is the adapter-manager crossing test). */
+function capLike(expiresAt: number): OwnedLabelsCapabilityLike {
+  return { v: 1, audience: "adapter-manager", ownedLabels: RUN_LABELS, expiresAt, sig: CAP_SIG };
+}
 
 function spyLogger(): { logger: Logger; lines: string[] } {
   const lines: string[] = [];
@@ -86,225 +55,6 @@ function spyLogger(): { logger: Logger; lines: string[] } {
   return { logger, lines };
 }
 
-async function settle(predicate: () => boolean, timeoutMs = 6000): Promise<boolean> {
-  const start = Date.now();
-  while (!predicate()) {
-    if (Date.now() - start > timeoutMs) return false;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  return true;
-}
-
-// =============================================================================
-// PART A — the real gated wire: composeDispatchRuntime → NetworkedProviderDriver
-//          → gated createProviderServer(E2bSandboxProvider(mock)).
-// =============================================================================
-
-/** A mock transport that RECORDS the env metadata each `create` receives (the crossing landed at
- * the provider) and counts terminations — a faithful "provider.peek". */
-class CapturingMockTransport extends MockE2bTransport {
-  readonly createdEnvs: Record<string, string>[] = [];
-  readonly createdIds: string[] = [];
-  destroyCount = 0;
-  override async create(req: Parameters<MockE2bTransport["create"]>[0]): ReturnType<MockE2bTransport["create"]> {
-    const result = await super.create(req);
-    this.createdIds.push(result.sandboxId);
-    try {
-      this.createdEnvs.push(JSON.parse(req.metadata[ENV_METADATA_KEY] ?? "{}") as Record<string, string>);
-    } catch {
-      this.createdEnvs.push({});
-    }
-    return result;
-  }
-  override async terminate(sandboxId: string): Promise<void> {
-    await super.terminate(sandboxId);
-    this.destroyCount += 1;
-  }
-}
-
-describe("DEP-011 Slice 2a · PART A — the credential crossing over the REAL gated wire", () => {
-  let fake: FakeControlPlane;
-  let workDir: string;
-  let runtime: DispatchRuntime | null;
-  let amServer: ReturnType<typeof createProviderServer>;
-  let transport: CapturingMockTransport;
-  const CODE = "dep011-2a-code";
-
-  beforeEach(async () => {
-    fake = await startFakeControlPlane({ enrollments: [enrollmentCodeConfig(CODE)] });
-    workDir = mkdtempSync(join(tmpdir(), "dep011-2a-"));
-    runtime = null;
-  });
-
-  afterEach(async () => {
-    if (runtime) {
-      runtime.leasing.stopLeasing();
-      await runtime.leasing.drain().catch(() => {});
-      runtime.renewal.stop();
-      runtime.eventOutbox.stopDrain();
-      await runtime.eventOutbox.flush().catch(() => {});
-      runtime.eventOutbox.closeStore();
-    }
-    await new Promise<void>((resolve) => amServer.close(() => resolve()));
-    await fake.close();
-    rmSync(workDir, { recursive: true, force: true });
-  });
-
-  function liveOffer(overrides: Record<string, unknown> = {}) {
-    const now = Date.now();
-    return compatibleOffer({
-      ackDeadline: new Date(now + 5 * 60_000).toISOString(),
-      expiresAt: new Date(now + 10 * 60_000).toISOString(),
-      ...overrides,
-    });
-  }
-
-  function credentialOffer() {
-    const offer = liveOffer();
-    (offer.job as Record<string, unknown>).secretHandles = [SECRET_HANDLE];
-    return offer;
-  }
-
-  /** Start the GATED adapter-manager over a capturing E2B mock; return the loopback base url. */
-  async function startGatedAm(publicKey: import("node:crypto").KeyObject): Promise<string> {
-    transport = new CapturingMockTransport();
-    amServer = createProviderServer({ provider: new E2bSandboxProvider({ transport }), controlPlanePublicKey: publicKey });
-    await new Promise<void>((resolve) => amServer.listen(0, "127.0.0.1", resolve));
-    const addr = amServer.address() as AddressInfo;
-    return `http://127.0.0.1:${addr.port}`;
-  }
-
-  async function composeNetworked(
-    offer: Record<string, unknown>,
-    amBaseUrl: string,
-    logger: Logger,
-    capturingFetch?: typeof fetch,
-  ): Promise<{ runtime: DispatchRuntime; factoryCalls: () => number }> {
-    const { session, key, client } = await enrollFixtureWorker(fake, CODE);
-    const self = await makeSelfModel();
-    const store = new SessionStore(
-      {
-        now: () => Date.now(),
-        renew: async () => {
-          throw new Error("unexpected renew");
-        },
-        bootstrap: async () => {
-          throw new Error("unexpected bootstrap");
-        },
-      },
-      session,
-    );
-    fake.enqueuePoll({ kind: "offer", offer });
-    let factoryCalls = 0;
-    const rt = await composeDispatchRuntime({
-      makeRunProvider: ({ capability }) => {
-        factoryCalls += 1;
-        return new NetworkedProviderDriver({
-          baseUrl: amBaseUrl,
-          fetch: capturingFetch,
-          capability: capability as unknown as OwnedLabelsCapability,
-        });
-      },
-      self,
-      key,
-      store,
-      client,
-      eventOutboxPath: join(workDir, "outbox.db"),
-      concurrency: { batch: 1, browser: 0, service: 0 },
-      backoff: { baseMs: 1, maxMs: 5, jitter: 0 } as never,
-      workDir,
-      probes: fixtureProbes(),
-      logger,
-    });
-    return { runtime: rt, factoryCalls: () => factoryCalls };
-  }
-
-  it("★ (a)/(b)/(c) — a minted cap VERIFIES at the gate, the model key CROSSES into the sandbox env, and the value + sig NEVER leak to events or logs", async () => {
-    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    const cap = signOwnedLabelsCapability(
-      { v: 1, audience: "adapter-manager", ownedLabels: RUN_LABELS, expiresAt: Date.now() + 3_600_000 },
-      privateKey,
-    );
-    fake.seedSecretResolution(SECRET_HANDLE.handleId, {
-      envTarget: "ANTHROPIC_API_KEY",
-      value: REDEEMED_VALUE,
-      ownedLabelsCapability: cap,
-    });
-    const amBaseUrl = await startGatedAm(publicKey);
-
-    const requestBodies: string[] = [];
-    const capturingFetch: typeof fetch = async (input, init) => {
-      if (typeof init?.body === "string") requestBodies.push(init.body);
-      return fetch(input, init);
-    };
-    const { logger, lines } = spyLogger();
-    const composed = await composeNetworked(credentialOffer(), amBaseUrl, logger, capturingFetch);
-    runtime = composed.runtime;
-    runtime.start();
-
-    // (a) the whole lifecycle ran through the GATED wire: create + the happy destroy both
-    // passed the gate (a rejected cap would refuse create → no sandbox, no destroy).
-    const ok = await settle(() => transport.destroyCount >= 1 && transport.createdIds.length === 1);
-    expect(ok, "networked create+destroy completed through the gate").toBe(true);
-
-    // (b) the redeemed model key CROSSED into the provider's create env (provider-side peek).
-    expect(transport.createdEnvs[0]?.ANTHROPIC_API_KEY).toBe(REDEEMED_VALUE);
-
-    // The crossing is REAL: the value + the cap sig are present in the create REQUEST body (correct).
-    const createReq = requestBodies.find((b) => b.includes("/")); // any op body
-    expect(requestBodies.some((b) => b.includes(REDEEMED_VALUE)), "value present in a create REQUEST").toBe(true);
-    expect(requestBodies.some((b) => b.includes(cap.sig)), "cap sig present in a create REQUEST").toBe(true);
-    void createReq;
-
-    // (c) #104 containment — the value + sig NEVER reach the drained event stream OR the worker logs.
-    await runtime.eventOutbox.flush();
-    await settle(() => fake.eventBodies().length >= 2, 3000);
-    const bodies = JSON.stringify(fake.eventBodies());
-    // positive control: the bodies DO carry real emitted content (the created sandboxId).
-    expect(bodies.includes(transport.createdIds[0]!), "positive control: real event content present").toBe(true);
-    expect(bodies.includes(REDEEMED_VALUE), "redeemed value absent from events").toBe(false);
-    expect(bodies.includes(cap.sig), "cap sig absent from events").toBe(false);
-    // logs: a positive control (the run leaseId is logged) + the value/sig absent.
-    const logs = lines.join("\n");
-    expect(logs.includes(POLL_FIXTURE_IDS.lease), "positive control: real log content present").toBe(true);
-    expect(logs.includes(REDEEMED_VALUE), "redeemed value absent from logs").toBe(false);
-    expect(logs.includes(cap.sig), "cap sig absent from logs").toBe(false);
-  });
-
-  it("★ (d) FAIL-CLOSED — a DENIED redemption yields NO capability ⇒ NO driver is built ⇒ NO create crosses the wire", async () => {
-    const { publicKey } = generateKeyPairSync("ed25519");
-    // No seeded resolution ⇒ the fake denies the handle ⇒ synthesise throws ⇒ fail closed BEFORE the
-    // networked rebuild, so makeRunProvider is NEVER called and no sandbox is ever created.
-    const amBaseUrl = await startGatedAm(publicKey);
-    const createRequests: string[] = [];
-    const capturingFetch: typeof fetch = async (input, init) => {
-      if (typeof input === "string" && input.includes("/op/create")) createRequests.push(String(init?.body ?? ""));
-      return fetch(input, init);
-    };
-    const { logger } = spyLogger();
-    const composed = await composeNetworked(credentialOffer(), amBaseUrl, logger, capturingFetch);
-    runtime = composed.runtime;
-    runtime.start();
-
-    await settle(() => fake.ackCountFor(POLL_FIXTURE_IDS.lease) === 1 && fake.resolveCountFor(SECRET_HANDLE.handleId) >= 1);
-    // Give the (failing) supervise a moment to settle.
-    await settle(() => transport.createdIds.length > 0, 400);
-    expect(transport.createdIds.length, "no sandbox created on a denied redemption").toBe(0);
-    expect(createRequests.length, "no create request crossed the wire").toBe(0);
-    expect(composed.factoryCalls(), "the per-run driver factory was never invoked (no cap)").toBe(0);
-  });
-});
-
-// =============================================================================
-// PART B — the supervisor's null-object late-binding + honest-cleanup timing,
-//          driven directly for determinism (injected clock, deferred redemption).
-// =============================================================================
-
-/** A cap-like object (Part B's fake provider is un-gated, so no real signature is needed). */
-function capLike(expiresAt: number): OwnedLabelsCapabilityLike {
-  return { v: 1, audience: "adapter-manager", ownedLabels: RUN_LABELS, expiresAt, sig: "test-sig" };
-}
-
 function deferred<T = void>(): { promise: Promise<T>; resolve: (v: T) => void } {
   let resolve!: (v: T) => void;
   const promise = new Promise<T>((r) => {
@@ -313,8 +63,17 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (v: T) => void } 
   return { promise, resolve };
 }
 
-describe("DEP-011 Slice 2a · PART B — fail-fast, null-object late-binding, honest cleanup", () => {
-  it("FAIL-FAST — both provider AND makeRunProvider set ⇒ throws at construction", () => {
+async function settle(predicate: () => boolean, timeoutMs = 2000): Promise<boolean> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) return false;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return true;
+}
+
+describe("DEP-011 Slice 2a — fail-fast construction", () => {
+  it("both provider AND makeRunProvider set ⇒ throws (which authority does buildRun build?)", () => {
     expect(() =>
       createSupervisor({
         provider: createFakeSandboxProvider({}),
@@ -327,7 +86,7 @@ describe("DEP-011 Slice 2a · PART B — fail-fast, null-object late-binding, ho
     ).toThrow(/mutually exclusive/);
   });
 
-  it("FAIL-FAST — makeRunProvider WITHOUT materializeRunSecrets ⇒ throws (the rebuild would never run)", () => {
+  it("makeRunProvider WITHOUT materializeRunSecrets ⇒ throws (the rebuild would never run)", () => {
     expect(() =>
       createSupervisor({
         makeRunProvider: () => createFakeSandboxProvider({}),
@@ -337,10 +96,13 @@ describe("DEP-011 Slice 2a · PART B — fail-fast, null-object late-binding, ho
       }),
     ).toThrow(/requires materializeRunSecrets/);
   });
+});
 
-  it("the per-run driver is built AFTER redemption: create/execute/destroy hit the makeRunProvider provider", async () => {
+describe("DEP-011 Slice 2a — the per-run driver is built AFTER redemption + the crossing lands (b/c)", () => {
+  it("the driver is built post-redemption: create/execute/destroy hit the makeRunProvider provider, and the model key CROSSES into its create env (provider.peek)", async () => {
     const provider = createFakeSandboxProvider({});
     let factoryCalls = 0;
+    const { logger, lines } = spyLogger();
     const sink = collectingSink();
     const supervisor = createSupervisor({
       makeRunProvider: () => {
@@ -351,16 +113,40 @@ describe("DEP-011 Slice 2a · PART B — fail-fast, null-object late-binding, ho
       eventSink: sink,
       redactionCanaries: [],
       now: () => 1000,
-      materializeRunSecrets: async () => ({ env: { ANTHROPIC_API_KEY: REDEEMED_VALUE }, canaries: [REDEEMED_VALUE], capability: capLike(9_999_999) }),
+      logger,
+      // the redeemed model key + its per-run canary + the run capability, as materialize yields them.
+      materializeRunSecrets: async () => ({
+        env: { ANTHROPIC_API_KEY: REDEEMED_VALUE },
+        canaries: [REDEEMED_VALUE],
+        capability: capLike(9_999_999),
+      }),
     });
     await supervisor.accept(makeHandoff());
+
+    // The factory ran ONCE, AFTER redemption (never at buildRun); the run went create→execute→destroy.
     expect(factoryCalls).toBe(1);
     const ops = provider.calls().filter((c) => !c.replayed).map((c) => c.op);
     expect(ops).toEqual(["create", "execute", "destroy"]);
     expect(supervisor.activeRunCount()).toBe(0);
-  });
 
-  it("ZERO-CAPABILITY fail-closed — redemption succeeds but yields NO cap ⇒ no driver, no create, a diagnosable terminal", async () => {
+    // (b) the redeemed model key CROSSED into the per-run provider's create env (provider.peek).
+    expect(provider.peek(SANDBOX_ID)?.env.ANTHROPIC_API_KEY).toBe(REDEEMED_VALUE);
+
+    // (c) #104 containment — the value + the cap sig NEVER reach the supervisor's emitted events…
+    const events = JSON.stringify(sink.events);
+    expect(events.includes(POLL_FIXTURE_IDS.lease), "positive control: real event content present").toBe(true);
+    expect(events.includes(REDEEMED_VALUE), "redeemed value absent from events").toBe(false);
+    expect(events.includes(CAP_SIG), "cap sig absent from events").toBe(false);
+    // …NOR the worker logs (positive control: the run leaseId is logged).
+    const logs = lines.join("\n");
+    expect(logs.includes(POLL_FIXTURE_IDS.lease), "positive control: real log content present").toBe(true);
+    expect(logs.includes(REDEEMED_VALUE), "redeemed value absent from logs").toBe(false);
+    expect(logs.includes(CAP_SIG), "cap sig absent from logs").toBe(false);
+  });
+});
+
+describe("DEP-011 Slice 2a — fail-closed + null-object late-binding + honest cleanup", () => {
+  it("(d) ZERO-CAPABILITY fail-closed — redemption succeeds but yields NO cap ⇒ no driver, no create, a diagnosable terminal", async () => {
     let factoryCalls = 0;
     const sink = collectingSink();
     const supervisor = createSupervisor({
@@ -412,7 +198,7 @@ describe("DEP-011 Slice 2a · PART B — fail-fast, null-object late-binding, ho
     expect(logs).not.toContain(NoopProviderReachedError.name);
   });
 
-  it("(f) an EXPIRED cap at teardown records a DISTINCT `orphaned` outcome — never `success`/`failed`, converge NEVER called", async () => {
+  it("(f) an EXPIRED cap at the happy destroy records a DISTINCT `orphaned` outcome — never `success`/`failed`, converge NEVER called", async () => {
     let clock = 1000;
     const gate = deferred();
     const provider = createFakeSandboxProvider({ executeGate: gate.promise });
@@ -467,7 +253,6 @@ describe("DEP-011 Slice 2a · PART B — fail-fast, null-object late-binding, ho
     const running = supervisor.accept(handoff);
     await settle(() => provider.callCount("execute") >= 1, 1000);
     clock = 6000; // the lease-clamped cap is now expired
-    // A cancel routes teardown through escalateCleanup → the HONEST networked convergence.
     await supervisor.cancel(handoff.leaseId, "cancel_expired");
     gate.resolve();
     await running;
