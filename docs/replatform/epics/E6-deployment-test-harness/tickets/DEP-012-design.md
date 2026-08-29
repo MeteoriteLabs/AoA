@@ -873,3 +873,238 @@ synthesize `list`'s `hasLiveLease = state==="running"` (B2.6 inheritance); the g
 sufficient). **Wave right-sized — keep unified** (B2's net-new security surface is smaller than B1's). Fix
 (applied, B2.0): the compose rationale was wrong — the worker-side check is VACUOUS under the driver synthesis,
 not shape-incompatible; DEP-011 must build the compose variant as no-op/trust, not a hash-compare.
+
+---
+
+# Slice 3 · Wave β1 — the durable idempotency ledger + create-gating + the TOCTOU lock
+
+**Status:** design (2026-08-29, post-recon + **create-gating DECIDED → gate create**, founder sign-off). Builds
+on the SHIPPED gated wire (A+B1+B2). Scope: the two HARD parts of Slice 3 — the durable, identity-namespaced
+idempotency ledger (which forces create-gating) + the TOCTOU/`sandboxId`-reuse lock — component-tested on the
+MOCK. **Wave β2 is SPLIT off** (host the real `E2bSandboxProvider` + a new adapter-manager boundary guard + keyed
+conformance — mostly wiring already-built code). **4-agent adversarial review applied (§β1.9)** — 3 HIGH ledger
+findings (the space-join key collision → unambiguous encoding; mandate STRIP not namespace; a concurrent
+double-provision → mutex + check-after-create) + the R2 regression (gating create reds the B1/B2 setup-creates →
+per-label mints) folded in.
+
+## β1.0 — the decisions + the recon findings (2026-08-29, verified against source)
+
+**Create-gating RESOLVED → GATE CREATE** (founder sign-off). The durable ledger MUST be namespaced by
+authenticated identity (SETTLED: S1.5, B2.6, `DEP-012-unit-b1-result.md` — else worker B replaying worker A's
+`idempotencyKey` learns A's `sandboxId` + raw labels: a cross-tenant/disclosure oracle). The provider's
+`#idempotency` (`e2b-provider.ts:156`) sits BELOW the gate, seeing only worker-chosen `ctx.idempotencyKey` +
+worker-supplied `spec.resourceLabels` — neither trusted. So identity-namespacing forces `create` to carry the
+capability. Gating `create` ALSO closes the separate "arbitrary foreign labels on a new sandbox" hole (`create`
+is gate-free today, `server.ts:83-86`; the B2-result skeptic note deferred it). Keyless `create` stays for Unit A
+back-compat.
+
+**Slice 3 SPLITS (recon).** β1 (this) = the ledger + create-gating + the TOCTOU lock. **β2** = a new
+composition-root bin hosting `new E2bSandboxProvider({ transport: createRealE2bTransport() })` (`E2B_API_KEY` in
+env, dynamic-import the SDK, refuse-not-degrade — template `worker-keystore/src/bin/sandbox-provider.ts:72-104`)
++ a **new `adapter-manager-boundary.mjs`** (none exists — hosting the real provider pulls `e2b` into the key-less
+server's closure; confine it, template `worker-keystore-boundary.mjs:27-35`) + move `sandbox-e2b-provider`
+devDep→dep + the keyed conformance lane (`describeKeyed` + dynamic import, `keyed-real-e2b.test.ts:31-42`).
+
+**Conformance = HOSTED-provider, NOT wire-end-to-end (recon Q4 — a landmine).** "The networked provider must
+pass `runSandboxIsolationConformance`" is structurally INFEASIBLE wire-end-to-end: the hostile suite creates
+resources with FRESH, varying labels per op (`per-op-adapter.ts:135-148`), but the wire carries ONE fixed
+`#capability` (`driver.ts:82-88`) + owns-checks every op against it (`owned-op-gate.ts:134`) → the suite's own
+resources are refused as foreign. Target = the HOSTED `E2bSandboxProvider` over the swapped transport (already
+substantially built: mock=full green `conformance.test.ts`; real=curated subset `keyed-real-e2b.test.ts` — the
+fault-directive invariants are permanently mock-only). The wire's correctness is the B1/B2 component tests. [β2.]
+
+**The TOCTOU (recon Q3).** `sandboxId` is E2B-assigned + opaque (`real-transport.ts:97-105` forwards it); the
+mock never reuses (`mock-transport.ts:80-83`); real-E2B reuse is an EMPIRICAL unknown. (a) provider-atomic
+compare-and-execute → grows the FROZEN port → INFEASIBLE; (b) AM-local per-`sandboxId` lock → feasible, no port
+change, CI-testable, but PARTIAL (only serializes MY inspect+dispatch on THIS AM instance); (c) proven-non-reuse
+invariant → cheapest IF real E2B ids don't reuse → deploy-verifiable. **Lean: (b) in β1 as CI defense-in-depth +
+(c) the empirical assertion owed at the keyed lane/deploy (β2/deploy); + the §S1.5 foreign-id ordering assertion.**
+
+## β1.1 — verified terrain (recon 2026-08-29)
+
+- **`create` replay** (`e2b-provider.ts:186-213`): `ctx.idempotencyKey` present + in the map → return the recorded
+  `{sandboxId, resourceLabels}` with a fresh `providerOpId`; else provision + `#idempotency.set(key, {sandboxId,
+  resourceLabels: spec.resourceLabels})` (`:211`). The map is IN-MEMORY (`:156`).
+- **adapter-manager has NO datastore** (`package.json` deps = `provider-wire` + `worker-daemon` only). The
+  durable-write primitive to reuse: `worker-daemon/src/identity/file-record-store.ts` (temp → `fsync` → `link()`
+  CAS → PARENT-DIR fsync `:178`) — but it is SINGLE-RECORD `saveIfAbsent`; a keyed LEDGER is a new build.
+- **`create` is gate-free even on a gated server** (`server.ts:83-86` — a raw Map handler; not in the
+  gate-routed path). The driver holds `#capability` (`driver.ts:82`) already attached to the other gated ops;
+  `#post` (`:175-190`) already types `op: ProviderOperation`, so attaching it to `create` is a ONE-arg change
+  (review R3).
+- **The TOCTOU:** `gateOwnedOp` is `provider.inspect` (`owned-op-gate.ts:126`) then `dispatch(detail)` (`:139`) —
+  non-atomic across two provider round-trips.
+
+## β1.2 — what it builds
+
+1. **Gate `create`** — `create` joins the gated ops on a KEYED server. The driver attaches the capability to
+   `create`; the server routes it through a create-gate: verify the capability → **enforce
+   `labelsEqual(spec.resourceLabels, cap.ownedLabels)`** (the caller creates only its OWN-labeled sandboxes —
+   closes the arbitrary-labels hole; refuse with the uniform error else) → the ledger check (item 2) →
+   `provider.create` → record. **Keyless server → `create` ungated** (Unit A back-compat — `create` KEEPS its raw
+   Map handler, reached only when ungated, exactly like `execute`). create's gate is a DISTINCT shape from
+   `gateOwnedOp`: NO `inspect` (there is no existing sandbox) — it is verify + spec-label-match + the ledger.
+   **Routing (review R2):** add `create` to `GATE_REQUIRED_OPS` AND a `routeGated` `case "create"` (the create-gate,
+   NOT `gateOwnedOp`) in the SAME change — the set + switch move together, else `create` falls to the `default`
+   reject — and re-pin `check-gate-clause-wiring`; `create` KEEPS its raw Map handler for the keyless path. **The
+   driver change is ONE arg** — `#post` already types `op: ProviderOperation` (`driver.ts:176`); `driver.create`
+   just passes `this.#capability` (no widening). A legit worker matches (`labelsFor(handoff)` ≡ `cap.ownedLabels`),
+   but the mint≡`labelsFor` FIELD-FOR-FIELD invariant (incl. NUMERIC `attempt`/`deviceGeneration` — `labelsEqual`
+   compares with `===`) is a DEP-011 must (§β1.6), else legit creates silently refuse.
+2. **The durable, identity-namespaced idempotency ledger** (a NEW adapter-manager server-layer component). Keyed
+   by **(identity, idempotencyKey)** where **identity = an UNAMBIGUOUS encoding of `cap.ownedLabels`** — the raw
+   ordered tuple, or a SHA over the B1 fixed-order-JSON / length-prefixed canonical (the SAME serialization B1's
+   capability mandates). **★ NOT `hashResourceLabels` (review R1+R4 — the headline fix):** its `.join(" ")` is
+   non-injective (`provider.ts:159-167`) — two tuples with a space across a field boundary collide
+   (`org:"a",target:"b c"` ≡ `org:"a b",target:"c"`), so two tenants would SHARE one ledger namespace → tenant Y
+   replaying X's key gets X's sandbox. B1 already rejected this hash for authorization (`capability.ts:9-12`); the
+   ledger must not reopen it. Value = `{sandboxId, resourceLabels}`. **The store:** a per-key file reusing the
+   `FileRecordStore` write-once `saveIfAbsent` CAS (temp → fsync → `link()` → **PARENT-DIR fsync** — the WRK-014
+   lesson; a reimplementation MUST carry the parent-dir fsync or a "stored" entry is lost to power loss) — NOT a
+   "compacting store" (different crash/concurrency properties; pick the write-once per-key file, which is
+   create-then-record only, no `pending→done`).
+   - On a gated `create`: verify → hold the per-`(identity,key)` MUTEX (item 3-bis below) → `ledger[(identity,key)]`
+     → HIT: return the recorded result (BYPASS `provider.create`); MISS: `provider.create` → record.
+   - **★ MANDATORY: STRIP `ctx.idempotencyKey` (pass `""`) before `provider.create` (review R1).** The provider's
+     OWN in-memory `#idempotency` (`e2b-provider.ts:156,:188`, keyed by the key ALONE) would otherwise HIT A's
+     entry when the server calls `provider.create` with B's replay of A's key → return A's `{sandboxId,
+     resourceLabels}` to B (a cross-tenant leak THROUGH the provider). Stripping makes the durable ledger the SOLE
+     idempotency authority with NO residual, and never breaks a legit replay (a replay is a ledger HIT that
+     bypasses the provider). **Do NOT** use the "namespaced provider key" alternative (unbounded map + inherits
+     the collision). Test the cross-identity replay at BOTH layers against a STRIPPED provider call.
+   - **★ CONCURRENCY — a double-provision (review R1+R4):** two same-`(identity,key)` creates on ONE instance both
+     MISS the ledger (Node interleaves at the awaited `provider.create`) → TWO real sandboxes; the write-once CAS
+     dedupes only the RECORD → the loser is a live orphan. Fix: an **AM-local per-`(identity,key)` async mutex
+     spanning the whole check → create → record**, PLUS a **check-after-create** (on `already_present`: re-read
+     the winner's record, RETURN it, and TEAR DOWN the loser's just-created sandbox). Across the scope's replicas
+     1-3 the in-process mutex + per-replica local ledger do NOT serialize — that cross-replica double-provision is
+     deploy-owed (a shared-volume ledger + the check-after-create; §β1.6).
+3. **The TOCTOU lock (b)** — `gateOwnedOp` holds an AM-local per-`sandboxId` async lock across inspect+dispatch
+   (`owned-op-gate.ts:126-139`), acquired AFTER `verifyOrUniform` (verify stays OUTSIDE the lock — fail-closed, and
+   an unauthenticated caller must not acquire locks) and released in a `finally`. The lock map (keyed by the
+   attacker-supplied `sandboxId`) EVICTS on drain, so foreign/garbage ids don't grow it. CI-testable (a
+   concurrent-op race on the mock). **Honestly PARTIAL:** it serializes only THIS AM instance's inspect+dispatch —
+   NOT E2B's own TTL destroy+reassign (`e2b-provider.ts:210`), and NOT a SECOND adapter-manager replica (the scope
+   allows replicas 1-3, `adapter-manager-scope.md:156`; an in-process lock has no cross-replica reach). The real
+   fix is (c) proven-non-reuse (deploy-owed); the §S1.5 foreign-id ordering assertion is also deploy-owed (β1.6).
+   (The create path's own concurrency uses the per-`(identity,key)` mutex of item 2 — a DIFFERENT key, since a new
+   `create` has no `sandboxId` yet.)
+
+## β1.3 — where things live + fences
+
+- All new code is `adapter-manager` (the create-gate + the ledger + the lock) + `provider-wire` (the driver
+  attaches the capability to `create`; widen the codec/driver as needed). **`cleanup-authority.ts` + worker-daemon
+  + the port UNTOUCHED** (assert, as A/B1/B2). The ledger reuses the `FileRecordStore` IDIOM but is a new
+  adapter-manager file — it does NOT import worker-daemon internals beyond the already-exported symbols.
+- **NOT** the real transport / the boundary guard / conformance (**β2**); **NOT** the empirical non-reuse fact
+  (deploy/keyed-owed); **NOT** the credential crossing (the per-run Company model key = **Slice 4**, settled (i));
+  **NOT** through the daemon (component-level). Still on the MOCK.
+
+## β1.4 — TDD (fail-first)
+
+0. **★ Migrate the shipped B1/B2 setup helpers FIRST (review R2 — else gating `create` reds them).** `gate.test.ts`
+   + `owned-op-gate.test.ts` run on a GATED server and use a capability-LESS `createSandbox` for setup — which the
+   create-gate now refuses. Migrate `createSandbox` to MINT + attach a capability matching the labels it creates;
+   the FOREIGN-labeled setups (`createSandbox(FOREIGN)`/`(SAME_COARSE)`) mint their OWN foreign capability (the
+   foreign sandbox is created AS the foreign tenant — the correct model), NOT the owner's. Confirm A/B1/B2 green.
+1. Gate `create` — keyed server: verify + `labelsEqual(spec.resourceLabels, cap.ownedLabels)` (FULL `ResourceLabels`
+   specs, not Unit A's 2-field `{tenant,run}`) → allow; foreign spec-labels → uniform error; MISSING capability →
+   refused (RED). Keyless server: `create` still ungated (Unit A's create tests GREEN).
+2. The ledger — durability: a `create` records; a SIMULATED restart (new ledger instance over the same dir — an OS
+   TEMP dir, NEVER the repo tree) replays the same `(identity,key)` → the SAME `sandboxId`, no second
+   `provider.create` (RED).
+3. ★ Cross-identity leak (STRIPPED): B's replay of A's `idempotencyKey` (different identity) → MISS → B gets its
+   OWN sandbox; A's `{sandboxId,resourceLabels}` NEVER returned to B — at the server ledger AND through the
+   provider's map (assert `provider.create` is called with an EMPTY key — proves the strip) (RED).
+4. ★ Ledger-key collision: two `ownedLabels` differing only by a SPACE shift (`org:"a",target:"b c"` vs
+   `org:"a b",target:"c"`) → DISTINCT ledger namespaces (B never gets A's sandbox) — FAILS under a
+   `hashResourceLabels` key, proves the unambiguous encoding (RED).
+5. ★ Concurrent double-provision: two same-`(identity,key)` creates racing → exactly ONE sandbox exists; the loser
+   is torn down / never created (the mutex + check-after-create) (RED).
+6. The TOCTOU lock — two concurrent ops on the same `sandboxId` do not interleave inspect/dispatch (a race with a
+   yielding inspect); verify-before-lock; the lock map evicts on drain (RED).
+7. Mutation sweep — the label-match clause; the ledger hit/miss; the STRIP (un-strip → B gets A's sandbox =
+   KILLED); the identity encoding (space-join → the collision test KILLS it); the mutex (drop → double-provision);
+   the durability write (drop the parent-dir fsync where reimplemented).
+
+## β1.6 — what Wave β2 + deploy inherit (recorded)
+
+- **β2:** the real-transport composition-root bin + the `adapter-manager-boundary.mjs` guard (confine `e2b` /
+  `E2B_API_KEY` / `sandbox-e2b-provider` to that one bin) + `sandbox-e2b-provider` devDep→dep (+ declare `e2b`) +
+  the keyed conformance lane (conform the HOSTED provider, curated subset — NOT the wire-end-to-end).
+- **Deploy/keyed-owed:** the TOCTOU (c) empirical non-reuse assertion (assert + a keyed test that a destroyed E2B
+  id is never re-minted) — if TRUE the TOCTOU is vacuous, the (b) lock is defense-in-depth; the §S1.5 foreign-id
+  ordering assertion.
+- **★ Cross-replica (review R4):** the scope allows adapter-manager replicas 1-3 (`adapter-manager-scope.md:156`),
+  but β1's TOCTOU lock is IN-PROCESS and the ledger is a per-replica LOCAL file — neither serializes across
+  replicas → a create replay routed to a different replica MISSES → double-provision. Deploy-owed: a SHARED-VOLUME
+  ledger + the check-after-create teardown; the in-process lock stays defense-in-depth.
+- **★ Crash-orphan (review R1):** create-then-record has a window — a crash AFTER `provider.create` but BEFORE the
+  ledger commit leaves a created-but-unrecorded sandbox → a restart replay re-provisions → a SAME-tenant orphan
+  (bounded by the sandbox TTL `e2b-provider.ts:210`, but a long workload's TTL is large). `record-intent-first`
+  would close it but is not expressible over write-once `saveIfAbsent` — a deploy/hardening item.
+- **★ The mint≡labelsFor invariant (review R2):** DEP-011's capability mint must produce `ownedLabels`
+  FIELD-FOR-FIELD identical to `labelsFor(handoff)` (`supervisor.ts:205-215`) that `createSpecFor` stamps —
+  including the NUMERIC `attempt`/`deviceGeneration` (`labelsEqual` uses `===`). Any type/normalization drift
+  silently REFUSES legit creates under the create-gate.
+- **Watch (recon landmine 6):** B2's `reconcile_cleanup` semantic inversion (already-gone → thrown
+  `ResourceNotAvailableError`, not `CleanupResult{success}`) may FIRST surface under a real E2B TTL-expiry
+  (`e2b-provider.ts:210`) once β2's real transport lands — DEP-011's remit, but β2 makes TTL expiry real.
+
+## β1.7 — guards (run the WHOLE set)
+
+No new package (adapter-manager + provider-wire). The five registers + `check-worker-daemon-boundary` (UNTOUCHED
+— assert) + `check-sandbox-e2b-provider-boundary` + `check-test-inventory` (NEW test files → `--write` re-pin, no
+over-reach) + `check-boot-roots-provider-free`. The ledger's file store adds NO boot root (it is a runtime store,
+not a bin naming `bootstrapWorkerDaemon`) — confirm. NOT `check-image-deps-stages` / `dockerfile-static` (β1 adds
+no image). NO new `vitest.config.ts` `projects[]` / Dockerfile COPY. **★ The ledger's runtime DIR must be
+out-of-tree or gitignored** (review R4 — reuse the `data/`/`.aoa/` `.gitignore` precedent; `FileRecordStore` takes
+a required `path`, no default), and the restart-replay test (β1.4 step 2) writes to an OS TEMP dir, NEVER the repo
+tree — else ledger data files could pollute `check-test-inventory`.
+
+## β1.8 — open questions for the 3-agent adversarial review
+
+1. **The leak-through** — does the server's provider-key namespacing/stripping FULLY close the provider's
+   in-memory `#idempotency` cross-identity leak (test both layers)? Is stripping `ctx.idempotencyKey` before
+   `provider.create` cleaner + safer than passing a namespaced key?
+2. **The ledger's file store** — is a keyed file-backed store crash-atomic + concurrent-safe (two AM requests
+   racing the same `(identity,key)`)? Does it need the `FileRecordStore` CAS per key, and is a restart-replay
+   genuinely durable (parent-dir fsync)?
+3. **create-gating fences** — does gating `create` on a keyed server break ANY A/B1/B2 test, and does keyless
+   `create` stay ungated (Unit A)? Is `labelsEqual(spec.resourceLabels, cap.ownedLabels)` the right
+   arbitrary-labels closure (a caller must still be able to create its own sandbox)?
+4. **The TOCTOU lock** — is an AM-local per-`sandboxId` lock sound (no deadlock, released on throw), and is its
+   PARTIALITY (doesn't cover E2B-side reassign) honestly recorded as (c)-deploy-owed, not oversold?
+5. **Identity function** — is `hashResourceLabels(cap.ownedLabels)` the right namespacing identity (stable,
+   collision-resistant enough for a ledger key), or should it be the raw tuple / the capability's own fields?
+6. **Guards** — does the file store trip `check-boot-roots-provider-free` or any register; does the ledger's dir
+   need a `.gitignore` / a configured path (not a committed artifact)?
+
+## β1.9 — Review round — 4-agent adversarial pass (2026-08-29), all verified against source
+
+**R1 — ledger security (3 HIGH, all applied).** (1) The LEAK-THROUGH: the provider's in-memory `#idempotency`
+(keyed by `idempotencyKey` ALONE) would echo A's sandbox to B on a cross-identity replay → MANDATE stripping
+`ctx.idempotencyKey` before `provider.create` (the durable ledger is the SOLE layer; a legit replay is a HIT that
+bypasses the provider); the "namespaced key" alternative DELETED (β1.2 item 2). (2) The ledger KEY collision:
+`hashResourceLabels`'s `.join(" ")` is non-injective — the SAME space-join bypass B1 rejected for authorization →
+key by an UNAMBIGUOUS encoding (raw ordered tuple / B1 canonical) + a collision mutation test (β1.2 item 2, β1.4
+step 4). (3) A concurrent DOUBLE-PROVISION: two same-key creates both miss the ledger → two sandboxes → a
+per-`(identity,key)` mutex + check-after-create teardown-the-loser (β1.2 item 2, β1.4 step 5). + the
+create-then-record crash-orphan recorded (β1.6).
+
+**R2 — create-gating (a REGRESSION, applied).** Gating `create` reds the SHIPPED B1+B2 suites (their gated-server
+`createSandbox` setup is capability-LESS, and they create FOREIGN-labeled sandboxes the owner's capability can't
+authorize) → β1.4 step 0 migrates the helpers to PER-LABEL mints (the foreign sandbox created AS the foreign
+tenant). Confirmed sound: the `labelsEqual` closure (+ the mint≡`labelsFor` invariant recorded for DEP-011,
+β1.6); the create-gate shape (no inspect); keyless `create` byte-identical. The routing coupling recorded (β1.2
+item 1).
+
+**R3 — terrain.** 8/8 confirmed. `create` genuinely gate-free; the leak-through real (the provider records the
+ORIGINAL caller's labels by key alone). Favorable: `#post` already types `ProviderOperation` → attaching the
+capability to `create` is a one-arg change (β1.1 cites corrected).
+
+**R4 — TOCTOU lock + scope + guards.** The lock is soundly implementable (verify-outside-lock, `finally`, evict on
+drain — β1.2 item 3); its PARTIALITY now names the MULTI-REPLICA gap (the in-process lock + per-replica local
+ledger don't serialize across the scope's replicas 1-3 → cross-replica double-provision, deploy-owed, β1.6). The
+β1/β2 split + the HOSTED-provider conformance read + one-wave sizing CONFIRMED; guards clean (the ledger DIR must
+be gitignored/out-of-tree, β1.7). Corroborated R1's ledger-key must-fix.
