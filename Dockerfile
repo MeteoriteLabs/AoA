@@ -71,6 +71,8 @@ COPY packages/worker-keystore/package.json packages/worker-keystore/
 # workspace package.json, independent of whether the package ships its own image.
 COPY packages/provider-wire/package.json packages/provider-wire/
 COPY packages/adapter-manager/package.json packages/adapter-manager/
+# DEP-011 §1.2.0 — the node:crypto-only owned-labels-capability leaf (server mints through it).
+COPY packages/provider-capability/package.json packages/provider-capability/
 COPY patches/ patches/
 RUN pnpm install --frozen-lockfile
 
