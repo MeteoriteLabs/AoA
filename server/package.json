@@ -47,6 +47,7 @@
     "@armyofagents/adapter-utils": "workspace:*",
     "@armyofagents/db": "workspace:*",
     "@armyofagents/plugin-sdk": "workspace:^",
+    "@armyofagents/provider-capability": "workspace:*",
     "@armyofagents/shared": "workspace:*",
     "@armyofagents/worker-protocol": "workspace:*",
     "@aws-sdk/client-s3": "^3.888.0",
@@ -88,6 +89,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@armyofagents/adapter-manager": "workspace:*",
     "@armyofagents/worker-daemon": "workspace:*",
     "@types/diff": "^8.0.0",
     "@types/express": "^5.0.0",

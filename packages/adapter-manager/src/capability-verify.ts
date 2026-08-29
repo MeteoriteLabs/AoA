@@ -23,8 +23,12 @@ import {
   buildOwnedLabelsCapabilityCanonical,
   type OwnedLabelsCapability,
   // Import from the SUBPATH (not the package barrel) so the verifier's runtime closure
-  // stays minimal — it never side-effect-loads the codec/driver. Same subpath discipline
-  // as Unit A's e2b-barrel avoidance.
+  // stays minimal — it never side-effect-loads the codec/driver. DEP-011 §1.2.0 re-homed
+  // the primitive to the `@armyofagents/provider-capability` leaf; `provider-wire/capability`
+  // now RE-EXPORTS it verbatim, so mint (control plane) + verify (here) still resolve to the
+  // ONE shared `buildOwnedLabelsCapabilityCanonical`. Kept on the provider-wire subpath (not
+  // the leaf directly) so adapter-manager's β2 runtime-dependency boundary is unchanged —
+  // the leaf is an adapter-manager DEVdependency for the component test only.
 } from "@armyofagents/provider-wire/capability";
 
 /** The closed failure mode of capability verification. The execute gate maps this to

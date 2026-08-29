@@ -28,6 +28,11 @@ export interface ResolvedFenceContext {
    * caller's own tenant checks. */
   companyId: string;
   authorityNow: Date;
+  /** DEP-011 Slice 1 (§1.4) — the locked lease's `expires_at`, surfaced so a caller can
+   * bound a minted token to the lease it authorizes (`min(now + TTL, leaseDeadline)`).
+   * Already validated non-null below (a null `expiresAt` is a `stale_fence` refusal).
+   * Additive: artifact-commit / transfer-grant callers simply ignore it. */
+  leaseDeadline: Date;
 }
 
 /** DAT-006 — the DEVICE-only authority context (no lease, no fence). Proves the worker's
@@ -132,7 +137,7 @@ export async function resolveWorkerFenceContext(
     providerConstraintHash: target.providerConstraintHash,
     fence: presented.fenceToken,
   };
-  return { fenceIdentity, companyId: context.lease.companyId, authorityNow };
+  return { fenceIdentity, companyId: context.lease.companyId, authorityNow, leaseDeadline: context.lease.expiresAt };
 }
 
 /**

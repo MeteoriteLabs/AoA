@@ -42,6 +42,10 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/worker-protocol/package.json packages/worker-protocol/
+# DEP-011 §1.2.0 — the node:crypto-only owned-labels-capability leaf. In the server
+# runtime closure (server mints in the resolve reply); its ResourceLabels dep is a
+# TYPE-only devDependency, so this COPY adds ONLY the leaf, never worker-daemon.
+COPY packages/provider-capability/package.json packages/provider-capability/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
 COPY packages/adapters/acpx-local/package.json packages/adapters/acpx-local/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/

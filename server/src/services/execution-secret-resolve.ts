@@ -33,6 +33,7 @@
 
 import { z } from "zod";
 import type { AuthAudience } from "@armyofagents/worker-protocol";
+import type { OwnedLabelsCapability } from "@armyofagents/provider-capability";
 import type { SecretResolveOutcome } from "./secret-broker.js";
 
 /**
@@ -98,6 +99,10 @@ export type ExecutionSecretResolveResult =
       /** The secret VALUE. Server-side until this point; the worker holds it only
        * between here and `provider.create`, and registers it as a redaction canary. */
       readonly value: string;
+      /** DEP-011 Slice 1 — the INERT owned-labels capability, passed through from the broker
+       * `resolved` arm UNTOUCHED (present only when a control-plane key is configured — absent
+       * today). It carries ONLY the 7 owned labels + expiry, never the `value`/fence token. */
+      readonly ownedLabelsCapability?: OwnedLabelsCapability;
     }
   | { readonly outcome: "denied"; readonly reason: ExecutionSecretResolveDenial };
 
@@ -130,5 +135,7 @@ export function admitSandboxLocalResolution(
     return { outcome: "denied", reason: "malformed" };
   }
 
-  return { outcome: "resolved", envTarget, value: outcome.material.value };
+  // DEP-011 Slice 1 — carry the (optional) minted capability through the pure assembler
+  // untouched. It is `undefined` unless the broker minted it on this sandbox-local arm.
+  return { outcome: "resolved", envTarget, value: outcome.material.value, ownedLabelsCapability: outcome.ownedLabelsCapability };
 }

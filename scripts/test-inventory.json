@@ -32,6 +32,10 @@
       "mode": "floor",
       "count": 1
     },
+    "packages/provider-capability": {
+      "mode": "floor",
+      "count": 1
+    },
     "packages/provider-wire": {
       "mode": "floor",
       "count": 3
@@ -54,7 +58,7 @@
     },
     "packages/worker-daemon": {
       "mode": "pinned",
-      "count": 149
+      "count": 150
     },
     "packages/worker-keystore": {
       "mode": "pinned",
@@ -70,7 +74,7 @@
     },
     "server": {
       "mode": "floor",
-      "count": 1486
+      "count": 1487
     },
     "tests": {
       "mode": "pinned",

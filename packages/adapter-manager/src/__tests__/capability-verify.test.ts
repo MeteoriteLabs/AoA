@@ -20,6 +20,12 @@ import {
   type OwnedLabelsCapabilitySignedFields,
 } from "@armyofagents/provider-wire";
 
+// DEP-011 §1.2.0 — the LEAF the mint (control plane) signs through. Importing the
+// signer from the leaf DIRECTLY (not the provider-wire barrel) pins that a
+// leaf-minted capability verifies here byte-for-byte: mint and verify share the ONE
+// leaf `buildOwnedLabelsCapabilityCanonical`, so the re-home introduced no drift.
+import { signOwnedLabelsCapability as signFromLeaf } from "@armyofagents/provider-capability";
+
 import { CapabilityVerificationError, verifyOwnedLabelsCapability } from "../capability-verify.js";
 
 const OWNED: ResourceLabels = {
@@ -56,6 +62,19 @@ describe("verifyOwnedLabelsCapability — valid path", () => {
   it("returns the caller's owned labels for a well-formed, in-date, correctly-signed capability", () => {
     const labels = verifyOwnedLabelsCapability(mint(), controlPlane.publicKey, NOW);
     expect(labels).toEqual(OWNED);
+  });
+
+  it("accepts a capability minted through the provider-capability LEAF directly (re-home byte-parity)", () => {
+    const leafMinted = signFromLeaf(
+      {
+        v: OWNED_LABELS_CAPABILITY_VERSION,
+        audience: OWNED_LABELS_CAPABILITY_AUDIENCE,
+        ownedLabels: OWNED,
+        expiresAt: NOW + 60_000,
+      },
+      controlPlane.privateKey,
+    );
+    expect(verifyOwnedLabelsCapability(leafMinted, controlPlane.publicKey, NOW)).toEqual(OWNED);
   });
 });
 

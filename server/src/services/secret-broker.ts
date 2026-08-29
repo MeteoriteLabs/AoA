@@ -29,7 +29,10 @@
 // exists). DAT-004 BINDS the destination + authorizes + resolves; the fence-aware egress
 // proxy that MATERIALIZES the value + enforces the destination is DAT-005 (non-goal here).
 
+import type { KeyObject } from "node:crypto";
+
 import type { AuthorizedSecretResolution, Db } from "@armyofagents/db";
+import type { OwnedLabelsCapability } from "@armyofagents/provider-capability";
 import {
   JobFenceError as DbJobFenceError,
   SecretResolveRejection,
@@ -37,8 +40,9 @@ import {
 } from "@armyofagents/db";
 import { runInTenant } from "../db/tenant-context.js";
 import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js";
-import { resolveWorkerFenceContext } from "./worker-fence-context.js";
+import { resolveWorkerFenceContext, type ResolvedFenceContext } from "./worker-fence-context.js";
 import type { JobControlMetrics } from "./job-control-metrics.js";
+import { applyOwnedLabelsCapability, OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS } from "./owned-labels-mint.js";
 
 /** A guarded-fence refusal → the frozen protocol reason vocabulary. */
 function fenceReason(code: JobFenceErrorCode): "stale_fence" | "attempt_terminal" | "target_revoked" {
@@ -113,7 +117,21 @@ export interface DeviceLocalHandoff {
 }
 
 export type SecretResolveOutcome =
-  | { outcome: "resolved"; seam: SecretDeliverySeam; material: FenceResolvedMaterial }
+  | {
+      outcome: "resolved";
+      seam: SecretDeliverySeam;
+      material: FenceResolvedMaterial;
+      /**
+       * DEP-011 Slice 1 — the INERT owned-labels capability minted on the
+       * `sandbox_local_only` ALLOW path when a control-plane signing key is configured
+       * (`applyOwnedLabelsCapability`, `owned-labels-mint.ts`). Absent otherwise (no key,
+       * or a non-sandbox-local seam). It carries ONLY the caller's 7 owned labels + expiry
+       * (Decision #104 — never the redeemed `value` or the fence token). Nothing consumes
+       * it yet (Slice 2). It rides the `resolved` arm out through the pure reply assembler
+       * and the route JSON UNTOUCHED.
+       */
+      ownedLabelsCapability?: OwnedLabelsCapability;
+    }
   | { outcome: "device_handoff"; handoff: DeviceLocalHandoff }
   | { outcome: "denied"; reason: "stale_fence" | "attempt_terminal" | "target_revoked" | "malformed" };
 
@@ -215,12 +233,21 @@ export function createSecretBrokerService(input: {
    * OUTCOME token (resolved | device_handoff | denied) — never a value, ref, host, or
    * destination (invariant #7). Defaults to no-op; best-effort, never alters resolve. */
   metrics?: JobControlMetrics;
+  /** DEP-011 Slice 1 — the control-plane Ed25519 PRIVATE key used to MINT the inert
+   * owned-labels capability on the `sandbox_local_only` ALLOW reply. Absent (the default
+   * today — no real keypair until deploy/Slice 5) ⇒ the capability is OMITTED and the
+   * resolve is byte-identical to pre-DEP-011. A TEST keypair is injected in the component. */
+  controlPlaneSigningKey?: KeyObject;
+  /** DEP-011 Slice 1 — the capability TTL ceiling (clamped to the lease deadline). */
+  ownedLabelsCapabilityTtlMs?: number;
 }) {
   const brokers = input.brokers ?? failClosedSecretBrokers;
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300_000);
   // Optional-chained (no NOOP VALUE import) so this inert-seam module carries no
   // runtime dependency on job-control-metrics on any load path (dormancy gate).
   const metrics = input.metrics;
+  const controlPlaneSigningKey = input.controlPlaneSigningKey;
+  const ownedLabelsCapabilityTtlMs = input.ownedLabelsCapabilityTtlMs ?? OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS;
 
   return {
     async resolve(resolveInput: {
@@ -229,6 +256,12 @@ export function createSecretBrokerService(input: {
     }): Promise<SecretResolveOutcome> {
       const { auth, request } = resolveInput;
       if (request.workerId !== auth.workerId) throw new JobLeasingError("unauthorized");
+
+      // DEP-011 Slice 1 — the device-proof-verified fence context, captured out of the tenant-tx
+      // closure so the MINT can read it at the finalize point (§1.2). It is set ONLY after
+      // `resolveWorkerFenceContext` succeeds; a fence auth failure throws out of `runInTenant`
+      // (the route maps it to a coarse denial) and leaves this undefined, so no capability is minted.
+      let fenceCtx: ResolvedFenceContext | undefined;
 
       // Fence identity + authorization inside ONE tenant tx, BEFORE any broker access.
       const authorized = await runInTenant(input.appDb, auth.organizationId, async (repos):
@@ -239,6 +272,7 @@ export function createSecretBrokerService(input: {
           attempt: request.attempt,
           fenceToken: request.fenceToken,
         }, maxHeartbeatAgeMs);
+        fenceCtx = ctx;
         try {
           return await repos.jobControl.resolveExecutionSecret({
             ...ctx.fenceIdentity,
@@ -270,6 +304,22 @@ export function createSecretBrokerService(input: {
         } catch {
           outcome = { outcome: "denied", reason: "malformed" };
         }
+      }
+
+      // DEP-011 Slice 1 — mint the INERT owned-labels capability onto the
+      // `resolved ∧ sandbox_local_only` reply (a no-op on every other outcome, and when no
+      // control-plane key is configured — the default today). Riding the `resolved` arm, it
+      // passes through the pure reply assembler + route JSON untouched. Never fails the resolve.
+      if (fenceCtx) {
+        outcome = applyOwnedLabelsCapability(
+          outcome,
+          {
+            fenceIdentity: fenceCtx.fenceIdentity,
+            authorityNow: fenceCtx.authorityNow,
+            leaseDeadline: fenceCtx.leaseDeadline,
+          },
+          { controlPlaneSigningKey, shortTtlMs: ownedLabelsCapabilityTtlMs },
+        );
       }
 
       // DEP-007 — count-only secret-read telemetry: the OUTCOME discriminant only, never

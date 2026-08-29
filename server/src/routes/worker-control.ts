@@ -1,3 +1,4 @@
+import type { KeyObject } from "node:crypto";
 import { Router, type Request } from "express";
 import type { Db } from "@armyofagents/db";
 import {
@@ -97,6 +98,11 @@ export function workerControlRoutes(opts: {
   now?: () => Date;
   /** CLI-006 (2b) — see the note on the same field in `createApp`'s opts. */
   onAttemptTerminal?: JobEventIngestTerminalHook;
+  /** DEP-011 Slice 1 — the control-plane Ed25519 PRIVATE key that MINTS the inert
+   * owned-labels capability in the sandbox-local resolve reply. Threaded to the secret
+   * broker. Absent (the default — no real keypair until deploy/Slice 5) ⇒ the reply carries
+   * no capability and is byte-identical to pre-DEP-011. */
+  controlPlaneSigningKey?: KeyObject;
 }) {
   const router = Router();
   const orgAccess = organizationAccessService(opts.db);
@@ -158,6 +164,8 @@ export function workerControlRoutes(opts: {
     appDb: opts.appDb,
     brokers: createExecutionSecretBrokers(opts.db),
     metrics: opts.jobControlMetrics,
+    // DEP-011 Slice 1 — inject the mint key (undefined today ⇒ inert; no capability minted).
+    controlPlaneSigningKey: opts.controlPlaneSigningKey,
   });
   const controlAck = createJobControlAckService({ appDb: opts.appDb });
   const reconciliation = createJobReconciliationService({ appDb: opts.appDb });
@@ -751,6 +759,10 @@ export function workerControlRoutes(opts: {
         outcome: "resolved",
         envTarget: admitted.envTarget,
         value: admitted.value,
+        // DEP-011 Slice 1 — include the INERT owned-labels capability ONLY when the broker
+        // minted one (a control-plane key is configured). Absent today ⇒ the reply is
+        // byte-identical to pre-DEP-011 (no `ownedLabelsCapability` key), preserving inertness.
+        ...(admitted.ownedLabelsCapability ? { ownedLabelsCapability: admitted.ownedLabelsCapability } : {}),
         serverTime: (opts.now?.() ?? new Date()).toISOString(),
       });
     } catch {

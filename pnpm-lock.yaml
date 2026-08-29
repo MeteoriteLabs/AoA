@@ -138,6 +138,9 @@ importers:
         specifier: workspace:*
         version: link:../worker-daemon
     devDependencies:
+      '@armyofagents/provider-capability':
+        specifier: workspace:*
+        version: link:../provider-capability
       '@types/node':
         specifier: ^24.6.0
         version: 24.12.0
@@ -575,8 +578,26 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/provider-capability:
+    devDependencies:
+      '@armyofagents/worker-daemon':
+        specifier: workspace:*
+        version: link:../worker-daemon
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.6
+        version: 3.2.6(patch_hash=2h6nzbcqsknlj7sn7jgbmgi3pa)(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.30.2)(tsx@4.22.4)(yaml@2.8.3)
+
   packages/provider-wire:
     dependencies:
+      '@armyofagents/provider-capability':
+        specifier: workspace:*
+        version: link:../provider-capability
       '@armyofagents/sandbox-e2b-provider':
         specifier: workspace:*
         version: link:../sandbox-e2b-provider
@@ -789,6 +810,9 @@ importers:
       '@armyofagents/plugin-sdk':
         specifier: workspace:^
         version: link:../packages/plugins/sdk
+      '@armyofagents/provider-capability':
+        specifier: workspace:*
+        version: link:../packages/provider-capability
       '@armyofagents/shared':
         specifier: workspace:*
         version: link:../packages/shared
@@ -907,6 +931,9 @@ importers:
         specifier: ^3.24.2
         version: 3.25.76
     devDependencies:
+      '@armyofagents/adapter-manager':
+        specifier: workspace:*
+        version: link:../packages/adapter-manager
       '@armyofagents/worker-daemon':
         specifier: workspace:*
         version: link:../packages/worker-daemon
