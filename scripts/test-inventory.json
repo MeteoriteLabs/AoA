@@ -10,7 +10,7 @@
     },
     "packages/adapter-manager": {
       "mode": "floor",
-      "count": 8
+      "count": 9
     },
     "packages/adapter-utils": {
       "mode": "floor",
@@ -26,7 +26,7 @@
     },
     "packages/db": {
       "mode": "floor",
-      "count": 57
+      "count": 58
     },
     "packages/plugins": {
       "mode": "floor",
@@ -66,11 +66,11 @@
     },
     "scripts": {
       "mode": "pinned",
-      "count": 49
+      "count": 50
     },
     "server": {
       "mode": "floor",
-      "count": 1475
+      "count": 1486
     },
     "tests": {
       "mode": "pinned",

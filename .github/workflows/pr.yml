@@ -183,6 +183,8 @@ jobs:
           node --test scripts/check-sandbox-e2b-provider-boundary.test.mjs
           node scripts/check-worker-keystore-boundary.mjs
           node --test scripts/check-worker-keystore-boundary.test.mjs
+          node scripts/check-adapter-manager-boundary.mjs
+          node --test scripts/check-adapter-manager-boundary.test.mjs
 
       - name: Sandbox coding adapter disposition coverage (CLI-002)
         run: |

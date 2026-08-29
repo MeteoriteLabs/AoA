@@ -1108,3 +1108,297 @@ drain — β1.2 item 3); its PARTIALITY now names the MULTI-REPLICA gap (the in-
 ledger don't serialize across the scope's replicas 1-3 → cross-replica double-provision, deploy-owed, β1.6). The
 β1/β2 split + the HOSTED-provider conformance read + one-wave sizing CONFIRMED; guards clean (the ledger DIR must
 be gitignored/out-of-tree, β1.7). Corroborated R1's ledger-key must-fix.
+
+---
+
+# Slice 3 · Wave β2 — host the real provider + the adapter-manager boundary guard
+
+**Status:** design (2026-08-29, post-recon + **3-agent adversarial review COMPLETE — all findings verified against
+source and folded in below**; **NO architecture fork** — mechanical wiring + one security-critical guard). Builds
+on the SHIPPED β1 (ledger + create-gating + TOCTOU lock, on the mock). A LIGHT wave — genuinely smaller than β1
+(net-new security surface = the boundary guard + the bin's key/refuse handling). The review's resolved corrections
+are in §β2.1–β2.6; §β2.7 is the review outcome. The two load-bearing repairs: (1) the guard must be a default-deny
+ALLOW-LIST with **subpath-aware** handling (a naive exact-match template copy REDS the shipped tree), and (2) the
+bin's fail-open lives in ONE optional field (`controlPlanePublicKey?`) — a missing key = an UNGATED server, so the
+bin's refuse-to-boot is β2's PRIMARY security guarantee, not a Slice-5 deferral.
+
+## β2.0 — the delta + the recon findings (2026-08-29, verified against source)
+
+**β2's net-new is (d) a composition-root BIN + (e) an `adapter-manager-boundary.mjs` GUARD + a devDep→dep move**
+(+ 2 small wiring edits: a `guard-inventory.json` entry + a `pr.yml` policy run-line). Parts (a) `RealE2bTransport`
+(`real-transport.ts:77,:238`, sync key-refuse `:53-59`), (b) the mock conformance (BOTH suites via
+`perOpToInvokeDriver(E2bSandboxProvider(MockE2bTransport))`, `conformance.test.ts:27-52`, green in `verify`), and
+(c) the real-E2B keyed subset + its `keyed-e2b-conformance.yml` lane (`describeKeyed = HAS_KEY ? … : skip`,
+`keyed-real-e2b.test.ts:31`, dynamic-imports `real-transport.js`) are ALL SHIPPED. **β2 adds ≈ZERO conformance
+code** — it INHERITS the existing suites; the target is the HOSTED provider, NOT the AM wire (wire-end-to-end is
+structurally infeasible — the single fixed capability vs the suite's fresh per-op labels; §DEP-012-design B1/B2).
+
+**★ Three corrections to the earlier β2 notes (recon):**
+- **OMIT `e2b` from the AM required-deps** — the design's "(+ declare `e2b`)" is WRONG. The worker-keystore
+  precedent hosts the provider yet declares only `[sandbox-e2b-provider, worker-daemon, worker-protocol]`
+  (`worker-keystore-boundary.mjs:71-75`); `e2b` stays TRANSITIVE (imported dynamically in the one bin). The AM
+  required-deps = `[provider-wire, sandbox-e2b-provider, worker-daemon]`.
+- **Ban `E2B_API_KEY` in ZERO files, not "the one bin"** — the bin does NOT read the key (`createRealE2bTransport()`
+  reads `process.env.E2B_API_KEY` itself, `real-transport.ts:54`). Like worker-keystore (`:111,:235-247`), the AM
+  guard forbids the token in ALL AM source.
+- **The control-plane public key is NOT in the compose today** (`docker-compose.staging.yml:318-323` injects
+  `E2B_API_KEY`+`E2B_DOMAIN`, no CP key). So the bin is **FAIL-CLOSED**: a production bin REQUIRES the CP-key path
+  to boot GATED — it refuses to boot rather than silently run ungated (the "Slice 5 must assert the key" residual,
+  enforced at the bin). The compose CP-key env is DEPLOY-OWED (Slice 5); β2 adds no compose/image change.
+
+## β2.1 — verified terrain (recon 2026-08-29)
+
+- **No `packages/adapter-manager/src/bin/`** exists; `createProviderServer` has ZERO production callers (only the
+  `index.ts` export + test files). The bin is the first.
+- **Template** `worker-keystore/src/bin/sandbox-provider.ts:72-104`: env gate + a LITERAL dynamic
+  `import("@armyofagents/sandbox-e2b-provider")` (`:63-64`, deferred because the barrel pulls `e2b`) +
+  refuse-not-degrade + an injectable `ProviderModuleLoader` (`:59,:74`) — the CI-testable seam (a fake loader
+  drives env-parse + refuse WITHOUT the SDK/key).
+- **The AM bin is a FULLER composition root** (landmine): beyond resolving the provider it must build the ed25519
+  `controlPlanePublicKey: KeyObject` (`server.ts:55`; ed25519-asserted `capability-verify.ts:55`). **★ CORRECTED
+  (review B4): a production ed25519-SPKI KeyObject loader + the EXACT assert the bin needs already exist** —
+  `worker-device-proof.ts:78-79` does `createPublicKey({key, format, type})` then `if (asymmetricKeyType !==
+  "ed25519") throw`, and `openclaw-gateway/src/server/execute.ts:567` loads a PEM. The genuinely net-new part is
+  narrow: loading THIS key **from a configured file path** + the fail-closed enumeration (§β2.2.1). Point β1's
+  `idempotencyLedgerDir` at a configured volume (`server.ts:58-66`); `createProviderServer({…})` + `.listen(PORT)`.
+- **★ CORRECTED (review B5): the bin's listen port is NOT free** — `docker-compose.staging.yml` already pins the
+  `adapter-manager` service to `PORT: "8090"` + a `curl http://127.0.0.1:8090/healthz` healthcheck (`:320,:338`),
+  and `createProviderServer` returns a bare `Server` (`server.ts:92`) that already serves `/healthz` (`:180-183`)
+  but does NOT listen. The bin MUST `.listen(process.env.PORT)`. Reading `PORT` now is NOT Slice-5 drift — the env
+  already ships in the compose; a hardcoded/ephemeral port breaks the shipped healthcheck + DEP-011's peer reach.
+- **No `adapter-manager-boundary.mjs`** (Glob `scripts/lib/*boundary*.mjs`). Template `worker-keystore-boundary.mjs`:
+  confine the provider package to ONE FULL path (`:99-100,:201`, full path not basename — the `:81-86` bug) + ban the
+  credential token (`:111`) — but it is an **allow-list (default-deny)**, and its `ALLOWED_BARE` is EXACT-match
+  (`:134-158`). **★ CORRECTED (review G1): a faithful exact-match copy REDS the shipped tree** — `server.ts:36`
+  imports `@armyofagents/provider-wire/codec` and `capability-verify.ts:28` imports `.../capability` (runtime
+  SUBPATH imports the exact-match allow-list rejects). The guard must be subpath-aware (§β2.2.2). Runner + self-test
+  pattern: `check-worker-keystore-boundary.mjs` + `.test.mjs`.
+- **`check-guard-inventory` is DEFAULT-DENY** — a new `check-*.mjs` not declared in `guard-inventory.json` REDS the
+  policy job (`pr.yml:250-251`), and it ALSO cross-checks the runner is named in a workflow (`not_in_workflows`,
+  `guard-inventory.mjs:90-92`). It **filters OUT `*.test.mjs`** (`check-guard-inventory.mjs:37`) — so the self-test
+  is tracked by a DIFFERENT guard: **`check-execution-census`** (§β2.2.2 / β2.6). `checkProviderControlBoundary`
+  already EXPECTS the key on adapter-manager (`staging-manifest-invariants.mjs:436`, green today) — β2 lands it
+  where the guard wants.
+- `server.ts` today imports only `@armyofagents/worker-daemon` + `@armyofagents/provider-wire/codec` (`:29-42`, a
+  provider-wire SUBPATH) — already provider-free (its static closure is e2b-free: `codec` → the provider `errors`
+  subpath → `worker-daemon` only, no `e2b`); the guard FREEZES that.
+
+## β2.2 — what it builds
+
+### β2.2.1 — the composition-root bin `packages/adapter-manager/src/bin/adapter-manager.ts` (FAIL-CLOSED)
+
+A FULL production composition root: env-gated (an `AOA_ADAPTER_MANAGER_*` provider/template switch mirroring the
+worker set); a literal dynamic `import("@armyofagents/sandbox-e2b-provider")` of the **BARE barrel** (keep `e2b`
+out of the eager closure — the guard allow-lists the bare specifier for the bin, NOT a subpath, so do NOT carry
+Unit A's "subpaths-only" convention here) → `new E2bSandboxProvider({ transport: createRealE2bTransport() })`; load
+the ed25519 `controlPlanePublicKey`; point the β1 `idempotencyLedgerDir` at a configured out-of-tree volume;
+`createProviderServer({ provider, controlPlanePublicKey, idempotencyLedgerDir, … })` then `.listen(process.env.PORT)`.
+
+**★ THE FAIL-OPEN LIVES IN ONE FIELD (review B1 — HIGH).** `createProviderServer`'s `provider` is a REQUIRED option
+(`server.ts:45` — the type fail-CLOSES it) but `controlPlanePublicKey?` is OPTIONAL (`:55` — the type fail-OPENS
+it), and the whole gate reduces to `const gated = controlPlanePublicKey !== undefined` (`:98`): **`undefined` ⇒
+create+execute fall to raw, UNGATED handlers** (`:104-107,:216-222`) — the exact cross-tenant `execute` oracle B1
+closed. So the bin is the SOLE guard on the key with NO compiler backstop, and:
+- **INVERT the template default.** The worker-keystore template treats `unset ⇒ {kind:"none"}` (a benign skip,
+  `sandbox-provider.ts:77-79`). For the CP key that is FATAL: unset/empty/missing ⇒ **REFUSE TO BOOT**, never a
+  benign none. Do not copy the template's "unset is fine" shape onto the key.
+- **MISSING-KEY is the load-bearing, singly-covered security property.** A missing key ⇒ `undefined` ⇒ ungated ⇒
+  NO downstream protection at all. (A parsed-but-non-ed25519 key is defense-in-depth — a gated server already
+  fail-closes every request at `capability-verify.ts:55`.) The mutation sweep's PRIMARY kill is "make the bin boot
+  ungated on a missing key" (§β2.4).
+- **β2's bin refusal is the PRIMARY guarantee delivered NOW** — reconcile the `server.ts:47-53` / S1.5 "Slice-5
+  deploy-ordering assertion will enforce the key" language: that is defense-in-depth, NOT the primary. β2 must NOT
+  ship a bin that can boot ungated and defer the guard to a Slice-5 deploy test β2 does not build.
+
+**★ THE FAIL-CLOSED ENUMERATION (review B3) — every case REFUSES, `createProviderServer` NEVER called:**
+env/path unset **OR empty-string** (`.trim()`-empty ⇒ unset); file missing; file unreadable; **readable-but-
+UNPARSEABLE** (empty / truncated / garbage PEM — `readFileSync` succeeds but `createPublicKey` THROWS, a distinct
+path from "unreadable"); parsed-but-non-ed25519. `createPublicKey` MUST sit INSIDE the refuse try/catch (a catch
+that scopes only the read, or defaults to `undefined`, fail-OPENS). SHOULD also reject a private-key PEM
+(`createPublicKey` silently derives the public half — a key-hygiene footgun).
+
+**★ ENCODING PINNED = PEM SPKI (review B2 — resolves the design's own DER/PEM contradiction).** Load via the
+single-arg `createPublicKey(fileBytes)` (Node defaults a string/Buffer to `format:"pem"` — no format arg), then
+assert `asymmetricKeyType === "ed25519"` (reuse the `worker-device-proof.ts:78-79` pattern, swapping its DER-bytes
+input for the mounted PEM file). **B1's `{format:"der",type:"spki"}` sketch (DEP-012-design §B1 ≈:459) is SUPERSEDED
+for the bin loader.** Slice-5 mounts a `-----BEGIN PUBLIC KEY-----` PEM SPKI file.
+
+**★ THE INJECTABLE SEAM CUTS AT fs-BYTES (review B3), not at a ready-made KeyObject** — inject (provider-module
+loader + a file-bytes reader + the env), and run the REAL `createPublicKey` on the injected bytes. A seam that hands
+in a finished `KeyObject` never exercises the parser, so the unparseable/non-ed25519 refuse paths become
+checks-that-nothing-runs. A locally-generated ed25519 PEM (happy), an RSA PEM (non-ed25519), a garbage buffer
+(unparseable), and an absent/empty path (unset) then cover every path with NO real E2B key and NO real CP key.
+
+### β2.2.2 — the `adapter-manager-boundary.mjs` guard (security-critical)
+
+A default-deny **ALLOW-LIST** reproducing the worker-keystore template's structure (`worker-keystore-boundary.mjs`)
+— NOT a minimal 3-clause deny-list. Three interlocking behaviors (**★ review G1 — HIGH**):
+1. **Confine the provider PREFIX-based to the bin's FULL path.** `value === PROVIDER_SPECIFIER ||
+   value.startsWith(PROVIDER_SPECIFIER + "/")` ⇒ allowed ONLY from `src/bin/adapter-manager.ts` (full package-
+   relative path, not basename — the `:81-86` bug), else the uniform violation. Prefix-based so a provider SUBPATH
+   (`@armyofagents/sandbox-e2b-provider/real-transport.js`, which ALSO pulls `e2b`) is confined too — a bare-only
+   match would let that subpath leak into a request-path file.
+2. **Subpath-aware allow-list for the NON-confined deps.** Accept `@armyofagents/provider-wire` and
+   `@armyofagents/worker-daemon` BARE **and** subpath (`@scope/name` and `@scope/name/…`) — else the guard REDS the
+   shipped tree at `server.ts:36` (`provider-wire/codec`) and `capability-verify.ts:28` (`.../capability`). Direct
+   `e2b` is NOT allow-listed ⇒ forbidden everywhere (this is what enforces "no `e2b` in the request path"
+   LEXICALLY, for free — the property a minimal deny-list would miss).
+3. **Ban `E2B_API_KEY` in ALL AM source** (`FORBIDDEN_CREDENTIAL_TOKENS`, template `:111`) + pin
+   `REQUIRED_RUNTIME_DEPENDENCIES = [provider-wire, sandbox-e2b-provider, worker-daemon]` (NO `e2b`) with EXACT-SET
+   equality (template `:263-278`; the constant pre-sorted). The scan **WALKS ALL of `src/` recursively** per the
+   template — the request-path files (`server.ts`, `owned-op-gate.ts`, `create-gate.ts`, the ledger,
+   **`capability-verify.ts`**, `keyed-mutex.ts`, `index.ts`) are ILLUSTRATIVE, not the scan set; `__tests__` is
+   intentionally skipped (tests legitimately import provider subpaths and are out of the production closure).
+
+**★ FIVE-part registration (review G2 + S1 — corrects the "4-part" claim), because two DIFFERENT meta-guards each
+track a different artifact:**
+1. `scripts/lib/adapter-manager-boundary.mjs` (pure lib)
+2. `scripts/check-adapter-manager-boundary.mjs` (runner)
+3. `scripts/check-adapter-manager-boundary.test.mjs` (self-test = the mutation corpus)
+4. a `scripts/guard-inventory.json` entry for the **RUNNER** (default-deny; ALSO cross-checked as named-in-a-workflow)
+5. a `scripts/test-execution-census.json` entry for the **SELF-TEST**: `{status:"runs", workflow:"pr.yml",
+   step:"Sandbox e2b provider dependency boundary"}` — because `check-guard-inventory` filters out `*.test.mjs`
+   (`:37`), the census is what proves the self-test runs. The census is STRONG: it reds `undeclared` if the
+   `.test.mjs` has no entry AND `not_named_in_step` if the named step's `run:` block does not literally contain the
+   path (`execution-census.mjs` ~`:108-113`). So BOTH directions are covered — but ONLY if this entry exists.
++ **pr.yml:** append BOTH commands to the EXISTING `Sandbox e2b provider dependency boundary` step (which already
+  hosts the e2b-provider + worker-keystore runners/self-tests, `pr.yml:180-185`):
+  `node scripts/check-adapter-manager-boundary.mjs` and `node --test scripts/check-adapter-manager-boundary.test.mjs`.
+  The census entry (5) MUST name this exact step string.
+
+### β2.2.3 — the devDep→dep move
+
+`sandbox-e2b-provider` devDependency → dependency in `adapter-manager/package.json`; OMIT `e2b` (transitive — the
+worker-keystore precedent). The move yields exactly the guard's pinned set `[provider-wire, sandbox-e2b-provider,
+worker-daemon]` (already sorted). Regenerate + COMMIT `pnpm-lock.yaml` (CI `verify` is `--frozen-lockfile`,
+`pr.yml:776`; the "block manual lockfile edits" policy step only rejects a lockfile change WITHOUT an accompanying
+manifest change, `pr.yml:135-147` — so the manifest edit + lockfile land together).
+
+## β2.3 — where things live + fences
+
+- All new code is `adapter-manager` (the bin) + `scripts/` (the guard lib/runner/self-test) + the manifest +
+  `guard-inventory.json` + `pr.yml`. **`server.ts` / `owned-op-gate.ts` / `create-gate.ts` / the ledger UNTOUCHED**
+  (the guard freezes them provider-free); cleanup-authority + worker-daemon + the port UNTOUCHED.
+- **INHERIT conformance** — β2 writes ≈no conformance code (the mock suite is green; the keyed subset exists). Do
+  NOT run conformance through the AM wire (infeasible) or add an AM-hosted conformance variant.
+- **NOT** a Dockerfile/image (Slice 5); **NOT** the compose CP-key env (DEPLOY-OWED — the bin fail-closes without
+  it, CI-tested, not deployed); **NOT** the credential crossing (per-run Company model key = Slice 4); **NOT**
+  through the daemon (DEP-011). The real `RealE2bTransport` CONNECT + the real-E2B subset run only in the keyed
+  lane/deploy.
+
+## β2.4 — TDD (fail-first)
+
+1. **The boundary guard lib** — self-test fixtures (each RED before the lib exists), reproducing the template's
+   allow-list AND the G1 subpath corrections:
+   - a non-bin file (`server.ts`) importing the provider BARE (`@armyofagents/sandbox-e2b-provider`) → VIOLATION;
+   - a non-bin file importing a provider SUBPATH (`.../sandbox-e2b-provider/real-transport.js`) → VIOLATION (the
+     bare-only-match bypass this closes);
+   - `server.ts` importing `@armyofagents/provider-wire/codec` → **GREEN** (subpath-aware allow-list — this is the
+     false-positive that a faithful exact-match copy would RED on the shipped tree);
+   - `E2B_API_KEY` in ANY non-bin file → VIOLATION;
+   - the BIN importing the bare provider barrel → OK; a direct `e2b` import anywhere → VIOLATION;
+   - required-deps mismatch (`e2b` added, or a dep dropped) → VIOLATION (exact-set).
+   Then implement the lib + runner; **register all 5 artifacts** (lib + runner + self-test + `guard-inventory.json`
+   runner-entry + `test-execution-census.json` self-test-entry) + the 2-command `pr.yml` step; run the runner GREEN
+   against the real tree, and run `check-guard-inventory` + `check-execution-census` GREEN (they prove the guard is
+   wired to actually run — the checks-that-nothing-runs backstop).
+2. **The bin** (INJECTED provider-loader + file-BYTES reader + env — no SDK, no real E2B key, no real CP key; the
+   seam runs the REAL `createPublicKey`):
+   - a valid ed25519 PEM + provider config → constructs the provider, loads+asserts the key, and calls
+     `createProviderServer` with `{ provider, controlPlanePublicKey, idempotencyLedgerDir }` then `.listen(PORT)`;
+   - **each fail-closed case → REFUSE, and assert `createProviderServer` is NEVER called** (not "constructed but
+     not listened"): provider env unset/`none`; CP path unset OR empty-string; CP file missing; CP file unreadable;
+     CP file readable-but-UNPARSEABLE (garbage/empty/truncated buffer → real `createPublicKey` throws); CP key
+     parsed-but-non-ed25519 (an RSA PEM); (SHOULD) a private-key PEM;
+   - a provider-construct throw → refuse-not-degrade.
+3. **The devDep→dep move** — the manifest lists `sandbox-e2b-provider` as a dep, NOT `e2b`; `pnpm-lock.yaml`
+   committed; the boundary guard's required-deps set matches; `pnpm install --frozen-lockfile` stays green.
+4. **Mutation sweep (numbered acceptance — this is the ONLY enforcement of the bin's fail-closed posture; there is
+   no static boot-root guard for it, §β2.6/S2):**
+   1. drop the guard's full-path check → a basename bypass survives ⇒ a fixture KILLS it;
+   2. drop the guard's prefix-based provider match → a provider SUBPATH from a non-bin file survives ⇒ KILLED;
+   3. drop the `E2B_API_KEY` ban → a planted token survives ⇒ KILLED;
+   4. **make the bin boot ungated on a MISSING CP key** (the primary security kill) ⇒ KILLED;
+   5. move `createPublicKey` OUTSIDE the refuse try/catch (so an unparseable key crashes-or-fail-opens) ⇒ KILLED.
+
+## β2.5 — what deploy / Slice 5 / DEP-011 inherit (recorded)
+
+- **Slice 5 / deploy:** inject the ed25519 control-plane PUBLIC key onto the `adapter-manager` compose service
+  (the bin fail-closes without it); build + sign + admit the `aoa-adapter-manager:staging` image (`docker/
+  adapter-manager/**` — does not exist); the real `E2B_API_KEY` material (already manifest-expected).
+- **Keyed/deploy:** the real `RealE2bTransport` connect + the real-E2B conformance subset run only via
+  `keyed-e2b-conformance.yml` (operator-dispatched); real E2B id-non-reuse (the β1 TOCTOU (c) assertion).
+- **DEP-011:** the through-the-daemon consumer (`AOA_WORKER_PROVIDER_URL`) + the compose variant / reconcile / v:2
+  / the mint≡labelsFor invariant.
+
+## β2.6 — guards (run the WHOLE set)
+
+No new PACKAGE. Run:
+- **`check-guard-inventory`** — default-deny; the NEW `check-adapter-manager-boundary.mjs` RUNNER needs an entry, or
+  `policy` reds (`guard-inventory.mjs:82-84`); it also cross-checks the runner is named in a workflow (`:90-92`).
+- **★ `check-execution-census` (review S1 — a MISS here is a GUARANTEED `policy` red).** The new
+  `check-adapter-manager-boundary.test.mjs` self-test is NOT tracked by guard-inventory (it filters `*.test.mjs`,
+  `:37`) — the census is. An undeclared `*.test.mjs` under `scripts/` reds `undeclared`; the `{status:"runs", …}`
+  entry's named step must literally contain the `node --test …` line or it reds `not_named_in_step`
+  (`execution-census.mjs`). This is DISTINCT from `check-test-inventory` (which only COUNTS files) — the exact
+  TRACK-002 counting-vs-running blind spot.
+- **`check-test-inventory`** (`--write` re-pin for the bin + guard test files).
+- **`check-boot-roots-provider-free`** — no-op, CONFIRM: it scans only `packages/worker-daemon|worker-keystore/
+  src/bin` and keys on the `bootstrapWorkerDaemon` marker (`check-boot-roots-provider-free.mjs:24-28`); the AM bin
+  is outside those dirs and names `createProviderServer`, so no `boot-roots-expectation.json` entry is needed.
+  **★ (review S2) — recorded INTENTIONALLY:** this guard is semantically WRONG for the AM bin anyway (it is the
+  provider HOST — it MUST construct the provider), so there is NO static guard for the bin's env-gated / fail-closed
+  posture. That posture is TEST-COVERED-ONLY, by design — the §β2.4.4 mutation sweep (esp. kills #4 missing-key and
+  #5 parse-outside-catch) IS the enforcement. A future reviewer must know the guard gap is deliberate, not an
+  oversight.
+- **`check-staging-manifest`** — already green (`E2B_API_KEY` manifest-expected on adapter-manager + confined off
+  every other surface; `checkProviderControlBoundary` does NOT require the CP-key, so its absence doesn't red — the
+  CP-key compose env is honestly DEPLOY-owed).
+- **`check-worker-daemon-boundary` / `check-sandbox-e2b-provider-boundary`** — UNTOUCHED (regression-confirm).
+- **NOT** `check-image-deps-stages` / `dockerfile-static`. **★ (review S3, precise):** adapter-manager ∉ either
+  SPLIT image (`docker/control-plane`, `docker/worker` — grep confirms). The COMBINED root `Dockerfile` DOES ship
+  the whole workspace closure incl. `e2b` already (present-but-unused — the `server` entrypoint runs
+  `server/dist/index.js`), so the devDep→dep move adds NOTHING to any image; the deps-stage bash step only checks
+  `package.json` presence, already satisfied.
+
+**COMMIT `pnpm-lock.yaml`** (`verify` is `--frozen-lockfile`).
+
+## β2.7 — review outcome (3 agents, 2026-08-29, every finding verified against source)
+
+Three adversarial reviewers (boundary-guard security; bin fail-closed key handling; scope-drift/guards/conformance)
+ran against this design. **No architecture fork; no scope change.** Two independent reviewers CONVERGED on the guard
+allow-list defect — the highest-confidence repair. Findings + resolution (all folded into §β2.1–β2.6 above):
+
+- **G1 (HIGH, converged) — guard must be a subpath-aware default-deny allow-list.** A faithful exact-match copy of
+  the template REDS the shipped tree (`server.ts:36` / `capability-verify.ts:28` import provider-wire SUBPATHS); the
+  naive root-match fix opens a provider-subpath confinement bypass. → §β2.2.2 (prefix-based provider confinement +
+  subpath-aware allow-list for the non-confined deps + `e2b` forbidden everywhere) + §β2.4.1 fixtures.
+- **B1 (HIGH) — the fail-open lives in one optional field.** `controlPlanePublicKey?` optional + `gated = … !==
+  undefined` ⇒ a missing key is an UNGATED server; the bin is the sole guard, no compiler backstop; the template's
+  "unset ⇒ benign none" shape is FATAL here. → §β2.2.1 (invert the default; missing-key is primary; β2's refusal is
+  the primary guarantee, not a Slice-5 deferral) + §β2.4.4 kill #4.
+- **B2 (MED-HIGH) — the design's own DER/PEM contradiction** (§B1 `{format:"der"}` vs β2 "PEM path"). → §β2.2.1 pins
+  PEM SPKI via single-arg `createPublicKey`, supersedes the DER sketch for the bin.
+- **B3 (MED) — fail-closed enumeration incomplete + seam mis-cut.** Missing "readable-but-unparseable" + empty-path
+  cases; the injectable seam must cut at fs-BYTES so the real parser runs. → §β2.2.1 + §β2.4.2.
+- **B4 (MED) — "no production loader exists" was FALSE** (`worker-device-proof.ts:78-79`, `openclaw …execute.ts:567`).
+  Net-new is only "load from a file path." → §β2.1 corrected.
+- **B5 / F6 (MED-LOW) — the listen port is pinned by the shipped compose** (`PORT: 8090` + healthcheck). → §β2.1 +
+  §β2.2.1 (`.listen(process.env.PORT)`).
+- **G2 + S1 (MED) — registration is FIVE artifacts, not four; the self-test is tracked by `check-execution-census`,
+  not guard-inventory.** A missing census entry is a GUARANTEED `policy` red. → §β2.2.2 (5-part) + §β2.6.
+- **S2 (LOW) — no static guard covers the bin's fail-closed posture; that gap is intentional** (boot-roots is
+  semantically wrong for the provider host). → §β2.6 records it; §β2.4.4 mutation sweep is the enforcement.
+- **S3 (LOW, precision) — "server ⊅ adapter-manager" narrowed** to "∉ either SPLIT image; the combined image already
+  ships `e2b` present-but-unused." → §β2.6.
+
+**Confirmed SOUND (no change needed):** full-path confinement intent; OMIT `e2b` from required-deps (worker-keystore
+precedent); exact-set deps check; `e2b` out of the static request closure (`codec` → provider `errors` subpath →
+`worker-daemon` only); ban `E2B_API_KEY` in zero files; `idempotencyLedgerDir` wiring; the bin is the first
+production `createProviderServer` caller (nothing else can leak an ungated server); conformance genuinely INHERITED
+(both suites exist, drive the per-op provider, β2 adds none; the full-stack-untested residual is already honestly
+recorded, `keyed-real-e2b.test.ts:156`); NO Slice-5 drift (no `docker/adapter-manager/**`, compose unchanged,
+CP-key deploy-owed); "wire-end-to-end conformance structurally infeasible" is SOUND (per-op fresh labels vs a fixed
+construction-time capability); lockfile `--frozen-lockfile` + the manifest-accompanies-lockfile policy.
+
+**Design is GO for the §9 build prompt.**

@@ -1,5 +1,9 @@
 {
   "scripts": {
+    "scripts/check-adapter-manager-boundary.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow"
+    },
     "scripts/check-artifact-commit-vectors.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"

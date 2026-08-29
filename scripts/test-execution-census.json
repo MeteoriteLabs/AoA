@@ -25,6 +25,11 @@
       "status": "unrun",
       "reason": "Its worker case mounts a root-owned `--tmpfs /worker` OVER the Dockerfile chown node:node, so the non-root daemon dies with mkdir EACCES. A defect in the TEST, not the image: D1 uses a named volume, which inherits the image ownership. TO WIRE: give the tmpfs uid/gid matching the node user, or use a named volume, then move it into the D1 image-assertions step beside image-contents."
     },
+    "scripts/check-adapter-manager-boundary.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Sandbox e2b provider dependency boundary"
+    },
     "scripts/check-artifact-commit-vectors.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",

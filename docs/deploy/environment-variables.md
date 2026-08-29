@@ -215,6 +215,28 @@ and deferred to CLI-001 (crosswalk rows CM-010 / CM-012).
 | `E2B_API_KEY` | (required on the adapter surface) | Provider-control (E2B) account/audience-scoped credential used by `sandbox-provider-runtime.ts` to create/connect/execute/pause/kill/destroy provider sandboxes. Injected only into the adapter-management surface; rotatable via the secret store; never placed on a control-plane, worker, tenant sandbox, protocol field, log line, or support bundle. |
 | `E2B_DOMAIN` | (unset) | Optional provider-control API domain override for the adapter-management surface (self-hosted / regional E2B endpoint). |
 
+### Adapter-manager composition root (DEP-012 Slice 3 · β2)
+
+Read **only** by the adapter-manager composition-root bin
+(`packages/adapter-manager/src/bin/adapter-manager.ts`), the process that hosts the per-op
+`SandboxProvider` and mounts `createProviderServer`. The bin is **fail-closed**: it refuses
+to boot (exit 1, `createProviderServer` never called) unless it can resolve a provider AND
+load a valid ed25519 control-plane PUBLIC key — a missing key would boot an **ungated**
+server (create/execute unprotected), so absence is a refusal, never a silent default. The
+bin never reads the provider-control credential (`createRealE2bTransport` does; DEP-006).
+The control-plane key compose env is DEPLOY-OWED (Slice 5); the bin fail-closes without it.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AOA_ADAPTER_MANAGER_SANDBOX_PROVIDER` | unset (refuse) | Names the sandbox provider the host constructs. `e2b` builds an `E2bSandboxProvider` over the real transport (requires `AOA_ADAPTER_MANAGER_E2B_TEMPLATE`). Unlike the desktop worker, `none`/unset/empty is a **refusal to boot** — the adapter-manager IS the provider host and cannot run without one. Any other value is also a refusal. |
+| `AOA_ADAPTER_MANAGER_E2B_TEMPLATE` | (required with `=e2b`) | The E2B sandbox template id the host provider launches. Required when `AOA_ADAPTER_MANAGER_SANDBOX_PROVIDER=e2b`; setting the provider switch WITHOUT a template is a **refusal to boot**. |
+| `AOA_ADAPTER_MANAGER_CONTROL_PLANE_PUBLIC_KEY_FILE` | (required to boot GATED) | Path to the mounted ed25519 control-plane **PUBLIC** key, PEM SPKI (`-----BEGIN PUBLIC KEY-----`). The bin loads it (`createPublicKey`) and asserts `ed25519`. Unset/empty, missing, unreadable, unparseable, non-ed25519, or a PRIVATE-key PEM ⇒ **refusal to boot** — never an ungated server. |
+| `AOA_ADAPTER_MANAGER_IDEMPOTENCY_LEDGER_DIR` | (server default: OS temp dir) | Directory the β1 durable idempotency ledger persists into. A real deployment points it at a configured out-of-tree volume (a shared volume across replicas is deploy-owed); when unset the server defaults to a fresh per-instance OS temp dir. |
+
+`PORT` (a generic, non-`AOA_` var) selects the listen port; the staging compose pins it to
+`8090` with a `:8090/healthz` check. Unset ⇒ an ephemeral port. The bin passes it straight
+to `.listen(process.env.PORT)`.
+
 ### Migration job & 0188 populated-cutover preflight (DEP-003, default-off)
 
 These are read ONLY by the privileged migration job (`docker/control-plane/migrate-entrypoint.sh`), never at application startup. Application startup runs no migrations and can only READ the durable 0188 cutover marker — it can never write or synthesize it. The 0188 preflight is dormant unless the operator explicitly opts in; single-tenant deployments never trigger it.

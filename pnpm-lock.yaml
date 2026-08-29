@@ -131,13 +131,13 @@ importers:
       '@armyofagents/provider-wire':
         specifier: workspace:*
         version: link:../provider-wire
+      '@armyofagents/sandbox-e2b-provider':
+        specifier: workspace:*
+        version: link:../sandbox-e2b-provider
       '@armyofagents/worker-daemon':
         specifier: workspace:*
         version: link:../worker-daemon
     devDependencies:
-      '@armyofagents/sandbox-e2b-provider':
-        specifier: workspace:*
-        version: link:../sandbox-e2b-provider
       '@types/node':
         specifier: ^24.6.0
         version: 24.12.0
