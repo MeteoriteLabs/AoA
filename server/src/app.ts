@@ -1,5 +1,6 @@
 import express, { Router, type Request as ExpressRequest } from "express";
 import helmet from "helmet";
+import type { KeyObject } from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -235,6 +236,11 @@ export async function createApp(
     jobReadyScheduler?: import("./services/job-ready-scheduler.js").JobReadyScheduler;
     jobControlMetrics?: import("./services/job-control-metrics.js").JobControlMetrics;
     workerSessionSigningKey?: string;
+    /** DEP-012 Slice 4+5 — the control-plane ed25519 PRIVATE key that MINTS the inert
+     * owned-labels capability in the sandbox-local resolve reply (threaded to
+     * workerControlRoutes -> the secret broker). Absent ⇒ the reply carries no capability
+     * (byte-identical to pre-DEP-011). Loaded + validated at the composition root. */
+    controlPlaneSigningKey?: KeyObject;
     /** CLI-006 (2b) — after-commit projection of a distributed attempt's terminal
      * onto its canary-owned heartbeat run. Composed at the root BEFORE createApp
      * (2b-D1) because the ingest service is built here, three hops down. Absent
@@ -502,6 +508,10 @@ export async function createApp(
       jobControlMetrics: opts.jobControlMetrics,
       sessionSigningKey: opts.workerSessionSigningKey,
       onAttemptTerminal: opts.onAttemptTerminal,
+      // DEP-012 Slice 4+5 — a pre-resolved LOCAL (opts), never an inline process.env read
+      // here (the rollout-rollback-liveness source-shape test negative-matches an env read
+      // within 400 chars of this mount). Absent ⇒ the mint is omitted (inert).
+      controlPlaneSigningKey: opts.controlPlaneSigningKey,
     }));
     // DSK-001 Lane D (D17) — the owner-scoped device listing. Mounted HERE, inside the
     // flag block, so DSK-00 clause (a) holds by construction: flag-off the router does

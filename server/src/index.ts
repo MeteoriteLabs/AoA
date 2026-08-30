@@ -36,6 +36,7 @@ import { openDistributedExecutionDatabases } from "./db/distributed-execution-da
 import { tenantIsolationEnforced } from "./config/deployment-mode.js";
 import { reconcileCloudBlockedPlugins } from "./services/plugin-lifecycle.js";
 import { loadConfig } from "./config.js";
+import { loadControlPlaneSigningKey } from "./config/control-plane-signing-key.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { setLiveEventLogStore, wasLocallyPublished } from "./services/live-events.js";
@@ -908,6 +909,19 @@ const onAttemptTerminal =
       }
     : undefined;
 
+// DEP-012 Slice 4+5 — load the control-plane ed25519 PRIVATE key that MINTS the
+// owned-labels capability (services/owned-labels-mint.ts), threaded through createApp ->
+// workerControlRoutes -> the secret broker. `loadControlPlaneSigningKey` mirrors the
+// adapter-manager bin's try/catch → refuse structure and is FAIL-CLOSED asymmetrically
+// (see config/control-plane-signing-key.ts): env unset ⇒ inert; env set but bad AND
+// distributed execution ON ⇒ a LOUD FATAL (never a silent inert = the dead path); env set
+// but bad AND distributed execution OFF ⇒ inert. This is the ONE site that reads the
+// AOA_CONTROL_PLANE_SIGNING_KEY_FILE env literal (documented for brand-check step 9).
+const controlPlaneSigningKey = loadControlPlaneSigningKey(
+  process.env.AOA_CONTROL_PLANE_SIGNING_KEY_FILE,
+  config.distributedExecutionEnabled === true,
+);
+
 const app = await createApp(db as any, {
   uiMode,
   storageService,
@@ -928,6 +942,9 @@ const app = await createApp(db as any, {
   jobReadyScheduler: scheduler,
   jobControlMetrics,
   workerSessionSigningKey: process.env.AOA_WORKER_SESSION_SIGNING_KEY,
+  // DEP-012 Slice 4+5 — the pre-resolved mint key (loaded above; a LOCAL, never an inline
+  // process.env read at the workerControlRoutes mount — the rollout-rollback source-shape test).
+  controlPlaneSigningKey,
   onAttemptTerminal,
   // DEP-003: the readiness contract. The gate is dormant unless distributed mode is on.
   readiness: {
