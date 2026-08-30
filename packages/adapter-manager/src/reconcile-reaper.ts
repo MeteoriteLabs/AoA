@@ -17,11 +17,13 @@
 // a structurally-uninterpretable label set, an oracle "unknown", an absent map row —
 // DEFAULTS to skip. There is NO negative `leaseId ∉ live-set` inference anywhere.
 //
-// ★ INERT. Nothing in production calls `reconcileReaper` yet. The real liveness oracle
-// (the AM→control-plane lease-truth channel) is Slice B — injected here as `resolveTruth`.
-// The trigger loop + the metric surface are Slice C — this returns counts and LOGS them;
-// it deliberately emits NO closed-label metric (the AM has no metric surface, and
-// worker-daemon's `outcome` label set is CLOSED and would throw on `reaped`/`skipped`).
+// ★ INERT BY DEFAULT. The production caller is Slice C's `startReaperLoop` — the AM bin arms
+// it ONLY when `AOA_ADAPTER_MANAGER_REAPER_ENABLED=1` (unset/`0`/`false` ⇒ never called). The
+// real liveness oracle (the AM→control-plane lease-truth channel) is Slice B — injected here
+// as `resolveTruth` (`makeControlPlaneResolveTruth`). This function returns counts and LOGS
+// them; Slice C's bin accumulates them onto the AM-local `/metrics` counter, so this module
+// deliberately emits NO closed-label metric of its own (worker-daemon's `outcome` label set is
+// CLOSED and would throw on `reaped`/`skipped`).
 //
 // Runtime imports: `@armyofagents/worker-daemon` ONLY (the abstract `SandboxProvider`
 // port types + `hashResourceLabels`) — NO new dependency, so the AM boundary stays green,
@@ -125,7 +127,8 @@ function isStructurallyInterpretable(summary: ResourceSummary): boolean {
 /**
  * One reconcile pass. Snapshot the fleet, pre-filter, ask the oracle, reclaim ONLY the
  * confirmed orphans — each reclaim contained so no single failure aborts the sweep.
- * INERT: no production caller yet.
+ * Inert by default: the caller is Slice C's `startReaperLoop`, armed only when the reaper
+ * flag is set (`AOA_ADAPTER_MANAGER_REAPER_ENABLED=1`).
  */
 export async function reconcileReaper(deps: ReconcileReaperDeps): Promise<ReconcileReaperResult> {
   const pageSize = deps.pageSize ?? DEFAULT_PAGE_SIZE;
