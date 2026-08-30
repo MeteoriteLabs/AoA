@@ -39,7 +39,7 @@ import type { ProviderOpContext, SandboxProvider } from "@armyofagents/worker-da
 
 import { createProviderServer, type CreateProviderServerOptions } from "../server.js";
 import { reconcileReaper, type ReaperLogger } from "../reconcile-reaper.js";
-import { makeControlPlaneResolveTruth } from "../reaper-truth-client.js";
+import { makeControlPlaneResolveTruth, TRUTH_SHARED_SECRET_ENV } from "../reaper-truth-client.js";
 import { accumulateReaperMetrics, createReaperMetrics } from "../reaper-metrics.js";
 import {
   realReaperScheduler,
@@ -205,7 +205,17 @@ export async function bootAdapterManager(deps: AdapterManagerDeps): Promise<Adap
       info: (obj, msg) => console.log(msg, obj),
       error: (obj, msg) => console.error(msg, obj),
     };
-    const resolveTruth = makeControlPlaneResolveTruth(reaperConfig.controlPlaneUrl);
+    // DEP-012 Slice 4+5 (P3) — the AM↔CP shared-secret bearer, read HERE via `env[CONST]`
+    // (never a `process.env.AOA_…` literal in this package). Additive: unset ⇒ no header
+    // (the CP truth route stays double-gated + inert). The reaper client never rejects, so
+    // a mismatch degrades to CP-404 → "unknown", never a mass-reclaim.
+    const truthSharedSecret = env[TRUTH_SHARED_SECRET_ENV]?.trim() || undefined;
+    const resolveTruth = makeControlPlaneResolveTruth(
+      reaperConfig.controlPlaneUrl,
+      undefined,
+      undefined,
+      truthSharedSecret,
+    );
     const makeCtx = (): ProviderOpContext => ({
       deadlineMs: Date.now() + reaperConfig.intervalMs,
       idempotencyKey: randomUUID(),

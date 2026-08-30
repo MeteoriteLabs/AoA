@@ -14,6 +14,7 @@ import {
   makeControlPlaneResolveTruth,
   mapControlPlaneVerdict,
   LEASE_TRUTH_PATH,
+  TRUTH_SHARED_SECRET_HEADER,
 } from "../reaper-truth-client.js";
 
 const BASE = "http://control-plane:8080";
@@ -101,6 +102,21 @@ describe("makeControlPlaneResolveTruth", () => {
         },
       ],
     });
+  });
+
+  it("DEP-012 P3: sends the shared-secret bearer header when configured", async () => {
+    const { fn, calls } = fakeFetch(() => verdictsBody({ "lease-1": "live" }));
+    const resolve = makeControlPlaneResolveTruth(BASE, fn, undefined, "staging-bearer-value");
+    await resolve([summary("sb", { leaseId: "lease-1" })]);
+    expect((calls[0]!.init.headers as Record<string, string>)[TRUTH_SHARED_SECRET_HEADER]).toBe(
+      "staging-bearer-value",
+    );
+  });
+
+  it("DEP-012 P3: omits the bearer header when no secret is configured (inert)", async () => {
+    const { fn, calls } = fakeFetch(() => verdictsBody({ "lease-1": "live" }));
+    await makeControlPlaneResolveTruth(BASE, fn)([summary("sb", { leaseId: "lease-1" })]);
+    expect(TRUTH_SHARED_SECRET_HEADER in (calls[0]!.init.headers as Record<string, string>)).toBe(false);
   });
 
   it("an UNRECOGNIZED enum → unknown (no mass-kill on drift)", async () => {

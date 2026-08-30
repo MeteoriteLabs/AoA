@@ -162,6 +162,28 @@ export function serializeError(err: unknown): SerializedError {
   return { name: "WireProtocolError", message: String(err) };
 }
 
+/**
+ * Is `err` one of the MODELLED wire error classes — i.e. a class whose serialized
+ * `message` is fixed by the class vocabulary, never tenant data? Additive predicate
+ * (DEP-012 Slice 4+5 / Cred-2). It does NOT change `serializeError`'s behaviour — the
+ * adapter-manager's error boundary uses it to decide, AM-LOCALLY, whether to pass an
+ * error through as-is or substitute a fixed generic `WireProtocolError` (so an
+ * unmodelled throw's `err.message` / `String(err)` can never carry a leaked value over
+ * the wire). Lives HERE, in provider-wire, because the concrete provider error classes
+ * are confined out of the adapter-manager request path (the AM boundary checker forbids
+ * naming `@armyofagents/sandbox-e2b-provider` there), and this module already imports
+ * the whole modelled vocabulary.
+ */
+export function isModelledWireError(err: unknown): boolean {
+  return (
+    err instanceof WireProtocolError ||
+    err instanceof ResourceNotAvailableError ||
+    err instanceof SandboxNotFoundError ||
+    err instanceof SandboxEgressDeniedError ||
+    err instanceof UnsupportedProviderOperation
+  );
+}
+
 /** Rebuild the AUTHORITATIVE domain error from a serialized payload. An unknown or
  * malformed name maps to a generic `WireProtocolError` — never silently discarded. */
 export function reconstructError(raw: unknown): Error {

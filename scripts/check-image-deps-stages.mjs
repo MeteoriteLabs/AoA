@@ -41,6 +41,17 @@ export const IMAGES = [
     dockerfile: "docker/worker/Dockerfile",
     entryPackages: ["@armyofagents/worker-daemon"],
   },
+  {
+    // DEP-012 Slice 4+5 — the out-of-process provider HOST. Its runtime closure is
+    // the transitive runtime workspace deps of @armyofagents/adapter-manager:
+    // provider-wire, sandbox-e2b-provider, worker-daemon, worker-protocol,
+    // provider-capability (a devDep of adapter-manager but a RUNTIME dep of
+    // provider-wire), and sandbox-provider-contract. sandbox-fake-provider is a
+    // devDep of sandbox-provider-contract only and is deliberately OUT of the closure.
+    imageName: "adapter-manager",
+    dockerfile: "docker/adapter-manager/Dockerfile",
+    entryPackages: ["@armyofagents/adapter-manager"],
+  },
 ];
 
 /** Workspace manifest search roots (mirrors pnpm-workspace.yaml layout). */

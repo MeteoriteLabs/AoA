@@ -35,6 +35,7 @@ import { type LeaseTruthVerdict } from "@armyofagents/db";
 import { validate } from "../middleware/validate.js";
 import { runInTenantReadOnly } from "../db/tenant-context.js";
 import { readDistributedExecutionDeploymentFlag } from "../config/distributed-execution.js";
+import { TRUTH_SHARED_SECRET_HEADER, truthBearerAccepted } from "./adapter-manager-control-auth.js";
 
 /** The independent, default-off second gate on the unauthenticated lease-truth route
  * (B1-F1). Read via `process.env[CONST]` so the string never appears as a
@@ -67,14 +68,20 @@ export function adapterManagerControlRoutes(opts: { appDb: Db }): Router {
 
   router.post(
     "/adapter-manager-control/lease-truth",
-    // ── The B1-F1 second gate. BEFORE `validate`, mirroring worker-control.ts:948-953,
-    // so a dormant route is indistinguishable from an absent one for any body. Checks
-    // BOTH flags (belt-and-suspenders: app.ts already mounts only inside the distributed
-    // block; this makes the double-gate hold even if that mounting ever changes).
-    (_req, res, next) => {
+    // ── The gate. BEFORE `validate`, mirroring worker-control.ts:948-953, so a dormant
+    // route is indistinguishable from an absent one for any body. THREE arms — all must
+    // hold, else 404 (belt-and-suspenders: app.ts already mounts only inside the
+    // distributed block; this holds even if that mounting ever changes):
+    //   (1) distributed execution enabled, (2) the independent TRUTH_ROUTE_ENABLED flag,
+    //   (3) DEP-012 Slice 4+5 (P3) — a matching AM↔CP shared-secret bearer. `truthBearerAccepted`
+    //       is FAIL-CLOSED: an UNSET configured secret ⇒ reject (NEVER `header === env`,
+    //       which falls OPEN when both are undefined). So enabling the route WITHOUT
+    //       configuring the secret leaves it 404 (the negative test).
+    (req, res, next) => {
       if (
         !readDistributedExecutionDeploymentFlag(process.env) ||
-        process.env[TRUTH_ROUTE_ENABLED_ENV]?.trim() !== "1"
+        process.env[TRUTH_ROUTE_ENABLED_ENV]?.trim() !== "1" ||
+        !truthBearerAccepted(process.env, req.get(TRUTH_SHARED_SECRET_HEADER))
       ) {
         res.status(404).json({ error: "Not found" });
         return;

@@ -1726,3 +1726,69 @@ curl/ca-certs/`apply-workspace-publish-config`/healthcheck/CMD all correct; the 
 
 **Session/operator split confirmed clean** (secret values + live build/deploy = operator; code + compose keys + docs +
 tests = session). **Design is GO for the §9 build prompt** (sub-sliced P1–P5).
+
+## S45.11 — build result (2026-08-30, BUILT + CI-green-locally, ships INERT)
+
+All five pillars landed on `claude/dep-012-deploy-real-build-517aa1` (branched off `docs/replatform-program` tip
+`f7d25665d`). Every claim in §S45 was re-verified against source before building; all findings held. Commits:
+
+- **P1 `6c0957353`** — `docker/adapter-manager/{Dockerfile,entrypoint.sh}` (4-stage mirror of control-plane; curl +
+  ca-certs; the exact 7-package closure; `apply-workspace-publish-config`; **[Img-1]** ledger + TMPDIR on a writable
+  node-owned `/am` volume so a read-only root does not crash boot). Opted into `check-image-deps-stages` (+ 3 AM
+  fixture tests) — the real guard MECHANICALLY confirms the deps COPY set == the runtime closure (7, sandbox-fake-
+  provider excluded). **NOT** the build/sbom/sign.sh edits (Guard-3). Ships unbuilt (CI render-only).
+- **P2 `f4b03e67f`** — the CP mint half: `index.ts` loads `AOA_CONTROL_PLANE_SIGNING_KEY_FILE` (the one env literal,
+  documented) → `createApp` opts → `workerControlRoutes({controlPlaneSigningKey})` (**[Mint-3]** arg + opts field +
+  `KeyObject` import; **[Mint-4]** a pre-resolved local). `loadControlPlaneSigningKey`
+  (`config/control-plane-signing-key.ts`, drizzle-free + injectable fs seam) mirrors the AM bin's try/catch → refuse
+  (**[Mint-2]**: encrypted/DER/RSA PEM throws a SCOPED refusal; present-but-bad ⇒ LOUD FATAL only when
+  `distributedExecutionEnabled`, else inert). Test proves true mint↔verify parity (a real ed25519 key mints a cap the
+  AM `verifyOwnedLabelsCapability` accepts; a mismatched public key is rejected) + every refuse path.
+- **P3 `6a076d9fc`** — the AM↔CP shared-secret bearer. AM: bin reads `AOA_ADAPTER_MANAGER_TRUTH_SHARED_SECRET` via
+  `env[CONST]` → header on the truth POST (never-rejects contract preserved: a mismatch ⇒ CP-404 ⇒ "unknown"). CP: a
+  THIRD gate arm in `adapter-manager-control.ts`, logic in a drizzle-free `adapter-manager-control-auth.ts`
+  (**[Img-2]** fail-closed on UNSET secret; `timingSafeEqual` over SHA-256 hashes — no length leak/throw). Negative
+  tests: route enabled + no bearer configured ⇒ 404; wrong ⇒ 404; match ⇒ pass. mTLS filed as a HARD production
+  follow-up (see below).
+- **P4 `04bce3daa`** — **[Cred-1]** stripped `[METADATA_KEYS.env]` from the durable E2B metadata write
+  (`e2b-provider.ts`); the mock decodes create-faults from `req.envVars`; two white-box captures (the crossing test +
+  the two redaction-non-vacuous tests) migrated metadata→envVars (kept non-vacuous via `command`); new `cred-at-rest`
+  test. **[Cred-2]** an AM-local fence at `server.ts`'s catch maps any non-modelled error → a FIXED generic
+  `WireProtocolError` before encode, via an additive `isModelledWireError` predicate in provider-wire (server.ts is
+  boundary-barred from the provider error classes); mutation test (an `Error` AND a non-`Error` planted-secret throw
+  leave no trace; modelled classes pass). `gate.test`'s B2-correction property (transient ≠ uniform refusal) still
+  holds — the driver already reconstructed a raw `Error` to `WireProtocolError`, so no consumer behaviour changed.
+- **P5 `6fc706d81`** — `pnpm verify:cp-am-keypair` (`server/src/cli/verify-cp-am-keypair.ts`): the operator's C0
+  matched-pair smoke (**[Mint-1]** — build-time tests cannot see the deployed combination; a mismatch collapses to the
+  uniform error). Mints a probe cap (dummy tuple, no tenant/provider/DB touch) with the mounted private key, verifies
+  with the mounted public key, exits LOUD non-zero on mismatch. Smoke-tested: matched ⇒ exit 0, mismatched ⇒ exit 1.
+- **Wiring `5925f5b2d`** — staging compose envs (3 AM boot + bearer×2 + CP mint key, NO new service/net), env docs
+  (the mint key + bearer), the E7-1 reason-prose honesty refresh (count stays 4), and the sandbox-e2b-provider
+  test-inventory pin 9→10 (floor-mode trees left untouched — a `--write` would have tightened unrelated floors).
+
+**Verification (local):** package tests green — provider-wire 28, sandbox-e2b-provider 46 (incl. cred-at-rest +
+adjusted redaction), adapter-manager 149 (incl. error-fence + fixed crossing/gate); server: control-plane-signing-key
+7, adapter-manager-control-auth 10, the source-shape tests (rollout-rollback-liveness, desktop-disabled.negative,
+job-leasing-contract, tenant-app-db-startup, job-fence-surface) all green. `pnpm --filter @armyofagents/server
+typecheck` clean. Guards green: the whole `policy` set (adapter-manager-boundary, sandbox-e2b-provider-boundary,
+gate-clause-wiring [E2bSandboxProvider = 4], staging-manifest [+31 invariant tests], image-deps-stages [+ AM fixtures],
+secret-resolve-vectors, test-inventory, guard-inventory, execution-census, boot-roots, embedded-secrets on
+docker/adapter-manager, …) **and** brand-check step 9 (env-doc completeness — nothing missing). The full CI run lands
+when the PR opens (not run in this session).
+
+**Ships INERT:** the AM image is unbuilt (CI render-only); an absent mint key ⇒ a byte-identical resolve reply; an
+absent bearer / disabled truth route ⇒ 404; the AM boot envs are absent outside staging (the bin is not run in CI).
+
+**Owed to the C0 operator runbook (flag for the orchestrator):**
+1. Generate ONE ed25519 keypair: private → CP `/run/secrets/control-plane-signing-key`
+   (`AOA_CONTROL_PLANE_SIGNING_KEY_FILE`), public → AM `/run/secrets/adapter-manager-cp-pubkey`
+   (`AOA_ADAPTER_MANAGER_CONTROL_PLANE_PUBLIC_KEY_FILE`). Supply `AOA_STAGING_E2B_TEMPLATE`, the `E2B_API_KEY`, and the
+   `AOA_STAGING_ADAPTER_MANAGER_TRUTH_SHARED_SECRET` bearer (same value on AM + CP).
+2. **Run `pnpm verify:cp-am-keypair` against the REAL mounted files BEFORE the canary** — it fail-LOUDs on a
+   mismatched/half-wired pair (the honest dead-path enforcement build-time tests cannot provide).
+3. Build + push `aoa-adapter-manager:staging` (P1 image) and `docker compose up --wait` the minimal fleet.
+4. **Staging MUST use DISPOSABLE / non-production provider keys**: peer-auth is a shared-secret bearer + control-net
+   `internal:true` for this first proof; the flat control-net leaves a privileged compromised worker able to MITM the
+   cleartext bearer / sniff the model key on the worker→AM hop. **Real client-cert mTLS on both hops is a REQUIRED,
+   FILED hard production gate** (a TLS-terminating CP truth listener + AM client-cert presentation) — out of scope for
+   this unit; do not flip to production keys until it lands.

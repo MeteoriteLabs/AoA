@@ -181,10 +181,14 @@ describe("CLI-004/D1 — reconcile() composed against the E2B driver (mock trans
     expect(ser).not.toContain("sk-live-secret");
     expect(ser).not.toContain("codex run");
     expect(ser).not.toContain(ORG);
-    // …NON-VACUOUS: the provider's OWN inspect holds the full sensitive detail.
+    // …NON-VACUOUS: the provider's OWN inspect holds the sensitive command (redaction is
+    // real work). ★ [Cred-1] (DEP-012 Slice 4+5): `env` is NO LONGER at rest — the provider
+    // stopped copying the tenant env into durable E2B metadata, so `raw.env` is empty and the
+    // API key never sits in the durable store (a STRONGER property than redaction).
     const raw = await provider.inspect(created.sandboxId, makeCtx());
     expect(raw.command).toBe("codex run");
-    expect(raw.env.API_KEY).toBe("sk-live-secret");
+    expect(raw.env.API_KEY).toBeUndefined();
+    expect(raw.env).toEqual({});
 
     // (§2.4) The cleanup facet can NEVER effect.
     expect(() => authority.execute()).toThrow(CleanupAuthorityDeniedError);

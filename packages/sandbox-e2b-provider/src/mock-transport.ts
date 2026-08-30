@@ -14,7 +14,7 @@
 // adapter's, the domain translation is the provider's.
 // -----------------------------------------------------------------------------
 
-import { decodeCreateFaults, decodeExecuteFaults, METADATA_KEYS } from "./directives.js";
+import { decodeCreateFaults, decodeExecuteFaults } from "./directives.js";
 import {
   E2bTransportEgressBlockedError,
   E2bTransportNotFoundError,
@@ -81,8 +81,12 @@ export class MockE2bTransport implements E2bTransport {
     this.#counter += 1;
     // Zero-padded so lexical sort === creation order (deterministic pagination).
     const sandboxId = `sbx-${String(this.#counter).padStart(6, "0")}`;
-    const env = decodeEnv(req.metadata[METADATA_KEYS.env]);
-    const faults = decodeCreateFaults(env);
+    // ★ [Cred-1] (DEP-012 Slice 4+5) — decode the create-fault directives from `envVars`,
+    // NOT `metadata[__aoa_env]`: the real provider no longer copies the tenant env into
+    // durable metadata (it would leave the model key AT REST). `envVars` carries the same
+    // env, so the deterministic fault contract is unchanged (parity with runCommand, which
+    // already reads `req.envVars`).
+    const faults = decodeCreateFaults(req.envVars);
     this.#records.set(sandboxId, {
       sandboxId,
       metadata: { ...req.metadata },
@@ -212,16 +216,6 @@ export class MockE2bTransport implements E2bTransport {
   }
 }
 
-function decodeEnv(raw: string | undefined): Record<string, string> {
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === "object") return parsed as Record<string, string>;
-  } catch {
-    // fall through
-  }
-  return {};
-}
 
 export function createMockE2bTransport(options: MockE2bTransportOptions = {}): MockE2bTransport {
   return new MockE2bTransport(options);

@@ -213,10 +213,15 @@ describe("D2 — every fault lever reaches the provider (observable outcome)", (
       params: { sensitive: { command: "CANARY-CMD", env: "CANARY-ENV" }, secrets: { providerCredential: "CANARY-CRED" } },
     });
     const rid = created.kind === "created" ? created.resource.resourceId : "";
-    // The provider HOLDS the sensitive detail (proving redaction is real work).
+    // The provider HOLDS the sensitive command (proving redaction is real work — NON-vacuous
+    // via `command`). ★ [Cred-1] (DEP-012 Slice 4+5): `env` is NO LONGER at rest — the
+    // provider stopped copying the tenant env into durable E2B metadata, so `inspect.env` is
+    // empty and the credential never sits in the durable store. This is a STRONGER property
+    // than "redaction strips env": the env is not there to strip.
     const detail = await provider.inspect(rid, { deadlineMs: 1000, idempotencyKey: "k" });
     expect(detail.command).toBe("CANARY-CMD");
-    expect(JSON.stringify(detail.env)).toContain("CANARY-CRED");
+    expect(JSON.stringify(detail.env)).not.toContain("CANARY-CRED");
+    expect(detail.env).toEqual({});
     // The neutral invoke-seam projection carries NONE of it.
     const inspect = await driver.invoke("inspect", { providerId: driver.providerId, resourceId: rid });
     expect(inspect.kind).toBe("inspect");
