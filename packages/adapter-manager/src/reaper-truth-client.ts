@@ -30,6 +30,19 @@ import type { ReaperVerdict, ResolveTruth } from "./reconcile-reaper.js";
  * `process.env.AOA_…` literal). The client appends the known lease-truth path. */
 export const CONTROL_PLANE_URL_ENV = "AOA_ADAPTER_MANAGER_CONTROL_PLANE_URL";
 
+/** DEP-012 Slice 4+5 (P3) — the AM↔CP shared-secret BEARER env. Read in the bin via
+ * `env[CONST]` (never a `process.env.AOA_…` literal), passed to
+ * `makeControlPlaneResolveTruth`, and sent as `TRUTH_SHARED_SECRET_HEADER` on the
+ * lease-truth POST. The CP truth route (server/src/routes/adapter-manager-control.ts)
+ * checks the MATCHING const value — the two MUST stay byte-identical (they cross the
+ * AM↔CP + compose boundary). Peer-auth for the E7-1 first proof on a controlled
+ * staging net; real client-cert mTLS is a FILED hard production follow-up. */
+export const TRUTH_SHARED_SECRET_ENV = "AOA_ADAPTER_MANAGER_TRUTH_SHARED_SECRET";
+
+/** The HTTP header the AM presents the bearer on. Lower-case (Node normalizes header
+ * names); MUST equal the CP route's header const. */
+export const TRUTH_SHARED_SECRET_HEADER = "x-aoa-adapter-manager-truth";
+
 /** The B1 endpoint path the client POSTs to (co-located with the client, which owns the
  * CP contract; the env carries only the service base). */
 export const LEASE_TRUTH_PATH = "/api/adapter-manager-control/lease-truth";
@@ -68,11 +81,18 @@ async function fetchOrgVerdicts(
   leaseIds: readonly string[],
   fetchImpl: typeof fetch,
   timeoutMs: number,
+  bearer: string | undefined,
 ): Promise<Record<string, unknown> | null> {
   try {
+    // DEP-012 Slice 4+5 (P3) — present the shared-secret bearer when configured. Additive:
+    // absent ⇒ no header (pre-P3 behaviour); a mismatch ⇒ the CP 404s ⇒ `!res.ok` ⇒ `null`
+    // ⇒ every sandbox in this batch stays "unknown" (the never-rejects / positive-confirmed-
+    // death contract is preserved — an auth failure can never promote a lease to "orphan").
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (bearer !== undefined && bearer !== "") headers[TRUTH_SHARED_SECRET_HEADER] = bearer;
     const res = await fetchImpl(endpoint, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({
         orgs: [{ organizationId, leases: leaseIds.map((leaseId) => ({ leaseId })) }],
       }),
@@ -103,6 +123,7 @@ export function makeControlPlaneResolveTruth(
   baseUrl: string,
   fetchImpl: typeof fetch = fetch,
   timeoutMs: number = DEFAULT_TRUTH_FETCH_TIMEOUT_MS,
+  bearer?: string,
 ): ResolveTruth {
   const endpoint = joinUrl(baseUrl, LEASE_TRUTH_PATH);
   return async (summaries: readonly ResourceSummary[]) => {
@@ -127,7 +148,7 @@ export function makeControlPlaneResolveTruth(
 
     for (const [organizationId, group] of byOrg) {
       const leaseIds = [...new Set(group.map((s) => s.resourceLabels.leaseId))];
-      const verdicts = await fetchOrgVerdicts(endpoint, organizationId, leaseIds, fetchImpl, timeoutMs);
+      const verdicts = await fetchOrgVerdicts(endpoint, organizationId, leaseIds, fetchImpl, timeoutMs, bearer);
       // ★ KEY BY ITERATING THE CLIENT'S OWN SUMMARIES (B2C-F7), never the CP's verdicts.
       // Two sandboxes sharing a leaseId (a retried create) then BOTH get that lease's
       // verdict — fail-safe (leases.id is a globally-unique UUID). `verdicts?.[leaseId]`
