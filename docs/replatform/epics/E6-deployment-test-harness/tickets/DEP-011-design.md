@@ -1107,3 +1107,23 @@ Slice-5 deploy-ordering.
    worker), and does it not accidentally re-impose the gate's generation-equality?
 5. **Guards + inertness.** Does the new `provider.reconcileCleanup` production caller trip `check-gate-clause-wiring`
    (β2 lesson), and does Slice A ship genuinely inert (no loop, no channel, oracle injected)?
+
+## R.9 — BUILD RESULT (2026-08-30, ships INERT) — independently verified
+
+Slice A SHIPPED CI-GREEN as `35ac5f29d` (run `33272818842`). `reconcileReaper`
+(`packages/adapter-manager/src/reconcile-reaper.ts`) — pure; deps `{ provider, resolveTruth, makeCtx, now,
+pageSize?, logger? }`; returns `{ reaped, skipped, unknown, failed }` + logs, NO metric. Verified against the
+repo: **snapshot-first** fleet `list` (placeholder `FLEET_SELECTOR`, global) → **structural pre-filter**
+(missing `leaseId`/`org`/`job` or `generation===0` → skip WITHOUT the oracle) → **one batch `resolveTruth`** →
+reclaim ONLY a confirmed `"orphan"` via server-local `reconcileCleanup` in a **per-target try/catch** (a throw →
+`failed`, sweep continues); a transient `cleanupStatus:"failed"` → `failed`, NEVER `reaped`; **positive-
+confirmation-of-death** (map-absent/`unknown` → skip; no negative inference); any-generation. Injected oracle ⇒
+fork-independent (Slice B) + inert (no production caller). Component test (5) + mutation sweep 6/6 (unknown→destroy,
+oracle-orphan on a structurally-invalid summary, reclaim-in-scan cursor-shift, `failed`-counted-`reaped`,
+uncaught-throw-aborts-sweep, generation-equality gate). Guards green: `check-adapter-manager-boundary` (no new
+dep — worker-daemon-only import), `check-gate-clause-wiring` (E7-1 stays 4; `E2bSandboxProvider` never in
+non-test source), `check-finding-ownership` (no result doc). **Concurrency note:** built in the shared `C:\e3`
+tree alongside Slice 2b; `35ac5f29d` committed ONLY the 3 reaper files by explicit path (this §R.9 was added later
+by the orchestrator, as the doc was dirty with 2b's edits at build time). **Next:** Slice B (the real
+`resolveTruth` pull channel — the AM→control-plane lease-truth query; the fork) then Slice C (the trigger loop +
+the AM metric surface).
