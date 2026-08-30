@@ -151,16 +151,19 @@ integration("DEP-011 B1 — classifyLeaseTruth over embedded PostgreSQL", () => 
       await admin`INSERT INTO organizations (id, name, slug) VALUES (${ORG}, 'DEP-011 B1 org', 'dep-011-b1-org')`;
       await admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
         VALUES (${COMPANY}, ${ORG}, 'DEP-011 B1 company', 'D11B')`;
+
+      // Targets FIRST — workers.(target_authority_key, execution_target_id) and
+      // leases.(target_authority_key, target_id) both FK into execution_targets.
+      await seedTarget(TARGET_LIVE, 1, "active");
+      await seedTarget(TARGET_SUPERSEDED, 2, "active");
+      await seedTarget(TARGET_DISABLED, 1, "disabled");
+
       await admin`INSERT INTO workers
         (id, scope, organization_id, execution_target_id, target_authority_key, device_public_key,
          device_thumbprint, device_generation, profile_hash, profile_snapshot, enrolled_at,
          last_seen_at, label, status)
         VALUES (${WORKER}, 'organization', ${ORG}, ${TARGET_LIVE}, ${AUTHORITY_KEY}, 'dep-011-b1-key',
           ${HEX64}, 1, ${HEX64}, '{}', clock_timestamp(), clock_timestamp(), 'DEP-011 B1 worker', 'enrolled')`;
-
-      await seedTarget(TARGET_LIVE, 1, "active");
-      await seedTarget(TARGET_SUPERSEDED, 2, "active");
-      await seedTarget(TARGET_DISABLED, 1, "disabled");
 
       await seedLease({ leaseId: LEASE_TERMINAL, ordinal: 1, targetId: TARGET_LIVE, leaseTargetGeneration: 1, leaseStatus: "released", attemptStatus: "running" });
       await seedLease({ leaseId: LEASE_LIVE, ordinal: 2, targetId: TARGET_LIVE, leaseTargetGeneration: 1, leaseStatus: "active", attemptStatus: "running" });
