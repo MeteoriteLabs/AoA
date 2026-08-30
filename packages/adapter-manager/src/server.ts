@@ -33,7 +33,7 @@ import type {
   ProviderOpContext,
   SandboxProvider,
 } from "@armyofagents/worker-daemon";
-import { WireProtocolError, decodeOpRequest, encodeErrResponse, encodeOkResponse } from "@armyofagents/provider-wire/codec";
+import { WireProtocolError, decodeOpRequest, encodeErrResponse, encodeOkResponse, isModelledWireError } from "@armyofagents/provider-wire/codec";
 import type { OwnedLabelsCapability } from "@armyofagents/provider-wire";
 
 import { gateList, gateOwnedOp, redactProjection, type OwnedOpGateDeps } from "./owned-op-gate.js";
@@ -244,7 +244,19 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
           // UnsupportedProviderOperation / the uniform ResourceNotAvailableError) + a
           // malformed request cross back as coded err envelopes; the driver reconstructs the
           // authoritative class. sendJson is guarded, so this catch can never re-throw.
-          sendJson(res, 200, encodeErrResponse(err));
+          //
+          // ★ [Cred-2] (DEP-012 Slice 4+5) — the leak fence. A raw e2b SDK throw reaching
+          // here would be forwarded VERBATIM by serializeError, whose TWO unmodelled arms
+          // (`err instanceof Error → err.message` AND the non-Error `String(err)`) can carry
+          // a leaked provider-auth value (nothing wraps the SDK call that receives envVars).
+          // So AM-LOCALLY (not the shared codec — no other consumer perturbed), map ANY error
+          // that is not a MODELLED wire class to a FIXED generic WireProtocolError BEFORE
+          // encoding — dropping both raw-text arms at once. Modelled classes pass as-is (their
+          // messages are fixed by the class vocabulary, never tenant data).
+          const safe = isModelledWireError(err)
+            ? err
+            : new WireProtocolError("adapter-manager provider operation failed");
+          sendJson(res, 200, encodeErrResponse(safe));
         }
       })();
     });

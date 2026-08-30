@@ -191,19 +191,27 @@ export class E2bSandboxProvider implements SandboxProvider {
         return { sandboxId: existing.sandboxId, providerOpId: this.#nextOpId("create"), resourceLabels: existing.resourceLabels };
       }
     }
-    // The management record the transport round-trips. `env` carries the tenant
-    // env verbatim (the adapter may have folded reserved fault/canary markers in);
-    // the provider never interprets it.
+    // The management record the transport round-trips (labels/command/workload only).
+    //
+    // ★ [Cred-1] (DEP-012 Slice 4+5) — the tenant `env` is DELIBERATELY NOT written into
+    // durable E2B metadata. A real transport persists `metadata` in E2B cloud (returned by
+    // Sandbox.list()/getInfo()), so a `[METADATA_KEYS.env]: JSON.stringify(spec.env)` copy
+    // would leave the tenant model-provider key AT REST in a shared-account durable store —
+    // forbidden by Decision #104 (the credential must not hit a durable store). The copy was
+    // REDUNDANT: `env` still reaches the running sandbox via the necessary `envVars` channel
+    // below; its only reader was `inspect`, whose gated wire ALWAYS redacts env, and `list`
+    // dropped it. The deterministic MOCK now decodes its create-fault directives from
+    // `req.envVars` (which carries the same env), not from this metadata.
     const metadata: Record<string, string> = {
       [METADATA_KEYS.labels]: JSON.stringify(spec.resourceLabels),
       [METADATA_KEYS.command]: spec.command,
-      [METADATA_KEYS.env]: JSON.stringify(spec.env),
       [METADATA_KEYS.workload]: spec.workloadType,
     };
     const { sandboxId } = await this.#transport.create({
       templateId: this.#templateId,
       timeoutMs: this.#ttl(ctx),
       metadata,
+      // The necessary channel: E2B needs the env to run the sandbox. NOT durable metadata.
       envVars: spec.env,
     });
     // Every sandbox gets an enforced TTL (idempotent belt-and-suspenders).

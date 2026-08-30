@@ -221,12 +221,19 @@ describe("execute gate — the oracle collapse (byte-identical refusals)", () =>
         body: JSON.stringify({ args: { sandboxId: "sbx-fault", command: "x", args: [], env: {} }, ctx: ctx(), capability: mint() }),
       });
       const text = await res.text();
-      // Surfaced distinctly — the transient is NOT the uniform ownership refusal.
+      // ★ The load-bearing property (B2 correction): the transient is NOT byte-identical to
+      // the uniform ownership refusal — so an idempotent teardown can never read it as
+      // "vanished -> success" and leak the sandbox. This STILL HOLDS after Cred-2.
       expect(text).not.toBe(UNIFORM_ERR_BODY);
-      // It crosses as its own (non-RNA) class — the original error name, never a spurious ok.
       const parsed = JSON.parse(text) as { err?: { name?: string }; ok?: unknown };
       expect(parsed.ok).toBeUndefined();
-      expect(parsed.err?.name).toBe("Error");
+      // ★ [Cred-2] (DEP-012 Slice 4+5): the AM error fence maps this unmodelled `Error`
+      // (whose message could leak a provider-auth value) to a FIXED generic WireProtocolError
+      // BEFORE encoding. The class name flattens from "Error" to "WireProtocolError" — but the
+      // driver ALREADY reconstructed any unknown name (incl. a raw "Error") to WireProtocolError
+      // via reconstructError's default, so no consumer behaviour changed; only the leak-prone
+      // message is now generic. Crucially it is still ≠ ResourceNotAvailableError (asserted above).
+      expect(parsed.err?.name).toBe("WireProtocolError");
     } finally {
       await new Promise<void>((resolve, reject) => faultServer.close((err) => (err ? reject(err) : resolve())));
     }

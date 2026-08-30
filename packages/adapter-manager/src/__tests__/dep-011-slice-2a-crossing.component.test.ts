@@ -34,7 +34,6 @@ import { signOwnedLabelsCapability } from "@armyofagents/provider-capability";
 
 import { createProviderServer } from "../server.js";
 
-const ENV_METADATA_KEY = "__aoa_env"; // METADATA_KEYS.env (not exported; white-box pin)
 const REDEEMED_VALUE = "sk-ant-fixture-dep011-crossing-000";
 
 /** The worker's `labelsFor(handoff)` tuple — the cap's `ownedLabels` AND the create spec's
@@ -57,17 +56,16 @@ function ctx(key: string): ProviderOpContext {
   return { deadlineMs: 5_000, idempotencyKey: key };
 }
 
-/** Records the env metadata each create receives — the provider-side "peek" that proves the model
- * key crossed the wire INTO the provider. */
+/** Records the env each create receives — the provider-side "peek" that proves the model key
+ * crossed the wire INTO the provider. ★ [Cred-1] (DEP-012 Slice 4+5): the env now crosses on
+ * the `envVars` channel (the necessary channel E2B runs the sandbox with), NOT durable
+ * `metadata` — the provider stopped copying the key into durable metadata (it would leave it
+ * AT REST). This white-box capture moved from `req.metadata[__aoa_env]` to `req.envVars`. */
 class CapturingMockTransport extends MockE2bTransport {
   readonly createdEnvs: Record<string, string>[] = [];
   override async create(req: Parameters<MockE2bTransport["create"]>[0]): ReturnType<MockE2bTransport["create"]> {
     const result = await super.create(req);
-    try {
-      this.createdEnvs.push(JSON.parse(req.metadata[ENV_METADATA_KEY] ?? "{}") as Record<string, string>);
-    } catch {
-      this.createdEnvs.push({});
-    }
+    this.createdEnvs.push({ ...req.envVars });
     return result;
   }
 }
