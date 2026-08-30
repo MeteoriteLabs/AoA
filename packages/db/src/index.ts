@@ -80,6 +80,8 @@ export type {
   AuthorizedSecretResolution,
 } from "./repositories/tenant/job-control.js";
 export { computeRetryBackoffMs } from "./repositories/tenant/job-control.js";
+// DEP-011 reaper Slice B (B1) — the read-only lease-truth classification surface.
+export { classifyLeaseTruthRow, type LeaseTruthVerdict, type LeaseTruthRow } from "./repositories/tenant/lease-truth.js";
 // JOB-004: the ONE common active-fence predicate + the CLOSED governed-mutator
 // surface. Re-exported from the barrel so `server/src/services/job-fencing.ts`
 // shares the exact same seam the tenant repository's guarded mutators gate on.
