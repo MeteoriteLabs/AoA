@@ -511,6 +511,14 @@ export async function createApp(
     // startup never loads the module graph.
     const { desktopDeviceRoutes } = await import("./routes/desktop-devices.js");
     api.use(desktopDeviceRoutes({ db }));
+    // DEP-011 reaper Slice B (B1) — the control-plane READ-ONLY lease-truth endpoint the
+    // adapter-manager PULLs to classify orphan sandboxes. Mounted HERE, inside the
+    // distributed block, is HALF the B1-F1 double-gate; the route's own pre-handler 404s
+    // unless AOA_ADAPTER_MANAGER_TRUTH_ROUTE_ENABLED="1" is the other half. Ships INERT:
+    // with either flag off it 404s, and its only caller is the AM client (B2). Dynamically
+    // imported like worker-control above so a flag-off startup never loads the module.
+    const { adapterManagerControlRoutes } = await import("./routes/adapter-manager-control.js");
+    api.use(adapterManagerControlRoutes({ appDb: opts.tenantAppDb }));
   }
   // Settings -> Providers. Path-mounted (mergeParams) so the provider endpoints
   // share one /companies/:companyId/providers prefix.

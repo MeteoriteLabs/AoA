@@ -238,6 +238,24 @@ The control-plane key compose env is DEPLOY-OWED (Slice 5); the bin fail-closes 
 `8090` with a `:8090/healthz` check. Unset ⇒ an ephemeral port. The bin passes it straight
 to `.listen(process.env.PORT)`.
 
+### Adapter-manager sandbox reaper (DEP-011 Slice B/C, default-off)
+
+The reaper reclaims orphan sandboxes: the adapter-manager PULLs the control-plane for a
+read-only lease-truth verdict (which of the leases it holds sandboxes for are terminal /
+superseded) and reclaims only the positive-confirmed orphans. It ships **INERT** — the
+control-plane endpoint 404s and the AM loop does not run until the flags below are set (a
+Slice-5 deploy concern; documented proactively). All four are read via `process.env[CONST]`
+name indirection (never a `process.env.AOA_…` literal). The reaper's real transport auth
+(mTLS / peer-allowlist on control-net) is DEPLOY-OWED (Slice 5); the double-gate keeps the
+endpoint unreachable until then.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AOA_ADAPTER_MANAGER_TRUTH_ROUTE_ENABLED` | unset (`false`) | **Control-plane (server) flag.** The independent second gate on the unauthenticated `POST /api/adapter-manager-control/lease-truth` lease-truth endpoint (DEP-011 B1). Deliberately **decoupled** from `AOA_DISTRIBUTED_EXECUTION_ENABLED`: both must be `1`/enabled for the route to respond (the route is mounted only inside the distributed block AND its pre-handler 404s unless this is `1`), so enabling distributed execution can never by itself expose the endpoint. Leave unset until Slice-5 mTLS is in place. |
+| `AOA_ADAPTER_MANAGER_CONTROL_PLANE_URL` | unset (reaper off ⇒ ok; reaper on ⇒ **refuse**) | **Adapter-manager bin.** Base URL of the control-plane lease-truth endpoint the reaper PULLs over control-net. Required when the reaper is enabled — flag-on with this unset is a **refusal to boot** (never a silently-dead reaper). Ignored when the reaper is off. |
+| `AOA_ADAPTER_MANAGER_REAPER_ENABLED` | unset (`false`) | **Adapter-manager bin.** Enables the periodic orphan-reaper sweep loop. Strict parse: enabled **iff** the trimmed value is exactly `1`; unset / `""` / `0` / `false` / anything else = off (a clean no-op). Off is the only inert state; on with a missing control-plane URL is a refusal. |
+| `AOA_ADAPTER_MANAGER_REAPER_INTERVAL_MS` | (bin default `< 60000`) | **Adapter-manager bin.** Sweep cadence in milliseconds. Defaults below the E2B create-TTL (`DEFAULT_TTL_MS = 60000`) so a sweep reclaims before the interim TTL backstop. A non-positive / unparseable value falls back to the default. |
+
 ### Migration job & 0188 populated-cutover preflight (DEP-003, default-off)
 
 These are read ONLY by the privileged migration job (`docker/control-plane/migrate-entrypoint.sh`), never at application startup. Application startup runs no migrations and can only READ the durable 0188 cutover marker — it can never write or synthesize it. The 0188 preflight is dormant unless the operator explicitly opts in; single-tenant deployments never trigger it.

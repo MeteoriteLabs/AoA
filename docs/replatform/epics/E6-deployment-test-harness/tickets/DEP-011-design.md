@@ -1379,3 +1379,53 @@ double-gate at `worker-control.ts:949`; app.ts single-flag block at `:483`):
 - **Guards-F2 (LOW)** — name the route path away from the `validateAppSourceBoundary` reserved prefixes (RBC.1/.6).
 - **Guards-F3 (LOW)** — `env[CONST]` indirection so brand-check step 9 doesn't force docs at B/C time; name the
   cadence env now (RBC.2/.3/.6).
+
+## RBC.10 — build result (2026-08-30, Slices B1 + B2 + C SHIPPED INERT)
+
+Built on branch `claude/reaper-slices-b-c-aa36f0` → PR
+[#329](https://github.com/MeteoriteLabs/AoA/pull/329) (base `docs/replatform-program`). All three sub-slices
+landed INERT, each independently green, in the sub-slice order STEP 0 → B1 → B2 → C.
+
+- **STEP 0** — `tests/fixtures/reaper-lease-truth/v1/` frozen (request/response + a `summaries.json`/
+  `expected-client-verdicts.json` pair carrying the multi-sandbox-per-lease case), dual-asserted by B1's
+  integration test AND B2's unit test.
+- **B1** — `1d8aab688`. `classifyLeaseTruth` (`packages/db/src/repositories/tenant/lease-truth.ts` pure classifier +
+  the `job-control.ts` query) + `POST /api/adapter-manager-control/lease-truth` (double-gated, INERT). Pure arms
+  17/17; embedded-PG integration test + fixture assertion (Linux CI is the authority — see the env note below).
+- **B2** — `f7e47f335`. `packages/adapter-manager/src/reaper-truth-client.ts`. 14/14, incl. the fixture round-trip.
+- **C** — `e77e7499b`. `reaper-loop.ts` + `reaper-metrics.ts` + the `server.ts` `/metrics` arm + the bin wiring.
+  Full AM suite 143/143 (loop/metrics/metrics-server + bin flag-off/on/refusal). Full `pnpm -r build` clean.
+
+Guards run locally green: `check-secret-resolve-vectors` (+ its node:test), `check-adapter-manager-boundary`
+(+ self-test), `check-gate-clause-wiring` (E7-1 pin stays 4 — the new AM modules never name `E2bSandboxProvider`),
+`check-distributed-execution-foundation` (`validateAppSourceBoundary` — the `adapter-manager-control` path avoids the
+reserved prefixes), `check-finding-ownership` (no `DEP-011-*-result.md`), `check-test-inventory`,
+`check-execution-census`, and the brand-check step-9 env-doc replica (all four new envs documented; every new AM env
+read via `env[CONST]`).
+
+**`ci-required` GREEN** on the tip (`3d2262b84`): run
+<https://github.com/MeteoriteLabs/AoA/actions/runs/33293683375> — `policy`, `verify` (4 shards), `e2e`,
+`e2e-pgvector`, `migrations`, `lint`, brand-check, and contract-bytes all pass; the B1 integration test ran green on
+Linux embedded-PG. Two Linux-CI-only failures were caught and fixed on the first CI pass (`3d2262b84`), neither
+reproducible locally (both hit the drizzle `require(esm)` cycle here): the integration test passed the
+`NonOwnerDbConnection` wrapper instead of `app.db` to `runInTenantReadOnly` (→ `db.transaction is not a function`),
+and adding `classifyLeaseTruth` tripped `job-fence-surface.contract.test.ts`'s CLOSED-method-surface guard (now
+classified as an UNGUARDED control-plane read).
+
+**Deviations from the brief (all recorded, none material):**
+- **B1-F3 guard mechanism.** The brief said "add `classifyLeaseTruth` to `check-secret-resolve-vectors`'s guard
+  set." That guard was a PURE fixture-vector verifier with no source-scanning "guard set." Honoring the finding's
+  INTENT, I appended a real `verifyClassifyLeaseTruthProjection(root)` to it: a sentinel-delimited
+  (`<classify-lease-truth-projection>…</…>`) source scan of the `job-control.ts` projection that reds on a bare
+  `.select()` or any `fence` column (mutation-verified: injecting `fence: leases.fence` reds the guard; revert
+  greens it). Same lane, same "a decision never sees a secret" seam.
+- **Drizzle-orm ESM cycle.** Importing the pure classifier from `job-control.ts` dragged drizzle in (the repo's
+  known `require(esm)` cycle under vitest). Resolved by extracting the verdict type + `classifyLeaseTruthRow` into a
+  drizzle-free `lease-truth.ts` module — the classifier's only dependency is `job-fence.ts`'s
+  `TERMINAL_ATTEMPT_STATUSES`, so the cross-platform unit test imports it with no drizzle.
+- **Local build environment (not a code change).** This worktree sits at a deep OneDrive path; `pnpm install`
+  aborts applying its three dependency patches (`process.chdir` past Windows MAX_PATH, unaffected by `subst`/junction
+  because pnpm realpaths the store). For LOCAL validation only I installed patch-less (patches are dev tooling;
+  integration tests skip on Windows regardless), then restored `package.json`/`pnpm-lock.yaml` — neither is in any
+  commit. The embedded-PG B1 integration test cannot run locally (the same drizzle `require(esm)` cycle fails the
+  reference `job-leasing.integration.test.ts` identically here); Linux CI is its authority.

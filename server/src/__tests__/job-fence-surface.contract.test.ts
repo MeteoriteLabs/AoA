@@ -133,6 +133,12 @@ const EXPECTED_UNGUARDED = [
   // the approval bridge uses to close a create TOCTOU). It is not a worker-reachable
   // governed mutator, so it is classified here like the other control-plane methods.
   "lockActiveFence",
+  // DEP-011 reaper Slice B (B1): the READ-ONLY lease-truth classifier for the
+  // adapter-manager's orphan reaper PULL. UNGUARDED by design — like the reaper and
+  // quarantine methods it acts precisely WHEN the fence is gone, so guardActiveFence
+  // would refuse every real call; its safety is classifying dead only on monotonic
+  // status/generation columns. Not a worker-reachable governed mutator.
+  "classifyLeaseTruth",
 ];
 
 function parse(path: string): ts.SourceFile {

@@ -40,6 +40,7 @@ import { gateList, gateOwnedOp, redactProjection, type OwnedOpGateDeps } from ".
 import { gateCreate, type CreateGateDeps } from "./create-gate.js";
 import { IdempotencyLedger } from "./idempotency-ledger.js";
 import { KeyedMutex } from "./keyed-mutex.js";
+import { createReaperMetrics, renderReaperMetrics, type ReaperMetricsCounter } from "./reaper-metrics.js";
 
 export interface CreateProviderServerOptions {
   readonly provider: SandboxProvider;
@@ -64,6 +65,13 @@ export interface CreateProviderServerOptions {
    * out-of-tree); an ungated server never constructs a ledger at all.
    */
   readonly idempotencyLedgerDir?: string;
+  /**
+   * DEP-011 reaper Slice C — the ONE shared AM-local metric counter, created by the bin
+   * BEFORE `startServer` and passed into BOTH `/metrics` (here) AND the reaper loop
+   * (B2C-F9). When omitted, `/metrics` renders zeros (an ungated server still calls
+   * `createProviderServer`, and a gated server with the reaper flag off has no loop).
+   */
+  readonly reaperMetrics?: ReaperMetricsCounter;
 }
 
 type OpHandler = (args: unknown, ctx: ProviderOpContext) => Promise<unknown>;
@@ -96,6 +104,9 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
   // GATED iff a control-plane public key is pinned. Ungated is Unit A's not-deploy-safe
   // posture — see CreateProviderServerOptions.controlPlanePublicKey.
   const gated = controlPlanePublicKey !== undefined;
+  // The shared reaper metric counter (or a fresh zeroed one so `/metrics` renders zeros
+  // when no reaper is wired). Slice C's loop mutates the SAME ref on the single event loop.
+  const reaperMetrics = options.reaperMetrics ?? createReaperMetrics();
 
   // A Map (not an object literal) so an inherited prototype key like
   // `constructor`/`__proto__` can NEVER resolve to a handler and return a spurious ok.
@@ -182,6 +193,13 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
       return;
     }
 
+    // DEP-011 reaper Slice C — the metric surface (Prometheus text). Renders zeros when no
+    // reaper is wired (Slice 5 owns the scrape target). Beside /healthz, same guarded write.
+    if (req.method === "GET" && req.url === "/metrics") {
+      sendText(res, 200, renderReaperMetrics(reaperMetrics));
+      return;
+    }
+
     const match = req.method === "POST" && req.url ? OP_ROUTE.exec(req.url) : null;
     if (!match) {
       sendJson(res, 404, encodeErrResponse(new WireProtocolError(`no route for ${req.method} ${req.url ?? ""}`)));
@@ -244,5 +262,17 @@ function sendJson(res: ServerResponse, status: number, body: string): void {
   } catch {
     // The socket was destroyed between the guard and the write — swallow; there is no
     // response to send and nothing to recover.
+  }
+}
+
+/** Write a text/plain body exactly once (the /metrics Prometheus surface). Same idempotent
+ * guard as `sendJson` so a double-write can never crash the request handler. */
+function sendText(res: ServerResponse, status: number, body: string): void {
+  if (res.headersSent || res.writableEnded) return;
+  try {
+    res.writeHead(status, { "content-type": "text/plain; version=0.0.4" });
+    res.end(body);
+  } catch {
+    // Socket destroyed between the guard and the write — nothing to recover.
   }
 }

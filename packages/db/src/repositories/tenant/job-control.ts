@@ -60,6 +60,7 @@ import {
   type ActiveFenceRequest,
   type SecretRefKind,
 } from "./job-fence.js";
+import { classifyLeaseTruthRow, type LeaseTruthVerdict } from "./lease-truth.js";
 
 export interface LeaseRejectionCleanupResult {
   readonly deleted: number;
@@ -563,6 +564,21 @@ export interface JobControlRepository {
    * to close a create TOCTOU before its receipt fast-path). Throws JobFenceError on a
    * stale/old-generation/terminal fence, exactly like every governed mutator. */
   lockActiveFence(input: ActiveFenceRequest): Promise<{ lease: Lease; attempt: JobAttempt }>;
+  /**
+   * DEP-011 reaper Slice B (B1) — READ-ONLY per-lease liveness classification for the
+   * adapter-manager's orphan reaper PULL. Given a batch of leaseIds, return a
+   * {@link LeaseTruthVerdict} per id from `leases ⋈ jobAttempts ⋈ executionTargets`,
+   * decided on DURABLE columns only. UNGUARDED by design — like the reaper and
+   * quarantine methods it acts precisely WHEN the fence is gone, so a `guardActiveFence`
+   * here would refuse every real call. Its safety comes from classifying dead ONLY on
+   * monotonic status/generation columns (a strict subset of the authority's death
+   * definition), never a renewable deadline. Effect-free; MUST run under
+   * `runInTenantReadOnly` per organization (org ids come from the request, never a
+   * SELECT DISTINCT — the boundary forbids org enumeration). Every requested id gets a
+   * verdict — a leaseId with no row in this tenant is `absent`. Reads only
+   * identifiers/enums: the projection NEVER selects `leases.fence` (a live bearer token).
+   */
+  classifyLeaseTruth(leaseIds: readonly string[]): Promise<Map<string, LeaseTruthVerdict>>;
 }
 
 /** JOB-004 terminal attempt statuses a governed completion may drive an attempt to. */
@@ -1408,6 +1424,55 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
   }
 
   return {
+    async classifyLeaseTruth(leaseIds) {
+      // Default EVERY requested id to `absent` first — a leaseId with no row in this
+      // tenant (unknown, or wrong-tenant → forced RLS returns zero rows) stays absent;
+      // the AM client maps absent → "unknown", never orphan. A found row overwrites it.
+      const verdicts = new Map<string, LeaseTruthVerdict>();
+      for (const id of leaseIds) verdicts.set(id, "absent");
+      const uniqueIds = [...new Set(leaseIds)].filter(
+        (id): id is string => typeof id === "string" && id.length > 0,
+      );
+      if (uniqueIds.length === 0) return verdicts;
+
+      // <classify-lease-truth-projection> — EXPLICIT column projection ONLY (B1-F3).
+      // NEVER `SELECT *` and NEVER `leases.fence` (a live per-attempt bearer token): the
+      // reaper decision must STRUCTURALLY never read a secret. This region is pinned by
+      // scripts/check-secret-resolve-vectors.mjs (verifyClassifyLeaseTruthProjection) so
+      // a future added column / `SELECT *` reds CI. Mirrors guardActiveFence's join:
+      // leases ⋈ jobAttempts (org+attemptId) leftJoin executionTargets (authorityKey+id).
+      const rows = await tx
+        .select({
+          leaseId: leases.id,
+          leaseStatus: leases.status,
+          leaseTargetGeneration: leases.targetGeneration,
+          attemptStatus: jobAttempts.status,
+          targetDeviceGeneration: executionTargets.deviceGeneration,
+          targetStatus: executionTargets.status,
+        })
+        .from(leases)
+        .innerJoin(
+          jobAttempts,
+          and(
+            eq(jobAttempts.organizationId, leases.organizationId),
+            eq(jobAttempts.id, leases.attemptId),
+          ),
+        )
+        .leftJoin(
+          executionTargets,
+          and(
+            eq(executionTargets.id, leases.targetId),
+            eq(executionTargets.targetAuthorityKey, leases.targetAuthorityKey),
+          ),
+        )
+        .where(inArray(leases.id, uniqueIds));
+      // </classify-lease-truth-projection>
+
+      for (const row of rows) {
+        verdicts.set(row.leaseId, classifyLeaseTruthRow(row));
+      }
+      return verdicts;
+    },
     async admission(input) {
       const [organization] = await tx
         .select({ id: organizations.id })

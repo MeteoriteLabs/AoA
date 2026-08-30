@@ -240,6 +240,57 @@ export function loadFixture(root = repoRoot()) {
   return JSON.parse(fs.readFileSync(path.join(root, ...FIXTURE_SEGMENTS), "utf8"));
 }
 
+// DEP-011 reaper Slice B (B1-F3) — pin the `classifyLeaseTruth` column projection.
+//
+// This lane owns the "a resolve/reaper decision NEVER sees a secret" discipline. B1 adds
+// a NEW read (`classifyLeaseTruth`) over `leases`, whose `fence` column is a LIVE
+// per-attempt bearer token; the decision must STRUCTURALLY never read it. The query lives
+// in a sentinel-delimited region so a future `SELECT *` / added-column reds CI here rather
+// than leaking a secret at runtime. (The secret-resolve vectors above scan the decision;
+// this guards the reaper read's projection — the same "decision never sees a secret" seam.)
+export const CLASSIFY_LEASE_TRUTH_SOURCE = [
+  "packages", "db", "src", "repositories", "tenant", "job-control.ts",
+];
+const PROJECTION_OPEN = "<classify-lease-truth-projection>";
+const PROJECTION_CLOSE = "</classify-lease-truth-projection>";
+
+export function verifyClassifyLeaseTruthProjection(root = repoRoot()) {
+  const src = fs.readFileSync(path.join(root, ...CLASSIFY_LEASE_TRUTH_SOURCE), "utf8");
+  const start = src.indexOf(PROJECTION_OPEN);
+  const end = src.indexOf(PROJECTION_CLOSE);
+  if (start === -1 || end === -1 || end <= start) {
+    throw new SecretResolveVectorError(
+      `classifyLeaseTruth projection sentinels ${PROJECTION_OPEN} … ${PROJECTION_CLOSE} not found in ` +
+        `${CLASSIFY_LEASE_TRUTH_SOURCE.join("/")} (the reaper read's column projection must stay pinned)`,
+    );
+  }
+  // Strip comments FIRST — the region is delimited by `//`-comment sentinels and carries
+  // explanatory prose that itself names `fence`; only the actual CODE (the `.select({…})`
+  // object) must be checked, so a comment mentioning the forbidden token cannot self-trip.
+  const region = src
+    .slice(start + PROJECTION_OPEN.length, end)
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/[^\n]*/g, " ");
+  const problems = [];
+  // EXPLICIT projection only — an object literal `.select({ … })`, never a bare
+  // `.select()` (all columns) that would pull `leases.fence`.
+  if (!region.includes(".select({")) {
+    problems.push("must use an EXPLICIT `.select({ … })` projection, never a bare `.select()`");
+  }
+  if (/\.select\(\s*\)/.test(region)) {
+    problems.push("a bare `.select()` (all columns) is forbidden — it would select `leases.fence`");
+  }
+  // NEVER select the fence bearer token (nor any obvious secret column) into the read.
+  if (/\bfence\b/.test(region)) {
+    problems.push("`fence` (a live per-attempt bearer token) must NEVER appear in the projection");
+  }
+  if (problems.length > 0) {
+    throw new SecretResolveVectorError(
+      `classifyLeaseTruth projection invalid:\n - ${problems.join("\n - ")}`,
+    );
+  }
+}
+
 function main() {
   let fixture;
   try {
@@ -250,7 +301,11 @@ function main() {
   }
   try {
     const { admits, rejects } = verifyFixture(fixture);
-    console.log(`secret-resolve vectors: PASS (${admits} admit vectors, ${rejects} reject vectors)`);
+    verifyClassifyLeaseTruthProjection();
+    console.log(
+      `secret-resolve vectors: PASS (${admits} admit vectors, ${rejects} reject vectors; ` +
+        `classifyLeaseTruth projection pinned)`,
+    );
   } catch (error) {
     console.error(`secret-resolve vectors: FAIL — ${error.message}`);
     process.exit(1);
