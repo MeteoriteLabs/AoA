@@ -231,7 +231,7 @@ get their first REAL exercise = Sprint 5 / E7-1 on real E2B → C0 deploy → ca
    Slice 2a ✅ SHIPPED (the worker per-run networked factory + capability threading + null-object late-binding +
    the honest-orphan cleanup [Option A]; independently verified) + reaper Slice A ✅ (the pure `reconcileReaper`,
    Option-A server reclamation) + Slice 2b ✅ (the container networked-host root) — the worker→provider CODE PATH
-   is COMPLETE incl. reaper Slice B/C ✅ (MERGED `635aa4454`); only the real control-plane KEYPAIR + Slices 4–5 (deploy) remain.** The provider-topology contract is
+   is COMPLETE incl. reaper Slice B/C ✅ (MERGED `635aa4454`); the LAST session unit = **DEP-012 Slice 4+5 (DESIGNED, 4-review folded, §9 ready — the AM image + the CP mint keypair + the AM→CP bearer + credential leak-proofing; `58b11bfc4`)**, then the operator C0 (keypair generation + deploy).** The provider-topology contract is
    settled (`qa/2026-08-28-adapter-manager-scope.md` §8, credential=(i)); the mechanism links
    (session/hello/self-model/loop) are already built + composed behind the default-off flag and get their
    first REAL exercise at E7-1.
@@ -304,7 +304,7 @@ flowchart TD
 |------|------|------|-----------|------|
 | **Frontier (buildable now)** | ~~Evidence-verifier A — the E7-1 acceptance harness~~ ✅ **BUILT** (`pnpm verify:e7-1-distributed-run`; flips no gate) | `SESS` | — | done |
 | | E6-F005 · E6-F007 · E4-F014 — doc-only closures | `SESS` | — | XS |
-| **★ Critical path — Tier 0 (session/code, the build front)** | WRK-014 **✅ BUILT-INERT** → WRK-015 **✅ SHIPPED** (d1 proof → WRK-017, off-path) → DEP-012 adapter-manager **Slice 1 Unit A ✅ (create/execute wire) + Unit B1 ✅ (signed-capability execute gate) + Unit B2 ✅ (teardown + `inspect`/`list` redaction — the FULL gated wire) + Slice 3 · Wave β1 ✅ (durable idempotency ledger + create-gating + the TOCTOU lock, on the mock) + Slice 3 · Wave β2 ✅ (real-provider FAIL-CLOSED composition-root bin + subpath-aware `adapter-manager-boundary` guard + devDep→dep; conformance inherited) + DEP-011 Slice 1 ✅ (server-side owned-labels-capability MINT, inert; `provider-capability` leaf extracted) + DEP-011 Slice 2a ✅ (worker factory + honest-orphan cleanup) + reaper Slice A ✅ (the pure `reconcileReaper` — Option-A server reclamation, positive-confirmed-dead) + Slice 2b ✅ (the container networked-host root) + reaper Slices B1+B2+C ✅ (MERGED `635aa4454`, PR #329 — the CP lease-truth endpoint + the AM PULL client + the contained loop/metrics)** → the worker→provider CODE PATH is COMPLETE; remaining = the real control-plane KEYPAIR + Slices 4–5 (DEPLOY) — the session-buildable Tier-0 code is DONE; contract settled (scope §8) | `SESS` | — | L |
+| **★ Critical path — Tier 0 (session/code, the build front)** | WRK-014 **✅ BUILT-INERT** → WRK-015 **✅ SHIPPED** (d1 proof → WRK-017, off-path) → DEP-012 adapter-manager **Slice 1 Unit A ✅ (create/execute wire) + Unit B1 ✅ (signed-capability execute gate) + Unit B2 ✅ (teardown + `inspect`/`list` redaction — the FULL gated wire) + Slice 3 · Wave β1 ✅ (durable idempotency ledger + create-gating + the TOCTOU lock, on the mock) + Slice 3 · Wave β2 ✅ (real-provider FAIL-CLOSED composition-root bin + subpath-aware `adapter-manager-boundary` guard + devDep→dep; conformance inherited) + DEP-011 Slice 1 ✅ (server-side owned-labels-capability MINT, inert; `provider-capability` leaf extracted) + DEP-011 Slice 2a ✅ (worker factory + honest-orphan cleanup) + reaper Slice A ✅ (the pure `reconcileReaper` — Option-A server reclamation, positive-confirmed-dead) + Slice 2b ✅ (the container networked-host root) + reaper Slices B1+B2+C ✅ (MERGED `635aa4454`, PR #329 — the CP lease-truth endpoint + the AM PULL client + the contained loop/metrics)** → the worker→provider CODE PATH is COMPLETE; the LAST session-buildable unit = **DEP-012 Slice 4+5 (DESIGNED, 4-review folded, §9 ready, `58b11bfc4`)** — the AM image + the CP matched-pair mint keypair (`app.ts:497` gap) + the AM→CP bearer peer-auth + credential leak-proofing (E2B-metadata + the error fence) + a C0 matched-pair smoke tool; then the operator C0 (keypair generation + deploy); contract settled (scope §8) | `SESS` | — | L |
 | | **C0 · staging-deploy pipeline** (deploy the staging compose) | `OP` | Tier 0 | **L** |
 | | C2 · fleet deployed + armed (E2B key, canary, cap>1, worker) | `OP` | C0 | M |
 | | C3 · E7-1 campaign — one real-E2B distributed run → **E7-1 wired** | `OP` | C2 | S |
@@ -323,7 +323,7 @@ flowchart TD
 
 **The one thing to see:** the mechanism is built; the campaign is gated on **Tier 0** (WRK-014 ✅ + WRK-015 ✅
 + DEP-012 Unit A ✅ + B1 ✅ + B2 ✅ + Slice 3 · β1 ✅ + β2 ✅ + DEP-011 Slice 1 ✅ (mint) + Slice 2a ✅ (worker
-factory + honest cleanup) + reaper Slice A ✅ + Slice 2b ✅ + reaper B/C ✅ (MERGED `635aa4454`) (worker→provider CODE PATH COMPLETE) → the remaining real CP keypair + DEP-012 Slices 4–5 (deploy)), then the operator deploy (C0), then the run. Everything downstream (**C4–C8**: bridges, sinks, drain, close) is dammed behind
+factory + honest cleanup) + reaper Slice A ✅ + Slice 2b ✅ + reaper B/C ✅ (MERGED `635aa4454`) (worker→provider CODE PATH COMPLETE) → the LAST session unit **DEP-012 Slice 4+5 (DESIGNED, §9 ready, `58b11bfc4`)**, then the operator C0 (keypair + deploy)), then the run. Everything downstream (**C4–C8**: bridges, sinks, drain, close) is dammed behind
 **E7-1 wired**.
 
 - **Session, now** — **Tier 0** is deep in: **WRK-014 ✅** (container identity — `file_record` custody +
@@ -649,7 +649,7 @@ SHIPPED — **WRK-014 ✅ + WRK-015 ✅ + DEP-012 Slice 1 Units A + B1 + B2 ✅ 
 (the durable idempotency ledger + create-gating + the TOCTOU lock) + Slice 3 · Wave β2 ✅ (the real-provider
 FAIL-CLOSED composition-root bin + the subpath-aware boundary guard + devDep→dep)**. The honest remainder before the
 E7-1 cloud campaign is **DEP-011 Slice 1 ✅ (mint) + Slice 2a ✅ (worker factory + honest cleanup) → the
-reaper Slice A ✅ + Slice 2b ✅ + reaper B/C ✅ (MERGED `635aa4454`) (worker→provider CODE PATH COMPLETE) → the real control-plane KEYPAIR + DEP-012 Slices 4–5 (credential /
+reaper Slice A ✅ + Slice 2b ✅ + reaper B/C ✅ (MERGED `635aa4454`) (worker→provider CODE PATH COMPLETE) → DEP-012 Slice 4+5 DESIGNED (§9 ready `58b11bfc4`) → the operator C0 (keypair /
 deploy = AM image + compose control-plane-key env)** — THEN the operator staging-fleet deploy +
 campaign (which promotes E7-1 and is the prerequisite for the bridge-wiring → crew cutover → the other
 sinks). Lane B (S7/S8) runs in parallel.
