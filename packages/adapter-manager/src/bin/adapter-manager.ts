@@ -30,14 +30,23 @@
 // `none`/unset is the shipped default), here an unset/unrecognised provider — or a provider
 // whose construction throws — is a loud refusal, never a silent boot with no provider.
 
-import { createPublicKey, type KeyObject } from "node:crypto";
+import { createPublicKey, randomUUID, type KeyObject } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
 
-import type { SandboxProvider } from "@armyofagents/worker-daemon";
+import type { ProviderOpContext, SandboxProvider } from "@armyofagents/worker-daemon";
 
 import { createProviderServer, type CreateProviderServerOptions } from "../server.js";
+import { reconcileReaper, type ReaperLogger } from "../reconcile-reaper.js";
+import { makeControlPlaneResolveTruth } from "../reaper-truth-client.js";
+import { accumulateReaperMetrics, createReaperMetrics } from "../reaper-metrics.js";
+import {
+  realReaperScheduler,
+  resolveReaperConfig,
+  startReaperLoop,
+  type ReaperScheduler,
+} from "../reaper-loop.js";
 
 /** Opts the host into a real sandbox provider. Unset/empty/`none` ⇒ REFUSE (this is the
  * provider HOST — it cannot boot without one). */
@@ -82,6 +91,9 @@ export interface AdapterManagerDeps {
   readonly loadProviderModule?: ProviderModuleLoader;
   readonly readKeyFileBytes?: (path: string) => Buffer;
   readonly createProviderServer?: (options: CreateProviderServerOptions) => Server;
+  /** DEP-011 reaper Slice C — the injected timer seam (default: `setTimeout`-backed). A
+   * test passes a fake scheduler to assert the loop is (not) armed without real timers. */
+  readonly reaperScheduler?: ReaperScheduler;
 }
 
 export type AdapterManagerBootResult =
@@ -167,12 +179,50 @@ export async function bootAdapterManager(deps: AdapterManagerDeps): Promise<Adap
     );
   }
 
+  // ── 2.5. Resolve the reaper start decision BEFORE listening (B2C-F6): flag-on but the
+  // control-plane URL missing is a loud REFUSAL, not a half-started server with a
+  // silently-dead reaper. Flag-off is the only clean no-op. ──
+  const reaperConfig = resolveReaperConfig(env);
+  if (reaperConfig.kind === "refused") {
+    return refused(reaperConfig.reason);
+  }
+
   // ── 3. Both resolved — construct the GATED server and listen. β1's ledger points at the
   // configured out-of-tree volume when set; otherwise the server defaults to an OS temp dir. ──
+  // The reaper metric counter is created HERE, BEFORE startServer (B2C-F9), and shared with
+  // BOTH the server's /metrics arm AND the loop below (single event loop ⇒ no race).
+  const reaperMetrics = createReaperMetrics();
   const idempotencyLedgerDir = env[IDEMPOTENCY_LEDGER_DIR_ENV]?.trim() || undefined;
-  const server = startServer({ provider, controlPlanePublicKey, idempotencyLedgerDir });
+  const server = startServer({ provider, controlPlanePublicKey, idempotencyLedgerDir, reaperMetrics });
   // The staging compose pins PORT (=8090) + a :8090/healthz check; unset ⇒ an ephemeral port.
   server.listen(env.PORT);
+
+  // ── 4. Arm the reaper loop (ONLY when enabled — flag-off left this a no-op above). The
+  // reconcile thunk closes over the raw `provider`, a per-op-fresh makeCtx, and B2's real
+  // resolveTruth; tick containment lives in `startReaperLoop`. ──
+  if (reaperConfig.kind === "enabled") {
+    const logger: ReaperLogger = {
+      info: (obj, msg) => console.log(msg, obj),
+      error: (obj, msg) => console.error(msg, obj),
+    };
+    const resolveTruth = makeControlPlaneResolveTruth(reaperConfig.controlPlaneUrl);
+    const makeCtx = (): ProviderOpContext => ({
+      deadlineMs: Date.now() + reaperConfig.intervalMs,
+      idempotencyKey: randomUUID(),
+    });
+    const reconcile = async () => {
+      const result = await reconcileReaper({ provider, resolveTruth, makeCtx, now: () => Date.now(), logger });
+      accumulateReaperMetrics(reaperMetrics, result);
+      return result;
+    };
+    startReaperLoop({
+      scheduler: deps.reaperScheduler ?? realReaperScheduler,
+      reconcile,
+      logger,
+      intervalMs: reaperConfig.intervalMs,
+    });
+  }
+
   return { kind: "listening", server };
 }
 

@@ -29,6 +29,8 @@ import {
   type AdapterManagerDeps,
   type ProviderModule,
 } from "../bin/adapter-manager.js";
+import { REAPER_ENABLED_ENV, REAPER_INTERVAL_MS_ENV, type ReaperScheduler, type ReaperTimer } from "../reaper-loop.js";
+import { CONTROL_PLANE_URL_ENV } from "../reaper-truth-client.js";
 
 // ── Locally-generated key material (no real control-plane key, no real E2B key) ──
 const ed25519 = generateKeyPairSync("ed25519");
@@ -83,6 +85,7 @@ function makeDeps(over: Partial<AdapterManagerDeps> & { keyBytes?: Buffer | (() 
     loadProviderModule: over.loadProviderModule ?? (async () => mod),
     readKeyFileBytes,
     createProviderServer,
+    ...(over.reaperScheduler ? { reaperScheduler: over.reaperScheduler } : {}),
   };
   return { deps, createProviderServer, listen, record, provider, server };
 }
@@ -209,5 +212,68 @@ describe("bootAdapterManager — fail-closed: createProviderServer is NEVER call
     const result = await bootAdapterManager(deps);
     expect(result.kind).toBe("refused");
     expect(createProviderServer).not.toHaveBeenCalled();
+  });
+});
+
+describe("bootAdapterManager — DEP-011 reaper wiring (Slice C, INERT until flagged)", () => {
+  function fakeScheduler() {
+    const scheduled: Array<() => void> = [];
+    const scheduler: ReaperScheduler = {
+      schedule(callback: () => void): ReaperTimer {
+        scheduled.push(callback);
+        return { cancel: () => {} };
+      },
+    };
+    return { scheduler, scheduled };
+  }
+
+  it("flag OFF (default) — boots listening, /metrics counter is wired, the loop is NOT armed", async () => {
+    const { scheduler, scheduled } = fakeScheduler();
+    const { deps, createProviderServer, listen } = makeDeps({ reaperScheduler: scheduler });
+    const result = await bootAdapterManager(deps);
+    expect(result.kind).toBe("listening");
+    expect(listen).toHaveBeenCalledTimes(1);
+    // The shared metric counter is always created and handed to the server (renders zeros).
+    expect(createProviderServer.mock.calls[0][0].reaperMetrics).toBeDefined();
+    // No reaper flag ⇒ the loop is never armed.
+    expect(scheduled).toHaveLength(0);
+  });
+
+  it("flag ON + control-plane URL — boots listening AND arms the loop (scheduler.schedule called)", async () => {
+    const { scheduler, scheduled } = fakeScheduler();
+    const env: Record<string, string | undefined> = {
+      [PROVIDER_ENV]: "e2b",
+      [TEMPLATE_ENV]: "base",
+      [CONTROL_PLANE_PUBLIC_KEY_FILE_ENV]: KEY_PATH,
+      PORT: "8090",
+      [REAPER_ENABLED_ENV]: "1",
+      [CONTROL_PLANE_URL_ENV]: "http://control-plane:8080",
+      [REAPER_INTERVAL_MS_ENV]: "15000",
+    };
+    const { deps, createProviderServer } = makeDeps({ env, reaperScheduler: scheduler });
+    const result = await bootAdapterManager(deps);
+    expect(result.kind).toBe("listening");
+    expect(createProviderServer).toHaveBeenCalledTimes(1);
+    // The loop armed its first tick through the injected scheduler.
+    expect(scheduled).toHaveLength(1);
+  });
+
+  it("flag ON but control-plane URL MISSING — REFUSES to boot (never a silently-dead reaper); server never starts", async () => {
+    const { scheduler, scheduled } = fakeScheduler();
+    const env: Record<string, string | undefined> = {
+      [PROVIDER_ENV]: "e2b",
+      [TEMPLATE_ENV]: "base",
+      [CONTROL_PLANE_PUBLIC_KEY_FILE_ENV]: KEY_PATH,
+      PORT: "8090",
+      [REAPER_ENABLED_ENV]: "1",
+      // CONTROL_PLANE_URL_ENV deliberately absent.
+    };
+    const { deps, createProviderServer, listen } = makeDeps({ env, reaperScheduler: scheduler });
+    const result = await bootAdapterManager(deps);
+    expect(result.kind).toBe("refused");
+    // Refused BEFORE startServer/listen — no half-started host, no armed loop.
+    expect(createProviderServer).not.toHaveBeenCalled();
+    expect(listen).not.toHaveBeenCalled();
+    expect(scheduled).toHaveLength(0);
   });
 });
