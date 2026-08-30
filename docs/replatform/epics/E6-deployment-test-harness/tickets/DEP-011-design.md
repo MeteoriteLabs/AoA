@@ -1127,3 +1127,255 @@ tree alongside Slice 2b; `35ac5f29d` committed ONLY the 3 reaper files by explic
 by the orchestrator, as the doc was dirty with 2b's edits at build time). **Next:** Slice B (the real
 `resolveTruth` pull channel — the AM→control-plane lease-truth query; the fork) then Slice C (the trigger loop +
 the AM metric surface).
+
+---
+
+# The server-side sandbox REAPER — Slices B + C (wire it live)
+
+**Status:** design (2026-08-30, post-recon). **3-agent adversarial review DONE — 9 findings folded (§RBC.9).** Fork
+RESOLVED → **PULL** (§R.0). One unit, sub-sliced **B1 → B2 → C**; ALL ship INERT (B1: the CP route 404s when EITHER
+gate flag is off + has no caller; B2: the client has no caller; C: the loop is behind a default-off flag). This wires
+the reaper LIVE: the AM asks the control-plane which leases are dead, then reclaims — but nothing runs until the
+Slice-5 deploy flips the flags.
+
+## RBC.0 — the shape + the decisions (recon-confirmed)
+
+The reaper (Slice A) takes an injected `resolveTruth(summaries) => Promise<Map<sandboxId, "orphan"|"live"|
+"unknown">>`. **B** builds the real one via PULL: the AM (which holds the fleet `list` + the E2B key, but has NO
+`DATABASE_URL`) asks the control-plane (which has the DB but not the key) a READ-ONLY "which of these leases are
+terminal/superseded?" query over `control-net`. **C** wires the `setInterval` loop + a metric surface. Decisions:
+- **Auth = control-net membership, DOUBLE-gated, mTLS deferred to Slice 5.** The AM is NOT worker-enrolled (no
+  session key / no device proof), so it cannot use `verifyWorkerOperationProof`. The precedent is DEP-005
+  `_test/reap` (`worker-control.ts:926-968`) — but note EXACTLY how it gates: it is **DOUBLE-gated** on BOTH
+  `readDistributedExecutionDeploymentFlag` AND a dedicated `AOA_D1_TEST_REAP_ENABLED` (`:949`), and its own comment
+  (`:935-945`) states why: *"this route has NO authentication … so it must NOT become reachable merely because a
+  real deployment turns AOA_DISTRIBUTED_EXECUTION_ENABLED on."* ★ **[B1-F1, HIGH — folded]** Staging MUST set
+  `distributedExecutionEnabled=true` to run the distributed system, so mounting the truth route on that flag ALONE
+  would expose an unauthenticated cross-tenant lease-oracle on control-net (where untrusted workers live) the instant
+  staging turns distributed execution on — enforcement living as Slice-5 prose is the "false claim of enforcement"
+  class. So B1 is **DOUBLE-gated like DEP-005**: an independent, default-off `AOA_ADAPTER_MANAGER_TRUTH_ROUTE_ENABLED`
+  (read via `env[CONST]`), decoupled from `distributedExecutionEnabled` — with EITHER flag off the route 404s. This
+  makes "enabling distributed execution can never BY ITSELF expose the endpoint" a CODE invariant, not a deploy note.
+  Mount inside the `if (opts.distributedExecutionEnabled)` block (`app.ts:483`) AND check the second flag in the
+  route's own pre-handler (BEFORE validation, mirroring `:948-953`). ★ **Slice 5 still MUST add mTLS / peer-allowlist
+  on control-net before flipping the truth-route flag** (recorded RBC.5/RBC.7) — the double-gate makes the endpoint
+  UNREACHABLE until then, but the durable auth is mTLS.
+- **Tenant-scoped, NOT cross-tenant.** `runInTenant`/`runInTenantReadOnly` require a non-empty organizationId and
+  the boundary FORBIDS org enumeration (`worker-control.ts:128-129`). Each summary carries `organizationId` (the
+  reaper's structural pre-filter requires it, `reconcile-reaper.ts:120`). So group the batch by org and run
+  `runInTenantReadOnly(appDb, orgId, …)` per group — org ids come from the REQUEST, never a `SELECT DISTINCT`.
+- **Metric = a tiny AM-LOCAL counter on `/metrics`** (recon option c) — NO cross-package edit to worker-daemon's
+  closed `outcome` set. The scrape wiring (a compose metrics port / Prometheus target) is Slice 5.
+- **`makeCtx` = per-op-fresh** (`{ deadlineMs: now()+D, idempotencyKey: randomUUID() }`, `node:crypto` — the
+  `startup-reconcile.ts:135` precedent). `reconcileCleanup` is idempotent (already-gone=success), so §R.2's
+  "stable per sweep" note is moot — per-op-fresh is correct.
+
+## RBC.1 — B1: the control-plane read-only lease-truth endpoint (net-new)
+
+- **The query** — a PURE read-only repo method `classifyLeaseTruth(leaseIds) => Map<leaseId, "terminal"|"live"|
+  "superseded"|"absent">` over `leases ⋈ jobAttempts ⋈ executionTargets` (mirroring what `reapExpiredLeases`
+  reads, `job-control.ts:3385-3435`, + the generation cutoff `:1108-1119`), via `runInTenantReadOnly` per org.
+  ★ **THE CORRECTNESS ANCHOR (review-CONFIRMED monotonic):** classify **superseded** = `executionTargets.
+  deviceGeneration ≠ lease.targetGeneration` OR target `disabled`/absent (the MONOTONIC field, §R.1 — generation only
+  ever increments, `lease.targetGeneration` is immutable-at-create); **terminal** = `leases.status ∈
+  {released,expired,revoked}` OR `jobAttempts.status ∈ TERMINAL_ATTEMPT_STATUSES` (`job-fence.ts:63`). The B1
+  reviewer verified against source that EVERY such column is monotonic and B1's terminal/superseded predicate is a
+  strict SUBSET of the control-plane's own `isActiveFence` death definition (`job-fence.ts:467-473` + the generation
+  cutoff `:1113-1119`) — it can never classify-dead anything the authority still renews. Critically: `expired`
+  STATUS is terminal & irreversible (`renewLease` requires `status='active'` AND `expires_at > clock_timestamp()`,
+  `:2403-2404` → an expired lease renews ZERO rows; re-leasing mints a NEW row) — but do NOT infer terminal from a
+  soon-to-expire *deadline* a renewal could extend; classify ONLY on the durable status/generation columns.
+  `absent` (leaseId unknown) → the client maps it to `"unknown"`, NOT orphan.
+  ★ **[B1-F2, MEDIUM — folded] Superseded reads `lease.targetGeneration` from the ROW, NEVER the request.** The
+  request carries only `leaseId` (RBC.4, post-fold); every generation/status value in the predicate is a DB read
+  keyed by `leaseId`. A build that compared `deviceGeneration ≠ request.targetGeneration` would let a caller supply a
+  stale generation to force "superseded" for a LIVE lease → a controllable mass-kill. The classifier NEVER reads a
+  caller-supplied generation/attempt.
+  ★ **[B1-F3, LOW — folded] Pin the explicit column projection** — SELECT only `leases.{id,status,targetGeneration,
+  targetId}`, `jobAttempts.status`, `executionTargets.{deviceGeneration,status}`. NEVER `SELECT *`: `leases.fence` is
+  a LIVE per-attempt bearer token (`leases.ts:38`), and the "decision never sees a secret" discipline
+  (`check-secret-resolve-vectors`) must hold structurally. Add `classifyLeaseTruth` to the secret-resolve-vectors
+  guard set (RBC.6) so a future added-column / `SELECT *` reds CI.
+- **The route** — a NEW sibling router `adapterManagerControlRoutes` (taking `opts.tenantAppDb`; the actor is the
+  AM, not a worker, so keep it out of `worker-control.ts`), path `POST /api/adapter-manager-control/lease-truth`
+  ★ **[Guards-F2 — folded]** (name it explicitly; AVOID the `distributed-execution/{public-services,cloud-plugins}`
+  reserved prefixes that `validateAppSourceBoundary` in `check-distributed-execution-foundation.mjs:1983` bans — our
+  path does). Mounted in `app.ts`'s `distributedExecutionEnabled` block, with a **route-level pre-handler** (before
+  `validate`, mirroring `worker-control.ts:948-953`) that 404s unless `env[TRUTH_ROUTE_ENABLED_ENV]?.trim() === "1"`
+  — the B1-F1 double-gate. Reads ONLY identifiers/enums — the pinned projection above, NO secret column.
+- **Ships INERT:** the route 404s pre-flag, and nothing calls it (the AM client is B2). **Test:** a `server/src/
+  __tests__/*.integration.test.ts` on embedded-PG (mirror `job-leasing.integration.test.ts`) seeding leases/
+  attempts/targets in each state (terminal-lease / terminal-attempt / superseded-gen / disabled-target / live /
+  absent) in ONE tenant → assert the per-leaseId classification.
+
+## RBC.2 — B2: the AM outbound client (the AM's FIRST outbound client)
+
+- A NEW AM module `src/reaper-truth-client.ts` exporting `makeControlPlaneResolveTruth(url, fetchImpl?): ResolveTruth`
+  (matching the injected type; `fetchImpl` defaults to global `fetch`, injectable so the test spies the hop). GLOBAL
+  `fetch` — boundary-clean (`fetch` ∉ `FORBIDDEN_GLOBAL_WORDS`; the AM boundary acts only on `require(`); NO new dep
+  — the manifest stays `[provider-wire, sandbox-e2b-provider, worker-daemon]`). The precedent is
+  `NetworkedProviderDriver`'s global-fetch client (`driver.ts:187-196`).
+- **This is now the REAL oracle** (Slice A's injected `resolveTruth` was the seam; B2 is the thing the reaper trusts
+  to reclaim). So the mapping is **STRUCTURAL positive-confirmed-death, not prose** ★ **[B2C-F2, MED-HIGH — folded]**:
+  (1) require `res.ok` FIRST — global `fetch` does NOT throw on non-2xx, so a naive `await res.json()` on a 500 body
+  reads error fields as truth; (2) shape-guard the body (`verdicts` is a plain object); (3) INITIALIZE every
+  sandbox's verdict to `"unknown"`; promote to `"live"` ONLY on exact `=== "live"`; promote to `"orphan"` ONLY on
+  exact `=== "terminal"` or `=== "superseded"`; **any other string (an unrecognized 5th enum, wrong-case, protocol
+  drift), a missing key, a non-2xx, a throw, or a timeout → stays `"unknown"`.** NEVER a negative default like
+  `v === "live" ? … : "orphan"` (that maps any out-of-contract value to a fleet-wide mass-kill).
+- **The client NEVER rejects** — every failure path RESOLVES to a Map (all-`unknown` for that batch). A throwing
+  `resolveTruth` would crash C's loop (RBC.3/B2C-F1); the two interlock.
+- **Bounded fetch** ★ **[B2C-F3, MED-HIGH — folded]:** each POST carries `signal: AbortSignal.timeout(D)` with D ≪
+  the sweep cadence; a hung CP → the abort → `"unknown"` (fail-closed), so a stalled CP can't pile up overlapping
+  sweeps (with C's self-reschedule, RBC.3).
+- **The keying** ★ **[B2C-F7 / Guards-F1 — folded]:** build the result by ITERATING THE CLIENT'S OWN summaries —
+  `map.set(summary.sandboxId, mapVerdict(verdicts[summary.resourceLabels.leaseId]))` — NEVER by iterating the CP's
+  `verdicts`. Two sandboxes sharing a `leaseId` (a retried create) then BOTH get that lease's verdict — fail-safe
+  (both reaped iff the shared lease is terminal, both skipped iff live; `leases.id` is a globally-unique UUID so
+  cross-org merge is collision-free). The reaper backstops this at consumption (`truth.get(id) ?? "unknown"`,
+  `reconcile-reaper.ts:173`) but the CLIENT must not emit a spurious positive `"orphan"`.
+- **The flow:** group the summaries by `organizationId`; POST the per-org batch(es) to the CP URL; apply the
+  structural mapping above. The CP URL = a new bin env read via `env[CONTROL_PLANE_URL_ENV]` (Guards-F3 —
+  `env[CONST]` indirection, mirroring `PROVIDER_ENV`; a raw `process.env.AOA_…` literal would fire brand-check step 9
+  and force docs at B/C time), injected into the client by the bin.
+- **Ships INERT** (no production caller until C). **Test:** a pure AM `.test.ts` with a fake `fetch` → assert
+  confirmed→orphan, live→live, and — the mutation cases — an UNRECOGNIZED enum, a non-2xx with a JSON body, a missing
+  `verdicts` key, a timeout, and a shared-leaseId multi-sandbox batch ALL → `"unknown"`/fail-safe; assert per-org
+  grouping (a 2-org batch → the right requests); assert the client never rejects. Load the RBC.4 fixture.
+
+## RBC.3 — C: the trigger loop + the AM metric surface
+
+- **The loop lives in an extracted `startReaperLoop({ scheduler, reconcile, logger, intervalMs })`** ★ **[B2C-F4 —
+  folded]** where `reconcile: () => Promise<ReconcileReaperResult>` is an INJECTED THUNK the bin builds (closing over
+  the raw `provider` (`:129`), `makeCtx` per-op-fresh (RBC.0), and B2's `resolveTruth`). This isolates the loop from
+  the real network/E2B so the test asserts "exactly one `reconcile` call" — a `scheduler?`-only seam can't (the bin's
+  callback would bind the real fetch+E2B). Called from `bootAdapterManager` (`bin/adapter-manager.ts:102`).
+- **Tick containment is the loop's JOB** ★ **[B2C-F1, HIGH — folded]:** `reconcileReaper` wraps ONLY the per-target
+  `reconcileCleanup` (`reconcile-reaper.ts:188-213`) — the fleet `provider.list` (`:140-147`) and the `resolveTruth`
+  await (`:166`) are UNWRAPPED, so a `provider.list` throw (a 5xx/socket error from the raw E2B provider over the
+  net) REJECTS the whole tick. The AM bin has NO `unhandledRejection` handler and the loop runs in the SAME process
+  as the gated create/execute/teardown host (`server.listen`) — an unhandled tick rejection would crash the host
+  serving LIVE workers. So: (1) every tick is `.catch()`-guarded (log at error + swallow — a failed sweep neither
+  crashes the process nor stops the loop); (2) use a **self-rescheduling `setTimeout` chain with a re-entrancy guard**
+  (schedule the next tick in the settled `.finally`), NOT raw `setInterval`, so a slow/hung sweep can't overlap the
+  next; (3) B2's `resolveTruth` never rejects (RBC.2) — belt-and-suspenders.
+- **Gated DEFAULT OFF, STRICT parse** ★ **[B2C-F5 — folded]:** read `env[REAPER_ENABLED_ENV]` (`env[CONST]`
+  indirection, Guards-F3); enabled IFF `.trim() === "1"`. Unset / `""` / `"0"` / `"false"` / anything else = OFF (a
+  loose `Boolean(env[X])` or `!== undefined` would enable on `"0"`/`"false"` and break inertness). Table-test the
+  off-tokens.
+- **Start pre-conditions are a REFUSAL, not a silent no-op** ★ **[B2C-F6 — folded]:** the loop starts ONLY when the
+  flag is on AND the provider is constructed AND the CP URL is configured. Flag-on but CP-URL-missing → **refuse
+  loudly** (throw/`refused`, mirroring the bin's "★ WHY A BAD PROVIDER CONFIG IS A REFUSAL" philosophy,
+  `bin:110-168`) or at minimum an error-level log — NEVER fold it into the silent success path (a silently-dead
+  reaper lets orphans accumulate with zero signal, the exact failure Option-A exists to prevent). Flag-OFF is the
+  only clean no-op.
+- **Cadence** = `env[REAPER_INTERVAL_MS_ENV]` (name it NOW — Guards-F3; e.g. `AOA_ADAPTER_MANAGER_REAPER_INTERVAL_MS`),
+  DEFAULT < the E2B create-TTL (`DEFAULT_TTL_MS = 60_000`, `e2b-provider.ts:72`), so a sweep reclaims before the
+  interim TTL backstop. `env[CONST]` indirection (not a raw literal).
+- **The metric surface** — a tiny AM-LOCAL counter (accumulating `reaped`/`skipped`/`unknown`/`failed` across sweeps),
+  created as ONE shared in-memory ref by the bin BEFORE `startServer` ★ **[B2C-F9 — folded]**, passed into BOTH a new
+  `/metrics` arm of the AM `createProviderServer` (beside `/healthz`, `server.ts:176-183`) AND the loop (single event
+  loop ⇒ no race). `/metrics` renders zeros when no reaper is wired (ungated servers still call
+  `createProviderServer`). NO worker-daemon edit, NO closed-set constraint. The scrape target is Slice 5.
+- **Ships INERT** (flag default off). **Test:** flag-off → the scheduler is never armed; flag-on → the fake scheduler
+  fires → exactly ONE `reconcile` call, and a REJECTED `reconcile` is swallowed (the loop survives, locks in
+  containment); the strict-parse off-token table; flag-on-but-URL-missing → refusal; `/metrics` renders the
+  accumulated tally + zeros unwired.
+
+## RBC.4 — the wire contract (freeze first, PINNED AS A FIXTURE)
+
+Freeze the request/response JSON BEFORE B1/B2 (they meet only at the wire, so a frozen contract lets them land in
+parallel). ★ **[B1-F2 — folded] Request carries `leaseId` ONLY** (drop `jobId`/`attempt`/`targetGeneration` — they
+are redundant with immutable DB columns the CP already holds by `leaseId`, and a caller-supplied generation next to
+the classifier is a mass-kill trap): `{ orgs: [{ organizationId, leases: [{ leaseId }] }] }`. Response:
+`{ verdicts: { <leaseId>: "terminal" | "live" | "superseded" | "absent" } }`. Identifiers/enums ONLY.
+
+★ **[Guards-F1, MEDIUM — folded] Pin the wire as a machine-checked fixture,** not prose. This repo pins EVERY other
+cross-process contract as a dual-asserted fixture (`tests/fixtures/{device-proof,secret-resolve,worker-protocol-*,…}`,
+12 dirs) — the lease-truth endpoint would otherwise be the sole net-new cross-process wire with no pinned contract, so
+a field-name/enum divergence (`verdicts` vs `results`; `superseded` vs `stale`) would pass BOTH sides' green tests and
+first surface at Slice-5 live wiring, wasting the parallel landing RBC.8 banks on. Add `tests/fixtures/
+reaper-lease-truth/v1/` with a frozen request + response example — INCLUDING a multi-sandbox-per-lease case (two
+summaries, one `leaseId`, verdict `superseded` → both fail-safe, per the RBC.2 keying) — loaded and asserted by BOTH
+B1's integration test AND B2's unit test. The fixture IS the freeze.
+
+## RBC.5 — fences
+
+NO compose/deploy change (Slice 5 owns the AM image + the CP-URL/reaper-flag/CP-key compose envs + the `/metrics`
+scrape target + mTLS on control-net). NO cross-package worker-daemon edit (the AM-local counter avoids the closed
+set). NO new AM runtime dep. NO capability/gate on the reaper path (server-local, Slice A). Ships INERT (routes
+404 pre-flag; the loop is flag-off). NO `DEP-011-*-result.md` (E6-F003 open + owned; result note in this doc).
+★ **The truth route is DOUBLE-gated** (`distributedExecutionEnabled` AND `AOA_ADAPTER_MANAGER_TRUTH_ROUTE_ENABLED`,
+B1-F1) — a CODE invariant that enabling distributed execution can never BY ITSELF expose the unauthenticated oracle.
+★ **Slice-5 deploy-gate (recorded, hard):** mTLS/peer-allowlist on control-net BEFORE the truth-route flag is
+flipped live.
+
+## RBC.6 — guards (review-swept: register COMPLETE, no missed guard of the β2/Slice-1/2b class)
+
+`check-adapter-manager-boundary` (the client + counter add NO new dep — global `fetch`, `node:crypto` `randomUUID`,
+worker-daemon types → green; verified: the lib pushes an error ONLY for `require(`, `:188-191`, so global `fetch` is
+clean and the manifest stays `[provider-wire, sandbox-e2b-provider, worker-daemon]`); `check-gate-clause-wiring` (the
+client + loop must NEVER name `E2bSandboxProvider` in non-test source; `reconcileReaper`/`reconcileCleanup`/
+`provider.list` are NOT tracked symbols + there is no DEP-011 clause → E7-1 pin stays 4); `check-secret-resolve-vectors`
+★ **[B1-F3 — folded]** — today it scans only the DAT-004 fixture + `job-fence.ts` and does NOT walk `server/src/routes`,
+so B1's route is invisible to it; ADD `classifyLeaseTruth` to its guard set + pin the explicit column projection
+(RBC.1) so a future `SELECT *`/added-column reds CI (`leases.fence` is a live bearer token); `checkEnvDocumented`
+(document all THREE new envs — `AOA_ADAPTER_MANAGER_CONTROL_PLANE_URL`, `AOA_ADAPTER_MANAGER_TRUTH_ROUTE_ENABLED`,
+`AOA_ADAPTER_MANAGER_REAPER_ENABLED`, plus the cadence `AOA_ADAPTER_MANAGER_REAPER_INTERVAL_MS` — in
+`docs/deploy/environment-variables.md`; compose-driven so it stays dormant until Slice 5, but document proactively).
+★ **[Guards-F3 — folded] brand-check step 9** (`pr.yml:676`) greps `process\.env\.AOA_[A-Z_]+` over `packages` and
+would force docs as a HARD `ci-required` gate at B/C time — so read EVERY new AM env via `env[CONST]` indirection (a
+named string const, mirroring `PROVIDER_ENV = "AOA_ADAPTER_MANAGER_SANDBOX_PROVIDER"`), NOT a raw
+`process.env.AOA_…` literal; the AM package has zero `process.env.AOA_` literals today and must stay that way.
+★ **[Guards-F2 — folded] Route-drift IS guarded** (correcting "no route-drift guard exists"): `validateAppSourceBoundary`
+(`check-distributed-execution-foundation.mjs:1967-1987`, a `policy` guard) scans `app.ts` and reds on reserved import
+patterns + route literals matching `distributed-execution/{public-services,cloud-plugins}` (`:1983`) — our
+`/api/adapter-manager-control/lease-truth` path avoids both, but name it (RBC.1) so the builder doesn't drift into a
+reserved prefix. `check-execution-census`/`check-test-inventory` (--write re-pin; root `vitest.config.ts` `projects[]`
+already lists BOTH `server` and `packages/adapter-manager`, `:24` → no `projects[]` change; B/C add `.test.ts` not
+`.test.mjs` → census manifest untouched); NO new package (no combined-root Dockerfile / boot-roots — the 2b traps
+don't recur). Run the WHOLE policy set.
+
+## RBC.7 — what Slice 5 (deploy) inherits (recorded)
+
+mTLS/peer-allowlist on control-net (the truth endpoint's real auth); the AM Docker image; the compose envs
+(`AOA_ADAPTER_MANAGER_CONTROL_PLANE_URL` → the CP service, `AOA_ADAPTER_MANAGER_REAPER_ENABLED=1`, the cadence);
+the `/metrics` scrape target; the real control-plane keypair; flipping `distributedExecutionEnabled` (mounts the
+truth route). Only after all of that does the reaper actually run.
+
+## RBC.8 — sub-slicing
+
+**B1 → B2 → C** (each independently CI-green + inert). Freeze RBC.4's contract first; then **B1 (CP route + query)
+and B2 (AM client) can land in parallel** (they meet only at the wire). **C strictly last** — it is the ONLY slice
+that introduces a running loop, so isolating it behind its own flag is what makes "inert" verifiable. Do NOT fold C
+into B.
+
+## RBC.9 — review outcome (3-agent adversarial review, 2026-08-30 — all findings folded above)
+
+Three agents reviewed against source: **B1 correctness+auth**, **B2+C client+loop**, **guards+cross-surface**. The
+correctness/monotonicity anchor + tenant-scope (leak-free by RLS) + inertness×3 were all verified SOUND, and the
+guard register is COMPLETE (no missed guard of the β2/Slice-1/2b class — a FIRST for this programme). Nine findings
+folded (each tagged at its clause above); orchestrator-verified the two load-bearing ones against source (DEP-005
+double-gate at `worker-control.ts:949`; app.ts single-flag block at `:483`):
+- **B1-F1 (HIGH)** — the truth route on the `distributedExecutionEnabled` flag alone = an unauthenticated cross-tenant
+  oracle the instant staging enables distributed execution; DEP-005 `_test/reap` is DOUBLE-gated precisely for this
+  → added `AOA_ADAPTER_MANAGER_TRUTH_ROUTE_ENABLED` (RBC.0/.1/.5).
+- **B2C-F1 (HIGH)** — a rejected sweep tick (`provider.list`/`resolveTruth` unwrapped in `reconcileReaper`) crashes
+  the AM host serving live workers → C owns tick containment: `.catch` + self-rescheduling `setTimeout` + re-entrancy
+  guard + `resolveTruth`-never-rejects (RBC.3/.2).
+- **B2C-F2 (MED-HIGH)** — the client is the REAL oracle; make positive-confirmed-death STRUCTURAL (start-unknown,
+  promote-only-on-exact, `res.ok` + shape guard) so an out-of-contract/error response can't mass-kill (RBC.2).
+- **B2C-F3 (MED-HIGH)** — `AbortSignal.timeout` on the fetch; a hung CP → unknown, no overlapping sweeps (RBC.2/.3).
+- **B1-F2 = B2C-F8 (MED)** — drop `jobId`/`attempt`/`targetGeneration` from the request; superseded reads the ROW
+  (RBC.4/.1).
+- **Guards-F1 (MED)** — pin the wire as a `tests/fixtures/reaper-lease-truth/v1/` fixture asserted by both sides,
+  incl. a multi-sandbox-per-lease case (RBC.4); keying = iterate-own-summaries, fail-safe (RBC.2).
+- **B2C-F4 (MED)** — extract `startReaperLoop({ scheduler, reconcile })` — the reconcile thunk is the testable seam
+  (RBC.3).
+- **B2C-F5 (MED)** — strict `=== "1"` flag parse (RBC.3).
+- **B2C-F6 (LOW-MED)** — flag-on-but-URL-missing = a loud refusal, not a silent dead reaper (RBC.3).
+- **B1-F3 (LOW)** — pin the column projection + add `classifyLeaseTruth` to `check-secret-resolve-vectors` (RBC.1/.6).
+- **B2C-F9 (LOW)** — one shared `/metrics` counter ref, created before `startServer` (RBC.3).
+- **Guards-F2 (LOW)** — name the route path away from the `validateAppSourceBoundary` reserved prefixes (RBC.1/.6).
+- **Guards-F3 (LOW)** — `env[CONST]` indirection so brand-check step 9 doesn't force docs at B/C time; name the
+  cadence env now (RBC.2/.3/.6).
