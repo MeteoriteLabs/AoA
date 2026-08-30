@@ -1401,7 +1401,16 @@ Guards run locally green: `check-secret-resolve-vectors` (+ its node:test), `che
 `check-distributed-execution-foundation` (`validateAppSourceBoundary` — the `adapter-manager-control` path avoids the
 reserved prefixes), `check-finding-ownership` (no `DEP-011-*-result.md`), `check-test-inventory`,
 `check-execution-census`, and the brand-check step-9 env-doc replica (all four new envs documented; every new AM env
-read via `env[CONST]`). CI run for the tip: <https://github.com/MeteoriteLabs/AoA/actions/runs/33292743335>.
+read via `env[CONST]`).
+
+**`ci-required` GREEN** on the tip (`3d2262b84`): run
+<https://github.com/MeteoriteLabs/AoA/actions/runs/33293683375> — `policy`, `verify` (4 shards), `e2e`,
+`e2e-pgvector`, `migrations`, `lint`, brand-check, and contract-bytes all pass; the B1 integration test ran green on
+Linux embedded-PG. Two Linux-CI-only failures were caught and fixed on the first CI pass (`3d2262b84`), neither
+reproducible locally (both hit the drizzle `require(esm)` cycle here): the integration test passed the
+`NonOwnerDbConnection` wrapper instead of `app.db` to `runInTenantReadOnly` (→ `db.transaction is not a function`),
+and adding `classifyLeaseTruth` tripped `job-fence-surface.contract.test.ts`'s CLOSED-method-surface guard (now
+classified as an UNGUARDED control-plane read).
 
 **Deviations from the brief (all recorded, none material):**
 - **B1-F3 guard mechanism.** The brief said "add `classifyLeaseTruth` to `check-secret-resolve-vectors`'s guard
