@@ -184,7 +184,9 @@ integration("DEP-011 B1 — classifyLeaseTruth over embedded PostgreSQL", () => 
 
   async function classify(leaseIds: string[]): Promise<Map<string, string>> {
     const { app } = guard();
-    return runInTenantReadOnly(app, ORG, (repos) => repos.jobControl.classifyLeaseTruth(leaseIds));
+    // `app.db` is the drizzle Db (the NonOwnerDbConnection wraps it); runInTenantReadOnly
+    // opens the read-only tenant tx on it.
+    return runInTenantReadOnly(app.db, ORG, (repos) => repos.jobControl.classifyLeaseTruth(leaseIds));
   }
 
   it("classifies each lease state and reports absent for an unknown leaseId", async () => {
