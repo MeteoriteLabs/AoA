@@ -1402,3 +1402,327 @@ CP-key deploy-owed); "wire-end-to-end conformance structurally infeasible" is SO
 construction-time capability); lockfile `--frozen-lockfile` + the manifest-accompanies-lockfile policy.
 
 **Design is GO for the §9 build prompt.**
+
+---
+
+# Slice 4 + Slice 5 — deploy-real (combined): the AM image, the mint keypair, control-net peer-auth, and the leak-proof credential crossing
+
+**Status:** design (2026-08-30, post 3-agent terrain map, all findings verified against source at tip `9ae2dbc7c`).
+Awaiting the adversarial review (§S45.10). This is the LAST session-buildable unit before the operator C0 deploy —
+it makes the already-built worker→provider path DEPLOYABLE and LEAK-PROOF. **The credential mechanism already ships
+inert (DEP-011 Slice 2a); this unit is deploy-real hardening + packaging, NOT a rebuild.**
+
+## S45.0 — the shape + the decisions (terrain-confirmed)
+
+The staging fleet cannot execute a canary today for FOUR reasons, three of them session code. This unit closes all
+four as **four pillars**:
+
+- **P1 — the AM image** (`docker/adapter-manager/**` does not exist; the compose references an unbuilt
+  `aoa-adapter-manager:staging`). Additive, lands INERT, fires zero guards by default.
+- **P2 — the CP matched-pair keypair** (THE LOAD-BEARING GAP). The AM verifies signed capabilities with a mounted
+  ed25519 PUBLIC key (fail-closed — the bin refuses to boot without it). But the PRIVATE **mint** half is UNWIRED:
+  `app.ts:497` mounts `workerControlRoutes({…})` WITHOUT `controlPlaneSigningKey` (verified; `worker-control.ts:105`
+  takes it, comment says "no real keypair until deploy/Slice 5"). ★ **If only the AM public half is wired, every
+  networked worker `create` fails the gate → the entire distributed create path is DEAD.** Both terrain agents
+  converged on this.
+- **P3 — the AM→CP truth-route peer-auth** (the B1-F1 deferral). Control-net is FLAT (`internal:true`, but all 7
+  services share it — zero peer isolation). The DEP-011 lease-truth route is unauthenticated (the AM isn't
+  worker-enrolled, can't use `verifyWorkerOperationProof`).
+- **P4 — the credential made leak-proof** (Slice 4 = (i)). The worker-side crossing EXISTS (Slice 2a: the redeemed
+  Company model key rides `create`'s `spec.env`). But the REAL e2b transport introduces ONE live-latent leak the
+  mock never exercised: the AM's unmodelled-error path.
+
+**Decisions (terrain + the user-delegated fork):**
+- **Credential = option (i)** [SETTLED, `qa/2026-08-28-adapter-manager-scope.md` §3.1/§8]: the worker redeems (as
+  today, bound to its own device identity — `secret-broker.ts:258` `request.workerId !== auth.workerId`; (ii) was
+  rejected because relocating the mint makes the AM a standing minter of every tenant's key), and sends the bearer
+  over the mutually-authenticated control-net-internal hop.
+- **★ Peer-auth = shared-secret BEARER + control-net `internal:true` for Slice 5; real mTLS = a REQUIRED, FILED
+  production follow-up (NOT dropped).** Rationale (user-delegated "best case + experience"): the goal now is the
+  E7-1 FIRST PROOF on a controlled staging network, not production multi-tenant hardening; settled option (i)
+  EXPLICITLY lists control-net `internal:true` among its mitigations (not a corner cut); the bearer closes the
+  actual B1-F1 concern (a worker without the secret can't call the truth route); real mTLS is net-new (zero repo
+  precedent), trips the exact-set manifest guards, and reshapes the deploy. File the mTLS follow-up as a hard
+  production gate.
+- **The AM image mirrors `docker/control-plane`** (NOT `docker/worker` — the AM is the provider HOST, must include
+  the e2b transport + curl + ca-certificates).
+- Governed by **Decision #104** (`decisions.md:913`, the Keyless-except-embeddings one — NOT the optimistic-
+  concurrency #104 at `:854`): *"The credential must not appear in the prompt, argv, protocol, events, logs,
+  artifacts, or evidence, and missing Company/provider/environment context fails closed."* THAT sentence is Slice 4's
+  acceptance spec.
+
+## S45.1 — P1: the AM image (additive, INERT, session)
+
+- **Add `docker/adapter-manager/Dockerfile`** — a 4-stage mirror of `docker/control-plane/Dockerfile` (NOT worker):
+  `base` (node:lts-trixie-slim pinned by `@sha256:` + corepack + **`curl` + `ca-certificates`** — the compose
+  healthcheck is `curl -fsS …/healthz` and the e2b SDK makes HTTPS calls; the worker image ships neither) → `deps`
+  (COPY the **7-package runtime closure** — `adapter-manager, provider-wire, sandbox-e2b-provider, worker-daemon,
+  worker-protocol, provider-capability, sandbox-provider-contract` — + `pnpm install --frozen-lockfile --filter
+  "@armyofagents/adapter-manager..."`) → `build` (`COPY . .`, build the closure, `pnpm --filter
+  @armyofagents/adapter-manager deploy --prod /am-app`, then **`RUN node docker/apply-workspace-publish-config.mjs
+  /am-app/node_modules`** — control-plane needs this because workspace deps ship `./dist` via `publishConfig`;
+  without it `ERR_MODULE_NOT_FOUND` at runtime) → `production` (**`WORKDIR /am-app`** [Img-info — the
+  `deploy --prod /am-app` + `CMD` pair requires it, mirroring `/cp-app`/`/worker-app`], `USER node`, read-only-root
+  label, `HEALTHCHECK`, `image.revision` label from `ARG AOA_IMAGE_REVISION`,
+  `CMD ["node","dist/bin/adapter-manager.js"]` — the bin has no `bin` field/shebang, invoked like the worker's).
+- ★ **[Img-1, MED] Wire the idempotency-ledger dir to a WRITABLE volume — a read-only root otherwise CRASHES the boot.**
+  On a gated server the ledger dir defaults to `mkdtempSync(join(tmpdir(), "aoa-am-ledger-"))` (`server.ts:129`), and
+  the bin calls `startServer` UN-try-caught (`bin:196`) — so under the `--read-only` root the design declares, `/tmp`
+  is not writable → `mkdtempSync` THROWS → unhandled → the container never goes healthy → `docker compose up --wait`
+  hangs. (Latent: the staging compose sets no `read_only:true` today, so bring-up survives — but a `docker run
+  --read-only` smoke bites.) **Fix:** mirror control-plane's `TMPDIR=/aoa/tmp` + `mkdir -p`/`chown node:node` + a
+  `VOLUME`, and point `AOA_ADAPTER_MANAGER_IDEMPOTENCY_LEDGER_DIR` (already documented) at a writable node-owned
+  volume dir. Optionally guard `startServer` in the bin to `refused` on a ledger-dir failure rather than crashing.
+- **[Img-info] Opt into the closure guard.** Because the AM is kept out of `check-image-deps-stages`' hardcoded
+  `IMAGES`, the 7-package COPY set is UNVALIDATED and could silently drift. The opt-in COPY set equals exactly the 7
+  (verified), so opting the AM into `check-image-deps-stages` + `dockerfile-static` (with the `.test.mjs` fixtures) is
+  cheap least-privilege parity — recommended.
+- **Add `docker/adapter-manager/entrypoint.sh`** — `exec "$@"`, no usermod/gosu/chown (required if we opt into the
+  `dockerfile-static` guard).
+- **To PRODUCE the image (not needed for inert landing):** add one call each to `docker/images/build.sh`
+  (`build_one "adapter-manager" "docker/adapter-manager/Dockerfile"`), `sbom.sh` (`emit_sbom`), `sign.sh`
+  (`sign_one`). Everything downstream (`adapter-manager.metadata.json`, the `digests.env` lines, the sbom, the
+  `allowlist.json` entry, the provenance file) is AUTO-GENERATED at build time — do NOT hand-author them.
+- **Do NOT add the AM to the release-admission set** — `RELEASE_ARTIFACT_CLASSES` is a FROZEN 5-set
+  (`{control_plane, worker, sandbox, desktop_installer, desktop_updater}`) that default-denies unknowns; the AM image
+  is deliberately OUTSIDE the release gate (staging = pre-release). Do NOT wire the dormant orphan
+  `verify-image-admission.mjs`.
+- **Inert:** the Dockerfile can exist unbuilt; the staging compose is never brought up in CI (render-only). Actually
+  building/pushing `aoa-adapter-manager:staging` is a C0/deploy concern, not CI-green.
+
+## S45.2 — P2: the CP matched-pair keypair (THE LOAD-BEARING GAP; session code)
+
+The owned-labels capability is signed by a CP **private** ed25519 key and verified by the AM with the matching
+**public** key. Both halves are deploy-owed; the private (mint) half needs a CODE change.
+
+- **The mint (private) half — SESSION CODE (THREE edits, not two — [Mint-3]).** In `server/src/index.ts` (beside
+  `:930` `workerSessionSigningKey: process.env.AOA_WORKER_SESSION_SIGNING_KEY`), load
+  `AOA_CONTROL_PLANE_SIGNING_KEY_FILE` → pass `controlPlaneSigningKey: KeyObject` through `createApp`'s opts →
+  `app.ts`'s `workerControlRoutes({…, controlPlaneSigningKey})` (the missing arg at `:497`). ★ The THIRD edit
+  ([Mint-3]): add `controlPlaneSigningKey?: KeyObject` to `createApp`'s opts INTERFACE (`app.ts:~216`) + the
+  `KeyObject` import — it is not there today. ★ **[Mint-4] the `:497` arg MUST be a pre-resolved LOCAL, never an
+  inline `process.env` read** — `rollout-rollback-liveness.test.ts:159` negative-matches
+  `workerControlRoutes[…400 chars…]process.env.AOA_DISTRIBUTED_EXECUTION_ENABLED`; an inline env read in that window
+  reds it. (Other source-shape tests to keep green: `desktop-disabled.negative.test.ts:257` [exactly one
+  `workerControlRoutes(` mount — an added arg keeps it one], `job-leasing-contract.test.ts`, `tenant-app-db-startup.test.ts`.)
+- **★ [Mint-2, MED] The private-key load must mirror the AM bin's `try/catch → refuse` STRUCTURE, not just its
+  asserts, and PRESENT-BUT-BAD ⇒ LOUD FATAL (never silent inert).** The AM bin wraps `createPublicKey` INSIDE the
+  try/catch precisely because an unparseable PEM THROWS there (a catch scoped only to the read fails OPEN,
+  `bin/adapter-manager.ts:166-180`). My linear "refuse-unless-`PRIVATE KEY`" prose is unsafe: an **encrypted PEM**
+  (`BEGIN ENCRYPTED PRIVATE KEY`) passes the string-guard then `createPrivateKey` THROWS with no passphrase → if
+  unwrapped, an UNCAUGHT exception at the `index.ts` composition root crashes the WHOLE control plane at boot; a
+  **DER** key has no ASCII `PRIVATE KEY` so the string-guard wrongly rejects a valid key. So: wrap the whole load in
+  try/catch; `asymmetricKeyType === "ed25519"` assert (catches an RSA `PRIVATE KEY`). ★ **Absent env ⇒ inert; but
+  PRESENT-and-unparseable/wrong-type ⇒ a LOUD refusal — SCOPED to `distributedExecutionEnabled && key-env-set`** (a
+  bad-key typo must not silently fall to `undefined`/inert = the exact dead path this pillar prevents; but crashing
+  the whole CP over a mint-key typo when distributed execution is OFF is disproportionate).
+- **The verify (public) half — manifest + operator.** The AM already fail-closes on
+  `AOA_ADAPTER_MANAGER_CONTROL_PLANE_PUBLIC_KEY_FILE` (a mounted ed25519 SPKI PEM). Slice 5 sets that env on the AM
+  compose service (path `/run/secrets/adapter-manager-cp-pubkey`, mirroring the enrollment-code file pattern — there
+  is NO top-level `secrets:` block; the orchestrator mounts out-of-band). Also set the two other fail-closed boot
+  envs the AM demands: `AOA_ADAPTER_MANAGER_SANDBOX_PROVIDER=e2b`, `AOA_ADAPTER_MANAGER_E2B_TEMPLATE`.
+- ★ **THE DEAD-PATH INVARIANT + [Mint-1, HIGH] its ENFORCEMENT (my "tests ARE the enforcement" was a false claim).**
+  The AM public key and the CP private key MUST be the same pair. If Slice 5 gates the AM but the operator mounts a
+  MISMATCHED pair (or leaves the mint unwired), the AM verifies capabilities that were never minted → every gated
+  `create` fails. ★ **This failure is MAXIMALLY SILENT:** every verify failure collapses to the UNIFORM
+  `ResourceNotAvailableError` (`capability-verify.ts` → `owned-op-gate.ts` `verifyOrUniform`), byte-INDISTINGUISHABLE
+  from a legitimate ownership denial — and neither service ever sees the other's key (each only validates its OWN key
+  parses), so a mismatched pair boots CLEAN on both sides. Build-time tests with a self-generated keypair prove the
+  endpoints in ISOLATION but CANNOT see the deployed combination. **So the enforcement is a C0 MATCHED-PAIR SMOKE
+  CHECK against the REAL mounted files** — a session-built probe tool the operator runs at C0 BEFORE the canary: the
+  CP mints a probe capability with the mounted private key → the AM verifies it with the mounted public key → **fail
+  LOUD on mismatch** (never the silent uniform error). This gates the canary; it is the honest enforcement the
+  build-time tests cannot provide. (Build-time tests still prove: mint↔verify parity with a real keypair → create
+  dispatches; AND absent-key ⇒ byte-identical inert.) The REFUTED axes — the mint↔verify canonical/signature parity
+  (one shared `buildOwnedLabelsCapabilityCanonical`, cross-package tested) and the label numeric/string trap (shared
+  anchor tuple) — are genuinely sound; do not re-litigate them.
+
+## S45.3 — P3: the AM→CP truth-route peer-auth (bearer; mTLS-deferred; session code)
+
+- **The bearer.** A NEW shared secret the AM sends on its lease-truth POST and the CP truth route checks. AM side:
+  read `env[AOA_ADAPTER_MANAGER_TRUTH_SHARED_SECRET]` in the bin, pass it into `makeControlPlaneResolveTruth` → the
+  client adds it as an `Authorization`/`X-…` header on the POST. CP side: `adapter-manager-control.ts`'s route
+  pre-handler adds a THIRD gate arm. ★ **[Img-2, MED] Fail-closed correctly: the check is "CP secret UNSET ⇒ 404",
+  NOT `header === env`** — a naive equality falls OPEN when both are `undefined` (route enabled via
+  `TRUTH_ROUTE_ENABLED=1` but the operator forgot the secret), re-opening the exact B1-F1 oracle. So: unset configured
+  secret ⇒ 404; else compare via `crypto.timingSafeEqual` over **fixed-length HASHES of both sides** (timingSafeEqual
+  throws on unequal-length buffers — hashing first is both constant-time AND no length leak). Negative test: **route
+  enabled + NO bearer configured ⇒ 404.** Absent config ⇒ inert (404 as today). Now:
+  `distributedExecutionEnabled` AND `TRUTH_ROUTE_ENABLED=1` AND a matching bearer.
+- ★ **[Img-3 / Cred-3, MED — calibration] "B1-F1 closed" means DIRECT-PROBE closed, NOT transit-interception.** A
+  worker CANNOT obtain the bearer from config (verified: it is on the AM + CP envs only, not on any worker service,
+  not derivable) — so the direct-probe vector is genuinely closed. BUT control-net is FLAT (`internal:true` blocks
+  external egress only; all 7 services share it, no mTLS), so a PRIVILEGED compromised worker (CAP_NET_RAW) could
+  MITM/replay the cleartext bearer — and likewise SNIFF the cleartext model key on the worker→AM credential hop (the
+  provider-wire codec is a bare `JSON.stringify`, no wire-key filter). Both are deferred to the filed mTLS follow-up.
+  **Acceptable for the E7-1 controlled first proof — REQUIRED mitigations: staging uses DISPOSABLE / non-production
+  provider keys, and mTLS stays a HARD production gate.** The credential hop's Slice-5 protections are control-net
+  `internal:true` + the owned-labels capability gate (authz) + per-run redaction + shortest-lived materialization.
+- **File the mTLS follow-up** (a new E11/E6 ticket or graph-inert slug): real client-cert mTLS on both hops (a
+  TLS-terminating CP listener for the truth route + AM client-cert presentation), the durable auth the B1-F1
+  deferral names. A HARD production gate, out of scope for this unit.
+
+## S45.4 — P4: the credential made leak-proof (Slice 4 = (i); session code)
+
+- **Do NOT rebuild the crossing.** The worker-side mechanism ships inert (Slice 2a): `synthesiseRunSecrets`
+  (`secret-redemption.ts:135-165`) folds the redeemed Company key into `env[PROVIDER_AUTH_ENV_TARGETS]`, pushes the
+  value to the canary set, and it rides `create`'s `spec.env` opaquely; the capability rides separately (signed over
+  labels only). β2's real host receives + forwards it to `provider.create`. This is all built.
+- **★ [Cred-1, HIGH — review-found, orchestrator-verified] Close leak-axis #0 — the model key at rest in E2B
+  METADATA.** `E2bSandboxProvider.create` writes the FULL env into E2B durable metadata:
+  `e2b-provider.ts:200` — `[METADATA_KEYS.env]: JSON.stringify(spec.env)` (`__aoa_env`) — SEPARATELY from the
+  necessary `envVars: spec.env` channel (`:207`). E2B stores metadata durably and returns it from
+  `Sandbox.list()`/`getInfo()` → the tenant model key sits AT REST in E2B cloud metadata (queryable by anyone with
+  E2B-side access — a shared account across tenants). Decision #104 forbids the value hitting a durable store. The
+  copy is REDUNDANT: its ONLY reader is `inspect` (`e2b-provider.ts:337`, `parsed.env`), which the gated wire ALWAYS
+  redacts (`owned-op-gate.ts` redactProjection → a 5-field literal, no env; `driver.ts` synthesizes `env:{}`); `list`
+  drops it; the idempotency map rebuilds from labels, not metadata. The mock hid it (in-memory metadata). **Fix:
+  strip the auth VALUES from the durable metadata write — but MIND TWO SEAMS** (verified): (a) the MOCK decodes fault/
+  canary directives FROM `metadata[__aoa_env]` (`mock-transport.ts:84-85`, `decodeCreateFaults(decodeEnv(…))`) — so
+  migrate the mock's fault decode to read `req.envVars` (which carries the same env), OR keep a value-free directive
+  projection; (b) dropping the env empties `inspect.env` → the cleanup-authority redaction becomes VACUOUS — adjust
+  the redaction-non-vacuous test accordingly. Recommended: migrate the mock to `envVars` + drop `metadata[__aoa_env]`
+  entirely. Test: the metadata sent to the transport at `create` contains NO provider-auth value. (Also filed as a
+  standalone chip — may land before C0; MUST land before the real transport goes live.)
+- **★ [Cred-2 — HIGH/MED, review-found] Close leak-axis #1 — the unmodelled-error verbatim path (the wire crux).** The
+  AM catch-all `server.ts:247` forwards ANY error via `encodeErrResponse`; and `RealE2bTransport.create` /
+  `E2bSandboxProvider.create` / `gateCreate` have NO try/catch around the SDK call carrying `envVars` — so a raw SDK
+  throw reaches `serializeError`, which forwards the message. ★ **`serializeError` has TWO unmodelled arms** (verified
+  `codec.ts`): `err instanceof Error → {message: err.message}` AND the non-Error fallthrough `{message: String(err)}`
+  — a crafted `throw "…"`/`{toString}` embedding `spec.env` uses the SECOND arm. **Fix: at the AM boundary
+  (`server.ts:247` — AM-local, NOT the shared codec, so no other consumer is perturbed), map ANY error that is not a
+  modelled wire class (`SandboxNotFoundError`, `SandboxEgressDeniedError`, `UnsupportedProviderOperation`,
+  `ResourceNotAvailableError`, `WireProtocolError`) to a FIXED generic `WireProtocolError` BEFORE `encodeErrResponse`
+  — dropping BOTH arms' raw text at once.** Modelled classes pass as-is (their messages are fixed-vocabulary — the
+  provider maps SDK faults by `destinationClass`/no-arg, never `err.message`; review-confirmed). The driver's
+  `reconstructError` is a pure amplifier of what the AM emits → the fix belongs on the ENCODE side. Mutation test:
+  BOTH an `Error` AND a NON-Error throw whose message contains a planted secret → the wire response carries NO trace.
+- **Preserve the 8 already-mitigated leak axes** (the review must re-confirm each in the REAL topology): worker event
+  streams (canary), worker logs (never logs the value/err), AM logs (never logs the request body), the idempotency
+  ledger (records `{sandboxId, resourceLabels}` only), the capability (labels only; never log `sig`), the resolve
+  audit columns (exclude the value/capability), and the wire itself (cleartext — confidentiality is P3's job).
+- **Optional belt-and-suspenders:** add `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` to
+  `check-adapter-manager-boundary`'s `FORBIDDEN_CREDENTIAL_TOKENS` — ONLY if the AM genuinely never names them (it
+  forwards `spec.env` opaquely, so it shouldn't). The review decides.
+
+## S45.5 — session vs operator split (the C0 handoff)
+
+- **SESSION CODE (this unit):** the Dockerfile + entrypoint (P1); the `index.ts`/`app.ts` mint-key load + wiring
+  (P2); the bearer on the AM client + the CP truth-route pre-handler (P3); the leak-axis-#1 fence (P4); the compose
+  env additions (the 3 AM boot envs + the bearer × 2, referencing operator-supplied `${AOA_STAGING_*}` values); the
+  env-var docs; all tests.
+- **OPERATOR (C0, NOT this unit):** generate the ed25519 keypair (private → CP `AOA_CONTROL_PLANE_SIGNING_KEY_FILE`,
+  public → AM `/run/secrets/adapter-manager-cp-pubkey`); supply the `E2B_API_KEY` value + the E2B template; supply
+  the bearer secret value; build/push the AM image; `docker compose up --wait` the minimal fleet.
+
+## S45.6 — no new frozen surfaces
+
+NO `worker-protocol` change (FROZEN). The provider-wire `create` env carries the value OPAQUELY (unchanged since
+Slice 2a). The bearer is a new AM↔CP HTTP header (documented, not a frozen wire). The AM image is OUTSIDE the frozen
+release-admission set. The `SandboxProvider` port (11 ops) is untouched.
+
+## S45.7 — guards (the full terrain-mapped list; run the WHOLE `policy` AND `brand-check` set)
+
+- **Image guards — additive, ZERO fire by default** (all hardcoded to `{control-plane, worker}`, none walk `docker/`):
+  the combined-root `./Dockerfile` awk deps-stage is ALREADY paid (β2 COPYed `packages/adapter-manager/package.json`);
+  `check-image-deps-stages` + `dockerfile-static` are OPT-IN (mirror-parity nicety — if we add the AM to their
+  hardcoded `IMAGES`/reads, the deps stage must COPY EXACTLY the 7-package closure + we update the `.test.mjs`
+  fixtures). Recommend opting in for least-privilege parity, but it is not required to land.
+- **`check-staging-manifest` / `staging-manifest-invariants`** — the AM service is already fully specified;
+  `checkAdmittedImageRefs` validates only the `image:` prefix (NOT that it's built); `checkProviderControlBoundary`
+  stays green (name the pubkey secret `adapter-manager-cp-pubkey` — does NOT match the `/e2b|provider[-_]?c(tl|ontrol)/`
+  regex; keep it AM-only; a bearer env on the CP is fine). **NO new service, NO new network** (the bearer is envs
+  only) → `checkServiceSet` (exact 8) + `checkNetworkMatrix` (exact per-service nets) stay green.
+- **`checkEnvDocumented` (`policy`) — EVERY new compose env KEY must be backtick-documented in
+  `docs/deploy/environment-variables.md`.** The 3 AM boot keys are already documented; the NET-NEW bearer
+  (`AOA_ADAPTER_MANAGER_TRUTH_SHARED_SECRET`, on both AM + CP) must be added.
+- ★ **[Guard-1, HIGH] `brand-check` step 9 (a SEPARATE JOB, not `policy`) forces `AOA_CONTROL_PLANE_SIGNING_KEY_FILE`
+  documentation UNCONDITIONALLY.** `pr.yml:676` greps the LITERAL `process\.env\.AOA_[A-Z_]+` over `server/src cli/src
+  packages` and reds if any hit is absent from `environment-variables.md`. The mint-key load in `index.ts` adds
+  exactly such a literal (mirroring `:930`'s documented `process.env.AOA_WORKER_SESSION_SIGNING_KEY`).
+  `AOA_CONTROL_PLANE_SIGNING_KEY_FILE` is nowhere in code/docs today → **document it unconditionally** — this fires on
+  the CODE read, NOT compose presence (my earlier "if it appears in a compose env" framing was WRONG). Document the
+  CP-side bearer read too if it is a literal. ★ Run `brand-check`, not just `policy`.
+- ★ **[Guard-2, LOW-MED] `check-gate-clause-wiring` — keep `E2bSandboxProvider` at EXACTLY 4.** The pin
+  (`gate-clause-wiring.json`, `expectedReferences:4`) counts non-comment/non-import/non-test `\bE2bSandboxProvider\b`
+  over `server/src`/`packages`/`cli`; P3 EDITS `adapter-manager.ts` (which holds 2 of the 4 refs) to thread the
+  bearer — safe as written, but any 5th production naming reds `policy` silently. Do NOT name the symbol in the
+  bearer/mint/fence code. (Honesty note: once Slice 5 lands the image + the CP-key compose env, the E7-1 gate's
+  "no image/compose yet" REASON prose goes stale — update it for honesty; the count-based guard won't red.)
+- **`check-secret-resolve-vectors`** — the model value must stay on the REPLY, NEVER in a `decideResolve` input or a
+  decision-path `.select()` (as DEP-011 Slice 1 kept it). Unperturbed if we touch no decision path. The reaper
+  projection guard (`verifyClassifyLeaseTruthProjection`) is untouched.
+- **`check-adapter-manager-boundary`** — the `E2B_API_KEY` ban holds (scanned over RAW source incl. comments — do
+  not name it); the bearer + the mint wiring live OUTSIDE the AM request-path allow-list (the bearer is in the bin +
+  the CP route; the mint is in the server) → no import-boundary trip. IF we add the optional model-key token ban,
+  update the guard + its test.
+- **`check-guard-inventory` / `check-execution-census`** — fire ONLY if we add a new `scripts/check-*.mjs` or
+  `scripts/*.test.mjs`. This unit adds neither (it edits existing guards' fixtures at most) → `--write` re-pin of
+  `check-test-inventory` for the new `.test.ts` files, no census/inventory bump.
+- **NO new package** → no combined-root COPY, no boot-roots. `check-boot-roots-provider-free` stays a no-op (the AM
+  bin's fail-closed posture is TEST-COVERED-ONLY, by design — recorded in β2.6).
+- ★ **[Guard-3] KEEP the `docker/images/{build,sbom,sign}.sh` edits OUT of the session/inert PR.** Producing/signing
+  the AM image AUTO-GENERATES an `allowlist.json` entry, and the AM is deliberately OUTSIDE the frozen
+  `RELEASE_ARTIFACT_CLASSES` 5-set — wiring the build scripts risks intersecting `check-release-admission`. Building
+  is OPERATOR/C0 (§S45.5); the session ships only the Dockerfile + entrypoint (inert, unbuilt).
+
+## S45.8 — fences
+
+NO new compose service or network. NO release-admission entry (frozen set). NO `worker-protocol` change. The model
+value is NEVER named/read by the AM (rides `spec.env` opaquely). mTLS is a FILED follow-up, not this unit. Ships
+INERT: the image unbuilt-or-built-but-undeployed; the mint key absent ⇒ byte-identical reply; the bearer/CP config
+absent ⇒ the truth route already 404s on the double-gate; the AM boot envs absent ⇒ the AM refuses (it isn't run in
+CI). Result note in this doc (NO `DEP-012-*-result.md` unless the ticket's finding-ownership permits — confirm E6-F003
+successor status first).
+
+## S45.9 — sub-slicing
+
+Five slices; **P2 + P4 are the security core**, P1 is independent, P3 couples the truth route, P5 is the deploy gate:
+- **P1 (image)** — independent, inert; Dockerfile (+ WORKDIR, the ledger-volume/TMPDIR wiring) + entrypoint [+ opt-in
+  closure guards]. NOT the build/sbom/sign.sh edits (Guard-3, operator/C0).
+- **P2 (mint keypair)** — `index.ts` load (try/catch → loud-fatal-on-bad, scoped) + the 3 `app.ts` edits (arg + opts
+  field + import). Test: mint↔verify parity (real keypair → gated create dispatches) + absent-key inert + present-but-
+  bad ⇒ loud refusal.
+- **P3 (bearer)** — the AM client header + the CP truth-route third arm (unset⇒404, timingSafeEqual-over-hashes) +
+  the negative test + env docs.
+- **P4 (leak-proofing)** — TWO items: (a) strip the model key from the E2B durable metadata write (migrate the mock's
+  fault decode to `envVars`; adjust the redaction test); (b) the AM error-boundary fence (map unmodelled → generic
+  BEFORE `encodeErrResponse`; mutation test with an Error AND a non-Error planted-secret throw).
+- **P5 (the C0 matched-pair smoke tool)** — a session-built probe: CP mints with the mounted private key → AM verifies
+  with the mounted public key → fail LOUD on mismatch. The operator RUNS it at C0 before the canary (the honest
+  dead-path enforcement build-time tests cannot provide).
+Freeze the bearer header name + the signing-key + metadata env/field names first (they cross the AM↔CP + compose
+boundary). P4(a) may also land as the standalone chip before C0.
+
+## S45.10 — review outcome (4-agent adversarial pass, 2026-08-30 — all findings folded above)
+
+Four reviewers (credential-leak+#104; mint-keypair+dead-path; image+bearer deploy-blockers; missed-guard hunt+split),
+each verified against source. The design's SOUND load-bearing claims were confirmed (the 7-package closure is exact;
+curl/ca-certs/`apply-workspace-publish-config`/healthcheck/CMD all correct; the mint↔verify canonical/signature parity
++ label anchor are airtight; the P2 dead-path is real; the 8 wire/log/ledger mitigations hold; inert landing holds).
+**3 HIGH + 5 MED + LOWs folded**; orchestrator-verified the two sharpest against source (the E2B metadata write
+`e2b-provider.ts:200`, its lone `inspect` reader + the mock's `decodeCreateFaults(decodeEnv(metadata))` seam
+`mock-transport.ts:84`; the `serializeError` two-arm codec):
+
+- **[Cred-1, HIGH]** the model key at rest in E2B durable metadata — redundant, but with TWO seams (the mock fault
+  decode + the redaction-non-vacuous test) → strip the values, migrate the mock to `envVars` (S45.4). Also a chip.
+- **[Mint-1, HIGH]** the dead-path enforcement was a false claim (build-time tests can't see a mismatched/half-wired
+  DEPLOY; the uniform error hides it) → a C0 matched-pair smoke tool, fail-loud (S45.2/P5).
+- **[Guard-1, HIGH]** `brand-check` step 9 forces `AOA_CONTROL_PLANE_SIGNING_KEY_FILE` docs UNCONDITIONALLY (code-read
+  gate, a separate job my "run the whole policy set" line steered past) → document it; run brand-check (S45.7).
+- **[Cred-2, MED]** the error fence must cover BOTH `serializeError` arms (`err.message` + `String(err)`) at the
+  AM-local `server.ts:247` (S45.4).
+- **[Mint-2, MED]** the private-key load must mirror the bin's try/catch → refuse; present-but-bad ⇒ LOUD fatal scoped
+  to `distributedExecutionEnabled && key-set` (S45.2).
+- **[Img-1, MED]** wire the idempotency-ledger dir to a writable node-owned volume or a read-only-root boot crashes
+  (S45.1).
+- **[Img-2, MED]** the bearer must fail-closed on UNSET secret (not `header===env`); timingSafeEqual over hashes +
+  a negative test (S45.3).
+- **[Img-3/Cred-3, MED]** "B1-F1 closed" = direct-probe only; transit MITM/sniff on the flat net → staging uses
+  disposable keys, mTLS stays a hard follow-up (S45.3).
+- **[Mint-3/4, LOW]** three edits (opts-type field + import); the `:497` arg a pre-resolved local (source-shape
+  tests) (S45.2). **[Guard-2, LOW]** keep `E2bSandboxProvider` at 4; update the E7-1 reason prose (S45.7).
+  **[Guard-3, LOW]** keep build/sbom/sign.sh out of the inert PR (S45.7).
+
+**Session/operator split confirmed clean** (secret values + live build/deploy = operator; code + compose keys + docs +
+tests = session). **Design is GO for the §9 build prompt** (sub-sliced P1–P5).
