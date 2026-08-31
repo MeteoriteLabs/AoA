@@ -228,6 +228,56 @@ NOT ship `migrate-entrypoint.sh`, but that script is trivially replicable:
 **Proper fix (owed, not done here):** either COPY the full manifest set in the `deps` stage, or drop `...` from the
 build filter, or teach `check-image-deps-stages` to walk devDeps so the guard matches pnpm's actual behaviour.
 
+## 9c. PHASE A RESULT (2026-08-31) — postgres + migrate + control-plane are UP on the campaign host
+
+**Deployed and validated on the Hetzner box** (`aoa-qa`, Ubuntu 26.04, 2 vCPU / 3.7 GB). Overlay:
+`/opt/campaign/docker-compose.campaign.yml`; image `aoa-monolith:campaign` built from the combined root
+`./Dockerfile` at tip `0248153ff`.
+
+**Decisive evidence the distributed path really initialized:**
+```
+INFO: Verified aoa_app and aoa_operator bounded database pools      <- the 5-phase fail-closed gate PASSED
+INFO: event: "job_control.outbox_tick" organizations: 0 claimed: 0  <- the distributed scheduler is running
+INFO: pgvector extension detected; semantic search enabled
+health: {"status":"ok","deploymentMode":"authenticated","authReady":true,"bootstrapStatus":"bootstrap_pending"}
+```
+202 tables created, incl. `jobs`, `job_attempts`, `leases`, `heartbeat_runs`, `execution_targets`,
+`job_projection_receipts`. Roles verified `rolcanlogin=t, rolsuper=f, rolbypassrls=f` — LOGIN granted **without**
+weakening FORCE RLS.
+
+**Route mount probes (from inside the container):**
+| Route | Code | Meaning |
+|---|---|---|
+| `/api/worker-control/poll` | 400 | mounted; rejects an empty body |
+| `/api/worker-control/enroll` | 401 | mounted; demands the device proof |
+| `/api/adapter-manager-control/lease-truth` | **404** | ★ **the DEP-011 B1 double-gate, verified LIVE** |
+
+★ That 404 is the B1-F1 security fix demonstrated on a real deployment: distributed execution is **on**, yet the
+lease-truth route still 404s because `AOA_ADAPTER_MANAGER_TRUTH_ROUTE_ENABLED` is unset — "enabling distributed
+execution can never BY ITSELF expose the unauthenticated cross-tenant oracle."
+
+**Three build-time lessons (none discoverable by reading):**
+1. `docker/control-plane/Dockerfile` is unbuildable at this tip — §9b (BLOCKER D).
+2. **V8 heap ceiling**, not machine RAM: the server `tsc` aborts with **exit 134 (SIGABRT)** at V8's ~2 GB default.
+   Swap cannot help (only 210 MiB was ever used). Fix = `ENV NODE_OPTIONS="--max-old-space-size=6144"` in the build
+   stage. Campaign-local patch (`/opt/campaign/Dockerfile.campaign`); the repo tree is untouched.
+3. ★ **The root `./Dockerfile` builds only `ui`, `plugin-sdk`, `server` — never server's workspace dependency
+   closure.** Fine on `main`, but this branch's server imports the new packages, and unresolved workspace types
+   silently degrade to `any` → `TS7006 Parameter 'op' implicitly has an 'any' type`. Fix = build with
+   `--filter "@armyofagents/server..."` (safe HERE because this image installs the whole workspace unfiltered).
+   **A latent defect the replatform branch exposes** — worth a repo fix.
+
+**Operational notes for the runbook:**
+- The root image ships the WHOLE workspace (`server/dist`, `packages/*/dist`, `docker/`, `node_modules`), so ONE
+  image serves control-plane + migrate + **adapter-manager** (`packages/adapter-manager/dist/bin/adapter-manager.js`
+  is present). `packages/worker-networked-host/dist` is **absent** (a leaf nothing depends on) — add it to the build
+  filter, or run its TS source via the bundled `tsx`.
+- ★ **Workspace `exports` point at TypeScript SOURCE in dev, and workspace packages link into each consuming
+  package's `node_modules` (not the root).** So `migrate-job` must run **from `/app/server` with the tsx loader** —
+  a bare `node -e` from `/app` fails `ERR_MODULE_NOT_FOUND`. This is what the image's own CMD does.
+- `internal: true` on the compose network omits the gateway that port-publishing NAT relies on, so a published port
+  is NOT reachable from the host. This is *desirable* here (the box has no firewall); use `docker exec` for admin.
+
 ## 10. Corrections to existing docs
 
 - `docs/replatform/qa/2026-08-28-c0-staging-deploy-scope.md` §1/§4: *"adapter-manager is a manifest fiction, ZERO
