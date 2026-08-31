@@ -278,8 +278,9 @@ green, in the design's §10 order.
 | B1 | `b155034f1` | the worker image ships the networked-host bin; AM build fixed; guards in lockstep |
 | F | `a59c91e3f` | E7-F002/E7-F003 filed; runbook ticket format + preconditions; `e2b/README.md` corrected |
 
-**Verification.** Full non-`ui` typecheck green. `packages/worker-daemon` 926/926. `server`
-13,079/13,079 (see "environmental" below). All 20 policy guards + 13 guard self-tests green;
+**Verification.** `pnpm -r typecheck` green (all 35 projects, `ui` included). Full root
+`pnpm exec vitest run`: **2336 test files passed, 0 failed; 21,864 tests passed, 1300 skipped.**
+All 20 policy guards + 13 guard self-tests green;
 `brand-check`'s forbidden-token scan clean and no new `AOA_*` env read. **Both images built and
 smoke-run locally**, which CI does not do: `docker build --target production` for
 `docker/worker/Dockerfile` and `docker/adapter-manager/Dockerfile`, then
@@ -383,11 +384,28 @@ company secret, a ratified `pooled_gvisor` target, `organizations.concurrency_ca
 E2B template, and the CP/AM keypair. §8's acceptance is unchanged — clause 5 still needs the E2B
 console inspected BY HAND, because nothing the agent produces reaches AoA.
 
-### 11.6 Environmental notes (this host, not the change)
+### 11.6 The two "environmental" failures had ONE cause, and it was the install flag
 
-- `ui` typecheck fails with `Property 'toBeInTheDocument' does not exist` across many test files
-  dating to 2026-07-14. This work changed ZERO `ui` files and `ui/tsconfig.json` has no project
-  references, so it cannot be related; it is a jest-dom type-resolution artifact of this Windows
-  install.
-- Six `server` tests fail when vitest is run from `server/` and pass from the repo ROOT (which is
-  how CI invokes it): four resolve fixture paths relative to CWD, two spawn `bash.exe`.
+Worth writing down because the first reading was plausible and wrong, and a plausible-and-wrong
+"it's environmental" is how a real failure gets waved through.
+
+Two things failed on this host: `ui` typecheck (`Property 'toBeInTheDocument' does not exist`, across
+files dating to 2026-07-14) and, on the first full root `vitest run`, **550 `ui` test FILES**. Neither
+could be caused by this change — it touches zero `ui` files and `ui/tsconfig.json` has no project
+references — but "cannot be mine" is not the same as "explained".
+
+The single root cause: this worktree sits deep under OneDrive, so `pnpm install` needs
+`--virtual-store-dir=C:/pn/<short>` to avoid `ENAMETOOLONG`. That puts the virtual store OUTSIDE the
+workspace root — and `@testing-library/jest-dom/dist/vitest.mjs` does a bare `import ... from
+"vitest"`. Node's upward `node_modules` walk from `C:\pnlockab\@testing-library+jest-dom@6.9.1\`
+never reaches the repo's hoisted `vitest`, so the import fails. Every one of the 550 failures was a
+COLLECTION error with that identical message; zero were assertion failures. The typecheck failure is
+the same package failing to contribute its `Assertion` augmentation, for the same reason.
+
+Verified rather than assumed: junctioning `vitest` into that store directory makes the previously
+failing `ui` specs pass and `pnpm --filter @armyofagents/ui typecheck` go green, with no source
+change. CI is unaffected (Linux, default virtual store inside the workspace).
+
+★ For the next session in a deep-OneDrive worktree: `--virtual-store-dir` outside the workspace root
+breaks any dependency that resolves a PEER by bare specifier. It is not only a path-length
+workaround; it changes resolution.
