@@ -278,6 +278,42 @@ execution can never BY ITSELF expose the unauthenticated cross-tenant oracle."
 - `internal: true` on the compose network omits the gateway that port-publishing NAT relies on, so a published port
   is NOT reachable from the host. This is *desirable* here (the box has no firewall); use `docker exec` for admin.
 
+## 9d. PHASE B RESULT (2026-08-31) — the adapter-manager is UP; the ENTIRE Slice 4+5 surface verified LIVE
+
+Fleet now healthy on the campaign host: **postgres + migrate + control-plane + adapter-manager**.
+
+**E2B:** the API key validates (HTTP 200) and the CLI accepts it (no separate access token needed). The `aoa-base`
+template is **built and `buildStatus: ready`** (`templateID 7vg8mu6gaoz2inw62lv8`, 2 vCPU / 2048 MB). Because
+`e2b.Dockerfile`'s final step asserts `command -v claude && claude --version`, a ready build **proves the Claude CLI
+is in the sandbox** — the §5 requirement is satisfied.
+
+★ **DOC DEFECT (new): `e2b/README.md`'s build command is a NO-OP STUB in CLI v2.18.0.** The documented
+`e2b template build --name aoa-base --dockerfile e2b.Dockerfile` is deprecated *and gutted* — `--help` shows
+`Arguments: template  unused` and **no options besides `-h`**. It swallows the flags, prints a deprecation banner,
+and **exits without building anything** (an 814-byte log, no error, no template). An operator following the README
+would believe the template was built and then hit `env: 'claude': No such file or directory` at execute time.
+**Correct command:** `e2b template create aoa-base -d e2b.Dockerfile [--memory-mb 2048 --cpu-count 2]`.
+
+**Every Slice 4+5 pillar verified on a real deployment:**
+| Pillar | Live evidence |
+|---|---|
+| P2 mint keypair | CP boots with the key; `verify:cp-am-keypair` **PASS** on the mounted pair AND **exit 1 + loud** on a deliberately mismatched pair (negative control) |
+| P2 [Mint-2] loud-fatal | ★ A `0600 root` key vs `USER node` gave `EACCES`; the CP **refused to boot with the exact cause** instead of silently falling to inert — the silent-dead-path this finding existed to prevent. Fix: `chown 1000:1000`, keep `0600`. |
+| P3 bearer (B1-F1 + Img-2) | truth route: **no bearer → 404**, **wrong bearer → 404**, **correct bearer → 200 `{"verdicts":{}}`**; and 404 for everything while the route flag was unset (Phase A) |
+| AM fail-closed boot (β2) | boots only with provider=`e2b` + non-empty template + a usable `E2B_API_KEY` + an ed25519 CP **public** key |
+| C `/metrics` | `aoa_reaper_sandboxes_total{outcome="reaped"|"skipped"|"unknown"|...} 0` renders |
+
+**Operational notes:**
+- Mounted secrets must be readable by the container's runtime uid: `chown 1000:1000` (node) and keep `0600`. A
+  root-owned `0600` mount is `EACCES` inside the container.
+- The provider-control boundary is preserved in the overlay: `E2B_API_KEY` is in `am.env` (adapter-manager **only**);
+  the control plane gets a separate `cp.env` with just the truth bearer.
+- The AM runs from the monolith image via `cd /app/packages/adapter-manager && node --import
+  /app/server/node_modules/tsx/dist/loader.mjs dist/bin/adapter-manager.js`.
+
+**Still blocking the campaign:** Blocker A (empty batch workload — no lease can ever be offered) and a
+provider-capable worker (Blocker B; `worker-networked-host/dist` is absent from the image).
+
 ## 10. Corrections to existing docs
 
 - `docs/replatform/qa/2026-08-28-c0-staging-deploy-scope.md` §1/§4: *"adapter-manager is a manifest fiction, ZERO
