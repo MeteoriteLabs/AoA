@@ -36,6 +36,7 @@ import { ConcurrencyLimiter } from "../poll/concurrency.js";
 import { createHostCapacityProbes, defaultHostProbeReaders } from "../poll/host-probes.js";
 import { createSupervisor } from "../supervisor/supervisor.js";
 import { createRunCanaryCoordinator } from "../supervisor/run-canaries.js";
+import { resolveRunOpDeadlineMs } from "./run-op-deadline.js";
 import { createRedeemer, synthesiseRunSecrets } from "../lease/secret-redemption.js";
 import { createLeaseRenewalDriver, createRealRenewalSchedule } from "../lease/lease-renewal.js";
 import { openEventOutboxStore, type DurableEventStore } from "../events/event-outbox-store.js";
@@ -179,6 +180,14 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     redactionCanaries: [],
     materializeRunSecrets,
     canaryCoordinator,
+    // ★ H1 — the run's OWN budget, from `workload.maxRuntimeSeconds`. Before this the
+    // supervisor's 60 s default stood for every run, and that one number is simultaneously
+    // the execute race, the E2B sandbox TTL, and the E2B command timeout — so every task
+    // needing more than a minute was killed and terminalized `failed` while its declared
+    // budget was ignored. `resolveRunOpDeadlineMs` keeps the value inside the owned-labels
+    // capability window (which is never re-minted on renewal): running past it would leave a
+    // BILLABLE sandbox the worker can no longer tear down, recorded `orphaned`.
+    opDeadlineMs: resolveRunOpDeadlineMs,
     logger: deps.logger,
     metrics: deps.metrics,
   });

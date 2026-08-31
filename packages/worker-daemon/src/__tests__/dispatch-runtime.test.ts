@@ -16,6 +16,13 @@ import { deriveHelloProvisioning } from "../enrollment/hello-provisioning.js";
 import { offerSatisfiesWorker, type CapacityProbes, type WorkerSelfModel } from "../poll/capacity.js";
 import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { generateDeviceKey } from "../identity/device-key.js";
+import {
+  OWNED_LABELS_CAPABILITY_TTL_MS,
+  RUN_OP_DEADLINE_CEILING_MS,
+  RUN_OP_DEADLINE_FLOOR_MS,
+  RUN_TEARDOWN_HEADROOM_MS,
+  resolveRunOpDeadlineMs,
+} from "../lifecycle/run-op-deadline.js";
 
 const fixture = JSON.parse(
   readFileSync(
@@ -73,7 +80,7 @@ function harness() {
     openStore: (async (o: unknown) => { order.push("openStore"); captured.storeOpts = o; return { close: () => {}, __store: true } as never; }) as never,
     makeSink: ((d: { store: unknown; kek: unknown }) => { order.push("makeSink"); captured.sinkStore = d.store; captured.sinkKek = d.kek; return sinkSentinel; }) as never,
     makeDrain: ((d: { kek: unknown }) => { order.push("makeDrain"); captured.drainKek = d.kek; return { recover: () => { order.push("recover"); return 0; }, start: () => { order.push("drainStart"); }, stop: () => {}, drainOnce: async () => ({}), flush: async () => {} } as never; }) as never,
-    makeSupervisor: ((d: { eventSink: unknown; redactionCanaries: unknown; observeRun?: unknown }) => { order.push("makeSupervisor"); captured.supEventSink = d.eventSink; captured.redactionCanaries = d.redactionCanaries; captured.observeRun = d.observeRun; return supSentinel; }) as never,
+    makeSupervisor: ((d: { eventSink: unknown; redactionCanaries: unknown; observeRun?: unknown; opDeadlineMs?: unknown }) => { order.push("makeSupervisor"); captured.supEventSink = d.eventSink; captured.redactionCanaries = d.redactionCanaries; captured.observeRun = d.observeRun; captured.opDeadlineMs = d.opDeadlineMs; return supSentinel; }) as never,
     makeDriver: ((d: { eventSink: unknown; supervisor: unknown; schedule: unknown }) => { order.push("makeDriver"); captured.driverEventSink = d.eventSink; captured.driverSupervisor = d.supervisor; captured.driverSchedule = d.schedule; return driverSentinel; }) as never,
     makePollLoop: ((d: { supervisor: unknown; self: unknown; measure: unknown }) => { order.push("makePollLoop"); captured.pollSupervisor = d.supervisor; captured.pollSelf = d.self; captured.pollMeasure = d.measure; captured.pollRun = () => { order.push("pollRun"); }; return { ...pollSentinel, run: async () => { order.push("pollRun"); return { kind: "stopped" }; } } as never; }) as never,
     makeSchedule: (() => ({ __schedule: true }) as never) as never,
@@ -167,5 +174,83 @@ describe("composeDispatchRuntime — the composition wiring", () => {
     runtime.start();
     expect(order).toContain("drainStart");
     expect(order.indexOf("drainStart")).toBeLessThan(order.indexOf("pollRun"));
+  });
+});
+
+// -- H1: the run deadline reaches the supervisor -------------------------------
+//
+// `createSupervisor`'s `opDeadlineMs` defaulted to 60 s and this composition never passed it,
+// so 60 s stood for EVERY run. That one number is three things at once — the execute race, the
+// E2B sandbox TTL, and the E2B command timeout — while the job envelope's own
+// `workload.maxRuntimeSeconds` (up to 600 s from the server's builder) was read by nothing.
+// Every task needing more than a minute was killed and terminalized `failed`.
+
+describe("composeDispatchRuntime — H1: the run's own deadline", () => {
+  it("passes a per-run opDeadlineMs RESOLVER to the supervisor", async () => {
+    const { captured } = await compose();
+    // A plain number would re-freeze the deadline at composition time, which is the bug.
+    expect(typeof captured.opDeadlineMs).toBe("function");
+  });
+
+  it("the composed resolver derives the deadline from the offer's workload", async () => {
+    const { captured } = await compose();
+    const resolve = captured.opDeadlineMs as (h: unknown) => number;
+    const handoff = (max: unknown) => ({
+      offer: { job: { workload: { command: "claude", args: [], stdinArtifactId: null, maxRuntimeSeconds: max } } },
+    });
+    expect(resolve(handoff(120))).toBe(120_000);
+    // Under the floor: never SHORTEN a run below what the fleet already tolerated (and the
+    // same number is the sandbox TTL at create).
+    expect(resolve(handoff(5))).toBe(RUN_OP_DEADLINE_FLOOR_MS);
+    // Over the ceiling: clamped inside the capability window.
+    expect(resolve(handoff(600))).toBe(RUN_OP_DEADLINE_CEILING_MS);
+  });
+});
+
+describe("resolveRunOpDeadlineMs — the pure resolver", () => {
+  const handoff = (workload: unknown) =>
+    ({ offer: { job: { workload } }, leaseId: "l", fenceToken: "1", workloadClass: "batch" }) as never;
+
+  it("honours a workload budget between the floor and the ceiling", () => {
+    expect(resolveRunOpDeadlineMs(handoff({ maxRuntimeSeconds: 90 }))).toBe(90_000);
+    expect(resolveRunOpDeadlineMs(handoff({ maxRuntimeSeconds: 239 }))).toBe(239_000);
+  });
+
+  it("clamps to the ceiling — the capability window, not an arbitrary number", () => {
+    expect(resolveRunOpDeadlineMs(handoff({ maxRuntimeSeconds: 600 }))).toBe(RUN_OP_DEADLINE_CEILING_MS);
+    expect(resolveRunOpDeadlineMs(handoff({ maxRuntimeSeconds: 86_400 }))).toBe(RUN_OP_DEADLINE_CEILING_MS);
+  });
+
+  // ★ THE CEILING'S REASON, asserted rather than asserted-in-a-comment. The owned-labels
+  // capability expires at `min(authorityNow + 5 min, leaseDeadline)` and is NEVER re-minted on
+  // renewal, so once it lapses `convergeNetworked` goes clock-first, records `orphaned`, and a
+  // BILLABLE sandbox is left for the server-side reaper. Running to the edge of the window
+  // converts a slow task into a leak.
+  it("leaves teardown headroom inside the owned-labels capability window", () => {
+    expect(RUN_OP_DEADLINE_CEILING_MS).toBeLessThan(OWNED_LABELS_CAPABILITY_TTL_MS);
+    expect(OWNED_LABELS_CAPABILITY_TTL_MS - RUN_OP_DEADLINE_CEILING_MS).toBe(RUN_TEARDOWN_HEADROOM_MS);
+    expect(RUN_TEARDOWN_HEADROOM_MS).toBeGreaterThan(0);
+    // Mirrored, not imported (provider-capability devDepends on worker-daemon, so importing it
+    // back would be a cycle and would breach the E4-D01 closure). Pin the mirrored value.
+    expect(OWNED_LABELS_CAPABILITY_TTL_MS).toBe(5 * 60_000);
+  });
+
+  // A NaN/absent budget must not become the deadline: `setTimeout(NaN)` fires IMMEDIATELY, so
+  // a malformed workload would kill every run instantly instead of falling back.
+  it.each([
+    ["an absent workload", undefined],
+    ["a null workload", null],
+    ["a workload with no budget", { command: "claude" }],
+    ["a non-numeric budget", { maxRuntimeSeconds: "600" }],
+    ["a NaN budget", { maxRuntimeSeconds: Number.NaN }],
+    ["an Infinity budget", { maxRuntimeSeconds: Number.POSITIVE_INFINITY }],
+    ["a zero budget", { maxRuntimeSeconds: 0 }],
+    ["a negative budget", { maxRuntimeSeconds: -30 }],
+  ])("falls back to the floor for %s", (_label, workload) => {
+    expect(resolveRunOpDeadlineMs(handoff(workload))).toBe(RUN_OP_DEADLINE_FLOOR_MS);
+  });
+
+  it("floors a fractional budget before converting to ms", () => {
+    expect(resolveRunOpDeadlineMs(handoff({ maxRuntimeSeconds: 90.9 }))).toBe(90_000);
   });
 });

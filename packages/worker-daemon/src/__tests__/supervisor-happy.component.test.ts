@@ -73,3 +73,141 @@ describe("supervisor-happy.component — create → execute (inside) → termina
     expect(rendered).toContain('sandbox_op{operation="destroy",outcome="success"}');
   });
 });
+
+// -- H1: the workload's budget reaches ctx.deadlineMs --------------------------
+//
+// `opDeadlineMs` was a construction-time constant that production never set, so 60 s stood
+// for every run. It is simultaneously (a) the supervisor's execute race, (b) the E2B SANDBOX
+// TTL (`#ttl(ctx)` -> `transport.create({timeoutMs})` + an idempotent `setTimeout`), and
+// (c) the E2B COMMAND timeout. So a task budgeted for 600 s was killed at 60 and terminalized
+// `failed`, with the workload's own number read by nothing.
+//
+// These assert the value ARRIVES, on the ops that matter, and that the ops that do NOT matter
+// were left alone: a long run budget is not a reason to let a teardown hang.
+
+/** Records `ctx.deadlineMs` per operation while delegating to the real fake. */
+function deadlineRecordingProvider(inner: ReturnType<typeof createFakeSandboxProvider>) {
+  const seen: Array<{ op: string; deadlineMs: number }> = [];
+  const recorder = new Proxy(inner as unknown as Record<string, unknown>, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== "function" || typeof prop !== "string") return value;
+      return (...args: unknown[]) => {
+        const ctx = args.find(
+          (a): a is { deadlineMs: number } =>
+            typeof a === "object" && a !== null && typeof (a as { deadlineMs?: unknown }).deadlineMs === "number",
+        );
+        if (ctx) seen.push({ op: prop, deadlineMs: ctx.deadlineMs });
+        return (value as (...a: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  });
+  return { provider: recorder as unknown as typeof inner, seen };
+}
+
+describe("supervisor — H1: the run's workload budget becomes ctx.deadlineMs", () => {
+  const deadlinesFor = async (opDeadlineMs: unknown, maxRuntimeSeconds = 3600) => {
+    const { provider, seen } = deadlineRecordingProvider(createFakeSandboxProvider());
+    const supervisor = createSupervisor({
+      provider,
+      identity: SUPERVISOR_IDENTITY,
+      eventSink: collectingSink(),
+      opDeadlineMs: opDeadlineMs as never,
+    });
+    await supervisor.accept(
+      makeHandoff({
+        job: {
+          ...(makeHandoff().offer.job as unknown as Record<string, unknown>),
+          workload: { command: "codex", args: ["exec", "--json"], stdinArtifactId: null, maxRuntimeSeconds },
+        },
+      }),
+    );
+    return seen;
+  };
+
+  it("a RESOLVER's answer reaches create (the sandbox TTL) and execute (the command timeout)", async () => {
+    const seen = await deadlinesFor((h: { offer: { job: { workload: { maxRuntimeSeconds: number } } } }) =>
+      h.offer.job.workload.maxRuntimeSeconds * 1000, 180);
+    expect(seen.find((s) => s.op === "create")?.deadlineMs).toBe(180_000);
+    expect(seen.find((s) => s.op === "execute")?.deadlineMs).toBe(180_000);
+  });
+
+  it("the resolver reads THIS run's handoff — two budgets give two deadlines", async () => {
+    const resolver = (h: { offer: { job: { workload: { maxRuntimeSeconds: number } } } }) =>
+      h.offer.job.workload.maxRuntimeSeconds * 1000;
+    expect((await deadlinesFor(resolver, 120)).find((s) => s.op === "execute")?.deadlineMs).toBe(120_000);
+    expect((await deadlinesFor(resolver, 240)).find((s) => s.op === "execute")?.deadlineMs).toBe(240_000);
+  });
+
+  it("teardown keeps the BASE deadline — a long run budget must not let a destroy hang", async () => {
+    const seen = await deadlinesFor(
+      (h: { offer: { job: { workload: { maxRuntimeSeconds: number } } } }) =>
+        h.offer.job.workload.maxRuntimeSeconds * 1000,
+      180,
+    );
+    expect(seen.find((s) => s.op === "destroy")?.deadlineMs).toBe(60_000);
+  });
+
+  // ★ THE RACE, NOT JUST THE CTX. Mutation testing found this: reverting only the
+  // supervisor-side execute RACE to the base 60 s left every ctx assertion above green, because
+  // the fake provider returns instantly and the race never fires. But that revert is the SAME
+  // bug in a new place — a command legitimately running 90 s inside a 180 s ctx budget would be
+  // killed by the backstop and reported `execute_timeout` while still inside its budget. The
+  // two numbers must be equal, so the armed timer is observed directly.
+  it("arms the execute RACE with the run's deadline, not the base one", async () => {
+    const armed: number[] = [];
+    const fakeSchedule = (_fn: () => void, ms: number): number => { armed.push(ms); return armed.length; };
+    const { provider } = deadlineRecordingProvider(createFakeSandboxProvider());
+    const supervisor = createSupervisor({
+      provider,
+      identity: SUPERVISOR_IDENTITY,
+      eventSink: collectingSink(),
+      opDeadlineMs: ((h: { offer: { job: { workload: { maxRuntimeSeconds: number } } } }) =>
+        h.offer.job.workload.maxRuntimeSeconds * 1000) as never,
+      setTimeoutFn: fakeSchedule as unknown as typeof setTimeout,
+      clearTimeoutFn: (() => {}) as unknown as typeof clearTimeout,
+    });
+
+    await supervisor.accept(
+      makeHandoff({
+        job: {
+          ...(makeHandoff().offer.job as unknown as Record<string, unknown>),
+          workload: { command: "codex", args: ["exec", "--json"], stdinArtifactId: null, maxRuntimeSeconds: 180 },
+        },
+      }),
+    );
+
+    // Two races are armed: create (its own `createBudget`, untouched by H1) then execute.
+    expect(armed.length).toBeGreaterThanOrEqual(2);
+    expect(armed.at(-1)).toBe(180_000);
+    expect(armed.at(-1)).not.toBe(60_000);
+    // The create race is deliberately NOT the run budget: a slow CREATE is a different failure
+    // from a long-running command, and only the latter is what the workload budgets for.
+    expect(armed[0]).toBe(30_000);
+  });
+
+  it("a plain NUMBER still behaves exactly as before (the desktop root, and every test)", async () => {
+    const seen = await deadlinesFor(45_000, 3600);
+    for (const entry of seen) expect(entry.deadlineMs, entry.op).toBe(45_000);
+  });
+
+  it("an ABSENT dep keeps the 60s default on every op (inert by construction)", async () => {
+    const seen = await deadlinesFor(undefined, 3600);
+    for (const entry of seen) expect(entry.deadlineMs, entry.op).toBe(60_000);
+  });
+
+  // A resolver that throws or returns garbage must NOT become the deadline: `setTimeout(NaN)`
+  // fires immediately, so it would kill every run instantly rather than fall back.
+  it.each([
+    ["throws", () => { throw new Error("boom"); }],
+    ["returns NaN", () => Number.NaN],
+    ["returns zero", () => 0],
+    ["returns a negative", () => -1],
+    ["returns Infinity", () => Number.POSITIVE_INFINITY],
+    ["returns a non-number", () => "600" as unknown as number],
+  ])("falls back to the base deadline when the resolver %s", async (_label, resolver) => {
+    const seen = await deadlinesFor(resolver);
+    expect(seen.length).toBeGreaterThan(0);
+    for (const entry of seen) expect(entry.deadlineMs, entry.op).toBe(60_000);
+  });
+});

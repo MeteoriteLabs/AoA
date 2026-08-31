@@ -502,7 +502,27 @@ function checkProviderControlBoundary(services, v) {
  * no equivalent deployment-surface guard, and after Sprint 3 removes the structural gate that
  * gap is the whole exposure (DEP-010 design §4.2 item 2).
  */
-export const DISPATCH_SWITCH_ENVS = ["AOA_WORKER_DISPATCH_ENABLED", "AOA_WORKER_SANDBOX_PROVIDER"];
+// ★ Blocker B added `AOA_WORKER_PROVIDER_URL` to this list, and the reason it was NOT here
+// before is the reason it must be here now.
+//
+// It is the CONTAINER analogue of the desktop `AOA_WORKER_SANDBOX_PROVIDER`: set it, and
+// `worker-networked-host` builds a per-run `makeRunProvider` factory that dials the
+// adapter-manager over the gated provider wire. Until Blocker B, leaving it unbanned was safe
+// for a STRUCTURAL reason — no shipped image contained a bin that reads it, so the variable was
+// inert config no matter who set it. Blocker B puts that bin in the worker image. The variable
+// stops being inert, and the non-ban stops being safe.
+//
+// `docker-compose.d1.yml` ALREADY sets it on both workers, pointed at a real `fake-provider`
+// service on the net (`scripts/d1-dispatch-expectation.json` declares it present-and-dead).
+// That is why this matters and is not theoretical: after Blocker B, D1 is ONE `command:` line
+// away from a fabricating provider. This list guards STAGING; the D1 declaration file carries
+// the matching clause for the D1 harness, and `checkDispatchDefaultOff` below spans
+// `environment` AND `command`/`entrypoint`, so the inline-injection route is covered too.
+export const DISPATCH_SWITCH_ENVS = [
+  "AOA_WORKER_DISPATCH_ENABLED",
+  "AOA_WORKER_SANDBOX_PROVIDER",
+  "AOA_WORKER_PROVIDER_URL",
+];
 
 function checkDispatchDefaultOff(services, v) {
   for (const name of WORKER_SERVICES) {

@@ -126,10 +126,38 @@ POST /api/organizations/<CANARY_ORG_ID>/execution-targets/<TARGET_ID>/enrollment
 # → returns a code aoa_enr_<locator>.<secret>  (10-minute TTL — worker-enrollment.ts CODE_TTL_MS)
 ```
 
-Write the returned code into the worker's `AOA_WORKER_ENROLLMENT_CODE_FILE`
-(`/run/secrets/worker-enrollment-code`, per the compose). The worker's daemon then POSTs
-`/worker-control/enroll` with a device proof and receives a device session. The target must be `active`
-with a ratified placement profile so placement can select it (WRK-011).
+> ### CORRECTION (Unit 1, 2026-09-01) — the file holds a TICKET, not the raw code.
+>
+> This step used to say "write the returned code into `AOA_WORKER_ENROLLMENT_CODE_FILE`". That does
+> not work, and it fails at enrolment with a message that deliberately does NOT echo what it was
+> handed (`enrollment ticket rejected: missing or wrong prefix`) — so an operator following the old
+> instruction gets a refusal with no hint that the FORMAT is the problem.
+>
+> `resolveEnrollmentInput` (`packages/worker-daemon/src/enrollment/enrollment-input.ts`) reads that
+> file and passes its contents straight to `decodeEnrollmentTicket`
+> (`packages/worker-daemon/src/enrollment/ticket.ts`), which requires:
+>
+> ```
+> aoa_tkt_<base64url(JSON.stringify({ v: 1, targetId, code }))>
+> ```
+>
+> Key order is FIXED (`v`, `targetId`, `code`) so the same ticket always encodes to the same bytes,
+> and `code` must still match the `aoa_enr_<locator>.<secret>` shape. The ticket exists because the
+> worker learns its `targetId` from it — the raw code alone does not carry one.
+>
+> ```bash
+> # operator, on a trusted host. Node, because the encoding is base64URL (-/_ , no padding).
+> node -e 'const t={v:1,targetId:process.argv[1],code:process.argv[2]};
+> process.stdout.write("aoa_tkt_"+Buffer.from(JSON.stringify(t)).toString("base64url"))' \
+>   "<TARGET_ID>" "<aoa_enr_...>" > /run/secrets/worker-enrollment-code
+> ```
+>
+> A trailing newline is tolerated (exactly one, trimmed). The code's 10-minute TTL runs from
+> ISSUE, not from write, so mint it immediately before starting the worker.
+
+The worker's daemon then POSTs `/worker-control/enroll` with a device proof and receives a device
+session. The target must be `active` with a ratified placement profile so placement can select it
+(WRK-011).
 
 ### 2.4 The E2B key on that substrate
 
@@ -138,6 +166,88 @@ with a ratified placement profile so placement can select it (WRK-011).
 control-plane/worker/migrate surface. Supply it as `AOA_STAGING_E2B_API_KEY` in the orchestrator secret
 store (rotatable, never baked). Supply every other `AOA_STAGING_*` var (external DB/S3/realtime
 pointers, image digests, session signing key) — see `docs/deploy/staging.md` and the compose.
+
+---
+
+## 2.5 PRECONDITIONS Unit 1 does not deliver — check ALL FOUR before the campaign
+
+Added 2026-09-01 by Unit 1 (Blocker A+B). Each of these fails in a way that looks like something
+else, which is why they are enumerated rather than left to inference. **Three of the four stop the
+run before a sandbox is ever created**, so the acceptance verifier reports a clean failure with no
+sandbox to inspect — and an operator debugging "the sandbox did nothing" is looking in the wrong
+place entirely.
+
+### (a) A `company_secrets` row named EXACTLY `provider:anthropic`
+
+Without it there is **NO SANDBOX AT ALL**, not merely "the CLI cannot authenticate".
+
+The owned-labels capability rides ONLY on a redeemed credential handle. No `provider:*` secret ⇒ no
+handle ⇒ `materializeRunSecrets` returns `capability === undefined` ⇒ the supervisor's networked
+branch FAILS CLOSED with terminal `no_run_capability` — emitted BEFORE `create`, so no sandbox
+exists and no `attempt_started` is ever emitted.
+
+★ `runtime_provider_keys` does NOT satisfy this. That table is `["e2b"]`-only and pays for the
+sandbox SUBSTRATE. The model-provider key is a SECOND, separate credential, per-Company, and the
+two are easy to conflate because the campaign needs both.
+
+(For `codex_local` the row is `provider:openai` — the mapping is the `provider` field of the v1
+bucket in `server/src/services/sandbox-coding-disposition.ts`.)
+
+### (b) An `execution_targets` row of kind `pooled_gvisor`, RATIFIED, org-scoped, heartbeating
+
+The canary's credential binding is four explicit nulls, so the resolver can only select
+`kind === "pooled_gvisor"`. A missing one means no placement.
+
+★ **UN-RATIFIED IS WORSE THAN MISSING.** `admitSelfModelRead` refuses an unratified profile, so the
+worker never even POLLS. The symptom is a silent, idle fleet — no error on the worker, no refusal in
+the control plane, nothing in the run's history. "No placement" at least leaves an attempt behind;
+this leaves nothing.
+
+### (c) `organizations.concurrency_cap` NULL or >= 2
+
+★ **THE PER-AGENT DIAL IS NOT THE ONE.** `agents.maxConcurrentRuns` (the
+`HEARTBEAT_MAX_CONCURRENT_RUNS_*` clamp) is NOT consulted on this path; the terrain doc named it and
+was wrong. A cap of exactly `1` makes the canary DENY ITSELF: the run is already `running` and
+counts against the same org budget it is about to claim from.
+
+### (d) The agent's `adapter_type` is `claude_local` or `codex_local`
+
+Unit 1's workload builder gates on the v1 bucket of the disposition matrix and REFUSES everything
+else, resolving `{owner:"legacy", reason:"workload_unavailable"}`. That is deliberate — there is no
+adapter gate at the canary fork itself, so without this an `http` agent would have emitted
+`command: "http"` (which passes the frozen `z.string().min(1)`) and run a nonexistent binary inside a
+sandbox while the real webhook stayed suppressed.
+
+The refusal is now visible: every canary outcome logs its `reason`, so a run that stayed legacy for
+this cause is distinguishable from one that was never a canary. Grep the control-plane log for
+`[CLI-006] canary execution owner = LEGACY`.
+
+### (e) The E2B template command — the README's is a no-op
+
+MEASURED, not inferred (`qa/2026-08-31-campaign-blockers-and-fleet-terrain.md`, "DOC DEFECT"):
+`e2b/README.md`'s `e2b template build --name aoa-base --dockerfile e2b.Dockerfile` is deprecated AND
+GUTTED in CLI v2.18.0 — `--help` shows `Arguments: template  unused` and no options besides `-h`. It
+swallows the flags, prints a deprecation banner, and **exits without building anything**: an
+814-byte log, no error, no template. An operator following the README believes the template was
+built and then hits `env: 'claude': No such file or directory` at execute time — which reads as an
+image problem, not a docs problem. The command that works is:
+
+```bash
+e2b template create aoa-base -d e2b.Dockerfile
+```
+
+### (f) `AOA_CONTROL_PLANE_SIGNING_KEY_FILE` must be set on the control plane
+
+Since Unit 1 (H3) an ABSENT key with distributed execution ENABLED logs an error naming the
+consequence, rather than resolving silently. It is an error, not a refusal, because a flag-on
+control plane with no mint key is a legitimate shape for a harness that never creates sandboxes
+(the D1 stack is exactly that). For a canary that DOES create sandboxes it is fatal in effect:
+nothing is minted, the adapter-manager rejects every create, and every run terminalizes
+`no_run_capability`. Verify the pair before starting:
+
+```bash
+pnpm verify:cp-am-keypair
+```
 
 ---
 

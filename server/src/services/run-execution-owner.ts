@@ -119,6 +119,17 @@ export type LegacyOwnerReason =
   | "convert_failed"
   /** A job exists but never became leasable — the CLI-005 inert state. */
   | "placement_not_leasable"
+  /**
+   * Blocker A — no `batch` workload could be built for this run, so there is nothing for a
+   * sandbox to execute. Emitted by the SEAM (`heartbeat.ts`), not by `resolve` below: the
+   * builder needs the adapter + command spec + task markdown, none of which reach this
+   * module. Converting anyway would place a leasable attempt whose only possible outcome is
+   * a sandbox running `command = workloadType` — while the legacy executor is already
+   * suppressed. The attributable cause travels in `detail`
+   * (`TaskRunBatchWorkloadRejection`: adapter_not_v1_scope / no_runtime_command_spec /
+   * empty_prompt / prompt_too_large / workload_too_large / invalid_workload).
+   */
+  | "workload_unavailable"
   /** Something threw. An unreadable decision is a legacy decision. */
   | "transfer_error";
 

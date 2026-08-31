@@ -481,6 +481,47 @@ function checkControlPlaneEnvLockstep(services, v) {
   }
 }
 
+// ★ Blocker B — D1 workers must keep entering the DAEMON bin, not the networked host.
+//
+// This clause did not need to exist before, and the reason it does now is the reason it is
+// easy to miss. `docker-compose.d1.yml` has set `AOA_WORKER_PROVIDER_URL` on both workers since
+// WRK-008, pointed at a REAL `fake-provider` service on the net, and
+// `scripts/d1-dispatch-expectation.json` correctly declared it "present and DEAD: read by NO
+// code". It was dead because no shipped image contained a bin that reads it.
+//
+// Blocker B puts that bin — `worker-networked-host` — into the worker image at
+// `/worker-net-app/dist/bin/networked-host.js`. The image CMD deliberately still points at the
+// daemon (repointing it would crash-loop the fleet: `runContainerHost` builds FileRecordStores
+// unconditionally and `resolveCustody` REFUSES `mounted_secret` with stores). So the ONLY thing
+// now standing between D1 and a live provider dialling `fake-provider` is the absence of a
+// per-service `command:` override — one line, no env change, and the pre-existing
+// dispatch-declaration checker (which parses `environment` only) would stay green through it.
+//
+// A fabricating provider that returns exit 0 is byte-identical to a real one on every other
+// gate, which is exactly what WRK-009's image assertion exists to prevent. This is that
+// assertion's compose-side counterpart.
+const NETWORKED_HOST_BIN_MARKER = "networked-host";
+
+function checkWorkersEnterTheDaemonBin(services, v) {
+  for (const name of WORKER_SERVICES) {
+    const svc = services[name];
+    if (!svc) continue;
+    for (const field of ["command", "entrypoint"]) {
+      const raw = svc[field];
+      if (raw === undefined || raw === null) continue;
+      const joined = Array.isArray(raw) ? raw.map(String).join(" ") : String(raw);
+      if (joined.includes(NETWORKED_HOST_BIN_MARKER)) {
+        v.push(
+          `worker '${name}' '${field}' enters the NETWORKED-HOST bin (${JSON.stringify(joined)}). ` +
+            `D1 workers must run the daemon bin: combined with the AOA_WORKER_PROVIDER_URL this compose ` +
+            `already sets, that override would give D1 a live provider dialling the in-net fake-provider, ` +
+            `whose fabricated exit 0 is indistinguishable from a real run on every other gate.`,
+        );
+      }
+    }
+  }
+}
+
 /**
  * @param {any} compose parsed docker-compose.d1.yml
  * @param {{ toxiproxyConfig?: any }} [options]
@@ -508,6 +549,7 @@ export function evaluateComposeInvariants(compose, options = {}) {
   checkAdmittedImageRefs(services, v);
   checkPresignEndpoint(services, v);
   checkControlPlaneEnvLockstep(services, v);
+  checkWorkersEnterTheDaemonBin(services, v);
 
   if (options.toxiproxyConfig !== undefined) {
     v.push(...evaluateToxiproxyConfig(options.toxiproxyConfig));

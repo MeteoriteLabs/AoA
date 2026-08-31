@@ -25,6 +25,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildHandoffRunPatch,
   shouldSuppressLegacyExecution,
+  type LegacyOwnerReason,
   type RunExecutionOwner,
 } from "../services/run-execution-owner.js";
 
@@ -40,15 +41,26 @@ describe("CLI-006/Task 3 — shouldSuppressLegacyExecution", () => {
   });
 
   it("does NOT suppress for any legacy reason — the fail-safe direction (Invariant 2)", () => {
-    // Every short-circuit in the resolver produces one of these. None may suppress:
-    // "neither executes" is a silently dropped run, which is worse than a fallback.
-    for (const reason of [
-      "rollout_not_canary",
-      "preflight_refused",
-      "convert_failed",
-      "placement_not_leasable",
-      "transfer_error",
-    ] as const) {
+    // Every short-circuit in the resolver (and, since Blocker A, the SEAM) produces one of
+    // these. None may suppress: "neither executes" is a silently dropped run, which is worse
+    // than a fallback.
+    //
+    // ★ This is a `Record<LegacyOwnerReason, true>` and NOT an `as const` array, deliberately.
+    // The array form was value-level: adding a 6th reason (`workload_unavailable`) left this
+    // test green while the new reason went entirely unexercised — a reason that suppressed
+    // would have shipped silently. A Record is EXHAUSTIVE at the type level, so a 7th reason
+    // is a compile error here until someone decides what it does.
+    const EVERY_LEGACY_REASON: Record<LegacyOwnerReason, true> = {
+      rollout_not_canary: true,
+      preflight_refused: true,
+      convert_failed: true,
+      placement_not_leasable: true,
+      workload_unavailable: true,
+      transfer_error: true,
+    };
+    const reasons = Object.keys(EVERY_LEGACY_REASON) as LegacyOwnerReason[];
+    expect(reasons.length).toBeGreaterThan(0);
+    for (const reason of reasons) {
       expect(shouldSuppressLegacyExecution({ owner: "legacy", reason }), reason).toBe(false);
     }
   });
@@ -208,5 +220,65 @@ describe("CLI-006/M6 — canary fires only on wakes the harness checks out for",
     const active = HEARTBEAT_SRC.findIndex((l) => l.includes('distributedRolloutState === "active"'));
     const guard = HEARTBEAT_SRC.slice(active, active + 8).join(" ");
     expect(guard).toContain("shouldAutoCheckoutForWake");
+  });
+});
+
+// -- Blocker A: the workload PUSH ---------------------------------------------
+//
+// `input` was plumbed end-to-end from this seam to `jobs.input` since CLI-005 and
+// NOTHING pushed into it. Every canary job carried `{}`, so `createSpecFor` fell
+// back to `command = workloadType` and the sandbox would have run a binary called
+// "batch". That is a five-module-long pipe whose only defect is one missing
+// argument — invisible to every type, every behavioural test, and every guard.
+//
+// So the push is asserted STRUCTURALLY, the same way the suppression return is.
+// A refactor that drops `input:` here reverts Blocker A completely while leaving
+// the entire suite green.
+
+describe("Blocker A — the canary seam pushes a real workload", () => {
+  const canaryResolveIdx = (): number => {
+    const idx = HEARTBEAT_SRC.findIndex((l) =>
+      l.includes("await distributedRolloutHook.resolveExecutionOwner({"),
+    );
+    expect(idx, "expected the canary resolveExecutionOwner call").toBeGreaterThan(-1);
+    return idx;
+  };
+
+  it("builds the workload from the run's own adapter + command spec + task markdown", () => {
+    const build = HEARTBEAT_SRC.findIndex((l) => l.includes("buildTaskRunBatchWorkload({"));
+    expect(build, "expected the seam to call buildTaskRunBatchWorkload").toBeGreaterThan(-1);
+    const call = HEARTBEAT_SRC.slice(build, build + 8).join(" ");
+    // NEVER `agent.adapterType` as the command — that is the shadow comparator's bug.
+    expect(call).toContain("runtimeCommandSpec");
+    expect(call).toContain("context.currentTaskMarkdown");
+    expect(call).toContain("runScopedConfig");
+    // The builder runs BEFORE the placement it feeds.
+    expect(build).toBeLessThan(canaryResolveIdx());
+  });
+
+  it("passes the built workload as `input` to resolveExecutionOwner", () => {
+    const idx = canaryResolveIdx();
+    const call = HEARTBEAT_SRC.slice(idx, idx + 9).join(" ");
+    expect(call).toContain("input: canaryWorkload.workload");
+  });
+
+  it("does NOT convert when the workload cannot be built (fail closed)", () => {
+    // Converting without a workload places a leasable attempt whose only possible
+    // outcome is a sandbox running a nonexistent command — while the legacy
+    // executor has already been suppressed. Staying legacy is the correct answer.
+    const build = HEARTBEAT_SRC.findIndex((l) => l.includes("buildTaskRunBatchWorkload({"));
+    const window = HEARTBEAT_SRC.slice(build, build + 24).join(" ");
+    expect(window).toContain("canaryWorkload.ok");
+    expect(window).toContain("workload_unavailable");
+  });
+
+  it("logs the reason on EVERY outcome, not just the new one", () => {
+    // A new legacy reason that is never logged is indistinguishable, in aggregate,
+    // from `rollout_not_canary` — the same blindness this change exists to remove.
+    const idx = canaryResolveIdx();
+    const window = HEARTBEAT_SRC.slice(idx, idx + 60).join(" ");
+    expect(window).toContain("canary execution owner = DISTRIBUTED");
+    expect(window).toContain("canary execution owner = LEGACY");
+    expect(window).toContain("reason: canaryExecutionOwner.reason");
   });
 });

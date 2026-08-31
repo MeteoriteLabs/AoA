@@ -28,7 +28,13 @@ import { runDepsStageCheck } from "./check-image-deps-stages.mjs";
 
 // A minimal workspace. Closures:
 //   control-plane {server, ui} -> server, ui, packages/db, packages/shared, packages/worker-protocol
-//   worker {worker-daemon}     -> packages/worker-daemon, packages/worker-protocol
+//   worker {worker-daemon, worker-networked-host}
+//                              -> worker-daemon, worker-protocol, worker-networked-host,
+//                                 provider-wire, provider-capability, sandbox-e2b-provider,
+//                                 sandbox-provider-contract (7). Blocker B gave DEP-011's
+//                                 CONTAINER boot root an image home, so the worker closure is
+//                                 no longer the two-package E4-D01 set. Same shape as the
+//                                 adapter-manager's, minus adapter-manager itself.
 //   adapter-manager            -> adapter-manager, provider-wire, sandbox-e2b-provider,
 //                                 worker-daemon, worker-protocol, provider-capability,
 //                                 sandbox-provider-contract (7). provider-capability is a
@@ -112,6 +118,14 @@ const WORKSPACE = {
     name: "@armyofagents/sandbox-fake-provider",
     dependencies: { "@armyofagents/worker-protocol": "workspace:*" },
   },
+  // --- DEP-011 Slice 2b: the CONTAINER networked-provider boot root (Blocker B) ---
+  "packages/worker-networked-host/package.json": {
+    name: "@armyofagents/worker-networked-host",
+    dependencies: {
+      "@armyofagents/provider-wire": "workspace:*",
+      "@armyofagents/worker-daemon": "workspace:*",
+    },
+  },
 };
 
 const CONTROL_DEPS = [
@@ -121,9 +135,17 @@ const CONTROL_DEPS = [
   "COPY packages/shared/package.json packages/shared/",
   "COPY packages/worker-protocol/package.json packages/worker-protocol/",
 ];
+// The worker closure is SEVEN packages since Blocker B (was two). `sandbox-fake-provider` is
+// still deliberately absent: it is a devDep of sandbox-provider-contract, so it is outside the
+// RUNTIME closure this stage installs, and `pnpm deploy --prod` prunes it from the shipped tree.
 const WORKER_DEPS = [
   "COPY packages/worker-daemon/package.json packages/worker-daemon/",
   "COPY packages/worker-protocol/package.json packages/worker-protocol/",
+  "COPY packages/worker-networked-host/package.json packages/worker-networked-host/",
+  "COPY packages/provider-wire/package.json packages/provider-wire/",
+  "COPY packages/provider-capability/package.json packages/provider-capability/",
+  "COPY packages/sandbox-e2b-provider/package.json packages/sandbox-e2b-provider/",
+  "COPY packages/sandbox-provider-contract/package.json packages/sandbox-provider-contract/",
 ];
 const ADAPTER_DEPS = [
   "COPY packages/adapter-manager/package.json packages/adapter-manager/",
@@ -203,6 +225,50 @@ test("E4-D01: worker deps stage that COPYs packages/db FAILS (out-of-closure)", 
   const { errors } = runDepsStageCheck(root);
   assert.ok(
     hasSubstr(errors, "worker: deps stage COPYs packages/db/package.json which is OUTSIDE the image closure"),
+    errors.join(" | "),
+  );
+});
+
+// ★ Blocker B — the worker closure widened from 2 to 7. The pre-existing worker cases only
+// prove the OUT-of-closure direction (server, packages/db). Without these two, the widening
+// could be silently un-done: dropping the networked-host manifest, or dropping the whole entry
+// package from the guard, would leave every other test green while the image stops installing
+// what it needs to build — and CI runs NO docker build to notice.
+
+test("Blocker B: worker deps stage MISSING worker-networked-host FAILS", (t) => {
+  const trimmed = WORKER_DEPS.filter((l) => !l.includes("packages/worker-networked-host/"));
+  const root = setup(t, { worker: dockerfile(trimmed) });
+  const { errors } = runDepsStageCheck(root);
+  assert.ok(
+    hasSubstr(errors, "worker: deps stage is MISSING closure manifest: COPY packages/worker-networked-host/package.json"),
+    errors.join(" | "),
+  );
+});
+
+test("Blocker B: worker deps stage MISSING provider-wire (closure via worker-networked-host) FAILS", (t) => {
+  // provider-wire is reached ONLY through the new entry package. If someone reverted
+  // `entryPackages` to the old single daemon, this case would go green while the image broke —
+  // so this is the assertion that pins the SECOND entry package specifically.
+  const trimmed = WORKER_DEPS.filter((l) => !l.includes("packages/provider-wire/"));
+  const root = setup(t, { worker: dockerfile(trimmed) });
+  const { errors } = runDepsStageCheck(root);
+  assert.ok(
+    hasSubstr(errors, "worker: deps stage is MISSING closure manifest: COPY packages/provider-wire/package.json"),
+    errors.join(" | "),
+  );
+});
+
+test("Blocker B: worker deps stage COPYing sandbox-fake-provider (devDep, out-of-closure) FAILS", (t) => {
+  // The build stage DOES copy fake-provider's manifest (tsc needs it), but the DEPS stage must
+  // not: that stage is the runtime closure, and `pnpm deploy --prod` prunes fake-provider from
+  // the shipped tree. A fabricating provider in the runtime install is exactly what WRK-009's
+  // unscoped image assertion exists to catch — this catches it one layer earlier.
+  const root = setup(t, {
+    worker: dockerfile([...WORKER_DEPS, "COPY packages/sandbox-fake-provider/package.json packages/sandbox-fake-provider/"]),
+  });
+  const { errors } = runDepsStageCheck(root);
+  assert.ok(
+    hasSubstr(errors, "worker: deps stage COPYs packages/sandbox-fake-provider/package.json which is OUTSIDE the image closure"),
     errors.join(" | "),
   );
 });

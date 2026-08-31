@@ -78,3 +78,78 @@ a personal-subscription `credentialKind`), which is a decision with a blast radi
 **Scope note.** This does not change any shipped behaviour and is fail-closed (no credential ⇒ the
 canary coding CLI cannot authenticate ⇒ the run degrades visibly, never double-executes or leaks). It
 bounds what a real-E2B canary campaign can prove until it is owned.
+
+## E7-F002 — Blocker A: a converted `task_run` carried an EMPTY workload, so no canary attempt could ever be leased
+
+**Status:** resolved · **Owner:** Unit 1 "the mechanism" (Blocker A+B fix, `qa/2026-08-31-blocker-ab-fix-design.md`)
+**Severity:** HIGH
+**Filed:** 2026-09-01, on filing Unit 1's result. FIRST FILED HERE — see "why this entry exists" below.
+
+**Why this entry exists at all.** This defect was found during BRW-001 and recorded ONLY as prose, in
+another epic's design doc, under a heading that says it is not being fixed:
+`epics/E8-browser-automation/tickets/BRW-001-design.md` §F3 — *"[P1] (confidence 9/10) — CROSS-LANE.
+NOT FIXED HERE, BY DECISION."* It named no ticket and no owner, so it existed in no register, and
+`check-finding-ownership.mjs` — the guard whose entire purpose is that noticing has a consequence —
+could not see it. It sat there while CLI-006 went green, because shadow mode does not build envelopes.
+A finding with no ticket is indistinguishable from a finding nobody had; this entry ends that, and it
+is filed even though the defect is now fixed, because the REGISTER is the durable record and a fix
+that leaves no trace teaches nobody.
+
+**The mechanism (as verified at `156e2b25e`, matching BRW-001's original trace).** The canary seam
+called `resolveExecutionOwner({source, actor, organizationId, idempotencyKey, rolloutState})` with **no
+`input` key**. The optional `input` was plumbed end to end and nothing pushed into it:
+
+```
+heartbeat.ts               (no `input:`)
+  -> heartbeat-distributed-rollout.ts   jobInput: input        (undefined)
+  -> run-execution-owner.ts             input: jobInput
+  -> job-convert-orchestrator.ts        admitAndSubmit(..., input)
+  -> job-admission-bridge.ts            admitAndSubmit(source, actor, key, input = {})
+```
+
+So a converted `task_run` got `job.input = {}`. Measured against the frozen schema, `{}` fails
+`batchWorkloadV1Schema` on all four fields, `buildJobEnvelope` returns `null`, and the attempt is never
+leasable — a SILENT non-lease with the failure surfacing as an absence rather than an error. And had a
+lease somehow been offered, `createSpecFor` falls back to `command = workloadType`, so the sandbox would
+have run a binary called `batch`.
+
+**Resolution.** `server/src/services/task-run-batch-workload.ts` builds a real `batch` workload (the
+adapter's actual binary from `runtimeCommandSpec`, a per-adapter argv shape, the real
+`context.currentTaskMarkdown` as the prompt) and the seam pushes it as `input`. A workload that cannot
+be built is a REFUSAL, not an empty object: the run resolves
+`{owner:"legacy", reason:"workload_unavailable"}` and the legacy executor keeps it.
+
+**What it does NOT resolve.** See E7-F003 — a leasable attempt is the MECHANISM, not the capability.
+
+## E7-F003 — Unit 1's workload is argv-only: a green distributed run proves the mechanism, not that the agent can work
+
+**Status:** open
+**Severity:** MEDIUM
+**Filed:** 2026-09-01, by Unit 1 (Blocker A+B) on landing the workload builder — filed BY the author of
+the thing it limits, deliberately, so the bound is on the record before the campaign reads a green run.
+
+**The bound.** `argv is the only channel into the sandbox`: `createSpecFor` reads only
+`workload.command` + `workload.args`, `ExecuteInput` has no stdin, `stdinArtifactId` has zero consumers,
+and `workspace` is hard-coded `null`. So the workload Unit 1 emits is deliberately minimal — the binary,
+a per-adapter flag set, and the task markdown as one positional argument. Everything the legacy adapters
+also pass is ABSENT, and each absence is a real capability gap:
+
+| Absent | Why | Consequence in the sandbox |
+|---|---|---|
+| `--mcp-config` / `--strict-mcp-config` | names HOST paths that do not exist in the sandbox | no `mcp__aoa__*` tools: no memory, no task updates, no ask-human |
+| `--append-system-prompt-file` / instructions bundle | same | no agent identity, role, or company context |
+| `--add-dir` / workspace | `workspace` is hard-coded `null` | no repository to work in |
+| `renderTemplate(promptTemplate, ...)` | rendering happens INSIDE `adapter.execute`, after the canary returns; the field is DELETED for agents migrated to the instructions bundle | the prompt is raw task markdown with no framing |
+| `--model`, permission flags | config-derived fidelity deliberately deferred | provider default model; default permission posture |
+| output capture (`observeRun`, `buildWorkspacePatch`) | `observeRun` is not composed; the E5 boundary returns an opaque `stdoutRef` only | NOTHING the agent produces reaches AoA |
+
+**Why this is a finding and not just a scope note.** The acceptance verifier's clause 5 keys on
+`attempt_started`, which is emitted after create succeeds. A run with a mutilated or context-free prompt
+still creates a sandbox, still executes, still terminalizes, and still SATISFIES the verifier. So the
+gap is invisible to the machine check that the campaign will read — which is exactly the shape of defect
+this programme keeps producing, and the reason it is written down rather than left in a design doc.
+
+**Not owned.** Unit 2 ("capability") is scoped in `qa/2026-08-31-blocker-ab-fix-design.md` but has no
+ticket on disk. Declared `unowned` in `scripts/finding-ownership.json` rather than pointed at a
+plausible-sounding existing ticket: a false claim of ownership converts an open question into a settled
+one, which is worse than an honest gap.

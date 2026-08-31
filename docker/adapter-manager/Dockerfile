@@ -74,6 +74,23 @@ FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
+# ★ RE-INSTALL, and it is NOT optional. `COPY . .` above brings in every workspace manifest,
+# including `packages/sandbox-fake-provider` — which the deps stage deliberately does NOT copy
+# (it is a devDependency of sandbox-provider-contract and is OUT of the runtime closure). pnpm's
+# `...` walks the DISCOVERED workspace, so the deps-stage filter legitimately selected 7, but
+# this build-stage filter now selects 8 and the 8th has no `node_modules`:
+#
+#     packages/sandbox-fake-provider build: src/hash.ts(11,28): error TS2307:
+#       Cannot find module 'node:crypto' ...
+#
+# This is a MEASURED failure, not a hypothetical: the image did not build. The fix belongs
+# HERE, after the copy that widens the workspace — not in the deps stage, whose COPY set is
+# exactly the runtime closure `scripts/check-image-deps-stages.mjs` enforces.
+#
+# Plain `--filter`, NEVER `--filter-prod`: provider-capability's only edge to worker-daemon is a
+# DEVdependency, so under the prod graph it is a leaf and compiles before worker-daemon's
+# declarations exist (TS2307). That devDep edge is what produces the correct topological order.
+RUN pnpm install --frozen-lockfile --filter "@armyofagents/adapter-manager..."
 RUN pnpm --filter "@armyofagents/adapter-manager..." build
 RUN test -f packages/adapter-manager/dist/bin/adapter-manager.js \
   || (echo "ERROR: adapter-manager build output missing" && exit 1)

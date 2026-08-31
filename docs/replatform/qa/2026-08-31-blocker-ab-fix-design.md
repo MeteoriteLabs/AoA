@@ -261,3 +261,151 @@ less as such.
    CI will not.
 6. **F** — file Blocker A in `finding-ownership.json` with an owning ticket; correct the runbook's `aoa_tkt_` ticket
    format and add §7's preconditions.
+
+---
+
+## 11. BUILD RESULT (2026-09-01)
+
+Branch `claude/blocker-ab-agent-mechanism-999514`, off `156e2b25e`. Six commits, each independently
+green, in the design's §10 order.
+
+| Slice | SHA | What landed |
+|---|---|---|
+| A1 | `3f6009b28` | `server/src/services/task-run-batch-workload.ts` — the pure builder + 52 tests |
+| A2 | `73ef21b2c` | the seam pushes `input`; `workload_unavailable`; `reason` logged on EVERY outcome |
+| H1 | `47289a567` | `opDeadlineMs` accepts a per-run resolver; `dispatch-runtime` derives it from the workload |
+| H3 | `9776cbda9` | an UNSET control-plane mint key is reported, not silent |
+| B1 | `b155034f1` | the worker image ships the networked-host bin; AM build fixed; guards in lockstep |
+| F | `a59c91e3f` | E7-F002/E7-F003 filed; runbook ticket format + preconditions; `e2b/README.md` corrected |
+
+**Verification.** `pnpm -r typecheck` green (all 35 projects, `ui` included). Full root
+`pnpm exec vitest run`: **2336 test files passed, 0 failed; 21,864 tests passed, 1300 skipped.**
+All 20 policy guards + 13 guard self-tests green;
+`brand-check`'s forbidden-token scan clean and no new `AOA_*` env read. **Both images built and
+smoke-run locally**, which CI does not do: `docker build --target production` for
+`docker/worker/Dockerfile` and `docker/adapter-manager/Dockerfile`, then
+`node /worker-net-app/dist/bin/networked-host.js` → refuses on `AOA_WORKER_CONTROL_PLANE_URL` (the
+predicted refusal), the unchanged daemon CMD → same refusal from `/worker-app`, and the AM →
+refuses ungated. `image-contents.test.mjs` was run for real against the built worker image with
+`AOA_DEP001_IMAGE_TEST=1`.
+
+### 11.1 The design held. Every measured claim reproduced.
+
+The adapter-manager diagnosis in §4.2 reproduced **exactly**: `docker build --target build` fails at
+`Dockerfile:77` with `sandbox-fake-provider ... TS2307: Cannot find module 'node:crypto'`, after
+`COPY . .` at `:76` makes it discoverable. The re-install fix works. §4.3's claim that
+`apply-workspace-publish-config.mjs` is newly required, and that its absence fails at container
+START rather than at build, also held. The three predicted red tests in
+`check-image-deps-stages.test.mjs` were red, at the predicted lines.
+
+### 11.2 Deviations, and why
+
+**1. H3 is an ERROR-LEVEL REPORT, not a refusal (§6 asked for a "loud refusal").** A refusal would
+be wrong, not merely inconvenient: `docker-compose.d1.yml` runs BOTH control planes with
+`AOA_DISTRIBUTED_EXECUTION_ENABLED: "true"` and NO signing key, and that is a legitimate shape —
+D1's workers are `mounted_secret` with no provider, so they never create a sandbox and never need a
+minted capability. Throwing would crash-loop them and red the merge train over a correct config.
+Present-but-BAD stays a hard refusal; that one is always an operator error. (§6's own parenthetical
+allowed "at minimum an error-level log".)
+
+**2. H1 threads the deadline THROUGH the supervisor, not at the composition root alone.** §5 says
+"thread `opDeadlineMs` at `dispatch-runtime.ts`", but `makeSupervisor` is called ONCE and has no
+handoff at construction, so a plain number there cannot carry a per-run value.
+`SupervisorDeps.opDeadlineMs` now accepts `number | ((handoff) => number)`; the composition root
+passes the resolver, so the POLICY still lives at `dispatch-runtime.ts` as the design intends.
+
+**3. The H1 ceiling is 240 s, DERIVED.** §5 said "keep it under the cap". The constant is now
+`OWNED_LABELS_CAPABILITY_TTL_MS - RUN_TEARDOWN_HEADROOM_MS`, so it cannot drift away from its
+reason, and the relationship is asserted in a test. Scope is narrower than "everywhere": `create`
+(whose ctx IS the sandbox TTL) and `execute` use the run budget; the create RACE keeps
+`createDeadlineMs`, and cleanup/teardown keep the base — a long run budget is not a reason to let a
+destroy hang.
+
+**4. The argv shapes are minimal on BOTH sides.** §3 specifies the claude shape exactly and leaves
+codex as `["exec","--json", …]`. Emitted: `["exec","--json",<prompt>]`. Deliberately no `--model`,
+no `--search`, no bypass flag, no `--skip-git-repo-check`, even though the legacy adapter derives
+all of them from config. Model pinning and permission posture are Unit 2 fidelity, and adding them
+here would have been exactly the smuggling §Fences forbids. ★ Note `codex exec` normally reads the
+prompt from stdin (`… -`); with no stdin channel the `-` is replaced by the prompt as a positional,
+a supported form. **Not live-validated** — Unit 1's acceptance is a claude run.
+
+**5. F filed TWO findings, not one.** E7-F002 records Blocker A (resolved). E7-F003 records the
+residual — Unit 1's workload is argv-only — as OPEN and `unowned`. That second one matters: the
+verifier's clause 5 keys on `attempt_started`, so a run with a context-free prompt still creates a
+sandbox, still terminalizes, and still PASSES. The bound had to become machine-visible before the
+campaign reads a green run, and Unit 2 has no ticket on disk to point at honestly.
+
+**6. B1 added guards the design did not list.** Three cases in
+`check-image-deps-stages.test.mjs` (missing networked-host; missing provider-wire — which is
+reachable ONLY through the new entry package, so it pins that package specifically; and
+fake-provider in the deps stage), two in `check-staging-manifest.test.mjs`, and — the substantive
+one — `checkWorkersEnterTheDaemonBin` in `scripts/lib/d1-compose-invariants.mjs` with three tests.
+§4.5 said to add the env to `DISPATCH_SWITCH_ENVS` "+ a D1 clause"; the env ban alone is NOT enough
+for D1, because the D1 dispatch-declaration checker parses `environment` only and would stay green
+through a `command:` override — which is the actual remaining step to a fabricating provider there.
+
+**7. `e2b/README.md` was corrected too**, not just the runbook. The README is the SOURCE of the
+no-op `e2b template build`; the terrain doc also still repeated that command at its line 97, four
+pages before measuring it as broken.
+
+### 11.3 Three things mutation testing changed
+
+Every slice was mutation-tested. Three survivors were real defects in the tests, not noise:
+
+1. **The disposition gate was behaviourally equivalent to the argv switch** — deleting it left all
+   twelve refusal cases green, because `buildArgsFor` already returns `null` for anything else with
+   the same reason. No example-based test can separate them. The cases are now DERIVED from
+   `CODING_ADAPTER_DISPOSITIONS`, which catches the thing that actually matters: the day the matrix
+   admits a third `v1` adapter, the switch would silently refuse it.
+2. **The `Math.floor` test was vacuous.** `resolveHeartbeatRunTimeoutPolicy` already floors on its
+   non-`http` branch, so a `{timeoutSec: 45.9}` case against `claude_local` tests nothing. The only
+   fractional producer is the `http` branch, which the gate excludes — so the floor is now exercised
+   at the exported resolver against that producer, with a comment saying why the obvious form is
+   vacuous.
+3. **H1's execute RACE was unobserved.** Reverting only the race to the base 60 s left every
+   `ctx.deadlineMs` assertion green, because the fake provider returns instantly. That revert is the
+   same bug relocated — a 90 s command inside a 180 s ctx budget killed at 60 s and reported
+   `execute_timeout`. The armed timer is now observed directly through the injected scheduler.
+
+A fourth survivor was accepted as equivalent-by-design and documented rather than "fixed".
+
+### 11.4 What is Unit 2, not smuggled in here
+
+MCP tool surface (`--mcp-config`), the instructions bundle
+(`--append-system-prompt-file`), the workspace (`--add-dir`; `workspace` is hard-coded `null`),
+`renderTemplate` + its data bag, model/permission-flag fidelity, and output capture (`observeRun` is
+not composed; the E5 boundary returns an opaque `stdoutRef`). All six are enumerated in E7-F003 with
+their per-item consequence inside the sandbox.
+
+### 11.5 Still owed, and unchanged by this Unit
+
+§7's preconditions are runbook steps, not code, and remain the operator's: the `provider:anthropic`
+company secret, a ratified `pooled_gvisor` target, `organizations.concurrency_cap` NULL or >= 2, the
+E2B template, and the CP/AM keypair. §8's acceptance is unchanged — clause 5 still needs the E2B
+console inspected BY HAND, because nothing the agent produces reaches AoA.
+
+### 11.6 The two "environmental" failures had ONE cause, and it was the install flag
+
+Worth writing down because the first reading was plausible and wrong, and a plausible-and-wrong
+"it's environmental" is how a real failure gets waved through.
+
+Two things failed on this host: `ui` typecheck (`Property 'toBeInTheDocument' does not exist`, across
+files dating to 2026-07-14) and, on the first full root `vitest run`, **550 `ui` test FILES**. Neither
+could be caused by this change — it touches zero `ui` files and `ui/tsconfig.json` has no project
+references — but "cannot be mine" is not the same as "explained".
+
+The single root cause: this worktree sits deep under OneDrive, so `pnpm install` needs
+`--virtual-store-dir=C:/pn/<short>` to avoid `ENAMETOOLONG`. That puts the virtual store OUTSIDE the
+workspace root — and `@testing-library/jest-dom/dist/vitest.mjs` does a bare `import ... from
+"vitest"`. Node's upward `node_modules` walk from `C:\pnlockab\@testing-library+jest-dom@6.9.1\`
+never reaches the repo's hoisted `vitest`, so the import fails. Every one of the 550 failures was a
+COLLECTION error with that identical message; zero were assertion failures. The typecheck failure is
+the same package failing to contribute its `Assertion` augmentation, for the same reason.
+
+Verified rather than assumed: junctioning `vitest` into that store directory makes the previously
+failing `ui` specs pass and `pnpm --filter @armyofagents/ui typecheck` go green, with no source
+change. CI is unaffected (Linux, default virtual store inside the workspace).
+
+★ For the next session in a deep-OneDrive worktree: `--virtual-store-dir` outside the workspace root
+breaks any dependency that resolves a PEER by bare specifier. It is not only a path-length
+workaround; it changes resolution.

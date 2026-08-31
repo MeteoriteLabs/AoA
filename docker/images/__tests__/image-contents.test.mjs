@@ -12,8 +12,9 @@
  * Asserts, against each running image:
  *   - control-plane: NO docker binary, NO worker daemon, NO agent CLIs; runs
  *     non-root; carries the OCI revision label matching digests.env.
- *   - worker: NO server/db/ui; runs non-root; ships the worker-daemon binary;
- *     carries the OCI revision label.
+ *   - worker: NO server/db/ui in EITHER deploy tree; runs non-root; ships the
+ *     worker-daemon binary AND the networked-host bin; no fake provider and no
+ *     emitted test tree by ANY route; carries the OCI revision label.
  */
 
 import { test, before } from "node:test";
@@ -85,10 +86,17 @@ test("control-plane: carries the OCI revision label from digests.env", { skip: S
 
 test("worker: no server/db/ui, ships the daemon binary, non-root", { skip: SKIP }, () => {
   const image = env.WORKER_IMAGE;
-  assert.equal(runIn(image, "test -e /worker-app/node_modules/@armyofagents/server && echo YES || echo NONE"), "NONE", "no server");
-  assert.equal(runIn(image, "test -e /worker-app/node_modules/@armyofagents/db && echo YES || echo NONE"), "NONE", "no db");
-  assert.equal(runIn(image, "test -e /worker-app/node_modules/@armyofagents/ui && echo YES || echo NONE"), "NONE", "no ui");
+  // ★ Blocker B — the image now ships TWO pruned deploy trees: `/worker-app` (the daemon, and
+  // still the CMD) and `/worker-net-app` (DEP-011 Slice 2b's CONTAINER boot root, opt-in per
+  // service). Every exclusion below is checked against BOTH, because an exclusion that covers
+  // only the first tree stops being an exclusion the moment a second one exists.
+  for (const root of ["/worker-app", "/worker-net-app"]) {
+    assert.equal(runIn(image, `test -e ${root}/node_modules/@armyofagents/server && echo YES || echo NONE`), "NONE", `no server in ${root}`);
+    assert.equal(runIn(image, `test -e ${root}/node_modules/@armyofagents/db && echo YES || echo NONE`), "NONE", `no db in ${root}`);
+    assert.equal(runIn(image, `test -e ${root}/node_modules/@armyofagents/ui && echo YES || echo NONE`), "NONE", `no ui in ${root}`);
+  }
   assert.equal(runIn(image, "test -f /worker-app/dist/bin/worker-daemon.js && echo YES || echo NONE"), "YES", "daemon present");
+  assert.equal(runIn(image, "test -f /worker-net-app/dist/bin/networked-host.js && echo YES || echo NONE"), "YES", "networked host present");
   // WRK-009 — NO TEST DOUBLE may ship in the worker image.
   //
   // `createFakeSandboxProvider` fabricates success: a default script returns
@@ -103,7 +111,7 @@ test("worker: no server/db/ui, ships the daemon binary, non-root", { skip: SKIP 
   // this assertion is the only thing standing between "someone composes the
   // loop" and a completed task that never executed.
   assert.equal(
-    runIn(image, "find /worker-app -name 'fake-provider*' -o -name '*fake-provider*' 2>/dev/null | head -1 | grep -q . && echo FOUND || echo NONE"),
+    runIn(image, "find /worker-app /worker-net-app -name 'fake-provider*' -o -name '*fake-provider*' 2>/dev/null | head -1 | grep -q . && echo FOUND || echo NONE"),
     "NONE",
     "no fake/test-double provider in the worker image",
   );
@@ -118,8 +126,14 @@ test("worker: no server/db/ui, ships the daemon binary, non-root", { skip: SKIP 
   // The fake-provider check above stays UNSCOPED on purpose: that one is about a
   // fabricating provider reaching the image by ANY route, including
   // `packages/sandbox-fake-provider` arriving as a dependency into node_modules.
+  //
+  // ★ Blocker B widened it to BOTH deploy roots. `/worker-net-app` is the tree that actually
+  // could carry it: `sandbox-provider-contract` DEV-depends on fake-provider and its tsconfig
+  // lists the conformance suite in `files:` (not subject to `exclude`), so the build stage
+  // genuinely compiles it. `pnpm deploy --prod` prunes it back out — and this is the assertion
+  // that says so, rather than trusting it.
   assert.equal(
-    runIn(image, "find /worker-app/dist -path '*__tests__*' -o -path '*__testing__*' 2>/dev/null | head -1 | grep -q . && echo FOUND || echo NONE"),
+    runIn(image, "find /worker-app/dist /worker-net-app/dist -path '*__tests__*' -o -path '*__testing__*' 2>/dev/null | head -1 | grep -q . && echo FOUND || echo NONE"),
     "NONE",
     "no test tree in the worker image's own emitted output",
   );

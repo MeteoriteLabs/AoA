@@ -920,6 +920,11 @@ const onAttemptTerminal =
 const controlPlaneSigningKey = loadControlPlaneSigningKey(
   process.env.AOA_CONTROL_PLANE_SIGNING_KEY_FILE,
   config.distributedExecutionEnabled === true,
+  undefined,
+  // [H3] the ABSENT-key report goes to the structured log, not stderr, so it is visible in a
+  // log aggregator alongside every other boot line. It is an ERROR, not a refusal — see the
+  // module header for why "flag on + no mint key" is a legitimate (D1) deployment shape.
+  (message) => logger.error({ configKey: "AOA_CONTROL_PLANE_SIGNING_KEY_FILE" }, message),
 );
 
 const app = await createApp(db as any, {

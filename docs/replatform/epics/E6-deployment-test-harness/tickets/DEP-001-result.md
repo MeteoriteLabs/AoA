@@ -82,3 +82,18 @@ Dockerfiles' least-privilege structure + static posture, deps-stage parity, and 
 producer↔verifier payload agreement. The actual container build + startup-smoke are the only
 DEFERRED items (Linux/CI, billing-blocked) — not faked. Next: **DEP-002** (isolated D1 compose
 topology) — compose structure locally lintable; live startup = CI.
+
+> **AMENDED by Blocker B (Unit 1).** The worker image closure is no longer two packages.
+> `worker-networked-host` — DEP-011 Slice 2b's CONTAINER boot root — was given an image home,
+> so the closure is now SEVEN: worker-daemon, worker-protocol, worker-networked-host,
+> provider-wire, provider-capability, sandbox-e2b-provider, sandbox-provider-contract. The
+> `e2b` SDK is therefore inside the image too (`provider-wire` VALUE-imports
+> `sandbox-e2b-provider/errors.js`), verified present at
+> `/worker-net-app/node_modules/.pnpm/node_modules/e2b` on the built image. That is
+> structurally safe — the container worker holds no E2B key and never constructs an E2B
+> transport; the real one lives in the adapter-manager — but the "exactly two packages"
+> statement was FALSE once the bin shipped, and a false closure claim is worse than a wider
+> true one. E4-D01's real invariant is untouched: `worker-daemon` still imports no provider
+> (`check-worker-daemon-boundary.mjs` is byte-unchanged), the networked driver lives OUTSIDE
+> it, and the two `pnpm deploy` trees are separate so nothing reaches the daemon's own
+> `node_modules` (asserted: `/worker-app` has no `sandbox-e2b-provider`).

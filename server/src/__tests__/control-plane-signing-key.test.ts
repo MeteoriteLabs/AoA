@@ -17,7 +17,10 @@ import {
 } from "@armyofagents/provider-capability";
 import { verifyOwnedLabelsCapability } from "@armyofagents/adapter-manager/capability-verify";
 
-import { loadControlPlaneSigningKey } from "../config/control-plane-signing-key.js";
+import {
+  UNWIRED_MINT_MESSAGE,
+  loadControlPlaneSigningKey,
+} from "../config/control-plane-signing-key.js";
 
 const { privateKey, publicKey } = generateKeyPairSync("ed25519");
 const PRIVATE_PEM = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
@@ -37,9 +40,10 @@ const LABELS: ResourceLabels = {
 
 describe("DEP-012 P2 — loadControlPlaneSigningKey", () => {
   it("absent / empty env ⇒ undefined (inert), regardless of the distributed flag", () => {
-    expect(loadControlPlaneSigningKey(undefined, true, reads(PRIVATE_PEM))).toBeUndefined();
-    expect(loadControlPlaneSigningKey("", true, reads(PRIVATE_PEM))).toBeUndefined();
-    expect(loadControlPlaneSigningKey("   ", false, reads(PRIVATE_PEM))).toBeUndefined();
+    const noop = () => {};
+    expect(loadControlPlaneSigningKey(undefined, true, reads(PRIVATE_PEM), noop)).toBeUndefined();
+    expect(loadControlPlaneSigningKey("", true, reads(PRIVATE_PEM), noop)).toBeUndefined();
+    expect(loadControlPlaneSigningKey("   ", false, reads(PRIVATE_PEM), noop)).toBeUndefined();
   });
 
   it("★ a real ed25519 key loads AND mint↔verify parity holds (the AM verify accepts its cap)", () => {
@@ -109,5 +113,63 @@ describe("DEP-012 P2 — loadControlPlaneSigningKey", () => {
       key,
     );
     expect(verifyOwnedLabelsCapability(cap, derivedPub, Date.now())).toEqual(LABELS);
+  });
+});
+
+// -- [H3] an ABSENT mint key must not be silent ---------------------------------
+//
+// The original [Mint-2] scoping made present-but-BAD loud and left ABSENT silent, even though
+// absent produces the identical total outage: the `if (!keyPath)` short-circuit sits before any
+// flag check, so a forgotten env var resolves "fine", nothing is ever minted, the
+// adapter-manager (which refuses to boot ungated) rejects every create, and every run
+// terminalizes `no_run_capability` before a sandbox exists — with one worker-side `warn` as the
+// only signal anywhere.
+
+describe("[H3] absent key + distributed ON is reported, not silent", () => {
+  const collect = () => {
+    const messages: string[] = [];
+    return { messages, report: (m: string) => messages.push(m) };
+  };
+
+  it.each([
+    ["undefined", undefined],
+    ["empty", ""],
+    ["whitespace-only", "   "],
+  ])("reports the unwired mint for %s + distributed ON", (_label, keyFile) => {
+    const { messages, report } = collect();
+    expect(loadControlPlaneSigningKey(keyFile, true, reads(PRIVATE_PEM), report)).toBeUndefined();
+    expect(messages).toEqual([UNWIRED_MINT_MESSAGE]);
+  });
+
+  it("says WHAT BREAKS, not just that a variable is missing", () => {
+    // An operator reading this line must be able to act without opening the source. The
+    // terminal code and the fix are both in it.
+    expect(UNWIRED_MINT_MESSAGE).toContain("AOA_CONTROL_PLANE_SIGNING_KEY_FILE");
+    expect(UNWIRED_MINT_MESSAGE).toContain("no_run_capability");
+    expect(UNWIRED_MINT_MESSAGE).toContain("AOA_ADAPTER_MANAGER_CONTROL_PLANE_PUBLIC_KEY_FILE");
+    expect(UNWIRED_MINT_MESSAGE).toContain("verify:cp-am-keypair");
+  });
+
+  it("stays SILENT when distributed execution is OFF (this is the inert shipping path)", () => {
+    const { messages, report } = collect();
+    expect(loadControlPlaneSigningKey(undefined, false, reads(PRIVATE_PEM), report)).toBeUndefined();
+    expect(loadControlPlaneSigningKey("", false, reads(PRIVATE_PEM), report)).toBeUndefined();
+    expect(messages).toEqual([]);
+  });
+
+  it("does NOT report when a key IS configured and loads", () => {
+    const { messages, report } = collect();
+    expect(loadControlPlaneSigningKey("/run/secrets/cp-key", true, reads(PRIVATE_PEM), report)).toBeDefined();
+    expect(messages).toEqual([]);
+  });
+
+  it("★ REPORTS rather than THROWS — `flag on + no mint key` is a legitimate D1 shape", () => {
+    // `docker-compose.d1.yml` runs BOTH control planes with
+    // AOA_DISTRIBUTED_EXECUTION_ENABLED=true and no signing key, because its workers are
+    // `mounted_secret` with no provider and never create a sandbox. Throwing here would
+    // crash-loop them. A present-but-BAD key is still a hard refusal — that one is always an
+    // operator error, never a valid shape.
+    expect(() => loadControlPlaneSigningKey(undefined, true, reads(PRIVATE_PEM), () => {})).not.toThrow();
+    expect(() => loadControlPlaneSigningKey("/x", true, reads("-----NOT A PEM-----"))).toThrow();
   });
 });
