@@ -94,7 +94,7 @@ performs exactly ONE `execute` (`packages/worker-daemon/src/supervisor/superviso
 `SANDBOX_INSTALL_COMMAND` is an adapter-registry behaviour not on this path. The CLI must already be on PATH in the
 template. **Good news: the template exists in-tree** — `e2b/e2b.Dockerfile` (node:22 + git/curl/ripgrep/python3 +
 `npm i -g @anthropic-ai/claude-code @openai/codex` + Playwright/Chromium, with build-time `command -v` assertions).
-Build on the operator's account: `e2b template build --name aoa-base --dockerfile e2b.Dockerfile` from `e2b/`.
+Build on the operator's account: `e2b template create aoa-base -d e2b.Dockerfile` from `e2b/`. (CORRECTED 2026-09-01 by Unit 1 — this line originally carried the README's `e2b template build ...`, which THIS SAME DOCUMENT measures four pages later as a gutted no-op stub. A doc that records a defect and then repeats it is worse than one that never mentioned it: the reader who stops at the first occurrence is misled BY the correction's own source.)
 Note `AOA_ADAPTER_MANAGER_E2B_TEMPLATE` (AM) is a DIFFERENT variable from `E2B_TEMPLATE` (monolith, defaults `base`).
 ★ Neither the CLI-006 runbook nor the C0 scope doc mentions "template" — a documentation gap worth closing.
 
