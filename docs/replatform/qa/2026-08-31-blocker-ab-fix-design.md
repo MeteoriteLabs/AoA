@@ -1,243 +1,263 @@
-# Blocker A + B fix — design (Unit 1 of 2: "the mechanism")
+# Unit 1 — "the mechanism": Blocker A + B (+H1, +H3) — design v2 (post-review)
 
-**Status:** design (2026-08-31) · **Branch:** `docs/replatform-program` · **Tip:** `65eafb34b`
-**Purpose:** make a real distributed run POSSIBLE. Today it is not: no lease can ever be offered (A), and no shipped
-worker image can construct a provider (B). Both verified against source; see
-[`2026-08-31-campaign-blockers-and-fleet-terrain.md`](./2026-08-31-campaign-blockers-and-fleet-terrain.md) §1–§2.
+**Status:** design **v2**, rewritten after a 3-agent adversarial review that invalidated v1's core premises.
+**Branch:** `docs/replatform-program` · **Source tip reviewed:** `322e5486a`
+**Purpose:** make a real distributed run POSSIBLE, and be honest about what it proves.
 
-**This is Unit 1 of a deliberate two-unit sequence.** Unit 1 proves the MECHANISM (lease → sandbox → execute →
-terminal → projection) with an honestly-degraded agent. **Unit 2 (separate, owed) delivers FULL CAPABILITY** — MCP
-tools, the skills/instructions bundle, workspace, and prompt delivery beyond argv. Unit 1 does not pretend to be
-Unit 2, and the acceptance language below says so explicitly.
+> **★ v1 WAS WRONG IN FOUR LOAD-BEARING WAYS.** All four are recorded in §9 with their verification, because each is
+> a false-green path that would have shipped: (1) there is **no rendered prompt** at the chosen seam; (2) the timeout
+> formula yields **1 second**; (3) the real execution ceiling is **60 s**, not 600, and v1 never inspected it; (4) the
+> Dockerfile two-stage install **silently installs nothing**. v2 supersedes v1 entirely.
+
+**Unit 1 of 2.** Unit 1 = the MECHANISM (lease → sandbox → execute → terminal → projection). **Unit 2 = CAPABILITY**
+(MCP tool surface, instructions/skills bundle, workspace, prompt delivery beyond argv, output capture). Unit 1 does
+not pretend to be Unit 2; §8 states exactly what a green run does and does not prove.
 
 ---
 
-## 1. THE CONSTRAINT THAT SHAPES EVERYTHING: argv is the only channel
+## 1. The constraint that shapes everything: argv is the only channel
 
-Verified: `createSpecFor` (`packages/worker-daemon/src/supervisor/supervisor.ts:275-281`) reads **only**
-`workload.command` and `workload.args`, producing `{resourceLabels, command, args, env, workloadType}`.
-`ExecuteInput` (`packages/worker-daemon/src/supervisor/provider.ts:200-205`) has **no stdin field**.
-`stdinArtifactId` has **zero consumers** — every non-test occurrence in the repo is literally `: null`.
-`workspace` is hard-coded `null` (`server/src/services/job-leasing.ts:373`). `env` carries only redeemed secret
-handles.
+`createSpecFor` (`packages/worker-daemon/src/supervisor/supervisor.ts:275-281`) reads **only** `workload.command` and
+`workload.args`. `ExecuteInput` (`supervisor/provider.ts:200-205`) has **no stdin**. `stdinArtifactId` has **zero
+consumers** — every non-test occurrence is literally `: null`. `workspace` is hard-coded `null`
+(`server/src/services/job-leasing.ts:371`). `env` is **only** the redeemed secret-handle map.
 
-The legacy `claude_local` adapter, by contrast, delivers the prompt on **stdin** (`--print -` +
-`stdin: prompt`, `packages/adapters/claude-local/src/server/execute.ts:736,879`) and passes `--mcp-config`,
-`--append-system-prompt-file`, `--add-dir` — all **host paths that do not exist inside an E2B sandbox**.
+The legacy `claude_local` adapter delivers the prompt on **stdin** (`--print -` + `stdin: prompt`,
+`packages/adapters/claude-local/src/server/execute.ts:736,879`) and passes `--mcp-config`,
+`--append-system-prompt-file`, `--add-dir` — **host paths that do not exist inside E2B**.
 
-⇒ Unit 1 delivers the prompt as an argv element. That is sufficient to execute, and insufficient for full
-capability. Unit 2 exists to close exactly that gap.
+## 2. What is NOT reusable (checked, rejected)
 
-## 2. ★ The shadow comparator's mapping is NOT reusable (checked first, rejected)
+**The shadow comparator** (`server/src/services/job-shadow-comparator.ts:320-325`) *validates* a caller-supplied
+workload; it does not build one. The task-run call site hand-writes `command: agent.adapterType` = `"claude_local"`
+— **a registry key, not a binary**. Its own comment concedes the values are placeholders. Mirror its SHAPE, never
+its VALUES.
 
-`job-shadow-comparator.ts` does not BUILD a workload — it VALIDATES a caller-supplied one (`:320-325` reads four
-fields off `snapshot.workloadCharacterization`). Every call site hand-writes literals, and the task-run one
-(`heartbeat.ts:5193-5198`) uses `command: agent.adapterType` = `"claude_local"` — **an adapter-registry key, not a
-binary on PATH**. Its own comment concedes the values are placeholders ("faithful, worker-executable synthesis is
-refined at MIG-002" — which never landed). Reusing it verbatim would lease a job that dies `exit 127`.
-**Mirror its SHAPE; never its VALUES.**
+★ **There is no rendered prompt at the seam** (v1's central error). `renderTemplate(...)` runs **inside**
+`adapter.execute` (`claude-local/src/server/execute.ts:719-726`), and the canary `return`s at
+`heartbeat.ts:5306` (`CLI-006-SUPPRESSION-RETURN`) — two lines *before* `adapter.execute` at `:5308`.
+`runScopedConfig.promptTemplate` is an **unrendered template** with `{{…}}` tokens, and for agents migrated to the
+instructions bundle the field is **deleted outright** (`server/src/routes/agents.ts`, the adapter→
+`instructionsFilePath` map at `:117-123`). Reimplementing `renderTemplate` + its data bag + the two-part
+`currentTaskMarkdown` fallback is **Unit 2**, not Unit 1.
 
-## 3. Blocker A — the fix
+## 3. Blocker A — v2
 
-**Seam: `heartbeat.ts` at the canary call site (~`:5234`).** The optional `input` parameter is ALREADY plumbed end
-to end (`heartbeat-distributed-rollout.ts:83,148` → `run-execution-owner.ts:188,253` → `job-convert-orchestrator.ts:58`
-→ `job-admission-bridge.ts:262`); the pipe exists and nothing is pushed into it. **No signature churn.**
-Rejected alternatives: the rollout hook has no agent context; `run-execution-owner` sees only
-`{source, actor, organizationId, workloadType, idempotencyKey}` (no adapter/config/model) and would need a new DB
-read plus an adapter-registry dependency inside the ownership decision; `job-admission-bridge` would apply to
-**every** source kind (`task_run`/`commander_turn`/`crew_run`/`one_shot` all map to `batch`) and drag the registry
-across the JOB-010 parity boundary. Only the heartbeat seam has `agent`, `adapter`, `runScopedConfig`,
-`runtimeCommandSpec`, `executionTarget`, `issueContext` and the rendered prompt in one scope.
+**Seam:** the canary call site in `heartbeat.ts` (~`:5234`). The optional `input` is ALREADY plumbed end-to-end
+(`heartbeat-distributed-rollout.ts:83,148` → `run-execution-owner.ts:188,253` → `job-convert-orchestrator.ts:58` →
+`job-admission-bridge.ts:262`); nothing pushes into it. No signature churn. (Alternatives rejected: the rollout hook
+has no agent context; `run-execution-owner` lacks adapter/config; `job-admission-bridge` would apply to every source
+kind and drag the registry across the JOB-010 parity boundary.)
 
-**A new PURE helper** `server/src/services/task-run-batch-workload.ts`, unit-testable, self-validating against
-`batchWorkloadV1Schema`, returning a discriminated `{ok: true, workload} | {ok: false, reason}`:
+**A new PURE helper** `server/src/services/task-run-batch-workload.ts` returning
+`{ok: true, workload} | {ok: false, reason}`, self-validated against `batchWorkloadV1Schema`.
+★ **Mirror the existing precedent** `server/src/services/browser-job-config.ts:31` (which already imports a workload
+schema and validates in-builder) rather than inventing a shape.
 
-| Field | Value | Source / rule |
+| Field | v2 value | Rule |
 |---|---|---|
-| `command` | `"claude"` | `runtimeCommandSpec.command` — already destructured at `heartbeat.ts:5047`, in scope at the seam. **Honors the founder's `adapterConfig.command` override** (`registry.ts:157`). ★ NOT `agent.adapterType`. |
-| `args` | `["--print", <prompt>, "--output-format", "stream-json", "--verbose"]` | Minimum viable executable form. `buildClaudeArgs` is private to the adapter's `execute`; a faithful builder is Unit 2. |
-| `stdinArtifactId` | `null` | Correct — nothing consumes it. A non-null value would be inert. |
-| `maxRuntimeSeconds` | `clamp(effectiveTimeoutSec, 1, 86400)`, default `600` | `resolveHeartbeatRunTimeoutPolicy` (`heartbeat-stop-metadata.ts:50-78`). ★ The clamp is MANDATORY: `defaultTimeoutSecForAdapter` can return `0` and the schema is `min(1)`. |
+| `command` | the adapter's real binary | `runtimeCommandSpec.command` (in scope, `heartbeat.ts:5047`), honoring `adapterConfig.command`. ★ **`runtimeCommandSpec` is `null` for 5 of 14 adapters** (`heartbeat.ts:437`) — a null is a REFUSAL, never a fallback. |
+| `args` | **per-adapter**, two explicit shapes | claude: `["--print", <prompt>, "--output-format","stream-json","--verbose"]`. codex: `["exec","--json", …]` (`codex-local/src/server/execute.ts:553-566`) — the claude flags are meaningless to it. |
+| prompt | **`context.currentTaskMarkdown`** | ★ v2's answer to §2: REAL task content, assembled at `heartbeat.ts:4224-4227` (`buildCurrentTaskMarkdown`), in scope at the seam. No template engine needed. |
+| `stdinArtifactId` | `null` | Zero consumers; a value would be inert. |
+| `maxRuntimeSeconds` | `timeoutConfigured ? min(600, floor(clamp(sec,1,86400))) : 600` | ★ **`defaultTimeoutSecForAdapter` is literally `return 0;` for EVERY adapter** (`heartbeat-stop-metadata.ts:38-40`), so v1's bare clamp yielded **1**. Also `effectiveTimeoutSec` can be **fractional** (`:61`, `timeoutMs/1000`) and the schema is `.int()`. |
 
-★ **Why 600 is both the default and the effective ceiling:** placement demand is
-`Math.min(600, provider.maxContinuousRuntimeSeconds)` (`job-placement.ts:198`, `job-leasing.ts:222`) and **ignores**
-`job.input.maxRuntimeSeconds`. A larger workload value would set an envelope deadline the negotiated provider demand
-does not back.
+### 3.1 ★ Gate on the disposition matrix — REFUSE, never guess
 
-★ **Determinism is REQUIRED.** `job-submission.ts:131` hashes the whole command *including* `input`; a differing
-digest under the same `idempotencyKey` (= `run.id`) throws **409** (`:310-311`). **No timestamps, no nonces, no
-`randomUUID()` in the workload.**
+**There is NO adapter gate at the canary fork** (`heartbeat.ts:5217-5233` — seven conjuncts, none adapter-related;
+`resolveRunRolloutState` takes no adapter input). So **any** of 14 adapters can reach this seam. v1 would have
+emitted claude-shaped argv for `http`/`process`/`hermes_local`, whose real binaries live in `adapterConfig` — and
+`command: "http"` **passes** `z.string().min(1).max(256)`, so the supervisor would run a nonexistent binary while
+the real webhook is suppressed.
 
-### 3.1 ★ The prompt-size rule: REFUSE, never truncate
+**Gate on `sandbox-coding-disposition.ts` (v1 scope = `claude_local`, `codex_local`) and refuse everything else.**
+This is also required for correctness downstream: the secret-handle mint is gated on the same matrix
+(`execution-secret-handle-mint.ts:167-169`), so a non-v1 adapter cannot get a credential handle **or a capability**
+(§H2) and could never create a sandbox anyway.
 
-`args` elements are capped at 8192 chars (`packages/worker-protocol/src/job.ts:292`) and the whole `jobs.input` at
-64 KiB. A rendered AoA prompt (system prompt + task + memory) routinely exceeds 8 KiB. **If the prompt does not fit,
-the builder MUST refuse** (`{ok: false, reason: "workload_unavailable"}`) → the run falls back to legacy, logged.
-**Silent truncation is forbidden** — it would produce a sandbox that runs a mutilated prompt and still terminalizes
-`succeeded`, which the E7-1 verifier would PASS (§6). Refusing is the honest failure, and it is the concrete
-motivation for Unit 2.
+### 3.2 Prompt size: REFUSE, never truncate
 
-### 3.2 Fail-closed + ★ the reasons are currently DISCARDED
+`args` elements cap at 8192 chars (`packages/worker-protocol/src/job.ts:290`, also ≤256 elements, `command` ≤256);
+`jobs.input` caps at 64 KiB. If the task markdown does not fit ⇒ `{ok:false}`. **Silent truncation is forbidden** —
+it yields a sandbox running a mutilated prompt that still terminalizes and (§8) still satisfies the verifier's
+clause 5. Corroboration that real prompts exceed this: the repo's own audit cap is
+`MAX_PROMPT_SNAPSHOT_CHARS = 16_000` (`server/src/services/prompt-snapshot.ts:28`), 2× the argv limit.
 
-Add `workload_unavailable` to the fallback vocabulary (`run-execution-owner.ts:113-123`, today:
-`rollout_not_canary | preflight_refused | convert_failed | placement_not_leasable | transfer_error`).
+### 3.3 Fail-closed + ★ log EVERY legacy outcome
 
-★ **A new reason ALONE is invisible.** Every consumer of `canaryExecutionOwner` in `heartbeat.ts` reads only
-`owner`/`jobId`/`attemptId`; the `reason`/`detail` is **never logged and never persisted** (contrast the CLI-005
-seam at `:5275-5278`, which does log). **So the fix MUST add a `logger.warn` at the seam** carrying the reason —
-otherwise a refusing canary is indistinguishable from a canary that never fired.
+Add `workload_unavailable` to the union (`run-execution-owner.ts:113-123`). Adding a 6th member is safe — verified:
+no exhaustive switch, no zod enum, no DB constraint, no metric label set; the only enumeration is a value-level
+`as const` array in a test.
 
-### 3.3 Do NOT promote the `batch` validator slot in this change
+★ **A new reason alone is INVISIBLE.** All nine `canaryExecutionOwner` sites in `heartbeat.ts` read only
+`owner`/`jobId`/`attemptId`; `reason`/`detail` is never logged or persisted. **So log `reason` on EVERY legacy
+outcome**, not just the new one — logging only the new one leaves it indistinguishable from `rollout_not_canary` in
+aggregate, which is the same blindness this is meant to fix. (v1 mis-cited the CLI-005 log as `heartbeat.ts:5275`;
+it is **`:3275-3278`**, and it logs a *different* type — `JobConvertReason`, not `LegacyOwnerReason`.)
 
-`workload-input-validators.ts:59-65` keeps `batch` `not_enforced` by design. Promotion here would (a) break the
-**CLI-005 active-mode convert** (`heartbeat.ts:3260-3264`), which deliberately passes no `input` to mint a durable
-*non-leasable* job — promotion silently degrades it from "converted, inert" to "not converted"; and (b) newly 400
-~18 three-arg `admitAndSubmit` calls in the real-DB integration suites. Validate INSIDE the builder instead.
-Promotion is a Unit-2/follow-on decision.
+### 3.4 Do NOT promote the `batch` validator slot here
+`workload-input-validators.ts:59-65`. Promotion would break the CLI-005 active convert (`heartbeat.ts:3260-3264`,
+which deliberately passes no input to mint a durable non-leasable job) and newly 400 ~18 integration calls.
 
-## 4. Blocker B — the fix
+## 4. Blocker B — v2 (v1's Dockerfile did not work; this was MEASURED)
 
-**`networked-host.ts` gives BOTH halves** (verified): it wraps `runContainerHost` (⇒ `FileRecordStore` custody ⇒
-`resolveCustody("file_record")` ok ⇒ the enrolment block at `worker-daemon.ts:327-331` runs) **and** injects
-`makeNetworkedRunProvider(url)` (⇒ gate 1 `no_provider` satisfied). Its only new env is
-`AOA_WORKER_PROVIDER_URL`; unset ⇒ `{kind:"none"}` ⇒ byte-identical inert boot.
+`networked-host.ts` gives BOTH halves: it wraps `runContainerHost` (⇒ `FileRecordStore` custody ⇒ enrolment at
+`worker-daemon.ts:327-331`) **and** injects `makeNetworkedRunProvider` (⇒ gate 1). Only new env:
+`AOA_WORKER_PROVIDER_URL`; unset ⇒ byte-identical inert boot.
 
-### 4.1 ★ THE TRAP: `--filter` vs `--filter-prod`
+### 4.1 ★ The keystone holds; v1's USE of it did not
 
-`computeRuntimeClosure` walks **`.dependencies` only** (`scripts/lib/image-deps-stage.mjs:170`). pnpm's `...`
-selector walks **dev+prod**. Measured:
-```
-pnpm list --filter      "@armyofagents/worker-networked-host..."  -> 8 pkgs (adds sandbox-fake-provider)
-pnpm list --filter-prod "@armyofagents/worker-networked-host..."  -> 7 pkgs (== computeRuntimeClosure)
-```
-`sandbox-fake-provider` enters as a **devDep of `sandbox-provider-contract`**. So a plain `--filter` install needs a
-manifest the guard forbids copying → the exact Blocker-D asymmetry. **`--filter-prod` in the deps stage is the
-resolution** — its traversal is byte-identical to the guard's.
+**Keystone CONFIRMED (measured):** `computeRuntimeClosure` walks `.dependencies` only
+(`scripts/lib/image-deps-stage.mjs:170`); `--filter-prod` selects **7** (== the guard), plain `--filter` selects
+**8** (adds `sandbox-fake-provider` via `sandbox-provider-contract`'s devDep). pnpm 9.15.4 supports it.
+★ *Latent:* the equivalence is coincidental on one axis — `--filter-prod` still traverses `optionalDependencies`,
+which `indexPackages` ignores. Zero workspace manifests declare one today; add a sentence to the guard's invariant
+comment so the first one doesn't silently re-open Blocker D.
 
-**Rule that cannot break: every stage installs against exactly the manifest set that stage contains.**
-Never add `COPY . .` to the worker image (it would also make the `dockerfile-static` exclusion greps vacuous, and
-unlike control-plane there is no `copiesWholeBuildTree` anti-vacuity guard on the worker).
+★ **v1's `--prod` in the deps stage is FATAL.** Measured: a `--prod` install writes
+`included:{devDependencies:false}` to `.modules.yaml`; the build stage's non-prod install then hits
+`INCLUDED_DEPS_CONFLICT`, falls through to the purge prompt, and with Docker's closed stdin **exits 0 having
+installed nothing** (`.pnpm` count unchanged at 52, `typescript` absent) — the next `pnpm … build` then dies on a
+missing `tsc`. **v2: drop `--prod`; use `--filter-prod` for SELECTION only.** Measured green: deps `Scope: 7 of 8`,
+build-stage 8-manifest re-install in 790 ms with **no purge**, `pnpm --filter "…worker-networked-host..." build`
+exit 0, all 8 compiled. `pnpm deploy --prod` still prunes at the end. This also matches what control-plane and the
+AM already do.
 
-- **deps stage:** COPY the 7 closure manifests; `pnpm install --frozen-lockfile --prod --filter-prod
-  "@armyofagents/worker-daemon..." --filter-prod "@armyofagents/worker-networked-host..."`.
-- **build stage:** additionally COPY `sandbox-fake-provider`'s manifest + the package trees, then re-install
-  **non-prod** against the manifest set this stage actually has (8 == the filter's selection), then
-  `pnpm --filter "@armyofagents/worker-networked-host..." build` (topological, replaces the hand-rolled `tsc -p`).
-- ★ **`apply-workspace-publish-config.mjs` is NEWLY REQUIRED** (today's worker image does not need it):
-  `provider-wire`, `provider-capability`, `worker-networked-host` export `./src/*.ts` in dev with `files:["dist"]`;
-  without the promotion, `node …/networked-host.js` dies `ERR_MODULE_NOT_FOUND`. **The failure appears at container
-  START, not at build** — easy to omit, painful to diagnose.
-- **Two deploy trees, deliberately:** keep `/worker-app` untouched (`image-contents.test.mjs:91` and
-  `dockerfile-static.test.mjs:211` assert it) and put the new bin at `/worker-net-app/dist/bin/networked-host.js`.
-- **production stage:** one added `COPY --chown=node:node --from=build /worker-net-app /worker-net-app`.
-  ★ **Leave `CMD` unchanged.**
+★ **The BUILD line must stay plain `--filter`.** Measured: `--filter-prod` on the build line **breaks** it —
+`provider-capability`'s only edge to `worker-daemon` is a **devDependency**, so under the prod graph it is a leaf and
+compiles before `worker-daemon/dist/index.d.ts` exists → `TS2307`. The devDep edge is what produces the correct
+topological order. **Do not "make the selectors consistent."**
 
-### 4.2 ★ Never repoint the image CMD
+### 4.2 ★ v1's §4.3 was FACTUALLY WRONG about the adapter-manager
 
-`runContainerHost` constructs `FileRecordStore`s **unconditionally** (`container-host.ts:118-125`) and
-`resolveCustody` REFUSES `mounted_secret` with stores present (`device-identity-store.ts:116-133`), exiting **before
-the health socket binds** (`worker-daemon.ts:254-259`). Every deployed worker today is `mounted_secret` (both
-compose files). A global CMD repoint would **crash-loop the entire fleet**. The new bin is an OPT-IN second
-entrypoint via a per-service `command:` override (`entrypoint.sh:16` is `exec "$@"`, so it flows through).
+v1 claimed the AM deps stage selects 8 → `ERR_PNPM_WORKSPACE_PKG_NOT_FOUND`, fixable by one word. **Measured: it
+selects 7 and exits 0** — pnpm's `...` walks the **discovered** workspace, and `sandbox-fake-provider` has no
+manifest on disk at that point, so it cannot be selected. **The proposed one-word fix is a literal no-op.**
+The AM image *is* unbuildable, but at **`docker/adapter-manager/Dockerfile:77`**: `COPY . .` (`:76`) makes
+fake-provider discoverable, the build filter then selects 8, and that package has no `node_modules` →
+`TS2307 Cannot find module 'node:crypto'`. **The real fix is a re-install after `COPY . .`** (or the 8th manifest in
+deps + re-install) — *not* a selector swap. (And per §4.1, `--filter-prod` on that build line would make it worse.)
 
-### 4.3 ★ Fix `docker/adapter-manager/Dockerfile` in the same pass (a defect I shipped)
+### 4.3 The edit
+- **deps:** COPY the 7 closure manifests; `pnpm install --frozen-lockfile --filter-prod "…worker-daemon..."
+  --filter-prod "…worker-networked-host..."` — **no `--prod`**.
+- **build:** additionally COPY `sandbox-fake-provider`'s manifest + the package trees; re-install (non-prod, plain
+  `--filter`); `pnpm --filter "@armyofagents/worker-networked-host..." build`; then two `pnpm deploy --prod` trees.
+- ★ **`apply-workspace-publish-config.mjs` is NEWLY REQUIRED** — verified empirically: without it
+  `node /worker-net-app/dist/bin/networked-host.js` dies `ERR_MODULE_NOT_FOUND … provider-wire/src/index.ts`; with
+  it, it boots and correctly refuses on `AOA_WORKER_CONTROL_PLANE_URL is required`. **The failure appears at
+  container START, not at build.** (Only `provider-wire` + `provider-capability` are promoted; the third is the
+  deploy root.)
+- **Two deploy trees:** `/worker-app` untouched (assertions depend on it), new bin at `/worker-net-app`.
+- ★ **CMD unchanged.** `runContainerHost` constructs stores unconditionally and `resolveCustody` REFUSES
+  `mounted_secret` with stores, exiting before the health socket binds. Every deployed worker is `mounted_secret`,
+  so a global repoint would **crash-loop the fleet**. Opt-in via a per-service `command:` (`entrypoint.sh:16` is
+  `exec "$@"`).
 
-It has the **identical** latent defect: 7 manifests (`:50-56`) + plain `--filter "@armyofagents/adapter-manager..."`
-(`:63`) → selects 8 → `ERR_PNPM_WORKSPACE_PKG_NOT_FOUND`. It has never been built in CI (the build/sign wiring was
-deliberately kept out of the Slice 4+5 PR), so nothing exercised it. **One-word fix: `--filter` → `--filter-prod`.**
-★ Note the lesson: Slice 4+5 P1 opted INTO `check-image-deps-stages` for "least-privilege parity", the guard went
-GREEN, and the image was still unbuildable — because the guard's model (`.dependencies`) diverges from pnpm's actual
-traversal (dev+prod). **A green guard proved the wrong property.**
+### 4.4 Guard lockstep (corrected + widened)
 
-### 4.4 Guard lockstep (exact)
+| File | Change |
+|---|---|
+| `scripts/check-image-deps-stages.mjs:41-44` | `entryPackages: [worker-daemon, worker-networked-host]` |
+| `scripts/check-image-deps-stages.test.mjs` | ★ **THREE** `deepEqual(errors, [])` tests red, not one — `:185`, `:249`, `:296`. Add `worker-networked-host` to `WORKSPACE`; extend `WORKER_DEPS` 2 → 7 |
+| `docker/images/__tests__/image-contents.test.mjs` | ★ **MISSED IN v1:** the anti-fake-provider `find` (`:105-109`) and the emitted-test check (`:121-125`) are **`/worker-app`-scoped**; a second tree puts that route outside the root. **Widen both to `/worker-app /worker-net-app`.** (Empirically `deploy --prod` prunes fake-provider, but a compiled **test file does ship** — `sandbox-provider-contract`'s tsconfig `files` is not subject to `exclude`, so `port-conformance.test.js` is emitted and shipped; inert, but it is why the 8th manifest is needed.) |
+| `scripts/boot-roots-expectation.json:24-29` | prose only (`evaluateBootRoots` never reads `reason`); update for honesty. Keep `return { kind: "none" };` literal. |
+| DEP-001 prose | ★ `e2b@2.30.5` IS now in the worker closure (`provider-wire` **value**-imports `sandbox-e2b-provider/errors.js`). Structurally safe (no key, never imported) but the "EXACTLY worker-daemon + worker-protocol" claim is false in `docker/worker/Dockerfile:6,23,67`, `DEP-001-result.md:31`, `image-deps-stage.mjs:13`, `DEP-010-design.md:704`. |
 
-| File | Change | If skipped |
+★ **`scripts` and `docker` are `pinned` in `test-inventory.json` (50 / 4), not floor** — adding any `*.test.mjs`
+there needs a count bump **and** a `test-execution-census.json` entry.
+
+### 4.5 ★ Staging is inert — but D1 is NOT, and that is new
+
+Staging: confirmed inert (`AOA_WORKER_PROVIDER_URL` is not in `DISPATCH_SWITCH_ENVS`, no staging worker sets it or
+overrides `command:`). **But `docker-compose.d1.yml:304,343` ALREADY set `AOA_WORKER_PROVIDER_URL` on both workers,
+with a real `fake-provider` service on the net.** Today that is dead config because the image cannot act on it.
+After Blocker B the image *contains the bin that reads it* — D1 moves from "structurally cannot construct a
+provider" to "one `command:` line from a fabricating provider," and **no guard covers the transition**. The non-ban
+was safe only because of the premise this change removes. **Add `AOA_WORKER_PROVIDER_URL` to `DISPATCH_SWITCH_ENVS`
+(+ a D1 clause) in the same pass.**
+
+### 4.6 ★ A broken worker image would ship `ci-required`-GREEN
+`pr.yml` runs **no Docker build**; the worker image is built only by `docker/images/build.sh` from
+`d1-merge-train.yml` — *after* the PR gate. So §4.1/§4.2-class failures red the merge train post-green.
+`check-image-deps-stages` validates COPY **sets**; **nothing validates that the install/build actually runs.**
+Build both images locally before pushing.
+
+## 5. ★ H1 (NEW, code) — the real ceiling is 60 s, and it is also the sandbox TTL
+
+`supervisor.ts:234` — `const opDeadlineMs = deps.opDeadlineMs ?? 60_000;`. The production compose
+(`lifecycle/dispatch-runtime.ts:175-184`) passes provider/identity/eventSink/materializeRunSecrets/canaryCoordinator/
+logger/metrics and **NOT `opDeadlineMs`**, so the 60 s default stands. That same `ctx.deadlineMs` becomes the E2B
+**sandbox TTL** (`e2b-provider.ts:183,212,218`) *and* the command timeout (`:249`). **`maxRuntimeSeconds` never
+reaches the supervisor.** §7's probe returned in ~1 s and never exercised it.
+
+⇒ **Thread `opDeadlineMs` from the workload's `maxRuntimeSeconds` at `dispatch-runtime.ts`.** Without this, every
+task that needs >60 s is killed and terminalizes `failed` — the single largest gap between what Unit 1 claims and
+what it would deliver. ★ Note the coupling: raising it past ~5 min interacts with capability expiry
+(`min(authorityNow+300_000, leaseDeadline)`, never re-minted on renewal) and would leak billable sandboxes via
+`recordOrphan("cap_expired_before_happy_destroy")` — so raise the deadline **and** keep it under the cap, or fix
+re-mint-on-renewal (already a filed deferral).
+
+## 6. ★ H3 (NEW, code) — an UNSET control-plane key is a silent total outage
+
+`server/src/config/control-plane-signing-key.ts:39-40` — `if (!keyPath) return undefined;` **before** any
+`distributedExecutionEnabled` check. The loud-fatal arm fires only for *set-but-unparseable*. Meanwhile the AM
+**refuses to boot ungated**, so its gate is always on. ⇒ forgetting the env var = the key resolves "fine", no
+capability is ever minted, **no sandbox is ever created**, and the only signal anywhere is one worker-side `warn`.
+**Make unset + `distributedExecutionEnabled` a loud refusal (or at minimum an error-level log).** This is a gap in
+my own Mint-2 scoping: I made present-but-bad loud and left absent silent.
+
+## 7. Preconditions Unit 1 does NOT deliver — document as hard runbook steps
+
+1. ★ **A `company_secrets` row named exactly `provider:anthropic`.** The owned-labels capability rides **only** on a
+   redeemed credential handle (`secret-redemption.ts:149-164`); no handle ⇒ `capability === undefined` ⇒
+   `supervisor.ts:494` terminal **`no_run_capability`** ⇒ **no sandbox at all** (not "no auth"). `runtime_provider_keys`
+   is `["e2b"]`-only and does NOT satisfy this — a **second, previously undocumented credential**.
+2. ★ **An `execution_targets` row of kind `pooled_gvisor`**, ratified, org-scoped, heartbeating. The canary's
+   credential binding is four nulls → the resolver picks `kind === "pooled_gvisor"` only. **Un-ratified is worse than
+   "no placement": `admitSelfModelRead` refuses → `no_self_model` → the worker never polls.**
+3. `organizations.concurrency_cap` **NULL or ≥ 2** (`1` makes the canary deny itself — it is already `running` and
+   counts against itself). ★ The terrain doc named the **wrong dial**: the per-agent `maxConcurrentRuns` is not
+   consulted here.
+4. The agent's `adapter_type` must be `claude_local` (or `codex_local`) — §3.1.
+
+## 8. ★ Acceptance — corrected, and less generous than v1
+
+★ **v1 was wrong in the campaign's favour.** Clause 5 requires ≥1 `attempt_started`, emitted **only after create
+succeeds** (`supervisor.ts:544`). So every pre-create failure — `secret_redemption_failed`, `no_run_capability`,
+`create_failed`, `create_timeout` — **FAILS** the verifier. The verifier *does* distinguish "no sandbox" from
+"sandbox ran"; it only fails to distinguish "ran well" from "ran and died" (clause 3 is terminal-agnostic).
+
+★ **Nothing the agent produces reaches AoA.** `observeRun` is not composed (`dispatch-runtime.ts:175-184`); the E5
+boundary returns opaque `stdoutRef` only (`e2b-provider.ts:256-257`); `buildWorkspacePatch` is never called; and the
+canary's early return skips all post-run capture. **So "real stdout" is verifiable ONLY by hand at the E2B console.**
+
+**Unit 1 acceptance:** (1) a real lease offered+acked+fenced; (2) a real `aoa-base` sandbox created via the gated AM
+`create`; (3) `claude` executes with a non-127 exit **within 60 s or the threaded deadline**; (4) terminal + an
+`applied` `attempt_terminal` receipt; (5) **the E2B console inspected by hand** for real output. Report anything
+less as such.
+
+## 9. What v1 got wrong (kept deliberately — each was a false-green)
+
+| v1 claim | Reality | Verified |
 |---|---|---|
-| `scripts/check-image-deps-stages.mjs:41-44` | `entryPackages: ["@armyofagents/worker-daemon", "@armyofagents/worker-networked-host"]` | `policy` red: 5× "COPYs … OUTSIDE the image closure" |
-| `scripts/check-image-deps-stages.test.mjs` | add `worker-networked-host` to `WORKSPACE` (`:38-115`); extend `WORKER_DEPS` (`:124-127`) 2 → 7 | `policy` red: entry pkg not in workspace + MISSING manifests; the exact-closure baseline test reds |
-| `scripts/boot-roots-expectation.json:24-29` | update the "Ships INERT: no image runs this bin" **prose** | none (prose only — `evaluateBootRoots` never reads `reason`); update for HONESTY |
+| "the rendered prompt is in scope at the seam" | rendering is inside `adapter.execute`, after the canary returns; the field is deleted for migrated agents | orchestrator, `execute.ts:719` vs `heartbeat.ts:5306/5308` |
+| `clamp(sec,1,86400)`, "default 600" | `defaultTimeoutSecForAdapter` returns **0** always ⇒ **1 second** | orchestrator, `heartbeat-stop-metadata.ts:38-40` |
+| "600 is the effective ceiling" | the ceiling is **60 s** (`opDeadlineMs` default, never threaded) and is also the sandbox TTL | orchestrator, `supervisor.ts:234` + `dispatch-runtime.ts:175-184` |
+| deps `--prod` + build non-prod | `INCLUDED_DEPS_CONFLICT` → purge prompt → **exit 0, nothing installed** | review, measured |
+| AM fix = one word (`--filter-prod`) | a **no-op**; the real failure is at `:77` after `COPY . .`, and `--filter-prod` there would break the build order | review, measured |
+| "one claude-shaped argv" | no adapter gate exists; 5/14 adapters have a `null` command spec | review |
+| §7.5 "ANTHROPIC_API_KEY alone authenticates" (generalized) | true only for claude_local + cloud-sandbox mode + a minted handle | review |
 
-Unaffected (verified): `dockerfile-static.test.mjs` (its worker exclusion list names none of the new COPYs);
-the combined-root awk step (`worker-networked-host` is already at `Dockerfile:79`); `check-guard-inventory`
-(no new guard); `check-test-inventory` (`server` is in **floor** mode); the AM/e2b/fake-provider boundary checkers
-(package-source scoped). ★ `resolveProviderUrl`'s `return { kind: "none" };` marker must stay literally intact.
+## 10. Sub-slicing
 
-### 4.5 Staging stays dispatch-off — touch nothing
-
-`checkDispatchDefaultOff` bans `AOA_WORKER_DISPATCH_ENABLED` / `AOA_WORKER_SANDBOX_PROVIDER` on worker services
-(env AND inline in `command:`/`entrypoint:`). **`AOA_WORKER_PROVIDER_URL` is NOT banned** and is already documented.
-No staging worker sets it or overrides `command:`, so the image change is **inert on staging** — all four keep
-booting the bare daemon. The campaign runs from its own overlay, which no compose checker reads.
-
-### 4.6 Accept + correct: the e2b SDK now ships in the worker image
-
-`provider-wire`'s `driver.ts:50` / `codec.ts:26` are **value** imports of `sandbox-e2b-provider/errors.js` (the
-modelled error vocabulary), so `sandbox-e2b-provider` is unavoidably in the worker closure. Structurally safe — the
-worker never receives `E2B_API_KEY` and never imports the transport — but **DEP-001's "closure is EXACTLY
-worker-daemon + worker-protocol + pino" prose becomes false and must be rewritten**, not left standing.
-
-## 5. File Blocker A as a real finding
-
-It has been carried **verbal-only since BRW-001 F3** ("NOT FIXED HERE, BY DECISION") and is **absent from
-`scripts/finding-ownership.json`** — no ticket, no owner. File it with an owning ticket in the same change.
-Mind E4-F013: an open finding needs an owner that exists on disk; a completed owner needs a checkable `successor`.
-
-## 6. ★ Acceptance language — what a green run does and does NOT mean
-
-The E7-1 verifier is **terminal-agnostic**: `failed` and `timed_out` PASS, and `producedArtifacts` is reported but
-never fails a run. **A sandbox where `claude` exits 127 yields a verifier PASS.** Therefore Unit 1's acceptance is
-NOT "the verifier is green". It is:
-1. a real **lease** is offered and acked (the thing that is impossible today);
-2. a real **E2B sandbox** is created from `aoa-base` (confirm provider identity by hand — the verifier does not);
-3. `claude` actually **executes** (confirm a non-127 exit and real stdout, not merely a terminal status);
-4. the attempt terminalizes and the **projection receipt** is applied.
-Anything less is reported as such. **"E7-1 wired" on Unit 1 means the MECHANISM works with a degraded agent** — and
-must be labelled that way in the gate `reason`, because nothing machine-checks that claim (§6 of the terrain doc:
-the gate flip is pure prose).
-
-## 7. Sub-slicing (build order)
-
-1. **A1** — the pure `task-run-batch-workload.ts` builder + unit tests (incl. the >8 KiB refusal and determinism).
-2. **A2** — the seam: pass `input` at `heartbeat.ts`, add `workload_unavailable` + **the log line**.
-3. **B1** — `docker/worker/Dockerfile` (+ the one-word `docker/adapter-manager/Dockerfile` fix) + the
-   `check-image-deps-stages` lockstep + fixtures + prose corrections.
-4. **F** — file Blocker A in `finding-ownership.json` with an owning ticket.
-
-## 7.5 ★ EMPIRICAL VALIDATION (2026-08-31) — the invocation was TESTED, not assumed
-
-Run against a real `aoa-base` sandbox on the campaign E2B account, with **only `ANTHROPIC_API_KEY`** in env — no MCP
-config, no settings file, no `--allowedTools`:
-
-```
-sandbox created: izhhtobns40u6a2i7rnmt (1109ms)
-claude present: exit=0 :: /usr/local/bin/claude   2.1.251 (Claude Code)
-exitCode: 0
-stdout: {"type":"system","subtype":"init","cwd":"/home/user","session_id":"…",
-         "tools":["Task","Bash","Edit","Read","Write","WebFetch","WebSearch",…],
-         "mcp_servers":[], "model":"claude-opus-5[1m]", "permissionMode":"default"}
-```
-
-**Proven:** (1) the template is correct — `claude` is on PATH and runs; (2) **the exact argv form in §3 exits 0** and
-emits valid `stream-json`; (3) it does NOT hang awaiting stdin and does NOT demand config we are not passing;
-(4) `ANTHROPIC_API_KEY` alone authenticates; (5) E2B create→exec→kill works with the campaign credentials.
-
-★ **The degradation is now MEASURED: `"mcp_servers": []`.** Crucially, the **built-in** tools (`Bash`, `Edit`,
-`Read`, `Write`, `Task`) ARE present. So Unit 1 yields a genuinely functional *coding* agent inside the sandbox;
-what it lacks is the **AoA MCP tool surface** — `ask_human`, memory, skills — i.e. the ability to call back into AoA.
-That is the precise, defensible characterization for the gate `reason`, and precisely what Unit 2 closes.
-
-## 8. Open questions for the adversarial review
-
-1. ~~**Executability.**~~ **ANSWERED EMPIRICALLY — see §7.5.** The invocation exits 0 with real output. Remaining
-   sub-question for the reviewer: does anything about running it through the *supervisor* (`createSpecFor` → provider
-   `execute`, no TTY, env from redeemed handles only) differ from this direct `commands.run` probe in a way that
-   would change the outcome?
-2. **The 8 KiB refusal.** Is refusing correct, or should Unit 1 ship a bounded, explicitly-labelled prompt
-   (e.g. task text only, no memory) so the canary can run? Which is more honest?
-3. **Determinism.** Is the prompt rendering at the seam stable across retries under the same `run.id`? Anything
-   time/UUID-derived in the rendered prompt would 409 on the idempotency digest.
-4. **The Dockerfile.** Does the two-stage `--filter-prod` (deps) / non-prod (build) split actually install and build,
-   and does `apply-workspace-publish-config` make `networked-host.js` runnable? Any trap the plan missed?
-5. **Guards.** Any guard the §4.4 lockstep missed (the recurring failure class)?
-6. **Scope.** Is anything here actually Unit 2 in disguise (i.e. does Unit 1 secretly require MCP/workspace to
-   produce a non-127 exit)?
+1. **A1** — the pure builder + unit tests (disposition gate, per-adapter argv, the >8 KiB refusal, the timeout
+   expression incl. the `0`-default and fractional cases, determinism).
+2. **A2** — the seam: pass `input`; add `workload_unavailable`; **log `reason` on every legacy outcome**.
+3. **H1** — thread `opDeadlineMs` (+ a test that the workload value reaches `ctx.deadlineMs`).
+4. **H3** — loud unset CP key when distributed execution is on.
+5. **B1** — the worker Dockerfile (v2 selectors), the AM re-install fix, the guard lockstep incl. the widened
+   `image-contents` roots, `DISPATCH_SWITCH_ENVS` + D1 clause, prose corrections. ★ **Build both images locally** —
+   CI will not.
+6. **F** — file Blocker A in `finding-ownership.json` with an owning ticket; correct the runbook's `aoa_tkt_` ticket
+   format and add §7's preconditions.
