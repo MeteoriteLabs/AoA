@@ -599,6 +599,16 @@ export type {
 } from "./supervisor/startup-reconcile.js";
 
 export { createStartupSteps, runStartupSteps } from "./lifecycle/startup-steps.js";
+// H1 — the per-run provider-op deadline bounds. Exported so the SERVER-side workload
+// builder's mirrored copies can be asserted equal in test (server ships no runtime import of
+// this barrel; see task-run-batch-workload.ts).
+export {
+  RUN_OP_DEADLINE_FLOOR_MS,
+  RUN_OP_DEADLINE_CEILING_MS,
+  OWNED_LABELS_CAPABILITY_TTL_MS,
+  RUN_TEARDOWN_HEADROOM_MS,
+  resolveRunOpDeadlineMs,
+} from "./lifecycle/run-op-deadline.js";
 export type { StartupStep, StartupReconciler, StartupLogger } from "./lifecycle/startup-steps.js";
 
 // WRK-008 slice 2 / DEP-010 (Sprint 2) — the dispatch-composition decision.

@@ -9,6 +9,13 @@ import { describe, expect, it } from "vitest";
 import { batchWorkloadV1Schema } from "@armyofagents/worker-protocol";
 import { CODING_ADAPTER_DISPOSITIONS } from "../services/sandbox-coding-disposition.js";
 import { resolveHeartbeatRunTimeoutPolicy } from "../services/heartbeat-stop-metadata.js";
+// ★ VALUE import of the worker-daemon originals, in TEST ONLY. Production mirrors these two
+// numbers (see task-run-batch-workload.ts) so the control plane ships no runtime import of
+// this barrel; this assertion is what makes the mirror safe instead of a second source of truth.
+import {
+  RUN_OP_DEADLINE_FLOOR_MS,
+  RUN_OP_DEADLINE_CEILING_MS,
+} from "@armyofagents/worker-daemon";
 import {
   FROZEN_MAX_ARG_CHARS,
   SUBMISSION_MAX_INPUT_BYTES,
@@ -17,6 +24,8 @@ import {
   maxRuntimeSecondsForPolicy,
   resolveTaskRunMaxRuntimeSeconds,
   type TaskRunBatchWorkloadInput,
+  TASK_RUN_MIN_ENFORCEABLE_SECONDS,
+  TASK_RUN_MAX_ENFORCEABLE_SECONDS,
 } from "../services/task-run-batch-workload.js";
 
 const PROMPT = "## Task AOA-1\n\nShip the thing.";
@@ -226,7 +235,7 @@ describe("maxRuntimeSeconds", () => {
   // unconfigured agent has `effectiveTimeoutSec === 0`. A bare `clamp(sec, 1, 86400)` would
   // yield 1 — every default-configured agent killed after one second, terminalizing `failed`
   // while the verifier's clauses still pass.
-  it("applies the 600s default when no timeout is configured (NOT a 1s clamp of the 0 default)", () => {
+  it("applies the 240s default when no timeout is configured (NOT a 1s clamp of the 0 default)", () => {
     const result = buildTaskRunBatchWorkload(input({ adapterConfig: {} }));
     expect(result.ok && result.workload.maxRuntimeSeconds).toBe(
       TASK_RUN_DEFAULT_MAX_RUNTIME_SECONDS,
@@ -234,21 +243,29 @@ describe("maxRuntimeSeconds", () => {
     expect(result.ok && result.workload.maxRuntimeSeconds).not.toBe(1);
   });
 
-  it("applies the 600s default for a null/absent adapter config", () => {
+  it("applies the 240s default for a null/absent adapter config", () => {
     for (const adapterConfig of [null, undefined]) {
       const result = buildTaskRunBatchWorkload(input({ adapterConfig }));
-      expect(result.ok && result.workload.maxRuntimeSeconds).toBe(600);
+      expect(result.ok && result.workload.maxRuntimeSeconds).toBe(240);
     }
   });
 
-  it("honors a configured timeout below the ceiling", () => {
-    const result = buildTaskRunBatchWorkload(input({ adapterConfig: { timeoutSec: 45 } }));
-    expect(result.ok && result.workload.maxRuntimeSeconds).toBe(45);
+  it("honors a configured timeout inside the enforceable band", () => {
+    const result = buildTaskRunBatchWorkload(input({ adapterConfig: { timeoutSec: 120 } }));
+    expect(result.ok && result.workload.maxRuntimeSeconds).toBe(120);
   });
 
-  it("clamps a configured timeout to the 600s server ceiling", () => {
+  // ★ A configured value BELOW what the worker can enforce is raised, not passed through.
+  // 45s was the previous fixture here and silently became a 60s run: the workload said 45,
+  // the supervisor's floor said 60. Declaring the enforced number is the whole point.
+  it("raises a sub-floor configured timeout to the enforceable floor", () => {
+    const result = buildTaskRunBatchWorkload(input({ adapterConfig: { timeoutSec: 45 } }));
+    expect(result.ok && result.workload.maxRuntimeSeconds).toBe(TASK_RUN_MIN_ENFORCEABLE_SECONDS);
+  });
+
+  it("clamps a configured timeout to the 240s ENFORCEABLE ceiling", () => {
     const result = buildTaskRunBatchWorkload(input({ adapterConfig: { timeoutSec: 7_200 } }));
-    expect(result.ok && result.workload.maxRuntimeSeconds).toBe(600);
+    expect(result.ok && result.workload.maxRuntimeSeconds).toBe(240);
   });
 
   // ★ THE FLOOR HAS EXACTLY ONE PRODUCER, AND IT IS NOT claude_local.
@@ -263,8 +280,13 @@ describe("maxRuntimeSeconds", () => {
   // widening ever routes a fractional policy to the builder, `.int()` would 400 the
   // submission; this is the assertion that keeps the backstop honest and non-vacuous.
   it("floors a fractional timeout — the frozen schema is .int()", () => {
-    expect(resolveTaskRunMaxRuntimeSeconds("http", { timeoutMs: 45_900 })).toBe(45);
-    expect(resolveTaskRunMaxRuntimeSeconds("http", { timeoutMs: 1_500 })).toBe(1);
+    // ★ The inputs MUST sit inside [MIN, MAX]_ENFORCEABLE. 45.9s and 1.5s were used here
+    // before the enforceable floor existed; both now clamp to 60 whether or not flooring
+    // happens, which would make this assertion vacuous — the exact trap the mutation sweep
+    // caught once already. 90.9s floors to 90 and survives the clamp, so the .int() backstop
+    // stays observable.
+    expect(resolveTaskRunMaxRuntimeSeconds("http", { timeoutMs: 90_900 })).toBe(90);
+    expect(resolveTaskRunMaxRuntimeSeconds("http", { timeoutMs: 239_400 })).toBe(239);
 
     // The upstream producer for the gated adapters is already integral — this pins WHY the
     // claude_local form of this test would be vacuous, so nobody re-adds it.
@@ -273,23 +295,25 @@ describe("maxRuntimeSeconds", () => {
     expect(resolveHeartbeatRunTimeoutPolicy("http", { timeoutMs: 45_900 })
       .effectiveTimeoutSec).toBe(45.9);
 
-    // A sub-1 configured value: the clamp raises it to 1 BEFORE the floor, so it never
-    // reaches 0 (which the frozen `.min(1)` would reject).
-    expect(resolveTaskRunMaxRuntimeSeconds("http", { timeoutMs: 500 })).toBe(1);
+    // A sub-1 configured value: the wire clamp raises it to 1, then the ENFORCEABLE floor
+    // raises it to 60. The property under test is unchanged — it never reaches 0, which the
+    // frozen `.min(1)` would reject — only the surviving bound moved.
+    expect(resolveTaskRunMaxRuntimeSeconds("http", { timeoutMs: 500 }))
+      .toBe(TASK_RUN_MIN_ENFORCEABLE_SECONDS);
 
     // …whereas a sub-1 timeoutSec floors to 0 UPSTREAM, so timeoutConfigured is false and the
-    // 600s default applies. Not 1 — the difference between the two branches matters.
-    expect(resolveTaskRunMaxRuntimeSeconds("claude_local", { timeoutSec: 0.5 })).toBe(600);
+    // 240s default applies. Not 1 — the difference between the two branches matters.
+    expect(resolveTaskRunMaxRuntimeSeconds("claude_local", { timeoutSec: 0.5 })).toBe(240);
   });
 
   // The widened `number | null` on HeartbeatRunTimeoutPolicy: a null/NaN must fall to the
-  // 600s DEFAULT, never to Math.max(1, null) === 1 — the one-second trap in a second guise.
+  // 240s DEFAULT, never to Math.max(1, null) === 1 — the one-second trap in a second guise.
   // Unreachable through the public resolver today, which is exactly why it is tested here.
   it.each([
     ["a null effectiveTimeoutSec", null],
     ["a NaN effectiveTimeoutSec", Number.NaN],
     ["an Infinity effectiveTimeoutSec", Number.POSITIVE_INFINITY],
-  ])("falls to the 600s default for %s even when timeoutConfigured is true", (_l, effectiveTimeoutSec) => {
+  ])("falls to the 240s default for %s even when timeoutConfigured is true", (_l, effectiveTimeoutSec) => {
     expect(
       maxRuntimeSecondsForPolicy({ effectiveTimeoutSec, timeoutConfigured: true }),
     ).toBe(TASK_RUN_DEFAULT_MAX_RUNTIME_SECONDS);
@@ -313,7 +337,7 @@ describe("maxRuntimeSeconds", () => {
       const seconds = resolveTaskRunMaxRuntimeSeconds(adapterType, config);
       expect(Number.isInteger(seconds), `timeoutSec=${timeoutSec}`).toBe(true);
       expect(seconds).toBeGreaterThanOrEqual(1);
-      expect(seconds).toBeLessThanOrEqual(600);
+      expect(seconds).toBeLessThanOrEqual(240);
     }
   });
 });
@@ -372,5 +396,32 @@ describe("the frozen schema has the last word", () => {
       "maxRuntimeSeconds",
       "stdinArtifactId",
     ]);
+  });
+});
+
+describe("declared budget == enforced budget (anti-drift)", () => {
+  // The defect this pins: the builder used to declare 600s while the worker enforced 240s, and
+  // `job-leasing.ts` derives the LEASE deadline from the declared value — so the lease outlived
+  // the execution deadline by six minutes and a task using its declared budget died early.
+  it("mirrors the worker's enforced bounds exactly", () => {
+    expect(TASK_RUN_MIN_ENFORCEABLE_SECONDS * 1000).toBe(RUN_OP_DEADLINE_FLOOR_MS);
+    expect(TASK_RUN_MAX_ENFORCEABLE_SECONDS * 1000).toBe(RUN_OP_DEADLINE_CEILING_MS);
+  });
+
+  it("never declares a budget the worker would clamp", () => {
+    const enforce = (declaredSeconds: number) =>
+      Math.min(RUN_OP_DEADLINE_CEILING_MS, Math.max(RUN_OP_DEADLINE_FLOOR_MS, declaredSeconds * 1000));
+    for (const cfg of [
+      undefined,
+      {},
+      { timeoutSec: 1 },
+      { timeoutSec: 45 },
+      { timeoutSec: 240 },
+      { timeoutSec: 600 },
+      { timeoutSec: 86_400 },
+    ]) {
+      const declared = resolveTaskRunMaxRuntimeSeconds("claude_local", cfg ?? null);
+      expect(enforce(declared)).toBe(declared * 1000);
+    }
   });
 });

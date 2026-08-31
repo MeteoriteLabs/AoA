@@ -92,7 +92,30 @@ export const SUBMISSION_MAX_INPUT_BYTES = 65_536;
  * [1, 86_400] would produce a ONE-SECOND run for every default-configured agent. The
  * `timeoutConfigured` flag — not the number — is what distinguishes "no timeout set" from
  * "a timeout of zero". */
-export const TASK_RUN_DEFAULT_MAX_RUNTIME_SECONDS = 600;
+/** ★ The bounds the WORKER actually enforces, mirrored so the workload cannot DECLARE a budget
+ * the system will not HONOUR.
+ *
+ * `packages/worker-daemon/src/lifecycle/run-op-deadline.ts` is the SOURCE OF TRUTH. They are
+ * mirrored rather than imported because server's only worker-daemon imports are `import type`
+ * (erased at compile time); a value import would pull that barrel into the control plane's
+ * RUNTIME graph for the sake of two numbers. `__tests__/task-run-batch-workload.test.ts`
+ * value-imports the originals and asserts equality, so drift is a RED TEST, not a silent lie.
+ *
+ * Why a ceiling: the owned-labels capability lives 300s and is never re-minted on renewal, so a
+ * deadline past (capability TTL − teardown headroom) leaves the sandbox un-destroyable — it is
+ * recorded `orphaned` and keeps billing. Why a floor: the same value is ALSO the sandbox TTL at
+ * `create`, so a very small budget would reap the sandbox out from under its own creation. */
+export const TASK_RUN_MIN_ENFORCEABLE_SECONDS = 60;
+export const TASK_RUN_MAX_ENFORCEABLE_SECONDS = 240;
+
+/** The applied default when the agent configures no timeout: the most the system can actually
+ * honour.
+ *
+ * ★ This was 600. That made the workload declare a budget nothing enforced — the worker clamps
+ * the provider-op deadline to 240s, while `job-leasing.ts` derives the LEASE deadline from THIS
+ * field, so the lease outlived the execution deadline by six minutes and a task that used its
+ * declared budget died at 240s having been promised 600. Declared and enforced now agree. */
+export const TASK_RUN_DEFAULT_MAX_RUNTIME_SECONDS = TASK_RUN_MAX_ENFORCEABLE_SECONDS;
 
 /** The frozen wire ceiling on `maxRuntimeSeconds` (`batchWorkloadV1Schema`, 1..86_400). */
 const FROZEN_MAX_RUNTIME_SECONDS = 86_400;
@@ -141,8 +164,14 @@ export function maxRuntimeSecondsForPolicy(
   if (!policy.timeoutConfigured || typeof seconds !== "number" || !Number.isFinite(seconds)) {
     return TASK_RUN_DEFAULT_MAX_RUNTIME_SECONDS;
   }
-  const clamped = Math.min(FROZEN_MAX_RUNTIME_SECONDS, Math.max(1, seconds));
-  return Math.min(TASK_RUN_DEFAULT_MAX_RUNTIME_SECONDS, Math.floor(clamped));
+  const floored = Math.floor(Math.min(FROZEN_MAX_RUNTIME_SECONDS, Math.max(1, seconds)));
+  // ★ Clamp to what the worker ENFORCES, not to the wire ceiling. A configured 45s was
+  // previously emitted as 45 and enforced as 60 (the worker's floor); a configured 900s was
+  // emitted as 600 and enforced as 240. Both were the same defect in opposite directions.
+  return Math.min(
+    TASK_RUN_MAX_ENFORCEABLE_SECONDS,
+    Math.max(TASK_RUN_MIN_ENFORCEABLE_SECONDS, floored),
+  );
 }
 
 /**
