@@ -1,0 +1,218 @@
+# E7-1 campaign — BLOCKERS + campaign-minimal fleet terrain (2026-08-31)
+
+**Status:** terrain + blocker register · **Worktree:** `C:\e3` · **Branch:** `docs/replatform-program` · **Tip:** `727d4d635`
+**Purpose:** a C0 deploy was scoped against a real single-box host (Hetzner, Ubuntu 26.04, 2 vCPU / 3.7 GB / 38 GB,
+Docker 29.7 + Compose v5.5). Pre-deploy research found the campaign **cannot produce a verifier-PASS run today**.
+This doc records the blockers (each verified against source), the fleet terrain for when they are fixed, and the
+silent-kill register. **Nothing was deployed. No spend was incurred.**
+
+> **★ THE HEADLINE.** Two independent, source-verified defects make an E7-1 run impossible. Deploying first would
+> have burned real E2B + model-provider spend on a run that was structurally incapable of passing. Both are
+> session-buildable code fixes.
+
+---
+
+## 1. BLOCKER A (P1) — the canary submits an EMPTY batch workload, so no lease can ever be offered
+
+**Orchestrator-verified end-to-end against source.** The chain:
+
+1. `server/src/services/heartbeat.ts:5234` — the canary calls `resolveExecutionOwner({source, actor,
+   organizationId, idempotencyKey, rolloutState})`. **There is no `input` key.**
+2. `server/src/services/heartbeat-distributed-rollout.ts:148` — `jobInput: input` (undefined).
+3. `server/src/services/run-execution-owner.ts:253` — `input: jobInput` (undefined).
+4. `server/src/services/job-admission-bridge.ts:262` — `admitAndSubmit(source, actor, idempotencyKey, input = {})`
+   → **defaults to `{}`**, which is persisted as `jobs.input`.
+5. `server/src/services/job-leasing.ts:382` — `buildJobEnvelope` sets `workload: input.job.input` (= `{}`).
+6. `packages/worker-protocol/src/job.ts` — `batchWorkloadV1Schema` is `.strict()` and **requires** `command`
+   (min 1), `args`, `stdinArtifactId`, `maxRuntimeSeconds`. `{}` cannot pass.
+7. `job-leasing.ts:384` — `jobEnvelopeV1Schema.safeParse(candidate)` → `null`.
+8. `job-leasing.ts:614` — `if (!jobEnvelope) throw new JobLeasingError("internal_unavailable")` → **no lease, ever.**
+
+**Nothing in production constructs a batch workload for a `task_run`.** Observable outcome of a campaign run:
+verifier clauses 1–3 PASS (the handoff marker is written, ids set, the run terminalizes) and **clause 5 FAILS** with
+*"no worker lease for the attempt (never-leased inert handoff)"* — precisely the false-PASS case clause 5 exists to
+catch.
+
+**Provenance:** filed in `docs/replatform/epics/E8-browser-automation/tickets/BRW-001-design.md` as *"F3 [P1]
+(confidence 9/10) — CROSS-LANE. NOT FIXED HERE, BY DECISION"* with the identical trace; `BRW-001-result.md` records
+it was *"reported directly to the programme owner; deliberately not written up on the branch at their instruction."*
+★ **It is NOT in `scripts/finding-ownership.json`** — no ticket, no owner. It should be filed properly.
+
+**Fix shape:** populate a valid `batchWorkloadV1` at the canary call site (`command`/`args` sourced from the resolved
+adapter's sandbox command; `stdinArtifactId` nullable; a bounded `maxRuntimeSeconds`). Small, well-scoped, and it is
+the single change that unblocks **every** variant of the campaign (including the degraded desktop-worker fallback,
+which also dies here — the envelope fails before any provider is consulted).
+
+## 2. BLOCKER B — no shipped worker image can construct a provider
+
+**Orchestrator-verified.** `docker/worker/Dockerfile` COPYs **only** `packages/worker-protocol` and
+`packages/worker-daemon` (`:31-32`, `:57-58`) — a repo-wide grep for `worker-networked-host|provider-wire` in that
+Dockerfile returns **0**. Its `CMD` is `["node","dist/bin/worker-daemon.js"]` (`:112`), the bare daemon root, which
+calls `bootstrapWorkerDaemon` with **no provider and no `makeRunProvider`** → `decideDispatchComposition` refuses at
+gate 1 with `no_provider` (`packages/worker-daemon/src/lifecycle/compose-dispatch.ts:103`).
+
+Corroborated in three places in-tree: `scripts/boot-roots-expectation.json` ("Ships INERT: no image runs this bin
+(Slice 5)"), `packages/worker-networked-host/src/resolve-provider-url.ts:13-15`, and
+`docs/deploy/environment-variables.md:196`. ⇒ **`AOA_WORKER_PROVIDER_URL` is a dead variable in the shipped worker
+image** (`scripts/d1-dispatch-expectation.json`: *"PRESENT and DEAD … read by NO code"*).
+
+★ **This is a gap in the DEP-012 Slice 4+5 design** (which shipped the *adapter-manager* image but never asked
+whether the *worker* image could run the networked-host root). Slice 2b recorded "no split-worker-image home yet
+(Slice 5)" and Slice 5 did not close it.
+
+**Fix shape:** add `@armyofagents/worker-networked-host` (and its `provider-wire` closure) to
+`docker/worker/Dockerfile` deps+build stages, **and update `IMAGES[worker].entryPackages` in
+`scripts/check-image-deps-stages.mjs` in LOCKSTEP** (that checker runs in the always-on `policy` gate,
+`.github/workflows/pr.yml:468`), then run the worker with `command: ["node","dist/bin/networked-host.js"]`.
+★ That one bin gives BOTH halves: it wraps `runContainerHost` (so `file_record` custody + enrolment work) **and**
+injects `makeNetworkedRunProvider(url)` (so dispatch composes).
+
+**Do NOT repoint the image CMD** to `container-host.js`/`networked-host.js` globally — `runContainerHost` injects
+stores unconditionally and `resolveCustody("mounted_secret", stores)` REFUSES, crash-looping every still-
+`mounted_secret` container (`packages/worker-daemon/src/bin/container-host.ts:16-25`). Use a per-service `command:`.
+
+## 3. BLOCKER C (config, not code) — `mounted_secret` custody cannot enrol
+
+`AOA_WORKER_KEY_STORE_MODE` defaults to `mounted_secret`, and BOTH compose files set it. The enrolment block
+(`packages/worker-daemon/src/bin/worker-daemon.ts:327-331`) runs **only** for `os_keychain` or `file_record` with
+stores injected. In `mounted_secret`, `AOA_WORKER_ENROLLMENT_CODE_FILE` is validated non-empty at boot and then
+**never opened** (`docs/deploy/environment-variables.md:200`: *"it holds a key, cannot enrol, and stays inert"*).
+Subsumed by the Blocker-B fix **provided** the overlay sets `AOA_WORKER_KEY_STORE_MODE=file_record` +
+`AOA_WORKER_STATE_DIR=/worker` on a **durable named volume**.
+
+## 4. DOC BUG — the enrolment file is a TICKET, not a code
+
+`CLI-006-staging-canary-runbook.md:129-131` says to write the returned `aoa_enr_…` code into
+`AOA_WORKER_ENROLLMENT_CODE_FILE`. **That is wrong.** `packages/worker-daemon/src/enrollment/ticket.ts:29-51`
+requires `aoa_tkt_<base64url(JSON.stringify({v:1, targetId, code}))>` with an exhaustive key check (`["code",
+"targetId","v"]` sorted; any extra key rejected). A raw code fails with "missing or wrong prefix". Correct the runbook.
+
+## 5. THE E2B TEMPLATE — a custom template is REQUIRED
+
+A stock `base` will not work, and there is **no install-at-spawn fallback** on the distributed path: the supervisor
+performs exactly ONE `execute` (`packages/worker-daemon/src/supervisor/supervisor.ts:508-590`); the monolith's
+`SANDBOX_INSTALL_COMMAND` is an adapter-registry behaviour not on this path. The CLI must already be on PATH in the
+template. **Good news: the template exists in-tree** — `e2b/e2b.Dockerfile` (node:22 + git/curl/ripgrep/python3 +
+`npm i -g @anthropic-ai/claude-code @openai/codex` + Playwright/Chromium, with build-time `command -v` assertions).
+Build on the operator's account: `e2b template build --name aoa-base --dockerfile e2b.Dockerfile` from `e2b/`.
+Note `AOA_ADAPTER_MANAGER_E2B_TEMPLATE` (AM) is a DIFFERENT variable from `E2B_TEMPLATE` (monolith, defaults `base`).
+★ Neither the CLI-006 runbook nor the C0 scope doc mentions "template" — a documentation gap worth closing.
+
+---
+
+## 6. THE VERIFIER — what it does and does NOT prove
+
+`pnpm verify:e7-1-distributed-run <runId>` (`server/src/cli/verify-e7-1-distributed-run.ts`, logic in
+`server/src/services/e7-distributed-run-verifier.ts`). Read-only SELECTs; exit 0 PASS / 1 FAIL / 2 usage.
+**Five clauses, all must pass:** (1) `execution_owner === "distributed"`; (2) `distributed_job_id` +
+`distributed_attempt_id` both non-null; (3) status ∈ {succeeded,failed,cancelled,timed_out} **and** `finished_at`;
+(4) no leaked secret across job events / run excerpts / task outputs / artifacts (5 leak classes: `sk-`/`sk-ant-`,
+`e2b_<16+>`, literal `E2B_API_KEY=`, connection-string URIs, PEM private keys); (5) journey corroboration — a
+matching `job_attempts` row, **≥1 lease**, **≥1 `attempt_started`**, **≥1 `terminal`**, and an `applied`
+`job_projection_receipts` row with `projection_kind='attempt_terminal'`.
+
+★ **Two things it does NOT prove — check both by hand:**
+- **Real E2B vs the fake provider.** No clause reads provider identity. A `fake-provider` run that produced a lease
+  + events + receipt would pass all five. Enforcement is **operator discipline**, not machine-checked.
+- **That real work happened.** Clause 3 is terminal-agnostic: `failed` and `timed_out` PASS. `producedArtifacts` is
+  reported in `observed` but never fails the run. A sandbox where `claude` isn't on PATH → exit 127 → `failed` →
+  **verifier PASS**. Read `produced:` in the output yourself.
+
+**The gate flip is pure prose.** `scripts/gate-clause-wiring.json` → `E7-1-coding-journey`; the checker only asserts
+the named symbol's production reference count `!== 0` for `wired` (already 4). Nothing validates the cited run id.
+**The honesty of this gate is 100% human.**
+
+## 7. CAMPAIGN-MINIMAL FLEET (for when the blockers are fixed)
+
+A NEW overlay (e.g. `docker-compose.campaign.yml`) is read by **none** of the compose checkers
+(`check-staging-manifest.mjs`, `check-d1-compose.mjs`, `check-d1-dispatch-declared.mjs` each hardcode their own
+path) — safe to add. **Never edit `docker-compose.staging.yml` in place** (`checkServiceSet` requires the exact
+8-service set). **Use `docker compose up --wait`, never swarm** (swarm ignores `depends_on`, breaking the
+load-bearing migrate-first gate).
+
+1. **postgres** — `pgvector/pgvector:pg18`; `POSTGRES_{USER,PASSWORD,DB}=aoa`; ★ `PGDATA=/var/lib/postgresql/data`
+   (required on pg18 or it exits when a volume is mounted at the legacy path); named volume; `pg_isready` healthcheck.
+2. **migrate** — CP image, `entrypoint: [/usr/local/bin/migrate-entrypoint.sh]`, `command: []` (clears the server
+   CMD), `DATABASE_URL` = **owner**. Everything else gates on `service_completed_successfully`.
+3. **control-plane** — the three DB URLs + `AOA_APP_DB_PASSWORD`/`AOA_OPERATOR_DB_PASSWORD` (see §8),
+   `AOA_DISTRIBUTED_EXECUTION_ENABLED=true`, **`AOA_DISTRIBUTED_EXECUTION_ROLLOUT`** (see §9 — the #1 silent kill),
+   `AOA_WORKER_SESSION_SIGNING_KEY` (≥32 B), `AOA_CONTROL_PLANE_SIGNING_KEY_FILE`,
+   `AOA_ADAPTER_MANAGER_TRUTH_{SHARED_SECRET,ROUTE_ENABLED=1}`. Simplest mode is `authenticated` +
+   `AOA_ALLOWED_HOSTNAMES` + throwaway Google/BetterAuth trio (what D1 does).
+4. **adapter-manager** — build `docker/adapter-manager/Dockerfile` locally (CI never builds it). `PORT=8090`,
+   `_SANDBOX_PROVIDER=e2b`, `_E2B_TEMPLATE`, `_CONTROL_PLANE_PUBLIC_KEY_FILE`, `_TRUTH_SHARED_SECRET`,
+   `_CONTROL_PLANE_URL=http://control-plane:3100`, `_REAPER_ENABLED=1`, `E2B_API_KEY` (**only here**), writable
+   `/am` volume.
+5. **worker** — needs the Blocker-B fix. `command: ["node","dist/bin/networked-host.js"]`,
+   `AOA_WORKER_KEY_STORE_MODE=file_record`, `AOA_WORKER_STATE_DIR=/worker` (**named volume** — a lost
+   `identity.json` re-mints a workerId the server denies `worker_transfer_denied` PERMANENTLY, with no reset route),
+   `AOA_WORKER_PROVIDER_URL=http://adapter-manager:8090`, `AOA_WORKER_DISPATCH_ENABLED=1` (**exactly `"1"`**),
+   `AOA_WORKER_EVENT_OUTBOX_PATH`, `AOA_WORKER_CONTROL_PLANE_URL`, `AOA_WORKER_TARGET_SCOPE=organization`.
+6. **minio — OPTIONAL.** None of the verifier's five clauses requires an artifact. Dropping it saves ~200 MB on a
+   3.7 GB box. If included it must serve **TLS** (artifact grant URLs are https-only).
+
+## 8. DB PROVISIONING — the fail-closed trap
+
+The four DB URLs are **ONE database + four role-scoped logins**. `DATABASE_URL` must be the **owner** (not
+`aoa_app` — `assertExactServingRoleAuthority` forbids `aoa_app` USAGE on the `drizzle` schema). With the
+distributed flag on, a missing `AOA_APP_DATABASE_URL`/`AOA_OPERATOR_DATABASE_URL` **throws at boot**
+(`server/src/config/distributed-execution.ts:46-77`).
+
+Migrations create `aoa_app`/`aoa_operator` **NOLOGIN**. Two in-repo ways to grant LOGIN:
+- **(a) D1-only:** `AOA_D1_PROVISION_SERVING_ROLES=1` on `migrate` → `provision-d1-serving-roles.mjs`.
+- **(b) RECOMMENDED (works anywhere):** set `AOA_APP_DB_PASSWORD` + `AOA_OPERATOR_DB_PASSWORD` on the
+  **control-plane**; `maybeProvisionDistributedExecutionRoles` (`server/src/index.ts:299-318`) runs
+  `ALTER ROLE … WITH LOGIN PASSWORD …` on the owner URL immediately before `openDistributedExecutionDatabases`.
+  ★ The passwords **must match** the values embedded in the two role URLs — boot provisions then immediately verifies.
+
+## 9. SILENT-KILL REGISTER (no error, no non-zero exit, healthcheck stays green)
+
+1. Worker image has no provider package → `no_provider` forever. **(Blocker B.)**
+2. ★ **`AOA_DISTRIBUTED_EXECUTION_ROLLOUT` unset ⇒ every org OFF.** Absent from BOTH compose files. Must be
+   `{"organizations":{"<ORG>":{"mode":"canary","workloads":["batch"]}}}`. **`active`/`shadow` are NOT enough** —
+   `run-execution-owner.ts` returns `rollout_not_canary`. Live-editable; a malformed edit fails closed to legacy.
+3. `AOA_WORKER_DISPATCH_ENABLED` unset → `dispatch_disabled` (and any value other than exactly `"1"` throws).
+4. `AOA_WORKER_EVENT_OUTBOX_PATH` unset → `no_event_outbox_path`.
+5. `AOA_WORKER_KEY_STORE_MODE=mounted_secret` → never enrols. **(Blocker C.)**
+6. A raw `aoa_enr_…` written where an `aoa_tkt_…` ticket is required. **(§4.)**
+7. No default `e2b` `runtime_provider_keys` row per Company → preflight `credential_authority_not_moved`. The
+   env-default `E2B_API_KEY` does **not** satisfy it. Two POSTs: `/secrets` then `/runtime-provider-keys`.
+8. Placement profile never ratified → `placement_not_leasable`.
+9. CP/AM keypair **mismatch** → uniform gate error on every create, no startup signal. **Only
+   `pnpm verify:cp-am-keypair` against the MOUNTED files catches it.**
+10. `AOA_ADAPTER_MANAGER_REAPER_ENABLED` unset — or set to `"true"`, which is **OFF** (strict `"1"`) → orphan E2B
+    sandboxes accrue and **bill forever**.
+11. `AOA_ADAPTER_MANAGER_TRUTH_ROUTE_ENABLED` unset or bearer mismatch → CP 404 → every lease `"unknown"` → the
+    reaper reclaims nothing.
+12. `AOA_ALLOWED_HOSTNAMES` missing the CP service name (`authenticated` + private) → `/api/health` green but
+    `/api/worker-control/*` 403.
+13. `AOA_DEPLOYMENT_MODE` / `AOA_STORAGE_PROVIDER` typo → **silent** fallback to `local_trusted` / `local_disk`.
+14. Per-agent `heartbeat.maxConcurrentRuns` default is **1** (the tighter constraint; the org cap defaults to 8).
+    Plus a documented capacity-slot leak: a declined placement leaves `capacity_claim_state='held'` permanently.
+15. Canary wake-type precondition: a mention / `execution_*` / null wake **silently skips** the canary block —
+    do NOT trigger the run by @-mentioning the agent in a comment.
+16. Fresh org required — a legacy `environment_leases` row can never satisfy the preflight's closure clause
+    (`reconcileCompanyLegacyResources` has no route/job wiring).
+17. Unsetting `AOA_DISTRIBUTED_EXECUTION_ENABLED` with in-flight distributed runs **strands them forever**.
+
+## 10. Corrections to existing docs
+
+- `docs/replatform/qa/2026-08-28-c0-staging-deploy-scope.md` §1/§4: *"adapter-manager is a manifest fiction, ZERO
+  implementation"* and *"has no Dockerfile"* are **STALE** — DEP-012 Slice 4+5 merged (`07ed2cc42`); the AM package,
+  bin, and `docker/adapter-manager/Dockerfile` all exist. Its Tier-0 framing is otherwise still correct in spirit:
+  the blocker remains unbuilt code, just *different* unbuilt code (§1–§2 above).
+- `CLI-006-staging-canary-runbook.md:129-131`: the enrolment ticket format (§4).
+- The CLI-006 runbook + the C0 scope doc: neither mentions the required custom E2B template (§5).
+
+## 11. Recommended order
+
+1. **Fix Blocker A** (the batch workload) — file it as a real finding with an owner first; it has been carried
+   verbal-only since BRW-001.
+2. **Fix Blocker B** (the worker image + the `check-image-deps-stages` lockstep edit).
+3. Build the `aoa-base` E2B template on the operator's account.
+4. Build the AM + worker + CP images on the host; generate the keypair; **`pnpm verify:cp-am-keypair` on the mounted
+   files**.
+5. Bring up the campaign-minimal overlay; provision DB roles; enrol ONE worker (ticket format!).
+6. Arm (fresh org, per-Company `e2b` key, rollout `canary`, ratified placement, agent `maxConcurrentRuns` ≥ 2).
+7. Dispatch ONE task → `verify:e7-1-distributed-run` → **and read `produced:` + confirm the provider was real E2B**
+   before citing the run in the gate flip.
