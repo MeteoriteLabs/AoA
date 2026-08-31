@@ -20,9 +20,40 @@
 //     distributed create fails, indistinguishably from an ownership denial);
 //   - env set but bad AND distributed execution OFF ⇒ undefined (a mint-key typo is not
 //     worth crashing a non-distributed control plane at boot — disproportionate).
+//
+// ★ [H3] THE GAP IN THAT SCOPING WAS ITS OWN AUTHOR'S: present-but-bad was made loud and
+// ABSENT was left silent, even though absent produces the IDENTICAL total outage. The
+// `if (!keyPath)` short-circuit sits BEFORE any flag check, so forgetting the env var means the
+// key resolves "fine", no capability is ever minted, the adapter-manager (which REFUSES to boot
+// ungated, so its gate is always on) rejects every create, and every distributed run
+// terminalizes `no_run_capability` BEFORE a sandbox exists. The only signal anywhere was one
+// worker-side `warn`, on the far side of the deployment.
+//
+// H3 makes that case LOUD — but as an ERROR-LEVEL REPORT, not a throw, and the difference is
+// deliberate. `docker-compose.d1.yml` runs BOTH control planes with
+// `AOA_DISTRIBUTED_EXECUTION_ENABLED: "true"` and NO signing key, and that is a legitimate
+// configuration rather than an oversight: D1's workers are `mounted_secret` with no provider,
+// so they never create a sandbox and never need a minted capability. A hard refusal would
+// crash-loop the D1 control planes and red the merge train over a config that is correct for
+// its purpose. "Flag on + no mint key" is a real deployment shape; what it must not be is a
+// SILENT one.
 
 import { createPrivateKey, type KeyObject } from "node:crypto";
 import { readFileSync } from "node:fs";
+
+/**
+ * The [H3] report. Exported so the boot wiring and the tests assert the SAME string, and so an
+ * operator can grep for it in a log aggregator.
+ */
+export const UNWIRED_MINT_MESSAGE =
+  "AOA_CONTROL_PLANE_SIGNING_KEY_FILE is NOT SET while distributed execution is ENABLED. " +
+  "No owned-labels capability can be minted, so the adapter-manager -- which refuses to boot " +
+  "ungated and therefore always gates -- will reject EVERY sandbox create: no distributed run " +
+  "can execute, and each one terminalizes `no_run_capability` before a sandbox exists. If this " +
+  "deployment is not meant to create sandboxes (the D1 harness is not), this is expected. " +
+  "Otherwise mount an ed25519 PRIVATE key (PEM PKCS8) at this path whose PUBLIC half is the " +
+  "adapter-manager's AOA_ADAPTER_MANAGER_CONTROL_PLANE_PUBLIC_KEY_FILE, and verify the pair " +
+  "with `pnpm verify:cp-am-keypair` before the canary.";
 
 /**
  * @param keyFile the value of AOA_CONTROL_PLANE_SIGNING_KEY_FILE (a mounted PEM path).
@@ -30,14 +61,23 @@ import { readFileSync } from "node:fs";
  *   the "present-but-bad ⇒ loud fatal" behaviour (off ⇒ a bad key stays inert, no crash).
  * @param readKeyFileBytes injectable fs seam (default readFileSync) — the REAL parser runs
  *   on the injected bytes, so tests exercise the unparseable / non-ed25519 refuse paths.
+ * @param reportUnwiredMint [H3] sink for the ABSENT-key report (default `console.error`);
+ *   the boot wiring passes the server logger so it lands in the structured stream.
  */
 export function loadControlPlaneSigningKey(
   keyFile: string | undefined,
   distributedExecutionEnabled: boolean,
   readKeyFileBytes: (path: string) => Buffer = (path) => readFileSync(path),
+  reportUnwiredMint: (message: string) => void = (message) => console.error(message),
 ): KeyObject | undefined {
   const keyPath = keyFile?.trim();
-  if (!keyPath) return undefined;
+  if (!keyPath) {
+    // [H3] ABSENT + distributed ON is a TOTAL, otherwise-silent outage of the distributed
+    // path. Report it at error level with the consequence spelled out, so an operator reading
+    // boot logs learns it HERE rather than from a fleet of `no_run_capability` terminals.
+    if (distributedExecutionEnabled) reportUnwiredMint(UNWIRED_MINT_MESSAGE);
+    return undefined;
+  }
   try {
     // createPrivateKey MUST sit inside this try: an encrypted PEM or a DER/RSA key throws
     // HERE, and that throw must be a scoped refusal — a catch scoped only to the read, or a
