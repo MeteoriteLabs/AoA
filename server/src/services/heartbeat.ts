@@ -162,6 +162,7 @@ import {
   shouldSuppressLegacyExecution,
   type RunExecutionOwner,
 } from "./run-execution-owner.js";
+import { buildTaskRunBatchWorkload } from "./task-run-batch-workload.js";
 import {
   dispatchCancel,
   getDistributedCancellationPort,
@@ -5231,13 +5232,76 @@ export function heartbeatService(
         issueContext &&
         issueContext.assigneeAgentId === agent.id
       ) {
-        canaryExecutionOwner = await distributedRolloutHook.resolveExecutionOwner({
-          source: { kind: "task_run", runId: run.id, issueId, assigneeAgentId: agent.id },
-          actor: { kind: "agent", id: agent.id, companyId: agent.companyId },
-          organizationId: distributedRolloutOrganizationId,
-          idempotencyKey: run.id,
-          rolloutState: distributedRolloutState,
+        // ── Blocker A — the WORKLOAD. ──────────────────────────────────────
+        // The optional `input` has been plumbed end-to-end since CLI-005
+        // (heartbeat-distributed-rollout -> run-execution-owner ->
+        // job-convert-orchestrator -> job-admission-bridge) and NOTHING pushed
+        // into it, so every canary job carried `{}`. `createSpecFor` then fell
+        // back to `command = workloadType` and the sandbox would have run a
+        // binary called "batch". This is the push.
+        //
+        // FAIL CLOSED: a workload we cannot build is a run we must NOT convert.
+        // Converting without one places a leasable attempt whose only possible
+        // outcome is a sandbox running a nonexistent command — while the legacy
+        // executor has already been suppressed. Staying legacy is correct.
+        const canaryWorkload = buildTaskRunBatchWorkload({
+          adapterType: agent.adapterType,
+          runtimeCommandSpec,
+          adapterConfig: runScopedConfig,
+          currentTaskMarkdown: context.currentTaskMarkdown,
         });
+        canaryExecutionOwner = canaryWorkload.ok
+          ? await distributedRolloutHook.resolveExecutionOwner({
+              source: { kind: "task_run", runId: run.id, issueId, assigneeAgentId: agent.id },
+              actor: { kind: "agent", id: agent.id, companyId: agent.companyId },
+              organizationId: distributedRolloutOrganizationId,
+              idempotencyKey: run.id,
+              rolloutState: distributedRolloutState,
+              input: canaryWorkload.workload,
+            })
+          : {
+              owner: "legacy",
+              reason: "workload_unavailable",
+              detail: canaryWorkload.reason,
+            };
+
+        // ★ A NEW REASON ALONE IS INVISIBLE. Before this, `reason`/`detail` was
+        // never logged or persisted anywhere: all nine `canaryExecutionOwner`
+        // references below read only `owner`/`jobId`/`attemptId`. So a canary
+        // that silently stayed legacy because of a missing workload would have
+        // been indistinguishable, in aggregate, from one that was simply not a
+        // canary — the exact blindness this change exists to remove. Log EVERY
+        // outcome, not just the new one. (The CLI-005 precedent above logs a
+        // different type, `JobConvertReason`.)
+        if (canaryExecutionOwner.owner === "distributed") {
+          logger.info(
+            {
+              runId: run.id,
+              issueId,
+              agentId: agent.id,
+              adapterType: agent.adapterType,
+              jobId: canaryExecutionOwner.jobId,
+              attemptId: canaryExecutionOwner.attemptId,
+              command: canaryWorkload.ok ? canaryWorkload.workload.command : null,
+              maxRuntimeSeconds: canaryWorkload.ok
+                ? canaryWorkload.workload.maxRuntimeSeconds
+                : null,
+            },
+            "[CLI-006] canary execution owner = DISTRIBUTED — legacy executor will be suppressed",
+          );
+        } else {
+          logger.info(
+            {
+              runId: run.id,
+              issueId,
+              agentId: agent.id,
+              adapterType: agent.adapterType,
+              reason: canaryExecutionOwner.reason,
+              detail: canaryExecutionOwner.detail ?? null,
+            },
+            "[CLI-006] canary execution owner = LEGACY — the legacy executor runs this task",
+          );
+        }
       }
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
