@@ -427,6 +427,37 @@ test("REJECT (DEP-009): control-plane-b with a DIVERGENT distributed-execution f
   );
 });
 
+// ★ Blocker B — the workers must keep entering the DAEMON bin.
+//
+// `AOA_WORKER_PROVIDER_URL` has been set on both D1 workers since WRK-008, pointed at a real
+// in-net `fake-provider`, and was correctly declared "present and DEAD" because no shipped image
+// contained a bin that reads it. Blocker B puts that bin in the worker image, so the only thing
+// between D1 and a live fabricating provider is the absence of a `command:` override — one line,
+// no env change, invisible to the dispatch-declaration checker (which parses `environment` only).
+test("REJECT (Blocker B): a D1 worker whose command enters the networked-host bin", () => {
+  const c = clone(validCompose());
+  c.services["worker-a"].command = ["node", "/worker-net-app/dist/bin/networked-host.js"];
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /networked-host/i), violations.join("\n"));
+});
+
+test("REJECT (Blocker B): a D1 worker whose ENTRYPOINT enters the networked-host bin", () => {
+  // Both delivery routes, for the same reason the dispatch-switch checker spans both: an
+  // entrypoint override is as effective as a command one, and a guard covering only `command`
+  // reads as coverage while leaving the other half open.
+  const c = clone(validCompose());
+  c.services["worker-b"].entrypoint = ["sh", "-c", "exec node /worker-net-app/dist/bin/networked-host.js"];
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /networked-host/i), violations.join("\n"));
+});
+
+test("the shipped D1 compose does NOT enter the networked-host bin (anti-vacuity)", () => {
+  // If the real compose ever DID set it, the two REJECT cases above would still pass while the
+  // property they exist to protect was already broken. This is the case that pins the tree.
+  const { violations } = evaluateComposeInvariants(clone(validCompose()));
+  assert.ok(!anyMatch(violations, /networked-host/i), violations.join("\n"));
+});
+
 test("REJECT (DEP-009): a control-plane replica missing the shared session signing key", () => {
   const c = clone(validCompose());
   delete c.services["control-plane-b"].environment.AOA_WORKER_SESSION_SIGNING_KEY;

@@ -25,7 +25,7 @@
       "providerPosture": "resolver",
       "resolverFile": "packages/worker-networked-host/src/resolve-provider-url.ts",
       "resolverNoneMarker": "return { kind: \"none\" };",
-      "reason": "DEP-011 Slice 2b — the CONTAINER networked-provider root. It supplies a per-run makeRunProvider factory RESOLVED by resolveProviderUrl, whose default (AOA_WORKER_PROVIDER_URL unset/empty/whitespace) returns {kind:'none'} — so the shipped default resolves to NO provider and the bin boots exactly as the inert container-host default. The networked driver lives OUTSIDE worker-daemon (E4-D01 holds); the factory is threaded via the container host's bootstrap seam. Ships INERT: no image runs this bin (Slice 5)."
+      "reason": "DEP-011 Slice 2b — the CONTAINER networked-provider root. It supplies a per-run makeRunProvider factory RESOLVED by resolveProviderUrl, whose default (AOA_WORKER_PROVIDER_URL unset/empty/whitespace) returns {kind:'none'} — so the shipped default resolves to NO provider and the bin boots exactly as the inert container-host default. The networked driver lives OUTSIDE worker-daemon (E4-D01 holds); the factory is threaded via the container host's bootstrap seam. Blocker B gave this bin an image home (/worker-net-app in docker/worker/Dockerfile), but the image CMD is UNCHANGED and still enters the daemon bin, so no shipped service runs it: entering it requires a per-service command/entrypoint override, which the staging manifest and the D1 compose invariants both now reject. The SHIPPED DEFAULT this guard reads is unchanged - resolveProviderUrl still returns { kind: 'none' } with the env unset."
     }
   }
 }

@@ -4,13 +4,23 @@
  * `scripts/check-image-deps-stages.mjs` supplies the Dockerfile text and the
  * parsed workspace manifests; this module decides parity.
  *
+ * ★ THE EQUIVALENCE IS NARROWER THAN IT LOOKS. This module's `computeRuntimeClosure` walks
+ * `.dependencies` ONLY (see `indexPackages`), which is what makes it byte-equal to pnpm's
+ * `--filter-prod "X..."` selection — the property the Dockerfiles rely on. But `--filter-prod`
+ * ALSO traverses `optionalDependencies`, which `indexPackages` ignores entirely. Zero workspace
+ * manifests declare one today, so the two agree; the FIRST one to do so would silently re-open
+ * the gap this guard closes, with the guard still green. If you add an `optionalDependencies`
+ * block to any workspace package, teach `indexPackages` about it in the same commit.
+ *
  * Least-privilege invariant: each split image's `deps` stage must `COPY`
  * EXACTLY the set of workspace-package manifests in its own runtime dependency
  * closure — no fewer (or the install is incomplete) and NO MORE (or the image
  * drags in code it must not contain, e.g. the worker pulling server/db). This is
  * the machine-checkable form of "each image's deps stage copies exactly its
  * dependency closure and no more" (plan §2.2), and for the worker it enforces
- * E4-D01's fixed closure of worker-daemon + worker-protocol.
+ * the worker's own closure. That closure was E4-D01's fixed two packages until Blocker B
+ * gave `worker-networked-host` (DEP-011 Slice 2b's container boot root) an image home; it is
+ * now seven, and `IMAGES[].entryPackages` in the CLI wrapper is the single place that says so.
  *
  * Dependencies: `node:path` only, for pure path arithmetic (no reads).
  */

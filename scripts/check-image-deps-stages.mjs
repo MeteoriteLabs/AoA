@@ -37,9 +37,18 @@ export const IMAGES = [
     entryPackages: ["@armyofagents/server", "@armyofagents/ui"],
   },
   {
+    // ★ TWO entry packages since Blocker B. The image now carries BOTH the daemon and
+    // `worker-networked-host` — DEP-011 Slice 2b's CONTAINER boot root, the only thing in the
+    // fleet that can construct a per-run provider over the gated adapter-manager wire. Its
+    // closure adds provider-wire, provider-capability, sandbox-e2b-provider and
+    // sandbox-provider-contract, so the image is SEVEN workspace packages, not two.
+    //
+    // E4-D01's real invariant is untouched: `worker-daemon` still imports no provider
+    // (`check-worker-daemon-boundary.mjs`), the networked driver lives OUTSIDE it, and the two
+    // deploy trees are separate so nothing here reaches the daemon's own node_modules.
     imageName: "worker",
     dockerfile: "docker/worker/Dockerfile",
-    entryPackages: ["@armyofagents/worker-daemon"],
+    entryPackages: ["@armyofagents/worker-daemon", "@armyofagents/worker-networked-host"],
   },
   {
     // DEP-012 Slice 4+5 — the out-of-process provider HOST. Its runtime closure is

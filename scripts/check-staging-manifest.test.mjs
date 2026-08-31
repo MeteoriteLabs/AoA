@@ -351,6 +351,29 @@ test("REJECT (DEP-010): AOA_WORKER_SANDBOX_PROVIDER in a worker's entrypoint (in
   assert.ok(anyMatch(violations, /DISPATCH-DEFAULT/i), violations.join("\n"));
 });
 
+// ★ Blocker B — `AOA_WORKER_PROVIDER_URL` is the CONTAINER analogue of the desktop
+// `AOA_WORKER_SANDBOX_PROVIDER`: set it and `worker-networked-host` builds a per-run provider
+// factory pointed at the adapter-manager. It was legitimately unbanned while NO shipped image
+// contained a bin that reads it — the ban was structurally redundant. Blocker B puts that bin
+// in the worker image, so the variable becomes live and the ban becomes load-bearing.
+test("REJECT (Blocker B): AOA_WORKER_PROVIDER_URL on a worker's environment", () => {
+  const c = clone(validCompose());
+  c.services["worker-a1"].environment.AOA_WORKER_PROVIDER_URL = "http://adapter-manager:8090";
+  const { violations } = evalValid(c);
+  assert.ok(anyMatch(violations, /DISPATCH-DEFAULT/i), violations.join("\n"));
+  assert.ok(anyMatch(violations, /AOA_WORKER_PROVIDER_URL/i), violations.join("\n"));
+});
+
+test("REJECT (Blocker B): AOA_WORKER_PROVIDER_URL in a worker's command (inline)", () => {
+  // The env map is not the only delivery route: a value delivered inline is a value delivered,
+  // and the same `command:` override is ALSO how the networked-host bin would be entered.
+  const c = clone(validCompose());
+  c.services["worker-a1"].command = ["sh", "-c", "AOA_WORKER_PROVIDER_URL=http://am:8090 exec worker"];
+  const { violations } = evalValid(c);
+  assert.ok(anyMatch(violations, /DISPATCH-DEFAULT/i), violations.join("\n"));
+  assert.ok(anyMatch(violations, /AOA_WORKER_PROVIDER_URL/i), violations.join("\n"));
+});
+
 // §2.6 — all mutable configuration documented.
 test("REJECT (§2.6): an undocumented render env key", () => {
   const c = clone(validCompose());
