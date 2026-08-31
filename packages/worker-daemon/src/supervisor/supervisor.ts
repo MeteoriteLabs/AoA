@@ -117,8 +117,20 @@ export interface SupervisorDeps {
   readonly newIdempotencyKey?: () => string;
   /** Wall-clock budget for a `create` before the deadline fires (default 30s). */
   readonly createDeadlineMs?: number;
-  /** Generic per-op deadline stamped on the op context (default 60s). */
-  readonly opDeadlineMs?: number;
+  /**
+   * Generic per-op deadline stamped on the op context (default 60s).
+   *
+   * ★ H1 — may be a FUNCTION of the handoff, resolved ONCE per run at acceptance. That is what
+   * lets the composition root derive the deadline from the run's own
+   * `workload.maxRuntimeSeconds`, which otherwise never reaches the supervisor at all: this
+   * number is simultaneously the execute race, the E2B sandbox TTL, and the E2B command
+   * timeout, so a fixed 60 s killed every task that needed longer.
+   *
+   * The per-run value governs `create` (whose ctx sets the sandbox TTL) and `execute`. Cleanup
+   * and teardown ops deliberately keep the BASE deadline: a long run budget is not a reason to
+   * let a destroy hang, and the capability those ops run under expires on its own schedule.
+   */
+  readonly opDeadlineMs?: number | ((handoff: LeaseHandoff) => number);
   /** ms after acceptance the cleanup authority's escalation becomes mandatory. */
   readonly cleanupDeadlineMs?: number;
   /** Injectable timer for the create-deadline race (default node timers). */
@@ -207,6 +219,10 @@ interface ActiveRun {
   /** The per-run capability's absolute ms-epoch expiry, set when the networked authorities are
    * rebuilt. The clock-first teardown compares it to the supervisor `now` (§2a.5). */
   capExpiresAt: number | null;
+  /** H1 — this run's provider-op budget, resolved ONCE at `buildRun` from the handoff (i.e.
+   * from `workload.maxRuntimeSeconds`). Governs `create` (⇒ the sandbox TTL) and `execute`;
+   * cleanup/teardown keep the base deadline. */
+  readonly opDeadlineMs: number;
 }
 
 const TIMEOUT = Symbol("create-deadline");
@@ -231,7 +247,13 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   const newEventId = deps.newEventId ?? randomUUID;
   const newKey = deps.newIdempotencyKey ?? randomUUID;
   const createDeadlineMs = deps.createDeadlineMs ?? 30_000;
-  const opDeadlineMs = deps.opDeadlineMs ?? 60_000;
+  // The BASE deadline: what cleanup/teardown ops use, and the fallback when no per-run
+  // resolver is composed (the desktop root, and every test that passes a plain number).
+  const opDeadlineMs = typeof deps.opDeadlineMs === "number" ? deps.opDeadlineMs : 60_000;
+  // H1 — the per-run resolver, when the composition root supplies one. Resolved ONCE at
+  // `buildRun`, never re-derived, so `create` and `execute` cannot disagree about the budget.
+  const resolveRunDeadlineMs =
+    typeof deps.opDeadlineMs === "function" ? deps.opDeadlineMs : () => opDeadlineMs;
   const cleanupDeadlineMs = deps.cleanupDeadlineMs ?? 30_000;
   // DAT-008 slice 5 (R6): the redemption budget is CARVED FROM the create budget — never larger —
   // so redeem + create together stay within `createDeadlineMs`.
@@ -244,8 +266,8 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   const emitOp = (operation: string, outcome: string): void =>
     deps.metrics?.inc(SANDBOX_OP_METRIC, { operation, outcome });
 
-  function ctx(): ProviderOpContext {
-    return { deadlineMs: opDeadlineMs, idempotencyKey: newKey() };
+  function ctx(deadlineMs: number = opDeadlineMs): ProviderOpContext {
+    return { deadlineMs, idempotencyKey: newKey() };
   }
 
   function labelsFor(handoff: LeaseHandoff): ResourceLabels {
@@ -512,7 +534,12 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     const createBudget = Math.max(0, createDeadlineMs - secretElapsedMs);
     let created;
     try {
-      created = await withDeadline(run.effect.create(spec, ctx()), createBudget);
+      // H1 — `run.makeCtx()` carries THIS RUN's budget. That ctx becomes the E2B sandbox
+      // TTL (`#ttl(ctx)` -> `transport.create({timeoutMs})` + `setTimeout`), so the sandbox
+      // must be born with the run's lifetime, not the base 60 s. The create RACE is still
+      // `createBudget` (30 s minus redemption) - a slow CREATE is a different failure from a
+      // long-running command, and only the latter is what the workload budgets for.
+      created = await withDeadline(run.effect.create(spec, run.makeCtx()), createBudget);
     } catch (err) {
       emitOp("create", "failed");
       await events.terminal({ status: "failed", exitCode: null, errorCode: "create_failed", errorMessage: null });
@@ -553,9 +580,13 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       const raced = await withDeadline(
         run.effect.execute(
           { sandboxId: created.sandboxId, command: spec.command, args: spec.args, env: spec.env },
-          ctx(),
+          // H1 - the run's budget on BOTH sides: the ctx is the provider's own command
+          // timeout, and the race below is the supervisor-side backstop for a provider that
+          // ignores it. They must be the same number, or the backstop fires first and
+          // reports `execute_timeout` for a command still inside its budget.
+          run.makeCtx(),
         ),
-        opDeadlineMs,
+        run.opDeadlineMs,
       );
       if (raced === TIMEOUT) {
         emitOp("execute", "timed_out");
@@ -696,18 +727,32 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     // §2a.3); `runLifecycle` REBUILDS them over the real per-run driver after redemption.
     const initialProvider = deps.provider ?? createNoopProvider();
     const { effect, cleanup } = buildAuthorities(initialProvider, labels, fence);
+    // H1 — resolve the run's budget ONCE, here. A resolver that threw or returned a
+    // non-positive/NaN value would otherwise reach `setTimeout`, which fires immediately and
+    // would kill every run instantly — so an unusable answer falls back to the base deadline
+    // rather than becoming an instant-kill.
+    let runOpDeadlineMs = opDeadlineMs;
+    try {
+      const resolved = resolveRunDeadlineMs(handoff);
+      if (typeof resolved === "number" && Number.isFinite(resolved) && resolved > 0) {
+        runOpDeadlineMs = resolved;
+      }
+    } catch {
+      // Keep the base deadline; a budget-resolution error must never fail a lease.
+    }
     return {
       leaseId: handoff.leaseId,
       labels,
       fence,
       effect,
       cleanup,
-      makeCtx: ctx,
+      makeCtx: () => ctx(runOpDeadlineMs),
       sandboxId: null,
       cancelled: false,
       cleanedUp: false,
       networked,
       capExpiresAt: null,
+      opDeadlineMs: runOpDeadlineMs,
     };
   }
 
