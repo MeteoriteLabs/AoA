@@ -311,6 +311,31 @@ would believe the template was built and then hit `env: 'claude': No such file o
 - The AM runs from the monolith image via `cd /app/packages/adapter-manager && node --import
   /app/server/node_modules/tsx/dist/loader.mjs dist/bin/adapter-manager.js`.
 
+### 9d.1 The two-network requirement (learned the hard way) + the reaper verified against REAL E2B
+
+A single `internal: true` network is **not** enough. With everything on one internal net the adapter-manager could
+not resolve E2B at all:
+```
+reaper: sweep failed (contained; loop continues)
+  err: TypeError: fetch failed   [cause]: Error: getaddrinfo EAI_AGAIN api.e2b.app
+```
+★ **This is exactly why the staging manifest puts the adapter-manager on BOTH `control-net` (internal) and
+`provider-ctl-net` (`internal: false`)** — the provider-control boundary means precisely one surface holds the E2B
+key AND has the egress to use it. Adding an egress network for the AM alone fixed it:
+```
+reaper: sweep complete { reaped: 0, skipped: 0, unknown: 0, failed: 0 }
+```
+⇒ the **full DEP-011 reaper (Slices A + B + C) is verified against the real E2B API**, and the E2B credentials work
+end to end.
+
+★★★ **Two operational cautions:**
+1. **A green `/healthz` does NOT mean the provider is reachable.** The AM reported `healthy` for 7 minutes while
+   every sweep was failing DNS — the healthcheck does not probe E2B. Check the reaper logs/metrics, not health.
+2. ★ **The B2C-F1 tick containment paid for itself here.** `reconcileReaper` leaves `provider.list` UNWRAPPED, so
+   this DNS throw would have rejected the tick; with no `unhandledRejection` handler the AM — the process serving
+   gated create/execute for live workers — would have **crashed on its first sweep**. The log line reads
+   `sweep failed (contained; loop continues)` and the AM stayed up. The review finding was real, and the fix works.
+
 **Still blocking the campaign:** Blocker A (empty batch workload — no lease can ever be offered) and a
 provider-capable worker (Blocker B; `worker-networked-host/dist` is absent from the image).
 
