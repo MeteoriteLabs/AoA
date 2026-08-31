@@ -195,6 +195,39 @@ Migrations create `aoa_app`/`aoa_operator` **NOLOGIN**. Two in-repo ways to gran
     (`reconcileCompanyLegacyResources` has no route/job wiring).
 17. Unsetting `AOA_DISTRIBUTED_EXECUTION_ENABLED` with in-flight distributed runs **strands them forever**.
 
+## 9b. BLOCKER D (found by BUILDING, 2026-08-31) — `docker/control-plane/Dockerfile` does not build at this tip
+
+Discovered on the real host, not by reading: the control-plane image build fails in the `build` stage with
+
+```
+packages/sandbox-fake-provider build: src/hash.ts(16,72): error TS2580: Cannot find name 'Buffer'
+packages/sandbox-fake-provider build: src/hostile-driver.ts(54,8): Cannot find module '@armyofagents/worker-protocol'
+ WARN  Local package.json exists, but node_modules missing, did you mean to install?
+ERROR: process "/bin/sh -c pnpm --filter \"@armyofagents/server...\" --filter \"@armyofagents/ui...\" build" … exit code: 2
+```
+
+**Not OOM** (swap untouched at 72 KiB). **The mechanism is an install/build asymmetry:**
+- the `deps` stage COPYs only **17** workspace `package.json` files, then installs with
+  `--filter "@armyofagents/server..." --filter "@armyofagents/ui..."`;
+- the `build` stage then runs `COPY . .` (**all 35** manifests) and re-runs the *same* filter, which now resolves
+  **25 of 35 projects** — pnpm's `...` selector traverses **devDependencies** too, pulling in packages that were
+  never installed (`sandbox-fake-provider` is a **devDep of `sandbox-provider-contract`**; `packages/plugins/sdk`
+  likewise) → no `node_modules` → TS2307/TS2580.
+
+★ **`check-image-deps-stages` cannot catch this**: `computeRuntimeClosure` walks `.dependencies` **only**, while the
+pnpm build filter walks dev+prod. The guard is green while the image is unbuildable.
+
+**Campaign workaround (adopted):** use the **combined root `./Dockerfile`** instead — it runs
+`pnpm install --frozen-lockfile` **unfiltered** (whole workspace ⇒ no asymmetry) and builds with individual
+non-`...` filters (`ui`, `plugin-sdk`, `server`), and its `CMD` runs `server/dist/index.js` (i.e. it *is* the control
+plane). It is also the image `docker.yml` builds on every `main` push — the best-tested image in the repo. It does
+NOT ship `migrate-entrypoint.sh`, but that script is trivially replicable:
+`node --input-type=module -e "import('@armyofagents/db/migrate-job').then(m => m.main())"` followed by
+`node docker/control-plane/provision-d1-serving-roles.mjs` for the LOGIN grant.
+
+**Proper fix (owed, not done here):** either COPY the full manifest set in the `deps` stage, or drop `...` from the
+build filter, or teach `check-image-deps-stages` to walk devDeps so the guard matches pnpm's actual behaviour.
+
 ## 10. Corrections to existing docs
 
 - `docs/replatform/qa/2026-08-28-c0-staging-deploy-scope.md` §1/§4: *"adapter-manager is a manifest fiction, ZERO
