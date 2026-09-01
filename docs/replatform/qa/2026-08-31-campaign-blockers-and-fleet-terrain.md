@@ -528,19 +528,65 @@ exactly two relations. Views and matviews ARE scanned like tables (`relkind IN (
 `provider:anthropic` (H2 / Step 4a) and the E2B pointer (Step 4b) is necessary but **not sufficient**,
 and neither can be validated end-to-end until E is fixed.
 
-#### 9e.2.2 ★★★ E-1 FIXED (Unit 1.6) — THE CANARY IS STILL GATED SHUT
+#### 9e.2.2 ★★★ E-1 FIXED (Units 1.6 + 1.7) — THE CANARY IS STILL GATED SHUT
 
-**E-1 only. The canary cannot flip, and any claim that Unit 1.6 unblocked it is false.**
+> **MERGED 2026-09-01 as `c7ead3a73` (PR #333), CI-green** — 16 checks including all four `verify`
+> shards, `e2e`, `migrations`, `policy`, `brand-check`. The Decision #122 amendment rides in the same
+> commit; PR #334, which carried it separately, was **closed as superseded** after its branch was
+> diffed against the merged base and found to be a net regression (it would have reinstated the
+> retracted claim that `0266` is the compliant exemplar) plus a stray repo-root `decisions.md`.
+>
+> **This section was written after Unit 1.6 and is corrected in place for Unit 1.7.** Read the ★
+> paragraph below before citing the shape of what shipped: the grantee changed, and the grantee is
+> the whole security argument.
 
-What shipped: an owner-owned `SECURITY DEFINER` function
-(`packages/db/src/migrations/0266_canary_preflight_evidence_fn.sql`) returning the three evidence
-scalars the gate needs, with `EXECUTE` granted to `aoa_app` only. No table grant, no column grant, no
-ACL-manifest edit — the four secret-bearing tables still raise 42501 for `aoa_app`, pinned as a
-standing anti-widening test (`canary-preflight-real-role.integration.test.ts`). Because such a
+**E-1 only. The canary cannot flip, and any claim that this unblocked it is false.**
+
+What shipped: **three** owner-owned, organization-bound `SECURITY DEFINER` functions
+(`packages/db/src/migrations/0267_canary_preflight_evidence_org_scope.sql`, which DROPs and supersedes
+`0266`'s two) serving the company enumeration, the lease inventory, and the two evidence scalars —
+with `EXECUTE` granted to **`aoa_operator` alone**. No table grant, no column grant, no ACL-manifest
+edit — the four secret-bearing tables still raise 42501 for `aoa_app`, pinned as a standing
+anti-widening test (`canary-preflight-real-role.integration.test.ts`). Because such a
 function was **invisible** to `assertExactServingRoleAuthority` (zero `prosecdef` references existed
 repo-wide), the same change ships a `prosecdef`-keyed certificate
 (`server/src/db/security-definer-manifest.ts`), so the ACL model **narrowed** rather than acquiring an
 undocumented hole.
+
+**★★★ THE BINDER IS THE GRANTEE, NOT THE PARAMETER — and Unit 1.6 got that wrong.** `0266` granted
+`EXECUTE` to `aoa_app` and scoped each function by a caller-supplied `p_company_id` that the body
+compared only to ITSELF. That closes the cross-*argument* oracle and nothing else: passing the
+victim's company id satisfies the predicate trivially, so any `aoa_app` session could name a company
+it has no relationship to and receive that company's lease ids through OWNER authority — and since
+`companies` carries no RLS and `aoa_app` holds `SELECT` on it, the caller did not even have to guess.
+**This was REPRODUCED against real PostgreSQL before `0267` was designed**, and is now asserted as an
+attack (an earlier probe passed the intruder's *own* id and so never exercised it; two probes had in
+fact asserted the attack as REQUIRED behaviour). The organization predicates in `0267` are defence in
+depth — `p_organization_id` is caller-supplied too — and the real boundary is the role the caller
+connects as, which is the one thing a caller cannot forge.
+
+**★ And the other half, which the first draft omitted: for `aoa_operator` this is a WIDENING.**
+`canary_preflight_evidence_companies` is a brand-new capability — `aoa_operator` holds no grant on
+`companies` or `organizations` at all. This moves a capability off a broad pool onto a narrow one; it
+does not delete it.
+
+**Two consumers moved, and one of them spans two authorities.** The gate reads through
+`distributed-execution-databases.ts`'s new `operatorDb`; `job-distributed-drain-store.ts` needs
+**both** pools — `listOrganizationCompanyIds` is a definer read on `operatorDb`, while
+`listActiveAttempts` is a tenant-scoped `job_attempts` read that must stay `runInTenant(appDb, …)`.
+An over-applied rename to a single pool failed three of its embedded-PG tests with 42501.
+
+**★ A pre-merge claim audit caught a live boot regression nine review rounds had not.** Making the
+definer certificate unconditional at startup turns a documented `AOA_MIGRATION_PROMPT=never`
+deployment into a hard boot failure: that path logs “continuing without applying” and **boots on**,
+at which point the manifested functions are legitimately absent. CI never saw it because every CI
+database is freshly migrated. The certificate now skips — loudly — when
+`migrationSummary === "pending migrations skipped"`, on the reasoning that when migrations are known
+pending, “absent” carries no information about **drift**, which is the only thing that arm detects.
+The same audit found that Decision #122's grantee condition had **no enforcing mechanism**: the
+certificate derives its expected ACL *from* the manifest, so a future entry declaring
+`executeGrantees: ["aoa_app"]` would have matched whatever the migration granted and passed —
+re-introducing the exact defect `0267` exists to fix. That is now pinned and mutation-checked.
 
 **The observed outcome, measured not predicted.** On a real `aoa_app` connection against a migrated
 database, the gate now answers:
