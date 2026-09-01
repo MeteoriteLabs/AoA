@@ -192,6 +192,36 @@ describe.skipIf(!RUN)("BLOCKER E — canary preflight on a real aoa_app connecti
       expect(rows.map((row) => row.lease_id)).toEqual([NEIGHBOUR_LEASE]);
     });
 
+    // ★ ROUND-7 P1 — THE ACTUAL ATTACK, and the one the probes above never exercised.
+    //
+    // The two probes around this one pass the INTRUDER's own company id and ask about the
+    // NEIGHBOUR's environment. That tests the CROSS-ARGUMENT oracle, which the
+    // `AND e.company_id = p_company_id` predicate closes. It is not the attack.
+    //
+    // The attack is to pass the VICTIM's company id. Then the predicate compares the victim
+    // to themselves, is trivially satisfied, and an owner-authority function hands the caller
+    // the victim's data. `p_company_id` is not authorization — it is a lookup key, and any
+    // session holding EXECUTE can supply any value. `companies` carries NO row-level security
+    // and `aoa_app` holds SELECT on it, so the caller does not even have to guess the id.
+    //
+    // This test is the positive control for the fix: it must FAIL while `aoa_app` holds
+    // EXECUTE, and pass once execute authority moves off that pool.
+    it("POSITIVE CONTROL — aoa_app can read ANY company's leases by naming it", async () => {
+      const result = await fixture!.appDb.execute(
+        sql`SELECT lease_id FROM public.canary_preflight_evidence_leases(${NEIGHBOUR}::uuid)`,
+      );
+      const rows = (Array.isArray(result)
+        ? result
+        : ((result as { rows?: unknown[] }).rows ?? [])) as Array<{ lease_id: string | null }>;
+
+      expect(
+        rows.map((row) => row.lease_id),
+        "an aoa_app session named a company it has no relationship to and received that " +
+          "company's lease ids through OWNER authority, bypassing the privilege denial that " +
+          "makes environment_leases unreadable to this pool",
+      ).not.toContain(NEIGHBOUR_LEASE);
+    });
+
     it("does not echo the neighbour's environment back to a different company", async () => {
       const rows = await evidence(INTRUDER, fixture!.neighbourEnvironmentId);
       expect(rows).toHaveLength(1); // the scalars function always yields exactly one row
