@@ -107,40 +107,49 @@ beforeEach(() => {
   getPort.mockReturnValue(undefined);
 });
 
-describe("Unit 1.5 — a bare heartbeatService(db) consults the rollout port", () => {
-  it("reads the port when constructed with NO options — the measured defect", () => {
-    // routes/issues.ts, issue-assignee-wakeup.ts, comment-wakeup-outbox.ts, agents.ts,
-    // approvals.ts and work-question-continuations.ts all construct exactly like this, and
-    // enqueueWakeup EXECUTES on its own instance (dispatchQueuedRunsAfterAgentSignal ->
-    // startQueuedRunsForSingleAgent -> claimQueuedRun -> executeRun). Before this fallback,
-    // every one of them ran legacy in silence.
+describe("Unit 1.5 — the port is read LAZILY, never captured at construction", () => {
+  // ★ THIS IS THE TEST THAT CATCHES THE REAL BUG, and the first draft of this change failed
+  // it. `createApp` (index.ts:931) eagerly builds the route factories, and three of them hold
+  // a factory-scope `const heartbeat = heartbeatService(db)` — routes/issues.ts:99,
+  // routes/agents.ts, routes/approvals.ts — roughly 466 lines BEFORE index.ts:1397 registers
+  // the port. A hook captured in the factory is therefore permanently `undefined` on exactly
+  // the sites this port exists for.
+  //
+  // What made that draft dangerous rather than merely wrong: the per-call sites
+  // (issue-assignee-wakeup.ts, comment-wakeup-outbox.ts, work-question-continuations.ts)
+  // construct at wake time and DO pick the port up — and the probe's own `issue_assigned`
+  // path runs through issue-assignee-wakeup. The canary would have started working while
+  // three adjacent paths stayed silently legacy, which is a worse state than uniformly broken.
+  //
+  // Laziness is the property that makes boot ORDER irrelevant instead of merely correct once.
+
+  it("does NOT touch the port during construction — boot order cannot break it", () => {
     getPort.mockReturnValue(PORT_HOOK);
     heartbeatService({} as never);
-    expect(getPort).toHaveBeenCalled();
+    expect(
+      getPort,
+      "a factory-scope read is a no-op for every instance built before index.ts:1397",
+    ).not.toHaveBeenCalled();
   });
 
-  it("reads the port when options are supplied WITHOUT a rollout hook", () => {
-    // A caller passing some other option must not accidentally opt out of the canary.
+  it("does not touch the port during construction with options either", () => {
     getPort.mockReturnValue(PORT_HOOK);
     heartbeatService({} as never, {} as never);
-    expect(getPort).toHaveBeenCalled();
+    expect(getPort).not.toHaveBeenCalled();
   });
 
-  it("does NOT read the port when an explicit hook is injected — the scheduler is unchanged", () => {
-    // `??` short-circuits. index.ts's scheduler instance still passes its own hook, so this
-    // change is byte-identical for the one construction site that was already correct.
+  it("does not touch the port during construction when an explicit hook is injected", () => {
     heartbeatService({} as never, { distributedRollout: HOOK } as never);
     expect(getPort).not.toHaveBeenCalled();
   });
 
-  it("DOES read the port for an explicit `undefined` hook — stated, not hidden", () => {
-    // The one behaviour change beyond the fix itself. `{ distributedRollout: undefined }` is
-    // indistinguishable from `{}` under `??`, so such a caller now inherits the port. No
-    // caller in the tree does this deliberately, and a real opt-out is expressed by not
-    // registering a port at all — the flag-off default.
+  it("survives a port registered AFTER the instance exists — the index.ts ordering", () => {
+    // The literal production sequence: construct (createApp), then register. Nothing here
+    // may throw or latch, and the instance must remain usable.
+    const svc = heartbeatService({} as never);
     getPort.mockReturnValue(PORT_HOOK);
-    heartbeatService({} as never, { distributedRollout: undefined } as never);
-    expect(getPort).toHaveBeenCalled();
+    expect(svc).toBeTruthy();
+    expect(getPort).not.toHaveBeenCalled();
   });
 });
 
@@ -195,7 +204,7 @@ describe("Unit 1.5 — the composition root registers the rollout port", () => {
   });
 });
 
-describe("Unit 1.5 — heartbeat.ts prefers the explicit option over the port", () => {
+describe("Unit 1.5 — heartbeat.ts resolves the hook per run, preferring the explicit option", () => {
   const heartbeat = readFileSync(
     fileURLToPath(new URL("../services/heartbeat.ts", import.meta.url)),
     "utf8",
@@ -203,7 +212,63 @@ describe("Unit 1.5 — heartbeat.ts prefers the explicit option over the port", 
 
   it("uses ?? so an explicitly-injected hook always wins", () => {
     // `||` behaves identically today but would silently swap precedence for any future
-    // falsy-but-present hook. The runtime tests above pin the short-circuit either way.
-    expect(heartbeat).toContain("options?.distributedRollout ?? getDistributedRolloutPort()");
+    // falsy-but-present hook.
+    expect(heartbeat).toContain("explicitRolloutHook ?? getDistributedRolloutPort()");
+  });
+
+  it("resolves INSIDE executeRun, not at factory scope", () => {
+    // The regression guard for the bug the runtime tests above catch. `executeRun` begins
+    // around heartbeat.ts:3049; the resolution must sit after it, never in the factory body.
+    const factory = heartbeat.indexOf("export function heartbeatService(");
+    const executeRun = heartbeat.indexOf("async function executeRun(");
+    const resolve = heartbeat.indexOf("const distributedRolloutHook = resolveDistributedRolloutHook();");
+    expect(factory, "expected the factory").toBeGreaterThan(-1);
+    expect(executeRun, "expected executeRun").toBeGreaterThan(executeRun - 1);
+    expect(resolve, "expected a per-run resolution").toBeGreaterThan(-1);
+    expect(resolve).toBeGreaterThan(executeRun);
+  });
+
+  it("never captures the resolved hook in a factory-scope const", () => {
+    // The exact shape of the first draft's defect.
+    expect(
+      heartbeat,
+      "a factory-scope capture is undefined forever on the eagerly-built route instances",
+    ).not.toContain("const distributedRolloutHook = options?.distributedRollout");
+  });
+});
+
+describe("Unit 1.5 — the rollout decision is falsifiable", () => {
+  const heartbeat = readFileSync(
+    fileURLToPath(new URL("../services/heartbeat.ts", import.meta.url)),
+    "utf8",
+  );
+
+  it("logs the resolution unconditionally, outside the seven-conjunct canary guard", () => {
+    // Both `[CLI-006] canary execution owner = ...` logs sit INSIDE that guard, so their
+    // absence conflates "never wired" with "dial off", "mention wake", "null org" and "no
+    // issue". An operator reading logs must be able to tell a broken canary from a
+    // declining one — that ambiguity is the whole reason this unit exists.
+    const marker = heartbeat.indexOf('"[CLI-006] rollout resolved"');
+    expect(marker, "expected an unconditional resolution log").toBeGreaterThan(-1);
+
+    // It must carry the discriminators, or it cannot do that job.
+    const stmt = heartbeat.slice(marker - 700, marker);
+    for (const field of [
+      "rolloutHookPresent",
+      "rolloutState",
+      "rolloutOrganizationId",
+      "hasIssueContext",
+    ]) {
+      expect(stmt, `the log must carry ${field} to distinguish the failure causes`).toContain(field);
+    }
+  });
+
+  it("emits it after the resolution block closes, not inside the hook guard", () => {
+    const guard = heartbeat.indexOf("if (distributedRolloutHook && issueId && issueContext) {");
+    const marker = heartbeat.indexOf('"[CLI-006] rollout resolved"');
+    const canaryBlock = heartbeat.indexOf("// ── CLI-006 (D3/D3a) — the canary execution-ownership decision");
+    expect(guard).toBeGreaterThan(-1);
+    expect(marker).toBeGreaterThan(guard);
+    expect(marker, "must precede the canary decision block it exists to explain").toBeLessThan(canaryBlock);
   });
 });

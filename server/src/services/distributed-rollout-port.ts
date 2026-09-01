@@ -12,15 +12,27 @@
 //                                                                                     // and itself behind
 //                                                                                     // `if (config.heartbeatSchedulerEnabled)`
 //
-// Every other construction is bare:
+// Every other construction is bare, and they split into two kinds — a distinction that
+// turns out to be load-bearing:
 //
-//   routes/issues.ts        heartbeatService(db)     <- the task-creation path
-//   routes/agents.ts        heartbeatService(db)
-//   routes/approvals.ts     heartbeatService(db)
-//   services/issue-assignee-wakeup.ts   heartbeatService(db).wakeup(...)
-//   services/comment-wakeup-outbox.ts   heartbeatService(db).wakeup(...)
-//   services/work-question-continuations.ts
-//   index.ts (x2)
+//   EAGER, at factory scope, built by `createApp` (index.ts:931) BEFORE this port is
+//   registered (index.ts:1397). A hook captured in a `const` at factory scope is
+//   permanently `undefined` for these:
+//     routes/issues.ts:99     const heartbeat = heartbeatService(db)
+//     routes/agents.ts        const heartbeat = heartbeatService(db)
+//     routes/approvals.ts     const heartbeat = heartbeatService(db)
+//
+//   PER-CALL, constructed at wake time, i.e. always after boot:
+//     services/issue-assignee-wakeup.ts        await heartbeatService(db).wakeup(...)
+//     services/comment-wakeup-outbox.ts        heartbeatService(db).wakeup(...)
+//     services/work-question-continuations.ts
+//
+// The first draft of this port captured the hook at factory scope and was therefore a
+// NO-OP for the three eager sites — the fix would have looked wired, typechecked, passed
+// its tests, and never fired on `routes/issues.ts`. It was caught only because the
+// per-call sites masked it: the probe's own `issue_assigned` path runs through
+// issue-assignee-wakeup, so the canary would have started working while three adjacent
+// paths silently stayed legacy. Hence the lazy read (see `getDistributedRolloutPort`).
 //
 // And `enqueueWakeup` does not merely queue — it EXECUTES on its own instance
 // (`dispatchQueuedRunsAfterAgentSignal` -> `startQueuedRunsForSingleAgent` ->
@@ -83,12 +95,18 @@ export function setDistributedRolloutPort(hook: HeartbeatDistributedRolloutHook 
 /**
  * The hook for a `heartbeatService` built without one.
  *
- * ★ Precedence: an EXPLICIT `options.distributedRollout` always wins over this port — the
- * caller that bothered to inject is never overridden, so the scheduler's existing wiring is
- * byte-identical and no test that constructs a deliberately-hookless instance with an
- * explicit `undefined` option changes behaviour... with one caveat worth stating plainly:
- * `heartbeatService(db)` (no options at all) DOES now pick the port up. That is the entire
- * point of the change, and it is why the flag-off default matters — see below.
+ * ★ Precedence: an EXPLICIT `options.distributedRollout` always wins over this port, so the
+ * scheduler's existing wiring is byte-identical. Note precisely what that does and does not
+ * mean: under `??`, `{ distributedRollout: undefined }` is indistinguishable from `{}`, so a
+ * caller passing an explicit `undefined` DOES inherit the port. No caller in the tree does
+ * that deliberately; a real opt-out is expressed by not registering a port at all.
+ *
+ * ★ Read LAZILY, per run — never captured at construction. `createApp` eagerly builds the
+ * route factories, three of which hold a factory-scope `heartbeatService(db)`, ~466 lines
+ * before `index.ts` registers this port. A value captured in the factory would therefore be
+ * permanently `undefined` on exactly those sites. `heartbeat.ts` resolves through a closure
+ * inside `executeRun` instead, which makes boot ORDER irrelevant rather than merely correct
+ * today. Do not "optimise" that back into a factory-scope `const`.
  *
  * ★ Inert when distributed execution is off: `index.ts` only builds and registers the hook
  * inside the distributed block, so on a flag-off deployment this returns `undefined` and
