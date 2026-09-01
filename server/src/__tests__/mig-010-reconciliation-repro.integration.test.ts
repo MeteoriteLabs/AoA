@@ -80,4 +80,28 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.2 — the reconciliation defects, reproduc
     createCanaryPreflight({
       store: createDrizzleCanaryPreflightStore(fixture!.operatorDb),
     }).check({ organizationId: ORG });
+
+  it("[E10-F002] refuses on CLOSURE, not on credentials — the fixture reaches the real check", async () => {
+    const result = await check();
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // ★ The anti-vacuity assertion. If this ever reads `credential_authority_not_moved`, the
+    // fixture regressed and every closure assertion below is meaningless.
+    expect(result.reason).not.toBe("credential_authority_not_moved");
+    expect(result.reason).not.toBe("preflight_error");
+    expect(result.reason).toBe("reconciliation_incomplete");
+  });
+
+  it("[E10-F002] the crosswalk is EMPTY, because nothing in production writes it", async () => {
+    const rows = await fixture!.admin`
+      SELECT count(*)::int AS n FROM legacy_resource_reconciliation WHERE company_id = ${COMPANY}`;
+    expect(rows[0]!.n).toBe(0);
+
+    const result = await check();
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // One lease, no platform-default env row -> inventory is exactly one key, and it is unmapped.
+    expect(result.detail).toContain("unmapped=1");
+    expect(result.companyId).toBe(COMPANY);
+  });
 });
