@@ -1,6 +1,8 @@
 # BLOCKER E-2 + E-3 — what should CLOSURE mean?
 
-> **Status: DESIGN, revision 2 — reviewed against the tree, NOT yet built.**
+> **Status: DESIGN, revision 3 — reviewed, semantics settled, NOT yet built.**
+> Now owned by **MIG-010**, with the two defects filed as **E10-F002** (E-2) and **E7-F004** (E-3).
+> §9 settles the two open semantics the review left (F3 freshness, F4 unattributable).
 > Revision 1 survived its own review on the *diagnosis* and failed it on the *remedy*: three of
 > §4's mechanisms cannot be built as written. See §8 for the findings, which are applied inline
 > below rather than silently corrected.
@@ -344,3 +346,77 @@ built, because both change what the gate is allowed to answer.
 **Still open from §7**, unchanged by this round: Option R vs keeping the CAS (F8 sharpens the
 question rather than settling it); watermark storage shape; `legacyStatus` on a paused-but-mapped
 record; per-company vs per-organization watermark.
+
+---
+
+## 9. Settled semantics (revision 3)
+
+The review left two questions that change **what the gate is allowed to answer**, so they are settled
+here before any build. Both were argued from the failure they must prevent, not from convenience.
+
+### 9.1 F3 — the freshness bound is a policy constant, and the alternatives are worse
+
+The bound must stop a stale watermark from opening the gate over a churned fleet. Three shapes were
+considered:
+
+1. **"No live lease may postdate the watermark."** Rejected — this is E-3 wearing a hat. Any legacy
+   traffic during the decision reshuts the gate, which is the exact wall this unit exists to remove.
+   It also contradicts MIG-008's own stance that an active legacy execution is `mapped` and *left for
+   drain* (`legacy-resource-reconciliation.ts:130-140`).
+2. **Derive staleness from fleet churn** (a ratio of post- to pre-watermark leases). Rejected — an
+   invented metric with a threshold nobody can defend, and it fails differently on a quiet company
+   than a busy one. An arbitrary constant honestly labelled beats a derived one that looks principled.
+3. **A bounded validity window on the evidence.** ✅ **Chosen.**
+
+**The decision.** Reconciliation evidence has a maximum age. Past it the gate refuses with a new
+policy reason — `reconciliation_stale` — and the operator re-runs the pass. The constant lives in
+the preflight module as an exported, documented value (**not** an `AOA_*` environment variable: a new
+undocumented `AOA_*` in `server/src` reds `brand-check`, and a value this load-bearing should be
+reviewed in a diff rather than set per-box).
+
+**Why a constant is honest here.** It is a guard rail, not the mechanism. The mechanism is that the
+operator runs the pass **as part of the cutover action** — same CLI session, minutes before the flip
+— so a stale watermark should never occur in the intended flow. The constant exists to make the
+unintended flow fail closed rather than silently open. Precedent for a chosen-and-documented policy
+constant: `HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT` (CLAUDE.md, D5).
+
+★ **Name the residual honestly.** Inside the window, a post-watermark live legacy lease IS waved
+through without a crosswalk record. That is the intended semantics from §2 — it is current traffic on
+the legacy path, not an unreconciled legacy resource — but it is a real widening versus today's
+behaviour and must be stated wherever this is summarised. The window bounds how much of it can
+accumulate; it does not eliminate it.
+
+### 9.2 F4 — an operator resolution path, using the grant that already exists
+
+An `unattributable` record refuses the gate permanently and nothing in code can clear it. Options:
+
+1. **Fix the underlying lease** (give it an owner FK so `resolveResourceType` classifies). Rejected —
+   the pass would be mutating tenant data to make its own assertion pass, which is the shape of every
+   fail-open in this programme.
+2. **Let the pass overwrite its own record.** Rejected — append-only is what makes the crosswalk
+   evidence rather than state, and a pass that can rewrite its own verdict is not evidence.
+3. **A narrow operator command that resolves ONE record, on the record.** ✅ **Chosen.**
+
+**The decision.** An operator CLI subcommand resolves a single `unattributable` record by `UPDATE`ing
+its `disposition` and `reason`, using the `UPDATE` grant migration `0256` **already provisions to
+`aoa_operator` and which no application code currently uses**. Constraints, each a test:
+
+- It may transition **only** `unattributable → terminal_cleanup`. It can never mint a `mapped`
+  record, because `mapped` is the disposition that says "a live resource is accounted for and left
+  for drain" — an operator asserting that about a resource nobody could classify is precisely the
+  claim that must not be forgeable.
+- It rewrites `reason` with an operator-supplied justification, and refuses an empty one.
+- It resolves one `resourceKey` at a time. No bulk sweep: a bulk clear is how a register of
+  unresolved problems becomes a register of nothing.
+- It asserts its connected role first, like every other operator entrypoint (F5).
+
+★ **A doc contradiction ships with it.** `legacy_resource_reconciliation.ts:31-32` states there is
+"no update path in application code" and that the operator `UPDATE` grant "exists only to satisfy the
+mirrored 0233 grant shape". After this there IS one. That comment is amended in the same commit —
+not left to be discovered by the next reader as a lie the code tells about itself.
+
+### 9.3 What this adds to the refusal surface
+
+`CanaryPreflightRefusalReason` gains **`reconciliation_stale`**. It does not gain a reason for the
+unattributable case: that already refuses as `reconciliation_incomplete` with `unattributable` in the
+detail, which is correct — it IS incomplete. §9.2 gives it a remedy, not a new verdict.
