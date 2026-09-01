@@ -108,6 +108,64 @@ describe("CLI-006 — canary preflight store reads through the definer function"
     expect(readCanaryPreflightEvidence).toHaveBeenCalledWith(db, "co-1");
   });
 
+  // The gate fires all three members in ONE `Promise.all` (`canary-preflight.ts:139-145`).
+  // Each one used to execute `canary_preflight_evidence` independently, and that function
+  // returns ONE ROW PER LEASE — so the two scalar-only members each rescanned and hydrated
+  // the company's whole lease inventory for nothing. Terminal leases are retained, so the
+  // waste grew with history.
+  //
+  // Single-flight, NOT a cache: the in-flight promise is dropped as soon as it settles, so
+  // nothing survives the burst. `canary-preflight.ts:30-33` is explicit that this gate must
+  // never cache — a stale `true` outliving a newly-unreconciled resource is the fail-open
+  // the module exists to close.
+  it("executes the evidence function ONCE for a concurrent three-member read", async () => {
+    readCanaryPreflightEvidence.mockResolvedValue({
+      leaseIds: ["lease-1"],
+      platformDefaultEnvironmentId: "env-1",
+      keyGeneration: "sec-1:2",
+    });
+
+    const [leases, platformDefault, keyGeneration] = await Promise.all([
+      store.listLeases("co-1"),
+      store.platformDefaultEnv("co-1"),
+      store.currentKeyGeneration("co-1"),
+    ]);
+
+    expect(readCanaryPreflightEvidence).toHaveBeenCalledTimes(1);
+    expect(leases).toEqual([{ id: "lease-1" }]);
+    expect(platformDefault).toEqual({ environmentId: "env-1" });
+    expect(keyGeneration).toBe("sec-1:2");
+  });
+
+  it("does not retain the evidence after the burst settles", async () => {
+    readCanaryPreflightEvidence.mockResolvedValue({
+      leaseIds: [],
+      platformDefaultEnvironmentId: null,
+      keyGeneration: null,
+    });
+
+    await Promise.all([store.listLeases("co-1"), store.currentKeyGeneration("co-1")]);
+    await Promise.all([store.listLeases("co-1"), store.currentKeyGeneration("co-1")]);
+
+    // Two bursts => two reads. A cache would answer the second burst from memory, which is
+    // exactly the fail-open this gate refuses.
+    expect(readCanaryPreflightEvidence).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not share an in-flight read between different companies", async () => {
+    readCanaryPreflightEvidence.mockResolvedValue({
+      leaseIds: [],
+      platformDefaultEnvironmentId: null,
+      keyGeneration: null,
+    });
+
+    await Promise.all([store.listLeases("co-1"), store.listLeases("co-2")]);
+
+    expect(readCanaryPreflightEvidence).toHaveBeenCalledTimes(2);
+    expect(readCanaryPreflightEvidence).toHaveBeenCalledWith(db, "co-1");
+    expect(readCanaryPreflightEvidence).toHaveBeenCalledWith(db, "co-2");
+  });
+
   // The gate is READ-ONLY by construction: it must not even be able to reconcile
   // as a side effect of being consulted.
   it.each(["casClaimPaused", "insertRecordIfAbsent"])(

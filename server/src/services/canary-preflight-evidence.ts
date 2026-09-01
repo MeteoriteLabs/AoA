@@ -7,10 +7,17 @@
 // projection and the predicate — the return type structurally cannot carry
 // `company_secret_versions.material` or `environment_leases.metadata`.
 //
-// NO ATOMICITY IS CLAIMED. The store calls this once per member, so a `check()` makes
-// three round trips, exactly as the code it replaces did (three separate drizzle queries).
-// If a future change needs a consistent snapshot across the three scalars, memoize per
-// `check()` — do not assert a consistency this code does not provide.
+// NO ATOMICITY IS CLAIMED ACROSS `check()` CALLS. Two separate `check()` calls read
+// independently, and must — `canary-preflight.ts:30-33` refuses to cache this gate.
+//
+// Within one `check()` the store single-flights this call, so the three members share one
+// read (`canary-preflight-store.ts`). An earlier version of this comment said three
+// independent calls were "exactly as the code it replaces did"; that was WRONG and is
+// corrected here rather than deleted. The replaced code issued four queries but scanned
+// `environment_leases` ONCE — only `listLeases` touched it, while the other two were
+// indexed lookups on `environments` / `runtime_provider_keys`. This function returns one row
+// per lease, so calling it per member scanned and hydrated the whole lease inventory THREE
+// times to read two scalars, and terminal leases are retained, so that grew with history.
 
 import { sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
