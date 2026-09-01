@@ -440,6 +440,26 @@ export async function assertSecurityDefinerManifest(
     found.set(key, entry);
   }
 
+  // Relation owners, for the owner pin below. Read once for every application relation
+  // rather than per function: the manifest is small but the join is not free, and this
+  // keeps the query shape identical no matter how many definer functions are manifested.
+  const relationOwners = new Map<string, string>(
+    rowsOf<{ schema_name: string; relation_name: string; owner_name: string }>(
+      await db.execute(sql`
+        SELECT
+          namespace.nspname AS schema_name,
+          relation.relname AS relation_name,
+          owner.rolname AS owner_name
+        FROM pg_class relation
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        JOIN pg_roles owner ON owner.oid = relation.relowner
+        WHERE relation.relkind IN ('r', 'p')
+          AND namespace.nspname <> 'information_schema'
+          AND namespace.nspname NOT LIKE 'pg_%'
+      `),
+    ).map((row) => [`${row.schema_name}.${row.relation_name}`, row.owner_name] as const),
+  );
+
   for (const [key, actual] of found) {
     const expected = manifested.get(key);
     if (!expected) {
@@ -455,6 +475,30 @@ export async function assertSecurityDefinerManifest(
       throw new Error(
         `${role} security-definer drift: ${key} is owned by serving role ${actual.owner}`,
       );
+    }
+
+    // OWNER IS PINNED, NOT MERELY BOUNDED. `ALTER FUNCTION … OWNER TO` rewrites the ACL's
+    // grantor/grantee entries to the new owner, and the sentinel normalization above maps
+    // them straight back to FUNCTION_OWNER — so an owner swap to any non-serving role is
+    // INVISIBLE to the exact-ACL comparison below. Pin it against the relations the body
+    // reads: that hardcodes no role name (so it holds on every deployment) and states the
+    // real invariant — a definer function may hold exactly the authority of the data it
+    // reads. A less-privileged owner silently restores the BLOCKER E `preflight_error`
+    // outage; a more-privileged one silently widens the definer context.
+    for (const relation of expected.authorityRelations) {
+      const relationOwner = relationOwners.get(relation);
+      if (relationOwner === undefined) {
+        throw new Error(
+          `${role} security-definer drift: ${key} declares authority relation ${relation}, ` +
+            "which does not exist",
+        );
+      }
+      if (relationOwner !== actual.owner) {
+        throw new Error(
+          `${role} security-definer owner drift: ${key} is owned by ${actual.owner} but its ` +
+            `authority relation ${relation} is owned by ${relationOwner}`,
+        );
+      }
     }
 
     // A NULL `proacl` is not "no privileges" — it is PostgreSQL's DEFAULT ACL, and the

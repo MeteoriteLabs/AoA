@@ -55,6 +55,18 @@ describe("SECURITY DEFINER manifest — shape", () => {
     }
   });
 
+  it("names the relations whose authority each function borrows", () => {
+    // Owner must be PINNED, not merely bounded — an empty list would silently disable the
+    // owner check and leave `ALTER FUNCTION … OWNER TO` invisible again.
+    for (const fn of SECURITY_DEFINER_FUNCTION_MANIFEST) {
+      expect(fn.authorityRelations.length, `${fn.name} declares no authority relation`)
+        .toBeGreaterThan(0);
+      for (const relation of fn.authorityRelations) {
+        expect(relation, `${fn.name}: ${relation} must be schema-qualified`).toMatch(/^[a-z_]+\.[a-z_]+$/);
+      }
+    }
+  });
+
   it("has no duplicate identities", () => {
     expect(manifestKeys().size).toBe(SECURITY_DEFINER_FUNCTION_MANIFEST.length);
   });
@@ -178,6 +190,29 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
       );
       await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
         /owned by serving role/i,
+      );
+    } finally {
+      await database.teardown();
+    }
+  }, 180_000);
+
+  // Owner drift to a NON-serving role. The serving-role check above does not catch this,
+  // and neither can the ACL comparison: PostgreSQL rewrites the ACL's grantor/grantee
+  // entries to the NEW owner on `ALTER FUNCTION … OWNER TO`, and the scan normalizes those
+  // to the `FUNCTION_OWNER` sentinel — so the exact-ACL check still passes while the
+  // function now executes with a completely different authority. A less-privileged owner
+  // silently restores the BLOCKER E `preflight_error` outage; a more-privileged one
+  // silently widens the definer context.
+  it("REJECTS a definer function whose owner is not the owner of the relations it reads", async () => {
+    const database = await startMigratedDatabase({ label: "aoa-definer-altowner-" });
+    try {
+      await database.admin.unsafe('CREATE ROLE "aoa_definer_alt_owner" NOLOGIN');
+      await database.admin.unsafe('GRANT CREATE ON SCHEMA public TO "aoa_definer_alt_owner"');
+      await database.admin.unsafe(
+        'ALTER FUNCTION public.canary_preflight_evidence(uuid, uuid) OWNER TO "aoa_definer_alt_owner"',
+      );
+      await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
+        /owner drift/i,
       );
     } finally {
       await database.teardown();

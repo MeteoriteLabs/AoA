@@ -22,6 +22,20 @@ export type SecurityDefinerFunction = {
    * manifest exists to prevent.
    */
   readonly executeGrantees: readonly string[];
+  /**
+   * The schema-qualified relations whose authority this function borrows — i.e. every
+   * relation its body reads. The function's owner MUST own all of them.
+   *
+   * Owner is not a bounded axis, it is a pinned one. `ALTER FUNCTION … OWNER TO` rewrites
+   * the ACL's grantor/grantee entries to the new owner, so an owner swap is INVISIBLE to
+   * an exact-ACL comparison that normalizes against the current owner. A less-privileged
+   * owner silently restores the BLOCKER E `preflight_error` outage (the body loses the
+   * privileges it depends on); a more-privileged one silently widens the definer context.
+   * Pinning against the relations themselves is deployment-independent — it hardcodes no
+   * role name, and it states the actual invariant: a definer function may hold exactly the
+   * authority of the data it reads.
+   */
+  readonly authorityRelations: readonly string[];
   /** Why this function may hold owner authority. */
   readonly rationale: string;
 };
@@ -33,6 +47,14 @@ export const SECURITY_DEFINER_FUNCTION_MANIFEST: readonly SecurityDefinerFunctio
     identityArguments: "p_company_id uuid, p_default_env_id uuid",
     // The canary preflight runs on the app pool and nothing else calls this.
     executeGrantees: ["aoa_app"],
+    // Every relation the body reads (migration 0266). `aoa_app` holds ZERO privileges on
+    // all four, which is the whole reason this function exists.
+    authorityRelations: [
+      "public.environment_leases",
+      "public.environments",
+      "public.runtime_provider_keys",
+      "public.company_secret_versions",
+    ],
     rationale:
       "BLOCKER E. Returns three scalars the CLI-006 canary gate needs from tables the " +
       "non-owner aoa_app pool holds zero privileges on. Both arguments are company-scoped in " +
