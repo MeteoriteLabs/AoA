@@ -13,6 +13,7 @@
 // Windows-skipped unless AOA_RUN_WIN_INTEGRATION=1 (Issue #114); Linux CI is the authority.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import type { Sql } from "postgres";
 import type { Db } from "@armyofagents/db";
 import { createCanaryPreflight } from "../services/canary-preflight.js";
@@ -103,5 +104,27 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.2 — the reconciliation defects, reproduc
     // One lease, no platform-default env row -> inventory is exactly one key, and it is unmapped.
     expect(result.detail).toContain("unmapped=1");
     expect(result.companyId).toBe(COMPANY);
+  });
+
+  it("[positive control] hand-writing the records a pass WOULD write opens the gate", async () => {
+    // This is what `reconcileCompanyLegacyResources` would have inserted for LEASE_1: one
+    // `mapped` record keyed on the lease id, tagged with the current key generation. Written
+    // through the OPERATOR pool, which proves the write authority the real pass will need.
+    // (Verified: `0256` grants aoa_operator SELECT/INSERT/UPDATE and its policy is
+    // `USING (true) WITH CHECK (true)`, so this insert needs no GUC and no tenant context.)
+    const keyGeneration = `${SECRET}:1`;
+    await fixture!.operatorDb.execute(sql`
+      INSERT INTO legacy_resource_reconciliation
+        (company_id, environment_lease_id, environment_id, resource_key, resource_type,
+         legacy_status, provider, provider_lease_id, disposition, key_generation, reason)
+      VALUES (${COMPANY}::uuid, ${LEASE_1}::uuid, ${ENV}::uuid, ${LEASE_1}, 'ephemeral',
+              'active', 'e2b', 'sbx-1', 'mapped', ${keyGeneration},
+              'active legacy execution — left for drain, no fence synthesized')`);
+
+    const result = await check();
+    // ★ If this refuses, read the detail before touching anything else: a `key_generation`
+    // mismatch refuses as `credential_authority_not_moved`, which is a SEEDING bug, not a
+    // closure result.
+    expect(result).toMatchObject({ ok: true });
   });
 });
