@@ -366,3 +366,35 @@ describe("CLI-007 — the preflight establishes the canary's Company mint author
     expect((result as { credentialAuthority?: unknown }).credentialAuthority).toBeUndefined();
   });
 });
+
+// BLOCKER E (E-1) — the gate consumes ONLY `lease.id`.
+//
+// `canary-preflight-store.ts` now constructs its leases as `{ id } as LegacyLeaseInput`,
+// because the definer function that replaced the permission-denied drizzle reads projects
+// exactly one lease column. That cast is a real narrowing: if the gate ever reads another
+// field it would see `undefined` in PRODUCTION while every fake-store test in this file —
+// all of which build fully-populated leases — kept passing. This asserts the narrowing the
+// cast asserts.
+describe("BLOCKER E — the gate consumes only lease.id", () => {
+  it("reaches a policy verdict when leases carry ONLY an id", async () => {
+    const preflight = createCanaryPreflight({
+      store: {
+        listOrganizationCompanyIds: async () => [COMPANY_A],
+        listLeases: async () => [{ id: "lease-1" } as never],
+        platformDefaultEnv: async () => null,
+        listRecords: async () => [],
+        currentKeyGeneration: async () => KEY_GEN,
+      },
+    });
+
+    const result = await preflight.check({ organizationId: ORG });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // A key generation IS supplied here, so the gate gets past the credential check at
+      // canary-preflight.ts:150-156 and reaches closure — the branch that touches lease
+      // fields. `preflight_error` here would mean the gate threw while reading the lease.
+      expect(result.reason).toBe("reconciliation_incomplete");
+    }
+  });
+});
