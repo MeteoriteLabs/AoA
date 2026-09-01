@@ -10,9 +10,10 @@
 //     query cannot drift from the one the canary gate already ships. A parallel
 //     re-implementation is precisely how CLI-002's memory bundle silently dropped a
 //     security predicate; reuse makes divergence impossible rather than merely unlikely.
-//     Plain read on `appDb` — `companies` carries no row-level security and `aoa_app`
-//     holds SELECT (migrations 0213/0214) — matching the production composition
-//     (`index.ts` builds the canary store with `appDb`).
+//     ★ ROUND 7: no longer a plain `companies` read. That primitive now goes through a
+//     SECURITY DEFINER function whose EXECUTE grant is `aoa_operator`-only (migration 0267),
+//     so this store takes the OPERATOR pool — matching the production composition, where
+//     `index.ts` builds the canary store on `distributedExecutionDatabases.operatorDb`.
 //
 //   * listActiveAttempts — the missing per-org non-terminal-attempt iterator (the
 //     interface member the pure module declared with no SQL impl). A TENANT-SCOPED read
@@ -43,15 +44,23 @@ export interface DistributedExecutionDrainStore {
   listActiveAttempts(organizationId: string): Promise<DistributedExecutionActiveAttempt[]>;
 }
 
-export function createDistributedExecutionDrainStore(appDb: Db): DistributedExecutionDrainStore {
+export function createDistributedExecutionDrainStore(
+  appDb: Db,
+  operatorDb: Db,
+): DistributedExecutionDrainStore {
   // Reuse the canary gate's Company enumeration BY REFERENCE — never a re-implementation.
-  // ★ ROUND 7 (Unit 1.7) — this store's privileged members now read through SECURITY DEFINER
-  // functions whose EXECUTE grant lives on `aoa_operator`, NOT `aoa_app`. `listOrganizationCompanyIds`
-  // is one of them. Nothing breaks today because `createDistributedExecutionDrainStore` has no
-  // production caller — the drain lever is owed to REL-005 — but whoever wires it will get a bare
-  // 42501 here unless this construction is repointed at the operator pool. Deliberately NOT
-  // repointed now: it is untested dead code and its pool is REL-005's decision to make.
-  const { listOrganizationCompanyIds } = createDrizzleCanaryPreflightStore(appDb);
+  // ★ ROUND 7 (Unit 1.7) — this store spans TWO authorities, and the signature now says so.
+  //
+  //   * listOrganizationCompanyIds goes through a SECURITY DEFINER function whose EXECUTE
+  //     grant is `aoa_operator`-only (migration 0267), so it needs `operatorDb`.
+  //   * listActiveAttempts is a TENANT-SCOPED read on `job_attempts` through `runInTenant`,
+  //     which is the app pool's RLS contract — it needs `appDb` and would break on the
+  //     operator pool.
+  //
+  // Both were previously one `appDb` parameter. Collapsing them onto either single pool
+  // fails: the app pool loses the definer EXECUTE, and the operator pool cannot do the
+  // tenant-scoped attempt read. I tried the one-pool version first and the suite caught it.
+  const { listOrganizationCompanyIds } = createDrizzleCanaryPreflightStore(operatorDb);
 
   return {
     listOrganizationCompanyIds,

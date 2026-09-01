@@ -63,7 +63,7 @@ async function seedPendingReceipt(company: string, seeded: { jobId: string; atte
 }
 
 function makeDrain(requestCancellation: ReturnType<typeof vi.fn>) {
-  const store = createDistributedExecutionDrainStore(fixture!.app.db);
+  const store = createDistributedExecutionDrainStore(fixture!.app.db, fixture!.operator.db);
   const bridge = jobBudgetCostBridge(fixture!.app.db, { env: ENABLED_ENV });
   return createDistributedExecutionDrain({
     listAdmittedOrganizationIds: async ({ afterOrganizationId }) =>
@@ -101,7 +101,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
   () => {
     it("[Step 4] listActiveAttempts returns exactly the non-terminal attempts, deduped by job, {org,company,job}", async () => {
       guard();
-      const store = createDistributedExecutionDrainStore(fixture!.app.db);
+      const store = createDistributedExecutionDrainStore(fixture!.app.db, fixture!.operator.db);
 
       const co1NonTerminal = await seedAttempt(COMPANY, "running");
       await seedAttempt(COMPANY, "succeeded"); // terminal → excluded
@@ -126,7 +126,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
 
     it("[Step 4] returns an empty list for an org whose attempts are ALL terminal", async () => {
       guard();
-      const store = createDistributedExecutionDrainStore(fixture!.app.db);
+      const store = createDistributedExecutionDrainStore(fixture!.app.db, fixture!.operator.db);
       await seedAttempt(COMPANY, "succeeded");
       await seedAttempt(COMPANY_B, "expired");
       expect(await store.listActiveAttempts(ORG)).toEqual([]);
