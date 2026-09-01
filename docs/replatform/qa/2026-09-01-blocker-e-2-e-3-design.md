@@ -160,10 +160,15 @@ What this buys:
 - **It mirrors the shape that already worked.** Units 1.6+1.7 were "correct-layering, read-only
   first slice".
 
-★ **F8 — revision 1 handed the cleanup half to "CLI-004", which does not exist.** `CLI-004`
-appears in this repository ONLY as a comment, in the two orphaned modules themselves
-(`legacy-resource-reconciliation.ts:19`, `:153`, `:169`; `legacy-resource-reconciliation-store.ts:60`).
-There is no implementation. The real, wired cleanup path is the **warm sandbox reaper**:
+★ **F8 — revision 1 handed the cleanup half to "CLI-004", which is not the path it named.**
+★★ *Corrected within the same round, because the review's first pass overstated this.* CLI-004 **did
+ship** (E7, `CLI-004-result.md`, implemented at `packages/worker-daemon/src/supervisor/reconcile.ts`).
+It is the **distributed** side's orphan sweeper: it reconciles labelled *provider resources* through
+`CleanupAuthority`, and it never reads `environment_leases`. So "terminal via CLI-004 reconcile
+composition" (`legacy-resource-reconciliation.ts:153`, `:169`) is a claim about a resource that has
+already become a labelled distributed resource — **not** a promise to tear down a legacy lease row.
+
+The path that actually sweeps legacy `environment_leases` rows is the **warm sandbox reaper**:
 `listTerminalUncleanedLeases` → `claimTerminalUncleaned` (`warm-sandbox-reaper.ts:291`, `:157`) and
 `listPausedLeasesWithKeyGeneration` (`:234`).
 
@@ -293,7 +298,7 @@ Each of these is a test, not a note.
 - **Unit 2 / capability** (E7-F003): MCP surface, instructions bundle, workspace, output capture.
   Still unowned, still not started. Fixing E-2/E-3 opens the gate; it does not make an agent capable.
 - Teardown of paused snapshots at cutover. Option R leaves them on the **warm reaper's** TTL path
-  (`warm-sandbox-reaper.ts:234`), not on "CLI-004", which does not exist (F8).
+  (`warm-sandbox-reaper.ts:234`) — not CLI-004, which sweeps labelled distributed resources and never reads `environment_leases` (F8).
 - The two audit findings still open from PR #333: Decision #122 condition 3 has no checker, and a
   *new* unmanifested definer function goes undetected on flag-off boots.
 
@@ -329,7 +334,7 @@ diagnosis (§1-§3) survived. **Three of §4's mechanisms did not.**
 | F5 | MED | The CLI's role is operator-supplied via `DATABASE_URL`. Without a role assertion the entire §4.2 grant argument is decorative. | §5.6 |
 | F6 | LOW | Correction, in the design's favour: `classifyLease` has **no** non-test caller but the pass, so Option R is cheaper than §4.1 claimed. Do not confuse it with `classifyLeaseTruth` (`adapter-manager-control.ts:103`), which is the reaper's and unrelated. | §4.1 |
 | F7 | LOW | Correction: `environment_leases.created_at` has **no** application consumer — the single grep hit (`job-operations.ts:95`) is the *job* leases table. The `acquireLease` clock switch is lower-risk than §3.3 implies, but still needs its pinning test: the risk was never "something reads it", it was "the two clocks must agree". | §3.3 |
-| F8 | MED | "CLI-004" exists only as a comment in the two orphaned modules. The real wired path is the warm reaper — and today's CAS is a deliberate handoff *into* it, not bookkeeping, so Option R must be argued as a lifecycle change rather than a cleanup deferral. | §4.1, §6 |
+| F8 | MED | Revision 1 deferred cleanup to "CLI-004". It ships, but it is the **distributed** orphan sweeper over labelled provider resources and never reads `environment_leases`. (★ This row was itself corrected mid-round: the first pass claimed CLI-004 did not exist.) The path that sweeps legacy lease rows is the warm reaper — and today's CAS is a deliberate handoff *into* it, not bookkeeping, so Option R must be argued as a lifecycle change rather than a cleanup deferral. | §4.1, §6 |
 
 **What this changes about sequencing.** F1 + F2 together mean the read surface is not "one new
 definer function" but a **new org-scoped, watermark-aware definer surface** — closer in size to
