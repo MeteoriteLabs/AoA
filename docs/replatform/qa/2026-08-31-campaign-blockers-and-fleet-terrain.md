@@ -410,6 +410,61 @@ partially-unpacked image. `docker builder prune -af` reclaimed 8.76GB (0 active)
 15GB pre-flight guard, and both scripts verify the fix is present in the checkout, in the built image, AND in
 the running container — a cached layer would otherwise ship the old code under a fresh tag.
 
+### 9e.2 ★★★ BLOCKER E (2026-09-01) — the canary preflight cannot read its own evidence
+
+**The CLI-006 canary can never flip to distributed on a correctly-booted flag-on deployment, no matter
+what credentials are set.** Found by an adversarial pass that REFUTED a prior agent's confident
+prediction, then confirmed empirically with `psql` on the live box.
+
+`server/src/index.ts:1214` binds the preflight store to the **non-owner `aoa_app`** pool:
+
+```ts
+preflight: createCanaryPreflight({ store: createDrizzleCanaryPreflightStore(appDb) })
+```
+
+`canary-preflight.ts` fires its evidence reads in one `Promise.all`. Measured privileges:
+
+| Table the preflight reads | `aoa_app` | `aoa_operator` |
+|---|---|---|
+| `companies` | **OK** | DENIED |
+| `legacy_resource_reconciliation` | **OK** | **OK** |
+| `environment_leases` | DENIED | DENIED |
+| `environments` | DENIED | DENIED |
+| `runtime_provider_keys` | DENIED | DENIED |
+| `company_secret_versions` | DENIED | DENIED |
+
+Three reads reject with PG 42501; the catch converts that to
+`reason="preflight_refused"`, `detail="preflight_error: … permission denied for table …"`, and
+`run-execution-owner.ts:254-257` returns `owner="legacy"`. Every time.
+
+**★ Why the obvious fixes do not work:**
+
+- **A bare `GRANT` breaks BOOT.** `assertExactServingRoleAuthority`
+  (`server/src/db/distributed-execution-databases.ts:190-208`) scans every table in every non-system
+  schema and throws on **any** deviation from `appTablePrivileges()`. Privileges outside the manifest
+  are drift, and drift is fatal. So there is **no operator-only fix** — this requires code.
+- **Swapping to the operator pool does not work either.** `aoa_operator` is *more* restricted — it
+  cannot read `companies`. Neither role holds the full set.
+
+**★★ Why this is the worst kind of blocker: the verification lies.** The runbook's Step 4b
+verification SQL is run by an operator as owner/superuser and will show **green** while the server
+keeps refusing — a check that passes for a reason the server does not share. Nothing catches it in
+CI either: `server/src/__tests__/cli-006-canary-preflight-store.test.ts:44` constructs the store with
+`{} as never`, and the pure tests inject fakes. **No test exercises the store against a real
+restricted role.** That is the [[checks-that-nothing-runs]] failure class, one level down.
+
+**Security dimension (why this is not a one-line grant).** `company_secret_versions.material` holds
+AES-256-GCM encrypted provider-key material. Granting the tenant-serving role table-level SELECT on
+it widens exposure of exactly what Decision #104 protects and what E2 made `aoa_app` a non-owner to
+contain. The fix must be designed, not patched — a design pass with security/correctness/minimal-diff
+judging is in flight; candidates are column-level grants or a SECURITY DEFINER projection, pushing the
+evidence into `legacy_resource_reconciliation` (which `aoa_app` **can** already read), or a reviewed
+manifest widening.
+
+**Ordering consequence.** Blocker E sits BEFORE the credential work in the dependency order: setting
+`provider:anthropic` (H2 / Step 4a) and the E2B pointer (Step 4b) is necessary but **not sufficient**,
+and neither can be validated end-to-end until E is fixed.
+
 ### 9e.1 ★ THE SEVEN-CONJUNCT PRE-FLIGHT — check ALL of these before the next dispatch
 
 `heartbeat.ts` guards the `[CLI-006]` decision block with **seven** conjuncts. A missing `[CLI-006]` line is
