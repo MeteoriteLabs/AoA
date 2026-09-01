@@ -127,4 +127,25 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.2 — the reconciliation defects, reproduc
     // closure result.
     expect(result).toMatchObject({ ok: true });
   });
+
+  it("[E7-F004] ONE lease created after the pass re-closes the gate — the losing race", async () => {
+    // Exactly what `acquireLease` does on every legacy cloud run (`environments.ts:141-165`).
+    await fixture!.admin`INSERT INTO environment_leases
+      (id, company_id, environment_id, status, lease_policy, provider, provider_lease_id)
+      VALUES (${LEASE_2}, ${COMPANY}, ${ENV}, 'active', 'ephemeral', 'e2b', 'sbx-2')`;
+
+    const result = await check();
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("reconciliation_incomplete");
+    // The NEW lease is the unmapped one. The recorded lease is still fine — this is not a
+    // regression of Task 3, it is a strictly larger inventory over the same records.
+    expect(result.detail).toContain("unmapped=1");
+
+    // ★ And the crosswalk did NOT change. The gate is read-only; it cannot heal itself, and no
+    // pass ran. This is what makes it a permanently-losing race rather than a transient.
+    const rows = await fixture!.admin`
+      SELECT count(*)::int AS n FROM legacy_resource_reconciliation WHERE company_id = ${COMPANY}`;
+    expect(rows[0]!.n).toBe(1);
+  });
 });
