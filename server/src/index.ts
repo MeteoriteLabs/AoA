@@ -33,7 +33,10 @@ import {
   TENANT_APP_ROLE,
   provisionTenantAppRoleLoginSql,
 } from "./db/rls-tenant.js";
-import { openDistributedExecutionDatabases } from "./db/distributed-execution-databases.js";
+import {
+  assertManifestedSecurityDefinerFunctions,
+  openDistributedExecutionDatabases,
+} from "./db/distributed-execution-databases.js";
 import { tenantIsolationEnforced } from "./config/deployment-mode.js";
 import { reconcileCloudBlockedPlugins } from "./services/plugin-lifecycle.js";
 import { loadConfig } from "./config.js";
@@ -557,6 +560,42 @@ if (config.databaseUrl) {
 // Optional boot-only credential provisioning remains dormant by default. External
 // secret managers may instead provision the URLs' credentials ahead of startup.
 await maybeProvisionDistributedExecutionRoles(activeDatabaseConnectionString);
+
+// The SECURITY DEFINER certificate's POSITIVE arm, on EVERY boot — flag on or off.
+// Migration 0266 creates the two `public.canary_preflight_evidence_*` functions on every deployment and grants
+// `aoa_app` EXECUTE on it regardless of the flag; a box that was once flag-on also keeps the
+// LOGIN credential, because `maybeProvisionDistributedExecutionRoles` is a strict no-op when
+// the flag is off and never restores NOLOGIN. So the owner-authority surface exists on
+// flag-off deployments too, and certifying it only under the flag would leave it unwatched
+// exactly where nothing else is watching. Drift here is fatal, per Decision #122's
+// 2026-09-01 amendment.
+//
+// Only the POSITIVE arm (every manifested function pinned to its owner, ACL, execution
+// config and body). The exhaustive "nothing unmanifested exists" arm stays on the flag-on
+// path: it asserts a property of the whole database, and AoA supports `external-postgres`
+// against an operator-owned database where a vendor or extension definer function in another
+// schema is legitimate.
+// ★ REGRESSION GUARD (found by a pre-merge claim audit, not by review). Making this arm
+// unconditional broke a SUPPORTED deployment: `AOA_MIGRATION_PROMPT=never` is documented
+// (docs/deploy/environment-variables.md) and plumbed through docker-compose, and an operator
+// at a TTY who declines the prompt takes the same path. Both log "continuing without
+// applying" and boot ON — at which point the manifested functions genuinely do not exist yet,
+// and an unguarded assertion turns a working box into a hard boot failure.
+//
+// Skipping here is correct rather than merely convenient: when migrations are known pending
+// the schema is known to be behind, so "this function is absent" carries no information about
+// DRIFT, which is the only thing this arm exists to detect. The operator has already been
+// warned about the pending migrations by ensureMigrations. Anything other than a skipped run
+// still asserts, so the drift guarantee is unchanged on every box that is actually migrated.
+if (migrationSummary === "pending migrations skipped") {
+  logger.warn(
+    "Pending migrations were skipped, so the SECURITY DEFINER certificate cannot distinguish " +
+      "drift from not-yet-created. Skipping it for this boot; run `pnpm db:migrate` and restart " +
+      "to re-arm it.",
+  );
+} else {
+  await assertManifestedSecurityDefinerFunctions(db, "startup");
+}
 
 // Corrective E2 successor to E2-D03: flag-on boot must prove both bounded roles
 // before any E3 route/work could start. There is deliberately no owner fallback.
@@ -1211,7 +1250,11 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
         organizationId,
         workloadType,
       }),
-    preflight: createCanaryPreflight({ store: createDrizzleCanaryPreflightStore(appDb) }),
+    preflight: createCanaryPreflight({
+      // ROUND 7 — the operator pool, not the tenant-facing app pool. The definer functions'
+      // EXECUTE grant moved with it; aoa_app can no longer reach owner authority here.
+      store: createDrizzleCanaryPreflightStore(distributedExecutionDatabases.operatorDb),
+    }),
     convert: convertOrchestrator,
     placement: toRunExecutionPlacement(placementService),
     // Hand back the org concurrency slot the convert claimed when the run ends up legacy.

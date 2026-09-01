@@ -2199,6 +2199,51 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       });
     }, 5_000);
 
+    // BLOCKER E-1 / Decision #122 amendment. The definer certificate's POSITIVE arm must run
+    // on EVERY boot, not only under the distributed flag: migration 0266 creates the
+    // owner-authority function on every deployment and grants `aoa_app` EXECUTE regardless,
+    // and a box that was once flag-on keeps the LOGIN credential (the provisioning helper is
+    // a strict no-op when the flag is off and never restores NOLOGIN).
+    //
+    // This spawns the REAL flag-off server, so it proves the wiring in index.ts, not just the
+    // assertion function. A control boot bounds it: without one, "the server exited" could
+    // mean the fixture is broken rather than that the certificate fired.
+    it("aborts a FLAG-OFF boot when the definer function's ACL has drifted", async () => {
+      guard();
+      const control = await observeServer({
+        databaseUrl: legacyOwnerUrl,
+        distributedEnabled: false,
+      });
+      expect(control.exited, `control flag-off boot must stay up:
+${control.output}`).toBe(false);
+
+      // The GRANT must run as the FUNCTION OWNER. `legacyOwnerUrl` authenticates as
+      // `aoa_legacy_table_owner`, which owns only `execution_targets` — so drive the drift
+      // through an admin connection to the same database.
+      const legacyOwner = postgres(
+        adminUrl.replace(/\/postgres$/, "/startup_legacy_owner"),
+        { max: 1 },
+      );
+      try {
+        await legacyOwner.unsafe(
+          "GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid, uuid) TO PUBLIC",
+        );
+        const drifted = await observeServer({
+          databaseUrl: legacyOwnerUrl,
+          distributedEnabled: false,
+        });
+        expect(drifted.exited, `flag-off boot must ABORT on definer ACL drift:
+${drifted.output}`)
+          .toBe(true);
+        expect(drifted.output).toContain("execute authority drift");
+      } finally {
+        await legacyOwner.unsafe(
+          "REVOKE EXECUTE ON FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid, uuid) FROM PUBLIC",
+        ).catch(() => {});
+        await legacyOwner.end().catch(() => {});
+      }
+    }, 180_000);
+
     it("keeps the real flag-off server usable with a non-superuser execution_targets owner", async () => {
       guard();
       const result = await observeServer({

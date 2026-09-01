@@ -18,7 +18,7 @@ You are reading this as context for working on the AoA codebase. This applies wh
 
 ## Critical Rules
 
-1. **Drizzle ORM only.** Schema changes go in `packages/db/src/schema/`. Run `pnpm db:generate` for migrations. NEVER write raw SQL migration files. Schema DDL is always `db:generate` output. **Narrow exception (C14):** drizzle-kit cannot emit idempotency guards (`IF NOT EXISTS` / `DO $$ … duplicate_object`) or data-only backfills; a few migrations (e.g. `0189`, `0195`) hand-APPEND those after generation — always with an inline comment and always idempotent. Schema DDL is never hand-authored. See `AGENTS.md` and Decision #19.
+1. **Drizzle ORM only.** Schema changes go in `packages/db/src/schema/`. Run `pnpm db:generate` for migrations. NEVER write raw SQL migration files. Schema DDL is always `db:generate` output. **Narrow exception (C14) — TWO classes, both of which drizzle-kit provably cannot emit:** **(a) idempotency guards** (`IF NOT EXISTS` / `DO $$ … duplicate_object`) **and data-only backfills**, hand-APPENDED below generated DDL (e.g. `0189`, `0195`); **(b) idempotent cluster/security DDL** — roles, `GRANT`/`REVOKE`, `ENABLE`/`FORCE ROW LEVEL SECURITY`, `CREATE POLICY`, and `SECURITY DEFINER` functions plus their ACLs — hand-authored into a delta-free `--custom` migration (e.g. `0211`, `0213`, `0214`, `0261`, `0267`; `0266` is superseded and is NOT an exemplar). **Class (b) is governed by Decision #122 and its 2026-09-01 amendment, which carry the binding conditions — read them before hand-authoring anything;** this line is a summary, not the authority. **Tables, columns, indexes and foreign keys are NEVER hand-authored** — that is always `db:generate` output. See `AGENTS.md` and Decisions #19 + #122.
 2. **Follow existing patterns.** New services follow `server/src/services/goals.ts`. New routes follow `server/src/routes/goals.ts`. New schemas follow `packages/db/src/schema/goals.ts`.
 3. **"Issues" = "Tasks" in UI only.** The DB table is `issues`. The API routes use `/issues`. All user-facing text says "Task" / "Tasks". Never rename the table or routes.
 4. **"Projects" table serves both Departments and Projects.** Distinguished by `type` field: `'department'` | `'project'`. Same mechanics for both.
@@ -344,7 +344,7 @@ Windows e2e skip is implemented at playwright config level (`tests/e2e/playwrigh
 
 ## Database Schema
 
-All table definitions live in `packages/db/src/schema/`. Schema changes use Drizzle ORM only — never raw SQL — except the C14 narrow exception (hand-appended idempotency guards + data backfills, e.g. 0189/0195; schema DDL is always `db:generate`).
+All table definitions live in `packages/db/src/schema/`. Schema changes use Drizzle ORM only — never raw SQL — except the C14 narrow exception, which has two classes: **(a)** hand-appended idempotency guards and data-only backfills (e.g. 0189/0195), and **(b)** idempotent cluster/security DDL, governed by Decision #122. Schema DDL is always `db:generate` output. See rule 1 above and `AGENTS.md` for the full text; **Decision #122 is the authority — this line summarises it and cannot widen it.**
 
 ### Core / Company
 
