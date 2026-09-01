@@ -412,6 +412,10 @@ the running container — a cached layer would otherwise ship the old code under
 
 ### 9e.2 ★★★ BLOCKER E (2026-09-01) — the canary preflight cannot read its own evidence
 
+> **STATUS (Unit 1.6): E-1 is FIXED; E-2 and E-3 are OPEN and the canary is STILL GATED SHUT.**
+> Read §9e.2.2 before acting on anything below it. Two corrections there: three reads were blocked,
+> not four, and the post-fix refusal is `credential_authority_not_moved`, not `preflight_error`.
+
 **The CLI-006 canary can never flip to distributed on a correctly-booted flag-on deployment, no matter
 what credentials are set.** Found by an adversarial pass that REFUTED a prior agent's confident
 prediction, then confirmed empirically with `psql` on the live box.
@@ -462,6 +466,9 @@ evidence into `legacy_resource_reconciliation` (which `aoa_app` **can** already 
 manifest widening.
 
 #### 9e.2.1 ★★★ E IS TWO DEFECTS STACKED — and the second is worse
+
+> **Superseded count:** E is **THREE** defects, not two. E-3 (the losing inventory race) is stated in
+> §9e.2.2. The analysis in this section stands; only the count was short.
 
 A three-design pass (security / correctness / minimal-diff judging) surfaced a load-bearing fact the
 privilege story had hidden. **VERIFIED INDEPENDENTLY:**
@@ -520,6 +527,72 @@ exactly two relations. Views and matviews ARE scanned like tables (`relkind IN (
 **Ordering consequence.** Blocker E sits BEFORE the credential work in the dependency order: setting
 `provider:anthropic` (H2 / Step 4a) and the E2B pointer (Step 4b) is necessary but **not sufficient**,
 and neither can be validated end-to-end until E is fixed.
+
+#### 9e.2.2 ★★★ E-1 FIXED (Unit 1.6) — THE CANARY IS STILL GATED SHUT
+
+**E-1 only. The canary cannot flip, and any claim that Unit 1.6 unblocked it is false.**
+
+What shipped: an owner-owned `SECURITY DEFINER` function
+(`packages/db/src/migrations/0266_canary_preflight_evidence_fn.sql`) returning the three evidence
+scalars the gate needs, with `EXECUTE` granted to `aoa_app` only. No table grant, no column grant, no
+ACL-manifest edit — the four secret-bearing tables still raise 42501 for `aoa_app`, pinned as a
+standing anti-widening test (`canary-preflight-real-role.integration.test.ts`). Because such a
+function was **invisible** to `assertExactServingRoleAuthority` (zero `prosecdef` references existed
+repo-wide), the same change ships a `prosecdef`-keyed certificate
+(`server/src/db/security-definer-manifest.ts`), so the ACL model **narrowed** rather than acquiring an
+undocumented hole.
+
+**The observed outcome, measured not predicted.** On a real `aoa_app` connection against a migrated
+database, the gate now answers:
+
+```
+{"ok":false,"reason":"credential_authority_not_moved",
+ "companyId":"…","detail":"Company … has no current provider-control key generation"}
+```
+
+That is a **policy** refusal. Before the fix the same call answered `preflight_error` with
+`permission denied for table environment_leases / environments / runtime_provider_keys` in the detail
+— an "I could not read" that is unfalsifiable and indistinguishable from a policy decision. **The only
+thing this unit delivers is that the refusal is now honest.**
+
+Note the reason is `credential_authority_not_moved`, **not** `reconciliation_incomplete`:
+`canary-preflight.ts:150-156` checks the key generation **before** closure is ever evaluated, and
+`deriveE2bKeyGeneration` returns `null` for any company without a default BYO e2b key (its own
+docstring calls that "the operator env default — ungenerationed"). `reconciliation_incomplete` becomes
+reachable only once a company has a BYO e2b key provisioned. Both are policy refusals.
+
+**Correction to §9e.2 above:** three reads are blocked, not four.
+`legacy_resource_reconciliation` **is** granted SELECT to `aoa_app`
+(`job-control-legacy-grants.ts:316-318`), so `listRecords` was never blocked. The blocked reads are
+`environment_leases`, `environments`, and the `runtime_provider_keys` → `company_secret_versions`
+pointer chain.
+
+**Still open — E-2 and E-3.** §9e.2.1 named E as two defects. It is **three**.
+
+- **E-2 (unwired)** — `reconcileCompanyLegacyResources` (`legacy-resource-reconciliation.ts:324`) has
+  **ZERO non-test callers**. Nothing in a running server writes `legacy_resource_reconciliation`, so
+  `listRecords` returns `[]` forever.
+- **E-3 (losing race)** — `environments.ts:142` inserts an `environment_leases` row on **every** legacy
+  cloud run, while `legacy-resource-reconciliation.ts:344-350` `continue`s past a lost-CAS paused lease
+  *without recording it*. The pass's inventory is a strict subset of the gate's re-derived inventory
+  **by construction**, so closure is a permanently-losing race on any box with traffic.
+
+**The E-2/E-3 design question, stated so it is not answered by reflex.**
+
+> `legacy-resource-reconciliation.ts:344-350` `continue`s past a lost-CAS paused lease *without
+> recording it*, while `environments.ts:142` inserts a lease on **every** legacy cloud run. The pass's
+> inventory is a strict subset of the gate's re-derived inventory **by construction**. Re-deriving live
+> inventory against a batch-written crosswalk is a permanently-losing race on any box with traffic.
+>
+> **The question is not "who calls the reconciler" — it is what closure should mean.** Candidates:
+> (a) freeze inventory at a watermark and assert closure only below it; (b) have the gate verify an
+> *attestation* the pass emits rather than re-deriving inventory itself; (c) scope closure to leases
+> predating the canary decision. Each changes what the gate promises. Pick deliberately.
+
+Wiring a caller for `reconcileCompanyLegacyResources` without answering that question produces a gate
+that closes and re-opens with traffic. The §9e.2.1 amendments still hold: the first slice must be
+READ-ONLY (a paused lease leaves the gate CLOSED rather than silently expiring a live warm snapshot),
+and the attestation must be keyed per company, not per pass.
 
 ### 9e.1 ★ THE SEVEN-CONJUNCT PRE-FLIGHT — check ALL of these before the next dispatch
 
