@@ -27,10 +27,12 @@ import {
   type Db,
   type NonOwnerDbConnection,
 } from "@armyofagents/db";
+import { sql } from "drizzle-orm";
 import { provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import { createCanaryPreflight } from "../services/canary-preflight.js";
 import { createDrizzleCanaryPreflightStore } from "../services/canary-preflight-store.js";
+import { derivePlatformDefaultEnvironmentId } from "../services/platform-default-environment.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -43,11 +45,29 @@ const PASSWORD = "blocker-e-real-role-password";
 const ORG = "e1000000-0000-4000-8000-000000000001";
 const COMPANY = "e1000000-0000-4000-8000-000000000002";
 
+// A SECOND organization, used only by the company-scoping probes below, so seeding it
+// cannot perturb the gate verdict asserted for ORG.
+const OTHER_ORG = "e1000000-0000-4000-8000-000000000011";
+const NEIGHBOUR = "e1000000-0000-4000-8000-000000000012"; // owns the seeded env + lease
+const INTRUDER = "e1000000-0000-4000-8000-000000000013"; // asks about the neighbour's
+const NEIGHBOUR_LEASE = "e1000000-0000-4000-8000-000000000014";
+
+// The four tables the non-owner serving role must NEVER be granted. `material` is
+// AES-256-GCM secret material; `environment_leases.metadata` is secret-bearing AT REST
+// (sanitizeProviderMetadata strips only apiKey|resolvedApiKey, at read time, in memory).
+const FORBIDDEN_TABLES = [
+  "company_secret_versions",
+  "environment_leases",
+  "environments",
+  "runtime_provider_keys",
+] as const;
+
 const RUN = process.platform !== "win32" || process.env.AOA_RUN_WIN_INTEGRATION === "1";
 
 type Fixture = {
   appDb: Db;
   organizationId: string;
+  neighbourEnvironmentId: string;
   teardown: () => Promise<void>;
 };
 
@@ -97,7 +117,23 @@ async function setUpRealRoleFixture(): Promise<Fixture> {
     await admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
       VALUES (${COMPANY}, ${ORG}, 'Blocker E company', 'BLKE')`;
 
-    return { appDb: app.db, organizationId: ORG, teardown };
+    // A neighbouring tenant holding real evidence, plus an intruder that holds none. The
+    // definer function runs with OWNER authority, so without its `company_id` predicates it
+    // would echo the neighbour's rows back to any caller who guesses the id.
+    await admin`INSERT INTO organizations (id, name, slug)
+      VALUES (${OTHER_ORG}, 'Blocker E neighbour org', 'blocker-e-neighbour-org')`;
+    await admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
+      VALUES (${NEIGHBOUR}, ${OTHER_ORG}, 'Neighbour company', 'NBR')`;
+    await admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
+      VALUES (${INTRUDER}, ${OTHER_ORG}, 'Intruder company', 'INT')`;
+    const neighbourEnvironmentId = derivePlatformDefaultEnvironmentId(NEIGHBOUR);
+    await admin`INSERT INTO environments (id, company_id, name, driver, status)
+      VALUES (${neighbourEnvironmentId}, ${NEIGHBOUR}, 'platform-default-e2b', 'sandbox', 'active')`;
+    await admin`INSERT INTO environment_leases
+      (id, company_id, environment_id, status, lease_policy)
+      VALUES (${NEIGHBOUR_LEASE}, ${NEIGHBOUR}, ${neighbourEnvironmentId}, 'active', 'ephemeral')`;
+
+    return { appDb: app.db, organizationId: ORG, neighbourEnvironmentId, teardown };
   } catch (error) {
     await teardown();
     throw error;
@@ -146,5 +182,59 @@ describe.skipIf(!RUN)("BLOCKER E — canary preflight on a real aoa_app connecti
       expect(result.reason).toBe("credential_authority_not_moved");
       expect(result.detail ?? "").not.toMatch(/permission denied/i);
     }
+  });
+
+  // Constraint 3, pinned NEGATIVELY and permanently. The fix must widen nothing: a table
+  // grant would let `aoa_app` enumerate every company's rows, including AES-256-GCM secret
+  // material. Hand-running this once proves nothing about the next commit.
+  it.each(FORBIDDEN_TABLES)("still denies `aoa_app` direct SELECT on %s", async (table) => {
+    // Drizzle wraps the driver error ("Failed query: …") and hangs the PostgresError off
+    // `cause`, so assert on the SQLSTATE rather than on the wrapper's message: 42501 is
+    // insufficient_privilege and nothing else.
+    let raised: unknown;
+    try {
+      await fixture!.appDb.execute(sql.raw(`SELECT * FROM ${table} LIMIT 1`));
+    } catch (error) {
+      raised = error;
+    }
+    expect(raised, `${table} is readable by aoa_app — a grant crept in`).toBeDefined();
+    const cause = (raised as { cause?: unknown }).cause ?? raised;
+    expect((cause as { code?: string }).code, table).toBe("42501");
+    expect(String((cause as { message?: string }).message ?? ""), table).toMatch(
+      /permission denied/i,
+    );
+  });
+
+  describe("the definer function is company-scoped — no cross-tenant oracle", () => {
+    async function evidence(companyId: string, defaultEnvId: string) {
+      const result = await fixture!.appDb.execute(
+        sql`SELECT lease_id, platform_default_environment_id, key_generation
+            FROM public.canary_preflight_evidence(${companyId}::uuid, ${defaultEnvId}::uuid)`,
+      );
+      return (Array.isArray(result)
+        ? result
+        : ((result as { rows?: unknown[] }).rows ?? [])) as Array<{
+        lease_id: string | null;
+        platform_default_environment_id: string | null;
+      }>;
+    }
+
+    // POSITIVE CONTROL. Without this, the negative case below could pass because the probe
+    // is broken rather than because the predicate holds.
+    it("returns the neighbour's own environment and lease to the neighbour", async () => {
+      const rows = await evidence(NEIGHBOUR, fixture!.neighbourEnvironmentId);
+      expect(rows.map((row) => row.lease_id)).toEqual([NEIGHBOUR_LEASE]);
+      expect(rows[0]?.platform_default_environment_id).toBe(fixture!.neighbourEnvironmentId);
+    });
+
+    it("does not echo the neighbour's environment back to a different company", async () => {
+      const rows = await evidence(INTRUDER, fixture!.neighbourEnvironmentId);
+      expect(rows).toHaveLength(1); // the zero-lease branch still yields exactly one row
+      expect(rows[0]?.lease_id).toBeNull();
+      expect(
+        rows[0]?.platform_default_environment_id,
+        "an owner-authority function that confirms another tenant's row id is an existence oracle",
+      ).toBeNull();
+    });
   });
 });
