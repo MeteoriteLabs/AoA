@@ -344,7 +344,7 @@ Windows e2e skip is implemented at playwright config level (`tests/e2e/playwrigh
 
 ## Database Schema
 
-All table definitions live in `packages/db/src/schema/`. Schema changes use Drizzle ORM only — never raw SQL — except the C14 narrow exception (hand-appended idempotency guards + data backfills, e.g. 0189/0195; schema DDL is always `db:generate`).
+All table definitions live in `packages/db/src/schema/`. Schema changes use Drizzle ORM only — never raw SQL — except the C14 narrow exception, which has two classes: **(a)** hand-appended idempotency guards and data-only backfills (e.g. 0189/0195), and **(b)** idempotent cluster/security DDL, governed by Decision #122. Schema DDL is always `db:generate` output. See rule 1 above and `AGENTS.md` for the full text; **Decision #122 is the authority — this line summarises it and cannot widen it.**
 
 ### Core / Company
 
