@@ -461,6 +461,62 @@ judging is in flight; candidates are column-level grants or a SECURITY DEFINER p
 evidence into `legacy_resource_reconciliation` (which `aoa_app` **can** already read), or a reviewed
 manifest widening.
 
+#### 9e.2.1 ★★★ E IS TWO DEFECTS STACKED — and the second is worse
+
+A three-design pass (security / correctness / minimal-diff judging) surfaced a load-bearing fact the
+privilege story had hidden. **VERIFIED INDEPENDENTLY:**
+
+```
+$ grep -rn 'reconcileCompanyLegacyResources' server/src packages --include=*.ts | grep -v test
+server/src/services/canary-preflight.ts:14:   // ... `reconcileCompanyLegacyResources` computes closure ...   <- a COMMENT
+server/src/services/legacy-resource-reconciliation.ts:324:export async function reconcileCompanyLegacyResources(
+```
+
+**`reconcileCompanyLegacyResources` has ZERO non-test callers.** So:
+
+- **E-1 (privilege)** — the preflight cannot READ 3 of its 4 evidence sources (§9e.2).
+- **E-2 (unwired)** — even with perfect privileges, the one table it *can* read
+  (`legacy_resource_reconciliation`) is **never populated**, because the MIG-008 reconciler that
+  computes closure was built and never wired. The gate is closure-gated on evidence nothing writes.
+
+Fixing only E-1 changes the refusal *message* without opening the gate. Two of three judges said
+exactly that of the privilege-only designs: *"Designs 1 and 3 both fix the error message."*
+
+**Design verdict — Design 2 (correct-layering) wins on security AND correctness**, with two amendments
+from the correctness judge:
+
+1. **The first slice must be READ-ONLY.** Drop `casClaimPaused` from the pass driver (or make paused
+   rows produce a refusal). A paused lease must leave the gate CLOSED rather than silently expiring a
+   live warm snapshot. Wire the CAS only after a dry-run pass is observed on the box.
+2. **Key the attestation per company**, not per pass — otherwise the crosswalk grows ~1440
+   rows/company/day inside the very relation the gate reads in full on every check.
+
+**Rejected, with reasons worth keeping:**
+
+- **Table-level grants are refused by all three designs** — `company_secret_versions.material` is
+  `jsonb().notNull()` and a table grant is a real Decision #104 regression.
+- **`environment_leases.metadata` is secret-bearing AT REST.** `sanitizeProviderMetadata`
+  (`environment-runtime.ts:386-393`) strips only `apiKey|resolvedApiKey`, and only at READ time, in
+  memory. So the intuition that "leases are safe to table-grant" is **wrong** — this killed the
+  minimal-diff design's grant.
+- **A SECURITY DEFINER function is invisible to the drift check** (it scans `pg_class` relkind
+  `r/p/v/m/f`, `pg_attribute`, sequences — functions are not scanned), so that mechanism *works*; it
+  just does not unblock the canary on its own, because of E-2.
+
+**★ Two test shapes to keep regardless of mechanism:**
+
+- The assertion that would have CAUGHT this entire class:
+  `expect(result.reason).not.toBe("preflight_error")` run against a **real `aoa_app` connection** in
+  the existing real-role harness (`distributed-execution-db-startup.integration.test.ts:190-205`).
+  Today `cli-006-canary-preflight-store.test.ts:44` passes `{} as never`.
+- A standing anti-widening pin: `SELECT material FROM company_secret_versions` must still raise 42501
+  as `aoa_app`.
+
+**Mechanics worth not rediscovering:** a COLUMN-level grant does NOT trip the table-level drift check
+(`has_table_privilege` ignores column ACLs — the in-repo proof is `mcp_api_keys`), but it DOES trip the
+COLUMN check, because `appColumnSelect` (`distributed-execution-databases.ts:259-273`) is hard-coded to
+exactly two relations. Views and matviews ARE scanned like tables (`relkind IN ('r','p','v','m','f')`).
+
 **Ordering consequence.** Blocker E sits BEFORE the credential work in the dependency order: setting
 `provider:anthropic` (H2 / Step 4a) and the E2B pointer (Step 4b) is necessary but **not sufficient**,
 and neither can be validated end-to-end until E is fixed.
