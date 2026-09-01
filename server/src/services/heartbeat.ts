@@ -62,6 +62,7 @@ import {
   HEARTBEAT_TASK_RUN_WORKLOAD_TYPE,
   type HeartbeatDistributedRolloutHook,
 } from "./heartbeat-distributed-rollout.js";
+import { getDistributedRolloutPort } from "./distributed-rollout-port.js";
 import type { RunRolloutState } from "../config/distributed-execution-rollout-source.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { resolveWarmSandboxPreference, readAgentWarmOverride } from "./warm-sandbox-policy.js";
@@ -1458,7 +1459,11 @@ export function heartbeatService(
     distributedRollout?: HeartbeatDistributedRolloutHook;
   },
 ) {
-  const distributedRolloutHook = options?.distributedRollout;
+  // Unit 1.5 — an EXPLICIT option always wins; otherwise fall back to the process-wide
+  // port. Without this fallback only the scheduler instance is hook-bearing, and the
+  // route-constructed instances that actually execute task runs silently run legacy with
+  // no [CLI-006] line — see services/distributed-rollout-port.ts for the measured trace.
+  const distributedRolloutHook = options?.distributedRollout ?? getDistributedRolloutPort();
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const outputDetector = outputDetectionService(db);
