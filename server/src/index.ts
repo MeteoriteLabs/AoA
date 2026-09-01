@@ -27,6 +27,7 @@ import postgres from "postgres";
 import { createApp } from "./app.js";
 import { buildReadinessProbe } from "./routes/readiness.js";
 import { loadSchemaCompatibility } from "./services/schema-compatibility.js";
+import { setDistributedRolloutPort } from "./services/distributed-rollout-port.js";
 import {
   OPERATOR_ROLE,
   TENANT_APP_ROLE,
@@ -1385,6 +1386,15 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
       comparator: shadowComparator,
     }),
   );
+
+  // ── Unit 1.5 — the SAME instance-independence problem, for the rollout hook itself.
+  // Registered beside the shadow port and for the identical reason: the instances that
+  // actually execute a task run (routes/issues.ts, issue-assignee-wakeup.ts, ...) each hold
+  // only a bare `heartbeatService(db)`, so an options-only hook is `undefined` exactly where
+  // it matters. Deliberately OUTSIDE the scheduler conditional below — those route instances
+  // exist whether or not the scheduler does. Measured before this line existed: an eligible
+  // canary task produced a run with `execution_owner = NULL` and NO `[CLI-006]` line at all.
+  setDistributedRolloutPort(distributedRolloutHook);
 }
 
 if (config.heartbeatSchedulerEnabled) {

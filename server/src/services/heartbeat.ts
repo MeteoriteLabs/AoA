@@ -62,6 +62,7 @@ import {
   HEARTBEAT_TASK_RUN_WORKLOAD_TYPE,
   type HeartbeatDistributedRolloutHook,
 } from "./heartbeat-distributed-rollout.js";
+import { getDistributedRolloutPort } from "./distributed-rollout-port.js";
 import type { RunRolloutState } from "../config/distributed-execution-rollout-source.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { resolveWarmSandboxPreference, readAgentWarmOverride } from "./warm-sandbox-policy.js";
@@ -1458,7 +1459,21 @@ export function heartbeatService(
     distributedRollout?: HeartbeatDistributedRolloutHook;
   },
 ) {
-  const distributedRolloutHook = options?.distributedRollout;
+  // Unit 1.5 — an EXPLICIT option always wins; otherwise fall back to the process-wide
+  // port. Without this fallback only the scheduler instance is hook-bearing, and the
+  // route-constructed instances that actually execute task runs silently run legacy with
+  // no [CLI-006] line — see services/distributed-rollout-port.ts for the measured trace.
+  //
+  // ★ RESOLVED LAZILY, PER RUN — NEVER CAPTURED HERE. `createApp` (index.ts:931) eagerly
+  // constructs the route factories, and three of them hold a factory-scope
+  // `heartbeatService(db)`: routes/issues.ts:99, routes/agents.ts, routes/approvals.ts.
+  // That happens ~466 lines BEFORE the composition root registers the port
+  // (index.ts:1397), so a `const` captured here would be `undefined` forever on exactly
+  // the sites this port exists for — wired-looking, typechecking, and never firing. A
+  // lazy read makes the boot ORDER irrelevant instead of merely getting it right once.
+  const explicitRolloutHook = options?.distributedRollout;
+  const resolveDistributedRolloutHook = (): HeartbeatDistributedRolloutHook | undefined =>
+    explicitRolloutHook ?? getDistributedRolloutPort();
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const outputDetector = outputDetectionService(db);
@@ -3172,6 +3187,10 @@ export function heartbeatService(
     // legacy path below is byte-identical. Best-effort — never fails the run.
     let distributedRolloutState: RunRolloutState = "off";
     let distributedRolloutOrganizationId: string | null = null;
+    // Unit 1.5 — resolved HERE, per run, not at construction. See the factory-scope note:
+    // the eagerly-constructed route instances predate the port's registration, so a
+    // captured value would be permanently `undefined` on the sites that matter most.
+    const distributedRolloutHook = resolveDistributedRolloutHook();
     if (distributedRolloutHook && issueId && issueContext) {
       try {
         const resolution = await distributedRolloutHook.resolveRunRolloutState({
@@ -3188,6 +3207,26 @@ export function heartbeatService(
         distributedRolloutState = "off";
       }
     }
+
+    // ── Unit 1.5 — the FALSIFIABILITY line. ────────────────────────────────
+    // The two `[CLI-006]` decision logs below both sit INSIDE the seven-conjunct canary
+    // guard, so their absence conflates "the hook was never wired" with "the dial said
+    // off", "this was a mention wake", "organizationId was null" and "no issue on the
+    // run" — the operator cannot tell a broken canary from a declining one, which is the
+    // exact unfalsifiable silence this port exists to remove. Emitted UNCONDITIONALLY on
+    // every run that reaches the seam, so a canary that declines says WHY.
+    logger.info(
+      {
+        runId: run.id,
+        issueId: issueId ?? null,
+        agentId: agent.id,
+        rolloutHookPresent: Boolean(distributedRolloutHook),
+        rolloutState: distributedRolloutState,
+        rolloutOrganizationId: distributedRolloutOrganizationId,
+        hasIssueContext: Boolean(issueContext),
+      },
+      "[CLI-006] rollout resolved",
+    );
 
     // ── Auto-checkout for scoped wakes (T22 / PR #3538 upstream) ────────────
     // When the wake is scoped to an issue and the wake reason is comment-driven,
