@@ -1985,10 +1985,18 @@ for any function declared `SECURITY DEFINER`, all of:
      `EXECUTE` grantees, execution config and body, and must not be `LEAKPROOF`; a serving-role
      owner, an owner that is not the owner of its declared authority relations, or a NULL `proacl`
      (PostgreSQL's default grants `EXECUTE` to `PUBLIC`) each abort startup. This arm is
-     unconditional because the function is created by a migration that runs on every deployment and
-     `aoa_app` keeps `EXECUTE` on it regardless of the flag — and a box that was once flag-on keeps
-     its LOGIN credential, since `maybeProvisionDistributedExecutionRoles` is a strict no-op when
-     the flag is off and never restores `NOLOGIN`.
+     unconditional because the function is created by a migration that runs on every deployment and a
+     serving role keeps `EXECUTE` on it regardless of the flag — and a box that was once flag-on keeps
+     that role's LOGIN credential, since `maybeProvisionDistributedExecutionRoles` is a strict no-op
+     when the flag is off and never restores `NOLOGIN`.
+
+     **Amended 2026-09-01 (Unit 1.7, migration 0267).** That grantee is now `aoa_operator`, not
+     `aoa_app`. 0266 granted `EXECUTE` to `aoa_app`, which made an owner-authority read reachable from
+     the pool that serves tenant HTTP requests, the outbox worker, the admission bridge and the
+     live-event log. 0267 revokes it there and grants `aoa_operator` only. The justification above is
+     unchanged in shape — a serving role still holds `EXECUTE` on every deployment and keeps its LOGIN
+     — only the role differs. Note this is a **widening for `aoa_operator`**, which previously held no
+     grant on `companies` or `organizations` at all; the capability moved rather than shrank.
    - **`assertNoUnmanifestedSecurityDefinerFunctions` — the flag-on serving-role path only.** It
      asserts a property of the WHOLE database, which holds on a controlled distributed-execution
      fleet (where `assertExactServingRoleAuthority` already fails boot on any unexpected schema) but
@@ -2001,8 +2009,16 @@ for any function declared `SECURITY DEFINER`, all of:
    vector` has no `SCHEMA` clause and installs ~100 `public` functions carrying the default
    `PUBLIC EXECUTE`, so an EXECUTE-keyed certificate would fail boot on every pgvector fleet.
 7. The body pins `SET search_path = ''` and schema-qualifies every relation, so a caller's
-   `search_path` cannot redirect it; and it is scoped to the caller-supplied tenant on every branch,
-   so an owner-authority function cannot become a cross-tenant existence oracle. **This is enforced,
+   `search_path` cannot redirect it; and it is scoped to the caller-supplied tenant on every branch.
+
+   **★ Corrected 2026-09-01 (Unit 1.7): that tenant scoping is DEFENCE IN DEPTH, not the boundary,
+   and the earlier wording here — "so an owner-authority function cannot become a cross-tenant
+   existence oracle" — was wrong.** The tenant parameter is supplied by the caller and compared only
+   to itself, so passing a victim's id satisfies it trivially; `companies` carries no row-level
+   security, so a caller need not even guess the id. This was reproduced against real PostgreSQL, not
+   argued. **The boundary is the `EXECUTE` grantee** — the one thing a caller cannot forge is the role
+   it connects as. Any future definer function must be justified on its grantee first, and may cite a
+   tenant predicate only as a second layer. **This is enforced,
    not merely required:** the certificate pins `pg_proc.proconfig` and a SHA-256 fingerprint of the
    body, and rejects `LEAKPROOF`. `CREATE OR REPLACE FUNCTION` preserves the owner and the ACL, so
    without those pins a replacement that drops the `search_path` clause or a tenant predicate would
