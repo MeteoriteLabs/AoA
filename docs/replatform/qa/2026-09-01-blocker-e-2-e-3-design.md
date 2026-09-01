@@ -1,6 +1,9 @@
 # BLOCKER E-2 + E-3 — what should CLOSURE mean?
 
-> **Status: DESIGN, revision 1. Not reviewed, not built.**
+> **Status: DESIGN, revision 2 — reviewed against the tree, NOT yet built.**
+> Revision 1 survived its own review on the *diagnosis* and failed it on the *remedy*: three of
+> §4's mechanisms cannot be built as written. See §8 for the findings, which are applied inline
+> below rather than silently corrected.
 > Predecessor: [Units 1.6+1.7](./2026-09-01-unit-1-7-definer-grantee-plan.md) fixed **E-1** and
 > merged as `c7ead3a73` (PR #333). The canary is still gated shut.
 > Terrain: [§9e.2.2](./2026-08-31-campaign-blockers-and-fleet-terrain.md).
@@ -155,7 +158,25 @@ What this buys:
 - **Invariant #2 gets stronger, not weaker.** The pass stops asserting terminality on a row that
   might resume, and stops destroying warm snapshots as a side effect of being consulted (§1.3).
 - **It mirrors the shape that already worked.** Units 1.6+1.7 were "correct-layering, read-only
-  first slice". The cleanup half is CLI-004's job at cutover, which is where it belonged.
+  first slice".
+
+★ **F8 — revision 1 handed the cleanup half to "CLI-004", which does not exist.** `CLI-004`
+appears in this repository ONLY as a comment, in the two orphaned modules themselves
+(`legacy-resource-reconciliation.ts:19`, `:153`, `:169`; `legacy-resource-reconciliation-store.ts:60`).
+There is no implementation. The real, wired cleanup path is the **warm sandbox reaper**:
+`listTerminalUncleanedLeases` → `claimTerminalUncleaned` (`warm-sandbox-reaper.ts:291`, `:157`) and
+`listPausedLeasesWithKeyGeneration` (`:234`).
+
+That correction cuts both ways, and the second half matters more:
+
+- **Today's CAS is not decorative.** `expireLeaseIfPaused` sets `status='expired'` +
+  `cleanupStatus='pending'`, which is exactly the predicate `listTerminalUncleanedLeases` selects
+  on — so the pass's claim is a deliberate *handoff into a running sweeper*, not bookkeeping.
+- **Option R changes which lifecycle a paused snapshot rides.** Left `paused`, it is no longer in
+  the terminal sweep set; it is reaped by the warm reaper's TTL grace path instead. Defensible —
+  the target is real and already wired, which is more than the CAS's stated rationale could say —
+  but it is a different lifecycle with a different latency, and Option R must be argued on that,
+  not on "CLI-004 will handle it".
 
 What it costs: `skippedResumed` loses its meaning (one assertion, `legacy-resource-reconciliation.test.ts:233`),
 and paused snapshots are no longer marked terminal *by the pass*. Per §1.5 that is test churn.
@@ -173,8 +194,17 @@ granted to `aoa_operator`:
 - `canary_preflight_evidence_leases(organizationId, companyId)` — but it projects `lease_id` only,
   and the pass needs the full `LegacyLeaseInput` to classify. **A new function is required**, not a
   reuse.
-- `canary_preflight_evidence_scalars(...)` covers the default env + key generation and **is
-  reusable as-is**.
+- `canary_preflight_evidence_scalars(...)` covers the default env + key generation and **is NOT
+  reusable as revision 1 claimed — F1.** Every `0267` function is **organization-bound**, and
+  `reconcileCompanyLegacyResources(companyId, deps)` holds no `organizationId`. `0267` ships
+  org→companies (`_companies`) and **no company→org lookup**, so a company-scoped pass structurally
+  cannot call any of them.
+
+  **Fix: the pass becomes organization-scoped.** It takes an `organizationId`, enumerates via
+  `canary_preflight_evidence_companies`, and reconciles each company. That is strictly better
+  than adding a company→org lookup: it matches the gate's own scope (`canary-preflight.ts:21-26`),
+  it matches the CLI's cutover framing ("reconcile this org before flipping it"), and it avoids
+  minting a reverse-direction lookup whose only caller would be this pass.
 
 So: one new `SECURITY DEFINER` function projecting the classification columns, manifested and
 certified like the other three, `EXECUTE` to `aoa_operator` alone. The projection must be narrowed
@@ -192,6 +222,15 @@ it that way; `p_organization_id` is caller-supplied and is defence in depth.
 - The gate's inventory becomes `leases WHERE created_at <= W` for the company's latest completed
   pass; **no pass ⇒ no watermark ⇒ no inventory narrowing ⇒ refuse** (fail-closed, unchanged from
   today).
+
+★ **F2 — that filter cannot live where revision 1 put it.** The gate does not read lease rows; it
+reads `canary_preflight_evidence_leases`, which projects **`lease_id` only** (`0267`). There is no
+`created_at` client-side to compare, so "the gate's inventory becomes …" is not implementable as a
+predicate in TypeScript. The watermark must be pushed **into the definer function** as a parameter.
+That means an arity change — which CREATES a new function rather than replacing the old one — so it
+carries the full `0267` ceremony: a new migration that DROPs the old signature, a new manifest
+entry with a fresh `bodySha256`, `REVOKE … FROM aoa_app`, `GRANT … TO aoa_operator`, and the boot
+certificate updated in the same commit. Budget for it; it is not a one-line predicate.
 - `assertClosure` is untouched. The gate still recomputes.
 
 ### 4.4 The caller (E-2)
@@ -211,14 +250,40 @@ Each of these is a test, not a note.
 1. A legacy lease that existed before the pass is **never** excluded by the watermark. (The §3.3
    clock argument, pinned — including a test that reds if `acquireLease` reverts to the app clock.)
 2. `no pass` and `pass but no watermark` both **refuse**.
-3. ★ **The watermark WIDENS what passes.** More companies now close vacuously — a company whose only
-   leases postdate the pass has an empty in-scope inventory and closes. That is the intended
-   semantics, and it must be stated where it is summarised, not discovered later.
-4. A record tagged with a superseded key generation still refuses (`canary-preflight.ts:157-171`,
+3. ★★★ **F3 — the watermark inverts the gate's failure direction, and revision 1 under-read this.**
+   Today the gate gets *stricter* with traffic: every new lease adds an unmapped key. The watermark
+   makes it get *looser with age*, because everything newer than the pass is out of scope. Run the
+   pass, let a month go by, let the fleet churn completely: the in-scope inventory is **empty**,
+   closure is **vacuous**, and the gate **opens** while fifty live unreconciled legacy leases exist.
+   Calling that "the intended semantics" (revision 1) is true of one lease and false of a stale
+   fleet. **A freshness bound is REQUIRED, not optional.**
+
+   One partial bound already exists and should be named rather than relied on: a provider-key
+   rotation retags the current generation, every record keeps the old one, and
+   `canary-preflight.ts:157-171` refuses on `superseded`. That forces a re-pass — **but only if the
+   key rotates.** It is not a clock.
+
+4. ★ **F4 — an `unattributable` record bricks the canary permanently, with no remedy in code.**
+   `assertClosure` fails on *any* unattributable disposition (`legacy-resource-reconciliation.ts:290`),
+   and `resolveResourceType` returns null for a lease that is not `ephemeral` and carries no
+   `agentId` / `commanderConversationId` / `executionWorkspaceId` (`:95-101`). The crosswalk is
+   append-only: `0256` grants no DELETE, and the schema comment states there is no update path in
+   application code. So one unclassifiable lease refuses the gate **forever**, and neither the pass
+   (idempotent insert-if-absent) nor the gate (read-only) can clear it. The design must state the
+   operator's remedy — or admit there isn't one, which is itself a decision.
+5. A record tagged with a superseded key generation still refuses (`canary-preflight.ts:157-171`,
    unchanged) — the watermark must not become a way around the credential-authority check.
-5. The new definer function is manifested, certified at boot, and grants `EXECUTE` to no role
+6. ★ **F5 — the operator CLI must ASSERT the role it connected as.** The precedent
+   (`verify-e7-1-distributed-run.ts:58-64`) is `createDb(process.env.DATABASE_URL)`: the operator
+   chooses the role. Run the pass with an owner URL and every definer function and grant argument in
+   §4.2 is **decorative** — it would succeed while proving nothing about the grant model, which is
+   the E-1 defect wearing a different hat. `assertNonOwnerConnection` and
+   `assertExactServingRoleAuthority` already exist and are already used this way
+   (`distributed-execution-databases.ts:1764-1765`). The CLI calls both before its first read, and
+   exits non-zero if it is not `aoa_operator`.
+7. The new definer function is manifested, certified at boot, and grants `EXECUTE` to no role
    containing `aoa_app` (the condition enforced in `security-definer-manifest.test.ts`).
-6. The pass performs **no** write to `environment_leases`. Asserted structurally, by the store seam
+8. The pass performs **no** write to `environment_leases`. Asserted structurally, by the store seam
    not exposing one.
 
 ---
@@ -227,7 +292,8 @@ Each of these is a test, not a note.
 
 - **Unit 2 / capability** (E7-F003): MCP surface, instructions bundle, workspace, output capture.
   Still unowned, still not started. Fixing E-2/E-3 opens the gate; it does not make an agent capable.
-- CLI-004's cutover teardown of paused snapshots. Option R hands it back; it does not implement it.
+- Teardown of paused snapshots at cutover. Option R leaves them on the **warm reaper's** TTL path
+  (`warm-sandbox-reaper.ts:234`), not on "CLI-004", which does not exist (F8).
 - The two audit findings still open from PR #333: Decision #122 condition 3 has no checker, and a
   *new* unmanifested definer function goes undetected on flag-off boots.
 
@@ -246,3 +312,30 @@ Each of these is a test, not a note.
    the flag is org-scoped. A per-company watermark means an org can be gated on passes taken at
    different instants. Probably fine — closure is asserted per company — but it is exactly the kind
    of scope seam that produced the org-vs-company defect in `0266`.
+
+---
+
+## 8. Review round 1 — findings
+
+Eight findings, all verified against the tree at `c7ead3a73` rather than reasoned about. The
+diagnosis (§1-§3) survived. **Three of §4's mechanisms did not.**
+
+| # | Sev | Finding | Where |
+|---|-----|---------|-------|
+| F1 | HIGH | The pass is company-scoped; every `0267` function is org-bound, and no company→org lookup exists. §4.2's "reusable as-is" is not buildable. → make the pass org-scoped. | §4.2 |
+| F2 | HIGH | The watermark filter cannot run in the gate: `_leases` projects `lease_id` only. It must be pushed into the definer function — an arity change, so a new migration + manifest entry + `bodySha256` + certificate update. | §4.3 |
+| F3 | HIGH | The watermark **inverts the failure direction**: today's gate tightens with traffic, the proposed one loosens with age, and a stale pass over a churned fleet opens it vacuously. A freshness bound is required. Key rotation is a partial bound only. | §5.3 |
+| F4 | MED-HIGH | An `unattributable` record refuses the gate permanently — append-only table, no DELETE grant, no application update path. One unclassifiable lease bricks the canary with no remedy in code. | §5.4 |
+| F5 | MED | The CLI's role is operator-supplied via `DATABASE_URL`. Without a role assertion the entire §4.2 grant argument is decorative. | §5.6 |
+| F6 | LOW | Correction, in the design's favour: `classifyLease` has **no** non-test caller but the pass, so Option R is cheaper than §4.1 claimed. Do not confuse it with `classifyLeaseTruth` (`adapter-manager-control.ts:103`), which is the reaper's and unrelated. | §4.1 |
+| F7 | LOW | Correction: `environment_leases.created_at` has **no** application consumer — the single grep hit (`job-operations.ts:95`) is the *job* leases table. The `acquireLease` clock switch is lower-risk than §3.3 implies, but still needs its pinning test: the risk was never "something reads it", it was "the two clocks must agree". | §3.3 |
+| F8 | MED | "CLI-004" exists only as a comment in the two orphaned modules. The real wired path is the warm reaper — and today's CAS is a deliberate handoff *into* it, not bookkeeping, so Option R must be argued as a lifecycle change rather than a cleanup deferral. | §4.1, §6 |
+
+**What this changes about sequencing.** F1 + F2 together mean the read surface is not "one new
+definer function" but a **new org-scoped, watermark-aware definer surface** — closer in size to
+`0267` itself than to a patch. F3 and F4 are semantics that must be settled *before* any of it is
+built, because both change what the gate is allowed to answer.
+
+**Still open from §7**, unchanged by this round: Option R vs keeping the CAS (F8 sharpens the
+question rather than settling it); watermark storage shape; `legacyStatus` on a paused-but-mapped
+record; per-company vs per-organization watermark.
