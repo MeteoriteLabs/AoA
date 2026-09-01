@@ -15,7 +15,11 @@
 import { describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { SECURITY_DEFINER_FUNCTION_MANIFEST } from "../db/security-definer-manifest.js";
-import { assertSecurityDefinerManifest } from "../db/distributed-execution-databases.js";
+import {
+  assertManifestedSecurityDefinerFunctions,
+  assertNoUnmanifestedSecurityDefinerFunctions,
+  assertSecurityDefinerManifest,
+} from "../db/distributed-execution-databases.js";
 import { startMigratedDatabase } from "./helpers/migrated-database.js";
 
 const RUN = process.platform !== "win32" || process.env.AOA_RUN_WIN_INTEGRATION === "1";
@@ -293,6 +297,33 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
       await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
         /leakproof/i,
       );
+    } finally {
+      await database.teardown();
+    }
+  }, 180_000);
+
+  // ── The two arms are split ON PURPOSE, and the split is load-bearing ───────────────
+  //
+  // The POSITIVE arm runs on EVERY boot (index.ts), because migration 0266 creates the
+  // owner-authority function on every deployment. The EXHAUSTIVE arm stays flag-gated: it
+  // asserts a property of the WHOLE database, and AoA supports `external-postgres` against
+  // an operator-owned database where a vendor or extension definer function in another
+  // schema is legitimate and unknowable to us. If these ever collapse back into one, an
+  // unconditional exhaustive scan would turn those deployments into hard boot failures.
+  it("the POSITIVE arm tolerates an unmanifested function; the EXHAUSTIVE arm rejects it", async () => {
+    const database = await startMigratedDatabase({ label: "aoa-definer-arms-" });
+    try {
+      await database.admin.unsafe(
+        "CREATE FUNCTION public.vendor_definer() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'",
+      );
+      // Every manifested function is still exactly as pinned, so the every-boot arm passes.
+      await expect(
+        assertManifestedSecurityDefinerFunctions(database.appDb, "startup"),
+      ).resolves.toBeUndefined();
+      // The flag-on arm is the one that owns "nothing unmanifested exists".
+      await expect(
+        assertNoUnmanifestedSecurityDefinerFunctions(database.appDb, "aoa_app"),
+      ).rejects.toThrow(/unmanifested SECURITY DEFINER function public\.vendor_definer\(\)/);
     } finally {
       await database.teardown();
     }

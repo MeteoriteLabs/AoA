@@ -357,10 +357,19 @@ function securityDefinerKey(schema: string, name: string, identityArguments: str
  * assertion path runs; the `role` argument appears in the message for provenance, and the
  * verdict is identical for both roles.
  */
-export async function assertSecurityDefinerManifest(
-  db: SqlExecutor,
-  role: string,
-): Promise<void> {
+type DefinerCatalog = {
+  found: Map<string, {
+    owner: string;
+    executionConfig: string[];
+    leakproof: boolean;
+    bodySha256: string;
+    aclIsNull: boolean;
+    tuples: string[];
+  }>;
+  relationOwners: Map<string, string>;
+};
+
+async function readSecurityDefinerCatalog(db: SqlExecutor): Promise<DefinerCatalog> {
   // KEYED ON prosecdef, NOT effective EXECUTE. On a fleet with pgvector, `CREATE EXTENSION
   // vector` (no SCHEMA clause: 0038_marvelous_vapor.sql:1, 0115_enable_pgvector.sql:29)
   // installs ~100 functions into `public` carrying PostgreSQL's default PUBLIC EXECUTE, so
@@ -484,20 +493,40 @@ export async function assertSecurityDefinerManifest(
     ).map((row) => [`${row.schema_name}.${row.relation_name}`, row.owner_name] as const),
   );
 
-  for (const [key, actual] of found) {
-    const expected = manifested.get(key);
-    if (!expected) {
+  return { found, relationOwners };
+}
+
+/**
+ * The POSITIVE arm of the certificate: every manifested definer function must exist with
+ * exactly its pinned owner, ACL, execution config and body, and must not be LEAKPROOF.
+ *
+ * Runs on EVERY boot, flag on or off. The function is created by a migration that runs on
+ * every deployment, and `aoa_app` keeps `EXECUTE` on it regardless of the flag — and a box
+ * that was once flag-on keeps the LOGIN credential, because
+ * `maybeProvisionDistributedExecutionRoles` is a strict no-op when the flag is off and never
+ * restores NOLOGIN. So the privileged surface exists on flag-off deployments too, and a
+ * certificate that only ran under the flag would leave it uncertified exactly where nothing
+ * else is watching.
+ */
+export async function assertManifestedSecurityDefinerFunctions(
+  db: SqlExecutor,
+  context: string,
+): Promise<void> {
+  const { found, relationOwners } = await readSecurityDefinerCatalog(db);
+  for (const expected of SECURITY_DEFINER_FUNCTION_MANIFEST) {
+    const key = securityDefinerKey(expected.schema, expected.name, expected.identityArguments);
+    const actual = found.get(key);
+    if (!actual) {
       throw new Error(
-        `${role} security-definer drift: unmanifested SECURITY DEFINER function ${key}`,
+        `${context} security-definer drift: manifested SECURITY DEFINER function ${key} is absent`,
       );
     }
-
     // 0214_e2_serving_role_hardening.sql:10,31 RAISEs if a serving role owns an application
     // object. A definer function owned by a serving role is that same violation, in the one
     // place the table/column/sequence scans cannot look.
     if (SERVING_ROLES.includes(actual.owner as ServingRole)) {
       throw new Error(
-        `${role} security-definer drift: ${key} is owned by serving role ${actual.owner}`,
+        `${context} security-definer drift: ${key} is owned by serving role ${actual.owner}`,
       );
     }
 
@@ -513,13 +542,13 @@ export async function assertSecurityDefinerManifest(
       const relationOwner = relationOwners.get(relation);
       if (relationOwner === undefined) {
         throw new Error(
-          `${role} security-definer drift: ${key} declares authority relation ${relation}, ` +
+          `${context} security-definer drift: ${key} declares authority relation ${relation}, ` +
             "which does not exist",
         );
       }
       if (relationOwner !== actual.owner) {
         throw new Error(
-          `${role} security-definer owner drift: ${key} is owned by ${actual.owner} but its ` +
+          `${context} security-definer owner drift: ${key} is owned by ${actual.owner} but its ` +
             `authority relation ${relation} is owned by ${relationOwner}`,
         );
       }
@@ -530,7 +559,7 @@ export async function assertSecurityDefinerManifest(
     // the REVOKE lands here, silently re-opened.
     if (actual.aclIsNull) {
       throw new Error(
-        `${role} security-definer execute authority drift: ${key} has a NULL ACL ` +
+        `${context} security-definer execute authority drift: ${key} has a NULL ACL ` +
           "(PostgreSQL's default grants EXECUTE to PUBLIC)",
       );
     }
@@ -543,14 +572,14 @@ export async function assertSecurityDefinerManifest(
     // oracle — the exact defect review caught in this plan's first revision).
     if (!exactJson(actual.executionConfig, expected.executionConfig)) {
       throw new Error(
-        `${role} security-definer execution config drift: ${key} has ` +
+        `${context} security-definer execution config drift: ${key} has ` +
           `${JSON.stringify(actual.executionConfig)} expected ` +
           `${JSON.stringify(expected.executionConfig)}`,
       );
     }
     if (actual.bodySha256 !== expected.bodySha256) {
       throw new Error(
-        `${role} security-definer body fingerprint drift: ${key} body is ` +
+        `${context} security-definer body fingerprint drift: ${key} body is ` +
           `${actual.bodySha256} expected ${expected.bodySha256}`,
       );
     }
@@ -558,7 +587,7 @@ export async function assertSecurityDefinerManifest(
     // Owner-authority code reading secret-bearing tables must never carry it.
     if (actual.leakproof) {
       throw new Error(
-        `${role} security-definer drift: ${key} is marked LEAKPROOF`,
+        `${context} security-definer drift: ${key} is marked LEAKPROOF`,
       );
     }
 
@@ -571,19 +600,50 @@ export async function assertSecurityDefinerManifest(
     const actualTuples = sortedStrings(actual.tuples);
     if (!exactJson(actualTuples, expectedTuples)) {
       throw new Error(
-        `${role} security-definer execute authority drift: ${key} ACL is ` +
+        `${context} security-definer execute authority drift: ${key} ACL is ` +
           `${JSON.stringify(actualTuples)} expected ${JSON.stringify(expectedTuples)}`,
       );
     }
   }
+}
 
-  for (const expected of manifested.keys()) {
-    if (!found.has(expected)) {
+/**
+ * The EXHAUSTIVE arm: no SECURITY DEFINER function outside the manifest may exist.
+ *
+ * Deliberately NOT run on every boot. It asserts a property of the WHOLE database, which
+ * only holds on a controlled distributed-execution fleet — the same fleet where
+ * `assertExactServingRoleAuthority` already fails boot on any unexpected schema. AoA also
+ * supports `external-postgres` against a database the operator owns, where a vendor or
+ * extension definer function in some other schema is legitimate and unknowable to us; making
+ * this unconditional would turn those deployments into hard boot failures. The positive arm
+ * above closes the drift risk that actually exists there.
+ */
+export async function assertNoUnmanifestedSecurityDefinerFunctions(
+  db: SqlExecutor,
+  role: string,
+): Promise<void> {
+  const { found } = await readSecurityDefinerCatalog(db);
+  const manifested = new Set(
+    SECURITY_DEFINER_FUNCTION_MANIFEST.map((fn) =>
+      securityDefinerKey(fn.schema, fn.name, fn.identityArguments),
+    ),
+  );
+  for (const key of found.keys()) {
+    if (!manifested.has(key)) {
       throw new Error(
-        `${role} security-definer drift: manifested SECURITY DEFINER function ${expected} is absent`,
+        `${role} security-definer drift: unmanifested SECURITY DEFINER function ${key}`,
       );
     }
   }
+}
+
+/** Both arms, for the flag-on serving-role authority path. */
+export async function assertSecurityDefinerManifest(
+  db: SqlExecutor,
+  role: string,
+): Promise<void> {
+  await assertNoUnmanifestedSecurityDefinerFunctions(db, role);
+  await assertManifestedSecurityDefinerFunctions(db, role);
 }
 
 type ActualAclTuple = {

@@ -33,7 +33,10 @@ import {
   TENANT_APP_ROLE,
   provisionTenantAppRoleLoginSql,
 } from "./db/rls-tenant.js";
-import { openDistributedExecutionDatabases } from "./db/distributed-execution-databases.js";
+import {
+  assertManifestedSecurityDefinerFunctions,
+  openDistributedExecutionDatabases,
+} from "./db/distributed-execution-databases.js";
 import { tenantIsolationEnforced } from "./config/deployment-mode.js";
 import { reconcileCloudBlockedPlugins } from "./services/plugin-lifecycle.js";
 import { loadConfig } from "./config.js";
@@ -557,6 +560,22 @@ if (config.databaseUrl) {
 // Optional boot-only credential provisioning remains dormant by default. External
 // secret managers may instead provision the URLs' credentials ahead of startup.
 await maybeProvisionDistributedExecutionRoles(activeDatabaseConnectionString);
+
+// The SECURITY DEFINER certificate's POSITIVE arm, on EVERY boot — flag on or off.
+// Migration 0266 creates `public.canary_preflight_evidence` on every deployment and grants
+// `aoa_app` EXECUTE on it regardless of the flag; a box that was once flag-on also keeps the
+// LOGIN credential, because `maybeProvisionDistributedExecutionRoles` is a strict no-op when
+// the flag is off and never restores NOLOGIN. So the owner-authority surface exists on
+// flag-off deployments too, and certifying it only under the flag would leave it unwatched
+// exactly where nothing else is watching. Drift here is fatal, per Decision #122's
+// 2026-09-01 amendment.
+//
+// Only the POSITIVE arm (every manifested function pinned to its owner, ACL, execution
+// config and body). The exhaustive "nothing unmanifested exists" arm stays on the flag-on
+// path: it asserts a property of the whole database, and AoA supports `external-postgres`
+// against an operator-owned database where a vendor or extension definer function in another
+// schema is legitimate.
+await assertManifestedSecurityDefinerFunctions(db, "startup");
 
 // Corrective E2 successor to E2-D03: flag-on boot must prove both bounded roles
 // before any E3 route/work could start. There is deliberately no owner fallback.

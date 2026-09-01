@@ -1978,13 +1978,28 @@ for any function declared `SECURITY DEFINER`, all of:
    function runs with the OWNER's authority regardless of caller, so it is the entire
    privilege-escalation surface the table/column/sequence scans cannot see — before this amendment
    there was not one `prosecdef` reference in the repository.
-6. `assertSecurityDefinerManifest` certifies it at boot and **drift is fatal**: an unmanifested
-   definer function, a manifested one that is absent, a serving-role owner, an owner that is not the
-   owner of its declared authority relations, a NULL `proacl` (PostgreSQL's default grants `EXECUTE`
-   to `PUBLIC`), or any `EXECUTE` grantee outside the manifest each abort startup. Discovery is keyed
-   on `pg_proc.prosecdef`, never on effective `EXECUTE` — `CREATE EXTENSION vector` has no `SCHEMA`
-   clause and installs ~100 `public` functions carrying the default `PUBLIC EXECUTE`, so an
-   EXECUTE-keyed certificate would fail boot on every pgvector fleet.
+6. The certificate runs at boot and **drift is fatal**, in two arms with deliberately different
+   reach:
+   - **`assertManifestedSecurityDefinerFunctions` — EVERY boot, flag on or off**
+     (`server/src/index.ts`). Every manifested function must exist with exactly its pinned owner,
+     `EXECUTE` grantees, execution config and body, and must not be `LEAKPROOF`; a serving-role
+     owner, an owner that is not the owner of its declared authority relations, or a NULL `proacl`
+     (PostgreSQL's default grants `EXECUTE` to `PUBLIC`) each abort startup. This arm is
+     unconditional because the function is created by a migration that runs on every deployment and
+     `aoa_app` keeps `EXECUTE` on it regardless of the flag — and a box that was once flag-on keeps
+     its LOGIN credential, since `maybeProvisionDistributedExecutionRoles` is a strict no-op when
+     the flag is off and never restores `NOLOGIN`.
+   - **`assertNoUnmanifestedSecurityDefinerFunctions` — the flag-on serving-role path only.** It
+     asserts a property of the WHOLE database, which holds on a controlled distributed-execution
+     fleet (where `assertExactServingRoleAuthority` already fails boot on any unexpected schema) but
+     not on `external-postgres` against an operator-owned database, where a vendor or extension
+     definer function in another schema is legitimate and unknowable to us. Making it unconditional
+     would convert those deployments into hard boot failures. **This is a stated residual:** on a
+     flag-off deployment a NEW unmanifested definer function is not detected at boot.
+
+   Discovery is keyed on `pg_proc.prosecdef`, never on effective `EXECUTE` — `CREATE EXTENSION
+   vector` has no `SCHEMA` clause and installs ~100 `public` functions carrying the default
+   `PUBLIC EXECUTE`, so an EXECUTE-keyed certificate would fail boot on every pgvector fleet.
 7. The body pins `SET search_path = ''` and schema-qualifies every relation, so a caller's
    `search_path` cannot redirect it; and it is scoped to the caller-supplied tenant on every branch,
    so an owner-authority function cannot become a cross-tenant existence oracle. **This is enforced,
