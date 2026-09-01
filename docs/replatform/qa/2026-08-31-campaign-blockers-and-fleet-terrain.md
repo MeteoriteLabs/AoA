@@ -365,6 +365,51 @@ executing closure therefore had `distributedRolloutHook === undefined` and `dist
 mirroring `distributed-cancellation-port.ts`, which documents this exact hazard and names `distributedRollout`
 as its example.
 
+### 9e.0 ★ RESULT (2026-09-01) — Step-0 CLEARED, the probe is now GO
+
+Unit 1.5 merged (`42c124258`), fleet rebuilt and recreated on the new image (verified: the *running*
+container carries the `rollout resolved` marker). The same probe now emits, for the first time:
+
+```
+[CLI-006] rollout resolved
+    runId:                 9ee2ec30-dce5-438d-8976-ac023673bade
+    issueId:               80fd5d68-e3cb-4374-bed1-b3d49fe50e37
+    rolloutHookPresent:    true          <- conjunct 1, the fix
+    rolloutState:          "canary"      <- conjunct 2
+    rolloutOrganizationId: "0febb760-…"  <- conjunct 4
+    hasIssueContext:       true          <- conjunct 6
+[heartbeat] Harness pre-checked out issue for scoped wake   <- conjuncts 3, 5, 7
+```
+
+**All seven conjuncts hold.** The canary decision block is now reachable — the Step-0 blocker is closed,
+and the unconditional line did exactly the job it was added for: the previous NO-GO was silent, this one
+names its own state.
+
+**The next blocker is H2, already filed** — the run fails just before the decision block:
+
+```
+ProviderUnavailableError: No usable anthropic provider credential for this run (no_assignment)
+  at resolveProviderCredential (server/src/services/provider-resolution.ts:450)
+```
+
+That is arming STEP 4a (the `provider:anthropic` company secret); the pre-flight already reported
+`company secrets: NONE`. Not a new discovery — the expected next precondition.
+
+Two smaller findings from the same run, recorded so they do not cost a cycle later:
+
+- **`heartbeat_runs` has NO `issue_id` column.** The linkage is `context_snapshot ->> 'issueId'`, which is
+  how `heartbeat.ts` itself queries it. The first probe script used `issue_id` and silently reported
+  nothing for 5 seconds before the loop broke.
+- **`Cannot emit a hub item: company has no human owner`** (non-fatal WARN, `hub-items.ts:344`). Harmless
+  now, but Assist-mode autonomy raises an Inbox approval — so a company with no human owner may not be able
+  to surface one. Worth checking before relying on an approval-gated dispatch.
+
+**Operational trap found the hard way:** the rebuild ran ~20 minutes, reached `exporting to image`, and died
+with `no space left on device` while extracting the final layer — leaving the tag pointing at a
+partially-unpacked image. `docker builder prune -af` reclaimed 8.76GB (0 active). `redeploy.sh` now carries a
+15GB pre-flight guard, and both scripts verify the fix is present in the checkout, in the built image, AND in
+the running container — a cached layer would otherwise ship the old code under a fresh tag.
+
 ### 9e.1 ★ THE SEVEN-CONJUNCT PRE-FLIGHT — check ALL of these before the next dispatch
 
 `heartbeat.ts` guards the `[CLI-006]` decision block with **seven** conjuncts. A missing `[CLI-006]` line is
