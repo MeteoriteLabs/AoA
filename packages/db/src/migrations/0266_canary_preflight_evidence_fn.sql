@@ -10,9 +10,13 @@
 --
 -- ★ HONEST ABOUT THE PRECEDENT: this is the FIRST `CREATE FUNCTION` in 266 migrations. The
 -- adjacent precedent (0211/0213/0214/0259/0261 — 26 migrations of hand-authored roles,
--- grants, RLS and policies) establishes the CLASS, not this object kind. AGENTS.md rule 6
--- was amended alongside this migration to name the class explicitly, because it previously
--- described only C14 class (a) and read as a blanket ban on all hand-authored SQL.
+-- grants, RLS and policies) is LOCKED as Decision #122, which enumerates the class as
+-- RLS/role/GRANT/FORCE-RLS/CREATE-POLICY DDL and does NOT name functions. Decision #122 was
+-- therefore AMENDED (2026-09-01) to cover `CREATE FUNCTION` plus its ACL, on the same
+-- provably-not-emittable footing, with three added conditions for `SECURITY DEFINER`:
+-- a manifest entry (security-definer-manifest.ts), a boot certificate whose drift is fatal
+-- (assertSecurityDefinerManifest), and an empty pinned search_path with tenant-scoped
+-- predicates on every branch. Read Decision #122 before adding a second one of these.
 --
 -- NO TABLE, COLUMN, INDEX OR CONSTRAINT DDL IS HAND-AUTHORED HERE. The accompanying
 -- meta/0266_snapshot.json differs from 0265's in `id`/`prevId` ONLY — i.e. this migration
