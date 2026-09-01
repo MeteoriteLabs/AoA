@@ -336,8 +336,55 @@ end to end.
    gated create/execute for live workers — would have **crashed on its first sweep**. The log line reads
    `sweep failed (contained; loop continues)` and the AM stayed up. The review finding was real, and the fix works.
 
-**Still blocking the campaign:** Blocker A (empty batch workload — no lease can ever be offered) and a
-provider-capable worker (Blocker B; `worker-networked-host/dist` is absent from the image).
+~~**Still blocking the campaign:** Blocker A (empty batch workload — no lease can ever be offered) and a
+provider-capable worker (Blocker B; `worker-networked-host/dist` is absent from the image).~~
+**SUPERSEDED 2026-09-01** — A and B both fixed and MERGED in Unit 1 (`b6e02a478`, PR #331); B was verified in the
+real 374MB worker artifact. The blocker that replaced them is **§9e** below, found by probing rather than reading.
+
+## 9e. THE STEP-0 BLOCKER (found by PROBING, 2026-09-01) — the rollout hook never reached the executing instance
+
+A GO/NO-GO probe was run against the live fleet before spending any E2B budget on arming. It returned **NO-GO**,
+and the result is the reason Unit 1 alone was not enough.
+
+**The probe.** Task `1ffe57ee-6e24-4f24-9576-d35dd2d84957` created over HTTP, assigned to the seeded
+`org`/`claude_local` agent, flag on, dial set to `{"organizations":{"<ORG>":{"mode":"canary","workloads":["batch"],"sources":["task_run"]}}}`,
+control-plane restarted healthy with no malformed-dial complaint. Result:
+
+```
+wakeup fired  ->  failed issue_assigned
+heartbeat_runs = 1,  execution_owner = NULL,  and NO [CLI-006] line at all
+```
+
+**The cause (source, not inference).** `heartbeatService(db, options?)` read the hook only from
+`options?.distributedRollout`, and exactly ONE construction site supplies it — the scheduler in `index.ts`, itself
+behind `config.heartbeatSchedulerEnabled`. The wakeup path constructs a **bare** `heartbeatService(db)`, and
+`enqueueWakeup` does not merely queue: it EXECUTES on its own instance
+(`dispatchQueuedRunsAfterAgentSignal` → `startQueuedRunsForSingleAgent` → `claimQueuedRun` → `executeRun`). The
+executing closure therefore had `distributedRolloutHook === undefined` and `distributedRolloutState` stuck at
+`"off"`. Fixed by **Unit 1.5** (PR [#332](https://github.com/MeteoriteLabs/AoA/pull/332)) — a module-level port
+mirroring `distributed-cancellation-port.ts`, which documents this exact hazard and names `distributedRollout`
+as its example.
+
+### 9e.1 ★ THE SEVEN-CONJUNCT PRE-FLIGHT — check ALL of these before the next dispatch
+
+`heartbeat.ts` guards the `[CLI-006]` decision block with **seven** conjuncts. A missing `[CLI-006]` line is
+consistent with **any** of them being false, so its silence never isolates a cause on its own — the probe gives
+the symptom, the source gives the cause. Verify each BEFORE burning another deploy+dispatch cycle:
+
+| # | Conjunct | How to pre-verify |
+|---|---|---|
+| 1 | `distributedRolloutHook` | Unit 1.5 (#332). Nothing to check once merged + redeployed. |
+| 2 | `distributedRolloutState === "canary"` | Produced by the hook. Needs the dial AND conjunct 4. |
+| 3 | `shouldAutoCheckoutForWake` | **Satisfied by `issue_assigned`** — the predicate excludes only `issue_comment_mentioned` and `execution_*` wakes, and requires a non-null wake reason. Do NOT probe with a mention wake. |
+| 4 | `distributedRolloutOrganizationId` | `resolveCompanyOrganizationId` (`services/org-concurrency.ts`) reads **`companies.organization_id`**. Pre-flight SQL: `SELECT organization_id FROM companies WHERE id='<COMPANY>'` must equal the dialed `<ORG>`. A NULL here kills the canary silently. |
+| 5 | `issueId` | Folded into conjunct 3. |
+| 6 | `issueContext` | Folded into conjunct 3. |
+| 7 | `issueContext.assigneeAgentId === agent.id` | Folded into conjunct 3 — the task must be **assigned** to the probing agent, not merely mentioned. |
+
+Conjuncts 3/5/6/7 collapse into one (3 requires the other three). Conjuncts 2 and 4 are both **produced by** the
+hook, so a missing hook forces three of the seven false at once — which is why a missing hook was sufficient to
+explain the observed silence, and why 1.5 is the fix. Conjunct 4 is the one Unit 1.5 does **not** fix and the one
+most likely to bite next: it depends on seeded data, not code.
 
 ## 10. Corrections to existing docs
 
