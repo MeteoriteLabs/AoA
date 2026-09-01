@@ -153,3 +153,36 @@ this programme keeps producing, and the reason it is written down rather than le
 ticket on disk. Declared `unowned` in `scripts/finding-ownership.json` rather than pointed at a
 plausible-sounding existing ticket: a false claim of ownership converts an open question into a settled
 one, which is worse than an honest gap.
+
+## E7-F004 — The canary preflight's inventory is a strict SUPERSET of any reconcile pass's, by construction
+
+**Status:** open · **Owner:** MIG-010 (`epics/E10-desktop-migration-realtime/tickets/MIG-010-design.md`, no result doc)
+**Severity:** HIGH
+**Filed:** 2026-09-01, by Blocker E-3 terrain verification at `c7ead3a73` (Units 1.6+1.7 / PR #333).
+
+**What.** The gate re-derives its inventory read-only from **live rows** — every lease the Company
+currently holds, whatever its status (`canary-preflight.ts:115-122`, `:141`). A reconcile pass's
+inventory is fixed at its own snapshot. Two independent mechanisms make the gate's set strictly
+larger, so the two can never agree:
+
+1. **Post-pass leases.** `environmentService.acquireLease` inserts a new `environment_leases` row on
+   every legacy acquisition (`environments.ts:141-165`), from three sites in `environment-runtime.ts`
+   (`:219`, `:578`, `:636`). Any lease created after the pass has no record → `unmapped` → refuse.
+2. **Lost-CAS paused rows.** On a lost `casClaimPaused` the pass `continue`s
+   (`legacy-resource-reconciliation.ts:347-350`) recording **nothing**, while the row still exists for
+   the gate to count → `unmapped` → refuse.
+
+(1) alone makes the gate unopenable on any box taking traffic. `canary-preflight.ts:16-19` describes
+this as "self-healing in the safe direction". It is safe. It is also **permanently shut**, which is
+not a gate but a wall.
+
+**★ The fix is a semantics decision, not a caller.** A lease created *after* the reconciliation
+decision is not an unreconciled *legacy* resource — it is current traffic on the legacy path, and the
+rollout flag steers only NEW ownership decisions. Requiring it to carry a crosswalk record is a
+category error. Deciding what closure is asserted *as of* changes what this gate may answer, which is
+why it is owned by a ticket rather than patched.
+
+**Interacts with E10-F002.** That finding says nothing writes the crosswalk; this one says that even
+once something does, the gate still refuses. Both must close for the canary to flip.
+
+**Blocks.** E7-1.

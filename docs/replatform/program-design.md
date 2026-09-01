@@ -1120,6 +1120,27 @@ This is a named partial gate, not a ticket and not E10 completion. It requires J
 - **Acceptance:** Per-Company rollback-safety (an org with any pending authoritative-cost receipt on any of its Companies is skipped; a clean org is drained); `listActiveAttempts` returns the distinct in-flight `(company, job)` set over `job_attempts`; `cancelled`/`no_active_lease` counted, terminal/not-found excluded; the existing drain tests reworked for the new `DrainDeps` shape. Promotion of `E10-1-drain` either lands on an M-proven production caller OR stays `unwired` with a reason (kill-switch write path is REL-005) — the acceptance accepts either, never a vacuous wired.
 - **Test:** Unit rollback-safety matrix (clean org drains, receipt-bearing org skips) + embedded-PG `listActiveAttempts` over seeded attempts + the drain status coverage; positive control first, grain + SQL guards mutation-proven by deletion.
 
+#### MIG-010 — Legacy-resource reconciliation becomes runnable, and closure becomes decidable (M)
+
+- **Depends on:** MIG-008, CLI-006.
+- **Outcome:** Make MIG-008's reconciliation pass something that actually runs, and make the closure
+  CLI-006's canary gate asserts something a running system can satisfy. Owns E10-F002 (the pass and
+  its drizzle store both have ZERO production callers, so `legacy_resource_reconciliation` is never
+  written and the gate answers `reconciliation_incomplete` forever) and E7-F004 (the gate re-derives
+  its inventory from live `environment_leases` rows, so every lease created after a pass is an
+  unmapped key — a permanently-losing race on any box with traffic). Neither is fixed by adding a
+  caller: the pass cannot run as `aoa_operator` at all, and "reconciled as of when" is undefined.
+- **Acceptance:** The preflight returns `ok` for an organization whose reconciliation has been run,
+  **on a box taking legacy traffic**, and still refuses — with a policy reason, never
+  `preflight_error` — for: no pass, a stale pass, an unresolved `unattributable` record, and a
+  superseded provider-key generation. The pass performs no write to `environment_leases`, runs
+  organization-scoped through owner-owned `SECURITY DEFINER` functions granted to `aoa_operator`
+  alone, and its operator entrypoint asserts the role it connected as before its first read.
+- **Test:** Fail-first reproduction of BOTH findings against embedded PostgreSQL with real serving
+  roles (gate refuses with no pass; gate re-refuses after one lease is inserted post-pass), then the
+  same two scenarios green; watermark boundary cases mutation-proven, including a test that reds if
+  `acquireLease` reverts to stamping `created_at` from the application clock.
+
 ### E11 — Hardening and beta release
 
 #### REL-FOUNDATION-GATE — E0 release-test gate stops accepting a bare string (S9 unit 1)

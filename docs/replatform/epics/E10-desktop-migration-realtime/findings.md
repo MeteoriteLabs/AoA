@@ -75,3 +75,34 @@ shares E5's `DEFERRAL-1-credential` wiring. Filed `unowned` because no ticket in
 force-fitting them onto one sink would be false ownership.
 
 **Blocks:** every Sprint 6 sink cutover. Does NOT block the drain fix.
+
+## E10-F002 — MIG-008's reconciler and its store have ZERO production callers, so the crosswalk is never written
+
+**Status:** open · **Owner:** MIG-010 (`epics/E10-desktop-migration-realtime/tickets/MIG-010-design.md`, no result doc)
+**Severity:** HIGH
+**Filed:** 2026-09-01, by Blocker E-2 terrain verification at `c7ead3a73` (Units 1.6+1.7 / PR #333).
+
+**What.** Both halves of MIG-008's writing path are orphaned:
+
+| Symbol | Definition | Non-test callers |
+|---|---|---|
+| `reconcileCompanyLegacyResources` | `server/src/services/legacy-resource-reconciliation.ts:324` | **0** |
+| `createDrizzleReconciliationStore` | `server/src/services/legacy-resource-reconciliation-store.ts:23` | **0** |
+
+So `legacy_resource_reconciliation` is **never written in production**. CLI-006's canary preflight
+reads it (`canary-preflight-store.ts:63`), `assertClosure` finds every inventory key unmapped, and
+the gate answers `reconciliation_incomplete` for every organization, forever.
+
+**★ Wiring a caller does not fix it.** The pass must first read `environment_leases`,
+`environments`, and the `runtime_provider_keys`→`company_secret_versions` chain — four tables
+**neither serving role holds any grant on**, which is exactly why E-1 needed owner-owned
+`SECURITY DEFINER` functions. Binding the pass to `operatorDb` as it stands fails with 42501 on its
+first read. It also *writes*: `casClaimPaused` → `expireLeaseIfPaused` (`environments.ts:310-327`)
+flips `paused → expired`, so running the pass destroys warm snapshots as a side effect.
+
+**Why nothing caught it.** MIG-008's tests assert the pass against injected stores. Nothing asserted
+that anything drives it — the failure class in
+[`checks-that-nothing-runs`](../../qa/2026-08-31-campaign-blockers-and-fleet-terrain.md): a check
+that nothing runs is not a check, and here there was not even a check.
+
+**Blocks.** E7-1. The canary cannot flip to distributed on a correctly-booted flag-on deployment.
