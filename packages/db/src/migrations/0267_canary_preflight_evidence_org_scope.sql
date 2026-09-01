@@ -43,14 +43,20 @@
 -- drops 0266's overloads survive WITH their aoa_app EXECUTE grant -- the fix would look
 -- applied while the hole stayed open -- and would then trip
 -- assertNoUnmanifestedSecurityDefinerFunctions on the flag-on path.
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (pg-core exposes no
+-- function primitive); IF EXISTS makes it idempotent.
 DROP FUNCTION IF EXISTS public.canary_preflight_evidence_leases(uuid);
 --> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (pg-core exposes no
+-- function primitive); IF EXISTS makes it idempotent.
 DROP FUNCTION IF EXISTS public.canary_preflight_evidence_scalars(uuid, uuid);
 --> statement-breakpoint
 
 -- Replaces the direct `companies` read in canary-preflight-store.ts. THIS is what lets
 -- EXECUTE move to aoa_operator, which holds no grant on companies or organizations: the
 -- enumeration moves inside the definer surface rather than requiring a table grant.
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (drizzle-orm's pg-core
+-- exposes no function/routine primitive at any level); CREATE OR REPLACE is idempotent.
 CREATE OR REPLACE FUNCTION public.canary_preflight_evidence_companies(p_organization_id uuid)
 RETURNS TABLE (company_id uuid)
 LANGUAGE sql
@@ -61,15 +67,23 @@ AS $$
   SELECT c.id FROM public.companies c WHERE c.organization_id = p_organization_id;
 $$;
 --> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (no ACL primitive exists);
+-- REVOKE is idempotent. Strips PostgreSQL's default PUBLIC EXECUTE on a new function.
 REVOKE ALL ON FUNCTION public.canary_preflight_evidence_companies(uuid) FROM PUBLIC;
 --> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (no ACL primitive exists);
+-- REVOKE is idempotent. THIS is the round-7 boundary: the tenant-facing pool loses owner authority.
 REVOKE ALL ON FUNCTION public.canary_preflight_evidence_companies(uuid) FROM "aoa_app";
 --> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (no ACL primitive exists);
+-- GRANT is idempotent. The operator pool is the sole grantee -- see Decision #122's 2026-09-01 amendment.
 GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence_companies(uuid) TO "aoa_operator";
 --> statement-breakpoint
 
 -- ORGANIZATION-BOUND. The EXISTS clause makes the ORG the unit of authority: a company
 -- outside the organization being gated yields zero rows whatever the caller passes.
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (drizzle-orm's pg-core
+-- exposes no function/routine primitive at any level); CREATE OR REPLACE is idempotent.
 CREATE OR REPLACE FUNCTION public.canary_preflight_evidence_leases(
   p_organization_id uuid, p_company_id uuid)
 RETURNS TABLE (lease_id uuid)
@@ -84,10 +98,16 @@ AS $$
                 WHERE c.id = p_company_id AND c.organization_id = p_organization_id);
 $$;
 --> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (no ACL primitive exists);
+-- REVOKE is idempotent. Strips PostgreSQL's default PUBLIC EXECUTE on a new function.
 REVOKE ALL ON FUNCTION public.canary_preflight_evidence_leases(uuid, uuid) FROM PUBLIC;
 --> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (no ACL primitive exists);
+-- REVOKE is idempotent. THIS is the round-7 boundary: the tenant-facing pool loses owner authority.
 REVOKE ALL ON FUNCTION public.canary_preflight_evidence_leases(uuid, uuid) FROM "aoa_app";
 --> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (no ACL primitive exists);
+-- GRANT is idempotent. The operator pool is the sole grantee -- see Decision #122's 2026-09-01 amendment.
 GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence_leases(uuid, uuid) TO "aoa_operator";
 --> statement-breakpoint
 
@@ -95,6 +115,8 @@ GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence_leases(uuid, uuid) TO
 -- always" contract holds and an out-of-org company reads as "no evidence", never an error.
 -- That distinction matters: the caller must never confuse "no leases" with "no key
 -- generation", which is the conflation this whole surface exists to remove.
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (drizzle-orm's pg-core
+-- exposes no function/routine primitive at any level); CREATE OR REPLACE is idempotent.
 CREATE OR REPLACE FUNCTION public.canary_preflight_evidence_scalars(
   p_organization_id uuid, p_company_id uuid, p_default_env_id uuid)
 RETURNS TABLE (
@@ -140,8 +162,14 @@ AS $$
          (SELECT secret_id::text || ':' || version::text FROM keygen);
 $$;
 --> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (no ACL primitive exists);
+-- REVOKE is idempotent. Strips PostgreSQL's default PUBLIC EXECUTE on a new function.
 REVOKE ALL ON FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid, uuid) FROM PUBLIC;
 --> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (no ACL primitive exists);
+-- REVOKE is idempotent. THIS is the round-7 boundary: the tenant-facing pool loses owner authority.
 REVOKE ALL ON FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid, uuid) FROM "aoa_app";
 --> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement (no ACL primitive exists);
+-- GRANT is idempotent. The operator pool is the sole grantee -- see Decision #122's 2026-09-01 amendment.
 GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid, uuid) TO "aoa_operator";
