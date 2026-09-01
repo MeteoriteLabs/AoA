@@ -62,6 +62,7 @@ export interface DistributedExecutionDatabases {
 }
 
 type ServingRole = "aoa_app" | "aoa_operator";
+const SERVING_ROLES: readonly ServingRole[] = Object.freeze(["aoa_app", "aoa_operator"] as const);
 type ParticipantRole = "owner" | ServingRole;
 type SqlExecutor = Pick<Db, "execute">;
 type OwnerTransportOptions = Record<string, unknown> & {
@@ -366,14 +367,47 @@ export async function assertSecurityDefinerManifest(
   // an EXECUTE-keyed certificate would fail boot there. `prosecdef` is also the
   // security-correct axis: a SECURITY INVOKER function confers nothing beyond the caller's
   // own authority.
-  const rows = rowsOf<{ schema_name: string; function_name: string; identity_arguments: string }>(
+  //
+  // The owner and ACL columns below are asserted ONLY for rows this `prosecdef` filter
+  // already returned. That keeps the pgvector constraint intact — those functions are
+  // SECURITY INVOKER, so they never enter this set — while closing the half of the
+  // certificate that identity comparison alone leaves open: a MANIFESTED definer function
+  // whose EXECUTE widens is owner-authority code reachable by a role that was never meant
+  // to reach it, and no table/column/sequence scan can see it.
+  const rows = rowsOf<{
+    schema_name: string;
+    function_name: string;
+    identity_arguments: string;
+    owner_name: string;
+    acl_is_null: boolean;
+    grantor: string | null;
+    grantee: string | null;
+    privilege_type: string | null;
+    is_grantable: boolean | null;
+  }>(
     await db.execute(sql`
       SELECT
         namespace.nspname AS schema_name,
         proc.proname AS function_name,
-        pg_get_function_identity_arguments(proc.oid) AS identity_arguments
+        pg_get_function_identity_arguments(proc.oid) AS identity_arguments,
+        owner.rolname AS owner_name,
+        proc.proacl IS NULL AS acl_is_null,
+        CASE
+          WHEN acl.grantor = proc.proowner THEN 'FUNCTION_OWNER'
+          ELSE COALESCE(grantor.rolname, acl.grantor::text)
+        END AS grantor,
+        CASE
+          WHEN acl.grantee = 0 THEN 'PUBLIC'
+          WHEN acl.grantee = proc.proowner THEN 'FUNCTION_OWNER'
+          ELSE COALESCE(grantee.rolname, acl.grantee::text)
+        END AS grantee,
+        acl.privilege_type, acl.is_grantable
       FROM pg_proc proc
       JOIN pg_namespace namespace ON namespace.oid = proc.pronamespace
+      JOIN pg_roles owner ON owner.oid = proc.proowner
+      LEFT JOIN LATERAL aclexplode(proc.proacl) acl ON TRUE
+      LEFT JOIN pg_roles grantor ON grantor.oid = acl.grantor
+      LEFT JOIN pg_roles grantee ON grantee.oid = acl.grantee
       WHERE proc.prosecdef
         AND namespace.nspname <> 'information_schema'
         AND namespace.nspname NOT LIKE 'pg_%'
@@ -383,26 +417,73 @@ export async function assertSecurityDefinerManifest(
   // Compare as SETS keyed by identity, never by sorted index: Postgres orders by
   // (nspname, proname, identity_arguments) while JS localeCompare orders differently, so
   // index pairing would spuriously red boot the moment a second definer function exists.
-  const allowed = new Set(
-    SECURITY_DEFINER_FUNCTION_MANIFEST.map((fn) =>
+  const manifested = new Map(
+    SECURITY_DEFINER_FUNCTION_MANIFEST.map((fn) => [
       securityDefinerKey(fn.schema, fn.name, fn.identityArguments),
-    ),
-  );
-  const actual = new Set(
-    rows.map((row) =>
-      securityDefinerKey(row.schema_name, row.function_name, row.identity_arguments),
-    ),
+      fn,
+    ]),
   );
 
-  for (const found of actual) {
-    if (!allowed.has(found)) {
+  // `aclexplode` is LATERAL-joined, so one function yields one row per ACL tuple (and a
+  // single all-null row when `proacl IS NULL`). Fold back to one entry per function.
+  const found = new Map<string, { owner: string; aclIsNull: boolean; tuples: string[] }>();
+  for (const row of rows) {
+    const key = securityDefinerKey(row.schema_name, row.function_name, row.identity_arguments);
+    const entry = (found.get(key) ??
+      { owner: row.owner_name, aclIsNull: row.acl_is_null, tuples: [] as string[] });
+    if (
+      row.grantor !== null && row.grantee !== null &&
+      row.privilege_type !== null && row.is_grantable !== null
+    ) {
+      entry.tuples.push(`${row.grantor}->${row.grantee}:${row.privilege_type}:${row.is_grantable}`);
+    }
+    found.set(key, entry);
+  }
+
+  for (const [key, actual] of found) {
+    const expected = manifested.get(key);
+    if (!expected) {
       throw new Error(
-        `${role} security-definer drift: unmanifested SECURITY DEFINER function ${found}`,
+        `${role} security-definer drift: unmanifested SECURITY DEFINER function ${key}`,
+      );
+    }
+
+    // 0214_e2_serving_role_hardening.sql:10,31 RAISEs if a serving role owns an application
+    // object. A definer function owned by a serving role is that same violation, in the one
+    // place the table/column/sequence scans cannot look.
+    if (SERVING_ROLES.includes(actual.owner as ServingRole)) {
+      throw new Error(
+        `${role} security-definer drift: ${key} is owned by serving role ${actual.owner}`,
+      );
+    }
+
+    // A NULL `proacl` is not "no privileges" — it is PostgreSQL's DEFAULT ACL, and the
+    // default for a function is EXECUTE to PUBLIC. A DROP + CREATE that forgets to re-issue
+    // the REVOKE lands here, silently re-opened.
+    if (actual.aclIsNull) {
+      throw new Error(
+        `${role} security-definer execute authority drift: ${key} has a NULL ACL ` +
+          "(PostgreSQL's default grants EXECUTE to PUBLIC)",
+      );
+    }
+
+    const expectedTuples = sortedStrings([
+      "FUNCTION_OWNER->FUNCTION_OWNER:EXECUTE:false",
+      ...expected.executeGrantees.map(
+        (grantee) => `FUNCTION_OWNER->${grantee}:EXECUTE:false`,
+      ),
+    ]);
+    const actualTuples = sortedStrings(actual.tuples);
+    if (!exactJson(actualTuples, expectedTuples)) {
+      throw new Error(
+        `${role} security-definer execute authority drift: ${key} ACL is ` +
+          `${JSON.stringify(actualTuples)} expected ${JSON.stringify(expectedTuples)}`,
       );
     }
   }
-  for (const expected of allowed) {
-    if (!actual.has(expected)) {
+
+  for (const expected of manifested.keys()) {
+    if (!found.has(expected)) {
       throw new Error(
         `${role} security-definer drift: manifested SECURITY DEFINER function ${expected} is absent`,
       );

@@ -44,6 +44,17 @@ describe("SECURITY DEFINER manifest — shape", () => {
     }
   });
 
+  it("never allows PUBLIC, and always names at least one execute grantee", () => {
+    // A definer function executable by PUBLIC is precisely the escalation this manifest
+    // exists to prevent; an empty grantee list would be a function nothing can call.
+    for (const fn of SECURITY_DEFINER_FUNCTION_MANIFEST) {
+      expect(fn.executeGrantees.length, `${fn.name} names no execute grantee`).toBeGreaterThan(0);
+      expect(fn.executeGrantees, fn.name).not.toContain("PUBLIC");
+      expect(fn.executeGrantees, fn.name).not.toContain("public");
+      expect(fn.executeGrantees, fn.name).not.toContain("FUNCTION_OWNER");
+    }
+  });
+
   it("has no duplicate identities", () => {
     expect(manifestKeys().size).toBe(SECURITY_DEFINER_FUNCTION_MANIFEST.length);
   });
@@ -91,6 +102,82 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
       );
       await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
         /unmanifested SECURITY DEFINER function public\.mutant_definer\(\)/,
+      );
+    } finally {
+      await database.teardown();
+    }
+  }, 180_000);
+
+  // ── ACL / ownership drift on a MANIFESTED definer function ──────────────────────
+  //
+  // Enumerating the definer surface is only half the certificate. A manifested function
+  // whose ACL widens is owner-authority code reachable by a role that was never meant to
+  // reach it, and the identity scan alone cannot see that. Each case below is a real
+  // escalation path, not a hypothetical.
+
+  it("REJECTS EXECUTE granted to PUBLIC on a manifested definer function", async () => {
+    const database = await startMigratedDatabase({ label: "aoa-definer-public-" });
+    try {
+      await database.admin.unsafe(
+        "GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence(uuid, uuid) TO PUBLIC",
+      );
+      await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
+        /execute authority drift/i,
+      );
+    } finally {
+      await database.teardown();
+    }
+  }, 180_000);
+
+  it("REJECTS EXECUTE granted to a role outside the manifest", async () => {
+    const database = await startMigratedDatabase({ label: "aoa-definer-role-" });
+    try {
+      await database.admin.unsafe('CREATE ROLE "aoa_definer_intruder" NOLOGIN');
+      await database.admin.unsafe(
+        'GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence(uuid, uuid) TO "aoa_definer_intruder"',
+      );
+      await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
+        /execute authority drift/i,
+      );
+    } finally {
+      await database.teardown();
+    }
+  }, 180_000);
+
+  // A DROP + CREATE resets `proacl` to NULL, which in PostgreSQL means the DEFAULT ACL —
+  // and the default for a function is EXECUTE to PUBLIC. A migration that recreates the
+  // function without re-issuing the REVOKE therefore re-opens it SILENTLY.
+  it("REJECTS a definer function whose ACL is NULL (PostgreSQL default = PUBLIC EXECUTE)", async () => {
+    const database = await startMigratedDatabase({ label: "aoa-definer-nullacl-" });
+    try {
+      await database.admin.unsafe("DROP FUNCTION public.canary_preflight_evidence(uuid, uuid)");
+      await database.admin.unsafe(
+        "CREATE FUNCTION public.canary_preflight_evidence(p_company_id uuid, p_default_env_id uuid) " +
+          "RETURNS TABLE (lease_id uuid, platform_default_environment_id uuid, key_generation text) " +
+          "LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $fn$ SELECT NULL::uuid, NULL::uuid, NULL::text $fn$",
+      );
+      await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
+        /execute authority drift/i,
+      );
+    } finally {
+      await database.teardown();
+    }
+  }, 180_000);
+
+  // 0214_e2_serving_role_hardening.sql RAISEs if a serving role owns an application object.
+  // A definer function owned by the serving role is that same violation, in the one place
+  // the table/column/sequence scans cannot look.
+  it("REJECTS a definer function owned by a serving role", async () => {
+    const database = await startMigratedDatabase({ label: "aoa-definer-owner-" });
+    try {
+      // ALTER FUNCTION … OWNER TO requires CREATE on the schema; granting it is exactly the
+      // drift being simulated.
+      await database.admin.unsafe('GRANT CREATE ON SCHEMA public TO "aoa_app"');
+      await database.admin.unsafe(
+        'ALTER FUNCTION public.canary_preflight_evidence(uuid, uuid) OWNER TO "aoa_app"',
+      );
+      await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
+        /owned by serving role/i,
       );
     } finally {
       await database.teardown();
