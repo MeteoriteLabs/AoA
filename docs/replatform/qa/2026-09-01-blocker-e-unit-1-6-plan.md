@@ -212,7 +212,7 @@ C14 narrow exception for security DDL only, the same route `0214` and `0261` too
 -- search_path is pinned EMPTY and every relation is schema-qualified, so a caller's
 -- search_path cannot redirect the body. pg_catalog stays implicitly resolvable.
 
-CREATE OR REPLACE FUNCTION public.canary_preflight_evidence(p_company_id uuid)
+CREATE OR REPLACE FUNCTION public.canary_preflight_evidence(p_company_id uuid, p_default_env_id uuid)
 RETURNS TABLE (
   lease_id uuid,
   platform_default_environment_id uuid,
@@ -228,7 +228,7 @@ AS $$
   ),
   default_env AS (
     SELECT e.id FROM public.environments e
-    WHERE e.id = public.derive_platform_default_environment_id(p_company_id)
+    WHERE e.id = p_default_env_id
     LIMIT 1
   ),
   keygen AS (
@@ -255,8 +255,8 @@ AS $$
   WHERE NOT EXISTS (SELECT 1 FROM leases);
 $$;
 
-REVOKE ALL ON FUNCTION public.canary_preflight_evidence(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence(uuid) TO "aoa_app";
+REVOKE ALL ON FUNCTION public.canary_preflight_evidence(uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence(uuid, uuid) TO "aoa_app";
 ```
 
 ★ The trailing `UNION ALL … WHERE NOT EXISTS` branch exists so a company with **zero leases** still
@@ -264,19 +264,13 @@ returns one row carrying the env + key-generation scalars. Without it the functi
 the wrapper cannot distinguish "no leases" from "no key generation" — which would resurrect exactly the
 conflation this whole unit is about.
 
-★ `derive_platform_default_environment_id` must already exist as a SQL function. **Verify first:**
-
-```bash
-cd /c/e3 && grep -rn "derive_platform_default_environment_id" packages/db/src/migrations/ | head -3
-```
-
-If it does **not** exist, the id is a pure uuidv5 derivation computed in TypeScript
-(`platform-default-environment.ts:109-111`). In that case change the function signature to accept it:
-`canary_preflight_evidence(p_company_id uuid, p_default_env_id uuid)`, drop the
-`derive_platform_default_environment_id(...)` call in favour of `e.id = p_default_env_id`, and have the
-wrapper (Task 3) pass `derivePlatformDefaultEnvironmentId(companyId)`. **Do not invent a PL/pgSQL uuidv5
-implementation** — a second derivation would be exactly the parallel-reimplementation drift the store's
-own header warns about.
+★ **The default-environment id is passed IN, not derived in SQL — this is settled, not a choice.**
+`derive_platform_default_environment_id` does **not** exist as a SQL function (verified: zero hits across
+`packages/db/src/migrations/`). It is a TypeScript uuidv5 derivation only
+(`platform-default-environment.ts:109-111`). Writing a PL/pgSQL uuidv5 would create a **second
+derivation** of a value whose whole purpose is to be deterministic across processes — exactly the
+parallel-reimplementation drift the store's own header warns about, and a silent one, because a
+mismatched id returns "no platform-default env" rather than an error. The caller passes it.
 
 - [ ] **Step 3: Apply and verify the privilege boundary holds**
 
@@ -287,7 +281,7 @@ cd /c/e3 && pnpm db:migrate
 Then, as `aoa_app`, confirm the function works **and** that nothing else opened up:
 
 ```sql
-SELECT * FROM public.canary_preflight_evidence('<a real company uuid>');  -- must return rows
+SELECT * FROM public.canary_preflight_evidence('<company uuid>', '<derivePlatformDefaultEnvironmentId(company)>');  -- must return rows
 SELECT material FROM company_secret_versions LIMIT 1;                     -- must STILL raise 42501
 SELECT * FROM environment_leases LIMIT 1;                                 -- must STILL raise 42501
 ```
@@ -324,6 +318,7 @@ git commit -m "feat(cli-006): owner-owned SECURITY DEFINER evidence read for the
 import { sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import type { LegacyLeaseInput } from "./legacy-resource-reconciliation.js";
+import { derivePlatformDefaultEnvironmentId } from "./platform-default-environment.js";
 
 type EvidenceRow = {
   lease_id: string | null;
@@ -341,9 +336,13 @@ export async function readCanaryPreflightEvidence(
   db: Db,
   companyId: string,
 ): Promise<CanaryPreflightEvidence> {
+  // The default-env id is derived HERE and passed in: it is a TypeScript uuidv5
+  // (platform-default-environment.ts:109-111) with no SQL equivalent, and a second
+  // derivation would drift silently (a mismatched id reads as "no default env", not an error).
+  const defaultEnvId = derivePlatformDefaultEnvironmentId(companyId);
   const result = await db.execute(
     sql`SELECT lease_id, platform_default_environment_id, key_generation
-        FROM public.canary_preflight_evidence(${companyId}::uuid)`,
+        FROM public.canary_preflight_evidence(${companyId}::uuid, ${defaultEnvId}::uuid)`,
   );
   const rows = (Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? []) as EvidenceRow[];
   return {
@@ -513,7 +512,7 @@ export const SECURITY_DEFINER_FUNCTION_MANIFEST: readonly SecurityDefinerFunctio
   {
     schema: "public",
     name: "canary_preflight_evidence",
-    identityArguments: "p_company_id uuid",
+    identityArguments: "p_company_id uuid, p_default_env_id uuid",
     rationale:
       "BLOCKER E. Returns four scalars the CLI-006 canary gate needs from tables the " +
       "non-owner aoa_app pool holds zero privileges on. Narrows the predicate to one " +
@@ -589,7 +588,7 @@ describe("SECURITY DEFINER manifest", () => {
       (fn) => fn.name === "canary_preflight_evidence",
     );
     expect(hits).toHaveLength(1);
-    expect(hits[0]?.identityArguments).toBe("p_company_id uuid");
+    expect(hits[0]?.identityArguments).toBe("p_company_id uuid, p_default_env_id uuid");
   });
 
   it("requires a rationale for every entry — owner authority is never granted silently", () => {
