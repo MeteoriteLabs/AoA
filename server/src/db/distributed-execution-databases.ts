@@ -53,6 +53,7 @@ import {
   WORKER_ENROLLMENT_OPERATOR_GRANTS,
   type TablePrivilege,
 } from "./job-control-legacy-grants.js";
+import { SECURITY_DEFINER_FUNCTION_MANIFEST } from "./security-definer-manifest.js";
 
 export interface DistributedExecutionDatabases {
   appDb: Db;
@@ -333,6 +334,79 @@ async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promi
       `${role} effective sequence authority drift: ` +
         `${sequenceDrift.schema_name}.${sequenceDrift.sequence_name}`,
     );
+  }
+
+  // The scans above enumerate tables, columns and sequences. None of them can see a
+  // SECURITY DEFINER function, which runs with the OWNER's authority regardless of caller
+  // and is therefore the whole remaining privilege-escalation surface.
+  await assertSecurityDefinerManifest(db, role);
+}
+
+function securityDefinerKey(schema: string, name: string, identityArguments: string): string {
+  return `${schema}.${name}(${identityArguments})`;
+}
+
+/**
+ * Certificate the SECURITY DEFINER surface against
+ * {@link SECURITY_DEFINER_FUNCTION_MANIFEST}: exactly the manifested functions may exist,
+ * and every manifested function must exist.
+ *
+ * Role-independent by construction — `prosecdef` is a property of the FUNCTION, not of the
+ * caller. It is invoked once per serving role only because that is where the existing
+ * assertion path runs; the `role` argument appears in the message for provenance, and the
+ * verdict is identical for both roles.
+ */
+export async function assertSecurityDefinerManifest(
+  db: SqlExecutor,
+  role: string,
+): Promise<void> {
+  // KEYED ON prosecdef, NOT effective EXECUTE. On a fleet with pgvector, `CREATE EXTENSION
+  // vector` (no SCHEMA clause: 0038_marvelous_vapor.sql:1, 0115_enable_pgvector.sql:29)
+  // installs ~100 functions into `public` carrying PostgreSQL's default PUBLIC EXECUTE, so
+  // an EXECUTE-keyed certificate would fail boot there. `prosecdef` is also the
+  // security-correct axis: a SECURITY INVOKER function confers nothing beyond the caller's
+  // own authority.
+  const rows = rowsOf<{ schema_name: string; function_name: string; identity_arguments: string }>(
+    await db.execute(sql`
+      SELECT
+        namespace.nspname AS schema_name,
+        proc.proname AS function_name,
+        pg_get_function_identity_arguments(proc.oid) AS identity_arguments
+      FROM pg_proc proc
+      JOIN pg_namespace namespace ON namespace.oid = proc.pronamespace
+      WHERE proc.prosecdef
+        AND namespace.nspname <> 'information_schema'
+        AND namespace.nspname NOT LIKE 'pg_%'
+    `),
+  );
+
+  // Compare as SETS keyed by identity, never by sorted index: Postgres orders by
+  // (nspname, proname, identity_arguments) while JS localeCompare orders differently, so
+  // index pairing would spuriously red boot the moment a second definer function exists.
+  const allowed = new Set(
+    SECURITY_DEFINER_FUNCTION_MANIFEST.map((fn) =>
+      securityDefinerKey(fn.schema, fn.name, fn.identityArguments),
+    ),
+  );
+  const actual = new Set(
+    rows.map((row) =>
+      securityDefinerKey(row.schema_name, row.function_name, row.identity_arguments),
+    ),
+  );
+
+  for (const found of actual) {
+    if (!allowed.has(found)) {
+      throw new Error(
+        `${role} security-definer drift: unmanifested SECURITY DEFINER function ${found}`,
+      );
+    }
+  }
+  for (const expected of allowed) {
+    if (!actual.has(expected)) {
+      throw new Error(
+        `${role} security-definer drift: manifested SECURITY DEFINER function ${expected} is absent`,
+      );
+    }
   }
 }
 

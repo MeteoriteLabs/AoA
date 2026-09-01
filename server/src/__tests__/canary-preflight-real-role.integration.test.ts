@@ -17,31 +17,13 @@
 // `runneradmin` CI runner — Issue #114); Linux CI is the authority.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import postgres, { type Sql } from "postgres";
-import {
-  applyPendingMigrations,
-  createTenantAppDbConnection,
-  type Db,
-  type NonOwnerDbConnection,
-} from "@armyofagents/db";
 import { sql } from "drizzle-orm";
-import { provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
-import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
+import type { Db } from "@armyofagents/db";
 import { createCanaryPreflight } from "../services/canary-preflight.js";
 import { createDrizzleCanaryPreflightStore } from "../services/canary-preflight-store.js";
 import { derivePlatformDefaultEnvironmentId } from "../services/platform-default-environment.js";
+import { startMigratedDatabase } from "./helpers/migrated-database.js";
 
-type EmbeddedPostgresInstance = {
-  initialise(): Promise<void>;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-};
-type EmbeddedPostgresCtor = new (opts: Record<string, unknown>) => EmbeddedPostgresInstance;
-
-const PASSWORD = "blocker-e-real-role-password";
 const ORG = "e1000000-0000-4000-8000-000000000001";
 const COMPANY = "e1000000-0000-4000-8000-000000000002";
 
@@ -74,44 +56,15 @@ type Fixture = {
 // ONE fixture for the whole describe. An embedded-postgres instance per `it()` leaks
 // processes on every lane.
 async function setUpRealRoleFixture(): Promise<Fixture> {
-  const dataDir = await mkdtemp(join(tmpdir(), "aoa-blocker-e-"));
-  const { default: EmbeddedPostgres } = (await import("embedded-postgres")) as {
-    default: EmbeddedPostgresCtor;
-  };
-  const port = await allocateEmbeddedPgPort();
-  const embedded = new EmbeddedPostgres({
-    databaseDir: join(dataDir, "db"),
-    user: "test",
-    password: "test",
-    port,
-    persistent: false,
-    initdbFlags: ["--encoding=UTF8", "--locale=C"],
-  });
-  let admin: Sql | null = null;
-  let app: NonOwnerDbConnection | null = null;
-  const teardown = async () => {
-    await app?.close({ timeoutSeconds: 5 }).catch(() => {});
-    await admin?.end().catch(() => {});
-    await embedded.stop().catch(() => {});
-    await rm(dataDir, { recursive: true, force: true }).catch(() => {});
-  };
+  const database = await startMigratedDatabase({ label: "aoa-blocker-e-" });
+  const { admin, appDb, teardown } = database;
   try {
-    await embedded.initialise();
-    await embedded.start();
-    const adminUrl = `postgres://test:test@127.0.0.1:${port}/postgres`;
-    await applyPendingMigrations(adminUrl);
-    admin = postgres(adminUrl, { max: 2 });
-    await admin.unsafe(provisionTenantAppRoleLoginSql("aoa_app", PASSWORD));
-    app = createTenantAppDbConnection(adminUrl.replace("test:test", `aoa_app:${PASSWORD}`), {
-      max: 4,
-    });
-
     // Seed as ADMIN, read as `aoa_app` — that asymmetry is the whole point.
     //
     // Seeding a Company is MANDATORY: with none the gate short-circuits on `no_companies`
     // (`canary-preflight.ts:132-137`) and the test would pass for the wrong reason. Nothing
-    // else is seeded — no leases, no runtime_provider_keys — so the post-fix verdict is a
-    // clean policy refusal rather than an artefact of fixture data.
+    // else is seeded for ORG — no leases, no runtime_provider_keys — so the post-fix verdict
+    // is a clean policy refusal rather than an artefact of fixture data.
     await admin`INSERT INTO organizations (id, name, slug)
       VALUES (${ORG}, 'Blocker E org', 'blocker-e-org')`;
     await admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
@@ -133,7 +86,7 @@ async function setUpRealRoleFixture(): Promise<Fixture> {
       (id, company_id, environment_id, status, lease_policy)
       VALUES (${NEIGHBOUR_LEASE}, ${NEIGHBOUR}, ${neighbourEnvironmentId}, 'active', 'ephemeral')`;
 
-    return { appDb: app.db, organizationId: ORG, neighbourEnvironmentId, teardown };
+    return { appDb, organizationId: ORG, neighbourEnvironmentId, teardown };
   } catch (error) {
     await teardown();
     throw error;
