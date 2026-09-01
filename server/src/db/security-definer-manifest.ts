@@ -36,6 +36,29 @@ export type SecurityDefinerFunction = {
    * authority of the data it reads.
    */
   readonly authorityRelations: readonly string[];
+  /**
+   * Expected `pg_proc.proconfig` — the per-function `SET` clauses, matched exactly.
+   *
+   * `CREATE OR REPLACE FUNCTION` PRESERVES the owner and the ACL, so a replacement that
+   * keeps the identity and the `SECURITY DEFINER` setting but drops `SET search_path = ''`
+   * is invisible to every identity, owner and ACL assertion. Without that pin, name
+   * resolution inside owner-authority code becomes caller-controlled.
+   */
+  readonly executionConfig: readonly string[];
+  /**
+   * SHA-256 of `pg_proc.prosrc` with carriage returns stripped, lowercase hex.
+   *
+   * The last thing `CREATE OR REPLACE` can change invisibly is the BODY — dropping a
+   * `company_id` predicate turns this into the cross-tenant existence oracle that review
+   * caught in this plan's first revision. Pinning the body makes any change to owner-
+   * authority code a deliberate, reviewed manifest edit.
+   *
+   * CR-stripped because `packages/db/src/migrations/` carries no `eol=lf` pin in
+   * `.gitattributes`: a Windows checkout with `core.autocrlf=true` stores the migration
+   * with CRLF and Linux CI with LF, so a raw hash would pin one platform and fail boot on
+   * the other. The scan normalizes the same way.
+   */
+  readonly bodySha256: string;
   /** Why this function may hold owner authority. */
   readonly rationale: string;
 };
@@ -55,6 +78,8 @@ export const SECURITY_DEFINER_FUNCTION_MANIFEST: readonly SecurityDefinerFunctio
       "public.runtime_provider_keys",
       "public.company_secret_versions",
     ],
+    executionConfig: ['search_path=""'],
+    bodySha256: "8b10e1022f4eef9ce0acc83cb9308932347d84a5a0eb327c9e38288906b8926b",
     rationale:
       "BLOCKER E. Returns three scalars the CLI-006 canary gate needs from tables the " +
       "non-owner aoa_app pool holds zero privileges on. Both arguments are company-scoped in " +

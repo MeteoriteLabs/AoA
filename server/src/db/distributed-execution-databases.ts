@@ -379,6 +379,9 @@ export async function assertSecurityDefinerManifest(
     function_name: string;
     identity_arguments: string;
     owner_name: string;
+    execution_config: string[] | null;
+    leakproof: boolean;
+    body_sha256: string;
     acl_is_null: boolean;
     grantor: string | null;
     grantee: string | null;
@@ -391,6 +394,14 @@ export async function assertSecurityDefinerManifest(
         proc.proname AS function_name,
         pg_get_function_identity_arguments(proc.oid) AS identity_arguments,
         owner.rolname AS owner_name,
+        proc.proconfig AS execution_config,
+        proc.proleakproof AS leakproof,
+        -- Carriage returns stripped: packages/db/src/migrations/ has no eol=lf pin in
+        -- .gitattributes, so a Windows checkout stores the body with CRLF and Linux CI with
+        -- LF. Hashing raw would pin one platform and fail boot on the other.
+        encode(
+          sha256(convert_to(replace(proc.prosrc, chr(13), ''), 'UTF8')), 'hex'
+        ) AS body_sha256,
         proc.proacl IS NULL AS acl_is_null,
         CASE
           WHEN acl.grantor = proc.proowner THEN 'FUNCTION_OWNER'
@@ -426,11 +437,24 @@ export async function assertSecurityDefinerManifest(
 
   // `aclexplode` is LATERAL-joined, so one function yields one row per ACL tuple (and a
   // single all-null row when `proacl IS NULL`). Fold back to one entry per function.
-  const found = new Map<string, { owner: string; aclIsNull: boolean; tuples: string[] }>();
+  const found = new Map<string, {
+    owner: string;
+    executionConfig: string[];
+    leakproof: boolean;
+    bodySha256: string;
+    aclIsNull: boolean;
+    tuples: string[];
+  }>();
   for (const row of rows) {
     const key = securityDefinerKey(row.schema_name, row.function_name, row.identity_arguments);
-    const entry = (found.get(key) ??
-      { owner: row.owner_name, aclIsNull: row.acl_is_null, tuples: [] as string[] });
+    const entry = (found.get(key) ?? {
+      owner: row.owner_name,
+      executionConfig: row.execution_config ?? [],
+      leakproof: row.leakproof,
+      bodySha256: row.body_sha256,
+      aclIsNull: row.acl_is_null,
+      tuples: [] as string[],
+    });
     if (
       row.grantor !== null && row.grantee !== null &&
       row.privilege_type !== null && row.is_grantable !== null
@@ -508,6 +532,33 @@ export async function assertSecurityDefinerManifest(
       throw new Error(
         `${role} security-definer execute authority drift: ${key} has a NULL ACL ` +
           "(PostgreSQL's default grants EXECUTE to PUBLIC)",
+      );
+    }
+
+    // EXECUTION DEFINITION. `CREATE OR REPLACE FUNCTION` PRESERVES the owner and the ACL,
+    // so a replacement keeping the identity and the SECURITY DEFINER setting passes every
+    // check above while silently changing what the function DOES. Two things it can drop:
+    // the empty `search_path` pin (making name resolution inside owner-authority code
+    // caller-controlled) and a tenant predicate (turning this into a cross-tenant existence
+    // oracle — the exact defect review caught in this plan's first revision).
+    if (!exactJson(actual.executionConfig, expected.executionConfig)) {
+      throw new Error(
+        `${role} security-definer execution config drift: ${key} has ` +
+          `${JSON.stringify(actual.executionConfig)} expected ` +
+          `${JSON.stringify(expected.executionConfig)}`,
+      );
+    }
+    if (actual.bodySha256 !== expected.bodySha256) {
+      throw new Error(
+        `${role} security-definer body fingerprint drift: ${key} body is ` +
+          `${actual.bodySha256} expected ${expected.bodySha256}`,
+      );
+    }
+    // LEAKPROOF lets the planner push a function below security barriers and RLS quals.
+    // Owner-authority code reading secret-bearing tables must never carry it.
+    if (actual.leakproof) {
+      throw new Error(
+        `${role} security-definer drift: ${key} is marked LEAKPROOF`,
       );
     }
 

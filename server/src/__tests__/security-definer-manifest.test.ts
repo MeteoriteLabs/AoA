@@ -67,6 +67,17 @@ describe("SECURITY DEFINER manifest — shape", () => {
     }
   });
 
+  it("pins each function's execution definition", () => {
+    // These two are what make CREATE OR REPLACE a reviewed act rather than a silent one.
+    for (const fn of SECURITY_DEFINER_FUNCTION_MANIFEST) {
+      expect(fn.bodySha256, `${fn.name} body fingerprint`).toMatch(/^[0-9a-f]{64}$/);
+      expect(
+        fn.executionConfig.some((entry) => entry.startsWith("search_path=")),
+        `${fn.name} must pin search_path — otherwise name resolution inside owner-authority code is caller-controlled`,
+      ).toBe(true);
+    }
+  });
+
   it("has no duplicate identities", () => {
     expect(manifestKeys().size).toBe(SECURITY_DEFINER_FUNCTION_MANIFEST.length);
   });
@@ -159,6 +170,12 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
   // A DROP + CREATE resets `proacl` to NULL, which in PostgreSQL means the DEFAULT ACL —
   // and the default for a function is EXECUTE to PUBLIC. A migration that recreates the
   // function without re-issuing the REVOKE therefore re-opens it SILENTLY.
+  //
+  // NOTE: this fixture is not perfectly isolated — recreating with a stub body also trips
+  // the body fingerprint. What isolates it is assertion ORDER: `aclIsNull` is checked before
+  // the execution-definition block, because "executable by PUBLIC" is the more urgent
+  // message of the two. The regex below pins that, so a reorder fails here rather than
+  // silently changing which drift an operator is told about first.
   it("REJECTS a definer function whose ACL is NULL (PostgreSQL default = PUBLIC EXECUTE)", async () => {
     const database = await startMigratedDatabase({ label: "aoa-definer-nullacl-" });
     try {
@@ -213,6 +230,68 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
       );
       await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
         /owner drift/i,
+      );
+    } finally {
+      await database.teardown();
+    }
+  }, 180_000);
+
+  // ── EXECUTION-DEFINITION drift ───────────────────────────────────────────────────
+  //
+  // `CREATE OR REPLACE FUNCTION` keeps the existing owner AND the existing ACL. So a
+  // replacement that keeps the identity and the SECURITY DEFINER setting, but drops the
+  // empty `search_path` pin or a tenant predicate, is invisible to every identity/owner/ACL
+  // assertion above. Each regex below names the SPECIFIC guard that must fire — a loose
+  // regex would let one of the other checks pass the test for the wrong reason.
+
+  it("REJECTS a definer function that lost its empty search_path pin", async () => {
+    const database = await startMigratedDatabase({ label: "aoa-definer-searchpath-" });
+    try {
+      // Same identity, same SECURITY DEFINER, no `SET search_path` — the classic definer
+      // hazard: name resolution inside owner-authority code becomes caller-controlled.
+      await database.admin.unsafe(
+        "CREATE OR REPLACE FUNCTION public.canary_preflight_evidence(p_company_id uuid, p_default_env_id uuid) " +
+          "RETURNS TABLE (lease_id uuid, platform_default_environment_id uuid, key_generation text) " +
+          "LANGUAGE sql STABLE SECURITY DEFINER AS $fn$ SELECT NULL::uuid, NULL::uuid, NULL::text $fn$",
+      );
+      await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
+        /execution config drift/i,
+      );
+    } finally {
+      await database.teardown();
+    }
+  }, 180_000);
+
+  it("REJECTS a definer function whose BODY changed (e.g. a dropped tenant predicate)", async () => {
+    const database = await startMigratedDatabase({ label: "aoa-definer-body-" });
+    try {
+      // Keeps the search_path pin, so only a body fingerprint can catch it. Dropping
+      // `AND e.company_id = p_company_id` is exactly the cross-tenant existence oracle
+      // review caught in this plan's first revision.
+      await database.admin.unsafe(
+        "CREATE OR REPLACE FUNCTION public.canary_preflight_evidence(p_company_id uuid, p_default_env_id uuid) " +
+          "RETURNS TABLE (lease_id uuid, platform_default_environment_id uuid, key_generation text) " +
+          "LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $fn$ " +
+          "SELECT NULL::uuid, (SELECT e.id FROM public.environments e WHERE e.id = p_default_env_id LIMIT 1), NULL::text $fn$",
+      );
+      await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
+        /body fingerprint drift/i,
+      );
+    } finally {
+      await database.teardown();
+    }
+  }, 180_000);
+
+  it("REJECTS a definer function marked LEAKPROOF", async () => {
+    const database = await startMigratedDatabase({ label: "aoa-definer-leakproof-" });
+    try {
+      // LEAKPROOF lets the planner push a function below security barriers and RLS quals.
+      // On owner-authority code reading secret-bearing tables that must never flip silently.
+      await database.admin.unsafe(
+        "ALTER FUNCTION public.canary_preflight_evidence(uuid, uuid) LEAKPROOF",
+      );
+      await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
+        /leakproof/i,
       );
     } finally {
       await database.teardown();

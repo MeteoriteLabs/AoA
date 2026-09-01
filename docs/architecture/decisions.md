@@ -1987,7 +1987,15 @@ for any function declared `SECURITY DEFINER`, all of:
    EXECUTE-keyed certificate would fail boot on every pgvector fleet.
 7. The body pins `SET search_path = ''` and schema-qualifies every relation, so a caller's
    `search_path` cannot redirect it; and it is scoped to the caller-supplied tenant on every branch,
-   so an owner-authority function cannot become a cross-tenant existence oracle.
+   so an owner-authority function cannot become a cross-tenant existence oracle. **This is enforced,
+   not merely required:** the certificate pins `pg_proc.proconfig` and a SHA-256 fingerprint of the
+   body, and rejects `LEAKPROOF`. `CREATE OR REPLACE FUNCTION` preserves the owner and the ACL, so
+   without those pins a replacement that drops the `search_path` clause or a tenant predicate would
+   satisfy every identity/owner/ACL assertion — a stated guarantee with no mechanism behind it. The
+   fingerprint is taken over the body with carriage returns stripped, because
+   `packages/db/src/migrations/` carries no `eol=lf` pin and a raw hash would pin one platform and
+   fail boot on the other. Changing the body of a definer function is therefore a deliberate,
+   reviewed manifest edit.
 
 **Consequences.** Migration `0266_canary_preflight_evidence_fn.sql` is compliant under this
 amendment. Condition 1 is untouched and remains the real line: **tables, columns, indexes and
