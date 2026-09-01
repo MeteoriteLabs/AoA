@@ -1,5 +1,22 @@
--- C14 hand-authored security DDL: drizzle-kit cannot emit functions or their ACLs.
--- Every statement is naturally idempotent (CREATE OR REPLACE / idempotent REVOKE + GRANT).
+-- C14 class (b) hand-authored cluster/security DDL, in an EMPTY --custom stub (there is no
+-- schema delta to diff onto). Every statement is naturally idempotent (CREATE OR REPLACE /
+-- idempotent REVOKE + GRANT).
+--
+-- NO GENERATOR ROUTE EXISTS. drizzle-orm's pg-core exposes no function/routine/procedure
+-- primitive at all (verified: zero exports matching /function|routine|proc/), and this
+-- repo's drizzle.config.ts declares neither `entities.roles` nor `pgPolicy`. There is
+-- therefore nothing `pnpm db:generate` could emit here, in the same way there was nothing
+-- it could emit for 0211's CREATE ROLE or 0261's GRANT.
+--
+-- ★ HONEST ABOUT THE PRECEDENT: this is the FIRST `CREATE FUNCTION` in 266 migrations. The
+-- adjacent precedent (0211/0213/0214/0259/0261 — 26 migrations of hand-authored roles,
+-- grants, RLS and policies) establishes the CLASS, not this object kind. AGENTS.md rule 6
+-- was amended alongside this migration to name the class explicitly, because it previously
+-- described only C14 class (a) and read as a blanket ban on all hand-authored SQL.
+--
+-- NO TABLE, COLUMN, INDEX OR CONSTRAINT DDL IS HAND-AUTHORED HERE. The accompanying
+-- meta/0266_snapshot.json differs from 0265's in `id`/`prevId` ONLY — i.e. this migration
+-- carries a zero schema delta, which is the checkable form of that claim.
 --
 -- WHY. The canary preflight (server/src/services/canary-preflight.ts:139-145) fires its
 -- evidence reads on the NON-OWNER `aoa_app` pool (server/src/index.ts). Three of them
