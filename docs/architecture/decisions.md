@@ -40,7 +40,7 @@ Decisions made during product design and development. Do not relitigate unless e
 | 17 | Tasks don't care who does them | Same task model for humans and agents. Experience adapts. |
 | 18 | Agents can only self-transition: todo → in_progress → in_review | Only humans mark done/cancelled. Deliberate control point. |
 | 18A | Decision #18 is superseded by Decision #109 (2026-07-11) | Review-required remains the safe default; explicitly governed tasks may allow agent completion under policy, autonomy, and structured acceptance criteria. |
-| 19 | Drizzle only, no raw SQL | Matches Paperclip patterns. `pnpm db:generate` for all schema DDL. Narrow C14 exception: idempotency guards + data-only backfills may be hand-appended post-generation (e.g. 0189/0195), always idempotent; schema DDL is never hand-authored. |
+| 19 | Drizzle only, no raw SQL | Matches Paperclip patterns. `pnpm db:generate` for all schema DDL. Narrow C14 exception: idempotency guards + data-only backfills may be hand-appended post-generation (e.g. 0189/0195), always idempotent. **Extended by Decision #122** (and its 2026-09-01 amendment) to idempotent cluster/security DDL — roles, GRANT/REVOKE, RLS, policies, and `SECURITY DEFINER` functions plus their ACLs — in delta-free `--custom` migrations. Tables, columns, indexes and foreign keys are never hand-authored. |
 | 20 | ~~Sub-goals limited to one level deep~~ **(SUPERSEDED 2026-05-25)** | Superseded by the multi-parent goals model — goals form a freely-nested, multi-parent DAG; integrity (cycles + child⊆parent scope) enforced on write. See `docs/superpowers/plans/2026-05-25-threads-goals-followup.md` B0. |
 | 21 | Task dependencies use a separate `task_dependencies` table, not parentId | parentId = subtasks (hierarchy). Dependencies = blocking relationships (different concept). Separate table, separate logic. |
 | 22 | Cancelled dependency notifies but does NOT auto-cancel dependents | Too aggressive. Founder decides what to do with orphaned tasks. |
@@ -1937,7 +1937,7 @@ Decision #120 remains authoritative for current Commander warm-E2B behavior unti
 
 ## Decision #122 — C14 hand-append also covers idempotent RLS/role/GRANT/FORCE security DDL that drizzle-kit cannot emit (2026-08-09)
 
-**Status:** Locked 2026-08-09 (re-platform Epic E2 / TEN-002; operator = Migration + Security Gate Owner). Amends Decision #19 (Drizzle-only) and the C14 narrow exception in `CLAUDE.md` Rule #1 / `AGENTS.md` §6. Promoted from re-platform epic decision **E2-D01** (`docs/replatform/epics/E2-tenant-kernel/decisions.md`).
+**Status:** Locked 2026-08-09 (re-platform Epic E2 / TEN-002; operator = Migration + Security Gate Owner); **amended 2026-09-01** (BLOCKER E-1 / Unit 1.6 — see the amendment at the end of this decision). Amends Decision #19 (Drizzle-only) and the C14 narrow exception in `CLAUDE.md` Rule #1 / `AGENTS.md` §6. Promoted from re-platform epic decision **E2-D01** (`docs/replatform/epics/E2-tenant-kernel/decisions.md`).
 
 **Context.** E2 enforces DB-level tenant isolation on the new distributed job/worker/service/lease tables via a non-owner role + forced RLS. The required DDL — `CREATE ROLE … NOLOGIN NOSUPERUSER NOBYPASSRLS`, `GRANT`, `ENABLE` + `FORCE ROW LEVEL SECURITY`, and `CREATE POLICY … USING/WITH CHECK (… = current_setting('aoa.organization_id', true)::uuid)` — is **provably not emittable** by the pinned `drizzle-kit@0.31.10` under this repo's config (no `entities.roles`, no `pgPolicy` in schema; `FORCE`/`GRANT`/`LOGIN`-role are absent from the generator entirely). The C14 exception as previously written blessed hand-appended SQL only for idempotency guards and data backfills (exemplars `0189`, `0195`).
 
@@ -1948,6 +1948,75 @@ Decision #120 remains authoritative for current Commander warm-E2B behavior unti
 4. Role names are validated (`assertSafeRoleName`), and no role credential (`LOGIN PASSWORD`) is committed — the role is created `NOLOGIN` and its login credential is provisioned separately from an env/secret at deploy/boot time.
 
 **Consequences.** RLS enforcement is versioned/ordered/auditable in the migration ledger like all other DDL, with one apply path. `db:push` remains absent. This does not authorize hand-authoring any DDL drizzle-kit *can* emit. `CLAUDE.md` Rule #1 and `AGENTS.md` §6 prose carry this cross-reference when TEN-002 lands.
+
+### Amendment (2026-09-01) — the class also covers `CREATE FUNCTION` and its ACL
+
+**Status:** Locked 2026-09-01 (BLOCKER E-1 / Unit 1.6, PR #333). Extends the enumerated DDL class
+above. Conditions 1-4 are unchanged and still apply in full.
+
+**Context.** The CLI-006 canary preflight runs on the non-owner `aoa_app` pool and holds ZERO
+privileges on `environment_leases`, `environments`, `runtime_provider_keys` and
+`company_secret_versions`. Every read raised 42501 and the gate answered `preflight_error` — an
+unreadability refusal indistinguishable from a policy decision. A table grant is not available:
+`company_secret_versions.material` is AES-256-GCM secret material and `environment_leases.metadata`
+is secret-bearing at rest, and a bare `GRANT` is ACL drift, which `assertExactServingRoleAuthority`
+treats as a fatal boot error. The remedy is an owner-owned `SECURITY DEFINER` function that narrows
+both the projection and the predicate — which requires `CREATE FUNCTION`, an object kind the
+enumeration above does not name (and the first in 266 migrations).
+
+`CREATE FUNCTION` is **provably not emittable** by the pinned generator, on the same footing as the
+DDL already covered: `drizzle-orm`'s `pg-core` exposes no function/routine/procedure primitive at
+any level (zero exports matching `/[Ff]unction|[Rr]outine|[Pp]roc/`), so there is nothing for
+`drizzle-kit generate` to diff or emit.
+
+**Decision.** The C14 class is extended to permit hand-authored, idempotent
+`CREATE OR REPLACE FUNCTION` plus its `REVOKE`/`GRANT`, subject to conditions 1-4 above **and**,
+for any function declared `SECURITY DEFINER`, all of:
+
+5. The function is listed in `server/src/db/security-definer-manifest.ts`, with a written rationale,
+   the exact roles that may `EXECUTE` it, and the relations whose authority it borrows. A definer
+   function runs with the OWNER's authority regardless of caller, so it is the entire
+   privilege-escalation surface the table/column/sequence scans cannot see — before this amendment
+   there was not one `prosecdef` reference in the repository.
+6. The certificate runs at boot and **drift is fatal**, in two arms with deliberately different
+   reach:
+   - **`assertManifestedSecurityDefinerFunctions` — EVERY boot, flag on or off**
+     (`server/src/index.ts`). Every manifested function must exist with exactly its pinned owner,
+     `EXECUTE` grantees, execution config and body, and must not be `LEAKPROOF`; a serving-role
+     owner, an owner that is not the owner of its declared authority relations, or a NULL `proacl`
+     (PostgreSQL's default grants `EXECUTE` to `PUBLIC`) each abort startup. This arm is
+     unconditional because the function is created by a migration that runs on every deployment and
+     `aoa_app` keeps `EXECUTE` on it regardless of the flag — and a box that was once flag-on keeps
+     its LOGIN credential, since `maybeProvisionDistributedExecutionRoles` is a strict no-op when
+     the flag is off and never restores `NOLOGIN`.
+   - **`assertNoUnmanifestedSecurityDefinerFunctions` — the flag-on serving-role path only.** It
+     asserts a property of the WHOLE database, which holds on a controlled distributed-execution
+     fleet (where `assertExactServingRoleAuthority` already fails boot on any unexpected schema) but
+     not on `external-postgres` against an operator-owned database, where a vendor or extension
+     definer function in another schema is legitimate and unknowable to us. Making it unconditional
+     would convert those deployments into hard boot failures. **This is a stated residual:** on a
+     flag-off deployment a NEW unmanifested definer function is not detected at boot.
+
+   Discovery is keyed on `pg_proc.prosecdef`, never on effective `EXECUTE` — `CREATE EXTENSION
+   vector` has no `SCHEMA` clause and installs ~100 `public` functions carrying the default
+   `PUBLIC EXECUTE`, so an EXECUTE-keyed certificate would fail boot on every pgvector fleet.
+7. The body pins `SET search_path = ''` and schema-qualifies every relation, so a caller's
+   `search_path` cannot redirect it; and it is scoped to the caller-supplied tenant on every branch,
+   so an owner-authority function cannot become a cross-tenant existence oracle. **This is enforced,
+   not merely required:** the certificate pins `pg_proc.proconfig` and a SHA-256 fingerprint of the
+   body, and rejects `LEAKPROOF`. `CREATE OR REPLACE FUNCTION` preserves the owner and the ACL, so
+   without those pins a replacement that drops the `search_path` clause or a tenant predicate would
+   satisfy every identity/owner/ACL assertion — a stated guarantee with no mechanism behind it. The
+   fingerprint is taken over the body with carriage returns stripped, because
+   `packages/db/src/migrations/` carries no `eol=lf` pin and a raw hash would pin one platform and
+   fail boot on the other. Changing the body of a definer function is therefore a deliberate,
+   reviewed manifest edit.
+
+**Consequences.** Migration `0266_canary_preflight_evidence_fn.sql` is compliant under this
+amendment. Condition 1 is untouched and remains the real line: **tables, columns, indexes and
+foreign keys are never hand-authored.** This does not authorize hand-authoring any DDL drizzle-kit
+*can* emit, and it does not authorize a definer function that is not manifested and certified —
+conditions 5-7 are what make the extension narrower than "functions are now allowed".
 
 ## Decision #123 — Distributed execution uses bounded tenant-serving and platform-operator database roles (2026-08-10)
 
