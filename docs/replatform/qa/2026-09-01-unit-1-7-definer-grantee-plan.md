@@ -48,8 +48,13 @@ State the security argument in exactly these terms, and no stronger:
 pool. `appDb` is the tenant-facing pool — the admitted-org enumerator, the outbox worker, the
 attempt-terminal projection, `tenantAppDb` handed to `createApp`, the live-event log store, the
 admission bridge, placement, capacity release, reconciliation, org resolution, shadow admissibility.
-`operatorDb` reaches three control-plane route modules, worker- and operator-facing, not
-tenant-request-facing. That is a genuine narrowing of the injection surface.
+`operatorDb` reaches three control-plane route modules — worker- and operator-facing. **Do not write
+"not tenant-request-facing": review refuted that.** Those modules are reachable over HTTP; the honest
+claim is that the reachable surface is far smaller and differently shaped, not that it is zero.
+
+**★ And say the other half, which an earlier draft omitted: for `aoa_operator` this is a WIDENING.**
+`_companies` is a brand-new capability — `aoa_operator` holds no grant on `companies` or `organizations`
+at all today. This unit moves a capability off a broad pool onto a narrow one; it does not delete it.
 
 **★ The binder is the GRANTEE, not the parameter.** Organization-scoping the arguments is *defence in
 depth and the enabler*, not the fix. `organizationId` is itself caller-supplied and nothing binds it;
@@ -65,22 +70,36 @@ in the manifest rationale and in the commit message.
    `DROP FUNCTION IF EXISTS` for the old signatures, the stale overloads survive **carrying their
    `aoa_app` EXECUTE grant** — the fix looks applied and the hole stays open. They would then also trip
    `assertNoUnmanifestedSecurityDefinerFunctions` on the flag-on path.
-2. **★ CORRECTED — edit 0266 in place, and do NOT bump the journal.** An earlier draft of this plan
-   told you to bump `when` for idx 266 in `meta/_journal.json`. **That is a no-op**, and I verified it
-   rather than reasoning about it: `migrationHistoryEntryExists`
-   (`packages/db/src/client.ts:461-477`) builds its predicate as `hash = … OR name = …` and never
-   consults `when`. Because the filename is unchanged, `name` always matches and the entry always
-   counts as applied — bumping `when` changes nothing.
+2. **★★ SHIP A NEW MIGRATION `0267`. Do NOT edit 0266, and do NOT touch the journal.**
+   Two earlier drafts of this plan got this wrong in opposite directions, so here is what the code
+   actually does, verified rather than reasoned about:
 
-   Editing in place is nonetheless **correct here**, for a different reason than the draft gave:
-   migration `0266` is introduced by this PR (`50bba3e7a`) and is **not on `docs/replatform-program`**,
-   so no deployed box has ever run it. Every database holding it is ephemeral — CI, embedded-postgres
-   test instances.
+   - `node_modules/drizzle-orm/pg-core/dialect.js:47-52` creates `__drizzle_migrations` as
+     `(id SERIAL, hash text, created_at bigint)`. **There is no `name` column.** So in
+     `migrationHistoryEntryExists` (`packages/db/src/client.ts:461-477`) `columnNames.has("name")`
+     is false and the predicate degenerates to `hash = <new hash>` — which **misses** on an edited file.
+   - `packages/db/src/client.ts:990` runs stock `migratePg` **first**, and `dialect.js:62` re-applies
+     exactly when `Number(lastDbMigration.created_at) < migration.folderMillis` — i.e. keyed on
+     **`when`**, the field a previous draft claimed was never consulted.
 
-   **The moment 0266 merges, this stops being true.** If this unit is ever rebased onto a base that
-   already carries 0266, the remedy is a **NEW migration file** (a new `name` makes the predicate miss),
-   never a journal edit. Check `git ls-tree <base> -- packages/db/src/migrations/ | grep 0266` before
-   assuming.
+   **Consequence of editing 0266 in place** on any database that already applied the pre-edit version —
+   which includes *your own dev database*, since 0266 has been edited twice already on this branch:
+   stock drizzle skips it, `reconcilePendingMigrationHistory` cannot repair it (`migrationStatementAlreadyApplied`
+   has no branch for `CREATE OR REPLACE FUNCTION` / `DROP FUNCTION`, `client.ts:663-686`), and the manual
+   path then applies the edited file and inserts a **second ledger row**. You get 268 rows for 267 files,
+   and then:
+   - `server/src/services/schema-compatibility.ts:47` — `rawAppliedCount > requiredLen` → `"newer"` →
+     `routes/readiness.ts:51` `ready = false`, **permanently**;
+   - `server/src/db/distributed-execution-databases.ts:906-910` — set-equality over ledger hashes vs the
+     journal → `throw new Error("database migration identity does not match checked-in migrations")`
+     from boot, with no fallback.
+
+   CI stays green throughout, because every CI database is fresh. Nothing reports the poisoning.
+
+   A **new file** is clean in both worlds: on a fresh box it is one more migration; on a dev box carrying
+   old-0266 the first 266 resolve as a prefix, `0267` is pending, and it applies. Leave `0266` exactly as
+   it is — its two functions are dropped by `0267`, which is the honest record of what happened.
+
 3. **Do NOT wrap the gate in `runInTenant`.** `legacy_resource_reconciliation` has FORCE RLS whose app
    policy qual is inverted — `current_setting('aoa.organization_id', true) IS NULL`. Wrapping returns
    **zero rows silently**. This unit sidesteps it rather than fixing it: the operator policy
@@ -106,11 +125,11 @@ in the manifest rationale and in the commit message.
 | File | Change |
 |---|---|
 | `server/src/__tests__/canary-preflight-real-role.integration.test.ts` | **Task 1** — the RED positive control (already written, already failing). Then the fixture gains an `aoa_operator` login, and the two existing "positive controls" are **inverted** — today they pin the attack as required behaviour. |
-| `packages/db/src/migrations/0266_canary_preflight_evidence_fn.sql` | Drop the two old signatures; create three org-bound functions; `REVOKE` from `aoa_app`, `GRANT` to `aoa_operator`. |
+| `packages/db/src/migrations/0267_canary_preflight_evidence_org_scope.sql` **(new)** | Drop 0266's two signatures; create three org-bound functions; `REVOKE` from `aoa_app`, `GRANT` to `aoa_operator`. **0266 is left untouched** — Constraint 2. |
 | `server/src/db/security-definer-manifest.ts` | Two entries → three: new `identityArguments`, `executeGrantees: ["aoa_operator"]`, `authorityRelations` + `public.companies`, fresh `bodySha256`. |
 | `server/src/services/canary-preflight-evidence.ts` | Add `readCanaryPreflightCompanyIds`; thread `organizationId` into the other two. |
 | `server/src/services/canary-preflight.ts` | Three store members gain `organizationId`. `listRecords` unchanged. |
-| `server/src/services/canary-preflight-store.ts` | `listOrganizationCompanyIds` delegates to the definer; the `companies`/`eq` drizzle imports go. |
+| `server/src/services/canary-preflight-store.ts` | `listOrganizationCompanyIds` delegates to the definer. **Keep the `eq` import** — `listRecords` still uses it; only the `companies` table import goes. |
 | `server/src/index.ts` | Construct the store on `operatorDb`. |
 | `server/src/__tests__/security-definer-manifest.test.ts` | 10 hardcoded `(uuid, uuid)` sites (lines 156, 171, 193-196, 217, 240, 264-265, 283-284, 302, 346, 349). |
 | `server/src/__tests__/distributed-execution-db-startup.integration.test.ts` | Lines 2229, 2241. |
@@ -172,13 +191,22 @@ git commit -m "test(cli-006): reproduce the cross-company definer read (RED)"
 ## Task 2: Three organization-bound functions, granted to the operator
 
 **Files:**
-- Modify: `packages/db/src/migrations/0266_canary_preflight_evidence_fn.sql`
-- Modify: `packages/db/src/migrations/meta/_journal.json`
+- Create: `packages/db/src/migrations/0267_canary_preflight_evidence_org_scope.sql`
+- Do **not** modify `0266`, and do **not** modify `meta/_journal.json` by hand.
 
-- [ ] **Step 1: Replace the two function definitions**
+- [ ] **Step 1: Generate the migration stub**
 
-Keep the file's existing WHY/WHY-NOT header and extend it. Replace everything from the first
-`CREATE OR REPLACE FUNCTION` to the end with:
+```bash
+cd /c/u16 && pnpm db:generate --custom --name=canary_preflight_evidence_org_scope
+```
+
+This writes the journal entry for you with a correct `folderMillis`. **Never hand-edit the journal** —
+see Constraint 2.
+
+- [ ] **Step 2: Write the migration**
+
+Carry a header explaining that this supersedes 0266's two functions and why it is a new file rather than
+an edit (Constraint 2). Then:
 
 ```sql
 -- ROUND-7. An arity change CREATES A NEW FUNCTION; it does not replace the old one. Without
@@ -284,17 +312,6 @@ recomputed in the body, and a natural-key lookup would be a second derivation th
 is now a pure **filter** — `e.company_id` is bound to `scoped`, so an env id from another org matches
 nothing.
 
-- [ ] **Step 2: Confirm 0266 is still unmerged, then do nothing to the journal**
-
-```bash
-cd /c/u16 && git ls-tree origin/docs/replatform-program --name-only packages/db/src/migrations/ | grep 0266 || echo "not on base — editing in place is correct"
-```
-
-Expected: `not on base`. If 0266 **is** on the base, stop and read Constraint 2 — you need a new
-migration file, not an edit, and this plan's Task 2 must be re-cut.
-
-Do **not** touch `meta/_journal.json`. The migrator keys on `hash OR name`, never `when`.
-
 - [ ] **Step 3: Apply and verify the grant actually moved**
 
 ```bash
@@ -336,6 +353,9 @@ and `aoa_operator` can still name any Company under any Organization. Write it a
       "defence in depth, NOT a boundary -- p_organization_id is caller-supplied and companies " +
       "carries no RLS. The binder is the grantee.",
 ```
+
+★ `_companies`'s own `authorityRelations` is `["public.companies"]` — state it. The owner-pin walks
+every declared relation, so an omitted entry is not a no-op.
 
 - [ ] **Step 2: Compute the hashes the way the scan does**
 
@@ -446,7 +466,19 @@ They must be **inverted**, not supplemented.
 `provisionTenantAppRoleLoginSql` is role-generic with `assertSafeRoleName` and is already used for the
 operator elsewhere. The two existing behaviour tests then run against `operatorDb`.
 
-- [ ] **Step 2: The cross-org read, and an honest positive control**
+- [ ] **Step 2: Define the helper, move the probes to the operator pool, and fix the test the draft missed**
+
+★ Three things an earlier draft left dangling, each of which fails at runtime:
+
+1. `leases(organizationId, companyId)` is used below but **never defined**. Define it beside `evidence()`.
+2. `evidence()` (around `:162-166`) and the inline `_leases` probe (around `:186-192`) bind
+   `fixture!.appDb`. Once EXECUTE moves they raise **42501**. Move both to `operatorDb`.
+3. The test *"does not echo the neighbour's environment back to a different company"* (around `:225-232`)
+   is named in no task, calls `evidence(INTRUDER, …)` on `appDb`, and **will throw 42501**. Either move it
+   to `operatorDb` and keep it as a cross-argument probe, or delete it as subsumed by the cross-org
+   assertion below. Decide deliberately and say which in the commit message.
+
+- [ ] **Step 3: The cross-org read, and an honest positive control**
 
 ```ts
 it("does not answer about a Company outside the Organization being gated", async () => {
@@ -465,7 +497,7 @@ it("returns the neighbour's lease when asked as the neighbour's own Organization
 });
 ```
 
-- [ ] **Step 3 ★: The assertion that IS the fix — `aoa_app` denied EXECUTE**
+- [ ] **Step 4 ★: The assertion that IS the fix — `aoa_app` denied EXECUTE**
 
 Put it beside the existing `FORBIDDEN_TABLES` loop; that loop already pins "the fix must widen nothing"
 for the four tables, and this extends the pin to the function surface created to bypass them.
@@ -488,18 +520,23 @@ it.each(DEFINER_FUNCTIONS)("still denies `aoa_app` EXECUTE on %s", async (fn) =>
 });
 ```
 
-- [ ] **Step 4 ★: Pin the premise the security argument rests on**
+- [ ] **Step 5 ★: Pin the premise the security argument rests on**
 
 The argument depends on the operator policy being `USING(true)` and the app policy being company-blind.
 Pin both, or the argument rots silently:
 
+★ **This does not compile as an earlier draft wrote it.** `Fixture` has no `adminDb`;
+`setUpRealRoleFixture` destructures `admin` but never returns it; the helper's `admin` is a **postgres.js**
+client (`Sql`) with no `.execute()`; and `rowsOf` is not exported from `canary-preflight-evidence.ts`.
+Add `admin: Sql` to the `Fixture` type and return it, then use the tagged template:
+
 ```ts
 it("pins the policy shapes this unit's security argument depends on", async () => {
-  const rows = await fixture!.adminDb.execute(sql`
+  const rows = await fixture!.admin`
     SELECT polname, pg_get_expr(polqual, polrelid) AS qual
     FROM pg_policy WHERE polrelid = 'public.legacy_resource_reconciliation'::regclass
-    ORDER BY polname`);
-  const byName = new Map(rowsOf<{ polname: string; qual: string }>(rows).map((r) => [r.polname, r.qual]));
+    ORDER BY polname`;
+  const byName = new Map((rows as Array<{ polname: string; qual: string }>).map((r) => [r.polname, r.qual]));
   // operator: unconditional, which is why the gate works in or out of tenant context there.
   expect(byName.get("legacy_resource_reconciliation_operator_write")).toBe("true");
   // app: the INVERTED qual. If this ever becomes company-scoped, revisit the whole design.
@@ -507,13 +544,13 @@ it("pins the policy shapes this unit's security argument depends on", async () =
 });
 ```
 
-- [ ] **Step 5: Delete the Task-1 positive control**
+- [ ] **Step 6: Delete the Task-1 positive control**
 
 Its job is done: it proved the defect. `aoa_app` no longer holds EXECUTE, so it would now fail for the
 wrong reason (a permission error rather than a leak). Step 3's loop is its successor and asserts the
 stronger property. Say that in the commit message.
 
-- [ ] **Step 6: Run**
+- [ ] **Step 7: Run**
 
 ```bash
 cd /c/u16 && AOA_RUN_WIN_INTEGRATION=1 npx vitest run server/src/__tests__/canary-preflight-real-role.integration.test.ts
@@ -521,7 +558,7 @@ cd /c/u16 && AOA_RUN_WIN_INTEGRATION=1 npx vitest run server/src/__tests__/canar
 
 Confirm `passed`, not `skipped`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add server/src/__tests__/canary-preflight-real-role.integration.test.ts
@@ -533,10 +570,14 @@ git commit -m "test(cli-006): invert the probes that pinned the cross-org read a
 ## Task 6: The call sites the design missed
 
 **Files:**
-- Modify: `server/src/__tests__/security-definer-manifest.test.ts` — **10** hardcoded `(uuid, uuid)`
-  sites: lines 156, 171, 193-196, 217, 240, 264-265, 283-284, 302, 346, 349.
+- Modify: `server/src/__tests__/security-definer-manifest.test.ts` — the hardcoded `(uuid, uuid)` sites,
+  **and critically** `it("lists both canary preflight evidence functions, once each")` at **`:36-50`**.
+  ★ That test hardcodes a **two-name array** and both `identityArguments` strings, and contains no
+  `(uuid, uuid)` substring — a grep-driven sweep will not find it and it will fail. Its title, its array
+  and both argument assertions must become three.
 - Modify: `server/src/__tests__/distributed-execution-db-startup.integration.test.ts` — lines 2229, 2241.
-- Modify: `server/src/__tests__/cli-006-canary-preflight-store.test.ts` — mock names, three-arg members.
+- Modify: `server/src/__tests__/cli-006-canary-preflight-store.test.ts` — the `vi.mock` factory must also
+  export `readCanaryPreflightCompanyIds`; omitting it fails the whole file, not one test.
 - Modify: `server/src/__tests__/cli-006-canary-preflight.test.ts` — fake stores gain the org argument.
 
 - [ ] **Step 1: Retarget them at the new signatures**
@@ -586,15 +627,42 @@ git commit -m "fix(cli-006): keep the key-generation id out of the refusal detai
 
 ---
 
+## Task 7b: Name the second consumer — dead today, and it will not stay dead
+
+**Files:**
+- Modify: `server/src/services/job-distributed-drain-store.ts` (a comment, not code)
+
+`job-distributed-drain-store.ts:48` destructures `listOrganizationCompanyIds` from
+`createDrizzleCanaryPreflightStore(appDb)`. `createDistributedExecutionDrainStore` has **no production
+caller** — it is MIG-009's drain lever, owed to REL-005 — so nothing breaks today. But after this unit
+that call runs a definer function `aoa_app` no longer holds EXECUTE on, and whoever wires REL-005 gets a
+bare 42501 with nothing explaining it.
+
+- [ ] **Step 1: Leave a comment at the construction site** recording that the store's privileged members
+  now require `operatorDb`, and that this call site must be repointed when the drain lever is wired.
+  Do **not** repoint it now — it is untested dead code and its pool is REL-005's decision.
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add server/src/services/job-distributed-drain-store.ts
+git commit -m "docs(mig-009): note the drain store needs the operator pool once wired"
+```
+
+---
+
 ## Task 8: Full verification before pushing
 
 - [ ] **Step 1: Sharded suite, from the REPO ROOT, gated on exit code**
 
 ```bash
-cd /c/u16 && rc=0; for s in 1 2 3 4; do npx vitest run --shard=$s/4 server/src/__tests__ || rc=1; done; echo "SUITE_RC=$rc"
+cd /c/u16 && rc=0; for s in 1 2 3 4; do AOA_RUN_WIN_INTEGRATION=1 npx vitest run --shard=$s/4 server/src/__tests__ || rc=1; done; echo "SUITE_RC=$rc"
 ```
 
-- [ ] **Step 2: The policy suite — 23 scripts plus the two extras**
+★ The flag is **required** here, not optional — Constraint 7. Without it the integration suites skip and
+`SUITE_RC=0` means nothing.
+
+- [ ] **Step 2: The policy guards — note this is 23 of the 31 CI's `policy` job runs**
 
 ```bash
 cd /c/u16 && for s in check-adapter-manager-boundary check-artifact-commit-vectors \
@@ -631,7 +699,9 @@ to: Constraint 2 + Task 2 Step 2 (the journal bump, which I verified is a NO-OP 
 (pin the premise), Task 7 (the refusal-detail sink), Task 5 Step 3 (the denied-EXECUTE loop), and the
 rationale wording in Task 3 Step 1 (do not overclaim).
 
-**Placeholders.** None. Every code step carries the code. The one judgement call left open is whether
+**Placeholders.** An earlier draft claimed "None" while Task 5 used an undefined `leases()` helper. That
+claim was false, which is why this section should not be trusted on its own. Every code step now carries
+its code, and Task 5 Step 2 names the three dangling references explicitly. The one judgement call left open is whether
 `decisions.md` condition wording needs to follow the grantee change — the plan says *check, do not
 assume*, because asserting either way without reading it is the exact failure this PR has produced eight
 times.
