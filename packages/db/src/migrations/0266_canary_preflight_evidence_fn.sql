@@ -48,9 +48,35 @@
 -- The `leases` CTE below is NOT `public.leases` (the job-control table). A CTE name always
 -- shadows a relation, and with an empty search_path an unqualified name resolves to nothing
 -- anyway; every real table in this body is schema-qualified.
-CREATE OR REPLACE FUNCTION public.canary_preflight_evidence(p_company_id uuid, p_default_env_id uuid)
+-- ROUND-6 SPLIT. This was ONE function returning one row per lease plus two scalars, which
+-- forced a choice between two defects: either the two scalar-only callers each hydrated the
+-- company's entire lease inventory to read a single scalar (the efficiency finding), or a
+-- shared single-flight coalesced them -- and a store-global single-flight let two OVERLAPPING
+-- `check()` calls share one snapshot, so a lease committed between them was invisible to the
+-- second. That is precisely the fail-open `canary-preflight.ts:30-33` forbids by refusing to
+-- cache. Splitting removes the choice: the two jobs are unrelated, each caller reads only what
+-- it needs, every read is independent, and there is no shared mutable state to scope.
+
+CREATE OR REPLACE FUNCTION public.canary_preflight_evidence_leases(p_company_id uuid)
+RETURNS TABLE (lease_id uuid)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  SELECT l.id FROM public.environment_leases l WHERE l.company_id = p_company_id;
+$$;
+--> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; REVOKE is idempotent.
+REVOKE ALL ON FUNCTION public.canary_preflight_evidence_leases(uuid) FROM PUBLIC;
+--> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; GRANT is idempotent.
+GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence_leases(uuid) TO "aoa_app";
+--> statement-breakpoint
+-- Exactly ONE row, always -- so a company with no leases still yields both scalars, and the
+-- caller can never confuse "no leases" with "no key generation". Touches no lease row.
+CREATE OR REPLACE FUNCTION public.canary_preflight_evidence_scalars(p_company_id uuid, p_default_env_id uuid)
 RETURNS TABLE (
-  lease_id uuid,
   platform_default_environment_id uuid,
   key_generation text
 )
@@ -59,25 +85,20 @@ STABLE
 SECURITY DEFINER
 SET search_path = ''
 AS $$
-  WITH leases AS (
-    SELECT l.id FROM public.environment_leases l WHERE l.company_id = p_company_id
-  ),
-  default_env AS (
-    -- COMPANY-SCOPED. Without `company_id = p_company_id` this is a cross-tenant
-    -- existence oracle: a caller passing company A with company B's environment id gets
-    -- B's row echoed back through an OWNER-authority function.
-    -- `ensurePlatformDefaultEnvironmentRow` writes the row with that companyId
-    -- (platform-default-environment.ts:186-204), so this predicate is behaviour-preserving.
+  WITH default_env AS (
+    -- COMPANY-SCOPED. Without `company_id = p_company_id` this is a cross-tenant existence
+    -- oracle: a caller passing company A with company B's environment id gets B's row echoed
+    -- back through an OWNER-authority function. `ensurePlatformDefaultEnvironmentRow` writes
+    -- the row with that companyId, so this predicate is behaviour-preserving.
     SELECT e.id FROM public.environments e
     WHERE e.id = p_default_env_id AND e.company_id = p_company_id
     LIMIT 1
   ),
   keygen AS (
-    -- INNER JOIN LATERAL is deliberate. A `runtime_provider_keys` row with no
-    -- status='current' version must yield NO keygen row, so `key_generation` is NULL --
-    -- matching deriveE2bKeyGeneration, which returns null in that case
-    -- (e2b-credential-authority-wiring.ts:45). A LEFT JOIN would emit `secretId:` with a
-    -- null version and change behaviour.
+    -- INNER JOIN LATERAL is deliberate. A `runtime_provider_keys` row with no status='current'
+    -- version must yield NO keygen row, so `key_generation` is NULL -- matching
+    -- deriveE2bKeyGeneration, which returns null in that case. A LEFT JOIN would emit
+    -- `secretId:` with a null version and change behaviour.
     SELECT k.secret_id, v.version
     FROM public.runtime_provider_keys k
     JOIN LATERAL (
@@ -88,23 +109,12 @@ AS $$
     WHERE k.company_id = p_company_id AND k.provider = 'e2b' AND k.is_default = TRUE
     LIMIT 1
   )
-  -- The UNION ALL ... WHERE NOT EXISTS branch makes a ZERO-LEASE company still return one
-  -- row carrying the env and key-generation scalars. Without it the function returns no
-  -- rows and the wrapper cannot tell "no leases" from "no key generation" -- resurrecting
-  -- exactly the conflation this migration exists to remove.
-  SELECT leases.id,
-         (SELECT id FROM default_env),
-         (SELECT secret_id::text || ':' || version::text FROM keygen)
-  FROM leases
-  UNION ALL
-  SELECT NULL::uuid,
-         (SELECT id FROM default_env),
-         (SELECT secret_id::text || ':' || version::text FROM keygen)
-  WHERE NOT EXISTS (SELECT 1 FROM leases);
+  SELECT (SELECT id FROM default_env),
+         (SELECT secret_id::text || ':' || version::text FROM keygen);
 $$;
 --> statement-breakpoint
 -- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; REVOKE is idempotent.
-REVOKE ALL ON FUNCTION public.canary_preflight_evidence(uuid, uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid) FROM PUBLIC;
 --> statement-breakpoint
 -- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; GRANT is idempotent.
-GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence(uuid, uuid) TO "aoa_app";
+GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid) TO "aoa_app";

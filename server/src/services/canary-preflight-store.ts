@@ -35,8 +35,8 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companies, legacyResourceReconciliation } from "@armyofagents/db";
 import {
-  readCanaryPreflightEvidence,
-  type CanaryPreflightEvidence,
+  readCanaryPreflightLeaseIds,
+  readCanaryPreflightScalars,
 } from "./canary-preflight-evidence.js";
 import type { CanaryPreflightStore } from "./canary-preflight.js";
 import type {
@@ -45,34 +45,6 @@ import type {
 } from "./legacy-resource-reconciliation.js";
 
 export function createDrizzleCanaryPreflightStore(db: Db): CanaryPreflightStore {
-  // SINGLE-FLIGHT, NOT A CACHE. `canary-preflight.ts:139-145` fires all three privileged
-  // members in ONE `Promise.all`, and each used to execute `canary_preflight_evidence`
-  // independently. That function returns ONE ROW PER LEASE, so the two scalar-only members
-  // each rescanned and hydrated the company's entire lease inventory to read a single
-  // scalar — and terminal leases are retained, so the waste grew with the company's history.
-  //
-  // The in-flight promise is dropped the moment it settles, so NOTHING survives the burst.
-  // That distinction is load-bearing: `canary-preflight.ts:30-33` states the gate is
-  // "deliberately NOT cached" because a stale `true` outliving a newly-unreconciled resource
-  // reintroduces exactly the fail-open the module exists to close. A second `check()` reads
-  // again, as it must.
-  //
-  // A side effect worth naming: the three members now observe ONE snapshot instead of three
-  // independent reads, so the gate can no longer see a lease list from one instant and a key
-  // generation from another. That is strictly better for a gate, but it is a consequence of
-  // deduplication — do not rely on it as an atomicity guarantee across separate `check()`
-  // calls, which still read independently.
-  const inFlight = new Map<string, Promise<CanaryPreflightEvidence>>();
-  const evidence = (companyId: string): Promise<CanaryPreflightEvidence> => {
-    const pending = inFlight.get(companyId);
-    if (pending) return pending;
-    const started = readCanaryPreflightEvidence(db, companyId).finally(() => {
-      inFlight.delete(companyId);
-    });
-    inFlight.set(companyId, started);
-    return started;
-  };
-
   return {
     // NEW. The canary flag is Organization-scoped while reconciliation closure is
     // Company-scoped, and one Organization may hold many Companies — so the gate
@@ -115,25 +87,22 @@ export function createDrizzleCanaryPreflightStore(db: Db): CanaryPreflightStore 
     // the file header). They read the SAME rows with the SAME predicates, through the
     // owner-owned SECURITY DEFINER function, on the pool that is actually allowed to.
     listLeases: async (companyId: string): Promise<readonly LegacyLeaseInput[]> => {
-      const result = await evidence(companyId);
-      // The gate consumes ONLY `lease.id`: `inventoryKeysForCompany`
-      // (canary-preflight.ts:115-122) maps `resourceKeyForLease(lease.id)`, and
-      // `resourceKeyForLease` is the identity function
-      // (legacy-resource-reconciliation.ts:194-196). The other twelve fields on
-      // LegacyLeaseInput serve the reconciler's CLASSIFIER, which this gate never runs.
-      // `cli-006-canary-preflight.test.ts` pins that narrowing, so a future gate change
-      // that reads another field fails there instead of seeing `undefined` in production.
-      return result.leaseIds.map((id) => ({ id }) as LegacyLeaseInput);
+      const leaseIds = await readCanaryPreflightLeaseIds(db, companyId);
+      // The gate consumes ONLY `lease.id`: `inventoryKeysForCompany` maps
+      // `resourceKeyForLease(lease.id)`, and `resourceKeyForLease` is the identity function.
+      // The other twelve fields on LegacyLeaseInput serve the reconciler's classifier, which
+      // this gate never runs. `cli-006-canary-preflight.test.ts` pins that narrowing.
+      return leaseIds.map((id) => ({ id }) as LegacyLeaseInput);
     },
     platformDefaultEnv: async (companyId: string) => {
-      const result = await evidence(companyId);
-      return result.platformDefaultEnvironmentId
-        ? { environmentId: result.platformDefaultEnvironmentId }
+      const scalars = await readCanaryPreflightScalars(db, companyId);
+      return scalars.platformDefaultEnvironmentId
+        ? { environmentId: scalars.platformDefaultEnvironmentId }
         : null;
     },
     currentKeyGeneration: async (companyId: string) => {
-      const result = await evidence(companyId);
-      return result.keyGeneration;
+      const scalars = await readCanaryPreflightScalars(db, companyId);
+      return scalars.keyGeneration;
     },
   };
 }

@@ -161,8 +161,8 @@ describe.skipIf(!RUN)("BLOCKER E — canary preflight on a real aoa_app connecti
   describe("the definer function is company-scoped — no cross-tenant oracle", () => {
     async function evidence(companyId: string, defaultEnvId: string) {
       const result = await fixture!.appDb.execute(
-        sql`SELECT lease_id, platform_default_environment_id, key_generation
-            FROM public.canary_preflight_evidence(${companyId}::uuid, ${defaultEnvId}::uuid)`,
+        sql`SELECT platform_default_environment_id, key_generation
+            FROM public.canary_preflight_evidence_scalars(${companyId}::uuid, ${defaultEnvId}::uuid)`,
       );
       return (Array.isArray(result)
         ? result
@@ -174,16 +174,27 @@ describe.skipIf(!RUN)("BLOCKER E — canary preflight on a real aoa_app connecti
 
     // POSITIVE CONTROL. Without this, the negative case below could pass because the probe
     // is broken rather than because the predicate holds.
-    it("returns the neighbour's own environment and lease to the neighbour", async () => {
+    it("returns the neighbour's own environment to the neighbour", async () => {
       const rows = await evidence(NEIGHBOUR, fixture!.neighbourEnvironmentId);
-      expect(rows.map((row) => row.lease_id)).toEqual([NEIGHBOUR_LEASE]);
+      expect(rows).toHaveLength(1);
       expect(rows[0]?.platform_default_environment_id).toBe(fixture!.neighbourEnvironmentId);
+    });
+
+    it("returns the neighbour's own lease to the neighbour, and only theirs", async () => {
+      // The leases function is company-scoped on its single argument; this is its positive
+      // control, kept separate now that leases and scalars are two functions.
+      const result = await fixture!.appDb.execute(
+        sql`SELECT lease_id FROM public.canary_preflight_evidence_leases(${NEIGHBOUR}::uuid)`,
+      );
+      const rows = (Array.isArray(result)
+        ? result
+        : ((result as { rows?: unknown[] }).rows ?? [])) as Array<{ lease_id: string | null }>;
+      expect(rows.map((row) => row.lease_id)).toEqual([NEIGHBOUR_LEASE]);
     });
 
     it("does not echo the neighbour's environment back to a different company", async () => {
       const rows = await evidence(INTRUDER, fixture!.neighbourEnvironmentId);
-      expect(rows).toHaveLength(1); // the zero-lease branch still yields exactly one row
-      expect(rows[0]?.lease_id).toBeNull();
+      expect(rows).toHaveLength(1); // the scalars function always yields exactly one row
       expect(
         rows[0]?.platform_default_environment_id,
         "an owner-authority function that confirms another tenant's row id is an existence oracle",

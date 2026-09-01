@@ -562,7 +562,7 @@ if (config.databaseUrl) {
 await maybeProvisionDistributedExecutionRoles(activeDatabaseConnectionString);
 
 // The SECURITY DEFINER certificate's POSITIVE arm, on EVERY boot — flag on or off.
-// Migration 0266 creates `public.canary_preflight_evidence` on every deployment and grants
+// Migration 0266 creates the two `public.canary_preflight_evidence_*` functions on every deployment and grants
 // `aoa_app` EXECUTE on it regardless of the flag; a box that was once flag-on also keeps the
 // LOGIN credential, because `maybeProvisionDistributedExecutionRoles` is a strict no-op when
 // the flag is off and never restores NOLOGIN. So the owner-authority surface exists on

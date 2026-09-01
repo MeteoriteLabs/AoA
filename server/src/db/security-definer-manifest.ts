@@ -66,24 +66,40 @@ export type SecurityDefinerFunction = {
 export const SECURITY_DEFINER_FUNCTION_MANIFEST: readonly SecurityDefinerFunction[] = [
   {
     schema: "public",
-    name: "canary_preflight_evidence",
-    identityArguments: "p_company_id uuid, p_default_env_id uuid",
+    name: "canary_preflight_evidence_leases",
+    identityArguments: "p_company_id uuid",
     // The canary preflight runs on the app pool and nothing else calls this.
     executeGrantees: ["aoa_app"],
-    // Every relation the body reads (migration 0266). `aoa_app` holds ZERO privileges on
-    // all four, which is the whole reason this function exists.
+    // The ONLY evidence read that touches environment_leases. `aoa_app` holds zero
+    // privileges on it, which is the whole reason this function exists.
+    authorityRelations: ["public.environment_leases"],
+    executionConfig: ['search_path=""'],
+    bodySha256: "8a644c52848737e4bce6b7e5a7ceb1b702a459df56ac1aabe9450b8ca1d99146",
+    rationale:
+      "BLOCKER E. Returns lease ids for one Company from a table the non-owner aoa_app pool " +
+      "holds zero privileges on. Company-scoped in the body; the return type is a bare uuid, " +
+      "so it structurally cannot carry environment_leases.metadata, which is secret-bearing " +
+      "at rest.",
+  },
+  {
+    schema: "public",
+    name: "canary_preflight_evidence_scalars",
+    identityArguments: "p_company_id uuid, p_default_env_id uuid",
+    executeGrantees: ["aoa_app"],
+    // Reads three relations `aoa_app` cannot touch; deliberately does NOT read
+    // environment_leases, so the two scalar-only store members never scan the lease
+    // inventory (the round-6 split).
     authorityRelations: [
-      "public.environment_leases",
       "public.environments",
       "public.runtime_provider_keys",
       "public.company_secret_versions",
     ],
     executionConfig: ['search_path=""'],
-    bodySha256: "8b10e1022f4eef9ce0acc83cb9308932347d84a5a0eb327c9e38288906b8926b",
+    bodySha256: "633a2b7270b9d20c677d66142c5b48c64a751f260c9e32cbce80d24b259af8e7",
     rationale:
-      "BLOCKER E. Returns three scalars the CLI-006 canary gate needs from tables the " +
-      "non-owner aoa_app pool holds zero privileges on. Both arguments are company-scoped in " +
-      "the body, and the return type structurally cannot carry company_secret_versions.material " +
-      "or environment_leases.metadata.",
+      "BLOCKER E. Returns exactly one row carrying the platform-default environment id and the " +
+      "current provider-control key generation. Both arguments are company-scoped in the body " +
+      "(the env predicate carries company_id, without which it is a cross-tenant existence " +
+      "oracle), and the return type structurally cannot carry company_secret_versions.material.",
   },
 ];

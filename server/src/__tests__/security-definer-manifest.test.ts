@@ -33,13 +33,20 @@ function manifestKeys(): Set<string> {
 }
 
 describe("SECURITY DEFINER manifest — shape", () => {
-  it("lists the canary preflight evidence function exactly once", () => {
-    const hits = SECURITY_DEFINER_FUNCTION_MANIFEST.filter(
-      (fn) => fn.name === "canary_preflight_evidence",
+  it("lists both canary preflight evidence functions, once each", () => {
+    const hits = SECURITY_DEFINER_FUNCTION_MANIFEST.filter((fn) =>
+      fn.name.startsWith("canary_preflight_evidence"),
     );
-    expect(hits).toHaveLength(1);
-    expect(hits[0]?.schema).toBe("public");
-    expect(hits[0]?.identityArguments).toBe("p_company_id uuid, p_default_env_id uuid");
+    // ROUND 6: one function became two so the scalar reads never scan the lease inventory
+    // and no shared in-flight state is needed to avoid it.
+    expect(hits.map((fn) => fn.name).sort()).toEqual([
+      "canary_preflight_evidence_leases",
+      "canary_preflight_evidence_scalars",
+    ]);
+    expect(hits.find((f) => f.name.endsWith("_leases"))?.identityArguments).toBe("p_company_id uuid");
+    expect(hits.find((f) => f.name.endsWith("_scalars"))?.identityArguments).toBe(
+      "p_company_id uuid, p_default_env_id uuid",
+    );
   });
 
   it("requires a rationale on every entry — owner authority is never granted silently", () => {
@@ -146,7 +153,7 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
     const database = await startMigratedDatabase({ label: "aoa-definer-public-" });
     try {
       await database.admin.unsafe(
-        "GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence(uuid, uuid) TO PUBLIC",
+        "GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid) TO PUBLIC",
       );
       await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
         /execute authority drift/i,
@@ -161,7 +168,7 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
     try {
       await database.admin.unsafe('CREATE ROLE "aoa_definer_intruder" NOLOGIN');
       await database.admin.unsafe(
-        'GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence(uuid, uuid) TO "aoa_definer_intruder"',
+        'GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid) TO "aoa_definer_intruder"',
       );
       await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
         /execute authority drift/i,
@@ -183,9 +190,9 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
   it("REJECTS a definer function whose ACL is NULL (PostgreSQL default = PUBLIC EXECUTE)", async () => {
     const database = await startMigratedDatabase({ label: "aoa-definer-nullacl-" });
     try {
-      await database.admin.unsafe("DROP FUNCTION public.canary_preflight_evidence(uuid, uuid)");
+      await database.admin.unsafe("DROP FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid)");
       await database.admin.unsafe(
-        "CREATE FUNCTION public.canary_preflight_evidence(p_company_id uuid, p_default_env_id uuid) " +
+        "CREATE FUNCTION public.canary_preflight_evidence_scalars(p_company_id uuid, p_default_env_id uuid) " +
           "RETURNS TABLE (lease_id uuid, platform_default_environment_id uuid, key_generation text) " +
           "LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $fn$ SELECT NULL::uuid, NULL::uuid, NULL::text $fn$",
       );
@@ -207,7 +214,7 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
       // drift being simulated.
       await database.admin.unsafe('GRANT CREATE ON SCHEMA public TO "aoa_app"');
       await database.admin.unsafe(
-        'ALTER FUNCTION public.canary_preflight_evidence(uuid, uuid) OWNER TO "aoa_app"',
+        'ALTER FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid) OWNER TO "aoa_app"',
       );
       await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
         /owned by serving role/i,
@@ -230,7 +237,7 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
       await database.admin.unsafe('CREATE ROLE "aoa_definer_alt_owner" NOLOGIN');
       await database.admin.unsafe('GRANT CREATE ON SCHEMA public TO "aoa_definer_alt_owner"');
       await database.admin.unsafe(
-        'ALTER FUNCTION public.canary_preflight_evidence(uuid, uuid) OWNER TO "aoa_definer_alt_owner"',
+        'ALTER FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid) OWNER TO "aoa_definer_alt_owner"',
       );
       await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
         /owner drift/i,
@@ -254,9 +261,9 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
       // Same identity, same SECURITY DEFINER, no `SET search_path` — the classic definer
       // hazard: name resolution inside owner-authority code becomes caller-controlled.
       await database.admin.unsafe(
-        "CREATE OR REPLACE FUNCTION public.canary_preflight_evidence(p_company_id uuid, p_default_env_id uuid) " +
-          "RETURNS TABLE (lease_id uuid, platform_default_environment_id uuid, key_generation text) " +
-          "LANGUAGE sql STABLE SECURITY DEFINER AS $fn$ SELECT NULL::uuid, NULL::uuid, NULL::text $fn$",
+        "CREATE OR REPLACE FUNCTION public.canary_preflight_evidence_scalars(p_company_id uuid, p_default_env_id uuid) " +
+          "RETURNS TABLE (platform_default_environment_id uuid, key_generation text) " +
+          "LANGUAGE sql STABLE SECURITY DEFINER AS $fn$ SELECT NULL::uuid, NULL::text $fn$",
       );
       await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
         /execution config drift/i,
@@ -273,10 +280,10 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
       // `AND e.company_id = p_company_id` is exactly the cross-tenant existence oracle
       // review caught in this plan's first revision.
       await database.admin.unsafe(
-        "CREATE OR REPLACE FUNCTION public.canary_preflight_evidence(p_company_id uuid, p_default_env_id uuid) " +
-          "RETURNS TABLE (lease_id uuid, platform_default_environment_id uuid, key_generation text) " +
+        "CREATE OR REPLACE FUNCTION public.canary_preflight_evidence_scalars(p_company_id uuid, p_default_env_id uuid) " +
+          "RETURNS TABLE (platform_default_environment_id uuid, key_generation text) " +
           "LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $fn$ " +
-          "SELECT NULL::uuid, (SELECT e.id FROM public.environments e WHERE e.id = p_default_env_id LIMIT 1), NULL::text $fn$",
+          "SELECT (SELECT e.id FROM public.environments e WHERE e.id = p_default_env_id LIMIT 1), NULL::text $fn$",
       );
       await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
         /body fingerprint drift/i,
@@ -292,7 +299,7 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
       // LEAKPROOF lets the planner push a function below security barriers and RLS quals.
       // On owner-authority code reading secret-bearing tables that must never flip silently.
       await database.admin.unsafe(
-        "ALTER FUNCTION public.canary_preflight_evidence(uuid, uuid) LEAKPROOF",
+        "ALTER FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid) LEAKPROOF",
       );
       await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
         /leakproof/i,
@@ -336,10 +343,10 @@ describe.skipIf(!RUN)("SECURITY DEFINER manifest — the scan actually matches t
     const database = await startMigratedDatabase({ label: "aoa-definer-absent-" });
     try {
       await database.admin.unsafe(
-        "DROP FUNCTION public.canary_preflight_evidence(uuid, uuid)",
+        "DROP FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid)",
       );
       await expect(assertSecurityDefinerManifest(database.appDb, "aoa_app")).rejects.toThrow(
-        /manifested SECURITY DEFINER function public\.canary_preflight_evidence\(p_company_id uuid, p_default_env_id uuid\) is absent/,
+        /manifested SECURITY DEFINER function public\.canary_preflight_evidence_scalars\(p_company_id uuid, p_default_env_id uuid\) is absent/,
       );
     } finally {
       await database.teardown();
