@@ -1,0 +1,89 @@
+-- C14 hand-authored security DDL: drizzle-kit cannot emit functions or their ACLs.
+-- Every statement is naturally idempotent (CREATE OR REPLACE / idempotent REVOKE + GRANT).
+--
+-- WHY. The canary preflight (server/src/services/canary-preflight.ts:139-145) fires its
+-- evidence reads on the NON-OWNER `aoa_app` pool (server/src/index.ts). Three of them
+-- hit tables `aoa_app` holds ZERO privileges on; each raises 42501, the catch at
+-- canary-preflight.ts:191-200 folds it into reason="preflight_error", and
+-- run-execution-owner.ts:254-257 returns owner="legacy". The gate could never open, and
+-- worse, it could never say WHY it was closed: an unreadability refusal is unfalsifiable
+-- and indistinguishable from a policy decision.
+--
+-- WHY NOT A GRANT. `company_secret_versions.material` is AES-256-GCM secret material and
+-- `environment_leases.metadata` is secret-bearing AT REST (sanitizeProviderMetadata strips
+-- only apiKey|resolvedApiKey, at read time, in memory). The gate needs THREE SCALARS. A
+-- definer function narrows the PREDICATE as well as the projection; a column grant would
+-- narrow only the projection and still let `aoa_app` enumerate every company's rows. It
+-- also avoids the nine-artifact manifest coupling a table grant carries (see 0261) --
+-- because it adds no relation to the serving inventory at all.
+--
+-- OWNERSHIP is load-bearing: migrations run as the database owner, and
+-- 0214_e2_serving_role_hardening.sql:10,31 RAISEs if a serving role owns an application
+-- object. The function is therefore owner-owned by construction.
+--
+-- search_path is pinned EMPTY and every relation is schema-qualified, so a caller's
+-- search_path cannot redirect the body. pg_catalog stays implicitly resolvable.
+--
+-- The `leases` CTE below is NOT `public.leases` (the job-control table). A CTE name always
+-- shadows a relation, and with an empty search_path an unqualified name resolves to nothing
+-- anyway; every real table in this body is schema-qualified.
+CREATE OR REPLACE FUNCTION public.canary_preflight_evidence(p_company_id uuid, p_default_env_id uuid)
+RETURNS TABLE (
+  lease_id uuid,
+  platform_default_environment_id uuid,
+  key_generation text
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  WITH leases AS (
+    SELECT l.id FROM public.environment_leases l WHERE l.company_id = p_company_id
+  ),
+  default_env AS (
+    -- COMPANY-SCOPED. Without `company_id = p_company_id` this is a cross-tenant
+    -- existence oracle: a caller passing company A with company B's environment id gets
+    -- B's row echoed back through an OWNER-authority function.
+    -- `ensurePlatformDefaultEnvironmentRow` writes the row with that companyId
+    -- (platform-default-environment.ts:186-204), so this predicate is behaviour-preserving.
+    SELECT e.id FROM public.environments e
+    WHERE e.id = p_default_env_id AND e.company_id = p_company_id
+    LIMIT 1
+  ),
+  keygen AS (
+    -- INNER JOIN LATERAL is deliberate. A `runtime_provider_keys` row with no
+    -- status='current' version must yield NO keygen row, so `key_generation` is NULL --
+    -- matching deriveE2bKeyGeneration, which returns null in that case
+    -- (e2b-credential-authority-wiring.ts:45). A LEFT JOIN would emit `secretId:` with a
+    -- null version and change behaviour.
+    SELECT k.secret_id, v.version
+    FROM public.runtime_provider_keys k
+    JOIN LATERAL (
+      SELECT cv.version FROM public.company_secret_versions cv
+      WHERE cv.secret_id = k.secret_id AND cv.status = 'current'
+      ORDER BY cv.version DESC LIMIT 1
+    ) v ON TRUE
+    WHERE k.company_id = p_company_id AND k.provider = 'e2b' AND k.is_default = TRUE
+    LIMIT 1
+  )
+  -- The UNION ALL ... WHERE NOT EXISTS branch makes a ZERO-LEASE company still return one
+  -- row carrying the env and key-generation scalars. Without it the function returns no
+  -- rows and the wrapper cannot tell "no leases" from "no key generation" -- resurrecting
+  -- exactly the conflation this migration exists to remove.
+  SELECT leases.id,
+         (SELECT id FROM default_env),
+         (SELECT secret_id::text || ':' || version::text FROM keygen)
+  FROM leases
+  UNION ALL
+  SELECT NULL::uuid,
+         (SELECT id FROM default_env),
+         (SELECT secret_id::text || ':' || version::text FROM keygen)
+  WHERE NOT EXISTS (SELECT 1 FROM leases);
+$$;
+--> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; REVOKE is idempotent.
+REVOKE ALL ON FUNCTION public.canary_preflight_evidence(uuid, uuid) FROM PUBLIC;
+--> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; GRANT is idempotent.
+GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence(uuid, uuid) TO "aoa_app";
