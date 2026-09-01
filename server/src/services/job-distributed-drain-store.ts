@@ -45,6 +45,12 @@ export interface DistributedExecutionDrainStore {
 
 export function createDistributedExecutionDrainStore(appDb: Db): DistributedExecutionDrainStore {
   // Reuse the canary gate's Company enumeration BY REFERENCE — never a re-implementation.
+  // ★ ROUND 7 (Unit 1.7) — this store's privileged members now read through SECURITY DEFINER
+  // functions whose EXECUTE grant lives on `aoa_operator`, NOT `aoa_app`. `listOrganizationCompanyIds`
+  // is one of them. Nothing breaks today because `createDistributedExecutionDrainStore` has no
+  // production caller — the drain lever is owed to REL-005 — but whoever wires it will get a bare
+  // 42501 here unless this construction is repointed at the operator pool. Deliberately NOT
+  // repointed now: it is untested dead code and its pool is REL-005's decision to make.
   const { listOrganizationCompanyIds } = createDrizzleCanaryPreflightStore(appDb);
 
   return {

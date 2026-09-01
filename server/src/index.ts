@@ -1230,7 +1230,11 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
         organizationId,
         workloadType,
       }),
-    preflight: createCanaryPreflight({ store: createDrizzleCanaryPreflightStore(appDb) }),
+    preflight: createCanaryPreflight({
+      // ROUND 7 — the operator pool, not the tenant-facing app pool. The definer functions'
+      // EXECUTE grant moved with it; aoa_app can no longer reach owner authority here.
+      store: createDrizzleCanaryPreflightStore(distributedExecutionDatabases.operatorDb),
+    }),
     convert: convertOrchestrator,
     placement: toRunExecutionPlacement(placementService),
     // Hand back the org concurrency slot the convert claimed when the run ends up legacy.

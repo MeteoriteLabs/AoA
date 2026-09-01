@@ -90,10 +90,10 @@ function cleanStore(): CanaryPreflightStore {
   };
   return {
     listOrganizationCompanyIds: async () => [COMPANY_A, COMPANY_B],
-    listLeases: async (companyId) => leases[companyId] ?? [],
-    platformDefaultEnv: async () => null,
+    listLeases: async (_organizationId, companyId) => leases[companyId] ?? [],
+    platformDefaultEnv: async (_organizationId: string, _companyId: string) => null,
     listRecords: async (companyId) => records[companyId] ?? [],
-    currentKeyGeneration: async () => KEY_GEN,
+    currentKeyGeneration: async (_organizationId: string, _companyId: string) => KEY_GEN,
   };
 }
 
@@ -161,7 +161,7 @@ describe("CLI-006 D2 — canary preflight (fail-closed, org-wide, recomputed)", 
   it("REFUSES when the platform-default environment has no crosswalk record", async () => {
     const preflight = createCanaryPreflight({
       store: withStore({
-        platformDefaultEnv: async (companyId) =>
+        platformDefaultEnv: async (_organizationId, companyId) =>
           companyId === COMPANY_A ? { environmentId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" } : null,
       }),
     });
@@ -175,7 +175,7 @@ describe("CLI-006 D2 — canary preflight (fail-closed, org-wide, recomputed)", 
     const environmentId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     const preflight = createCanaryPreflight({
       store: withStore({
-        platformDefaultEnv: async (companyId) => (companyId === COMPANY_A ? { environmentId } : null),
+        platformDefaultEnv: async (_organizationId, companyId) => (companyId === COMPANY_A ? { environmentId } : null),
         listRecords: async (companyId) =>
           companyId === COMPANY_A
             ? [
@@ -228,7 +228,7 @@ describe("CLI-006 D2 — canary preflight (fail-closed, org-wide, recomputed)", 
 
   it("REFUSES when provider-control authority has not moved at all (no key generation)", async () => {
     const preflight = createCanaryPreflight({
-      store: withStore({ currentKeyGeneration: async () => null }),
+      store: withStore({ currentKeyGeneration: async (_organizationId: string, _companyId: string) => null }),
     });
     const result = await preflight.check({ organizationId: ORG });
     expect(result.ok).toBe(false);
@@ -250,7 +250,7 @@ describe("CLI-006 D2 — canary preflight (fail-closed, org-wide, recomputed)", 
   it("REFUSES (never throws) when the store throws", async () => {
     const preflight = createCanaryPreflight({
       store: withStore({
-        listLeases: async () => {
+        listLeases: async (_organizationId: string, _companyId: string) => {
           throw new Error("db down");
         },
       }),
@@ -285,7 +285,7 @@ describe("CLI-006 D2 — canary preflight (fail-closed, org-wide, recomputed)", 
     const withNewLease = createCanaryPreflight({
       store: {
         ...store,
-        listLeases: async (companyId) =>
+        listLeases: async (_organizationId, companyId) =>
           companyId === COMPANY_A
             ? [
                 lease({ id: "1easeaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: COMPANY_A }),
@@ -357,7 +357,7 @@ describe("CLI-007 — the preflight establishes the canary's Company mint author
   // usable authority into the mint.
   it("emits NO credentialAuthority when the gate refuses (provider-control authority not moved)", async () => {
     const preflight = createCanaryPreflight({
-      store: withStore({ currentKeyGeneration: async () => null }),
+      store: withStore({ currentKeyGeneration: async (_organizationId: string, _companyId: string) => null }),
     });
     const result = await preflight.check({ organizationId: ORG });
     expect(result.ok).toBe(false);
@@ -380,10 +380,10 @@ describe("BLOCKER E — the gate consumes only lease.id", () => {
     const preflight = createCanaryPreflight({
       store: {
         listOrganizationCompanyIds: async () => [COMPANY_A],
-        listLeases: async () => [{ id: "lease-1" } as never],
-        platformDefaultEnv: async () => null,
+        listLeases: async (_organizationId: string, _companyId: string) => [{ id: "lease-1" } as never],
+        platformDefaultEnv: async (_organizationId: string, _companyId: string) => null,
         listRecords: async () => [],
-        currentKeyGeneration: async () => KEY_GEN,
+        currentKeyGeneration: async (_organizationId: string, _companyId: string) => KEY_GEN,
       },
     });
 

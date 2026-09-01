@@ -22,6 +22,7 @@ import type { Db } from "@armyofagents/db";
 import { createCanaryPreflight } from "../services/canary-preflight.js";
 import { createDrizzleCanaryPreflightStore } from "../services/canary-preflight-store.js";
 import { derivePlatformDefaultEnvironmentId } from "../services/platform-default-environment.js";
+import type { Sql } from "postgres";
 import { startMigratedDatabase } from "./helpers/migrated-database.js";
 
 const ORG = "e1000000-0000-4000-8000-000000000001";
@@ -48,6 +49,8 @@ const RUN = process.platform !== "win32" || process.env.AOA_RUN_WIN_INTEGRATION 
 
 type Fixture = {
   appDb: Db;
+  operatorDb: Db;
+  admin: Sql;
   organizationId: string;
   neighbourEnvironmentId: string;
   teardown: () => Promise<void>;
@@ -57,7 +60,7 @@ type Fixture = {
 // processes on every lane.
 async function setUpRealRoleFixture(): Promise<Fixture> {
   const database = await startMigratedDatabase({ label: "aoa-blocker-e-" });
-  const { admin, appDb, teardown } = database;
+  const { admin, appDb, operatorDb, teardown } = database;
   try {
     // Seed as ADMIN, read as `aoa_app` — that asymmetry is the whole point.
     //
@@ -86,7 +89,7 @@ async function setUpRealRoleFixture(): Promise<Fixture> {
       (id, company_id, environment_id, status, lease_policy)
       VALUES (${NEIGHBOUR_LEASE}, ${NEIGHBOUR}, ${neighbourEnvironmentId}, 'active', 'ephemeral')`;
 
-    return { appDb, organizationId: ORG, neighbourEnvironmentId, teardown };
+    return { appDb, operatorDb, admin, organizationId: ORG, neighbourEnvironmentId, teardown };
   } catch (error) {
     await teardown();
     throw error;
@@ -106,8 +109,10 @@ describe.skipIf(!RUN)("BLOCKER E — canary preflight on a real aoa_app connecti
 
   function gate() {
     if (!fixture) throw new Error("real-role fixture was not initialized");
+    // ROUND 7 — the gate's own reads run on the OPERATOR pool; `appDb` is the pool that must
+    // be DENIED, and the DEFINER_FUNCTIONS loop below pins that denial.
     return createCanaryPreflight({
-      store: createDrizzleCanaryPreflightStore(fixture.appDb),
+      store: createDrizzleCanaryPreflightStore(fixture.operatorDb),
     });
   }
 
@@ -159,10 +164,11 @@ describe.skipIf(!RUN)("BLOCKER E — canary preflight on a real aoa_app connecti
   });
 
   describe("the definer function is company-scoped — no cross-tenant oracle", () => {
-    async function evidence(companyId: string, defaultEnvId: string) {
-      const result = await fixture!.appDb.execute(
+    async function evidence(organizationId: string, companyId: string, defaultEnvId: string) {
+      const result = await fixture!.operatorDb.execute(
         sql`SELECT platform_default_environment_id, key_generation
-            FROM public.canary_preflight_evidence_scalars(${companyId}::uuid, ${defaultEnvId}::uuid)`,
+            FROM public.canary_preflight_evidence_scalars(
+              ${organizationId}::uuid, ${companyId}::uuid, ${defaultEnvId}::uuid)`,
       );
       return (Array.isArray(result)
         ? result
@@ -174,61 +180,83 @@ describe.skipIf(!RUN)("BLOCKER E — canary preflight on a real aoa_app connecti
 
     // POSITIVE CONTROL. Without this, the negative case below could pass because the probe
     // is broken rather than because the predicate holds.
-    it("returns the neighbour's own environment to the neighbour", async () => {
-      const rows = await evidence(NEIGHBOUR, fixture!.neighbourEnvironmentId);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]?.platform_default_environment_id).toBe(fixture!.neighbourEnvironmentId);
-    });
 
-    it("returns the neighbour's own lease to the neighbour, and only theirs", async () => {
-      // The leases function is company-scoped on its single argument; this is its positive
-      // control, kept separate now that leases and scalars are two functions.
-      const result = await fixture!.appDb.execute(
-        sql`SELECT lease_id FROM public.canary_preflight_evidence_leases(${NEIGHBOUR}::uuid)`,
+
+    async function leases(organizationId: string, companyId: string) {
+      const result = await fixture!.operatorDb.execute(
+        sql`SELECT lease_id FROM public.canary_preflight_evidence_leases(
+              ${organizationId}::uuid, ${companyId}::uuid)`,
       );
-      const rows = (Array.isArray(result)
+      return (Array.isArray(result)
         ? result
         : ((result as { rows?: unknown[] }).rows ?? [])) as Array<{ lease_id: string | null }>;
+    }
+
+    // ROUND-7 P1. The suite's earlier probes passed the INTRUDER's own id and asked about the
+    // NEIGHBOUR's environment — the cross-ARGUMENT case, which the company predicate already
+    // closed. The attack was to pass the VICTIM's id, and no test exercised it. Worse, two
+    // probes ASSERTED the attack as required behaviour: ORG's fixture read NEIGHBOUR's lease
+    // (a company in OTHER_ORG) and expected to get it. Those are inverted below.
+    it("does not answer about a Company outside the Organization being gated", async () => {
+      const rows = await leases(fixture!.organizationId /* ORG */, NEIGHBOUR);
+      expect(
+        rows.map((row) => row.lease_id),
+        "an owner-authority function must not return another Organization's lease ids",
+      ).toEqual([]);
+    });
+
+    // POSITIVE CONTROL, deliberately asked as the neighbour's OWN organization — so no test
+    // in this suite asserts that one Organization can read another's evidence.
+    it("returns the neighbour's lease when asked as the neighbour's own Organization", async () => {
+      const rows = await leases(OTHER_ORG, NEIGHBOUR);
       expect(rows.map((row) => row.lease_id)).toEqual([NEIGHBOUR_LEASE]);
     });
 
-    // ★ ROUND-7 P1 — THE ACTUAL ATTACK, and the one the probes above never exercised.
-    //
-    // The two probes around this one pass the INTRUDER's own company id and ask about the
-    // NEIGHBOUR's environment. That tests the CROSS-ARGUMENT oracle, which the
-    // `AND e.company_id = p_company_id` predicate closes. It is not the attack.
-    //
-    // The attack is to pass the VICTIM's company id. Then the predicate compares the victim
-    // to themselves, is trivially satisfied, and an owner-authority function hands the caller
-    // the victim's data. `p_company_id` is not authorization — it is a lookup key, and any
-    // session holding EXECUTE can supply any value. `companies` carries NO row-level security
-    // and `aoa_app` holds SELECT on it, so the caller does not even have to guess the id.
-    //
-    // This test is the positive control for the fix: it must FAIL while `aoa_app` holds
-    // EXECUTE, and pass once execute authority moves off that pool.
-    it("POSITIVE CONTROL — aoa_app can read ANY company's leases by naming it", async () => {
-      const result = await fixture!.appDb.execute(
-        sql`SELECT lease_id FROM public.canary_preflight_evidence_leases(${NEIGHBOUR}::uuid)`,
-      );
-      const rows = (Array.isArray(result)
-        ? result
-        : ((result as { rows?: unknown[] }).rows ?? [])) as Array<{ lease_id: string | null }>;
-
-      expect(
-        rows.map((row) => row.lease_id),
-        "an aoa_app session named a company it has no relationship to and received that " +
-          "company's lease ids through OWNER authority, bypassing the privilege denial that " +
-          "makes environment_leases unreadable to this pool",
-      ).not.toContain(NEIGHBOUR_LEASE);
-    });
-
-    it("does not echo the neighbour's environment back to a different company", async () => {
-      const rows = await evidence(INTRUDER, fixture!.neighbourEnvironmentId);
+    it("does not echo an environment back to a Company in another Organization", async () => {
+      const rows = await evidence(fixture!.organizationId, INTRUDER, fixture!.neighbourEnvironmentId);
       expect(rows).toHaveLength(1); // the scalars function always yields exactly one row
       expect(
         rows[0]?.platform_default_environment_id,
         "an owner-authority function that confirms another tenant's row id is an existence oracle",
       ).toBeNull();
+    });
+
+    // ★ THE ASSERTION THAT IS THE FIX. The organization predicates above are defence in depth —
+    // p_organization_id is caller-supplied too. The boundary is that `aoa_app`, the pool serving
+    // tenant HTTP requests, the outbox worker, the admission bridge and the live-event log, can
+    // no longer reach owner authority here at all.
+    const DEFINER_FUNCTIONS = [
+      `public.canary_preflight_evidence_companies('${OTHER_ORG}'::uuid)`,
+      `public.canary_preflight_evidence_leases('${OTHER_ORG}'::uuid, '${NEIGHBOUR}'::uuid)`,
+      `public.canary_preflight_evidence_scalars('${OTHER_ORG}'::uuid, '${NEIGHBOUR}'::uuid, '${NEIGHBOUR}'::uuid)`,
+    ] as const;
+
+    it.each(DEFINER_FUNCTIONS)("still denies `aoa_app` EXECUTE on %s", async (fn) => {
+      let raised: unknown;
+      try {
+        await fixture!.appDb.execute(sql.raw(`SELECT * FROM ${fn}`));
+      } catch (error) {
+        raised = error;
+      }
+      expect(raised, `${fn} is executable by aoa_app — a grant crept in`).toBeDefined();
+      const cause = (raised as { cause?: unknown }).cause ?? raised;
+      expect((cause as { code?: string }).code, fn).toBe("42501");
+    });
+
+    // The security argument rests on these two policy shapes. Pin them or it rots silently:
+    // the operator policy is unconditional (which is why the gate works in or out of tenant
+    // context on operatorDb), and the app policy is the INVERTED qual that makes runInTenant
+    // a trap on this path.
+    it("pins the policy shapes this unit's security argument depends on", async () => {
+      const rows = await fixture!.admin`
+        SELECT polname, pg_get_expr(polqual, polrelid) AS qual
+        FROM pg_policy WHERE polrelid = 'public.legacy_resource_reconciliation'::regclass
+        ORDER BY polname`;
+      const byName = new Map(
+        (rows as unknown as Array<{ polname: string; qual: string }>).map((r) => [r.polname, r.qual]),
+      );
+      expect(byName.get("legacy_resource_reconciliation_operator_write")).toBe("true");
+      expect(byName.get("legacy_resource_reconciliation_app_read")).toContain("aoa.organization_id");
     });
   });
 });

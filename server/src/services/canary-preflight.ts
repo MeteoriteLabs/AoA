@@ -53,13 +53,13 @@ export interface CanaryPreflightStore {
   /** Every Company under the Organization (the org-wide scope, design §2.8). */
   listOrganizationCompanyIds(organizationId: string): Promise<readonly string[]>;
   /** All `environment_leases` rows for the Company. */
-  listLeases(companyId: string): Promise<readonly LegacyLeaseInput[]>;
+  listLeases(organizationId: string, companyId: string): Promise<readonly LegacyLeaseInput[]>;
   /** The materialized platform-default env row id, or null when none exists. */
-  platformDefaultEnv(companyId: string): Promise<{ environmentId: string } | null>;
+  platformDefaultEnv(organizationId: string, companyId: string): Promise<{ environmentId: string } | null>;
   /** The PERSISTED crosswalk records for the Company (MIG-008's durable evidence). */
   listRecords(companyId: string): Promise<readonly ReconciliationRecord[]>;
   /** The current per-Company key generation (MIG-008 D3 attribution tag), or null. */
-  currentKeyGeneration(companyId: string): Promise<string | null>;
+  currentKeyGeneration(organizationId: string, companyId: string): Promise<string | null>;
 }
 
 export type CanaryPreflightRefusalReason =
@@ -138,10 +138,10 @@ export function createCanaryPreflight(deps: { store: CanaryPreflightStore }): Ca
 
         for (const companyId of companyIds) {
           const [leases, platformDefault, records, keyGeneration] = await Promise.all([
-            store.listLeases(companyId),
-            store.platformDefaultEnv(companyId),
+            store.listLeases(organizationId, companyId),
+            store.platformDefaultEnv(organizationId, companyId),
             store.listRecords(companyId),
-            store.currentKeyGeneration(companyId),
+            store.currentKeyGeneration(organizationId, companyId),
           ]);
 
           // (b) Provider-control authority. A Company with no current generation has
@@ -162,7 +162,11 @@ export function createCanaryPreflight(deps: { store: CanaryPreflightStore }): Ca
               "credential_authority_not_moved",
               companyId,
               `Company ${companyId} has ${superseded.length} reconciliation record(s) tagged with a superseded key generation ` +
-                `(current ${keyGeneration}); provider-control authority has not fully moved`,
+                // ROUND 7 — the key generation is `<secretId>:<version>`, i.e. a company_secrets ROW ID.
+              // This detail reaches logs through run-execution-owner.ts, which is a different sink
+              // from the definer surface and costs nothing to close. The count is what an operator
+              // needs; the identifier is not.
+              `provider-control authority has not fully moved`,
             );
           }
 

@@ -45,9 +45,13 @@ vi.mock("../services/legacy-resource-reconciliation-store.js", () => ({
   }),
 }));
 
+const readCanaryPreflightCompanyIds = vi.fn();
 const readCanaryPreflightLeaseIds = vi.fn();
 const readCanaryPreflightScalars = vi.fn();
+// ROUND 7 — the factory must export all THREE. Omitting one fails the whole file at import,
+// not a single test, because vitest's missing-export throw fires on first use of the module.
 vi.mock("../services/canary-preflight-evidence.js", () => ({
+  readCanaryPreflightCompanyIds: (...args: unknown[]) => readCanaryPreflightCompanyIds(...args),
   readCanaryPreflightLeaseIds: (...args: unknown[]) => readCanaryPreflightLeaseIds(...args),
   readCanaryPreflightScalars: (...args: unknown[]) => readCanaryPreflightScalars(...args),
 }));
@@ -69,6 +73,7 @@ describe("CLI-006 — canary preflight store reads through the definer function"
   const store = createDrizzleCanaryPreflightStore(db);
 
   beforeEach(() => {
+    readCanaryPreflightCompanyIds.mockReset();
     readCanaryPreflightLeaseIds.mockReset();
     readCanaryPreflightScalars.mockReset();
   });
@@ -87,8 +92,8 @@ describe("CLI-006 — canary preflight store reads through the definer function"
   it("sources `listLeases` from the leases function, narrowed to lease ids", async () => {
     readCanaryPreflightLeaseIds.mockResolvedValue(["lease-1", "lease-2"]);
 
-    await expect(store.listLeases("co-1")).resolves.toEqual([{ id: "lease-1" }, { id: "lease-2" }]);
-    expect(readCanaryPreflightLeaseIds).toHaveBeenCalledWith(db, "co-1");
+    await expect(store.listLeases("org-1", "co-1")).resolves.toEqual([{ id: "lease-1" }, { id: "lease-2" }]);
+    expect(readCanaryPreflightLeaseIds).toHaveBeenCalledWith(db, "org-1", "co-1");
   });
 
   it.each([
@@ -100,8 +105,8 @@ describe("CLI-006 — canary preflight store reads through the definer function"
       keyGeneration: null,
     });
 
-    await expect(store.platformDefaultEnv("co-1")).resolves.toEqual(expected);
-    expect(readCanaryPreflightScalars).toHaveBeenCalledWith(db, "co-1");
+    await expect(store.platformDefaultEnv("org-1", "co-1")).resolves.toEqual(expected);
+    expect(readCanaryPreflightScalars).toHaveBeenCalledWith(db, "org-1", "co-1");
   });
 
   it("sources `currentKeyGeneration` from the scalars function", async () => {
@@ -110,8 +115,8 @@ describe("CLI-006 — canary preflight store reads through the definer function"
       keyGeneration: "sec-1:3",
     });
 
-    await expect(store.currentKeyGeneration("co-1")).resolves.toBe("sec-1:3");
-    expect(readCanaryPreflightScalars).toHaveBeenCalledWith(db, "co-1");
+    await expect(store.currentKeyGeneration("org-1", "co-1")).resolves.toBe("sec-1:3");
+    expect(readCanaryPreflightScalars).toHaveBeenCalledWith(db, "org-1", "co-1");
   });
 
   // ROUND 6. The gate fires all three members in ONE `Promise.all`
@@ -127,9 +132,9 @@ describe("CLI-006 — canary preflight store reads through the definer function"
     });
 
     const [leases, platformDefault, keyGeneration] = await Promise.all([
-      store.listLeases("co-1"),
-      store.platformDefaultEnv("co-1"),
-      store.currentKeyGeneration("co-1"),
+      store.listLeases("org-1", "co-1"),
+      store.platformDefaultEnv("org-1", "co-1"),
+      store.currentKeyGeneration("org-1", "co-1"),
     ]);
 
     expect(leases).toEqual([{ id: "lease-1" }]);
@@ -148,7 +153,7 @@ describe("CLI-006 — canary preflight store reads through the definer function"
       keyGeneration: null,
     });
 
-    await Promise.all([store.platformDefaultEnv("co-1"), store.currentKeyGeneration("co-1")]);
+    await Promise.all([store.platformDefaultEnv("org-1", "co-1"), store.currentKeyGeneration("org-1", "co-1")]);
 
     expect(readCanaryPreflightLeaseIds).not.toHaveBeenCalled();
   });
@@ -162,8 +167,8 @@ describe("CLI-006 — canary preflight store reads through the definer function"
       .mockImplementationOnce(() => new Promise((r) => { resolveFirst = r; }))
       .mockResolvedValueOnce(["lease-late"]);
 
-    const first = store.listLeases("co-1");
-    const second = store.listLeases("co-1");
+    const first = store.listLeases("org-1", "co-1");
+    const second = store.listLeases("org-1", "co-1");
     resolveFirst?.([]);
 
     expect(await first).toEqual([]);

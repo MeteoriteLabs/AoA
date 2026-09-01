@@ -37,14 +37,21 @@ export type MigratedDatabase = {
   readonly admin: Sql;
   /** Drizzle Db on the NON-OWNER `aoa_app` login role. Read through this. */
   readonly appDb: Db;
+  /**
+   * Drizzle Db on the NON-OWNER `aoa_operator` login role. ROUND 7 — the canary preflight's
+   * definer functions grant EXECUTE to this role only, so the gate's own reads run here while
+   * `appDb` stays the pool that must be DENIED.
+   */
+  readonly operatorDb: Db;
   readonly teardown: () => Promise<void>;
 };
 
 export async function startMigratedDatabase(
-  options: { label?: string; appPassword?: string } = {},
+  options: { label?: string; appPassword?: string; operatorPassword?: string } = {},
 ): Promise<MigratedDatabase> {
   const label = options.label ?? "aoa-migrated-db-";
   const password = options.appPassword ?? "migrated-database-app-password";
+  const operatorPassword = options.operatorPassword ?? "migrated-database-operator-password";
   const dataDir = await mkdtemp(join(tmpdir(), label));
   const { default: EmbeddedPostgres } = (await import("embedded-postgres")) as {
     default: EmbeddedPostgresCtor;
@@ -60,7 +67,9 @@ export async function startMigratedDatabase(
   });
   let admin: Sql | null = null;
   let app: NonOwnerDbConnection | null = null;
+  let operator: NonOwnerDbConnection | null = null;
   const teardown = async () => {
+    await operator?.close({ timeoutSeconds: 5 }).catch(() => {});
     await app?.close({ timeoutSeconds: 5 }).catch(() => {});
     await admin?.end().catch(() => {});
     await embedded.stop().catch(() => {});
@@ -76,7 +85,15 @@ export async function startMigratedDatabase(
     app = createTenantAppDbConnection(adminUrl.replace("test:test", `aoa_app:${password}`), {
       max: 4,
     });
-    return { admin, appDb: app.db, teardown };
+    // `provisionTenantAppRoleLoginSql` is role-generic (it runs assertSafeRoleName), and
+    // `aoa_operator` is created unconditionally by migration 0213, so this only attaches a
+    // login. ROUND 7 needs it because the definer EXECUTE grant now lives on this role.
+    await admin.unsafe(provisionTenantAppRoleLoginSql("aoa_operator", operatorPassword));
+    operator = createTenantAppDbConnection(
+      adminUrl.replace("test:test", `aoa_operator:${operatorPassword}`),
+      { max: 4 },
+    );
+    return { admin, appDb: app.db, operatorDb: operator.db, teardown };
   } catch (error) {
     await teardown();
     throw error;

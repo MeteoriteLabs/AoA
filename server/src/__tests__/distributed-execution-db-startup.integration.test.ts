@@ -2226,7 +2226,7 @@ ${control.output}`).toBe(false);
       );
       try {
         await legacyOwner.unsafe(
-          "GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid) TO PUBLIC",
+          "GRANT EXECUTE ON FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid, uuid) TO PUBLIC",
         );
         const drifted = await observeServer({
           databaseUrl: legacyOwnerUrl,
@@ -2238,7 +2238,7 @@ ${drifted.output}`)
         expect(drifted.output).toContain("execute authority drift");
       } finally {
         await legacyOwner.unsafe(
-          "REVOKE EXECUTE ON FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid) FROM PUBLIC",
+          "REVOKE EXECUTE ON FUNCTION public.canary_preflight_evidence_scalars(uuid, uuid, uuid) FROM PUBLIC",
         ).catch(() => {});
         await legacyOwner.end().catch(() => {});
       }

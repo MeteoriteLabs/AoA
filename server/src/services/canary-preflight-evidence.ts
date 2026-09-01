@@ -6,7 +6,11 @@
 // 0266_canary_preflight_evidence_fn.sql) which narrow both the projection and the predicate --
 // the return types structurally cannot carry secret material.
 //
-// ★ TWO FUNCTIONS, AND NO SHARED STATE. There was one function returning a row per lease plus
+// ★ ROUND 7 — THREE functions, organization-bound, and EXECUTE lives on `aoa_operator`.
+// `p_company_id` alone was a lateral read of ANY Company's evidence through owner authority.
+// The organization predicates are defence in depth; the boundary is the GRANT.
+//
+// ★ TWO FUNCTIONS BECAME THREE, AND THERE IS STILL NO SHARED STATE. There was one function returning a row per lease plus
 // two scalars, which forced a choice between two defects: either the two scalar-only store
 // members each hydrated the whole lease inventory to read one scalar, or a single-flight
 // coalesced them. The single-flight was store-global and keyed only by company, so two
@@ -42,13 +46,32 @@ function rowsOf<T>(result: unknown): T[] {
   return (Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])) as T[];
 }
 
+/**
+ * Company ids for one Organization, read through owner authority so the gate's pool needs no
+ * `companies` grant. That absence is what lets EXECUTE live on `aoa_operator`, which holds no
+ * grant on `companies` or `organizations` at all.
+ */
+export async function readCanaryPreflightCompanyIds(
+  db: Db,
+  organizationId: string,
+): Promise<readonly string[]> {
+  const result = await db.execute(
+    sql`SELECT company_id FROM public.canary_preflight_evidence_companies(${organizationId}::uuid)`,
+  );
+  return rowsOf<{ company_id: string | null }>(result)
+    .map((row) => row.company_id)
+    .filter((id): id is string => id !== null);
+}
+
 /** Lease ids for one Company. The only evidence read that touches `environment_leases`. */
 export async function readCanaryPreflightLeaseIds(
   db: Db,
+  organizationId: string,
   companyId: string,
 ): Promise<readonly string[]> {
   const result = await db.execute(
-    sql`SELECT lease_id FROM public.canary_preflight_evidence_leases(${companyId}::uuid)`,
+    sql`SELECT lease_id FROM public.canary_preflight_evidence_leases(
+          ${organizationId}::uuid, ${companyId}::uuid)`,
   );
   return rowsOf<LeaseRow>(result)
     .map((row) => row.lease_id)
@@ -61,6 +84,7 @@ export async function readCanaryPreflightLeaseIds(
  */
 export async function readCanaryPreflightScalars(
   db: Db,
+  organizationId: string,
   companyId: string,
 ): Promise<CanaryPreflightScalars> {
   // The default-env id is derived HERE and passed in: it is a TypeScript uuidv5
@@ -69,7 +93,8 @@ export async function readCanaryPreflightScalars(
   const defaultEnvId = derivePlatformDefaultEnvironmentId(companyId);
   const result = await db.execute(
     sql`SELECT platform_default_environment_id, key_generation
-        FROM public.canary_preflight_evidence_scalars(${companyId}::uuid, ${defaultEnvId}::uuid)`,
+        FROM public.canary_preflight_evidence_scalars(
+          ${organizationId}::uuid, ${companyId}::uuid, ${defaultEnvId}::uuid)`,
   );
   const row = rowsOf<ScalarRow>(result)[0];
   return {

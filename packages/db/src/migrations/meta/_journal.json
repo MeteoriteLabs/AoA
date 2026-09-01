@@ -1870,6 +1870,13 @@
       "when": 1788240336663,
       "tag": "0266_canary_preflight_evidence_fn",
       "breakpoints": true
+    },
+    {
+      "idx": 267,
+      "version": "7",
+      "when": 1788272658445,
+      "tag": "0267_canary_preflight_evidence_org_scope",
+      "breakpoints": true
     }
   ]
 }

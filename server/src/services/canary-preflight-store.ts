@@ -35,6 +35,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companies, legacyResourceReconciliation } from "@armyofagents/db";
 import {
+  readCanaryPreflightCompanyIds,
   readCanaryPreflightLeaseIds,
   readCanaryPreflightScalars,
 } from "./canary-preflight-evidence.js";
@@ -51,13 +52,11 @@ export function createDrizzleCanaryPreflightStore(db: Db): CanaryPreflightStore 
     // must enumerate all of them. Checking only the run's Company would let an
     // Organization be canaried while a sibling Company's legacy leases stay
     // unreconciled (design §2.8).
-    listOrganizationCompanyIds: async (organizationId: string) => {
-      const rows = await db
-        .select({ id: companies.id })
-        .from(companies)
-        .where(eq(companies.organizationId, organizationId));
-      return rows.map((row) => row.id);
-    },
+    // ROUND 7 — through the definer function, not a direct `companies` select. The gate's
+    // pool therefore needs no `companies` grant, which is exactly what let EXECUTE move to
+    // aoa_operator (it holds no grant on companies or organizations).
+    listOrganizationCompanyIds: async (organizationId: string) =>
+      readCanaryPreflightCompanyIds(db, organizationId),
 
     // NEW. The reconciler only ever inserts; nothing needed to READ the persisted
     // crosswalk back until a gate had to recompute closure without mutating.
@@ -86,22 +85,22 @@ export function createDrizzleCanaryPreflightStore(db: Db): CanaryPreflightStore 
     // BLOCKER E — these three no longer delegate to the reconciler's drizzle store (see
     // the file header). They read the SAME rows with the SAME predicates, through the
     // owner-owned SECURITY DEFINER function, on the pool that is actually allowed to.
-    listLeases: async (companyId: string): Promise<readonly LegacyLeaseInput[]> => {
-      const leaseIds = await readCanaryPreflightLeaseIds(db, companyId);
+    listLeases: async (organizationId: string, companyId: string): Promise<readonly LegacyLeaseInput[]> => {
+      const leaseIds = await readCanaryPreflightLeaseIds(db, organizationId, companyId);
       // The gate consumes ONLY `lease.id`: `inventoryKeysForCompany` maps
       // `resourceKeyForLease(lease.id)`, and `resourceKeyForLease` is the identity function.
       // The other twelve fields on LegacyLeaseInput serve the reconciler's classifier, which
       // this gate never runs. `cli-006-canary-preflight.test.ts` pins that narrowing.
       return leaseIds.map((id) => ({ id }) as LegacyLeaseInput);
     },
-    platformDefaultEnv: async (companyId: string) => {
-      const scalars = await readCanaryPreflightScalars(db, companyId);
+    platformDefaultEnv: async (organizationId: string, companyId: string) => {
+      const scalars = await readCanaryPreflightScalars(db, organizationId, companyId);
       return scalars.platformDefaultEnvironmentId
         ? { environmentId: scalars.platformDefaultEnvironmentId }
         : null;
     },
-    currentKeyGeneration: async (companyId: string) => {
-      const scalars = await readCanaryPreflightScalars(db, companyId);
+    currentKeyGeneration: async (organizationId: string, companyId: string) => {
+      const scalars = await readCanaryPreflightScalars(db, organizationId, companyId);
       return scalars.keyGeneration;
     },
   };

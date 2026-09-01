@@ -66,40 +66,58 @@ export type SecurityDefinerFunction = {
 export const SECURITY_DEFINER_FUNCTION_MANIFEST: readonly SecurityDefinerFunction[] = [
   {
     schema: "public",
-    name: "canary_preflight_evidence_leases",
-    identityArguments: "p_company_id uuid",
-    // The canary preflight runs on the app pool and nothing else calls this.
-    executeGrantees: ["aoa_app"],
-    // The ONLY evidence read that touches environment_leases. `aoa_app` holds zero
-    // privileges on it, which is the whole reason this function exists.
-    authorityRelations: ["public.environment_leases"],
+    name: "canary_preflight_evidence_companies",
+    identityArguments: "p_organization_id uuid",
+    executeGrantees: ["aoa_operator"],
+    // The enumeration moved INSIDE the definer surface (migration 0267) precisely so the
+    // gate's pool needs no `companies` grant. That absence is what let EXECUTE move off
+    // aoa_app -- aoa_operator holds no grant on companies or organizations at all.
+    authorityRelations: ["public.companies"],
     executionConfig: ['search_path=""'],
-    bodySha256: "8a644c52848737e4bce6b7e5a7ceb1b702a459df56ac1aabe9450b8ca1d99146",
+    bodySha256: "f225bf33116c15d8b5a6e4a9960f166cab1b442ba5850b9e2eeae7a1d12ca0e4",
     rationale:
-      "BLOCKER E. Returns lease ids for one Company from a table the non-owner aoa_app pool " +
-      "holds zero privileges on. Company-scoped in the body; the return type is a bare uuid, " +
-      "so it structurally cannot carry environment_leases.metadata, which is secret-bearing " +
+      "BLOCKER E / round 7. Enumerates one Organization's Companies so the canary gate needs " +
+      "no companies grant on its pool. EXECUTE is aoa_operator ONLY. Note this is a WIDENING " +
+      "for aoa_operator, which holds no grant on companies or organizations -- the capability " +
+      "moves off a broad pool onto a narrow one rather than being removed.",
+  },
+  {
+    schema: "public",
+    name: "canary_preflight_evidence_leases",
+    identityArguments: "p_organization_id uuid, p_company_id uuid",
+    executeGrantees: ["aoa_operator"],
+    authorityRelations: ["public.environment_leases", "public.companies"],
+    executionConfig: ['search_path=""'],
+    bodySha256: "42efbfa50d3ff1b666b6e0a9ba40f758a7ded78d9ac5a1886fe6b0df57cd1217",
+    rationale:
+      "BLOCKER E / round 7. Returns lease ids for one Company from a table the serving roles " +
+      "hold zero privileges on. EXECUTE is granted to aoa_operator ONLY: aoa_app is the " +
+      "tenant-facing pool (HTTP requests, outbox worker, admission bridge, live-event log), so " +
+      "moving the grant narrows WHICH surface can reach owner authority. The organization " +
+      "predicate is defence in depth, NOT a boundary -- p_organization_id is caller-supplied " +
+      "and companies carries no RLS. The binder is the grantee, not the parameter. Return type " +
+      "is a bare uuid, so it cannot carry environment_leases.metadata, which is secret-bearing " +
       "at rest.",
   },
   {
     schema: "public",
     name: "canary_preflight_evidence_scalars",
-    identityArguments: "p_company_id uuid, p_default_env_id uuid",
-    executeGrantees: ["aoa_app"],
-    // Reads three relations `aoa_app` cannot touch; deliberately does NOT read
-    // environment_leases, so the two scalar-only store members never scan the lease
-    // inventory (the round-6 split).
+    identityArguments: "p_organization_id uuid, p_company_id uuid, p_default_env_id uuid",
+    executeGrantees: ["aoa_operator"],
+    // Deliberately does NOT read environment_leases: the round-6 split keeps the scalar
+    // reads off the lease inventory, and the round-7 change must not silently undo it.
     authorityRelations: [
       "public.environments",
       "public.runtime_provider_keys",
       "public.company_secret_versions",
+      "public.companies",
     ],
     executionConfig: ['search_path=""'],
-    bodySha256: "633a2b7270b9d20c677d66142c5b48c64a751f260c9e32cbce80d24b259af8e7",
+    bodySha256: "1aad28e0fa0ba14aebbf708d6469025f6bb0e46bcc78c1d64b37db1fc9a03e14",
     rationale:
-      "BLOCKER E. Returns exactly one row carrying the platform-default environment id and the " +
-      "current provider-control key generation. Both arguments are company-scoped in the body " +
-      "(the env predicate carries company_id, without which it is a cross-tenant existence " +
-      "oracle), and the return type structurally cannot carry company_secret_versions.material.",
+      "BLOCKER E / round 7. Returns exactly one row carrying the platform-default environment " +
+      "id and the current provider-control key generation. EXECUTE is aoa_operator ONLY -- that " +
+      "grant is the boundary; the organization predicate is defence in depth. The return type " +
+      "structurally cannot carry company_secret_versions.material.",
   },
 ];
