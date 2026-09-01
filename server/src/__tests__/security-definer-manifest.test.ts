@@ -77,6 +77,26 @@ describe("SECURITY DEFINER manifest — shape", () => {
     }
   });
 
+  it("never grants a definer function to the tenant-facing serving role", () => {
+    // ★ Decision #122 (2026-09-01 amendment) says a definer function must be justified on its
+    // GRANTEE first, and a tenant predicate may be cited only as a second layer. That condition
+    // had no mechanism: the boot certificate derives its expected ACL FROM this manifest, so a
+    // new entry declaring `executeGrantees: ["aoa_app"]` would match whatever the migration
+    // granted and pass every check. The exact defect migration 0267 exists to fix was therefore
+    // re-introducible without tripping anything.
+    //
+    // `aoa_app` is the pool serving tenant HTTP requests, the outbox worker, the admission
+    // bridge and the live-event log. Owner authority must not be reachable from it. A future
+    // function that genuinely needs a different grantee should change this test deliberately,
+    // with the reasoning — which is the point of pinning it here rather than in prose.
+    for (const fn of SECURITY_DEFINER_FUNCTION_MANIFEST) {
+      expect(
+        fn.executeGrantees,
+        `${fn.name} grants EXECUTE to aoa_app — owner authority reachable from the tenant pool`,
+      ).not.toContain("aoa_app");
+    }
+  });
+
   it("names the relations whose authority each function borrows", () => {
     // Owner must be PINNED, not merely bounded — an empty list would silently disable the
     // owner check and leave `ALTER FUNCTION … OWNER TO` invisible again.
