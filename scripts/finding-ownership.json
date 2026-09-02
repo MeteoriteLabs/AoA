@@ -57,12 +57,6 @@
       "status": "unowned",
       "reason": "Unit 2 (\"capability\") is scoped in docs/replatform/qa/2026-08-31-blocker-ab-fix-design.md but has NO ticket on disk, so there is nothing honest to point at. Naming a plausible existing ticket would be the false-claim-of-ownership failure this guard exists to prevent - it converts an open question into a settled one for every later reader. What is blocked: a distributed canary run can reach a real terminal, but the agent inside the sandbox has no MCP tool surface, no instructions bundle, no workspace, no rendered prompt template, and no output capture back into AoA. What the decision waits on: a Unit 2 ticket that owns prompt/context delivery beyond argv - which needs a channel argv does not provide (ExecuteInput has no stdin, stdinArtifactId has zero consumers, workspace is hard-coded null), i.e. a worker-protocol or E5-boundary decision with a blast radius, not a line in a composition ticket."
     },
-    "E10-F002": {
-      "status": "owned",
-      "ticket": "MIG-010",
-      "ownerStillOpen": "MIG-010 is a filed scoping stub (ticket file + #### MIG-010 program node, no result doc). MIG-008 shipped and has a result doc on disk, so leaving either finding on it would read as owned by nobody (E4-F013); the same is true of CLI-006 for E7-F004. The two findings share one owner deliberately: E10-F002 says nothing writes the crosswalk and E7-F004 says the gate would still refuse once something did, so closing either alone leaves the canary shut. Design work is in docs/replatform/qa/2026-09-01-blocker-e-2-e-3-design.md (revision 2, reviewed, not built).",
-      "reason": "reconcileCompanyLegacyResources and createDrizzleReconciliationStore each have zero non-test callers, so legacy_resource_reconciliation is never written and CLI-006's canary preflight answers reconciliation_incomplete forever. Not fixable by adding a caller: the pass reads four tables neither serving role holds a grant on (42501 on its first read as aoa_operator) and writes to environment_leases, destroying warm snapshots as a side effect. HIGH: blocks E7-1."
-    },
     "E7-F004": {
       "status": "owned",
       "ticket": "MIG-010",

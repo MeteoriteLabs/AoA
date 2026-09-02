@@ -78,9 +78,28 @@ force-fitting them onto one sink would be false ownership.
 
 ## E10-F002 — MIG-008's reconciler and its store have ZERO production callers, so the crosswalk is never written
 
-**Status:** open · **Owner:** MIG-010 (`epics/E10-desktop-migration-realtime/tickets/MIG-010-design.md`, no result doc)
+**Status:** **resolved** · **Resolved by:** MIG-010 Unit 2.3, `597e77715` (PR #336), 2026-09-02.
 **Severity:** HIGH
 **Filed:** 2026-09-01, by Blocker E-2 terrain verification at `c7ead3a73` (Units 1.6+1.7 / PR #333).
+
+**Resolved.** `reconcileOrganizationLegacyResources` has a production caller — the operator CLI
+`server/src/cli/reconcile-legacy-resources.ts` (`pnpm reconcile:legacy-resources`) — and the pass can
+now actually execute: migration `0268` adds `legacy_reconciliation_leases`, an org-bound
+`SECURITY DEFINER` classification read with `EXECUTE` on `aoa_operator` alone, and Option R removed
+the paused CAS, which `aoa_operator` had no grant to perform. The crosswalk is written when an
+operator runs the pass — deliberately an operator action, per this table's own security model
+("a SERVER-SIDE system/operator pass, NOT a per-tenant-request writer"), not an automatic one.
+
+★ **And the recurrence class is closed, not just the instance.** The reason this survived for the
+life of MIG-008 is that the symbol was never enrolled in the repo's own zero-caller register. It now
+is: `gate-clause-wiring.json` carries `E10-2-legacy-reconciliation` as `wired`, and
+`check-gate-clause-wiring.mjs` reds if the caller is removed or becomes unreachable. Proven by
+mutation rather than asserted — renaming the CLI's call exits 1 with
+`reconcileOrganizationLegacyResources has 0 production callers`; restoring it exits 0.
+
+**What this does NOT resolve.** The canary is still gated shut. `E7-F004` is open: the gate's
+inventory is still a strict superset of any pass's, so a lease created after a pass is still an
+unmapped key. See MIG-010 Unit 2.4.
 
 **What.** Both halves of MIG-008's writing path are orphaned:
 
