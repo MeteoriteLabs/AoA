@@ -44,8 +44,13 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.2 — the reconciliation defects, reproduc
 
       // ★ The key generation. Without it `canary-preflight.ts:150-156` refuses with
       // `credential_authority_not_moved` BEFORE the closure check, and every assertion below
-      // would pass while proving nothing. deriveE2bKeyGeneration walks
-      // runtime_provider_keys(provider='e2b', is_default) -> company_secret_versions(status='current').
+      // would pass while proving nothing.
+      //
+      // The gate does NOT call `deriveE2bKeyGeneration` — a debugging reader sent there is sent
+      // to the wrong place. Since Unit 1.7 the path is `canary-preflight-store.ts:102-105` ->
+      // `readCanaryPreflightScalars` -> the `0267` SECURITY DEFINER function, which walks the
+      // same two tables in SQL: runtime_provider_keys(provider='e2b', is_default) ->
+      // company_secret_versions(status='current'), and formats `<secretId>:<version>`.
       await admin`INSERT INTO company_secrets (id, company_id, name, latest_version)
         VALUES (${SECRET}, ${COMPANY}, 'e2b-key', 1)`;
       await admin`INSERT INTO company_secret_versions
@@ -73,7 +78,10 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.2 — the reconciliation defects, reproduc
   afterAll(async () => {
     await fixture?.teardown();
     fixture = null;
-  });
+    // 60s to match `canary-preflight-real-role.integration.test.ts:106-108`. On the default hook
+    // timeout a slow embedded-postgres teardown fails THIS file, which reads as a defect in the
+    // code under test rather than as the shutdown being slow.
+  }, 60_000);
 
   // The gate reads through the operator pool since Unit 1.7 moved EXECUTE there
   // (`index.ts:1256`). Building it per-call keeps each assertion independent.
@@ -93,7 +101,12 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.2 — the reconciliation defects, reproduc
     expect(result.reason).toBe("reconciliation_incomplete");
   });
 
-  it("[E10-F002] the crosswalk is EMPTY, because nothing in production writes it", async () => {
+  // NAMED for what it asserts. E10-F002's headline claim is a SOURCE property — two symbols
+  // with zero non-test callers — and no assertion here establishes it; a behavioural test cannot
+  // exercise a caller that does not exist. What it does pin is the filed CONSEQUENCE
+  // (findings.md E10-F002: "the gate answers `reconciliation_incomplete` for every organization,
+  // forever"). The caller count becomes "exactly one" in Unit 2.4 and is asserted there.
+  it("[E10-F002] an empty crosswalk leaves every inventory key unmapped", async () => {
     const rows = await fixture!.admin`
       SELECT count(*)::int AS n FROM legacy_resource_reconciliation WHERE company_id = ${COMPANY}`;
     expect(rows[0]!.n).toBe(0);
@@ -102,14 +115,27 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.2 — the reconciliation defects, reproduc
     expect(result.ok).toBe(false);
     if (result.ok) return;
     // One lease, no platform-default env row -> inventory is exactly one key, and it is unmapped.
-    expect(result.detail).toContain("unmapped=1");
+    // ★ EXACT, not a prefix. This count is the file's single discriminating assertion (proven by
+    // mutation: reorder the tests and it reads unmapped=2 while `reason` is unchanged), and a bare
+    // `toContain("unmapped=1")` would also match unmapped=10..19 and unmapped=100..199. Pinning
+    // the whole closure triple also covers the other two arms `assertClosure` can fail on.
+    expect(result.detail).toContain("(unmapped=1, duplicates=0, unattributable=0)");
     expect(result.companyId).toBe(COMPANY);
   });
 
   it("[positive control] hand-writing the records a pass WOULD write opens the gate", async () => {
-    // This is what `reconcileCompanyLegacyResources` would have inserted for LEASE_1: one
-    // `mapped` record keyed on the lease id, tagged with the current key generation. Written
-    // through the OPERATOR pool, which proves the write authority the real pass will need.
+    // The record a real pass would key on LEASE_1: `mapped`, tagged with the current key
+    // generation. Written through the OPERATOR pool, which proves the write authority the real
+    // pass will need.
+    //
+    // ★ NOT byte-identical to `buildLeaseRecord`, and the earlier comment claiming it was is
+    // corrected here. `buildLeaseRecord` (legacy-resource-reconciliation.ts:210-211) sets
+    // `resourceLabelsHash = computeResourceLabelsHash(lease)` on EVERY `mapped` record; this row
+    // leaves it null. That is deliberate — `assertClosure` reads only `resourceKey` and
+    // `disposition` (`:270-295`), so the hash cannot change the verdict, and synthesizing a hash
+    // here would be a second derivation of MIG-008 Invariant #2's attribution that could drift
+    // from the real one silently. Fidelity to what the CLOSURE CHECK consumes is the property
+    // that matters; fidelity to the full record is Unit 2.4's, where the real pass writes it.
     // (Verified: `0256` grants aoa_operator SELECT/INSERT/UPDATE and its policy is
     // `USING (true) WITH CHECK (true)`, so this insert needs no GUC and no tenant context.)
     const keyGeneration = `${SECRET}:1`;
@@ -139,8 +165,11 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.2 — the reconciliation defects, reproduc
     if (result.ok) return;
     expect(result.reason).toBe("reconciliation_incomplete");
     // The NEW lease is the unmapped one. The recorded lease is still fine — this is not a
-    // regression of Task 3, it is a strictly larger inventory over the same records.
-    expect(result.detail).toContain("unmapped=1");
+    // regression of the positive control, it is a strictly larger inventory over the same records.
+    // ★ EXACT for the same reason as above: in the wrong order this reads unmapped=2, and that
+    // difference — not the refusal reason, which is identical either way — is what makes this
+    // test mean anything.
+    expect(result.detail).toContain("(unmapped=1, duplicates=0, unattributable=0)");
 
     // ★ And the crosswalk did NOT change. The gate is read-only; it cannot heal itself, and no
     // pass ran. This is what makes it a permanently-losing race rather than a transient.
