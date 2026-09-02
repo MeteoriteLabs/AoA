@@ -1,6 +1,8 @@
 # BLOCKER E-2 + E-3 — what should CLOSURE mean?
 
-> **Status: DESIGN, revision 5 — §10.3's replacement is itself corrected. Unit 2.3 SHIPPED; 2.4 not built.**
+> **Status: DESIGN, revision 6 — §11.3's rotation trap is WIDER than §11.3 says, and no transaction fixes it.**
+> Unit 2.3 SHIPPED. **Unit 2.4a is BLOCKED on §12** — its Task 4 addresses a window inside a much
+> larger one. §12 supersedes §11.3.
 > A second sweep (67 agents, 44 confirmed hazards) ran REAL PostgreSQL probes and broke two of
 > §10.3's five points. **§11 supersedes §10.3.** Read it before building anything.
 > ★ Third consecutive round where the DIAGNOSIS held and the REMEDY failed. That is now a
@@ -622,3 +624,79 @@ company-scoped pass that could not call an org-bound function. Round 2 proposed 
 that opens the gate. Round 3 proposed a total that vanishes exactly when needed. The lesson is not
 "review harder" — all three passed review. It is that **a mechanism in this area is not knowable by
 reading; it has to be run.** Unit 2.4's plan must therefore lead with probes, not with code.
+
+---
+
+## 12. Revision 6 — the rotation trap is not a race, it is a standing condition
+
+§11.3 described the key-rotation trap as a *mid-pass* hazard: records landing under two generations
+while the pass runs. Unit 2.4a's plan then prescribed a per-company transaction with the generation
+re-read before commit. **Both are aimed at a window that is not where the damage comes from.**
+
+### 12.1 What the code actually does — measured, then read
+
+`reconcileCompanyLegacyResources` reads `currentKeyGeneration` **exactly once per company**
+(`legacy-resource-reconciliation.ts:410-414`) and threads that single value into every
+`buildLeaseRecord` and `buildPlatformDefaultEnvRecord` call for that company. A subagent measured
+this against a fake store with a rotation injected mid-pass and got one distinct generation per
+company; I then confirmed it by reading the code.
+
+So **records within a company never disagree.** §11.3's "records land under two generations" is
+imprecise, and the mid-pass race it names is largely closed already.
+
+### 12.2 ★★★ The real trap is unbounded in time, and a transaction cannot reach it
+
+Every record for a company carries the generation observed **at pass start**. The gate refuses on
+any record whose generation differs from the current one (`canary-preflight.ts:157-171`). The
+crosswalk is append-only: the unique index is `(company_id, resource_key)`
+(`legacy_resource_reconciliation.ts:73-76`) and `insertRecordIfAbsent` is `onConflictDoNothing`
+(`legacy-resource-reconciliation-store.ts:89-91`), so **a re-run cannot re-tag an existing record**.
+
+Therefore: **any provider-key rotation after a pass — by a second, a day, or a month — permanently
+bricks that company.** Not a race. A standing condition, with an unbounded window, reached by a
+perfectly clean pass followed by an ordinary key rotation.
+
+A per-company transaction closes the mid-pass window and does **nothing** for this. Unit 2.4a's Task
+4 Step 2, and §11.3 before it, are both scoped to the smaller problem.
+
+### 12.3 The resolution: the generation belongs to the MARKER, not to every record
+
+The two facts a cutover needs are different in kind, and conflating them is what creates an
+unfixable state:
+
+- **What was reconciled** — which resources were accounted for. That is what a crosswalk record is,
+  and it is a fact about *resources*. It does not go stale when a key rotates.
+- **Under which authority, and when** — the provider-control generation and the snapshot instant.
+  That is a fact about the *pass*, and it is exactly what the marker (§9.1, Unit 2.4a Task 2) exists
+  to carry.
+
+So the gate should compare **the marker's** generation to the current one, not each record's. A
+rotation then makes the marker stale — `reconciliation_stale`, re-run required — and the re-run
+writes a **new marker** while the records, which are about resources, stay valid and are correctly
+left alone by `onConflictDoNothing`. An unfixable brick becomes ordinary, recoverable staleness, and
+the append-only crosswalk works as designed rather than against itself.
+
+★ This is why `key_generation` on the record was load-bearing in the first place: before a marker
+existed, the record was the only place to put it. The marker is the right home, and §9.1 already
+required it to record one.
+
+### 12.4 What this changes
+
+- **Unit 2.4a Task 4 Step 2** is superseded. The per-company transaction is still *defensible*
+  hygiene, but it is no longer the fix and must not be described as one. The marker must record the
+  generation observed at pass start — which Task 2 Step 1 already requires.
+- **Unit 2.4b** gains the change that actually closes it: `canary-preflight.ts:157-171` stops
+  refusing on per-record generation and refuses on a stale **marker** instead.
+- **The existing per-record `key_generation` column stays** — it is history, and rewriting shipped
+  semantics is not required to fix this. It simply stops being what the gate reads.
+- **A test must pin the recovery**: clean pass → rotate the key → gate refuses `reconciliation_stale`
+  → re-run the pass → gate passes. That sequence is impossible today at any distance from the pass,
+  which is the whole finding.
+
+### 12.5 The pattern, again
+
+Round 4. The diagnosis (§1-§3) has now survived four adversarial rounds untouched; the remedy has
+failed four times. This one is the sharpest instance yet: §11.3 correctly identified that a rotation
+bricks a company, then mis-diagnosed *when*, and the plan built a mechanism precisely fitted to the
+wrong window. **A remedy aimed at a race, when the real defect is a standing condition, will always
+look correct in review — it fixes something real.**
