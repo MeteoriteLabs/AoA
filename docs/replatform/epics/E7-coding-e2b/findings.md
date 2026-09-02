@@ -271,3 +271,38 @@ semantics, and the marker's generation column (Unit 2.4a) is `NOT NULL` with an 
 `'ungenerationed'` sentinel so the value is unrepresentable there. MIG-010 owns it because §12 moves
 this exact comparison onto the marker — fixing it separately would fix the copy that is about to stop
 being read.
+
+## E7-F006 — One `unattributable` record refuses the gate forever, and ordinary agent deletion creates one
+
+**Status:** open · **Owner:** MIG-010 (`epics/E10-desktop-migration-realtime/tickets/MIG-010-design.md`, no result doc)
+**Severity:** HIGH
+**Filed:** 2026-09-02, after Units 2.3 + 2.4 made the path reachable. Flagged BLOCKING by two
+independent terrain sweeps and carried in design §9.2 since 2026-09-01 — **but never filed as a
+finding, so nothing owned it and `check-finding-ownership.mjs` could not see it.** That is the same
+gap that let BLOCKER E sit unowned for MIG-008's entire life.
+
+**What.** `assertClosure` fails on *any* record with disposition `unattributable`
+(`legacy-resource-reconciliation.ts:290`), and `resolveResourceType` returns null — producing that
+disposition — for a lease that is not `ephemeral` and carries no `agentId`,
+`commanderConversationId` or `executionWorkspaceId` (`:95-101`). The crosswalk is **append-only**:
+`0256` grants no DELETE, `insertRecordIfAbsent` is `onConflictDoNothing`, and no application code
+updates a record. So one such record refuses the canary gate **permanently**, and neither the pass
+(insert-if-absent) nor the gate (read-only) can clear it.
+
+**Reachable through ordinary operation, not corruption.** `environment_leases.agent_id` and
+`execution_workspace_id` are `references(..., { onDelete: "set null" })`
+(`packages/db/src/schema/environment_leases.ts:16,:21`). **Deleting an agent nulls the owner FK on
+every lease it held**, turning classifiable leases into unclassifiable ones. A founder removing an
+agent is enough.
+
+**★ Why it is filed NOW.** It was latent while the pass had no caller. Unit 2.3 (`597e77715`) gave it
+one and Unit 2.4 (`effa591d6`) made the gate read the result — so **we enabled the path that reaches
+this trap** and must close it before operators start running passes in earnest.
+
+**Fix.** Design §9.2 settles the shape: a narrow operator command resolving ONE record, using the
+`UPDATE` grant `0256` already provisions and no application code uses. It may transition **only**
+`unattributable → terminal_cleanup`, never mint `mapped` (an operator asserting "this live resource
+is accounted for" is precisely the forgeable claim), requires a non-empty operator justification,
+takes one `resourceKey` at a time, and asserts its connected role first. It ships with an amendment
+to `legacy_resource_reconciliation.ts:31-32`, which currently states there is no update path in
+application code.

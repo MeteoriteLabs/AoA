@@ -56,6 +56,12 @@
     "E7-F003": {
       "status": "unowned",
       "reason": "Unit 2 (\"capability\") is scoped in docs/replatform/qa/2026-08-31-blocker-ab-fix-design.md but has NO ticket on disk, so there is nothing honest to point at. Naming a plausible existing ticket would be the false-claim-of-ownership failure this guard exists to prevent - it converts an open question into a settled one for every later reader. What is blocked: a distributed canary run can reach a real terminal, but the agent inside the sandbox has no MCP tool surface, no instructions bundle, no workspace, no rendered prompt template, and no output capture back into AoA. What the decision waits on: a Unit 2 ticket that owns prompt/context delivery beyond argv - which needs a channel argv does not provide (ExecuteInput has no stdin, stdinArtifactId has zero consumers, workspace is hard-coded null), i.e. a worker-protocol or E5-boundary decision with a blast radius, not a line in a composition ticket."
+    },
+    "E7-F006": {
+      "status": "owned",
+      "ticket": "MIG-010",
+      "ownerStillOpen": "MIG-010 is a filed scoping stub (ticket file + #### MIG-010 program node, NO result doc) and its scope sketch already names 'a resolution path for an unattributable record'. It owned E10-F002/E7-F004/E7-F005, all now resolved; this is the last item in its stated scope, and MIG-010 does not promote to done until it closes. Design section 9.2 settles the remedy's shape; Unit 2.5 builds it.",
+      "reason": "assertClosure fails on any unattributable disposition, resolveResourceType produces one for a lease with no owner FK, and the crosswalk is append-only with no DELETE grant and no application update path - so one such record refuses the canary gate permanently with no remedy in code. Reachable through ordinary operation: environment_leases.agent_id and execution_workspace_id are ON DELETE SET NULL, so deleting an agent turns classifiable leases into unclassifiable ones. HIGH: latent until Unit 2.3 gave the pass a caller and Unit 2.4 made the gate read the result."
     }
   }
 }
