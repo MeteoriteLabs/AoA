@@ -33,6 +33,15 @@
 //                           into the run's real evidence surfaces.
 //   5. Journey corroboration — a worker LEASED it, STARTED it, and its terminal was
 //                           PROJECTED (the anti-false-PASS clause; new in v2).
+//
+// Clauses 1-5 answer ONE question: was the distributed journey corroborated — the
+// MECHANISM. None of them reads `workload`, `args`, `exitCode`, stdout, or anything
+// the agent produced, so a `claude` that exits 127 with no tools and a context-free
+// prompt satisfies all five (E7-F003, pinned by a test).
+//
+//   6. Capability (SEPARATE DIMENSION — CLI-008 Unit A) — did anything the agent
+//      produced reach AoA? Reported as `capabilityProven` / `capabilityFailures`,
+//      NEVER folded into `ok`. See E7VerifyResult.capabilityProven for why.
 // ---------------------------------------------------------------------------
 
 /**
@@ -138,7 +147,16 @@ export interface E7RunVerifierStore {
 // --- The verdict -------------------------------------------------------------
 
 export interface E7VerifyFailure {
-  readonly clause: 1 | 2 | 3 | 4 | 5;
+  /**
+   * Clauses 1-5 are the `ok` clauses — the distributed-journey corroboration.
+   *
+   * Clause 6 is the CAPABILITY clause and lives ONLY in `capabilityFailures`. It
+   * must never be pushed into `failures`: doing so folds capability into `ok`, and
+   * `producedArtifacts` is structurally 0 until CLI-008 Unit F ships output capture,
+   * so `ok` would be permanently false — a gate nobody can pass. (A verifier test
+   * pins that: `E7-F003 blind spot`.)
+   */
+  readonly clause: 1 | 2 | 3 | 4 | 5 | 6;
   /** SHAPE only — NEVER a raw matched secret substring. */
   readonly reason: string;
 }
@@ -173,6 +191,18 @@ export interface E7VerifyResult {
   readonly runId: string;
   readonly notFound?: true;
   readonly failures: readonly E7VerifyFailure[];
+  /**
+   * Did the agent DO anything that reached AoA? Independent of `ok`, deliberately.
+   * `ok` answers "was the distributed journey corroborated" — the MECHANISM. This answers
+   * "could the agent work" — the CAPABILITY. They are different questions and E7-F003 exists
+   * because one was being read as the other.
+   *
+   * FALSE ON EVERY REAL RUN TODAY, and that is the intended outcome of CLI-008 Unit A: the
+   * verifier starts telling a truth it already had the data for. It becomes achievable when
+   * Unit F builds a producer for `job_artifacts` / `task_outputs`.
+   */
+  readonly capabilityProven: boolean;
+  readonly capabilityFailures: readonly E7VerifyFailure[];
   readonly observed: E7VerifyObserved;
 }
 
@@ -310,7 +340,15 @@ export function createE7DistributedRunVerifier(deps: {
     async verify({ runId, expected }) {
       const run = await store.getRun(runId);
       if (!run) {
-        return { ok: false, runId, notFound: true, failures: [], observed: EMPTY_OBSERVED };
+        return {
+          ok: false,
+          runId,
+          notFound: true,
+          failures: [],
+          capabilityProven: false,
+          capabilityFailures: [],
+          observed: EMPTY_OBSERVED,
+        };
       }
 
       const failures: E7VerifyFailure[] = [];
@@ -454,7 +492,37 @@ export function createE7DistributedRunVerifier(deps: {
         suspectedHeuristicHits: heuristicHits,
       };
 
-      return { ok: failures.length === 0, runId, failures, observed };
+      // --- Clause 6 — CAPABILITY, computed beside the verdict and kept OUT of it ---
+      //
+      // `failures` / `ok` are NOT touched here. Deliberately: `producedArtifacts` is
+      // structurally 0 until CLI-008 Unit F ships a producer, so a capability failure
+      // folded into `ok` would make E7-1 permanently red — a gate nobody can pass gets
+      // bypassed, argued around, or deleted (scripts/lib/gate-clause-wiring.mjs says so
+      // in its own header), and it would retroactively invalidate the D1 40/40 evidence,
+      // which is honest evidence OF THE MECHANISM and stays true.
+      //
+      // The CLI's `--require-capability` is where an operator opts INTO enforcing this.
+      const capabilityFailures: E7VerifyFailure[] = [];
+      if (produced.workspacePatchArtifacts < 1 && produced.taskOutputs < 1) {
+        capabilityFailures.push({
+          clause: 6,
+          reason:
+            "nothing the agent produced reached AoA: no committed workspace_patch job_artifact and no task_output " +
+            "for this run. Output capture is UNBUILT (CLI-008 Unit F) — the E2B driver passes no stream handlers, " +
+            "stdoutRef/stderrRef are fabricated literals rather than references to stored bytes, observeRun is " +
+            "uncomposed, and buildWorkspacePatch/createResultCommitter have zero production callers. So this run " +
+            "cannot be distinguished from a context-free one (E7-F003), whatever the agent actually did.",
+        });
+      }
+
+      return {
+        ok: failures.length === 0,
+        runId,
+        failures,
+        capabilityProven: capabilityFailures.length === 0,
+        capabilityFailures,
+        observed,
+      };
     },
   };
 }
