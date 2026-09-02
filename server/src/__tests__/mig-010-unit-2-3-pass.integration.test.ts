@@ -76,24 +76,59 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.3 — the reconciliation pass, made runnab
     // as the shutdown being slow.
   }, 60_000);
 
-  it("[E10-F002] TODAY the pass cannot even read: aoa_operator is denied on environment_leases", async () => {
+  // ★ INVERTED IN PLACE, NOT DELETED (DSK-003). Until Task 7 this asserted the DENIAL:
+  //
+  //     await expect(store.listLeases(ORG, COMPANY)).rejects.toMatchObject({
+  //       cause: { code: "42501", message: "permission denied for table environment_leases" },
+  //     });
+  //
+  // and it passed, because `aoa_operator` holds no grant on `environment_leases`. Pointing
+  // the store at the `0268` SECURITY DEFINER function flipped it: the run before this edit
+  // failed with "promise resolved [ { …(13) } ] instead of rejecting". That transition — a
+  // reproduction going green for the stated reason — is the evidence this unit turns on, and
+  // deleting the test would have subtracted a failure instead of proving a fix.
+  it("[E10-F002] the pass CAN now read, through owner authority, as aoa_operator", async () => {
     const store = createDrizzleReconciliationStore(fixture!.operatorDb);
-    // ★ If this ever fails because the read SUCCEEDS, that is a BIGGER finding than this
-    // unit: the operator role would hold a grant `job-control-legacy-grants.ts` does not
-    // declare, and the authority manifest is an exact allowlist, not a partial one.
-    //
-    // ★ THE CODE IS ON `cause`, NOT ON THE ERROR. drizzle wraps every driver failure in a
-    // `DrizzleQueryError` whose `message` is the rendered SQL; the PostgresError carrying
-    // `code` is its `cause`. A top-level `{ code: "42501" }` matcher does NOT fail loudly
-    // here -- it fails with a diff that looks like a shape quibble while the denial it was
-    // written to catch is present. Pin the relation too: a bare 42501 would also match a
-    // denial on some other table and would keep passing after this one is fixed.
-    // ★ `(ORG, COMPANY)` since Unit 2.3 org-scoped the store. Every member takes the pair
-    // now, and a stale one-arg call lands COMPANY in `organizationId` and leaves companyId
-    // undefined -- which fails as UNDEFINED_VALUE, not 42501. Pinning the code AND the
-    // message is what makes that visible instead of green-and-meaningless.
-    await expect(store.listLeases(ORG, COMPANY)).rejects.toMatchObject({
-      cause: { code: "42501", message: "permission denied for table environment_leases" },
+    const leases = await store.listLeases(ORG, COMPANY);
+
+    expect(leases).toHaveLength(1);
+    // Field by field, by NAME. The definer function returns eleven named columns and the
+    // evidence module assigns each from its own key; a positional swap between two `uuid`
+    // columns, or two `text` ones, is invisible to the type system. `environmentId` /
+    // `companyId` and `status` / `leasePolicy` / `provider` are exactly those adjacent pairs.
+    expect(leases[0]).toMatchObject({
+      id: LEASE_1,
+      companyId: COMPANY,
+      environmentId: ENV,
+      status: "active",
+      leasePolicy: "ephemeral",
+      provider: "e2b",
+      providerLeaseId: "sbx-u23-1",
+      agentId: null,
+      commanderConversationId: null,
+      executionWorkspaceId: null,
+      cleanupStatus: null,
     });
+  });
+
+  it("the definer projection EXCLUDES the secret-bearing columns", async () => {
+    // The return type is the security boundary, so assert it holds rather than trusting the
+    // migration comment. `metadata` is secret-bearing at rest and `failure_reason` is
+    // unbounded operator text; neither may cross into the pass.
+    const store = createDrizzleReconciliationStore(fixture!.operatorDb);
+    const [lease] = await store.listLeases(ORG, COMPANY);
+    expect(lease).toBeDefined();
+    expect(lease).not.toHaveProperty("metadata");
+    expect(lease).not.toHaveProperty("failureReason");
+    expect(lease).not.toHaveProperty("failure_reason");
+  });
+
+  it("the ORG predicate is real: a foreign organization id yields nothing", async () => {
+    // `p_organization_id` is defence in depth rather than the boundary — the GRANT is the
+    // boundary — but a predicate that does not discriminate is worth nothing at all, and a
+    // dropped EXISTS clause would be invisible to every other assertion here.
+    const store = createDrizzleReconciliationStore(fixture!.operatorDb);
+    const foreignOrg = "e3000000-0000-4000-8000-0000000000ff";
+    expect(await store.listLeases(foreignOrg, COMPANY)).toEqual([]);
   });
 });
