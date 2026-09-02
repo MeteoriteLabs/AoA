@@ -1,6 +1,7 @@
 # CLI-008 Unit B — the inbound channel: DECISION
 
-> **Status: the PORT SHAPE is decided; the BYTE PATH is NOT (§7). A build plan is not yet writable.**
+> **Status: DECIDED end to end. §7's gap is closed by §8 — the byte path exists, and every piece of it
+> is already built and orphaned. A build plan is writable.**
 > Amended 2026-09-03 after tracing where the bytes would actually come from. Evidence: a 40-agent sweep, five lenses, every candidate attacked
 > refute-by-default. **Both load-bearing claims in `CLI-008-design.md` §3 are false**, and §3 is
 > corrected by this document.
@@ -195,3 +196,66 @@ A focused trace of the inbound artifact path: can the control plane author an ar
 has not started, and if so by which write path and under what authority — or is that unbuilt, making
 the real Unit B deliverable *"give the control plane a way to stage a bundle"* rather than
 *"give the provider a way to write files"*.
+
+---
+
+## 8. ★★★ §7's gap, CLOSED — the byte path is four orphans in a row
+
+A 29-agent trace answered it by **running embedded PostgreSQL against HEAD's migrations**, not by
+reading. Both halves of the answer matter.
+
+### The suspicion was right, and it is structural
+
+**The fenced mutators are unusable inbound BY CONSTRUCTION.** `ActiveFenceRequest` demands
+`leaseId`, `fence`, `workerId`, `targetGeneration`, `profileHash` and `providerConstraintHash` — none
+of which exist before placement mints them. **The control plane cannot even construct the argument**,
+let alone satisfy the guard.
+
+And the no-fence window is wider than "before a lease row exists". Measured: with a `leases` row
+correct in all thirteen identity fields but `status='offered'`, `lockActiveFence` still throws
+`stale_fence`. A fence begins at worker **ACK**, so the whole span from admission through placement,
+offer and ack-in-flight has none. Three lenses independently returned BLOCKED for every
+reuse-the-guarded-path candidate.
+
+### And the answer is still yes, by a path nobody was using
+
+**`JobArtifactsRepository.insert` is a plain, UNGUARDED tenant-repo write.** It is not in
+`GUARDED_JOB_MUTATORS`, never calls `guardActiveFence`, and a repo-wide grep finds **zero callers —
+production or test**. That is a **fourth** built-and-orphaned component, after `writeFiles`,
+`observeRun` and `artifactTransferGrant`.
+
+**Measured, and this is the decisive result:** inside `runInTenant(ORG)` as `aoa_app`, with no lease
+and no fence ever having existed, inserting a `job_artifacts` row with `status: 'committed'`
+**succeeded** (`leaseId=null, fenceToken=null`), and `findCommitted` **found it** — which is exactly
+the precondition the download branch checks.
+
+**The download half of the frozen op is deliberately fence-INDEPENDENT and fully built.**
+`artifact-transfer-grant.ts` locks a fence only on the *upload* branch; download proves tenant-scoped
+object existence via `findCommitted` plus objectKey and prefix checks, then presigns a GET. The route
+is wired, the service composed, and an existing integration test already proves a download grant is
+issued **after the lease has expired**.
+
+The other barriers are real but trivially satisfiable by the control plane: RLS is enforced
+(a foreign `organization_id` fails `42501`) and the composite FK is enforced (a ghost job fails
+`23503`) — both satisfied by writing inside `runInTenant(org)` for a job that exists. There is **no**
+CHECK on `status`, and `attempt`, `lease_id`, `fence_token`, `object_key` and `sha256` are all
+nullable.
+
+### So the path is
+
+```
+control plane   putObject + jobArtifacts.insert(status:'committed')   ← unguarded, ZERO callers
+worker          artifactTransferGrant → download_granted             ← built, ONE caller (a test)
+provider        redeem the grant, transport.writeFiles                ← built, ZERO callers on this path
+```
+
+**Every component exists. Nothing composes them.** Unit B's build is wiring, not construction — which
+is why it was invisible: nothing is missing, so nothing looked absent.
+
+### One question the plan must settle first, not assume
+
+The two sweeps disagree on whether the bundle should ride **object storage + a grant** or the
+envelope's **`extensions[]`** (measured ceiling ~49 KB, which fits an MCP config and an instructions
+bundle but not a repository). Sweep 1 rejected inline extensions; sweep 2 recommended it. **That is a
+live conflict and the plan resolves it by measurement, not by preference** — and it does not block
+the provider-side work, which is identical either way.
