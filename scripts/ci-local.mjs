@@ -43,6 +43,20 @@ const CANNOT_RUN_HERE = {
   "ci-required": "an aggregator over other jobs' results; nothing to execute",
 };
 
+/**
+ * Jobs that need an environment CI provides and this machine may not. Unlike CANNOT_RUN_HERE
+ * these are runnable WHEN the environment exists, so the check is dynamic -- and reporting
+ * "FAIL" for a missing service would be a lie that trains people to ignore this runner.
+ */
+const NEEDS_ENV = {
+  migrations: {
+    ok: () => Boolean(process.env.DATABASE_URL),
+    why: "needs DATABASE_URL pointing at a postgres CI supplies as a service container. "
+      + "Note the migrations themselves ARE exercised locally: every *.integration.test.ts "
+      + "using startMigratedDatabase applies the full folder to a fresh embedded database.",
+  },
+};
+
 /** The default fast gate: everything cheap that catches most red CI. */
 const FAST_JOBS = ["policy", "brand-check", "worker-protocol-contract-bytes", "lint"];
 
@@ -118,7 +132,8 @@ function main() {
   if (argv.includes("--list")) {
     console.log("jobs in pr.yml:\n");
     for (const [name, steps] of jobs) {
-      const why = CANNOT_RUN_HERE[name];
+      const env = NEEDS_ENV[name];
+      const why = CANNOT_RUN_HERE[name] ?? (env && !env.ok() ? env.why : undefined);
       const mark = why ? "SKIP" : steps.length ? " RUN" : "  --";
       console.log(`  ${mark}  ${name.padEnd(32)} ${steps.length} step(s)${why ? `  — ${why}` : ""}`);
     }
@@ -142,6 +157,11 @@ function main() {
   for (const name of selected) {
     if (CANNOT_RUN_HERE[name]) {
       skipped.push({ name, why: CANNOT_RUN_HERE[name] });
+      continue;
+    }
+    const env = NEEDS_ENV[name];
+    if (env && !env.ok()) {
+      skipped.push({ name, why: env.why });
       continue;
     }
     const steps = jobs.get(name);
