@@ -159,7 +159,21 @@ export function environmentService(db: Db) {
           failureReason: null,
           cleanupStatus: null,
           metadata: input.metadata ?? null,
-          createdAt: now,
+          // ★ `createdAt` is DELIBERATELY NOT STAMPED HERE. The column default is `now()`,
+          // so the value comes from the DATABASE clock. MIG-010 Unit 2.4 compares
+          // `environment_leases.created_at` against a reconciliation pass's DB-clock snapshot
+          // instant to narrow the canary gate's lease inventory; a value stamped from the
+          // application clock makes that a CROSS-CLOCK comparison, which is the two-clock bug
+          // design section 3.3 exists to close. Any skew between the app host and the database
+          // would decide whether a lease is inside or outside the watermark.
+          //
+          // `acquiredAt` / `lastUsedAt` / `updatedAt` keep the application clock on purpose:
+          // none of them participates in the watermark comparison, they are read by the warm
+          // reuse and reaper paths that already reason in application time, and moving them
+          // would be an unrelated behaviour change in this unit.
+          //
+          // `environments-lease-created-at-db-clock.integration.test.ts` reds if this line
+          // comes back.
           updatedAt: now,
         })
         .returning();
