@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createE7DistributedRunVerifier,
+  e7VerifyExitCode,
   formatVerifyResult,
   detectHardLeakClasses,
   type E7RunVerifierStore,
@@ -561,5 +562,33 @@ describe("evidence-verifier A — the RESULT line cannot be quoted as capability
     const printed = formatVerifyResult(await verifier.verify({ runId: RUN_ID }));
     expect(printed).toContain("capability: PROVEN (workspace_patch_artifacts=2 task_outputs=3)");
     expect(printed).toContain("RESULT: PASS (mechanism)");
+  });
+});
+
+describe("evidence-verifier A — the --require-capability exit decision", () => {
+  // ★ THIS TABLE EXISTS BECAUSE OF WHAT THIS UNIT IS. Unit A stops a claim from living only in
+  // prose. A `--require-capability` flag whose enforcing branch is exercised by nothing would
+  // reproduce that exact shape one level up: everyone believes it gates the campaign, and
+  // nothing checks that it does. The decision is pure, so all four rows are reachable without
+  // a live DATABASE_URL.
+  const cases: ReadonlyArray<[boolean, boolean, boolean, 0 | 1 | 3]> = [
+    // ok,  capabilityProven, requireCapability, expected
+    [true, true, false, 0],
+    [true, false, false, 0], // today's real run: mechanism green, capability unproven, not required
+    [true, false, true, 3], // ★ the branch the campaign flips at Unit F
+    [false, false, true, 1], // a mechanism failure OUTRANKS the capability flag
+  ];
+
+  for (const [ok, capabilityProven, requireCapability, expected] of cases) {
+    it(`ok=${ok} capabilityProven=${capabilityProven} requireCapability=${requireCapability} -> exit ${expected}`, () => {
+      expect(e7VerifyExitCode({ ok, capabilityProven }, requireCapability)).toBe(expected);
+    });
+  }
+
+  it("3 is distinct from 1, so a campaign script can tell the two failures apart", () => {
+    // "the journey did not happen" and "the journey happened and proved nothing about the
+    // agent" call for different next steps; collapsing them would hide the second.
+    expect(e7VerifyExitCode({ ok: false, capabilityProven: false }, true)).toBe(1);
+    expect(e7VerifyExitCode({ ok: true, capabilityProven: false }, true)).toBe(3);
   });
 });

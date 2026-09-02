@@ -528,6 +528,30 @@ export function createE7DistributedRunVerifier(deps: {
 }
 
 /**
+ * The CLI's exit decision, as a pure function so every branch is reachable in a test.
+ *
+ * ★ EXTRACTED BECAUSE OF WHAT THIS UNIT IS. Unit A exists to stop a claim from living only in
+ * prose. Shipping `--require-capability` whose enforcing branch is exercised by nothing would
+ * reproduce that exact shape one level up: a flag everyone believes gates the campaign, and no
+ * check that it does. Inline in `main()` the branch needs a live DATABASE_URL to reach.
+ *
+ *   0  mechanism corroborated (and capability proven, or not required)
+ *   1  mechanism NOT corroborated -- the run does not prove the distributed journey
+ *   3  mechanism corroborated but capability unproven, AND the operator asked for it
+ *
+ * 3 rather than 1 so a campaign script can tell "the journey did not happen" apart from "the
+ * journey happened and proved nothing about the agent" -- they call for different next steps.
+ */
+export function e7VerifyExitCode(
+  result: Pick<E7VerifyResult, "ok" | "capabilityProven">,
+  requireCapability: boolean,
+): 0 | 1 | 3 {
+  if (!result.ok) return 1;
+  if (requireCapability && !result.capabilityProven) return 3;
+  return 0;
+}
+
+/**
  * Pure printer for the CLI — per-clause verdict + observed. Prints SHAPE only, never a raw secret.
  *
  * ★ The RESULT line is NEVER unqualified. It used to read "PASS — distributed journey

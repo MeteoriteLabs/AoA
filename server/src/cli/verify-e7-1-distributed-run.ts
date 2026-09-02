@@ -48,7 +48,11 @@
 // never a raw matched substring.
 
 import { createDb } from "@armyofagents/db";
-import { createE7DistributedRunVerifier, formatVerifyResult } from "../services/e7-distributed-run-verifier.js";
+import {
+  createE7DistributedRunVerifier,
+  e7VerifyExitCode,
+  formatVerifyResult,
+} from "../services/e7-distributed-run-verifier.js";
 import { createDrizzleE7RunVerifierStore } from "../services/e7-distributed-run-verifier-store.js";
 
 function parseArgs(argv: readonly string[]): {
@@ -104,16 +108,15 @@ async function main(): Promise<void> {
   console.log(formatVerifyResult(result));
   console.log(`\nverdict-json: ${JSON.stringify(result)}`);
 
-  if (!result.ok) {
-    process.exit(1);
+  // The decision is a PURE function (`e7VerifyExitCode`) so every branch is reachable in a
+  // test; reaching them here would need a live DATABASE_URL. This block only reports.
+  const code = e7VerifyExitCode(result, requireCapability);
+  if (code === 3) {
+    console.error(
+      "--require-capability: this run does NOT prove the agent could work (see the capability clause above)",
+    );
   }
-  // The mechanism is corroborated. Capability is a SEPARATE verdict, enforced only when
-  // the operator opts in — see the header for why that is not the default today.
-  if (requireCapability && !result.capabilityProven) {
-    console.error("--require-capability: this run does NOT prove the agent could work (see the capability clause above)");
-    process.exit(3);
-  }
-  process.exit(0);
+  process.exit(code);
 }
 
 void main().catch((error) => {
