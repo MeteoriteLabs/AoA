@@ -1,6 +1,9 @@
 # BLOCKER E-2 + E-3 — what should CLOSURE mean?
 
-> **Status: DESIGN, revision 3 — reviewed, semantics settled, NOT yet built.**
+> **Status: DESIGN, revision 4 — §4.3's watermark mechanism is WITHDRAWN as a fail-open. NOT built.**
+> A 72-agent terrain sweep (183 cited facts, 67 hazards raised, **48 confirmed**) established that the
+> optional-watermark-parameter shape §4.3 proposed would make the gate **ADMIT an unreconciled fleet**.
+> §10 records what was confirmed and replaces the mechanism. Read §10 before §4.
 > Now owned by **MIG-010**, with the two defects filed as **E10-F002** (E-2) and **E7-F004** (E-3).
 > §9 settles the two open semantics the review left (F3 freshness, F4 unattributable).
 > Revision 1 survived its own review on the *diagnosis* and failed it on the *remedy*: three of
@@ -420,3 +423,104 @@ not left to be discovered by the next reader as a lie the code tells about itsel
 `CanaryPreflightRefusalReason` gains **`reconciliation_stale`**. It does not gain a reason for the
 unattributable case: that already refuses as `reconciliation_incomplete` with `unattributable` in the
 detail, which is correct — it IS incomplete. §9.2 gives it a remedy, not a new verdict.
+
+---
+
+## 10. Revision 4 — the terrain sweep, and why §4.3 is withdrawn
+
+Five lenses, 72 agents, every hazard put through a citation check: **67 raised, 48 confirmed, 19
+rejected**. Two confirmed BLOCKING and nine HIGH. The diagnosis in §1-§3 survived untouched. **The
+remedy in §4.3 did not, and it failed in the worst possible direction.**
+
+### 10.1 ★★★ The withdrawn mechanism: "NULL watermark means no narrowing" OPENS the gate
+
+§4.3 says a NULL watermark means no narrowing and therefore "fails closed, unchanged from today".
+**That is backwards on two independent counts, and either one alone admits an unreconciled fleet.**
+
+**(a) SQL three-valued logic inverts it.** `l.created_at <= p_watermark` with a NULL watermark
+evaluates to NULL, which `WHERE` treats as not-true. The function returns **zero rows** — not all
+rows. NULL means *total* narrowing, the exact opposite of the claim.
+
+**(b) An empty inventory SATISFIES closure.** `assertClosure` derives `unmapped` by iterating
+`inventoryKeys` only (`legacy-resource-reconciliation.ts:280-283`) and returns `ok: true` when that
+loop finds nothing (`:289-295`). `canary-preflight.ts` has no minimum-inventory guard; its only
+emptiness check is on the company list (`:131`).
+
+Composed: a NULL watermark zeroes the lease inventory, closure is vacuously satisfied, the key
+generation is current — **the gate ADMITS and the canary transfers live execution ownership over an
+entirely unreconciled fleet.** Silent: no error, no refusal reason, no log. It is one omitted
+OR-arm away (`WHERE created_at <= p_wm` instead of `WHERE p_wm IS NULL OR created_at <= p_wm`), and
+**no existing test would catch it** — every fake-store test supplies leases directly and never
+exercises the SQL.
+
+Worse than the wall it replaces. Withdrawn.
+
+### 10.2 ★★★ And "optional" is unpinnable: the certificate is blind to argument DEFAULTs
+
+Even with the OR-arm written correctly, an **optional** parameter cannot be certified. The catalog
+query selects `proname`, `pg_get_function_identity_arguments`, `proowner`, `proconfig`,
+`proleakproof`, `prosrc`, `proacl` — and nothing else
+(`distributed-execution-databases.ts:404-431`). `pg_get_function_identity_arguments` omits default
+expressions **by definition**, `bodySha256` hashes `prosrc` (the body between the `$$` delimiters
+only), and `proargdefaults` appears nowhere in the repository.
+
+**Measured, not reasoned:** a `CREATE OR REPLACE` that changes only the DEFAULT — `DEFAULT NULL`
+becoming `DEFAULT '-infinity'::timestamptz` — leaves `identity_arguments`, `proconfig`, `proacl`,
+`proleakproof` and `sha256(prosrc)` **byte-identical**. All eight certificate checks pass. Every
+company's inventory goes empty and the gate answers `ok: true` for an unreconciled fleet.
+
+★ **A fail-open with a passing certificate is precisely what the manifest exists to prevent, and the
+one field §4 proposed to add is the field that can do it.** A second measured result compounds it: a
+two-arg call against a two-arg function *and* a three-arg-with-DEFAULT overload raises **42725
+`function ... is not unique`**, which `canary-preflight.ts:195-204` folds into `preflight_error` —
+restoring the unfalsifiable "I could not read" that Unit 1.6 existed to remove.
+
+### 10.3 The replacement
+
+1. **The watermark parameter is REQUIRED, with no DEFAULT.** Unpinnable axes do not go into a
+   certified surface. The old two-arg signature is DROPped in the same migration (§10.2's 42725
+   result makes this mandatory, not hygienic).
+2. **The body raises on a NULL watermark** rather than returning an empty set. A NULL here is a
+   programming error, not a policy state, and the reachable path never produces one because…
+3. **…the gate refuses BEFORE it calls.** No stored watermark ⇒ `reconciliation_stale` ⇒ refuse. The
+   definer function is never reached without a value, so the loud-failure arm stays unreachable and
+   `preflight_error` stays out of the reachable path.
+4. **The function returns the narrowed ids AND the unnarrowed total.** `total > 0 && narrowed == 0`
+   means "the pass predates the entire current fleet" — refuse `reconciliation_stale`. This closes
+   §10.1(b) without touching `assertClosure`, and it is a *derived* staleness signal rather than only
+   the §9.1 constant. Both are kept: the constant bounds time, this bounds churn.
+5. **`identityArguments` must read `timestamp with time zone`, not `timestamptz`** — the catalog
+   renders the former and the manifest is compared with exact equality. Confirmed BLOCKING: a
+   `timestamptz` entry is a fatal every-boot failure.
+
+### 10.4 Other confirmed hazards that change the plan
+
+- **HIGH — Option R is mandatory, not preferred.** The pass cannot run as `aoa_operator` at all
+  until the CAS write is removed: `OPERATOR_SERVING_RELATIONS` grants no write on
+  `environment_leases`. §4.1 offered R as the better of two options; the terrain says it is the only
+  one that runs.
+- **BLOCKING — §9.2's unattributable remedy is not optional.** `unattributable` is reachable through
+  **ordinary agent deletion**: the owner FKs are nullable, so deleting an agent turns a classifiable
+  lease into an unclassifiable one and bricks the gate permanently with no remedy in code.
+- **HIGH — storage must be a separate marker.** A watermark COLUMN on
+  `legacy_resource_reconciliation` cannot express "latest completed pass"; a synthetic ROW silently
+  enters two gate predicates; and a per-record watermark **newly bricks companies that pass the gate
+  today**. All three storage shortcuts are out.
+- **HIGH — an arity change on `_leases` reds call sites a `(uuid, uuid)` grep cannot find**, and the
+  "lists all three" shape test is prefix-matched so a fourth function either reds it spuriously or
+  slips past. The Unit 1.7 lesson repeats exactly.
+- **HIGH — `bodySha256` must be recomputed from a real database.** It is
+  `encode(sha256(convert_to(replace(prosrc, chr(13), ''), 'UTF8')), 'hex')` — CR-stripped because
+  `packages/db/src/migrations/` carries no `eol=lf` pin. A wrong-but-well-formed hash passes every
+  check runnable on the dev machine and then **bricks every boot**.
+- **HIGH — nothing mechanical notices if the new caller is removed or was never reachable.**
+  `gate-clause-wiring.json` is the mechanism that must be extended, or E10-F002 recurs in the fix.
+- **HIGH — the Unit 2.2 repro tests must invert, and the floor guard is trivially satisfied by a
+  swap.** The 1497 bump makes a bare deletion visible; it does not make a delete-plus-add visible.
+  Naming those tests in a pinned inventory is the only shape that actually holds.
+
+### 10.5 What the sweep did NOT overturn
+
+§1 (the terrain), §2 (the question), §3.1 and §3.2 (the two rejected answers), §9.1's freshness
+bound and §9.2's remedy shape. The diagnosis has now survived two adversarial rounds; every failure
+has been in the *remedy*, and both times in a mechanism that looked obviously safe.
