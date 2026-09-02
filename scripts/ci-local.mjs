@@ -48,14 +48,24 @@ const CANNOT_RUN_HERE = {
  * these are runnable WHEN the environment exists, so the check is dynamic -- and reporting
  * "FAIL" for a missing service would be a lie that trains people to ignore this runner.
  */
-const NEEDS_ENV = {
-  migrations: {
+const NEEDS_ENV = [
+  {
+    // ★ PER-STEP, NOT PER-JOB — and that distinction cost a red CI run. Skipping the whole
+    // `migrations` job for want of a DATABASE_URL also skipped its journal/snapshot CHAIN
+    // assertion, which is inline python and needs no database. A broken `prevId` chain
+    // therefore passed locally and failed on GitHub: exactly the round trip this exists to
+    // remove. Gate the step that needs the environment; run everything else.
+    match: /db:migrate|drizzle-kit (migrate|push)/,
     ok: () => Boolean(process.env.DATABASE_URL),
-    why: "needs DATABASE_URL pointing at a postgres CI supplies as a service container. "
-      + "Note the migrations themselves ARE exercised locally: every *.integration.test.ts "
-      + "using startMigratedDatabase applies the full folder to a fresh embedded database.",
+    why: "needs DATABASE_URL pointing at the postgres CI supplies as a service container",
   },
-};
+];
+
+/** The reason a single STEP cannot run here, or undefined if it can. */
+function envSkipReason(cmd) {
+  const rule = NEEDS_ENV.find((r) => r.match.test(cmd));
+  return rule && !rule.ok() ? rule.why : undefined;
+}
 
 /** The default fast gate: everything cheap that catches most red CI. */
 const FAST_JOBS = ["policy", "brand-check", "worker-protocol-contract-bytes", "lint"];
@@ -132,10 +142,10 @@ function main() {
   if (argv.includes("--list")) {
     console.log("jobs in pr.yml:\n");
     for (const [name, steps] of jobs) {
-      const env = NEEDS_ENV[name];
-      const why = CANNOT_RUN_HERE[name] ?? (env && !env.ok() ? env.why : undefined);
+      const why = CANNOT_RUN_HERE[name];
+      const gated = steps.filter((c) => envSkipReason(c)).length;
       const mark = why ? "SKIP" : steps.length ? " RUN" : "  --";
-      console.log(`  ${mark}  ${name.padEnd(32)} ${steps.length} step(s)${why ? `  — ${why}` : ""}`);
+      console.log(`  ${mark}  ${name.padEnd(32)} ${steps.length} step(s)${why ? `  — ${why}` : gated ? `  (${gated} gated on env)` : ""}`);
     }
     console.log("\nfast gate:", FAST_JOBS.join(", "));
     return;
@@ -159,11 +169,6 @@ function main() {
       skipped.push({ name, why: CANNOT_RUN_HERE[name] });
       continue;
     }
-    const env = NEEDS_ENV[name];
-    if (env && !env.ok()) {
-      skipped.push({ name, why: env.why });
-      continue;
-    }
     const steps = jobs.get(name);
     if (!steps || steps.length === 0) {
       skipped.push({ name, why: "no runnable steps found in pr.yml" });
@@ -173,6 +178,14 @@ function main() {
     let jobFailed = false;
     let jobMs = 0;
     for (const step of steps) {
+      const envWhy = envSkipReason(step);
+      if (envWhy) {
+        console.log(`
+  - ${step}`);
+        console.log(`    SKIP — ${envWhy}`);
+        skipped.push({ name: `${name}:step`, why: `${step} — ${envWhy}` });
+        continue;
+      }
       console.log(`\n  $ ${step}`);
       const { code, ms } = run(step);
       jobMs += ms;
