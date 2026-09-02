@@ -27,7 +27,7 @@
  * Runtime imports: `@armyofagents/worker-protocol` + relative modules — the E4-D01 boundary.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   artifactDownloadGrantV1Schema,
@@ -110,6 +110,22 @@ export interface CreateStagedInputResolverDeps {
   readonly newProofId?: () => string;
 }
 
+/**
+ * A DETERMINISTIC RFC-4122-shaped uuid from a seed.
+ *
+ * The frozen `idempotencyKeySchema` is `z.string().uuid()`, so the key must be a uuid — but a
+ * RANDOM one would defeat the point: a retried grant for the same file must present the SAME
+ * key or the control plane cannot recognise the replay. Seeded on (leaseId, artifactId),
+ * which is exactly the identity being retried.
+ */
+function deterministicUuid(seed: string): string {
+  const bytes = Buffer.from(createHash("sha256").update(seed).digest().subarray(0, 16));
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function defaultProofId(): string {
   return `prf_${randomUUID().replace(/-/g, "")}${randomUUID().replace(/-/g, "").slice(0, 8)}`;
 }
@@ -130,7 +146,7 @@ function buildGrantRequest(
     issuedAt,
     nonce: randomUUID(),
     audience: "worker_run" as const,
-    idempotencyKey: `stage-${fence.leaseId}-${pointer.artifactId}`,
+    idempotencyKey: deterministicUuid(`staged-input:${fence.leaseId}:${pointer.artifactId}`),
     body: {
       protocolVersion: 1 as const,
       operation: "download" as const,
