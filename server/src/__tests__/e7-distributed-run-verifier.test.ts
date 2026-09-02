@@ -418,3 +418,52 @@ describe("evidence-verifier A — expected org/company assertion + read-only sur
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// E7-F003 — the capability blind spot, PINNED ON PURPOSE.
+//
+// ★ DO NOT "FIX" THIS DESCRIBE BLOCK. It asserts today's behaviour deliberately,
+// exactly as the MIG-010 Unit 2.2 repro did: it is the record of what the verifier
+// could not see. `ok` answers "was the distributed journey corroborated" — the
+// MECHANISM — and a context-free run corroborates that journey perfectly well.
+// Making `ok` false here would be the naive fix CLI-008 Unit A explicitly rejects
+// (`producedArtifacts` is structurally 0 until Unit F ships output capture, so a
+// clause folded into `ok` is a gate nobody can pass — and a permanently-red gate
+// gets bypassed, argued around, or deleted).
+//
+// If this block reddens, someone folded capability into `ok`. Read
+// `docs/replatform/qa/2026-09-02-cli-008-unit-a-verifier-clause-plan.md` §"The
+// design decision" before changing anything.
+// ---------------------------------------------------------------------------
+describe("evidence-verifier A — E7-F003 blind spot (pinned: today's verifier blesses a context-free run)", () => {
+  // A run whose sandbox agent had no tools, no identity, no workspace and a
+  // context-free prompt, and whose CLI exited 127 — yet a worker leased it,
+  // started it, terminalized it, and the projector applied the receipt. Every
+  // existing clause is satisfied; NOTHING the agent did reached AoA.
+  function contextFreeRunStore() {
+    return goldenStore({
+      runRow: run({ status: "failed", errorCode: "nonzero_exit", error: "claude: command not found (exit 127)" }),
+      attemptRow: attempt({ status: "failed" }),
+      leases: [lease({ status: "released" })],
+      events: [event("attempt_started"), event("terminal")],
+      produced: { workspacePatchArtifacts: 0, taskOutputs: 0 },
+    });
+  }
+
+  it("a context-free run that produced NOTHING satisfies every clause and PASSES (this is the defect)", async () => {
+    const verifier = createE7DistributedRunVerifier({ store: contextFreeRunStore() });
+    const result = await verifier.verify({ runId: RUN_ID });
+    expect(result.ok).toBe(true);
+    expect(result.failures).toEqual([]);
+  });
+
+  it("the produced-output counts are VISIBLE and INERT — the signal exists and changes nothing", async () => {
+    const verifier = createE7DistributedRunVerifier({ store: contextFreeRunStore() });
+    const result = await verifier.verify({ runId: RUN_ID });
+    // The pairing IS the finding: the verifier computed the number that would
+    // catch this, reported it, and let the run through anyway.
+    expect(result.observed.producedArtifacts).toEqual({ workspacePatchArtifacts: 0, taskOutputs: 0 });
+    expect(result.failures).toEqual([]);
+    expect(result.ok).toBe(true);
+  });
+});
