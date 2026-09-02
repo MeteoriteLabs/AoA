@@ -420,3 +420,33 @@ make the pass's verdict read from the same persisted records the gate does, so t
 construction. MIG-010 owns choosing.
 
 **Not a blocker for E7-1.** E7-1 is gated by E7-F003 and the execution substrate.
+
+## E7-F008 — A task whose assembled prompt exceeds 8,192 characters cannot run distributed, and the ceiling is per-ARGUMENT
+
+**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-design.md`, no result doc)
+**Severity:** MEDIUM
+**Filed:** 2026-09-03, by the Unit B channel sweep, which measured it rather than inferring it.
+
+**What.** `buildTaskRunBatchWorkload` refuses with `prompt_too_large` when the assembled task markdown
+exceeds `FROZEN_MAX_ARG_CHARS = 8192` (`task-run-batch-workload.ts:80, :237-241`), mirroring the
+frozen schema `args: z.array(z.string().max(8192)).max(256)` (`worker-protocol/src/job.ts:290-292`).
+It is a **refusal, not a truncation** — which is the right direction, but it means such a task simply
+cannot run distributed.
+
+**Measured.** Binary-searching the description length through the real
+`buildCurrentTaskMarkdown` → `buildTaskRunBatchWorkload`: minimal framing accepts **7,736** description
+characters and refuses 7,737; realistic framing (8-char identifier, 60-char title) accepts 7,676; plus
+one wake-comment section, **7,437**. The framing overhead is a variable 450-760+ characters, which is
+the whole explanation of the "~7.4 KB" figure that circulated before this was measured. The repo's own
+audit cap `MAX_PROMPT_SNAPSHOT_CHARS = 16_000` is **2×** the limit, and its comment says real prompts
+do exceed it.
+
+**★ The ceiling is PER ARGUMENT, and that changes the remedy.** The protocol allows 8 KiB per element
+and ~64 KiB per job. A chunked shape (`sh -c '<script>' _ c1..c10`) carries **65,306 prompt characters
+across 11 arguments** at exactly the 65,536-byte submission bound — **8.0× today's usable capacity** —
+and the resulting `shellJoin`'d string is 65,464 bytes, still half of Linux `MAX_ARG_STRLEN`
+(131,072). So this is fixable **without** any new channel, and independently of Unit B.
+
+**Why it is filed separately from E7-F003.** F003 is about what the sandbox *lacks* (tools, context,
+workspace, output). This is a live refusal on the path that exists: a sufficiently detailed task fails
+to dispatch today, and the fix is a different shape from anything in C–F.

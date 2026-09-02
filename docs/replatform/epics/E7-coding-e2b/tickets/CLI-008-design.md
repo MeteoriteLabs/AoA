@@ -76,7 +76,26 @@ It is the opposite of progress toward a green campaign, and should be reported t
 
 ---
 
-## 3. ★★★ The keystone decision, and the hard constraint that shapes it
+## 3. ★★★ The keystone decision — **DECIDED 2026-09-03, and this section was WRONG**
+
+> **Superseded by [`qa/2026-09-03-cli-008-unit-b-channel-decision.md`](../../../qa/2026-09-03-cli-008-unit-b-channel-decision.md).**
+> A 40-agent sweep measured **both** load-bearing claims below to be false:
+>
+> 1. *"The FROZEN `SandboxProvider` port has no file-staging operation"* — this **conflates two
+>    objects**. `capabilities.ts` defines a wire/registry VOCABULARY; the port is
+>    `worker-daemon/src/supervisor/provider.ts:339`, in a package that is **not frozen**, and it has
+>    **already grown to thirteen methods plus a mode field** (`digestArtifact`, `exportArtifact`,
+>    `artifactExportMode` — shipped as DAT-009 slice 1, `d5885053f`, with the frozen package
+>    untouched).
+> 2. *"argv is bounded … therefore the channel must not be argv-shaped"* — the cliff is **8,192
+>    CHARACTERS PER ARGUMENT** and ~64 KiB per job, not 8 KiB per job. Chunked argv carries **65,306
+>    prompt characters**, 8× today's capacity. The bound is a property of `buildArgsFor`'s
+>    one-positional shape, not of the protocol.
+>
+> **DECISION: `stageFiles` as a non-frozen port method + a local `fileStagingMode`** — the exact
+> DAT-009 shape. The text below is retained as the record of what was believed before it was measured.
+
+### (superseded) The constraint as originally stated
 
 **Every remaining gap is the same problem wearing six hats: there is no channel into the sandbox
 except argv.**
@@ -109,7 +128,7 @@ Sizes are the sweep's, corrected by a verification pass. They are indicative, no
 | Unit | Size | What |
 |---|---|---|
 | **A — the judge** | **S** | ✅ **DONE 2026-09-02** (§2). `producedArtifacts` promoted to a `capabilityProven` dimension separate from `ok`, pinned fixture, `--require-capability` off by default. **`--model` in the argv was NOT done** and stays open |
-| **B — the channel** | **M** (decision) | Decide and prove the non-argv inbound channel. Blocks C–F |
+| **B — the channel** | **M** (decision) | ✅ **DECIDED 2026-09-03** — `stageFiles` on the NON-FROZEN port + a local `fileStagingMode`, the DAT-009 shape; the frozen vocabulary is untouched. See `qa/2026-09-03-cli-008-unit-b-channel-decision.md`. Building it is the next unit |
 | **C — tools** | **L–XL** | A brokered HTTP `aoa` MCP config plus its env vars, and a run-identity credential as a second secret handle, so `mcp__aoa__*` is actually callable |
 | **D — context** | **M** | The instructions bundle reaches the sandbox (`--append-system-prompt-file`), and the prompt stops being a positional |
 | **E — workspace** | **XL** | A repository to work in. `workspaceV1Schema` requires a `manifestArtifactId` that has **zero producers**; `buildWorkspaceManifest` walks a LOCAL filesystem and cannot be pointed at an E2B sandbox |

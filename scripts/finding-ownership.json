@@ -64,6 +64,12 @@
       "ticket": "MIG-010",
       "ownerStillOpen": "MIG-010 remains a filed scoping stub (ticket file + #### MIG-010 program node, NO result doc) and DELIBERATELY still has none: it closed E10-F002, E7-F004, E7-F005 and now E7-F006, but adding a -result.md would retire it as an owner exactly when this successor finding needs one. The divergence is between the pass verdict and the gate verdict over the same crosswalk, which is MIG-010 terrain and nobody else's. The fix is not settled (three non-equivalent shapes are on the record in the finding); choosing is the ticket work.",
       "reason": "reconcileCompanyLegacyResources computes closure over records it builds IN MEMORY; canary-preflight recomputes it over records PERSISTED in the append-only crosswalk. Delete an agent AFTER its lease was already recorded as mapped and the two disagree: onConflictDoNothing means the newly-unattributable record is never written, so the pass refuses forever while the gate opens. MEDIUM: the gate is arguably right (the record was true when written and the resource is unchanged), but the operator pass becomes permanently red with no command that can make it green, and the Unit 2.5 remedy cannot touch it - there is no unattributable record to resolve, and widening it to rewrite a mapped record is the forgeable transition design section 9.2 forbids. Measured on a real database in mig-010-unit-2-5-unattributable.integration.test.ts, not reasoned."
+    },
+    "E7-F008": {
+      "status": "owned",
+      "ticket": "CLI-008",
+      "ownerStillOpen": "CLI-008 is a filed scoping stub (ticket file + #### CLI-008 program node, no result doc) and already owns E7-F003. This is the same argv surface CLI-008 unit D touches when the prompt stops being a positional, so splitting it to another ticket would split one edit across two owners. Fixable independently of the Unit B channel decision: chunked argv gives 8x without a new channel.",
+      "reason": "buildTaskRunBatchWorkload refuses prompt_too_large above FROZEN_MAX_ARG_CHARS = 8192, mirroring the frozen schema's per-element cap, so a task whose assembled markdown exceeds ~7.4-7.7k description characters cannot dispatch distributed at all. Measured, not inferred. MEDIUM: a refusal rather than a truncation, and the protocol allows ~64 KiB per job across elements, so chunking is 8x headroom."
     }
   }
 }
