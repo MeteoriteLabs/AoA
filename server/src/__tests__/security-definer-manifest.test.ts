@@ -32,30 +32,49 @@ function manifestKeys(): Set<string> {
   );
 }
 
+/**
+ * The WHOLE manifest, name by name and signature by signature.
+ *
+ * ★ THIS WAS PREFIX-MATCHED, AND MIG-010 UNIT 2.3 WIDENED IT DELIBERATELY. The test used to
+ * filter on `name.startsWith("canary_preflight_evidence")` and assert a three-name array. A
+ * fourth definer function with a different prefix therefore did not red it — which is another
+ * way of saying it was not covered BY it. Unit 2.3 adds exactly such a function
+ * (`legacy_reconciliation_leases`), so the choice was: add a sibling assertion for the new
+ * name, or pin the whole manifest.
+ *
+ * A sibling assertion leaves the hole open one function later — a FIFTH name with yet another
+ * prefix would slip past both, which is the same recurrence class E10-F002 itself is. Pinning
+ * the whole manifest closes the "slips past" direction permanently: every definer function
+ * must be enrolled here deliberately, with its signature, or this test reds.
+ *
+ * It reds on ANY manifest addition, and that is the intent, not a cost — the identity is the
+ * thing `pg_get_function_identity_arguments` is compared against at boot with EXACT equality
+ * (parameter names included), and a grep-driven sweep over "(uuid, uuid)" cannot find it.
+ */
+const EXPECTED_MANIFEST_IDENTITIES: Readonly<Record<string, string>> = {
+  "public.canary_preflight_evidence_companies": "p_organization_id uuid",
+  "public.canary_preflight_evidence_leases": "p_organization_id uuid, p_company_id uuid",
+  "public.canary_preflight_evidence_scalars":
+    "p_organization_id uuid, p_company_id uuid, p_default_env_id uuid",
+  "public.legacy_reconciliation_leases": "p_organization_id uuid, p_company_id uuid",
+};
+
 describe("SECURITY DEFINER manifest — shape", () => {
-  it("lists all three canary preflight evidence functions, once each", () => {
-    const hits = SECURITY_DEFINER_FUNCTION_MANIFEST.filter((fn) =>
-      fn.name.startsWith("canary_preflight_evidence"),
+  it("pins EVERY manifested function's identity, once each — not just one prefix", () => {
+    const actual = Object.fromEntries(
+      SECURITY_DEFINER_FUNCTION_MANIFEST.map((fn) => [
+        `${fn.schema}.${fn.name}`,
+        fn.identityArguments,
+      ]),
     );
-    // ROUND 7: two functions became three, and every one is organization-bound. This test
-    // hardcodes the set deliberately -- a grep-driven sweep over "(uuid, uuid)" cannot find
-    // it, so it is the one that catches a half-finished rename.
-    expect(hits.map((fn) => fn.name).sort()).toEqual([
-      "canary_preflight_evidence_companies",
-      "canary_preflight_evidence_leases",
-      "canary_preflight_evidence_scalars",
-    ]);
-    expect(hits.find((f) => f.name.endsWith("_companies"))?.identityArguments).toBe(
-      "p_organization_id uuid",
+    // One assertion over the whole set: it catches an addition, a removal, a half-finished
+    // rename, and a signature drift, in both directions.
+    expect(actual).toEqual(EXPECTED_MANIFEST_IDENTITIES);
+    expect(SECURITY_DEFINER_FUNCTION_MANIFEST.length).toBe(
+      Object.keys(EXPECTED_MANIFEST_IDENTITIES).length,
     );
-    expect(hits.find((f) => f.name.endsWith("_leases"))?.identityArguments).toBe(
-      "p_organization_id uuid, p_company_id uuid",
-    );
-    expect(hits.find((f) => f.name.endsWith("_scalars"))?.identityArguments).toBe(
-      "p_organization_id uuid, p_company_id uuid, p_default_env_id uuid",
-    );
-    // The boundary: EXECUTE must be operator-only on all three.
-    for (const fn of hits) {
+    // The boundary: EXECUTE must be operator-only on every one of them.
+    for (const fn of SECURITY_DEFINER_FUNCTION_MANIFEST) {
       expect(fn.executeGrantees, fn.name).toEqual(["aoa_operator"]);
     }
   });

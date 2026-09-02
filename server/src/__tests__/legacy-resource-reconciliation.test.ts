@@ -8,9 +8,12 @@ import {
   buildPlatformDefaultEnvRecord,
   assertClosure,
   reconcileCompanyLegacyResources,
+  reconcileOrganizationLegacyResources,
   type LegacyLeaseInput,
   type LegacyReconciliationStore,
 } from "../services/legacy-resource-reconciliation.js";
+
+const ORG = "org-1";
 
 const baseLease = (over: Partial<LegacyLeaseInput> = {}): LegacyLeaseInput => ({
   id: "lease-1",
@@ -180,20 +183,22 @@ function makeStore(
   leases: LegacyLeaseInput[],
   opts: {
     platformDefaultEnvId?: string | null;
-    pausedClaim?: (leaseId: string) => boolean;
     keyGeneration?: string | null;
+    companyIds?: readonly string[];
   } = {},
 ): LegacyReconciliationStore & { inserted: Array<{ resourceKey: string; disposition: string }> } {
   const inserted: Array<{ resourceKey: string; disposition: string }> = [];
   const seen = new Set<string>();
   return {
     inserted,
+    listOrganizationCompanyIds: async () => opts.companyIds ?? ["co-1"],
     listLeases: async () => leases,
     platformDefaultEnv: async () =>
       opts.platformDefaultEnvId ? { environmentId: opts.platformDefaultEnvId } : null,
     currentKeyGeneration: async () => opts.keyGeneration ?? null,
-    casClaimPaused: async (leaseId: string) =>
-      opts.pausedClaim ? opts.pausedClaim(leaseId) : true,
+    // `casClaimPaused` was here (with a `pausedClaim` knob to make it lose). Option R
+    // removed the member from `LegacyReconciliationStore` entirely, so a fake that still
+    // offered it would be modelling a seam that no longer exists.
     insertRecordIfAbsent: async (record) => {
       if (seen.has(record.resourceKey)) return false;
       seen.add(record.resourceKey);
@@ -210,14 +215,22 @@ describe("MIG-008 reconciler pass", () => {
       baseLease({ id: "l-b", status: "released", providerLeaseId: null }),
     ];
     const store = makeStore(leases, { platformDefaultEnvId: "env-1" });
-    const result = await reconcileCompanyLegacyResources("co-1", { store });
+    const result = await reconcileCompanyLegacyResources(ORG, "co-1", { store });
     expect(result.closure.ok).toBe(true);
     expect(store.inserted.map((r) => r.resourceKey).sort()).toEqual(
       ["l-a", "l-b", "platform-default-env:env-1"].sort(),
     );
   });
 
-  it("claims a paused row via the status='paused' CAS and no-ops when the resume wins", async () => {
+  // ★ OPTION R (MIG-010 Unit 2.3) INVERTED THIS PAIR. There were two cases here — "the CAS
+  // is lost, record nothing, report skippedResumed" and "the CAS is won, record it
+  // terminally". Both described a compare-and-swap that no longer exists: it was an UPDATE
+  // on `environment_leases`, and `aoa_operator` holds no write grant there, so the pass
+  // could not run at all while it was in the code path.
+  //
+  // The replacement asserts the property that REPLACED them, rather than deleting a pair of
+  // failures: a paused row is now always inventoried and always recorded, as `mapped`.
+  it("records a paused row as `mapped` — always, with no CAS to lose", async () => {
     const paused = baseLease({
       id: "l-paused",
       status: "paused",
@@ -225,15 +238,25 @@ describe("MIG-008 reconciler pass", () => {
       agentId: "agent-1",
       providerLeaseId: "sbx-p",
     });
-    // CAS loses: a concurrent warm-resume flipped the row to active first.
-    const store = makeStore([paused], { pausedClaim: () => false });
-    const result = await reconcileCompanyLegacyResources("co-1", { store });
-    // The reconciler no-ops on the resumed row — no terminal record synthesized.
-    expect(store.inserted.find((r) => r.resourceKey === "l-paused")).toBeUndefined();
-    expect(result.skippedResumed).toContain("l-paused");
+    const store = makeStore([paused], { keyGeneration: "secret-x:1" });
+    const result = await reconcileCompanyLegacyResources(ORG, "co-1", { store });
+
+    const rec = store.inserted.find((r) => r.resourceKey === "l-paused");
+    // It is RECORDED (the old lost-CAS branch recorded nothing at all) ...
+    expect(rec).toBeDefined();
+    // ... and `mapped`, not `terminal_cleanup`: the pass observes a resumable snapshot, it
+    // does not assert terminality on it.
+    expect(rec?.disposition).toBe("mapped");
+    // And because every lease is now recorded, closure holds over the same inventory —
+    // which is E-3's second asymmetry (a lost CAS leaving an unrecorded row the gate still
+    // counts) closed by construction.
+    expect(result.closure.ok).toBe(true);
+    expect(result.closure.unmapped).toEqual([]);
   });
 
-  it("records the paused row terminally when the CAS is won", async () => {
+  it("keeps the OBSERVED status on a paused record, and carries the distinction in `reason`", () => {
+    // A `mapped` paused row must not read as an active one. The honest status stays on the
+    // record; `reason` is where the difference lives.
     const paused = baseLease({
       id: "l-paused",
       status: "paused",
@@ -241,18 +264,23 @@ describe("MIG-008 reconciler pass", () => {
       agentId: "agent-1",
       providerLeaseId: "sbx-p",
     });
-    const store = makeStore([paused], { pausedClaim: () => true });
-    await reconcileCompanyLegacyResources("co-1", { store });
-    const rec = store.inserted.find((r) => r.resourceKey === "l-paused");
-    expect(rec?.disposition).toBe("terminal_cleanup");
+    const record = buildLeaseRecord(paused, classifyLease(paused), { keyGeneration: null });
+    expect(record.legacyStatus).toBe("paused");
+    expect(record.disposition).toBe("mapped");
+    expect(record.reason).toContain("paused warm snapshot");
+    // NOT the terminal handoff it used to claim, and not CLI-004's either.
+    expect(record.reason).not.toContain("CLI-004");
+    expect(record.cleanupOutcome).toBeNull();
+    // A `mapped` record carries the attribution hash — and only that; never a fence.
+    expect(typeof record.resourceLabelsHash).toBe("string");
   });
 
   it("is idempotent: a second reconcile inserts no duplicate records", async () => {
     const leases = [baseLease({ id: "l-a", status: "active", providerLeaseId: "sbx-a" })];
     const store = makeStore(leases, { platformDefaultEnvId: "env-1" });
-    await reconcileCompanyLegacyResources("co-1", { store });
+    await reconcileCompanyLegacyResources(ORG, "co-1", { store });
     const firstCount = store.inserted.length;
-    await reconcileCompanyLegacyResources("co-1", { store });
+    await reconcileCompanyLegacyResources(ORG, "co-1", { store });
     expect(store.inserted.length).toBe(firstCount);
   });
 
@@ -266,8 +294,61 @@ describe("MIG-008 reconciler pass", () => {
       commanderConversationId: null,
     });
     const store = makeStore([weird], { platformDefaultEnvId: null });
-    const result = await reconcileCompanyLegacyResources("co-1", { store });
+    const result = await reconcileCompanyLegacyResources(ORG, "co-1", { store });
     expect(result.closure.unattributable).toContain("l-weird");
     expect(result.closure.ok).toBe(false);
+  });
+});
+
+// --- the ORGANIZATION fold (MIG-010 Unit 2.3) --------------------------------
+//
+// The pass became org-scoped because every read now goes through an organization-bound
+// SECURITY DEFINER function and `0267` ships no company->org reverse lookup (design §4.2,
+// F1). These pin the fold itself: the unit of closure is still the company, the unit of
+// VERDICT is the organization.
+
+describe("MIG-010 reconcileOrganizationLegacyResources — the org fold", () => {
+  it("folds every company under the organization, and closes only when ALL do", async () => {
+    const store = makeStore([baseLease({ id: "l-a", status: "active", providerLeaseId: "sbx-a" })], {
+      companyIds: ["co-1", "co-2", "co-3"],
+    });
+    const result = await reconcileOrganizationLegacyResources(ORG, { store });
+
+    expect(result.organizationId).toBe(ORG);
+    expect(result.companies.map((c) => c.companyId)).toEqual(["co-1", "co-2", "co-3"]);
+    expect(result.ok).toBe(true);
+  });
+
+  it("one unattributable company closes the WHOLE organization", async () => {
+    // The sibling-company fail-open the gate's org scope exists to prevent: a clean company
+    // must not carry a dirty one across the line.
+    const weird = baseLease({
+      id: "l-weird",
+      status: "active",
+      leasePolicy: "reuse_by_environment",
+      agentId: null,
+      executionWorkspaceId: null,
+      commanderConversationId: null,
+    });
+    const store = makeStore([weird], { companyIds: ["co-1", "co-2"] });
+    const result = await reconcileOrganizationLegacyResources(ORG, { store });
+
+    expect(result.ok).toBe(false);
+    expect(result.unattributableKeys).toContain("l-weird");
+    // It does NOT short-circuit: an operator wants the whole picture, not the first company
+    // alphabetically. Both companies were visited.
+    expect(result.companies).toHaveLength(2);
+  });
+
+  it("an organization with NO companies is NOT closed", async () => {
+    // ★ THE VACUOUS-CLOSURE ARM. `assertClosure` returns ok over an empty inventory, so a
+    // fold written as `every(...)` alone answers `ok: true` for an organization that
+    // reconciled nothing at all — the same shape as the withdrawn watermark's empty-inventory
+    // fail-open (design §10.1(b)). The gate refuses this as `no_companies`; so does the pass.
+    const store = makeStore([], { companyIds: [] });
+    const result = await reconcileOrganizationLegacyResources(ORG, { store });
+
+    expect(result.companies).toEqual([]);
+    expect(result.ok).toBe(false);
   });
 });

@@ -7,8 +7,26 @@
 // E7-F004: the gate re-derives inventory from LIVE `environment_leases` rows, so a lease created
 // after a pass is an unmapped key. On a box with traffic the gate can never close.
 //
-// ★ These tests assert TODAY'S broken behaviour on purpose. When Units 2.3-2.6 land they must be
-// INVERTED, not deleted — a deleted test subtracts a failure instead of proving a fix (DSK-003).
+// ★ These tests assert TODAY'S broken behaviour on purpose. When the units that FIX them land
+// they must be INVERTED, not deleted — a deleted test subtracts a failure instead of proving a
+// fix (DSK-003).
+//
+// ★ UNIT 2.3 HAS LANDED AND DID NOT INVERT THEM. That is deliberate, and it is not an
+// oversight to be corrected by the next reader:
+//
+//   * Every assertion below is STILL TRUE, and still guards. This file seeds its own database
+//     and never runs the reconciliation pass, so the crosswalk is genuinely empty, `unmapped=1`
+//     is genuinely the closure result, and E7-F004's post-pass lease genuinely re-closes the
+//     gate. Inverting an accurate test would delete a live regression guard.
+//   * Unit 2.3 closes E10-F002 — the pass had no caller and could not have run if it had one —
+//     WITHOUT touching the gate. There is no watermark, no `reconciliation_stale` and no change
+//     to `canary-preflight.ts`, so nothing here could have changed. The canary is still shut.
+//   * The INVERTED counterpart now exists alongside, in
+//     `mig-010-unit-2-3-pass.integration.test.ts`: same seed shape, but a real pass runs first,
+//     and the same gate then answers `ok: true`. The pair is the evidence — this file pins what
+//     happens with no pass, that one pins what happens with one.
+//
+// E7-F004 (the post-pass lease) is untouched by 2.3 and is Unit 2.4's to invert.
 //
 // Windows-skipped unless AOA_RUN_WIN_INTEGRATION=1 (Issue #114); Linux CI is the authority.
 

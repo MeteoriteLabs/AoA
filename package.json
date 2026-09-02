@@ -36,6 +36,7 @@
     "oauth:rollback-v2": "tsx scripts/rollback-mcp-oauth-v2.ts",
     "verify:e7-1-distributed-run": "tsx server/src/cli/verify-e7-1-distributed-run.ts",
     "verify:cp-am-keypair": "tsx server/src/cli/verify-cp-am-keypair.ts",
+    "reconcile:legacy-resources": "tsx server/src/cli/reconcile-legacy-resources.ts",
     "db:backup": "./scripts/backup-db.sh",
     "aoa": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",

@@ -120,4 +120,27 @@ export const SECURITY_DEFINER_FUNCTION_MANIFEST: readonly SecurityDefinerFunctio
       "grant is the boundary; the organization predicate is defence in depth. The return type " +
       "structurally cannot carry company_secret_versions.material.",
   },
+  {
+    schema: "public",
+    name: "legacy_reconciliation_leases",
+    identityArguments: "p_organization_id uuid, p_company_id uuid",
+    executeGrantees: ["aoa_operator"],
+    // Both relations the body reads. The owner pin walks each DECLARED relation, so omitting
+    // `public.companies` -- which only appears inside the EXISTS clause -- would not be a
+    // no-op: it would leave that relation's owner unpinned.
+    authorityRelations: ["public.environment_leases", "public.companies"],
+    executionConfig: ['search_path=""'],
+    bodySha256: "4f0fec604c062683446a12f7475a5a2784828f0c9e8c03f8dceb464c3cb5ac3f",
+    rationale:
+      "MIG-010 Unit 2.3 (E10-F002). The CLASSIFICATION read for the legacy reconciliation " +
+      "pass, which aoa_operator cannot perform directly: OPERATOR_SERVING_RELATIONS grants it " +
+      "one crosswalk relation and nothing on environment_leases, so the pass raised 42501 on " +
+      "its first statement. Distinct from canary_preflight_evidence_leases rather than a " +
+      "widening of it: that one projects lease_id only (all the GATE consumes), while the pass " +
+      "must classify and reads eleven columns -- so there is no arity change, no DROP, and no " +
+      "42725 ambiguous-call trap. EXECUTE is aoa_operator ONLY; the binder is the grantee, not " +
+      "the caller-supplied organization parameter. The projection deliberately EXCLUDES " +
+      "environment_leases.metadata, which is secret-bearing at rest, and failure_reason, so " +
+      "the return type structurally cannot carry key material.",
+  },
 ];

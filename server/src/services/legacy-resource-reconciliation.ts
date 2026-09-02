@@ -19,9 +19,34 @@ import { createHash } from "node:crypto";
  * terminal cleanup record; `cleanupStatus='failed'` composes CLI-004's reconcile
  * as the terminal record (no duplicate cleanup path).
  *
- * Paused rows are claimed via the SAME `AND status='paused'` compare-and-swap the
- * warm reaper uses (`expireLeaseIfPaused`), so the reconciler can never race a
- * concurrent warm-resume: the CAS loser no-ops on the resumed row.
+ * ★ OPTION R (MIG-010 Unit 2.3) — THE PASS IS READ-ONLY. It once claimed paused rows
+ * via the same `AND status='paused'` compare-and-swap the warm reaper uses
+ * (`expireLeaseIfPaused`, paused -> expired + `cleanup_status='pending'`). That CAS is
+ * gone, and its removal is a PRECONDITION for the pass running at all, not a
+ * preference: the CAS is an UPDATE on `environment_leases`, and
+ * `OPERATOR_SERVING_RELATIONS` (job-control-legacy-grants.ts:319-321) grants
+ * `aoa_operator` NO write there — nor any read. The pass raised 42501 on its first
+ * statement, so it could not have run with a caller either
+ * (`mig-010-unit-2-3-pass.integration.test.ts`).
+ *
+ * Two consequences worth stating plainly rather than discovering later:
+ *
+ *  1. **A paused snapshot rides a different lifecycle now.** The CAS was not
+ *     bookkeeping — it was a deliberate handoff INTO a running sweeper: `expired` +
+ *     `cleanup_status='pending'` is exactly the predicate `listTerminalUncleanedLeases`
+ *     selects on (warm-sandbox-reaper.ts:291). Left `paused`, the row is no longer in
+ *     that terminal set; it is reclaimed by the warm reaper's own paused paths instead —
+ *     the idle-TTL sweep over `listPausedLeasesOlderThan` and the superseded-key scan
+ *     over `listPausedLeasesWithKeyGeneration` (:234). A real target, already wired, but
+ *     a DIFFERENT latency.
+ *  2. **It is not "CLI-004".** The `delegated_cli004` outcome below names the DISTRIBUTED
+ *     orphan sweeper over labelled provider resources
+ *     (packages/worker-daemon/src/supervisor/reconcile.ts), which never reads
+ *     `environment_leases`. It is not a promise to tear down a legacy lease row.
+ *
+ * The invariant gets STRONGER, not weaker: the pass no longer asserts terminality on a
+ * row that might resume, and no longer destroys warm snapshots as a side effect of being
+ * consulted.
  *
  * This module is deliberately DB-internals-free: it exposes pure classification +
  * record-building + closure helpers and a reconciler pass that drives an injected
@@ -65,8 +90,9 @@ export interface LeaseClassification {
   readonly resourceType: LegacyResourceType | null;
   readonly disposition: ReconciliationDisposition;
   readonly hasLiveHandle: boolean;
-  /** Only a paused live row must be claimed via the status='paused' CAS. */
-  readonly requiresPausedClaim: boolean;
+  // `requiresPausedClaim` lived here. Option R removed the only arm that set it true, and
+  // a field nothing can set is a field nothing reads — the zero-caller shape this unit
+  // exists to close. Removed rather than left pinned to false.
   readonly cleanupOutcome: string | null;
   readonly reason: string;
 }
@@ -102,10 +128,11 @@ function resolveResourceType(lease: LegacyLeaseInput): LegacyResourceType | null
 
 /**
  * Pure classification of one legacy lease into a type + disposition. NEVER
- * synthesizes a fence: a live active row is `mapped` (drain, hash-only); a paused
- * row is `terminal_cleanup` but requires the status='paused' CAS before recording;
- * terminal / no-handle rows are `terminal_cleanup`; an unclassifiable owner shape
- * is `unattributable` (surfaced, never dropped).
+ * synthesizes a fence: a live active row is `mapped` (drain, hash-only); a PAUSED row
+ * is likewise `mapped` since Option R (it still holds a live provider handle and may
+ * resume, so the pass observes it rather than asserting it terminal); terminal /
+ * no-handle rows are `terminal_cleanup`; an unclassifiable owner shape is
+ * `unattributable` (surfaced, never dropped).
  */
 export function classifyLease(lease: LegacyLeaseInput): LeaseClassification {
   const resourceType = resolveResourceType(lease);
@@ -119,7 +146,6 @@ export function classifyLease(lease: LegacyLeaseInput): LeaseClassification {
       resourceType: null,
       disposition: "unattributable",
       hasLiveHandle,
-      requiresPausedClaim: false,
       cleanupOutcome: null,
       reason: "unclassifiable owner shape — surfaced for manual attribution (never dropped)",
     };
@@ -134,24 +160,44 @@ export function classifyLease(lease: LegacyLeaseInput): LeaseClassification {
       resourceType,
       disposition: "mapped",
       hasLiveHandle: true,
-      requiresPausedClaim: false,
       cleanupOutcome: null,
       reason: "active legacy execution — left for drain, no fence synthesized",
     };
   }
 
   if (lease.status === "paused") {
-    // A held warm snapshot: reconciled terminally, but ONLY after the status=
-    // 'paused' CAS claim (so a concurrent warm-resume can never be clobbered).
+    // ★ OPTION R (MIG-010 Unit 2.3). A held warm snapshot is now `mapped` — recorded with
+    // an attribution hash and LEFT ALONE — where it was once `terminal_cleanup` behind a
+    // status='paused' CAS claim. The CAS was an UPDATE on `environment_leases`, which
+    // `aoa_operator` cannot perform, so keeping it meant the pass could not run at all.
+    //
+    // EVERY paused row takes this arm, including one whose `provider_lease_id` is null:
+    // `hasLiveHandle` is reported as computed rather than asserted true. That is deliberate
+    // — a paused row is resumable by definition, and the pass's job here is to OBSERVE it,
+    // not to adjudicate whether its handle is still good. Closure reads only `resourceKey`
+    // and `disposition`, so this cannot change a verdict; what it changes is that the pass
+    // never asserts terminality on a row that might come back.
+    //
+    // WHAT THIS CHANGES, SAID OUT LOUD: the pass no longer flips the row to
+    // `expired` + `cleanup_status='pending'`, which is the predicate
+    // `listTerminalUncleanedLeases` selects on (warm-sandbox-reaper.ts:291). So the
+    // snapshot is no longer swept as terminal; it is reclaimed by the warm reaper's
+    // PAUSED paths instead — idle-TTL (`listPausedLeasesOlderThan`) and the
+    // superseded-key scan (`listPausedLeasesWithKeyGeneration`, :234). Both are real and
+    // already wired; the latency differs. This is NOT handed to "CLI-004", which is the
+    // distributed orphan sweeper over labelled provider resources and never reads
+    // `environment_leases`.
+    //
+    // `legacyStatus` keeps the OBSERVED status ('paused') so the record still says what
+    // was seen and cannot be mistaken for an active row; the distinction rides `reason`.
     return {
       resourceType,
-      disposition: "terminal_cleanup",
+      disposition: "mapped",
       hasLiveHandle,
-      requiresPausedClaim: true,
-      cleanupOutcome: failedCleanup ? "delegated_cli004" : "paused_snapshot_reconciled",
+      cleanupOutcome: null,
       reason: failedCleanup
-        ? "paused warm snapshot with failed cleanup — terminal via CLI-004 reconcile"
-        : "paused warm snapshot — terminal cleanup after status='paused' CAS claim",
+        ? "paused warm snapshot with a failed prior cleanup — observed, left for the warm reaper's paused paths, no fence synthesized"
+        : "paused warm snapshot — observed, left for the warm reaper's paused paths, no fence synthesized",
     };
   }
 
@@ -163,7 +209,6 @@ export function classifyLease(lease: LegacyLeaseInput): LeaseClassification {
     resourceType,
     disposition: "terminal_cleanup",
     hasLiveHandle,
-    requiresPausedClaim: false,
     cleanupOutcome,
     reason: failedCleanup
       ? "failed cleanup — terminal via CLI-004 reconcile composition"
@@ -296,15 +341,30 @@ export function assertClosure(input: {
 
 // --- reconciler pass ---------------------------------------------------------
 
+/**
+ * ★ EVERY MEMBER IS `(organizationId, companyId)` SINCE MIG-010 UNIT 2.3, matching
+ * `CanaryPreflightStore`'s shape. That is not cosmetic symmetry: the owner-owned
+ * SECURITY DEFINER functions these reads go through (`0267`, `0268`) are ALL
+ * organization-bound, and `0267` ships an org->companies lookup and NO company->org
+ * reverse. A company-scoped pass therefore structurally cannot call any of them
+ * (design §4.2, F1).
+ */
 export interface LegacyReconciliationStore {
+  /** Every Company under the Organization — the enumeration the pass now folds over. */
+  listOrganizationCompanyIds(organizationId: string): Promise<readonly string[]>;
   /** All `environment_leases` rows for the company (owner-served). */
-  listLeases(companyId: string): Promise<readonly LegacyLeaseInput[]>;
+  listLeases(organizationId: string, companyId: string): Promise<readonly LegacyLeaseInput[]>;
   /** The materialized platform-default env row id, or null when none exists. */
-  platformDefaultEnv(companyId: string): Promise<{ environmentId: string } | null>;
+  platformDefaultEnv(
+    organizationId: string,
+    companyId: string,
+  ): Promise<{ environmentId: string } | null>;
   /** The current per-company key generation (D3 attribution tag), or null. */
-  currentKeyGeneration(companyId: string): Promise<string | null>;
-  /** Status='paused' CAS claim (paused → expired). true = claimed, false = lost. */
-  casClaimPaused(leaseId: string): Promise<boolean>;
+  currentKeyGeneration(organizationId: string, companyId: string): Promise<string | null>;
+  // `casClaimPaused` lived here. Option R removed it: it was an UPDATE on
+  // `environment_leases`, which `aoa_operator` holds no write grant on, so the pass could
+  // not run while it existed. The only remaining WRITE this store performs is the
+  // append-only crosswalk insert below, on the one relation the operator role is granted.
   /** Append-only insert; false when a record for that resourceKey already exists. */
   insertRecordIfAbsent(record: ReconciliationRecord): Promise<boolean>;
 }
@@ -312,44 +372,55 @@ export interface LegacyReconciliationStore {
 export interface ReconcileResult {
   readonly closure: ClosureResult;
   readonly insertedKeys: readonly string[];
-  readonly skippedResumed: readonly string[];
+  // `skippedResumed` lived here. There is no lost CAS any more, so there is no unrecorded
+  // row — which also closes E-3's second asymmetry (design §1.2(2)) by construction rather
+  // than by a fix: every lease the pass sees now gets a record.
+  readonly unattributableKeys: readonly string[];
+}
+
+/** The org-wide result: one per-company outcome, plus the folded totals. */
+export interface OrganizationReconcileResult {
+  readonly organizationId: string;
+  /** Per-company, in enumeration order. The unit of CLOSURE is still the company. */
+  readonly companies: readonly (ReconcileResult & { readonly companyId: string })[];
+  /** True only when EVERY company closed — the same bar `canary-preflight.ts` applies. */
+  readonly ok: boolean;
+  readonly insertedKeys: readonly string[];
   readonly unattributableKeys: readonly string[];
 }
 
 /**
  * Reconcile one company's legacy E2B leases + platform-default env resource into
- * the append-only crosswalk. Idempotent (append-only insert-if-absent). Paused
- * rows are CAS-claimed; a lost CAS (concurrent resume) no-ops on that row.
+ * the append-only crosswalk. Idempotent (append-only insert-if-absent).
+ *
+ * READ-ONLY against tenant data since Option R: the only write is the crosswalk insert.
+ * A paused row is observed and recorded, never claimed.
+ *
+ * ★ NO LONGER THE ENTRY POINT (MIG-010 Unit 2.3). It stays the unit of CLOSURE — closure
+ * is a per-company property and `canary-preflight.ts` refuses per company — but the pass
+ * is driven org-wide by `reconcileOrganizationLegacyResources` below. Exported for the
+ * unit tests that pin its per-company semantics; production calls the org function.
  */
 export async function reconcileCompanyLegacyResources(
+  organizationId: string,
   companyId: string,
   deps: { store: LegacyReconciliationStore },
 ): Promise<ReconcileResult> {
   const { store } = deps;
   const [leases, platformDefault, keyGeneration] = await Promise.all([
-    store.listLeases(companyId),
-    store.platformDefaultEnv(companyId),
-    store.currentKeyGeneration(companyId),
+    store.listLeases(organizationId, companyId),
+    store.platformDefaultEnv(organizationId, companyId),
+    store.currentKeyGeneration(organizationId, companyId),
   ]);
 
   const inventoryKeys: string[] = [];
   const records: ReconciliationRecord[] = [];
   const insertedKeys: string[] = [];
-  const skippedResumed: string[] = [];
 
   for (const lease of leases) {
     const classification = classifyLease(lease);
-
-    // A paused live row must win the status='paused' CAS before we record a
-    // terminal disposition — else a concurrent warm-resume owns it; no-op.
-    if (classification.requiresPausedClaim) {
-      const claimed = await store.casClaimPaused(lease.id);
-      if (!claimed) {
-        skippedResumed.push(lease.id);
-        continue; // resumed row: not part of this pass's closure inventory
-      }
-    }
-
+    // Option R: no CAS, no `continue`. EVERY lease read is inventoried and recorded, so
+    // the pass's inventory can no longer differ from the gate's by a lost race.
     inventoryKeys.push(resourceKeyForLease(lease.id));
     const record = buildLeaseRecord(lease, classification, { keyGeneration });
     records.push(record);
@@ -371,7 +442,53 @@ export async function reconcileCompanyLegacyResources(
   return {
     closure,
     insertedKeys,
-    skippedResumed,
     unattributableKeys: closure.unattributable,
+  };
+}
+
+/**
+ * ★ THE PRODUCTION ENTRY POINT (MIG-010 Unit 2.3, E10-F002). Reconcile EVERY Company under
+ * one Organization.
+ *
+ * WHY ORG-SCOPED, given closure is a per-company property. Every read the pass makes now
+ * goes through an owner-owned SECURITY DEFINER function, and every one of those — `0267`'s
+ * three and `0268`'s one — is ORGANIZATION-BOUND. `0267` ships org->companies and no
+ * company->org reverse, so a company-scoped pass holds no `organizationId` and structurally
+ * cannot call any of them (design §4.2, F1). Minting a reverse lookup whose only caller
+ * would be this pass is strictly worse than moving the scope: org-scope matches the gate's
+ * own scope (`canary-preflight.ts:21-26`) and the operator's framing — "reconcile this org
+ * before flipping it".
+ *
+ * Sequential by Company on purpose. The reads are owner-authority definer calls on a single
+ * operator pool; fanning them out buys nothing an operator pass needs and makes a partial
+ * failure harder to attribute.
+ *
+ * `ok` is the same bar the gate applies: EVERY Company must close. A single unmapped or
+ * unattributable resource anywhere under the Organization leaves it false. The pass does not
+ * short-circuit on the first failure — an operator wants the whole picture, not the first
+ * company alphabetically.
+ */
+export async function reconcileOrganizationLegacyResources(
+  organizationId: string,
+  deps: { store: LegacyReconciliationStore },
+): Promise<OrganizationReconcileResult> {
+  const { store } = deps;
+  const companyIds = await store.listOrganizationCompanyIds(organizationId);
+
+  const companies: (ReconcileResult & { companyId: string })[] = [];
+  for (const companyId of companyIds) {
+    const result = await reconcileCompanyLegacyResources(organizationId, companyId, { store });
+    companies.push({ ...result, companyId });
+  }
+
+  return {
+    organizationId,
+    companies,
+    // An Organization with NO companies is not closed. It is the `no_companies` refusal the
+    // gate already makes (`canary-preflight.ts:131-137`), and answering `ok: true` here for
+    // an empty enumeration would be the vacuous-closure fail-open in a second place.
+    ok: companies.length > 0 && companies.every((company) => company.closure.ok),
+    insertedKeys: companies.flatMap((company) => company.insertedKeys),
+    unattributableKeys: companies.flatMap((company) => company.unattributableKeys),
   };
 }
