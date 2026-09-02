@@ -186,3 +186,37 @@ why it is owned by a ticket rather than patched.
 once something does, the gate still refuses. Both must close for the canary to flip.
 
 **Blocks.** E7-1.
+
+## E7-F005 — A NULL `key_generation` is never "superseded", so the gate's authority check passes vacuously
+
+**Status:** open · **Owner:** MIG-010 (`epics/E10-desktop-migration-realtime/tickets/MIG-010-design.md`, no result doc)
+**Severity:** MEDIUM
+**Filed:** 2026-09-02, by the design §12 attack (three lenses converged); confirmed by reading shipped code.
+
+**What.** `canary-preflight.ts:157-158` filters superseded records as:
+
+```ts
+records.filter((r) => r.keyGeneration !== null && r.keyGeneration !== keyGeneration)
+```
+
+The `!== null` conjunct means a record whose `key_generation` is NULL is **never** counted as
+superseded. `deriveE2bKeyGeneration` returns null for a company with no default e2b
+`runtime_provider_keys` row (`e2b-credential-authority-wiring.ts:32`), and the column is documented
+as *"Null for an operator-env-default (ungenerationed) company"*
+(`legacy_resource_reconciliation.ts:61-65`) — so NULL is a normal, expected value, not a corruption.
+
+**The reachable sequence — no race, no rotation.** Reconcile a company with no BYO e2b key (every
+record gets `keyGeneration = null`), then give the company a provider key. The `:150-156` arm does
+not refuse, because it fires only when the *current* generation is null. `superseded` is empty
+because every record is NULL. The authority half of the acceptance clause passes vacuously — for
+exactly the company whose provider-control authority moved **after** its evidence was gathered.
+
+**Why it has not bitten.** The gate is still shut for other reasons (E7-F004), and MIG-008's pass had
+no production caller until `597e77715`, so no company has records at all yet. It becomes reachable
+the moment operators start running the pass.
+
+**Fix, and why it is owned by MIG-010.** Design §13 settles it: comparisons use `IS DISTINCT FROM`
+semantics, and the marker's generation column (Unit 2.4a) is `NOT NULL` with an explicit
+`'ungenerationed'` sentinel so the value is unrepresentable there. MIG-010 owns it because §12 moves
+this exact comparison onto the marker — fixing it separately would fix the copy that is about to stop
+being read.

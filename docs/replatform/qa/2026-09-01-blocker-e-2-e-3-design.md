@@ -1,6 +1,7 @@
 # BLOCKER E-2 + E-3 — what should CLOSURE mean?
 
-> **Status: DESIGN, revision 6 — §11.3's rotation trap is WIDER than §11.3 says, and no transaction fixes it.**
+> **Status: DESIGN, revision 7 — §12 SURVIVES, with its NULL semantics pinned (§13).**
+> §13 also files a defect in the SHIPPED gate that §12 would otherwise have inherited: **E7-F005**.
 > Unit 2.3 SHIPPED. **Unit 2.4a is BLOCKED on §12** — its Task 4 addresses a window inside a much
 > larger one. §12 supersedes §11.3.
 > A second sweep (67 agents, 44 confirmed hazards) ran REAL PostgreSQL probes and broke two of
@@ -700,3 +701,79 @@ failed four times. This one is the sharpest instance yet: §11.3 correctly ident
 bricks a company, then mis-diagnosed *when*, and the plan built a mechanism precisely fitted to the
 wrong window. **A remedy aimed at a race, when the real defect is a standing condition, will always
 look correct in review — it fixes something real.**
+
+---
+
+## 13. Revision 7 — §12 holds, and the NULL it never mentioned
+
+An attack aimed squarely at §12 (three lenses, refute-by-default) produced **one** surviving finding
+out of twenty-four. §12's core — the generation belongs to the marker, a rotation is recoverable
+staleness rather than an unfixable brick — **survives**. But three of the three lenses independently
+reached the same hole, and the convergence is the signal even though only one survived verification.
+
+### 13.1 ★★★ The comparison §12 relocates has no defined NULL, and NULL is a normal value
+
+`key_generation` is nullable on **both** sides of the comparison. `deriveE2bKeyGeneration` returns
+null for a company with no default e2b `runtime_provider_keys` row
+(`e2b-credential-authority-wiring.ts:32`), the definer scalar is typed `string | null`
+(`canary-preflight-evidence.ts`), and the crosswalk column is documented *"Null for an
+operator-env-default (ungenerationed) company"* (`legacy_resource_reconciliation.ts:61-65`).
+
+§12.3 says the gate compares *"the marker's generation to the current one"* and never states what
+happens when either is NULL. **Both natural implementations get it wrong**, measured against
+PostgreSQL 18.1:
+
+- SQL `WHERE key_generation <> current` — with current `'S2:1'`, matched **2 of 3** rows; the NULL
+  marker escaped. With current NULL, matched **0 of 3**: every marker escaped.
+- The same rows under `IS DISTINCT FROM` — **3 of 3** and **2 of 3**. Correct.
+
+### 13.2 ★★★ And the SHIPPED gate already has this hole — filed as E7-F005
+
+`canary-preflight.ts:157-158` is:
+
+```ts
+records.filter((r) => r.keyGeneration !== null && r.keyGeneration !== keyGeneration)
+```
+
+The `!== null` conjunct means **a NULL-generation record is never counted as superseded**. Verified
+by reading the shipped code, not inferred.
+
+The reachable sequence needs no race and no rotation:
+
+1. Reconcile a company that has **no BYO e2b key**. Every record is written with
+   `keyGeneration = null`.
+2. Give that company a provider key.
+3. Now `keyGeneration` is non-null, so the `:150-156` arm does **not** refuse — it only fires when the
+   *current* generation is null — and every record is NULL, so `superseded` is empty.
+
+The authority half of the acceptance clause passes **vacuously**, for precisely the company whose
+provider-control authority demonstrably moved *after* its evidence was gathered.
+
+★ §12 would have **inherited and concentrated** this: today it takes every record being NULL, whereas
+a single NULL marker row would disable the check outright.
+
+### 13.3 The decision
+
+**The marker's generation column is `NOT NULL`, with an explicit `'ungenerationed'` sentinel**, and
+every comparison uses `IS DISTINCT FROM` semantics regardless. Belt and braces, deliberately: the
+sentinel makes the NULL unrepresentable in the new column, and `IS DISTINCT FROM` means a future
+nullable input cannot silently re-open it.
+
+`canary-preflight.ts:150` stays exactly as it is — it is the arm that refuses a company with **no
+current generation at all**, which is a different question from staleness and remains correct.
+
+**Pin all four combinations in a test**: (marker NULL/sentinel, current NULL) → not stale;
+(sentinel, `'S2:1'`) → **stale**; (`'S1:1'`, `'S2:1'`) → stale; (`'S1:1'`, `'S1:1'`) → not stale.
+The second is the one every naive implementation gets wrong.
+
+### 13.4 What survived the attack, and what this round cost
+
+Twenty-three findings were refuted, several by measurement. §12's answers to the sequences that
+worried me most — rotate-then-rerun leaving mixed generations, an unrerun company, concurrent
+passes — all held. The design has now survived five rounds on §1-§3 and, for the first time, a
+remedy has survived too.
+
+★ **The lesson is about convergence, not about this bug.** One finding survived verification; three
+independent lenses had raised the same defect. Had I counted only survivors I would have read
+"1 MEDIUM" and moved on. **When separate reviewers reach the same hole by different routes, the
+convergence outranks the individual verdicts.**
