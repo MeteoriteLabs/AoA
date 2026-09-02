@@ -112,6 +112,19 @@ function parseJobs(text) {
         continue;
       }
       const cmd = line.trim();
+      // ★★★ A HEREDOC IS ONE STEP THIS PARSER CANNOT REPRESENT, AND DROPPING IT SILENTLY IS
+      // THE FAILURE THIS FILE IS SUPPOSED TO PREVENT. `migrations` verifies the drizzle
+      // journal/snapshot chain with `python <<'PYEOF' … PYEOF`; keeping only the first line
+      // would run `python` with no script, read EOF, and exit 0 — a VACUOUS PASS. Proven by
+      // mutation: with the first-line-only behaviour, breaking 0271's `prevId` exactly as CI
+      // found it still reported `PASS migrations`.
+      //
+      // Until this executes whole `run:` blocks through a shell, such a step is recorded as
+      // UNREPRESENTABLE and surfaced, never counted green.
+      if (/<<\s*['"]?\w+['"]?/.test(cmd)) {
+        jobs.get(job).push({ unrepresentable: cmd });
+        continue;
+      }
       // Shell scaffolding inside a block is executed as part of the block, not as a step; keep only
       // the invocations this runner can meaningfully attribute a pass/fail to.
       // Environment setup, not a check. Running `pnpm install --frozen-lockfile` locally costs
@@ -143,9 +156,10 @@ function main() {
     console.log("jobs in pr.yml:\n");
     for (const [name, steps] of jobs) {
       const why = CANNOT_RUN_HERE[name];
-      const gated = steps.filter((c) => envSkipReason(c)).length;
+      const gated = steps.filter((c) => typeof c === "string" && envSkipReason(c)).length;
+      const unrep = steps.filter((c) => typeof c === "object").length;
       const mark = why ? "SKIP" : steps.length ? " RUN" : "  --";
-      console.log(`  ${mark}  ${name.padEnd(32)} ${steps.length} step(s)${why ? `  — ${why}` : gated ? `  (${gated} gated on env)` : ""}`);
+      console.log(`  ${mark}  ${name.padEnd(32)} ${steps.length} step(s)${why ? `  — ${why}` : gated || unrep ? `  (${gated} gated on env, ${unrep} unrepresentable)` : ""}`);
     }
     console.log("\nfast gate:", FAST_JOBS.join(", "));
     return;
@@ -178,6 +192,16 @@ function main() {
     let jobFailed = false;
     let jobMs = 0;
     for (const step of steps) {
+      if (typeof step === "object" && step.unrepresentable) {
+        console.log(`
+  ? ${step.unrepresentable}`);
+        console.log("    UNREPRESENTABLE — multi-line run: block; this runner cannot execute it");
+        skipped.push({
+          name: `${name}:step`,
+          why: `${step.unrepresentable} — multi-line run: block, NOT checked here`,
+        });
+        continue;
+      }
       const envWhy = envSkipReason(step);
       if (envWhy) {
         console.log(`
