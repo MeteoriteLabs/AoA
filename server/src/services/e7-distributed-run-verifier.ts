@@ -527,7 +527,16 @@ export function createE7DistributedRunVerifier(deps: {
   };
 }
 
-/** Pure printer for the CLI — per-clause verdict + observed. Prints SHAPE only, never a raw secret. */
+/**
+ * Pure printer for the CLI — per-clause verdict + observed. Prints SHAPE only, never a raw secret.
+ *
+ * ★ The RESULT line is NEVER unqualified. It used to read "PASS — distributed journey
+ * corroborated", which is accurate and was still read as "the canary works". Both dimensions
+ * now appear on that one line, so neither can be quoted alone: a reader who sees only the
+ * first line cannot come away believing capability was proven when it was not. The CAPABILITY
+ * block below it prints on pass and fail alike — an unproven capability is exactly when it
+ * matters, so it is never suppressed.
+ */
 export function formatVerifyResult(result: E7VerifyResult): string {
   const lines: string[] = [];
   lines.push(`evidence-verifier A — run ${result.runId}`);
@@ -535,15 +544,26 @@ export function formatVerifyResult(result: E7VerifyResult): string {
     lines.push("  RESULT: NOT FOUND — no heartbeat_runs row for this id");
     return lines.join("\n");
   }
-  lines.push(
-    `  RESULT: ${result.ok ? "PASS — distributed journey corroborated" : "FAIL — does NOT prove the distributed journey"}`,
-  );
+  const mechanism = result.ok
+    ? "PASS (mechanism) — distributed journey corroborated"
+    : "FAIL (mechanism) — does NOT prove the distributed journey";
+  const capability = result.capabilityProven
+    ? "CAPABILITY: PROVEN — output from the agent reached AoA"
+    : "CAPABILITY: NOT PROVEN — nothing the agent produced reached AoA";
+  lines.push(`  RESULT: ${mechanism} | ${capability}`);
   const o = result.observed;
   lines.push("  observed:");
   lines.push(`    execution_owner=${o.executionOwner ?? "-"} job=${o.distributedJobId ?? "-"} attempt=${o.distributedAttemptId ?? "-"}`);
   lines.push(`    company=${o.companyId ?? "-"} org=${o.organizationId ?? "-"} status=${o.status ?? "-"} error_code=${o.errorCode ?? "-"} finished_at=${o.finishedAt ?? "-"}`);
   lines.push(`    leases=${o.leaseCount} attempt_started=${o.attemptStartedEvents} terminal_events=${o.terminalEvents} terminal_receipt_applied=${o.projectionReceiptApplied}`);
-  lines.push(`    produced: workspace_patch_artifacts=${o.producedArtifacts.workspacePatchArtifacts} task_outputs=${o.producedArtifacts.taskOutputs}`);
+  // ALWAYS printed, on pass and fail alike — see the doc comment above.
+  lines.push(
+    `  capability: ${result.capabilityProven ? "PROVEN" : "NOT PROVEN"}` +
+      ` (workspace_patch_artifacts=${o.producedArtifacts.workspacePatchArtifacts} task_outputs=${o.producedArtifacts.taskOutputs})`,
+  );
+  for (const f of result.capabilityFailures) {
+    lines.push(`    clause ${f.clause}: ${f.reason}`);
+  }
   if (o.suspectedHeuristicHits.length > 0) {
     lines.push("    advisory heuristic hits (NOT a gate — likely session ids/hashes):");
     for (const h of o.suspectedHeuristicHits) {

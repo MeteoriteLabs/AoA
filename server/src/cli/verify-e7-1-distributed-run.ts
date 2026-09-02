@@ -4,12 +4,36 @@
 // evidence-verifier A — the operator entrypoint.
 //
 //   DATABASE_URL=... tsx server/src/cli/verify-e7-1-distributed-run.ts <runId> \
-//       [--org <organizationId>] [--company <companyId>]
+//       [--org <organizationId>] [--company <companyId>] [--require-capability]
 //
 // Reads a dispatched heartbeat run + its distributed-kernel evidence and prints the
 // per-clause verdict. Exit 0 iff the run PROVABLY completed the distributed journey
 // (a worker leased it, ran it, and its terminal was projected — with no leaked
 // secret); exit 1 otherwise, naming the failing clause(s).
+//
+// ★ TWO DIMENSIONS, TWO EXIT CODES.
+//
+// `ok` (exit 0/1) answers "was the distributed journey corroborated" — the MECHANISM.
+// It reads NOTHING about the workload, the argv, the exit code, stdout, or anything the
+// agent produced, so a `claude` that exits 127 with no tools and a context-free prompt
+// passes it (E7-F003). That is not a bug in `ok`; `ok` answers a different question.
+//
+// `capabilityProven` answers "did anything the agent produced reach AoA" — the
+// CAPABILITY. It is ALWAYS printed and ALWAYS in `verdict-json`. `--require-capability`
+// makes an unproven capability exit 3.
+//
+// --require-capability is OFF BY DEFAULT, deliberately. Output capture is unbuilt
+// (CLI-008 Unit F: the E2B driver passes no stream handlers, stdoutRef/stderrRef are
+// fabricated literals, observeRun is uncomposed, buildWorkspacePatch and
+// createResultCommitter have zero production callers), so the counts are STRUCTURALLY
+// zero and the flag on-by-default would be a gate nobody can pass — which in this
+// repository is how a guard gets bypassed, argued around, and then deleted. This is the
+// flag the campaign flips once Unit F lands; until then it is an operator opt-in, and
+// the always-printed CAPABILITY line is what stops a green run being read as capability.
+//
+// Exit codes: 0 = verdict clean · 1 = mechanism FAIL (or an unreadable verifier)
+//             2 = usage · 3 = mechanism PASS but capability unproven, with
+//                            --require-capability set.
 //
 // This FLIPS NO GATE. It produces the machine-checkable verdict a human cites when
 // deciding to flip `E7-1-coding-journey` in `scripts/gate-clause-wiring.json`. The
@@ -31,8 +55,11 @@ function parseArgs(argv: readonly string[]): {
   runId?: string;
   organizationId?: string;
   companyId?: string;
+  requireCapability: boolean;
 } {
-  const out: { runId?: string; organizationId?: string; companyId?: string } = {};
+  const out: { runId?: string; organizationId?: string; companyId?: string; requireCapability: boolean } = {
+    requireCapability: false,
+  };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
@@ -40,6 +67,8 @@ function parseArgs(argv: readonly string[]): {
       out.organizationId = rest[++i];
     } else if (arg === "--company") {
       out.companyId = rest[++i];
+    } else if (arg === "--require-capability") {
+      out.requireCapability = true;
     } else if (!arg.startsWith("--") && out.runId === undefined) {
       out.runId = arg;
     }
@@ -48,10 +77,12 @@ function parseArgs(argv: readonly string[]): {
 }
 
 async function main(): Promise<void> {
-  const { runId, organizationId, companyId } = parseArgs(process.argv);
+  const { runId, organizationId, companyId, requireCapability } = parseArgs(process.argv);
 
   if (!runId) {
-    console.error("usage: verify-e7-1-distributed-run <runId> [--org <organizationId>] [--company <companyId>]");
+    console.error(
+      "usage: verify-e7-1-distributed-run <runId> [--org <organizationId>] [--company <companyId>] [--require-capability]",
+    );
     process.exit(2);
   }
 
@@ -73,7 +104,16 @@ async function main(): Promise<void> {
   console.log(formatVerifyResult(result));
   console.log(`\nverdict-json: ${JSON.stringify(result)}`);
 
-  process.exit(result.ok ? 0 : 1);
+  if (!result.ok) {
+    process.exit(1);
+  }
+  // The mechanism is corroborated. Capability is a SEPARATE verdict, enforced only when
+  // the operator opts in — see the header for why that is not the default today.
+  if (requireCapability && !result.capabilityProven) {
+    console.error("--require-capability: this run does NOT prove the agent could work (see the capability clause above)");
+    process.exit(3);
+  }
+  process.exit(0);
 }
 
 void main().catch((error) => {
