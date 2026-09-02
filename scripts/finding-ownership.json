@@ -56,18 +56,6 @@
     "E7-F003": {
       "status": "unowned",
       "reason": "Unit 2 (\"capability\") is scoped in docs/replatform/qa/2026-08-31-blocker-ab-fix-design.md but has NO ticket on disk, so there is nothing honest to point at. Naming a plausible existing ticket would be the false-claim-of-ownership failure this guard exists to prevent - it converts an open question into a settled one for every later reader. What is blocked: a distributed canary run can reach a real terminal, but the agent inside the sandbox has no MCP tool surface, no instructions bundle, no workspace, no rendered prompt template, and no output capture back into AoA. What the decision waits on: a Unit 2 ticket that owns prompt/context delivery beyond argv - which needs a channel argv does not provide (ExecuteInput has no stdin, stdinArtifactId has zero consumers, workspace is hard-coded null), i.e. a worker-protocol or E5-boundary decision with a blast radius, not a line in a composition ticket."
-    },
-    "E7-F004": {
-      "status": "owned",
-      "ticket": "MIG-010",
-      "ownerStillOpen": "MIG-010 is a filed scoping stub (ticket file + #### MIG-010 program node, no result doc). MIG-008 shipped and has a result doc on disk, so leaving either finding on it would read as owned by nobody (E4-F013); the same is true of CLI-006 for E7-F004. The two findings share one owner deliberately: E10-F002 says nothing writes the crosswalk and E7-F004 says the gate would still refuse once something did, so closing either alone leaves the canary shut. Design work is in docs/replatform/qa/2026-09-01-blocker-e-2-e-3-design.md (revision 2, reviewed, not built).",
-      "reason": "The gate re-derives its inventory from live environment_leases rows while a pass's inventory is fixed at its snapshot, so every post-pass lease is an unmapped key and a lost paused-CAS records nothing. The gate's set is a strict superset by construction and can never close on a box with traffic. The fix is a semantics decision about what closure is asserted as of, which changes what this gate may answer. HIGH: blocks E7-1."
-    },
-    "E7-F005": {
-      "status": "owned",
-      "ticket": "MIG-010",
-      "ownerStillOpen": "MIG-010 is a filed scoping stub (ticket file + #### MIG-010 program node, no result doc) and already owns E7-F004. Design section 12 relocates this exact comparison from the per-record key_generation onto the reconciliation marker, so fixing it anywhere else would fix the copy that is about to stop being read. Unit 2.4a makes the marker column NOT NULL with an explicit sentinel; Unit 2.4b switches the gate to IS DISTINCT FROM semantics.",
-      "reason": "canary-preflight.ts:157-158 excludes NULL key_generation from the superseded set, and NULL is a normal value for a company with no default e2b runtime_provider_keys row. Reconcile such a company, then give it a provider key: the no-current-generation arm does not fire, every record is NULL, and the authority half of the acceptance clause passes vacuously for exactly the company whose authority moved after its evidence was gathered. MEDIUM: unreachable today because the gate is shut on E7-F004 and no company has records yet."
     }
   }
 }
