@@ -42,7 +42,7 @@
     },
     "packages/sandbox-e2b-provider": {
       "mode": "pinned",
-      "count": 10
+      "count": 11
     },
     "packages/sandbox-fake-provider": {
       "mode": "pinned",
@@ -58,7 +58,7 @@
     },
     "packages/worker-daemon": {
       "mode": "pinned",
-      "count": 153
+      "count": 155
     },
     "packages/worker-keystore": {
       "mode": "pinned",
