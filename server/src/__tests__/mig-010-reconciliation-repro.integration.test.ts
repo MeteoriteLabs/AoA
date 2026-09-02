@@ -28,6 +28,32 @@
 //
 // E7-F004 (the post-pass lease) is untouched by 2.3 and is Unit 2.4's to invert.
 //
+// ★★★ UNIT 2.4b HAS NOW INVERTED IT — one test, in place, not by deletion. Read what did NOT
+// change first, because that is what makes the change meaningful:
+//
+//   * `unmapped=1` on an empty crosswalk still holds, and is still this file's single
+//     DISCRIMINATING assertion (proven by mutation in Unit 2.2: reorder the tests and it reads
+//     unmapped=2 while `reason` is identical either way).
+//   * the positive control still opens the gate.
+//   * the credential and closure arms are untouched.
+//
+// The ONE assertion that flipped is E7-F004's: a lease created AFTER the reconciliation
+// snapshot no longer re-closes the gate. The old comment beside it called that behaviour
+// "self-healing"; it is the permanently-losing race E7-F004 filed, because on a box taking
+// legacy traffic there is always another lease. Design section 9.1 names the residual honestly:
+// inside the freshness window such a lease IS waved through without a crosswalk record — it is
+// current traffic on the legacy path, not an unreconciled legacy resource.
+//
+// ★ AND ITS ANTI-VACUITY TWIN IS ADDED BESIDE IT. A lease created BEFORE the snapshot still
+// re-closes the gate. Without that, "the new lease no longer refuses" would also pass if the
+// narrowing had simply stopped looking at leases at all.
+//
+// ★ THE FIXTURE GAINS A MARKER (migration 0269), seeded directly rather than by running a pass:
+// this file's whole identity is "no pass has run", and it must keep asserting closure over an
+// EMPTY crosswalk. Without a marker the gate now refuses `reconciliation_stale` before it ever
+// reaches closure, and all four assertions below would be testing the marker check instead of
+// the thing they were written for.
+//
 // Windows-skipped unless AOA_RUN_WIN_INTEGRATION=1 (Issue #114); Linux CI is the authority.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -44,6 +70,8 @@ const ENV = "e2000000-0000-4000-8000-000000000003";
 const LEASE_1 = "e2000000-0000-4000-8000-000000000004";
 const LEASE_2 = "e2000000-0000-4000-8000-000000000005";
 const SECRET = "e2000000-0000-4000-8000-000000000006";
+const LEASE_3 = "e2000000-0000-4000-8000-000000000007";
+const PASS = "e2000000-0000-4000-8000-000000000008";
 
 const RUN = process.platform !== "win32" || process.env.AOA_RUN_WIN_INTEGRATION === "1";
 
@@ -86,6 +114,21 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.2 — the reconciliation defects, reproduc
       await admin`INSERT INTO environment_leases
         (id, company_id, environment_id, status, lease_policy, provider, provider_lease_id)
         VALUES (${LEASE_1}, ${COMPANY}, ${ENV}, 'active', 'ephemeral', 'e2b', 'sbx-1')`;
+
+      // ★ MIG-010 Unit 2.4b — a completed-pass MARKER, seeded AFTER the lease so its snapshot
+      // covers it. Seeded directly, NOT by running a pass: this file's identity is "no pass has
+      // run", and every assertion below is about what the gate does over an EMPTY crosswalk.
+      // The marker only supplies the WATERMARK the gate now needs before it can read leases at
+      // all; it says nothing about closure, which the gate re-derives for itself.
+      //
+      // `snapshot_at`/`completed_at` come from the DATABASE clock, like the real pass's, so the
+      // freshness bound is evaluated against the same clock on both sides. The generation must
+      // match the one the 0267 scalars function derives (`<secretId>:<version>`) or the gate
+      // refuses `reconciliation_stale` on the generation arm — which would read as a defect in
+      // the code under test rather than as a seeding bug.
+      await admin`INSERT INTO legacy_reconciliation_passes
+        (pass_id, organization_id, company_id, snapshot_at, key_generation, completed_at)
+        VALUES (${PASS}, ${ORG}, ${COMPANY}, now(), ${`${SECRET}:1`}, now())`;
     } catch (error) {
       await teardown();
       throw error;
@@ -172,27 +215,58 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.2 — the reconciliation defects, reproduc
     expect(result).toMatchObject({ ok: true });
   });
 
-  it("[E7-F004] ONE lease created after the pass re-closes the gate — the losing race", async () => {
-    // Exactly what `acquireLease` does on every legacy cloud run (`environments.ts:141-165`).
+  // ★★★ E7-F004, INVERTED IN PLACE (DSK-003) — this is the one assertion Unit 2.4b changed.
+  //
+  // Until this unit it read:
+  //
+  //     it("[E7-F004] ONE lease created after the pass re-closes the gate — the losing race")
+  //       expect(result.reason).toBe("reconciliation_incomplete");
+  //       expect(result.detail).toContain("(unmapped=1, duplicates=0, unattributable=0)");
+  //
+  // and it passed, and it WAS the defect: the gate re-derived its inventory from LIVE rows, so
+  // one lease created a second after the pass re-closed it, forever, on any box taking legacy
+  // traffic. The lease inventory is now narrowed to the marker's snapshot instant.
+  it("[E7-F004, inverted] a lease created AFTER the snapshot no longer re-closes the gate", async () => {
+    // Exactly what `acquireLease` does on every legacy cloud run (`environments.ts:141-165`) —
+    // and `created_at` comes from the DATABASE default, which Unit 2.4a made load-bearing.
     await fixture!.admin`INSERT INTO environment_leases
       (id, company_id, environment_id, status, lease_policy, provider, provider_lease_id)
       VALUES (${LEASE_2}, ${COMPANY}, ${ENV}, 'active', 'ephemeral', 'e2b', 'sbx-2')`;
 
     const result = await check();
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.reason).toBe("reconciliation_incomplete");
-    // The NEW lease is the unmapped one. The recorded lease is still fine — this is not a
-    // regression of the positive control, it is a strictly larger inventory over the same records.
-    // ★ EXACT for the same reason as above: in the wrong order this reads unmapped=2, and that
-    // difference — not the refusal reason, which is identical either way — is what makes this
-    // test mean anything.
-    expect(result.detail).toContain("(unmapped=1, duplicates=0, unattributable=0)");
+    // The gate stays OPEN. Section 9.1's residual, stated where it is observable: this lease is
+    // waved through without a crosswalk record because it is current traffic on the legacy
+    // path, not an unreconciled legacy resource, and the freshness window bounds how much of
+    // that can accumulate.
+    expect(result).toMatchObject({ ok: true });
 
-    // ★ And the crosswalk did NOT change. The gate is read-only; it cannot heal itself, and no
-    // pass ran. This is what makes it a permanently-losing race rather than a transient.
+    // ★ And the crosswalk STILL did not change. The gate remains read-only — it did not open by
+    // recording anything, it opened by asking a narrower question.
     const rows = await fixture!.admin`
       SELECT count(*)::int AS n FROM legacy_resource_reconciliation WHERE company_id = ${COMPANY}`;
     expect(rows[0]!.n).toBe(1);
+  });
+
+  // ★ THE ANTI-VACUITY TWIN, and it is not optional: without it, the assertion above would pass
+  // just as well if the narrowing had stopped looking at leases altogether. A lease INSIDE the
+  // watermark with no crosswalk record must still refuse.
+  it("[E7-F004] a lease created BEFORE the snapshot still re-closes the gate", async () => {
+    // `created_at` is set explicitly to an instant well before the marker's snapshot. Everything
+    // else matches LEASE_2 above, so the ONLY difference between the two tests is which side of
+    // the watermark the row falls on.
+    await fixture!.admin`INSERT INTO environment_leases
+      (id, company_id, environment_id, status, lease_policy, provider, provider_lease_id, created_at)
+      VALUES (${LEASE_3}, ${COMPANY}, ${ENV}, 'active', 'ephemeral', 'e2b', 'sbx-3',
+              now() - interval '1 hour')`;
+
+    const result = await check();
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("reconciliation_incomplete");
+    // ★ EXACT, and it is still this file's discriminating assertion: LEASE_1 has a record and
+    // LEASE_2 is outside the watermark, so exactly ONE key is unmapped. `unmapped=2` here would
+    // mean the narrowing did not exclude LEASE_2 after all, and the refusal REASON is identical
+    // in both worlds.
+    expect(result.detail).toContain("(unmapped=1, duplicates=0, unattributable=0)");
   });
 });

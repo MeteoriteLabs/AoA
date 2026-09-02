@@ -29,10 +29,36 @@ import { sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { derivePlatformDefaultEnvironmentId } from "./platform-default-environment.js";
 
-type LeaseRow = { lease_id: string | null };
+/**
+ * ★ THE ONE-ROW CONTRACT (design §11.1). Not a row per lease — ONE row, always, carrying the
+ * narrowed ids AND the unnarrowed total. A `RETURNS TABLE` of the MATCHES returns ZERO rows
+ * when the watermark predates every lease, so the total vanishes exactly in the case the
+ * churn guard exists to detect. Same shape, same reason, as `canary_preflight_evidence_scalars`.
+ *
+ * The field types are MEASURED, not assumed (mig-010-unit-2-4-probes.integration.test.ts,
+ * PostgreSQL 18.1 / postgres.js 3.4.8 / drizzle-orm 0.45.2):
+ *   * `lease_ids` is `null` when the narrowed set is empty — `array_agg` over an empty set is
+ *     NULL, NOT `[]`. Test `=== null`, never `.length === 0`.
+ *   * `unnarrowed_total` arrives as a STRING ("3"), through both the raw client and
+ *     `db.execute`. It is converted with an explicit `Number()` below; a bare `total > 0` on
+ *     a string is the silent bug §11.1 names, and no type error catches it.
+ */
+type LeaseRow = { lease_ids: string[] | null; unnarrowed_total: unknown };
 type ScalarRow = {
   platform_default_environment_id: string | null;
   key_generation: string | null;
+};
+
+/** What one Company's lease inventory looks like once narrowed to a pass's watermark. */
+export type CanaryPreflightLeaseInventory = {
+  /** The leases at or before the watermark. Empty when the pass predates the whole fleet. */
+  readonly leaseIds: readonly string[];
+  /**
+   * Every lease the Company holds, watermark or no watermark. `unnarrowedTotal > 0` with an
+   * EMPTY `leaseIds` is the churn signal: the pass predates the entire current fleet, which
+   * an empty inventory alone cannot express because `assertClosure` satisfies it vacuously.
+   */
+  readonly unnarrowedTotal: number;
 };
 
 export type CanaryPreflightScalars = {
@@ -63,19 +89,54 @@ export async function readCanaryPreflightCompanyIds(
     .filter((id): id is string => id !== null);
 }
 
-/** Lease ids for one Company. The only evidence read that touches `environment_leases`. */
-export async function readCanaryPreflightLeaseIds(
+/**
+ * One Company's lease inventory, narrowed to `watermark`. The only evidence read that touches
+ * `environment_leases`.
+ *
+ * ★ RETURNS BOTH FACTS, and the caller must carry both. §11.4 measured that
+ * `SELECT lease_id FROM fn(…)` against a two-column `RETURNS TABLE` returns rows keyed only
+ * `["lease_id"]` with NO error — so a half-updated caller that projects by name loses the
+ * churn guard SILENTLY. The projection below names both columns and the return type carries
+ * both, which is what stops that being possible one edit at a time.
+ *
+ * ★ THE WATERMARK IS REQUIRED, here and in SQL. There is no overload to fall back to
+ * (migration 0270 DROPped the 2-argument form) and no DEFAULT to supply one. A caller with no
+ * marker must refuse BEFORE reaching this function, which is what `canary-preflight.ts` does —
+ * so the "no watermark" path never reaches the database and `preflight_error` stays off the
+ * reachable path.
+ */
+export async function readCanaryPreflightLeaseInventory(
   db: Db,
   organizationId: string,
   companyId: string,
-): Promise<readonly string[]> {
+  watermark: Date,
+): Promise<CanaryPreflightLeaseInventory> {
+  // ★ THE WATERMARK CROSSES AS AN ISO-8601 STRING, not as a `Date`. Two reasons, the first
+  // measured: this driver rejects a raw `Date` bound through `db.execute` with a Node
+  // `ERR_INVALID_ARG_TYPE`, which the gate's catch folds into `preflight_error` — the
+  // unfalsifiable "I could not read" refusal BLOCKER E-1 existed to remove, reintroduced by a
+  // parameter type. Second, `toISOString()` is UTC with an explicit `Z`, so the `::timestamptz`
+  // cast cannot be reinterpreted by the session's TimeZone setting; a local-format string
+  // could be.
   const result = await db.execute(
-    sql`SELECT lease_id FROM public.canary_preflight_evidence_leases(
-          ${organizationId}::uuid, ${companyId}::uuid)`,
+    sql`SELECT lease_ids, unnarrowed_total FROM public.canary_preflight_evidence_leases(
+          ${organizationId}::uuid, ${companyId}::uuid, ${watermark.toISOString()}::timestamptz)`,
   );
-  return rowsOf<LeaseRow>(result)
-    .map((row) => row.lease_id)
-    .filter((id): id is string => id !== null);
+  const row = rowsOf<LeaseRow>(result)[0];
+  // ONE ROW, ALWAYS — including for an out-of-org company, which reads as the empty answer
+  // rather than as an error. A missing row would mean the contract itself broke, and treating
+  // it as "no leases, no total" would be the vacuous-closure fail-open; refuse instead.
+  if (!row) {
+    throw new Error(
+      "canary_preflight_evidence_leases returned no row; the one-row contract is broken",
+    );
+  }
+  return {
+    // `array_agg` over an empty set is NULL, measured — not `[]`.
+    leaseIds: (row.lease_ids ?? []).filter((id): id is string => id !== null),
+    // EXPLICIT conversion: the driver hands back a string, measured.
+    unnarrowedTotal: Number(row.unnarrowed_total),
+  };
 }
 
 /**

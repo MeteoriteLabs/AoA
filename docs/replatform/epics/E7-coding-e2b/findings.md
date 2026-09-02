@@ -156,9 +156,46 @@ one, which is worse than an honest gap.
 
 ## E7-F004 — The canary preflight's inventory is a strict SUPERSET of any reconcile pass's, by construction
 
-**Status:** open · **Owner:** MIG-010 (`epics/E10-desktop-migration-realtime/tickets/MIG-010-design.md`, no result doc)
+**Status:** **resolved** · **Resolved by:** MIG-010 Units 2.4a + 2.4b, 2026-09-02.
 **Severity:** HIGH
 **Filed:** 2026-09-01, by Blocker E-3 terrain verification at `c7ead3a73` (Units 1.6+1.7 / PR #333).
+
+**Resolved.** The gate's lease inventory is narrowed to the DB-clock snapshot instant of the latest
+COMPLETED reconciliation pass, so a lease created after the pass is no longer an unmapped key.
+Mechanism, end to end:
+
+* Migration `0269` adds `legacy_reconciliation_passes` — the durable per-Company marker of a completed
+  pass, carrying the snapshot instant, the provider-control generation observed, completion, scope and
+  a pass identity. `aoa_operator` holds `SELECT, INSERT` and nothing else; `aoa_app` holds nothing.
+* `reconcileOrganizationLegacyResources` reads that instant from the DATABASE once, before listing
+  anything, and writes the marker as its LAST write for each Company — so a crash leaves "records, no
+  marker", which the gate reads as not reconciled.
+* `environmentService.acquireLease` stopped stamping `created_at` from the application clock, so the
+  watermark comparison is database-clock on both sides (§3.3).
+* Migration `0270` DROPs `canary_preflight_evidence_leases(uuid, uuid)` and re-creates it with a
+  REQUIRED, no-DEFAULT `p_watermark` returning `(lease_ids uuid[], unnarrowed_total bigint)` — ONE ROW,
+  always.
+* `canary-preflight.ts` refuses `reconciliation_stale` on a missing marker, on a marker past
+  `RECONCILIATION_EVIDENCE_MAX_AGE_SECONDS`, on a superseded marker generation, and on churn
+  (`unnarrowed_total > 0` with an empty narrowed set).
+
+★ **The semantics decision this finding asked for, made explicitly.** A lease created *after* the
+reconciliation decision is current traffic on the legacy path, not an unreconciled legacy resource, and
+it is waved through without a crosswalk record. §9.1 names that residual rather than hiding it: the
+freshness window bounds how much of it can accumulate; it does not eliminate it. Two guards bound the
+two ways evidence goes stale — the constant bounds TIME, the churn arm bounds FLEET TURNOVER — because
+a fleet can turn over completely inside the window.
+
+★ **The Unit 2.2 repro was INVERTED IN PLACE, not deleted**, and its inversion is mutation-proven:
+disabling the narrowing (a far-future watermark, nothing else changed) reds both the inverted assertion
+and the anti-vacuity twin that pins a PRE-watermark lease still re-closing the gate.
+
+**Item (2) of the mechanism below no longer exists.** Option R (Unit 2.3) removed `casClaimPaused`
+entirely, so there is no lost-CAS `continue` and no unrecorded paused row.
+
+**What this does NOT resolve.** Nothing about `unattributable` records, which still refuse
+`reconciliation_incomplete` permanently with no remedy in code — design §9.2's operator resolution path
+is Unit 2.5, and E7-1 remains gated on the execution substrate besides.
 
 **What.** The gate re-derives its inventory read-only from **live rows** — every lease the Company
 currently holds, whatever its status (`canary-preflight.ts:115-122`, `:141`). A reconcile pass's
@@ -189,9 +226,23 @@ once something does, the gate still refuses. Both must close for the canary to f
 
 ## E7-F005 — A NULL `key_generation` is never "superseded", so the gate's authority check passes vacuously
 
-**Status:** open · **Owner:** MIG-010 (`epics/E10-desktop-migration-realtime/tickets/MIG-010-design.md`, no result doc)
+**Status:** **resolved** · **Resolved by:** MIG-010 Units 2.4a + 2.4b, 2026-09-02.
 **Severity:** MEDIUM
 **Filed:** 2026-09-02, by the design §12 attack (three lenses converged); confirmed by reading shipped code.
+
+**Resolved, belt and braces, exactly as §13.3 required.** The `records.filter((r) => r.keyGeneration
+!== null && …)` clause is GONE: §12 moved the comparison onto the marker, so the vacuous clause no
+longer exists to pass vacuously. Where the comparison now lives, the NULL is unrepresentable —
+`legacy_reconciliation_passes.key_generation` is `NOT NULL` with an explicit `'ungenerationed'`
+sentinel (migration 0269) — and it is still made with `IS DISTINCT FROM` semantics
+(`isDistinctFrom` / `isMarkerGenerationStale`), so a future nullable input cannot silently re-open it.
+
+All four §13.3 combinations are pinned in `cli-006-canary-preflight.test.ts`, including the second —
+sentinel marker against a real current generation — which is the one every naive implementation gets
+wrong, and which SQL `<>` measurably misses. `canary-preflight.ts:150` is UNCHANGED: "no current
+generation at all" is a different question and remains correct.
+
+Mutation-proven: deleting the generation arm reds exactly one test.
 
 **What.** `canary-preflight.ts:157-158` filters superseded records as:
 

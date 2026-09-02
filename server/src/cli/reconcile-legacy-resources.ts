@@ -24,10 +24,11 @@
 // reconciliation is a deliberate operator act. It follows the two existing precedents,
 // `verify-cp-am-keypair.ts` and `verify-e7-1-distributed-run.ts`.
 //
-// ★ THIS FLIPS NO GATE, AND THE CANARY STAYS SHUT. Unit 2.3 closes E10-F002 only. There is
-// no watermark, no `reconciliation_stale`, and no change to `canary-preflight.ts` here — a
-// lease created after this pass still re-closes the gate (E7-F004, design §1.2(1)). Those
-// are Unit 2.4.
+// ★ THIS FLIPS NO GATE, AND THE CANARY STAYS SHUT. Unit 2.3 closed E10-F002; Unit 2.4a adds
+// the durable MARKER of a completed pass (`legacy_reconciliation_passes`, migration 0269) and
+// nothing more. NOTHING READS THE MARKER YET — `canary-preflight.ts` is untouched, there is no
+// `reconciliation_stale`, and a lease created after this pass still re-closes the gate
+// (E7-F004, design §1.2(1)). That is Unit 2.4b.
 //
 // READ-ONLY against tenant data (Option R): the only write is the append-only crosswalk
 // insert, on the one relation `aoa_operator` is granted. It never kills a live sandbox and
@@ -107,6 +108,12 @@ async function main(): Promise<void> {
   });
 
   console.log(`organization ${result.organizationId}: ${result.companies.length} company(ies)`);
+  // The pass identity and the DB-clock snapshot instant every marker this run wrote carries.
+  // An operator debugging a `reconciliation_stale` refusal in Unit 2.4b needs both, and
+  // reconstructing them from the table afterwards is strictly worse than printing them.
+  console.log(
+    `  pass ${result.passId} snapshot ${result.snapshotAt.toISOString()} (database clock)`,
+  );
   for (const company of result.companies) {
     const { closure } = company;
     console.log(
@@ -127,7 +134,8 @@ async function main(): Promise<void> {
   console.log(
     `\nreconciled=${result.ok ? "closed" : "NOT closed"}. This flips no gate: the canary ` +
       `preflight re-derives closure independently, and a lease created after this pass ` +
-      `re-closes it (E7-F004, Unit 2.4).`,
+      `re-closes it (E7-F004, Unit 2.4b). A completed-pass marker was written for each ` +
+      `company above; nothing reads it yet.`,
   );
 
   process.exit(result.ok ? 0 : 1);

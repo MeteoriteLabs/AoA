@@ -248,6 +248,14 @@ export {
   type LegacyResourceReconciliation,
   type NewLegacyResourceReconciliation,
 } from "./legacy_resource_reconciliation.js";
+// MIG-010 Unit 2.4 (BLOCKER E-2/E-3): the durable marker of a COMPLETED reconciliation
+// pass (operator-metadata infra; aoa_operator write-only / aoa_app NONE / tenants
+// invisible). The gate narrows its lease inventory to this marker's snapshot instant.
+export {
+  legacyReconciliationPasses,
+  type LegacyReconciliationPass,
+  type NewLegacyReconciliationPass,
+} from "./legacy_reconciliation_passes.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { workspaceOperations } from "./workspace_operations.js";
 export { feedbackVotes } from "./feedback_votes.js";

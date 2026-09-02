@@ -33,6 +33,7 @@ import {
   KILL_SWITCH_POLICY_APP_GRANTS,
   LEGACY_RESOURCE_RECONCILIATION_APP_GRANTS,
   LEGACY_RESOURCE_RECONCILIATION_OPERATOR_GRANTS,
+  LEGACY_RECONCILIATION_PASS_OPERATOR_GRANTS,
   LIVE_EVENT_LOG_NEW_PATH_GRANTS,
   SERVICE_GENERATIONS_NEW_PATH_GRANTS,
   OPERATOR_METADATA_COLUMN_GRANTS,
@@ -132,6 +133,10 @@ export function operatorTablePrivileges(): Readonly<Record<string, readonly Tabl
     ...CUTOVER_MARKER_OPERATOR_GRANTS,
     ...EXECUTION_TARGET_REVOCATION_OPERATOR_GRANTS,
     ...LEGACY_RESOURCE_RECONCILIATION_OPERATOR_GRANTS,
+    // MIG-010 Unit 2.4: the reconciliation-pass marker (migration 0269). Operator-only —
+    // there is no matching entry in `appTablePrivileges()` because aoa_app holds nothing
+    // on this table, which `assertExactServingRoleAuthority` then asserts as an absence.
+    ...LEGACY_RECONCILIATION_PASS_OPERATOR_GRANTS,
   };
 }
 

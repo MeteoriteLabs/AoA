@@ -11,6 +11,9 @@ import {
   reconcileOrganizationLegacyResources,
   type LegacyLeaseInput,
   type LegacyReconciliationStore,
+  type ReconciliationPassMarker,
+  UNGENERATIONED_KEY_GENERATION,
+  markerKeyGeneration,
 } from "../services/legacy-resource-reconciliation.js";
 
 const ORG = "org-1";
@@ -179,6 +182,9 @@ describe("MIG-008 closure gate — one record per resource, zero unmapped", () =
 
 // --- reconciler pass with an injected store seam (no drizzle internals) -------
 
+/** Fixed so the marker assertions can compare exactly rather than within a window. */
+const FAKE_SNAPSHOT_AT = new Date("2026-09-02T00:00:00.000Z");
+
 function makeStore(
   leases: LegacyLeaseInput[],
   opts: {
@@ -186,11 +192,16 @@ function makeStore(
     keyGeneration?: string | null;
     companyIds?: readonly string[];
   } = {},
-): LegacyReconciliationStore & { inserted: Array<{ resourceKey: string; disposition: string }> } {
+): LegacyReconciliationStore & {
+  inserted: Array<{ resourceKey: string; disposition: string }>;
+  markers: ReconciliationPassMarker[];
+} {
   const inserted: Array<{ resourceKey: string; disposition: string }> = [];
+  const markers: ReconciliationPassMarker[] = [];
   const seen = new Set<string>();
   return {
     inserted,
+    markers,
     listOrganizationCompanyIds: async () => opts.companyIds ?? ["co-1"],
     listLeases: async () => leases,
     platformDefaultEnv: async () =>
@@ -204,6 +215,15 @@ function makeStore(
       seen.add(record.resourceKey);
       inserted.push({ resourceKey: record.resourceKey, disposition: record.disposition });
       return true;
+    },
+    // MIG-010 Unit 2.4. ★ `server/src/__tests__` is EXCLUDED from typecheck
+    // (server/tsconfig.json) and vitest sets no `typecheck` option, so a store-interface
+    // change reds NOTHING here — this fake was found by grep, not by the compiler
+    // (design §11.4, measured). A fixed instant keeps the pass's ordering assertions
+    // deterministic; `markers` is what the marker tests below read.
+    readSnapshotInstant: async () => FAKE_SNAPSHOT_AT,
+    recordCompletedPass: async (marker) => {
+      markers.push(marker);
     },
   };
 }

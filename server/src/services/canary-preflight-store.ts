@@ -31,19 +31,29 @@
 // such members, so the gate structurally cannot reconcile as a side effect of being
 // consulted.
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { companies, legacyResourceReconciliation } from "@armyofagents/db";
+import { legacyResourceReconciliation } from "@armyofagents/db";
 import {
   readCanaryPreflightCompanyIds,
-  readCanaryPreflightLeaseIds,
+  readCanaryPreflightLeaseInventory,
   readCanaryPreflightScalars,
 } from "./canary-preflight-evidence.js";
-import type { CanaryPreflightStore } from "./canary-preflight.js";
+import type {
+  CanaryPreflightLeaseInventory,
+  CanaryPreflightPassMarker,
+  CanaryPreflightStore,
+} from "./canary-preflight.js";
 import type {
   LegacyLeaseInput,
   ReconciliationRecord,
 } from "./legacy-resource-reconciliation.js";
+
+function rowsOf<T>(result: unknown): T[] {
+  // `db.execute` returns an array on some drivers and `{rows}` on others. Both shapes are
+  // handled deliberately; do not "simplify" without checking which driver this pool uses.
+  return (Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])) as T[];
+}
 
 export function createDrizzleCanaryPreflightStore(db: Db): CanaryPreflightStore {
   return {
@@ -85,13 +95,84 @@ export function createDrizzleCanaryPreflightStore(db: Db): CanaryPreflightStore 
     // BLOCKER E — these three no longer delegate to the reconciler's drizzle store (see
     // the file header). They read the SAME rows with the SAME predicates, through the
     // owner-owned SECURITY DEFINER function, on the pool that is actually allowed to.
-    listLeases: async (organizationId: string, companyId: string): Promise<readonly LegacyLeaseInput[]> => {
-      const leaseIds = await readCanaryPreflightLeaseIds(db, organizationId, companyId);
+    // MIG-010 Unit 2.4b — the completed-pass marker (migration 0269).
+    //
+    // ★ A DIRECT TABLE READ, not a definer function, and that is not an inconsistency.
+    // `aoa_operator` holds SELECT on `legacy_reconciliation_passes` outright (0269), exactly
+    // as it does on the crosswalk that `listRecords` below reads directly. A definer function
+    // exists where the operator role holds NO grant — `environment_leases`, `companies`,
+    // `runtime_provider_keys`, `company_secret_versions` — and minting one here would add a
+    // certified surface for a table the caller may already read.
+    //
+    // ★★★ FRESHNESS IS DECIDED IN SQL, ON BOTH SIDES. `now()` and `snapshot_at` are both
+    // database values; only the BOUND crosses from TypeScript, and a bound is a duration, not
+    // an instant, so it carries no clock. Comparing `snapshot_at` against a JavaScript `Date`
+    // here would reintroduce the two-clock bug design section 3.3 exists to close (section
+    // 11.4 flags this specific implementation as the obvious wrong one).
+    //
+    // "Latest" is ordered by `completed_at` — literally section 11.4's "latest COMPLETED
+    // pass" — with `snapshot_at` and `id` as deterministic tiebreaks so two markers written in
+    // the same millisecond cannot make the gate answer differently on consecutive reads.
+    latestCompletedPass: async (
+      organizationId: string,
+      companyId: string,
+      maxAgeSeconds: number,
+    ): Promise<CanaryPreflightPassMarker | null> => {
+      const result = await db.execute(sql`
+        SELECT m.snapshot_at,
+               m.key_generation,
+               (now() - m.snapshot_at) > make_interval(secs => ${maxAgeSeconds}) AS stale,
+               EXTRACT(EPOCH FROM (now() - m.snapshot_at))::float8 AS age_seconds
+        FROM legacy_reconciliation_passes m
+        WHERE m.company_id = ${companyId}::uuid
+          AND m.organization_id = ${organizationId}::uuid
+        ORDER BY m.completed_at DESC, m.snapshot_at DESC, m.id DESC
+        LIMIT 1`);
+      const row = rowsOf<{
+        snapshot_at: Date | string;
+        key_generation: string;
+        stale: boolean;
+        age_seconds: unknown;
+      }>(result)[0];
+      // NO MARKER IS NOT AN ERROR — it is "this Company has never been reconciled", which the
+      // gate turns into `reconciliation_stale`. Returning null keeps that a policy answer
+      // rather than an unfalsifiable `preflight_error`.
+      if (!row) return null;
+      return {
+        snapshotAt: row.snapshot_at instanceof Date ? row.snapshot_at : new Date(row.snapshot_at),
+        keyGeneration: row.key_generation,
+        stale: row.stale,
+        // EXPLICIT conversion. `float8` and `bigint` both arrive as strings from this driver
+        // (measured in mig-010-unit-2-4-probes.integration.test.ts), and a bare comparison on
+        // a string is the silent bug design section 11.1 names.
+        ageSeconds: Number(row.age_seconds),
+      };
+    },
+
+    listLeases: async (
+      organizationId: string,
+      companyId: string,
+      watermark: Date,
+    ): Promise<CanaryPreflightLeaseInventory> => {
+      const inventory = await readCanaryPreflightLeaseInventory(
+        db,
+        organizationId,
+        companyId,
+        watermark,
+      );
       // The gate consumes ONLY `lease.id`: `inventoryKeysForCompany` maps
       // `resourceKeyForLease(lease.id)`, and `resourceKeyForLease` is the identity function.
       // The other twelve fields on LegacyLeaseInput serve the reconciler's classifier, which
       // this gate never runs. `cli-006-canary-preflight.test.ts` pins that narrowing.
-      return leaseIds.map((id) => ({ id }) as LegacyLeaseInput);
+      //
+      // ★ THE TOTAL IS CARRIED THROUGH, not dropped here. Section 11.4 measured that a caller
+      // projecting by name off a widened `RETURNS TABLE` silently loses the new column with no
+      // error, so the store returns BOTH facts and the churn arm cannot be lost one edit at a
+      // time.
+      return {
+        leases: inventory.leaseIds.map((id) => ({ id }) as LegacyLeaseInput),
+        unnarrowedTotal: inventory.unnarrowedTotal,
+      };
     },
     platformDefaultEnv: async (organizationId: string, companyId: string) => {
       const scalars = await readCanaryPreflightScalars(db, organizationId, companyId);

@@ -47,13 +47,13 @@ vi.mock("../services/legacy-resource-reconciliation-store.js", () => ({
 }));
 
 const readCanaryPreflightCompanyIds = vi.fn();
-const readCanaryPreflightLeaseIds = vi.fn();
+const readCanaryPreflightLeaseInventory = vi.fn();
 const readCanaryPreflightScalars = vi.fn();
 // ROUND 7 — the factory must export all THREE. Omitting one fails the whole file at import,
 // not a single test, because vitest's missing-export throw fires on first use of the module.
 vi.mock("../services/canary-preflight-evidence.js", () => ({
   readCanaryPreflightCompanyIds: (...args: unknown[]) => readCanaryPreflightCompanyIds(...args),
-  readCanaryPreflightLeaseIds: (...args: unknown[]) => readCanaryPreflightLeaseIds(...args),
+  readCanaryPreflightLeaseInventory: (...args: unknown[]) => readCanaryPreflightLeaseInventory(...args),
   readCanaryPreflightScalars: (...args: unknown[]) => readCanaryPreflightScalars(...args),
 }));
 
@@ -65,18 +65,30 @@ vi.mock("@armyofagents/db", () => {
 vi.mock("drizzle-orm", () => ({
   and: (...a: unknown[]) => ({ and: a }),
   eq: (...a: unknown[]) => ({ eq: a }),
+  // MIG-010 Unit 2.4b — the marker read is a direct tagged `db.execute` call, so the `sql` tag needs a
+  // no-op stand-in. It returns the interpolated values so a future assertion could inspect them.
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values }),
+    { raw: (v: unknown) => v },
+  ),
 }));
+
+const execute = vi.fn();
 
 const { createDrizzleCanaryPreflightStore } = await import("../services/canary-preflight-store.js");
 
 describe("CLI-006 — canary preflight store reads through the definer function", () => {
-  const db = {} as never;
+  const db = { execute } as never;
   const store = createDrizzleCanaryPreflightStore(db);
+
+  /** The watermark every narrowed read now carries (migration 0269's snapshot instant). */
+  const WATERMARK = new Date("2026-09-02T00:00:00.000Z");
 
   beforeEach(() => {
     readCanaryPreflightCompanyIds.mockReset();
-    readCanaryPreflightLeaseIds.mockReset();
+    readCanaryPreflightLeaseInventory.mockReset();
     readCanaryPreflightScalars.mockReset();
+    execute.mockReset();
   });
 
   it.each([
@@ -90,11 +102,48 @@ describe("CLI-006 — canary preflight store reads through the definer function"
     expect(store[name as "listLeases"], name).not.toBe(forbidden());
   });
 
-  it("sources `listLeases` from the leases function, narrowed to lease ids", async () => {
-    readCanaryPreflightLeaseIds.mockResolvedValue(["lease-1", "lease-2"]);
+  it("sources `listLeases` from the leases function, narrowed to lease ids AND carrying the total", async () => {
+    readCanaryPreflightLeaseInventory.mockResolvedValue({
+      leaseIds: ["lease-1", "lease-2"],
+      unnarrowedTotal: 5,
+    });
 
-    await expect(store.listLeases("org-1", "co-1")).resolves.toEqual([{ id: "lease-1" }, { id: "lease-2" }]);
-    expect(readCanaryPreflightLeaseIds).toHaveBeenCalledWith(db, "org-1", "co-1");
+    await expect(store.listLeases("org-1", "co-1", WATERMARK)).resolves.toEqual({
+      leases: [{ id: "lease-1" }, { id: "lease-2" }],
+      // ★ THE TOTAL SURVIVES THE STORE. Design section 11.4 measured that a caller projecting
+      // by name off a widened `RETURNS TABLE` loses the new column SILENTLY, with no error, so
+      // the churn arm can be lost one edit at a time. This is the assertion that stops it.
+      unnarrowedTotal: 5,
+    });
+    // ★ AND THE WATERMARK REACHES THE READ. The definer function's third parameter is REQUIRED
+    // with no DEFAULT (migration 0270), so a store that dropped it would fail loudly -- but a
+    // store that passed the WRONG value would not, which is what this pins.
+    expect(readCanaryPreflightLeaseInventory).toHaveBeenCalledWith(db, "org-1", "co-1", WATERMARK);
+  });
+
+  it("sources `latestCompletedPass` from the marker table, and null means NO pass rather than an error", async () => {
+    // MIG-010 Unit 2.4b. A direct read: `aoa_operator` holds SELECT on
+    // `legacy_reconciliation_passes` outright (0269), as it does on the crosswalk, so there is
+    // no definer function to mock -- the query goes through `db.execute`.
+    execute.mockResolvedValueOnce([]);
+    await expect(store.latestCompletedPass("org-1", "co-1", 3600)).resolves.toBeNull();
+
+    execute.mockResolvedValueOnce([
+      {
+        snapshot_at: WATERMARK,
+        key_generation: "sec-1:2",
+        stale: false,
+        // The driver hands back float8 as a STRING, measured in
+        // mig-010-unit-2-4-probes.integration.test.ts. The store must convert EXPLICITLY.
+        age_seconds: "42.5",
+      },
+    ]);
+    await expect(store.latestCompletedPass("org-1", "co-1", 3600)).resolves.toEqual({
+      snapshotAt: WATERMARK,
+      keyGeneration: "sec-1:2",
+      stale: false,
+      ageSeconds: 42.5,
+    });
   });
 
   it.each([
@@ -126,19 +175,22 @@ describe("CLI-006 — canary preflight store reads through the definer function"
   // newly-unreconciled resource is the fail-open the module exists to close. A store-global
   // single-flight broke that for OVERLAPPING checks; two functions with no shared state cannot.
   it("reads independently on every call — no coalescing, even within one burst", async () => {
-    readCanaryPreflightLeaseIds.mockResolvedValue(["lease-1"]);
+    readCanaryPreflightLeaseInventory.mockResolvedValue({
+      leaseIds: ["lease-1"],
+      unnarrowedTotal: 1,
+    });
     readCanaryPreflightScalars.mockResolvedValue({
       platformDefaultEnvironmentId: "env-1",
       keyGeneration: "sec-1:2",
     });
 
     const [leases, platformDefault, keyGeneration] = await Promise.all([
-      store.listLeases("org-1", "co-1"),
+      store.listLeases("org-1", "co-1", WATERMARK),
       store.platformDefaultEnv("org-1", "co-1"),
       store.currentKeyGeneration("org-1", "co-1"),
     ]);
 
-    expect(leases).toEqual([{ id: "lease-1" }]);
+    expect(leases.leases).toEqual([{ id: "lease-1" }]);
     expect(platformDefault).toEqual({ environmentId: "env-1" });
     expect(keyGeneration).toBe("sec-1:2");
     // Two scalar members, two scalar reads: nothing is shared or replayed.
@@ -156,25 +208,25 @@ describe("CLI-006 — canary preflight store reads through the definer function"
 
     await Promise.all([store.platformDefaultEnv("org-1", "co-1"), store.currentKeyGeneration("org-1", "co-1")]);
 
-    expect(readCanaryPreflightLeaseIds).not.toHaveBeenCalled();
+    expect(readCanaryPreflightLeaseInventory).not.toHaveBeenCalled();
   });
 
   it("does not share state between overlapping reads for the same company", async () => {
     // The round-6 defect: a store-global in-flight map keyed by company let a SECOND, later
     // `check()` reuse the FIRST check's snapshot, so a lease committed in between was
     // invisible to it. With no shared state, every overlapping call reads for itself.
-    let resolveFirst: ((v: readonly string[]) => void) | undefined;
-    readCanaryPreflightLeaseIds
+    let resolveFirst: ((v: unknown) => void) | undefined;
+    readCanaryPreflightLeaseInventory
       .mockImplementationOnce(() => new Promise((r) => { resolveFirst = r; }))
-      .mockResolvedValueOnce(["lease-late"]);
+      .mockResolvedValueOnce({ leaseIds: ["lease-late"], unnarrowedTotal: 1 });
 
-    const first = store.listLeases("org-1", "co-1");
-    const second = store.listLeases("org-1", "co-1");
-    resolveFirst?.([]);
+    const first = store.listLeases("org-1", "co-1", WATERMARK);
+    const second = store.listLeases("org-1", "co-1", WATERMARK);
+    resolveFirst?.({ leaseIds: [], unnarrowedTotal: 0 });
 
-    expect(await first).toEqual([]);
-    expect(await second).toEqual([{ id: "lease-late" }]);
-    expect(readCanaryPreflightLeaseIds).toHaveBeenCalledTimes(2);
+    expect((await first).leases).toEqual([]);
+    expect((await second).leases).toEqual([{ id: "lease-late" }]);
+    expect(readCanaryPreflightLeaseInventory).toHaveBeenCalledTimes(2);
   });
 
   // The gate is READ-ONLY by construction: it must not even be able to reconcile
@@ -193,8 +245,11 @@ describe("CLI-006 — canary preflight store reads through the definer function"
     expect(typeof insertRecordIfAbsent).toBe("function");
   });
 
-  it("adds the two reads MIG-008's store does not have", () => {
+  it("adds the reads MIG-008's store does not have", () => {
     expect(typeof store.listOrganizationCompanyIds).toBe("function");
     expect(typeof store.listRecords).toBe("function");
+    // MIG-010 Unit 2.4b — the marker read. The reconciler WRITES markers; only the gate
+    // reads the latest one back.
+    expect(typeof store.latestCompletedPass).toBe("function");
   });
 });

@@ -19,12 +19,18 @@
 import { describe, expect, it } from "vitest";
 import {
   createCanaryPreflight,
+  isDistinctFrom,
+  isMarkerGenerationStale,
+  RECONCILIATION_EVIDENCE_MAX_AGE_SECONDS,
+  type CanaryPreflightLeaseInventory,
+  type CanaryPreflightPassMarker,
   type CanaryPreflightStore,
 } from "../services/canary-preflight.js";
 import { CANARY_CREDENTIAL_AUTHORITY } from "../services/canary-mint-authority.js";
 import {
   resourceKeyForLease,
   resourceKeyForPlatformDefaultEnv,
+  UNGENERATIONED_KEY_GENERATION,
   type LegacyLeaseInput,
   type ReconciliationRecord,
 } from "../services/legacy-resource-reconciliation.js";
@@ -68,6 +74,30 @@ function record(overrides: Partial<ReconciliationRecord> & { companyId: string; 
   };
 }
 
+/**
+ * A completed pass, recent and at the current generation — the marker a clean cutover has.
+ * `stale` is a STORE-COMPUTED field (the real store evaluates it in SQL against the database
+ * clock on both sides), so a fake supplies it directly rather than re-deriving it here.
+ */
+function freshMarker(overrides: Partial<CanaryPreflightPassMarker> = {}): CanaryPreflightPassMarker {
+  return {
+    snapshotAt: new Date("2026-09-02T00:00:00.000Z"),
+    keyGeneration: KEY_GEN,
+    stale: false,
+    ageSeconds: 30,
+    ...overrides,
+  };
+}
+
+/**
+ * The narrowed inventory a watermark that covers everything produces: every lease is inside
+ * it, and the unnarrowed total equals the narrowed count. Tests that need the CHURN case
+ * build `{ leases: [], unnarrowedTotal: n }` explicitly.
+ */
+function narrowed(leases: readonly LegacyLeaseInput[]): CanaryPreflightLeaseInventory {
+  return { leases, unnarrowedTotal: leases.length };
+}
+
 /** A store where both Companies of the Organization are cleanly reconciled. */
 function cleanStore(): CanaryPreflightStore {
   const leases: Record<string, LegacyLeaseInput[]> = {
@@ -90,7 +120,13 @@ function cleanStore(): CanaryPreflightStore {
   };
   return {
     listOrganizationCompanyIds: async () => [COMPANY_A, COMPANY_B],
-    listLeases: async (_organizationId, companyId) => leases[companyId] ?? [],
+    // MIG-010 Unit 2.4b. ★ EVERY FAKE IN THIS FILE ABSORBED THE NEW MEMBER SILENTLY:
+    // `server/src/__tests__` is excluded from typecheck (server/tsconfig.json) and vitest sets
+    // no `typecheck` option, so a store-interface change reds NOTHING here at compile time
+    // (design section 11.4, measured). These were found by grep and by the RUN, not by tsc.
+    latestCompletedPass: async () => freshMarker(),
+    listLeases: async (_organizationId, companyId, _watermark) =>
+      narrowed(leases[companyId] ?? []),
     platformDefaultEnv: async (_organizationId: string, _companyId: string) => null,
     listRecords: async (companyId) => records[companyId] ?? [],
     currentKeyGeneration: async (_organizationId: string, _companyId: string) => KEY_GEN,
@@ -200,7 +236,19 @@ describe("CLI-006 D2 — canary preflight (fail-closed, org-wide, recomputed)", 
   });
 
   // Credential authority — the second half of the acceptance clause.
-  it("REFUSES when a record carries a SUPERSEDED key generation", async () => {
+  //
+  // ★ INVERTED IN PLACE BY MIG-010 UNIT 2.4b, NOT DELETED (DSK-003). Until this unit it read:
+  //
+  //     it("REFUSES when a record carries a SUPERSEDED key generation", ...)
+  //       expect(result.reason).toBe("credential_authority_not_moved");
+  //
+  // and it passed, because the gate filtered RECORDS by generation. Design section 12 showed
+  // that clause was wrong twice over: the crosswalk is append-only, so a re-run could not
+  // re-tag a record and ANY rotation after a clean pass bricked the Company permanently; and
+  // its `!== null` conjunct meant a NULL-generation record was never counted as superseded at
+  // all (E7-F005). The generation now belongs to the MARKER, so a superseded RECORD is
+  // history and no longer a verdict.
+  it("[section 12, inverted] a record carrying a SUPERSEDED generation no longer refuses — the MARKER decides", async () => {
     const preflight = createCanaryPreflight({
       store: withStore({
         listRecords: async (companyId) =>
@@ -220,10 +268,94 @@ describe("CLI-006 D2 — canary preflight (fail-closed, org-wide, recomputed)", 
               ],
       }),
     });
+    // The marker is fresh and at the current generation, so the evidence IS current — which
+    // is what "reconciled under the authority in force" actually means.
+    expect((await preflight.check({ organizationId: ORG })).ok).toBe(true);
+  });
+
+  it("[section 12] REFUSES `reconciliation_stale` when the MARKER's generation is superseded", async () => {
+    const preflight = createCanaryPreflight({
+      store: withStore({
+        latestCompletedPass: async () => freshMarker({ keyGeneration: "secret-1:4" }),
+      }),
+    });
     const result = await preflight.check({ organizationId: ORG });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.reason).toBe("credential_authority_not_moved");
+    // NOT `credential_authority_not_moved`: authority DID move, and the evidence predates the
+    // move. Re-running the pass fixes it, which is exactly what the reason says.
+    expect(result.reason).toBe("reconciliation_stale");
+    expect(result.detail).toContain("superseded");
+  });
+
+  // ★★★ THE FOUR COMBINATIONS design section 13.3 requires pinned, and the SECOND is the one
+  // every naive implementation gets wrong: SQL `<>` (or a bare `!==` against a NULL current)
+  // lets a sentinel marker escape when the current generation is real. Measured against
+  // PostgreSQL 18.1: `<>` matched 2 of 3 rows with a real current and 0 of 3 with a NULL one;
+  // `IS DISTINCT FROM` matched 3 of 3 and 2 of 3.
+  it("[section 13.3] pins all four (marker, current) generation combinations", () => {
+    expect(isMarkerGenerationStale(UNGENERATIONED_KEY_GENERATION, null)).toBe(false);
+    expect(isMarkerGenerationStale(UNGENERATIONED_KEY_GENERATION, "S2:1")).toBe(true);
+    expect(isMarkerGenerationStale("S1:1", "S2:1")).toBe(true);
+    expect(isMarkerGenerationStale("S1:1", "S1:1")).toBe(false);
+    // And the primitive underneath, so a future nullable input cannot silently re-open it.
+    expect(isDistinctFrom(null, null)).toBe(false);
+    expect(isDistinctFrom(null, "S1:1")).toBe(true);
+    expect(isDistinctFrom("S1:1", null)).toBe(true);
+  });
+
+  it("[section 9.1] REFUSES `reconciliation_stale` when the marker has no completed pass at all", async () => {
+    const preflight = createCanaryPreflight({
+      store: withStore({ latestCompletedPass: async () => null }),
+    });
+    const result = await preflight.check({ organizationId: ORG });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("reconciliation_stale");
+    expect(result.detail).toContain("no completed legacy reconciliation pass");
+  });
+
+  it("[section 9.1] REFUSES `reconciliation_stale` when the evidence is past the freshness bound", async () => {
+    const preflight = createCanaryPreflight({
+      store: withStore({
+        latestCompletedPass: async () =>
+          freshMarker({ stale: true, ageSeconds: RECONCILIATION_EVIDENCE_MAX_AGE_SECONDS + 1 }),
+      }),
+    });
+    const result = await preflight.check({ organizationId: ORG });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("reconciliation_stale");
+    expect(result.detail).toContain(`${RECONCILIATION_EVIDENCE_MAX_AGE_SECONDS}s bound`);
+  });
+
+  it("[section 10.3.4 — the CHURN arm] REFUSES when the pass predates the ENTIRE current fleet", async () => {
+    // The fail-open this arm exists to close: an empty narrowed inventory satisfies
+    // `assertClosure` VACUOUSLY (it iterates inventoryKeys only), so without the unnarrowed
+    // total the gate would ADMIT here — no error, no reason, no log.
+    const preflight = createCanaryPreflight({
+      store: withStore({
+        listLeases: async (_organizationId, companyId) =>
+          companyId === COMPANY_A ? { leases: [], unnarrowedTotal: 3 } : narrowed([]),
+      }),
+    });
+    const result = await preflight.check({ organizationId: ORG });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("reconciliation_stale");
+    expect(result.detail).toContain("3 legacy lease(s)");
+  });
+
+  it("[section 10.3.4] a genuinely lease-free Company is NOT churn — zero narrowed AND zero total ADMITS", async () => {
+    // The discriminating half. If the arm were written on the narrowed count alone it would
+    // refuse every Company that simply holds no legacy leases, which is a normal, closed state.
+    const preflight = createCanaryPreflight({
+      store: withStore({
+        listLeases: async () => narrowed([]),
+        listRecords: async () => [],
+      }),
+    });
+    expect((await preflight.check({ organizationId: ORG })).ok).toBe(true);
   });
 
   it("REFUSES when provider-control authority has not moved at all (no key generation)", async () => {
@@ -250,7 +382,7 @@ describe("CLI-006 D2 — canary preflight (fail-closed, org-wide, recomputed)", 
   it("REFUSES (never throws) when the store throws", async () => {
     const preflight = createCanaryPreflight({
       store: withStore({
-        listLeases: async (_organizationId: string, _companyId: string) => {
+        listLeases: async (_organizationId: string, _companyId: string, _watermark: Date) => {
           throw new Error("db down");
         },
       }),
@@ -275,26 +407,60 @@ describe("CLI-006 D2 — canary preflight (fail-closed, org-wide, recomputed)", 
     expect(result.reason).toBe("preflight_error");
   });
 
-  // A legacy lease created AFTER reconciliation must re-close the gate — the
-  // self-healing direction the design commits to (§4 D2).
-  it("REFUSES again when a NEW legacy lease appears after a clean reconciliation", async () => {
+  // ★★★ E7-F004, INVERTED IN PLACE BY MIG-010 UNIT 2.4b — not deleted (DSK-003). Until this
+  // unit it read:
+  //
+  //     it("REFUSES again when a NEW legacy lease appears after a clean reconciliation", ...)
+  //       expect(result.reason).toBe("reconciliation_incomplete");
+  //
+  // and it passed, and it was the defect. The gate re-derived its inventory from LIVE rows, so
+  // one lease created a second after the pass re-closed it — on a box taking legacy traffic
+  // the gate could never open, permanently, and the old comment above called that
+  // "self-healing". It is a permanently-losing race, which is what E7-F004 filed.
+  //
+  // A post-watermark lease is now OUT of the narrowed inventory. Section 9.1 names the
+  // residual honestly: inside the freshness window such a lease IS waved through without a
+  // crosswalk record. That is the intended semantics — it is current traffic on the legacy
+  // path, not an unreconciled legacy resource — and the window bounds how much of it can
+  // accumulate rather than eliminating it.
+  it("[E7-F004, inverted] a NEW legacy lease created AFTER the watermark no longer re-closes the gate", async () => {
     const store = cleanStore();
-    const preflight = createCanaryPreflight({ store });
-    expect((await preflight.check({ organizationId: ORG })).ok).toBe(true);
+    expect((await createCanaryPreflight({ store }).check({ organizationId: ORG })).ok).toBe(true);
 
     const withNewLease = createCanaryPreflight({
       store: {
         ...store,
-        listLeases: async (_organizationId, companyId) =>
+        // The narrowed set is UNCHANGED — the new lease postdates the watermark, so the
+        // definer function's FILTER excludes it — while the unnarrowed total grows. That
+        // asymmetry is exactly what the one-row contract exists to express.
+        listLeases: async (_organizationId, companyId, watermark) =>
           companyId === COMPANY_A
-            ? [
-                lease({ id: "1easeaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: COMPANY_A }),
-                lease({ id: "1easenew-nnnn-4nnn-8nnn-nnnnnnnnnnnn", companyId: COMPANY_A }),
-              ]
-            : store.listLeases(companyId),
+            ? {
+                leases: [lease({ id: "1easeaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: COMPANY_A })],
+                unnarrowedTotal: 2,
+              }
+            : store.listLeases(_organizationId, companyId, watermark),
       },
     });
-    const result = await withNewLease.check({ organizationId: ORG });
+    expect((await withNewLease.check({ organizationId: ORG })).ok).toBe(true);
+  });
+
+  it("[E7-F004] a lease created BEFORE the watermark still re-closes the gate — the narrowing is not a blanket pass", async () => {
+    // The anti-vacuity half. If the narrowing were "ignore leases", this would admit too.
+    const store = cleanStore();
+    const withOldLease = createCanaryPreflight({
+      store: {
+        ...store,
+        listLeases: async (_organizationId, companyId, watermark) =>
+          companyId === COMPANY_A
+            ? narrowed([
+                lease({ id: "1easeaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: COMPANY_A }),
+                lease({ id: "1easeold-nnnn-4nnn-8nnn-nnnnnnnnnnnn", companyId: COMPANY_A }),
+              ])
+            : store.listLeases(_organizationId, companyId, watermark),
+      },
+    });
+    const result = await withOldLease.check({ organizationId: ORG });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toBe("reconciliation_incomplete");
@@ -309,6 +475,10 @@ describe("CLI-006 D2 — canary preflight (fail-closed, org-wide, recomputed)", 
         listOrganizationCompanyIds: async (...a) => {
           calls.push("listOrganizationCompanyIds");
           return store.listOrganizationCompanyIds(...a);
+        },
+        latestCompletedPass: async (...a) => {
+          calls.push("latestCompletedPass");
+          return store.latestCompletedPass(...a);
         },
         listLeases: async (...a) => {
           calls.push("listLeases");
@@ -334,7 +504,10 @@ describe("CLI-006 D2 — canary preflight (fail-closed, org-wide, recomputed)", 
     // exact-set assertion below is what carries this test, and it fails on any extra call.
     expect(calls).not.toContain("insertRecordIfAbsent");
     expect(new Set(calls)).toEqual(
-      new Set(["listOrganizationCompanyIds", "listLeases", "platformDefaultEnv", "listRecords", "currentKeyGeneration"]),
+      new Set([
+        "listOrganizationCompanyIds", "latestCompletedPass", "listLeases",
+        "platformDefaultEnv", "listRecords", "currentKeyGeneration",
+      ]),
     );
   });
 });
@@ -382,7 +555,11 @@ describe("BLOCKER E — the gate consumes only lease.id", () => {
     const preflight = createCanaryPreflight({
       store: {
         listOrganizationCompanyIds: async () => [COMPANY_A],
-        listLeases: async (_organizationId: string, _companyId: string) => [{ id: "lease-1" } as never],
+        latestCompletedPass: async () => freshMarker(),
+        listLeases: async (_organizationId: string, _companyId: string, _watermark: Date) => ({
+          leases: [{ id: "lease-1" } as never],
+          unnarrowedTotal: 1,
+        }),
         platformDefaultEnv: async (_organizationId: string, _companyId: string) => null,
         listRecords: async () => [],
         currentKeyGeneration: async (_organizationId: string, _companyId: string) => KEY_GEN,

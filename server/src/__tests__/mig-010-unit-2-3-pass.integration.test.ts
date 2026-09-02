@@ -271,6 +271,11 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.3 — the reconciliation pass, made runnab
     // mismatch refuses as `credential_authority_not_moved`, which would be a SEEDING bug, not
     // a closure result — and would mean the pass and the gate derive the generation
     // differently, which is the drift `currentKeyGeneration` was re-pointed to prevent.
+    if (!result.ok) {
+      // Diagnostic first: the reason discriminates a SEEDING bug from a real refusal, and
+      // MIG-010 Unit 2.4b added three more reasons this can now be.
+      throw new Error(`gate refused ${result.reason}: ${result.detail}`);
+    }
     expect(result).toMatchObject({ ok: true });
     expect(result.ok && result.companyIds).toEqual([COMPANY]);
   });
