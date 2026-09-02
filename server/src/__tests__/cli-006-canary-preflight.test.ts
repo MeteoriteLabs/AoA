@@ -329,7 +329,9 @@ describe("CLI-006 D2 — canary preflight (fail-closed, org-wide, recomputed)", 
       },
     });
     await preflight.check({ organizationId: ORG });
-    expect(calls).not.toContain("casClaimPaused");
+    // `casClaimPaused` was named here too. Option R removed it from the reconciler's store,
+    // so its absence is no longer a fact about the GATE -- it is a fact about nothing. The
+    // exact-set assertion below is what carries this test, and it fails on any extra call.
     expect(calls).not.toContain("insertRecordIfAbsent");
     expect(new Set(calls)).toEqual(
       new Set(["listOrganizationCompanyIds", "listLeases", "platformDefaultEnv", "listRecords", "currentKeyGeneration"]),

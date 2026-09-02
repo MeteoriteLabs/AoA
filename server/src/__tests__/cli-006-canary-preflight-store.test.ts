@@ -32,15 +32,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const listLeases = vi.fn();
 const platformDefaultEnv = vi.fn();
 const currentKeyGeneration = vi.fn();
-const casClaimPaused = vi.fn();
 const insertRecordIfAbsent = vi.fn();
 
+// `casClaimPaused` was a fourth member here. Option R (MIG-010 Unit 2.3) removed it from
+// `LegacyReconciliationStore`, so keeping it in this fake would model a seam that no
+// longer exists -- and would make the absence assertion below pass for the wrong reason.
 vi.mock("../services/legacy-resource-reconciliation-store.js", () => ({
   createDrizzleReconciliationStore: () => ({
     listLeases,
     platformDefaultEnv,
     currentKeyGeneration,
-    casClaimPaused,
     insertRecordIfAbsent,
   }),
 }));
@@ -178,12 +179,19 @@ describe("CLI-006 — canary preflight store reads through the definer function"
 
   // The gate is READ-ONLY by construction: it must not even be able to reconcile
   // as a side effect of being consulted.
-  it.each(["casClaimPaused", "insertRecordIfAbsent"])(
-    "does NOT expose the mutating member `%s`",
-    (name) => {
-      expect((store as Record<string, unknown>)[name]).toBeUndefined();
-    },
-  );
+  //
+  // ★ THIS LIST SHRANK FROM TWO TO ONE, AND THAT IS THE HONEST DIRECTION. It read
+  // `["casClaimPaused", "insertRecordIfAbsent"]`. Option R deleted `casClaimPaused` from
+  // `LegacyReconciliationStore` outright, so asserting the gate does not expose it became
+  // vacuously true -- a check that nothing runs. `insertRecordIfAbsent` still exists on the
+  // reconciler's store, so this assertion still discriminates: it fails if the gate ever
+  // re-acquires the mutating half.
+  it("does NOT expose the mutating member `insertRecordIfAbsent`", () => {
+    expect((store as Record<string, unknown>).insertRecordIfAbsent).toBeUndefined();
+    // And the member it is asserted against is REAL on the reconciler's own store, so this
+    // is not an assertion about a name nothing defines.
+    expect(typeof insertRecordIfAbsent).toBe("function");
+  });
 
   it("adds the two reads MIG-008's store does not have", () => {
     expect(typeof store.listOrganizationCompanyIds).toBe("function");
