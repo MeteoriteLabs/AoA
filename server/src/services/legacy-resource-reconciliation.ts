@@ -335,13 +335,26 @@ export function assertClosure(input: {
 
 // --- reconciler pass ---------------------------------------------------------
 
+/**
+ * ★ EVERY MEMBER IS `(organizationId, companyId)` SINCE MIG-010 UNIT 2.3, matching
+ * `CanaryPreflightStore`'s shape. That is not cosmetic symmetry: the owner-owned
+ * SECURITY DEFINER functions these reads go through (`0267`, `0268`) are ALL
+ * organization-bound, and `0267` ships an org->companies lookup and NO company->org
+ * reverse. A company-scoped pass therefore structurally cannot call any of them
+ * (design §4.2, F1).
+ */
 export interface LegacyReconciliationStore {
+  /** Every Company under the Organization — the enumeration the pass now folds over. */
+  listOrganizationCompanyIds(organizationId: string): Promise<readonly string[]>;
   /** All `environment_leases` rows for the company (owner-served). */
-  listLeases(companyId: string): Promise<readonly LegacyLeaseInput[]>;
+  listLeases(organizationId: string, companyId: string): Promise<readonly LegacyLeaseInput[]>;
   /** The materialized platform-default env row id, or null when none exists. */
-  platformDefaultEnv(companyId: string): Promise<{ environmentId: string } | null>;
+  platformDefaultEnv(
+    organizationId: string,
+    companyId: string,
+  ): Promise<{ environmentId: string } | null>;
   /** The current per-company key generation (D3 attribution tag), or null. */
-  currentKeyGeneration(companyId: string): Promise<string | null>;
+  currentKeyGeneration(organizationId: string, companyId: string): Promise<string | null>;
   // `casClaimPaused` lived here. Option R removed it: it was an UPDATE on
   // `environment_leases`, which `aoa_operator` holds no write grant on, so the pass could
   // not run while it existed. The only remaining WRITE this store performs is the
@@ -359,22 +372,39 @@ export interface ReconcileResult {
   readonly unattributableKeys: readonly string[];
 }
 
+/** The org-wide result: one per-company outcome, plus the folded totals. */
+export interface OrganizationReconcileResult {
+  readonly organizationId: string;
+  /** Per-company, in enumeration order. The unit of CLOSURE is still the company. */
+  readonly companies: readonly (ReconcileResult & { readonly companyId: string })[];
+  /** True only when EVERY company closed — the same bar `canary-preflight.ts` applies. */
+  readonly ok: boolean;
+  readonly insertedKeys: readonly string[];
+  readonly unattributableKeys: readonly string[];
+}
+
 /**
  * Reconcile one company's legacy E2B leases + platform-default env resource into
  * the append-only crosswalk. Idempotent (append-only insert-if-absent).
  *
  * READ-ONLY against tenant data since Option R: the only write is the crosswalk insert.
  * A paused row is observed and recorded, never claimed.
+ *
+ * ★ NO LONGER THE ENTRY POINT (MIG-010 Unit 2.3). It stays the unit of CLOSURE — closure
+ * is a per-company property and `canary-preflight.ts` refuses per company — but the pass
+ * is driven org-wide by `reconcileOrganizationLegacyResources` below. Exported for the
+ * unit tests that pin its per-company semantics; production calls the org function.
  */
 export async function reconcileCompanyLegacyResources(
+  organizationId: string,
   companyId: string,
   deps: { store: LegacyReconciliationStore },
 ): Promise<ReconcileResult> {
   const { store } = deps;
   const [leases, platformDefault, keyGeneration] = await Promise.all([
-    store.listLeases(companyId),
-    store.platformDefaultEnv(companyId),
-    store.currentKeyGeneration(companyId),
+    store.listLeases(organizationId, companyId),
+    store.platformDefaultEnv(organizationId, companyId),
+    store.currentKeyGeneration(organizationId, companyId),
   ]);
 
   const inventoryKeys: string[] = [];
@@ -407,5 +437,52 @@ export async function reconcileCompanyLegacyResources(
     closure,
     insertedKeys,
     unattributableKeys: closure.unattributable,
+  };
+}
+
+/**
+ * ★ THE PRODUCTION ENTRY POINT (MIG-010 Unit 2.3, E10-F002). Reconcile EVERY Company under
+ * one Organization.
+ *
+ * WHY ORG-SCOPED, given closure is a per-company property. Every read the pass makes now
+ * goes through an owner-owned SECURITY DEFINER function, and every one of those — `0267`'s
+ * three and `0268`'s one — is ORGANIZATION-BOUND. `0267` ships org->companies and no
+ * company->org reverse, so a company-scoped pass holds no `organizationId` and structurally
+ * cannot call any of them (design §4.2, F1). Minting a reverse lookup whose only caller
+ * would be this pass is strictly worse than moving the scope: org-scope matches the gate's
+ * own scope (`canary-preflight.ts:21-26`) and the operator's framing — "reconcile this org
+ * before flipping it".
+ *
+ * Sequential by Company on purpose. The reads are owner-authority definer calls on a single
+ * operator pool; fanning them out buys nothing an operator pass needs and makes a partial
+ * failure harder to attribute.
+ *
+ * `ok` is the same bar the gate applies: EVERY Company must close. A single unmapped or
+ * unattributable resource anywhere under the Organization leaves it false. The pass does not
+ * short-circuit on the first failure — an operator wants the whole picture, not the first
+ * company alphabetically.
+ */
+export async function reconcileOrganizationLegacyResources(
+  organizationId: string,
+  deps: { store: LegacyReconciliationStore },
+): Promise<OrganizationReconcileResult> {
+  const { store } = deps;
+  const companyIds = await store.listOrganizationCompanyIds(organizationId);
+
+  const companies: (ReconcileResult & { companyId: string })[] = [];
+  for (const companyId of companyIds) {
+    const result = await reconcileCompanyLegacyResources(organizationId, companyId, { store });
+    companies.push({ ...result, companyId });
+  }
+
+  return {
+    organizationId,
+    companies,
+    // An Organization with NO companies is not closed. It is the `no_companies` refusal the
+    // gate already makes (`canary-preflight.ts:131-137`), and answering `ok: true` here for
+    // an empty enumeration would be the vacuous-closure fail-open in a second place.
+    ok: companies.length > 0 && companies.every((company) => company.closure.ok),
+    insertedKeys: companies.flatMap((company) => company.insertedKeys),
+    unattributableKeys: companies.flatMap((company) => company.unattributableKeys),
   };
 }

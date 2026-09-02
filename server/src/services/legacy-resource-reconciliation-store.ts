@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { environmentLeases, environments, legacyResourceReconciliation } from "@armyofagents/db";
 import { derivePlatformDefaultEnvironmentId } from "./platform-default-environment.js";
 import { deriveE2bKeyGeneration } from "./e2b-credential-authority-wiring.js";
+import { readCanaryPreflightCompanyIds } from "./canary-preflight-evidence.js";
 import type {
   LegacyLeaseInput,
   LegacyReconciliationStore,
@@ -23,7 +24,21 @@ import type {
  */
 export function createDrizzleReconciliationStore(db: Db): LegacyReconciliationStore {
   return {
-    listLeases: async (companyId: string): Promise<readonly LegacyLeaseInput[]> => {
+    // Org->companies through the `0267` definer function, not a direct `companies` select:
+    // `aoa_operator` holds no grant on `companies` or `organizations` at all. This is the
+    // same read the gate uses, so the pass and the gate enumerate the identical set.
+    listOrganizationCompanyIds: async (organizationId: string) =>
+      readCanaryPreflightCompanyIds(db, organizationId),
+
+    // ★ `organizationId` is accepted and NOT YET USED by the three reads below. They still
+    // query the tenant tables directly, which is exactly why the pass cannot run as
+    // `aoa_operator` (42501 on the first read). Task 7 points them at the definer functions,
+    // which is where the parameter becomes load-bearing. It is named `_organizationId` so
+    // the unused-parameter rule states the gap rather than hiding it.
+    listLeases: async (
+      _organizationId: string,
+      companyId: string,
+    ): Promise<readonly LegacyLeaseInput[]> => {
       const rows = await db
         .select()
         .from(environmentLeases)
@@ -44,7 +59,7 @@ export function createDrizzleReconciliationStore(db: Db): LegacyReconciliationSt
         cleanupStatus: row.cleanupStatus,
       }));
     },
-    platformDefaultEnv: async (companyId: string) => {
+    platformDefaultEnv: async (_organizationId: string, companyId: string) => {
       const id = derivePlatformDefaultEnvironmentId(companyId);
       const [row] = await db
         .select({ id: environments.id })
@@ -53,7 +68,8 @@ export function createDrizzleReconciliationStore(db: Db): LegacyReconciliationSt
         .limit(1);
       return row ? { environmentId: row.id } : null;
     },
-    currentKeyGeneration: (companyId: string) => deriveE2bKeyGeneration(db, companyId),
+    currentKeyGeneration: (_organizationId: string, companyId: string) =>
+      deriveE2bKeyGeneration(db, companyId),
     // `casClaimPaused` lived here, calling `environments$.expireLeaseIfPaused`. Option R
     // (MIG-010 Unit 2.3) removed it: it was an UPDATE on `environment_leases`, and
     // `aoa_operator` — the role this store must run as — holds no write grant there. The

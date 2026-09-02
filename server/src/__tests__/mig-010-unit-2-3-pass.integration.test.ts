@@ -88,7 +88,11 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.3 — the reconciliation pass, made runnab
     // here -- it fails with a diff that looks like a shape quibble while the denial it was
     // written to catch is present. Pin the relation too: a bare 42501 would also match a
     // denial on some other table and would keep passing after this one is fixed.
-    await expect(store.listLeases(COMPANY)).rejects.toMatchObject({
+    // ★ `(ORG, COMPANY)` since Unit 2.3 org-scoped the store. Every member takes the pair
+    // now, and a stale one-arg call lands COMPANY in `organizationId` and leaves companyId
+    // undefined -- which fails as UNDEFINED_VALUE, not 42501. Pinning the code AND the
+    // message is what makes that visible instead of green-and-meaningless.
+    await expect(store.listLeases(ORG, COMPANY)).rejects.toMatchObject({
       cause: { code: "42501", message: "permission denied for table environment_leases" },
     });
   });

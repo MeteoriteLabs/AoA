@@ -8,9 +8,12 @@ import {
   buildPlatformDefaultEnvRecord,
   assertClosure,
   reconcileCompanyLegacyResources,
+  reconcileOrganizationLegacyResources,
   type LegacyLeaseInput,
   type LegacyReconciliationStore,
 } from "../services/legacy-resource-reconciliation.js";
+
+const ORG = "org-1";
 
 const baseLease = (over: Partial<LegacyLeaseInput> = {}): LegacyLeaseInput => ({
   id: "lease-1",
@@ -181,12 +184,14 @@ function makeStore(
   opts: {
     platformDefaultEnvId?: string | null;
     keyGeneration?: string | null;
+    companyIds?: readonly string[];
   } = {},
 ): LegacyReconciliationStore & { inserted: Array<{ resourceKey: string; disposition: string }> } {
   const inserted: Array<{ resourceKey: string; disposition: string }> = [];
   const seen = new Set<string>();
   return {
     inserted,
+    listOrganizationCompanyIds: async () => opts.companyIds ?? ["co-1"],
     listLeases: async () => leases,
     platformDefaultEnv: async () =>
       opts.platformDefaultEnvId ? { environmentId: opts.platformDefaultEnvId } : null,
@@ -210,7 +215,7 @@ describe("MIG-008 reconciler pass", () => {
       baseLease({ id: "l-b", status: "released", providerLeaseId: null }),
     ];
     const store = makeStore(leases, { platformDefaultEnvId: "env-1" });
-    const result = await reconcileCompanyLegacyResources("co-1", { store });
+    const result = await reconcileCompanyLegacyResources(ORG, "co-1", { store });
     expect(result.closure.ok).toBe(true);
     expect(store.inserted.map((r) => r.resourceKey).sort()).toEqual(
       ["l-a", "l-b", "platform-default-env:env-1"].sort(),
@@ -234,7 +239,7 @@ describe("MIG-008 reconciler pass", () => {
       providerLeaseId: "sbx-p",
     });
     const store = makeStore([paused], { keyGeneration: "secret-x:1" });
-    const result = await reconcileCompanyLegacyResources("co-1", { store });
+    const result = await reconcileCompanyLegacyResources(ORG, "co-1", { store });
 
     const rec = store.inserted.find((r) => r.resourceKey === "l-paused");
     // It is RECORDED (the old lost-CAS branch recorded nothing at all) ...
@@ -273,9 +278,9 @@ describe("MIG-008 reconciler pass", () => {
   it("is idempotent: a second reconcile inserts no duplicate records", async () => {
     const leases = [baseLease({ id: "l-a", status: "active", providerLeaseId: "sbx-a" })];
     const store = makeStore(leases, { platformDefaultEnvId: "env-1" });
-    await reconcileCompanyLegacyResources("co-1", { store });
+    await reconcileCompanyLegacyResources(ORG, "co-1", { store });
     const firstCount = store.inserted.length;
-    await reconcileCompanyLegacyResources("co-1", { store });
+    await reconcileCompanyLegacyResources(ORG, "co-1", { store });
     expect(store.inserted.length).toBe(firstCount);
   });
 
@@ -289,8 +294,61 @@ describe("MIG-008 reconciler pass", () => {
       commanderConversationId: null,
     });
     const store = makeStore([weird], { platformDefaultEnvId: null });
-    const result = await reconcileCompanyLegacyResources("co-1", { store });
+    const result = await reconcileCompanyLegacyResources(ORG, "co-1", { store });
     expect(result.closure.unattributable).toContain("l-weird");
     expect(result.closure.ok).toBe(false);
+  });
+});
+
+// --- the ORGANIZATION fold (MIG-010 Unit 2.3) --------------------------------
+//
+// The pass became org-scoped because every read now goes through an organization-bound
+// SECURITY DEFINER function and `0267` ships no company->org reverse lookup (design §4.2,
+// F1). These pin the fold itself: the unit of closure is still the company, the unit of
+// VERDICT is the organization.
+
+describe("MIG-010 reconcileOrganizationLegacyResources — the org fold", () => {
+  it("folds every company under the organization, and closes only when ALL do", async () => {
+    const store = makeStore([baseLease({ id: "l-a", status: "active", providerLeaseId: "sbx-a" })], {
+      companyIds: ["co-1", "co-2", "co-3"],
+    });
+    const result = await reconcileOrganizationLegacyResources(ORG, { store });
+
+    expect(result.organizationId).toBe(ORG);
+    expect(result.companies.map((c) => c.companyId)).toEqual(["co-1", "co-2", "co-3"]);
+    expect(result.ok).toBe(true);
+  });
+
+  it("one unattributable company closes the WHOLE organization", async () => {
+    // The sibling-company fail-open the gate's org scope exists to prevent: a clean company
+    // must not carry a dirty one across the line.
+    const weird = baseLease({
+      id: "l-weird",
+      status: "active",
+      leasePolicy: "reuse_by_environment",
+      agentId: null,
+      executionWorkspaceId: null,
+      commanderConversationId: null,
+    });
+    const store = makeStore([weird], { companyIds: ["co-1", "co-2"] });
+    const result = await reconcileOrganizationLegacyResources(ORG, { store });
+
+    expect(result.ok).toBe(false);
+    expect(result.unattributableKeys).toContain("l-weird");
+    // It does NOT short-circuit: an operator wants the whole picture, not the first company
+    // alphabetically. Both companies were visited.
+    expect(result.companies).toHaveLength(2);
+  });
+
+  it("an organization with NO companies is NOT closed", async () => {
+    // ★ THE VACUOUS-CLOSURE ARM. `assertClosure` returns ok over an empty inventory, so a
+    // fold written as `every(...)` alone answers `ok: true` for an organization that
+    // reconciled nothing at all — the same shape as the withdrawn watermark's empty-inventory
+    // fail-open (design §10.1(b)). The gate refuses this as `no_companies`; so does the pass.
+    const store = makeStore([], { companyIds: [] });
+    const result = await reconcileOrganizationLegacyResources(ORG, { store });
+
+    expect(result.companies).toEqual([]);
+    expect(result.ok).toBe(false);
   });
 });
