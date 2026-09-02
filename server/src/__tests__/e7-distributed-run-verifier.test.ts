@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createE7DistributedRunVerifier,
+  e7VerifyExitCode,
   formatVerifyResult,
   detectHardLeakClasses,
   type E7RunVerifierStore,
@@ -416,5 +417,178 @@ describe("evidence-verifier A — expected org/company assertion + read-only sur
         "countProducedOutputs",
       ]),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// E7-F003 — the capability blind spot, PINNED ON PURPOSE.
+//
+// ★ DO NOT "FIX" THIS DESCRIBE BLOCK. It asserts today's behaviour deliberately,
+// exactly as the MIG-010 Unit 2.2 repro did: it is the record of what the verifier
+// could not see. `ok` answers "was the distributed journey corroborated" — the
+// MECHANISM — and a context-free run corroborates that journey perfectly well.
+// Making `ok` false here would be the naive fix CLI-008 Unit A explicitly rejects
+// (`producedArtifacts` is structurally 0 until Unit F ships output capture, so a
+// clause folded into `ok` is a gate nobody can pass — and a permanently-red gate
+// gets bypassed, argued around, or deleted).
+//
+// If this block reddens, someone folded capability into `ok`. Read
+// `docs/replatform/qa/2026-09-02-cli-008-unit-a-verifier-clause-plan.md` §"The
+// design decision" before changing anything.
+// ---------------------------------------------------------------------------
+describe("evidence-verifier A — E7-F003 blind spot (pinned: today's verifier blesses a context-free run)", () => {
+  // A run whose sandbox agent had no tools, no identity, no workspace and a
+  // context-free prompt, and whose CLI exited 127 — yet a worker leased it,
+  // started it, terminalized it, and the projector applied the receipt. Every
+  // existing clause is satisfied; NOTHING the agent did reached AoA.
+  function contextFreeRunStore() {
+    return goldenStore({
+      runRow: run({ status: "failed", errorCode: "nonzero_exit", error: "claude: command not found (exit 127)" }),
+      attemptRow: attempt({ status: "failed" }),
+      leases: [lease({ status: "released" })],
+      events: [event("attempt_started"), event("terminal")],
+      produced: { workspacePatchArtifacts: 0, taskOutputs: 0 },
+    });
+  }
+
+  it("a context-free run that produced NOTHING satisfies every clause and PASSES (this is the defect)", async () => {
+    const verifier = createE7DistributedRunVerifier({ store: contextFreeRunStore() });
+    const result = await verifier.verify({ runId: RUN_ID });
+    expect(result.ok).toBe(true);
+    expect(result.failures).toEqual([]);
+  });
+
+  it("the produced-output counts are VISIBLE and INERT — the signal exists and changes nothing", async () => {
+    const verifier = createE7DistributedRunVerifier({ store: contextFreeRunStore() });
+    const result = await verifier.verify({ runId: RUN_ID });
+    // The pairing IS the finding: the verifier computed the number that would
+    // catch this, reported it, and let the run through anyway.
+    expect(result.observed.producedArtifacts).toEqual({ workspacePatchArtifacts: 0, taskOutputs: 0 });
+    expect(result.failures).toEqual([]);
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLI-008 Unit A — the capability dimension, and the three properties that make
+// it real (plan Task 4). Each is a mutation target, named in the test.
+// ---------------------------------------------------------------------------
+describe("evidence-verifier A — clause 6: capability, a dimension separate from ok", () => {
+  const NOTHING_PRODUCED = { workspacePatchArtifacts: 0, taskOutputs: 0 };
+
+  it("a context-free run is capabilityProven=false with exactly one clause-6 failure", async () => {
+    const verifier = createE7DistributedRunVerifier({ store: goldenStore({ produced: NOTHING_PRODUCED }) });
+    const result = await verifier.verify({ runId: RUN_ID });
+    // MUTATION 1: delete the capability computation and this reddens, while the
+    // E7-F003 pin above stays green. If nothing reds, the dimension is decorative.
+    expect(result.capabilityProven).toBe(false);
+    expect(result.capabilityFailures.map((f) => f.clause)).toEqual([6]);
+    // The reason must teach an operator what is UNBUILT, not restate that a count was 0.
+    expect(result.capabilityFailures[0].reason).toContain("Unit F");
+    expect(result.capabilityFailures[0].reason).toContain("observeRun");
+  });
+
+  it("the capability failure NEVER enters failures, so ok stays true", async () => {
+    const verifier = createE7DistributedRunVerifier({ store: goldenStore({ produced: NOTHING_PRODUCED }) });
+    const result = await verifier.verify({ runId: RUN_ID });
+    // MUTATION 2: push the capability failure into `failures` instead and BOTH this
+    // and the E7-F003 pin redden. This is the guard against the exact regression the
+    // design rejects — `producedArtifacts` is structurally 0 until Unit F, so a
+    // capability clause folded into `ok` makes E7-1 permanently red.
+    expect(result.ok).toBe(true);
+    expect(result.failures).toEqual([]);
+    expect(result.failures.some((f) => f.clause === 6)).toBe(false);
+  });
+
+  // MUTATION 3, both arms: a dimension that can never be true is not a check.
+  it("a committed workspace_patch artifact ALONE flips capabilityProven true", async () => {
+    const verifier = createE7DistributedRunVerifier({
+      store: goldenStore({ produced: { workspacePatchArtifacts: 1, taskOutputs: 0 } }),
+    });
+    const result = await verifier.verify({ runId: RUN_ID });
+    expect(result.capabilityProven).toBe(true);
+    expect(result.capabilityFailures).toEqual([]);
+  });
+
+  it("a task_output ALONE flips capabilityProven true", async () => {
+    const verifier = createE7DistributedRunVerifier({
+      store: goldenStore({ produced: { workspacePatchArtifacts: 0, taskOutputs: 1 } }),
+    });
+    const result = await verifier.verify({ runId: RUN_ID });
+    expect(result.capabilityProven).toBe(true);
+    expect(result.capabilityFailures).toEqual([]);
+  });
+
+  it("a mechanism FAILURE does not suppress the capability verdict (both dimensions, always)", async () => {
+    const verifier = createE7DistributedRunVerifier({
+      store: goldenStore({ leases: [], events: [], terminalReceipt: null, produced: NOTHING_PRODUCED }),
+    });
+    const result = await verifier.verify({ runId: RUN_ID });
+    expect(result.ok).toBe(false);
+    expect(result.capabilityProven).toBe(false);
+    expect(formatVerifyResult(result)).toContain("capability: NOT PROVEN");
+  });
+
+  it("an absent run is capabilityProven=false — a run that does not exist proved nothing", async () => {
+    const verifier = createE7DistributedRunVerifier({ store: goldenStore() });
+    const result = await verifier.verify({ runId: "00000000-0000-4000-8000-000000000000" });
+    expect(result.notFound).toBe(true);
+    expect(result.capabilityProven).toBe(false);
+  });
+});
+
+describe("evidence-verifier A — the RESULT line cannot be quoted as capability", () => {
+  it("a mechanism-PASS with capability unproven says so ON THE RESULT LINE", async () => {
+    const verifier = createE7DistributedRunVerifier({
+      store: goldenStore({ produced: { workspacePatchArtifacts: 0, taskOutputs: 0 } }),
+    });
+    const result = await verifier.verify({ runId: RUN_ID });
+    expect(result.ok).toBe(true);
+    const resultLine = formatVerifyResult(result)
+      .split("\n")
+      .find((l) => l.includes("RESULT:"))!;
+    // The property (plan Task 3 Step 1): a reader who sees ONLY this line must not
+    // come away believing capability was proven. So PASS is never unqualified, and
+    // the capability verdict travels with it.
+    expect(resultLine).toContain("NOT PROVEN");
+    expect(resultLine).toContain("mechanism");
+    expect(resultLine).not.toContain("RESULT: PASS —"); // the old unqualified wording
+  });
+
+  it("the counts are printed with the verdict, on a passing run", async () => {
+    const verifier = createE7DistributedRunVerifier({
+      store: goldenStore({ produced: { workspacePatchArtifacts: 2, taskOutputs: 3 } }),
+    });
+    const printed = formatVerifyResult(await verifier.verify({ runId: RUN_ID }));
+    expect(printed).toContain("capability: PROVEN (workspace_patch_artifacts=2 task_outputs=3)");
+    expect(printed).toContain("RESULT: PASS (mechanism)");
+  });
+});
+
+describe("evidence-verifier A — the --require-capability exit decision", () => {
+  // ★ THIS TABLE EXISTS BECAUSE OF WHAT THIS UNIT IS. Unit A stops a claim from living only in
+  // prose. A `--require-capability` flag whose enforcing branch is exercised by nothing would
+  // reproduce that exact shape one level up: everyone believes it gates the campaign, and
+  // nothing checks that it does. The decision is pure, so all four rows are reachable without
+  // a live DATABASE_URL.
+  const cases: ReadonlyArray<[boolean, boolean, boolean, 0 | 1 | 3]> = [
+    // ok,  capabilityProven, requireCapability, expected
+    [true, true, false, 0],
+    [true, false, false, 0], // today's real run: mechanism green, capability unproven, not required
+    [true, false, true, 3], // ★ the branch the campaign flips at Unit F
+    [false, false, true, 1], // a mechanism failure OUTRANKS the capability flag
+  ];
+
+  for (const [ok, capabilityProven, requireCapability, expected] of cases) {
+    it(`ok=${ok} capabilityProven=${capabilityProven} requireCapability=${requireCapability} -> exit ${expected}`, () => {
+      expect(e7VerifyExitCode({ ok, capabilityProven }, requireCapability)).toBe(expected);
+    });
+  }
+
+  it("3 is distinct from 1, so a campaign script can tell the two failures apart", () => {
+    // "the journey did not happen" and "the journey happened and proved nothing about the
+    // agent" call for different next steps; collapsing them would hide the second.
+    expect(e7VerifyExitCode({ ok: false, capabilityProven: false }, true)).toBe(1);
+    expect(e7VerifyExitCode({ ok: true, capabilityProven: false }, true)).toBe(3);
   });
 });

@@ -33,6 +33,15 @@
 //                           into the run's real evidence surfaces.
 //   5. Journey corroboration — a worker LEASED it, STARTED it, and its terminal was
 //                           PROJECTED (the anti-false-PASS clause; new in v2).
+//
+// Clauses 1-5 answer ONE question: was the distributed journey corroborated — the
+// MECHANISM. None of them reads `workload`, `args`, `exitCode`, stdout, or anything
+// the agent produced, so a `claude` that exits 127 with no tools and a context-free
+// prompt satisfies all five (E7-F003, pinned by a test).
+//
+//   6. Capability (SEPARATE DIMENSION — CLI-008 Unit A) — did anything the agent
+//      produced reach AoA? Reported as `capabilityProven` / `capabilityFailures`,
+//      NEVER folded into `ok`. See E7VerifyResult.capabilityProven for why.
 // ---------------------------------------------------------------------------
 
 /**
@@ -138,7 +147,16 @@ export interface E7RunVerifierStore {
 // --- The verdict -------------------------------------------------------------
 
 export interface E7VerifyFailure {
-  readonly clause: 1 | 2 | 3 | 4 | 5;
+  /**
+   * Clauses 1-5 are the `ok` clauses — the distributed-journey corroboration.
+   *
+   * Clause 6 is the CAPABILITY clause and lives ONLY in `capabilityFailures`. It
+   * must never be pushed into `failures`: doing so folds capability into `ok`, and
+   * `producedArtifacts` is structurally 0 until CLI-008 Unit F ships output capture,
+   * so `ok` would be permanently false — a gate nobody can pass. (A verifier test
+   * pins that: `E7-F003 blind spot`.)
+   */
+  readonly clause: 1 | 2 | 3 | 4 | 5 | 6;
   /** SHAPE only — NEVER a raw matched secret substring. */
   readonly reason: string;
 }
@@ -173,6 +191,18 @@ export interface E7VerifyResult {
   readonly runId: string;
   readonly notFound?: true;
   readonly failures: readonly E7VerifyFailure[];
+  /**
+   * Did the agent DO anything that reached AoA? Independent of `ok`, deliberately.
+   * `ok` answers "was the distributed journey corroborated" — the MECHANISM. This answers
+   * "could the agent work" — the CAPABILITY. They are different questions and E7-F003 exists
+   * because one was being read as the other.
+   *
+   * FALSE ON EVERY REAL RUN TODAY, and that is the intended outcome of CLI-008 Unit A: the
+   * verifier starts telling a truth it already had the data for. It becomes achievable when
+   * Unit F builds a producer for `job_artifacts` / `task_outputs`.
+   */
+  readonly capabilityProven: boolean;
+  readonly capabilityFailures: readonly E7VerifyFailure[];
   readonly observed: E7VerifyObserved;
 }
 
@@ -310,7 +340,15 @@ export function createE7DistributedRunVerifier(deps: {
     async verify({ runId, expected }) {
       const run = await store.getRun(runId);
       if (!run) {
-        return { ok: false, runId, notFound: true, failures: [], observed: EMPTY_OBSERVED };
+        return {
+          ok: false,
+          runId,
+          notFound: true,
+          failures: [],
+          capabilityProven: false,
+          capabilityFailures: [],
+          observed: EMPTY_OBSERVED,
+        };
       }
 
       const failures: E7VerifyFailure[] = [];
@@ -454,12 +492,75 @@ export function createE7DistributedRunVerifier(deps: {
         suspectedHeuristicHits: heuristicHits,
       };
 
-      return { ok: failures.length === 0, runId, failures, observed };
+      // --- Clause 6 — CAPABILITY, computed beside the verdict and kept OUT of it ---
+      //
+      // `failures` / `ok` are NOT touched here. Deliberately: `producedArtifacts` is
+      // structurally 0 until CLI-008 Unit F ships a producer, so a capability failure
+      // folded into `ok` would make E7-1 permanently red — a gate nobody can pass gets
+      // bypassed, argued around, or deleted (scripts/lib/gate-clause-wiring.mjs says so
+      // in its own header), and it would retroactively invalidate the D1 40/40 evidence,
+      // which is honest evidence OF THE MECHANISM and stays true.
+      //
+      // The CLI's `--require-capability` is where an operator opts INTO enforcing this.
+      const capabilityFailures: E7VerifyFailure[] = [];
+      if (produced.workspacePatchArtifacts < 1 && produced.taskOutputs < 1) {
+        capabilityFailures.push({
+          clause: 6,
+          reason:
+            "nothing the agent produced reached AoA: no committed workspace_patch job_artifact and no task_output " +
+            "for this run. Output capture is UNBUILT (CLI-008 Unit F) — the E2B driver passes no stream handlers, " +
+            "stdoutRef/stderrRef are fabricated literals rather than references to stored bytes, observeRun is " +
+            "uncomposed, and buildWorkspacePatch/createResultCommitter have zero production callers. So this run " +
+            "cannot be distinguished from a context-free one (E7-F003), whatever the agent actually did.",
+        });
+      }
+
+      return {
+        ok: failures.length === 0,
+        runId,
+        failures,
+        capabilityProven: capabilityFailures.length === 0,
+        capabilityFailures,
+        observed,
+      };
     },
   };
 }
 
-/** Pure printer for the CLI — per-clause verdict + observed. Prints SHAPE only, never a raw secret. */
+/**
+ * The CLI's exit decision, as a pure function so every branch is reachable in a test.
+ *
+ * ★ EXTRACTED BECAUSE OF WHAT THIS UNIT IS. Unit A exists to stop a claim from living only in
+ * prose. Shipping `--require-capability` whose enforcing branch is exercised by nothing would
+ * reproduce that exact shape one level up: a flag everyone believes gates the campaign, and no
+ * check that it does. Inline in `main()` the branch needs a live DATABASE_URL to reach.
+ *
+ *   0  mechanism corroborated (and capability proven, or not required)
+ *   1  mechanism NOT corroborated -- the run does not prove the distributed journey
+ *   3  mechanism corroborated but capability unproven, AND the operator asked for it
+ *
+ * 3 rather than 1 so a campaign script can tell "the journey did not happen" apart from "the
+ * journey happened and proved nothing about the agent" -- they call for different next steps.
+ */
+export function e7VerifyExitCode(
+  result: Pick<E7VerifyResult, "ok" | "capabilityProven">,
+  requireCapability: boolean,
+): 0 | 1 | 3 {
+  if (!result.ok) return 1;
+  if (requireCapability && !result.capabilityProven) return 3;
+  return 0;
+}
+
+/**
+ * Pure printer for the CLI — per-clause verdict + observed. Prints SHAPE only, never a raw secret.
+ *
+ * ★ The RESULT line is NEVER unqualified. It used to read "PASS — distributed journey
+ * corroborated", which is accurate and was still read as "the canary works". Both dimensions
+ * now appear on that one line, so neither can be quoted alone: a reader who sees only the
+ * first line cannot come away believing capability was proven when it was not. The CAPABILITY
+ * block below it prints on pass and fail alike — an unproven capability is exactly when it
+ * matters, so it is never suppressed.
+ */
 export function formatVerifyResult(result: E7VerifyResult): string {
   const lines: string[] = [];
   lines.push(`evidence-verifier A — run ${result.runId}`);
@@ -467,15 +568,26 @@ export function formatVerifyResult(result: E7VerifyResult): string {
     lines.push("  RESULT: NOT FOUND — no heartbeat_runs row for this id");
     return lines.join("\n");
   }
-  lines.push(
-    `  RESULT: ${result.ok ? "PASS — distributed journey corroborated" : "FAIL — does NOT prove the distributed journey"}`,
-  );
+  const mechanism = result.ok
+    ? "PASS (mechanism) — distributed journey corroborated"
+    : "FAIL (mechanism) — does NOT prove the distributed journey";
+  const capability = result.capabilityProven
+    ? "CAPABILITY: PROVEN — output from the agent reached AoA"
+    : "CAPABILITY: NOT PROVEN — nothing the agent produced reached AoA";
+  lines.push(`  RESULT: ${mechanism} | ${capability}`);
   const o = result.observed;
   lines.push("  observed:");
   lines.push(`    execution_owner=${o.executionOwner ?? "-"} job=${o.distributedJobId ?? "-"} attempt=${o.distributedAttemptId ?? "-"}`);
   lines.push(`    company=${o.companyId ?? "-"} org=${o.organizationId ?? "-"} status=${o.status ?? "-"} error_code=${o.errorCode ?? "-"} finished_at=${o.finishedAt ?? "-"}`);
   lines.push(`    leases=${o.leaseCount} attempt_started=${o.attemptStartedEvents} terminal_events=${o.terminalEvents} terminal_receipt_applied=${o.projectionReceiptApplied}`);
-  lines.push(`    produced: workspace_patch_artifacts=${o.producedArtifacts.workspacePatchArtifacts} task_outputs=${o.producedArtifacts.taskOutputs}`);
+  // ALWAYS printed, on pass and fail alike — see the doc comment above.
+  lines.push(
+    `  capability: ${result.capabilityProven ? "PROVEN" : "NOT PROVEN"}` +
+      ` (workspace_patch_artifacts=${o.producedArtifacts.workspacePatchArtifacts} task_outputs=${o.producedArtifacts.taskOutputs})`,
+  );
+  for (const f of result.capabilityFailures) {
+    lines.push(`    clause ${f.clause}: ${f.reason}`);
+  }
   if (o.suspectedHeuristicHits.length > 0) {
     lines.push("    advisory heuristic hits (NOT a gate — likely session ids/hashes):");
     for (const h of o.suspectedHeuristicHits) {

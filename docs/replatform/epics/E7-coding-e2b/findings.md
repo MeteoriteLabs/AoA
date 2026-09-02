@@ -165,6 +165,25 @@ artifacts plus `task_outputs` by run; the result rides on `observed.producedArti
 fourteen `failures.push` calls touches it. Promoting it to an asserted clause is an **S**, and it is
 the first unit of CLI-008 because every later unit is judged by this verifier.
 
+**★ Unit A landed 2026-09-02 — the blind spot is now COMPUTED. The finding stays OPEN.** The
+verifier reports two independent dimensions. `ok` is unchanged: *the distributed journey was
+corroborated* — the MECHANISM — and it is still true of a context-free run. `capabilityProven`
+is new and answers *did anything the agent produced reach AoA*; its clause-6 failure names what
+is unbuilt (the four missing links in the return path) rather than restating that a count was
+zero. The RESULT line now carries both verdicts, so neither can be quoted alone, and a
+`capability:` block with both counts prints on pass and fail alike.
+
+`capabilityProven` is **false on every real run today**, and that is the intended outcome — the
+verifier started telling a truth it already had the data for. The CLI's `--require-capability`
+turns an unproven capability into a non-zero exit and is **OFF by default**: `producedArtifacts`
+is structurally 0 until Unit F ships a producer, so on-by-default would be a gate nobody can
+pass, and `scripts/lib/gate-clause-wiring.mjs` records in its own header what happens to those.
+It is the flag the campaign flips once Unit F lands.
+
+**Nothing here is an unblock.** No tools, no instructions bundle, no workspace and no output
+capture were built; the capability gap is exactly as wide as it was. What changed is that the
+machine now says so, where before only prose did — which is why the finding stays open.
+
 ## E7-F004 — The canary preflight's inventory is a strict SUPERSET of any reconcile pass's, by construction
 
 **Status:** **resolved** · **Resolved by:** MIG-010 Units 2.4a + 2.4b, 2026-09-02.
