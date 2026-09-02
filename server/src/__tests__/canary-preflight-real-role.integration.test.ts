@@ -133,11 +133,22 @@ describe.skipIf(!RUN)("BLOCKER E — canary preflight on a real aoa_app connecti
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      // The expected reason is `credential_authority_not_moved`, NOT
-      // `reconciliation_incomplete`: `canary-preflight.ts:150-156` checks the key generation
-      // BEFORE closure is evaluated, and this fixture seeds no BYO e2b key, so
-      // `deriveE2bKeyGeneration` returns null (the operator env default — ungenerationed).
-      expect(result.reason).toBe("credential_authority_not_moved");
+      // ★ THE REASON CHANGED IN MIG-010 UNIT 2.4b, and the change is the point of this file's
+      // ASSERTION rather than a regression in it. It used to read
+      // `credential_authority_not_moved`, because the key-generation check ran first and this
+      // fixture seeds no BYO e2b key.
+      //
+      // The gate now reads the reconciliation MARKER before anything else, and it must: the
+      // narrowed lease read takes a REQUIRED watermark with no DEFAULT and no 2-argument
+      // overload (migration 0270), so a Company with no completed pass has nothing to call the
+      // definer function WITH. Refusing first is what keeps that path unreachable and keeps
+      // `preflight_error` off the reachable path (design section 10.3 point 3).
+      //
+      // This fixture runs no reconciliation pass, so there is no marker — `reconciliation_stale`
+      // is the accurate answer, and it is still a POLICY reason, which is what this test exists
+      // to assert. The credential arm is unchanged and still fires; it is simply reached later,
+      // and `cli-006-canary-preflight.test.ts` pins it directly.
+      expect(result.reason).toBe("reconciliation_stale");
       expect(result.detail ?? "").not.toMatch(/permission denied/i);
     }
   });
@@ -182,14 +193,31 @@ describe.skipIf(!RUN)("BLOCKER E — canary preflight on a real aoa_app connecti
     // is broken rather than because the predicate holds.
 
 
+    // MIG-010 Unit 2.4b — THREE arguments now, and the third is REQUIRED. A watermark far in
+    // the future keeps these org-scoping probes about SCOPE and nothing else: every lease the
+    // function may return is inside it, so an empty answer means the organization predicate
+    // refused, never that the narrowing hid a row.
+    const FAR_FUTURE = "2999-01-01T00:00:00Z";
+
     async function leases(organizationId: string, companyId: string) {
       const result = await fixture!.operatorDb.execute(
-        sql`SELECT lease_id FROM public.canary_preflight_evidence_leases(
-              ${organizationId}::uuid, ${companyId}::uuid)`,
+        sql`SELECT lease_ids, unnarrowed_total FROM public.canary_preflight_evidence_leases(
+              ${organizationId}::uuid, ${companyId}::uuid, ${FAR_FUTURE}::timestamptz)`,
       );
-      return (Array.isArray(result)
+      const rows = (Array.isArray(result)
         ? result
-        : ((result as { rows?: unknown[] }).rows ?? [])) as Array<{ lease_id: string | null }>;
+        : ((result as { rows?: unknown[] }).rows ?? [])) as Array<{
+        lease_ids: string[] | null;
+        unnarrowed_total: unknown;
+      }>;
+      // ★ ONE ROW, ALWAYS — including for an out-of-org company, which reads as the empty
+      // answer rather than as an error or as zero rows (design section 11.1).
+      expect(rows).toHaveLength(1);
+      return {
+        // `array_agg` over an empty set is NULL, not `[]` (measured).
+        leaseIds: rows[0]!.lease_ids ?? [],
+        unnarrowedTotal: Number(rows[0]!.unnarrowed_total),
+      };
     }
 
     // ROUND-7 P1. The suite's earlier probes passed the INTRUDER's own id and asked about the
@@ -198,18 +226,45 @@ describe.skipIf(!RUN)("BLOCKER E — canary preflight on a real aoa_app connecti
     // probes ASSERTED the attack as required behaviour: ORG's fixture read NEIGHBOUR's lease
     // (a company in OTHER_ORG) and expected to get it. Those are inverted below.
     it("does not answer about a Company outside the Organization being gated", async () => {
-      const rows = await leases(fixture!.organizationId /* ORG */, NEIGHBOUR);
+      const answer = await leases(fixture!.organizationId /* ORG */, NEIGHBOUR);
       expect(
-        rows.map((row) => row.lease_id),
+        answer.leaseIds,
         "an owner-authority function must not return another Organization's lease ids",
       ).toEqual([]);
+      // ★ AND THE TOTAL IS ZERO TOO. The organization predicate gates the whole read, not just
+      // the array: a count that leaked the neighbour's lease COUNT would be an existence
+      // oracle in the new column, which is exactly the shape the round-7 review found in the
+      // old one.
+      expect(answer.unnarrowedTotal).toBe(0);
     });
 
     // POSITIVE CONTROL, deliberately asked as the neighbour's OWN organization — so no test
     // in this suite asserts that one Organization can read another's evidence.
     it("returns the neighbour's lease when asked as the neighbour's own Organization", async () => {
-      const rows = await leases(OTHER_ORG, NEIGHBOUR);
-      expect(rows.map((row) => row.lease_id)).toEqual([NEIGHBOUR_LEASE]);
+      const answer = await leases(OTHER_ORG, NEIGHBOUR);
+      expect(answer.leaseIds).toEqual([NEIGHBOUR_LEASE]);
+      expect(answer.unnarrowedTotal).toBe(1);
+    });
+
+    // ★ MIG-010 Unit 2.4b — THE NARROWING ITSELF, against the real function rather than a fake.
+    // Same company, same authority, a watermark that predates the lease: the narrowed set is
+    // empty while the total still says the lease is there. That asymmetry IS the churn signal,
+    // and a `RETURNS TABLE` of the matches could not express it — it would return zero rows and
+    // the total would vanish exactly when the gate needs it (design section 11.1, measured).
+    it("narrows by the watermark, and the ONE ROW still carries the unnarrowed total", async () => {
+      const result = await fixture!.operatorDb.execute(
+        sql`SELECT lease_ids, unnarrowed_total FROM public.canary_preflight_evidence_leases(
+              ${OTHER_ORG}::uuid, ${NEIGHBOUR}::uuid, '2000-01-01T00:00:00Z'::timestamptz)`,
+      );
+      const rows = (Array.isArray(result)
+        ? result
+        : ((result as { rows?: unknown[] }).rows ?? [])) as Array<{
+        lease_ids: string[] | null;
+        unnarrowed_total: unknown;
+      }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.lease_ids).toBeNull();
+      expect(Number(rows[0]!.unnarrowed_total)).toBe(1);
     });
 
     it("does not echo an environment back to a Company in another Organization", async () => {
@@ -227,7 +282,12 @@ describe.skipIf(!RUN)("BLOCKER E — canary preflight on a real aoa_app connecti
     // no longer reach owner authority here at all.
     const DEFINER_FUNCTIONS = [
       `public.canary_preflight_evidence_companies('${OTHER_ORG}'::uuid)`,
-      `public.canary_preflight_evidence_leases('${OTHER_ORG}'::uuid, '${NEIGHBOUR}'::uuid)`,
+      // MIG-010 Unit 2.4b — the THREE-argument signature. Naming the old 2-argument one here
+      // would raise 42883 (`does not exist`) rather than 42501, and the loop below would then
+      // pass for the wrong reason: an absent function denies everyone, which says nothing about
+      // whether aoa_app is denied EXECUTE on the function that DOES exist.
+      `public.canary_preflight_evidence_leases('${OTHER_ORG}'::uuid, '${NEIGHBOUR}'::uuid, ` +
+        `'2999-01-01T00:00:00Z'::timestamptz)`,
       `public.canary_preflight_evidence_scalars('${OTHER_ORG}'::uuid, '${NEIGHBOUR}'::uuid, '${NEIGHBOUR}'::uuid)`,
     ] as const;
 

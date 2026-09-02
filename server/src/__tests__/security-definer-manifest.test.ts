@@ -53,7 +53,12 @@ function manifestKeys(): Set<string> {
  */
 const EXPECTED_MANIFEST_IDENTITIES: Readonly<Record<string, string>> = {
   "public.canary_preflight_evidence_companies": "p_organization_id uuid",
-  "public.canary_preflight_evidence_leases": "p_organization_id uuid, p_company_id uuid",
+  // ★ MIG-010 Unit 2.4b widened this to THREE arguments (migration 0270), and this fixture is
+  // what noticed — a `(uuid, uuid)` grep would not have found it. `timestamp with time zone`,
+  // not `timestamptz`: the catalog renders the former and the manifest is compared with exact
+  // equality, so the short spelling is a fatal EVERY-BOOT failure (measured).
+  "public.canary_preflight_evidence_leases":
+    "p_organization_id uuid, p_company_id uuid, p_watermark timestamp with time zone",
   "public.canary_preflight_evidence_scalars":
     "p_organization_id uuid, p_company_id uuid, p_default_env_id uuid",
   "public.legacy_reconciliation_leases": "p_organization_id uuid, p_company_id uuid",
