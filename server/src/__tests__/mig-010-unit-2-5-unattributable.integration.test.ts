@@ -17,14 +17,24 @@
 // then runs the resolution command against the SAME record and asserts the gate opens. That
 // before/after sequence is the evidence, so these are not independently runnable with `-t`.
 //
-// TWO ORGANIZATIONS, on purpose. The gate is organization-scoped and refuses on the first
+// THREE ORGANIZATIONS, on purpose. The gate is organization-scoped and refuses on the first
 // failing Company, so a poisoned Company would mask every later assertion about a healthy
-// one. ORG_A carries the orphan lease; ORG_B carries the agent-owned lease whose owner is
-// then deleted.
+// one. ORG_A carries the orphan lease and is the record the remedy repairs; ORG_B carries the
+// agent-owned lease whose owner is then deleted; ORG_C exists ONLY so the owner-URL probe has
+// a record of its own to fail against.
+//
+// ★ ORG_C IS WHAT MAKES THE ROLE-ASSERTION MUTATION CHECK CLEAN. Deleting `assertOperatorRole`
+// makes the owner run SUCCEED, which RESOLVES whatever record it was pointed at. Pointed at
+// ORG_A that would also break the recovery case downstream and red two tests for one mutation.
+// Nothing else reads ORG_C, so the mutation reds exactly one.
 //
 // Windows-skipped unless AOA_RUN_WIN_INTEGRATION=1 (Issue #114); Linux CI is the authority.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import type { Sql } from "postgres";
 import type { Db } from "@armyofagents/db";
 import { createCanaryPreflight } from "../services/canary-preflight.js";
@@ -50,7 +60,30 @@ const LEASE_B = "e5000000-0000-4000-8000-000000000014";
 const SECRET_B = "e5000000-0000-4000-8000-000000000015";
 const AGENT_B = "e5000000-0000-4000-8000-000000000016";
 
+// ORG_C — a second orphan lease, reserved for the owner-URL probe. See the header.
+const ORG_C = "e5000000-0000-4000-8000-000000000021";
+const COMPANY_C = "e5000000-0000-4000-8000-000000000022";
+const ENV_C = "e5000000-0000-4000-8000-000000000023";
+const LEASE_C = "e5000000-0000-4000-8000-000000000024";
+
 const RUN = process.platform !== "win32" || process.env.AOA_RUN_WIN_INTEGRATION === "1";
+
+const execFileAsync = promisify(execFile);
+
+// The remedy is driven as a REAL SUBPROCESS, because that is the only shape in which its
+// `current_user` gate means anything: a CLI takes a DATABASE_URL, not a `Db`, and the gate's
+// whole job is to discriminate between two connection URLs. Resolved from this file so it
+// does not depend on the working directory vitest happens to run in.
+const REPO_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
+const CLI = fileURLToPath(new URL("../cli/resolve-unattributable-record.ts", import.meta.url));
+// `tsx` through its own JS entrypoint under `process.execPath`: `execFile` uses no shell, and
+// the `.cmd` shim is not directly executable on Windows. Resolved, not guessed — a wrong path
+// would fail as ENOENT and read like a broken CLI rather than a broken test.
+const NPX = createRequire(import.meta.url).resolve("tsx/cli");
+
+/** The justification every successful resolution in this file writes. */
+const JUSTIFICATION =
+  "orphaned warm lease: owning agent deleted, provider handle confirmed gone by the operator";
 
 type Fixture = {
   operatorDb: Db;
@@ -80,6 +113,17 @@ async function crosswalkRows(companyId: string) {
   return fixture!.admin`
     SELECT id, resource_key, resource_type, disposition, cleanup_outcome, reason, created_at
     FROM legacy_resource_reconciliation WHERE company_id = ${companyId} ORDER BY resource_key`;
+}
+
+/** Drive the real remedy as a subprocess against a chosen connection URL. */
+function runResolveCli(
+  args: readonly string[],
+  url: string,
+): Promise<{ stdout: string; stderr: string }> {
+  return execFileAsync(process.execPath, [NPX, CLI, ...args], {
+    env: { ...process.env, DATABASE_URL: url },
+    cwd: REPO_ROOT,
+  });
 }
 
 describe.skipIf(!RUN)("MIG-010 Unit 2.5 — E7-F006: an unattributable record and its remedy", () => {
@@ -131,6 +175,19 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.5 — E7-F006: an unattributable record an
       await admin`INSERT INTO environment_leases
         (id, company_id, environment_id, agent_id, status, lease_policy, provider, provider_lease_id)
         VALUES (${LEASE_B}, ${COMPANY_B}, ${ENV_B}, ${AGENT_B}, 'active', 'reuse_by_agent', 'e2b', 'sbx-u25-b')`;
+
+      // --- ORG_C: a second orphan lease, for the owner-URL probe ONLY --------------
+      // No `runtime_provider_keys` row: nothing here asserts the GATE for ORG_C, only the
+      // pass and the remedy, and neither needs a key generation.
+      await admin`INSERT INTO organizations (id, name, slug)
+        VALUES (${ORG_C}, 'MIG-010 u2.5 org C', 'mig-010-u25-org-c')`;
+      await admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
+        VALUES (${COMPANY_C}, ${ORG_C}, 'MIG-010 u2.5 company C', 'M5C')`;
+      await admin`INSERT INTO environments (id, company_id, name, driver, status)
+        VALUES (${ENV_C}, ${COMPANY_C}, 'mig-010-u25-env-c', 'sandbox', 'active')`;
+      await admin`INSERT INTO environment_leases
+        (id, company_id, environment_id, status, lease_policy, provider, provider_lease_id)
+        VALUES (${LEASE_C}, ${COMPANY_C}, ${ENV_C}, 'active', 'reuse_by_agent', 'e2b', 'sbx-u25-c')`;
     } catch (error) {
       await teardown();
       throw error;
@@ -289,4 +346,154 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.5 — E7-F006: an unattributable record an
     // ★ And the UPDATE has no consumer yet. Until Task 2 there is no application or operator
     // code that issues one, which is precisely why the record is permanent today.
   }, 120_000);
+
+  // --- TASK 3: THE REMEDY, AND THAT ITS TWO GUARDS ARE NOT DECORATIVE ----------
+
+  it("★ MUTATION TARGET (role assertion) — an owner DATABASE_URL is REFUSED, and changes nothing", async () => {
+    // ★ DELETE THE `assertOperatorRole(db)` CALL IN `resolve-unattributable-record.ts` AND
+    // EXACTLY THIS TEST REDS, with the failure being the OWNER RUN SUCCEEDING: the promise
+    // resolves instead of rejecting, and the row below is resolved rather than untouched.
+    //
+    // Without the assertion the whole grant model is ornamental. The owner bypasses every
+    // GRANT and every RLS policy, so an owner run would succeed identically if `0256` had
+    // never granted `aoa_operator` UPDATE at all — and reaching for the owner URL is the
+    // obvious thing to do when a run dies on a permission error. That is BLOCKER E-1's defect
+    // wearing a different hat.
+    //
+    // ORG_C's record exists only for this case, so the mutation cannot red anything else.
+    const pass = await runPass(ORG_C);
+    expect(pass.unattributableKeys).toEqual([LEASE_C]);
+
+    await expect(
+      runResolveCli(
+        ["--company", COMPANY_C, "--resource-key", LEASE_C, "--reason", JUSTIFICATION],
+        fixture!.adminUrl,
+      ),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining('refusing to run as "test"'),
+    });
+
+    // The refusal is BEFORE the UPDATE, so the record is untouched — not merely un-reported.
+    const rows = await crosswalkRows(COMPANY_C);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.disposition).toBe("unattributable");
+    expect(rows[0]!.cleanup_outcome).toBeNull();
+  }, 180_000);
+
+  it("refuses a blank --reason, exits 2, and changes nothing", async () => {
+    // A whitespace-only justification is worse than none: it LOOKS like a record. Exit 2
+    // (usage) rather than 1 (a real failed repair) so a script can tell them apart.
+    await expect(
+      runResolveCli(
+        ["--company", COMPANY_A, "--resource-key", LEASE_A, "--reason", "   "],
+        fixture!.operatorUrl,
+      ),
+    ).rejects.toMatchObject({
+      code: 2,
+      stderr: expect.stringContaining("--reason must be a non-empty justification"),
+    });
+
+    const rows = await crosswalkRows(COMPANY_A);
+    expect(rows[0]!.disposition).toBe("unattributable");
+  }, 180_000);
+
+  it("★ MUTATION TARGET (WHERE predicate) — it REFUSES to rewrite a `mapped` record", async () => {
+    // ★ REMOVE `AND disposition = 'unattributable'` FROM THE `WHERE` CLAUSE AND THIS TEST
+    // REDS: the command resolves, exits 0, and COMPANY_B's `mapped` record is rewritten to
+    // `terminal_cleanup`.
+    //
+    // That is the forgeable claim design section 9.2 forbids, in its mirror direction: a live
+    // resource that IS accounted for and left for drain must not be silently reclassified as
+    // terminal by a mistyped resource key. COMPANY_B's row is exactly such a record — and,
+    // per Task 1, it belongs to a lease whose owning agent was deleted, so it is the row an
+    // operator chasing an unattributable PASS verdict would most plausibly point this command
+    // at and the one a widened predicate would destroy first.
+    const before = await crosswalkRows(COMPANY_B);
+    expect(before[0]!.disposition).toBe("mapped");
+
+    await expect(
+      runResolveCli(
+        ["--company", COMPANY_B, "--resource-key", LEASE_B, "--reason", JUSTIFICATION],
+        fixture!.operatorUrl,
+      ),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("no unattributable record"),
+    });
+
+    // Byte for byte, including `reason` and `created_at` — not merely still-`mapped`.
+    const after = await crosswalkRows(COMPANY_B);
+    expect(after).toEqual(before);
+  }, 180_000);
+
+  it("[E7-F006 RESOLVED] the recovery sequence: refuse -> resolve ONE record -> the gate closes", async () => {
+    // (1) The gate refuses, with the count in the detail. Re-asserted here rather than
+    // assumed from the earlier case, because this is the BEFORE half of the pair.
+    const before = await runGate(ORG_A);
+    expect(before.ok).toBe(false);
+    if (before.ok) return;
+    expect(before.reason).toBe("reconciliation_incomplete");
+    expect(before.detail).toContain("unattributable=1");
+
+    // (2) The remedy: exactly one row, exit 0.
+    const { stdout } = await runResolveCli(
+      ["--company", COMPANY_A, "--resource-key", LEASE_A, "--reason", JUSTIFICATION],
+      fixture!.operatorUrl,
+    );
+    expect(stdout).toContain(`resolved ${LEASE_A}: unattributable -> terminal_cleanup`);
+    expect(stdout).toContain("rows changed: 1");
+    // ★ And it says so on every run: removing one refusal is not an open canary.
+    expect(stdout).toContain("This flips no gate on its own");
+
+    const rows = await crosswalkRows(COMPANY_A);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.disposition).toBe("terminal_cleanup");
+    expect(rows[0]!.cleanup_outcome).toBe("operator_resolved");
+    expect(rows[0]!.reason).toBe(JUSTIFICATION);
+    // ★ THE HISTORY SURVIVES. `resource_type` still reads `unattributable`, so the record
+    // says both what the machine could not classify AND what the human decided about it.
+    expect(rows[0]!.resource_type).toBe("unattributable");
+
+    // (3) The gate closes. The record still exists — closure is satisfied because a
+    // `terminal_cleanup` disposition is an accounted-for resource, not because the register
+    // was emptied.
+    const after = await runGate(ORG_A);
+    if (!after.ok) throw new Error(`gate still refuses ${after.reason}: ${after.detail}`);
+    expect(after.ok).toBe(true);
+    expect(after.ok && after.companyIds).toEqual([COMPANY_A]);
+  }, 180_000);
+
+  it("a SECOND run of the command is a no-op: 0 rows, non-success exit", async () => {
+    // The other property the `WHERE` predicate buys, and the second test the predicate
+    // mutation reds. Without it this run would match the now-`terminal_cleanup` row, exit 0,
+    // and silently overwrite an already-written justification — so a stale script re-run
+    // would look like a fresh repair.
+    const before = await crosswalkRows(COMPANY_A);
+
+    await expect(
+      runResolveCli(
+        ["--company", COMPANY_A, "--resource-key", LEASE_A, "--reason", "a different reason"],
+        fixture!.operatorUrl,
+      ),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("nothing was changed"),
+    });
+
+    const after = await crosswalkRows(COMPANY_A);
+    expect(after).toEqual(before);
+    expect(after[0]!.reason).toBe(JUSTIFICATION);
+  }, 180_000);
+
+  it("a resource key that names nothing is the SAME non-success outcome, not a success", async () => {
+    // 0 rows means "no such unattributable record" whatever the cause. An operator who cannot
+    // tell that apart from a repair will believe a gate was unblocked when it was not.
+    await expect(
+      runResolveCli(
+        ["--company", COMPANY_A, "--resource-key", "no-such-resource-key", "--reason", JUSTIFICATION],
+        fixture!.operatorUrl,
+      ),
+    ).rejects.toMatchObject({ code: 1 });
+  }, 180_000);
 });
