@@ -166,11 +166,17 @@ export function classifyLease(lease: LegacyLeaseInput): LeaseClassification {
   }
 
   if (lease.status === "paused") {
-    // ★ OPTION R (MIG-010 Unit 2.3). A held warm snapshot is now `mapped` — a live
-    // handle, recorded with an attribution hash and LEFT ALONE — where it was once
-    // `terminal_cleanup` behind a status='paused' CAS claim. The CAS was an UPDATE on
-    // `environment_leases`, which `aoa_operator` cannot perform, so keeping it meant the
-    // pass could not run at all.
+    // ★ OPTION R (MIG-010 Unit 2.3). A held warm snapshot is now `mapped` — recorded with
+    // an attribution hash and LEFT ALONE — where it was once `terminal_cleanup` behind a
+    // status='paused' CAS claim. The CAS was an UPDATE on `environment_leases`, which
+    // `aoa_operator` cannot perform, so keeping it meant the pass could not run at all.
+    //
+    // EVERY paused row takes this arm, including one whose `provider_lease_id` is null:
+    // `hasLiveHandle` is reported as computed rather than asserted true. That is deliberate
+    // — a paused row is resumable by definition, and the pass's job here is to OBSERVE it,
+    // not to adjudicate whether its handle is still good. Closure reads only `resourceKey`
+    // and `disposition`, so this cannot change a verdict; what it changes is that the pass
+    // never asserts terminality on a row that might come back.
     //
     // WHAT THIS CHANGES, SAID OUT LOUD: the pass no longer flips the row to
     // `expired` + `cleanup_status='pending'`, which is the predicate
