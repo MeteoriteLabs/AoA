@@ -1898,6 +1898,13 @@
       "when": 1788343527289,
       "tag": "0270_canary_preflight_lease_watermark",
       "breakpoints": true
+    },
+    {
+      "idx": 271,
+      "version": "7",
+      "when": 1788366844255,
+      "tag": "0271_safe_eternals",
+      "breakpoints": true
     }
   ]
 }

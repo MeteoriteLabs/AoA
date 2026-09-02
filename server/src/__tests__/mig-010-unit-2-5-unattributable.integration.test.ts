@@ -85,6 +85,10 @@ const NPX = createRequire(import.meta.url).resolve("tsx/cli");
 const JUSTIFICATION =
   "orphaned warm lease: owning agent deleted, provider handle confirmed gone by the operator";
 
+/** ATTESTATION, not authentication — see the CLI header. Recorded so an incident review has a
+ *  name to start from; it is exactly as forgeable as the justification beside it. */
+const OPERATOR = "tk@orchestrator";
+
 type Fixture = {
   operatorDb: Db;
   admin: Sql;
@@ -111,7 +115,8 @@ async function runGate(organizationId: string) {
 
 async function crosswalkRows(companyId: string) {
   return fixture!.admin`
-    SELECT id, resource_key, resource_type, disposition, cleanup_outcome, reason, created_at
+    SELECT id, resource_key, resource_type, disposition, cleanup_outcome, reason, created_at,
+           resolution_reason, resolved_by, resolved_at
     FROM legacy_resource_reconciliation WHERE company_id = ${companyId} ORDER BY resource_key`;
 }
 
@@ -366,7 +371,7 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.5 — E7-F006: an unattributable record an
 
     await expect(
       runResolveCli(
-        ["--company", COMPANY_C, "--resource-key", LEASE_C, "--reason", JUSTIFICATION],
+        ["--company", COMPANY_C, "--resource-key", LEASE_C, "--reason", JUSTIFICATION, "--operator", OPERATOR],
         fixture!.adminUrl,
       ),
     ).rejects.toMatchObject({
@@ -381,12 +386,30 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.5 — E7-F006: an unattributable record an
     expect(rows[0]!.cleanup_outcome).toBeNull();
   }, 180_000);
 
+  it("[Codex P1] refuses a blank --operator, exits 2, and changes nothing", async () => {
+    // The handle is the name an incident review starts from. Blank is worse than absent for
+    // the same reason a blank justification is: it looks like a record.
+    await expect(
+      runResolveCli(
+        ["--company", COMPANY_A, "--resource-key", LEASE_A, "--reason", JUSTIFICATION, "--operator", "  "],
+        fixture!.operatorUrl,
+      ),
+    ).rejects.toMatchObject({
+      code: 2,
+      stderr: expect.stringContaining("--operator must be a non-empty handle"),
+    });
+
+    const untouched = await crosswalkRows(COMPANY_A);
+    expect(untouched[0]!.disposition).toBe("unattributable");
+    expect(untouched[0]!.resolved_at).toBeNull();
+  }, 180_000);
+
   it("refuses a blank --reason, exits 2, and changes nothing", async () => {
     // A whitespace-only justification is worse than none: it LOOKS like a record. Exit 2
     // (usage) rather than 1 (a real failed repair) so a script can tell them apart.
     await expect(
       runResolveCli(
-        ["--company", COMPANY_A, "--resource-key", LEASE_A, "--reason", "   "],
+        ["--company", COMPANY_A, "--resource-key", LEASE_A, "--reason", "   ", "--operator", OPERATOR],
         fixture!.operatorUrl,
       ),
     ).rejects.toMatchObject({
@@ -414,7 +437,7 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.5 — E7-F006: an unattributable record an
 
     await expect(
       runResolveCli(
-        ["--company", COMPANY_B, "--resource-key", LEASE_B, "--reason", JUSTIFICATION],
+        ["--company", COMPANY_B, "--resource-key", LEASE_B, "--reason", JUSTIFICATION, "--operator", OPERATOR],
         fixture!.operatorUrl,
       ),
     ).rejects.toMatchObject({
@@ -438,7 +461,7 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.5 — E7-F006: an unattributable record an
 
     // (2) The remedy: exactly one row, exit 0.
     const { stdout } = await runResolveCli(
-      ["--company", COMPANY_A, "--resource-key", LEASE_A, "--reason", JUSTIFICATION],
+      ["--company", COMPANY_A, "--resource-key", LEASE_A, "--reason", JUSTIFICATION, "--operator", OPERATOR],
       fixture!.operatorUrl,
     );
     expect(stdout).toContain(`resolved ${LEASE_A}: unattributable -> terminal_cleanup`);
@@ -450,7 +473,21 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.5 — E7-F006: an unattributable record an
     expect(rows).toHaveLength(1);
     expect(rows[0]!.disposition).toBe("terminal_cleanup");
     expect(rows[0]!.cleanup_outcome).toBe("operator_resolved");
-    expect(rows[0]!.reason).toBe(JUSTIFICATION);
+    // ★ Codex P1: the CLASSIFIER's verdict SURVIVES the resolution. `reason` is evidence;
+    // the operator's prose lands beside it, not over it.
+    expect(rows[0]!.reason).toBe("unclassifiable owner shape — surfaced for manual attribution (never dropped)");
+    expect(rows[0]!.resolution_reason).toBe(JUSTIFICATION);
+    // ★★ Codex P1 — THE AUDIT TRAIL. Before this the row's only timestamp was `created_at`,
+    // the PASS's insert time, which PREDATES the decision it records. `resolved_at` comes from
+    // the DATABASE clock in the same UPDATE that flips the disposition, so it must postdate the
+    // insert; a client-supplied stamp could sit anywhere, including before it.
+    expect(rows[0]!.resolved_at).not.toBeNull();
+    expect(new Date(rows[0]!.resolved_at as string).getTime()).toBeGreaterThan(
+      new Date(rows[0]!.created_at as string).getTime(),
+    );
+    // ATTESTATION, not authentication — see the CLI header. Recorded so an incident review has
+    // a name to start from, and exactly as forgeable as the justification beside it.
+    expect(rows[0]!.resolved_by).toBe(OPERATOR);
     // ★ THE HISTORY SURVIVES. `resource_type` still reads `unattributable`, so the record
     // says both what the machine could not classify AND what the human decided about it.
     expect(rows[0]!.resource_type).toBe("unattributable");
@@ -473,7 +510,7 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.5 — E7-F006: an unattributable record an
 
     await expect(
       runResolveCli(
-        ["--company", COMPANY_A, "--resource-key", LEASE_A, "--reason", "a different reason"],
+        ["--company", COMPANY_A, "--resource-key", LEASE_A, "--reason", "a different reason", "--operator", OPERATOR],
         fixture!.operatorUrl,
       ),
     ).rejects.toMatchObject({
@@ -483,7 +520,8 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.5 — E7-F006: an unattributable record an
 
     const after = await crosswalkRows(COMPANY_A);
     expect(after).toEqual(before);
-    expect(after[0]!.reason).toBe(JUSTIFICATION);
+    expect(after[0]!.reason).toBe("unclassifiable owner shape — surfaced for manual attribution (never dropped)");
+    expect(after[0]!.resolution_reason).toBe(JUSTIFICATION);
   }, 180_000);
 
   it("a resource key that names nothing is the SAME non-success outcome, not a success", async () => {
@@ -491,7 +529,7 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.5 — E7-F006: an unattributable record an
     // tell that apart from a repair will believe a gate was unblocked when it was not.
     await expect(
       runResolveCli(
-        ["--company", COMPANY_A, "--resource-key", "no-such-resource-key", "--reason", JUSTIFICATION],
+        ["--company", COMPANY_A, "--resource-key", "no-such-resource-key", "--reason", JUSTIFICATION, "--operator", OPERATOR],
         fixture!.operatorUrl,
       ),
     ).rejects.toMatchObject({ code: 1 });

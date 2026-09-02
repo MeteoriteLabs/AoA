@@ -99,6 +99,27 @@ export const legacyResourceReconciliation = pgTable(
     cleanupOutcome: text("cleanup_outcome"),
     reason: text("reason").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // --- operator resolution (MIG-010 Unit 2.5, Codex P1) -------------------------------
+    // A resolved record previously carried a `terminal_cleanup` / `operator_resolved` verdict
+    // whose ONLY timestamp was `createdAt` -- the PASS's insert time, which PREDATES the
+    // decision it records. That is not merely missing, it is misleading to anyone
+    // reconstructing an incident, and it is the one loss here that cannot be recovered from
+    // anywhere else: no history table, no DELETE, and `legacy_reconciliation_passes` records
+    // pass completions rather than resolutions.
+    //
+    // Set from the DATABASE clock in the same UPDATE that flips the disposition, so the
+    // "atomically" requirement is satisfied by construction rather than by a transaction.
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    // ★ ATTESTATION, NOT AUTHENTICATION. This is a self-declared handle, exactly as forgeable
+    // as the justification beside it. The only authenticated fact available to an operator CLI
+    // is the role it connected as, which `assertOperatorRole` already establishes. Calling this
+    // an identity would be a false claim of enforcement, which this programme treats as worse
+    // than no check at all.
+    resolvedBy: text("resolved_by"),
+    // The operator's justification lives HERE rather than overwriting `reason`. `reason` is the
+    // CLASSIFIER's verdict and the crosswalk is evidence; an operator's prose replacing it is a
+    // write over evidence even when the overwritten string is a compile-time constant.
+    resolutionReason: text("resolution_reason"),
   },
   (table) => ({
     // One record per resource: re-running the reconciler is idempotent.

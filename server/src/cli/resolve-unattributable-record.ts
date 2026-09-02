@@ -70,6 +70,7 @@ interface Args {
   companyId?: string;
   resourceKey?: string;
   reason?: string;
+  operator?: string;
 }
 
 function parseArgs(argv: readonly string[]): Args {
@@ -80,6 +81,7 @@ function parseArgs(argv: readonly string[]): Args {
     if (arg === "--company") out.companyId = rest[++i];
     else if (arg === "--resource-key") out.resourceKey = rest[++i];
     else if (arg === "--reason") out.reason = rest[++i];
+    else if (arg === "--operator") out.operator = rest[++i];
   }
   return out;
 }
@@ -114,12 +116,12 @@ async function assertOperatorRole(db: ReturnType<typeof createDb>): Promise<void
 }
 
 async function main(): Promise<void> {
-  const { companyId, resourceKey, reason } = parseArgs(process.argv);
+  const { companyId, resourceKey, reason, operator } = parseArgs(process.argv);
 
-  if (!companyId || !resourceKey || reason === undefined) {
+  if (!companyId || !resourceKey || reason === undefined || operator === undefined) {
     console.error(
       "usage: resolve-unattributable-record --company <companyId> " +
-        '--resource-key <resourceKey> --reason "<justification>"',
+        '--resource-key <resourceKey> --reason "<justification>" --operator <handle>',
     );
     process.exit(2);
   }
@@ -132,6 +134,21 @@ async function main(): Promise<void> {
     console.error(
       "--reason must be a non-empty justification: it is the audit trail this record carries " +
         "in place of a machine-derived classification.",
+    );
+    process.exit(2);
+  }
+
+  // ★ ATTESTATION, NOT AUTHENTICATION — and the difference is worth stating where someone
+  // reading the row will look. `assertOperatorRole` below establishes the ONLY authenticated
+  // fact available here: the role this process connected as. `--operator` is a self-declared
+  // handle, exactly as forgeable as `--reason`, supplied by whoever already holds the
+  // aoa_operator DATABASE_URL. It is recorded so an incident has a name to start from, not so
+  // anyone can be held to it. Describing it as identity would be the false-enforcement claim
+  // this programme treats as worse than a missing check.
+  const operatorHandle = operator.trim();
+  if (operatorHandle.length === 0) {
+    console.error(
+      "--operator must be a non-empty handle: it is the name an incident review starts from.",
     );
     process.exit(2);
   }
@@ -149,16 +166,36 @@ async function main(): Promise<void> {
   // makes minting `mapped` structurally impossible, makes the command idempotent, and makes
   // a mistyped resource key a no-op instead of an overwrite. Moving this predicate into a
   // TypeScript pre-check would leave the UPDATE itself unguarded and reintroduce all three.
-  const updated = rowsOf<{ resource_key: string; disposition: string; cleanup_outcome: string }>(
+  //
+  // ★★ AND `reason` IS NO LONGER TOUCHED (Codex P1). `reason` is the CLASSIFIER's verdict and
+  // this crosswalk is EVIDENCE; an operator's prose overwriting it is a write over evidence,
+  // even though the string it replaced is a compile-time constant. The justification now lands
+  // in `resolution_reason` beside it, so the row carries both what the machine concluded and
+  // what the human decided.
+  //
+  // ★ `resolved_at = now()` is the DATABASE clock, in the SAME statement that flips the
+  // disposition — which is how the finding's "atomically" requirement is met without a
+  // transaction, and without the operator pool needing any authority it does not already hold.
+  // Before this, the only timestamp on a resolved row was `created_at`: the PASS's insert time,
+  // which PREDATES the decision it records.
+  const updated = rowsOf<{
+    resource_key: string;
+    disposition: string;
+    cleanup_outcome: string;
+    resolved_at: string;
+    resolved_by: string;
+  }>(
     await db.execute(sql`
       UPDATE legacy_resource_reconciliation
          SET disposition = ${RESOLVED_DISPOSITION},
-             reason = ${justification},
-             cleanup_outcome = ${RESOLVED_CLEANUP_OUTCOME}
+             cleanup_outcome = ${RESOLVED_CLEANUP_OUTCOME},
+             resolution_reason = ${justification},
+             resolved_by = ${operatorHandle},
+             resolved_at = now()
        WHERE company_id = ${companyId}
          AND resource_key = ${resourceKey}
          AND disposition = 'unattributable'
-      RETURNING resource_key, disposition, cleanup_outcome`),
+      RETURNING resource_key, disposition, cleanup_outcome, resolved_at, resolved_by`),
   );
 
   // 0 rows is NOT success. It means "no such unattributable record" — either the key names
