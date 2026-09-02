@@ -38,6 +38,7 @@ import { createSupervisor } from "../supervisor/supervisor.js";
 import { createRunCanaryCoordinator } from "../supervisor/run-canaries.js";
 import { resolveRunOpDeadlineMs } from "./run-op-deadline.js";
 import { createRedeemer, synthesiseRunSecrets } from "../lease/secret-redemption.js";
+import { createStagedInputResolver } from "../lease/staged-input.js";
 import { createLeaseRenewalDriver, createRealRenewalSchedule } from "../lease/lease-renewal.js";
 import { openEventOutboxStore, type DurableEventStore } from "../events/event-outbox-store.js";
 import { DurableWorkerEventSink } from "../events/durable-event-sink.js";
@@ -163,6 +164,17 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     return synthesiseRunSecrets(handoff.offer.job.secretHandles ?? [], redeem);
   };
 
+  // CLI-008 Unit B — per-run staged input: read the control plane's pointer off the frozen
+  // envelope and mint ONE short-lived download grant per file. Grants out, never bytes; the
+  // provider redeems them. A run whose envelope carries no pointer resolves to `[]` and the
+  // lifecycle is byte-identical to before, which is what keeps staging optional. Fails CLOSED
+  // inside the supervisor.
+  const resolveStagedFiles = createStagedInputResolver({
+    client: deps.client,
+    key: deps.key,
+    session: () => session.get(),
+  });
+
   // `redactionCanaries: []` is the construction-time PREFIX; the run's real canaries are seeded
   // PER-RUN into the coordinator's per-lease array (below), never at construction — so no
   // construction-time secret exists and a forgotten seeding cannot fail open. observeRun stays
@@ -179,6 +191,7 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     eventSink,
     redactionCanaries: [],
     materializeRunSecrets,
+    resolveStagedFiles,
     canaryCoordinator,
     // ★ H1 — the run's OWN budget, from `workload.maxRuntimeSeconds`. Before this the
     // supervisor's 60 s default stood for every run, and that one number is simultaneously

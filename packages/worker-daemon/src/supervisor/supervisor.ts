@@ -44,6 +44,7 @@ import {
   type ProviderOpContext,
   type ResourceLabels,
   type SandboxProvider,
+  type StagedFileRequest,
 } from "./provider.js";
 import type { RunCanaryCoordinator } from "./run-canaries.js";
 import type { OwnedLabelsCapabilityLike } from "../lease/owned-labels-capability.js";
@@ -160,6 +161,24 @@ export interface SupervisorDeps {
    * a throw is logged and never fails the run.
    */
   readonly observeRun?: (input: { handoff: LeaseHandoff; exec: ExecuteResult }) => RunObservation | Promise<RunObservation>;
+  /**
+   * CLI-008 Unit B — resolve the control-plane-staged files for this run, as {path, GRANT}
+   * pairs. Absent (the default) ⇒ nothing is staged and the lifecycle is byte-identical to
+   * before, which is what keeps staging OPTIONAL for every existing run.
+   *
+   * ★ GRANTS, NOT BYTES. The composition root reads the staged-input pointer off the frozen
+   * envelope and mints a download grant per file over the frozen `artifact_transfer_grant`
+   * op; the bytes go store → provider → sandbox and never cross this seam. A bytes-shaped
+   * signature would route payloads through a daemon that is dependency-pinned (E4-D01)
+   * precisely so it does not handle them.
+   *
+   * ★ FAIL CLOSED, unlike `observeRun`. `observeRun` is instrumentation and a throw there is
+   * swallowed; this is INPUT. A run that was meant to have files and does not is a sandbox
+   * whose agent works from the wrong context, terminalizes cleanly, and satisfies every gate
+   * downstream while proving nothing. A throw here — resolving OR staging — fails the attempt
+   * and escalates cleanup.
+   */
+  readonly resolveStagedFiles?: (input: { handoff: LeaseHandoff }) => Promise<readonly StagedFileRequest[]>;
   /**
    * DAT-008 slice 5 — PER-RUN secret materialisation. Given a handoff, redeems the envelope's
    * `env`/`sandbox_local_only` handles and returns the sandbox `env` plus the redeemed values (to
@@ -565,6 +584,46 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       await events.terminal({ status: "cancelled", exitCode: null, errorCode: "cancelled", errorMessage: null });
       await escalateCleanup(run, "cancelled_during_create");
       return;
+    }
+
+    // 1b. CLI-008 Unit B — stage the control plane's files INTO the sandbox.
+    //
+    // Position: after `create` (there is no sandbox to write into before it) and before
+    // `attempt_started`/`execute` (the files exist so the tenant command can read them). It is
+    // deliberately BEFORE `attempt_started` so a staging failure never emits an event that
+    // says the tenant command started when it never did.
+    if (deps.resolveStagedFiles) {
+      let staged: readonly StagedFileRequest[] = [];
+      try {
+        staged = await deps.resolveStagedFiles({ handoff });
+      } catch (err) {
+        emitOp("stage_files", "failed");
+        deps.logger?.warn(
+          { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels) },
+          "supervisor: could not resolve staged input for this run — failing the attempt closed",
+        );
+        await events.terminal({ status: "failed", exitCode: null, errorCode: "stage_input_unavailable", errorMessage: null });
+        await escalateCleanup(run, "stage_input_unresolved");
+        return;
+      }
+      if (staged.length > 0) {
+        try {
+          await run.effect.stageFiles(created.sandboxId, staged, run.makeCtx());
+          emitOp("stage_files", "success");
+        } catch (err) {
+          // FAIL CLOSED. Running the agent without the files the control plane meant it to
+          // have produces a clean terminal for mutilated work — the one outcome nothing
+          // downstream can detect.
+          emitOp("stage_files", "failed");
+          deps.logger?.warn(
+            { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels), stagedCount: staged.length },
+            "supervisor: staging the control plane's input failed — failing the attempt closed",
+          );
+          await events.terminal({ status: "failed", exitCode: null, errorCode: "stage_input_failed", errorMessage: null });
+          await escalateCleanup(run, "stage_input_error");
+          return;
+        }
+      }
     }
 
     // 2. attempt_started — the tenant command is running INSIDE the sandbox.

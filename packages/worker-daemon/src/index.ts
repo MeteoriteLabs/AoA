@@ -138,6 +138,14 @@ export {
   synthesiseRunSecrets,
 } from "./lease/secret-redemption.js";
 export type { RedeemFn, ResolveClassification, RunFenceContext } from "./lease/secret-redemption.js";
+// CLI-008 Unit B — the worker-side staged-input pointer reader + grant minter.
+export {
+  STAGED_INPUT_EXTENSION_NAMESPACE,
+  StagedInputUnavailableError,
+  createStagedInputResolver,
+  readStagedInputPointers,
+} from "./lease/staged-input.js";
+export type { StagedInputPointer } from "./lease/staged-input.js";
 
 export { createEnroller, EnrollmentError, mapErrorStatus, DEFAULT_SESSION_TTL_MS } from "./enrollment/enroll.js";
 export type {
