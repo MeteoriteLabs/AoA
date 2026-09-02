@@ -285,7 +285,7 @@ being read.
 
 ## E7-F006 — One `unattributable` record refuses the gate forever, and ordinary agent deletion creates one
 
-**Status:** open · **Owner:** MIG-010 (`epics/E10-desktop-migration-realtime/tickets/MIG-010-design.md`, no result doc)
+**Status:** **resolved** · **Resolved by:** MIG-010 Unit 2.5, 2026-09-02.
 **Severity:** HIGH
 **Filed:** 2026-09-02, after Units 2.3 + 2.4 made the path reachable. Flagged BLOCKING by two
 independent terrain sweeps and carried in design §9.2 since 2026-09-01 — **but never filed as a
@@ -317,3 +317,87 @@ is accounted for" is precisely the forgeable claim), requires a non-empty operat
 takes one `resourceKey` at a time, and asserts its connected role first. It ships with an amendment
 to `legacy_resource_reconciliation.ts:31-32`, which currently states there is no update path in
 application code.
+
+**Resolved.** MIG-010 Unit 2.5, exactly as §9.2 settled it. `server/src/cli/resolve-unattributable-record.ts`
+is the operator remedy — `pnpm resolve:unattributable-record --company <id> --resource-key <key>
+--reason "<justification>"`. **No migration:** `aoa_operator` has held `SELECT, INSERT, UPDATE` on the
+crosswalk since `0256` and the operator-write policy is `ALL` with `USING (true)`; the grant existed and
+nothing used it. This is its first consumer.
+
+* **The transition guard is in the `WHERE` clause**, not in TypeScript — `AND disposition =
+  'unattributable'`. The target disposition and cleanup outcome are file constants, not arguments, so
+  minting `mapped` is structurally impossible; the predicate makes a second run a no-op rather than a
+  silent overwrite, and makes a mistyped `--resource-key` that hits a real row a no-op rather than a
+  rewrite.
+* **Both guards are mutation-checked** (`mig-010-unit-2-5-unattributable.integration.test.ts`, 12 cases
+  on a real migrated database, on the real `aoa_operator` serving role). Removing the `WHERE` predicate
+  reds two cases — the `mapped`-rewrite refusal and the idempotence no-op — both failing as the command
+  *succeeding*. Deleting the `assertOperatorRole` call reds exactly one, and its failure is the **owner
+  run succeeding**, which is the shape that matters: an owner URL bypasses every GRANT and RLS policy,
+  so without the assertion the command would work identically had `0256` never granted the operator
+  `UPDATE` at all.
+* **The record survives its own repair.** `resource_type` stays at the `unattributable` sentinel and
+  `cleanup_outcome` is stamped `operator_resolved` (a value the pass never writes), so the row says both
+  what the machine could not classify and what the human decided, and a human-asserted terminal record
+  stays distinguishable from a machine-derived one. Closure is satisfied because the resource is
+  accounted for, not because the register was emptied.
+* The `legacy_resource_reconciliation.ts` comment amendment shipped in the same unit, plus two more the
+  unit falsified (the SECURITY MODEL's "only the reconciliation pass writes these rows", and the
+  `cleanupOutcome` value list).
+
+**★ A CORRECTION TO THIS FINDING'S OWN REACHABILITY CLAIM, measured rather than reasoned.** "Deleting an
+agent creates one" is true only when the deletion happens **before** the company's first pass. Reproduced
+on a real database (Unit 2.5 Task 1, ORG_B): delete the agent *after* a pass has already recorded the
+lease as `mapped`, and `insertRecordIfAbsent`'s `onConflictDoNothing` means the newly-unattributable
+record is **never written** — the row on disk stays `mapped`, byte for byte. So that ordering does not
+produce the durable trap this finding describes. It produces a different failure, now filed separately as
+**E7-F007**: the pass refuses forever while the gate opens, and this remedy cannot touch it because there
+is no `unattributable` record to resolve.
+
+**★ This resolves the last item in MIG-010's stated scope, and the canary still cannot flip.** E7-1 is
+gated by **E7-F003** (`unowned` — the capability half: no MCP surface, no instructions bundle, no
+workspace, no output capture) and by the execution substrate. Nothing here is an unblock.
+
+## E7-F007 — After a post-pass owner deletion, the reconciliation pass refuses forever while the gate opens
+
+**Status:** open · **Owner:** MIG-010 (`epics/E10-desktop-migration-realtime/tickets/MIG-010-design.md`, no result doc)
+**Severity:** MEDIUM
+**Filed:** 2026-09-02, by MIG-010 Unit 2.5 Task 1, **measured on a real migrated database** rather than
+reasoned — the plan's Task 1 Step 2 said "assert what you observe, not what you expect about the second
+pass", and this is what was observed.
+
+**What.** `reconcileCompanyLegacyResources` computes closure over the records it **builds in memory**
+during the pass, while `canary-preflight.ts` recomputes closure over the records **persisted** in the
+crosswalk. Those two sets can disagree, because the crosswalk is append-only:
+
+1. A lease owned by an agent reconciles as `mapped`; the record lands on disk.
+2. The founder deletes the agent. `environment_leases.agent_id` is `ON DELETE SET NULL`, so the lease
+   survives with no owner FK and `resolveResourceType` can no longer classify it.
+3. Re-run the pass. It builds an `unattributable` record and reports `ok: false` — but
+   `insertRecordIfAbsent` is `onConflictDoNothing` on `(company_id, resource_key)`, a record already
+   exists, and **nothing is written**. The persisted row is still `mapped`.
+4. The gate reads the persisted records, finds closure satisfied, and **opens**. The operator's own pass
+   exits non-zero, and will on every future run.
+
+**Why it is not simply E7-F006 again.** E7-F006's trap is a durable `unattributable` record: it refuses
+fail-**closed** and Unit 2.5 gives it a remedy. This is the mirror — a divergence in the fail-**open**
+direction, with **no** record for the Unit 2.5 command to act on. Widening that command to rewrite a
+`mapped` record would be exactly the forgeable transition design §9.2 forbids, so it was deliberately not
+done.
+
+**Severity, argued.** MEDIUM, not HIGH. The gate is arguably *right*: the record was true when written,
+the underlying provider resource is unchanged, and `mapped` means "left for drain" — which is still what
+should happen to it. The concrete harm is operator-facing and real: `pnpm reconcile:legacy-resources`
+becomes permanently red for that Organization with no command that can make it green, and a permanently
+red operator tool is how this programme has historically taught people to stop reading one. It is also a
+live contradiction between two computations of the same predicate, which is the class §2 of the design
+exists to keep out.
+
+**Fix — not settled, deliberately.** At least three shapes are plausible and they are not equivalent: let
+the pass compare against the persisted record and report a `stale_record` outcome distinct from
+`unattributable`; give the pass a reconcile-with-existing path (which reopens "a pass that can rewrite its
+own verdict is not evidence", design §9.2 option 2, and is probably wrong); or accept the divergence and
+make the pass's verdict read from the same persisted records the gate does, so the two cannot disagree by
+construction. MIG-010 owns choosing.
+
+**Not a blocker for E7-1.** E7-1 is gated by E7-F003 and the execution substrate.

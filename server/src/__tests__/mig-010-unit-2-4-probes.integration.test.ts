@@ -374,7 +374,17 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.4 probes — measured PostgreSQL behaviour
           createdAt <= watermark
         }`,
       );
-      expect(createdAt.getTime()).toBeLessThan(watermark.getTime());
+      // ★ `<=`, NOT `<`, AND THAT IS THE MECHANISM'S OWN PREDICATE, not a weakened assertion.
+      // `canary_preflight_evidence_leases` narrows with `l.created_at <= p_watermark`, so a row
+      // stamped in the SAME instant as the watermark is IN scope -- which is exactly what this
+      // probe exists to establish. Two reasons a strict `<` is wrong here: it asserts more than
+      // the code promises, and `Date.getTime()` truncates PostgreSQL's microseconds to
+      // milliseconds, so sub-millisecond ordering is not even observable through it.
+      //
+      // Measured: this failed on Linux CI with `expected 1788368327288 to be less than
+      // 1788368327288` -- the same millisecond -- while passing on a slower Windows box. A
+      // timing-dependent assertion that holds only on slow hardware is a flake, not a check.
+      expect(createdAt.getTime()).toBeLessThanOrEqual(watermark.getTime());
     } finally {
       await writer.end();
     }
