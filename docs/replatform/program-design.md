@@ -927,6 +927,25 @@ It unblocks JOB-004 through JOB-008, JOB-011 through JOB-014, and WRK-005 onward
 - **Acceptance:** A canary placement mints a Company-key handle and the lease envelope carries a non-empty `secretHandles`; the placement-digest replay invariant still holds; the mint's owner-authority gate is unchanged in strength; fail-closed preserved (no owner authority ⇒ no handle, visible degrade, no key in prompt/event/log). Unblocks but does not promote E7-1 (that needs a cited dispatched real-E2B run).
 - **Test:** Unit mint/owner-authority matrix + placement-digest replay proof + embedded-PG canary placement showing a non-empty handle set; the real-E2B leg is Sprint 5's operator-dispatched journey.
 
+#### CLI-008 — The capability half: make the sandbox agent able to work, and make that CHECKABLE (L)
+
+- **Depends on:** CLI-006, CLI-007.
+- **Outcome:** Own and close E7-F003. Today the distributed sandbox reaches the agent through argv
+  ONLY — no MCP tools, no instructions bundle, no workspace, no output capture — and the acceptance
+  verifier cannot see any of it: no clause reads workload, args, exitCode, stdout or any produced
+  artifact, and clause 3 is terminal-agnostic, so a run that exits 127 with a context-free prompt
+  passes. Fix the judge first, then the capability. The keystone decision is the inbound channel: the
+  FROZEN SandboxProvider port has no file-staging operation and worker-daemon is dependency-pinned,
+  so a file reaches the sandbox through argv staging or not at all — and argv is bounded, a task
+  description over ~7.4 KB cannot run distributed today.
+- **Acceptance:** A distributed coding run the verifier can DISTINGUISH from a context-free one — the
+  agent had tools, had its identity and company context, had a repository, and something it produced
+  reached AoA, each asserted by a clause rather than printed as an observation. Until the verifier
+  clause lands, no green E7-1 is evidence of capability, and the go-book says so.
+- **Test:** A fixture proving the CURRENT verifier blesses a context-free run (the blind spot, pinned
+  before it is closed), then the same fixture failing once the produced-output clause is asserted;
+  per-unit integration proof for the channel, tools, context, workspace and return path as each lands.
+
 ### E8 — Browser automation
 
 #### BRW-001 — Browser-session job and policy extensions (M)

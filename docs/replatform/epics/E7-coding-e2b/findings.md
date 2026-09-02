@@ -149,10 +149,21 @@ still creates a sandbox, still executes, still terminalizes, and still SATISFIES
 gap is invisible to the machine check that the campaign will read — which is exactly the shape of defect
 this programme keeps producing, and the reason it is written down rather than left in a design doc.
 
-**Not owned.** Unit 2 ("capability") is scoped in `qa/2026-08-31-blocker-ab-fix-design.md` but has no
-ticket on disk. Declared `unowned` in `scripts/finding-ownership.json` rather than pointed at a
-plausible-sounding existing ticket: a false claim of ownership converts an open question into a settled
-one, which is worse than an honest gap.
+**Owner: CLI-008** (`epics/E7-coding-e2b/tickets/CLI-008-design.md`, no result doc), repointed from
+`unowned` on 2026-09-02 after a 39-agent scoping sweep produced the evidence a ticket could be written
+from. The previous `unowned` declaration was correct at the time — Unit 2 was sketched in a qa design
+with no ticket on disk, and naming a plausible-sounding existing ticket would have been a false claim
+of ownership. There is now an honest thing to point at.
+
+**★ The sweep sharpened this finding in two ways.** First, the blind spot is worse than described:
+clause 3 is labelled *"Terminal-AGNOSTIC"* in its own comment, so `failed` and `timed_out` are
+accepted, and **no clause anywhere reads `workload`, `args`, `exitCode`, stdout or any produced
+artifact** — a run that exits 127 satisfies the verifier. Second, and better: **the verifier already
+COMPUTES the signal that would catch it.** `countProducedOutputs` counts committed `workspace_patch`
+artifacts plus `task_outputs` by run; the result rides on `observed.producedArtifacts` and is
+**printed**. It appears at exactly four lines — type, zero-init, assignment, print — and none of the
+fourteen `failures.push` calls touches it. Promoting it to an asserted clause is an **S**, and it is
+the first unit of CLI-008 because every later unit is judged by this verifier.
 
 ## E7-F004 — The canary preflight's inventory is a strict SUPERSET of any reconcile pass's, by construction
 
