@@ -1,7 +1,9 @@
 # CLI-008 — The capability half: make the sandbox agent able to work, and make that CHECKABLE
 
-**Status:** `scoping stub` — filed so **E7-F003** has a checkable owner (E4-F013). No implementation,
-no result doc. Evidence: a 39-agent scoping sweep, 2026-09-02, every item verified against HEAD.
+**Status:** **Unit A shipped 2026-09-02** (§2); units B–F remain a `scoping stub` and Unit B's channel
+decision is undecided, so no result doc yet. Unit A changed the JUDGE, not the capability — E7-F003
+stays open and every row of §1 is still true. Evidence: a 39-agent scoping sweep, 2026-09-02, every
+item verified against HEAD.
 **Epic:** `E7 — Coding/CLI workload on E2B`. **Owns:** `E7-F003`.
 
 ---
@@ -45,6 +47,33 @@ lines — the type, the zero-init, the assignment, and the print — and **none 
 ship a fixture proving the verifier currently blesses a context-free run. Everything after this is
 judged by the verifier; fixing the judge first is the only ordering that makes later units provable.
 
+### Unit A — DONE, 2026-09-02
+
+The verifier now computes two independent dimensions.
+
+- **`ok`** is untouched: *the distributed journey was corroborated* — the MECHANISM. Still true of
+  a context-free run, and still exactly what the D1 40/40 evidence proved.
+- **`capabilityProven` / `capabilityFailures`** are new: *did anything the agent produced reach
+  AoA*. Unproven when both counts are 0; the clause-6 reason names the four unbuilt links in the
+  return path instead of restating that a number was zero.
+- The **RESULT line carries both verdicts**, so a reader who sees only it cannot come away
+  believing capability was proven, and a `capability:` block with both counts prints on pass and
+  fail alike — an unproven capability is exactly when it matters.
+- **`--require-capability`** makes an unproven capability exit 3. **Off by default**, because the
+  counts are structurally 0 until Unit F and a gate nobody can pass gets bypassed and then deleted
+  (`scripts/lib/gate-clause-wiring.mjs`, header). It is the flag the campaign flips at Unit F.
+
+Proven by mutation, not by assertion: deleting the computation reds the capability tests while the
+E7-F003 pin stays green; pushing the failure into `failures` instead reds **the pin**, which is the
+guard against the fix this design rejects; making the push unconditional reds both "one count
+non-zero flips it true" arms.
+
+**★ What Unit A did NOT do.** It built no capability. No MCP tool surface, no instructions bundle,
+no workspace, no non-argv channel, no output capture — the gap in §1 is exactly as wide as it was,
+and `capabilityProven` will be **false on every real run** until Unit F. Unit A did not touch the
+`--model` argv item the §4 table pairs with it; that stays open. This unit makes the gap legible.
+It is the opposite of progress toward a green campaign, and should be reported that way.
+
 ---
 
 ## 3. ★★★ The keystone decision, and the hard constraint that shapes it
@@ -79,7 +108,7 @@ Sizes are the sweep's, corrected by a verification pass. They are indicative, no
 
 | Unit | Size | What |
 |---|---|---|
-| **A — the judge** | **S** | Promote `producedArtifacts` to a clause; fixture proving today's verifier blesses a context-free run; `--model` in the argv while here |
+| **A — the judge** | **S** | ✅ **DONE 2026-09-02** (§2). `producedArtifacts` promoted to a `capabilityProven` dimension separate from `ok`, pinned fixture, `--require-capability` off by default. **`--model` in the argv was NOT done** and stays open |
 | **B — the channel** | **M** (decision) | Decide and prove the non-argv inbound channel. Blocks C–F |
 | **C — tools** | **L–XL** | A brokered HTTP `aoa` MCP config plus its env vars, and a run-identity credential as a second secret handle, so `mcp__aoa__*` is actually callable |
 | **D — context** | **M** | The instructions bundle reaches the sandbox (`--append-system-prompt-file`), and the prompt stops being a positional |
@@ -98,8 +127,9 @@ A distributed coding run that the verifier **can distinguish** from a context-fr
 tools, had its identity and company context, had a repository, and something it produced reached AoA
 — each asserted by a clause, not printed as an observation.
 
-★ Until Unit A lands, **no green E7-1 should be read as evidence of capability**, and the go-book
-should keep saying so.
+★ **No green E7-1 should be read as evidence of capability.** Since Unit A that is computed rather
+than asserted: the verifier prints `CAPABILITY: NOT PROVEN` beside every PASS, and
+`--require-capability` is the flag that enforces it once Unit F gives it something to find.
 
 ## 6. Depends on
 
