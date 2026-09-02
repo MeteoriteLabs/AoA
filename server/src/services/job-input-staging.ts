@@ -49,7 +49,11 @@
 import { createHash } from "node:crypto";
 
 import type { Db } from "@armyofagents/db";
-import { expectedAttemptObjectPrefix } from "@armyofagents/worker-protocol";
+import {
+  WIRE_EXTENSION_LIMITS,
+  canonicalizeJsonV1,
+  expectedAttemptObjectPrefix,
+} from "@armyofagents/worker-protocol";
 
 import { runInTenant } from "../db/tenant-context.js";
 import type { StorageProvider } from "../storage/types.js";
@@ -102,11 +106,42 @@ export interface StageJobInputFilesInput {
 }
 
 export type StageJobInputFilesResult =
-  | { readonly staged: false; readonly reason: "no_files" | "unknown_attempt" }
+  | { readonly staged: false; readonly reason: "no_files" | "unknown_attempt" | "pointer_too_large" }
   | { readonly staged: true; readonly attempt: number; readonly pointers: readonly StagedInputPointer[] };
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+/**
+ * Would this file set's POINTER fit the frozen per-extension value budget?
+ *
+ * ★ WHY THIS IS A REFUSAL AND NOT A SURPRISE. The pointer is small — about 200 bytes a file —
+ * but `valueMaxCanonicalBytes` is 16,384, so somewhere past ~70 files the extension stops
+ * being wire-legal. `buildJobEnvelope` would then `safeParse` to null, the poll would raise
+ * `internal_unavailable`, and the job would be PERMANENTLY UNLEASEABLE with nothing anywhere
+ * naming the cause. Refusing here — before a single byte is written, with an attributable
+ * reason the caller can act on — turns an undiagnosable cliff into an answer.
+ *
+ * Computed from placeholder ids of the exact minted LENGTH (a uuid is 36 chars, a sha256 hex
+ * digest is 64), so the projection is an upper bound on the real pointer rather than a guess.
+ */
+function pointerFitsExtension(
+  files: readonly StagedInputFile[],
+  prefix: string,
+): boolean {
+  const placeholderId = "0".repeat(36);
+  const projected = {
+    files: files.map((file) => ({
+      id: placeholderId,
+      path: file.path,
+      key: `${prefix}${placeholderId}`,
+      sha256: "0".repeat(64),
+      size: file.bytes.byteLength,
+    })),
+  };
+  const bytes = new TextEncoder().encode(canonicalizeJsonV1(projected)).length;
+  return bytes <= WIRE_EXTENSION_LIMITS.valueMaxCanonicalBytes;
 }
 
 /**
@@ -150,6 +185,10 @@ export async function stageJobInputFiles(
     jobId: input.jobId,
     attempt: resolved.attempt,
   });
+  // 1b. Refuse a bundle whose POINTER could not ride the envelope, BEFORE a byte moves.
+  if (!pointerFitsExtension(input.files, prefix)) {
+    return { staged: false, reason: "pointer_too_large" };
+  }
 
   const pointers: StagedInputPointer[] = [];
   const pending: Array<{ pointer: StagedInputPointer; contentType: string }> = [];

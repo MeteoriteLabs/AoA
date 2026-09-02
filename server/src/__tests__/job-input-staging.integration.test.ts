@@ -328,6 +328,45 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
     expect(rows[0]?.n).toBe(1);
   });
 
+  it("★ refuses a bundle whose POINTER could not ride the envelope, BEFORE a byte moves", async () => {
+    // The pointer is ~200 bytes a file against a frozen 16,384-byte per-extension budget, so
+    // past ~70 files the extension stops being wire-legal — `buildJobEnvelope` would safeParse
+    // to null and the job would be PERMANENTLY UNLEASEABLE with nothing naming the cause.
+    // Refusing here turns an undiagnosable cliff into an attributable answer.
+    const { admin, app } = ctx();
+    const { jobId, attemptId } = await seedJob();
+    const storage = makeStubStorage();
+    const many = Array.from({ length: 200 }, (_unused, i) => ({
+      path: `/home/user/.aoa/file-${i}.md`,
+      bytes: bytes(`content ${i}`),
+    }));
+    const result = await stageJobInputFiles({
+      appDb: app.db, storage, organizationId: ORG, jobId, attemptId, files: many,
+    });
+    expect(result).toEqual({ staged: false, reason: "pointer_too_large" });
+    // ★ Nothing was written — not the objects, and not the rows.
+    expect(storage.puts).toHaveLength(0);
+    const rows = await admin`SELECT count(*)::int AS n FROM job_artifacts WHERE job_id = ${jobId}`;
+    expect(rows[0]?.n).toBe(0);
+  });
+
+  it("still stages a realistic bundle — the ceiling is not in the way of Units C and D", async () => {
+    // Task 1 measured the real need at two files, 26,814 bytes of CONTENT. The pointer for
+    // that is a rounding error against the budget; this pins that the guard above cannot
+    // start refusing the bundles the channel exists to carry.
+    const { app } = ctx();
+    const { jobId, attemptId } = await seedJob();
+    const storage = makeStubStorage();
+    const result = await stageJobInputFiles({
+      appDb: app.db, storage, organizationId: ORG, jobId, attemptId,
+      files: [
+        { path: "/home/user/.aoa/mcp.json", bytes: bytes("x".repeat(246)) },
+        { path: "/home/user/.aoa/AGENTS.md", bytes: bytes("y".repeat(26_568)) },
+      ],
+    });
+    expect(result.staged).toBe(true);
+  });
+
   it("stages nothing for an empty file list, and never touches the store", async () => {
     const { app } = ctx();
     const { jobId, attemptId } = await seedJob();
