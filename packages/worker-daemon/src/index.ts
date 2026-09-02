@@ -141,6 +141,7 @@ export type { RedeemFn, ResolveClassification, RunFenceContext } from "./lease/s
 // CLI-008 Unit B — the worker-side staged-input pointer reader + grant minter.
 export {
   STAGED_INPUT_EXTENSION_NAMESPACE,
+  StagedInputMalformedError,
   StagedInputUnavailableError,
   createStagedInputResolver,
   readStagedInputPointers,

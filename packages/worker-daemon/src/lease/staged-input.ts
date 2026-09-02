@@ -20,9 +20,14 @@
  *
  * ★ AND IT IS NOT TRUSTED FOR SHAPE. `extensions[].value` is `z.unknown()` on the frozen
  * schema — the refiner bounds its SIZE and STRUCTURE, not its fields — so every field is
- * checked here. A malformed pointer yields NO staged files rather than a throw: an
- * unrecognised extension must behave exactly like an absent one, which is what makes staging
- * optional for every worker that predates it.
+ * checked here. The two "cannot read it" cases are deliberately NOT the same:
+ *   * the namespace is ABSENT      → `[]`. An unrecognised extension must behave exactly like
+ *                                    an absent one, which is what makes staging optional for
+ *                                    every worker that predates this.
+ *   * the namespace is PRESENT but the payload is unreadable → THROW. The control plane
+ *                                    staged something and this worker cannot tell what. Running
+ *                                    the agent anyway would be the fail-open the rest of this
+ *                                    module exists to avoid.
  *
  * Runtime imports: `@armyofagents/worker-protocol` + relative modules — the E4-D01 boundary.
  */
@@ -77,24 +82,35 @@ function readPointer(entry: unknown): StagedInputPointer | null {
 /**
  * Read this run's staged-input pointers off the frozen envelope's `extensions[]`.
  *
- * Returns `[]` for an absent, unknown, or malformed extension — an unrecognised pointer must
- * be indistinguishable from no pointer, or every worker built before this existed would start
- * failing runs it used to complete. A pointer that is PARTLY malformed yields `[]` for the
- * whole extension rather than a subset: staging a subset of a bundle is the partial-stage
- * failure the provider refuses for the same reason.
+ * `[]` means "this run has no staged input" — an ABSENT extension, which is every run built
+ * before this existed and every run today.
+ *
+ * ★ A PRESENT-BUT-UNREADABLE extension THROWS {@link StagedInputMalformedError} instead. That
+ * asymmetry is the point: returning `[]` for a corrupt pointer would let the agent run without
+ * the files the control plane meant it to have, terminalize cleanly, and satisfy every gate
+ * downstream — the exact failure the digest check and the fail-closed supervisor branch exist
+ * to prevent, reintroduced at the one place it would be invisible.
+ *
+ * A PARTLY malformed pointer throws for the whole extension rather than staging a subset, for
+ * the same reason the provider's staging is all-or-nothing: an agent cannot tell which files
+ * it is missing.
  */
 export function readStagedInputPointers(extensions: unknown): readonly StagedInputPointer[] {
   if (!Array.isArray(extensions)) return [];
   const extension = extensions.find(
     (entry) => isRecord(entry) && entry.namespace === STAGED_INPUT_EXTENSION_NAMESPACE,
   );
-  if (!isRecord(extension) || !isRecord(extension.value)) return [];
+  if (extension === undefined) return [];
+  if (!isRecord(extension) || !isRecord(extension.value)) {
+    throw new StagedInputMalformedError("extension value is not an object");
+  }
   const files = extension.value.files;
-  if (!Array.isArray(files) || files.length === 0) return [];
+  if (!Array.isArray(files)) throw new StagedInputMalformedError("`files` is not an array");
+  if (files.length === 0) return [];
   const pointers: StagedInputPointer[] = [];
   for (const entry of files) {
     const pointer = readPointer(entry);
-    if (!pointer) return [];
+    if (!pointer) throw new StagedInputMalformedError("a file entry is missing or malformed");
     pointers.push(pointer);
   }
   return pointers;
@@ -172,6 +188,14 @@ function buildGrantRequest(
     key: deps.key,
   });
   return { bytes, sessionToken: session.token, proofHeaders: proof.headers };
+}
+
+/** Thrown when this run's staged-input extension is present but cannot be read. */
+export class StagedInputMalformedError extends Error {
+  constructor(detail: string) {
+    super(`staged-input pointer is unreadable: ${detail}`);
+    this.name = "StagedInputMalformedError";
+  }
 }
 
 /** Thrown when a pointer exists but no grant could be obtained for it. Carries no url. */

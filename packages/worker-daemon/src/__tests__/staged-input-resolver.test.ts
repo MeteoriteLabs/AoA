@@ -237,4 +237,25 @@ describe("CLI-008 Unit B — staged-input resolver (pointer → download grant)"
   it("reads back exactly what the control plane's encoding wrote", () => {
     expect(readStagedInputPointers([stagedInputExtension([POINTER])])).toEqual([POINTER]);
   });
+
+  it("★ a PRESENT but UNREADABLE pointer fails the run — it does not read as 'nothing staged'", async () => {
+    // Absent ⇒ []. Present-but-corrupt ⇒ throw. Collapsing the two would let an agent run
+    // without the files the control plane meant it to have, with a clean terminal.
+    const { resolve, requests } = resolverOver(() => {
+      throw new Error("must not be called");
+    });
+    const damaged = {
+      namespace: STAGED_INPUT_EXTENSION_NAMESPACE,
+      schemaVersion: 1,
+      critical: false,
+      value: { files: [{ id: POINTER.artifactId, path: POINTER.path, key: POINTER.objectKey, sha256: "nope", size: 1 }] },
+    };
+    const base = makeHandoff();
+    const handoff = {
+      ...base,
+      offer: leaseOfferV1Schema.parse({ ...base.offer, job: { ...base.offer.job, extensions: [damaged] } }),
+    };
+    await expect(resolve({ handoff })).rejects.toThrow(/unreadable/);
+    expect(requests).toHaveLength(0);
+  });
 });

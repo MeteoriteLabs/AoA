@@ -73,21 +73,24 @@ describe("CLI-008 Unit B — the staged-input pointer crosses the E4-D01 boundar
     ).toEqual([]);
   });
 
-  it("★ a PARTLY malformed pointer stages NOTHING, not a subset", () => {
-    // `extensions[].value` is `z.unknown()` on the frozen schema — the refiner bounds size and
-    // structure, not fields — so the reader validates every one. Staging a subset of a bundle
-    // is the partial-stage failure the provider refuses for the same reason.
+  it("★ a PARTLY malformed pointer THROWS — it does not read as 'nothing staged'", () => {
+    // ★ THE ASYMMETRY IS THE POINT. An absent extension is "no staged input"; a PRESENT but
+    // unreadable one is "the control plane staged something this worker cannot read", and
+    // returning [] for that would let the agent run without its files, terminalize cleanly and
+    // satisfy every gate downstream — the exact fail-open the digest check exists to prevent.
+    // Throwing for the whole extension rather than staging a subset mirrors the provider's
+    // all-or-nothing rule: an agent cannot tell which files it is missing.
     const extension = stagedInputExtension(POINTERS);
     const damaged = {
       ...extension,
       value: { files: [extension.value.files[0], { ...extension.value.files[1], sha256: "not-a-digest" }] },
     };
-    expect(readStagedInputPointers([damaged])).toEqual([]);
+    expect(() => readStagedInputPointers([damaged])).toThrow(/unreadable/);
   });
 
   it("a relative in-sandbox path is refused — staged paths are absolute", () => {
     const extension = stagedInputExtension([{ ...POINTERS[0]!, path: "relative/x.md" }]);
-    expect(readStagedInputPointers([extension])).toEqual([]);
+    expect(() => readStagedInputPointers([extension])).toThrow(/unreadable/);
   });
 });
 
