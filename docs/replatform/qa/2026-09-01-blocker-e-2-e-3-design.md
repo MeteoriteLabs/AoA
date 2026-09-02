@@ -1,6 +1,10 @@
 # BLOCKER E-2 + E-3 — what should CLOSURE mean?
 
-> **Status: DESIGN, revision 4 — §4.3's watermark mechanism is WITHDRAWN as a fail-open. NOT built.**
+> **Status: DESIGN, revision 5 — §10.3's replacement is itself corrected. Unit 2.3 SHIPPED; 2.4 not built.**
+> A second sweep (67 agents, 44 confirmed hazards) ran REAL PostgreSQL probes and broke two of
+> §10.3's five points. **§11 supersedes §10.3.** Read it before building anything.
+> ★ Third consecutive round where the DIAGNOSIS held and the REMEDY failed. That is now a
+> property of this problem, not an accident: assume any mechanism here is wrong until measured.
 > A 72-agent terrain sweep (183 cited facts, 67 hazards raised, **48 confirmed**) established that the
 > optional-watermark-parameter shape §4.3 proposed would make the gate **ADMIT an unreconciled fleet**.
 > §10 records what was confirmed and replaces the mechanism. Read §10 before §4.
@@ -524,3 +528,97 @@ restoring the unfalsifiable "I could not read" that Unit 1.6 existed to remove.
 §1 (the terrain), §2 (the question), §3.1 and §3.2 (the two rejected answers), §9.1's freshness
 bound and §9.2's remedy shape. The diagnosis has now survived two adversarial rounds; every failure
 has been in the *remedy*, and both times in a mechanism that looked obviously safe.
+
+---
+
+## 11. Revision 5 — measured, and §10.3 was still wrong twice
+
+The second sweep did not reason about PostgreSQL; it **ran** it. Two of §10.3's five points are
+withdrawn, one is right for the wrong reason, and one new BLOCKING hazard appeared that no previous
+round saw.
+
+### 11.1 ★★★ §10.3 point 4 is UNBUILDABLE in the shape it names
+
+The churn guard — refuse when `total > 0 && narrowed == 0` — was to be served by a
+`RETURNS TABLE (lease_id uuid, unnarrowed_total bigint)`.
+
+**Measured:** with a watermark that predates every lease, that function returns **ZERO ROWS**. There
+is no row to carry the total. The guard is unobservable **exactly in the case it exists to detect**,
+and it fails silent, not loud.
+
+**The fix is already in this codebase.** `canary_preflight_evidence_scalars` solved the same problem
+and `0267` documents it: *"`scoped` returning no row makes BOTH scalar sub-selects NULL, so the
+'exactly one row, always' contract holds."* The narrowed-lease read must adopt that contract:
+
+```sql
+RETURNS TABLE (lease_ids uuid[], unnarrowed_total bigint)
+-- one row, ALWAYS: array_agg over the narrowed set (NULL when empty) + count(*) over the
+-- UNNARROWED set. `narrowed == 0 && total > 0` is then observable, because the row exists.
+```
+
+★ A set-returning shape cannot carry a fact about the empty set. If a value must survive "no
+matches", it belongs in a one-row contract, not a `RETURNS TABLE` of the matches.
+
+### 11.2 ★★★ §10.3 point 1 is right, and its stated reason is WRONG — the truth is worse
+
+§10.3 justified DROPping the old signature by the 42725 `is not unique` result. **Measured: that
+result only occurs when the new parameter carries a DEFAULT.** With the REQUIRED, no-DEFAULT
+parameter §10.3 itself mandates, a surviving 2-argument call **does not error at all** — it resolves
+silently to the OLD, unnarrowed function and returns every lease.
+
+So a missed call site does not fail loudly into `preflight_error`. It **fails open**, quietly, with
+the gate reading an unnarrowed inventory it believes is narrowed. The DROP is mandatory for a
+stronger reason than the one recorded.
+
+Two more measured facts make the DROP unavoidable anyway:
+
+- `CREATE OR REPLACE FUNCTION` **cannot change a return type** (42P13, *"Use DROP FUNCTION first"*),
+  so adding the total forces a DROP even at unchanged arity.
+- After the DROP, a stale call raises **42883 `does not exist`**, not 42501 — function resolution
+  precedes the ACL check. That is the loud failure the design wanted, but it arrives only *because*
+  of the DROP, never instead of it.
+
+### 11.3 ★★★ NEW BLOCKING — a partial pass across a key rotation bricks the company, and reports OK
+
+If the provider key rotates while a pass is running, records written before the rotation carry
+generation G1 and records after carry G2. The gate refuses on **any** record whose generation differs
+from the current one (`canary-preflight.ts:157-171`), the crosswalk is **append-only with no update
+path**, and the pass **reports success**. The company is then permanently ungateable with no remedy
+in code, and nothing says so.
+
+This is the same permanence trap as the `unattributable` case (§9.2) reached by a different route.
+The pass must therefore read the generation once, re-read it before it commits its marker, and
+**abort without writing a marker** if it moved — leaving a retryable state rather than a poisoned one.
+
+### 11.4 The other confirmed hazards that shape Unit 2.4
+
+- **HIGH — §9.1's freshness bound is a SECOND cross-clock comparison**, and the obvious
+  implementation (compare the marker to a JavaScript `Date`) reintroduces the exact two-clock bug
+  §3.3 exists to close. The comparison must happen **in SQL**, against the database clock, on both
+  sides.
+- **HIGH — nothing would RED if `acquireLease` reverted to the application clock.** The switch is a
+  one-line deletion protected by zero tests, and the whole watermark is unsound without it.
+- **HIGH — "latest marker" only means "latest COMPLETED pass" if the marker records completion,
+  scope and identity.** Decide the marker's columns from that sentence, not from convenience.
+- **HIGH — an added output column is invisible to a caller that projects by name.** Measured:
+  `SELECT lease_id FROM fn(…)` against a two-column `RETURNS TABLE` returns rows keyed only
+  `["lease_id"]`, no error. A half-updated caller loses the new guard silently.
+- **★ HIGH — `server/src/__tests__` is EXCLUDED from typecheck** (`server/tsconfig.json`), and vitest
+  sets no `typecheck` option. Measured: `tsc --listFilesOnly` pulls exactly ONE file from that
+  directory. So **every fake `CanaryPreflightStore` silently absorbs a new parameter** — a store
+  interface change reds nothing in the tests that mock it. This is a general property of this
+  repository worth remembering well beyond Unit 2.4.
+- **HIGH — inverting the E7-F004 repro by delete-plus-add is invisible to every guard.** The Unit
+  2.2 floor bump catches a bare deletion, not a swap. If those assertions must change, name them
+  somewhere pinned.
+
+### 11.5 What survives, and the pattern
+
+§1-§3 (terrain, question, rejected answers), §9.1's bound and §9.2's remedy shape, and §10.1/§10.2
+(the NULL fail-open and the DEFAULT blindness) all stand — §10.2 was independently re-measured.
+
+★ **Three rounds, three times the remedy was wrong and the diagnosis was right.** Round 1 shipped a
+company-scoped pass that could not call an org-bound function. Round 2 proposed an optional watermark
+that opens the gate. Round 3 proposed a total that vanishes exactly when needed. The lesson is not
+"review harder" — all three passed review. It is that **a mechanism in this area is not knowable by
+reading; it has to be run.** Unit 2.4's plan must therefore lead with probes, not with code.
