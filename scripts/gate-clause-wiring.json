@@ -86,6 +86,12 @@
       "symbol": "reconcileOrganizationLegacyResources",
       "reason": "MIG-010 Unit 2.3 (E10-F002). Driven by server/src/cli/reconcile-legacy-resources.ts, exposed as `pnpm reconcile:legacy-resources`. Declared `wired` deliberately and enrolled here for the CLASS, not just the instance: E10-F002 was exactly this symbol's predecessor (reconcileCompanyLegacyResources) plus its store having ZERO non-test callers, and nothing mechanical noticed for the life of MIG-008 -- the crosswalk was never written and canary-preflight answered reconciliation_incomplete for every organization, forever. The guard now fails if that call site is removed. PROVEN TO BITE, not merely declared: renaming the CLI's call reddens check-gate-clause-wiring.mjs with exit 1 (claimed_wired_but_no_caller) and restoring it returns exit 0. SCOPE, STATED HONESTLY: `wired` here means a production, non-test, non-comment caller exists -- which is the whole of what this guard measures. It does NOT mean the canary opens. Unit 2.3 closes E10-F002 only; a lease created after the pass still re-closes the gate (E7-F004) and there is no watermark or reconciliation_stale until Unit 2.4."
     },
+    "E10-2-reconciliation-watermark": {
+      "epic": "E10",
+      "status": "wired",
+      "symbol": "recordCompletedPass",
+      "reason": "MIG-010 Unit 2.4a. The durable marker of a COMPLETED reconciliation pass (legacy_reconciliation_passes, migration 0269) is what Unit 2.4b's canary gate narrows its lease inventory to; without a marker WRITE the gate reads no evidence and refuses reconciliation_stale forever. Enrolled here for the CLASS, exactly as E10-2-legacy-reconciliation was: E10-F002's whole shape was a capability whose production path had zero callers, unnoticed for the life of MIG-008, and a marker writer is the same shape one layer down. `wired` means a production, non-test caller exists -- reconcileOrganizationLegacyResources calls it once per company, after every record for that company is on disk. It does NOT mean the canary opens: nothing READS the marker until Unit 2.4b."
+    },
     "E10-1-drain": {
       "epic": "E10",
       "status": "unwired",

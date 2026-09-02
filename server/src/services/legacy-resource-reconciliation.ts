@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 /**
  * MIG-008 (E10 desktop-migration) — legacy E2B lease/resource RECONCILER.
@@ -339,6 +339,60 @@ export function assertClosure(input: {
   };
 }
 
+// --- the completed-pass marker (MIG-010 Unit 2.4) ----------------------------
+
+/**
+ * ★★★ THE SENTINEL THAT MAKES A NULL UNREPRESENTABLE ON THE MARKER.
+ *
+ * A company's key generation is `<secretId>:<version>` (`formatKeyGeneration`) or NULL --
+ * NULL being a perfectly normal value for a company with no default e2b
+ * `runtime_provider_keys` row. Design §13 measured what that NULL does to the comparison the
+ * gate makes: with SQL `<>` a NULL marker escapes the filter entirely, and the shipped gate's
+ * own `keyGeneration !== null && ...` guard already treats a NULL RECORD as "not superseded"
+ * (filed as E7-F005).
+ *
+ * On the marker the NULL is replaced by this sentinel, so the column is `NOT NULL` and the
+ * hole is unrepresentable rather than merely avoided. It cannot collide with a real
+ * generation, which always contains a colon after a uuid.
+ *
+ * ★ Belt AND braces: every comparison against it still uses `IS DISTINCT FROM` semantics
+ * (Unit 2.4b), so a future nullable input cannot silently re-open the hole.
+ */
+export const UNGENERATIONED_KEY_GENERATION = "ungenerationed";
+
+/** Fold a possibly-absent key generation onto the marker's NOT NULL column. */
+export function markerKeyGeneration(keyGeneration: string | null): string {
+  return keyGeneration ?? UNGENERATIONED_KEY_GENERATION;
+}
+
+/**
+ * What the pass durably records for ONE company once it has finished that company.
+ *
+ * The columns are derived from §11.4's sentence -- *"latest marker" only means "latest
+ * COMPLETED pass" if the marker records completion, scope and identity* -- not from
+ * convenience. `completedAt` is deliberately ABSENT here: the store stamps it from the
+ * DATABASE clock, because §11.4 also records that comparing a marker against a JavaScript
+ * `Date` reintroduces the two-clock bug §3.3 exists to close.
+ */
+export interface ReconciliationPassMarker {
+  /** IDENTITY: one value per pass INVOCATION, shared by every company marker it writes. */
+  readonly passId: string;
+  /** SCOPE: the organization the pass ran for. */
+  readonly organizationId: string;
+  /** SCOPE: the company this marker completes. */
+  readonly companyId: string;
+  /**
+   * THE WATERMARK. Read from the DATABASE clock BEFORE the pass listed anything, so every
+   * lease inside it (`created_at <= snapshotAt`) is a lease any later listing must have
+   * seen. A lease whose transaction opened before this instant and committed after it stays
+   * IN scope and may lack a record -- the gate then refuses, which is the fail-CLOSED
+   * direction (measured in mig-010-unit-2-4-probes.integration.test.ts).
+   */
+  readonly snapshotAt: Date;
+  /** NEVER null -- {@link markerKeyGeneration} folds an absent generation onto the sentinel. */
+  readonly keyGeneration: string;
+}
+
 // --- reconciler pass ---------------------------------------------------------
 
 /**
@@ -367,6 +421,20 @@ export interface LegacyReconciliationStore {
   // append-only crosswalk insert below, on the one relation the operator role is granted.
   /** Append-only insert; false when a record for that resourceKey already exists. */
   insertRecordIfAbsent(record: ReconciliationRecord): Promise<boolean>;
+  /**
+   * MIG-010 Unit 2.4 — the DATABASE's clock, read once at the start of a pass and carried
+   * into every marker it writes. It is a store member rather than `new Date()` because the
+   * watermark is compared against `environment_leases.created_at`, which is a database
+   * value: an application-clock snapshot would make that a cross-clock comparison (§3.3).
+   */
+  readSnapshotInstant(): Promise<Date>;
+  /**
+   * MIG-010 Unit 2.4 — record that the pass COMPLETED for one company. This is the pass's
+   * LAST write for that company: nothing may observe a completed marker for a company whose
+   * records are not all on disk, so a crash between the records and this call leaves
+   * "records, no marker", which the gate reads as NOT reconciled and a re-run completes.
+   */
+  recordCompletedPass(marker: ReconciliationPassMarker): Promise<void>;
 }
 
 export interface ReconcileResult {
@@ -376,6 +444,16 @@ export interface ReconcileResult {
   // row — which also closes E-3's second asymmetry (design §1.2(2)) by construction rather
   // than by a fix: every lease the pass sees now gets a record.
   readonly unattributableKeys: readonly string[];
+  /**
+   * MIG-010 Unit 2.4 — the provider-control generation this company's records were tagged
+   * with, surfaced so the org-level pass can write it onto the company's MARKER. Design §12:
+   * the generation belongs to the marker, because the crosswalk is append-only
+   * (`onConflictDoNothing`) and a re-run therefore cannot re-tag an existing record — so a
+   * key rotation at ANY distance after a clean pass would otherwise brick the company
+   * permanently. Null here means "this company has no current generation"; the marker folds
+   * that onto the `'ungenerationed'` sentinel.
+   */
+  readonly keyGeneration: string | null;
 }
 
 /** The org-wide result: one per-company outcome, plus the folded totals. */
@@ -387,6 +465,10 @@ export interface OrganizationReconcileResult {
   readonly ok: boolean;
   readonly insertedKeys: readonly string[];
   readonly unattributableKeys: readonly string[];
+  /** MIG-010 Unit 2.4 — the identity every marker this invocation wrote carries. */
+  readonly passId: string;
+  /** MIG-010 Unit 2.4 — the DB-clock instant every marker this invocation wrote carries. */
+  readonly snapshotAt: Date;
 }
 
 /**
@@ -443,6 +525,10 @@ export async function reconcileCompanyLegacyResources(
     closure,
     insertedKeys,
     unattributableKeys: closure.unattributable,
+    // Read ONCE per company above and threaded into every record for that company
+    // (verified against :410-414 before relying on it), so there is exactly one value to
+    // report and the marker cannot disagree with the records it accompanies.
+    keyGeneration,
   };
 }
 
@@ -473,16 +559,60 @@ export async function reconcileOrganizationLegacyResources(
   deps: { store: LegacyReconciliationStore },
 ): Promise<OrganizationReconcileResult> {
   const { store } = deps;
+
+  // ★ THE SNAPSHOT INSTANT IS READ FIRST, AND ONCE, FROM THE DATABASE.
+  //
+  // Before any listing, deliberately. Every lease inside the watermark
+  // (`created_at <= snapshotAt`) is then a lease that any listing performed AFTERWARDS must
+  // already have been able to see, so the pass records it. Reading the instant after listing
+  // would invert that: a lease created in between would fall inside the gate's narrowed
+  // inventory with no record, and the gate would refuse a company that was in fact reconciled.
+  //
+  // Once, not per company: a per-company instant would be later for companies enumerated
+  // later, which is the same inversion at a smaller scale.
+  //
+  // From the DATABASE, not `new Date()`: probe 5 established that `now()` is transaction
+  // start, and that a lease whose transaction began before this instant but commits after it
+  // still carries `created_at <= snapshotAt` — it stays IN scope and the gate demands a record
+  // for it. That is the fail-CLOSED direction; an application clock running fast would push
+  // such leases OUT of scope, which is the fail-open.
+  const snapshotAt = await store.readSnapshotInstant();
+  // IDENTITY (§11.4). One value for the whole invocation, so every company marker this pass
+  // writes is attributable to the same run rather than inferred from adjacent timestamps.
+  const passId = randomUUID();
+
   const companyIds = await store.listOrganizationCompanyIds(organizationId);
 
   const companies: (ReconcileResult & { companyId: string })[] = [];
   for (const companyId of companyIds) {
     const result = await reconcileCompanyLegacyResources(organizationId, companyId, { store });
+    // ★ THE MARKER IS THE PASS'S LAST WRITE FOR THIS COMPANY, and it is written whatever the
+    // closure VERDICT was. Those are different facts: the marker says "a pass ran to
+    // completion here, at this instant, under this authority", and closure is a property the
+    // gate re-derives for itself. Withholding the marker from an unclosed company would make
+    // the gate answer `reconciliation_stale` for a company whose real problem is an unmapped
+    // resource — replacing an accurate refusal with a misleading one (§9.3).
+    //
+    // An EXCEPTION mid-company skips this line, leaving "records, no marker": the gate reads
+    // that as not reconciled, which is the fail-closed direction, and a re-run completes it.
+    await store.recordCompletedPass({
+      passId,
+      organizationId,
+      companyId,
+      snapshotAt,
+      // §12: the generation belongs HERE, not to each record. A rotation after a clean pass
+      // then makes the MARKER stale — recoverable by re-running, which writes a new marker —
+      // instead of permanently bricking the company, which is what per-record comparison does
+      // against an append-only crosswalk that cannot re-tag.
+      keyGeneration: markerKeyGeneration(result.keyGeneration),
+    });
     companies.push({ ...result, companyId });
   }
 
   return {
     organizationId,
+    passId,
+    snapshotAt,
     companies,
     // An Organization with NO companies is not closed. It is the `no_companies` refusal the
     // gate already makes (`canary-preflight.ts:131-137`), and answering `ok: true` here for
