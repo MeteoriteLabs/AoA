@@ -1,6 +1,7 @@
 # CLI-008 Unit B — the inbound channel: DECISION
 
-> **Status: DECIDED, 2026-09-03.** Evidence: a 40-agent sweep, five lenses, every candidate attacked
+> **Status: the PORT SHAPE is decided; the BYTE PATH is NOT (§7). A build plan is not yet writable.**
+> Amended 2026-09-03 after tracing where the bytes would actually come from. Evidence: a 40-agent sweep, five lenses, every candidate attacked
 > refute-by-default. **Both load-bearing claims in `CLI-008-design.md` §3 are false**, and §3 is
 > corrected by this document.
 
@@ -132,3 +133,65 @@ and this decision does not change that.
   constant is 8192 rather than the doc's ~7.4 KB, and chunking gives 8× without any new channel.
 - `CLI-008-design.md` §3 is corrected by this document; the ticket should cite it rather than restate
   the withdrawn bounds.
+
+---
+
+## 7. ★★★ AMENDMENT — the decision settled the PORT SHAPE, not the BYTE PATH
+
+I wrote §3 as though `stageFiles(sandboxId, files)` were the whole answer. It is not. **Where do the
+`files` come from?** Tracing that turns up a second, separate question this document had not asked,
+and a build plan written now would be written over the hole.
+
+### What is settled
+
+- **The envelope carries only artifact IDs, never bytes.** `stdinArtifactId`,
+  `workspace.manifestArtifactId` and `adapter.configArtifactId` are all references, and
+  `batchWorkloadV1Schema` is `.strict()` — **no bytes field can be added to the workload without a
+  contract change.** So the payload cannot ride the envelope, and §3's decision does not change that.
+- **The pointer slots have zero producers AND zero consumers.** `workspace: null` is hard-coded at the
+  single envelope builder; `manifestArtifactId` appears only in the schema and one test;
+  `stdinArtifactId` is a literal `null` at all six production sites; and no read of `job.workspace`
+  exists anywhere in `worker-daemon` or `sandbox-e2b-provider`.
+- **★ The worker's fetch client is BUILT AND UNCALLED — the third orphan in this area.**
+  `ControlPlaneClient.artifactTransferGrant` consumes the frozen `artifact_transfer_grant` op, its
+  response union includes `download_granted` with a full schema, and the server can issue one. A grep
+  for `.artifactTransferGrant(` finds **exactly one caller, a unit test**
+  (`worker-daemon/src/__tests__/artifact-commit-client.test.ts:80`). Alongside `writeFiles` and
+  `observeRun`, that is three built-and-orphaned components on this path.
+
+### The shape that follows
+
+Grant in, reference out, **never bytes through the daemon** — the exact inversion of DAT-009's export:
+
+1. the control plane stores the bundle as an artifact;
+2. the worker mints a short-lived, prefix-scoped **download grant** over the frozen op;
+3. the grant — opaque, no bytes — rides into the provider;
+4. **the provider** fetches and writes with `transport.writeFiles`.
+
+★ This also **corrects §3**: `stageFiles` should take a **grant**, not bytes. A bytes-shaped signature
+would route payloads through a daemon that is dependency-pinned precisely so it does not handle them.
+
+### ★ The open question, which blocks the plan
+
+**Step 1 has no established path.** `authorizeArtifactCommit`, `recordArtifactGrantIntent` and
+`commitArtifactVersion` are all in `GUARDED_JOB_MUTATORS` and each begins with `guardActiveFence`
+(`server/src/services/job-fencing.ts:44`). That machinery is built for the **outbound** direction — a
+worker committing its own output under an active fence. Using it **inbound**, for a bundle the control
+plane authors *before* the work starts, is the inverse, and I do not know whether it is the right
+vehicle, a wrong one, or simply unbuilt.
+
+Until that is answered, `stageFiles` has a signature and no supplier.
+
+### And one thing Unit E does NOT wait on
+
+A repository is 10²–10³ times the ~48 KB argv and extensions ceilings, `buildWorkspaceManifest`
+cannot be pointed at a sandbox, and `git` + `curl` are already in the E2B template
+(`e2b/e2b.Dockerfile:18-25`). **Unit E must be a PULL from inside the sandbox regardless of what
+Unit B decides for C and D.** That is worth knowing now: the channel decision does not size E.
+
+### What would close this
+
+A focused trace of the inbound artifact path: can the control plane author an artifact for a job that
+has not started, and if so by which write path and under what authority — or is that unbuilt, making
+the real Unit B deliverable *"give the control plane a way to stage a bundle"* rather than
+*"give the provider a way to write files"*.
