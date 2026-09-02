@@ -21,6 +21,9 @@ import {
   readStagedInputPointers,
   type StagedInputPointer,
 } from "../lease/staged-input.js";
+import { createSupervisor } from "../supervisor/supervisor.js";
+import { createFakeSandboxProvider } from "./support/fake-provider.js";
+import { collectingSink, SUPERVISOR_IDENTITY } from "./support/supervisor-fixtures.js";
 import { generateDeviceKey } from "../identity/device-key.js";
 import type { WorkerSession } from "../enrollment/enroll.js";
 import type { LeaseHandoff } from "../poll/poll-loop.js";
@@ -236,6 +239,28 @@ describe("CLI-008 Unit B — staged-input resolver (pointer → download grant)"
 
   it("reads back exactly what the control plane's encoding wrote", () => {
     expect(readStagedInputPointers([stagedInputExtension([POINTER])])).toEqual([POINTER]);
+  });
+
+  it("★ a CANCEL during staging is reported as CANCELLED, not as a staging failure", async () => {
+    // A cancel withdraws effect authority and surfaces as a throw from `stageFiles`. Reporting
+    // that as `stage_input_failed` would send someone hunting an object-store problem that
+    // never existed — the same reasoning the execute arm already carries.
+    const fake = createFakeSandboxProvider({});
+    const sink = collectingSink();
+    const supervisor = createSupervisor({
+      provider: fake,
+      identity: SUPERVISOR_IDENTITY,
+      eventSink: sink,
+      redactionCanaries: [],
+      resolveStagedFiles: async () => {
+        // Cancel lands while the resolve is in flight, then the resolve throws.
+        await supervisor.cancel(makeHandoff().leaseId);
+        throw new Error("resolve interrupted");
+      },
+    });
+    await supervisor.accept(makeHandoff());
+    const terminal = sink.events.find((event) => event.eventType === "terminal");
+    expect(terminal?.payload).toMatchObject({ status: "cancelled", errorCode: "cancelled" });
   });
 
   it("★ a PRESENT but UNREADABLE pointer fails the run — it does not read as 'nothing staged'", async () => {

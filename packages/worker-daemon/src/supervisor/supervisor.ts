@@ -602,8 +602,17 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
           { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels) },
           "supervisor: could not resolve staged input for this run — failing the attempt closed",
         );
-        await events.terminal({ status: "failed", exitCode: null, errorCode: "stage_input_unavailable", errorMessage: null });
-        await escalateCleanup(run, "stage_input_unresolved");
+        // A cancel arriving mid-resolve withdraws effect authority and surfaces here as a
+        // throw. Report it as `cancelled`, exactly as the execute arm below does — labelling a
+        // cancel a staging failure would send someone hunting a store problem that never was.
+        const cancelled = run.cancelled;
+        await events.terminal({
+          status: cancelled ? "cancelled" : "failed",
+          exitCode: null,
+          errorCode: cancelled ? "cancelled" : "stage_input_unavailable",
+          errorMessage: null,
+        });
+        await escalateCleanup(run, cancelled ? "cancelled_during_stage_input" : "stage_input_unresolved");
         return;
       }
       if (staged.length > 0) {
@@ -619,8 +628,16 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
             { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels), stagedCount: staged.length },
             "supervisor: staging the control plane's input failed — failing the attempt closed",
           );
-          await events.terminal({ status: "failed", exitCode: null, errorCode: "stage_input_failed", errorMessage: null });
-          await escalateCleanup(run, "stage_input_error");
+          // Same reasoning as the resolve arm: a cancel withdraws effect authority and reaches
+          // us as a throw from `stageFiles`, and it is a cancel, not a store failure.
+          const cancelled = run.cancelled;
+          await events.terminal({
+            status: cancelled ? "cancelled" : "failed",
+            exitCode: null,
+            errorCode: cancelled ? "cancelled" : "stage_input_failed",
+            errorMessage: null,
+          });
+          await escalateCleanup(run, cancelled ? "cancelled_during_stage_input" : "stage_input_error");
           return;
         }
       }
