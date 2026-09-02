@@ -4454,7 +4454,19 @@ function leaseStaticContextPollViolations(source: string): string[] {
         const storedHandlesInput = storedHandlesCall?.arguments.length === 1
           ? closedObjectProperties(storedHandlesCall.arguments[0])
           : null;
-        const jobEnvelopeDeclaration = declarationAt(3);
+        // CLI-008 Unit B — this attempt's staged-input pointers are rebuilt from the DURABLE
+        // job_artifacts rows inside the SAME tenant transaction that offers the lease, so the
+        // envelope cannot advertise a pointer from a stale read (and a stage that has not
+        // committed yet simply is not advertised). Pinned positionally like every other
+        // statement in this chain.
+        const stagedInputDeclaration = declarationAt(3);
+        const stagedInputName = stagedInputDeclaration && ts.isIdentifier(stagedInputDeclaration.name)
+          ? stagedInputDeclaration.name.text
+          : null;
+        const stagedInputCall = stagedInputDeclaration
+          ? unwrappedCall(stagedInputDeclaration.initializer)
+          : null;
+        const jobEnvelopeDeclaration = declarationAt(4);
         const jobEnvelopeName = jobEnvelopeDeclaration && ts.isIdentifier(jobEnvelopeDeclaration.name)
           ? jobEnvelopeDeclaration.name.text
           : null;
@@ -4464,11 +4476,11 @@ function leaseStaticContextPollViolations(source: string): string[] {
         const jobEnvelopeInput = jobEnvelopeCall?.arguments.length === 1
           ? closedObjectProperties(jobEnvelopeCall.arguments[0])
           : null;
-        const jobEnvelopeReject = tryOfferStatements[4] && ts.isIfStatement(tryOfferStatements[4])
-          ? tryOfferStatements[4]
+        const jobEnvelopeReject = tryOfferStatements[5] && ts.isIfStatement(tryOfferStatements[5])
+          ? tryOfferStatements[5]
           : null;
-        const fenceDeclaration = declarationAt(5);
-        const leaseDeclaration = declarationAt(6);
+        const fenceDeclaration = declarationAt(6);
+        const leaseDeclaration = declarationAt(7);
         const ackDeadlineName = ackDeadlineDeclaration && ts.isIdentifier(ackDeadlineDeclaration.name)
           ? ackDeadlineDeclaration.name.text
           : null;
@@ -4485,10 +4497,10 @@ function leaseStaticContextPollViolations(source: string): string[] {
         const offerLeaseInput = offerLeaseCall?.arguments.length === 1
           ? closedObjectProperties(offerLeaseCall.arguments[0])
           : null;
-        const leaseReject = tryOfferStatements[7] && ts.isIfStatement(tryOfferStatements[7])
-          ? tryOfferStatements[7]
+        const leaseReject = tryOfferStatements[8] && ts.isIfStatement(tryOfferStatements[8])
+          ? tryOfferStatements[8]
           : null;
-        const offerDeclaration = declarationAt(8);
+        const offerDeclaration = declarationAt(9);
         const offerName = offerDeclaration && ts.isIdentifier(offerDeclaration.name)
           ? offerDeclaration.name.text
           : null;
@@ -4496,15 +4508,15 @@ function leaseStaticContextPollViolations(source: string): string[] {
         const leaseOfferInput = leaseOfferCall?.arguments.length === 1
           ? closedObjectProperties(leaseOfferCall.arguments[0])
           : null;
-        const protocolReturn = tryOfferStatements[9] && ts.isReturnStatement(tryOfferStatements[9])
-          ? tryOfferStatements[9]
+        const protocolReturn = tryOfferStatements[10] && ts.isReturnStatement(tryOfferStatements[10])
+          ? tryOfferStatements[10]
           : null;
         const protocolCall = protocolReturn ? unwrappedCall(protocolReturn.expression) : null;
         const protocolInput = protocolCall?.arguments.length === 1
           ? closedObjectProperties(protocolCall.arguments[0])
           : null;
         const exactTryOffer = Boolean(tryOfferBinding && tryOfferHelper && tryOfferParameter &&
-          tryOfferNormalizedParameter === "normalized" && tryOfferStatements.length === 10 &&
+          tryOfferNormalizedParameter === "normalized" && tryOfferStatements.length === 11 &&
           ackDeadlineName === "ackDeadline" &&
           expiresAtName === "expiresAt" && fenceName === "fence" &&
           compact(ackDeadlineDeclaration?.initializer) === "newDate(databaseNow.getTime()+ackTimeoutMs)" &&
@@ -4512,7 +4524,7 @@ function leaseStaticContextPollViolations(source: string): string[] {
           jobEnvelopeName === "jobEnvelope" && jobEnvelopeCall &&
           callPath(jobEnvelopeCall) === "buildJobEnvelope" && jobEnvelopeInput &&
           [...jobEnvelopeInput.keys()].sort().join(",") ===
-            "attempt,databaseNow,job,leaseExpiresAt,requirements,resourceLimits,secretHandles,target" &&
+            "attempt,databaseNow,job,leaseExpiresAt,requirements,resourceLimits,secretHandles,stagedInput,target" &&
           pathOf(jobEnvelopeInput.get("job"))?.join(".") === `${tryOfferParameter}.job` &&
           pathOf(jobEnvelopeInput.get("attempt"))?.join(".") === `${tryOfferParameter}.attempt` &&
           pathOf(jobEnvelopeInput.get("target"))?.join(".") === targetName &&
@@ -4529,6 +4541,16 @@ function leaseStaticContextPollViolations(source: string): string[] {
             `${tryOfferParameter}.job.organizationId` &&
           pathOf(storedHandlesInput.get("jobId"))?.join(".") === `${tryOfferParameter}.job.id` &&
           compact(jobEnvelopeInput.get("secretHandles")) === `toSecretHandleRefs(${storedHandlesName})` &&
+          // CLI-008 Unit B — one awaited, tenant-scoped read of THIS job's artifact rows, and
+          // the envelope's `stagedInput` derived from exactly that binding and this candidate's
+          // attempt number. Pinned so the pointer can never come from anywhere else — a
+          // caller-supplied pointer would let the offer advertise bytes nobody committed.
+          stagedInputName === "stagedInputRows" && stagedInputCall && isAwaitedCall(stagedInputCall) &&
+          callPath(stagedInputCall) === `${reposName}.jobArtifacts.listForJob` &&
+          stagedInputCall.arguments.length === 1 &&
+          pathOf(stagedInputCall.arguments[0])?.join(".") === `${tryOfferParameter}.job.id` &&
+          compact(jobEnvelopeInput.get("stagedInput")) ===
+            `stagedInputPointersFromRows(${stagedInputName},${tryOfferParameter}.attempt.attemptNumber)` &&
           jobEnvelopeReject && !jobEnvelopeReject.elseStatement &&
           conditionRejects(jobEnvelopeReject.expression, jobEnvelopeName) &&
           directlyThrows(jobEnvelopeReject.thenStatement) &&
@@ -4798,6 +4820,14 @@ function leaseStaticContextPollViolations(source: string): string[] {
       // launder the authority context. Registered here for the same reason the two reads
       // above are.
       `${reposName}.jobControl.listActiveExecutionSecretHandles`,
+      // CLI-008 Unit B — the same shape and the same reasoning as the DAT-008 read above: a
+      // tenant-scoped READ keyed on this candidate's jobId, taken inside the transaction that
+      // offers the lease. It selects no authority row, writes nothing, and returns artifact
+      // metadata only, so it cannot mutate or launder the authority context. The pure mapper
+      // that turns those rows into pointers is registered with it — it touches the candidate
+      // only to read `attempt.attemptNumber`, and `exactTryOffer` above pins both exactly.
+      `${reposName}.jobArtifacts.listForJob`,
+      "stagedInputPointersFromRows",
       `${reposName}.jobControl.upsertLeaseRejectionCertificates`,
     ].includes(path ?? "") || Boolean(path &&
       (path.endsWith(".getTime") || path === "databaseNow.toISOString"));
@@ -6192,6 +6222,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
                        organizationId: candidate.job.organizationId,
                        jobId: candidate.job.id,
                      });
+                     const stagedInputRows = await repos.jobArtifacts.listForJob(candidate.job.id);
                      const jobEnvelope = buildJobEnvelope({
                        job: candidate.job,
                        attempt: candidate.attempt,
@@ -6201,6 +6232,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
                        databaseNow,
                        leaseExpiresAt: expiresAt,
                        secretHandles: toSecretHandleRefs(storedHandles),
+                       stagedInput: stagedInputPointersFromRows(stagedInputRows, candidate.attempt.attemptNumber),
                      });
                      if (!jobEnvelope) throw new Error("internal_unavailable");
                      const fence = randomBytes(32).toString("base64url");
