@@ -28,11 +28,16 @@ import {
   CORE_PROVIDER_OPERATIONS,
   type ProviderOperation,
   type ArtifactUploadGrantV1,
+  type ArtifactDownloadGrantV1,
 } from "@armyofagents/worker-protocol";
+import { createHash } from "node:crypto";
 import type {
   ArtifactDigestResult,
   ArtifactExportMode,
   ArtifactExportResult,
+  FileStagingMode,
+  StageFilesResult,
+  StagedFileRequest,
   CheckpointMode,
   CheckpointResult,
   CleanupResult,
@@ -66,6 +71,7 @@ import {
   E2bTransportTransientError,
   type E2bRecordState,
   type E2bSandboxRecord,
+  type E2bStagedFile,
   type E2bTransport,
 } from "./transport.js";
 
@@ -87,6 +93,25 @@ export interface E2bSandboxProviderOptions {
   readonly advertisedOptionalOps?: readonly ProviderOperation[];
   /** Default per-op deadline when a caller passes none. */
   readonly defaultTtlMs?: number;
+  /**
+   * CLI-008 Unit B — how the provider turns a download grant into bytes. Injected so the
+   * no-key mock lane can stage without a network, exactly as `transport` is injected.
+   * Defaults to the global `fetch` against the grant's presigned URL.
+   *
+   * ★ The implementation MUST NOT log or re-throw the url or headers: the grant is a bearer
+   * capability, and the port already classifies this class of value as sensitive.
+   */
+  readonly redeemDownloadGrant?: (grant: ArtifactDownloadGrantV1) => Promise<Uint8Array>;
+}
+
+/** The default redemption: a plain GET against the presigned url with the grant's headers. */
+async function fetchGrantBytes(grant: ArtifactDownloadGrantV1): Promise<Uint8Array> {
+  const response = await fetch(grant.url, { method: "GET", headers: { ...grant.headers } });
+  if (!response.ok) {
+    // The status, never the url — the url IS the capability.
+    throw new Error(`staged-input download failed with status ${response.status}`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 function mapState(state: E2bRecordState): SandboxState {
@@ -137,6 +162,7 @@ export class E2bSandboxProvider implements SandboxProvider {
   readonly #transport: E2bTransport;
   readonly #templateId: string;
   readonly #defaultTtlMs: number;
+  readonly #redeemDownloadGrant: (grant: ArtifactDownloadGrantV1) => Promise<Uint8Array>;
   readonly advertisedOperations: ReadonlySet<ProviderOperation>;
   readonly checkpointMode: CheckpointMode;
   readonly healthMode: HealthMode;
@@ -151,6 +177,17 @@ export class E2bSandboxProvider implements SandboxProvider {
    */
   readonly artifactExportMode: ArtifactExportMode = "none";
 
+  /**
+   * CLI-008 Unit B — declared `"grant_download"`, and this one is REAL.
+   *
+   * Unlike `artifactExportMode` above (honestly `"none"` because slice 1 left the
+   * implementation out of scope), staging is implemented here over the transport's existing
+   * `writeFiles`, which both drivers already have. Declaring support this provider did not
+   * have would be the WRK-009 defect; declaring `"none"` for one it does have would leave the
+   * capability unreachable. It has it, so it says so.
+   */
+  readonly fileStagingMode: FileStagingMode = "grant_download";
+
   /** Idempotency ledger: a stable create key → the recorded resource. A replayed
    * key returns the SAME sandbox and never provisions a second one. */
   readonly #idempotency = new Map<string, { sandboxId: string; resourceLabels: ResourceLabels }>();
@@ -160,6 +197,7 @@ export class E2bSandboxProvider implements SandboxProvider {
     this.#transport = options.transport;
     this.#templateId = options.templateId ?? "base";
     this.#defaultTtlMs = options.defaultTtlMs ?? DEFAULT_TTL_MS;
+    this.#redeemDownloadGrant = options.redeemDownloadGrant ?? fetchGrantBytes;
 
     const requested = new Set<string>((options.advertisedOptionalOps ?? DEFAULT_ADVERTISED_OPTIONAL_OPS).map(String));
     const advertised = new Set<ProviderOperation>(CORE_PROVIDER_OPERATIONS);
@@ -362,6 +400,49 @@ export class E2bSandboxProvider implements SandboxProvider {
     _ctx: ProviderOpContext,
   ): Promise<ArtifactExportResult> {
     throw new UnsupportedProviderOperation("export_artifact");
+  }
+
+  /**
+   * CLI-008 Unit B — redeem each grant and write the bytes into the sandbox.
+   *
+   * ★ VERIFY BEFORE WRITING. The digest and the size are checked against the grant's own
+   * `expectedSha256`/`maxBytes` before a single byte reaches `writeFiles`. Without that, a
+   * store that served the wrong object — or a truncated response — produces a sandbox whose
+   * agent works from the wrong instructions and whose run terminalizes cleanly, which is
+   * indistinguishable from success on every gate downstream.
+   *
+   * ALL-OR-NOTHING: every file is fetched and verified first, and the single `writeFiles`
+   * call happens only if all of them passed. A partial stage is worse than no stage, because
+   * the agent cannot tell which files it is missing.
+   *
+   * Errors never carry the grant, the url or the headers.
+   */
+  async stageFiles(
+    sandboxId: string,
+    files: readonly StagedFileRequest[],
+    _ctx: ProviderOpContext,
+  ): Promise<StageFilesResult> {
+    if (this.fileStagingMode === "none") throw new UnsupportedProviderOperation("stage_files");
+    if (files.length === 0) return { stagedPaths: [] };
+    const staged: E2bStagedFile[] = [];
+    for (const file of files) {
+      const bytes = await this.#redeemDownloadGrant(file.grant);
+      if (bytes.byteLength > file.grant.maxBytes) {
+        throw new Error(
+          `staged-input for ${file.path} is ${bytes.byteLength} bytes, over the granted ${file.grant.maxBytes}`,
+        );
+      }
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      if (digest !== file.grant.expectedSha256) {
+        // The digests, never the url.
+        throw new Error(
+          `staged-input for ${file.path} hashed ${digest}, expected ${file.grant.expectedSha256}`,
+        );
+      }
+      staged.push({ path: file.path, bytes });
+    }
+    await this.#transport.writeFiles(sandboxId, staged);
+    return { stagedPaths: staged.map((file) => file.path) };
   }
 
   async checkpoint(sandboxId: string, _ctx: ProviderOpContext): Promise<CheckpointResult> {

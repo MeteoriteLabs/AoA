@@ -20,6 +20,8 @@ import {
   type ArtifactDigestResult,
   type ArtifactExportMode,
   type ArtifactExportResult,
+  type FileStagingMode,
+  type StageFilesResult,
   type CheckpointMode,
   type CheckpointResult,
   type CleanupResult,
@@ -68,11 +70,13 @@ export function createNoopProvider(): SandboxProvider {
   const checkpointMode: CheckpointMode = "none";
   const healthMode: HealthMode = "none";
   const artifactExportMode: ArtifactExportMode = "none";
+  const fileStagingMode: FileStagingMode = "none";
   return {
     advertisedOperations: new Set<ProviderOperation>(CORE_OPS),
     checkpointMode,
     healthMode,
     artifactExportMode,
+    fileStagingMode,
     create(_spec: CreateSandboxSpec, _ctx: ProviderOpContext): Promise<CreateResult> {
       throw new NoopProviderReachedError("create");
     },
@@ -114,6 +118,9 @@ export function createNoopProvider(): SandboxProvider {
     },
     exportArtifact(): Promise<ArtifactExportResult> {
       throw new NoopProviderReachedError("export_artifact");
+    },
+    stageFiles(): Promise<StageFilesResult> {
+      throw new NoopProviderReachedError("stage_files");
     },
   };
 }

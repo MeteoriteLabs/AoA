@@ -395,6 +395,10 @@ export type {
   ArtifactExportMode,
   ArtifactDigestResult,
   ArtifactExportResult,
+  // CLI-008 Unit B — the provider-side INBOUND file-staging capability.
+  FileStagingMode,
+  StagedFileRequest,
+  StageFilesResult,
   DeclinableOperation,
   SandboxState,
   CleanupStatus,

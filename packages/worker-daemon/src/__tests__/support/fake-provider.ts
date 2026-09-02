@@ -33,6 +33,8 @@ import {
   SandboxNotFoundError,
   UnsupportedProviderOperation,
   type ArtifactExportMode,
+  type FileStagingMode,
+  type StagedFileRequest,
   type CheckpointMode,
   type CheckpointResult,
   type CleanupResult,
@@ -79,6 +81,12 @@ export interface FakeProviderScript {
   readonly artifactExportMode?: ArtifactExportMode;
   /** In-sandbox path -> the bytes the double pretends are there. */
   readonly artifactFiles?: Readonly<Record<string, string>>;
+  /** CLI-008 Unit B — defaults to "none" so an unscripted double DECLINES rather than
+   * reporting a phantom stage. Same reasoning as `artifactExportMode`. */
+  readonly fileStagingMode?: FileStagingMode;
+  /** CLI-008 Unit B — objectKey -> the bytes the double's "store" would serve. A grant for a
+   * key that is not here FAILS, rather than staging fabricated content. */
+  readonly stagedObjects?: Readonly<Record<string, string>>;
   /** `create` never resolves (its resource is still registered as `creating`) →
    * the supervisor's deadline fires and it must tear the labeled resource down. */
   readonly hangCreate?: boolean;
@@ -160,6 +168,11 @@ export interface FakeSandboxProvider extends SandboxProvider {
   /** Ordered log of every op call. */
   calls(): readonly FakeProviderCall[];
   callCount(op: ProviderOperation): number;
+  /** CLI-008 Unit B — in-sandbox path -> the bytes actually staged, so a test can assert the
+   * file landed with the right content. */
+  stagedFiles(): Readonly<Record<string, string>>;
+  /** The object keys this double redeemed. NEVER the grants: they are bearer capabilities. */
+  readonly redeemedObjectKeys: string[];
 }
 
 const CORE_STATE_ALIVE: ReadonlySet<SandboxState> = new Set<SandboxState>(["creating", "running", "cancelling"]);
@@ -190,6 +203,12 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
   const healthMode: HealthMode = script.healthMode ?? "none";
   const artifactExportMode: ArtifactExportMode = script.artifactExportMode ?? "none";
   const artifactFiles: Readonly<Record<string, string>> = script.artifactFiles ?? {};
+  const fileStagingMode: FileStagingMode = script.fileStagingMode ?? "none";
+  const stagedObjects: Readonly<Record<string, string>> = script.stagedObjects ?? {};
+  /** What actually landed in the sandbox, by path. */
+  const stagedFileContents: Record<string, string> = {};
+  /** Object keys this double redeemed, so a test can assert a stage happened. */
+  const redeemedObjectKeys: string[] = [];
   /** Object keys this double has "uploaded", so a test can assert an export happened. */
   const exportedObjectKeys: string[] = [];
 
@@ -249,6 +268,36 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
     checkpointMode,
     artifactExportMode,
     exportedObjectKeys,
+    fileStagingMode,
+    redeemedObjectKeys,
+
+    stagedFiles() {
+      return { ...stagedFileContents };
+    },
+
+    async stageFiles(sandboxId: string, files: readonly StagedFileRequest[]) {
+      if (fileStagingMode === "none") throw new UnsupportedProviderOperation("stage_files");
+      requireSandbox(sandboxId);
+      // Fetch + VERIFY every file BEFORE writing any of them. A partial stage is worse than
+      // no stage: the agent cannot tell which files it is missing.
+      const resolved: Array<{ path: string; body: string }> = [];
+      for (const file of files) {
+        const body = stagedObjects[file.grant.objectKey];
+        // An unknown object FAILS. It must never fabricate content — a fabricated stage is
+        // byte-identical to a real one on every gate downstream, which is the WRK-009 defect.
+        if (body === undefined) throw new SandboxNotFoundError();
+        const digest = createHash("sha256").update(body).digest("hex");
+        if (digest !== file.grant.expectedSha256) {
+          throw new Error(`staged-input for ${file.path} hashed ${digest}, expected ${file.grant.expectedSha256}`);
+        }
+        resolved.push({ path: file.path, body });
+      }
+      for (const entry of resolved) stagedFileContents[entry.path] = entry.body;
+      // Records only the OBJECT KEY — the grant is a bearer capability and is deliberately
+      // not retained anywhere a projection, log or assertion could surface it.
+      for (const file of files) redeemedObjectKeys.push(file.grant.objectKey);
+      return { stagedPaths: resolved.map((entry) => entry.path) };
+    },
 
     async digestArtifact(_sandboxId: string, path: string) {
       if (artifactExportMode === "none") throw new UnsupportedProviderOperation("digest_artifact");
