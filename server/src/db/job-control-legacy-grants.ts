@@ -320,6 +320,27 @@ export const LEGACY_RESOURCE_RECONCILIATION_OPERATOR_GRANTS = Object.freeze({
   legacy_resource_reconciliation: ["SELECT", "INSERT", "UPDATE"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
+/**
+ * MIG-010 Unit 2.4 (BLOCKER E-2/E-3) reconciliation-pass MARKER (migration 0269).
+ * aoa_operator SELECT + INSERT: the operator-authored pass writes a marker per Company and
+ * the canary gate — which runs on the same operator pool since Unit 1.7 — reads the latest
+ * one. No UPDATE and no DELETE: a marker is durable EVIDENCE of a completed pass, and a pass
+ * that can rewrite its own marker is not evidence.
+ *
+ * ★ THERE IS NO MATCHING `*_APP_GRANTS` CONSTANT, and that is the point. The three
+ * operator-metadata precedents (CUTOVER_MARKER_*, EXECUTION_TARGET_REVOCATION_*,
+ * LEGACY_RESOURCE_RECONCILIATION_*) each pair operator write with aoa_app SELECT. Nothing on
+ * the aoa_app pool reads this marker, and BLOCKER E-1's lesson is that the GRANTEE is the
+ * boundary — a grant with no reader is authority handed over for symmetry. If a control-plane
+ * reader appears, add the constant and the GRANT together, in their own reviewed diff.
+ *
+ * These mirror the reviewed C14 grants in 0269 exactly — a grant change there must update
+ * this constant and survive review.
+ */
+export const LEGACY_RECONCILIATION_PASS_OPERATOR_GRANTS = Object.freeze({
+  legacy_reconciliation_passes: ["SELECT", "INSERT"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
 /** Tenant target metadata needed to issue/consume enrollment and retire bootstrap auth. */
 export const APP_ENROLLMENT_TARGET_SELECT_COLUMNS = Object.freeze([
   "id", "organization_id", "owner_user_id", "scope", "target_authority_key",
@@ -389,6 +410,7 @@ export const OPERATOR_SERVING_RELATIONS = sortedUnion(
   Object.keys(CUTOVER_MARKER_OPERATOR_GRANTS),
   Object.keys(EXECUTION_TARGET_REVOCATION_OPERATOR_GRANTS),
   Object.keys(LEGACY_RESOURCE_RECONCILIATION_OPERATOR_GRANTS),
+  Object.keys(LEGACY_RECONCILIATION_PASS_OPERATOR_GRANTS),
   ["execution_targets"],
 );
 
@@ -412,6 +434,10 @@ export const RLS_RELATIONS = Object.freeze([
   // every other tenant relation; its aoa_app grant is SELECT + INSERT only, which is
   // what makes generations immutable.
   "service_generations",
+  // MIG-010 Unit 2.4: the reconciliation-pass marker (migration 0269). Operator-only —
+  // it carries ONE policy, not the two every other operator-metadata table carries,
+  // because there is no aoa_app read to authorize.
+  "legacy_reconciliation_passes",
 ] as const);
 
 export const FORCE_RLS_RELATIONS = Object.freeze(
@@ -458,6 +484,11 @@ export const POLICY_COUNTS = deepFreeze({
   // fails startup with `catalog certificate drift: policy counts`, surfaced only as the opaque
   // `distributed_execution_app_authority`. SVC-001 shipped that and it cost three CI rounds.
   service_generations: 1,
+  // MIG-010 Unit 2.4: operator-write ONLY (migration 0269). ONE policy, not the two the
+  // other operator-metadata tables carry — aoa_app holds no grant on the marker, so there
+  // is no app-read policy to pair with it. Placed LAST because `legacy_reconciliation_passes`
+  // is last in RLS_RELATIONS; see the ORDER MATTERS note above.
+  legacy_reconciliation_passes: 1,
 } as const);
 
 const ORGANIZATION_QUAL =
@@ -536,6 +567,11 @@ export const RLS_POLICY_MANIFEST = deepFreeze([
   // isolation, FORCE RLS, no operator authority. Same shape as job_events / folder_grants.
   policy("live_event_log", "live_event_log_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
   policy("live_event_sequences", "live_event_sequences_tenant_isolation", "ALL", "aoa_app", ORGANIZATION_QUAL, ORGANIZATION_QUAL),
+  // MIG-010 Unit 2.4 reconciliation-pass marker (migration 0269): operator writes
+  // (USING/CHECK true). Deliberately NO app-read policy — aoa_app holds no grant on this
+  // table at all, so unlike the 0233/0239/0256 operator-metadata tables there is nothing
+  // for a second policy to authorize.
+  policy("legacy_reconciliation_passes", "legacy_reconciliation_passes_operator_write", "ALL", "aoa_operator", "true", "true"),
 ] as const);
 
 /*
@@ -591,6 +627,9 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreeze({
     jobs: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     labels: { aoa_app: ["SELECT"], aoa_operator: [] },
     leases: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    // MIG-010 Unit 2.4: aoa_app is EMPTY on purpose (nothing on that pool reads the marker);
+    // aoa_operator holds SELECT + INSERT only, because markers are durable evidence.
+    legacy_reconciliation_passes: { aoa_app: [], aoa_operator: ["SELECT", "INSERT"] },
     legacy_resource_reconciliation: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
     live_event_log: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     live_event_sequences: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
@@ -726,6 +765,7 @@ const RELATION_ACL_NULLNESS_CERTIFICATE = deepFreeze({
   jobs: false,
   labels: false,
   leases: false,
+  legacy_reconciliation_passes: false,
   legacy_resource_reconciliation: false,
   live_event_log: false,
   live_event_sequences: false,

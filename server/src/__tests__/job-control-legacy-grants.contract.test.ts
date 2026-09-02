@@ -85,6 +85,8 @@ const PLAN_DERIVED_ACL_MATRIX = deepFreezeFixture({
     jobs: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     labels: { aoa_app: ["SELECT"], aoa_operator: [] },
     leases: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
+    // MIG-010 Unit 2.4: aoa_app is EMPTY on purpose — nothing on that pool reads the marker.
+    legacy_reconciliation_passes: { aoa_app: [], aoa_operator: ["SELECT", "INSERT"] },
     legacy_resource_reconciliation: { aoa_app: ["SELECT"], aoa_operator: ["SELECT", "INSERT", "UPDATE"] },
     live_event_log: { aoa_app: ["SELECT", "INSERT", "UPDATE", "DELETE"], aoa_operator: [] },
     live_event_sequences: { aoa_app: ["SELECT", "INSERT", "UPDATE"], aoa_operator: [] },
@@ -228,6 +230,7 @@ const PLAN_DERIVED_RELATION_ACL_NULLNESS = deepFreezeFixture({
   jobs: false,
   labels: false,
   leases: false,
+  legacy_reconciliation_passes: false,
   legacy_resource_reconciliation: false,
   live_event_log: false,
   live_event_sequences: false,
@@ -368,6 +371,9 @@ describe("JOB-003 bounded aoa_app authority", () => {
       ...Object.keys(grants.CUTOVER_MARKER_OPERATOR_GRANTS),
       ...Object.keys(grants.EXECUTION_TARGET_REVOCATION_OPERATOR_GRANTS),
       ...Object.keys(grants.LEGACY_RESOURCE_RECONCILIATION_OPERATOR_GRANTS),
+      // MIG-010 Unit 2.4: the reconciliation-pass marker. Operator-only — there is
+      // deliberately no matching *_APP_GRANTS constant to add to appExpected above.
+      ...Object.keys(grants.LEGACY_RECONCILIATION_PASS_OPERATOR_GRANTS),
       "execution_targets",
     ])].sort();
     expect(manifest.APP_SERVING_RELATIONS).toEqual(appExpected);
@@ -376,7 +382,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
     expect(Object.isFrozen(manifest.OPERATOR_SERVING_RELATIONS)).toBe(true);
   });
 
-  it("pins the exact 26-table RLS, 25-table FORCE, and 36-row permissive policy certificate", () => {
+  it("pins the exact 27-table RLS, 26-table FORCE, and 37-row permissive policy certificate", () => {
     const manifest = grants as typeof grants & {
       RLS_RELATIONS?: readonly string[];
       FORCE_RLS_RELATIONS?: readonly string[];
@@ -401,6 +407,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       "execution_target_revocations", "folder_grants", "worker_admission_rate_limits",
       "legacy_resource_reconciliation", "live_event_log", "live_event_sequences",
       "service_generations",
+      "legacy_reconciliation_passes",
     ];
     const counts = {
       jobs: 1, job_attempts: 1, leases: 1, workers: 2, services: 1,
@@ -415,6 +422,9 @@ describe("JOB-003 bounded aoa_app authority", () => {
       live_event_log: 1,
       live_event_sequences: 1,
       service_generations: 1,
+      // MIG-010 Unit 2.4: ONE policy, not two. aoa_app holds no grant on the marker, so
+      // there is no app-read policy to pair with the operator write.
+      legacy_reconciliation_passes: 1,
     };
     const ORG = "(organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
     const CANDIDATE_ORG = "(candidate_organization_id = (current_setting('aoa.organization_id'::text, true))::uuid)";
@@ -468,6 +478,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       policy("legacy_resource_reconciliation", "legacy_resource_reconciliation_app_read", "SELECT", "aoa_app", "(current_setting('aoa.organization_id'::text, true) IS NULL)", null),
       policy("live_event_log", "live_event_log_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
       policy("live_event_sequences", "live_event_sequences_tenant_isolation", "ALL", "aoa_app", ORG, ORG),
+      policy("legacy_reconciliation_passes", "legacy_reconciliation_passes_operator_write", "ALL", "aoa_operator", "true", "true"),
     ];
     expect(manifest.RLS_RELATIONS).toEqual(rls);
     expect(manifest.FORCE_RLS_RELATIONS).toEqual(rls.filter((relation) => relation !== "execution_targets"));
@@ -551,6 +562,7 @@ describe("JOB-003 bounded aoa_app authority", () => {
       ...Object.keys(grants.EXECUTION_TARGET_REVOCATION_OPERATOR_GRANTS),
       ...Object.keys(grants.LEGACY_RESOURCE_RECONCILIATION_APP_GRANTS),
       ...Object.keys(grants.LEGACY_RESOURCE_RECONCILIATION_OPERATOR_GRANTS),
+      ...Object.keys(grants.LEGACY_RECONCILIATION_PASS_OPERATOR_GRANTS),
       "mcp_api_keys",
       "execution_targets",
     ])].sort();
