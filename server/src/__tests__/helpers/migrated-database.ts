@@ -43,6 +43,13 @@ export type MigratedDatabase = {
    * `appDb` stays the pool that must be DENIED.
    */
   readonly operatorDb: Db;
+  /**
+   * The connection URLs behind `admin` / `operatorDb`. ADDITIVE, for suites that must drive
+   * a real OPERATOR ENTRYPOINT as a subprocess — a CLI takes a DATABASE_URL, not a Db, and
+   * proving that a `current_user` gate discriminates requires connecting as BOTH roles.
+   */
+  readonly adminUrl: string;
+  readonly operatorUrl: string;
   readonly teardown: () => Promise<void>;
 };
 
@@ -89,11 +96,16 @@ export async function startMigratedDatabase(
     // `aoa_operator` is created unconditionally by migration 0213, so this only attaches a
     // login. ROUND 7 needs it because the definer EXECUTE grant now lives on this role.
     await admin.unsafe(provisionTenantAppRoleLoginSql("aoa_operator", operatorPassword));
-    operator = createTenantAppDbConnection(
-      adminUrl.replace("test:test", `aoa_operator:${operatorPassword}`),
-      { max: 4 },
-    );
-    return { admin, appDb: app.db, operatorDb: operator.db, teardown };
+    const operatorUrl = adminUrl.replace("test:test", `aoa_operator:${operatorPassword}`);
+    operator = createTenantAppDbConnection(operatorUrl, { max: 4 });
+    return {
+      admin,
+      appDb: app.db,
+      operatorDb: operator.db,
+      adminUrl,
+      operatorUrl,
+      teardown,
+    };
   } catch (error) {
     await teardown();
     throw error;

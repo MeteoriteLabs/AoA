@@ -14,10 +14,35 @@
 // Windows-skipped unless AOA_RUN_WIN_INTEGRATION=1 (Issue #114); Linux CI is the authority.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import type { Sql } from "postgres";
 import type { Db } from "@armyofagents/db";
+import { createCanaryPreflight } from "../services/canary-preflight.js";
+import { createDrizzleCanaryPreflightStore } from "../services/canary-preflight-store.js";
+import {
+  buildLeaseRecord,
+  classifyLease,
+  reconcileOrganizationLegacyResources,
+} from "../services/legacy-resource-reconciliation.js";
 import { createDrizzleReconciliationStore } from "../services/legacy-resource-reconciliation-store.js";
 import { startMigratedDatabase } from "./helpers/migrated-database.js";
+
+const execFileAsync = promisify(execFile);
+
+// The operator entrypoint is driven as a REAL SUBPROCESS, because that is the only shape in
+// which its `current_user` gate means anything: a CLI takes a DATABASE_URL, not a `Db`, and
+// the gate's whole job is to discriminate between two connection URLs. Resolved from this
+// file so it does not depend on the working directory vitest happens to run in.
+const REPO_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
+const CLI = fileURLToPath(new URL("../cli/reconcile-legacy-resources.ts", import.meta.url));
+// `tsx` is invoked through its own JS entrypoint under `process.execPath` rather than via a
+// `.cmd` shim: `execFile` does not use a shell, and the shim is not directly executable on
+// Windows. Resolved, not guessed — a wrong path would fail as ENOENT and read like a broken
+// CLI rather than a broken test.
+const NPX = createRequire(import.meta.url).resolve("tsx/cli");
 
 const ORG = "e3000000-0000-4000-8000-000000000001";
 const COMPANY = "e3000000-0000-4000-8000-000000000002";
@@ -27,13 +52,19 @@ const SECRET = "e3000000-0000-4000-8000-000000000006";
 
 const RUN = process.platform !== "win32" || process.env.AOA_RUN_WIN_INTEGRATION === "1";
 
-type Fixture = { operatorDb: Db; admin: Sql; teardown: () => Promise<void> };
+type Fixture = {
+  operatorDb: Db;
+  admin: Sql;
+  adminUrl: string;
+  operatorUrl: string;
+  teardown: () => Promise<void>;
+};
 let fixture: Fixture | null = null;
 
 describe.skipIf(!RUN)("MIG-010 Unit 2.3 — the reconciliation pass, made runnable", () => {
   beforeAll(async () => {
     const database = await startMigratedDatabase({ label: "aoa-mig-010-u23-" });
-    const { admin, operatorDb, teardown } = database;
+    const { admin, operatorDb, adminUrl, operatorUrl, teardown } = database;
     try {
       await admin`INSERT INTO organizations (id, name, slug)
         VALUES (${ORG}, 'MIG-010 u2.3 org', 'mig-010-u23-org')`;
@@ -65,7 +96,7 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.3 — the reconciliation pass, made runnab
       await teardown();
       throw error;
     }
-    fixture = { operatorDb, admin, teardown };
+    fixture = { operatorDb, admin, adminUrl, operatorUrl, teardown };
   }, 180_000);
 
   afterAll(async () => {
@@ -131,4 +162,154 @@ describe.skipIf(!RUN)("MIG-010 Unit 2.3 — the reconciliation pass, made runnab
     const foreignOrg = "e3000000-0000-4000-8000-0000000000ff";
     expect(await store.listLeases(foreignOrg, COMPANY)).toEqual([]);
   });
+
+  // --- THE POISON-ROW TEST -----------------------------------------------------
+  //
+  // ★ THE CASES BELOW SHARE ONE FIXTURE AND RUN IN ORDER, deliberately — the same shape the
+  // Unit 2.2 repro uses. The first runs the pass and asserts `insertedKeys === [LEASE_1]`;
+  // the second asserts a SECOND pass inserts nothing; the CLI case then asserts `inserted=0`
+  // because the rows already exist. That sequence is the point (a first write, then
+  // idempotence), so these are not independently runnable with `-t` and are not meant to be.
+  //
+  // ★ This is the first point at which the pass writes REAL rows, and
+  // `legacy_resource_reconciliation` is APPEND-ONLY WITH NO CLEAR PATH: the operator holds
+  // SELECT/INSERT/UPDATE and no DELETE, and no application code updates it. A column-mapping
+  // bug therefore writes rows the gate can never clear — permanent, on disk, per company.
+  //
+  // A positional mis-map between two `uuid` columns (company_id / environment_lease_id /
+  // environment_id) or two `text` ones (resource_type / legacy_status / provider /
+  // provider_lease_id / disposition / key_generation / reason) is invisible to the type
+  // system: every one of them is the same TypeScript type. So this asserts FIELD BY FIELD
+  // against what `buildLeaseRecord` produces for this exact lease, rather than counting rows
+  // or spot-checking one column.
+
+  it("[E10-F002] a real pass writes the crosswalk row FIELD BY FIELD", async () => {
+    const store = createDrizzleReconciliationStore(fixture!.operatorDb);
+    const result = await reconcileOrganizationLegacyResources(ORG, { store });
+
+    expect(result.ok).toBe(true);
+    expect(result.companies.map((c) => c.companyId)).toEqual([COMPANY]);
+    expect(result.insertedKeys).toEqual([LEASE_1]);
+
+    // The independently-derived expectation: what the pure builder produces for this lease,
+    // at the key generation the gate reads. Deriving it rather than restating it by hand is
+    // the point — a hand-written copy can drift from `buildLeaseRecord` silently, which is
+    // exactly what the Unit 2.2 positive control had to disclaim about itself.
+    const lease = (await store.listLeases(ORG, COMPANY))[0]!;
+    const expected = buildLeaseRecord(lease, classifyLease(lease), {
+      keyGeneration: `${SECRET}:1`,
+    });
+
+    const rows = await fixture!.admin`
+      SELECT company_id, environment_lease_id, environment_id, resource_key, resource_type,
+             legacy_status, provider, provider_lease_id, disposition, resource_labels_hash,
+             key_generation, cleanup_outcome, reason
+      FROM legacy_resource_reconciliation WHERE company_id = ${COMPANY}`;
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+
+    expect(row.company_id).toBe(expected.companyId);
+    expect(row.environment_lease_id).toBe(expected.environmentLeaseId);
+    expect(row.environment_id).toBe(expected.environmentId);
+    expect(row.resource_key).toBe(expected.resourceKey);
+    expect(row.resource_type).toBe(expected.resourceType);
+    expect(row.legacy_status).toBe(expected.legacyStatus);
+    expect(row.provider).toBe(expected.provider);
+    expect(row.provider_lease_id).toBe(expected.providerLeaseId);
+    expect(row.disposition).toBe(expected.disposition);
+    expect(row.key_generation).toBe(expected.keyGeneration);
+    expect(row.cleanup_outcome).toBe(expected.cleanupOutcome);
+    expect(row.reason).toBe(expected.reason);
+
+    // ★ AND THE VALUES ARE NOT INTERCHANGEABLE, so the field-by-field comparison above is
+    // not satisfiable by a swap. Pin the discriminating ones concretely too: `company_id`
+    // and `environment_id` are distinct uuids, and `resource_key` is the LEASE id (a third
+    // distinct uuid), so a two-way swap among them would fail here.
+    expect(row.company_id).toBe(COMPANY);
+    expect(row.environment_id).toBe(ENV);
+    expect(row.environment_lease_id).toBe(LEASE_1);
+    expect(row.resource_key).toBe(LEASE_1);
+    expect(row.resource_type).toBe("ephemeral");
+    expect(row.legacy_status).toBe("active");
+    expect(row.disposition).toBe("mapped");
+    expect(row.key_generation).toBe(`${SECRET}:1`);
+    // Non-null for a `mapped` record, and it is the attribution HASH — never a fence.
+    expect(row.resource_labels_hash).toBe(expected.resourceLabelsHash);
+    expect(row.resource_labels_hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("a second pass is a NO-OP: same row count, same values (append-only)", async () => {
+    const before = await fixture!.admin`
+      SELECT id, resource_key, disposition, reason, key_generation, created_at
+      FROM legacy_resource_reconciliation WHERE company_id = ${COMPANY} ORDER BY resource_key`;
+
+    const store = createDrizzleReconciliationStore(fixture!.operatorDb);
+    const result = await reconcileOrganizationLegacyResources(ORG, { store });
+    // Still closed, but nothing NEW was inserted — that is what idempotent means here.
+    expect(result.ok).toBe(true);
+    expect(result.insertedKeys).toEqual([]);
+
+    const after = await fixture!.admin`
+      SELECT id, resource_key, disposition, reason, key_generation, created_at
+      FROM legacy_resource_reconciliation WHERE company_id = ${COMPANY} ORDER BY resource_key`;
+    // Row identity included: `id` and `created_at` unchanged proves the row was not deleted
+    // and rewritten, which a count-only assertion would not distinguish.
+    expect(after).toEqual(before);
+  });
+
+  it("[E10-F002 INVERTED] the gate now CLOSES for the fixture the 2.2 repro left unmapped", async () => {
+    // ★ THE INVERSION OF THE UNIT 2.2 REPRO, not a deletion of it. That file asserts
+    // `(unmapped=1, duplicates=0, unattributable=0)` for exactly this seed shape — one active
+    // lease, no platform-default env row, an empty crosswalk. A real pass has now run against
+    // the same shape, so the same gate answers ok.
+    const preflight = createCanaryPreflight({
+      store: createDrizzleCanaryPreflightStore(fixture!.operatorDb),
+    });
+    const result = await preflight.check({ organizationId: ORG });
+
+    // ★ If this refuses, read the reason before touching anything else: a `key_generation`
+    // mismatch refuses as `credential_authority_not_moved`, which would be a SEEDING bug, not
+    // a closure result — and would mean the pass and the gate derive the generation
+    // differently, which is the drift `currentKeyGeneration` was re-pointed to prevent.
+    expect(result).toMatchObject({ ok: true });
+    expect(result.ok && result.companyIds).toEqual([COMPANY]);
+  });
+
+  // --- THE OPERATOR ENTRYPOINT, END TO END -------------------------------------
+
+  it("★ the CLI REFUSES an owner DATABASE_URL — the role gate is not decorative", async () => {
+    // Without this gate the entire SECURITY DEFINER design is ornamental: the owner satisfies
+    // every definer function's authority directly and bypasses every EXECUTE grant, so a run
+    // with an owner URL goes green while establishing NOTHING about the grant model. It is
+    // also the obvious thing an operator reaches for when a run dies on a permission error.
+    await expect(
+      execFileAsync(
+        process.execPath,
+        [NPX, CLI, "--organization", ORG],
+        { env: { ...process.env, DATABASE_URL: fixture!.adminUrl }, cwd: REPO_ROOT },
+      ),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining('refusing to run as "test"'),
+    });
+  }, 180_000);
+
+  it("★ the CLI RUNS as aoa_operator, end to end, and exits 0", async () => {
+    // The other half of the same proof: the refusal above must be about the ROLE, not about
+    // the command being broken. Same command, same fixture, operator URL — exit 0.
+    //
+    // This is also the only assertion that exercises the CALLER `gate-clause-wiring.json`
+    // declares `wired`. The guard proves a call site exists; this proves it works.
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [NPX, CLI, "--organization", ORG],
+      { env: { ...process.env, DATABASE_URL: fixture!.operatorUrl }, cwd: REPO_ROOT },
+    );
+    expect(stdout).toContain(`organization ${ORG}: 1 company(ies)`);
+    expect(stdout).toContain(`OK     ${COMPANY}`);
+    // Idempotent: the rows already exist from the earlier passes, so this run inserts none.
+    expect(stdout).toContain("inserted=0");
+    // ★ And it says so on every run: a green pass is NOT an open canary.
+    expect(stdout).toContain("This flips no gate");
+  }, 180_000);
 });
