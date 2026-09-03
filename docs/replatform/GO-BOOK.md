@@ -467,6 +467,23 @@ argument in this section, measured.
 What the fleet is still needed for is genuinely narrower than it looked: the real agent binaries
 running inside the sandbox, and Unit B's staging channel end to end.
 
+★★★ **Two things about Unit F that a scheduler must not read past** — both measured on the design's
+revision pass (2026-09-03) and both changing what a green means rather than what it costs:
+
+- **`capabilityProven` is a PROVENANCE verdict, not a productivity one.** Both its arms are SQL
+  counts over control-plane rows; neither reads a byte of the artifact. What Unit F makes provable is
+  *attested bytes from this run's sandbox reached durable AoA storage* — the captured file is the
+  CLI's own JSONL protocol transcript, which is non-empty even for a run in which the model never
+  spoke. The productivity floor lives in the worker (refuse to export an empty or model-turn-free
+  transcript), not in the gate. The verdict's NAME outruns its predicate; that is carried by
+  **E7-F016**, and the symbol is deliberately not renamed. **A green E7-1 with
+  `--require-capability` therefore proves the RETURN PATH, not that an agent did a task.**
+- **Unit F's L is the size of slices A–E TOGETHER; there is no useful prefix.** The artifact arm has
+  **zero producers today** (the daemon's `artifactCommit` client method has no production caller;
+  both shipped providers declare `artifactExportMode: "none"`), so slice A alone — which removes the
+  forgeable arm — converts a forgeable gate into an **unpassable** one, inverting the precedent
+  CLI-008 Unit A set. Schedule A–E as one increment.
+
 ### 1.9.4 Stale passages in THIS document, named — ✅ ALL FOUR CORRECTED 2026-09-03 (Track C)
 
 **Every row below is now FIXED in place.** The table is kept as the record of what was wrong and
