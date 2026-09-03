@@ -91,6 +91,15 @@ export const CLOSED_LABEL_VALUES: Readonly<Record<string, ReadonlySet<string>>> 
     "checkpoint",
     "restore",
     "health",
+    // ★ CLI-008 Unit B — `stage_files` is NOT a `PROVIDER_OPERATIONS` member and never will be.
+    // It is a method on the NON-FROZEN supervisor port (that was the Unit B decision: grow the
+    // port, leave the wire vocabulary alone), so it does not arrive here with the eleven above
+    // and has to be registered deliberately. Without this entry `emitOp("stage_files", …)`
+    // THROWS on the closed allow-list — on the success path as readily as the failure path —
+    // and the throw lands in `accept`'s last-resort catch, which emits NO TERMINAL. A staged run
+    // would be torn down and stranded non-terminal, which is the exact outcome the staging arms'
+    // fail-closed handling exists to prevent.
+    "stage_files",
   ]),
   outcome: new Set([
     // poll outcomes

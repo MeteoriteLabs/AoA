@@ -90,6 +90,10 @@ export interface FakeProviderScript {
   /** `create` never resolves (its resource is still registered as `creating`) →
    * the supervisor's deadline fires and it must tear the labeled resource down. */
   readonly hangCreate?: boolean;
+  /** CLI-008 Unit B — `stageFiles` never resolves → the supervisor's staging deadline must
+   * fire. Without a race the supervisor's `accept()` never terminalizes and the sandbox is
+   * retained for the life of the process, which is a hang, not a failure. */
+  readonly hangStageFiles?: boolean;
   /** `cancel` is ignored: the process tree stays alive → escalate to `kill`. */
   readonly ignoreCancel?: boolean;
   /** `kill` is ignored: the process tree stays alive → escalate to `destroy`. */
@@ -278,6 +282,11 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
     async stageFiles(sandboxId: string, files: readonly StagedFileRequest[]) {
       if (fileStagingMode === "none") throw new UnsupportedProviderOperation("stage_files");
       requireSandbox(sandboxId);
+      // Never resolves — and deliberately does NOT honour the ctx deadline, because the real
+      // E2B provider does not either (its transport's writeFiles/fetch accept no signal). The
+      // supervisor-side race is the only thing standing between a stalled write and a run that
+      // never terminalizes; a double that self-cancelled would test a provider we do not have.
+      if (script.hangStageFiles === true) await new Promise<never>(() => {});
       // Fetch + VERIFY every file BEFORE writing any of them. A partial stage is worse than
       // no stage: the agent cannot tell which files it is missing.
       const resolved: Array<{ path: string; body: string }> = [];
