@@ -170,7 +170,26 @@ Why (c):
 > **The design must therefore specify a delivery hop for the effective policy BYTES**, and it is
 > subject to the same constraint as every other guest-bound payload: it must be authenticated and
 > digest-checked against the envelope's `networkPolicy.digest`, so a substituted or stale policy
-> fails closed rather than widening the allowlist. The natural carrier is the staged-config channel
+> fails closed rather than widening the allowlist.
+>
+> ★★ **CORRECTION (Codex re-review): that digest check is self-referential as written, and would
+> never match.** `networkPolicyV1Schema` (`policy.ts:81-93`) carries **`digest` as one of its own
+> fields**. Hashing the staged policy bytes verbatim therefore hashes the digest into itself, and no
+> canonical-digest helper for policies exists anywhere in the repo (the `policyDigest` symbols in
+> `job-placement-transaction.ts` are the unrelated *placement* policy).
+>
+> **The canonical form must be specified, and the house already has the pattern.** The
+> `eventDigest` contract is *"SHA-256 over the UTF-8 canonical bytes (RFC 8785 JCS, v1 subset) of the
+> same object **with `eventDigest` omitted**"* (`tests/fixtures/distributed-execution/README.md:44-49`),
+> computed through `canonicalizeJsonV1` (`packages/worker-protocol/src/canonical-json.ts:87`).
+> **Network-policy digest = the same algorithm over the strict policy with `digest` omitted**, via
+> that same helper — not a second implementation.
+>
+> ★ Producer and enforcement point must share **one** helper with one test, or cross-check each
+> other's output on a committed vector. `BRW-003-terrain.md`'s corrections record the cost of the
+> alternative: a second implementation of a digest rule is "a divergence waiting to happen". A
+> mismatch here does not fail loudly — it fails as a policy that never verifies, which the enforcement
+> point is required to treat as refuse-to-start, so a divergence would look like a total outage. The natural carrier is the staged-config channel
 > BRW-002 already uses for the runner's config (`BRW-002-result.md` §6: "the runner reads its config
 > from a staged file"), because the seven frozen browser workload fields cannot carry it either. The
 > enforcement point must **refuse to start** when the staged policy's digest does not equal the
@@ -248,14 +267,28 @@ attempt a connection to a host that is not in `egressAllowlist`, and record whet
 ### (b) — Close `E8-F001`: make the fixture↔code authority disagreement visible. **S.**
 
 `validateFixtureSourceParity` (`scripts/check-distributed-execution-foundation.mjs:2722-2752`) reads
-requester, executor and source fields, and never reads the `control` block. Add a check binding each
-fixture's `control.productApproval` / `control.runtimeDecision` to the **shipped**
-`describeSourceGovernance` profile for that source kind, so a fixture that claims an authority the
-code does not implement fails the `policy` lane.
+requester, executor and source fields, and never reads the `control` block.
+
+**Build this** (the design below is the FINAL one; the two correction blocks that follow record the
+two shapes it was NOT, because both were wrong in instructive ways):
+
+1. A check binding each fixture's `control.productApproval` / `control.runtimeDecision` to the
+   **shipped** `describeSourceGovernance` profile for that source kind. A fixture claiming an
+   authority the code does not implement fails the `policy` lane — **unless it is on the pinned
+   historical-divergence list**.
+2. A **pinned-divergence list** keyed by the VALUE tuple `(fixtureId, control.productApproval,
+   control.runtimeDecision, expected profile authority)`, seeded with the one known entry
+   (`browser-approval-download`, carrying `E8-F001`).
+3. A **second always-printed verdict** — the divergence census — naming every pinned divergence and
+   its finding id. It never fails the gate.
 
 - **Artifact:** the new check + `scripts/check-distributed-execution-foundation.test.mjs` cases.
-- ★ **Positive control (mandatory):** the guard must be shown to go RED against
-  `browser-approval-download.json` as it stands today.
+- ★ **Positive control (mandatory):** a synthetic fixture carrying a *different* contradiction must
+  turn the gate RED, while the pinned one does not. Without it, "green because pinned" and "green
+  because it checks nothing" are indistinguishable.
+- ★ **Anti-drift control:** mutating the pinned fixture's `control` block must ALSO turn the gate
+  RED — that is what makes the pin a record of a specific known divergence rather than a blanket
+  exemption for that filename.
 
 > ★★★ **CORRECTION (Codex review — and it overturns a clearance I was given).** This slice previously
 > said the guard goes GREEN "once the expectation is expressed as: the fixture's `productApproval`
@@ -279,13 +312,47 @@ code does not implement fails the `policy` lane.
 >    have **blessed the contradiction it was built to detect** — the `checks-that-nothing-runs`
 >    failure mode, in the very slice that cites it.
 >
-> **Revised slice (b).** The check binds `control.productApproval` / `control.runtimeDecision` to the
-> shipped `describeSourceGovernance` profile and **stays RED for `browser-approval-download.json`**,
-> reported as a named, recorded divergence carrying `E8-F001` — a guard that detects, not one that
-> maps the problem away. The actual resolution is the README's own escape hatch: **a new versioned
-> fixture directory** with `control` corrected, leaving v1 intact. **That is a fixture-owner /
-> Protocol Custodian decision, not BRW-004's to take**, so it is raised in §7 rather than assumed.
-> Until it is taken, E8-F001 stays open and BRW-004 builds against the CODE's authority (D2).
+> **Revised slice (b) — SUPERSEDED by the block below. Kept because the error is instructive.** The
+> first revision said the check "**stays RED for `browser-approval-download.json`**". That is a
+> required `policy`-lane check that can never go green: the README keeps v1 present even after a v2
+> directory exists, so the contradictory input never disappears and slice (b) could never land.
+
+> ★★★ **CORRECTION 2 (Codex re-review) — the first remedy built a gate nobody can pass.** A
+> permanently-red required check is not a strict guard; it is a guard that gets deleted, and in the
+> meantime it trains everyone to ignore the lane it runs in. **This programme has already resolved
+> exactly this once:** in CLI-008 Unit A the obvious fix was to fold the new clause into `ok`, and it
+> was rejected for this precise reason — the remedy was a **second verdict** (`capabilityProven`)
+> computed *beside* `ok`, not a permanently-red `ok`. That is the template here.
+>
+> **Revised slice (b), take 2 — two verdicts, one lane.**
+>
+> 1. **The production gate (`ok`)** binds `control.productApproval` / `control.runtimeDecision` to the
+>    shipped `describeSourceGovernance` profile for every fixture, **except** those on a pinned
+>    historical-divergence list. It is GREEN today.
+> 2. **The divergence census** is a second, always-reported verdict that names every pinned
+>    divergence, its fixture, and the finding it carries (`E8-F001`). It is printed on every run and
+>    never fails the gate — a divergence that is *named and tracked*, not one that reds CI forever.
+>
+> ★ **The pin is by VALUE, not by name**, or the fix is worse than the problem. The entry records the
+> tuple `(fixtureId, control.productApproval, control.runtimeDecision, expected profile authority)`.
+> Consequences, and these are the point:
+>
+> - a **new** fixture with the same contradiction → **RED** (it is not pinned);
+> - the pinned fixture's `control` block **changing** → **RED** (the values no longer match the pin),
+>   which is also how the README's "no in-place repurposing" rule gets mechanically enforced;
+> - a **v2 directory** with `control` corrected → **GREEN**, and the pin is deleted with v1's
+>   retirement.
+>
+> ★ **Positive control (mandatory, and it replaces the withdrawn "must go RED on the real fixture"
+> one):** a synthetic fixture carrying a *different* contradiction must turn the gate RED, and the
+> pinned one must not. A gate that is green because it is pinned and green because it checks nothing
+> are indistinguishable without that test — which is the failure mode this whole slice exists inside.
+>
+> The real resolution is still the README's own escape hatch — **a new versioned fixture directory**
+> with `control` corrected, leaving v1 intact — and it remains a fixture-owner / Protocol Custodian
+> decision, raised in §7 Q5. `E8-F001` stays open until it is taken; BRW-004 builds against the
+> CODE's authority (D2) meanwhile. **`E8-F001` must not be closed by deleting the pin, nor by
+> weakening the gate.**
 
 - **Note:** the fixture bytes are NOT edited, and under the README they cannot be — not even to
   "correct" them in place. Only an additive field, or a new versioned directory, is permitted.
@@ -376,7 +443,10 @@ Three parts, in order:
 3. **The policy-bytes delivery hop** (D3 correction). Resolving the policy server-side is not
    enough — the ref on the envelope carries no `allow` rules. Stage the effective policy into the
    sandbox alongside the runner config, and have the enforcement point verify its SHA-256 against
-   the envelope's `networkPolicy.digest` before it starts. **Digest mismatch, missing policy, or an
+   the envelope's `networkPolicy.digest` before it starts — where the digest is taken over the
+   **canonical bytes of the strict policy with its own `digest` field omitted** (D3 correction),
+   through the shared `canonicalizeJsonV1` helper, never a second implementation. **Digest mismatch,
+   missing policy, or an
    unparseable one must refuse to start** — never fall back to an empty allowlist, which denies
    everything and is indistinguishable from working enforcement.
 4. **The in-sandbox enforcement point** (D3(c)) calling the shared `classifyEgressDestination`,
@@ -457,6 +527,7 @@ The programme's standing requirement, gathered in one place.
 | Secret value in an event → `«redacted»` | (g) per-run canaries | a non-canary string in the same field survives verbatim |
 | Session state destroyed at terminal | (h) teardown assertion | the check FAILS against a deliberately-preserved profile |
 | Staged policy digest ≠ envelope `networkPolicy.digest` → refuse to start | (f) enforcement point | a matching digest starts and classifies normally |
+| Digest computed over the WRONG canonical form (e.g. `digest` field not omitted) → never verifies | (f) shared helper | ★ a committed vector both producer and enforcement point reproduce — otherwise a divergence looks like a total outage, not a bug |
 | Missing/unparseable staged policy → refuse to start, never empty-allowlist | (f) | a present policy starts; ★ an empty allowlist must be shown to be DISTINGUISHABLE from a refusal, since both deny everything |
 | Sandbox egress boundary (if any) | (a) probe | an allowlisted host succeeds in the same probe run |
 
@@ -524,8 +595,10 @@ an idempotency guard beneath generated DDL, nothing more.
 5. **★ Who authorises a v2 fixture directory, and will they?** Resolving `E8-F001` properly means a
    new versioned fixture directory with `control` corrected for `browser_request`, per
    `tests/fixtures/distributed-execution/README.md`'s own rule. That is a fixture-owner / Protocol
-   Custodian call. Until it is taken, slice (b)'s guard stays RED on that one fixture by design and
-   `E8-F001` stays open. **Do not resolve it by weakening the guard.**
+   Custodian call. Until it is taken, the divergence stays PINNED in slice (b)'s census — reported on
+   every run, failing nothing — and `E8-F001` stays open. **Do not resolve it by deleting the pin or
+   by weakening the gate**, and do not resolve it by making the gate permanently red either: that
+   was the first remedy and it was withdrawn (slice (b), correction 2).
 6. **What component turns a broker-resolved credential into browser session state?** None is named
    anywhere today (slice (g) correction). Until one exists the spec's "login fixture" test cannot
    pass, and the Outcome's "materialize scoped session credentials" is unmet.

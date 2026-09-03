@@ -65,8 +65,13 @@ first would leave the second still reading `"none"` — the guard would have ble
 it exists to detect.
 
 The revised disposition: slice (b)'s guard binds both `control` fields to the shipped
-`describeSourceGovernance` profile and **stays RED for `browser-approval-download.json`**, reported as
-a named divergence carrying this finding id. The real resolution is a **v2 fixture directory** with
+`describeSourceGovernance` profile for every fixture **except a pinned historical-divergence list**,
+and reports the pinned divergences as a SECOND always-printed verdict that never fails the gate.
+(An earlier revision made the gate stay RED on `browser-approval-download.json`; that was withdrawn
+on Codex re-review — a permanently-red required check is a check that gets deleted, and the CLI-008
+Unit A precedent is a second verdict computed beside `ok`, not a red `ok`.) The pin records the
+VALUE tuple, so a new contradicting fixture, or any change to the pinned one's `control` block,
+turns the gate red. The real resolution is a **v2 fixture directory** with
 `control` corrected, leaving v1 intact — a fixture-owner / Protocol Custodian decision, raised as
 BRW-004 design §7 Q5 and **not** BRW-004's to take. This finding therefore stays open until that
 decision is made, and **must not be closed by weakening the guard**.
