@@ -116,7 +116,7 @@ taking the code's side and by adding the check that would have caught it.
 
 ### 2a. ★★★ …and the designated aggregate CANNOT HOLD A ROW for a browser job
 
-`packages/db/src/schema/agent_runtime_decisions.ts:21-22`:
+`packages/db/src/schema/agent_runtime_decisions.ts:22-23`:
 
 ```ts
 agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),

@@ -74,7 +74,7 @@ before the mapping is expressed, or it is a check that nothing runs.
 `aggregateKind: "agent_runtime_decisions"` (`job-approval-bridge.ts:176-182`). That table cannot
 store a row for a distributed browser job.
 
-`packages/db/src/schema/agent_runtime_decisions.ts:21-22`:
+`packages/db/src/schema/agent_runtime_decisions.ts:22-23`:
 
 ```ts
 agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
