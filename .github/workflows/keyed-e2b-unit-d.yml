@@ -93,7 +93,7 @@ jobs:
 
       - name: Run the Unit D invocation-shape cases against REAL E2B
         env:
-          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY_DELIBERATELY_ABSENT }}
           E2B_TEMPLATE: ${{ inputs.e2b_template }}
         run: pnpm --filter @armyofagents/sandbox-e2b-provider exec vitest run src/__tests__/keyed-cli-008-unit-d-invocation.test.ts
 
@@ -110,4 +110,4 @@ jobs:
           fi
           echo "E2B_API_KEY was present; the cases ran for real."
         env:
-          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY_DELIBERATELY_ABSENT }}
