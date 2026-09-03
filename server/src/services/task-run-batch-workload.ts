@@ -49,9 +49,8 @@ import {
 } from "@armyofagents/worker-protocol";
 import { dispositionForAdapter } from "./sandbox-coding-disposition.js";
 import {
-  STAGED_INSTRUCTIONS_PATH,
-  STAGED_PROMPT_PATH,
   buildSandboxInvocation,
+  type SandboxStagedFile,
 } from "./task-run-sandbox-invocation.js";
 import {
   resolveHeartbeatRunTimeoutPolicy,
@@ -85,17 +84,8 @@ export type TaskRunBatchWorkloadRejection =
   /** The assembled workload failed the FROZEN schema — the schema always has the last word. */
   | "invalid_workload";
 
-/**
- * One control-plane-authored file that MUST exist inside the sandbox before the workload's
- * argv runs. Structurally assignable to `StagedInputFile` (`job-input-staging.ts`) and to the
- * `stagedFiles` element type on `RunExecutionOwnerResolver.resolve`.
- */
-export interface TaskRunStagedFile {
-  /** ABSOLUTE in-sandbox path. */
-  readonly path: string;
-  readonly bytes: Uint8Array;
-  readonly contentType: string;
-}
+/** Re-exported so callers of this module do not have to know which module owns the paths. */
+export type TaskRunStagedFile = SandboxStagedFile;
 
 /**
  * ★★★ THE WORKLOAD AND THE FILES ARE ONE RESULT, NOT TWO.
@@ -268,9 +258,6 @@ export function maxRuntimeSecondsForPolicy(
   );
 }
 
-/** UTF-8 bytes for a staged file. */
-const ENCODER = new TextEncoder();
-
 /**
  * Build the `batch` workload for one canary task run, or refuse with an attributable reason.
  *
@@ -311,20 +298,17 @@ export function buildTaskRunBatchWorkload(
       ? input.instructions
       : null;
 
-  // 3c. The staged set. Built from the SAME constants the invocation's argv references, so
-  //     the two cannot name different paths.
-  const stagedFiles: TaskRunStagedFile[] = [
-    { path: STAGED_PROMPT_PATH, bytes: ENCODER.encode(prompt), contentType: "text/markdown; charset=utf-8" },
-    ...(instructions
-      ? [
-          {
-            path: STAGED_INSTRUCTIONS_PATH,
-            bytes: ENCODER.encode(instructions),
-            contentType: "text/markdown; charset=utf-8",
-          },
-        ]
-      : []),
-  ];
+  // 3c. The argv AND the files it reads, from one function. `buildSandboxInvocation` owns the
+  //     paths, so there is nowhere for the two to disagree about them.
+  const invocation = buildSandboxInvocation({
+    adapterType: input.adapterType,
+    binary: command,
+    prompt,
+    instructions,
+  });
+  if (invocation === null) return { ok: false, reason: "adapter_not_v1_scope" };
+  const stagedFiles = invocation.stagedFiles;
+
   // REFUSE, never truncate. A truncated prompt still creates a sandbox, still runs, still
   // terminalizes, and still satisfies the acceptance verifier — while the agent works from a
   // mutilated task. The ceiling is now the staging path's (1 MiB/file), not the frozen argv
@@ -332,13 +316,6 @@ export function buildTaskRunBatchWorkload(
   if (stagedFiles.some((file) => file.bytes.byteLength > MAX_STAGED_FILE_BYTES)) {
     return { ok: false, reason: "staged_input_too_large" };
   }
-
-  const invocation = buildSandboxInvocation({
-    adapterType: input.adapterType,
-    binary: command,
-    hasInstructions: instructions !== null,
-  });
-  if (invocation === null) return { ok: false, reason: "adapter_not_v1_scope" };
 
   const candidate = {
     command: invocation.command,
@@ -360,7 +337,7 @@ export function buildTaskRunBatchWorkload(
   //    frozen schema admits 8,192 chars per element against a 64 KiB job, so the backstop
   //    keeps a reachable remit. It stays where it is rather than being deleted as unreachable.
   const encoded = JSON.stringify(parsed.data);
-  if (ENCODER.encode(encoded).byteLength > SUBMISSION_MAX_INPUT_BYTES) {
+  if (new TextEncoder().encode(encoded).byteLength > SUBMISSION_MAX_INPUT_BYTES) {
     return { ok: false, reason: "workload_too_large" };
   }
 

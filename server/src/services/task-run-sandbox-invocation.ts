@@ -5,11 +5,12 @@
 // Unit B built the inbound channel (control plane → object storage → download grant →
 // `transport.writeFiles`) and nothing rode it. This module is the thing that rides it: it
 // decides, for one canary task run, WHICH files must exist inside the sandbox and WHAT argv
-// reads them. Those two answers are produced together, by one function, because a path in the
-// argv that no staged file writes is a run that fails at exec — and a staged file no argv
-// reads is a byte nobody consumes. `task-run-sandbox-invocation.test.ts` asserts the
-// agreement structurally rather than by example: every absolute path in the argv must appear
-// in the staged set.
+// reads them. **One function returns both**, and that is not tidiness: a path in the argv that
+// no staged file writes is a run that fails at exec, and a staged file no argv reads is a byte
+// nobody consumes. Two functions reading the same constants would still be two functions that
+// can drift. `task-run-batch-workload.test.ts` also asserts the agreement from the OUTSIDE —
+// every absolute path in the emitted argv must appear in the emitted staged set, and the
+// converse — so the invariant is checked as well as structured.
 //
 // ★ LANE. This targets the **E2B / desktop lane**. The networked/container lane has no
 // `stage_files` route (E7-F011) — its boot root ships inert (`docker/worker/Dockerfile:196`
@@ -84,13 +85,28 @@ export const SANDBOX_INVOCATION_COMMAND = "sh";
 /** Where the real binary sits in the emitted argv (`sh -c <script> <binary> …`). */
 export const SANDBOX_INVOCATION_BINARY_ARG_INDEX = 2;
 
+/** One control-plane-authored file that MUST exist inside the sandbox before the argv runs.
+ * Structurally assignable to `StagedInputFile` (`job-input-staging.ts`) and to the
+ * `stagedFiles` element type on `RunExecutionOwnerResolver.resolve`. */
+export interface SandboxStagedFile {
+  /** ABSOLUTE in-sandbox path. */
+  readonly path: string;
+  readonly bytes: Uint8Array;
+  readonly contentType: string;
+}
+
 export interface SandboxInvocation {
   /** Always {@link SANDBOX_INVOCATION_COMMAND}. */
   readonly command: string;
   readonly args: readonly string[];
-  /** The absolute in-sandbox paths this argv reads. Every one MUST be staged. */
-  readonly requiredPaths: readonly string[];
+  /** The files the argv above reads — same paths, same order, built here so they cannot be
+   * a different list. */
+  readonly stagedFiles: readonly SandboxStagedFile[];
 }
+
+/** Everything staged by this unit is UTF-8 markdown. */
+const STAGED_CONTENT_TYPE = "text/markdown; charset=utf-8";
+const ENCODER = new TextEncoder();
 
 /**
  * The readable-or-refuse preamble, over the script's positional parameters.
@@ -134,17 +150,36 @@ export function buildSandboxInvocation(input: {
   readonly adapterType: string;
   /** The adapter's real binary, already resolved from `runtimeCommandSpec`. */
   readonly binary: string;
-  readonly hasInstructions: boolean;
+  /** The assembled task markdown. Already trimmed and known non-empty by the caller. */
+  readonly prompt: string;
+  /** The instructions bundle entry file's content, or `null` when the agent has no bundle.
+   * `null` is the ONLY thing that changes the emitted shape — there is no "stage an empty
+   * bundle" state, because `--append-system-prompt-file` on an empty file is a flag that
+   * promises context and delivers none. */
+  readonly instructions: string | null;
 }): SandboxInvocation | null {
-  const paths = input.hasInstructions
-    ? [STAGED_PROMPT_PATH, STAGED_INSTRUCTIONS_PATH]
-    : [STAGED_PROMPT_PATH];
+  // The paths, the argv that reads them, and the bytes written to them are all derived from
+  // this ONE list, in this ONE function.
+  const staged: SandboxStagedFile[] = [
+    { path: STAGED_PROMPT_PATH, bytes: ENCODER.encode(input.prompt), contentType: STAGED_CONTENT_TYPE },
+    ...(input.instructions === null
+      ? []
+      : [
+          {
+            path: STAGED_INSTRUCTIONS_PATH,
+            bytes: ENCODER.encode(input.instructions),
+            contentType: STAGED_CONTENT_TYPE,
+          },
+        ]),
+  ];
+  const paths = staged.map((file) => file.path);
   const guard = readableGuard(paths.length);
 
   let script: string;
+  const hasInstructions = input.instructions !== null;
   switch (input.adapterType) {
     case "claude_local":
-      script = input.hasInstructions
+      script = hasInstructions
         ? `${guard}; exec "$0" --print - --output-format stream-json --verbose --append-system-prompt-file "$2" < "$1"`
         : `${guard}; exec "$0" --print - --output-format stream-json --verbose < "$1"`;
       break;
@@ -164,7 +199,7 @@ export function buildSandboxInvocation(input: {
       //
       // A pipeline's exit status is its LAST command's, so the invocation still reports codex's
       // exit code, not `cat`'s.
-      script = input.hasInstructions
+      script = hasInstructions
         ? `${guard}; { cat "$2"; echo; cat "$1"; } | "$0" exec --json -`
         : `${guard}; exec "$0" exec --json - < "$1"`;
       break;
@@ -175,6 +210,6 @@ export function buildSandboxInvocation(input: {
   return {
     command: SANDBOX_INVOCATION_COMMAND,
     args: ["-c", script, input.binary, ...paths],
-    requiredPaths: paths,
+    stagedFiles: staged,
   };
 }
