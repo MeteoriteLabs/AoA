@@ -31,6 +31,19 @@ if [ "${AOA_D1_PROVISION_SERVING_ROLES:-}" = "1" ]; then
   node /cp-app/provision-d1-serving-roles.mjs
 fi
 
+# 1c. D1 harness ONLY (WRK-017) — register ONE worker's execution target and authorize the
+#     single-use enrolment code its committed ticket carries, so a real worker container can
+#     ENROL during `docker compose up --wait`. It MUST run here and not from a
+#     `docker compose exec` seed: a first-boot enrol failure is proc.exit(1) in the daemon,
+#     the D1 workers declare no `restart:` policy, and a compose exec necessarily happens
+#     after the stack is already up. STRICTLY gated behind AOA_D1_SEED_WORKER_ENROLMENT=1,
+#     set ONLY by docker-compose.d1.yml's migrate service; a no-op everywhere else. Runs as
+#     the privileged owner role like every other step, and fails closed under `set -eu`.
+if [ "${AOA_D1_SEED_WORKER_ENROLMENT:-}" = "1" ]; then
+  echo "migrate-job: [D1 harness] seeding the worker enrolment target + code"
+  node /cp-app/seed-d1-worker-enrolment.mjs
+fi
+
 # 2. Operator-gated 0188 populated-cutover preflight — ONLY when the operator has
 #    explicitly opted in. Dormant by default: a single-tenant / non-cutover deploy
 #    never runs it. It requires the exact candidate SHA, takes + checksum-validates

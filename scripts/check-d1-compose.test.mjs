@@ -521,3 +521,124 @@ test("yaml-lite strips comments but preserves '#' inside quotes", () => {
   assert.equal(doc.a, 1);
   assert.equal(doc.b, "has # hash");
 });
+
+// === WRK-017: custody mode ⇄ boot root, and the migrate-side seed ============
+//
+// These clauses exist because the two halves of "one worker enrols" live in different
+// compose keys — `environment.AOA_WORKER_KEY_STORE_MODE` and `command:` — and either half
+// alone is a pre-socket `exit 1` that `up --wait` reports only as an unhealthy service.
+// Every case below is a state a rebase, a revert or a copy-paste can actually produce.
+
+/** Turn `validCompose()`'s worker-b into the enrolling worker, plus the migrate-side seed. */
+function enrollingCompose() {
+  const c = clone(validCompose());
+  const b = c.services["worker-b"];
+  b.environment.AOA_WORKER_KEY_STORE_MODE = "file_record";
+  b.environment.AOA_WORKER_STATE_DIR = "/worker";
+  b.environment.AOA_WORKER_ENROLLMENT_CODE_FILE = "/enrollment-code";
+  b.command = ["node", "dist/bin/container-host.js"];
+  b.volumes.push("./docker/d1/worker-b.enrollment-ticket:/enrollment-code:ro");
+  c.services.migrate.environment.AOA_D1_SEED_WORKER_ENROLMENT = "1";
+  c.services.migrate.environment.AOA_D1_SEED_ENROLMENT_TICKET_FILE = "/seed-enrolment-ticket";
+  c.services.migrate.volumes = [
+    "./docker/d1/worker-b.profile.json:/seed-worker.profile.json:ro",
+    "./docker/d1/worker-b.enrollment-ticket:/seed-enrolment-ticket:ro",
+  ];
+  return c;
+}
+
+test("hand-built ENROLLING compose passes with zero violations (anti-vacuity)", () => {
+  assert.deepEqual(evaluateComposeInvariants(enrollingCompose()).violations, []);
+});
+
+test("REJECT (WRK-017): file_record custody without the container-host command", () => {
+  const c = enrollingCompose();
+  delete c.services["worker-b"].command; // the image CMD enters the DAEMON bin
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /does not enter the container-host bin/i), violations.join("\n"));
+});
+
+test("REJECT (WRK-017): the container-host command with mounted_secret custody", () => {
+  const c = enrollingCompose();
+  c.services["worker-b"].environment.AOA_WORKER_KEY_STORE_MODE = "mounted_secret";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /injects record stores UNCONDITIONALLY/i), violations.join("\n"));
+});
+
+test("REJECT (WRK-017): the container-host command with NO custody mode declared at all", () => {
+  const c = enrollingCompose();
+  delete c.services["worker-b"].environment.AOA_WORKER_KEY_STORE_MODE;
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /injects record stores UNCONDITIONALLY/i), violations.join("\n"));
+});
+
+test("REJECT (WRK-017): an enrolling worker whose ticket path has nothing mounted at it", () => {
+  const c = enrollingCompose();
+  c.services["worker-b"].volumes = c.services["worker-b"].volumes.filter(
+    (v) => !String(v).includes("/enrollment-code"),
+  );
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /mounts nothing at that path/i), violations.join("\n"));
+});
+
+test("REJECT (WRK-017): an enrolling worker whose ticket mount is read-WRITE", () => {
+  const c = enrollingCompose();
+  c.services["worker-b"].volumes = c.services["worker-b"].volumes.map((v) =>
+    String(v).includes("/enrollment-code") ? "./docker/d1/worker-b.enrollment-ticket:/enrollment-code" : v,
+  );
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /read-WRITE/i), violations.join("\n"));
+});
+
+test("REJECT (WRK-017): an enrolling worker with no AOA_WORKER_ENROLLMENT_CODE_FILE", () => {
+  const c = enrollingCompose();
+  delete c.services["worker-b"].environment.AOA_WORKER_ENROLLMENT_CODE_FILE;
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /declares no 'AOA_WORKER_ENROLLMENT_CODE_FILE'/i), violations.join("\n"));
+});
+
+test("REJECT (WRK-017): an enrolling worker whose state dir is a BIND, not a named volume", () => {
+  const c = enrollingCompose();
+  c.services["worker-b"].volumes = c.services["worker-b"].volumes.map((v) =>
+    String(v) === "d1-worker-b-state:/worker" ? "./tmp/worker-b:/worker" : v,
+  );
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /not backed by a writable NAMED volume/i), violations.join("\n"));
+});
+
+test("REJECT (WRK-017): an enrolling worker whose state dir points nowhere", () => {
+  const c = enrollingCompose();
+  c.services["worker-b"].environment.AOA_WORKER_STATE_DIR = "/not-mounted";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /not backed by a writable NAMED volume/i), violations.join("\n"));
+});
+
+test("REJECT (WRK-017): a worker enrols but migrate does not seed its authority", () => {
+  const c = enrollingCompose();
+  delete c.services.migrate.environment.AOA_D1_SEED_WORKER_ENROLMENT;
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /does not set 'AOA_D1_SEED_WORKER_ENROLMENT: 1'/i), violations.join("\n"));
+});
+
+test("REJECT (WRK-017): migrate seeds a DIFFERENT ticket than the worker presents", () => {
+  const c = enrollingCompose();
+  c.services.migrate.volumes[1] = "./docker/d1/worker-a.enrollment-ticket:/seed-enrolment-ticket:ro";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /the SAME committed ticket/i), violations.join("\n"));
+});
+
+test("REJECT (WRK-017): migrate seeds while NO worker enrols (a seed nothing presents)", () => {
+  const c = clone(validCompose());
+  c.services.migrate.environment.AOA_D1_SEED_WORKER_ENROLMENT = "1";
+  const { violations } = evaluateComposeInvariants(c);
+  assert.ok(anyMatch(violations, /authorize a code nothing presents/i), violations.join("\n"));
+});
+
+test("the real D1 compose declares EXACTLY one enrolling worker and one control", () => {
+  const compose = parseYaml(readFileSync(composePath, "utf8"));
+  const modes = ["worker-a", "worker-b"].map(
+    (w) => compose.services[w].environment.AOA_WORKER_KEY_STORE_MODE,
+  );
+  assert.equal(modes.filter((m) => m === "file_record").length, 1, `custody modes: ${modes.join(", ")}`);
+  assert.equal(modes.filter((m) => m === "mounted_secret").length, 1, `custody modes: ${modes.join(", ")}`);
+});

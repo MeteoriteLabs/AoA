@@ -212,6 +212,36 @@ test("worker: runs the worker daemon binary", () => {
   assert.match(WORKER, /dist\/bin\/worker-daemon\.js/);
 });
 
+// WRK-017. `docker-compose.d1.yml` enters `dist/bin/container-host.js` on one worker via a
+// `command:` override, and a `command:` naming a file the image does not contain is NOT a build
+// failure — the container starts, node exits ERR_MODULE_NOT_FOUND, and `up --wait` reports an
+// unhealthy service with no hint that the BIN is what is missing. Both guards are asserted: the
+// build tree (does tsc emit it?) and the DEPLOY tree (does `pnpm deploy` ship it?), because those
+// are two different questions and only the second is what the container actually runs.
+test("worker: build AND deploy stages assert the container-host bin (WRK-017)", () => {
+  assert.match(
+    WORKER_CODE,
+    /test -f packages\/worker-daemon\/dist\/bin\/container-host\.js/,
+    "the build stage must assert tsc emitted the container-host bin",
+  );
+  assert.match(
+    WORKER_CODE,
+    /test -f \/worker-app\/dist\/bin\/container-host\.js/,
+    "the deploy stage must assert the container-host bin actually SHIPS at the path the D1 command: names",
+  );
+});
+
+// WRK-017. The D1-harness-only enrolment seed must reach /cp-app, where the deployed `postgres`
+// driver and `@armyofagents/worker-protocol` resolve. Placed anywhere else it is an
+// ERR_MODULE_NOT_FOUND inside the migrate job, which fails the whole bring-up.
+test("control-plane: ships the D1 enrolment seed under /cp-app (WRK-017)", () => {
+  assert.match(
+    CONTROL_CODE,
+    /COPY[^\n]*docker\/control-plane\/seed-d1-worker-enrolment\.mjs \/cp-app\/seed-d1-worker-enrolment\.mjs/,
+    "the enrolment seed must be COPYed to /cp-app so its imports resolve",
+  );
+});
+
 test("worker: loopback-only /healthz health surface", () => {
   assert.match(WORKER, /\/healthz/);
   assert.match(WORKER, /127\.0\.0\.1/);

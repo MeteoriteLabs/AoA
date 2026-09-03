@@ -358,6 +358,13 @@ jobs:
           node --test scripts/lib/__tests__/collect-d1-evidence.test.mjs
           node --test scripts/check-bundled-snapshot-inputs.test.mjs
           node --test docker/d1/__tests__/ctl-allowlist.test.mjs
+          # WRK-017. The live half of "a real container enrols on d1" runs only in the D1
+          # merge-train lane, which fires on PUSH to the integration branch — i.e. after
+          # merge. This is the half a PR can prove: the committed enrolment ticket decodes,
+          # names the same target as the shipped worker profile, matches the SERVER's own
+          # code regex, and the control-plane seed's mirror of the daemon's ticket codec has
+          # not drifted from the daemon's source.
+          node --test docker/d1/__tests__/enrolment-seed.test.mjs
 
       # BRW-002. The browser lane's execution guard must itself be proven: it replaced a
       # grep that failed an all-green run, so its non-vacuousness is a self-test, not a

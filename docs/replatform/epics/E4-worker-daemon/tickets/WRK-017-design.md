@@ -1,7 +1,21 @@
 # WRK-017 — a CI-exercised first container-enrol on d1 (WRK-015 Part 2, split out)
 
 **Epic:** E4 · **Plan node:** `docs/replatform/program-design.md`, `#### WRK-017`
-**Depends on:** WRK-015 (POSIX enrolment input, SHIPPED) · WRK-014 (container identity, SHIPPED inert) · **Size:** M–L · **Status:** scope (2026-08-28, split from WRK-015 at its Step-0 gate)
+**Depends on:** WRK-015 (POSIX enrolment input, SHIPPED) · WRK-014 (container identity, SHIPPED inert) · **Size:** M–L · **Status:** `built` (2026-09-03; see [`WRK-017-result.md`](./WRK-017-result.md)) — filed as `scope` on 2026-08-28 when it was split from WRK-015 at its Step-0 gate
+
+> **Implementer's answers to the three open questions below (2026-09-03).**
+> **OQ#3 — org-scope `worker-b` was chosen**, per the cheaper-lever note in (c). Two reasons beyond
+> cost: the org enrol path is already live-proven end to end by `e6f-03` (the harness enrols an
+> org-scope target through the same route), whereas the platform authority repo has never executed;
+> and org scope needs no operator-DB authority rows at all, so OQ#1's question does not arise.
+> `worker-a` stays `mounted_secret` as the negative control.
+> **OQ#2 — a committed ticket fixture**, mounted READ-ONLY into BOTH the migrate job (which decodes
+> it to learn which code to authorize) and the worker (which presents it). One artifact read twice,
+> so there is no runtime hand-off to get wrong and the whole coupling is checkable BEFORE merge.
+> **OQ#1 — moot**, for the reason under OQ#3.
+> **(f) ordering — the migrate-time seed**, as the design preferred: no merge-train restructure.
+> The 10-minute TTL is handled by seeding a longer expiry (an explicit input, `AOA_D1_SEED_ENROLMENT_TTL_MINUTES`)
+> rather than by racing it; the rationale is stated at the seed and in the result doc.
 **Terrain of record:** [`WAVE-4-RESEQUENCE.md`](../../../WAVE-4-RESEQUENCE.md) §3.2 · [`SPIKE-worker-walking-skeleton.md`](../../../SPIKE-worker-walking-skeleton.md) F5
 **Reconciliation:** [`qa/2026-08-28-worker-dispatch-chain-reconciled.md`](../../../qa/2026-08-28-worker-dispatch-chain-reconciled.md) (link 3.2)
 

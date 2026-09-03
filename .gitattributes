@@ -94,3 +94,10 @@ scripts/**/*.sh text eol=lf
 # (Linux CI is unaffected). (foundation-suite-unrun)
 tests/fixtures/distributed-execution/** text eol=lf
 docs/architecture/distributed-execution-* text eol=lf
+
+# WRK-017 — the D1 worker enrolment ticket is read by a Linux container and split on `.`
+# by two independent decoders. The daemon's reader trims surrounding whitespace, so CRLF is
+# survivable today; pin LF anyway so what a Windows checkout mounts is byte-identical to what
+# CI mounts, and so the one-line-file assertion in docker/d1/__tests__ measures the same bytes
+# everywhere. The file is already LF, so this changes no committed bytes.
+docker/d1/worker-b.enrollment-ticket text eol=lf
