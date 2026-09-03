@@ -41,10 +41,47 @@ export const FINDING_OWNERSHIP_STATUSES = Object.freeze(["owned", "unowned", "ac
  * CLI-001/D2" and CLI-001 shipped. They were carried past their own resolution point and
  * nothing noticed, because nothing was looking. */
 
+/**
+ * The severity vocabulary this programme's registers ACTUALLY use, and whether each value
+ * is gate-blocking. Measured across all 9 registers (108 findings) on 2026-09-03:
+ *
+ *   P1=29  HIGH=26  MEDIUM=15  LOW=11  MED=11  MINOR=8  P2=3  P0=1
+ *
+ * Two scales coexist deliberately — E3 and its neighbours use a P0/P1/P2 STOP scale, the
+ * rest use HIGH/MEDIUM/LOW — and `MED`/`MEDIUM` and `LOW`/`MINOR` are the same rung spelled
+ * two ways. They are NOT normalised in the registers: rewriting 108 severity values across
+ * frozen-evidence epics would be large, risky churn to make a parser's life easier, and the
+ * P-scale is real information rather than a typo. The remedy is the same one chosen for the
+ * status field — READ WHAT IS ACTUALLY WRITTEN, and REFUSE what cannot be read.
+ *
+ * Anything outside this table is `severity_unknown_vocabulary`: a fourth spelling must be
+ * added here deliberately, by a human, rather than silently degrading to UNKNOWN and taking
+ * the HIGH-may-never-be-accepted rule down with it.
+ */
+export const SEVERITY_VOCABULARY = Object.freeze({
+  CRITICAL: { blocking: true },
+  P0: { blocking: true },
+  HIGH: { blocking: true },
+  P1: { blocking: true },
+  MEDIUM: { blocking: false },
+  MED: { blocking: false },
+  P2: { blocking: false },
+  LOW: { blocking: false },
+  MINOR: { blocking: false },
+});
+
 /** Severities that may NOT be `accepted`. Waving away a HIGH is exactly the move this
  * guard exists to make impossible to do quietly — it must be `owned`, or `unowned` with a
- * reason someone can read and argue with. */
-const NOT_ACCEPTABLE = Object.freeze(["HIGH", "CRITICAL"]);
+ * reason someone can read and argue with.
+ *
+ * ★ DERIVED from the vocabulary rather than hand-listed. The hand-listed version was
+ * `["HIGH", "CRITICAL"]`, which silently omitted the ENTIRE P-scale — so even once the
+ * severity regex is fixed, 30 of the 108 findings (P0 + P1) could still have been quietly
+ * `accepted`. Deriving it means adding a blocking spelling to the table above cannot leave
+ * this list behind. */
+const NOT_ACCEPTABLE = Object.freeze(
+  Object.keys(SEVERITY_VOCABULARY).filter((k) => SEVERITY_VOCABULARY[k].blocking),
+);
 
 /** The status value a finding gets when no `Status:` field could be read from its block.
  * It is a HARD FAILURE, not a shrug — see `unparseable_status` below. */
@@ -112,6 +149,30 @@ export function evaluateFindingOwnership(input) {
   const openIds = new Set(open.map((f) => f.id));
   const unowned = [];
 
+  // ★★ AN OPEN FINDING'S SEVERITY MUST BE READABLE AND KNOWN. The second axis of the same
+  // failure, and it composes with the first: `unparseable_status` decides whether a finding
+  // is VISIBLE at all; this decides whether a visible one's severity is KNOWABLE.
+  //
+  // Until 2026-09-03 the severity regex could not read `**Severity:** HIGH` — the bolded
+  // house style — so 82 of 108 findings parsed as UNKNOWN, `String(undefined).toUpperCase()`
+  // was never in NOT_ACCEPTABLE, and the rule the guard's own comment says exists "to make
+  // [waving away a HIGH] impossible to do quietly" COULD NOT FIRE for any of them.
+  //
+  // ★ It was a DEAD LEVER, NOT A BREACH. All eight `accepted` declarations parse LOW or
+  // MINOR against their register text; nobody waved away a HIGH through this hole. Said
+  // explicitly because the register is exactly where an overstatement would stick.
+  //
+  // Scoped to OPEN findings: this guard reasons about nothing else, and four resolved
+  // findings legitimately carry no readable severity. Flipping one back to open demands one.
+  for (const finding of [...open].sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
+    const severity = String(finding.severity ?? "").toUpperCase();
+    if (severity === UNPARSEABLE_SEVERITY) {
+      problems.push({ kind: "severity_unreadable", finding: finding.id, detail: finding.register });
+    } else if (!Object.prototype.hasOwnProperty.call(SEVERITY_VOCABULARY, severity)) {
+      problems.push({ kind: "severity_unknown_vocabulary", finding: finding.id, detail: severity });
+    }
+  }
+
   for (const finding of [...open].sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
     const entry = declared[finding.id];
     // Default-deny. A new open finding is born UNDECLARED, and undeclared fails — which is
@@ -172,21 +233,12 @@ export function evaluateFindingOwnership(input) {
       }
       continue;
     }
-    if (entry.status === "accepted") {
-      const severity = String(finding.severity).toUpperCase();
-      // The same blindness, one field over. `**Severity:** HIGH` — the shape EVERY register
-      // uses — did not parse either (the old expression demanded the value abut the closing
-      // `**`), so 82 of 108 findings carried severity UNKNOWN and `severity_not_acceptable`
-      // could not fire for any of them. With the regex fixed, an unreadable severity must
-      // still refuse `accepted`: you may not wave away what you have not classified.
-      if (severity === UNPARSEABLE_SEVERITY) {
-        problems.push({ kind: "severity_unreadable_not_acceptable", finding: finding.id, detail: finding.severity });
-        continue;
-      }
-      if (NOT_ACCEPTABLE.includes(severity)) {
-        problems.push({ kind: "severity_not_acceptable", finding: finding.id, detail: finding.severity });
-        continue;
-      }
+    // An unreadable or off-vocabulary severity is already reported by the pass above, for
+    // EVERY open finding rather than only the accepted ones — so this arm can trust that a
+    // severity reaching it is one the table knows.
+    if (entry.status === "accepted" && NOT_ACCEPTABLE.includes(String(finding.severity).toUpperCase())) {
+      problems.push({ kind: "severity_not_acceptable", finding: finding.id, detail: finding.severity });
+      continue;
     }
     if (entry.status === "unowned") unowned.push(finding.id);
   }

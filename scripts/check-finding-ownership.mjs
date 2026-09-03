@@ -14,7 +14,7 @@ import { readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-import { evaluateFindingOwnership, parseFindings } from "./lib/finding-ownership.mjs";
+import { evaluateFindingOwnership, parseFindings, SEVERITY_VOCABULARY } from "./lib/finding-ownership.mjs";
 
 export const MANIFEST_RELATIVE_PATH = "scripts/finding-ownership.json";
 const EPICS_RELATIVE_PATH = "docs/replatform/epics";
@@ -109,6 +109,9 @@ if (process.argv.includes("--write")) {
   process.exit(0);
 }
 
+const BLOCKING = Object.keys(SEVERITY_VOCABULARY).filter((k) => SEVERITY_VOCABULARY[k].blocking);
+const NON_BLOCKING = Object.keys(SEVERITY_VOCABULARY).filter((k) => !SEVERITY_VOCABULARY[k].blocking);
+
 const EXPLAIN = {
   undeclared_finding: "open, but no entry in the manifest — say who owns it, or that nobody does",
   malformed_declaration: "entry is not one of owned/unowned/accepted with a reason",
@@ -119,8 +122,10 @@ const EXPLAIN = {
   successor_not_on_disk: "the named `successor` has no file on disk — a false claim of inheritance",
   successor_already_complete: "the named `successor` has ALSO already SHIPPED — the same hole one level down",
   severity_not_acceptable: "a HIGH/CRITICAL may not be 'accepted'; own it or record it as unowned",
-  severity_unreadable_not_acceptable:
-    "declared 'accepted' but its **Severity:** could not be read — you may not wave away what you have not classified",
+  severity_unreadable:
+    "open, but its **Severity:** could not be read — the HIGH-may-never-be-accepted rule cannot apply to it",
+  severity_unknown_vocabulary:
+    "open, with a severity spelling the guard does not know — add it to SEVERITY_VOCABULARY deliberately, with its blocking flag",
   unparseable_status:
     "no readable `Status:` field — the guard cannot tell whether it is open, so it refuses (see below)",
   stale_declaration: "declared, but no longer an open finding — remove the entry",
@@ -132,6 +137,15 @@ if (!result.ok) {
   for (const p of result.problems) {
     const detail = p.detail ? ` (${p.detail})` : "";
     console.error(`  - ${p.finding ?? "(input)"}${detail}: ${EXPLAIN[p.kind] ?? p.kind}`);
+  }
+  if (result.problems.some((p) => p.kind === "severity_unreadable" || p.kind === "severity_unknown_vocabulary")) {
+    console.error(
+      "\nAn OPEN finding must carry a severity the guard knows. Recognised spellings:\n" +
+        `  blocking (may NOT be 'accepted'): ${BLOCKING.join(", ")}\n` +
+        `  non-blocking:                     ${NON_BLOCKING.join(", ")}\n` +
+        "Both `**Severity:** HIGH` and `Severity: HIGH` parse. A tenth spelling is a deliberate\n" +
+        "edit to SEVERITY_VOCABULARY, not something to leave degrading to UNKNOWN.",
+    );
   }
   if (result.problems.some((p) => p.kind === "unparseable_status")) {
     console.error(

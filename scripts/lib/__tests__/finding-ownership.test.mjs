@@ -267,16 +267,79 @@ test("★ a HIGH may not be 'accepted' — now that severities actually parse", 
   assert.deepEqual(kinds(r), ["severity_not_acceptable"]);
 });
 
-test("★ 'accepted' with an UNREADABLE severity fails — you may not wave away the unclassified", () => {
-  // Otherwise the severity blindness becomes a laundering route: a HIGH whose severity the
-  // parser cannot read would be `accepted` without ever tripping severity_not_acceptable.
-  const r = evaluateFindingOwnership({
+test("★★ the coordinator's positive control: a HIGH in the BOLDED house style cannot be 'accepted'", () => {
+  // MEASURED at base 203853b3a, against the original parser, both halves:
+  //   `- **Severity:** HIGH` -> severity=UNKNOWN, ok=TRUE,  problems=[]                  <- waved away
+  //   `- Severity: HIGH`     -> severity=HIGH,    ok=false, problems=[severity_not_acceptable]
+  // The bolded form is what EVERY register writes, so the rule the guard's own comment says
+  // exists "to make [waving away a HIGH] impossible to do quietly" could not fire at all.
+  // Both spellings must now refuse.
+  for (const severityLine of ["- **Severity:** HIGH", "- Severity: HIGH", "**Severity:** HIGH"]) {
+    const findings = parseFindings(`## E9-F001 — probe\n\n**Status:** open\n${severityLine}\n`);
+    assert.equal(findings[0].severity, "HIGH", severityLine);
+    const r = evaluateFindingOwnership({
+      findings,
+      declared: { "E9-F001": { status: "accepted", reason: "waving away a HIGH" } },
+      ticketIds: [],
+    });
+    assert.equal(r.ok, false, severityLine);
+    assert.deepEqual(kinds(r), ["severity_not_acceptable"], severityLine);
+  }
+});
+
+test("★★ an OPEN finding with an UNREADABLE severity FAILS — not a silent UNKNOWN", () => {
+  // Scoped to open findings on purpose: the guard reasons about nothing else, and four
+  // RESOLVED findings legitimately carry no readable severity.
+  const open = evaluateFindingOwnership({
     findings: [{ id: "E9-F001", status: "open", severity: "UNKNOWN", title: "probe" }],
-    declared: { "E9-F001": { status: "accepted", reason: "nit" } },
+    declared: { "E9-F001": { status: "unowned", reason: "nobody yet" } },
+    ticketIds: [],
+  });
+  assert.equal(open.ok, false);
+  assert.deepEqual(kinds(open), ["severity_unreadable"]);
+
+  const resolved = evaluateFindingOwnership({
+    findings: [{ id: "E9-F001", status: "resolved", severity: "UNKNOWN", title: "probe" }],
+    declared: {},
+    ticketIds: [],
+  });
+  assert.equal(resolved.ok, true, JSON.stringify(resolved.problems));
+});
+
+test("★ a severity spelling the vocabulary does not know FAILS — a tenth style is a deliberate edit", () => {
+  // Without this, the whole defect recurs the moment someone writes a fourth style: it would
+  // parse to something, fail the NOT_ACCEPTABLE membership test, and go quiet again.
+  const r = evaluateFindingOwnership({
+    findings: [{ id: "E9-F001", status: "open", severity: "SEV1", title: "probe" }],
+    declared: { "E9-F001": { status: "unowned", reason: "nobody yet" } },
     ticketIds: [],
   });
   assert.equal(r.ok, false);
-  assert.deepEqual(kinds(r), ["severity_unreadable_not_acceptable"]);
+  assert.deepEqual(kinds(r), ["severity_unknown_vocabulary"]);
+  assert.equal(r.problems[0].detail, "SEV1");
+});
+
+test("★★ NOT_ACCEPTABLE covers the WHOLE P-scale, not just HIGH/CRITICAL", () => {
+  // The hand-written list was ["HIGH","CRITICAL"], which omitted P0 and P1 entirely — 30 of
+  // this repo's 108 findings. So even with the regex fixed, a P1 STOP could still have been
+  // quietly `accepted`. The list is now DERIVED from SEVERITY_VOCABULARY.
+  for (const severity of ["HIGH", "CRITICAL", "P0", "P1"]) {
+    const r = evaluateFindingOwnership({
+      findings: [{ id: "E9-F001", status: "open", severity, title: "probe" }],
+      declared: { "E9-F001": { status: "accepted", reason: "nit" } },
+      ticketIds: [],
+    });
+    assert.equal(r.ok, false, `${severity} must not be acceptable`);
+    assert.deepEqual(kinds(r), ["severity_not_acceptable"], severity);
+  }
+  for (const severity of ["MEDIUM", "MED", "P2", "LOW", "MINOR"]) {
+    const r = evaluateFindingOwnership({
+      findings: [{ id: "E9-F001", status: "open", severity, title: "probe" }],
+      declared: { "E9-F001": { status: "accepted", reason: "genuinely a nit" } },
+      ticketIds: [],
+    });
+    assert.equal(r.ok, true, `${severity} must remain acceptable: ${JSON.stringify(r.problems)}`);
+  }
 });
 
 test("parseFindings tolerates junk without throwing", () => {
