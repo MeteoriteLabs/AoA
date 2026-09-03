@@ -1,9 +1,21 @@
 # CLI-008 — The capability half: make the sandbox agent able to work, and make that CHECKABLE
 
-**Status:** **Unit A shipped 2026-09-02** (§2); units B–F remain a `scoping stub` and Unit B's channel
-decision is undecided, so no result doc yet. Unit A changed the JUDGE, not the capability — E7-F003
-stays open and every row of §1 is still true. Evidence: a 39-agent scoping sweep, 2026-09-02, every
-item verified against HEAD.
+**Status:** **Units A and B are SHIPPED** — A merged `0e0904206` (PR #339, 2026-09-02), B merged
+`393f7a251` (PR #340, 2026-09-03). Units **C–F remain unbuilt**; no result doc yet, because the
+ticket closes on the capability, not on the channel. Unit A changed the JUDGE, not the capability;
+Unit B built the inbound CHANNEL and nothing that rides it. **E7-F003 stays open and every row of
+§1 is still true**, so `capabilityProven` is false on every real run.
+
+> ★ **This line was stale until 2026-09-03 and said the opposite.** It read *"units B–F remain a
+> `scoping stub` and Unit B's channel decision is **undecided**"* — while §3 of THIS SAME FILE
+> already carried the banner "DECIDED 2026-09-03" and Unit B was merged. The file's last commit
+> predated its own build. If you are reading a Status line here, check it against
+> `git log --oneline -- <this file>` and the GO-BOOK row before trusting it.
+
+**Open findings owned by this ticket:** E7-F003 (the capability gap itself), E7-F008 (a LIVE refusal
+— a prompt over 8,192 chars cannot dispatch distributed at all), E7-F009 (the fit check measures the
+wrong set), E7-F011 (no `stage_files` route on the networked/container lane — MEDIUM, corrected down
+from HIGH; **C and D are NOT blocked by it**, they run on the E2B/desktop lane).
 **Epic:** `E7 — Coding/CLI workload on E2B`. **Owns:** `E7-F003`.
 
 ---
@@ -128,7 +140,7 @@ Sizes are the sweep's, corrected by a verification pass. They are indicative, no
 | Unit | Size | What |
 |---|---|---|
 | **A — the judge** | **S** | ✅ **DONE 2026-09-02** (§2). `producedArtifacts` promoted to a `capabilityProven` dimension separate from `ok`, pinned fixture, `--require-capability` off by default. **`--model` in the argv was NOT done** and stays open |
-| **B — the channel** | **M** (decision) | ✅ **DECIDED 2026-09-03** — `stageFiles` on the NON-FROZEN port + a local `fileStagingMode`, the DAT-009 shape; the frozen vocabulary is untouched. See `qa/2026-09-03-cli-008-unit-b-channel-decision.md`. Building it is the next unit |
+| **B — the channel** | **M** (decision) | ✅ **DECIDED 2026-09-03** — `stageFiles` on the NON-FROZEN port + a local `fileStagingMode`, the DAT-009 shape; the frozen vocabulary is untouched. See `qa/2026-09-03-cli-008-unit-b-channel-decision.md`. ✅ **BUILT AND MERGED `393f7a251`** (PR #340) |
 | **C — tools** | **L–XL** | A brokered HTTP `aoa` MCP config plus its env vars, and a run-identity credential as a second secret handle, so `mcp__aoa__*` is actually callable |
 | **D — context** | **M** | The instructions bundle reaches the sandbox (`--append-system-prompt-file`), and the prompt stops being a positional |
 | **E — workspace** | **XL** | A repository to work in. `workspaceV1Schema` requires a `manifestArtifactId` that has **zero producers**; `buildWorkspaceManifest` walks a LOCAL filesystem and cannot be pointed at an E2B sandbox |

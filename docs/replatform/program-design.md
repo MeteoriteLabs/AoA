@@ -934,10 +934,22 @@ It unblocks JOB-004 through JOB-008, JOB-011 through JOB-014, and WRK-005 onward
   ONLY — no MCP tools, no instructions bundle, no workspace, no output capture — and the acceptance
   verifier cannot see any of it: no clause reads workload, args, exitCode, stdout or any produced
   artifact, and clause 3 is terminal-agnostic, so a run that exits 127 with a context-free prompt
-  passes. Fix the judge first, then the capability. The keystone decision is the inbound channel: the
-  FROZEN SandboxProvider port has no file-staging operation and worker-daemon is dependency-pinned,
-  so a file reaches the sandbox through argv staging or not at all — and argv is bounded, a task
-  description over ~7.4 KB cannot run distributed today.
+  passes. Fix the judge first, then the capability.
+
+  ★★★ **THE TWO SENTENCES THAT USED TO BE HERE WERE MEASURED FALSE. Do not restore them.** This node
+  asserted that "the FROZEN SandboxProvider port has no file-staging operation … so a file reaches the
+  sandbox through argv staging or not at all — and argv is bounded". Both halves were refuted by
+  measurement on 2026-09-03 and the ticket's own §3 carries the superseding banner:
+  (1) `capabilities.ts` defines a wire/registry VOCABULARY, not the port — the port is
+  `worker-daemon/src/supervisor/provider.ts`, in a package that is **not frozen**, and it had already
+  grown to thirteen methods (DAT-009, `d5885053f`); (2) the argv cliff is **8,192 characters PER
+  ARGUMENT**, not ~8 KB per job. CLI-008 Unit B shipped the channel on that basis (`393f7a251`):
+  `stageFiles` on the non-frozen port, pointer via `extensions[]`, bytes via object storage, with
+  `git diff packages/worker-protocol/src` empty.
+
+  What SURVIVES is the number, as its own finding: **E7-F008** — a task whose assembled prompt exceeds
+  8,192 characters is refused `prompt_too_large` and cannot dispatch distributed at all. That is a LIVE
+  refusal today. What does NOT survive is the inference "therefore the channel must not be argv-shaped".
 - **Acceptance:** A distributed coding run the verifier can DISTINGUISH from a context-free one — the
   agent had tools, had its identity and company context, had a repository, and something it produced
   reached AoA, each asserted by a clause rather than printed as an observation. Until the verifier
