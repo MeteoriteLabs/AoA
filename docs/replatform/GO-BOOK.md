@@ -57,14 +57,18 @@ agents.** What remains is breadth (other workload classes), two owed live-infra 
 guards/residuals.
 
 - **✅ DONE (verified):** E0–E6 (the whole mechanism — wire protocol, tenant kernel, job control, worker
-  daemon, workspaces/secrets, deploy harness); **E7** CLI-001..007 (code-complete); **E10-desktop**
+  daemon, workspaces/secrets, deploy harness); **E7** CLI-001..007 (code-complete — ★ **tickets 001–007
+  only, NOT the epic**: CLI-008 is a filed E7 ticket, size L, whose Units A and B are shipped and whose
+  **Units C/D/E/F are unbuilt**; see §1.9.3); **E10-desktop**
   DSK-001..004; **E10 realtime foundation + drain** (MIG-002/003/008/shadow/009); **E8** Lane-B features
   (BRW-001/002/003*) + BRW-hostspawn-gate; **E9** SVC-001 (storage half only); **E11** REL-004(+C/D) /
   REL-FOUNDATION-GATE / REL-003 core / GATE-clause-3-rollback / foundation-suite-unrun. Sprints S1–S5b,
   S6, S7-1, S9-1, S9-2, S9-3.
 - **🟡 OWED — built, needs a live-infra run (OPERATOR, not session):** **E7-1** staging-canary campaign
-  (real-E2B distributed coding journey; code-complete, blocked only on the staging fleet being
-  deployed) → promotes E7-1 `unwired`→`wired`; **REL-003** DR staging rehearsal (measured RPO/RTO;
+  (real-E2B distributed coding journey) → promotes E7-1 `unwired`→`wired`. ★ **NOT "blocked only on the
+  staging fleet"**: the E7-1 clause also names a DEP-011 daemon-consumer precondition, and a green E7-1
+  proves the MECHANISM, not capability — capability needs CLI-008 Unit F (see §1.9.3); **REL-003** DR
+  staging rehearsal (measured RPO/RTO;
   E11-F002 — the `aoa db:restore` entrypoint half is session-buildable).
 - **🚫 BLOCKED (absent features/deps):** REL-001 (BRW-006/S7 + SVC-007/S8), REL-002 (SVC-006/S8),
   REL-005 (all REL + kill-switch write path); **E10 cutover sinks** (MIG-005/006/007 — need the routing
@@ -249,6 +253,8 @@ get their first REAL exercise = Sprint 5 / E7-1 on real E2B → C0 deploy → ca
 4. **Then (unlocked, session):** wire the zero-caller projection bridges → the **S6 sink cutover** (crew
    first — rides the mint for a v1-provider company) → drain wired → REL-005.
 5. **Parallel — Lane B (`C:\e8`):** S7 browser BRW-004..008 + S8 service SVC-002..007 → unblock REL-001
+   ★ **The FEATURES are unbuilt — this is a PLAN, not an observed state.** Track D's revival began
+   2026-09-03 (BRW-004 terrain + design, PR #343) but landed **docs only, no feature code**. See §1.9.2.
    (BRW-006/SVC-007), REL-002 (SVC-006), the E9 service-dispatch enable (shares E10's routing seam).
 6. **Operator DR (any time staging is up):** the **REL-003 DR rehearsal** (RPO/RTO); DBR-001 owns the
    `aoa db:restore` entrypoint. **Last:** REL-005 — the private-beta close (after all REL + the
@@ -281,7 +287,7 @@ flowchart TD
   SK["S6 sink cutover<br/>crew → extraction → Commander<br/>SESS + credential work"]:::sess
   DR["drain wired (E10-1)<br/>SESS"]:::sess
   R5["REL-005 — private-beta close<br/>SESS + OP"]:::mix
-  LB["Lane B: S7 browser BRW-004..008<br/>+ S8 service SVC-002..007<br/>LANE B · not ours"]:::laneb
+  LB["Lane B: S7 browser BRW-004..008<br/>+ S8 service SVC-002..007<br/>LANE B · features UNBUILT, see §1.9.2"]:::laneb
   R1["REL-001 / REL-002"]:::mix
   DBR["DBR-001 aoa db:restore entrypoint<br/>SESS"]:::sess
   R3["REL-003 live DR rehearsal (RPO/RTO)<br/>OP"]:::op
@@ -309,7 +315,7 @@ flowchart TD
 |------|------|------|-----------|------|
 | **Frontier (buildable now)** | ~~Evidence-verifier A — the E7-1 acceptance harness~~ ✅ **BUILT** (`pnpm verify:e7-1-distributed-run`; flips no gate). ★ **CLI-008 Unit A (2026-09-02)** gave it a second verdict: `capabilityProven`, computed and always printed, `--require-capability` off by default — so a green E7-1 can no longer be quoted as capability | `SESS` | — | done |
 | | E6-F005 · E6-F007 · E4-F014 — doc-only closures | `SESS` | — | XS |
-| **★ Critical path — Tier 0 (session/code, the build front)** | WRK-014 **✅ BUILT-INERT** → WRK-015 **✅ SHIPPED** (d1 proof → WRK-017, off-path) → DEP-012 adapter-manager **Slice 1 Unit A ✅ (create/execute wire) + Unit B1 ✅ (signed-capability execute gate) + Unit B2 ✅ (teardown + `inspect`/`list` redaction — the FULL gated wire) + Slice 3 · Wave β1 ✅ (durable idempotency ledger + create-gating + the TOCTOU lock, on the mock) + Slice 3 · Wave β2 ✅ (real-provider FAIL-CLOSED composition-root bin + subpath-aware `adapter-manager-boundary` guard + devDep→dep; conformance inherited) + DEP-011 Slice 1 ✅ (server-side owned-labels-capability MINT, inert; `provider-capability` leaf extracted) + DEP-011 Slice 2a ✅ (worker factory + honest-orphan cleanup) + reaper Slice A ✅ (the pure `reconcileReaper` — Option-A server reclamation, positive-confirmed-dead) + Slice 2b ✅ (the container networked-host root) + reaper Slices B1+B2+C ✅ (MERGED `635aa4454`, PR #329 — the CP lease-truth endpoint + the AM PULL client + the contained loop/metrics)** → the worker→provider CODE PATH is COMPLETE; **DEP-012 Slice 4+5 ✅ MERGED `07ed2cc42` (PR #330, CI-green — the AM image + the CP matched-pair mint keypair + the AM↔CP bearer + credential leak-proofing + a C0 smoke tool)** → **Unit 1 ✅ MERGED `b6e02a478` (PR #331)** — Blocker A (the canary submitted an EMPTY workload, so no lease could ever be offered) + Blocker B (no shipped worker image could construct a provider) + H1 (the real execution ceiling was 60s, not 600) + H3 (an unset mint key was a silent total outage) → **Unit 1.5 ✅ MERGED `42c124258` (PR #332)** — the Step-0 blocker, found by PROBING the live fleet: the rollout hook never reached the EXECUTING heartbeat instance (`enqueueWakeup` executes on its own bare instance), so an eligible canary task produced `execution_owner = NULL` and NO `[CLI-006]` line — indistinguishable from a legitimate legacy decision. Fixed with a module-level port resolved LAZILY per run (a factory-scope capture was itself a no-op, because `createApp` builds the route instances ~466 lines before registration), plus an unconditional `[CLI-006] rollout resolved` log so a declining canary says WHY (§9e/§9e.1). ~~**A real run is now POSSIBLE.**~~ **RETRACTED 2026-09-01 — see BLOCKER E** ([`qa/…campaign-blockers…md`](./qa/2026-08-31-campaign-blockers-and-fleet-terrain.md) §9e.2): the canary CANNOT flip to distributed on a correctly-booted flag-on deployment. E is **THREE** defects stacked — **E-1 ✅ FIXED (Unit 1.6)** the preflight store is bound to the non-owner `aoa_app` pool and was permission-denied on three of its evidence reads (measured with psql; a bare GRANT is drift and drift is a FATAL boot error, and `aoa_operator` is more restricted still) — now served by **three** owner-owned org-bound `SECURITY DEFINER` functions (migration `0267_canary_preflight_evidence_org_scope.sql`, which supersedes `0266`) with `EXECUTE` on **`aoa_operator`** — the tenant-facing `aoa_app` pool holds none — plus a `prosecdef`-keyed certificate that closes the blind spot the fix relies on. ★ An intermediate revision granted `EXECUTE` to `aoa_app` and scoped each function by a caller-supplied `p_company_id`; that was a lateral read of ANY Company's evidence through owner authority, REPRODUCED against real PostgreSQL, and `0267` is the fix. **The binder is the GRANTEE, not the parameter** — the org predicates are defence in depth, the one thing a caller cannot forge is the role it connects as; **E-2 ❌ OPEN** `reconcileCompanyLegacyResources` has **ZERO non-test callers**, so the one evidence table the gate CAN read is never populated; and **E-3 ❌ OPEN** `environments.ts:142` inserts a lease on EVERY legacy cloud run while the pass `continue`s past a lost-CAS paused lease without recording it, so the pass's inventory is a strict subset of the gate's re-derived inventory BY CONSTRUCTION — a permanently-losing race on any box with traffic. **Fixing E-1 alone does NOT open the gate; it only makes the refusal HONEST** — `credential_authority_not_moved` (a policy refusal, measured on a real `aoa_app` connection) instead of `preflight_error` ("I could not read"). §9e.2.2. The MECHANISM up to the decision seam is proven (Unit 1.5, §9e.0: all seven conjuncts hold live); the DECISION itself is still gated shut.  Unit 2 (CAPABILITY — MCP surface, instructions bundle, workspace, prompt beyond argv, output capture) is filed E7-F003, UNOWNED, not started.** Remaining before a canary: the operator C0 preconditions (a `provider:anthropic` company secret; a ratified `pooled_gvisor` target; org `concurrency_cap` NULL-or-≥2; an enrolled worker using an `aoa_tkt_` ticket) | `SESS`→`OP` | — | ✅ mechanism / ❌ capability |
+| **★ Critical path — Tier 0 (session/code, the build front)** | WRK-014 **✅ BUILT-INERT** → WRK-015 **✅ SHIPPED** (d1 proof → WRK-017, off-path) → DEP-012 adapter-manager **Slice 1 Unit A ✅ (create/execute wire) + Unit B1 ✅ (signed-capability execute gate) + Unit B2 ✅ (teardown + `inspect`/`list` redaction — the FULL gated wire) + Slice 3 · Wave β1 ✅ (durable idempotency ledger + create-gating + the TOCTOU lock, on the mock) + Slice 3 · Wave β2 ✅ (real-provider FAIL-CLOSED composition-root bin + subpath-aware `adapter-manager-boundary` guard + devDep→dep; conformance inherited) + DEP-011 Slice 1 ✅ (server-side owned-labels-capability MINT, inert; `provider-capability` leaf extracted) + DEP-011 Slice 2a ✅ (worker factory + honest-orphan cleanup) + reaper Slice A ✅ (the pure `reconcileReaper` — Option-A server reclamation, positive-confirmed-dead) + Slice 2b ✅ (the container networked-host root) + reaper Slices B1+B2+C ✅ (MERGED `635aa4454`, PR #329 — the CP lease-truth endpoint + the AM PULL client + the contained loop/metrics)** → the worker→provider CODE PATH is COMPLETE; **DEP-012 Slice 4+5 ✅ MERGED `07ed2cc42` (PR #330, CI-green — the AM image + the CP matched-pair mint keypair + the AM↔CP bearer + credential leak-proofing + a C0 smoke tool)** → **Unit 1 ✅ MERGED `b6e02a478` (PR #331)** — Blocker A (the canary submitted an EMPTY workload, so no lease could ever be offered) + Blocker B (no shipped worker image could construct a provider) + H1 (the real execution ceiling was 60s, not 600) + H3 (an unset mint key was a silent total outage) → **Unit 1.5 ✅ MERGED `42c124258` (PR #332)** — the Step-0 blocker, found by PROBING the live fleet: the rollout hook never reached the EXECUTING heartbeat instance (`enqueueWakeup` executes on its own bare instance), so an eligible canary task produced `execution_owner = NULL` and NO `[CLI-006]` line — indistinguishable from a legitimate legacy decision. Fixed with a module-level port resolved LAZILY per run (a factory-scope capture was itself a no-op, because `createApp` builds the route instances ~466 lines before registration), plus an unconditional `[CLI-006] rollout resolved` log so a declining canary says WHY (§9e/§9e.1). ~~**A real run is now POSSIBLE.**~~ **RETRACTED 2026-09-01 — see BLOCKER E** ([`qa/…campaign-blockers…md`](./qa/2026-08-31-campaign-blockers-and-fleet-terrain.md) §9e.2): the canary CANNOT flip to distributed on a correctly-booted flag-on deployment. E is **THREE** defects stacked — **E-1 ✅ FIXED (Unit 1.6)** the preflight store is bound to the non-owner `aoa_app` pool and was permission-denied on three of its evidence reads (measured with psql; a bare GRANT is drift and drift is a FATAL boot error, and `aoa_operator` is more restricted still) — now served by **three** owner-owned org-bound `SECURITY DEFINER` functions (migration `0267_canary_preflight_evidence_org_scope.sql`, which supersedes `0266`) with `EXECUTE` on **`aoa_operator`** — the tenant-facing `aoa_app` pool holds none — plus a `prosecdef`-keyed certificate that closes the blind spot the fix relies on. ★ An intermediate revision granted `EXECUTE` to `aoa_app` and scoped each function by a caller-supplied `p_company_id`; that was a lateral read of ANY Company's evidence through owner authority, REPRODUCED against real PostgreSQL, and `0267` is the fix. **The binder is the GRANTEE, not the parameter** — the org predicates are defence in depth, the one thing a caller cannot forge is the role it connects as; **E-2 ✅ RESOLVED** (= E10-F002, closed by MIG-010 Unit 2.3, `597e77715`, PR #336) — `reconcileCompanyLegacyResources` had **ZERO non-test callers**, so the one evidence table the gate CAN read was never populated; it now has a production caller (the operator CLI); and **E-3 ✅ RESOLVED** (= E7-F004, closed by MIG-010 Units 2.4a+2.4b) — `environments.ts:142` inserted a lease on EVERY legacy cloud run while the pass `continue`s past a lost-CAS paused lease without recording it, so the pass's inventory is a strict subset of the gate's re-derived inventory BY CONSTRUCTION — a permanently-losing race on any box with traffic. **Fixing E-1 alone does NOT open the gate; it only makes the refusal HONEST** — `credential_authority_not_moved` (a policy refusal, measured on a real `aoa_app` connection) instead of `preflight_error` ("I could not read"). §9e.2.2. The MECHANISM up to the decision seam is proven (Unit 1.5, §9e.0: all seven conjuncts hold live); the DECISION itself is still gated shut.  Unit 2 (CAPABILITY — MCP surface, instructions bundle, workspace, prompt beyond argv, output capture) is filed E7-F003, **`owned` by CLI-008** (repointed 2026-09-02; so recorded in both `findings.md` and `scripts/finding-ownership.json`), Units C/D/E/F not started.** Remaining before a canary: the operator C0 preconditions (a `provider:anthropic` company secret; a ratified `pooled_gvisor` target; org `concurrency_cap` NULL-or-≥2; an enrolled worker using an `aoa_tkt_` ticket) | `SESS`→`OP` | — | ✅ mechanism / ❌ capability |
 | | **C0 · staging-deploy pipeline** (deploy the staging compose) | `OP` | Tier 0 | **L** |
 | | C2 · fleet deployed + armed (E2B key, canary, cap>1, worker) | `OP` | C0 | M |
 | | C3 · E7-1 campaign — one real-E2B distributed run → **E7-1 wired** | `OP` | C2 | S |
@@ -318,12 +324,12 @@ flowchart TD
 | | C6 · S6 sink cutover — crew → extraction → Commander (E10-F001) | `SESS`+cred | C4, C5 | L |
 | | C7 · drain wired (E10-1-drain) | `SESS` | C6 | S |
 | | C8 · REL-005 — kill-switch write-path + drain trigger | `SESS`+`OP` | C7, all REL | M |
-| **Parallel — Lane B** | S7 browser BRW-004..008 · S8 service SVC-002..007 | `LANE B` | dispatch-live | L |
+| **Parallel — Lane B** (★ features **UNBUILT** — a plan, not an observed state; §1.9.2) | S7 browser BRW-004..008 · S8 service SVC-002..007 | `LANE B` | its own rebase, then dispatch-live | L |
 | | REL-001 / REL-002 | mix | S7/S8 | M |
 | **Operator DR** | DBR-001 · `aoa db:restore` entrypoint (E11-F002 session half) | `SESS` | — | S |
 | | REL-003 · live DR rehearsal (measured RPO/RTO) | `OP` | C2, DBR-001 | M |
 | **Deferred daemon stubs (LOW, fail-closed)** | WRK-012 self-model refresh + lease-in-flight (E4-F008) | `SESS` | — | M |
-| | WRK-013 durable lease-candidate + startup reconciler (E4-F009 → unblocks E5-3) | `SESS` | — | M |
+| | WRK-013 durable lease-candidate + startup reconciler (E4-F009 → unblocks **E4-3**) | `SESS` | — | M |
 | | E3-18 revocation-fanout consumer | `SESS` | dispatch-live | M |
 
 **The one thing to see:** the mechanism is built; the campaign is gated on **Tier 0** (WRK-014 ✅ + WRK-015 ✅
@@ -344,6 +350,7 @@ factory + honest cleanup) + reaper Slice A ✅ + Slice 2b ✅ + reaper B/C ✅ (
   execute a canary run until Tier 0 lands (adapter-manager's wire + `execute` gate are IN; the teardown +
   redaction, the real provider, and deploy remain).
 - **Lane B, parallel** — S7/S8 features (`C:\e8`); they share C5's routing seam (build it once).
+  ★ **No feature code since 2026-08-24** — scheduling it as a running track is a plan, not a fact. §1.9.2.
 
 Full analysis: `qa/2026-08-28-worker-dispatch-chain-reconciled.md` (the chain) ·
 `qa/2026-08-28-adapter-manager-scope.md` §8 (the settled provider contract) ·
@@ -384,6 +391,11 @@ diffs the whole 100-commit PR, not the push, so even a docs-only push runs the f
 
 ### 1.9.2 The programme is running as ONE lane. Lane B is dormant.
 
+★ **UPDATE 2026-09-03:** Track D's revival has STARTED — `919fcd3c4` (PR #343) landed BRW-004 terrain
++ design and filed E8-F001/E8-F002, both `owned` by BRW-004. It is **docs only: no feature code, no
+result doc.** So the sentence below remains true of the FEATURES and of the `C:\e8` checkout; it is no
+longer true that nothing is moving. The revival did not go through `C:\e8`.
+
 `C:\e8` is on `lane-b` at `30861d0be` (2026-08-24) — **275 commits behind, 0 ahead, ~10 days idle.**
 The last E8/E9 landing on the integration branch was `5fbd3b3fb` (2026-08-24). **Every mention of
 Lane B as an active parallel track in this GO-BOOK (§ lines 251, 284, 321, 671, 1125) is a PLAN, not
@@ -411,16 +423,113 @@ the open findings.
 which is four unbuilt links. A green E7-1 proves the MECHANISM, not capability — the verifier
 computes and prints both since Unit A, and `--require-capability` is the flag the campaign flips at F.
 
-### 1.9.4 Stale passages in THIS document, named
+### 1.9.4 Stale passages in THIS document, named — ✅ ALL FOUR CORRECTED 2026-09-03 (Track C)
 
-| where | what is wrong |
-|---|---|
-| `:312` Tier-0 backlog cell | three errors in one cell: E7-F003 marked **UNOWNED** (it is `owned`/CLI-008 in both findings.md and `finding-ownership.json`); **E-2 OPEN** (= E10-F002, resolved by MIG-010 Unit 2.3, `597e77715`); **E-3 OPEN** (= E7-F004, resolved by MIG-010 Units 2.4a+2.4b) |
-| `:59-60`, `:65-67` | "E7 CLI-001..007 code-complete" and "E7-1 blocked only on the staging fleet" are true of tickets 001–007 but read as an epic verdict they are wrong: **CLI-008 is a filed E7 ticket (size L) whose Units C/D/E/F are unbuilt**, and the E7-1 clause names a DEP-011 daemon-consumer precondition too |
-| `:251, :284, :321, :671, :1125` | Lane B scheduled as active — see 1.9.2 |
-| `:326` | WRK-013 row says "unblocks E5-3". It unlocks **E4-3**, not E5-3: E5-3's declared symbol is `createPatchApplyService`, a server-side DAT-003 service WRK-013 never touches. A substitution, not an addition. `gate-clause-wiring.json:61`'s own reason makes the same substantive error and is the likelier origin |
+**Every row below is now FIXED in place.** The table is kept as the record of what was wrong and
+where, because the corrections are edits to living prose and nothing else would show that the claims
+were once made. Do not re-introduce them.
 
-### 1.9.5 Three LIVE register defects — Track C's first work
+| where (by SECTION — see the note) | what was wrong | fixed |
+|---|---|---|
+| §1 Tier-0 backlog cell ("★ Critical path — Tier 0") | three errors in one cell: E7-F003 marked **UNOWNED** (it is `owned`/CLI-008 in both findings.md and `finding-ownership.json`); **E-2 OPEN** (= E10-F002, resolved by MIG-010 Unit 2.3, `597e77715`); **E-3 OPEN** (= E7-F004, resolved by MIG-010 Units 2.4a+2.4b) | ✅ all three |
+| §1 "✅ DONE" and "🟡 OWED" bullets | "E7 CLI-001..007 code-complete" and "E7-1 blocked only on the staging fleet" are true of tickets 001–007 but read as an epic verdict they are wrong: **CLI-008 is a filed E7 ticket (size L) whose Units C/D/E/F are unbuilt**, and the E7-1 clause names a DEP-011 daemon-consumer precondition too | ✅ both bullets now say so inline |
+| the five Lane B scheduling sites (§1 numbered list, the mermaid `LB` node, the Tier-0 "Parallel — Lane B" row, the §1 track summary, the §3 sprint prose) | Lane B scheduled as active — see §1.9.2 | ✅ each now carries an inline **DORMANT** marker pointing at §1.9.2 |
+| the WRK-013 deferred-daemon-stub row | says "unblocks E5-3". It unlocks **E4-3**, not E5-3: E5-3's declared symbol is `createPatchApplyService`, a server-side DAT-003 service WRK-013 never touches. A substitution, not an addition. `gate-clause-wiring.json`'s own reason for `E5-3-patch-quarantine` makes the same substantive error and is the likelier origin | ✅ row corrected to **E4-3**, **and the origin reason in `gate-clause-wiring.json` corrected too** — fixing only the copy would let the origin re-seed it |
+
+★ **This table used to cite LINE NUMBERS, and two of them had already drifted** by the time Track C
+came to fix them: `:671` was blank and `:1125` pointed at an unrelated milestone sentence. That is
+this document's own rule in §9 — *cite living documents by section/id, never by line* — being broken
+by the section that exists to correct drift. Rewritten to cite sections.
+
+★★ The **three register defects** §1.9.5 named are also fixed — see the note there.
+
+### 1.9.5 FOUR LIVE register defects — ✅ ALL FOUR FIXED (2026-09-03)
+
+> **Track C landed the repair, and all four are closed.** A **uniqueness check now exists** for all
+> three id spaces (`node scripts/check-register-id-uniqueness.mjs`, wired into the `policy` job) so
+> none of them can recur silently, and the ownership guard now fails closed on an unreadable status
+> or severity rather than going quiet. The defects are kept below as the record of what was wrong.
+>
+> ★★★ **And the uniqueness guard itself shipped with the same defect it was written to prevent** —
+> caught by external review (Codex), not by this track. It read only `## Decision #N` headings:
+> **35 of the 153 decision ids in `decisions.md`**. The other 118 are 91 `| N | … |` TABLE ROWS
+> (decisions #1-91) and 27 `### DA-N:` headings, so a duplicate table-row decision or a duplicate
+> `### DA-3:` shipped GREEN — verified by positive control. **The gap was invisible precisely
+> BECAUSE the guard worked on the case it was built for** (`#104` is one of the 35). Fixed: coverage
+> is now 152 of 153 ids, the 153rd being `## Decision #14 (revised …)`, which is correctly
+> classified as a REVISION of table row 14 rather than counted as a duplicate — and a revision that
+> revises nothing is itself an error, so that exclusion is not an escape hatch. An anti-recurrence
+> test asserts against the real document that every id-shaped line is claimed by an extractor, so a
+> FOURTH shape fails loudly instead of going unscanned.
+>
+> ★ **The lesson worth carrying:** a guard passing on the case that motivated it is the weakest
+> possible evidence that it is enforcing anything. Ask what it does NOT read, and count.
+>
+> ★★★ **And that lesson immediately caught three more, in the fixes themselves** — again by
+> external review, not by this track. Each fix had closed the case that motivated it and left the
+> adjacent case open: `(revised)` was matched as "id, anything, the word revised", so a duplicate
+> titled *"different decision (revised wording)"* was skipped — **and the `revision_without_original`
+> check built for exactly that attack validated the wrong property**, that an original existed rather
+> than that this heading revised it; the fail-closed status arm caught only an ABSENT status, so the
+> typo `**Status:** opne` still exited 0, recreating the blind spot inside the fix; and a waiver bound
+> to an occurrence COUNT caught add and remove but not REPLACEMENT. All three are fixed with two
+> independent gates on revisions, an exact-`open` status vocabulary with families for the 15 real
+> resolution wordings, and waivers bound to occurrence IDENTITIES.
+>
+> ★★ **The most useful thing that happened:** one anti-regression mutation STAYED GREEN — narrowing
+> the status arm back left every test passing, which proved the fix had shipped with no test at all.
+> A mutation that refuses to go red is not a nuisance; it is the only reason that gap was visible.
+>
+> ★★★ **The id-range heading is now REFUSED, and it is worth knowing why.** `## E3-F028–E3-F033 —
+> RESOLVED (…)` — a heading naming six findings and addressable as none of them — produced **three
+> distinct failures in one day**: a false-positive duplicate in the new uniqueness check; the same
+> false positive independently hit by another track (its EN dash escapes `parseFindings`'s `[—-]`
+> class, so the two extractors disagreed); and, worst, **six stale per-finding `Status:` lines,
+> including a P0 STOP, masked by a roll-up no parser can associate with its members** — the register
+> contradicted itself and the ownership guard read the losing side, excluding them and being **right
+> by luck**. Teaching the parser to expand the range was rejected: it would create a second source of
+> truth for a status, and when the two disagree — which is exactly what happened — the precedence
+> rule needed to resolve it is itself the hazard. What is refused is the heading SHAPE, not the
+> roll-up: the prose is preserved verbatim under a non-id heading, and each member now carries its
+> own amended status and resolving revision.
+>
+> ★ **And a tooling trap:** that refusal's regex was first authored through a shell heredoc that ate
+> its backslashes, leaving a literal BACKSPACE in the character class — a guard that could never
+> match anything. It was caught only by running the pattern against the REAL register and finding 0
+> headings where 1 was known to exist. **A guard authored through a lossy channel needs a positive
+> control on real data, not a self-test on the synthetic strings it was written beside.**
+>
+> - **1 — `Decision #104` twice: ✅ FIXED (renumbered on operator approval).** `:854` (*Optimistic
+>   concurrency for agent updates*, 2026-06-25) is now **Decision #125**; `:913`
+>   (*Keyless-except-embeddings*) is the sole `#104`. ★ **The OLDER decision took the HIGHER number,
+>   deliberately** — it is the only direction that avoids editing frozen evidence. Measured citation
+>   split: all FOUR CLAUDE.md citations and every FROZEN replatform record that cites #104 mean
+>   `:913` (`e7-1-evidence-verifier-result.md` alone cites it three times), and none of them had to
+>   change; the `:854` sense had 12 citations, **all live source or tests**, all updated in the same
+>   commit. The reason is written into the #125 block itself so a future reader does not "fix" the
+>   ordering back. The `register-id-duplicates.json` waiver is deleted — and proved itself on the way
+>   out, refusing with `stale_waiver` until it was removed.
+> - **2 — `E1-F008` twice: ✅ FIXED.** The later-filed one (2026-08-24) is renumbered **E1-F009**;
+>   both blocks carry an alias note saying which existing citations mean which finding, so no frozen
+>   QA/handoff/result record had to be rewritten.
+> - **4 — the HIGH-may-never-be-accepted rule could not fire: ✅ FIXED.** A fourth defect, found
+>   during defect 3's positive control and independently measured by the orchestrator. The severity
+>   regex could not read `**Severity:** HIGH` — the BOLDED house style every register writes — so
+>   **82 of 108 findings parsed as UNKNOWN**, `String(undefined).toUpperCase()` was never in
+>   `NOT_ACCEPTABLE`, and the rule the guard's own comment says exists "to make [waving away a HIGH]
+>   impossible to do quietly" was dead for all of them. ★ **A DEAD LEVER, NOT A BREACH** — all eight
+>   `accepted` declarations parse LOW/MINOR against their register text; nobody waved away a HIGH.
+>   Fixed on the same axis as defect 3 (read what is written, refuse what cannot be read): the regex
+>   reads all three forms, a `SEVERITY_VOCABULARY` names the nine real spellings and which BLOCK, an
+>   open finding whose severity is unreadable or off-vocabulary now FAILS, and `NOT_ACCEPTABLE` is
+>   DERIVED from that table — the hand-written `["HIGH","CRITICAL"]` had silently omitted the entire
+>   P-scale, i.e. 30 of 108 findings.
+> - **3 — the ownership guard was blind to E0/E1/E2: ✅ FIXED.** The parser now reads all three
+>   real-world `Status:` shapes and folds case, an unreadable status FAILS CLOSED
+>   (`unparseable_status`) instead of being silently treated as "not open", the `**Severity:**` regex
+>   is fixed (it had matched **nothing** in 82 of 108 findings, so `severity_not_acceptable` was dead),
+>   and all 25 findings that carried no status field now carry one. **This surfaced 5 previously
+>   invisible open findings (17 → 22), all declared.**
 
 1. **Two different locked decisions are both "Decision #104"** (`docs/architecture/decisions.md:854`
    and `:913`, one day apart). `CLAUDE.md` cites #104 as load-bearing in **four** places. No
@@ -445,16 +554,32 @@ not true. It supersedes the parallel-lane framing in `HANDOFF-wave-4.md` and
 
 ### 1.9.6 Open findings — RUN THE CHECKER; the number below is a timestamp, not a fact
 
-`node scripts/check-finding-ownership.mjs` → OK. **18 open across 10 registers** at
-`a83886308` + CLI-008 Unit D. **Unowned on the record:** E10-F001, E11-F001, E3-F034, E4-F014.
-★ That count EXCLUDES E0/E1/E2 entirely for the reason in 1.9.5, so it is a **floor, not a total.**
+`node scripts/check-finding-ownership.mjs` → OK. **Unowned at `b9ab89e36` + this branch:**
+E0-F003, E10-F001, E11-F001, E3-F034, E4-F014, E7-F012 — six, pinned to a sha because this list
+goes stale exactly as fast as the count does. The checker prints it on every green run; that
+output is the authority, not this line.
 
-★★ **THE COUNT MOVED FOUR TIMES IN NINETY MINUTES ON 2026-09-03, AND TWICE IT LANDED BACK ON THE
-SAME NUMBER.** It was 17/9 registers; CLI-008 Unit D closed **E7-F008 and E7-F009** (→ 15); BRW-004's
-terrain doc `919fcd3c4` filed **E8-F001 and E8-F002** in a tenth register (→ 17 — the same number, a
-different set); JOB-015's `a83886308` filed another (→ 18). With four tracks running, this line is
-stale roughly as often as it is written. **Cite the register and the sha, or re-run the checker —
-never quote this number back at someone.**
+★★ **THE COUNT MOVED FIVE TIMES IN A DAY ON 2026-09-03, AND TWICE IT LANDED BACK ON THE SAME
+NUMBER.** It was 17/9 registers; the register-repair track made E0/E1/E2 readable at all (→ 22);
+BRW-004's `919fcd3c4` filed **E8-F001/E8-F002** in a tenth register; JOB-015's `a83886308` filed
+**E3-F035**; CLI-008 Unit D's `b9ab89e36` closed **E7-F008 and E7-F009** and filed **E7-F012**. With
+four tracks running, this line is stale roughly as often as it is written. **Cite the register and
+the sha, or re-run the checker — never quote this number back at someone.**
+
+★ **It is now a TOTAL, not a floor.** Earlier text here said the count "EXCLUDES E0/E1/E2 … so it is
+a floor, not a total" — true when written, and no longer: those three registers were invisible only
+because the guard could not read their `Status:` shapes (§1.9.5 defect 3). With that fixed it reads
+every finding in all ten registers, so whatever the checker prints is the whole number.
+
+★★ Making them readable surfaced two severity **HIGH** findings — E2-F014 and E2-F015 — whose last
+recorded word was "awaiting distinct re-review; not resolved/pass". They **are** resolved (the a5
+completion handoff records `Decision: pass` by a distinct gate owner on exactly the candidate
+revision they name; the register was simply never updated). Had that review not passed, two open
+HIGH findings would have sat in a `complete` epic with nothing able to see them. The other newly
+visible ones are MINOR/LOW and all declared, including **E0-F003 `unowned`** — its item 1, a
+same-sentence negation smuggle in `check-distributed-execution-foundation.mjs`, is measured still
+live, and both tickets its own disposition named as the remediation window (FND-003, FND-007)
+shipped without doing it.
 
 
 ### 1.9.8 The D1 merge-train lane was RED for three merges, and nothing was waiting on it
@@ -792,7 +917,7 @@ FAIL-CLOSED composition-root bin + the subpath-aware boundary guard + devDep→d
 E7-1 cloud campaign is **DEP-011 Slice 1 ✅ (mint) + Slice 2a ✅ (worker factory + honest cleanup) → the
 reaper Slice A ✅ + Slice 2b ✅ + reaper B/C ✅ (MERGED `635aa4454`) (worker→provider CODE PATH COMPLETE) → DEP-012 Slice 4+5 ✅ MERGED `07ed2cc42` (PR #330, CI-green; the AM image + CP mint keypair + AM↔CP bearer + credential leak-proofing + the C0 keypair smoke tool) → **Unit 1 ✅ MERGED `b6e02a478`** (Blocker A+B, H1, H3) → **Unit 1.5 ✅ MERGED `42c124258`** (the Step-0 blocker: the rollout hook never reached the executing instance — found by PROBING, §9e) — the mechanism up to the decision seam is proven — but see BLOCKER E (§9e.2), which holds the decision itself shut — Units 1.6+1.7 ✅ MERGED `c7ead3a73` (PR #333) fixed E-1 only; E-2/E-3 remain OPEN (§9e.2.2); capability is Unit 2, filed E7-F003 → the operator C0 (generate the ed25519 keypair, `pnpm verify:cp-am-keypair` on the mounted files, build+push the images, `docker compose up`, then the four campaign preconditions; real client-cert mTLS is a FILED hard production gate)** — THEN the operator staging-fleet deploy +
 campaign (which promotes E7-1 and is the prerequisite for the bridge-wiring → crew cutover → the other
-sinks). Lane B (S7/S8) runs in parallel.
+sinks). Lane B (S7/S8) is scheduled to run in parallel, but its features are UNBUILT — see §1.9.2.
 
 ### Sprint 1 — WRK-010: a worker stays logged in
 **Epic E4 · ★ SHIPPED `c1c5530f5` · design + result: `epics/E4-worker-daemon/tickets/WRK-010-{design,result}.md`**
