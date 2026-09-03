@@ -20,6 +20,9 @@ import {
   FINDING_HEADING,
   DECISION_HEADING,
   EPIC_DECISION_HEADING,
+  DECISION_TABLE_ROW,
+  DA_HEADING,
+  DECISION_REVISION,
 } from "./lib/register-id-uniqueness.mjs";
 
 const EPICS_RELATIVE_PATH = "docs/replatform/epics";
@@ -35,11 +38,20 @@ export function loadWaivers(root) {
   return parsed && typeof parsed === "object" && parsed.duplicates ? parsed.duplicates : {};
 }
 
-/** Every register this guard reads, as {file, kind, pattern}. */
+/** Every register this guard reads, as {file, kind, pattern}.
+ *
+ * ★ `decisions.md` contributes THREE sources, not one. Its decisions are written in three
+ * shapes — 91 as `| N | … |` table rows, 27 as `### DA-N:` headings, 35 as `## Decision #N`
+ * headings — and the first version of this guard read only the last, i.e. 35 of 153 ids.
+ * The table rows and the `## Decision #N` headings share the SAME `decision` namespace
+ * (they are one continuous numbering: rows are 1-91, headings run 14 and 92-125), so a
+ * heading colliding with its own table entry is caught. `DA-N` is a separate namespace. */
 export function findSourceFiles(root) {
   const out = [];
   if (existsSync(path.join(root, DECISIONS_RELATIVE_PATH))) {
-    out.push({ file: DECISIONS_RELATIVE_PATH, kind: "decision", pattern: DECISION_HEADING });
+    out.push({ file: DECISIONS_RELATIVE_PATH, kind: "decision", pattern: DECISION_HEADING, skip: DECISION_REVISION });
+    out.push({ file: DECISIONS_RELATIVE_PATH, kind: "decision", pattern: DECISION_TABLE_ROW });
+    out.push({ file: DECISIONS_RELATIVE_PATH, kind: "da-decision", pattern: DA_HEADING });
   }
   const epics = path.join(root, EPICS_RELATIVE_PATH);
   if (!existsSync(epics)) return out;
@@ -62,16 +74,29 @@ export function findSourceFiles(root) {
 }
 
 export function collectSources(root) {
-  return findSourceFiles(root).map(({ file, kind, pattern }) => ({
+  return findSourceFiles(root).map(({ file, kind, pattern, skip }) => ({
     file,
     kind,
-    ids: extractHeadingIds(readFileSync(path.join(root, file), "utf8"), pattern),
+    ids: extractHeadingIds(readFileSync(path.join(root, file), "utf8"), pattern, { skip }),
+  }));
+}
+
+/** `## Decision #14 (revised …)` restates an existing decision rather than defining a new
+ * one, so it is excluded from the uniqueness count — and then checked here, because an
+ * exclusion nobody validates is a hole. */
+export function collectRevisions(root) {
+  const file = DECISIONS_RELATIVE_PATH;
+  if (!existsSync(path.join(root, file))) return [];
+  return extractHeadingIds(readFileSync(path.join(root, file), "utf8"), DECISION_REVISION).map((r) => ({
+    ...r,
+    file,
+    kind: "decision",
   }));
 }
 
 const ROOT = process.cwd();
 const sources = collectSources(ROOT);
-const result = evaluateIdUniqueness({ sources, waived: loadWaivers(ROOT) });
+const result = evaluateIdUniqueness({ sources, revisions: collectRevisions(ROOT), waived: loadWaivers(ROOT) });
 
 if (!result.ok) {
   console.error("register-id-uniqueness: an id names more than one thing.\n");

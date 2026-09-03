@@ -101,12 +101,36 @@ export function evaluateIdUniqueness(input) {
       // A waiver must carry a REASON. An empty one is an allow-list entry wearing a
       // declaration's clothes, and this repo has already learned that a false claim of
       // enforcement is worse than a missing check.
-      if (typeof waiver === "object" && waiver !== null && typeof waiver.reason === "string" && waiver.reason.trim()) {
+      //
+      // ★★ AND IT MUST BIND TO AN OCCURRENCE COUNT. Keying a waiver on the id ALONE turns
+      // the waived id into a permanent blind spot, which defeats the default-deny goal: a
+      // THIRD unrelated `## Decision #104` would have been silently absorbed by the waiver
+      // for the first two. `occurrences` is the cheapest binding that closes it — the
+      // declarer states how many definitions they looked at, and the moment that number
+      // changes the waiver stops applying and the duplicate is reported in full.
+      if (typeof waiver === "object" && waiver !== null) {
+        const hasReason = typeof waiver.reason === "string" && waiver.reason.trim();
+        if (!hasReason) {
+          problems.push({ kind: "malformed_waiver", id, detail: `${key}: a waiver must carry a non-empty reason` });
+          continue;
+        }
+        if (!Number.isInteger(waiver.occurrences) || waiver.occurrences < 2) {
+          problems.push({
+            kind: "malformed_waiver",
+            id,
+            detail: `${key}: a waiver must declare \`occurrences\` (an integer >= 2) so a NEW occurrence cannot hide behind it`,
+          });
+          continue;
+        }
+        if (waiver.occurrences !== places.length) {
+          problems.push({
+            kind: "waiver_count_mismatch",
+            id,
+            detail: `${key}: waiver declares ${waiver.occurrences} occurrence(s), found ${places.length} — ${places.map((p) => `${p.file}:${p.line}`).join(", ")}`,
+          });
+          continue;
+        }
         waivedSeen.push(key);
-        continue;
-      }
-      if (waiver !== undefined) {
-        problems.push({ kind: "malformed_waiver", id, detail: `${key}: a waiver must carry a non-empty reason` });
         continue;
       }
       // Report EVERY location, not just the count. A duplicate id is only actionable once
@@ -117,6 +141,27 @@ export function evaluateIdUniqueness(input) {
         kind: "duplicate_id",
         id,
         detail: `${kind}: ${places.map((p) => `${p.file}:${p.line}`).join(" and ")}`,
+      });
+    }
+  }
+
+  // ★ A REVISION MUST REVISE SOMETHING. Revisions are excluded from the uniqueness count
+  // above (a revision names the same decision by design), so without this arm "(revised)"
+  // would be an escape hatch: `## Decision #999 (revised …)` would be silently ignored and
+  // a genuine duplicate could hide behind the word. Requiring an existing definition makes
+  // the exclusion safe rather than merely convenient.
+  const revisions = Array.isArray(input.revisions) ? input.revisions : [];
+  for (const revision of [...revisions].sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
+    if (typeof revision !== "object" || revision === null || typeof revision.id !== "string") {
+      problems.push({ kind: "malformed_input", id: null });
+      continue;
+    }
+    const defined = byKind.get(revision.kind)?.has(revision.id);
+    if (!defined) {
+      problems.push({
+        kind: "revision_without_original",
+        id: revision.id,
+        detail: `${revision.kind}: ${revision.file}:${revision.line} is marked "(revised)" but no original definition of ${revision.id} exists`,
       });
     }
   }
@@ -158,6 +203,48 @@ export const DECISION_HEADING = /^#{2,4}\s+Decision\s+#(\d+)(?=\s|$)/;
 /** `### E2-D01 — title` in an epic-scoped decisions register. */
 export const EPIC_DECISION_HEADING = /^#{2,4}\s+([A-Z][A-Z0-9]*-D\d+)(?=\s|$)/;
 
+// ★★★ THE 77% THAT WAS NOT BEING SCANNED — the guard's own failure class, inside the guard
+// written to prevent that class recurring.
+//
+// `docs/architecture/decisions.md` defines its decisions in THREE shapes, not one. The first
+// version of this guard read only `## Decision #N` headings, which is 35 of 153 ids. Measured:
+//
+//     | N | … |  table rows (decisions #1-91)   91   NOT SCANNED
+//     ### DA-N:  headings (the DA series)       27   NOT SCANNED
+//     ## Decision #N headings                   35   scanned
+//
+// So a duplicate table-row decision, or a duplicate `### DA-3:`, shipped GREEN — verified by
+// positive control before this fix. The gap was invisible precisely BECAUSE the guard worked
+// on the case it was built for: `#104`, the duplicate that motivated it, is one of the 35.
+// A FALSE CLAIM OF ENFORCEMENT IS WORSE THAN A MISSING CHECK, one register over again.
+//
+// Found by an external review (Codex) of `dae86d157e`; reproduced and fixed here.
+
+/** `| 91 | Decision text | Rationale |` — decisions #1-91 live as table rows, not headings.
+ * Verified safe to scan: the 91 rows are EXACTLY 1..91, contiguous, no gaps and no duplicates,
+ * which also proves no unrelated numeric table injects false ids (one would have collided). */
+export const DECISION_TABLE_ROW = /^\|\s*(\d+)\s*\|/;
+
+/** `### DA-1: Product Positioning` — the Discussions/internal-agent decision series. Its own
+ * namespace: `DA-1` and decision `1` are unrelated things that merely share a digit. */
+export const DA_HEADING = /^#{2,4}\s+(DA-\d+):/;
+
+/**
+ * `## Decision #14 (revised 2026-04-21)` — a REVISION, not a second definition.
+ *
+ * ★ This is why the table rows and the `## Decision #N` headings share ONE namespace but
+ * still pass: id 14 exists as BOTH a table row (the original) and a heading (its revision,
+ * whose body says "Status: Revised. Original locked version superseded."). A revision names
+ * the SAME decision — that is what a revision IS — so counting it as a duplicate would be a
+ * false positive on a legitimate, documented pattern, and a guard that cries wolf gets
+ * switched off. (The same lesson the `E3-F028–E3-F033` range roll-up taught this guard.)
+ *
+ * It is NOT a free pass: a revision is required to revise something that exists, or it is
+ * `revision_without_original`. Otherwise "(revised)" becomes the escape hatch that smuggles
+ * a genuine duplicate past the check.
+ */
+export const DECISION_REVISION = /^#{2,4}\s+Decision\s+#(\d+)\b[^\n]*\(revised\b/i;
+
 /**
  * Extract the ids DEFINED by headings in one document.
  *
@@ -165,11 +252,17 @@ export const EPIC_DECISION_HEADING = /^#{2,4}\s+([A-Z][A-Z0-9]*-D\d+)(?=\s|$)/;
  * definition, and counting citations would make every well-cross-referenced document a
  * failure — the noisy-guard failure mode that gets guards switched off.
  */
-export function extractHeadingIds(text, pattern) {
+export function extractHeadingIds(text, pattern, opts = {}) {
   if (typeof text !== "string") return [];
+  // `skip` lets a caller exclude a line the pattern would otherwise claim as a definition —
+  // used for `## Decision #14 (revised …)`, which RESTATES an existing decision rather than
+  // defining a new one. Those lines are collected separately and validated, so the exclusion
+  // is checked rather than merely granted.
+  const skip = opts && opts.skip instanceof RegExp ? opts.skip : null;
   const out = [];
   const lines = text.split(/\r?\n/);
   for (let i = 0; i < lines.length; i += 1) {
+    if (skip && skip.test(lines[i])) continue;
     const match = pattern.exec(lines[i]);
     if (match) out.push({ id: match[1], line: i + 1 });
   }

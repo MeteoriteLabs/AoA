@@ -20,6 +20,9 @@ import {
   FINDING_HEADING,
   DECISION_HEADING,
   EPIC_DECISION_HEADING,
+  DECISION_TABLE_ROW,
+  DA_HEADING,
+  DECISION_REVISION,
 } from "../register-id-uniqueness.mjs";
 import { parseFindings } from "../finding-ownership.mjs";
 
@@ -86,10 +89,17 @@ test("kinds are separate namespaces — a finding and a decision may share a num
 // The waiver: default-deny, with a written declaration.
 
 test("★ a DECLARED duplicate passes and is reported, so it cannot be forgotten", () => {
+  // ★ UPDATED: this test used to pass a waiver carrying only a `reason`, which pinned the
+  // WEAKER contract an external review then found (the P2): keyed on the id alone, a waiver
+  // turned that id into a permanent blind spot, so a THIRD occurrence hid behind it. A
+  // waiver now has to declare `occurrences` and have it match exactly.
   const sources = [
     { file: "decisions.md", kind: "decision", ids: [{ id: "104", line: 854 }, { id: "104", line: 913 }] },
   ];
-  const r = evaluateIdUniqueness({ sources, waived: { "decision:104": { reason: "awaiting an operator decision" } } });
+  const r = evaluateIdUniqueness({
+    sources,
+    waived: { "decision:104": { reason: "awaiting an operator decision", occurrences: 2 } },
+  });
   assert.equal(r.ok, true);
   assert.deepEqual(r.waived, ["decision:104"]);
 });
@@ -176,4 +186,145 @@ test("★★ this guard and the ownership guard must agree on what a finding IS"
       `${entry.name}: the uniqueness extractor and parseFindings disagree about which headings are findings`,
     );
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★★★ THE 77% GAP — the guard's own failure class, inside the guard built to stop it.
+//
+// The first version read only `## Decision #N` headings: 35 of the 153 decision ids in
+// `docs/architecture/decisions.md`. The other 118 are 91 `| N | … |` TABLE ROWS (decisions
+// #1-91) and 27 `### DA-N:` headings. Verified by positive control before the fix: a
+// synthetic duplicate table row and a synthetic duplicate `### DA-3:` BOTH shipped green.
+//
+// The gap was invisible precisely BECAUSE the guard worked on the case it was built for --
+// `#104` is one of the 35. Found by external review (Codex) of `dae86d157e`.
+
+test("★★★ a duplicate TABLE-ROW decision FAILS — 91 of 153 ids were unscanned", () => {
+  const ids = extractHeadingIds("| 6 | six | r |\n| 7 | seven | r |\n| 7 | SYNTHETIC dup | r |\n", DECISION_TABLE_ROW);
+  assert.deepEqual(ids.map((x) => x.id), ["6", "7", "7"]);
+  const r = evaluateIdUniqueness({ sources: [{ file: "decisions.md", kind: "decision", ids }] });
+  assert.equal(r.ok, false);
+  assert.deepEqual(kinds(r), ["duplicate_id"]);
+  assert.equal(r.problems[0].id, "7");
+});
+
+test("★★★ a duplicate DA-N heading FAILS — the other 27 unscanned ids", () => {
+  const ids = extractHeadingIds("### DA-3: Discussions Replace Debrief\n### DA-3: SYNTHETIC dup\n", DA_HEADING);
+  assert.deepEqual(ids.map((x) => x.id), ["DA-3", "DA-3"]);
+  const r = evaluateIdUniqueness({ sources: [{ file: "decisions.md", kind: "da-decision", ids }] });
+  assert.equal(r.ok, false);
+  assert.deepEqual(kinds(r), ["duplicate_id"]);
+});
+
+test("★★ a heading colliding with its own TABLE entry FAILS — they are ONE namespace", () => {
+  // `## Decision #80` and table row `| 80 |` are the same numbering continued in a different
+  // shape, so they must share a namespace. Putting table rows in their own kind would have
+  // closed the COUNT while leaving this collision — the shape the reviewer named — wide open.
+  const r = evaluateIdUniqueness({
+    sources: [
+      { file: "decisions.md", kind: "decision", ids: [{ id: "80", line: 198 }] },
+      { file: "decisions.md", kind: "decision", ids: [{ id: "80", line: 2191 }] },
+    ],
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(kinds(r), ["duplicate_id"]);
+});
+
+test("★ DA-1 and decision 1 do NOT collide — separate namespaces", () => {
+  const r = evaluateIdUniqueness({
+    sources: [
+      { file: "decisions.md", kind: "decision", ids: [{ id: "1", line: 17 }] },
+      { file: "decisions.md", kind: "da-decision", ids: [{ id: "DA-1", line: 233 }] },
+    ],
+  });
+  assert.equal(r.ok, true);
+});
+
+test("★★ a (revised …) heading is NOT a duplicate — the real id-14 pattern", () => {
+  // `## Decision #14 (revised 2026-04-21)` restates table row 14 ("Status: Revised. Original
+  // locked version superseded."). A revision names the SAME decision — that is what a
+  // revision IS — so counting it would be a false positive on a documented pattern, and a
+  // guard that cries wolf gets switched off.
+  const text = "| 14 | MCP inbound may create tasks | r |\n## Decision #14 (revised 2026-04-21)\n";
+  const defs = extractHeadingIds(text, DECISION_HEADING, { skip: DECISION_REVISION });
+  assert.deepEqual(defs, [], "the revision heading must not be read as a definition");
+  const rows = extractHeadingIds(text, DECISION_TABLE_ROW);
+  const revs = extractHeadingIds(text, DECISION_REVISION).map((x) => ({ ...x, file: "decisions.md", kind: "decision" }));
+  const r = evaluateIdUniqueness({
+    sources: [{ file: "decisions.md", kind: "decision", ids: [...defs, ...rows] }],
+    revisions: revs,
+  });
+  assert.equal(r.ok, true, JSON.stringify(r.problems));
+});
+
+test("★★ (revised) is not an escape hatch — a revision of nothing FAILS", () => {
+  // Without this, "(revised)" would be the way to smuggle a duplicate past the check:
+  // excluded from the count, and validated by nothing.
+  const r = evaluateIdUniqueness({
+    sources: [{ file: "decisions.md", kind: "decision", ids: [{ id: "14", line: 37 }] }],
+    revisions: [{ id: "999", kind: "decision", file: "decisions.md", line: 2191 }],
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(kinds(r), ["revision_without_original"]);
+  assert.equal(r.problems[0].id, "999");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The P2 — a waiver keyed on the id ALONE makes that id a permanent blind spot.
+
+test("★★ a waiver must declare occurrences — a reason alone is not a binding", () => {
+  const sources = [
+    { file: "decisions.md", kind: "decision", ids: [{ id: "104", line: 854 }, { id: "104", line: 913 }] },
+  ];
+  const r = evaluateIdUniqueness({ sources, waived: { "decision:104": { reason: "awaiting a decision" } } });
+  assert.equal(r.ok, false);
+  assert.deepEqual(kinds(r), ["malformed_waiver"]);
+  for (const bad of [0, 1, "2", 2.5, null]) {
+    const q = evaluateIdUniqueness({ sources, waived: { "decision:104": { reason: "r", occurrences: bad } } });
+    assert.equal(q.ok, false, `occurrences=${JSON.stringify(bad)} must be rejected`);
+  }
+});
+
+test("★★★ a THIRD occurrence cannot hide behind a waiver for the first two", () => {
+  // The reviewer's P2: with the waiver keyed on the id alone, adding an unrelated third
+  // `## Decision #104` — or swapping one of the two known ones for different content —
+  // stayed green, so the waived id became a permanent blind spot.
+  const waived = { "decision:104": { reason: "awaiting a decision", occurrences: 2 } };
+  const two = [{ id: "104", line: 854 }, { id: "104", line: 913 }];
+  assert.equal(
+    evaluateIdUniqueness({ sources: [{ file: "d.md", kind: "decision", ids: two }], waived }).ok,
+    true,
+    "the declared two must still pass",
+  );
+  const three = [...two, { id: "104", line: 2191 }];
+  const r = evaluateIdUniqueness({ sources: [{ file: "d.md", kind: "decision", ids: three }], waived });
+  assert.equal(r.ok, false, "a third occurrence must break the waiver");
+  assert.deepEqual(kinds(r), ["waiver_count_mismatch"]);
+  assert.match(r.problems[0].detail, /declares 2 occurrence\(s\), found 3/);
+});
+
+test("★★★ ANTI-RECURRENCE: every decision-id shape in the REAL file is scanned", () => {
+  // The gap this closes was not a bug in a pattern — it was a pattern that DID NOT EXIST.
+  // So the durable guard is a coverage assertion against the real document: every line that
+  // looks like a decision id must be claimed by an extractor, as a definition or a revision.
+  // A FOURTH shape added later fails here instead of going quietly unscanned.
+  const file = path.join(ROOT, "docs/architecture/decisions.md");
+  if (!existsSync(file)) return;
+  const text = readFileSync(file, "utf8");
+  const claimed =
+    extractHeadingIds(text, DECISION_HEADING, { skip: DECISION_REVISION }).length +
+    extractHeadingIds(text, DECISION_TABLE_ROW).length +
+    extractHeadingIds(text, DA_HEADING).length +
+    extractHeadingIds(text, DECISION_REVISION).length;
+  // Counted with expressions that do NOT reuse the exported patterns — a coverage test that
+  // reuses the thing it audits proves nothing.
+  const lines = text.split(/\r?\n/);
+  const looksLikeAnId = lines.filter(
+    (l) => /^\|\s*\d+\s*\|/.test(l) || /^#{2,4}\s+Decision\s+#\d+/.test(l) || /^#{2,4}\s+DA-\d+:/.test(l),
+  ).length;
+  assert.equal(
+    claimed,
+    looksLikeAnId,
+    `the extractors claim ${claimed} decision ids but the document has ${looksLikeAnId} id-shaped lines — a shape is unscanned`,
+  );
 });
