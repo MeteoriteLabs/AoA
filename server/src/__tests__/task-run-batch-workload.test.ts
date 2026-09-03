@@ -287,22 +287,84 @@ describe("the instructions bundle (CLI-008 Unit D)", () => {
     expect(result.ok && result.workload.args[1]).toContain('{ cat "$2"; echo; cat "$1"; } | "$0" exec --json -');
   });
 
-  // ★ The blank line between the bundle and the task is the legacy adapter's own \n\n
-  // separator, moved to the point of use. Without it the agent's standing instructions and its
-  // task run together as one block — and a bundle with no trailing newline would join its last
-  // line to the task's first. Staging the separator INTO the bytes was rejected: the same staged
-  // object also serves claude's `--append-system-prompt-file`, and it should stay byte-identical
-  // to the host file the legacy path reads.
-  it("separates the codex bundle from the prompt with a blank line", () => {
+  // ★★★ THE SEPARATOR, ASSERTED ON WHAT THE CLI RECEIVES — NOT ON THE SCRIPT'S TEXT.
+  //
+  // The legacy codex adapter builds its prefix as `${instructionsContents}\n\n` (verified at
+  // `codex-local/src/server/execute.ts:503-507`), so concatenating the two staged files with
+  // nothing between them is a BEHAVIOUR CHANGE against the shipped path, not a formatting nit.
+  // A bundle whose last heading fuses into the task's first line has not arrived intact, which
+  // is the one thing this unit exists to deliver.
+  //
+  // ★★ AND THE FIXTURE HAS NO TRAILING NEWLINE, ON PURPOSE. A bundle that happens to end in one
+  // passes with or without the separator, so a test written that way proves nothing — the shape
+  // of every dead guard this programme has filed. The case that can only pass WITH the separator
+  // is the one asserted.
+  //
+  // `stdinFromScript` reads the emitted script and computes the bytes the CLI's stdin actually
+  // receives, so the assertion is on the OBSERVABLE result. It throws on a script it does not
+  // recognise, which is the anti-vacuity control: a shape change cannot make this test silently
+  // stop testing anything.
+  function stdinFromScript(script: string, bundle: string, prompt: string): string {
+    if (script.includes('{ cat "$2"; echo; cat "$1"; } | "$0"')) return `${bundle}\n${prompt}`;
+    if (script.includes('cat "$2" "$1" | "$0"')) return `${bundle}${prompt}`;
+    if (script.includes('exec "$0" exec --json - < "$1"')) return prompt;
+    throw new Error(`stdinFromScript does not understand this script: ${script}`);
+  }
+
+  it("★ keeps the codex bundle and the task on separate lines when the bundle has NO trailing newline", () => {
+    const bundle = "# SOUL\n\nYou are the CFO agent."; // deliberately no trailing newline
+    const prompt = "# Task AOA-1";
+    expect(bundle.endsWith("\n")).toBe(false);
+
     const result = buildTaskRunBatchWorkload(
-      input({ adapterType: "codex_local", runtimeCommandSpec: { command: "codex" }, instructions: INSTRUCTIONS }),
+      input({
+        adapterType: "codex_local",
+        runtimeCommandSpec: { command: "codex" },
+        instructions: bundle,
+        currentTaskMarkdown: prompt,
+      }),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.workload.args[1]).toContain("; echo; ");
-    // …and the staged bytes are still exactly the host file's.
+
+    const stdin = stdinFromScript(result.workload.args[1]!, bundle, prompt);
+    // The load-bearing assertion: the bundle's last line and the task's first line are NOT one
+    // line. Removing the separator fuses them into "You are the CFO agent.# Task AOA-1".
+    expect(stdin).not.toContain("agent.# Task");
+    expect(stdin.split("\n")).toContain("You are the CFO agent.");
+    expect(stdin.split("\n")).toContain("# Task AOA-1");
+    // …and the staged bytes are still EXACTLY the host file's — the separator lives at the point
+    // of use, so the same object can also serve claude's `--append-system-prompt-file`.
     const staged = result.stagedFiles.find((file) => file.path === STAGED_INSTRUCTIONS_PATH);
-    expect(new TextDecoder().decode(staged!.bytes)).toBe(INSTRUCTIONS);
+    expect(new TextDecoder().decode(staged!.bytes)).toBe(bundle);
+  });
+
+  it("a bundle that DOES end in a newline gets the legacy blank line, not a single one", () => {
+    // The legacy prefix is `${contents}\n\n`. A bundle already ending in `\n` plus the
+    // separator reproduces exactly that.
+    const bundle = "# SOUL\n\nYou are the CFO agent.\n";
+    const prompt = "# Task AOA-1";
+    const result = buildTaskRunBatchWorkload(
+      input({
+        adapterType: "codex_local",
+        runtimeCommandSpec: { command: "codex" },
+        instructions: bundle,
+        currentTaskMarkdown: prompt,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(stdinFromScript(result.workload.args[1]!, bundle, prompt)).toBe(`${bundle}\n${prompt}`);
+  });
+
+  it("the no-bundle codex shape feeds the prompt alone (no phantom separator)", () => {
+    const prompt = "# Task AOA-1";
+    const result = buildTaskRunBatchWorkload(
+      input({ adapterType: "codex_local", runtimeCommandSpec: { command: "codex" }, currentTaskMarkdown: prompt }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(stdinFromScript(result.workload.args[1]!, "", prompt)).toBe(prompt);
   });
 
   it.each([
