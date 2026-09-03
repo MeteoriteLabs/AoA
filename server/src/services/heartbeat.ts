@@ -164,6 +164,7 @@ import {
   type RunExecutionOwner,
 } from "./run-execution-owner.js";
 import { buildTaskRunBatchWorkload } from "./task-run-batch-workload.js";
+import { resolveTaskRunInstructionsBundle } from "./task-run-instructions-bundle.js";
 import {
   dispatchCancel,
   getDistributedCancellationPort,
@@ -5283,12 +5284,28 @@ export function heartbeatService(
         // Converting without one places a leasable attempt whose only possible
         // outcome is a sandbox running a nonexistent command — while the legacy
         // executor has already been suppressed. Staying legacy is correct.
-        const canaryWorkload = buildTaskRunBatchWorkload({
-          adapterType: agent.adapterType,
-          runtimeCommandSpec,
+        //
+        // ── CLI-008 Unit D — the CONTEXT the workload's argv reads. ─────────
+        // The agent's instructions bundle entry file lives on the HOST; the
+        // sandbox has no host filesystem, so the control plane reads it here and
+        // Unit B's staging channel puts the bytes inside the sandbox, where
+        // `--append-system-prompt-file` (claude) / the stdin prepend (codex) can
+        // reach them. A configured-but-UNREADABLE bundle is a refusal, not an
+        // absence: running a canary agent without its identity produces plausible
+        // work and a clean terminal, which is the one failure nothing downstream
+        // detects. `resolveTaskRunInstructionsBundle` never throws.
+        const canaryInstructions = await resolveTaskRunInstructionsBundle({
           adapterConfig: runScopedConfig,
-          currentTaskMarkdown: context.currentTaskMarkdown,
         });
+        const canaryWorkload = canaryInstructions.ok
+          ? buildTaskRunBatchWorkload({
+              adapterType: agent.adapterType,
+              runtimeCommandSpec,
+              adapterConfig: runScopedConfig,
+              currentTaskMarkdown: context.currentTaskMarkdown,
+              instructions: canaryInstructions.configured ? canaryInstructions.content : null,
+            })
+          : ({ ok: false, reason: "invalid_workload" } as const);
         canaryExecutionOwner = canaryWorkload.ok
           ? await distributedRolloutHook.resolveExecutionOwner({
               source: { kind: "task_run", runId: run.id, issueId, assigneeAgentId: agent.id },
@@ -5297,11 +5314,19 @@ export function heartbeatService(
               idempotencyKey: run.id,
               rolloutState: distributedRolloutState,
               input: canaryWorkload.workload,
+              // ★ The files the argv above READS. Passed from the SAME build result, so a
+              // future edit cannot give the sandbox one and not the other.
+              stagedFiles: canaryWorkload.stagedFiles,
             })
           : {
               owner: "legacy",
               reason: "workload_unavailable",
-              detail: canaryWorkload.reason,
+              // The instructions refusal is reported under its own reason rather than
+              // folded into `invalid_workload`, which would send someone reading this log
+              // to the frozen schema instead of to a file they cannot read.
+              detail: canaryInstructions.ok
+                ? canaryWorkload.reason
+                : `instructions_${canaryInstructions.reason}: ${canaryInstructions.detail}`,
             };
 
         // ★ A NEW REASON ALONE IS INVISIBLE. Before this, `reason`/`detail` was

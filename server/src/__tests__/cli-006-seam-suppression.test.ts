@@ -21,6 +21,8 @@
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 import {
   buildHandoffRunPatch,
@@ -35,6 +37,29 @@ const NOW = new Date("2026-08-19T10:00:00.000Z");
 
 const distributed: RunExecutionOwner = { owner: "distributed", jobId: JOB, attemptId: ATTEMPT };
 
+/**
+ * Every member of `LegacyOwnerReason`, read out of the SOURCE the type is declared in.
+ *
+ * The union is a compile-time construct with no runtime residue, and this test file is never
+ * compiled by CI (see the note in the exhaustiveness test). Reading the declaration is the only
+ * way to make "the record covers the union" a fact a machine re-checks rather than a comment.
+ * The parse is deliberately narrow — it takes the `export type LegacyOwnerReason =` block up to
+ * its terminating semicolon and collects the quoted members — so a malformed match yields a
+ * short list, which the anti-vacuity assertion rejects rather than silently passing.
+ */
+function declaredLegacyOwnerReasons(): string[] {
+  const source = readFileSync(
+    new URL("../services/run-execution-owner.ts", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("export type LegacyOwnerReason =");
+  if (start < 0) throw new Error("LegacyOwnerReason declaration not found");
+  const end = source.indexOf(";", start);
+  if (end < 0) throw new Error("LegacyOwnerReason declaration is unterminated");
+  const block = source.slice(start, end);
+  return [...block.matchAll(/\|\s*"([a-z_]+)"/g)].map((match) => match[1]!);
+}
+
 describe("CLI-006/Task 3 — shouldSuppressLegacyExecution", () => {
   it("suppresses ONLY on a distributed owner", () => {
     expect(shouldSuppressLegacyExecution(distributed)).toBe(true);
@@ -48,16 +73,34 @@ describe("CLI-006/Task 3 — shouldSuppressLegacyExecution", () => {
     // ★ This is a `Record<LegacyOwnerReason, true>` and NOT an `as const` array, deliberately.
     // The array form was value-level: adding a 6th reason (`workload_unavailable`) left this
     // test green while the new reason went entirely unexercised — a reason that suppressed
-    // would have shipped silently. A Record is EXHAUSTIVE at the type level, so a 7th reason
-    // is a compile error here until someone decides what it does.
+    // would have shipped silently. A Record is exhaustive at the TYPE level.
+    //
+    // ★★★ BUT THE TYPE LEVEL IS NOT CHECKED, AND THIS COMMENT USED TO CLAIM IT WAS.
+    // `server/tsconfig.json` has `"exclude": ["src/__tests__"]`, and `pnpm -r typecheck` is
+    // `tsc --noEmit` against exactly that config, so NOTHING in CI ever compiles this file.
+    // Vitest has no `typecheck` project either. The promise that "a 7th reason is a compile
+    // error here" was false the whole time — the [[checks-that-nothing-runs]] family, in the
+    // guard written to prevent the value-level version of the same miss. Measured while adding
+    // the 7th reason (`staging_unavailable`, CLI-008 Unit D), which is exactly the case it
+    // promised to catch and would not have.
+    //
+    // So the exhaustiveness is checked at RUNTIME, against the SOURCE. Parsing the union out
+    // of the module is not elegant; it is the only thing available to a test that is never
+    // compiled, and it is the difference between a guard and a claim.
     const EVERY_LEGACY_REASON: Record<LegacyOwnerReason, true> = {
       rollout_not_canary: true,
       preflight_refused: true,
       convert_failed: true,
       placement_not_leasable: true,
       workload_unavailable: true,
+      staging_unavailable: true,
       transfer_error: true,
     };
+    const declared = declaredLegacyOwnerReasons();
+    // Anti-vacuity: a parse that found nothing would make the comparison below trivially true.
+    expect(declared.length).toBeGreaterThan(5);
+    expect(Object.keys(EVERY_LEGACY_REASON).sort()).toEqual([...declared].sort());
+
     const reasons = Object.keys(EVERY_LEGACY_REASON) as LegacyOwnerReason[];
     expect(reasons.length).toBeGreaterThan(0);
     for (const reason of reasons) {

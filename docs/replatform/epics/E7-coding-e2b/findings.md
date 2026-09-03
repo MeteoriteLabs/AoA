@@ -423,9 +423,36 @@ construction. MIG-010 owns choosing.
 
 ## E7-F008 — A task whose assembled prompt exceeds 8,192 characters cannot run distributed, and the ceiling is per-ARGUMENT
 
-**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-design.md`, no result doc)
+**Status:** FIXED (CLI-008 Unit D) · **Owner:** CLI-008
 **Severity:** MEDIUM
 **Filed:** 2026-09-03, by the Unit B channel sweep, which measured it rather than inferring it.
+**Closed:** 2026-09-03, by CLI-008 Unit D — not by the remedy this finding proposed.
+
+> ### Closed by REMOVING the prompt from argv, not by chunking it
+>
+> The finding's own remedy was chunked argv (`sh -c '<script>' _ c1..c10`, 65,306 characters,
+> 8× today's capacity, no new channel). Unit D did not do that, and the reason is worth
+> recording: Unit D had to stage the instructions bundle anyway — that is its whole job — so
+> once a staging channel is carrying one file it may as well carry the prompt, and then the
+> per-element ceiling does not apply at all rather than applying 8× further out.
+>
+> **What changed.** `workload.command` is now `sh` and `args` is a fixed `-c <script>` plus the
+> adapter's binary and two constant paths. The assembled markdown rides CLI-008 Unit B's
+> staging channel as bytes and the script reads it with a stdin redirect — which is what the
+> legacy adapters have always done (`claude --print -`, `codex exec --json -`). The bound that
+> replaces `FROZEN_MAX_ARG_CHARS` is `MAX_STAGED_FILE_BYTES` (1 MiB, 128×), which is a sanity
+> ceiling on what the control plane pushes into a tenant sandbox rather than a wire limit.
+>
+> ★ **The refusal was MOVED, not deleted.** `prompt_too_large` became
+> `staged_input_too_large` at a much larger bound. Deleting the last size check on content that
+> goes into a sandbox would have been the other half of the same mistake, and a reason nobody
+> can trip is a false claim of enforcement.
+>
+> **Measured, not asserted.** The realistic workload's submission payload went from **790 bytes
+> to 295** (`cli-008-unit-b-byte-source.integration.test.ts` pins both numbers and says why the
+> drop is the change): the payload no longer grows with the task. Prompts at the old cliff + 1,
+> at 8× it, and at 100× it now all build and still parse against the frozen schema. Mutation:
+> re-applying `FROZEN_MAX_ARG_CHARS` to the prompt reds all three.
 
 **What.** `buildTaskRunBatchWorkload` refuses with `prompt_too_large` when the assembled task markdown
 exceeds `FROZEN_MAX_ARG_CHARS = 8192` (`task-run-batch-workload.ts:80, :237-241`), mirroring the
@@ -453,8 +480,34 @@ to dispatch today, and the fix is a different shape from anything in C–F.
 
 ## E7-F009 — The staged-input fit check measures the wrong set, so the front door is closed and the side door is not
 
-**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-design.md`, no result doc)
+**Status:** FIXED (CLI-008 Unit D) · **Owner:** CLI-008
 **Severity:** MEDIUM (latent) · **Filed:** 2026-09-03, surfaced while designing the fix for a Codex P2.
+**Closed:** 2026-09-03, by CLI-008 Unit D — the first unit that stages anything at all, which is
+what made it worth fixing then rather than later.
+
+> ### Fixed as the finding specified: the UNION, at the call site
+>
+> `pointerFitsExtension(existing, files, prefix)` now projects the attempt's POST-CONDITION set
+> — everything `listForJob` will return after this stage — instead of `input.files` alone.
+> `existing` was already resolved two statements above the call, exactly as the finding said.
+> Already-committed PATHS are deduped against, because such a file either replays (adding no
+> row) or throws `conflicting_restage`, so counting it twice would refuse a bundle that fits.
+>
+> **Deduping at the reader stayed rejected**, and there is now a mutation that says so: making
+> the projection count duplicates — the shape a reader-side dedupe would leave behind — reds
+> both lanes.
+>
+> **Two lanes, because one was not enough.** `cli-008-unit-d-fit-union.test.ts` measures the
+> cliff at runtime and asserts the projection; `cli-008-unit-d-fit-union-callsite.test.ts`
+> stubs the tenant transaction and proves `stageJobInputFiles` actually HANDS the check the
+> committed rows — a correct projection called with the wrong argument being the defect itself.
+> The integration lane (`job-input-staging.integration.test.ts`, embedded Postgres) is the
+> third, and is CI-only.
+>
+> ★ **Mutation-proven both ways.** Reverting the argument to `[]` reds both lanes. The
+> dedupe-removal mutant initially SURVIVED — the first draft compared two verdicts that were
+> both `true` — so the fixture is now sized at the cliff, where a double-count is exactly what
+> tips it.
 
 **What.** `pointerFitsExtension` (`job-input-staging.ts:129-145`, called at `:189`) projects
 **`input.files` only** — never the accumulated durable set. But the lease offer is built from **all**

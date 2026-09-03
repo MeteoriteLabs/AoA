@@ -81,6 +81,20 @@ export interface HeartbeatDistributedRolloutHook {
     idempotencyKey: string;
     rolloutState: RunRolloutState;
     input?: Record<string, unknown>;
+    /**
+     * CLI-008 Unit D — the control-plane-authored files this run's argv READS (the prompt and,
+     * when the agent has one, the instructions bundle entry file). Built by
+     * `buildTaskRunBatchWorkload` alongside the workload, so the two cannot name different
+     * paths, and forwarded verbatim to the ownership decision, which stages them between the
+     * convert and the placement.
+     *
+     * ★ THE PASS-THROUGH IS THE WHOLE JOB HERE, AND IT IS EASY TO FORGET. This hook destructures
+     * its input explicitly, so a field that is added to the type and not to BOTH the
+     * destructure and the delegated call is silently dropped — the run is then placed with an
+     * argv that reads files nobody staged. `heartbeat-distributed-rollout.test.ts` asserts the
+     * forwarding rather than the type.
+     */
+    stagedFiles?: readonly { readonly path: string; readonly bytes: Uint8Array; readonly contentType?: string }[];
   }): Promise<RunExecutionOwner>;
   /** Shadow comparison (D2): delegate to the effect-free comparator. Never throws. */
   runShadowComparison(snapshot: LegacyRunExecutionSnapshot): void;
@@ -133,7 +147,7 @@ export function createHeartbeatDistributedRolloutHook(deps: {
       }
     },
 
-    async resolveExecutionOwner({ source, actor, organizationId, idempotencyKey, rolloutState, input }) {
+    async resolveExecutionOwner({ source, actor, organizationId, idempotencyKey, rolloutState, input, stagedFiles }) {
       // An unwired resolver is a legacy deployment. Never guess.
       if (!deps.ownerResolver) {
         return { owner: "legacy", reason: "rollout_not_canary", detail: "owner resolver not composed" };
@@ -147,6 +161,7 @@ export function createHeartbeatDistributedRolloutHook(deps: {
           idempotencyKey,
           jobInput: input,
           rolloutState,
+          stagedFiles,
         });
       } catch (error) {
         // The resolver already fails safe internally; this guards the delegation

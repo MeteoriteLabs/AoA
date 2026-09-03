@@ -17,7 +17,15 @@ import {
   RUN_OP_DEADLINE_CEILING_MS,
 } from "@armyofagents/worker-daemon";
 import {
+  SANDBOX_INVOCATION_COMMAND,
+  STAGED_INSTRUCTIONS_PATH,
+  STAGED_INPUT_MISSING_EXIT_CODE,
+  STAGED_PROMPT_PATH,
+  SANDBOX_INVOCATION_BINARY_ARG_INDEX,
+} from "../services/task-run-sandbox-invocation.js";
+import {
   FROZEN_MAX_ARG_CHARS,
+  MAX_STAGED_FILE_BYTES,
   SUBMISSION_MAX_INPUT_BYTES,
   TASK_RUN_DEFAULT_MAX_RUNTIME_SECONDS,
   buildTaskRunBatchWorkload,
@@ -99,16 +107,77 @@ describe("the disposition gate (derived from the matrix, not a copy of it)", () 
 });
 
 describe("the command", () => {
+  // ★ SINCE UNIT D `workload.command` IS `sh`, AND THE REAL BINARY IS AN ARGV ELEMENT. That is
+  // not a loosening of "never the registry key" — it is where the guarantee moved to, because
+  // a stdin REDIRECTION has to be interpreted by a shell and `shellJoin` quotes every token
+  // (so a bare `<` in the argv would be a literal, never a redirect). The assertions below
+  // follow the binary to its new position rather than being deleted.
   it("uses the adapter's real binary from the runtime command spec", () => {
     const result = buildTaskRunBatchWorkload(input());
-    expect(result.ok && result.workload.command).toBe("claude");
+    expect(result.ok && result.workload.command).toBe(SANDBOX_INVOCATION_COMMAND);
+    expect(result.ok && result.workload.args[SANDBOX_INVOCATION_BINARY_ARG_INDEX]).toBe("claude");
   });
 
   it("honors a founder adapterConfig.command override (already resolved into the spec)", () => {
     const result = buildTaskRunBatchWorkload(
       input({ runtimeCommandSpec: { command: "/opt/bin/claude-pinned" } }),
     );
-    expect(result.ok && result.workload.command).toBe("/opt/bin/claude-pinned");
+    expect(result.ok && result.workload.args[SANDBOX_INVOCATION_BINARY_ARG_INDEX]).toBe(
+      "/opt/bin/claude-pinned",
+    );
+  });
+
+  // ★★★ THE PROPERTY THE `sh -c` SHAPE HAS TO EARN. The script is a fixed literal and the
+  // binary rides as a SEPARATE argv element read back as `$0`, so a founder-supplied command
+  // cannot close a quote and append a second command — structurally, not by sanitizing. If a
+  // future edit ever interpolates the binary into the script string, this goes red.
+  //
+  // ★★ EVERY SCRIPT BRANCH, NOT ONE. There are four (two adapters x with/without an
+  // instructions bundle), and mutation testing proved why that matters: interpolating the
+  // binary into the WITH-instructions claude branch alone left a single-case version of this
+  // test green, because the fixture had no bundle and took the other branch.
+  it.each([
+    ["claude_local", undefined],
+    ["claude_local", "# bundle"],
+    ["codex_local", undefined],
+    ["codex_local", "# bundle"],
+  ])("refuses to interpolate a hostile binary into the %s script (instructions: %s)", (adapterType, instructions) => {
+    const hostile = `claude'; rm -rf / #`;
+    const result = buildTaskRunBatchWorkload(
+      input({ adapterType, runtimeCommandSpec: { command: hostile }, instructions }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const script = result.workload.args[1]!;
+    expect(script).not.toContain("rm -rf");
+    expect(script).not.toContain(hostile);
+    expect(result.workload.args[SANDBOX_INVOCATION_BINARY_ARG_INDEX]).toBe(hostile);
+  });
+
+  // The same property for the CONTENT, which is the larger surface: a prompt full of shell
+  // metacharacters is bytes in a file the script never sees, not text the script embeds.
+  it.each([
+    ["claude_local", "claude", undefined],
+    ["claude_local", "claude", "# bundle $(id)"],
+    ["codex_local", "codex", undefined],
+    ["codex_local", "codex", "# bundle $(id)"],
+  ])("never puts task content into the %s script (instructions: %s)", (adapterType, binary, instructions) => {
+    const nasty = "$(touch /tmp/pwned) `id` '; echo hi; '";
+    const result = buildTaskRunBatchWorkload(
+      input({
+        adapterType,
+        runtimeCommandSpec: { command: binary },
+        currentTaskMarkdown: nasty,
+        instructions,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const joined = result.workload.args.join("\u0000");
+    expect(joined).not.toContain("touch /tmp/pwned");
+    expect(joined).not.toContain("bundle $(id)");
+    const staged = result.stagedFiles.find((file) => file.path === STAGED_PROMPT_PATH);
+    expect(new TextDecoder().decode(staged!.bytes)).toBe(nasty);
   });
 
   // 5 of the 14 registered adapters have no `getRuntimeCommandSpec`, so `runtimeCommandSpec`
@@ -132,15 +201,15 @@ describe("the command", () => {
   });
 });
 
-describe("the per-adapter argv shapes", () => {
-  it("emits the claude shape with the prompt as a positional", () => {
+describe("the per-adapter argv shapes (CLI-008 Unit D)", () => {
+  it("emits the claude shape, reading the prompt from a STAGED FILE on stdin", () => {
     const result = buildTaskRunBatchWorkload(input({ adapterType: "claude_local" }));
+    expect(result.ok && result.workload.command).toBe("sh");
     expect(result.ok && result.workload.args).toEqual([
-      "--print",
-      PROMPT,
-      "--output-format",
-      "stream-json",
-      "--verbose",
+      "-c",
+      expect.stringContaining('exec "$0" --print - --output-format stream-json --verbose < "$1"'),
+      "claude",
+      STAGED_PROMPT_PATH,
     ]);
   });
 
@@ -148,14 +217,46 @@ describe("the per-adapter argv shapes", () => {
     const result = buildTaskRunBatchWorkload(
       input({ adapterType: "codex_local", runtimeCommandSpec: { command: "codex" } }),
     );
-    expect(result.ok && result.workload.args).toEqual(["exec", "--json", PROMPT]);
+    expect(result.ok && result.workload.args).toEqual([
+      "-c",
+      expect.stringContaining('exec "$0" exec --json - < "$1"'),
+      "codex",
+      STAGED_PROMPT_PATH,
+    ]);
+    expect(result.ok && result.workload.args.join(" ")).not.toContain("--append-system-prompt-file");
   });
 
-  it("never emits a stdin placeholder — there is no stdin channel into the sandbox", () => {
-    for (const adapterType of ["claude_local", "codex_local"]) {
-      const result = buildTaskRunBatchWorkload(input({ adapterType }));
-      expect(result.ok && result.workload.args).not.toContain("-");
+  // ★ THE ASSERTION THIS DESCRIBE EXISTS FOR, and it is not example-based. Every absolute path
+  // the argv names must be a path this build also STAGES. A future shape that adds a third
+  // file — an MCP config (Unit C), a workspace manifest (Unit E) — and forgets to stage it would
+  // place a leasable attempt whose sandbox reads a file nobody wrote. Deriving the expectation
+  // from the emitted argv rather than from a fixture is what makes that a red test rather than
+  // a comment.
+  it.each([
+    ["claude_local", "claude", undefined],
+    ["claude_local", "claude", "# Be excellent"],
+    ["codex_local", "codex", undefined],
+    ["codex_local", "codex", "# Be excellent"],
+  ])("every absolute path in the %s argv is staged (instructions: %s)", (adapterType, binary, instructions) => {
+    const result = buildTaskRunBatchWorkload(
+      input({ adapterType, runtimeCommandSpec: { command: binary }, instructions }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const stagedPaths = result.stagedFiles.map((file) => file.path);
+    const argvPaths = result.workload.args.filter((arg) => arg.startsWith("/"));
+    expect(argvPaths.length).toBeGreaterThan(0);
+    for (const argvPath of argvPaths) {
+      expect(stagedPaths.includes(argvPath), `${argvPath} is in the argv but nothing stages it`).toBe(true);
     }
+    // …and the converse: a staged byte no argv reads is a byte nobody consumes.
+    expect([...stagedPaths].sort()).toEqual([...argvPaths].sort());
+  });
+
+  it("carries the adapter's real binary as an argv element, never the registry key", () => {
+    const result = buildTaskRunBatchWorkload(input());
+    expect(result.ok && result.workload.args[SANDBOX_INVOCATION_BINARY_ARG_INDEX]).toBe("claude");
+    expect(result.ok && result.workload.args).not.toContain("claude_local");
   });
 
   it("leaves stdinArtifactId null (zero consumers anywhere in the daemon)", () => {
@@ -164,10 +265,99 @@ describe("the per-adapter argv shapes", () => {
   });
 });
 
+describe("the instructions bundle (CLI-008 Unit D)", () => {
+  const INSTRUCTIONS = "# SOUL\n\nYou are the CFO agent.";
+
+  it("stages the bundle and points --append-system-prompt-file at the STAGED path", () => {
+    const result = buildTaskRunBatchWorkload(input({ instructions: INSTRUCTIONS }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.workload.args[1]).toContain('--append-system-prompt-file "$2"');
+    expect(result.workload.args).toContain(STAGED_INSTRUCTIONS_PATH);
+    const staged = result.stagedFiles.find((file) => file.path === STAGED_INSTRUCTIONS_PATH);
+    expect(new TextDecoder().decode(staged!.bytes)).toBe(INSTRUCTIONS);
+  });
+
+  // codex has no append-system-prompt flag; the legacy adapter prepends the bundle to the
+  // stdin prompt, and so does this.
+  it("prepends the bundle to codex's stdin instead of inventing a flag it does not have", () => {
+    const result = buildTaskRunBatchWorkload(
+      input({ adapterType: "codex_local", runtimeCommandSpec: { command: "codex" }, instructions: INSTRUCTIONS }),
+    );
+    expect(result.ok && result.workload.args[1]).toContain('cat "$2" "$1" | "$0" exec --json -');
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["null", null],
+    ["empty", ""],
+    ["whitespace-only", "  \n "],
+  ])("stages NO bundle and emits NO bundle flag when it is %s", (_label, instructions) => {
+    const result = buildTaskRunBatchWorkload(input({ instructions }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.stagedFiles.map((file) => file.path)).toEqual([STAGED_PROMPT_PATH]);
+    expect(result.workload.args.join(" ")).not.toContain("--append-system-prompt-file");
+  });
+
+  // ★ The guard in the script is what turns "the pointer extension is critical:false, so an
+  // older worker stages nothing" from a mystery into an answer. Without it the failure is a
+  // bare `sh` redirection error (exit 2) or — for the codex `cat |` shape — the CLI's own exit
+  // code with an empty prompt, which looks like a successful context-free run.
+  it("guards every staged path it reads, with an attributable exit code", () => {
+    for (const instructions of [undefined, INSTRUCTIONS]) {
+      for (const [adapterType, binary] of [["claude_local", "claude"], ["codex_local", "codex"]]) {
+        const result = buildTaskRunBatchWorkload(
+          input({ adapterType, runtimeCommandSpec: { command: binary }, instructions }),
+        );
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        const script = result.workload.args[1]!;
+        const guard = script.slice(0, script.indexOf("done") + 4);
+        for (let i = 1; i <= result.stagedFiles.length; i += 1) {
+          expect(guard, `${adapterType} does not guard $${i}`).toContain(`"$${i}"`);
+        }
+        // …and never a parameter it does not pass: `[ -r "" ]` is false, so guarding an unset
+        // positional would fail every run for a file it never needed.
+        expect(guard).not.toContain(`"$${result.stagedFiles.length + 1}"`);
+        expect(script).toContain(`exit ${STAGED_INPUT_MISSING_EXIT_CODE}`);
+      }
+    }
+  });
+});
+
 describe("the prompt", () => {
-  it("carries the REAL assembled task markdown, trimmed", () => {
+  it("carries the REAL assembled task markdown, trimmed, as STAGED BYTES", () => {
     const result = buildTaskRunBatchWorkload(input({ currentTaskMarkdown: `\n\n${PROMPT}\n\n` }));
-    expect(result.ok && result.workload.args[1]).toBe(PROMPT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const staged = result.stagedFiles.find((file) => file.path === STAGED_PROMPT_PATH);
+    expect(new TextDecoder().decode(staged!.bytes)).toBe(PROMPT);
+  });
+
+  // ★★★ E7-F008 — THE ONLY LIVE REFUSAL AMONG THE OPEN FINDINGS, CLOSED HERE.
+  //
+  // The prompt used to be an argv positional, so `FROZEN_MAX_ARG_CHARS = 8192` refused it:
+  // `prompt_too_large`, a task that could not dispatch distributed AT ALL. Measured then:
+  // minimal framing accepted 7,736 description characters and refused 7,737. It is a staged
+  // file now, so the frozen per-element ceiling does not reach it.
+  //
+  // This asserts the far side of the old cliff and then some — 8x it, which is what the
+  // finding's own chunked-argv remedy would have bought, and 100x it, which no argv shape
+  // could have carried at all.
+  it.each([
+    ["one character past the OLD cliff", FROZEN_MAX_ARG_CHARS + 1],
+    ["8x the old cliff (what chunked argv would have bought)", FROZEN_MAX_ARG_CHARS * 8],
+    ["100x the old cliff (beyond any argv shape)", FROZEN_MAX_ARG_CHARS * 100],
+  ])("dispatches a prompt at %s", (_label, length) => {
+    const prompt = "x".repeat(length);
+    const result = buildTaskRunBatchWorkload(input({ currentTaskMarkdown: prompt }));
+    expect(result.ok, "E7-F008 has regressed: a large prompt cannot dispatch").toBe(true);
+    if (!result.ok) return;
+    const staged = result.stagedFiles.find((file) => file.path === STAGED_PROMPT_PATH);
+    expect(staged!.bytes.byteLength).toBe(length);
+    // …and the frozen schema still accepts the argv, because the prompt is not in it.
+    expect(batchWorkloadV1Schema.safeParse(result.workload).success).toBe(true);
   });
 
   it.each([
@@ -181,19 +371,29 @@ describe("the prompt", () => {
     expect(result).toEqual({ ok: false, reason: "empty_prompt" });
   });
 
-  it("accepts a prompt exactly at the frozen 8192-char arg ceiling", () => {
+  it("accepts a prompt exactly at the staging ceiling", () => {
     const result = buildTaskRunBatchWorkload(
-      input({ currentTaskMarkdown: "x".repeat(FROZEN_MAX_ARG_CHARS) }),
+      input({ currentTaskMarkdown: "x".repeat(MAX_STAGED_FILE_BYTES) }),
     );
     expect(result.ok).toBe(true);
   });
 
   // REFUSE, never truncate: a truncated prompt still creates a sandbox, still terminalizes,
   // and still satisfies the acceptance verifier while the agent works from a mutilated task.
-  it("REFUSES an oversized prompt — it does not truncate it", () => {
-    const oversized = "x".repeat(FROZEN_MAX_ARG_CHARS + 1);
+  // The ceiling moved from the frozen argv element's to the staging path's; the DIRECTION did
+  // not, and a refusal still exists — so this is a guard that moved, not a guard that was
+  // deleted.
+  it("REFUSES a prompt past the staging ceiling — it does not truncate it", () => {
+    const oversized = "x".repeat(MAX_STAGED_FILE_BYTES + 1);
     const result = buildTaskRunBatchWorkload(input({ currentTaskMarkdown: oversized }));
-    expect(result).toEqual({ ok: false, reason: "prompt_too_large" });
+    expect(result).toEqual({ ok: false, reason: "staged_input_too_large" });
+  });
+
+  it("REFUSES an instructions bundle past the staging ceiling too", () => {
+    const result = buildTaskRunBatchWorkload(
+      input({ instructions: "y".repeat(MAX_STAGED_FILE_BYTES + 1) }),
+    );
+    expect(result).toEqual({ ok: false, reason: "staged_input_too_large" });
   });
 
   // HONESTY ABOUT THE 64 KiB BACKSTOP. It cannot fire today, and this test says WHY rather
