@@ -309,8 +309,20 @@ describe("Blocker A — the canary seam pushes a real workload", () => {
     // Converting without a workload places a leasable attempt whose only possible
     // outcome is a sandbox running a nonexistent command — while the legacy
     // executor has already been suppressed. Staying legacy is the correct answer.
+    //
+    // ★ THE WINDOW IS ANCHORED AT BOTH ENDS, NOT SIZED BY A MAGIC NUMBER. It was
+    // `build + 24`, and CLI-008 Unit D pushed `workload_unavailable` past line 24 by adding
+    // comments — a RED test for a seam that had not changed. A fixed line count measures how
+    // much prose sits between two statements, which is not the property being asserted. The
+    // window now runs from the builder call to the log line that follows the decision, so it
+    // grows with the code it brackets.
     const build = HEARTBEAT_SRC.findIndex((l) => l.includes("buildTaskRunBatchWorkload({"));
-    const window = HEARTBEAT_SRC.slice(build, build + 24).join(" ");
+    const end = HEARTBEAT_SRC.findIndex(
+      (l, i) => i > build && l.includes("canary execution owner = DISTRIBUTED"),
+    );
+    expect(build).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(build);
+    const window = HEARTBEAT_SRC.slice(build, end).join(" ");
     expect(window).toContain("canaryWorkload.ok");
     expect(window).toContain("workload_unavailable");
   });
@@ -318,8 +330,14 @@ describe("Blocker A — the canary seam pushes a real workload", () => {
   it("logs the reason on EVERY outcome, not just the new one", () => {
     // A new legacy reason that is never logged is indistinguishable, in aggregate,
     // from `rollout_not_canary` — the same blindness this change exists to remove.
+    // ★ Anchored at both ends for the same reason as the window above: a fixed `idx + 60`
+    // measures prose, not structure, and Unit D's comments pushed the LEGACY branch past it.
     const idx = canaryResolveIdx();
-    const window = HEARTBEAT_SRC.slice(idx, idx + 60).join(" ");
+    const end = HEARTBEAT_SRC.findIndex(
+      (l, i) => i > idx && l.includes("shouldSuppressLegacyExecution(canaryExecutionOwner)"),
+    );
+    expect(end).toBeGreaterThan(idx);
+    const window = HEARTBEAT_SRC.slice(idx, end).join(" ");
     expect(window).toContain("canary execution owner = DISTRIBUTED");
     expect(window).toContain("canary execution owner = LEGACY");
     expect(window).toContain("reason: canaryExecutionOwner.reason");

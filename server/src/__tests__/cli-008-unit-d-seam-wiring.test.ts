@@ -96,6 +96,20 @@ describe("the heartbeat seam's Unit D edits, asserted structurally", () => {
     expect(source).toContain("stagedFiles: canaryWorkload.stagedFiles");
   });
 
+  // ★ `workload.command` is `sh` for every Unit D run, so a log line carrying only it tells an
+  // operator nothing about which CLI the sandbox ran. The binary is an argv element now, and the
+  // canary log has to follow it there — otherwise the one line written to answer "what is this
+  // canary running?" answers "a shell".
+  it("logs the real BINARY beside the command, not just `sh`", () => {
+    const line = source.slice(
+      source.indexOf("[CLI-006] canary execution owner = DISTRIBUTED") - 2500,
+      source.indexOf("[CLI-006] canary execution owner = DISTRIBUTED"),
+    );
+    expect(line).toContain("binary: canaryWorkload.ok");
+    expect(line).toContain("SANDBOX_INVOCATION_BINARY_ARG_INDEX");
+    expect(line).toContain("stagedPaths: canaryWorkload.ok");
+  });
+
   it("a configured-but-unreadable bundle keeps the run LEGACY rather than running without it", () => {
     // The refusal must not be folded into a shape that looks like "this agent has no bundle".
     expect(source).toContain("canaryInstructions.ok");
