@@ -443,11 +443,17 @@ verify a builder's report, and a table of eight things that are repeated in this
 not true. It supersedes the parallel-lane framing in `HANDOFF-wave-4.md` and
 `HANDOFF-lane-b-browser-service.md`, whose deconfliction contract stays useful and whose numbers do not.
 
-### 1.9.6 Open findings: 15, across 9 registers
+### 1.9.6 Open findings: 17, across 10 registers
 
 `node scripts/check-finding-ownership.mjs` → OK. **Unowned on the record:** E10-F001, E11-F001,
-E3-F034, E4-F014. ★ That count EXCLUDES E0/E1/E2 entirely for the reason in 1.9.5, so **15 is a
-floor, not a total.** (Was 17 on 2026-09-03 before CLI-008 Unit D closed E7-F008 and E7-F009.)
+E3-F034, E4-F014. ★ That count EXCLUDES E0/E1/E2 entirely for the reason in 1.9.5, so **17 is a
+floor, not a total.**
+
+★ **This number moved twice on 2026-09-03 and the net is a coincidence, not a wash.** It was 17
+across 9 registers; CLI-008 Unit D closed **E7-F008 and E7-F009** (→ 15), and BRW-004's terrain
+doc (`919fcd3c4`) filed **E8-F001 and E8-F002** in a tenth register (→ 17). Two lanes moved it in
+opposite directions within an hour, so a reader who sees "17" on two different days is not looking
+at the same 17. Cite the register, not the count.
 
 
 ### 1.9.8 The D1 merge-train lane was RED for three merges, and nothing was waiting on it
