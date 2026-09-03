@@ -278,3 +278,35 @@ built it. What came out of it:
 
 Verified afterwards by `git clone`-ing the branch into a clean directory: the seed is present and
 110/110 of the three static suites pass there.
+
+## 9. The second thing CI caught: a test that PARSES the compose
+
+`verify (4)` failed on `packages/worker-daemon/src/__tests__/shipped-binary-refuses.test.ts`
+(WRK-008 slice 2b Step 8a). It reads `docker-compose.d1.yml` **for real** — deliberately, so its
+assertions cannot be fixtures asserting themselves — and it asserted that **both** D1 workers are
+`mounted_secret`. Changing worker-b broke two of its cases. Correct behaviour by the test; my miss.
+
+`node scripts/ci-local.mjs` (the standing local gate) runs policy, lint, brand-check and
+contract-bytes — **not `verify`**, i.e. not the vitest shards. The standing rule "`tsc -p server`
+does not cover `server/src/__tests__`; run the actual suite" applies to `packages/*` too, and I ran
+only the D1 static suites. Recorded so the next builder does not repeat it.
+
+The update **strengthens** the test rather than relaxing it:
+
+- The anti-fixture case now asserts the two workers carry **DIFFERENT** custody modes
+  (`worker-a` `mounted_secret`, `worker-b` `file_record`) plus dispatch-off for both. A hardcoded
+  parser cannot satisfy two different values with one constant, so this is a sharper anti-hardcode
+  property than "both are the same string" ever was.
+- The shared `it.each` is split, because worker-b's env now has two genuinely different outcomes,
+  and both are worth pinning **in the daemon**, where the refusal happens:
+  - **under the DAEMON bin** (the state a partial revert produces: `file_record` in `environment:`
+    with the `command:` override gone) — refuses at CUSTODY, pre-socket, `exit 1`, with the exact
+    reason string. This is the daemon-side proof of the crash loop that
+    `checkWorkerCustodyBootRoot` forbids statically.
+  - **WITH the container host's stores** (what `runContainerHost` composes) — gets past custody and
+    refuses with EXACTLY `no_provider`. Without this arm, "worker-b never dispatches" would rest on
+    a custody refusal rather than on the dispatch gate, which is a different claim.
+
+Mutation-proven: reverting worker-b to `mounted_secret` in the real compose reddens **3 of the 8**
+cases; restored, 8/8 pass. Full `packages/worker-daemon` suite: **950 passed / 1 skipped / 149
+files**.
