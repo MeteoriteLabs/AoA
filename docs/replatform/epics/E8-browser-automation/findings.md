@@ -55,12 +55,26 @@ A false terrain claim propagating into a dependent ticket's design is the failur
 **Not live.** Nothing in production submits a `browser_request` job, so no wrong approval has been
 raised. This is a design-time defect.
 
-**Disposition.** BRW-004 takes the code's side (design §2 D2) and closes the invisibility rather than
-the fixture: slice (b) extends the foundation checker to bind each fixture's `control.productApproval`
-/ `control.runtimeDecision` to the shipped `describeSourceGovernance` profile for its source kind.
-**The fixture bytes are NOT edited** — `tests/fixtures/distributed-execution/README.md` declares them
-immutable behavioural inputs. The new guard must be demonstrated RED against the fixture as it stands
-before the mapping is expressed, or it is a check that nothing runs.
+**Disposition (REVISED 2026-09-03, Codex review).** BRW-004 takes the code's side (design §2 D2).
+The original disposition said slice (b) would express the guard's expectation as "the fixture's
+`productApproval` spelling maps to the profile's runtime-decision authority." **That was wrong twice
+over and is withdrawn.** (1) `tests/fixtures/distributed-execution/README.md` names *repurposing a
+field* as a breaking change requiring a **new versioned directory**, so the mapping is not permitted.
+(2) `control.productApproval` and `control.runtimeDecision` are separate enum fields, so mapping the
+first would leave the second still reading `"none"` — the guard would have blessed the contradiction
+it exists to detect.
+
+The revised disposition: slice (b)'s guard binds both `control` fields to the shipped
+`describeSourceGovernance` profile for every fixture **except a pinned historical-divergence list**,
+and reports the pinned divergences as a SECOND always-printed verdict that never fails the gate.
+(An earlier revision made the gate stay RED on `browser-approval-download.json`; that was withdrawn
+on Codex re-review — a permanently-red required check is a check that gets deleted, and the CLI-008
+Unit A precedent is a second verdict computed beside `ok`, not a red `ok`.) The pin records the
+VALUE tuple, so a new contradicting fixture, or any change to the pinned one's `control` block,
+turns the gate red. The real resolution is a **v2 fixture directory** with
+`control` corrected, leaving v1 intact — a fixture-owner / Protocol Custodian decision, raised as
+BRW-004 design §7 Q5 and **not** BRW-004's to take. This finding therefore stays open until that
+decision is made, and **must not be closed by weakening the guard**.
 
 ---
 

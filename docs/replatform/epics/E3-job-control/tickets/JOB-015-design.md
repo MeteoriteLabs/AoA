@@ -223,9 +223,49 @@ authoritative when understood, with the boolean as the floor. **This must be a t
 An extension that fails to parse, exceeds its byte budget, or carries an unknown shape must **not**
 be silently dropped into "no pending commands". The worker treats a malformed
 `dev.aoa.job/control-v1` extension as a delivery fault and keeps the run's existing posture (the
-boolean still governs cancel), while the server-side projection fails closed by **omitting the
-extension entirely rather than truncating it** — a truncated command list is worse than an absent
-one, because it looks complete.
+boolean still governs cancel).
+
+> ★★★ **CORRECTION (Codex review).** An earlier draft had the server-side projection fail closed by
+> **omitting the extension entirely** when the pending list exceeds its byte budget. That is this
+> ticket's own bug, re-committed: an omitted extension is **byte-identical to `extensions: []`**, so
+> the worker cannot distinguish "nothing is pending" from "commands exist and could not be sent." A
+> silent omission is exactly the class JOB-015 was filed to fix.
+>
+> **Revised:** an over-budget queue must be SIGNALLED, not omitted. The extension is always emitted
+> when anything is pending, carrying as many commands as fit **plus an explicit overflow marker**
+> (`truncated: true` with the total `pendingCount`), so the worker knows its view is partial and can
+> renew again to drain the remainder. Truncation is safe **only** because it is declared; an
+> undeclared truncation would be worse than omission, and an undeclared omission is worse than both.
+> If even the marker cannot fit, the renew fails with a protocol error rather than returning a
+> response that reads as "no commands".
+>
+> ★★★ **CORRECTION 2 (Codex re-review): marked truncation STALLS FOREVER on a single oversized
+> command.** Commands are delivered in `command_seq` order, so if the *first* pending command does
+> not itself fit, the projection emits only the overflow marker. The worker then has nothing to apply
+> and nothing to ACK; ACK is what clears `ackStatus IS NULL`; so the next renewal sees the same
+> leading command and returns the same marker — **a permanent stall with no terminal**, which is the
+> E7-F010 shape.
+>
+> **It is not a corner case — it is guaranteed at the bound.** A work-question answer is bounded at
+> **≤16 KiB canonical** by the protocol itself (`transport.ts:526-534`) and the per-extension-value
+> cap is **exactly 16,384 bytes** (`extensions.ts:43`). So a maximal answer *plus* the result's own
+> `requestId`/`nonce`/`requestDigest`/`schemaVersion`/`sourceRevision`/`expiresAt`/`decidedBy`/
+> `decidedAt`/`idempotencyKey`/`timeoutPolicy`/`outcome` **necessarily** exceeds the extension cap.
+> The stored `command` jsonb is unbounded besides.
+>
+> **Revised: an individually oversized command has a terminal rule, and it is not "renew again".**
+> When the leading pending command alone exceeds the per-value budget, the projection emits the
+> overflow marker carrying that command's `commandId` and `commandSeq` plus an explicit
+> `oversizedLeading: true`. The worker's ACK path accepts an ACK for that command with status
+> **`rejected`** and detail `oversized_for_renew_channel` — a frozen `CONTROL_ACK_STATUSES` value
+> (`transport.ts:644`), so no wire change. That clears `ackStatus`, unblocks the queue, and leaves a
+> durable record that the command was never applied. Escalating that one command to the dedicated
+> frozen `control_command` fetch operation (D1's rejected-for-v1 option) is the follow-up, and it is
+> named here so the stall has an exit rather than a hope.
+>
+> ★ **Positive control:** an oversized leading command must be shown to UNBLOCK the queue — the
+> command behind it is delivered on the next renewal. A test that only asserts the marker appears
+> would pass against the stalling design.
 
 ★ The byte budget is the real risk: 16,384 canonical bytes per extension value against an unbounded
 `command` jsonb per row and an unbounded pending count. Slice (b) bounds it; slice (d) proves the
@@ -236,6 +276,20 @@ bound fails closed.
 The worker ACKs through the existing `POST /worker-control/control-acks` with the frozen
 `controlCommandAckV1Schema`. `listPendingControlCommands` already filters `ackStatus IS NULL`, so ACK
 is what stops redelivery. **No new ACK surface, and no change to `ackControlCommand`'s fence guard.**
+
+> ★★ **CORRECTION (Codex review, verified in source).** "ACK stops redelivery" was stated as though
+> it were a safety property. It is not, yet — and the gap is the same class as `E3-F035`.
+> `controlCommandAckV1Schema` (`transport.ts:649-661`) carries `commandSeq`, and its own docstring
+> says the worker *"echoes the command ID + sequence"* — but `ackControlCommand`
+> (`job-control.ts:3163-3170`) matches on `(organizationId, leaseId, commandId)` and the ack-status
+> transition **only**. The echoed `commandSeq` is accepted and discarded. **A frozen validation field
+> the server never checks.**
+>
+> **Revised:** slice (c) validates the echoed `commandSeq` against the stored row before the ACK is
+> allowed to suppress redelivery; a mismatch is rejected and the command stays pending. This is a
+> narrow addition to the ACK's WHERE clause, not a new surface, and the fence guard is still
+> untouched. ★ Its positive control is the matching-sequence ACK succeeding in the same test —
+> otherwise the new predicate could reject everything and look like working validation.
 
 ---
 
@@ -253,8 +307,12 @@ anti-regression test provably could have caught the defect.
 ### (b) — The server-side projection. **M.**
 
 Replace `extensions: []` in the renew mutator with the `dev.aoa.job/control-v1` extension built from
-`listPendingControlCommands`. Bound it: cap the command count per response, compute the canonical
-byte length before emitting, and omit the extension entirely if the budget is exceeded (D3).
+`listPendingControlCommands`. Bound it: cap the command count per response and compute the canonical
+byte length before emitting. **When the budget is exceeded, emit the extension anyway** — as many
+commands as fit plus the explicit overflow marker (`truncated: true`, total `pendingCount`), and,
+when the *leading* command alone does not fit, the marker's `oversizedLeading` form so the queue can
+be unblocked by a `rejected` ACK (D3). **Never omit the extension** — an omitted extension is
+byte-identical to `extensions: []` and is the exact bug this ticket exists to fix.
 
 - **Touches `packages/db/src/repositories/tenant/job-control.ts`** (the mutator) — see §6.
 - **Artifact:** repository integration tests at embedded PG (`AOA_RUN_WIN_INTEGRATION=1` on Windows,
@@ -269,6 +327,17 @@ through **`decideControlReceiverV1`** — its first production caller — to cla
 `accept | replay | gap | conflict | stale` against the contiguous per-lease sequence. Apply
 `runtime_decision_result` and `product_approval_result`; ACK through the existing route.
 
+Two behaviours this slice owns that the D3/D4 corrections assign to it, easy to miss because they
+live in the decision blocks rather than here:
+
+- **Validate the echoed `commandSeq` server-side before an ACK may suppress redelivery** (D4
+  correction). `ackControlCommand` matches on `(organizationId, leaseId, commandId)` today and
+  discards the sequence the frozen ACK schema carries. Add it to the WHERE clause; a mismatch leaves
+  the command pending. ★ Positive control: the matching-sequence ACK succeeds in the same test, or a
+  predicate that rejects everything would look like working validation.
+- **Handle the `oversizedLeading` marker** (D3 correction 2) by ACKing that command `rejected` with
+  detail `oversized_for_renew_channel`, so the queue behind it drains instead of stalling forever.
+
 - ★ **Positive control:** a worker built **without** extension support must complete a run normally
   against a server that emits one, proving `critical:false` is honoured and existing deployments are
   unaffected.
@@ -277,7 +346,8 @@ through **`decideControlReceiverV1`** — its first production caller — to cla
 
 ### (d) — The fail-closed cases. **S–M.**
 
-Malformed extension, over-budget omission, sequence gap, stale fence, duplicate `commandId`.
+Malformed extension, marked truncation, an oversized LEADING command and its `rejected`-ACK unblock,
+sequence gap, mismatched-sequence ACK, stale fence, duplicate `commandId`.
 
 - ★ Every one needs its allow-side twin in the same test: a well-formed extension applies, an
   in-sequence command is accepted, a live-fence command is applied. **A denial suite with no accept
@@ -295,9 +365,19 @@ exists at the repository layer, say so in the result doc rather than implying on
 
 ### (f) — Deliver `drain`, or state on the record that it is not delivered. **S.**
 
-`drain` is persistable and undelivered (§1.4). Either include it in the projection or record in the
-result doc that it remains operator-side only. **Do not leave it ambiguous** — an undelivered
-`drain` that looks delivered is the same class of defect as `E3-F035`.
+`drain` is persistable and undelivered (§1.4).
+
+> ★★ **CORRECTION (Codex review).** The earlier wording — "either include it in the projection or
+> record that it remains operator-side only" — would let **inclusion count as delivery**. It does not.
+> This ticket's whole finding is that a command can be persisted, surfaced, and still never acted on;
+> an acceptance clause satisfied by putting `drain` in a JSON array would re-file the same bug one
+> layer up.
+>
+> **Revised:** `drain` counts as delivered only when the worker-side handler exists and is tested —
+> the daemon observes the command, applies drain semantics (stop accepting new leases, finish the
+> current attempt), and ACKs. Either build that, or state in the result doc that `drain` remains
+> **operator-side only and undelivered**. Those are the only two honest outcomes; "it is in the
+> projection" is not one of them.
 
 ---
 
@@ -305,7 +385,10 @@ result doc that it remains operator-side only. **Do not leave it ambiguous** —
 
 | Clause | Where it fires | ★ Positive control |
 |---|---|---|
-| Over-budget command list → extension omitted, not truncated | (b) projection | an under-budget list IS emitted, same test |
+| Over-budget command list → extension emitted WITH an overflow marker, never silently omitted | (b) projection | an under-budget list is emitted with no marker, same test — and ★ the two must be distinguishable from `extensions: []` |
+| Overflow marker itself cannot fit → renew fails with a protocol error | (b) | a fitting marker returns a normal renewal |
+| Leading command alone exceeds the budget → marker carries `oversizedLeading` + its ids; a `rejected` ACK clears it | (b)/(c) | ★ the command BEHIND it is delivered on the next renewal — a test asserting only that the marker appears would pass against the stalling design |
+| ACK echoing a mismatched `commandSeq` → rejected, command stays pending | (c) ACK predicate | a matching-sequence ACK succeeds and stops redelivery, same test |
 | Malformed extension → delivery fault, not "no commands" | (c)/(d) worker | a well-formed extension applies |
 | Sequence gap → `gap`, command not applied | (d) `decideControlReceiverV1` | an in-sequence command is `accept`ed |
 | Stale fence → refused | (d) | a live-fence command is applied |
