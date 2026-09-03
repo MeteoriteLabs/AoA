@@ -483,6 +483,14 @@ revision pass (2026-09-03) and both changing what a green means rather than what
   both shipped providers declare `artifactExportMode: "none"`), so slice A alone — which removes the
   forgeable arm — converts a forgeable gate into an **unpassable** one, inverting the precedent
   CLI-008 Unit A set. Schedule A–E as one increment.
+- ★★★ **And E7-F014 is a HARD PREREQUISITE of that increment, not an adjacent tidy-up** — added on
+  the design's third revision (2026-09-04) after the finding merged at `c48259358`. Against real E2B
+  a non-zero exit THROWS; traced one layer past the finding, `supervisor.ts:743-757` catches it,
+  emits the terminal, **destroys the sandbox** and **returns**. So any output capture placed after
+  `execute` — a redirected file, a provider-side capture, anything read from the command result — is
+  skipped on **every failing run**, which is precisely the run an operator wants output from. Unit F
+  now opens with **Slice Ø** (catch `CommandExitError` in the transport and return the exit code, as
+  E7-F014's own remedy recommends); it blocks slices C, D and E, and it can land ahead of them.
 
 ### 1.9.4 Stale passages in THIS document, named — ✅ ALL FOUR CORRECTED 2026-09-03 (Track C)
 

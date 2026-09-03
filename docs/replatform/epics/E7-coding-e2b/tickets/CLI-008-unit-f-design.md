@@ -4,7 +4,14 @@
 **Depends on:** CLI-008 Unit B (the staging channel, SHIPPED `393f7a251`) · Unit D (the sandbox
 command line, SHIPPED `b9ab89e36`) · DAT-002 + DAT-002 slice-7 live-MinIO (SHIPPED) · DAT-009 slice 1
 (the provider export port, SHIPPED) · **Size: L — corrected DOWN from XL, see §2** · **Status:**
-`design` (2026-09-03). Measured at `d0b75be19`, in `C:/uf`.
+`design` (2026-09-04, **third revision**). Measured at `d3fd1b52c` (base `c48259358`), in `C:/uf`.
+
+★★★ **READ §3.1a BEFORE §3.1.** The supply mechanism in this document has been refuted twice — once
+on argv **shape**, once on argv **size** — and both refutations landed because a revision reasoned
+about the seam from the pins it remembered instead of the pins that exist. §3.1a is the census that
+should have preceded either. §3.1c states, and declines, the alternative that touches no pin at all;
+§3.1f states what happens to captured output when the command throws, which is the constraint E7-F014
+imposes on every candidate mechanism equally.
 
 **Governing decision:** [`DECISION-byte-egress-and-provider-topology.md`](../../../DECISION-byte-egress-and-provider-topology.md)
 — Option D, "the provider reads the file from inside its sandbox and PUTs it directly to object
@@ -242,7 +249,7 @@ one kind (slice A).
 | **stdout as `log` events** | `observeRun` composition + provider stream capture | M | **flips no counter** — evidence, not capability. Out of scope (§7) |
 | **one named file → export → commit → project** | §1.6's six links, all small or already proven | **L** | **this unit** |
 
-**Where the L sits.** Slices A, B, F are S; C, D, E are M–L. Nothing in the path is research: the
+**Where the L sits.** Slices Ø, A, B, F are S; C, D, E are M–L. Nothing in the path is research: the
 grant→PUT→commit half is live-proven (§1.5), the port and its conformance suite exist, the terminal
 projector is composed and reachable, and the sandbox command line is already ours (Unit D).
 
@@ -394,27 +401,237 @@ structures derived from the other side do not follow you.
 **The shape that survives all three: a constant in the script text, not in the argv.**
 `STAGED_INPUT_DIR` is already a module constant, and `readableGuard(...)`'s output is already
 interpolated into the script template — so `> ${DECLARED_OUTPUT_PATH}` is structurally the same move
-the module already makes. Measured against each pin, **no test needs editing**:
+the module already makes.
 
-- `paths` is **unchanged** → the guard's arity is unchanged → `:388` passes untouched, and the guard
-  now *structurally cannot* cover the output path rather than merely being instructed not to.
-- The argv is **unchanged** (4 elements with a bundle, 3 without) → the two `toEqual` shape
-  assertions at `:208` and `:220` pass: both match the script through
-  `expect.stringContaining('… < "$1"')`, and appending a redirect leaves that substring intact.
-- `argvPaths` is `args.filter((arg) => arg.startsWith("/"))`; `args[1]` is the script and begins
-  `for f in`, so it is not an argv path → `:229-252` passes untouched.
-- `stdinFromScript` (`:307-312`) matches by `script.includes(...)` and **throws** on a shape it does
-  not recognise — its anti-vacuity control still fires, and a trailing redirect does not disturb the
-  three matches it knows.
+#### 3.1a ★★★ THE PIN CENSUS — enumerated BY SEARCH, and it costs ONE EDIT
 
-★ **Zero test EDITS is not zero test WORK, and the difference is the whole point.** The invariant at
-`:229-252` now has an absolute path it does not see. Leaving that implicit would be *hiding* an
-exception behind a filter predicate — this programme's own worst failure class, "a check that nothing
-runs". Slice B therefore **adds** an assertion that states the exception instead of relying on it:
-the declared output path appears **in the script**, is absent from **`stagedFiles`**, is absent from
-the **guard prefix**, and is not an element of **`args`** (slice B point 3 lists all four). A future
-change that promotes it to a positional, or that stages it, or that silently drops the redirect, reds
-that test.
+★★★ **AN EARLIER REVISION OF THIS DOCUMENT CLAIMED "no test needs editing". THAT CLAIM WAS FALSE,
+AND HOW IT BECAME FALSE MATTERS MORE THAN THE FACT.** It was reached by walking the pins in
+`task-run-batch-workload.test.ts` — one file, the file the change obviously touches — and then
+generalised to the repository. A second file pins the workload by a property that file never asserts:
+its **serialized size**. So the census below is built by SEARCH, not by recall, over
+`buildTaskRunBatchWorkload`, `SUBMISSION_MAX_INPUT_BYTES`, `submissionHeadroom`, `utf8Bytes`,
+`stagedFiles`, `readableGuard`, `JSON.stringify(workload)` and `buildSandboxInvocation`, across
+`server/src/__tests__` and `packages/**`. Every pin it found is listed, including the ones that hold.
+
+**Measured**, at `d3fd1b52c`, by building the real workload with the real builder and appending the
+real redirect (35 ASCII bytes — ` > /home/user/.aoa-run-output.jsonl`, no JSON escapes):
+
+```
+workloadBytes BEFORE: 295   headroom BEFORE: 65,241
+workloadBytes AFTER : 330   headroom AFTER : 65,206
+```
+
+| # | pin | file:line | what it derives | moves? |
+|---|---|---|---|---|
+| 1 | `expect(workloadBytes).toBe(295)` | `cli-008-unit-b-byte-source.integration.test.ts:279` | `utf8Bytes(JSON.stringify(realisticWorkload()))` — the **serialized size** of the real builder's output | ★ **YES → 330** |
+| 2 | `expect(MEASURED.submissionHeadroomBytes).toBe(65_241)` | same file `:280` | `SUBMISSION_MAX_INPUT_BYTES - workloadBytes` | ★ **YES → 65_206** |
+| 3 | `emits the claude shape` `toEqual([...])` | `task-run-batch-workload.test.ts:208-212` | argv **shape**; the script is matched by `expect.stringContaining('… < "$1"')` | no — appending after the matched substring leaves it intact |
+| 4 | `emits the codex shape` `toEqual([...])` | `:220-226` | same, `stringContaining('exec "$0" exec --json - < "$1"')` | no |
+| 5 | `every absolute path in the %s argv is staged` | `:229-253` | **set equality** `stagedPaths` ≡ `args.filter(a => a.startsWith("/"))` | no — `args[1]` begins `for f in`, so the script is not an argv path, and `args` is unchanged |
+| 6 | `--append-system-prompt-file "$2"` present | `:275-278` | claude has-bundle script prefix | no |
+| 7 | codex bundle pipeline prefix | `:287` | `{ cat "$2"; echo; cat "$1"; } \| "$0" exec --json -` | no — the redirect attaches after it, and does not touch E7-F013's separator, which lives inside the prefix |
+| 8 | `stagedFiles` is exactly `[STAGED_PROMPT_PATH]` | `:377-381` | the no-bundle staged set | no — `staged`/`paths` untouched |
+| 9 | `guards every staged path … with an attributable exit code` | `:388-406` | `readableGuard` **arity**, asserted in both directions (`"$i"` present for every staged index, `"$n+1"` absent) | no — arity derives from `paths.length`, unchanged |
+| 10 | `stdinFromScript` anti-vacuity helper | `:307-312`, used at `:357`,`:367` | matches three known script shapes by `includes(...)`, and **throws** on an unknown one | no — a trailing redirect disturbs none of the three matches |
+| 11 | `E7-F008 has regressed: a large prompt cannot dispatch` | `:435-440` | a 100× prompt still builds and still parses against the frozen schema | no — the prompt rides staging, not the argv |
+| 12 | `the frozen arg ceiling structurally guarantees the 64 KiB submission bound` | `:487-509` | `encoded <= SUBMISSION_MAX_INPUT_BYTES` — an **inequality**, ~49 KiB against 65,536 | no — +35 bytes does not approach the bound |
+| 13 | `Object.keys(workload)` order / sorted key set | `:641-647`, `:673` | the workload's **key set** | no — no new key |
+| 14 | `pointerFitsExtension` union projection | `cli-008-unit-d-fit-union.test.ts:83-105` | staged-input extension value bytes vs `valueMaxCanonicalBytes` | no — see §3.1e |
+| 15 | keyed live-sandbox argv + stdin | `keyed-cli-008-unit-d-invocation.test.ts:171-189`, `:248-256` | the probe's recorded argv/stdin, read back with `transport.readFile` | no — the argv is unchanged; ★ and this is the lane where slice B's redirect gets **proved** rather than argued |
+| 16 | `stdoutRef` fabricated literal | `adapter-manager/…/component.test.ts:107,138`, `gate.test.ts:137`, `provider-contract.test.ts:31` | `ref:stdout:<id>` / `sandbox://<id>/stdout` | no — Unit F does **not** make `stdoutRef` real (§7) |
+
+★★ **So the honest count is: sixteen pins found, two move, and those two are one measurement stated
+twice.** The rest of §3.1's argument survives — but it survives as the *result* of a census, not as a
+claim that preceded one.
+
+#### 3.1b ★ THE ONE EDIT, AND WHY MAKING IT IS HONEST
+
+Pins 1 and 2 are a **measurement**. The rule this programme uses for measurement pins is: one may be
+updated when the thing it measures legitimately changes, **provided the change is stated**. Here is
+the statement.
+
+The comment immediately above those two lines says what the number IS:
+
+> ★ 790 UNTIL UNIT D, 295 AFTER IT — and the drop IS the change. The workload used to carry the
+> whole assembled prompt as an argv positional; it now carries a fixed `sh -c` script plus the binary
+> and two constant paths, and the prompt rides Unit B's staging channel as bytes. **That is E7-F008
+> closed, visible as a number: the submission payload no longer grows with the task.**
+
+The invariant that sentence asserts is **"no longer grows with the task"** — that the submission
+payload is O(1) in the size of the work. It does not assert that the constant equals 295. Slice B
+adds **35 constant bytes** to a fixed script literal: after it, the payload is 330 for a one-line task
+and 330 for a 100× prompt, exactly as it is 295 for both today. **E7-F008 stays closed, and the number
+evidencing it stays a constant.** That is the whole justification, and it is checkable rather than
+asserted — pin 11 (`:435-440`, the 100× prompt) IS the assertion that the payload is O(1), and it does
+not move.
+
+**What slice B must do about it, explicitly — a deliverable, not a footnote:**
+
+- update the two literals to `330` / `65_206`;
+- **extend the comment in the same edit** with the second delta and its reason, so the file keeps
+  reading as a history of measured changes rather than a number someone refreshed. Of the form:
+  *"790 until Unit D → 295 after it → 330 after Unit F's declared-output redirect (a fixed 35 bytes;
+  still O(1) in the task, which is what E7-F008 actually asserts)."*
+- update the two **prose** references so the repository does not carry two answers to "what does the
+  test pin": `findings.md:452` (E7-F008's own entry — its *history*, "went from 790 to 295", stays
+  true and must NOT be rewritten; the parenthetical *"pins both numbers"* is what goes stale) and
+  `CLI-008-design.md:261` (Unit D's acceptance criterion 1 — likewise a record of Unit D's own delta,
+  to be annotated rather than restated).
+
+★ **A reviewer is entitled to reject this trade**, and the alternative is named and costed in §3.1c
+rather than hidden. What a reviewer should not accept is the previous revision's framing, in which
+this edit did not appear at all.
+
+#### 3.1c ★★★ THE ALTERNATIVE THAT TOUCHES NO PIN — MEASURED, AND DECLINED
+
+The obvious response to a moved pin is *"then do not put it in the workload"*. That was measured. It
+is a real option, and it is declined for mechanical reasons rather than aesthetic ones.
+
+**First, what is already solved: READING.** `E2bTransport` declares
+`readFile(sandboxId, path): Promise<Uint8Array>` and **both** drivers implement it —
+`real-transport.ts:196` (`sandbox.files.read`, with not-found classification) and
+`mock-transport.ts:200`. `e2b-provider.ts:172` says so in its own words: *"The transport already has
+`readFile`, so a real implementation is a small, provider-specific piece"*. Reading a convention path
+out of a sandbox needs **no new mechanism at all**.
+
+**Second, what is NOT solved: WRITING.** Nothing creates a file. `sandbox.commands.run` returns and
+streams stdout **to the caller**, and the caller sits on the far side of the byte-egress boundary
+(Option D: *"the port carries a grant inbound and a reference outbound, and never bytes"*). So the
+file has exactly two possible authors:
+
+| author | what it costs, measured |
+|---|---|
+| **the script** (this design) | one module constant + one appended token inside an existing fixed literal. **Pins 1 + 2 move.** |
+| **the provider**, wrapping the command | `E2bSandboxProvider.execute` would re-emit `{command, args}` as a nested `sh -c` with the redirect appended to `shellJoin(command, args)`. Touches **no** workload pin — and costs: a new optional field on `ExecuteInput` (`worker-daemon/src/supervisor/provider.ts:246-251`) threaded through `effect-authority` → `provider-wire/driver` → `adapter-manager/server` → `e2b-provider` → `per-op-adapter`; a matching change in `mock-transport`, or a mock that models the **opposite** contract (which is E7-F014's founding lesson, one layer down); and a **nested** `sh -c` wrapped around an already-collapsed argv — re-entering verbatim the hazard `shellJoin` exists to close after it caused **8 of 18** failures on the first keyed run (`real-transport-helpers.ts:18-28`) |
+
+★★ **And the provider route does not even avoid the declaration work.** It must still be *told* which
+runs to capture: `E2bSandboxProvider` serves every workload, and H2 (§3.1d) measures that
+`workloadType` is `"batch"` for a coding run **and** for an extraction one-shot alike. So it needs
+the same `extensions[]` pointer slice B already builds, **plus** the port field, **plus** the nested
+shell. It is strictly the larger change, and its extra surface is a port — the E7-F010 shape exactly
+(grow one side of a seam and the structures derived from the other side do not follow you).
+
+**Verdict: the output path belongs in the workload.** Not because that seam is convenient — it is the
+most heavily pinned surface in the repo, and this document has now been refuted on its shape and on
+its size — but because the only other author of the file is a shared provider that would have to be
+told the same thing anyway, through a wider seam, with a shell-quoting hazard attached. One
+measurement pin, updated with its reason written down, is the smaller and more honest cost.
+
+#### 3.1d ★★★ H2 — `workloadType` DOES NOT DISCRIMINATE, AND THE POINTER MUST NOT ASK IT TO
+
+An earlier revision recommended emitting the declared-output pointer *"whenever the workload is the
+coding one, derived from `input.job.workloadType`"*. **That is refuted by measurement, and the
+counter-example is already in the repository:**
+
+- `HEARTBEAT_TASK_RUN_WORKLOAD_TYPE = "batch"` (`heartbeat-distributed-rollout.ts:29`) — a coding
+  task run is `batch`.
+- `cli-008-unit-b-staging-channel.integration.test.ts:299-300` seeds a **non-coding** job —
+  `source_kind 'one_shot'`, `source_intent {kind:"one_shot", operationKind:"extraction"}` — whose
+  `workload_type` is **also** `'batch'`.
+
+One value, two workload classes. A pointer emitted on `workloadType === "batch"` would be attached to
+extraction one-shots, whose script contains no redirect, so the worker would go looking for a file
+nothing ever created — on every extraction run.
+
+★★★ **The discriminator is not a classification of the job; it is a READ of the artefact whose
+existence the pointer announces.** Slice B's emitter derives the pointer from **the workload it is
+about to ship**: a single exported helper `declaredOutputPathFromWorkload(workload)` returns the path
+iff `workload.args[1]` actually ends with `` ` > ${DECLARED_OUTPUT_PATH}` ``, and `null` otherwise.
+Three properties follow, and each is why this is preferred over `source.kind === "task_run"` (which
+*is* available at the attach point, via `source(input.job)` at `job-leasing.ts:354`, and which would
+also have separated the counter-example):
+
+- **It cannot drift.** The redirect and the pointer are not two facts kept in agreement by a
+  convention; one is *derived from* the other. A future shape that drops the redirect drops the
+  pointer with it, and the worker exports nothing instead of failing to find a file.
+- **It cannot over-claim.** The pointer never names a file the script did not arrange to create —
+  which is the WRK-009 property (*a fabricated success is byte-identical to a real one on every
+  gate*) applied one layer earlier.
+- **It is fail-closed in the right direction.** Not-a-coding-workload ⇒ no pointer ⇒ no export ⇒
+  `capabilityProven` stays `false`. That is the true verdict for a run that produced nothing.
+
+Slice B pins it with a positive and a negative: the four (adapter × bundle) coding shapes each yield
+the path, and a workload whose `args[1]` carries no redirect yields `null`.
+
+#### 3.1e ★★ THE POINTER IS A SECOND EXTENSION — what that does and does not disturb
+
+`buildJobEnvelope` emits at most one extension today
+(`job-leasing.ts:399`, `extensions: input.stagedInput.length > 0 ? [stagedInputExtension(...)] : []`).
+Measured against the frozen container's own limits, which
+`cli-008-unit-b-byte-source.integration.test.ts:253-255` restates: `valueMaxCanonicalBytes` 16,384,
+`combinedMaxCanonicalBytes` 65,536, `maxCount` 16. A second, small extension consumes 1 of 16 and a
+few hundred of 65,536 — no ceiling is approached.
+
+★ **But `pointerFitsExtension` (`job-input-staging.ts:220-243`) checks the PER-VALUE cap only**
+(`bytes <= WIRE_EXTENSION_LIMITS.valueMaxCanonicalBytes`) and knows nothing about siblings. That is
+correct today and remains correct at two extensions (16,384 + a few hundred ≪ 65,536). It is a latent
+E7-F010 shape at *three*, and slice B must record that at the call site rather than leave the next
+author to discover it — a projection that measures the wrong set unnoticed is precisely what F009 was.
+
+★ **`critical: false`, for the same reason the staged-input extension carries it** (`:396-398`): a
+worker that does not understand the namespace ignores the pointer and exports nothing, rather than
+refusing the offer. See open question 3, which now has this as its answer rather than its
+recommendation.
+
+#### 3.1f ★★★ WHAT HAPPENS TO CAPTURED OUTPUT WHEN THE COMMAND THROWS (E7-F014)
+
+**This governs the whole return path, and it is not a slice detail.**
+
+E7-F014 (merged `c48259358`, OBSERVED in a real E2B sandbox — run `33789547290`, confirmed by the
+deliberate mutant run `33790235730`) measures that against real E2B a **non-zero exit is THROWN**:
+`CommandExitError` from `e2b@2.30.5` `commandHandle.ts:176`, surfacing through
+`RealE2bTransport.runCommand` (`real-transport.ts:116`), which maps only timeout-named errors and
+rethrows (`:123-131`); `E2bSandboxProvider.execute` then classifies only egress-denied and not-found
+and rethrows (`:297-303`).
+
+★★★ **Traced one layer further than the finding does — and this layer is what constrains Unit F.**
+`supervisor.ts:743-757` catches it and then:
+
+```
+emitOp("execute", "failed");
+await events.terminal({ status: "failed", exitCode: null, errorCode: "execute_failed", … });
+await escalateCleanup(run, "execute_error");   //  <- DESTROYS THE SANDBOX
+return;                                        //  <- EARLY RETURN
+```
+
+The supervisor **tears the sandbox down and returns before anything after `execute` runs**. Stated
+plainly, because it must be:
+
+> **A redirect leaves the transcript on disk inside the sandbox even when the agent exits non-zero —
+> and today nobody would ever read it, because the sandbox is destroyed and the lifecycle returns two
+> statements later.** Every failing distributed run is therefore exactly the run an operator most
+> wants output from, and exactly the run that would produce none.
+
+★★ **This is not an argument against the redirect.** The identical early return kills the
+provider-wrap alternative, a post-run `readFile`, and every design that reads output from the command
+result. It is a **prerequisite** — and one Unit F already owns: E7-F014's `Owner` line names CLI-008
+Unit F, and its own recommended remedy is what this design adopts:
+
+> catch the SDK's `CommandExitError` in `RealE2bTransport.runCommand` and return
+> `{ exitCode, signal: null, timedOut: false, crashed: true }`, restoring the shape the mock already
+> models and the provider already expects.
+
+With that, a non-zero exit **returns** instead of throwing, the catch is not entered, and the export
+step sits on the normal path — running for succeeded and failed runs alike. That is why **Slice Ø is
+first in §4 and blocks C, D and E**: not because the exit code is nice to have, but because without
+it the return path is dead on precisely the runs it exists for.
+
+**The residual, stated rather than designed around.** Even after Slice Ø, three exits still destroy
+the sandbox before any export can run: a genuine provider fault (egress denied, sandbox not found),
+the supervisor's `withDeadline` race (`execute_timeout`), and a cancel/lease-loss teardown. Output is
+genuinely lost on those; `capabilityProven` stays `false`, which is the correct verdict — nothing
+reached AoA. Slice Ø converts only the **agent-exited-non-zero** case, which E7-F014 measures as the
+common one. §6.4 carries this as acceptance, criterion and residual both.
+
+★ **Zero test EDITS was never the goal; a stated cost is.** The invariant at
+`task-run-batch-workload.test.ts:229-253` now has an absolute path it does not see. Leaving that
+implicit would be *hiding* an exception behind a filter predicate — this programme's own worst failure
+class, "a check that nothing runs". Slice B therefore **adds** an assertion that states the exception
+instead of relying on it: the declared output path appears **in the script**, is absent from
+**`stagedFiles`**, is absent from the **guard prefix**, and is not an element of **`args`** (slice B
+point 4 lists all four). A future change that promotes it to a positional, or that stages it, or that
+silently drops the redirect, reds that test.
 
 Four properties of the redirect itself, each deliberate:
 
@@ -601,14 +818,55 @@ passable. That "and not before" is why §6.9 refuses to let slice A ship alone.
 
 ## 4. The lettered slice plan
 
-Each slice lands on its own commit with its own tests. **The order is load-bearing:** A before
-anything (pin the defect first, or the anti-regression mutation cannot exist); the producer (B, C, D)
-before the consumer (E), so no slice ships a composed thing with nothing to feed it.
+Each slice lands on its own commit with its own tests. **The order is load-bearing:** Ø before C, D
+and E (without it the return path is dead on every failing run — §3.1f); A before anything that
+changes the verdict (pin the defect first, or the anti-regression mutation cannot exist); the
+producer (B, C, D) before the consumer (E), so no slice ships a composed thing with nothing to feed
+it.
 
-★★★ **A–E are one release increment, not five.** Per-slice commits, yes — but the artifact arm has
+★★★ **Ø–E are one release increment, not six.** Per-slice commits, yes — but the artifact arm has
 **zero producers today** (§2.1 Q2), so A-without-C-through-E ships a gate nobody can pass. Land them
 together, and if open question 1 answers "no", land none of them (§6.9). F and G follow; G is the
 operator's.
+
+★ **Ø is the exception to "one increment".** It is a strict repair of a measured defect that Unit F
+owns, it depends on nothing in this design, and it makes an already-shipped keyed assertion true end
+to end. It may land on its own ahead of the rest, and probably should.
+
+### Slice Ø — E7-F014: the exit code must survive the SDK (S) · `packages/sandbox-e2b-provider/src/real-transport.ts`
+
+★★★ **FIRST, AND IT BLOCKS C, D AND E.** Not a courtesy fix of an adjacent finding: §3.1f measures
+that without it the export step **never runs on a failing run**, because `supervisor.ts:743-757`
+catches the SDK's `CommandExitError`, destroys the sandbox via `escalateCleanup`, and returns. Every
+downstream slice would then deliver output only for runs that already exited 0 — the opposite of the
+runs an operator needs it for.
+
+1. `RealE2bTransport.runCommand` catches `CommandExitError` (identified by class name + the
+   `exitCode`/`exitStatus` it carries, **not** by parsing `"exit status N"` out of `.message`) and
+   returns `{ exitCode, signal: null, timedOut: false, crashed: true }` — the shape
+   `MockE2bTransport` already returns (`mock-transport.ts:130-137`) and the provider already expects.
+   Timeout classification stays **ahead** of it; a `CommandExitError` must never be re-read as a
+   timeout, nor as not-found (`isE2bNotFound` already excludes it deliberately —
+   `real-transport-helpers.ts:44-46` — and that exclusion must survive this change untouched).
+2. **The dead branch comes alive.** `crashed: exitCode !== 0` (`real-transport.ts:122`) is measured
+   dead today. After this slice it is reachable, and a test must take it — otherwise the fix is
+   itself a check that nothing runs.
+3. **Classify in a pure helper.** `real-transport.ts` imports the `e2b` SDK and loads only on the
+   keyed lane, so its decisions cannot be regression-covered by the no-key build. Put the
+   classification in `real-transport-helpers.ts` beside `isE2bNotFound` — the file that exists for
+   exactly this reason — and pin it there with SDK-shaped fakes.
+4. ★ **The keyed lane is the proof, and it is already written.**
+   `keyed-cli-008-unit-d-invocation.test.ts:323-325` already runs the 78-guard case in a real
+   sandbox and asserts `exitCode === STAGED_INPUT_MISSING_EXIT_CODE`. Run `33789547290` is what
+   measured the throw. After this slice, that assertion passes through the **provider** rather than
+   only the transport, and Unit D's acceptance criterion 5 — *"an attributable failure … exit 78 with
+   a named cause on stderr"* — becomes true end to end for the first time.
+5. **Update E7-F014's `Status:` line to `fixed` in the same commit**, with the commit sha, per the
+   ownership-guard contract. Do not leave a fixed finding reading `open`.
+
+★ **What this slice does NOT fix**, and §3.1f says so as a residual: a provider fault, the
+`withDeadline` race, and a cancel/lease-loss teardown still destroy the sandbox before any export.
+Those runs produce no artifact, `capabilityProven` stays `false`, and that verdict is correct.
 
 ### Slice A — the judge (S) · `server/src/services/e7-distributed-run-verifier{,-store}.ts`
 
@@ -655,9 +913,26 @@ this one does not; do not re-derive it, and do not "tidy" the constant back into
 | `codex_local` | yes | `{ cat "$2"; echo; cat "$1"; } \| "$0" exec --json - > /home/user/.aoa-run-output.jsonl` |
 | `codex_local` | no | `exec "$0" exec --json - < "$1" > /home/user/.aoa-run-output.jsonl` |
 
-**3 — the assertion that states the exception rather than hiding it.** No existing test needs
-editing (§3.1 walks each pin), and that is precisely why a **new** one is mandatory: the invariant at
-`task-run-batch-workload.test.ts:229-252` now has an absolute path it cannot see, and an unstated
+**3 — ★ THE ONE PIN EDIT, made visibly.** `cli-008-unit-b-byte-source.integration.test.ts:279-280`
+pins the workload's **serialized size** (`295`) and the derived submission headroom (`65_241`).
+Measured at `d3fd1b52c`, the redirect takes them to `330` / `65_206`. §3.1a is the full census (16
+pins found, these 2 move) and §3.1b is the justification — E7-F008's invariant is *"no longer grows
+with the task"*, and 35 fixed bytes leave it true. Slice B therefore:
+
+- updates both literals;
+- **extends the comment above them in the same edit** with the new delta and its reason, so the file
+  keeps reading as a history of measured changes rather than a refreshed number;
+- annotates the two prose references to those numbers — `findings.md:452` and
+  `CLI-008-design.md:261` — **without rewriting either one's history** (both correctly record Unit
+  D's own 790→295 delta; only the "the test pins both numbers" parenthetical goes stale).
+
+★★ Do not make this edit silently, and do not make it larger. If the diff to that file is anything
+other than two literals plus a comment extension, something else moved and the census in §3.1a is
+wrong — stop and re-measure.
+
+**4 — the assertion that states the exception rather than hiding it.** Every other pin holds
+untouched (§3.1a), and that is precisely why a **new** one is mandatory: the invariant at
+`task-run-batch-workload.test.ts:229-253` now has an absolute path it cannot see, and an unstated
 exception behind a filter predicate is this programme's "a check that nothing runs". Add, over all
 four shapes:
 
@@ -669,33 +944,65 @@ four shapes:
   so folding it into `readableGuard` reds;
 - `DECLARED_OUTPUT_PATH` is **not an element of `args`** — so promoting it to a positional reds.
 
-★★ **Slice B also EMITS the pointer the worker will read, and the emit site is NOT the workload
-builder.** The control plane knows the declared output path; the worker must be told it, and the only
-channel is the frozen envelope's `extensions[]` — the bounded additive container
-(`packages/worker-protocol/src/extensions.ts`) that Unit B already uses for exactly this shape. Copy
-`stagedInputExtension` (`server/src/services/job-input-staging.ts:481-501`) into a sibling
-`declaredOutputExtension` under a new namespace `com.armyofagents.job/declared-output`, carrying
-`{path, kind: "log", contentType}`. **No frozen schema change.**
+**5 — slice B also EMITS the pointer the worker will read, and the emit site is NOT the workload
+builder.** The control plane knows the declared output path; the worker must be told it. It cannot be
+told by a shared constant: `worker-daemon` depends on **`@armyofagents/worker-protocol` and `pino`,
+nothing else** (measured, `packages/worker-daemon/package.json`), and `worker-protocol` is the frozen
+leaf. So the only channel is the frozen envelope's `extensions[]` — the bounded additive container
+Unit B already uses for exactly this shape, whose `value` is `z.unknown()` on the frozen schema and
+whose reader already exists in the daemon (`lease/staged-input.ts:98`, reading
+`handoff.offer.job.extensions` at `:228`). Copy `stagedInputExtension`
+(`server/src/services/job-input-staging.ts:481-501`) into a sibling `declaredOutputExtension` under a
+new namespace `com.armyofagents.job/declared-output`, carrying `{path, kind: "log", contentType}`,
+`critical: false` (§3.1e). **No frozen schema change.**
 
 ★★★ **The attach point is the LEASE-OFFER builder, `server/src/services/job-leasing.ts:399`, not the
 workload builder — and this is the one non-obvious piece of plumbing in slice B.** That line is
 `extensions: input.stagedInput.length > 0 ? [stagedInputExtension(input.stagedInput)] : []`, and
-`input.stagedInput` is derived at lease time from durable `job_artifacts` rows
-(`:628`, `:638`). A declared **output** has no such row — nothing has been produced yet — so it
-cannot ride that derivation. Two shapes, and the implementer must pick one **in slice B**, not
-discover the fork in slice D:
+`input.stagedInput` is derived at lease time from durable `job_artifacts` rows (`:628`, `:638`). A
+declared **output** has no such row — nothing has been produced yet — so it cannot ride that
+derivation.
 
-- **(recommended) Derive it at lease time from the workload type.** The builder already holds
-  `input.job.workloadType` (`:400`). The declared output path is a property of the task-run workload
-  shape *the control plane itself authored*, so emitting the pointer whenever the workload is the
-  coding one needs no new storage and cannot drift from the argv — both read the same constant, and
-  the new assertion above keeps them reading it.
-- **(alternative) Persist it at submission.** More faithful for a future per-run path, but `workload`
-  is the `.strict()` frozen shape, so it needs a column or a job-side blob. Only worth it if open
-  question 2 is answered "a list".
+★★★ **AND THE PREDICATE THAT DECIDES WHETHER TO EMIT IS NOT `workloadType`. An earlier revision
+recommended exactly that, and §3.1d refutes it by measurement:** a coding task run is `batch`
+(`heartbeat-distributed-rollout.ts:29`) and so is an extraction one-shot
+(`cli-008-unit-b-staging-channel.integration.test.ts:299-300`, `source_kind 'one_shot'`,
+`operationKind "extraction"`). One value, two workload classes; a pointer keyed on it would send the
+worker hunting a file no extraction script ever creates.
 
-See open question 3 for the `critical` flag, which is a real fork and must be decided before slice D
-starts.
+**The predicate is a read of the workload the builder is about to ship** — which
+`buildJobEnvelope` already holds as `input.job.input`, the very value it assigns to `workload:` one
+line after the `extensions:` line (`job-leasing.ts:399-400`). Export a single helper beside the
+constant:
+
+```
+declaredOutputPathFromWorkload(workload): string | null
+  // the path iff workload.args[1] ends with ` > ${DECLARED_OUTPUT_PATH}`; null otherwise
+```
+
+and emit the extension iff it returns non-null. This is deliberately preferred over
+`source.kind === "task_run"` — which IS available at the attach point (`source(input.job)`,
+`job-leasing.ts:354`) and would also have separated the counter-example — for three reasons:
+
+- **It cannot drift.** The redirect and the pointer are not two facts held in agreement by
+  convention; one is derived from the other. A future shape that drops the redirect drops the pointer
+  with it, and the worker exports nothing rather than failing to find a file.
+- **It cannot over-claim.** The pointer never names a file the script did not arrange to create —
+  the WRK-009 property (*a fabricated success is byte-identical to a real one on every gate*) applied
+  one layer earlier.
+- **It is fail-closed in the right direction.** No redirect ⇒ no pointer ⇒ no export ⇒
+  `capabilityProven` stays `false`, which is the true verdict for a run that produced nothing.
+
+Pin it with a positive and a negative in the same test: the four (adapter × bundle) coding shapes
+each yield the path; a workload whose `args[1]` carries no redirect yields `null`. ★ The negative is
+the one that matters — without it the helper could `return DECLARED_OUTPUT_PATH` unconditionally and
+every assertion above would still pass.
+
+★ **Record the sibling-extension arithmetic at the call site** (§3.1e): `pointerFitsExtension`
+(`job-input-staging.ts:220-243`) checks the **per-value** cap only and knows nothing about siblings.
+Correct at one extension, still correct at two (16,384 + a few hundred against a 65,536 combined cap
+and a count cap of 16), a latent E7-F010 shape at three. Say so where the second one is added rather
+than leaving the next author to find it.
 
 ★ **The in-sandbox guard does NOT grow to cover the output path — and under this shape it cannot.**
 `STAGED_INPUT_MISSING_EXIT_CODE = 78` (`:80`) fires when a needed *input* is unreadable, before the
@@ -740,15 +1047,29 @@ This is DAT-009 slice 3, scoped to **one declared output path** rather than to a
 0. **Read the pointer.** A `readDeclaredOutputPointers(handoff.offer.job.extensions)` mirroring
    `readStagedInputPointers` (`lease/staged-input.ts`). A run whose envelope carries no pointer
    resolves to `[]` and the lifecycle is byte-identical to today — which is what keeps export
-   optional, exactly as staging is. **Do not start slice D before open question 3 is answered**: the
-   `critical` flag on that pointer decides whether an un-understood namespace refuses or exports
-   nothing, and that is the same fork Unit B decided for staging.
+   optional, exactly as staging is. The pointer is `critical: false` (§3.1e, formerly open question
+   3): an un-understood namespace exports nothing rather than refusing the offer, agreeing with D.5's
+   polarity — losing a transcript must not cost a completed run its terminal.
+   ★ **Validate the path before using it, and do NOT reuse `assertLocalAbsolutePath`**
+   (`enrollment/enrollment-input.ts:80`): that validator is **host-platform-aware**, and a sandbox
+   path is POSIX regardless of what the worker runs on — a Windows-hosted worker would reject
+   `/home/user/…`. The precedent to copy is `staged-input.ts:75` (`path.startsWith("/")`), tightened
+   here to: POSIX-absolute, no `..` segment, and inside `STAGED_INPUT_DIR`. It is control-plane data,
+   not tenant data, so this is defence in depth rather than a trust boundary — but a path the worker
+   will read out of a sandbox and PUT to object storage is worth bounding, and WRK-015's lesson is
+   that a validator minus its root drops absoluteness.
 1. **`EffectAuthority` grows the pair**, mirroring `stageFiles` exactly
    (`supervisor/effect-authority.ts:94-108`): both are effectful reads of a live sandbox and must be
    fence-gated, so a run whose lease was replaced cannot still be exporting from the sandbox its
    successor is about to use.
 2. **The supervisor's post-execute step**: after `execute` and *before* `terminal`, for each declared
-   output path — digest → **floor check** → `artifactTransferGrant(operation:"upload",
+   output path — ★★★ **and this placement is only correct once Slice Ø has landed.** As measured in
+   §3.1f, a non-zero exit today THROWS out of the transport, and `supervisor.ts:743-757` catches it,
+   emits the terminal, `escalateCleanup`s the sandbox and **returns** — so a step written here would
+   be skipped, and its sandbox destroyed, on every failing run. Slice Ø converts that throw into a
+   returned `{exitCode, crashed:true}`, which puts failing runs back on this path. **Do not implement
+   D.2 against a transport that still throws**; the result would be a return path that works only for
+   runs that already succeeded. For each declared output path, then — digest → **floor check** → `artifactTransferGrant(operation:"upload",
    expectedSha256, maxBytes)` over the frozen op → `exportArtifact` → `artifactCommit`
    (`transport/client.ts:567`, whose route is already mounted). ★ **The floor check comes BEFORE the
    grant**, not after: an empty or model-turn-free transcript (§3.1, slice C) must mint no grant,
@@ -852,10 +1173,14 @@ turn it red.
 | 5.11 | **A lost terminal latch writes NO row** (slice E) | `setRunStatus` resolves `false`; assert no `task_outputs` row and no summary | Move step (5) above the `:226` early return → red |
 | 5.12 | **A run with no issue writes NO row** (slice E) | `target.issueId === null`; assert nothing is written (`task_outputs.issueId` is `notNull`, `task_outputs.ts:29`) | Same mutation as 5.11 |
 | 5.13 | **A legacy-owned run is never projected** (slice E, existing) | `run.executionOwner !== "distributed"` returns at `canary-terminal-projection.ts:306` before any write | Delete the guard → a legacy run gains a distributed artifact row → red |
-| 5.14 | ★★★ **The declared output path is NOT staged and NOT guarded** (slice B) | Over all four (adapter × bundle) shapes: `DECLARED_OUTPUT_PATH` is in `args[1]`, absent from `stagedFiles`, absent from the guard prefix, and absent from `args` as an element | Add it to the `staged` array → the guard 78-refuses the happy path AND this test reds. Promote it to a positional → this test reds. **Without this test the exception at `task-run-batch-workload.test.ts:229-252` is unstated**, which is the failure class §3.1 exists to avoid |
-| 5.15 | **The redirect is present in every shape** (slice B) | All four scripts end in `> ${DECLARED_OUTPUT_PATH}`; the existing `:208`/`:220` `toEqual` shape tests and `:229-252` still pass unedited | Drop the redirect from any one shape → 5.14's first bullet reds for that shape (and nothing else does — which is exactly why it is asserted) |
+| 5.14 | ★★★ **The declared output path is NOT staged and NOT guarded** (slice B) | Over all four (adapter × bundle) shapes: `DECLARED_OUTPUT_PATH` is in `args[1]`, absent from `stagedFiles`, absent from the guard prefix, and absent from `args` as an element | Add it to the `staged` array → the guard 78-refuses the happy path AND this test reds. Promote it to a positional → this test reds. **Without this test the exception at `task-run-batch-workload.test.ts:229-253` is unstated**, which is the failure class §3.1 exists to avoid |
+| 5.15 | **The redirect is present in every shape** (slice B) | All four scripts end in `> ${DECLARED_OUTPUT_PATH}`; the existing `:208`/`:220` `toEqual` shape tests and `:229-253` still pass **unedited** (§3.1a pins 3-5) | Drop the redirect from any one shape → 5.14's first bullet reds for that shape (and nothing else does — which is exactly why it is asserted) |
 | 5.16 | ★★ **An EMPTY transcript never becomes a committed artifact** (slice C/D) | A run whose declared output file is zero bytes: assert no grant is minted, no PUT is issued, no `job_artifacts` row persists, a `terminal` IS emitted, and `capabilityProven === false` | Remove the zero-length refusal → an empty file commits → `capabilityProven` goes true on a run that produced nothing → red |
 | 5.17 | ★★★ **A transcript with NO MODEL TURN never becomes a committed artifact** — **CONDITIONAL on open question 5**, because the check is NOT buildable at the worker as the port stands (`digestArtifact` is "metadata only; never returns content", `supervisor/provider.ts:412`) | Feed a claude transcript of `system` + `result` frames only (the shape a failed CLI login emits): assert no commit, a `terminal`, and `capabilityProven === false` | Remove the model-turn predicate → the gate goes green for a run in which the model never spoke. ★ **If open question 5 declines all three homes, this control is NOT written and §6.6's residual stands unmitigated** — an unwritten control that is named is honest; a control asserted against a port that forbids it is not |
+
+| 5.18 | ★★★ **The updated size pin still measures an O(1) payload** (slice B) | `cli-008-unit-b-byte-source.integration.test.ts` reads `330`/`65_206` AND the 100×-prompt test (`task-run-batch-workload.test.ts:435-440`) still passes untouched — the second is what makes the first an honest measurement rather than a refreshed number | Make the redirect depend on the prompt in any way (interpolate a task id, a run id, a hash) → the 100× test reds and the size pin becomes non-deterministic. ★ **That mutation is the whole point of this row**: E7-F008's claim is *"no longer grows with the task"*, not *"equals 295"*, and this is the control that proves the edit preserved the claim rather than eroding it |
+| 5.19 | ★★★ **A non-zero exit RETURNS its code instead of throwing** (slice Ø) | Against a real sandbox on the keyed lane, the already-written 78-guard case (`keyed-cli-008-unit-d-invocation.test.ts:323-325`) reaches `exitCode === 78` **through `E2bSandboxProvider.execute`**, not only through the transport; and the no-key lane pins the classifier in `real-transport-helpers.ts` against an SDK-shaped `CommandExitError` fake | Restore the bare rethrow in `RealE2bTransport.runCommand` → red. ★ **And take the newly-live branch**: `crashed: exitCode !== 0` (`real-transport.ts:122`) is measured DEAD today; a slice-Ø test that never reaches it has fixed nothing observable |
+| 5.20 | ★★ **The declared-output pointer is emitted for a coding workload and NOT for a non-coding one** (slice B) | `declaredOutputPathFromWorkload` returns the path for all four (adapter × bundle) shapes AND `null` for a workload whose `args[1]` carries no redirect | Make the helper return the constant unconditionally → the negative case reds. ★ **Without the negative this control is vacuous**, and `workloadType` — which is `"batch"` for a coding run and for an extraction one-shot alike (§3.1d) — would pass a positive-only version |
 
 ★ **The gate this unit must NOT create.** Unit A faced a clause nobody could pass and the remedy was
 a **second verdict computed beside `ok`**, never a fold into `ok`. Unit F does not fold anything into
@@ -880,7 +1205,14 @@ arm anything could satisfy. That is the failure mode to watch for in review, and
 3. exactly **one** `task_outputs` row on the run's task, `created_by_run_id = <the run>`,
    surviving a redelivered terminal;
 4. and a run whose **export failed** still reaching a durable `terminal`, with
-   `capabilityProven === false` — the true statement, not a masked one;
+   `capabilityProven === false` — the true statement, not a masked one; ★★★ **and a run whose agent
+   exited NON-ZERO reaching a terminal that carries that exit code, with its transcript exported and
+   committed exactly as a succeeded run's is.** That criterion is what Slice Ø buys, and it is the
+   one an operator will actually exercise first: E7-F014 measures the throw as the common case, and
+   without Ø this whole return path delivers output only for runs that already exited 0. **Residual,
+   stated:** a provider fault, the `withDeadline` race, and a cancel/lease-loss teardown still
+   destroy the sandbox before any export, so those runs commit nothing and `capabilityProven` stays
+   `false` — the correct verdict, since nothing reached AoA (§3.1f);
 5. and a run whose transcript was **empty** committing nothing, reaching a durable `terminal`, with
    `capabilityProven === false` (§3.1(1)'s producer-side floor; control §5.16). ★ The **model-turn**
    half of that floor is conditional on open question 5 and is NOT an acceptance criterion — see
@@ -974,23 +1306,32 @@ carry):
 ## 9. Open questions the implementer must answer
 
 1. **Does the E2B SDK's `files.read` return bytes for a file written by a redirected `exec`?**
-   `#transport.readFile` exists and is uncalled; nothing in this repo has ever exercised it against a
-   real sandbox. **Step 0 for slice C:** call it once in the operator-dispatched keyed lane
-   (`keyed-real-e2b.test.ts`) before building anything on top of it. If it does not work, slice C's
-   shape changes and this design needs a second pass — say so and stop, the way WRK-015 did.
+   `#transport.readFile` exists and is uncalled **by production code** — ★ but it is NOT unexercised
+   against a real sandbox any more: `keyed-cli-008-unit-d-invocation.test.ts` reads three files back
+   with it inside a live E2B sandbox (`readText` at `:125-127`, used at `:171`, `:184`, `:188-189`),
+   and that lane merged green at `c48259358`. So the remaining unknown is **narrow**: those files
+   were written by `writeFiles` and by a probe script, not by a **redirected `exec`**. **Step 0 for
+   slice C** is therefore one added case on that same lane — run a redirecting script, then
+   `readFile` its target — not a new harness. If it fails, slice C's shape changes and this design
+   takes a second pass; say so and stop, the way WRK-015 did.
+   ★★ **Two sub-cases that must be in the same step-0 run**, because they are the ones the design
+   leans on: (a) a **non-zero-exiting** command's redirect still leaves a readable file (this is what
+   makes Slice Ø worth building); (b) an **unwritable** redirect target fails at the redirection with
+   the agent never starting — `exec cmd > path` applies redirections first, and a redirection failure
+   on the special built-in `exec` exits the shell, which is the fail-closed polarity §4 slice B
+   claims. Both are one-line variants of the case in (a).
 2. **One output path or a list?** The design assumes exactly one (`DECLARED_OUTPUT_PATH`, a script
    constant). A list generalizes the supervisor step but multiplies the grant round-trips and needs a
    per-file failure policy. Start at one; the port takes a `path` per call, so widening later is
    additive. ★ Note that a list re-opens slice B's fork: a per-run list cannot be a script constant,
    so it would have to become positionals — and §3.1's three measurements apply again, in full.
-3. ★ **Is the declared-output pointer `critical`?** Slice B assigns the CHANNEL (a new
-   `extensions[]` namespace beside the staged-input one). What it does not assign is the flag, and
-   this is a real fork with opposite failure directions: `critical: true` means a worker that does
-   not understand the namespace **refuses the offer** (nothing runs, no capacity claimed);
-   `critical: false` means it runs and simply exports nothing (the run succeeds and
-   `capabilityProven` stays false). **Recommendation: `critical: false`**, because it agrees with
-   the export step's own polarity (§4 slice D.5) — losing a transcript must not cost a completed
-   run its terminal. Decide it, and write the reason at the constant, **before slice D starts**.
+3. ~~**Is the declared-output pointer `critical`?**~~ ★ **ANSWERED in this revision — `critical:
+   false`** (§3.1e), for the same reason the staged-input extension carries it: a worker that does
+   not understand the namespace exports nothing rather than refusing the offer, which agrees with the
+   export step's own polarity (§4 slice D.5) — losing a transcript must not cost a completed run its
+   terminal. It remains listed here so the reasoning is not re-litigated silently; write the reason
+   at the constant. **What replaces it as a slice-B decision is the EMIT PREDICATE**, and that is
+   settled too: `declaredOutputPathFromWorkload`, not `workloadType` (§3.1d, H2).
 4. **Size ceiling.** A long stream-json transcript can be large; `DEFAULT_MAX_ARTIFACT_BYTES` bounds
    the commit server-side, and the grant carries `maxBytes`. Decide whether the worker refuses before
    the PUT (recommended — a rejected commit wastes the upload) and what the operator sees when it
@@ -1020,13 +1361,31 @@ carry):
 
 ## 10. Corrections to earlier records
 
-★★★ **Including this document's own first draft (`419a94afd`…`c28631e33`), corrected in place on
-review rather than quietly swapped.** Both errors were the *obvious* shape, which is why they are
-recorded instead of erased:
+★★★ **Including this document's own earlier drafts, corrected in place on review rather than quietly
+swapped.** Every error below was the *obvious* shape, which is why they are recorded instead of
+erased. ★★ **And the pattern across them is worth more than any single row: three revisions, three
+mechanisms, ONE seam.** Round 1 put the output path in the argv and was refuted on argv **shape**
+(the positional index is shape-dependent; `readableGuard` arity; the argv↔staged set-equality
+invariant). Round 2 fixed the shape and was refuted on argv **size** (a serialized-bytes pin in a
+file it never opened). Both refutations exist because Unit D *just* stabilised that seam and pinned
+its numbers as E7-F008 evidence — it is the most heavily pinned surface in the repository precisely
+because it was the most recently moved. The corrective is not a fourth mechanism; it is §3.1a, a
+census by search, and §3.1c, a costed comparison against the alternative that avoids the seam
+entirely. This revision keeps the seam and pays one stated pin edit, and says why in §3.1b.
+
+**Round 2's errors (`2bc203b92`…`d3fd1b52c`), corrected in this revision:**
+
+| round 2 said | measured, and where the correction lives |
+|---|---|
+| ★★★ *"Measured against each pin, **no test needs editing**"*, repeated as a slice-B claim and again in §5.15 | **False.** `cli-008-unit-b-byte-source.integration.test.ts:279-280` pins the workload's **serialized size** (`295`) and the derived headroom (`65_241`); the 35-byte redirect takes them to `330`/`65_206`. No `skipIf`, no DB gate — it runs in the required Linux `verify`. ★ The claim was reached by walking one file's pins and generalising; the second file asserts a property the first never mentions. **§3.1a** is the census by search (16 pins, 2 move), **§3.1b** is the justification for editing them, and **slice B point 3** makes the edit a named deliverable |
+| *"emit the pointer whenever the workload is the coding one, derived from `input.job.workloadType`"* (§4 slice B, "recommended") | **It does not discriminate.** `HEARTBEAT_TASK_RUN_WORKLOAD_TYPE = "batch"` (`heartbeat-distributed-rollout.ts:29`), and `cli-008-unit-b-staging-channel.integration.test.ts:299-300` seeds a **non-coding** one-shot (`operationKind "extraction"`) whose `workload_type` is also `'batch'`. **§3.1d** replaces it with `declaredOutputPathFromWorkload` — a read of the workload about to ship, which cannot drift from the redirect because it is derived from it — and control §5.20 pins the negative case that a positive-only test would miss |
+| the design was written against the clean-exit path only | **E7-F014** (merged `c48259358`, observed in real E2B run `33789547290`) measures a non-zero exit as a **throw**; traced one layer further, `supervisor.ts:743-757` emits the terminal, **destroys the sandbox** and **returns**, so no post-execute step runs on any failing run. **§3.1f** states this, **Slice Ø** fixes it and blocks C/D/E, slice D.2 refuses to be implemented without it, and acceptance §6.4 carries both the criterion and the residual |
+
+**Round 1's errors (`419a94afd`…`c28631e33`):**
 
 | the first draft said | measured, and where the correction lives |
 |---|---|
-| the redirect is `> "$3"`, with the output path appended to the argv | Wrong three ways, each caught by a shipped test: `$3` is not a stable index (the instructions path is conditional, `task-run-sandbox-invocation.ts:164,169`, and the no-bundle argv is pinned at `task-run-batch-workload.test.ts:215,371`); routing it through `paths` makes `readableGuard` 78-refuse the happy path (`:176`, pinned `:388`); routing it around `paths` breaks the set-equality invariant (`:229-252`). **§3.1** has the shape that survives — a constant in the script literal, no argv change, no test edits, plus one new assertion that states the exception |
+| the redirect is `> "$3"`, with the output path appended to the argv | Wrong three ways, each caught by a shipped test: `$3` is not a stable index (the instructions path is conditional, `task-run-sandbox-invocation.ts:164,169`, and the no-bundle argv is pinned at `task-run-batch-workload.test.ts:215,371`); routing it through `paths` makes `readableGuard` 78-refuse the happy path (`:176`, pinned `:388`); routing it around `paths` breaks the set-equality invariant (`:229-253`). **§3.1** has the shape that survives — a constant in the script literal, no argv change, plus one new assertion that states the exception. ★ **NOTE**: this row originally ended *"no test edits"*, which is the claim round 2 was refuted on — see the round-2 table above and §3.1a. The shape survives; the cost is one measurement pin, not zero |
 | the captured bytes are "the thing the agent produced, byte for byte" | They are JSONL **protocol frames** (shapes at `claude-local/src/server/parse.ts:19-45`), non-empty even when the model never spoke. **§0** picks provenance over productivity and follows it through §3.1, §3.3, §5.16 (and §5.17, conditional — the model-turn check is measured as not buildable at the worker), §6.6 and §7 |
 
 ★★ **And a third correction of altitude rather than fact:** the first draft removed the task-output
