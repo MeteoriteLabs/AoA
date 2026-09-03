@@ -108,6 +108,13 @@ export interface RunExecutionOwnerDeps {
    * as before. Returns the staged pointers for logging; the LEASE path re-reads the durable
    * rows rather than trusting anything returned here, because the offer is built in a
    * different transaction and possibly a different process.
+   *
+   * ★ `staged: false` HERE MEANS "nothing was asked for", AND ONLY THAT. A refusal — the
+   * attempt is not visible, or the pointer would not fit the envelope — THROWS
+   * (`StagedInputRefusedError`), because this signature cannot carry a reason and the caller
+   * below deliberately does not inspect the result. Do not widen the return to report a
+   * failure: the boolean would be indistinguishable from the benign case, and the whole point
+   * of the throw is that a run missing its files must not proceed to placement.
    */
   stageJobInput?(input: {
     organizationId: string;

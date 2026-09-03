@@ -1274,10 +1274,16 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
         attemptId,
         files,
       });
+      // ★ KEEP THIS, AND KEEP IT AT DEBUG. Since refusals throw (`StagedInputRefusedError`),
+      // the only reason that can reach here is `no_files` — "nothing was asked for, correctly".
+      // A warn for that trains operators to ignore the channel, which is the state in which a
+      // real one goes unread. It stays as the POSITIVE CONTROL: it fires only if the caller's
+      // own `files.length > 0` guard is ever tidied away, and it is the one line that would
+      // then say so.
       if (!result.staged) {
-        logger.warn(
+        logger.debug(
           { organizationId, jobId, attemptId, reason: result.reason },
-          "[cli-008] staged-input write produced nothing — the sandbox will start without the control plane's files",
+          "[cli-008] nothing to stage",
         );
       }
       return { staged: result.staged };

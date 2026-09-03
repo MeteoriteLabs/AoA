@@ -105,8 +105,56 @@ export interface StageJobInputFilesInput {
   readonly now?: () => Date;
 }
 
+/**
+ * Why a stage refused to write anything. ★ NEITHER OF THESE IS A LEGAL RETURN — both throw.
+ *
+ * | reason | meaning |
+ * |---|---|
+ * | `unknown_attempt` | the attempt row is absent, invisible under RLS, or belongs to another job |
+ * | `pointer_too_large` | the projected extension exceeds the frozen 16,384-byte value budget |
+ *
+ * Both mean the control plane's files WILL NOT BE THERE. See `StagedInputRefusedError`.
+ */
+export type StagedInputRefusalReason = "unknown_attempt" | "pointer_too_large";
+
+/**
+ * A stage that could not honour its postcondition.
+ *
+ * ★★ WHY THIS THROWS INSTEAD OF RETURNING. A refusal and a success are not two outcomes of
+ * one operation — a refusal means the sandbox will start WITHOUT the files the control plane
+ * meant it to have, while placement runs, the attempt becomes leasable, and the legacy adapter
+ * is suppressed. A worker then runs the agent with no MCP config and no instructions and
+ * reports success: a silent wrong-content execution. Returning that outcome puts the burden of
+ * noticing on a caller that provably cannot — the port type is `Promise<{staged: boolean}>`
+ * (`run-execution-owner.ts:117`) and the composition root narrows the reason away before the
+ * caller ever sees it.
+ *
+ * Throwing puts the decision where the reason exists. `resolveExecutionOwner`'s catch already
+ * releases the claimed capacity and returns `transfer_error`, and its comment already says
+ * *"A throw here is a LEGACY run, not a broken one"* — this makes that sentence true rather
+ * than aspirational. Placement has not run, so no attempt is left leasable.
+ */
+export class StagedInputRefusedError extends Error {
+  readonly reason: StagedInputRefusalReason;
+
+  constructor(reason: StagedInputRefusalReason, detail: string) {
+    super(`[cli-008] staged input refused (${reason}): ${detail}`);
+    this.name = "StagedInputRefusedError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * ★★★ THE UNION IS NARROW ON PURPOSE, AND THAT IS THE LOAD-BEARING HALF OF THIS FIX.
+ *
+ * `no_files` is the only non-throwing `staged: false`, and the TYPE now states it: the caller
+ * asked for nothing, so the postcondition holds vacuously. There is nowhere left to put a new
+ * refusal that a caller would ignore — adding one means either widening this union (which reds
+ * every exhaustive consumer) or throwing (which is correct). A silent refusal cannot be
+ * introduced by accident, which is exactly how this one was introduced.
+ */
 export type StageJobInputFilesResult =
-  | { readonly staged: false; readonly reason: "no_files" | "unknown_attempt" | "pointer_too_large" }
+  | { readonly staged: false; readonly reason: "no_files" }
   | { readonly staged: true; readonly attempt: number; readonly pointers: readonly StagedInputPointer[] };
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -177,7 +225,12 @@ export async function stageJobInputFiles(
     const rows = await repos.jobArtifacts.listForJob(input.jobId);
     return { attempt: attempt.attemptNumber, rows };
   });
-  if (!resolved) return { staged: false, reason: "unknown_attempt" };
+  if (!resolved) {
+    throw new StagedInputRefusedError(
+      "unknown_attempt",
+      `attempt ${input.attemptId} is not a visible attempt of job ${input.jobId}`,
+    );
+  }
 
   const existing = stagedInputPointersFromRows(resolved.rows, resolved.attempt);
   const prefix = expectedAttemptObjectPrefix({
@@ -187,7 +240,10 @@ export async function stageJobInputFiles(
   });
   // 1b. Refuse a bundle whose POINTER could not ride the envelope, BEFORE a byte moves.
   if (!pointerFitsExtension(input.files, prefix)) {
-    return { staged: false, reason: "pointer_too_large" };
+    throw new StagedInputRefusedError(
+      "pointer_too_large",
+      `${input.files.length} files project past the ${WIRE_EXTENSION_LIMITS.valueMaxCanonicalBytes}-byte extension budget`,
+    );
   }
 
   const pointers: StagedInputPointer[] = [];

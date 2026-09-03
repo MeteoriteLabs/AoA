@@ -29,6 +29,7 @@ import { provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
 import { runInTenant } from "../db/tenant-context.js";
 import {
   STAGED_INPUT_ARTIFACT_KIND,
+  StagedInputRefusedError,
   stageJobInputFiles,
   stagedPathFromMarker,
 } from "../services/job-input-staging.js";
@@ -262,11 +263,14 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
     // The attempt is invisible under ORG's context, so the resolve step already refuses —
     // which is the fail-closed direction. Prove the deeper barrier too, by asking the
     // repository to insert an artifact for a FOREIGN organization directly.
-    const refused = await stageJobInputFiles({
+    // ★ It THROWS rather than returning. A returned refusal would let placement run and the
+    //   attempt become leasable with no files behind it — a silent wrong-content execution.
+    const refused = stageJobInputFiles({
       appDb: app.db, storage, organizationId: ORG, jobId, attemptId,
       files: [{ path: "/home/user/.aoa/x.md", bytes: bytes("x") }],
     });
-    expect(refused).toEqual({ staged: false, reason: "unknown_attempt" });
+    await expect(refused).rejects.toThrow(StagedInputRefusedError);
+    await expect(refused).rejects.toMatchObject({ reason: "unknown_attempt" });
     expect(storage.puts).toHaveLength(0);
 
     await expectSqlState(
@@ -340,10 +344,11 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
       path: `/home/user/.aoa/file-${i}.md`,
       bytes: bytes(`content ${i}`),
     }));
-    const result = await stageJobInputFiles({
+    const result = stageJobInputFiles({
       appDb: app.db, storage, organizationId: ORG, jobId, attemptId, files: many,
     });
-    expect(result).toEqual({ staged: false, reason: "pointer_too_large" });
+    await expect(result).rejects.toThrow(StagedInputRefusedError);
+    await expect(result).rejects.toMatchObject({ reason: "pointer_too_large" });
     // ★ Nothing was written — not the objects, and not the rows.
     expect(storage.puts).toHaveLength(0);
     const rows = await admin`SELECT count(*)::int AS n FROM job_artifacts WHERE job_id = ${jobId}`;
@@ -351,7 +356,8 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
   });
 
   it("still stages a realistic bundle — the ceiling is not in the way of Units C and D", async () => {
-    // Task 1 measured the real need at two files, 26,814 bytes of CONTENT. The pointer for
+    // Task 1 measured the real need at two files, 26,597 bytes of CONTENT (the LF figure;
+    // the 26,814 first recorded here was a CRLF checkout's). The pointer for
     // that is a rounding error against the budget; this pins that the guard above cannot
     // start refusing the bundles the channel exists to carry.
     const { app } = ctx();
@@ -361,19 +367,23 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
       appDb: app.db, storage, organizationId: ORG, jobId, attemptId,
       files: [
         { path: "/home/user/.aoa/mcp.json", bytes: bytes("x".repeat(246)) },
-        { path: "/home/user/.aoa/AGENTS.md", bytes: bytes("y".repeat(26_568)) },
+        { path: "/home/user/.aoa/AGENTS.md", bytes: bytes("y".repeat(26_351)) },
       ],
     });
     expect(result.staged).toBe(true);
   });
 
-  it("stages nothing for an empty file list, and never touches the store", async () => {
+  it("★ stages nothing for an empty file list — the ONLY non-throwing refusal", async () => {
     const { app } = ctx();
     const { jobId, attemptId } = await seedJob();
     const storage = makeStubStorage();
     const result = await stageJobInputFiles({
       appDb: app.db, storage, organizationId: ORG, jobId, attemptId, files: [],
     });
+    // ★ This one RETURNS, and the union type says so: `no_files` is the sole `staged: false`
+    //   variant. The caller asked for nothing, so the postcondition holds vacuously and the
+    //   run must proceed distributed. A blanket "any false throws" would turn every ordinary
+    //   run into a legacy one — which is why the fix narrowed the type instead.
     expect(result).toEqual({ staged: false, reason: "no_files" });
     expect(storage.puts).toHaveLength(0);
   });
