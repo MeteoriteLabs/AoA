@@ -1347,3 +1347,61 @@ answer on this programme ([[e7-cli-001-execution]]: two “flakes” were misdia
 one safe to call non-deterministic is not that it *looks* like a flake — it is a same-commit re-run
 that went green and a dated prior sighting on another branch, both pulled from raw logs. An
 unrecorded flake on a required check is a trap for whoever hits it next.
+
+---
+
+## E3-F035 — `listPendingControlCommands` has no caller, and its docstring asserts a consumer that does not exist
+
+**Status:** open · **Owner:** JOB-015 (`epics/E3-job-control/tickets/JOB-015-design.md` §1.3, slice (e)) · Severity: MEDIUM (latent; a capability that looks built and cannot fire).
+**Filed:** 2026-09-03, by BRW-004 (E8) terrain mapping, re-measured in E3 at `203853b3a`.
+
+> ★ **Note on this entry's `Severity:` spelling.** It is deliberately unbolded, matching E4's
+> register rather than E3's own `**Severity:**` house style, because `parseFindings`
+> (`scripts/lib/finding-ownership.mjs:176`) matches `/Severity:\s*\*{0,2}([A-Za-z]+)/` and the bolded
+> form puts `**` *after* the colon, so the capture never fires. Measured: **35 of 35** E3 findings and
+> **11 of 11** E7 findings parse as severity `UNKNOWN`. That silently disables the guard's
+> `NOT_ACCEPTABLE` rule (a HIGH may never be `accepted`) for both registers. Reported separately; not
+> fixed here, because repairing a guard's blind spot across two registers is register-repair work,
+> not this ticket's.
+
+**What.** `packages/db/src/repositories/tenant/job-control.ts:498-503` is a complete, correct
+repository method with **zero production callers** — and its own docstring names the consumer:
+
+> `/** Un-ACKed control commands for a lease, in monotonic sequence — the "return`
+> ` * pending controls until ACK" read the poll/renew path surfaces. */`
+
+**The poll/renew path does not surface it.**
+
+**Measured at `203853b3a`** (`grep -a`, excluding `node_modules` and `dist/`):
+
+| Claim | Measured |
+|---|---|
+| non-definition references to `listPendingControlCommands` | **1** — `server/src/__tests__/job-fence-surface.contract.test.ts:114`, a name-inventory contract test |
+| the renew path calls it | **no.** `job-control.ts:2477-2484` runs its own inline query with a different projection (`reason` only) and a narrower filter (`command_kind IN ('cancel','graceful_stop')`), collapsed to `cancelRequested: Boolean(pendingCancel)` at `:2495`, with `extensions: []` hardcoded at `:2496` |
+| the poll path calls it | **no.** The poll response carries lease offers; it has no control field |
+| `commandKind` anywhere in `packages/worker-daemon/src` | **0** |
+| production callers of `decideControlReceiverV1` — the E1 replay/gap/conflict/stale classifier that `job_control_commands.ts:33` says the worker uses against this sequence | **0.** The only non-`worker-protocol` reference is that comment |
+
+**Why this is filed at MEDIUM and not shrugged off.** It is not an unused helper. It is a **false
+claim of enforcement** — this programme's own named worst failure class — written into the docstring
+of the method that would implement the thing it claims. Someone auditing "do queued control commands
+reach the worker?" finds a method whose name *and* comment both answer yes. The measurable
+consequence: of the five kinds `job_control_commands_kind_check` admits, **three are persisted and
+never delivered** (`drain`, `product_approval_result`, `runtime_decision_result`); only `cancel` and
+`graceful_stop` reach a worker, and only as an undifferentiated boolean.
+
+**Not live.** Nothing currently depends on delivery of the three undelivered kinds: JOB-011's approval
+bridge has zero production callers and is flag-gated off, and no browser or service job is dispatched.
+It becomes live the moment either ships.
+
+**Two epics are already blocked by it, independently.** E8/BRW-004 cannot satisfy "denial/timeout
+fails closed" (the decision is produced and durably recorded by the 30 s sweep at
+`server/src/index.ts:2106-2136`, then never delivered), and E9/SVC-001 hit the same wall from the
+other side and wrote the workaround into schema prose at
+`packages/db/src/schema/service_generations.ts:61-67`.
+
+**Disposition.** Owned by **JOB-015**, filed for exactly this. The finding is closed by the method
+**acquiring a real caller** (design slice (b) sources the renew-response extension from it), not by
+editing the docstring. If JOB-015's slices (b)/(c) are descoped, this must be repointed to a live
+successor rather than marked resolved — an open finding owned by shipped or abandoned work is owned
+by nobody (E4-F013).
