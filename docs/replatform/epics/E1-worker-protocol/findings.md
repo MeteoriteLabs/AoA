@@ -4,6 +4,7 @@ New findings use IDs `E1-F001`, `E1-F002`, and so on.
 
 ## E1-F001 — PRT-002 Step-2 illustrative transition maps diverge from the E0 lifecycle JSON authority
 
+- **Status:** resolved
 - **Severity:** Medium (would produce an incorrect state machine if transcribed literally).
 - **Blocks gate:** No.
 - **Blocks execution until amended:** Yes (execution paused for a plan amendment per operator directive; PRT-002 must not be implemented from the divergent examples).
@@ -18,6 +19,7 @@ New findings use IDs `E1-F001`, `E1-F002`, and so on.
 
 ## E1-F002 — PRT-006 golden-journey parity is vocabulary/enum membership, not full-object schema parse; `emits` vocabulary is broader than the worker-event union
 
+- **Status:** resolved
 - **Severity:** Medium (literal implementation of two Step-6 bullets would fail against the frozen fixtures).
 - **Blocks gate:** No.
 - **Blocks execution until amended:** Yes (PRT-006 `golden-journeys.test.ts` design).
@@ -47,6 +49,7 @@ New findings use IDs `E1-F001`, `E1-F002`, and so on.
 
 ## E1-F003 — PRT-002 `index.ts` uses `export *`, defeating the package's explicit-public-exports review convention
 
+- **Status:** resolved
 - **Severity:** Medium (review integrity). The functional wire surface is currently correct — I verified `export *` re-exports exactly the intended 48 identifiers and leaks no transition-map/guard/private helper — so this does **not** block the E1 gate. It does, however, require a fix before PRT-002 approval (reviewer disposition `changes_requested`), because it violates a stated, twice-documented convention on the one file whose diff the reviewer must scrutinize, and it compounds across the remaining tickets.
 - **Blocks gate:** No. **Requires fix before PRT-002 approval:** Yes.
 - **Discovered during:** PRT-002 independent review (reviewed revision `5288189b73b2fad3709efecf002fef6dcdb24d39`).
@@ -85,6 +88,7 @@ New findings use IDs `E1-F001`, `E1-F002`, and so on.
 
 ## E1-F006 — PRT-004 ticket-result `Reviewed revision:` line carries trailing annotation that the plan's Task-8 Step-1 verification regex rejects
 
+- **Status:** open
 - **Severity:** Low (documentation/tooling format; the reviewed revision is substantively correct and independently verifiable).
 - **Blocks gate:** No.
 - **Discovered during:** E1 integration gate (Task 8) Step-1 ticket-completeness verification, gate revision `93c5e9f2763a16ce17507fde11b8cac770d5478a`.

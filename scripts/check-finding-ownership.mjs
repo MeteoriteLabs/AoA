@@ -119,6 +119,10 @@ const EXPLAIN = {
   successor_not_on_disk: "the named `successor` has no file on disk — a false claim of inheritance",
   successor_already_complete: "the named `successor` has ALSO already SHIPPED — the same hole one level down",
   severity_not_acceptable: "a HIGH/CRITICAL may not be 'accepted'; own it or record it as unowned",
+  severity_unreadable_not_acceptable:
+    "declared 'accepted' but its **Severity:** could not be read — you may not wave away what you have not classified",
+  unparseable_status:
+    "no readable `Status:` field — the guard cannot tell whether it is open, so it refuses (see below)",
   stale_declaration: "declared, but no longer an open finding — remove the entry",
   malformed_input: "internal: the guard was handed something it could not read",
 };
@@ -128,6 +132,15 @@ if (!result.ok) {
   for (const p of result.problems) {
     const detail = p.detail ? ` (${p.detail})` : "";
     console.error(`  - ${p.finding ?? "(input)"}${detail}: ${EXPLAIN[p.kind] ?? p.kind}`);
+  }
+  if (result.problems.some((p) => p.kind === "unparseable_status")) {
+    console.error(
+      "\nA finding block must carry a machine-readable status. Any of these is read:\n" +
+        "  **Status:** open            **Status:** `resolved`      **Status:** **resolved**\n" +
+        "  - **Status: RESOLVED (resolving revision `abc123`).**\n" +
+        "Prose in `- **Disposition:**` is NOT read: inferring open-ness from prose is the\n" +
+        "guessing this guard refuses to do. Write the field.",
+    );
   }
   console.error(
     "\nStatuses: owned (names an existing ticket) | unowned (nobody does — say what it blocks)\n" +
