@@ -1,0 +1,16 @@
+{
+  "_readme": [
+    "Duplicate register ids a human has SEEN and owes a decision on. Default-deny: any",
+    "duplicate not listed here fails `node scripts/check-register-id-uniqueness.mjs`.",
+    "A waiver is NOT a resolution. It says only that the collision is known and that",
+    "renumbering needs a decision a guard cannot make. Every entry is reported on green",
+    "runs so it cannot be forgotten, and `stale_waiver` fires the moment the duplicate is",
+    "gone, so a waiver cannot outlive the defect it covers. Delete the entry in the same",
+    "commit that fixes the duplicate."
+  ],
+  "duplicates": {
+    "decision:104": {
+      "reason": "AWAITING AN OPERATOR DECISION, filed 2026-09-03 by the register-repair unit. `docs/architecture/decisions.md:854` (Optimistic concurrency for agent updates: optional `updatedAt` token -> 409, 2026-06-25) and `:913` (Keyless-except-embeddings: selectable extraction engine + embedding resilience, 2026-06-26) are two different LOCKED decisions one day apart, both numbered #104. NOT waived as acceptable - held because renumbering a locked decision is not a mechanical edit and this unit was scoped to propose, not act. MEASURED citation split: all FOUR CLAUDE.md citations (:31 rule 11, :121 Adapters, :159 memory-write RAG indexing, :171 Discussion Pipeline) mean :913, and so does every frozen replatform record that cites #104 (CLI-006-campaign-result, CLI-007-result, CLI-006-D2-step1-result, e7-1-evidence-verifier-result, REL-003-result, the docs/replatform/qa/* immutable QA records) - all write-once evidence that policy forbids rewriting. The :854 sense is cited ~12 times and ALL of them are live source or tests (packages/shared/src/validators/agent.ts, ui AgentSkillsTab/AgentConfigForm/AgentDetail/AoaAgentDetail + their tests, server agents-update-concurrency.integration.test.ts) plus one historical plan doc, none of them frozen. RECOMMENDATION: renumber :854 to #125 (highest currently defined is #124) and update its ~12 live citations in the same commit; every CLAUDE.md citation and every frozen record then stays correct and untouched. Evidence that the collision already bites: DEP-012-design.md:1449 disambiguates by LINE NUMBER (\"Decision #104 (decisions.md:913, the Keyless-except-embeddings one)\") because the id alone is not enough. Remove this entry in the commit that renumbers."
+    }
+  }
+}
