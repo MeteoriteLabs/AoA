@@ -538,3 +538,63 @@ non-frozen port over the frozen vocabulary was right and remains right — but e
 that vocabulary (allow-lists, conformance suites, registries mirroring `PROVIDER_OPERATIONS`) then
 needs a deliberate entry, because nothing adds it for you. Anywhere a new port method is observed
 through a structure derived from the frozen list, check the derivation.
+
+---
+
+## E7-F011 — Unit B's channel does not reach the lane that actually ships, and the prerequisite exists only as a comment
+
+**Status:** open · **Owner:** CLI-008 · **Severity:** HIGH (latent today; a hard blocker between
+Unit B and Units C/D) · **Filed:** 2026-09-03, immediately after CLI-008 Unit B merged as
+`393f7a251`. **Filed against my own work.**
+
+**What.** Unit B's staging channel works on the **E2B/desktop** lane and is structurally unreachable
+on the **networked/container** lane — which is the one the shipped worker image boots.
+
+The chain, verified link by link:
+
+| # | fact | evidence |
+|---|---|---|
+| 1 | `stage_files` is **not** in the frozen operation vocabulary — deliberately; that WAS Unit B's decision | `worker-protocol/src/capabilities.ts:142-153` — 8 core + 3 optional, no `stage_files` |
+| 2 | the wire's `#post` is typed to that vocabulary, so the driver has **no route** to a remote `stageFiles` | `provider-wire/src/driver.ts` `#post<R>(op: ProviderOperation, …)` |
+| 3 | so `NetworkedProviderDriver` declares `fileStagingMode = "none"` and its `stageFiles` **throws** | `driver.ts:93`, `:193-199` — `throw new UnsupportedProviderOperation("stage_files")` |
+| 4 | the **shipped worker image** boots the networked-host root, which constructs exactly that driver | `docker/worker/Dockerfile:13`; `worker-networked-host/src/make-run-provider.ts:86` |
+| 5 | the supervisor **fails closed** on a staging throw | `worker-daemon/src/supervisor/supervisor.ts:700` → `stage_input_failed` + `escalateCleanup` |
+
+**So the first moment Unit C or D supplies a staged file, every container-lane run terminates as a
+hard failure.** Nothing breaks today only because there is no producer: `resolveStagedFiles` returns
+`[]`, `staged.length > 0` is false, and `stageFiles` is never called.
+
+★ **The fail-closed behaviour in link 5 is CORRECT and must not be "fixed".** Running an agent
+without the files the control plane meant it to have produces a clean terminal for mutilated work —
+the one outcome nothing downstream can detect. The defect is the missing route, not the refusal.
+
+★★ **The fix is well-scoped, and smaller than it first looks.** `E2bSandboxProvider.stageFiles`
+already works and already lives on the **remote** side of this wire (`adapter-manager/src/server.ts`
+constructs it). The adapter-manager *can* stage; the driver simply cannot ask it to. What is needed
+is an **inbound staging route on the adapter-manager wire** — not a new provider, and not a change
+to the frozen vocabulary.
+
+★★★ **WHY THIS IS FILED AS A FINDING RATHER THAN LEFT AS A COMMENT — THE ACTUAL DEFECT.** The
+builder knew. `driver.ts:84-92` says it in terms: *"this driver has no wire route to reach a remote
+provider's `stageFiles`. Giving the adapter-manager wire an inbound staging route is its own piece of
+work; claiming support without one would silently drop every staged file."* That comment is honest
+and correct. **But it was the ONLY record.** No finding, no ticket, no gate clause — nothing any
+register, any sweep, or any planning session could see. A prerequisite that exists only as prose in
+the file that implements the refusal is [[checks-that-nothing-runs]] wearing its politest disguise:
+not a false claim of enforcement, but a **real constraint invisible to every mechanism built to
+surface constraints**. Unit B's own PR said "the canary still cannot flip" and listed what was
+missing; this was not on that list.
+
+★ **It also means one sentence in Unit B's record needs reading carefully.** The gate clause is
+honest — it says `wired` means reachable from a boot root, not "runs today", and names the E2B
+driver plus the mock transport as what it proved. That is true. What it does not say, and what this
+finding adds, is that **the boot root it is reachable from is not the boot root that ships.**
+
+**Sequencing consequence — this is the part that changes plans.** Units C and D were both described
+as "now have a channel to ride". On the desktop lane they do. On the container lane they do not, and
+building either before this route exists means their first real run fails closed with
+`stage_input_failed` and no obvious pointer back to here. **This belongs between B and C/D**, and any
+plan that schedules C or D first should say explicitly which lane it is targeting.
+
+**Not to be confused with E7-F009**, which is about the fit check measuring the wrong set on a
+lane where staging *does* work. Both are open; they are independent.
