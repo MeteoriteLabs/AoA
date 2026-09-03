@@ -24,6 +24,7 @@ import {
   DA_HEADING,
   DECISION_REVISION,
   DECISION_REVISION_BODY,
+  FINDING_ID_RANGE_HEADING,
 } from "../register-id-uniqueness.mjs";
 import { parseFindings } from "../finding-ownership.mjs";
 
@@ -427,4 +428,48 @@ test("★ a waiver missing `identities` is malformed — the binding is required
   });
   assert.equal(r.ok, false);
   assert.deepEqual(kinds(r), ["malformed_waiver"]);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★★★ THE ID-RANGE HEADING IS REFUSED. One idiom, three distinct failures in a day.
+
+test("★★★ an id-range heading is REFUSED — it names six findings and is addressable as none", () => {
+  const r = evaluateIdUniqueness({
+    sources: [],
+    rangeHeadings: [{ file: "E3/findings.md", line: 1252, from: "E3-F028", to: "E3-F033" }],
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(kinds(r), ["id_range_heading"]);
+  assert.equal(r.problems[0].id, "E3-F028..E3-F033");
+});
+
+test("★★ the range pattern matches the real form and NOT ordinary finding headings", () => {
+  // The dash matters: the real heading uses an EN dash, which is exactly why
+  // `parseFindings` (whose class holds an EM dash and a hyphen) never saw it and the two
+  // extractors disagreed. All three dashes are covered here.
+  for (const h of [
+    "## E3-F028–E3-F033 — RESOLVED (JOB-003 final acceptance 2026-08-12)",
+    "## E3-F028—E3-F033 — RESOLVED",
+    "## E3-F028-E3-F033 — RESOLVED",
+  ]) {
+    assert.equal(FINDING_ID_RANGE_HEADING.test(h), true, `must be refused: ${h}`);
+  }
+  for (const h of [
+    "## E3-F028 - Bounded pools are not bound to one advisory-lock authority domain",
+    "## E1-F009 — the frozen matcher's five placement guards had NO falsifiable test",
+    "## Resolution round — JOB-003 final acceptance, 2026-08-12 (findings F028 through F033)",
+  ]) {
+    assert.equal(FINDING_ID_RANGE_HEADING.test(h), false, `must NOT be refused: ${h}`);
+  }
+});
+
+test("★★ the replacement heading is claimed by NO id extractor", () => {
+  // The point of re-heading rather than deleting: the prose survives, but nothing tries to
+  // address it as a finding. If this ever regressed, the roll-up would start shadowing a
+  // real id again.
+  const heading = "## Resolution round — JOB-003 final acceptance, 2026-08-12 (findings F028 through F033)";
+  assert.deepEqual(extractHeadingIds(heading, FINDING_HEADING), []);
+  assert.deepEqual(extractHeadingIds(heading, DECISION_HEADING), []);
+  assert.deepEqual(extractHeadingIds(heading, DA_HEADING), []);
+  assert.equal(FINDING_ID_RANGE_HEADING.test(heading), false);
 });

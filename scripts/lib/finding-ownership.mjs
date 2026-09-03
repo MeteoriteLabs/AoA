@@ -121,10 +121,21 @@ export const EXACT_NON_OPEN_STATUSES = Object.freeze([
   "fixed",
 ]);
 
+/** Statuses that MEAN open. Deliberately just `open`.
+ *
+ * ★ `needs_changes` was briefly moved here and the operator ruled against it. The reasoning
+ * that made it tempting — "a review refused the work, so it is not resolved" — is sound in
+ * the abstract and wrong for this corpus: all six findings carrying it (E3-F028..F033) are
+ * genuinely RESOLVED, per the `E3-F028–E3-F033` roll-up and JOB-003's `complete` result
+ * ledger. Their per-finding `Status:` lines were simply never amended. Reclassifying the
+ * status would have manufactured six phantom open findings — including a P0 STOP — out of a
+ * documentation lag. The lag is fixed in the register instead, where it belongs. */
+export const EXACT_OPEN_STATUSES = Object.freeze(["open"]);
+
 /** @returns {"open"|"not_open"|"unrecognised"} */
 export function classifyStatus(status) {
   const value = String(status ?? "").toLowerCase();
-  if (value === "open") return "open";
+  if (EXACT_OPEN_STATUSES.includes(value)) return "open";
   if (EXACT_NON_OPEN_STATUSES.includes(value)) return "not_open";
   if (NON_OPEN_STATUS_FAMILIES.some((f) => value.startsWith(f))) return "not_open";
   return "unrecognised";
@@ -196,7 +207,13 @@ export function evaluateFindingOwnership(input) {
     }
   }
 
-  const open = findings.filter((f) => isPlainObject(f) && f.status === "open");
+  // ★ ONE notion of "open", not two. This filter used to compare the literal string while
+  // `classifyStatus` had its own opinion — two definitions of the same concept in one file,
+  // which is the "two guards disagreeing about what a thing IS" class this branch already
+  // fixed once between `parseFindings` and the uniqueness extractor. Now the classifier is
+  // the single source, so adding a status to EXACT_OPEN_STATUSES cannot leave the filter
+  // behind.
+  const open = findings.filter((f) => isPlainObject(f) && classifyStatus(f.status) === "open");
   const openIds = new Set(open.map((f) => f.id));
   const unowned = [];
 

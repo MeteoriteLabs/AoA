@@ -195,6 +195,22 @@ export function evaluateIdUniqueness(input) {
     }
   }
 
+  // ★★★ AN ID-SHAPED RANGE HEADING IS REFUSED OUTRIGHT. See FINDING_ID_RANGE_HEADING for
+  // the reasoning; the short version is that one such heading caused three distinct
+  // failures in a single day, the last of which left a P0 STOP reading `needs_changes`
+  // while the roll-up alone said RESOLVED — the guard excluded it and was right by luck.
+  for (const heading of Array.isArray(input.rangeHeadings) ? input.rangeHeadings : []) {
+    if (typeof heading !== "object" || heading === null) {
+      problems.push({ kind: "malformed_input", id: null });
+      continue;
+    }
+    problems.push({
+      kind: "id_range_heading",
+      id: `${heading.from}..${heading.to}`,
+      detail: `${heading.file}:${heading.line} names a RANGE of findings and is addressable as none of them — amend each finding in place and put the shared prose under a heading that is not id-shaped`,
+    });
+  }
+
   // A waiver that outlives its duplicate is a lie the next reader inherits — the same rot
   // `stale_declaration` exists to stop in the ownership manifest.
   for (const key of Object.keys(declared).sort()) {
@@ -302,6 +318,37 @@ export const DECISION_REVISION = /^#{2,4}\s+Decision\s+#(\d+)\s+\(revised\s+\d{4
  * Anything failing either gate is treated as an ordinary DEFINITION — so the failure mode is
  * a duplicate being reported, never a duplicate being skipped.
  */
+/**
+ * ★★★ AN ID-SHAPED RANGE HEADING IS REFUSED. `## E3-F028–E3-F033 — RESOLVED (…)`.
+ *
+ * THE DECISION, and why refusing beats teaching. This one idiom produced THREE distinct
+ * failures in a single day:
+ *   1. this guard's first run reported a false duplicate, matching `E3-F028` out of it;
+ *   2. another track independently hit the same false positive (its EN dash escapes the
+ *      `[—-]` class in `parseFindings`, so the two extractors disagreed about it);
+ *   3. six per-finding `Status:` lines — including a **P0 STOP** — sat stale at
+ *      `needs_changes` while the roll-up alone recorded the resolution. The register
+ *      contradicted itself and the ownership guard read the losing side. It excluded them
+ *      and was RIGHT, BY LUCK: had the roll-up said something else, the guard would have
+ *      been equally confident and wrong.
+ *
+ * Teaching the parser to expand the range was the alternative and it is worse. It would
+ * create a SECOND source of truth for a finding's status — its own block, or a roll-up —
+ * and the moment those disagree (which is exactly today's state) a precedence rule is
+ * needed. That rule is itself the hazard: pick wrong and a P0 disappears silently. Worse,
+ * expanding a range and applying its status to members IS INFERENCE, the practice this
+ * guard family's own header records as having been WRONG FIVE TIMES IN BOTH DIRECTIONS.
+ *
+ * ★ What is refused is the HEADING SHAPE, not the roll-up. A shared resolution note for six
+ * findings resolved together is genuinely useful documentation and none of its prose is
+ * lost — it simply must not masquerade as a finding heading, because a heading that names
+ * six findings and is addressable as none of them is precisely the no-consumer shape this
+ * programme keeps being bitten by. Put the prose under a heading that is not id-shaped and
+ * amend each member in place; `artifact-policy.md:48` explicitly permits that amendment.
+ */
+export const FINDING_ID_RANGE_HEADING =
+  /^#{2,4}\s+([A-Z][A-Z0-9]*-F\d+)\s*[–—-]\s*([A-Z][A-Z0-9]*-F\d+)\b/;
+
 export const DECISION_REVISION_BODY = /\*\*Status:\*\*\s*\**\s*Revised\b/i;
 
 /**

@@ -24,6 +24,7 @@ import {
   DA_HEADING,
   DECISION_REVISION,
   DECISION_REVISION_BODY,
+  FINDING_ID_RANGE_HEADING,
 } from "./lib/register-id-uniqueness.mjs";
 
 const EPICS_RELATIVE_PATH = "docs/replatform/epics";
@@ -110,9 +111,29 @@ export function collectRevisions(root) {
     .map((r) => ({ ...r, file, kind: "decision" }));
 }
 
+/** Findings-register headings that name a RANGE of ids. Refused — see
+ * FINDING_ID_RANGE_HEADING for why teaching the form is worse than refusing it. */
+export function collectRangeHeadings(root) {
+  const out = [];
+  for (const { file, kind } of findSourceFiles(root)) {
+    if (kind !== "finding") continue;
+    const lines = readFileSync(path.join(root, file), "utf8").split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      const m = FINDING_ID_RANGE_HEADING.exec(lines[i]);
+      if (m) out.push({ file, line: i + 1, from: m[1], to: m[2] });
+    }
+  }
+  return out;
+}
+
 const ROOT = process.cwd();
 const sources = collectSources(ROOT);
-const result = evaluateIdUniqueness({ sources, revisions: collectRevisions(ROOT), waived: loadWaivers(ROOT) });
+const result = evaluateIdUniqueness({
+  sources,
+  revisions: collectRevisions(ROOT),
+  rangeHeadings: collectRangeHeadings(ROOT),
+  waived: loadWaivers(ROOT),
+});
 
 if (!result.ok) {
   console.error("register-id-uniqueness: an id names more than one thing.\n");
