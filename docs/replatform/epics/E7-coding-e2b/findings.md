@@ -928,3 +928,87 @@ value asserted the wrong thing. Carrying the cause text is **output capture — 
 is unbuilt; no separate finding is filed because the silence is an enforced architectural boundary
 with an owner, not an undocumented constraint. Unit D's acceptance criterion 5 is therefore **half
 met**: "exit 78" is now recorded on the attempt; "with a named cause on stderr" is not.
+## E7-F015 — The capability bar is forgeable: one board POST flips `capabilityProven` with no agent, no worker and no sandbox
+
+**Status:** open · **Owner:** CLI-008 (Unit F, slice A)
+**Severity:** MEDIUM · **Filed:** 2026-09-03, by CLI-008 Unit F's terrain pass, before designing
+anything that would make an operator start trusting this gate.
+
+**What.** `capabilityProven` — the programme's headline capability verdict — is an OR over two
+counters (`server/src/services/e7-distributed-run-verifier.ts:506`, `:522`). One of the two arms is
+writable over HTTP by any company-scoped actor, with no provenance check anywhere on the path.
+
+The chain, verified link by link at `d0b75be19`:
+
+1. `countProducedOutputs`'s task-output arm is **one predicate** —
+   `.where(eq(taskOutputs.createdByRunId, run.id))`
+   (`server/src/services/e7-distributed-run-verifier-store.ts:213-216`). It selects `id` and returns
+   `.length`. There is **no** filter on `type`, `provider`, `created_by_agent_id`, `asset_id`, or any
+   projection receipt.
+2. `POST /api/issues/:issueId/outputs` passes `req.body` straight into `svc.upsertForIssue`
+   (`server/src/routes/task-outputs.ts:45,53`), and the router is mounted unconditionally
+   (`server/src/app.ts:566`) — outside the `distributedExecutionEnabled` gate.
+3. `upsertTaskOutputSchema` admits `createdByRunId: z.string().uuid().nullable().optional()`
+   (`packages/shared/src/validators/task-output.ts:50`). Only `type` and `title` are required;
+   `assetId`, `artifactId` and `executionWorkspaceId` are all optional.
+4. The **only** guard on the field is
+   `assertCompanyOwnedRef(db, heartbeatRuns, input.createdByRunId, companyId, "Heartbeat run")`
+   (`server/src/services/task-outputs.ts:123`) — the run must merely belong to the issue's company.
+   Nothing checks that the caller *is* that run, that the run produced anything, or that the run is
+   distributed at all.
+
+So `{"type":"external_link","title":"x","createdByRunId":"<the canary run>"}` satisfies clause 6.
+
+**Reachability.** MEDIUM, and stated honestly rather than inflated. `--require-capability` is OFF by
+default (`server/src/cli/verify-e7-1-distributed-run.ts:65`), no workflow or script runs the
+verifier, and GO-BOOK §9 currently tells the operator not to pass it — so nothing is being decided on
+this signal **today**. But Unit F exists to make an operator start passing it, and both counters are
+structurally 0 until then, which means the first time this gate is trusted is also the first time it
+matters that it can be forged. It is filed now, and closed BEFORE the bar is made flippable, for
+exactly that reason.
+
+★ **Why the fix is to remove the arm rather than to tighten the route.** Tightening
+`assertCompanyOwnedRef` into "the caller must be this run" does not close it: an agent can stamp its
+own real run id, and the board route has legitimate non-distributed users. The evidentiary asymmetry
+is the point — a `job_artifacts` row can only be written by `commitArtifactVersion` behind a live
+fence, a verified device proof, an attempt-scoped object prefix, and a control-plane `headObject`
+that independently confirms the SHA-256; a `task_outputs` row can be written by anyone who can reach
+the API. Unit F slice A therefore takes the task-output count OUT of the clause-6 predicate (it stays
+OBSERVED and printed) and widens the artifact arm off its `kind = 'workspace_patch'` filter, which
+was never a discriminator for "the agent produced something" — it is a discriminator for "the run had
+a repository", which is Unit E's question.
+
+## E7-F016 — Clause 6's failure text names four unbuilt links, three of which cannot flip either counter, and omits the ones that can
+
+**Status:** open · **Owner:** CLI-008 (Unit F, slice A)
+**Severity:** LOW · **Filed:** 2026-09-03, by CLI-008 Unit F's terrain pass — which was sent to size
+Unit F against this text and found the text wrong about its own subject.
+
+**What.** The reason string at `server/src/services/e7-distributed-run-verifier.ts:509-515` is
+printed to the operator beside every verdict and is the programme's standing answer to "what does
+Unit F have to build". It attributes the structural zero to four links:
+
+| the text's link | measured at `d0b75be19` |
+|---|---|
+| "the E2B driver passes no stream handlers" | True (`packages/sandbox-e2b-provider/src/e2b-provider.ts:261-297`) — but the transport **already implements them**: `RealE2bTransport.runCommand(req, handlers?)` binds `onStdout`/`onStderr` to the E2B SDK (`real-transport.ts:107-120`). And wiring them flips **neither** counter: a `log` event is not a `job_artifacts` row and not a `task_outputs` row |
+| "`stdoutRef`/`stderrRef` are fabricated literals" | True (`e2b-provider.ts:276,293`) — but making them real IS exporting bytes to object storage, i.e. the same work as the artifact path counted twice, not an independent link |
+| "`observeRun` is uncomposed" | True (`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:178-181`). `RunObservation` is `{logs?, progress?, usage?}` (`supervisor/supervisor.ts:73-77`) — flips **neither** counter |
+| "`buildWorkspacePatch`/`createResultCommitter` have zero production callers" | True, and the only one of the four that touches a counter — but it is blocked behind Unit E **and** behind an in-sandbox manifest capture that does not exist: `buildWorkspaceManifest` imports `node:fs` (`snapshot/build-manifest.ts:24`) and walks the DAEMON's filesystem, which on the E2B lane is not where the agent's files are. The text names neither blocker |
+
+Omitted, and decisive: `artifactExportMode: "none"` on **both** shipped providers
+(`e2b-provider.ts:178`, `packages/provider-wire/src/driver.ts:83`); no `artifactPrepared` emitter on
+`EventSequencer` (seven emitters at `packages/worker-daemon/src/supervisor/events.ts:147,155,162,170,178,206,220`,
+while `artifact_prepared` is already frozen at `packages/worker-protocol/src/events.ts:358`); no
+**upload-direction** grant consumer in the daemon (the sole `artifactTransferGrant` caller,
+`lease/staged-input.ts:242`, is download-only and explicitly rejects a cross-paired
+`upload_granted`); and no control-plane projector from durable evidence onto `task_outputs`.
+
+**Reachability.** LOW: it fails no gate and fails open in no direction. It is filed because it is an
+**evidence surface** — printed, quoted, and load-bearing for scheduling. It produced CLI-008's XL
+sizing for Unit F, which the terrain pass corrects to L by taking a route the text does not mention.
+
+★ **The transferable part.** A failure reason is a claim like any other, and this one was assembled
+from symptoms rather than from the predicate directly above it. Three of its four links are true
+statements about the system that are **irrelevant to the counter the clause reads** — which is what
+made the list feel comprehensive while pointing at the most expensive route. When a clause explains
+itself, check each link against the clause's own predicate, not against the subject area.
