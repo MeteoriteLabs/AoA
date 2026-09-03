@@ -114,6 +114,15 @@ RUN pnpm install --frozen-lockfile --filter "@armyofagents/worker-networked-host
 RUN pnpm --filter "@armyofagents/worker-networked-host..." build
 RUN test -f packages/worker-daemon/dist/bin/worker-daemon.js \
   || (echo "ERROR: worker-daemon build output missing" && exit 1)
+# WRK-017 — the CONTAINER custody boot root. `docker-compose.d1.yml` enters it on one worker
+# via a `command:` override, and a `command:` naming a file that is not in the image is not a
+# build failure: the container starts, node exits `ERR_MODULE_NOT_FOUND`, and `up --wait`
+# reports an unhealthy service with no hint that the BIN is what is missing. Assert it here,
+# where the failure names itself. (The daemon deploy tree below is produced by
+# `pnpm --filter @armyofagents/worker-daemon deploy`, which ships this package's whole `dist`,
+# so the compiled bin reaching /worker-app follows from this line.)
+RUN test -f packages/worker-daemon/dist/bin/container-host.js \
+  || (echo "ERROR: worker-daemon container-host build output missing" && exit 1)
 RUN test -f packages/worker-networked-host/dist/bin/networked-host.js \
   || (echo "ERROR: worker-networked-host build output missing" && exit 1)
 # TWO self-contained, prod-only deploy trees.
@@ -137,6 +146,12 @@ RUN pnpm --filter @armyofagents/worker-networked-host deploy --prod /worker-net-
 RUN node docker/apply-workspace-publish-config.mjs /worker-net-app/node_modules
 RUN test -f /worker-net-app/dist/bin/networked-host.js \
   || (echo "ERROR: worker-networked-host deploy output missing" && exit 1)
+# WRK-017 — the DEPLOYED container-host, at the exact path the D1 `command:` override names
+# (WORKDIR is /worker-app, so `dist/bin/container-host.js` resolves here). Asserted on the
+# deploy tree and not only on the build tree, because `pnpm deploy` is what decides which
+# files actually ship.
+RUN test -f /worker-app/dist/bin/container-host.js \
+  || (echo "ERROR: worker-daemon container-host deploy output missing" && exit 1)
 
 # ---------------------------------------------------------------------------
 # production — non-root, read-only-root runtime. TWO pruned deploy trees: the daemon

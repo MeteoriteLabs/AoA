@@ -120,6 +120,21 @@ services:
       # Gated flag — inert on every non-D1 deploy path. Passwords MUST match the
       # AOA_APP_DATABASE_URL / AOA_OPERATOR_DATABASE_URL on control-plane below.
       AOA_D1_PROVISION_SERVING_ROLES: "1"
+      # WRK-017 — D1 harness ONLY: register worker-b's execution target and authorize the
+      # single-use enrolment code its committed ticket carries, so the real worker container
+      # can ENROL during "up --wait". It runs HERE and not from a compose-exec seed
+      # because a first-boot enrol failure is proc.exit(1) in the daemon and the workers have
+      # no restart policy, so a seed that runs after the stack is up is structurally too
+      # late. Gated flag; migrate-entrypoint.sh skips the step everywhere else.
+      AOA_D1_SEED_WORKER_ENROLMENT: "1"
+      AOA_D1_SEED_WORKER_PROFILE_FILE: "/seed-worker.profile.json"
+      AOA_D1_SEED_ENROLMENT_TICKET_FILE: "/seed-enrolment-ticket"
+    volumes:
+      # The SAME two committed files worker-b mounts, read-only. One artifact read twice is
+      # what makes the target id in the database, the target id in the ticket and the target
+      # id the worker profile declares provably the same string.
+      - "./docker/d1/worker-b.profile.json:/seed-worker.profile.json:ro"
+      - "./docker/d1/worker-b.enrollment-ticket:/seed-enrolment-ticket:ro"
     depends_on:
       postgres:
         condition: service_healthy
@@ -136,10 +151,20 @@ services:
       PORT: "3100"
       AOA_DEPLOYMENT_MODE: "authenticated"
       # authenticated mode validates the request Host header against an allowlist
-      # (health/liveness bypass it, but /api/worker-control/* does not). The E6F harness +
-      # the workers reach the control plane by its in-compose service name, so allow it
-      # (plus loopback for the container healthcheck).
-      AOA_ALLOWED_HOSTNAMES: "control-plane,localhost,127.0.0.1"
+      # (health/liveness bypass it, but /api/worker-control/* does not). The E6F harness
+      # reaches the control plane by its in-compose service name, so allow it (plus loopback
+      # for the container healthcheck).
+      # ★ WRK-017 added `toxiproxy`, and the reason is a defect this comment used to conceal.
+      # It used to say the WORKERS also reach the control plane by its in-compose service
+      # name — they do NOT. `AOA_WORKER_CONTROL_PLANE_URL` is
+      # `http://toxiproxy:13100` (that routing is itself a load-bearing invariant,
+      # `checkToxiproxyInPath`), so a worker's HTTP `Host` header is literally `toxiproxy:13100`
+      # and `privateHostnameGuard` — enabled here, because this stack is
+      # `authenticated` + the image's default `AOA_DEPLOYMENT_EXPOSURE=private` — answered 403
+      # to every `/api/worker-control/*` request. Nothing ever caught it because until WRK-017
+      # no worker container issued a request: the E6F harness dials `http://control-plane:3100`
+      # from `test-runner`, which was in the allowlist all along.
+      AOA_ALLOWED_HOSTNAMES: "control-plane,toxiproxy,localhost,127.0.0.1"
       AOA_DISTRIBUTED_EXECUTION_ENABLED: "true"
       # DEP-005 — enables the dormant, unauthenticated test-only reaper trigger
       # (POST /api/worker-control/_test/reap). Decoupled from the distributed-execution
@@ -244,7 +269,9 @@ services:
       AOA_DEPLOYMENT_MODE: "authenticated"
       # Adds `control-plane-b` to the base allowlist so worker-control requests that reach
       # THIS replica by its own service name pass the authenticated-mode Host check.
-      AOA_ALLOWED_HOSTNAMES: "control-plane,control-plane-b,localhost,127.0.0.1"
+      # WRK-017 — `toxiproxy` for the same reason as replica A (see there): a worker dials
+      # `toxiproxy:13100`/`toxiproxy:13101`, so that is the Host the guard sees.
+      AOA_ALLOWED_HOSTNAMES: "control-plane,control-plane-b,toxiproxy,localhost,127.0.0.1"
       AOA_DISTRIBUTED_EXECUTION_ENABLED: "true"
       AOA_D1_TEST_REAP_ENABLED: "1"
       DATABASE_URL: "postgres://aoa:aoa@toxiproxy:15432/aoa"
@@ -342,11 +369,35 @@ services:
       AOA_WORKER_S3_ENDPOINT: "http://toxiproxy:19000"
       AOA_WORKER_PROVIDER_URL: "http://fake-provider:8080"
       AOA_WORKER_HEALTH_PORT: "9464"
-      # See worker-a: required by loadWorkerConfig or the daemon exits before /healthz.
-      # Scope matches worker-b.profile.json scope="organization".
+      # ★ WRK-017 — worker-b is the ENROLLING worker. worker-a stays `mounted_secret` as the
+      # negative control, so one boot path persists a device identity and the other provably
+      # does not.
+      #
+      # The ticket file is now READ, not merely named: it is a committed, read-only bind of
+      # `docker/d1/worker-b.enrollment-ticket`, and the same file is mounted into `migrate`,
+      # whose seed authorizes exactly the code inside it before this container ever starts.
+      # `/enrollment-code` is a POSIX absolute path, which the daemon accepted only after
+      # WRK-015 made `assertLocalAbsolutePath` platform-aware — before that it crash-looped
+      # here.
       AOA_WORKER_ENROLLMENT_CODE_FILE: "/enrollment-code"
-      AOA_WORKER_KEY_STORE_MODE: "mounted_secret"
+      # `file_record` + the `command:` override below are ONE change with two halves, and
+      # EITHER HALF ALONE IS A CRASH LOOP — `resolveCustody` refuses `file_record` with no
+      # stores injected (the daemon bin injects none) and refuses `mounted_secret` WITH stores
+      # (the container host injects them unconditionally), both pre-socket with exit 1. That
+      # coupling is a static invariant, not a comment: see `checkWorkerCustodyBootRoot` in
+      # `scripts/lib/d1-compose-invariants.mjs`.
+      AOA_WORKER_KEY_STORE_MODE: "file_record"
+      # The durable home for the DeviceIdentityRecord + receipt. It MUST be the named volume
+      # below: a recreated container that lost its identity re-mints a workerId the server
+      # denies as `worker_transfer_denied` forever, and a container has no `--reset-identity`.
+      AOA_WORKER_STATE_DIR: "/worker"
       AOA_WORKER_TARGET_SCOPE: "organization"
+    # NOT an image-CMD repoint. `runContainerHost` builds its FileRecordStores unconditionally,
+    # so repointing the image default would make `resolveCustody` refuse every still-
+    # `mounted_secret` container in the fleet (worker-a here, and the staging manifest's
+    # workers) at their next boot. The container boot root is therefore opt-in PER SERVICE, and
+    # the worker entrypoint is `exec "$@"`, so this override is all it takes.
+    command: ["node", "dist/bin/container-host.js"]
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9464/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: "10s"
@@ -355,6 +406,9 @@ services:
     volumes:
       - "d1-worker-b-state:/worker"
       - "./docker/d1/worker-b.profile.json:/profile.json:ro"
+      # WRK-017 — the enrolment ticket, read-only. `migrate` mounts the SAME committed file and
+      # authorizes the code inside it, so there is one artifact and no runtime hand-off.
+      - "./docker/d1/worker-b.enrollment-ticket:/enrollment-code:ro"
     depends_on:
       control-plane:
         condition: service_healthy

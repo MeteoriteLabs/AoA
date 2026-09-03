@@ -6,7 +6,7 @@
     },
     "docker": {
       "mode": "pinned",
-      "count": 4
+      "count": 5
     },
     "packages/adapter-manager": {
       "mode": "floor",
@@ -82,7 +82,7 @@
     },
     "tests": {
       "mode": "pinned",
-      "count": 106
+      "count": 107
     },
     "ui": {
       "mode": "floor",

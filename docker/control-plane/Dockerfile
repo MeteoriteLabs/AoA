@@ -72,13 +72,38 @@ RUN pnpm install --frozen-lockfile --filter "@armyofagents/server..." --filter "
 # source tree — the deployed workspace packages resolve to their built `dist`
 # via `publishConfig`, so the runtime needs NO tsx (plain `node dist/index.js`,
 # exactly like the worker image). The `...` suffix selects each entry package AND
-# its transitive workspace deps, built in topological order — the same closure
-# the deps stage installed.
+# its transitive workspace deps, built in topological order.
+#
+# ★ THE `...` SELECTION IS NOT THE DEPS STAGE'S CLOSURE, and believing it was broke this
+# image. `pnpm --filter "X..."` walks BOTH `dependencies` and `devDependencies`; the deps
+# stage's COPY set is the PROD closure only, which is also all that
+# `scripts/check-image-deps-stages.mjs` compares (its `computeRuntimeClosure` walks
+# `.dependencies` alone, by design, to mirror `--filter-prod`). The two were equal until
+# DEP-011 Slice 1 (`c3d26657d`) gave `@armyofagents/server` a workspace DEVdependency on
+# `@armyofagents/adapter-manager`, whose own graph reaches provider-wire →
+# sandbox-e2b-provider → sandbox-provider-contract → (devDep) sandbox-fake-provider. Five
+# packages the deps stage never installed then entered the BUILD selection, and `tsc` died
+# on `Cannot find module 'node:crypto'` in a package with no `node_modules`. The D1
+# merge-train lane went red on that commit and stayed red for three merges — it is not a
+# required check, so `ci-required` never saw it, and the deps-stage guard stayed GREEN
+# throughout because the manifest it guards was still exactly right.
+#
+# The fix is the one the worker image already uses for the same reason (its "8th manifest"
+# note): re-install here, against the manifest set THIS stage actually has after `COPY . .`,
+# so the build selection and the installed set are the same set. Non-prod, so the workspace
+# `typescript` devDep resolves; `pnpm deploy --prod` below prunes every dev package back out,
+# so nothing extra reaches production (asserted by the production-stage tests in
+# `docker/images/__tests__/dockerfile-static.test.mjs` and by `image-contents.test.mjs`).
+#
+# Do NOT "fix" this by switching the build line to `--filter-prod`: `provider-capability`'s
+# only edge to `worker-daemon` is a devDependency, and that edge is what yields the correct
+# topological order — the worker Dockerfile records the same trap.
 # ---------------------------------------------------------------------------
 FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
+RUN pnpm install --frozen-lockfile --filter "@armyofagents/server..." --filter "@armyofagents/ui..."
 RUN pnpm --filter "@armyofagents/server..." --filter "@armyofagents/ui..." build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 # Self-contained, PROD-only deployment of JUST the server closure: server dist +
@@ -133,6 +158,12 @@ COPY --chown=node:node docker/control-plane/migrate-entrypoint.sh /usr/local/bin
 # `node /cp-app/provision-d1-serving-roles.mjs` resolves the deployed `postgres`
 # driver from /cp-app/node_modules. Inert on any non-D1 deploy path.
 COPY --chown=node:node docker/control-plane/provision-d1-serving-roles.mjs /cp-app/provision-d1-serving-roles.mjs
+# WRK-017, same D1-harness-only pattern and the same /cp-app placement reason: the worker
+# enrolment seed invoked by migrate-entrypoint.sh under AOA_D1_SEED_WORKER_ENROLMENT=1. It
+# needs the deployed `postgres` driver AND `@armyofagents/worker-protocol` (for the two
+# canonicalizers whose digests the target row must carry), both of which resolve only from
+# /cp-app/node_modules. Inert on any non-D1 deploy path.
+COPY --chown=node:node docker/control-plane/seed-d1-worker-enrolment.mjs /cp-app/seed-d1-worker-enrolment.mjs
 RUN sed -i 's/\r$//' /usr/local/bin/control-plane-entrypoint.sh /usr/local/bin/migrate-entrypoint.sh \
   && chmod +x /usr/local/bin/control-plane-entrypoint.sh /usr/local/bin/migrate-entrypoint.sh \
   && mkdir -p /aoa \

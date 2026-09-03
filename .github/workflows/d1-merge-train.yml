@@ -179,7 +179,13 @@ jobs:
           # BOUNDED: the topology network-denial proofs (E6F-05) + one fixture-driven
           # fake-provider job (E6F-03) — the full submit -> placement -> lease ->
           # execute -> event path end to end.
-          BOUNDED="tests/d1/network-denial.test.mjs tests/d1/fake-provider-job.test.mjs"
+          # WRK-017 adds container-enrol to BOUNDED, not to the e6f-* set, deliberately: it
+          # must run in EVERY scope (a scope selector is exactly the kind of thing that
+          # quietly stops running a check), and an `e6f-` name would run it twice under
+          # `foundation`. Note the bring-up above is already the primary gate — a failed
+          # first enrol is proc.exit(1) with no restart policy, so `up --wait` dies before
+          # this line. These assertions add what a dead container cannot report.
+          BOUNDED="tests/d1/network-denial.test.mjs tests/d1/fake-provider-job.test.mjs tests/d1/container-enrol.test.mjs"
           # --test-concurrency=1: the E6F files all drive the SAME live control-plane +
           # DB, so running them in parallel (node --test's default) makes them compete
           # for the shared stack. E6F-01's 100-race drain asserts "never 5xx", but a

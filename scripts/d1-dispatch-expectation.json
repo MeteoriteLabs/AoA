@@ -50,13 +50,13 @@
       },
       "keyStoreMode": {
         "var": "AOA_WORKER_KEY_STORE_MODE",
-        "expect": "mounted_secret",
-        "reason": "gate 3: mounted_secret with no OS-custody store means no device identity."
+        "expect": "file_record",
+        "reason": "WRK-017 \u2014 worker-b is the ENROLLING worker: it boots the CONTAINER custody root (a compose `command:` override on dist/bin/container-host.js) and persists a DeviceIdentityRecord + receipt to its named volume. Gate 3 is therefore SATISFIED here, deliberately, and it is the only D1 worker for which that is true \u2014 worker-a stays mounted_secret as the negative control. This does NOT enable dispatch: gates 1 (no AOA_WORKER_SANDBOX_PROVIDER \u2192 no provider) and 4 (no AOA_WORKER_EVENT_OUTBOX_PATH) still refuse, and AOA_WORKER_DISPATCH_ENABLED is still absent. NOTE the coupling this row cannot see: file_record WITHOUT the container-host command, or that command without file_record, are BOTH pre-socket exit(1) crash loops \u2014 checkWorkerCustodyBootRoot in scripts/lib/d1-compose-invariants.mjs carries that clause, exactly as checkWorkersEnterTheDaemonBin carries the providerUrl one."
       },
       "sandboxProvider": {
         "var": "AOA_WORKER_SANDBOX_PROVIDER",
         "expect": "absent",
-        "reason": "gate 1: absent \u21d2 no provider; D1 runs the container root with no resolver."
+        "reason": "gate 1: absent \u21d2 no provider. worker-b now runs the CONTAINER root (container-host.js), which \u2014 like the daemon root \u2014 constructs no provider: runContainerHost passes `provider: undefined` for the shipped container by design (DEP-010/E4-D01, the daemon image cannot carry a provider package). So gate 1 stays STRUCTURAL even though gate 3 no longer does."
       },
       "e2bTemplate": {
         "var": "AOA_WORKER_E2B_TEMPLATE",

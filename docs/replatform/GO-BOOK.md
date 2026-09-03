@@ -449,6 +449,22 @@ not true. It supersedes the parallel-lane framing in `HANDOFF-wave-4.md` and
 E3-F034, E4-F014. ★ That count EXCLUDES E0/E1/E2 entirely for the reason in 1.9.5, so **17 is a
 floor, not a total.**
 
+
+### 1.9.8 The D1 merge-train lane was RED for three merges, and nothing was waiting on it
+
+Measured 2026-09-03 (WRK-017 Step 0): `d1-merge-train.yml` failed on `c3d26657d` (2026-08-29),
+`07ed2cc42` (2026-08-30) and `b6e02a478` (2026-08-31); the last green was `50380b6f7`
+(2026-08-25). All three died in *Build split D1 images* — **the control-plane image could not
+build at all** — so every "the D1 lane exercises this" claim made in that window is unsupported,
+including the `AOA_D1_RETRIGGER` bumps in `docker/d1/campaign.env` that were spent on it.
+
+Cause and fix are in **E6-F010** (`E6-deployment-test-harness/findings.md`); WRK-017 fixes it. The
+part worth carrying forward is structural, not the bug: **`d1-merge-train` is not a required check**
+(branch protection requires only `ci-required`, from `pr.yml`) and it runs on `push` to this branch,
+i.e. after merge. A red verdict nobody consumes is operationally identical to a check that does not
+run — this programme's own worst failure class, one lane over. **After every merge that touches
+`docker/**`, `docker-compose.d1.yml` or `tests/d1/**`, check the lane's verdict for that sha.**
+
 ---
 
 ## 2. How to run a sprint (read once, applies to every sprint)

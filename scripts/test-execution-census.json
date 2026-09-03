@@ -11,6 +11,11 @@
       "workflow": "pr.yml",
       "step": "Previously-unrun guard self-tests (TRACK-002)"
     },
+    "docker/d1/__tests__/enrolment-seed.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Previously-unrun guard self-tests (TRACK-002)"
+    },
     "docker/images/__tests__/dockerfile-static.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",

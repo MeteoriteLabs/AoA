@@ -522,6 +522,179 @@ function checkWorkersEnterTheDaemonBin(services, v) {
   }
 }
 
+// ★ WRK-017 — CUSTODY MODE AND BOOT ROOT ARE ONE CHANGE WITH TWO HALVES.
+//
+// `resolveCustody` (`packages/worker-daemon/src/identity/device-identity-store.ts`) is a pure,
+// pre-socket verdict, and it refuses BOTH halves of the mismatch:
+//
+//   file_record    + `dist/bin/worker-daemon.js`   → the daemon bin injects NO stores, so
+//                                                    "keyStoreMode is file_record but no
+//                                                    identity store was injected" → exit 1.
+//   mounted_secret + `dist/bin/container-host.js`  → `runContainerHost` injects stores
+//                                                    UNCONDITIONALLY, so "keyStoreMode is
+//                                                    mounted_secret but an identity store was
+//                                                    injected" → exit 1.
+//
+// Either way the container exits BEFORE its health socket binds, the D1 workers declare no
+// `restart:` policy, and `docker compose up -d --wait` fails the whole lane with a message
+// about an unhealthy service rather than about a custody mismatch. Half of this edit is
+// one word in `environment`, the other is one line in `command` — different keys, different
+// blocks, trivially separable in a rebase or a revert. So the coupling is a static invariant.
+//
+// It is stated as an EQUIVALENCE (both directions) deliberately. A one-directional check
+// ("file_record implies container-host") would stay green through the OTHER crash loop, which
+// is the one an image-CMD-repoint instinct produces.
+const KEY_STORE_MODE_ENV = "AOA_WORKER_KEY_STORE_MODE";
+const CONTAINER_HOST_BIN_MARKER = "container-host";
+const CONTAINER_CUSTODY_MODE = "file_record";
+const ENROLLMENT_CODE_FILE_ENV = "AOA_WORKER_ENROLLMENT_CODE_FILE";
+const STATE_DIR_ENV = "AOA_WORKER_STATE_DIR";
+// The migrate-side half: the seed that authorizes the ticket's code.
+const SEED_FLAG_ENV = "AOA_D1_SEED_WORKER_ENROLMENT";
+const SEED_TICKET_FILE_ENV = "AOA_D1_SEED_ENROLMENT_TICKET_FILE";
+const MIGRATE_SERVICE = "migrate";
+
+/** Normalize a service's mounts to `{ source, target, readOnly }`, both compose forms. */
+function serviceMounts(service) {
+  const out = [];
+  for (const mount of asArray(service?.volumes)) {
+    if (mount && typeof mount === "object") {
+      out.push({
+        source: mount.source === undefined ? "" : String(mount.source),
+        target: mount.target === undefined ? "" : String(mount.target),
+        readOnly: mount.read_only === true,
+      });
+      continue;
+    }
+    const parts = String(mount).split(":");
+    if (parts.length < 2) continue;
+    const mode = parts.length >= 3 ? parts[parts.length - 1] : "";
+    out.push({ source: parts[0], target: parts[1], readOnly: mode === "ro" });
+  }
+  return out;
+}
+
+function bootRootText(service) {
+  return ["command", "entrypoint"]
+    .map((field) => {
+      const raw = service?.[field];
+      if (raw === undefined || raw === null) return "";
+      return Array.isArray(raw) ? raw.map(String).join(" ") : String(raw);
+    })
+    .join(" ");
+}
+
+function checkWorkerCustodyBootRoot(services, v) {
+  for (const name of WORKER_SERVICES) {
+    const svc = services[name];
+    if (!svc) continue;
+    const mode = envValue(svc, KEY_STORE_MODE_ENV);
+    const entersContainerHost = bootRootText(svc).includes(CONTAINER_HOST_BIN_MARKER);
+    const wantsContainerCustody = String(mode) === CONTAINER_CUSTODY_MODE;
+
+    if (wantsContainerCustody && !entersContainerHost) {
+      v.push(
+        `worker '${name}' declares '${KEY_STORE_MODE_ENV}: ${CONTAINER_CUSTODY_MODE}' but does not enter the ` +
+          `container-host bin. The daemon bin injects no record stores, so resolveCustody refuses ` +
+          `file_record pre-socket and the container exits 1 before its healthcheck can answer.`,
+      );
+    }
+    if (!wantsContainerCustody && entersContainerHost) {
+      v.push(
+        `worker '${name}' enters the container-host bin but declares '${KEY_STORE_MODE_ENV}: ` +
+          `${mode ?? "(unset)"}'. runContainerHost injects record stores UNCONDITIONALLY, so ` +
+          `resolveCustody refuses any non-file_record mode pre-socket and the container exits 1.`,
+      );
+    }
+    if (!wantsContainerCustody) continue;
+
+    // An enrolling worker must actually be able to READ a ticket, and must persist what it
+    // enrols to a DURABLE named volume. A ticket path with nothing mounted at it is
+    // "enrollment ticket file could not be read" → a fatal first-boot enrol failure; a state
+    // dir that is not a named volume loses the DeviceIdentityRecord on recreate, and a
+    // re-minted workerId is denied `worker_transfer_denied` FOREVER with no container reset.
+    const mounts = serviceMounts(svc);
+    const ticketPath = envValue(svc, ENROLLMENT_CODE_FILE_ENV);
+    if (!ticketPath) {
+      v.push(`worker '${name}' is ${CONTAINER_CUSTODY_MODE} but declares no '${ENROLLMENT_CODE_FILE_ENV}'`);
+    } else {
+      const backing = mounts.find((m) => m.target === String(ticketPath));
+      if (!backing) {
+        v.push(
+          `worker '${name}' names '${ENROLLMENT_CODE_FILE_ENV}: ${ticketPath}' but mounts nothing at that path; ` +
+            `an enrolling worker with no ticket file fails its first enrol, which is exit 1.`,
+        );
+      } else if (!backing.readOnly) {
+        v.push(
+          `worker '${name}' mounts its enrolment ticket at '${ticketPath}' read-WRITE; the ticket carries a ` +
+            `single-use bearer credential and the worker must never be able to alter it.`,
+        );
+      }
+    }
+    const stateDir = envValue(svc, STATE_DIR_ENV);
+    if (!stateDir) {
+      v.push(`worker '${name}' is ${CONTAINER_CUSTODY_MODE} but declares no '${STATE_DIR_ENV}'`);
+    } else {
+      const backing = mounts.find((m) => m.target === String(stateDir));
+      const named = backing && /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(backing.source) &&
+        !backing.source.startsWith(".") && !backing.source.startsWith("/");
+      if (!named || backing.readOnly) {
+        v.push(
+          `worker '${name}' '${STATE_DIR_ENV}: ${stateDir}' is not backed by a writable NAMED volume; ` +
+            `a lost DeviceIdentityRecord re-mints a workerId the control plane denies permanently.`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * The other end of the same wire: if any worker enrols, the migrate job must SEED the
+ * authority for the very ticket that worker mounts.
+ *
+ * Without the seed the ticket decodes fine and the control plane answers `unauthorized` —
+ * again exit 1, again a bring-up failure whose message says nothing about a missing seed.
+ * And the two must reference the SAME file: a seed pointed at a different ticket authorizes a
+ * code nobody presents.
+ */
+function checkEnrolmentSeedWiring(services, v) {
+  const enrolling = WORKER_SERVICES.filter(
+    (name) => services[name] && String(envValue(services[name], KEY_STORE_MODE_ENV)) === CONTAINER_CUSTODY_MODE,
+  );
+  const migrate = services[MIGRATE_SERVICE];
+  if (enrolling.length === 0) {
+    if (migrate && String(envValue(migrate, SEED_FLAG_ENV)) === "1") {
+      v.push(
+        `'${MIGRATE_SERVICE}' sets '${SEED_FLAG_ENV}: 1' but no worker declares ` +
+          `'${KEY_STORE_MODE_ENV}: ${CONTAINER_CUSTODY_MODE}'; the seed would authorize a code nothing presents.`,
+      );
+    }
+    return;
+  }
+  if (!migrate) return; // absence reported by checkServiceSet
+  if (String(envValue(migrate, SEED_FLAG_ENV)) !== "1") {
+    v.push(
+      `worker(s) ${enrolling.join(", ")} enrol (${KEY_STORE_MODE_ENV}: ${CONTAINER_CUSTODY_MODE}) but ` +
+        `'${MIGRATE_SERVICE}' does not set '${SEED_FLAG_ENV}: 1'; nothing authorizes their enrolment code, so ` +
+        `the first enrol is refused and the container exits 1.`,
+    );
+    return;
+  }
+  const seedTicketTarget = envValue(migrate, SEED_TICKET_FILE_ENV);
+  const seedSource = serviceMounts(migrate).find((m) => m.target === String(seedTicketTarget))?.source;
+  for (const name of enrolling) {
+    const svc = services[name];
+    const workerTicketTarget = envValue(svc, ENROLLMENT_CODE_FILE_ENV);
+    const workerSource = serviceMounts(svc).find((m) => m.target === String(workerTicketTarget))?.source;
+    if (!seedSource || !workerSource || seedSource !== workerSource) {
+      v.push(
+        `'${MIGRATE_SERVICE}' seeds from ticket source '${seedSource ?? "(none)"}' but worker '${name}' presents ` +
+          `'${workerSource ?? "(none)"}'; the seed must authorize the SAME committed ticket the worker reads.`,
+      );
+    }
+  }
+}
+
 /**
  * @param {any} compose parsed docker-compose.d1.yml
  * @param {{ toxiproxyConfig?: any }} [options]
@@ -550,6 +723,8 @@ export function evaluateComposeInvariants(compose, options = {}) {
   checkPresignEndpoint(services, v);
   checkControlPlaneEnvLockstep(services, v);
   checkWorkersEnterTheDaemonBin(services, v);
+  checkWorkerCustodyBootRoot(services, v);
+  checkEnrolmentSeedWiring(services, v);
 
   if (options.toxiproxyConfig !== undefined) {
     v.push(...evaluateToxiproxyConfig(options.toxiproxyConfig));

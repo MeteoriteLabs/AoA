@@ -54,11 +54,20 @@ function bootDeps(env: Record<string, string>, over: Partial<BootstrapDeps> = {}
 }
 
 describe("shipped-binary-refuses (8a) — the container root", () => {
-  it("the parsed D1 env is REAL (mounted_secret), so these assertions are not fixtures asserting themselves", () => {
+  it("the parsed D1 env is REAL — and the two workers DIFFER, so nothing here asserts its own fixture", () => {
     // Guards the "hardcode d1WorkerEnv" mutant: a hardcoded env would assert its own values.
+    //
+    // WRK-017 made this STRONGER rather than merely updating a constant. The two workers now
+    // carry DIFFERENT custody modes — worker-a `mounted_secret` (the negative control),
+    // worker-b `file_record` (the enrolling worker) — so a hardcoded parser cannot satisfy both
+    // arms with one value, which is a sharper anti-fixture property than the previous "both are
+    // mounted_secret". Dispatch stays off for BOTH, which is what this file is actually about.
     expect(d1WorkerEnv("worker-a").AOA_WORKER_KEY_STORE_MODE).toBe("mounted_secret");
+    expect(d1WorkerEnv("worker-b").AOA_WORKER_KEY_STORE_MODE).toBe("file_record");
     expect(d1WorkerEnv("worker-a").AOA_WORKER_DISPATCH_ENABLED).toBeUndefined();
-    expect(d1WorkerEnv("worker-b").AOA_WORKER_KEY_STORE_MODE).toBe("mounted_secret");
+    expect(d1WorkerEnv("worker-b").AOA_WORKER_DISPATCH_ENABLED).toBeUndefined();
+    expect(d1WorkerEnv("worker-a").AOA_WORKER_SANDBOX_PROVIDER).toBeUndefined();
+    expect(d1WorkerEnv("worker-b").AOA_WORKER_SANDBOX_PROVIDER).toBeUndefined();
   });
 
   it("the REAL production invocation refuses — composeDispatch at 0 calls", async () => {
@@ -67,10 +76,48 @@ describe("shipped-binary-refuses (8a) — the container root", () => {
     expect(composeDispatch).not.toHaveBeenCalled();
   });
 
-  it.each(["worker-a", "worker-b"])("%s refuses with EXACTLY no_provider", async (service) => {
-    const { deps, reasons } = bootDeps(d1WorkerEnv(service));
+  it("worker-a refuses with EXACTLY no_provider", async () => {
+    const { deps, reasons } = bootDeps(d1WorkerEnv("worker-a"));
     await bootstrapWorkerDaemon(deps);
     expect(reasons()).toEqual(["no_provider"]);
+  });
+
+  // WRK-017 split worker-b out of the shared `it.each`, and the split is the point rather than
+  // bookkeeping: worker-b's env now REQUIRES the container host, so the two halves of that
+  // coupling are separately observable here, in the daemon, where the refusal actually happens.
+  it("worker-b's env under the DAEMON bin refuses at CUSTODY, pre-socket — the crash loop", async () => {
+    // This is the state a partial revert produces: `file_record` in `environment:` with the
+    // compose `command:` override gone, so the image CMD enters `bin/worker-daemon.js`, which
+    // injects NO record stores. `resolveCustody` refuses before any socket and the process
+    // exits 1 — `up --wait` then reports only "unhealthy service".
+    // `checkWorkerCustodyBootRoot` (scripts/lib/d1-compose-invariants.mjs) forbids that compose
+    // state statically; this is the daemon-side proof that the refusal is real.
+    const { deps, reasons, exitCodes } = bootDeps(d1WorkerEnv("worker-b"));
+    await bootstrapWorkerDaemon(deps);
+    expect(reasons()).toEqual(["keyStoreMode is file_record but no identity store was injected"]);
+    expect(exitCodes).toEqual([1]);
+  });
+
+  it("worker-b WITH the container host's stores gets past custody and refuses EXACTLY no_provider", async () => {
+    // What `runContainerHost` actually composes: both record stores injected. Custody passes,
+    // enrolment is stubbed (this file is about DISPATCH, not the network), and the daemon then
+    // refuses for the reason that matters — no provider. Without this arm the assertion above
+    // would leave "worker-b never dispatches" resting on a custody refusal rather than on the
+    // dispatch gate, which is a different claim.
+    const store = { load: () => null, saveIfAbsent: () => "stored" as const, clear: () => {} };
+    const { deps, reasons, exitCodes } = bootDeps(d1WorkerEnv("worker-b"), {
+      identityStore: store as never,
+      receiptStore: store as never,
+      enrollOnceFn: (async () => ({
+        enrolled: true, minted: true, skipped: false,
+        workerId: "00000000-0000-4000-8000-000000000002",
+        targetId: "22222222-2222-4222-8222-222222222222",
+        deviceGeneration: 1, deviceThumbprint: "tp",
+      })) as never,
+    });
+    await bootstrapWorkerDaemon(deps);
+    expect(reasons()).toEqual(["no_provider"]);
+    expect(exitCodes).toEqual([]);
   });
 
   it("D1 with the flag FORCED ON still refuses (no provider)", async () => {

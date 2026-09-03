@@ -192,3 +192,78 @@ non-empty + excludes control-plane) and the fake control endpoint now fails CLOS
 allowlist. A stricter network-layer split (dedicated cp↔pg toxiproxy on a control-plane-only net +
 interface-bound listener) is a possible E6 follow-up but is NOT required — the credential + RLS
 boundary is the meaningful guarantee.
+
+## E6-F010 — the D1 merge-train lane had been RED for five days and three merges; the control-plane image could not build — RESOLVED
+
+**Status:** `resolved` (WRK-017, 2026-09-03) · Severity: **HIGH** (the D1 lane is the ONLY thing
+that boots the split images, and it validated nothing for three merges) · Source: WRK-017 Step 0 —
+the ticket's premise is "a CI-exercised first container-enrol", so the first question was whether
+the lane runs at all.
+
+**Measured.** `gh run list --workflow=d1-merge-train.yml` → `failure` on `c3d26657d` (2026-08-29),
+`07ed2cc42` (2026-08-30) and `b6e02a478` (2026-08-31); last `success` `50380b6f7` (2026-08-25).
+The failing step is *Build split D1 images*, and the failure is identical on all three:
+
+```
+packages/sandbox-fake-provider build: src/hash.ts(11,28): error TS2307: Cannot find module 'node:crypto'
+ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL @armyofagents/sandbox-fake-provider@0.1.0 build: `tsc`
+#40 ERROR: process "/bin/sh -c pnpm --filter \"@armyofagents/server...\" --filter \"@armyofagents/ui...\" build" did not complete successfully
+```
+
+Reproduced byte-for-byte on a local Docker Desktop against `203853b3a` before any WRK-017 change.
+
+**Root cause — a guard that was green because it guards a different set.** The control-plane
+`deps` stage COPYs the workspace manifests in `@armyofagents/server`'s **production** closure, and
+`scripts/check-image-deps-stages.mjs` enforces that COPY set exactly — its `computeRuntimeClosure`
+walks `.dependencies` alone, by design, to mirror pnpm's `--filter-prod`. The `build` stage,
+however, runs `pnpm --filter "@armyofagents/server..." build`, and `pkg...` traverses
+**`devDependencies` too**. The two sets were equal until DEP-011 Slice 1 (`c3d26657d`) added
+`@armyofagents/adapter-manager` to `server`'s **devDependencies**, whose graph reaches
+`provider-wire → sandbox-e2b-provider → sandbox-provider-contract → (devDep) sandbox-fake-provider`.
+Five packages the deps stage never installed entered the build selection, and `tsc` died in a
+package with no `node_modules`. `node scripts/check-image-deps-stages.mjs` **stays PASS** through
+all of it, correctly: the manifest it guards is still exactly right.
+
+**Why nobody noticed.** `d1-merge-train.yml` is not among the required checks — branch protection
+requires only `ci-required` (`pr.yml`), and `d1-merge-train` runs on `push` to the integration
+branch, after the merge. A red there is a red nobody is waiting on. This is the programme's own
+"a check that nothing runs is not a check" class, one lane over: the check ran and went red, and
+the absence of a *consumer* for that verdict made it equivalent to not running.
+
+**Resolved** by the fix the WORKER image already uses for the identical reason (its "8th manifest"
+note): re-install in the build stage, against the manifest set that stage actually has after
+`COPY . .`, so the build selection and the installed set are the same set. Non-prod, because the
+workspace `typescript` devDep must resolve; `pnpm deploy --prod` still prunes every dev package
+back out, so nothing extra reaches production. Verified locally: both images build and
+`docker/images/digests.env` is populated. NOT fixed by switching the build line to `--filter-prod`
+— `provider-capability`'s only edge to `worker-daemon` is a devDependency and that edge is what
+yields the correct topological order, a trap the worker Dockerfile already records.
+
+**Residual, stated plainly.** The class is not closed. Any future workspace **devDependency** added
+to `server` or `ui` widens the build selection again; the re-install absorbs that, but nothing
+warns when the two sets diverge, and no PR-time check builds either image. A deps-stage guard that
+also compared the dev closure — or a `ci-required` consumer for the image build — would close it.
+Not attempted here: WRK-017 needed the lane green, not a new gate.
+
+## E6-F011 — the D1 control plane would have refused every real worker request: `toxiproxy` was never in its hostname allowlist — RESOLVED
+
+**Status:** `resolved` (WRK-017, 2026-09-03) · Severity: MED (latent; unreachable until a worker
+container actually issued a request, which WRK-017 is the first thing to do) · Source: WRK-017
+source trace of the enrol path before the first bring-up.
+
+`docker-compose.d1.yml` set `AOA_ALLOWED_HOSTNAMES: "control-plane,localhost,127.0.0.1"` with the
+comment *"The E6F harness + the workers reach the control plane by its in-compose service name"*.
+The workers do **not**. `AOA_WORKER_CONTROL_PLANE_URL` is `http://toxiproxy:13100` — and that
+routing is itself a load-bearing static invariant (`checkToxiproxyInPath`), so it is not a mistake
+to be corrected on the worker side. A worker's HTTP `Host` header is therefore literally
+`toxiproxy:13100`, `privateHostnameGuard` is ENABLED on this stack (`authenticated` mode plus the
+control-plane image's default `AOA_DEPLOYMENT_EXPOSURE=private`), and `/api/worker-control/*` does
+not bypass it — so every enrol/poll/ack from a real worker would have been answered **403**.
+
+The comment was true of the only client that existed: the E6F harness dials
+`http://control-plane:3100` from `test-runner`, which was in the allowlist all along. The claim
+about *workers* had never been executed by anything.
+
+**Resolved** by adding `toxiproxy` to `AOA_ALLOWED_HOSTNAMES` on BOTH control-plane replicas, with
+the reasoning recorded at the line. No product code changed: the guard behaved exactly as designed;
+the harness's allowlist was simply wrong about who its clients are.
