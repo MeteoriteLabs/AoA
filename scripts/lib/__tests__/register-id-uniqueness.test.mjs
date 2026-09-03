@@ -23,6 +23,7 @@ import {
   DECISION_TABLE_ROW,
   DA_HEADING,
   DECISION_REVISION,
+  DECISION_REVISION_BODY,
 } from "../register-id-uniqueness.mjs";
 import { parseFindings } from "../finding-ownership.mjs";
 
@@ -98,9 +99,18 @@ test("★ a DECLARED duplicate passes and is reported, so it cannot be forgotten
   ];
   const r = evaluateIdUniqueness({
     sources,
-    waived: { "decision:104": { reason: "awaiting an operator decision", occurrences: 2 } },
+    waived: {
+      "decision:104": {
+        reason: "awaiting an operator decision",
+        occurrences: 2,
+        // ★ UPDATED AGAIN (round 2): a count alone catches only ADD and REMOVE. A waiver now
+        // also binds to the IDENTITIES reviewed, so replacing one definition with a different
+        // one breaks it. `sources` above carries no `text`, so both identities are empty.
+        identities: ["", ""],
+      },
+    },
   });
-  assert.equal(r.ok, true);
+  assert.equal(r.ok, true, JSON.stringify(r.problems));
   assert.deepEqual(r.waived, ["decision:104"]);
 });
 
@@ -148,19 +158,19 @@ test("★ a RANGE roll-up heading is not a second definition — the guard's own
     ].join("\n"),
     FINDING_HEADING,
   );
-  assert.deepEqual(ids, [{ id: "E3-F028", line: 1 }]);
+  assert.deepEqual(ids.map((x) => ({ id: x.id, line: x.line })), [{ id: "E3-F028", line: 1 }]);
 });
 
 test("heading extraction reads the real shapes and ignores body-text CITATIONS", () => {
   assert.deepEqual(
-    extractHeadingIds("## Decision #104 — Keyless (2026-06-26)\nSee Decision #45 and #92.\n", DECISION_HEADING),
+    extractHeadingIds("## Decision #104 — Keyless (2026-06-26)\nSee Decision #45 and #92.\n", DECISION_HEADING).map((x) => ({ id: x.id, line: x.line })),
     [{ id: "104", line: 1 }],
   );
   assert.deepEqual(
-    extractHeadingIds("### E2-D01 — locked\ntext about E2-D03\n", EPIC_DECISION_HEADING),
+    extractHeadingIds("### E2-D01 — locked\ntext about E2-D03\n", EPIC_DECISION_HEADING).map((x) => ({ id: x.id, line: x.line })),
     [{ id: "E2-D01", line: 1 }],
   );
-  assert.deepEqual(extractHeadingIds("## E1-F008 - frozen-consumer checker\n", FINDING_HEADING), [
+  assert.deepEqual(extractHeadingIds("## E1-F008 - frozen-consumer checker\n", FINDING_HEADING).map((x) => ({ id: x.id, line: x.line })), [
     { id: "E1-F008", line: 1 },
   ]);
   for (const bad of [null, undefined, 42, {}]) assert.deepEqual(extractHeadingIds(bad, FINDING_HEADING), []);
@@ -289,14 +299,14 @@ test("★★★ a THIRD occurrence cannot hide behind a waiver for the first two
   // The reviewer's P2: with the waiver keyed on the id alone, adding an unrelated third
   // `## Decision #104` — or swapping one of the two known ones for different content —
   // stayed green, so the waived id became a permanent blind spot.
-  const waived = { "decision:104": { reason: "awaiting a decision", occurrences: 2 } };
-  const two = [{ id: "104", line: 854 }, { id: "104", line: 913 }];
+  const waived = { "decision:104": { reason: "awaiting a decision", occurrences: 2, identities: ["A", "B"] } };
+  const two = [{ id: "104", line: 854, text: "A" }, { id: "104", line: 913, text: "B" }];
   assert.equal(
     evaluateIdUniqueness({ sources: [{ file: "d.md", kind: "decision", ids: two }], waived }).ok,
     true,
     "the declared two must still pass",
   );
-  const three = [...two, { id: "104", line: 2191 }];
+  const three = [...two, { id: "104", line: 2191, text: "C" }];
   const r = evaluateIdUniqueness({ sources: [{ file: "d.md", kind: "decision", ids: three }], waived });
   assert.equal(r.ok, false, "a third occurrence must break the waiver");
   assert.deepEqual(kinds(r), ["waiver_count_mismatch"]);
@@ -327,4 +337,94 @@ test("★★★ ANTI-RECURRENCE: every decision-id shape in the REAL file is sca
     looksLikeAnId,
     `the extractors claim ${claimed} decision ids but the document has ${looksLikeAnId} id-shaped lines — a shape is unscanned`,
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★★★ ROUND 2 — the fix closed the case that motivated it and left the adjacent
+// case open. Both found by external review of `676b87aa9`.
+
+test("★★★ (revised) may not be a disguise — a duplicate with revision-ish prose is NOT a revision", () => {
+  // MEASURED against the FIRST version of DECISION_REVISION (`#(\d+)\b[^\n]*\(revised\b`):
+  // all three of these were treated as revisions and skipped, and `revision_without_original`
+  // then PASSED each, because it verified only that some original with that id exists.
+  // I built that check for this exact attack and it validated the wrong property.
+  assert.equal(DECISION_REVISION.test("## Decision #14 (revised 2026-04-21)"), true, "the genuine form must qualify");
+  for (const disguise of [
+    "## Decision #125 — different decision (revised wording)",
+    "## Decision #125 — a totally unrelated duplicate (revised)",
+    "## Decision #125 (revised)",
+    "## Decision #125 (revised soon)",
+  ]) {
+    assert.equal(DECISION_REVISION.test(disguise), false, `must NOT qualify as a revision: ${disguise}`);
+  }
+});
+
+test("★★ a disguised duplicate falls through to the DEFINITION count and collides", () => {
+  // The safe direction: failing either revision gate means the heading is an ordinary
+  // definition, so the duplicate is REPORTED rather than skipped.
+  const text = "## Decision #125 — the real one (2026-06-25)\n\nbody\n## Decision #125 — different decision (revised wording)\n\nbody\n";
+  const defs = extractHeadingIds(text, DECISION_HEADING, { skip: DECISION_REVISION });
+  assert.equal(defs.length, 2, "the disguised heading must still be counted as a definition");
+  const r = evaluateIdUniqueness({ sources: [{ file: "decisions.md", kind: "decision", ids: defs }] });
+  assert.equal(r.ok, false);
+  assert.deepEqual(kinds(r), ["duplicate_id"]);
+});
+
+test("★★ gate 2 is load-bearing — the right heading form with no body declaration is NOT a revision", () => {
+  // Proven live against the real corpus: `## Decision #125 (revised 2026-09-03)` with an
+  // ordinary body is still reported as a duplicate. One gate was demonstrably not enough,
+  // so the body must declare the revision too.
+  const genuine = "## Decision #14 (revised 2026-04-21)\n\n**Status:** Revised. Original locked version superseded.\n";
+  const fake = "## Decision #14 (revised 2026-04-21)\n\nA totally unrelated decision, no declaration.\n";
+  assert.equal(DECISION_REVISION_BODY.test(genuine), true);
+  assert.equal(DECISION_REVISION_BODY.test(fake), false);
+});
+
+test("★★★ a waiver binds to the occurrences REVIEWED, not merely to how many there were", () => {
+  // The count catches ADD and REMOVE only. Replacing either reviewed definition with a
+  // different one at another line left `places.length === 2`, so the waiver kept applying
+  // and the promised swap detection never ran.
+  const identities = ["## Decision #104 — Optimistic concurrency", "## Decision #104 — Keyless-except-embeddings"];
+  const waived = { "decision:104": { reason: "awaiting a decision", occurrences: 2, identities } };
+  const reviewed = [
+    { id: "104", line: 854, text: identities[0] },
+    { id: "104", line: 913, text: identities[1] },
+  ];
+  assert.equal(
+    evaluateIdUniqueness({ sources: [{ file: "d.md", kind: "decision", ids: reviewed }], waived }).ok,
+    true,
+    "the reviewed pair must still pass",
+  );
+
+  // Same COUNT, one definition REPLACED.
+  const swapped = [reviewed[0], { id: "104", line: 2191, text: "## Decision #104 — A COMPLETELY DIFFERENT THING" }];
+  const r = evaluateIdUniqueness({ sources: [{ file: "d.md", kind: "decision", ids: swapped }], waived });
+  assert.equal(r.ok, false, "a swapped occurrence must break the waiver");
+  assert.deepEqual(kinds(r), ["waiver_identity_mismatch"]);
+
+  // LINE DRIFT must NOT break it — identity is the source text, not file:line, because
+  // every edit above a definition shifts its line and a guard that cries wolf gets
+  // switched off.
+  const drifted = [
+    { id: "104", line: 999, text: identities[0] },
+    { id: "104", line: 1500, text: identities[1] },
+  ];
+  assert.equal(
+    evaluateIdUniqueness({ sources: [{ file: "d.md", kind: "decision", ids: drifted }], waived }).ok,
+    true,
+    "pure line drift must not break a waiver",
+  );
+});
+
+test("★ a waiver missing `identities` is malformed — the binding is required, not optional", () => {
+  const ids = [
+    { id: "104", line: 854, text: "## Decision #104 — A" },
+    { id: "104", line: 913, text: "## Decision #104 — B" },
+  ];
+  const r = evaluateIdUniqueness({
+    sources: [{ file: "d.md", kind: "decision", ids }],
+    waived: { "decision:104": { reason: "awaiting", occurrences: 2 } },
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(kinds(r), ["malformed_waiver"]);
 });

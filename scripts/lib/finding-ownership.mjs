@@ -86,6 +86,49 @@ const NOT_ACCEPTABLE = Object.freeze(
 /** The status value a finding gets when no `Status:` field could be read from its block.
  * It is a HARD FAILURE, not a shrug — see `unparseable_status` below. */
 export const UNPARSEABLE_STATUS = "unknown";
+
+/**
+ * ★★★ FAIL CLOSED ON EVERY UNRECOGNISED STATUS, NOT JUST THE ABSENT ONE.
+ *
+ * The first version of the fail-closed arm caught only the synthetic `"unknown"` — the value
+ * the parser invents when no `Status:` field exists at all. A TYPO sailed straight through:
+ * `**Status:** opne` parses to `"opne"`, is not `"open"`, matches no manifest entry, and so
+ * exits 0. **That recreates, inside the fix, the exact blind spot the fix exists to remove.**
+ * Found by external review; reproduced before fixing.
+ *
+ * A flat closed enum would be the wrong shape here — measured, the corpus already uses
+ * FIFTEEN distinct statuses, several of them one-offs like
+ * `resolved_in_fix_round_2_red_pending_final_review`. Requiring a table edit for every new
+ * bespoke resolution wording is the cry-wolf failure that gets a guard switched off.
+ *
+ * So: `open` must be spelled EXACTLY (no family, so every misspelling of it — `opne`,
+ * `oepn`, `opne_` — is rejected rather than silently read as closed, which is the one
+ * direction that actually loses a finding), a small set of exact non-open statuses is
+ * listed, and two FAMILIES (`resolved*`, `superseded*`) absorb the open-ended resolution
+ * wordings. Anything else is `unknown_status_vocabulary`.
+ *
+ * ★ SCOPE NOTE, deliberately conservative: this changes NO finding's open/closed
+ * classification. `needs_changes` (6 findings, all in E3) is recorded here as non-open
+ * because that is how the guard has always treated it — NOT because that is settled. If it
+ * should count as open, that is a real decision with real consequences (six findings would
+ * need declarations) and it belongs to a human, not to a parser change smuggling it in.
+ */
+export const NON_OPEN_STATUS_FAMILIES = Object.freeze(["resolved", "superseded"]);
+export const EXACT_NON_OPEN_STATUSES = Object.freeze([
+  "needs_changes",
+  "approved_pending_job",
+  "partially_resolved_in_job",
+  "fixed",
+]);
+
+/** @returns {"open"|"not_open"|"unrecognised"} */
+export function classifyStatus(status) {
+  const value = String(status ?? "").toLowerCase();
+  if (value === "open") return "open";
+  if (EXACT_NON_OPEN_STATUSES.includes(value)) return "not_open";
+  if (NON_OPEN_STATUS_FAMILIES.some((f) => value.startsWith(f))) return "not_open";
+  return "unrecognised";
+}
 /** Likewise for severity: an unclassifiable finding may not be quietly `accepted`. */
 export const UNPARSEABLE_SEVERITY = "UNKNOWN";
 
@@ -140,9 +183,17 @@ export function evaluateFindingOwnership(input) {
   //
   // A FALSE CLAIM OF ENFORCEMENT IS WORSE THAN A MISSING CHECK: for 108 findings across 9
   // registers this guard reported a confident `OK` while reading the status of only 73.
-  for (const finding of [...findings].filter((f) => isPlainObject(f) && f.status === UNPARSEABLE_STATUS)
+  for (const finding of [...findings].filter((f) => isPlainObject(f))
     .sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
-    problems.push({ kind: "unparseable_status", finding: finding.id, detail: finding.register });
+    if (finding.status === UNPARSEABLE_STATUS) {
+      problems.push({ kind: "unparseable_status", finding: finding.id, detail: finding.register });
+    } else if (classifyStatus(finding.status) === "unrecognised") {
+      // A TYPO is the dangerous case: `opne` is not `open`, matches no manifest entry, and
+      // under the first version of this arm exited 0 — losing the finding exactly as a
+      // missing status line did. Catching only the absent field left the blind spot inside
+      // the fix built to remove it.
+      problems.push({ kind: "unknown_status_vocabulary", finding: finding.id, detail: String(finding.status) });
+    }
   }
 
   const open = findings.filter((f) => isPlainObject(f) && f.status === "open");

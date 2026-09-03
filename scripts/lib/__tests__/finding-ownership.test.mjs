@@ -457,3 +457,49 @@ test("★ E4-F013 calibration preserved — a valid successor does NOT waive the
   assert.equal(r.ok, false);
   assert.ok(kinds(r).includes("owner_ticket_already_complete"), JSON.stringify(kinds(r)));
 });
+
+test("★★★ a TYPO'd status FAILS CLOSED — not just an absent one", () => {
+  // ROUND 2, found by external review. The first fail-closed arm caught only the synthetic
+  // "unknown" the parser invents when no Status field exists. A typo sailed through:
+  // `**Status:** opne` parses to "opne", is not "open", matches no manifest entry, and the
+  // check exited 0 — recreating, INSIDE the fix, the blind spot the fix exists to remove.
+  const parsed = parseFindings("## E9-F001 — probe\n\n**Status:** opne\n- **Severity:** HIGH\n");
+  assert.equal(parsed[0].status, "opne");
+  const r = evaluateFindingOwnership({ findings: parsed, declared: {}, ticketIds: [] });
+  assert.equal(r.ok, false, "a status the vocabulary does not recognise must fail closed");
+  assert.deepEqual(kinds(r), ["unknown_status_vocabulary"]);
+  assert.equal(r.problems[0].detail, "opne");
+});
+
+test("★★ the status vocabulary admits real wordings without a table edit, but not typos of 'open'", () => {
+  // 15 distinct statuses are already in use, several one-offs. A flat closed enum would red
+  // CI on every new resolution wording — the cry-wolf failure that gets a guard switched
+  // off. Families absorb those; `open` stays EXACT so its misspellings cannot be read as
+  // closed, which is the one direction that actually loses a finding.
+  const classify = (s) =>
+    evaluateFindingOwnership({
+      findings: [{ id: "E9-F001", status: s, severity: "LOW", title: "p" }],
+      declared: {},
+      ticketIds: [],
+    });
+  // Recognised as NOT open -> silent, no problem raised.
+  for (const s of [
+    "resolved",
+    "resolved_in_job",
+    "resolved_in_fix_round_2_red_pending_final_review",
+    "superseded_after_rejected_four_field_amendment",
+    "needs_changes",
+    "fixed",
+    "partially_resolved_in_job",
+    "approved_pending_job",
+    "resolved_in_some_brand_new_wording",
+  ]) {
+    assert.deepEqual(kinds(classify(s)), [], `${s} must be accepted as a non-open status`);
+  }
+  // Recognised as OPEN -> must be declared.
+  assert.deepEqual(kinds(classify("open")), ["undeclared_finding"]);
+  // Every misspelling of "open" must be REFUSED, never silently treated as closed.
+  for (const s of ["opne", "oepn", "opened", "reopened", "OPE N", "op en"]) {
+    assert.deepEqual(kinds(classify(s)), ["unknown_status_vocabulary"], `${s} must be refused`);
+  }
+});

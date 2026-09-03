@@ -23,6 +23,7 @@ import {
   DECISION_TABLE_ROW,
   DA_HEADING,
   DECISION_REVISION,
+  DECISION_REVISION_BODY,
 } from "./lib/register-id-uniqueness.mjs";
 
 const EPICS_RELATIVE_PATH = "docs/replatform/epics";
@@ -49,7 +50,7 @@ export function loadWaivers(root) {
 export function findSourceFiles(root) {
   const out = [];
   if (existsSync(path.join(root, DECISIONS_RELATIVE_PATH))) {
-    out.push({ file: DECISIONS_RELATIVE_PATH, kind: "decision", pattern: DECISION_HEADING, skip: DECISION_REVISION });
+    out.push({ file: DECISIONS_RELATIVE_PATH, kind: "decision", pattern: DECISION_HEADING, skipGenuineRevisions: true });
     out.push({ file: DECISIONS_RELATIVE_PATH, kind: "decision", pattern: DECISION_TABLE_ROW });
     out.push({ file: DECISIONS_RELATIVE_PATH, kind: "da-decision", pattern: DA_HEADING });
   }
@@ -74,10 +75,16 @@ export function findSourceFiles(root) {
 }
 
 export function collectSources(root) {
-  return findSourceFiles(root).map(({ file, kind, pattern, skip }) => ({
+  // Only headings that pass BOTH revision gates are withheld from the definition count.
+  // A heading in the documented shape whose body does NOT declare the revision is therefore
+  // still counted as a definition, and collides — the safe direction.
+  const genuineRevisionLines = new Set(collectRevisions(root).map((r) => `${r.file}:${r.line}`));
+  return findSourceFiles(root).map(({ file, kind, pattern, skipGenuineRevisions }) => ({
     file,
     kind,
-    ids: extractHeadingIds(readFileSync(path.join(root, file), "utf8"), pattern, { skip }),
+    ids: extractHeadingIds(readFileSync(path.join(root, file), "utf8"), pattern, {
+      skipLine: skipGenuineRevisions ? (line) => genuineRevisionLines.has(`${file}:${line}`) : undefined,
+    }),
   }));
 }
 
@@ -87,11 +94,20 @@ export function collectSources(root) {
 export function collectRevisions(root) {
   const file = DECISIONS_RELATIVE_PATH;
   if (!existsSync(path.join(root, file))) return [];
-  return extractHeadingIds(readFileSync(path.join(root, file), "utf8"), DECISION_REVISION).map((r) => ({
-    ...r,
-    file,
-    kind: "decision",
-  }));
+  const text = readFileSync(path.join(root, file), "utf8");
+  // GATE 2: the BODY must declare the revision too. A heading in the right shape is not
+  // enough — see DECISION_REVISION's header for why one gate was demonstrably not enough.
+  // A heading that passes gate 1 but not gate 2 is NOT collected here AND is not skipped by
+  // the definition extractor, so it lands in the uniqueness count and collides. Fail-closed.
+  const blocks = text.split(/\n(?=#{2,4}\s)/);
+  const declaresRevision = new Set();
+  for (const block of blocks) {
+    const heading = DECISION_REVISION.exec(block.split("\n")[0]);
+    if (heading && DECISION_REVISION_BODY.test(block)) declaresRevision.add(heading[1]);
+  }
+  return extractHeadingIds(text, DECISION_REVISION)
+    .filter((r) => declaresRevision.has(r.id))
+    .map((r) => ({ ...r, file, kind: "decision" }));
 }
 
 const ROOT = process.cwd();

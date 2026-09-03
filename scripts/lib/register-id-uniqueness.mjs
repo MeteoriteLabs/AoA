@@ -83,7 +83,7 @@ export function evaluateIdUniqueness(input) {
         return { ok: false, problems: [{ kind: "malformed_input", id: null }], counts: {}, waived: [] };
       }
       if (!seen.has(entry.id)) seen.set(entry.id, []);
-      seen.get(entry.id).push({ file, line: entry.line });
+      seen.get(entry.id).push({ file, line: entry.line, text: entry.text });
       counts[kind] = (counts[kind] ?? 0) + 1;
     }
   }
@@ -127,6 +127,35 @@ export function evaluateIdUniqueness(input) {
             kind: "waiver_count_mismatch",
             id,
             detail: `${key}: waiver declares ${waiver.occurrences} occurrence(s), found ${places.length} — ${places.map((p) => `${p.file}:${p.line}`).join(", ")}`,
+          });
+          continue;
+        }
+        // ★★★ AND IT MUST BIND TO THE OCCURRENCES ACTUALLY REVIEWED, not merely to how many
+        // there were. A count catches ADD and REMOVE and nothing else: REPLACING either
+        // reviewed definition with a different one at another file/line leaves
+        // `places.length === 2`, so the waiver kept applying and the promised swap detection
+        // never ran. External review found this; the count alone was half a binding.
+        //
+        // The identity is the definition's own SOURCE TEXT, not `file:line`. Line numbers
+        // drift on every edit above them — binding to those would red CI on unrelated
+        // changes, which is the cry-wolf failure that gets a guard switched off — whereas
+        // the text is stable under drift and changes exactly when the definition is swapped.
+        const actual = places.map((p) => String(p.text ?? "").trim()).sort();
+        const claimed = Array.isArray(waiver.identities) ? waiver.identities.map((t) => String(t).trim()).sort() : null;
+        if (!claimed || claimed.length !== actual.length) {
+          problems.push({
+            kind: "malformed_waiver",
+            id,
+            detail: `${key}: a waiver must list \`identities\` — the exact source text of each of the ${places.length} occurrence(s) reviewed`,
+          });
+          continue;
+        }
+        const drifted = actual.filter((t, i) => t !== claimed[i]);
+        if (drifted.length > 0) {
+          problems.push({
+            kind: "waiver_identity_mismatch",
+            id,
+            detail: `${key}: a reviewed occurrence was REPLACED, not merely re-counted — now: ${drifted.join(" | ")}`,
           });
           continue;
         }
@@ -243,7 +272,37 @@ export const DA_HEADING = /^#{2,4}\s+(DA-\d+):/;
  * `revision_without_original`. Otherwise "(revised)" becomes the escape hatch that smuggles
  * a genuine duplicate past the check.
  */
-export const DECISION_REVISION = /^#{2,4}\s+Decision\s+#(\d+)\b[^\n]*\(revised\b/i;
+export const DECISION_REVISION = /^#{2,4}\s+Decision\s+#(\d+)\s+\(revised\s+\d{4}-\d{2}-\d{2}\)\s*$/i;
+
+/**
+ * ★★★ WHY THE PATTERN ABOVE IS STRICT, AND WHY A SECOND CHECK EXISTS BELOW.
+ *
+ * The first version was `#(\d+)\b[^\n]*\(revised\b` — "the id, then anything, then the word
+ * revised". That matched far more than the documented form, and external review found it
+ * re-opened the very hole the exclusion was built to close. Measured, all three of these
+ * were treated as revisions and skipped by the definition extractor:
+ *
+ *     ## Decision #14 (revised 2026-04-21)                       <- the genuine one
+ *     ## Decision #125 — different decision (revised wording)     <- a DUPLICATE
+ *     ## Decision #125 — a totally unrelated duplicate (revised)  <- a DUPLICATE
+ *
+ * and `revision_without_original` then passed each of them, because it verified only that
+ * SOME original with id 125 exists. **I built that check for exactly this attack and it
+ * validated the wrong property** — that an original exists, rather than that this heading is
+ * a revision OF it. The advertised protection permitted a duplicate to ship.
+ *
+ * Two independent gates now, because one clearly was not enough:
+ *   1. the heading must be EXACTLY the documented form — id, then ` (revised YYYY-MM-DD)`,
+ *      then end of line. A title carrying its own prose cannot qualify, so both duplicates
+ *      above fall through to the definition extractor and collide, which is the safe
+ *      direction;
+ *   2. the BODY must declare the revision (`**Status:** Revised …`), which is what the real
+ *      Decision #14 block says. A heading alone cannot buy the exclusion.
+ *
+ * Anything failing either gate is treated as an ordinary DEFINITION — so the failure mode is
+ * a duplicate being reported, never a duplicate being skipped.
+ */
+export const DECISION_REVISION_BODY = /\*\*Status:\*\*\s*\**\s*Revised\b/i;
 
 /**
  * Extract the ids DEFINED by headings in one document.
@@ -259,12 +318,20 @@ export function extractHeadingIds(text, pattern, opts = {}) {
   // defining a new one. Those lines are collected separately and validated, so the exclusion
   // is checked rather than merely granted.
   const skip = opts && opts.skip instanceof RegExp ? opts.skip : null;
+  // `skipLine` is the stronger form: the caller decides per LINE NUMBER, having already
+  // applied whatever multi-gate test it needs. The revision check needs the block BODY as
+  // well as the heading, and a regex over a single line cannot express that.
+  const skipLine = opts && typeof opts.skipLine === "function" ? opts.skipLine : null;
   const out = [];
   const lines = text.split(/\r?\n/);
   for (let i = 0; i < lines.length; i += 1) {
+    if (skipLine && skipLine(i + 1)) continue;
     if (skip && skip.test(lines[i])) continue;
     const match = pattern.exec(lines[i]);
-    if (match) out.push({ id: match[1], line: i + 1 });
+    // `text` is the occurrence IDENTITY: stable under line drift (any edit above shifts
+    // every line number) and it CHANGES when a definition is replaced, which is precisely
+    // the swap a count cannot see.
+    if (match) out.push({ id: match[1], line: i + 1, text: lines[i].trim() });
   }
   return out;
 }
