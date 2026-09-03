@@ -161,6 +161,166 @@ function hasReason(value) {
  * @returns {{ok: boolean, problems: Array<{kind: string, finding: string|null, detail?: string}>,
  *            openCount: number, unowned: string[]}}
  */
+/**
+ * ★★★ THE MANIFEST ITSELF IS AN UNGUARDED INPUT, AND ON 2026-09-03 THAT COST A CORRECTION.
+ *
+ * `check-finding-ownership.mjs` used to do `JSON.parse(readFileSync(...))` and trust the
+ * result. THREE separate tracks hit merge conflicts in `finding-ownership.json` in a single
+ * day — it is a one-object file every track appends to — and on one of them `git rerere`
+ * silently replayed a stale resolution that produced a structurally invalid entry WITH A
+ * DUPLICATED `reason` KEY. **The `git add` ran anyway**, because nothing validated the file
+ * on the way in.
+ *
+ * ★ THE DISTINCTION THAT MAKES THIS WORTH A GUARD. A conflict in a GUARDED field fails
+ * LOUDLY: drop an ownership entry and the finding is undeclared, so the guard reports it on
+ * the next run. A conflict inside FREE TEXT fails SILENTLY — the stale replay reverted a
+ * corrected source citation inside a `reason` string, and every guard stayed green, because
+ * no guard reads those strings for anything. This closes the silent half.
+ *
+ * ★★ AND A PARSE ALONE DOES NOT CATCH IT. `JSON.parse` accepts duplicate keys and keeps the
+ * LAST one, so the corrupted manifest parsed cleanly and the losing `reason` — the corrected
+ * one — vanished with no error anywhere. The duplicate must therefore be looked for in the
+ * RAW TEXT, which is the only place both copies still exist.
+ *
+ * @param {string} text raw file contents
+ * @returns {{ok: true, findings: Record<string, object>}
+ *          | {ok: false, kind: "manifest_unparseable"|"manifest_duplicate_key"|"manifest_shape", detail: string}}
+ */
+export function parseOwnershipManifest(text) {
+  if (typeof text !== "string") {
+    return { ok: false, kind: "manifest_shape", detail: "manifest contents were not a string" };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    // REFUSE, rather than crashing with a bare SyntaxError stack. A guard that dies with an
+    // unattributed exception is indistinguishable from a broken guard, and the difference
+    // matters: one is "fix your manifest", the other is "ignore this, tooling is flaky".
+    return { ok: false, kind: "manifest_unparseable", detail: String(error?.message ?? error) };
+  }
+  // Only well-formed JSON reaches the duplicate scan, so the scanner may assume valid syntax.
+  const duplicates = findDuplicateJsonKeys(text);
+  if (duplicates.length > 0) {
+    return {
+      ok: false,
+      kind: "manifest_duplicate_key",
+      detail: duplicates.map((d) => `${d.path} (repeated ${d.count} times)`).join(", "),
+    };
+  }
+  if (!isPlainObject(parsed)) {
+    return { ok: false, kind: "manifest_shape", detail: "top level is not a JSON object" };
+  }
+  if (!isPlainObject(parsed.findings)) {
+    return {
+      ok: false,
+      kind: "manifest_shape",
+      detail: parsed.findings === undefined
+        ? "no `findings` object — a manifest that lost its only key would otherwise report EVERY finding as undeclared, which reads like a register problem rather than a file problem"
+        : "`findings` is present but is not a JSON object",
+    };
+  }
+  for (const [id, entry] of Object.entries(parsed.findings)) {
+    if (!isPlainObject(entry)) {
+      return { ok: false, kind: "manifest_shape", detail: `findings.${id} is not a JSON object` };
+    }
+  }
+  return { ok: true, findings: parsed.findings };
+}
+
+/**
+ * Every duplicated key in a JSON document, by path, found in the RAW TEXT.
+ *
+ * Deliberately a scanner and not a regex: `"reason": "... \"ticket\": ..."` puts key-shaped
+ * text inside a string value, and a regex cannot tell the two apart. These manifests are
+ * almost entirely long prose `reason` strings, so that is the common case, not a corner one.
+ *
+ * @param {string} text syntactically valid JSON
+ * @returns {Array<{path: string, count: number}>}
+ */
+export function findDuplicateJsonKeys(text) {
+  const tokens = tokenizeJson(text);
+  /** @type {Array<{isObject: boolean, seen: Map<string, number>, key: string|null, index: number}>} */
+  const stack = [];
+  const duplicates = new Map();
+
+  const currentPath = () => {
+    const parts = [];
+    for (const frame of stack) {
+      if (frame.isObject) {
+        if (frame.key !== null) parts.push(frame.key);
+      } else {
+        parts.push(`[${frame.index}]`);
+      }
+    }
+    return parts.length > 0 ? parts.join(".") : "(root)";
+  };
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token.type === "{") {
+      stack.push({ isObject: true, seen: new Map(), key: null, index: 0 });
+      continue;
+    }
+    if (token.type === "[") {
+      stack.push({ isObject: false, seen: new Map(), key: null, index: 0 });
+      continue;
+    }
+    if (token.type === "}" || token.type === "]") {
+      stack.pop();
+      continue;
+    }
+    if (token.type === "," ) {
+      const frame = stack[stack.length - 1];
+      if (frame && !frame.isObject) frame.index += 1;
+      continue;
+    }
+    if (token.type !== "string") continue;
+    const frame = stack[stack.length - 1];
+    // A string is a KEY only when it sits directly in an object and is followed by a colon.
+    if (!frame || !frame.isObject || tokens[i + 1]?.type !== ":") continue;
+    const name = token.raw;
+    const seen = (frame.seen.get(name) ?? 0) + 1;
+    frame.seen.set(name, seen);
+    frame.key = name;
+    if (seen > 1) duplicates.set(currentPath(), seen);
+  }
+
+  return [...duplicates].map(([path, count]) => ({ path, count }));
+}
+
+const JSON_PUNCTUATION = new Set(["{", "}", "[", "]", ":", ","]);
+const JSON_WHITESPACE = new Set([" ", "\n", "\r", "\t"]);
+
+/** Minimal JSON tokenizer. Values other than strings are not interpreted — only their extent
+ * matters, because the only thing being looked for is which strings are keys. */
+function tokenizeJson(text) {
+  const tokens = [];
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (JSON_WHITESPACE.has(ch)) { i += 1; continue; }
+    if (JSON_PUNCTUATION.has(ch)) { tokens.push({ type: ch }); i += 1; continue; }
+    if (ch === '"') {
+      let j = i + 1;
+      let raw = "";
+      while (j < text.length && text[j] !== '"') {
+        if (text[j] === "\\") { raw += text[j] + (text[j + 1] ?? ""); j += 2; continue; }
+        raw += text[j];
+        j += 1;
+      }
+      tokens.push({ type: "string", raw });
+      i = j + 1;
+      continue;
+    }
+    let j = i;
+    while (j < text.length && !JSON_WHITESPACE.has(text[j]) && !JSON_PUNCTUATION.has(text[j])) j += 1;
+    tokens.push({ type: "literal" });
+    i = j > i ? j : i + 1;
+  }
+  return tokens;
+}
+
 export function evaluateFindingOwnership(input) {
   const problems = [];
   if (!isPlainObject(input)) {

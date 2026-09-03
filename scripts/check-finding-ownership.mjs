@@ -14,7 +14,12 @@ import { readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-import { evaluateFindingOwnership, parseFindings, SEVERITY_VOCABULARY } from "./lib/finding-ownership.mjs";
+import {
+  evaluateFindingOwnership,
+  parseFindings,
+  parseOwnershipManifest,
+  SEVERITY_VOCABULARY,
+} from "./lib/finding-ownership.mjs";
 
 export const MANIFEST_RELATIVE_PATH = "scripts/finding-ownership.json";
 const EPICS_RELATIVE_PATH = "docs/replatform/epics";
@@ -76,11 +81,47 @@ export function collectFindings(root) {
   return out;
 }
 
+const MANIFEST_EXPLAIN = {
+  manifest_unparseable:
+    "the manifest is not valid JSON — the guard REFUSES rather than guessing, because a\n" +
+    "    checker that dies on an unattributed SyntaxError reads like broken tooling rather\n" +
+    "    than like a broken file, and gets ignored",
+  manifest_duplicate_key:
+    "the manifest repeats a key. `JSON.parse` accepts this and silently keeps the LAST\n" +
+    "    copy, so a parse alone cannot see it — the duplicate is found in the RAW TEXT,\n" +
+    "    which is the only place the losing copy still exists. This is the exact shape a\n" +
+    "    `git rerere` replay of a stale conflict resolution produced on 2026-09-03",
+  manifest_shape:
+    "the manifest parsed, but is not `{ \"findings\": { <id>: { … } } }`",
+};
+
+/** ★ REFUSE A MANIFEST THAT CANNOT BE TRUSTED, instead of parsing it and carrying on.
+ *
+ * Three tracks conflicted in this one file on 2026-09-03 and one of them had `git rerere`
+ * replay a stale resolution, producing a duplicated `reason` key — and its `git add` ran
+ * anyway, because nothing validated the file. A conflict in a GUARDED field fails loudly (a
+ * dropped entry makes its finding undeclared); a conflict in FREE TEXT fails SILENTLY, and
+ * that replay reverted a corrected source citation with every guard green. This is that half.
+ *
+ * The missing-FILE case still yields `{}` — that is bootstrap, not corruption, and it fails
+ * loudly one step later as `undeclared_finding` for every open finding. */
 function loadManifest(root) {
   const file = path.join(root, MANIFEST_RELATIVE_PATH);
   if (!existsSync(file)) return {};
-  const parsed = JSON.parse(readFileSync(file, "utf8"));
-  return parsed && typeof parsed === "object" && parsed.findings ? parsed.findings : {};
+  const result = parseOwnershipManifest(readFileSync(file, "utf8"));
+  if (!result.ok) {
+    console.error(`finding-ownership: ${MANIFEST_RELATIVE_PATH} is not usable.\n`);
+    console.error(`  - ${result.kind}: ${MANIFEST_EXPLAIN[result.kind] ?? result.kind}`);
+    console.error(`    ${result.detail}`);
+    console.error(
+      "\nFix the file. Do NOT re-run with --write: that would rewrite the manifest from the\n" +
+        "half of a duplicated key that `JSON.parse` happened to keep, destroying the other half\n" +
+        "— which on a rerere replay is the CORRECTED one. If a merge produced this, re-resolve\n" +
+        "the conflict by hand and check `git rerere status`.",
+    );
+    process.exit(1);
+  }
+  return result.findings;
 }
 
 const ROOT = process.cwd();

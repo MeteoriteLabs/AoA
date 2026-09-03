@@ -1329,8 +1329,11 @@ separate step.
 
 ## E3-F034 — The 100-claimer poll test sits on the lock-timeout threshold, and its failure CORRUPTS THE NEXT TEST
 
-**Status:** open · **Owner:** E3 / JOB-003 · **Severity:** MEDIUM (CI reliability on a required check)
+**Status:** `resolved_in_E3-F034_test_determinism_fix` · **Owner:** E3 / JOB-003 · **Severity:** MEDIUM (CI reliability on a required check)
 **Filed:** 2026-09-03, from a red `verify (4)` on PR #340 that was attributed rather than assumed.
+**Resolved:** 2026-09-03 on `claude/e3-f034-and-ownership-guard` — see **THE FIX** at the end of this entry.
+★ Every `file:line` below is the citation AS FILED and several have since moved; the analysis is
+kept verbatim because it is the record of the defect, and THE FIX names the current shapes.
 
 **What.** `job-leasing.integration.test.ts:1467` *"gives exactly one of 100 concurrent claimers one
 opaque offer"* fires **100 concurrent `service.poll()`** through `Promise.all` at a **single**
@@ -1351,6 +1354,16 @@ polls are `await`ed SEQUENTIALLY (`:1508`, `:1512`, `:1516`), so it cannot be se
 failure is entirely imported. That is why one flaky test reports as **two** failures, and why six of
 the seven 55P03s in the log carry the *second* test's name — which is precisely what makes each
 occurrence look larger and less explicable than it is.
+
+★★★ **AND THE CASCADE IS ITSELF NON-DETERMINISTIC — added 2026-09-03 after a FOURTH occurrence.**
+This raced **four times in one day** across the programme's lanes, and the failures did not look
+alike: at `a83886308` it produced **ONE** failure with **no cascade at all**, and on PR #340 it
+produced **TWO**. Whether the stragglers reach the next test's fixture depends on where in the
+24-slot pool queue the first rejection landed and how far the survivors had got — so the *shape of
+the report* changes between occurrences of the SAME bug. **That is why each sighting looked unlike
+the last and was re-diagnosed from scratch.** A reader matching a new red against this entry should
+match it on the ASSERTION STRING and the `55P03` on `lockWorkerLeaseAuthority`, never on the failure
+COUNT: one failure and two failures are the same defect.
 
 **Evidence — non-determinism and pre-existence are PROVEN, not inferred.**
 
@@ -1397,6 +1410,99 @@ answer on this programme ([[e7-cli-001-execution]]: two “flakes” were misdia
 one safe to call non-deterministic is not that it *looks* like a flake — it is a same-commit re-run
 that went green and a dated prior sighting on another branch, both pulled from raw logs. An
 unrecorded flake on a required check is a trap for whoever hits it next.
+
+---
+
+### ★ THE FIX (2026-09-03) — what was done, what property was preserved, and how that is known
+
+**Option 1 (the cascade) and option 2 (the threshold) were BOTH taken; option 3 was not.** Two
+changes, in `job-leasing.integration.test.ts` and one new test helper. **No production code changed.**
+
+**1 — the cascade, structurally.** `Promise.all` is replaced by `settleAllClaimers`
+(`server/src/__tests__/helpers/settle-all-claimers.ts`), which awaits **every** claimer to
+settlement and only then re-throws. This is deliberately NOT the bare `Promise.allSettled` swap this
+entry warned against: a rejected claimer is **still a failure** — the helper re-throws it, names how
+many rejected, their index and their SQLSTATE, and carries the first reason as `cause`. What changes
+is only *when* the verdict is reported, which is exactly the difference between one attributable
+failure and two confusing ones. Nothing from the race can still be in flight when the next test seeds.
+
+**2 — the threshold, by removing an assertion the test never meant to make.** The race now runs on
+its **own** `createTenantAppDbConnection`, with the **same role**, the **same `max: 24` pool** and the
+**same 100 claimers** — so the DATABASE-level overlap, which is the thing that makes it a race, is
+bit-for-bit unchanged — and with `lockTimeoutMs` / `statementTimeoutMs` /
+`idleInTransactionSessionTimeoutMs` raised to 20 s. Every other test in the file keeps production's
+750 ms.
+
+★ **A MEASURED CORRECTION TO THIS ENTRY'S OWN DIAGNOSIS.** `lock_timeout` was **not the only** cap.
+Read back live from the pool, the session GUCs are `lock_timeout=750ms`,
+`statement_timeout=5000ms`, `idle_in_transaction_session_timeout=5000ms` — a waiting `FOR UPDATE`
+spends its wait inside its own *statement*, and a poll transaction sits idle between round trips
+while the transactions ahead of it commit. **Raising `lock_timeout` alone, as option 2 proposed,
+would have moved the abort from `55P03` to `57014` / `25P03` rather than removed it.** All three are
+raised together.
+
+**WHAT PROPERTY IS PRESERVED, AND HOW THAT IS KNOWN.** The test asserts: of N concurrent claimers on
+one placed attempt, exactly **1** `offer` and **N-1** `no_work`; each loser's body carries exactly
+`{correlationId, outcome, protocolVersion, retryAfterMs, serverTime}` and nothing else; the winner's
+body carries the seeded `jobId` and a well-formed fence token; and the database ends at
+`leases=1, offered=1, queued=1`. **Not one of those clauses mentions latency, and the claimer count,
+the pool cap, the single contended row and every assertion are unchanged.** What is dropped is an
+assertion the test made *by accident and never in its name* — that 23 serialized poll transactions
+complete inside 750 ms on whatever storage the runner has. That was an ENVIRONMENT property; this
+entry's own measurement (median checkpoint fsync 2.493 s vs 1.193 s) is what made it fail.
+
+**THE ANTI-REGRESSION PROBLEM, AND THE ANSWER TO IT.** A test that passes because the race no longer
+occurs is indistinguishable from one that passes because it stopped testing — and the threshold
+defect *cannot be reproduced on demand*, so timing can never be the evidence. Both halves are
+therefore pinned as PROPERTIES:
+
+| half | pinned by | mutation that reds it |
+|---|---|---|
+| the cascade | `settle-all-claimers.test.ts`, with no database: an early rejection must not be REPORTED until a still-pending straggler has settled | reverting the helper to `Promise.all` — **4 of its 5 tests red**, the property test with `expected false to be true` (the straggler had not settled) |
+| the budget | the test reads `current_setting('lock_timeout' / 'statement_timeout' / 'idle_in_transaction_session_timeout')` back **from the live session** and asserts each clears a floor DERIVED from the pool cap (`(CONTENDED_POOL_MAX - 1) x 500 ms = 11,500 ms`) | dropping the three options — reds with `expected 750 to be greater than or equal to 11500`, and `expected 5000 ...` twice. Raising the pool cap without raising the budget also reds, because the floor is derived from it |
+
+**AND THE INVARIANT ITSELF IS STILL LIVE — measured, and it does NOT live where this entry implied.**
+Mutating the code the entry cites and re-running:
+
+| mutation | result |
+|---|---|
+| remove `FOR UPDATE` on the `execution_targets` row (`job-control.ts:1819-1821`, the line this entry names) | **GREEN** |
+| ...and on the `workers` row in the same `lockWorkerLeaseAuthority` | **GREEN** |
+| ...and the claim head's `FOR UPDATE ... SKIP LOCKED` on `job_attempts` | **GREEN** |
+| ...and the `status = 'pending'` conjunct in `offerLease`'s CAS `UPDATE` | **GREEN** |
+| ...and the `status = 'pending'` filter in the candidate read | ★ **RED** — 99 of 100 claimers reject with `internal_unavailable`, the losers having tried to mint a second lease against the `leases` uniqueness backstop |
+
+★ **So the three `FOR UPDATE`s SERIALIZE; they do not EXCLUDE.** The single-winner property is
+carried by the `status = 'pending'` qualification — in the candidate read and in `offerLease`'s
+compare-and-swap `UPDATE`, under Postgres row-write locking and EPQ re-qualification — with the
+`leases` unique constraint as the last backstop. Anyone reading this entry to learn *where* the
+race is decided would have been sent to the wrong three lines. **A positive control was run before
+believing any of the greens** (a `throw` at the top of `offerLease` → 100 / 100 reject), because four
+green mutations in a row is exactly the shape of a mutation that never reached the code under test.
+
+**★ THE ADJACENT CASE WAS FIXED TOO, AND IT WAS NOT IN THIS ENTRY.** *"activates exactly once across
+100 concurrent ACKs"* has the identical shape one test over: 100 concurrent `service.ack()` through
+`Promise.all`, every one taking the same `execution_targets` and `workers` rows `FOR UPDATE` in the
+same `lockWorkerLeaseAuthority` and holding them to COMMIT. It has simply not been the one CI was
+observed failing. Closing a defect on the case that motivated it while leaving the identical adjacent
+case open is this programme's own named recurring mistake (GO-BOOK 1.9.5), so both are fixed. The
+rest of the file was counted rather than assumed: the other `Promise.all` races are 2-way, or fixture
+seeding on the 4-connection `admin` pool, or already `Promise.allSettled`; the only other repo-wide
+`Promise.all(Array.from(...))` in an integration test is `worker-admission-rate-limit` at N=12 against
+a single atomic upsert — 11 waiters on one statement, not 23 on a ten-round-trip transaction.
+
+**WHAT WAS DELIBERATELY NOT DONE.** The service still re-throws `55P03` (`job-leasing.ts:796`).
+Absorbing it as a retry or as `no_work` would make the test deterministic by construction rather than
+by margin, and is arguably the correct production answer — but it is a behaviour change inside the
+frozen JOB-003 authority chain, it needs its own gate analysis, and the workload that provokes it
+(one worker polling its own target 100 times at once) is a test construction, not a production one.
+Recorded here rather than half-taken.
+
+**Verification.** All **39** tests in `job-leasing.integration.test.ts` plus the **5** new helper
+tests pass locally on Windows (`AOA_RUN_WIN_INTEGRATION=1`). Typechecking the touched files produces
+**147** errors before the change and **147** after — the file carries pre-existing branded-type
+errors and is outside `server/tsconfig.json`, so the delta is the only honest signal.
+`server/src/__tests__` is eslint-ignored, so no lint gate applies to it (measured, not assumed).
 
 ---
 

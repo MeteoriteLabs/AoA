@@ -9,7 +9,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { evaluateFindingOwnership, parseFindings } from "../finding-ownership.mjs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  evaluateFindingOwnership,
+  findDuplicateJsonKeys,
+  parseFindings,
+  parseOwnershipManifest,
+} from "../finding-ownership.mjs";
 
 const OPEN_HIGH = { id: "E4-F007", status: "open", severity: "HIGH", title: "no session renewal" };
 const OPEN_LOW = { id: "E6-F005", status: "open", severity: "LOW", title: "nit" };
@@ -502,4 +513,143 @@ test("★★ the status vocabulary admits real wordings without a table edit, bu
   for (const s of ["opne", "oepn", "opened", "reopened", "OPE N", "op en"]) {
     assert.deepEqual(kinds(classify(s)), ["unknown_status_vocabulary"], `${s} must be refused`);
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★★★ THE MANIFEST IS AN INPUT TOO.
+//
+// Three tracks conflicted in `finding-ownership.json` in a single day on 2026-09-03 and one
+// of them had `git rerere` silently replay a stale resolution, producing a DUPLICATED
+// `reason` key — and the `git add` ran anyway, because nothing validated the file.
+//
+// ★ The distinction these tests exist for: a conflict in a GUARDED field fails LOUDLY (drop
+// an ownership entry and its finding becomes undeclared, so the guard reports it). A conflict
+// in FREE TEXT fails SILENTLY — that replay reverted a corrected source citation inside a
+// `reason` string with every guard green, because no guard reads those strings. `JSON.parse`
+// accepts a duplicate key and keeps the LAST copy, so a parse alone cannot see it either.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MANIFEST = (findings) => JSON.stringify({ findings }, null, 2);
+
+test("★ a manifest that does not parse is REFUSED, not crashed on", () => {
+  const r = parseOwnershipManifest('{"findings": {<<<<<<< HEAD');
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "manifest_unparseable");
+  // The refusal carries the parser's own words, so the reader is told WHERE, not just THAT.
+  assert.ok(r.detail.length > 0);
+});
+
+test("★ a DUPLICATED key is refused — the case `JSON.parse` alone cannot see", () => {
+  // Exactly the rerere-replay shape: the stale copy and the corrected copy, both present.
+  const text = `{
+  "findings": {
+    "E3-F034": {
+      "status": "unowned",
+      "reason": "STALE: cites job-control.ts:1700",
+      "reason": "CORRECTED: cites job-control.ts:1819-1821"
+    }
+  }
+}`;
+  // The premise, asserted rather than assumed: this parses cleanly and loses a copy.
+  assert.equal(typeof JSON.parse(text), "object");
+  assert.equal(JSON.parse(text).findings["E3-F034"].reason.startsWith("CORRECTED"), true);
+
+  const r = parseOwnershipManifest(text);
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "manifest_duplicate_key");
+  assert.match(r.detail, /findings\.E3-F034\.reason/);
+});
+
+test("duplicate keys are found in the RAW TEXT, and key-shaped text inside a VALUE is not one", () => {
+  // These manifests are almost entirely long prose `reason` strings, so a value that quotes a
+  // key is the common case, not a corner one — which is why this is a scanner, not a regex.
+  assert.deepEqual(
+    findDuplicateJsonKeys('{"reason": "the entry said \\"status\\": \\"owned\\" at the time", "status": "unowned"}'),
+    [],
+  );
+  assert.deepEqual(findDuplicateJsonKeys('{"a": 1, "a": 2}'), [{ path: "a", count: 2 }]);
+  assert.deepEqual(
+    findDuplicateJsonKeys('{"a": [{"k": 1}, {"k": 1, "k": 2}]}'),
+    [{ path: "a.[1].k", count: 2 }],
+  );
+  // The same NAME in two different objects is not a duplicate. A checker that said otherwise
+  // would fire on every manifest, and a guard that cries wolf gets switched off.
+  assert.deepEqual(findDuplicateJsonKeys('{"x": {"status": 1}, "y": {"status": 2}}'), []);
+});
+
+test("a manifest that parses but has the wrong SHAPE is refused", () => {
+  // A merge that loses the one top-level key would otherwise report EVERY finding as
+  // undeclared — which reads like a register problem rather than a file problem.
+  assert.equal(parseOwnershipManifest('{"finding": {}}').kind, "manifest_shape");
+  assert.equal(parseOwnershipManifest("[]").kind, "manifest_shape");
+  assert.equal(parseOwnershipManifest('{"findings": []}').kind, "manifest_shape");
+  assert.equal(parseOwnershipManifest('{"findings": {"E1-F001": "owned"}}').kind, "manifest_shape");
+});
+
+test("a well-formed manifest still passes through untouched", () => {
+  const findings = { "E4-F007": { status: "unowned", reason: "nobody yet" } };
+  const r = parseOwnershipManifest(MANIFEST(findings));
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.findings, findings);
+});
+
+// ★ AND THE VALIDATION MUST BE CHAINED TO THE GUARD, not merely available beside it — the
+// 2026-09-03 incident is precisely that a validation existed nowhere in the path the file
+// actually travelled. These drive the real script end to end against a fixture repo root.
+
+const CHECKER = path.join(
+  fileURLToPath(new URL("../../", import.meta.url)),
+  "check-finding-ownership.mjs",
+);
+
+function runCheckerOn(manifestText, extraArgs = []) {
+  const root = mkdtempSync(path.join(tmpdir(), "finding-ownership-"));
+  try {
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    mkdirSync(path.join(root, "docs/replatform/epics/E0-foundation"), { recursive: true });
+    writeFileSync(path.join(root, "scripts/finding-ownership.json"), manifestText, "utf8");
+    writeFileSync(
+      path.join(root, "docs/replatform/epics/E0-foundation/findings.md"),
+      "## E0-F001 — a finding\n\n**Status:** open\n**Severity:** LOW\n",
+      "utf8",
+    );
+    try {
+      const stdout = execFileSync(process.execPath, [CHECKER, ...extraArgs], {
+        cwd: root,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      return { code: 0, output: stdout };
+    } catch (error) {
+      return { code: error.status ?? 1, output: `${error.stdout ?? ""}${error.stderr ?? ""}` };
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("★ the SCRIPT refuses a duplicated key — validation is chained to the read", () => {
+  const good = MANIFEST({ "E0-F001": { status: "unowned", reason: "nobody yet" } });
+  const green = runCheckerOn(good);
+  assert.equal(green.code, 0, `positive control must be green, got:\n${green.output}`);
+
+  const corrupted = good.replace('"status": "unowned",', '"reason": "STALE REPLAY",\n      "status": "unowned",');
+  const red = runCheckerOn(corrupted);
+  assert.equal(red.code, 1);
+  assert.match(red.output, /manifest_duplicate_key/);
+  assert.match(red.output, /findings\.E0-F001\.reason/);
+});
+
+test("★ --write ALSO refuses — it must never rewrite the surviving half of a duplicate", () => {
+  const corrupted = MANIFEST({ "E0-F001": { status: "unowned", reason: "kept" } })
+    .replace('"status": "unowned",', '"reason": "STALE REPLAY",\n      "status": "unowned",');
+  const red = runCheckerOn(corrupted, ["--write"]);
+  assert.equal(red.code, 1);
+  assert.match(red.output, /manifest_duplicate_key/);
+});
+
+test("the SCRIPT refuses a manifest that does not parse at all", () => {
+  const red = runCheckerOn('{"findings": {\n<<<<<<< HEAD\n');
+  assert.equal(red.code, 1);
+  assert.match(red.output, /manifest_unparseable/);
 });
