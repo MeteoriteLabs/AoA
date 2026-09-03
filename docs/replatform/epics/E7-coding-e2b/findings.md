@@ -978,7 +978,34 @@ OBSERVED and printed) and widens the artifact arm off its `kind = 'workspace_pat
 was never a discriminator for "the agent produced something" — it is a discriminator for "the run had
 a repository", which is Unit E's question.
 
-## E7-F016 — Clause 6's failure text names four unbuilt links, three of which cannot flip either counter, and omits the ones that can
+★★ **The axis this finding turns on is PROVENANCE, not probative value — and naming it precisely is
+what keeps the fix consistent.** The replacement arm (a committed transcript artifact) does not prove
+productivity either; it proves that attested bytes left this run's sandbox. The two arms therefore
+differ on exactly one axis — **who can cause the row to exist** — and that is the axis slice A
+discriminates on. A row predicate reads control-plane tables and never the artifact's bytes, so
+provenance is the only claim clause 6 can honestly make; the productivity floor moves to the producer
+(the worker refuses to export an empty transcript, or one with no model turn). See
+[`CLI-008-unit-f-design.md`](./tickets/CLI-008-unit-f-design.md) §0 and §3.3. Stating the axis matters
+because the looser framing — *"the arm is non-probative"* — would disqualify the replacement too.
+
+★★★ **Removing the arm from the predicate does NOT withdraw the question it stood for, and here is
+where that question still lives.** Two owners, both pre-existing: `gate-clause-wiring.json`'s
+`E3-17-output` (`unwired`, symbol `jobOutputBridge`, "wire at sink cutover (Sprint 6)",
+`scripts/gate-clause-wiring.json:21-26`, checked by the required `policy` job) owns the general
+distributed-job → `task_outputs` projection; and Unit F's own **slice E** builds the E7-1 projection
+and carries it as acceptance criterion §6.3 with three positive controls. The honest cost is that
+enforcement moves from *a clause a verify run prints* to *unit tests plus an acceptance criterion* —
+weaker, and mitigated only by keeping `taskOutputs` printed beside the verdict. That trade is recorded
+in the design's §2.1 Q1 rather than left to be discovered.
+
+★ **A second measured consequence, which binds the fix's release shape.** The surviving arm has
+**zero producers today** — the daemon's `artifactCommit` client method
+(`packages/worker-daemon/src/transport/client.ts:266,567`) has no production caller, and both shipped
+providers declare `artifactExportMode: "none"`. So slice A shipped ALONE converts a forgeable gate
+into an **unpassable** one, which is CLI-008 Unit A's precedent inverted. Slice A lands with slices
+C–E or it does not land (design §2.1 Q2, §6.9).
+
+## E7-F016 — Clause 6's operator-facing text misdescribes its own subject: four blamed links (three of which flip neither counter), and a verdict named for more than it proves
 
 **Status:** open · **Owner:** CLI-008 (Unit F, slice A)
 **Severity:** LOW · **Filed:** 2026-09-03, by CLI-008 Unit F's terrain pass — which was sent to size
@@ -1007,8 +1034,24 @@ while `artifact_prepared` is already frozen at `packages/worker-protocol/src/eve
 **evidence surface** — printed, quoted, and load-bearing for scheduling. It produced CLI-008's XL
 sizing for Unit F, which the terrain pass corrects to L by taking a route the text does not mention.
 
+★★ **The second half, added on review: the VERDICT'S NAME overclaims too.** `capabilityProven` is
+computed from two SQL counts over control-plane rows. A row predicate can assert **provenance** —
+*these bytes reached durable storage through an attested path* — and can never assert
+**productivity** — *these bytes are the work*. Neither arm reads a byte of the artifact. So the name
+promises a capability judgement the predicate structurally cannot make, and after Unit F slice A the
+surviving arm is a **protocol transcript**, which is non-empty even for a run in which the model never
+spoke. Same defect class as the reason string: operator-facing text asserting more than the code
+beneath it.
+
+**Fix, and the deliberate non-fix.** Slice A rewrites the reason string and the printed verdict label
+to state the provenance claim. It does **not** rename the symbol: `capabilityProven` appears in 15
+files across five epics (`grep -rl capabilityProven` at `d0b75be19`), and a cross-epic rename is churn
+Unit F has no mandate for. The name's overclaim is therefore carried HERE, in the register, plus as an
+explicit acceptance non-claim in the design (§6.6) — recorded rather than silently tolerated.
+
 ★ **The transferable part.** A failure reason is a claim like any other, and this one was assembled
 from symptoms rather than from the predicate directly above it. Three of its four links are true
 statements about the system that are **irrelevant to the counter the clause reads** — which is what
 made the list feel comprehensive while pointing at the most expensive route. When a clause explains
-itself, check each link against the clause's own predicate, not against the subject area.
+itself, check each link against the clause's own predicate, not against the subject area — **and
+check the clause's own NAME the same way.**

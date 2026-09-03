@@ -13,19 +13,49 @@ storage under a worker-minted grant; the port carries a grant inbound and a refe
 
 ---
 
-## 0. The answer in five sentences
+## 0. The bar this unit answers to, and then the answer
 
-`capabilityProven` turns on **two counters**, and **not one of the four links the verifier's own
-failure text blames is one of them.** The arm the text is really about — a committed `workspace_patch`
-job artifact — is blocked behind Unit E *and* behind an in-sandbox manifest capture that does not
-exist, because `buildWorkspaceManifest` walks a **local** filesystem with `node:fs`. The other arm —
-a `task_output` keyed to the run — is reachable today by **a board `curl`**, which makes the
-programme's headline gate forgeable. So the honest cheapest path is neither of the two the estimate
-assumed: it is **one named file, written by the agent to a fixed absolute path Unit D's own script
-already owns, exported by the provider under an upload grant that the D1 lane has already proven end
-to end against real MinIO, committed as a `log` job artifact, and projected onto the task**. That
+★★★ **First, what clause 6 can honestly assert — because everything below follows from it, and an
+earlier draft of this document did not pick.** `capabilityProven` is computed from two SQL counts. A
+count over rows can assert **provenance** — *these bytes reached durable AoA storage through an
+attested path* — and it cannot assert **productivity** — *these bytes are the work the task asked
+for*. The two arms of clause 6 fail on **different axes**, and collapsing that into one word
+("non-probative") is what let an earlier draft argue both sides of a single principle:
+
+| arm | provenance | productivity |
+|---|---|---|
+| `task_outputs` where `created_by_run_id = run.id` | **none** — any company-scoped actor can POST it (§1.3, E7-F015) | none |
+| a `committed` `job_artifacts` row | **full** — live fence, verified device proof, attempt-scoped object prefix, control-plane `headObject` re-verifying the declared SHA-256 | **none — and this document says so at every point where it matters** |
+
+**Unit F picks provenance, and makes the operator-facing text say so.** That is not retreating to a
+weaker bar so something can pass. Provenance is the only axis on which the two arms differ; it is the
+axis this whole substrate — leases, fences, device proofs, attested commits — exists to provide; and
+it is the only axis a row predicate can read at all, because the verifier reads the control plane's
+tables and never the artifact's bytes. Productivity is not abandoned: it moves to the **producer**,
+which can inspect content (§3.1's export floor), and the residual weakness is written into acceptance
+as an explicit non-claim (§6.6, restated as scope in §7) rather than left for a reader to trip
+over.
+
+**Then the answer.** `capabilityProven` turns on those two counters, and **not one of the four links
+the verifier's own failure text blames is one of them** (E7-F016). The arm the text is really about —
+a committed `workspace_patch` job artifact — is blocked behind Unit E *and* behind an in-sandbox
+manifest capture that does not exist, because `buildWorkspaceManifest` walks a **local** filesystem
+with `node:fs`. The other arm is reachable today by **a board `curl`**, which makes the programme's
+headline gate forgeable (E7-F015). So the cheapest satisfier that is honest **on the provenance
+axis** is: **one named file, written by the agent's own process to a fixed absolute path Unit D's
+script already owns, exported by the provider under an upload grant the D1 lane has already proven
+end to end against real MinIO, committed as a `log` job artifact, and projected onto the task**. That
 path needs no workspace, no `buildWorkspacePatch`, no `createResultCommitter`, and no `observeRun` —
 and it is **L**.
+
+★★ **Two things a reader of the previous draft must un-learn**, both corrected in place rather than
+quietly swapped, because both are the shape the next implementer would reach for anyway:
+
+1. The output path is **not** an argv positional and the redirect is **not** `> "$3"`. Three shipped
+   tests catch that shape. §3.1 has the measurement and the shape that survives.
+2. The captured bytes are **not** "the thing the agent produced, byte for byte". They are a JSONL
+   protocol transcript, non-empty even for a run in which the model never spoke. §3.1 states what
+   they are; §6 states what they do not prove.
 
 ---
 
@@ -59,6 +89,11 @@ The two counters come from `countProducedOutputs`
 |---|---|---|
 | `workspacePatchArtifacts` | `job_artifacts` where `job_id = run.distributedJobId` **AND `kind = 'workspace_patch'` AND `status = 'committed'`** (`:201-211`) | ONLY `commitArtifactVersion`, behind a live fence, a device proof, and a control-plane `headObject` that independently verifies the object's `ChecksumSHA256` |
 | `taskOutputs` | `task_outputs` where `created_by_run_id = run.id` (`:213-216`) — **no type, provider, agent or provenance filter** | anything that can write the table |
+
+★ **The table's right-hand column is the whole design decision.** The two arms are not
+"one strong, one weak" on a single scale — they differ on **who can cause the row to exist**, and on
+nothing else. Neither arm reads a byte of the artifact, so neither can say anything about *what* was
+produced. §0 names that axis and §3.3 spends it.
 
 ★ **Two different citations for the same predicate.** `store:165` is the byte-identical
 `eq(taskOutputs.createdByRunId, run.id)` inside `listRunSecretScanSurfaces` — the **clause-4 leak
@@ -172,14 +207,19 @@ suite and a working `grant_upload` double
 ### 1.6 So the genuinely missing links are these, and only these
 
 1. **No file to export.** Unit D's script runs `claude --print -` and lets stdout go nowhere in
-   particular. There is no agreed absolute path inside the sandbox that holds what the agent produced.
+   particular. There is no agreed absolute path inside the sandbox holding anything this run emitted.
+   ★ Closing this is **one constant in an existing fixed script literal**, not a new argv positional
+   — see §3.1, which records why the positional shape fails against three shipped tests.
 2. **No real `exportArtifact`/`digestArtifact`.** `E2bSandboxProvider` declares
    `artifactExportMode = "none"` and declines both (`e2b-provider.ts:178,391-402`) — honestly, and
    with `#transport.readFile` (`real-transport.ts:196`) sitting one line away, uncalled.
 3. **No worker-side consumer.** Nothing sequences digest → mint upload grant → export → commit. This
    is DAT-009 slice 3, chartered on Track B (GO-BOOK §1.9.3) and unbuilt.
 4. **No announcement.** `EventSequencer` has no `artifactPrepared` method, so a committed artifact is
-   invisible to the control plane's evidence stream.
+   invisible to the control plane's evidence stream. ★ **This blocks slice E's projection and
+   acceptance §6.2 — it does NOT block the counter.** `countProducedOutputs` reads `job_artifacts`
+   directly and joins no events (§2.1 Q2). Confusing the two is the sweep's error this design
+   corrects.
 5. **No projector.** `foldAttemptEvidence` hard-codes `detectedFiles: []`
    (`canary-terminal-projection.ts:251`) and `createCanaryRunProjector.projectTerminal`
    (`canary-run-projector.ts:149`) has exactly four steps — events (`:163`), terminal (`:188`),
@@ -208,8 +248,112 @@ projector is composed and reachable, and the sandbox command line is already our
 
 **A measured "it really is XL" was on the table and is not what the evidence says.** What *is* XL and
 genuinely Unit-E-blocked is the workspace-patch arm — and the honest consequence is that
-**capabilityProven going green after Unit F does NOT close E7-F003**. §7 states that as an acceptance
-criterion so a green cannot be read as more than it is.
+**capabilityProven going green after Unit F does NOT close E7-F003**. §6.6 states that as an
+acceptance non-criterion so a green cannot be read as more than it is.
+
+★★★ **L is the size of A–E TOGETHER, not of any prefix of them.** The artifact arm has **zero
+producers today** (§2.1 Q2), so slice A alone leaves a gate nobody can pass. Anyone scheduling this
+unit should read the L as one increment; there is no half-Unit-F that improves anything.
+
+---
+
+## 2.1 ★★★ Two questions answered as MEASUREMENTS, because assuming either would sink the plan
+
+### Q1 — after slice A, what still owns *"a distributed run can produce a `task_output`"*?
+
+**Measured: two owners, and neither of them is a sentence in this document.** Taking the arm out of
+the clause-6 predicate does not withdraw the question; here is where it demonstrably still lives.
+
+1. **`gate-clause-wiring.json`'s `E3-17-output`** —
+   `{"epic":"E3","status":"unwired","symbol":"jobOutputBridge","reason":"JOB-014 output projection
+   has zero callers; task_outputs is still written by the legacy path. Wire at sink cutover
+   (Sprint 6)."}` (`scripts/gate-clause-wiring.json:21-26`). That clause owns the **general**
+   distributed-job → `task_outputs` projection, it is checked by the **required `policy` job**, and
+   Unit F deliberately leaves it alone (§3.2). It was the owner before this design and it is the
+   owner after it.
+2. **Unit F slice E**, which builds the E7-1-specific projection and carries it as **acceptance
+   criterion §6.3**, with three positive controls: §5.10 (replay writes ONE row), §5.11 (a lost
+   terminal latch writes NO row), §5.12 (a run with no issue writes NO row).
+
+★ **And here is the cost, stated rather than glossed.** Before slice A the question was enforced by a
+clause **a verify run reads and prints**. After slice A it is enforced by **unit tests and an
+acceptance criterion**. That is *weaker in a specific way*: a unit test reds in CI, but no
+`verify:e7-1-distributed-run` invocation will ever report "the artifact committed and the founder
+still cannot see it on the task". Slice A's mitigation is that `taskOutputs` stays in
+`E7ProducedOutputCounts` and stays **printed by `formatVerifyResult`**, so the gap between the two
+counters is readable off the verdict line by an operator who knows to look. That is a printout, not a
+gate, and this document does not dress it up as one.
+
+★★ **What this is NOT: the chartered question deleted.** The wave was convened to answer *what
+supplies the output*, and Unit F answers it by **building the supply** — slices B, C, D and E,
+including the `task_outputs` row. What slice A removes is that row's standing as a **gate satisfier**,
+and the reason is structural rather than presentational: **clause 6 is an OR, and in an OR the
+weakest arm sets the bar.** Two different questions had been disjoined into one predicate — *did
+attested bytes leave the sandbox* and *can the founder see them* — so a forged answer to the second
+was a sufficient answer to the first. Slice A separates them. It drops neither.
+
+### Q2 — is the widened artifact arm actually reachable?
+
+A sweep angle reported that the worker's event-sequence class exposes seven emitters and has **no**
+`artifactPrepared` method, so the frozen protocol's one artifact-announcement event is unemittable —
+and inferred that after slice A **both** arms of `capabilityProven` may be unreachable, making the
+gate unpassable. **I verified it myself. The premise is TRUE. The inference is FALSE. And a
+different, sharper problem is true instead, which the sweep was circling and did not name.**
+
+**VERIFIED — the premise.** `packages/worker-daemon/src/supervisor/events.ts` declares exactly seven
+emitters — `attemptStarted` (`:147`), `networkDenied` (`:155`), `log` (`:162`), `progress` (`:170`),
+`usage` (`:178`), `browserObservation` (`:206`), `terminal` (`:220`) — and no `artifactPrepared`. A
+repo-wide grep for `artifact_prepared`/`artifactPrepared` outside tests returns seven hits and
+**every one is a declaration, not an emission**: the DB CHECK
+(`packages/db/src/schema/job_events.ts:75`), the frozen payload schema, type, vocabulary entry and
+variant (`packages/worker-protocol/src/events.ts:92,95,358,387`), the re-export
+(`worker-protocol/src/index.ts:324`), and one comment
+(`server/src/services/canary-terminal-projection.ts:248`). **Nothing emits it.**
+
+**REFUTED — the inference, and the refutation is one clause of the store.** The artifact arm does not
+read events. `countProducedOutputs` queries `job_artifacts` directly —
+`and(eq(jobArtifacts.jobId, run.distributedJobId), eq(jobArtifacts.kind, "workspace_patch"),
+eq(jobArtifacts.status, "committed"))` (`e7-distributed-run-verifier-store.ts:201-211`) — and the
+module contains no `job_events` join anywhere. **A committed artifact counts whether or not anything
+announced it.** `artifact_prepared` is needed for slice E's projection and for acceptance §6.2; it is
+not on the path to the counter.
+
+★ **And adding the emitter is not blocked either.** `artifact_prepared` is already in the frozen
+vocabulary (`worker-protocol/src/events.ts:358`) with a frozen payload (`:92-94`) and is already in
+the `job_events` CHECK constraint (`schema/job_events.ts:75`). `EventSequencer` is **daemon** code,
+outside the `worker-protocol-contract-bytes` job's freeze. Slice D.3 adds an eighth method: no
+protocol change, no migration.
+
+★★★ **THE REAL PROBLEM, STATED CORRECTLY: the artifact arm has ZERO PRODUCERS TODAY, so slice A
+shipped ALONE turns a forgeable gate into an unpassable one.** Measured: the daemon's HTTP client
+declares `artifactCommit` (`worker-daemon/src/transport/client.ts:266,567`) and **no production code
+calls it** — `patch/result-commit.ts:25` names it only in a comment — and both shipped providers
+declare `artifactExportMode: "none"` (`e2b-provider.ts:178`, `provider-wire/src/driver.ts:83`). The
+mechanism is proven (DAT-002 slice 7 drove the routes 13/13 from the test runner); the **producer**
+is absent.
+
+| state | artifact arm | task-output arm | `capabilityProven` |
+|---|---|---|---|
+| today | 0 producers | forgeable by one authenticated POST (E7-F015) | **passable only by forgery** |
+| **after slice A alone** | 0 producers | not in the predicate | ⚠️ **unpassable** |
+| after slices A–E | the committed transcript artifact | not in the predicate, still printed | **passable, on provenance** |
+
+**Three consequences, and they bind the plan rather than decorating it:**
+
+1. ★ **A–E land together, or A does not land.** Landing A first *within* Unit F is right (pin the
+   defect before the fix, or the anti-regression mutation cannot exist) and it is safe in isolation
+   only because `--require-capability` is **off by default**
+   (`server/src/cli/verify-e7-1-distributed-run.ts:65`), no workflow runs the verifier, and GO-BOOK
+   §9 tells the operator not to pass it. But a Unit F that lands A and stops has shipped a gate
+   nobody can pass — which is precisely the precedent CLI-008 Unit A set **against**. This is
+   written into acceptance as §6.9.
+2. The interim errs in the **safe** direction — an unpassable gate under-reports where a forgeable
+   one over-reports — but it is still an interim, and it is named here so that nobody discovers it
+   from a red verify run.
+3. ★★ **Slice C's open question 1 is therefore a precondition on slice A, not just on slice C.** If
+   `#transport.readFile` cannot read a file written by a redirected `exec` (open question 1), the
+   producer does not exist and **neither slice may land**. That dependency was implicit in the slice
+   ordering before; it is explicit now.
 
 ---
 
@@ -219,39 +363,120 @@ A composed bridge with nothing to feed it is this programme's most-repeated defe
 has RLS, grants, a commit path, an orphan sweeper and DR reconciliation, and **no producer**. So the
 producer is named first, concretely, before any consumer is designed.
 
-### 3.1 The producer: the agent's own output, at a fixed absolute path
+### 3.1 The producer: the agent's own process output, at a fixed absolute path
 
 Unit D already owns the sandbox command line. It emits a **fixed literal** `sh -c` script per
 (adapter, has-bundle) pair, with the binary and the staged paths as separate argv elements
-(`CLI-008-design.md` §4a). Unit F adds **one redirection and one constant path**:
+(`CLI-008-design.md` §4a). Unit F adds **one redirection, whose target is a module constant baked
+into that same fixed literal**:
 
 ```
-sh -c 'for f in "$1" "$2"; do [ -r "$f" ] || { echo "[cli-008] staged input missing: $f" >&2; exit 78; }; done;
-       exec "$0" --print - --output-format stream-json --verbose --append-system-prompt-file "$2" < "$1" > "$3"'
-   claude  /home/user/.aoa-run-prompt.md  /home/user/.aoa-run-instructions.md  /home/user/.aoa-run-output.jsonl
+sh -c 'for f in "$1"; do [ -r "$f" ] || { echo "[cli-008] staged input missing: $f" >&2; exit 78; }; done;
+       exec "$0" --print - --output-format stream-json --verbose < "$1" > /home/user/.aoa-run-output.jsonl'
+   claude  /home/user/.aoa-run-prompt.md
 ```
 
-Four properties, each deliberate:
+★★★ **THE OUTPUT PATH IS NOT AN ARGV POSITIONAL, AND AN EARLIER DRAFT OF THIS DOCUMENT SAID IT WAS
+(`> "$3"`, with the path appended to the argv). That draft was wrong in three independent ways, and
+each one is caught by a test that is already shipped.** The correction is recorded rather than
+silently swapped, because the broken shape is the *obvious* one — the next implementer will reach for
+it too.
 
-- **A redirection, not a pipeline.** `> "$3"` preserves `exec`'s exit code exactly. `| tee` would
+| what `> "$3"` assumed | what is measured at `d0b75be19` |
+|---|---|
+| **`$3` is a stable index** | It is not. `args: ["-c", script, input.binary, ...paths]` (`task-run-sandbox-invocation.ts:212`) makes `$0` the binary and `$1…$n` the staged paths — and the **instructions path is conditional** (`:164`, `:169`), so the no-bundle shape has exactly ONE path. That shape is pinned twice: `emits the codex shape — NOT the claude flags, which are meaningless to it` asserts the argv is exactly `["-c", script, "codex", STAGED_PROMPT_PATH]` (`task-run-batch-workload.test.ts:215-226`), and `stages NO bundle and emits NO bundle flag when it is %s` asserts `stagedFiles` is exactly `[STAGED_PROMPT_PATH]` (`:371-381`). In that shape the output positional is `$2`; a literal `$3` expands to the empty string, and `> ""` is an `sh` redirection failure |
+| **the path can ride the `paths` array** | Then it fails on the **happy path**. `readableGuard(paths.length)` (`:176`, defined `:118-124`) derives the guard's arity from the array and emits one `[ -r "$i" ] \|\| exit 78` per element. The output file **does not exist before exec**, so the guard would 78-refuse every run. `guards every staged path it reads, with an attributable exit code` (`:388-406`) asserts that arity in **both** directions — every staged index guarded, and `"$n+1"` absent |
+| **the path can ride the argv but skip `paths`** | Then it fails the structural invariant. `every absolute path in the %s argv is staged (instructions: %s)` (`:229-252`) is a non-example-based `it.each` ending in `expect([...stagedPaths].sort()).toEqual([...argvPaths].sort())` — **set equality, not containment**. A fourth argv element nothing stages reds it, on all four (adapter × bundle) rows |
+
+**Three escapes, all closed.** This is the E7-F010 class exactly: grow one side of a seam and the
+structures derived from the other side do not follow you.
+
+**The shape that survives all three: a constant in the script text, not in the argv.**
+`STAGED_INPUT_DIR` is already a module constant, and `readableGuard(...)`'s output is already
+interpolated into the script template — so `> ${DECLARED_OUTPUT_PATH}` is structurally the same move
+the module already makes. Measured against each pin, **no test needs editing**:
+
+- `paths` is **unchanged** → the guard's arity is unchanged → `:388` passes untouched, and the guard
+  now *structurally cannot* cover the output path rather than merely being instructed not to.
+- The argv is **unchanged** (4 elements with a bundle, 3 without) → the two `toEqual` shape
+  assertions at `:208` and `:220` pass: both match the script through
+  `expect.stringContaining('… < "$1"')`, and appending a redirect leaves that substring intact.
+- `argvPaths` is `args.filter((arg) => arg.startsWith("/"))`; `args[1]` is the script and begins
+  `for f in`, so it is not an argv path → `:229-252` passes untouched.
+- `stdinFromScript` (`:307-312`) matches by `script.includes(...)` and **throws** on a shape it does
+  not recognise — its anti-vacuity control still fires, and a trailing redirect does not disturb the
+  three matches it knows.
+
+★ **Zero test EDITS is not zero test WORK, and the difference is the whole point.** The invariant at
+`:229-252` now has an absolute path it does not see. Leaving that implicit would be *hiding* an
+exception behind a filter predicate — this programme's own worst failure class, "a check that nothing
+runs". Slice B therefore **adds** an assertion that states the exception instead of relying on it:
+the declared output path appears **in the script**, is absent from **`stagedFiles`**, is absent from
+the **guard prefix**, and is not an element of **`args`** (slice B point 3 lists all four). A future
+change that promotes it to a positional, or that stages it, or that silently drops the redirect, reds
+that test.
+
+Four properties of the redirect itself, each deliberate:
+
+- **A redirection, not a pipeline.** `> PATH` preserves `exec`'s exit code exactly. `| tee` would
   replace the agent's exit status with `tee`'s, and POSIX `sh` has no `pipefail` — the run's
-  success/failure verdict must not become a property of the capture.
-- **Still a fixed literal.** `$3` is a fourth constant argv element read back positionally, exactly
-  like `$1`/`$2`. Nothing is interpolated; Unit D's four "interpolate the binary" mutants stay valid
-  and a founder-supplied `adapterConfig.command` still cannot close a quote.
-- **A FLAT sibling in `/home/user`**, for Unit D's stated reason: a nested path rests on the E2B
-  SDK MKDIRing a parent, which no test in this repo exercises against a real sandbox.
-- **The bytes are the agent's own.** `--output-format stream-json` is the assistant's turns, its tool
-  calls and its result — the thing the agent produced, byte for byte, not a description of it.
+  success/failure verdict must not become a property of the capture. (The codex has-bundle shape is
+  already a pipeline; the redirect attaches to its **last** command, whose status the pipeline
+  already reports, so that shape is unchanged in kind.)
+- **Still a fixed literal, and still nothing founder-controlled is interpolated.** Unit D's property
+  is that a hostile `adapterConfig.command` cannot close a quote and append a command — and that is a
+  property of the **binary**, which remains a separate argv element read back as `$0`. A module
+  constant inside the template is the same class as the literal `--append-system-prompt-file`, which
+  has been there since Unit D. Unit D's four "interpolate the binary" mutants stay valid untouched.
+- **A FLAT sibling in `/home/user`.** Unit D's reason (nothing in this repo has ever exercised a
+  nested staging write against a real sandbox) applies here with extra force: `>` creates the *file*
+  and never the *directory*, so a nested output path would fail at redirection with nothing having
+  created its parent. Flatness is a hard requirement here, not a preference.
+- **`sh` creates the file; nothing stages it, and the 78 guard does not grow.**
+  `STAGED_INPUT_MISSING_EXIT_CODE = 78` means "an **input** this run needed is unreadable", and it
+  fires before the agent starts. An unwritable output target is a different failure with the opposite
+  polarity (§4 slice D.5) and gets `sh`'s own redirection status. Widening 78 would make one code
+  mean two causes; under the shape above it is not even possible, because the output path is not a
+  positional the guard loop can reach.
+
+★★ **WHAT THESE BYTES ARE, STATED WITHOUT INFLATION — an earlier draft called them "the thing the
+agent produced, byte for byte", and this document now refuses that claim.** `claude --print -
+--output-format stream-json --verbose` emits **JSONL protocol frames**: a `system`/`init` frame, an
+`assistant` frame per model turn, `user` frames carrying tool results, and a terminal `result` frame.
+The shapes are not guesswork — they are parsed in-repo today at
+`packages/adapters/claude-local/src/server/parse.ts:19-45`, and codex's `exec --json` shape at
+`packages/adapters/codex-local/src/server/parse.ts:136-238`. So, precisely:
+
+- The transcript **is** attributable to this run's sandbox process, and it reaches AoA through the
+  attested path (grant → PUT → fenced commit → `headObject` checksum re-verification). **That is the
+  provenance claim, and it is true.**
+- The transcript is **not** a deliverable, and **a run in which the model never spoke still emits
+  frames** — a CLI that fails to authenticate emits `system` + `result` and nothing else. So its mere
+  existence is **not** a productivity claim. §6.6 says so as acceptance; §7 says so as scope.
+
+★★★ **The productivity floor therefore lives in the PRODUCER, not the judge — and it is nearly free,
+because the frame shapes are already parsed in this repo.** The worker refuses to export, and so
+refuses to manufacture a committed artifact, when the transcript is:
+
+1. **empty** — mandatory, trivial, universal across adapters; and
+2. **free of any model turn** — recommended: `type === "assistant"` for claude
+   (`claude-local/src/server/parse.ts:25`), `type === "item.completed"` for codex
+   (`codex-local/src/server/parse.ts:194`).
+
+A refusal exports nothing, so `capabilityProven` stays `false` — which is the **true** statement for
+a run in which the model never spoke. ★ **Re-implement the predicate over those shapes; do NOT import
+the adapter packages** — `worker-daemon` does not depend on them and must not start. Open question 5
+carries the codex half, which is the less certain of the two.
 
 ★ **This is the whole reason the unit is L.** "What did the agent produce?" is an open question if
-you have to discover it (walk a tree, diff a repo, ask the provider to enumerate). It is a **fixed
-constant** if the command line that starts the agent also decides where its output lands. Unit D put
-that command line under our control; Unit F spends it.
+you have to *discover* it — walk a tree, diff a repository, ask the provider to enumerate. It is a
+**constant** if the command line that starts the agent also decides where its output lands. Unit D
+put that command line under our control; Unit F spends it.
 
-**What this does NOT claim.** Capturing the transcript proves the agent produced *output*. It does
-not prove the agent had tools, identity or a repository — those are E7-F003, and Units C and E. §7
-holds the line.
+**What this does NOT claim.** Capturing the transcript proves the return path carries attested bytes.
+It does not prove the agent had tools, identity or a repository — those are E7-F003, and Units C and
+E — and it does not prove the agent did the task. §6 and §7 hold both lines, and §6.9 refuses to let
+a green be read as either.
 
 ### 3.2 Why the terminal projector, and not `jobOutputBridge`
 
@@ -304,26 +529,55 @@ Slice A replaces the clause-6 predicate's inputs:
 |---|---|---|
 | artifact arm | committed `job_artifacts` for the job **whose `kind = 'workspace_patch'`** | committed `job_artifacts` for the job, **any frozen `kind`** |
 | task-output arm | **in the predicate** — and forgeable by a POST (§1.3) | **observed and printed, not in the predicate** |
+| what the verdict then means | "output capture works" — a claim neither arm supported | "attested bytes from this run's sandbox reached durable AoA storage" — which the surviving arm does support |
 
-Three reasons this is strictly more honest, not less:
+★★★ **The objection this must answer, in its strongest form.** *"Slice A disqualifies the
+task-output arm for not proving the agent produced anything — and then proposes a protocol transcript,
+which does not prove the agent produced anything either. That is arguing both sides of one
+principle."* The objection is correct that a transcript is not a productivity proof. It is wrong that
+this is one principle: **the two signals fail on different axes, and slice A discriminates on exactly
+one of them.**
 
-1. It **removes** the only forgeable arm. After slice A a `curl` cannot prove capability at all.
-2. The widening it does is within one evidentiary class. Every committed `job_artifacts` row —
+| | provenance — *did these bytes leave this run's sandbox through an attested path?* | productivity — *are these bytes the work?* |
+|---|---|---|
+| a forged `task_output` | **NO.** Any company-scoped actor, one POST, no worker, no fence, no sandbox | no |
+| the committed transcript artifact | **YES.** Leased worker, live fence, verified device proof, attempt-scoped object prefix, control-plane `headObject` re-verifying the SHA-256 | **no — and this document never says otherwise** |
+| a committed `workspace_patch` (Unit E) | yes | closer, but still a diff, not a judgement of the work |
+
+Slice A does not swap a non-probative signal for another non-probative signal. **It removes an
+unattested arm and keeps an attested one, on the only axis a row predicate can read** — and it stops
+claiming, anywhere in this document or in the verifier's text, that the remaining arm proves
+productivity. E7-F015's own argument was always the provenance one (*"the evidentiary asymmetry is
+the point"*); §0 now names the axis so the argument cannot be misread as the weaker "non-probative"
+claim.
+
+Three consequences, each strictly more honest than today:
+
+1. It **removes the only forgeable arm.** After slice A a `curl` cannot prove capability at all.
+2. The widening it does stays **within one evidentiary class**. Every committed `job_artifacts` row —
    `log` or `workspace_patch` alike — requires a leased worker, a live fence, a verified device
    proof, an object under the attempt-scoped key prefix, and a control-plane `headObject` that
-   independently confirms the SHA-256 the worker declared. The per-row strength is identical; only
-   the `kind` differs.
+   independently confirms the SHA-256 the worker declared. The per-row provenance strength is
+   **identical**; only the `kind` differs.
 3. `workspace_patch` was never a discriminator for *"the agent produced something"*. It is a
    discriminator for *"the run had a repository"* — which is Unit E's question, and belongs in a
-   clause that says so, not smuggled into clause 6's `kind` filter.
+   clause that says so rather than smuggled into clause 6's `kind` filter.
+
+★ **And the bar does not get the benefit of the doubt.** Because the remaining arm is provenance-only,
+the productivity floor is put where content can actually be inspected — the producer refuses to
+export an empty transcript or one with no model turn (§3.1) — and the residual is written into
+acceptance as a non-claim (§6.6). A gate that under-claims in its own text is the outcome; a gate
+that quietly means less than its name is the thing being fixed.
 
 The task-output count stays in `E7ProducedOutputCounts` and stays printed, because the gap between
 "an artifact was committed" and "the founder can see it on the task" is exactly the state slice E
-closes, and an operator should be able to read that gap off the verdict line.
+closes, and an operator should be able to read that gap off the verdict line. Q1 (§2.1) records what
+that costs.
 
 **Unit A's precedent is the template and is respected:** a clause nobody can pass gets bypassed,
-argued around, then deleted. Slice A does not add such a clause — it takes an unpassable-but-honest
-arm and a passable-but-dishonest arm and leaves one arm that is both.
+argued around, then deleted. Slice A takes an unpassable-but-honest arm and a passable-but-unattested
+arm and leaves one arm that is both honest and — **once slices C–E land, and not before** (§2.1 Q2) —
+passable. That "and not before" is why §6.9 refuses to let slice A ship alone.
 
 ---
 
@@ -332,6 +586,11 @@ arm and a passable-but-dishonest arm and leaves one arm that is both.
 Each slice lands on its own commit with its own tests. **The order is load-bearing:** A before
 anything (pin the defect first, or the anti-regression mutation cannot exist); the producer (B, C, D)
 before the consumer (E), so no slice ships a composed thing with nothing to feed it.
+
+★★★ **A–E are one release increment, not five.** Per-slice commits, yes — but the artifact arm has
+**zero producers today** (§2.1 Q2), so A-without-C-through-E ships a gate nobody can pass. Land them
+together, and if open question 1 answers "no", land none of them (§6.9). F and G follow; G is the
+operator's.
 
 ### Slice A — the judge (S) · `server/src/services/e7-distributed-run-verifier{,-store}.ts`
 
@@ -342,24 +601,55 @@ before the consumer (E), so no slice ships a composed thing with nothing to feed
 2. Clause 6's predicate becomes `produced.committedJobArtifacts < 1`. `taskOutputs` stays in
    `E7ProducedOutputCounts` and in `formatVerifyResult`, and leaves the predicate.
 3. Rewrite the reason string to name the real links (§1.4) — the current text is E7-F016.
+4. Rewrite the printed verdict label so it states the **provenance** claim, not a productivity one:
+   what clause 6 now asserts is *"attested bytes from this run's sandbox reached durable AoA
+   storage"*. The `capabilityProven` **symbol name is deliberately NOT changed** — 15 files across
+   five epics reference it (`grep -rl capabilityProven`), and a cross-epic rename is churn Unit F has
+   no mandate for. Instead the name's overclaim is recorded as part of **E7-F016**, whose subject is
+   exactly the operator-facing text around this clause.
 
 **Non-goals:** `ok` is not touched; `--require-capability` stays off by default; the CLI's exit codes
-are unchanged.
+are unchanged; `capabilityProven` is not renamed.
 
-### Slice B — the agent's output has a path (S) · `server/src/services/task-run-sandbox-invocation.ts` + `task-run-batch-workload.ts`
+★★★ **Slice A MUST NOT be released without C–E.** Measured in §2.1 Q2: the artifact arm has zero
+producers today, so slice A alone converts a forgeable gate into an **unpassable** one — the precise
+outcome CLI-008 Unit A's precedent exists to prevent. Landing A first *inside* Unit F is correct and
+required (pin the defect before the fix). Landing A and stopping is not. §6.9.
 
-Add a fourth exported constant beside `STAGED_PROMPT_PATH` and `STAGED_INSTRUCTIONS_PATH`
-(`task-run-sandbox-invocation.ts:60,64`) — `DECLARED_OUTPUT_PATH`, built from the same
-`STAGED_INPUT_DIR` and resolving to `/home/user/.aoa-run-output.jsonl` — and the `> "$3"` redirect
-(§3.1) to all four
-(adapter × has-bundle) script shapes in `task-run-batch-workload.ts`.
+### Slice B — the agent's output has a path (S) · `server/src/services/task-run-sandbox-invocation.ts` + `task-run-batch-workload.ts` + `job-leasing.ts`
 
-★ **Unit D's structural invariant now has an exception, and it must be STATED in the assertion
-rather than worked around.** Criterion 2 was *"every absolute path the argv names is a path the same
-build stages, and the converse"*, asserted from the emitted argv. `$3` is an **output** path — named
-by the argv and deliberately **not** staged, so the naive assertion fails. Split it into two sets
-(staged inputs ↔ argv input positions; declared outputs ↔ argv output positions) rather than
-loosening it to one, or the property Unit D bought stops discriminating.
+**1 — the constant.** Add a fourth exported constant beside `STAGED_PROMPT_PATH` and
+`STAGED_INSTRUCTIONS_PATH` (`task-run-sandbox-invocation.ts:60,64`): `DECLARED_OUTPUT_PATH`, built
+from the same `STAGED_INPUT_DIR` and resolving to `/home/user/.aoa-run-output.jsonl`.
+
+**2 — the redirect, in the SCRIPT LITERAL, not the argv.** Append `> ${DECLARED_OUTPUT_PATH}` to
+each of the four (adapter × has-bundle) script shapes in `buildSandboxInvocation`'s switch
+(`:177-206`). **`staged`, `paths`, `readableGuard(paths.length)` and the returned `args` array are
+all untouched.** §3.1 records why the `> "$3"` positional shape fails against three shipped tests and
+this one does not; do not re-derive it, and do not "tidy" the constant back into the argv.
+
+★ **The four shapes, exactly** (only the tail changes):
+
+| adapter | bundle | tail after the change |
+|---|---|---|
+| `claude_local` | yes | `… --append-system-prompt-file "$2" < "$1" > /home/user/.aoa-run-output.jsonl` |
+| `claude_local` | no | `… --print - --output-format stream-json --verbose < "$1" > /home/user/.aoa-run-output.jsonl` |
+| `codex_local` | yes | `{ cat "$2"; echo; cat "$1"; } \| "$0" exec --json - > /home/user/.aoa-run-output.jsonl` |
+| `codex_local` | no | `exec "$0" exec --json - < "$1" > /home/user/.aoa-run-output.jsonl` |
+
+**3 — the assertion that states the exception rather than hiding it.** No existing test needs
+editing (§3.1 walks each pin), and that is precisely why a **new** one is mandatory: the invariant at
+`task-run-batch-workload.test.ts:229-252` now has an absolute path it cannot see, and an unstated
+exception behind a filter predicate is this programme's "a check that nothing runs". Add, over all
+four shapes:
+
+- `DECLARED_OUTPUT_PATH` **appears in `args[1]`** (the script) — so a shape that silently drops the
+  redirect reds;
+- `DECLARED_OUTPUT_PATH` is **absent from `stagedFiles`** — so staging it (which would 78-refuse
+  every run) reds;
+- `DECLARED_OUTPUT_PATH` is **absent from the guard prefix** (`script.slice(0, indexOf("done")+4)`) —
+  so folding it into `readableGuard` reds;
+- `DECLARED_OUTPUT_PATH` is **not an element of `args`** — so promoting it to a positional reds.
 
 ★★ **Slice B also EMITS the pointer the worker will read, and the emit site is NOT the workload
 builder.** The control plane knows the declared output path; the worker must be told it, and the only
@@ -380,7 +670,8 @@ discover the fork in slice D:
 - **(recommended) Derive it at lease time from the workload type.** The builder already holds
   `input.job.workloadType` (`:400`). The declared output path is a property of the task-run workload
   shape *the control plane itself authored*, so emitting the pointer whenever the workload is the
-  coding one needs no new storage and cannot drift from the argv — both come from the same constant.
+  coding one needs no new storage and cannot drift from the argv — both read the same constant, and
+  the new assertion above keeps them reading it.
 - **(alternative) Persist it at submission.** More faithful for a future per-run path, but `workload`
   is the `.strict()` frozen shape, so it needs a column or a job-side blob. Only worth it if open
   question 2 is answered "a list".
@@ -388,11 +679,13 @@ discover the fork in slice D:
 See open question 3 for the `critical` flag, which is a real fork and must be decided before slice D
 starts.
 
-★ **The in-sandbox guard does NOT grow to cover `$3`.** `STAGED_INPUT_MISSING_EXIT_CODE = 78`
-(`:80`) fires when a needed *input* is unreadable, before the agent starts. An unwritable output
-path is a different failure with the opposite polarity (§4 slice D.5) and must not fail the attempt
-closed; `sh`'s redirection failure is the honest signal, and the export step's absence of an
-artifact is what the verdict then reads.
+★ **The in-sandbox guard does NOT grow to cover the output path — and under this shape it cannot.**
+`STAGED_INPUT_MISSING_EXIT_CODE = 78` (`:80`) fires when a needed *input* is unreadable, before the
+agent starts. An unwritable output path is a different failure with the opposite polarity (§4 slice
+D.5) and must not fail the attempt closed; `sh`'s own redirection status is the honest signal, and
+the export step's absence of an artifact is what the verdict then reads. Because the path is a script
+constant rather than a positional, `readableGuard`'s `for f in "$1" … "$n"` loop has no way to reach
+it — the property is structural, and the third bullet of point 3 pins it.
 
 ### Slice C — a real provider export (M) · `packages/sandbox-e2b-provider`
 
@@ -406,6 +699,16 @@ Implement `digestArtifact` and `exportArtifact` on `E2bSandboxProvider` and flip
   `x-amz-checksum-sha256` (§1.5's sharp edge), returning `{objectKey}` — a **reference**, never
   bytes. Refuse if the read exceeds `grant.maxBytes` or its digest differs from
   `grant.expectedSha256`, before any PUT.
+- ★★★ **The productivity floor lives here, in the producer** (§3.1). `digestArtifact` returns a
+  **zero length** for an empty transcript and the supervisor must refuse to grant/export on it; and —
+  recommended — the worker declines a transcript containing **no model turn**
+  (`type === "assistant"` for claude, `type === "item.completed"` for codex; shapes measured at
+  `claude-local/src/server/parse.ts:25` and `codex-local/src/server/parse.ts:194`). A refusal exports
+  nothing, so `capabilityProven` stays `false`, which is the true statement for a run in which the
+  model never spoke. ★ **Re-implement the predicate over those shapes; do NOT import the adapter
+  packages** — `worker-daemon` does not depend on them and must not start. Open question 5 carries
+  the codex half. This is the only content inspection anywhere in Unit F, and it is deliberately on
+  the producer side: the judge reads rows and can never assert productivity (§0).
 - **Boundary-legal without a new dependency:** `scripts/check-sandbox-e2b-provider-boundary.mjs`
   enforces an exact dependency set plus Node built-ins; global `fetch` is a Node global, not an
   import, and a presigned PUT carries no credential, so nothing enters the `E2B_API_KEY` /`e2b`-SDK
@@ -429,9 +732,13 @@ This is DAT-009 slice 3, scoped to **one declared output path** rather than to a
    fence-gated, so a run whose lease was replaced cannot still be exporting from the sandbox its
    successor is about to use.
 2. **The supervisor's post-execute step**: after `execute` and *before* `terminal`, for each declared
-   output path — digest → `artifactTransferGrant(operation:"upload", expectedSha256, maxBytes)` over
-   the frozen op → `exportArtifact` → `artifactCommit`
-   (`transport/client.ts:567`, whose route is already mounted).
+   output path — digest → **floor check** → `artifactTransferGrant(operation:"upload",
+   expectedSha256, maxBytes)` over the frozen op → `exportArtifact` → `artifactCommit`
+   (`transport/client.ts:567`, whose route is already mounted). ★ **The floor check comes BEFORE the
+   grant**, not after: an empty or model-turn-free transcript (§3.1, slice C) must mint no grant,
+   issue no PUT and commit nothing — a refusal that costs one `readFile`, not a round trip. It is
+   logged and `emitOp(..., "failed")`-ed like any other export refusal, and the terminal is emitted
+   anyway (D.5).
 3. **`EventSequencer.artifactPrepared(artifactId, kind)`** — the eighth emitter, emitted after a
    successful commit. The event type is already frozen (`worker-protocol/src/events.ts:358`) and
    already in the `job_events` CHECK constraint (`packages/db/src/schema/job_events.ts:72-82`), so
@@ -448,8 +755,10 @@ This is DAT-009 slice 3, scoped to **one declared output path** rather than to a
    `finalizeAgentStatus` recomputes from the count of running rows — every **other** run of that
    agent (R7). A failed export must therefore be caught, logged, `emitOp(..., "failed")`, and the
    terminal emitted anyway. This is not a fail-open in the safety sense: the observable result is
-   `capabilityProven === false` on a run that succeeded, which is the **true** statement "nothing the
-   agent produced reached AoA".
+   `capabilityProven === false` on a run that succeeded, which — read as the provenance verdict it is
+   (§0) — is the **true** statement *"no attested bytes from this run's sandbox reached durable AoA
+   storage"*. The same is true of a floor refusal (D.2): the run worked, nothing was attested, and
+   the verdict says exactly that.
 6. **Enrol the new orphans.** Add a `gate-clause-wiring.json` clause naming `exportArtifact` (or the
    supervisor's export step) with an explicit `expectedReferences`, so a later removal of the caller
    reds the required `policy` job. Every orphan composed is born with its caller — Unit B's rule.
@@ -480,11 +789,15 @@ This is DAT-009 slice 3, scoped to **one declared output path** rather than to a
    though `CanaryRunRow` does (`canary-terminal-projection.ts:53`). Add it to the target rather than
    re-reading the run — the handler already holds the row.
 5. Compose the port at `heartbeat.ts:7122`, beside `postRunSummary`.
-6. ★ **The row must be honest about what it is.** It carries no `assetId` and no `url`, so
-   `OutputsSection`'s field-aware mapping renders it as a non-clickable entry. That is the correct
+6. ★ **The row must be honest about what it is — TWICE OVER.** It carries no `assetId` and no `url`,
+   so `OutputsSection`'s field-aware mapping renders it as a non-clickable entry. That is the correct
    v1 rendering of "a committed artifact exists and is not yet downloadable from here" — but the
-   title must say `kind` plainly rather than implying a file the founder can open. Making it
-   downloadable is §7's named follow-up, not a thing to half-build here.
+   title must say `kind` plainly rather than implying a file the founder can open. **And the title
+   must not imply a deliverable either**: what this row points at is the run's own JSONL transcript
+   (§3.1), so a title like *"agent run transcript (log)"* is honest and *"agent output"* is not. A
+   founder who clicks expecting their document and finds protocol frames is the same overclaim §0
+   removes from the verifier, re-introduced in the UI. Making it downloadable is §7's named
+   follow-up, not a thing to half-build here.
 
 ### Slice F — advertisement and lane (S) · config + docs
 
@@ -523,11 +836,20 @@ turn it red.
 | 5.11 | **A lost terminal latch writes NO row** (slice E) | `setRunStatus` resolves `false`; assert no `task_outputs` row and no summary | Move step (5) above the `:226` early return → red |
 | 5.12 | **A run with no issue writes NO row** (slice E) | `target.issueId === null`; assert nothing is written (`task_outputs.issueId` is `notNull`, `task_outputs.ts:29`) | Same mutation as 5.11 |
 | 5.13 | **A legacy-owned run is never projected** (slice E, existing) | `run.executionOwner !== "distributed"` returns at `canary-terminal-projection.ts:306` before any write | Delete the guard → a legacy run gains a distributed artifact row → red |
+| 5.14 | ★★★ **The declared output path is NOT staged and NOT guarded** (slice B) | Over all four (adapter × bundle) shapes: `DECLARED_OUTPUT_PATH` is in `args[1]`, absent from `stagedFiles`, absent from the guard prefix, and absent from `args` as an element | Add it to the `staged` array → the guard 78-refuses the happy path AND this test reds. Promote it to a positional → this test reds. **Without this test the exception at `task-run-batch-workload.test.ts:229-252` is unstated**, which is the failure class §3.1 exists to avoid |
+| 5.15 | **The redirect is present in every shape** (slice B) | All four scripts end in `> ${DECLARED_OUTPUT_PATH}`; the existing `:208`/`:220` `toEqual` shape tests and `:229-252` still pass unedited | Drop the redirect from any one shape → 5.14's first bullet reds for that shape (and nothing else does — which is exactly why it is asserted) |
+| 5.16 | ★★ **An EMPTY transcript never becomes a committed artifact** (slice C/D) | A run whose declared output file is zero bytes: assert no grant is minted, no PUT is issued, no `job_artifacts` row persists, a `terminal` IS emitted, and `capabilityProven === false` | Remove the zero-length refusal → an empty file commits → `capabilityProven` goes true on a run that produced nothing → red |
+| 5.17 | ★★★ **A transcript with NO MODEL TURN never becomes a committed artifact** (slice C/D, recommended) | Feed a claude transcript of `system` + `result` frames only (the shape a failed CLI login emits): assert no commit, a `terminal`, and `capabilityProven === false` | Remove the model-turn predicate → the gate goes green for a run in which the model never spoke. **This is the productivity floor, and it is the only test that pins it** — §0 puts the floor in the producer precisely because no row predicate can |
 
 ★ **The gate this unit must NOT create.** Unit A faced a clause nobody could pass and the remedy was
 a **second verdict computed beside `ok`**, never a fold into `ok`. Unit F does not fold anything into
 `ok` either: clause 6 stays in `capabilityFailures`, `--require-capability` stays off by default, and
 slice A's change makes the existing second verdict *reachable* rather than adding a third.
+
+★★★ **And the way this unit would MOST easily create it anyway is by shipping slice A alone.** The
+artifact arm has zero producers today (§2.1 Q2), so A-without-C-through-E is the unpassable clause
+Unit A's precedent exists to prevent — arrived at not by adding a clause but by removing the only
+arm anything could satisfy. That is the failure mode to watch for in review, and §6.9 is the check.
 
 ---
 
@@ -542,15 +864,29 @@ slice A's change makes the existing second verdict *reachable* rather than addin
 3. exactly **one** `task_outputs` row on the run's task, `created_by_run_id = <the run>`,
    surviving a redelivered terminal;
 4. and a run whose **export failed** still reaching a durable `terminal`, with
-   `capabilityProven === false` — the true statement, not a masked one.
+   `capabilityProven === false` — the true statement, not a masked one;
+5. and a run whose transcript was **empty or model-turn-free** committing nothing, reaching a durable
+   `terminal`, with `capabilityProven === false` (§3.1's producer-side floor; controls §5.16–§5.17).
 
 **Explicitly NOT acceptance, and stated so a green cannot be over-read:**
 
-5. **E7-F003 is not closed.** No clause reads the artifact's *content*, so a run that produced a
+6. ★★★ **`capabilityProven === true` is a PROVENANCE verdict, not a productivity one** (§0). It
+   asserts *attested bytes from this run's sandbox reached durable AoA storage*. It does **not**
+   assert that the agent did the task, or that the bytes are a deliverable — they are a JSONL
+   protocol transcript, and a run in which the model spoke once but did nothing useful clears the bar
+   exactly as one that worked well does. The producer-side floor (§3.1, controls §5.16–§5.17) rules
+   out only the degenerate cases: empty, and no model turn at all. **The symbol's NAME outruns what
+   it proves; that is recorded in E7-F016 and is not fixed by a rename here** (§4 slice A.4).
+7. **E7-F003 is not closed.** No clause reads the artifact's *content*, so a run that produced a
    transcript and a run that produced a *good* transcript are still indistinguishable to the
    verifier. Tools are Unit C; a repository is Unit E.
-6. **`ok` is unchanged**, and a green `ok` still says nothing about capability.
-7. **The container/networked lane is not covered** (§5.9).
+8. **`ok` is unchanged**, and a green `ok` still says nothing about capability.
+9. ★★★ **Slice A is not independently shippable.** Measured in §2.1 Q2: the artifact arm has zero
+   producers today, so A-without-C-through-E leaves a gate **nobody can pass** — Unit A's precedent
+   inverted. Unit F is met only when A–E are in the same landed increment, and if open question 1
+   answers "no" (`#transport.readFile` cannot read a redirected `exec`'s output) then **no slice
+   lands** and the design takes a second pass, the way WRK-015 did.
+10. **The container/networked lane is not covered** (§5.9).
 
 ---
 
@@ -570,6 +906,14 @@ slice A's change makes the existing second verdict *reachable* rather than addin
   object key anyway, so the projector would have to read `job_artifacts` to obtain one. A
   founder-facing download route that mints a fresh grant from the artifact id is the follow-up, and
   the row it would light up already exists after slice E.
+- ★★★ **It does not prove the agent did the work, and it does not claim to.** The committed artifact
+  is a protocol transcript with full provenance and no productivity content (§0, §3.1). Upgrading the
+  bar to productivity means either (a) instructing the agent, in its staged bundle, to write a
+  **deliverable** to a declared path and counting only that — which makes the gate depend on model
+  compliance and turns a non-complying-but-working run into a red, and which needs Unit C's tools and
+  Unit E's repository to be meaningful; or (b) having the control plane read the artifact's bytes,
+  which crosses the byte-egress decision's "a reference, never bytes" line at the control plane. Both
+  are named successors, not things to half-build here.
 - **It does not enforce retention.** `log` maps to the `run` class
   (`services/browser-artifact-retention.ts`), and `artifact-retention-authority.ts` states in terms
   that *"nothing reads the stored column to act"*. A task_output pointing at a swept object is a
@@ -584,7 +928,7 @@ Both are entered in `scripts/finding-ownership.json` in the same commit as their
 | id | severity | what |
 |---|---|---|
 | **E7-F015** | MEDIUM | The capability bar is forgeable: `POST /api/issues/:id/outputs` accepts `createdByRunId` from the request body with only a company-ownership check, and `countProducedOutputs` applies no provenance filter — so one authenticated POST flips `capabilityProven`. Owned by CLI-008; slice A closes it |
-| **E7-F016** | LOW | Clause 6's operator-facing failure reason names four unbuilt links, three of which cannot flip either counter, and omits the ones that are decisive — and it produced this unit's XL estimate. Owned by CLI-008; slice A rewrites it |
+| **E7-F016** | LOW | Clause 6's operator-facing text misdescribes its own subject, in two ways. (a) The failure reason names four unbuilt links, three of which cannot flip either counter, and omits the ones that are decisive — and it produced this unit's XL estimate. (b) The verdict is named `capabilityProven` while its surviving arm can only assert **provenance** (§0); the name outruns the predicate. Owned by CLI-008; slice A rewrites the reason string and the printed label, and deliberately does **not** rename the symbol (15 files across five epics) |
 
 **Observed, not filed** (each is a candidate for a successor rather than a defect this unit should
 carry):
@@ -611,9 +955,11 @@ carry):
    real sandbox. **Step 0 for slice C:** call it once in the operator-dispatched keyed lane
    (`keyed-real-e2b.test.ts`) before building anything on top of it. If it does not work, slice C's
    shape changes and this design needs a second pass — say so and stop, the way WRK-015 did.
-2. **One output path or a list?** The design assumes exactly one (`$3`). A list generalizes the
-   supervisor step but multiplies the grant round-trips and needs a per-file failure policy. Start at
-   one; the port takes a `path` per call, so widening later is additive.
+2. **One output path or a list?** The design assumes exactly one (`DECLARED_OUTPUT_PATH`, a script
+   constant). A list generalizes the supervisor step but multiplies the grant round-trips and needs a
+   per-file failure policy. Start at one; the port takes a `path` per call, so widening later is
+   additive. ★ Note that a list re-opens slice B's fork: a per-run list cannot be a script constant,
+   so it would have to become positionals — and §3.1's three measurements apply again, in full.
 3. ★ **Is the declared-output pointer `critical`?** Slice B assigns the CHANNEL (a new
    `extensions[]` namespace beside the staged-input one). What it does not assign is the flag, and
    this is a real fork with opposite failure directions: `critical: true` means a worker that does
@@ -626,10 +972,39 @@ carry):
    the commit server-side, and the grant carries `maxBytes`. Decide whether the worker refuses before
    the PUT (recommended — a rejected commit wastes the upload) and what the operator sees when it
    does.
+5. ★ **The codex half of the model-turn floor.** The claude predicate is certain
+   (`type === "assistant"`, `claude-local/src/server/parse.ts:25`). Codex's `exec --json` stream
+   distinguishes `thread.started` / `response_item` / `event_msg` / `item.completed` /
+   `turn.completed` / `turn.failed` (`codex-local/src/server/parse.ts:136-238`), and **which of those
+   is the minimal "the model spoke" marker was not established in this pass**. Decide it against that
+   parser before slice C ships the codex branch; until then, ship the **zero-length** refusal (which
+   is universal and certain) for codex and the full predicate for claude, and say so at the constant.
+   Do not guess — a wrong predicate here silently suppresses real runs.
+6. ★★ **Does the deliverable-directive route belong to Unit C or Unit E?** §7 names it as the
+   successor that would upgrade the bar from provenance to productivity: instruct the agent, in its
+   staged bundle, to write a deliverable to a declared path, and count only that. It is deliberately
+   out of scope here (it makes the gate depend on model compliance, and a directive is only
+   meaningful once the agent has tools and a repository). It needs an owner before someone assumes
+   Unit F left it done.
 
 ---
 
 ## 10. Corrections to earlier records
+
+★★★ **Including this document's own first draft (`419a94afd`…`c28631e33`), corrected in place on
+review rather than quietly swapped.** Both errors were the *obvious* shape, which is why they are
+recorded instead of erased:
+
+| the first draft said | measured, and where the correction lives |
+|---|---|
+| the redirect is `> "$3"`, with the output path appended to the argv | Wrong three ways, each caught by a shipped test: `$3` is not a stable index (the instructions path is conditional, `task-run-sandbox-invocation.ts:164,169`, and the no-bundle argv is pinned at `task-run-batch-workload.test.ts:215,371`); routing it through `paths` makes `readableGuard` 78-refuse the happy path (`:176`, pinned `:388`); routing it around `paths` breaks the set-equality invariant (`:229-252`). **§3.1** has the shape that survives — a constant in the script literal, no argv change, no test edits, plus one new assertion that states the exception |
+| the captured bytes are "the thing the agent produced, byte for byte" | They are JSONL **protocol frames** (shapes at `claude-local/src/server/parse.ts:19-45`), non-empty even when the model never spoke. **§0** picks provenance over productivity and follows it through §3.1, §3.3, §5.16–17, §6.6 and §7 |
+
+★★ **And a third correction of altitude rather than fact:** the first draft removed the task-output
+arm without saying where its question then lived, or measuring whether the surviving arm was
+reachable. **§2.1** answers both as measurements — the question keeps two owners
+(`gate-clause-wiring.json`'s `E3-17-output` and slice E's own acceptance), and the surviving arm has
+**zero producers today**, which makes slice A non-shippable alone (§6.9).
 
 - ★ **`heartbeat.ts` line numbers in circulation are wrong at this tip.** The suppression guard is at
   **5399**, its `return; // CLI-006-SUPPRESSION-RETURN` at **5451**, `adapter.execute` at **5453**,
