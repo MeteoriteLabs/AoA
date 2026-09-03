@@ -472,10 +472,25 @@ check precisely so an over-large pointer set is refused *before a byte moves*, a
 (`:119-124`) says so. **It closed the front door; this is the side door** — reached by the one route
 the check does not measure.
 
-**Reachability.** Latent, and downstream of the duplicate-path defect (the replay probe matches on
-path AND sha256, so a changed-bytes restage mints a second committed row). It needs a producer that
-stages more than once for an attempt. Its consequence is strictly **worse** than the duplicate-row
-defect it rides on: a dead job rather than a wrong file.
+**Reachability.** Latent. It needs a producer that stages more than once for an attempt. Its
+consequence is strictly **worse** than the duplicate-row defect it was first spotted beside: a dead
+job rather than a wrong file.
+
+> **Reachability CORRECTED, 2026-09-03** — this paragraph originally said F009 was *downstream of*
+> the duplicate-path defect (the replay probe matches on path AND sha256, so a changed-bytes restage
+> minted a second committed row). **That defect is now closed** — `7d345e8b3` refuses a conflicting
+> restage rather than superseding it — and F009 **survives it unchanged**.
+>
+> ★ The route was never the duplicate: a second stage that adds a **DIFFERENT PATH** (files A, then
+> A+B, or just B) appends committed rows for the same attempt without the fit check ever seeing the
+> accumulated set. Same-digest restages replay and add nothing; different-digest restages now throw;
+> **new paths still accumulate.** The projection measures `input.files` no matter which route
+> reaches it, which is why the fix is the union and not a dedupe.
+>
+> ★★ Recorded because the near-miss is the lesson. Closing the neighbouring defect made it
+> tempting to read F009 as closed by consequence — and it was written into this register as a
+> dependency it never had. A finding whose stated reachability names another defect must be
+> re-derived when that defect closes, not retired with it.
 
 **Fix, when built.** `pointerFitsExtension` must project the **union** of `existing` (already
 resolved at `:182`) and the new files, not `input.files` alone — a one-argument change, since the
@@ -486,3 +501,40 @@ and leave the projection still measuring the wrong set for any future multi-stag
 that happens to be unreachable is a false claim of enforcement. And moving the fit check into
 `buildJobEnvelope` was rejected: that refuses at LEASE time, minutes later, which is exactly the
 undiagnosable cliff the check exists to move earlier.
+
+## E7-F010 — The staging metric's label was never registered, so every staged run strands non-terminal
+
+**Status:** FIXED `2e77b300f` (CLI-008 Unit B fix wave) · **Owner:** CLI-008
+**Severity:** HIGH (was latent; would have been a P0 on the first Unit C/D content) · **Filed and
+closed:** 2026-09-03, surfaced while writing the deadline test for a Codex P1-b.
+
+**What.** `supervisor.ts`'s `emitOp` stamps an `operation` label that `assertBoundedLabels` checks
+against a **closed allow-list** (`metrics/metrics.ts:81-94`) whose comment names its source: *"the
+frozen PROVIDER_OPERATIONS vocabulary"*. `stage_files` is deliberately **not** in that vocabulary —
+growing the non-frozen supervisor port and leaving the wire alone was the Unit B decision — so it
+never arrived with the eleven others and was never registered. Every `emitOp("stage_files", …)`
+**threw**.
+
+★ **And the throw is not contained by the fail-closed arms — it happens INSIDE them.** The failure
+arm re-throws from its own `emitOp`, so the escape reaches `accept()`'s last-resort catch, which
+emits **NO TERMINAL**. The success path at the end of a healthy stage threw just as readily.
+`dispatch-runtime.ts:205` passes a real registry in production, so **every distributed run carrying
+staged files would have been torn down and stranded non-terminal** — precisely the outcome the
+staging arms' fail-closed handling exists to prevent, reached by the happy path.
+
+**Why it was invisible.** No staging test composed a real metrics registry. The server-side channel
+integration test passes none, so `deps.metrics?.inc` was a silent no-op everywhere the channel was
+exercised. ★★★ **A metric that nothing ever emits against a real registry is not a metric; it is a
+line of code that has never run** — the [[checks-that-nothing-runs]] family, in the one place the
+programme keeps rediscovering it.
+
+**Fix.** `stage_files` registered on the `operation` allow-list with a comment saying why it does not
+arrive with the frozen eleven, plus a happy-path test on a REAL `createMetrics()` asserting the
+success metric is emitted and a normal terminal is reached. Mutation-proven: unregistering the label
+reds all four tests in `supervisor-hung-stage-input.test.ts`.
+
+★ **The general lesson is about the OTHER direction of the Unit B decision.** Choosing the
+non-frozen port over the frozen vocabulary was right and remains right — but everything keyed to
+that vocabulary (allow-lists, conformance suites, registries mirroring `PROVIDER_OPERATIONS`) then
+needs a deliberate entry, because nothing adds it for you. Anywhere a new port method is observed
+through a structure derived from the frozen list, check the derivation.
