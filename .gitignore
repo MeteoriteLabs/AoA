@@ -27,6 +27,13 @@ check-*.mjs
 new-agent*.json
 newcompany.json
 seed-*.mjs
+# WRK-017: `seed-*.mjs` above is UNANCHORED, so it silently swallows a real, shipped file
+# anywhere in the tree — it ate docker/control-plane/seed-d1-worker-enrolment.mjs, which the
+# image COPYs and the migrate job runs. Nothing local noticed: the Docker build context obeys
+# .dockerignore, not .gitignore, so it built and ran fine while CI got a repo without it. The
+# guard self-test caught it (ERR_MODULE_NOT_FOUND on the first CI run). Un-ignore the whole
+# docker/ tree rather than one path, so the next such file is not caught by the same trap.
+!docker/**/seed-*.mjs
 server/check-*.mjs
 server/seed-*.mjs
 packages/db/seed-*.mjs

@@ -21,7 +21,8 @@
 
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -283,3 +284,70 @@ for (const [name, entryCode, entryRaw] of [
     assert.match(entryRaw, /^exec "\$@"/m, `${name} entrypoint must exec "$@"`);
   });
 }
+
+// === WRK-017: a file the image COPYs must actually be IN the repository ======
+//
+// This clause exists because it bit, on this ticket, in exactly the way that is hardest to
+// see: `.gitignore` carries an UNANCHORED `seed-*.mjs` (a scratch-script convention), and it
+// silently swallowed `docker/control-plane/seed-d1-worker-enrolment.mjs` — a real, shipped file
+// that the control-plane image COPYs and the migrate job runs.
+//
+// NOTHING local noticed. The Docker build context obeys `.dockerignore`, not `.gitignore`, so
+// the image built and the live stack ran a green enrol end to end on a working tree that
+// contained the file. CI then checked out a repository that did not, and the first thing to
+// fail was a node:test import. A local green over an incomplete commit is precisely the shape
+// this repository's CI redesign exists to catch.
+//
+// So: every LOCAL path a split Dockerfile COPYs must exist on disk AND be tracked by git.
+// `git ls-files` is the authority rather than a hand-maintained list, because the question is
+// literally "would a fresh clone have this file".
+test("every local path the split Dockerfiles COPY is present and NOT gitignored (WRK-017)", () => {
+  const copied = new Set();
+  for (const text of [CONTROL_CODE, WORKER_CODE]) {
+    for (const line of text.split(/\r?\n/)) {
+      const m = /^\s*COPY\s+(.*)$/i.exec(line);
+      if (!m) continue;
+      const args = m[1].trim().split(/\s+/);
+      // `COPY --from=<stage> ...` copies from an earlier STAGE, not the build context.
+      if (args.some((a) => /^--from=/.test(a))) continue;
+      const sources = args.filter((a) => !a.startsWith("--")).slice(0, -1);
+      for (const src of sources) {
+        // Only concrete files; directories and the bare-root context copies are covered by
+        // their own assertions above and would drag in the whole tree here.
+        if (src === "." || src.endsWith("/") || !path.extname(src)) continue;
+        copied.add(src);
+      }
+    }
+  }
+  assert.ok(copied.size >= 5, `expected several COPYed files, parsed ${copied.size} — the parser is vacuous`);
+
+  // This assertion is ABOUT the repository, so it is meaningless outside one — and it FAILS
+  // rather than skips in that case, deliberately. A guard that quietly stands down where it
+  // cannot answer is indistinguishable from one that passes.
+  const inRepo = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: ROOT, encoding: "utf8" });
+  assert.equal(
+    (inRepo.stdout ?? "").trim(),
+    "true",
+    "this test asks whether a fresh clone would carry the COPYed files, so it must run inside a git checkout",
+  );
+
+  const missing = [];
+  const ignored = [];
+  for (const rel of copied) {
+    if (!existsSync(path.join(ROOT, rel))) { missing.push(rel); continue; }
+    // `git ls-files --error-unmatch` asks the question that actually matters — "is this path
+    // IN the repository" — rather than "does an ignore rule match it". The two differ, and the
+    // difference is the whole bug: `git check-ignore` skips already-TRACKED paths, so it answers
+    // "not ignored" for a file that is only tracked because someone force-added it, and it would
+    // stop biting the moment the mistake was half-fixed. Tracked-or-not is unambiguous.
+    const res = spawnSync("git", ["ls-files", "--error-unmatch", "--", rel], { cwd: ROOT });
+    if (res.error) throw res.error;
+    if (res.status !== 0) ignored.push(rel);
+  }
+  assert.deepEqual(missing, [], `Dockerfile COPYs a file that is not on disk: ${missing.join(", ")}`);
+  assert.deepEqual(
+    ignored,
+    [],
+    `Dockerfile COPYs a file git does NOT track, so a fresh clone would not have it: ${ignored.join(", ")}`,
+  );
+});
