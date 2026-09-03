@@ -338,6 +338,7 @@ integration("CLI-008 Unit B — the staging channel, end to end", () => {
       appDb: app.db,
       storage: store.provider,
       organizationId: ORG,
+      companyId: COMPANY,
       jobId: seeded.jobId,
       attemptId: seeded.attemptId,
       files,
