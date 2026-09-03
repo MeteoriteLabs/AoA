@@ -419,9 +419,25 @@ of Unit B's channel (so it validates that work rather than stacking a second unb
 it), and "the prompt stops being a positional" IS the fix for E7-F008 — the only LIVE refusal among
 the open findings.
 
-★★ **Nothing in Track A, B or D flips `capabilityProven`.** That needs Unit F (output capture),
-which is four unbuilt links. A green E7-1 proves the MECHANISM, not capability — the verifier
-computes and prints both since Unit A, and `--require-capability` is the flag the campaign flips at F.
+★★ **Nothing in Track A, B or D flips `capabilityProven`.** That needs Unit F (output capture). A
+green E7-1 proves the MECHANISM, not capability — the verifier computes and prints both since Unit A,
+and `--require-capability` is the flag the campaign flips at F.
+
+★★★ **"which is four unbuilt links" was WRONG, and it is corrected here rather than deleted, because
+it is the sentence that sized Unit F XL.** Re-measured 2026-09-03 at `d0b75be19`
+([`CLI-008-unit-f-design.md`](./epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md)): the four
+links are the verifier's own clause-6 reason string, and **three of them flip NEITHER counter** — a
+`log` event is not a `job_artifacts` row and not a `task_outputs` row, so stream handlers, real
+stdout/stderr refs and a composed `observeRun` all improve evidence without touching capability. The
+fourth (`buildWorkspacePatch`/`createResultCommitter`) is the only one that touches a counter and is
+blocked behind Unit E **and** behind an in-sandbox manifest capture that does not exist anywhere in
+the tree. Filed as **E7-F016**. **Unit F is L, not XL, and does not need Unit E** — clause 6 is an OR
+and its cheapest honest satisfier is one named file exported under an upload grant, on a
+grant→PUT→commit pipeline already proven 13/13 against real MinIO on the D1 lane. ★ Filed alongside
+it: **E7-F015** — `capabilityProven`'s task-output arm has no provenance filter and
+`POST /api/issues/:id/outputs` accepts `createdByRunId` from the request body, so **one authenticated
+POST flips the programme's headline gate** with no agent, worker or sandbox. It closes in Unit F's
+first slice, before the bar is made flippable.
 
 ★★★ **A REAL E2B RUN IS REACHABLE FROM A SESSION — measured 2026-09-03. This changes what "needs the
 fleet" means.** Unit D shipped saying its shape could only be observed "on the staging fleet". It
