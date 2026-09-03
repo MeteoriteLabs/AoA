@@ -56,6 +56,7 @@ import {
 } from "@armyofagents/worker-protocol";
 
 import { runInTenant } from "../db/tenant-context.js";
+import { insertActivity } from "./activity-log.js";
 import type { StorageProvider } from "../storage/types.js";
 
 /** `job_artifacts.kind` for a control-plane-authored inbound file. Distinct from every
@@ -68,6 +69,14 @@ export const STAGED_INPUT_EXTENSION_NAMESPACE = "com.armyofagents.job/staged-inp
 
 /** The pointer payload's schema version, carried on the extension. */
 export const STAGED_INPUT_EXTENSION_SCHEMA_VERSION = 1;
+
+/** `activity_log.action` for a control-plane staging write. */
+export const STAGED_INPUT_AUDIT_ACTION = "job.staged_input";
+
+/** `activity_log.actor_id` for it. The control plane acts as itself here — no user and no
+ * agent authored this, and attributing it to either would be a lie in the one record a
+ * founder would consult to find out who put a file in their sandbox. */
+export const STAGED_INPUT_AUDIT_ACTOR = "control-plane";
 
 /** A file the control plane wants to exist inside the sandbox before the agent runs. */
 export interface StagedInputFile {
@@ -94,6 +103,10 @@ export interface StageJobInputFilesInput {
   readonly appDb: Db;
   readonly storage: StorageProvider;
   readonly organizationId: string;
+  /** The Company the audit entry belongs to. `activity_log.company_id` is NOT NULL and FKs
+   * `companies`, so the tenant Organization alone cannot address the row — the caller has it
+   * on `actor.companyId` and passes it down. */
+  readonly companyId: string;
   readonly jobId: string;
   /** The attempt's ROW id. The attempt NUMBER (which the object key binds) is resolved from
    * it here — the submission response carries only the id, and deriving the number at the
@@ -280,7 +293,7 @@ export async function stageJobInputFiles(
       //    no fence has ever existed for this attempt. That is the property that makes an
       //    inbound write possible at all; do not "tidy" this behind `guardActiveFence`, which
       //    cannot be satisfied here and would remove the capability rather than secure it.
-      await runInTenant(input.appDb, input.organizationId, async (repos) => {
+      await runInTenant(input.appDb, input.organizationId, async (repos, tx) => {
         for (const entry of pending) {
           await repos.jobArtifacts.insert({
             organizationId: input.organizationId,
@@ -298,6 +311,51 @@ export async function stageJobInputFiles(
             committedAt: now(),
           });
         }
+
+        // 3b. ONE BUNDLE-LEVEL AUDIT ENTRY, in the SAME transaction as the rows.
+        //
+        // ★ Why the control plane writing files into a tenant's sandbox must be visible: this is
+        // the one mutation on the inbound path that the tenant can neither see nor undo. The
+        // artifact rows are the mechanism's own bookkeeping; nothing renders them, and nothing
+        // in the Activity feed would otherwise say that content was placed inside a run.
+        //
+        // ★ ONE ENTRY, NOT ONE PER FILE. A bundle is a single control-plane act. Per-file rows
+        // would flood a tenant's feed with the mechanism's granularity instead of the decision's.
+        //
+        // ★★ NO BYTES AND NO SECRET MATERIAL. Paths, digests and a count — enough to answer
+        // "what was placed, and is it what I think it is" and nothing more. The staged files are
+        // exactly the kind of content (MCP configs, credentials-adjacent instructions) whose
+        // BYTES must never reach a durable, broadly-readable audit surface. `insertActivityLog`
+        // sanitizes `details`, but relying on a sanitizer to remove what should never have been
+        // added is the wrong order.
+        //
+        // ★ `runId: null` is FORCED, exactly as the JOB-013 audit bridge forces it:
+        // `activity_log.run_id` FKs `heartbeat_runs`, and a distributed attemptId is not a
+        // heartbeat run — passing one through would 23503 and roll back the artifact rows with it.
+        //
+        // Same transaction as the rows, so the two cannot disagree. Of the two failure modes an
+        // audit row with no artifacts is worse than artifacts with no audit row, but one
+        // transaction avoids both, and the rows are already written inside one `runInTenant`.
+        await insertActivity(tx, {
+          companyId: input.companyId,
+          actorType: "system",
+          actorId: STAGED_INPUT_AUDIT_ACTOR,
+          action: STAGED_INPUT_AUDIT_ACTION,
+          entityType: "job",
+          entityId: input.jobId,
+          runId: null,
+          details: {
+            attempt: resolved.attempt,
+            fileCount: pending.length,
+            // Paths and digests only — deliberately not `objectKey`, which is a storage
+            // address, and never the bytes.
+            files: pending.map((entry) => ({
+              path: entry.pointer.path,
+              sha256: entry.pointer.sha256,
+              sizeBytes: entry.pointer.sizeBytes,
+            })),
+          },
+        });
       });
     } catch (error) {
       // The row is the only durable record of the object; without it the object is

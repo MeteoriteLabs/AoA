@@ -118,6 +118,9 @@ export interface RunExecutionOwnerDeps {
    */
   stageJobInput?(input: {
     organizationId: string;
+    /** For the bundle-level `activity_log` entry, whose `company_id` is NOT NULL. The tenant
+     * Organization does not address it. */
+    companyId: string;
     jobId: string;
     attemptId: string;
     files: readonly { readonly path: string; readonly bytes: Uint8Array; readonly contentType?: string }[];
@@ -325,7 +328,13 @@ export function createRunExecutionOwnerResolver(
         // correct direction — a sandbox missing the files the control plane meant it to have
         // is worse than a legacy run, and nothing has been placed yet.
         if (stageJobInput && stagedFiles && stagedFiles.length > 0) {
-          await stageJobInput({ organizationId, jobId, attemptId, files: stagedFiles });
+          await stageJobInput({
+            organizationId,
+            companyId: actor.companyId,
+            jobId,
+            attemptId,
+            files: stagedFiles,
+          });
         }
 
         // 4. Placement — LAST, because it is what makes the attempt leasable.

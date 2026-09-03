@@ -1263,13 +1263,14 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
     // is the RAW one (full object keys, no company prefixing), exactly as
     // `worker-control.ts` composes it for the transfer-grant service — the download
     // branch presigns the same key this write records.
-    stageJobInput: async ({ organizationId, jobId, attemptId, files }) => {
+    stageJobInput: async ({ organizationId, companyId, jobId, attemptId, files }) => {
       const { stageJobInputFiles } = await import("./services/job-input-staging.js");
       const { createStorageProviderFromConfig } = await import("./storage/provider-registry.js");
       const result = await stageJobInputFiles({
         appDb,
         storage: createStorageProviderFromConfig(config),
         organizationId,
+        companyId,
         jobId,
         attemptId,
         files,
@@ -1282,7 +1283,7 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
       // then say so.
       if (!result.staged) {
         logger.debug(
-          { organizationId, jobId, attemptId, reason: result.reason },
+          { organizationId, companyId, jobId, attemptId, reason: result.reason },
           "[cli-008] nothing to stage",
         );
       }

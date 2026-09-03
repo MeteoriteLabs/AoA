@@ -201,7 +201,7 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
     expect(leasesBefore[0]?.n).toBe(0);
 
     const result = await stageJobInputFiles({
-      appDb: app.db, storage, organizationId: ORG, jobId, attemptId,
+      appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId,
       files: [{ path: "/home/user/.aoa/staged.md", bytes: bytes(content), contentType: "text/markdown" }],
     });
 
@@ -243,8 +243,8 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
     const storage = makeStubStorage();
     const files = [{ path: "/home/user/.aoa/staged.md", bytes: bytes("same bytes") }];
 
-    const first = await stageJobInputFiles({ appDb: app.db, storage, organizationId: ORG, jobId, attemptId, files });
-    const second = await stageJobInputFiles({ appDb: app.db, storage, organizationId: ORG, jobId, attemptId, files });
+    const first = await stageJobInputFiles({ appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId, files });
+    const second = await stageJobInputFiles({ appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId, files });
 
     expect(first.staged && second.staged).toBe(true);
     if (!first.staged || !second.staged) return;
@@ -266,7 +266,7 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
     // ★ It THROWS rather than returning. A returned refusal would let placement run and the
     //   attempt become leasable with no files behind it — a silent wrong-content execution.
     const refused = stageJobInputFiles({
-      appDb: app.db, storage, organizationId: ORG, jobId, attemptId,
+      appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId,
       files: [{ path: "/home/user/.aoa/x.md", bytes: bytes("x") }],
     });
     await expect(refused).rejects.toThrow(StagedInputRefusedError);
@@ -295,7 +295,7 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
     await expectSqlState(
       runInTenant(app.db, ORG, async (repos) =>
         repos.jobArtifacts.insert({
-          organizationId: ORG, jobId: ghostJobId, identifier: crypto.randomUUID(), attempt: 1,
+          organizationId: ORG, companyId: COMPANY, jobId: ghostJobId, identifier: crypto.randomUUID(), attempt: 1,
           objectKey: `organizations/${ORG}/jobs/${ghostJobId}/attempts/1/x`,
           sha256: sha256("x"), sizeBytes: 1, kind: STAGED_INPUT_ARTIFACT_KIND,
           status: "committed", leaseId: null, fenceToken: null,
@@ -313,13 +313,13 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
     // the realistic way the row write fails after the object has already landed.
     const fixedId = crypto.randomUUID();
     await stageJobInputFiles({
-      appDb: app.db, storage, organizationId: ORG, jobId, attemptId,
+      appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId,
       newArtifactId: () => fixedId,
       files: [{ path: "/a.md", bytes: bytes("a") }],
     });
     await expect(
       stageJobInputFiles({
-        appDb: app.db, storage, organizationId: ORG, jobId, attemptId,
+        appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId,
         newArtifactId: () => fixedId,
         // A DIFFERENT path/digest, so the idempotency short-circuit does not fire and the
         // insert genuinely collides.
@@ -345,7 +345,7 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
       bytes: bytes(`content ${i}`),
     }));
     const result = stageJobInputFiles({
-      appDb: app.db, storage, organizationId: ORG, jobId, attemptId, files: many,
+      appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId, files: many,
     });
     await expect(result).rejects.toThrow(StagedInputRefusedError);
     await expect(result).rejects.toMatchObject({ reason: "pointer_too_large" });
@@ -364,7 +364,7 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
     const { jobId, attemptId } = await seedJob();
     const storage = makeStubStorage();
     const result = await stageJobInputFiles({
-      appDb: app.db, storage, organizationId: ORG, jobId, attemptId,
+      appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId,
       files: [
         { path: "/home/user/.aoa/mcp.json", bytes: bytes("x".repeat(246)) },
         { path: "/home/user/.aoa/AGENTS.md", bytes: bytes("y".repeat(26_351)) },
@@ -373,12 +373,93 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
     expect(result.staged).toBe(true);
   });
 
+  it("★★ writes ONE bundle-level activity entry — paths and digests, never bytes", async () => {
+    // ★ WHY THIS EXISTS. Staging is the one mutation on the inbound path that the tenant can
+    //   neither see nor undo: the control plane places content inside a run the tenant owns.
+    //   The artifact rows are the mechanism's own bookkeeping — nothing renders them — so
+    //   without this entry nothing in the Activity feed says content was placed at all.
+    const { admin, app } = ctx();
+    const { jobId, attemptId } = await seedJob();
+    const storage = makeStubStorage();
+    const secret = "sk-live-DO-NOT-LOG-0123456789";
+
+    await stageJobInputFiles({
+      appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId,
+      files: [
+        { path: "/home/user/.aoa/mcp.json", bytes: bytes(secret) },
+        { path: "/home/user/.aoa/AGENTS.md", bytes: bytes("# instructions") },
+      ],
+    });
+
+    const rows = await admin`
+      SELECT action, actor_type, actor_id, entity_type, entity_id, run_id, agent_id, details
+      FROM activity_log WHERE company_id = ${COMPANY} AND entity_id = ${jobId}`;
+    // ★ ONE entry for a TWO-file bundle. A bundle is a single control-plane act; per-file rows
+    //   would flood the feed with the mechanism's granularity instead of the decision's.
+    expect(rows).toHaveLength(1);
+    const entry = rows[0]!;
+    expect(entry.action).toBe("job.staged_input");
+    expect(entry.actor_type).toBe("system");
+    expect(entry.actor_id).toBe("control-plane");
+    expect(entry.entity_type).toBe("job");
+    expect(entry.entity_id).toBe(jobId);
+    // ★ `run_id` FKs `heartbeat_runs`; a distributed attemptId is not one, so passing it would
+    //   23503 and roll the artifact rows back with it. The JOB-013 bridge forces it null for the
+    //   same reason.
+    expect(entry.run_id).toBeNull();
+    expect(entry.agent_id).toBeNull();
+
+    const details = entry.details as { attempt: number; fileCount: number; files: { path: string; sha256: string }[] };
+    expect(details.fileCount).toBe(2);
+    expect(details.attempt).toBe(1);
+    expect(details.files.map((f) => f.path).sort()).toEqual(
+      ["/home/user/.aoa/AGENTS.md", "/home/user/.aoa/mcp.json"],
+    );
+    expect(details.files.every((f) => /^[0-9a-f]{64}$/.test(f.sha256))).toBe(true);
+
+    // ★★ NO BYTES, AND NO SECRET MATERIAL, anywhere in the serialized row. Staged files are
+    //   exactly the content — MCP configs, credential-adjacent instructions — whose bytes must
+    //   never reach a durable, broadly-readable audit surface. Asserted against the WHOLE
+    //   serialized row, not the fields we happened to think of.
+    const serialized = JSON.stringify(entry);
+    // ★★★ BOTH ARMS ARE LOAD-BEARING, AND THE SECOND IS THE ONE THAT BITES. Measured by
+    //   mutation: putting the raw bytes into the payload leaves the `sk-live-…` string
+    //   REDACTED — `insertActivityLog` runs `sanitizeRecord`, whose `looksLikeSecretValue`
+    //   catches secret-SHAPED strings — while `# instructions` passes through verbatim. So a
+    //   test that only checked for a credential would have gone green on a leak of every other
+    //   byte. The sanitizer is a backstop against secret-shaped material, never a licence to
+    //   put content in the payload and let it filter.
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain("# instructions");
+    // The storage address is not the tenant's business either.
+    expect(serialized).not.toContain("organizations/");
+  });
+
+  it("★ a REPLAYED stage adds no second entry — the audit tracks acts, not calls", async () => {
+    const { admin, app } = ctx();
+    const { jobId, attemptId } = await seedJob();
+    const storage = makeStubStorage();
+    const files = [{ path: "/home/user/.aoa/AGENTS.md", bytes: bytes("# instructions") }];
+
+    await stageJobInputFiles({ appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId, files });
+    await stageJobInputFiles({ appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId, files });
+
+    // The second call recognises the committed row for the same (path, digest) and writes
+    // nothing — no object, no row, and so no entry. An audit that counted CALLS would tell a
+    // founder the control plane staged twice when it staged once.
+    const rows = await admin`
+      SELECT count(*)::int AS n FROM activity_log
+      WHERE company_id = ${COMPANY} AND entity_id = ${jobId}`;
+    expect(rows[0]?.n).toBe(1);
+    expect(storage.puts).toHaveLength(1);
+  });
+
   it("★ stages nothing for an empty file list — the ONLY non-throwing refusal", async () => {
     const { app } = ctx();
     const { jobId, attemptId } = await seedJob();
     const storage = makeStubStorage();
     const result = await stageJobInputFiles({
-      appDb: app.db, storage, organizationId: ORG, jobId, attemptId, files: [],
+      appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId, files: [],
     });
     // ★ This one RETURNS, and the union type says so: `no_files` is the sole `staged: false`
     //   variant. The caller asked for nothing, so the postcondition holds vacuously and the
