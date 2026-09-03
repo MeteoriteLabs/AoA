@@ -34,6 +34,11 @@ import {
   toSecretHandleRefs,
   type CandidateSecretHandleRef,
 } from "./execution-secret-handle-envelope.js";
+import {
+  stagedInputExtension,
+  stagedInputPointersFromRows,
+  type StagedInputPointer,
+} from "./job-input-staging.js";
 import type { JobReadyScheduler } from "./job-ready-scheduler.js";
 import { NOOP_JOB_CONTROL_METRICS, type JobControlMetrics } from "./job-control-metrics.js";
 import {
@@ -338,6 +343,13 @@ function buildJobEnvelope(input: {
    * fail-closed direction (a lease whose sandbox has no credential is the outcome
    * nothing downstream can recover from). */
   secretHandles: readonly CandidateSecretHandleRef[];
+  /**
+   * CLI-008 Unit B — this attempt's control-plane-staged input files, rebuilt from the
+   * durable `job_artifacts` rows by the caller. Empty for every run that staged nothing,
+   * which is every run until Units C and D supply content — and the envelope is then
+   * byte-identical to before this field existed (`extensions: []`).
+   */
+  stagedInput: readonly StagedInputPointer[];
 }): JobEnvelopeV1 | null {
   const executionSource = source(input.job);
   if (!executionSource) return null;
@@ -377,7 +389,14 @@ function buildJobEnvelope(input: {
       digest: input.attempt.placementPolicyDigest,
     },
     offlinePolicy: "cancel",
-    extensions: [],
+    // ★ The staged-input POINTER, never bytes. Task 1 measured the inline `extensions[]`
+    // payload ceiling at 48,960 bytes and put the payload in object storage; what still has
+    // to cross is which artifact to fetch and what it must hash to, and `extensions` is the
+    // container the frozen protocol designates for exactly that additive data. The extension
+    // is `critical: false`, so a worker that does not understand the namespace ignores it and
+    // stages nothing rather than rejecting the offer. No staged files ⇒ `[]`, byte-identical
+    // to every envelope built before this existed.
+    extensions: input.stagedInput.length > 0 ? [stagedInputExtension(input.stagedInput)] : [],
     workloadType: input.job.workloadType,
     workload: input.job.input,
   };
@@ -602,6 +621,11 @@ export function createJobLeasingService(input: {
             organizationId: candidate.job.organizationId,
             jobId: candidate.job.id,
           });
+          // CLI-008 Unit B — the staged-input pointers come from the DURABLE rows, in this
+          // transaction, not from anything the staging call returned: the stage happened in a
+          // different transaction, minutes earlier, possibly in a different process. A
+          // pointer only the staging process could produce would be no pointer at all.
+          const stagedInputRows = await repos.jobArtifacts.listForJob(candidate.job.id);
           const jobEnvelope = buildJobEnvelope({
             job: candidate.job,
             attempt: candidate.attempt,
@@ -611,6 +635,7 @@ export function createJobLeasingService(input: {
             databaseNow,
             leaseExpiresAt: expiresAt,
             secretHandles: toSecretHandleRefs(storedHandles),
+            stagedInput: stagedInputPointersFromRows(stagedInputRows, candidate.attempt.attemptNumber),
           });
           if (!jobEnvelope) throw new JobLeasingError("internal_unavailable");
           const fence = randomBytes(32).toString("base64url");

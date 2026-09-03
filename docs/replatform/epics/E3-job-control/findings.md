@@ -1274,3 +1274,76 @@ Fresh HEAD execution (`cf03460f1`): 5 files / 141 assertions PASS, with the hone
 Windows-local `postgres` teardown artifact recorded in the ticket ledger. Linux CI = DEC-03
 authority. This resolves the epic's JOB-003 blocker set; the E3 integration/exit gate is a
 separate step.
+
+---
+
+## E3-F034 — The 100-claimer poll test sits on the lock-timeout threshold, and its failure CORRUPTS THE NEXT TEST
+
+**Status:** open · **Owner:** E3 / JOB-003 · **Severity:** MEDIUM (CI reliability on a required check)
+**Filed:** 2026-09-03, from a red `verify (4)` on PR #340 that was attributed rather than assumed.
+
+**What.** `job-leasing.integration.test.ts:1467` *"gives exactly one of 100 concurrent claimers one
+opaque offer"* fires **100 concurrent `service.poll()`** through `Promise.all` at a **single**
+`execution_targets` row. Each poll takes that row `FOR UPDATE`
+(`repositories/tenant/job-control.ts:1819-1821`) and holds it to COMMIT of the transaction opened at
+`services/job-leasing.ts:542` — with ~8-10 further round trips inside. The app pool is capped at
+**24** (`:829`) and `lock_timeout` is **750 ms**, a connection GUC (`packages/db/src/client.ts:107`).
+A 55P03 is not absorbed: `job-leasing.ts:796` re-throws anything that is not a `HeadRestartConflict`.
+
+So the test passes only while ~24 queued waiters all clear 750 ms. In the observed failure **93 polls
+succeeded and 7 timed out** — it is not broken, it is **on the threshold**, and slower storage tips it.
+
+★★★ **THE PART THAT MATTERS MORE THAN THE FLAKE: THE FAILURE CASCADES.** `Promise.all` rejects on
+the first rejection and **does not cancel the other 99 polls**, which keep running and keep mutating
+the database. The NEXT test — *"chooses the oldest compatible attempt…"* (`:1493`) — calls
+`resetRuntimeRows()` and seeds three jobs while those stragglers are still in flight. **Its three
+polls are `await`ed SEQUENTIALLY (`:1508`, `:1512`, `:1516`), so it cannot be self-contending**: its
+failure is entirely imported. That is why one flaky test reports as **two** failures, and why six of
+the seven 55P03s in the log carry the *second* test's name — which is precisely what makes each
+occurrence look larger and less explicable than it is.
+
+**Evidence — non-determinism and pre-existence are PROVEN, not inferred.**
+
+| claim | proof |
+|---|---|
+| non-deterministic | Run `33723015836` **attempt 2**, same head sha `dd03516d5`, no code change → `conclusion=success`. A same-commit re-run that passes is a demonstration, not an inference. |
+| pre-existing | Run `33628981726`, branch `docs/replatform-program` @ `811ee7ede`, **2026-09-02** — the identical two FAIL lines, the identical `expected null to be 'a3100000-…0010'`, plus `55P03` and `lockWorkerLeaseAuthority` in the raw job log (job `100246991655`). Predates PR #340's code commits and is on a different branch. |
+| not caused by PR #340 | The suspected transaction (`job-input-staging.ts` `runInTenant`) touches only `job_artifacts` and `activity_log`; neither has a trigger (zero hits across 272 migration `.sql` files), neither's FKs reach `execution_targets`, and `job_artifacts`' RLS policy (`0211:86-88`) is a bare `current_setting` comparison with no subquery. Decisively, **every server integration test file spawns its OWN embedded postgres** (root `vitest.config.ts:3-14`; `mkdtemp` + `allocateEmbeddedPgPort` per file), so cross-file lock contention is impossible. |
+
+**★ What the environment actually did, stated correctly.** An earlier pass of this investigation
+claimed *"the failing run's environment was not worse"* by comparing **one** checkpoint out of 45.
+Measured across all of them, the opposite holds: median checkpoint fsync **2.493 s** in the failing
+job vs **1.193 s** in the passing one (n=45 / n=44), and the `Duration` line's own decomposition
+shows **test time +62.5 s (+17.9%)** even though the aggregate was lower (collect dropped ~50 s). The
+“leasing file ran faster” datum is circular — a file whose tests abort at 750 ms finishes sooner.
+**The trigger is slow storage, and the design is what converts slow storage into a red gate.**
+
+**★ The one honest coupling to PR #340, measured rather than waved away.** vitest 3.2.6 shards by
+**SHA-1 hash of the file path**, not sorted order, so adding any test file re-shuffles assignment
+arbitrarily. `cli-008-unit-b-staging-channel.integration.test.ts` migrated ONTO shard 4 (absent from
+the passing shard-4 log), bringing an entire additional embedded-postgres cluster and its initdb
+fsync storm; `job-input-staging.integration.test.ts` grew 8→12 tests. Together **~+7.1 s** of shard-4
+work against a **+62.5 s** test-time delta — small, almost certainly not the cause, and **non-zero**.
+Any commit that adds a test file produces this same perturbation class.
+
+**Fix options, for the owner to choose — deliberately NOT applied in PR #340**, which is a CLI-008
+staging change and must not carry an edit to an E3 acceptance gate:
+
+1. **Fix the cascade first; it is the cheap half and it is unambiguous.** Await the stragglers before
+   the test returns, so a failure cannot leak transactions into the next test's fixture. Note that a
+   naive `Promise.all` → `Promise.allSettled` swap also changes what the test *asserts* (rejections
+   stop being failures), so the settle must be added **alongside** the existing assertions, not
+   instead of them. This alone converts every future occurrence from two confusing failures into one
+   attributable one.
+2. **Move the test off the threshold**: raise `lock_timeout` for this suite via
+   `createTenantAppDbConnection`'s `lockTimeoutMs`, or raise the pool cap, or lower the claimer
+   count. ★ Each weakens what the test proves — it exists to show that exactly one of many
+   concurrent claimers wins — so whichever is chosen should say in the test what was traded.
+3. **Do nothing but record it.** Acceptable only with this finding in place; the failure mode is
+   already two sightings old and cost a full investigation to attribute the second time.
+
+★ **Why this is filed rather than shrugged off.** “It is just a flake” has twice been the wrong
+answer on this programme ([[e7-cli-001-execution]]: two “flakes” were misdiagnoses). What makes this
+one safe to call non-deterministic is not that it *looks* like a flake — it is a same-commit re-run
+that went green and a dated prior sighting on another branch, both pulled from raw logs. An
+unrecorded flake on a required check is a trap for whoever hits it next.

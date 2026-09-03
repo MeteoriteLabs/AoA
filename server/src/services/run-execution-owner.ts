@@ -93,6 +93,39 @@ export interface RunExecutionOwnerDeps {
   convert: JobConvertOrchestrator;
   placement: RunExecutionPlacement;
   /**
+   * CLI-008 Unit B — stage control-plane-authored files for the converted job, BETWEEN the
+   * convert and the placement.
+   *
+   * ★ THE POSITION IS THE WHOLE POINT, and it follows from this module's own ordering rule.
+   * The job must already exist (the `job_artifacts` composite FK refuses a ghost job), and
+   * the attempt must NOT yet be leasable — placement is what makes it leasable, and a worker
+   * that leased before the bundle was committed would find the download branch's
+   * `findCommitted` returning null and stage nothing. Staging here also keeps the fail-safe
+   * direction intact: a staging failure is still a legacy run, because nothing that can fail
+   * back to legacy runs after placement.
+   *
+   * Optional, exactly like `releaseCapacity`: a deployment that has not composed it behaves
+   * as before. Returns the staged pointers for logging; the LEASE path re-reads the durable
+   * rows rather than trusting anything returned here, because the offer is built in a
+   * different transaction and possibly a different process.
+   *
+   * ★ `staged: false` HERE MEANS "nothing was asked for", AND ONLY THAT. A refusal — the
+   * attempt is not visible, or the pointer would not fit the envelope — THROWS
+   * (`StagedInputRefusedError`), because this signature cannot carry a reason and the caller
+   * below deliberately does not inspect the result. Do not widen the return to report a
+   * failure: the boolean would be indistinguishable from the benign case, and the whole point
+   * of the throw is that a run missing its files must not proceed to placement.
+   */
+  stageJobInput?(input: {
+    organizationId: string;
+    /** For the bundle-level `activity_log` entry, whose `company_id` is NOT NULL. The tenant
+     * Organization does not address it. */
+    companyId: string;
+    jobId: string;
+    attemptId: string;
+    files: readonly { readonly path: string; readonly bytes: Uint8Array; readonly contentType?: string }[];
+  }): Promise<{ staged: boolean }>;
+  /**
    * Release the org concurrency slot the CONVERT claimed, when the run ends up legacy anyway.
    *
    * The convert's submit claims a slot (`job-submission.ts` -> `admitAttemptCapacity`, which
@@ -204,6 +237,17 @@ export interface RunExecutionOwnerResolver {
      * derived exactly once per run rather than twice. Omitted → derived here.
      */
     rolloutState?: RunRolloutState;
+    /**
+     * CLI-008 Unit B — files the control plane wants to exist inside the sandbox before the
+     * agent runs. Staged after the convert and before placement (see `stageJobInput`).
+     *
+     * ★ EMPTY TODAY, AND THAT IS THE DESIGNED STATE. Unit B delivers the CHANNEL; the things
+     * that ride it are Units C (the MCP config) and D (the instructions bundle). The seam
+     * passes what it has, which is nothing, so no production run stages a file yet and
+     * `capabilityProven` is unmoved. The chain itself is proven end-to-end with a real bundle
+     * in `cli-008-unit-b-staging-channel.integration.test.ts`.
+     */
+    stagedFiles?: readonly { readonly path: string; readonly bytes: Uint8Array; readonly contentType?: string }[];
   }): Promise<RunExecutionOwner>;
 }
 
@@ -214,7 +258,7 @@ function legacy(reason: LegacyOwnerReason, detail?: string): RunExecutionOwner {
 export function createRunExecutionOwnerResolver(
   deps: RunExecutionOwnerDeps,
 ): RunExecutionOwnerResolver {
-  const { resolveRunRolloutState, preflight, convert, placement, releaseCapacity } = deps;
+  const { resolveRunRolloutState, preflight, convert, placement, releaseCapacity, stageJobInput } = deps;
 
   return {
     async resolve({
@@ -225,6 +269,7 @@ export function createRunExecutionOwnerResolver(
       idempotencyKey,
       jobInput,
       rolloutState,
+      stagedFiles,
     }) {
       // Set once the convert has claimed a capacity slot, so every later legacy exit — the
       // placement decline AND the catch-all — can hand it back. Declared out here because the
@@ -270,6 +315,27 @@ export function createRunExecutionOwnerResolver(
           return legacy("convert_failed", `convert reason ${converted.reason}`);
         }
         claimedAttemptId = attemptId;
+
+        // 3b. CLI-008 Unit B — stage the control-plane-authored inbound files, if any.
+        //
+        // Between the convert and the placement, for two reasons that are both structural:
+        // the `job_artifacts` composite FK needs the job to exist (it now does), and the
+        // attempt must not be leasable yet (placement below is what makes it so) or a worker
+        // could lease before the bundle is committed and find nothing to fetch.
+        //
+        // A throw here is a LEGACY run, not a broken one: it lands in this function's catch,
+        // which releases the claimed capacity and returns `transfer_error`. That is the
+        // correct direction — a sandbox missing the files the control plane meant it to have
+        // is worse than a legacy run, and nothing has been placed yet.
+        if (stageJobInput && stagedFiles && stagedFiles.length > 0) {
+          await stageJobInput({
+            organizationId,
+            companyId: actor.companyId,
+            jobId,
+            attemptId,
+            files: stagedFiles,
+          });
+        }
 
         // 4. Placement — LAST, because it is what makes the attempt leasable.
         //    A `canary` Organization is presented to placement as `active`

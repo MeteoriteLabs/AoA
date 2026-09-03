@@ -22,6 +22,7 @@ import {
   DEFAULT_PLACEMENT_MAX_HEARTBEAT_AGE_MS,
   type RunExecutionOwnerDeps,
 } from "../services/run-execution-owner.js";
+import { StagedInputRefusedError } from "../services/job-input-staging.js";
 
 const ORG = "66666666-6666-4666-8666-666666666666";
 const RUN = "77777777-7777-4777-8777-777777777777";
@@ -378,5 +379,89 @@ describe("CLI-006 — toRunExecutionPlacement", () => {
       companyId: COMPANY,
     });
     expect(decision).toEqual({ disposition: "selected", leaseEligible: false });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CLI-008 Unit B / P1-a — a staging REFUSAL must not reach placement.
+//
+// ★★★ THE DEFECT THIS PINS. `stageJobInputFiles` used to RETURN `{staged:false}` for a
+// refusal, and this call site discards the result (it cannot discriminate: the dep type is
+// `Promise<{staged: boolean}>` and the composition root narrows the reason away). So placement
+// ran, the attempt became leasable, the legacy adapter was SUPPRESSED, and a worker ran the
+// agent with no MCP config and no instructions — reporting success. A silent wrong-content
+// execution is the worst failure shape this seam has, because the output is still plausible.
+//
+// The fix is at the CALLEE (it throws) and in the TYPE (the union admits only `no_files`).
+// These tests pin the consequence at the seam, which is where the damage would have happened.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("CLI-008 Unit B — a staged-input refusal resolves to LEGACY, before placement", () => {
+  const FILES = [{ path: "/home/user/.aoa/mcp.json", bytes: new Uint8Array([1, 2, 3]) }];
+
+  it.each([
+    ["unknown_attempt" as const],
+    ["pointer_too_large" as const],
+  ])("refusal %s → legacy transfer_error, placement never called", async (reason) => {
+    const place = vi.fn(async () => ({ disposition: "selected", leaseEligible: true }) as never);
+    const releaseCapacity = vi.fn(async () => undefined);
+    const result = await createRunExecutionOwnerResolver(
+      deps({
+        placement: { place },
+        releaseCapacity,
+        stageJobInput: async () => {
+          throw new StagedInputRefusedError(reason, "pinned by test");
+        },
+      }),
+    ).resolve({ ...input, stagedFiles: FILES });
+
+    expect(result.owner).toBe("legacy");
+    if (result.owner !== "legacy") throw new Error("unreachable");
+    expect(result.reason).toBe("transfer_error");
+    // ★ ATTRIBUTABLE. The detail carries the refusal reason, so an operator reading the log
+    //   learns WHICH refusal fired — not merely that the transfer failed.
+    expect(result.detail).toContain(reason);
+    // ★ The load-bearing assertion: placement is step 4 and the throw is step 3b, so no
+    //   attempt was ever made leasable. Legacy executes, exactly once.
+    expect(place).not.toHaveBeenCalled();
+    // The convert claimed an org concurrency slot; a legacy outcome must hand it back or the
+    // inert attempt throttles the Organization's ordinary work forever.
+    expect(releaseCapacity).toHaveBeenCalledWith({ attemptId: ATTEMPT, organizationId: ORG });
+  });
+
+  it("★ an EMPTY bundle is not a refusal — the run still goes distributed", async () => {
+    // The counter-test for the fix that was rejected. A blanket "any falsy staged result
+    // throws" at this call site would have turned every ordinary run — every run with no
+    // staged files at all, which today is all of them — into a legacy run.
+    const stageJobInput = vi.fn(async () => ({ staged: false }));
+    const result = await createRunExecutionOwnerResolver(
+      deps({ stageJobInput }),
+    ).resolve({ ...input, stagedFiles: [] });
+
+    expect(result.owner).toBe("distributed");
+    // Not even called: the caller's own `length > 0` guard short-circuits first.
+    expect(stageJobInput).not.toHaveBeenCalled();
+  });
+
+  it("stages BEFORE placement when there are files, and the run goes distributed", async () => {
+    const order: string[] = [];
+    const result = await createRunExecutionOwnerResolver(
+      deps({
+        stageJobInput: async () => {
+          order.push("stage");
+          return { staged: true };
+        },
+        placement: {
+          place: async () => {
+            order.push("place");
+            return { disposition: "selected", leaseEligible: true } as never;
+          },
+        },
+      }),
+    ).resolve({ ...input, stagedFiles: FILES });
+
+    expect(result.owner).toBe("distributed");
+    // Ordering is structural, not incidental: the composite FK needs the job to exist, and the
+    // attempt must not be leasable before its bytes are committed.
+    expect(order).toEqual(["stage", "place"]);
   });
 });

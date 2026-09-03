@@ -23,6 +23,9 @@
 import type {
   ArtifactDigestResult,
   ArtifactExportMode,
+  FileStagingMode,
+  StageFilesResult,
+  StagedFileRequest,
   ArtifactExportResult,
   CheckpointMode,
   CheckpointResult,
@@ -78,6 +81,16 @@ export class NetworkedProviderDriver implements SandboxProvider {
   readonly checkpointMode: CheckpointMode = "none";
   readonly healthMode: HealthMode = "none";
   readonly artifactExportMode: ArtifactExportMode = "none";
+  /**
+   * CLI-008 Unit B — `"none"`, and honestly so.
+   *
+   * `stage_files` is NOT a member of the frozen `ProviderOperation` vocabulary (deliberately
+   * — see `FileStagingMode`), and `#post` is typed to that vocabulary, so this driver has no
+   * wire route to reach a remote provider's `stageFiles`. Giving the adapter-manager wire an
+   * inbound staging route is its own piece of work; claiming support without one would
+   * silently drop every staged file.
+   */
+  readonly fileStagingMode: FileStagingMode = "none";
 
   readonly #baseUrl: string;
   readonly #fetch: typeof fetch;
@@ -176,6 +189,13 @@ export class NetworkedProviderDriver implements SandboxProvider {
     _ctx: ProviderOpContext,
   ): Promise<ArtifactExportResult> {
     throw new UnsupportedProviderOperation("export_artifact");
+  }
+  async stageFiles(
+    _sandboxId: string,
+    _files: readonly StagedFileRequest[],
+    _ctx: ProviderOpContext,
+  ): Promise<StageFilesResult> {
+    throw new UnsupportedProviderOperation("stage_files");
   }
 
   async #post<R>(

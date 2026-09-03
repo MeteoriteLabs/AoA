@@ -44,6 +44,7 @@ import {
   type ProviderOpContext,
   type ResourceLabels,
   type SandboxProvider,
+  type StagedFileRequest,
 } from "./provider.js";
 import type { RunCanaryCoordinator } from "./run-canaries.js";
 import type { OwnedLabelsCapabilityLike } from "../lease/owned-labels-capability.js";
@@ -133,6 +134,15 @@ export interface SupervisorDeps {
   readonly opDeadlineMs?: number | ((handoff: LeaseHandoff) => number);
   /** ms after acceptance the cleanup authority's escalation becomes mandatory. */
   readonly cleanupDeadlineMs?: number;
+  /**
+   * CLI-008 Unit B — wall-clock budget for the WHOLE staging step (default 30s).
+   *
+   * ★ ONE budget across BOTH halves, subtracted not added — the R6 shape `secretRedeemDeadlineMs`
+   * established for redeem+create. The resolve fetches bytes over the network and the write
+   * pushes them into the sandbox; two independent 30 s budgets would make the step's real bound
+   * 60 s while every knob still read 30. A bound nobody can compute from the config is not a bound.
+   */
+  readonly stageInputDeadlineMs?: number;
   /** Injectable timer for the create-deadline race (default node timers). */
   readonly setTimeoutFn?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   readonly clearTimeoutFn?: (handle: ReturnType<typeof setTimeout>) => void;
@@ -160,6 +170,24 @@ export interface SupervisorDeps {
    * a throw is logged and never fails the run.
    */
   readonly observeRun?: (input: { handoff: LeaseHandoff; exec: ExecuteResult }) => RunObservation | Promise<RunObservation>;
+  /**
+   * CLI-008 Unit B — resolve the control-plane-staged files for this run, as {path, GRANT}
+   * pairs. Absent (the default) ⇒ nothing is staged and the lifecycle is byte-identical to
+   * before, which is what keeps staging OPTIONAL for every existing run.
+   *
+   * ★ GRANTS, NOT BYTES. The composition root reads the staged-input pointer off the frozen
+   * envelope and mints a download grant per file over the frozen `artifact_transfer_grant`
+   * op; the bytes go store → provider → sandbox and never cross this seam. A bytes-shaped
+   * signature would route payloads through a daemon that is dependency-pinned (E4-D01)
+   * precisely so it does not handle them.
+   *
+   * ★ FAIL CLOSED, unlike `observeRun`. `observeRun` is instrumentation and a throw there is
+   * swallowed; this is INPUT. A run that was meant to have files and does not is a sandbox
+   * whose agent works from the wrong context, terminalizes cleanly, and satisfies every gate
+   * downstream while proving nothing. A throw here — resolving OR staging — fails the attempt
+   * and escalates cleanup.
+   */
+  readonly resolveStagedFiles?: (input: { handoff: LeaseHandoff }) => Promise<readonly StagedFileRequest[]>;
   /**
    * DAT-008 slice 5 — PER-RUN secret materialisation. Given a handoff, redeems the envelope's
    * `env`/`sandbox_local_only` handles and returns the sandbox `env` plus the redeemed values (to
@@ -255,6 +283,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   const resolveRunDeadlineMs =
     typeof deps.opDeadlineMs === "function" ? deps.opDeadlineMs : () => opDeadlineMs;
   const cleanupDeadlineMs = deps.cleanupDeadlineMs ?? 30_000;
+  const stageInputDeadlineMs = deps.stageInputDeadlineMs ?? 30_000;
   // DAT-008 slice 5 (R6): the redemption budget is CARVED FROM the create budget — never larger —
   // so redeem + create together stay within `createDeadlineMs`.
   const secretRedeemDeadlineMs = Math.min(deps.secretRedeemDeadlineMs ?? 5_000, createDeadlineMs);
@@ -565,6 +594,116 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       await events.terminal({ status: "cancelled", exitCode: null, errorCode: "cancelled", errorMessage: null });
       await escalateCleanup(run, "cancelled_during_create");
       return;
+    }
+
+    // 1b. CLI-008 Unit B — stage the control plane's files INTO the sandbox.
+    //
+    // Position: after `create` (there is no sandbox to write into before it) and before
+    // `attempt_started`/`execute` (the files exist so the tenant command can read them). It is
+    // deliberately BEFORE `attempt_started` so a staging failure never emits an event that
+    // says the tenant command started when it never did.
+    if (deps.resolveStagedFiles) {
+      // ★★ BOTH HALVES ARE RACED. Every neighbouring await in this function is bounded — secrets
+      // (:494), create (:561), execute (:656) — and staging was the one that was not. A stalled
+      // fetch or a sandbox filesystem that never returns meant `accept()` NEVER TERMINALIZED,
+      // and an active sandbox was retained for as long as the process lived. That is strictly
+      // worse than the failure the fail-closed arms below were written for: a hang produces no
+      // terminal at all, so nothing downstream even knows the attempt is stuck.
+      const stageStartedAt = now();
+      let staged: readonly StagedFileRequest[] = [];
+      try {
+        const resolved = await withDeadline(deps.resolveStagedFiles({ handoff }), stageInputDeadlineMs);
+        if (resolved === TIMEOUT) {
+          emitOp("stage_files", "timed_out");
+          deps.logger?.warn(
+            { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels) },
+            "supervisor: staged-input resolve deadline exceeded — failing the attempt closed",
+          );
+          const cancelled = run.cancelled;
+          await events.terminal({
+            status: cancelled ? "cancelled" : "failed",
+            exitCode: null,
+            errorCode: cancelled ? "cancelled" : "stage_input_timeout",
+            errorMessage: null,
+          });
+          await escalateCleanup(run, cancelled ? "cancelled_during_stage_input" : "stage_input_deadline");
+          return;
+        }
+        staged = resolved;
+      } catch (err) {
+        emitOp("stage_files", "failed");
+        deps.logger?.warn(
+          { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels) },
+          "supervisor: could not resolve staged input for this run — failing the attempt closed",
+        );
+        // A cancel arriving mid-resolve withdraws effect authority and surfaces here as a
+        // throw. Report it as `cancelled`, exactly as the execute arm below does — labelling a
+        // cancel a staging failure would send someone hunting a store problem that never was.
+        const cancelled = run.cancelled;
+        await events.terminal({
+          status: cancelled ? "cancelled" : "failed",
+          exitCode: null,
+          errorCode: cancelled ? "cancelled" : "stage_input_unavailable",
+          errorMessage: null,
+        });
+        await escalateCleanup(run, cancelled ? "cancelled_during_stage_input" : "stage_input_unresolved");
+        return;
+      }
+      if (staged.length > 0) {
+        // What is LEFT of the step budget after the resolve, never a fresh one.
+        const writeBudget = Math.max(0, stageInputDeadlineMs - (now() - stageStartedAt));
+        try {
+          const wrote = await withDeadline(
+            // ★ The ctx is passed and the E2B provider IGNORES it — `stageFiles` hands the files
+            // to `transport.writeFiles`, whose `writeFiles`/`fetch` accept no abort signal, so
+            // there is nothing to honour it with. RECORDED RATHER THAN HALF-BUILT: this race is
+            // a supervisor-side backstop that bounds the SUPERVISOR, and a timed-out write may
+            // still be in flight inside the transport. That is acceptable here only because the
+            // timeout arm escalates cleanup, which destroys the sandbox the write targets.
+            // Threading a signal end to end is a transport change and belongs with the work that
+            // needs it.
+            run.effect.stageFiles(created.sandboxId, staged, run.makeCtx()),
+            writeBudget,
+          );
+          if (wrote === TIMEOUT) {
+            emitOp("stage_files", "timed_out");
+            deps.logger?.warn(
+              { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels), stagedCount: staged.length },
+              "supervisor: staging the control plane's input exceeded its deadline — failing the attempt closed",
+            );
+            const cancelled = run.cancelled;
+            await events.terminal({
+              status: cancelled ? "cancelled" : "failed",
+              exitCode: null,
+              errorCode: cancelled ? "cancelled" : "stage_input_timeout",
+              errorMessage: null,
+            });
+            await escalateCleanup(run, cancelled ? "cancelled_during_stage_input" : "stage_input_deadline");
+            return;
+          }
+          emitOp("stage_files", "success");
+        } catch (err) {
+          // FAIL CLOSED. Running the agent without the files the control plane meant it to
+          // have produces a clean terminal for mutilated work — the one outcome nothing
+          // downstream can detect.
+          emitOp("stage_files", "failed");
+          deps.logger?.warn(
+            { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels), stagedCount: staged.length },
+            "supervisor: staging the control plane's input failed — failing the attempt closed",
+          );
+          // Same reasoning as the resolve arm: a cancel withdraws effect authority and reaches
+          // us as a throw from `stageFiles`, and it is a cancel, not a store failure.
+          const cancelled = run.cancelled;
+          await events.terminal({
+            status: cancelled ? "cancelled" : "failed",
+            exitCode: null,
+            errorCode: cancelled ? "cancelled" : "stage_input_failed",
+            errorMessage: null,
+          });
+          await escalateCleanup(run, cancelled ? "cancelled_during_stage_input" : "stage_input_error");
+          return;
+        }
+      }
     }
 
     // 2. attempt_started — the tenant command is running INSIDE the sandbox.

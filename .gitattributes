@@ -18,6 +18,19 @@ tests/e2e/fixtures/fake-codex/fake-codex.mjs text eol=lf
 packages/shared/src/generated/tools.json text eol=lf
 server/src/onboarding-assets/commander/TOOLS.md text eol=lf
 
+# The agent instruction bundles are DELIVERED INTO A LINUX SANDBOX as an agent's
+# system prompt (CLI-008 Unit B), so CRLF in them is wrong on its own terms and not
+# merely a measurement nuisance. Same reasoning as the TOOLS.md pin above, which is
+# why TOOLS.md was the only bundle file unaffected when a Windows checkout made
+# `cli-008-unit-b-byte-source` measure 26,568 bytes where Linux CI measured 26,351
+# (110 + 65 + 42 = 217 CRLF pairs across AGENTS/HEARTBEAT/SOUL). The blobs are
+# already LF, so this changes no committed bytes -- it stops the working tree from
+# diverging from what CI and the sandbox see.
+server/src/onboarding-assets/**/AGENTS.md text eol=lf
+server/src/onboarding-assets/**/HEARTBEAT.md text eol=lf
+server/src/onboarding-assets/**/SOUL.md text eol=lf
+server/src/onboarding-assets/**/TOOLS.md text eol=lf
+
 # Generated AoA-native-skills catalog (pnpm gen:skills / gen:skills:check)
 # and the eval snapshot committed alongside the commander-skill-triggering
 # suite (Plan 2, Task 6) — same CRLF-drift risk as the tools.json artifacts

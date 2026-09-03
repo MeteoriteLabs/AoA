@@ -1257,6 +1257,38 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
     }),
     convert: convertOrchestrator,
     placement: toRunExecutionPlacement(placementService),
+    // ── CLI-008 Unit B — the control-plane staging write, given its caller ──────
+    // `stageJobInputFiles` is the production consumer of `jobArtifacts.insert`, which
+    // sat with ZERO callers (production or test) until this line. The storage provider
+    // is the RAW one (full object keys, no company prefixing), exactly as
+    // `worker-control.ts` composes it for the transfer-grant service — the download
+    // branch presigns the same key this write records.
+    stageJobInput: async ({ organizationId, companyId, jobId, attemptId, files }) => {
+      const { stageJobInputFiles } = await import("./services/job-input-staging.js");
+      const { createStorageProviderFromConfig } = await import("./storage/provider-registry.js");
+      const result = await stageJobInputFiles({
+        appDb,
+        storage: createStorageProviderFromConfig(config),
+        organizationId,
+        companyId,
+        jobId,
+        attemptId,
+        files,
+      });
+      // ★ KEEP THIS, AND KEEP IT AT DEBUG. Since refusals throw (`StagedInputRefusedError`),
+      // the only reason that can reach here is `no_files` — "nothing was asked for, correctly".
+      // A warn for that trains operators to ignore the channel, which is the state in which a
+      // real one goes unread. It stays as the POSITIVE CONTROL: it fires only if the caller's
+      // own `files.length > 0` guard is ever tidied away, and it is the one line that would
+      // then say so.
+      if (!result.staged) {
+        logger.debug(
+          { organizationId, companyId, jobId, attemptId, reason: result.reason },
+          "[cli-008] nothing to stage",
+        );
+      }
+      return { staged: result.staged };
+    },
     // Hand back the org concurrency slot the convert claimed when the run ends up legacy.
     // `job_attempts` is RLS-protected, so the update must run inside the Organization's tenant
     // transaction on the non-owner pool — the same shape `releaseAttemptCapacity`'s only other

@@ -27,6 +27,8 @@ import type {
   ProviderOpContext,
   RestoreResult,
   SandboxProvider,
+  StageFilesResult,
+  StagedFileRequest,
 } from "./provider.js";
 
 /** The lease fence an EffectAuthority is bound to. Effect authority is valid ONLY
@@ -87,6 +89,23 @@ export class EffectAuthority {
   execute(input: ExecuteInput, ctx: ProviderOpContext): Promise<ExecuteResult> {
     this.#guard();
     return this.#provider.execute(input, ctx);
+  }
+
+  /**
+   * CLI-008 Unit B — write the control plane's files into the sandbox before the tenant
+   * command starts.
+   *
+   * Gated here with everything else effectful, and that is not a formality: staging writes
+   * into a live sandbox, so a run whose lease was replaced must not still be putting files
+   * into the sandbox its successor is about to use.
+   */
+  stageFiles(
+    sandboxId: string,
+    files: readonly StagedFileRequest[],
+    ctx: ProviderOpContext,
+  ): Promise<StageFilesResult> {
+    this.#guard();
+    return this.#provider.stageFiles(sandboxId, files, ctx);
   }
 
   /** Resume a checkpointed sandbox (the frozen optional `restore` op). Effectful:
