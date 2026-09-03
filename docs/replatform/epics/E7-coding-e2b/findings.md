@@ -709,3 +709,47 @@ is a working client binding — DEP-011/DEP-012 built them. **The deferral's own
 has therefore partly arrived**, which is exactly the kind of change a finding's reachability must be
 re-derived against rather than inherited. Not corrected here because E6-F003 belongs to DEP-011, not
 to CLI-008; flagged so its owner can re-derive it.
+
+
+## E7-F012 — A relative `instructionsFilePath` resolves against two different directories, so the editor can show one file while the agent reads another
+
+**Status:** open · **Owner:** unowned (see `scripts/finding-ownership.json` for the reason)
+**Severity:** LOW · **Filed:** 2026-09-03, by CLI-008 Unit D, which HAD to match the shipped
+behaviour rather than fix it — and got that wrong once first.
+
+**What.** `adapterConfig.instructionsFilePath` is read by two consumers that disagree about what a
+RELATIVE value means:
+
+- **The adapters** (the path that actually runs an agent) pass the raw string to `fs.readFile`:
+  `claude-local/src/server/execute.ts:629` and `codex-local/src/server/execute.ts:503`. Node
+  resolves that against the **SERVER PROCESS's working directory**. Neither adapter consults
+  `adapterConfig.cwd` for this read — that field is the CHILD process's cwd (`execute.ts:192` /
+  `:249`), used for spawning.
+- **The route-level bundle service** (`agent-instructions.ts:165-174`,
+  `resolveLegacyInstructionsPath`) resolves a relative path against `adapterConfig.cwd`, and
+  THROWS `unprocessable` when that is absent or itself relative.
+
+So for any agent whose `instructionsFilePath` is relative and whose `adapterConfig.cwd` differs from
+the server's working directory, **the Instructions editor reads, lists and writes one file while the
+running agent reads another** — or the editor refuses outright while the agent runs fine.
+
+**Reachability.** LOW, and honestly so: every path the product WRITES is absolute
+(`syncInstructionsBundleConfigFromFilePath` stores `path.dirname(resolvedPath)` +
+`path.basename`, and the managed root is absolute), so a relative value arrives only by direct
+`adapterConfig` authoring — the import/export bundle path, a hand-edited config, or a marketplace
+package. It is a real inconsistency with a plausible user-visible symptom, not a live incident.
+
+★ **Why CLI-008 Unit D filed it instead of fixing it.** Unit D stages the bundle bytes into the
+sandbox and its entire claim is PARITY: the distributed run must read the file the legacy run would.
+An earlier draft resolved relative paths against `adapterConfig.cwd` — matching the *editor* — and
+cited `agent-instructions.ts:165-174` as "the legacy contract". That citation is real and it is
+about the wrong consumer. **The consequence was the sharpest failure available here: a canary could
+read a different bundle from its legacy fallback, or SUCCEED where legacy would have failed — a
+canary green for the wrong reason**, which is the class this ticket exists to eliminate. Codex
+caught it in review; the resolver now passes the configured string through verbatim.
+
+★★ **A unit that "fixes" the path it is measuring against destroys its own evidence.** Changing the
+adapters to resolve against `cwd` may well be the right end state — but it changes the SHIPPED
+legacy path for every agent, it is not CLI-008's remit, and doing it inside the unit whose claim is
+"we now match legacy" would make that claim untestable. Whoever owns agent instructions should pick
+ONE resolution rule and apply it at all three sites at once.

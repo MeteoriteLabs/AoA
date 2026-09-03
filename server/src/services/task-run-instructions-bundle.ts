@@ -5,7 +5,7 @@
 //
 // The legacy adapters read this file in process and hand it to the CLI: claude writes a
 // combined temp file and passes `--append-system-prompt-file`
-// (`claude-local/src/server/execute.ts:626-633, :766-769`); codex prepends it to the stdin
+// (`claude-local/src/server/execute.ts:627-634, :766-769`); codex prepends it to the stdin
 // prompt (`codex-local/src/server/execute.ts:498-518`). The distributed path has no host
 // filesystem to point at, so the control plane reads the same bytes here and Unit B's channel
 // puts them inside the sandbox.
@@ -29,23 +29,37 @@
 // being used as EVIDENCE that distributed execution works. Refusing sends the run to the
 // legacy executor, where it behaves exactly as it does today.
 //
-// ★★ PATH RESOLUTION MIRRORS THE ADAPTERS EXACTLY, INCLUDING WHAT THEY DO NOT DO. Absolute
-// paths are used as-is; a relative path resolves against `adapterConfig.cwd` when that is
-// absolute (the legacy contract stated in `agent-instructions.ts:165-174`) and is otherwise a
-// refusal. There is deliberately NO `~` expansion and no managed-root fallback, because the
-// point is that the distributed path reads the SAME FILE the legacy path would. A resolver
-// that were cleverer than the adapters would stage bytes no legacy run has ever used.
-
-import path from "node:path";
+// ★★★ THE PATH IS PASSED TO `readFile` EXACTLY AS CONFIGURED — NO RESOLUTION, NO CLEVERNESS.
+//
+// Both v1 adapters call `fs.readFile(instructionsFilePath)` with the RAW configured string
+// (`claude-local/.../execute.ts:629`, `codex-local/.../execute.ts:503`; verified, both
+// re-read). Neither resolves it against `adapterConfig.cwd` — that config field is the CHILD
+// process's cwd (`execute.ts:192` / `:249`), used for spawning, not for this read. So a
+// RELATIVE `instructionsFilePath` resolves against the SERVER PROCESS's directory on the
+// legacy path, and it must resolve the same way here.
+//
+// ★★ AN EARLIER VERSION OF THIS MODULE RESOLVED RELATIVE PATHS AGAINST `adapterConfig.cwd`,
+// AND ITS COMMENT CITED `agent-instructions.ts:165-174` AS "THE LEGACY CONTRACT". That citation
+// is real but it is about a DIFFERENT CONSUMER — the route-level bundle EDITOR service, not the
+// adapter execution path. The comment warned, in terms, that "a resolver that were cleverer
+// than the adapters would stage bytes no legacy run has ever used", and then was exactly that.
+// Codex caught it. The consequence was the nastiest shape available here: a canary could read a
+// different file from its legacy fallback, or SUCCEED where legacy would have failed — a canary
+// going green for the wrong reason, which is the failure this whole ticket is about.
+//
+// ★ The two halves of the product genuinely disagree about relative paths — the editor service
+// resolves against `adapterConfig.cwd` and throws without one, the adapters resolve against the
+// server process directory — so a founder can be shown one file and have another one read. That
+// is a real defect on the SHIPPED path; it is filed as **E7-F012** and deliberately NOT fixed
+// here. Unit D's claim is parity, and a unit that "fixes" the path it is measuring against
+// destroys its own evidence.
 
 /** The `adapterConfig` key both v1 adapters read. Not re-derived here — read verbatim. */
 export const INSTRUCTIONS_FILE_PATH_KEY = "instructionsFilePath";
 
 export type TaskRunInstructionsRefusal =
-  /** `instructionsFilePath` is relative and `adapterConfig.cwd` is missing or not absolute. */
-  | "unresolvable_path"
   /** The file is configured but could not be read (absent, permissions, a directory, …). */
-  | "unreadable";
+  "unreadable";
 
 export type TaskRunInstructionsBundle =
   /** No bundle is configured for this agent. Legal: the invocation omits the bundle flag. */
@@ -59,7 +73,7 @@ export interface ResolveTaskRunInstructionsBundleInput {
   /** The run-scoped adapter config (`runScopedConfig`) — the same object the adapter reads. */
   readonly adapterConfig: Record<string, unknown> | null | undefined;
   /** Injected so this is testable without a filesystem. Defaults to `fs.readFile(…,"utf8")`. */
-  readonly readFile?: (absolutePath: string) => Promise<string>;
+  readonly readFile?: (pathAsConfigured: string) => Promise<string>;
 }
 
 function asNonEmptyString(value: unknown): string | null {
@@ -79,32 +93,21 @@ export async function resolveTaskRunInstructionsBundle(
   input: ResolveTaskRunInstructionsBundleInput,
 ): Promise<TaskRunInstructionsBundle> {
   const config = input.adapterConfig ?? {};
-  const configured = asNonEmptyString(config[INSTRUCTIONS_FILE_PATH_KEY]);
-  if (configured === null) return { ok: true, configured: false };
-
-  let hostPath: string;
-  if (path.isAbsolute(configured)) {
-    hostPath = configured;
-  } else {
-    const cwd = asNonEmptyString(config.cwd);
-    if (!cwd || !path.isAbsolute(cwd)) {
-      return {
-        ok: false,
-        reason: "unresolvable_path",
-        detail: `relative instructionsFilePath "${configured}" needs an absolute adapterConfig.cwd`,
-      };
-    }
-    hostPath = path.resolve(cwd, configured);
-  }
+  // `.trim()` mirrors `asString(config.instructionsFilePath, "").trim()` at both adapter sites.
+  const hostPath = asNonEmptyString(config[INSTRUCTIONS_FILE_PATH_KEY]);
+  if (hostPath === null) return { ok: true, configured: false };
 
   const readFile =
     input.readFile ??
-    (async (absolutePath: string) => {
+    (async (pathAsConfigured: string) => {
       const fs = await import("node:fs/promises");
-      return fs.readFile(absolutePath, "utf8");
+      return fs.readFile(pathAsConfigured, "utf8");
     });
 
   try {
+    // VERBATIM. Not `path.resolve`, not `resolveHomeAwarePath`, not joined to
+    // `adapterConfig.cwd` — see the header. Whatever this resolves to is what the legacy
+    // adapter would have read for this same agent.
     const content = await readFile(hostPath);
     return { ok: true, configured: true, hostPath, content };
   } catch (error) {
