@@ -249,3 +249,32 @@ worker-b`). Without `AOA_D1_LIVE` it skips cleanly, exactly like the other D1 su
   residual.
 - **Build-time cost.** The build-stage re-install resolves ~1000 packages on a cold layer. Measured
   locally as tolerable; not measured on a GitHub runner.
+
+## 8. The mistake CI caught, and what came out of it
+
+The first PR run failed `policy` with `ERR_MODULE_NOT_FOUND` on
+`docker/control-plane/seed-d1-worker-enrolment.mjs`. **`.gitignore` carries an unanchored
+`seed-*.mjs`** (a scratch-script convention, alongside `check-*.mjs`, which is negated for
+`scripts/`) and it had silently swallowed the seed — a real, shipped file the control-plane image
+COPYs and the migrate job runs.
+
+Nothing local could have noticed, and the reason is the interesting part: **the Docker build
+context obeys `.dockerignore`, not `.gitignore`**, so the image built and the entire live enrol —
+including both positive controls — ran green on a working tree that HAD the file. `git status`
+showed nothing, because the file was ignored rather than untracked. Every measurement in §6 was
+true of the code; none of it was true of the commit.
+
+The guard that caught it was the pre-merge one this ticket added, which is the argument for having
+built it. What came out of it:
+
+1. `!docker/**/seed-*.mjs` — un-ignore the whole `docker/` tree rather than one path, so the next
+   such file is not caught by the same rule.
+2. A new `dockerfile-static.test.mjs` clause: **every local path a split Dockerfile COPYs must
+   exist on disk AND be tracked by git.** It asks `git ls-files --error-unmatch`, not
+   `git check-ignore` — check-ignore SKIPS already-tracked paths, so it answers "not ignored" for
+   a force-added file and stops biting the moment the mistake is half-fixed. Outside a checkout it
+   FAILS rather than skips. Proven by mutation (untrack the file; point a COPY at a nonexistent
+   one) and anti-vacuous (the parser must find ≥5 COPYed files).
+
+Verified afterwards by `git clone`-ing the branch into a clean directory: the seed is present and
+110/110 of the three static suites pass there.
