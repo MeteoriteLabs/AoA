@@ -568,6 +568,13 @@ The backlog contains 105 implementation tickets (audited 2026-08-25 against the 
 - **Acceptance:** Artifact commit remains distinct from explicit task-output projection. Provider/external idempotency identity, primary-output rules, review state, typed creator/source provenance, and run-summary behavior are preserved. Success/failure/cancel/dead-letter creates the correct summary exactly once; stale or losing-attempt output is quarantined and cannot become the selected result; self-hosted projections remain compatible where the product contract requires it.
 - **Test:** Duplicate provider/external identity, primary/review transitions, retry attribution, stale completion, output selection/quarantine, Commander/crew/one-shot projections, terminal-state and run-summary parity, and rollback after accepted versus unaccepted artifacts/events.
 
+#### JOB-015 — Deliver queued control commands to a running worker (M)
+
+- **Depends on:** JOB-004, JOB-006.
+- **Outcome:** Surface a lease's un-ACKed control commands to the worker holding it through the frozen lease-renew response's bounded additive extension, and apply them worker-side under the existing replay/gap/conflict/stale classification and the existing control-ACK route. Today only `cancel` and `graceful_stop` reach a worker, collapsed into the `cancelRequested` boolean; `drain`, `product_approval_result`, and `runtime_decision_result` are persisted and never delivered.
+- **Acceptance:** The `cancelRequested` boolean is preserved unchanged so an unadopted worker is byte-unaffected, and the extension is non-critical so it is ignored rather than rejected. Delivery is at-least-once per fresh renewal and never within a replayed renewal, whose stored response body is reproduced verbatim. Redelivery stops at ACK. An over-budget command list omits the extension rather than truncating it, and a malformed extension is a delivery fault rather than an absence of commands. No worker-protocol edit is required.
+- **Test:** Pending/absent projection parity, unadopted-worker compatibility, boolean-and-extension redundancy, sequence gap, duplicate command id, stale fence, over-budget omission with its under-budget twin, replayed-renewal body identity, and ACK-stops-redelivery.
+
 ### E4 — Worker daemon
 
 #### WRK-001 — Scaffold the separately deployable worker (S)

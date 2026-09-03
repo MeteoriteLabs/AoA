@@ -280,7 +280,7 @@ route. Land D2's migration **0272** (re-pin the slot at generation time) plus th
   is rejected by `matchRuntimeDecisionResultToRequestV1` (`transport.ts:588-591`) — assert the
   rejection, since that is the frozen guard the whole timeout story rests on.
 
-### (e) — The delivery hop. **M. GATED ON §2 D1 / §7 Q1.**
+### (e) — The delivery hop. **M. GATED ON §2 D1 / §7 Q1 — now chartered as JOB-015.**
 
 Only if the orchestrator assigns it to BRW-004. Ship the `dev.aoa.job/control-v1` non-critical
 extension on the lease-renew response, plus the worker-daemon consumer that applies a
