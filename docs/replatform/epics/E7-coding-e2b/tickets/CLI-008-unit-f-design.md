@@ -564,10 +564,12 @@ slice A's change makes the existing second verdict *reachable* rather than addin
   the one this unit builds, argued for by a reason string that is itself E7-F016.
 - **It does not wire `jobOutputBridge`** (§3.2) — `E3-17-output` stays `unwired` with its reason
   intact, and the sink-cutover owner's decision is untouched.
-- **It does not make the artifact downloadable from the task.** The row carries provenance
-  (`metadata.jobArtifactId`, `objectKey`, `kind`), not an `assetId` or a URL — a presigned URL in a
-  durable row expires into a broken link. A founder-facing download route that mints a fresh grant is
-  a follow-up, and the row it would light up already exists after slice E.
+- **It does not make the artifact downloadable from the task.** The row identifies the artifact by
+  id and kind (`metadata.jobArtifactId`, `metadata.kind`) and carries **no** `assetId` and no `url` —
+  a presigned URL in a durable row expires into a broken link, and `artifact_prepared` carries no
+  object key anyway, so the projector would have to read `job_artifacts` to obtain one. A
+  founder-facing download route that mints a fresh grant from the artifact id is the follow-up, and
+  the row it would light up already exists after slice E.
 - **It does not enforce retention.** `log` maps to the `run` class
   (`services/browser-artifact-retention.ts`), and `artifact-retention-authority.ts` states in terms
   that *"nothing reads the stored column to act"*. A task_output pointing at a swept object is a
