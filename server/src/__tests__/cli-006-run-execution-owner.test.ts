@@ -450,7 +450,7 @@ describe("CLI-008 Unit B — a staged-input refusal resolves to LEGACY, before p
   // uncomposed port SILENTLY STAGED NOTHING — harmless while nothing rode the channel. Unit D
   // put the prompt and the instructions bundle on it and made the argv READ those paths, so
   // the same silent skip would place a leasable attempt whose sandbox runs
-  // `sh -c '… < /home/user/.aoa-run/prompt.md'` against a file that is not there: the legacy
+  // `sh -c '… < /home/user/.aoa-run-prompt.md'` against a file that is not there: the legacy
   // executor suppressed, a worker running, and nothing anywhere naming the cause.
   //
   // It is the same shape as E7-F010 one layer up — growing one side of a seam and leaving a

@@ -95,13 +95,13 @@ describe("E7-F009 — the call site passes the attempt's committed rows to the f
   });
 
   it("the fake repo really does accumulate rows across stages (anti-vacuity)", async () => {
-    await stage(["/home/user/.aoa-run/prompt.md"]);
-    await stage(["/home/user/.aoa-run/instructions.md"]);
+    await stage(["/home/user/.aoa-run-prompt.md"]);
+    await stage(["/home/user/.aoa-run-instructions.md"]);
     expect(rows).toHaveLength(2);
     expect(rows.every((row) => row.kind === STAGED_INPUT_ARTIFACT_KIND)).toBe(true);
     expect(rows.map((row) => row.contentType)).toEqual([
-      stagedPathMarker("/home/user/.aoa-run/prompt.md"),
-      stagedPathMarker("/home/user/.aoa-run/instructions.md"),
+      stagedPathMarker("/home/user/.aoa-run-prompt.md"),
+      stagedPathMarker("/home/user/.aoa-run-instructions.md"),
     ]);
   });
 
@@ -136,7 +136,7 @@ describe("E7-F009 — the call site passes the attempt's committed rows to the f
   it("a second stage of the SAME bytes at the SAME path still replays (not a false refusal)", async () => {
     // The counter-test. Counting an already-committed path twice would refuse a bundle that
     // fits — a refusal for a wire state that can never exist.
-    const paths = ["/home/user/.aoa-run/prompt.md", "/home/user/.aoa-run/instructions.md"];
+    const paths = ["/home/user/.aoa-run-prompt.md", "/home/user/.aoa-run-instructions.md"];
     await stage(paths);
     const again = await stage(paths);
     expect(again).toMatchObject({ staged: true });
@@ -147,7 +147,7 @@ describe("E7-F009 — the call site passes the attempt's committed rows to the f
   it("a realistic Unit D bundle (prompt + instructions) is nowhere near the budget", async () => {
     // The bound must not bite the thing this unit actually stages.
     const result = await stage(
-      ["/home/user/.aoa-run/prompt.md", "/home/user/.aoa-run/instructions.md"],
+      ["/home/user/.aoa-run-prompt.md", "/home/user/.aoa-run-instructions.md"],
       32_000,
     );
     expect(result).toMatchObject({ staged: true, attempt: 1 });

@@ -172,8 +172,15 @@ CLI's stdin and points `--append-system-prompt-file` at the staged bundle.
 ```
 sh -c 'for f in "$1" "$2"; do [ -r "$f" ] || { echo "[cli-008] staged input missing: $f" >&2; exit 78; }; done;
        exec "$0" --print - --output-format stream-json --verbose --append-system-prompt-file "$2" < "$1"'
-   claude  /home/user/.aoa-run/prompt.md  /home/user/.aoa-run/instructions.md
+   claude  /home/user/.aoa-run-prompt.md  /home/user/.aoa-run-instructions.md
 ```
+
+★ **The staged paths are FLAT siblings in `/home/user`, not a `.aoa-run/` subdirectory.** A nested
+path rests on `sandbox.files.write` MKDIRing its parent — believed true of the E2B SDK, but the only
+test in this repo that writes against a REAL sandbox (`keyed-real-e2b.test.ts`) writes flat paths, and
+the no-key lanes use an in-memory map that accepts anything. Staging into a directory that does not
+exist fails the attempt closed — the right direction, a bad trade for tidiness. Nest them when Unit E
+needs a staged directory and something proves the mkdir.
 
 **Why `sh -c`.** The sandbox's only execution channel is `createSpecFor` → `ExecuteInput{command,
 args}`, and the real E2B transport `shellJoin`s the whole argv into one QUOTED command string. That

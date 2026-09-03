@@ -175,7 +175,7 @@ export type LegacyOwnerReason =
    * CHANNEL. Under Unit B the staging call was guarded by `if (stageJobInput && …)`: an
    * uncomposed port meant "stage nothing", which was harmless while nothing was ever staged.
    * Since Unit D the argv READS the staged paths, so the same silent skip would place a
-   * leasable attempt whose sandbox runs `sh -c '… < /home/user/.aoa-run/prompt.md'` against a
+   * leasable attempt whose sandbox runs `sh -c '… < /home/user/.aoa-run-prompt.md'` against a
    * file that does not exist. Refusing BEFORE the convert is the only outcome that is neither
    * a broken run nor a context-free one: nothing is submitted, nothing claims capacity, and
    * the legacy executor runs the task exactly as it does today.

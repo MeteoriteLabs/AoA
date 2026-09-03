@@ -34,7 +34,7 @@ function pointer(index: number): StagedInputPointer {
     artifactId: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
     // ★ SAME LENGTH as `file()`'s path, deliberately: the cliff is measured with one and
     // asserted against unions of both, so a longer prefix here would silently shift it.
-    path: `/home/user/.aoa-run/old-${index}.md`,
+    path: `/home/user/.aoa-run-old-${index}.md`,
     objectKey: `${PREFIX}00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
     sha256: "a".repeat(64),
     sizeBytes: 1024,
@@ -43,7 +43,7 @@ function pointer(index: number): StagedInputPointer {
 
 function file(index: number): StagedInputFile {
   return {
-    path: `/home/user/.aoa-run/new-${index}.md`,
+    path: `/home/user/.aoa-run-new-${index}.md`,
     bytes: new Uint8Array(1024),
   };
 }

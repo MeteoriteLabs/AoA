@@ -4,7 +4,7 @@
 // argv that reads them, `heartbeat.ts` hands them to the rollout hook, the hook hands them to
 // the ownership resolver, and the resolver hands them to the staging port. Three of those are
 // pass-throughs, and a dropped pass-through has NO local symptom: the run is placed, the
-// legacy executor is suppressed, and the sandbox runs `sh -c '… < /home/user/.aoa-run/prompt.md'`
+// legacy executor is suppressed, and the sandbox runs `sh -c '… < /home/user/.aoa-run-prompt.md'`
 // against a file nobody wrote.
 //
 // ★ The hook is the sharpest one, because it DESTRUCTURES its input. A field added to the

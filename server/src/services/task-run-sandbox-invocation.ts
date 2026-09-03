@@ -40,16 +40,27 @@
  * `/home/user` is E2B's default user home — the account `files.write` writes as and
  * `commands.run` executes as — and is the same root the repo's other in-sandbox paths use
  * (`/home/user/aoa-workspace`, the E2B environment runner's cwd). A `/aoa`-style root would
- * need a writable directory at `/` that the template does not create. */
-export const STAGED_INPUT_DIR = "/home/user/.aoa-run";
+ * need a writable directory at `/` that the template does not create.
+ *
+ * ★★★ FLAT, NOT A SUBDIRECTORY, AND THAT IS DELIBERATE. `/home/user/.aoa-run/prompt.md` would be
+ * tidier and it rests on an assumption this codebase cannot currently check: that
+ * `sandbox.files.write` MKDIRs its parent. The E2B SDK is believed to, but the only test that
+ * writes against a real sandbox (`keyed-real-e2b.test.ts`, the keyed lane) writes FLAT paths —
+ * `/home/user/output.txt`, `/home/user/base.txt` — so nothing in this repo has ever exercised a
+ * nested staging write, and the no-key lanes use an in-memory map that would happily accept any
+ * path. Staging into a directory that does not exist fails the whole attempt closed, which is the
+ * right direction but a bad trade for tidiness. So the files are siblings of the one path shape
+ * that has actually run. Nest them when Unit E needs a staged directory and something proves the
+ * mkdir. */
+export const STAGED_INPUT_DIR = "/home/user";
 
 /** The assembled task markdown. Was an argv positional until Unit D; that positional is what
  * `FROZEN_MAX_ARG_CHARS` refused above 8,192 characters (E7-F008). */
-export const STAGED_PROMPT_PATH = `${STAGED_INPUT_DIR}/prompt.md`;
+export const STAGED_PROMPT_PATH = `${STAGED_INPUT_DIR}/.aoa-run-prompt.md`;
 
 /** The agent's instructions bundle entry file — the same bytes the legacy adapters hand to
  * `--append-system-prompt-file` (claude) or prepend to stdin (codex). */
-export const STAGED_INSTRUCTIONS_PATH = `${STAGED_INPUT_DIR}/instructions.md`;
+export const STAGED_INSTRUCTIONS_PATH = `${STAGED_INPUT_DIR}/.aoa-run-instructions.md`;
 
 /**
  * The exit code the in-sandbox guard uses when a staged file it needs is not readable.
@@ -58,7 +69,7 @@ export const STAGED_INSTRUCTIONS_PATH = `${STAGED_INPUT_DIR}/instructions.md`;
  * `critical: false` (Unit B's decision, deliberately unchanged here): a worker that does not
  * understand the namespace ignores it and stages NOTHING. Before Unit D that was harmless —
  * nothing rode the channel. Now the argv depends on it, so such a worker would run
- * `sh -c '… < /home/user/.aoa-run/prompt.md'` against a file that is not there.
+ * `sh -c '… < /home/user/.aoa-run-prompt.md'` against a file that is not there.
  *
  * `sh`'s own diagnostic for that is a redirection failure with exit 2 — indistinguishable from
  * a hundred other shell errors, and for the `cat |` shape not even that (the pipeline's status
