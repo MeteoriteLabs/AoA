@@ -125,10 +125,14 @@ export interface StageJobInputFilesInput {
  * |---|---|
  * | `unknown_attempt` | the attempt row is absent, invisible under RLS, or belongs to another job |
  * | `pointer_too_large` | the projected extension exceeds the frozen 16,384-byte value budget |
+ * | `conflicting_restage` | this attempt already has DIFFERENT bytes committed at that path |
  *
  * Both mean the control plane's files WILL NOT BE THERE. See `StagedInputRefusedError`.
  */
-export type StagedInputRefusalReason = "unknown_attempt" | "pointer_too_large";
+export type StagedInputRefusalReason =
+  | "unknown_attempt"
+  | "pointer_too_large"
+  | "conflicting_restage";
 
 /**
  * A stage that could not honour its postcondition.
@@ -217,7 +221,8 @@ function pointerFitsExtension(
  * Idempotent per (attempt, path, digest): a replayed stage that finds a committed staged-input
  * row for the same path and digest reuses it instead of writing a second object. The
  * identifier is minted, so a replay is recognised by scanning this attempt's rows rather than
- * by guessing the id.
+ * by guessing the id. DIFFERENT bytes at an already-staged path are REFUSED, not
+ * superseded — see the `conflicting_restage` check.
  */
 export async function stageJobInputFiles(
   input: StageJobInputFilesInput,
@@ -259,36 +264,69 @@ export async function stageJobInputFiles(
     );
   }
 
-  const pointers: StagedInputPointer[] = [];
-  const pending: Array<{ pointer: StagedInputPointer; contentType: string }> = [];
-  for (const file of input.files) {
-    const sha256 = sha256Hex(file.bytes);
-    const replay = existing.find((p) => p.path === file.path && p.sha256 === sha256);
-    if (replay) {
-      pointers.push(replay);
-      continue;
-    }
-    const artifactId = newArtifactId();
-    const pointer: StagedInputPointer = {
-      artifactId,
-      path: file.path,
-      objectKey: `${prefix}${artifactId}`,
-      sha256,
-      sizeBytes: file.bytes.byteLength,
-    };
-    // 2. The bytes, BEFORE the row.
-    await input.storage.putObject({
-      objectKey: pointer.objectKey,
-      body: Buffer.from(file.bytes),
-      contentType: file.contentType ?? "application/octet-stream",
-      contentLength: pointer.sizeBytes,
-    });
-    pending.push({ pointer, contentType: file.contentType ?? "application/octet-stream" });
-    pointers.push(pointer);
+  // 1c. ★★ P2-b — REFUSE A RESTAGE THAT WOULD CHANGE BYTES AT AN ALREADY-STAGED PATH.
+  //
+  // The replay probe below matches on path AND digest, so identical bytes reuse the committed
+  // row. DIFFERENT bytes at the same path used to mint a SECOND committed row: the partial
+  // unique index keys on `identifier` (`organization_id, job_id, attempt, identifier WHERE
+  // status='committed'`), which is minted per stage, so nothing stopped it — and `listForJob`
+  // has NO `ORDER BY`, so which of the two the offer carried was genuinely unspecified. A run
+  // would receive one of two versions of its own instructions, chosen by the query planner.
+  //
+  // ★ REFUSING rather than SUPERSEDING is deliberate, and the reason is a race, not tidiness.
+  // `aoa_app` does hold UPDATE and DELETE here, so superseding is available — but by the time a
+  // second stage arrives the worker may already hold, or be mid-fetch on, the first pointer.
+  // Deleting the old object races a download; keeping it is a deliberate permanent orphan; and
+  // either way the attempt briefly has two truths. A refusal has none of that: it is the only
+  // outcome that cannot produce mixed content, and changed content means a new attempt, which
+  // is how this path is used. Fail-closed, before a byte moves.
+  const conflicting = input.files.find((file) =>
+    existing.some((p) => p.path === file.path && p.sha256 !== sha256Hex(file.bytes)),
+  );
+  if (conflicting) {
+    throw new StagedInputRefusedError(
+      "conflicting_restage",
+      `${conflicting.path} already has different bytes committed for attempt ${resolved.attempt}`,
+    );
   }
 
-  if (pending.length > 0) {
-    try {
+
+  const pointers: StagedInputPointer[] = [];
+  const pending: Array<{ pointer: StagedInputPointer; contentType: string }> = [];
+  // ★★ P2-a — THE UPLOAD LOOP IS INSIDE THE COMPENSATION. It used to sit outside, so a
+  // failure on the SECOND file left the FIRST file's object stored with no row naming it. The
+  // storage port has no list operation, so an object nobody recorded can never be found again:
+  // these orphans are permanent AND undiscoverable, and they accumulate silently, one per
+  // partial stage, for the life of the bucket. `pending` is appended to as the loop goes, so
+  // the catch always covers exactly what was actually written — a partial loop included.
+  try {
+    for (const file of input.files) {
+      const sha256 = sha256Hex(file.bytes);
+      const replay = existing.find((p) => p.path === file.path && p.sha256 === sha256);
+      if (replay) {
+        pointers.push(replay);
+        continue;
+      }
+      const artifactId = newArtifactId();
+      const pointer: StagedInputPointer = {
+        artifactId,
+        path: file.path,
+        objectKey: `${prefix}${artifactId}`,
+        sha256,
+        sizeBytes: file.bytes.byteLength,
+      };
+      // 2. The bytes, BEFORE the row.
+      await input.storage.putObject({
+        objectKey: pointer.objectKey,
+        body: Buffer.from(file.bytes),
+        contentType: file.contentType ?? "application/octet-stream",
+        contentLength: pointer.sizeBytes,
+      });
+      pending.push({ pointer, contentType: file.contentType ?? "application/octet-stream" });
+      pointers.push(pointer);
+    }
+
+    if (pending.length > 0) {
       // 3. The committed rows. ★ NO LEASE, NO FENCE — `leaseId` and `fenceToken` are null and
       //    no fence has ever existed for this attempt. That is the property that makes an
       //    inbound write possible at all; do not "tidy" this behind `guardActiveFence`, which
@@ -357,14 +395,19 @@ export async function stageJobInputFiles(
           },
         });
       });
-    } catch (error) {
-      // The row is the only durable record of the object; without it the object is
-      // unfindable (the storage port has no list operation). Remove what we just wrote.
-      for (const entry of pending) {
-        await input.storage.deleteObject({ objectKey: entry.pointer.objectKey }).catch(() => undefined);
-      }
-      throw error;
     }
+  } catch (error) {
+    // The row is the only durable record of the object; without it the object is unfindable
+    // (the storage port has no list operation). Remove everything this call wrote — whether
+    // the failure came from an upload mid-loop or from the row/audit transaction.
+    //
+    // Best-effort per object, and never masking the original error: a delete that fails leaves
+    // an orphan, which is the condition we are already in, whereas throwing from the cleanup
+    // would replace the real cause with a janitor complaint.
+    for (const entry of pending) {
+      await input.storage.deleteObject({ objectKey: entry.pointer.objectKey }).catch(() => undefined);
+    }
+    throw error;
   }
 
   return { staged: true, attempt: resolved.attempt, pointers };

@@ -454,6 +454,80 @@ integration("CLI-008 Unit B — the control-plane staging write on real serving 
     expect(storage.puts).toHaveLength(1);
   });
 
+  it("★★ a FAILED upload mid-bundle leaves NO objects behind — P2-a", async () => {
+    // ★★★ WHY THIS IS THE WORST KIND OF LEAK. The upload loop used to sit OUTSIDE the
+    //   compensation, so a failure on the second file left the first file's object stored with
+    //   no row naming it. The storage port has no list operation — an object nobody recorded
+    //   can never be found again. These orphans are permanent AND undiscoverable, and they
+    //   accumulate one per partial stage for the life of the bucket, billed and invisible.
+    const { admin, app } = ctx();
+    const { jobId, attemptId } = await seedJob();
+    const storage = makeStubStorage();
+    let uploads = 0;
+    const failing: typeof storage = {
+      ...storage,
+      putObject: async (put) => {
+        uploads += 1;
+        // The SECOND file fails. The first has already been written.
+        if (uploads === 2) throw new Error("object store unavailable");
+        return storage.putObject(put);
+      },
+    };
+
+    await expect(
+      stageJobInputFiles({
+        appDb: app.db, storage: failing, organizationId: ORG, companyId: COMPANY, jobId, attemptId,
+        files: [
+          { path: "/home/user/.aoa/a.md", bytes: bytes("first") },
+          { path: "/home/user/.aoa/b.md", bytes: bytes("second") },
+        ],
+      }),
+    ).rejects.toThrow(/object store unavailable/);
+
+    // ★ The first file's object was written AND then deleted. Not "never written" — the
+    //   compensation is what makes the difference, so assert the delete happened.
+    expect(storage.puts).toHaveLength(1);
+    expect(storage.deletes).toEqual(storage.puts.map((put) => put.objectKey));
+
+    // And no half-staged rows: the row transaction never ran.
+    const rows = await admin`SELECT count(*)::int AS n FROM job_artifacts WHERE job_id = ${jobId}`;
+    expect(rows[0]?.n).toBe(0);
+  });
+
+  it("★★ a restage with DIFFERENT bytes at the same path is REFUSED — P2-b", async () => {
+    // ★★★ The replay probe matches on path AND digest, so changed bytes used to mint a
+    //   SECOND committed row for the same path. The partial unique index keys on `identifier`
+    //   (org, job, attempt, identifier WHERE status='committed'), which is minted per stage, so
+    //   nothing stopped it — and `listForJob` has NO ORDER BY, so which of the two the offer
+    //   carried was genuinely unspecified. The run would receive one of two versions of its own
+    //   instructions, picked by the query planner.
+    const { admin, app } = ctx();
+    const { jobId, attemptId } = await seedJob();
+    const storage = makeStubStorage();
+    const PATH = "/home/user/.aoa/AGENTS.md";
+
+    await stageJobInputFiles({
+      appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId,
+      files: [{ path: PATH, bytes: bytes("version one") }],
+    });
+
+    const restage = stageJobInputFiles({
+      appDb: app.db, storage, organizationId: ORG, companyId: COMPANY, jobId, attemptId,
+      files: [{ path: PATH, bytes: bytes("version TWO") }],
+    });
+    await expect(restage).rejects.toThrow(StagedInputRefusedError);
+    await expect(restage).rejects.toMatchObject({ reason: "conflicting_restage" });
+
+    // ★ EXACTLY ONE effective file, and it is the first version. Refused BEFORE a byte moved,
+    //   so there is no second object to orphan either — which is the half a "supersede" design
+    //   would have had to answer for.
+    const rows = await admin`
+      SELECT sha256 FROM job_artifacts WHERE job_id = ${jobId} AND status = 'committed'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.sha256).toBe(sha256("version one"));
+    expect(storage.puts).toHaveLength(1);
+  });
+
   it("★ stages nothing for an empty file list — the ONLY non-throwing refusal", async () => {
     const { app } = ctx();
     const { jobId, attemptId } = await seedJob();
