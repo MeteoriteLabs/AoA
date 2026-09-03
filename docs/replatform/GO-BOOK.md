@@ -435,6 +435,14 @@ computes and prints both since Unit A, and `--require-capability` is the flag th
    epics' own documented style would ship green.** This is the guard's own stated failure class, one
    register over.
 
+### 1.9.7 The orchestration handoff
+
+**[`HANDOFF-orchestration.md`](./HANDOFF-orchestration.md)** is the document to hand a session that
+will run the track board — it carries the merge protocol, a copy-paste prompt per track, how to
+verify a builder's report, and a table of eight things that are repeated in this programme and are
+not true. It supersedes the parallel-lane framing in `HANDOFF-wave-4.md` and
+`HANDOFF-lane-b-browser-service.md`, whose deconfliction contract stays useful and whose numbers do not.
+
 ### 1.9.6 Open findings: 17, across 9 registers
 
 `node scripts/check-finding-ownership.mjs` → OK. **Unowned on the record:** E10-F001, E11-F001,

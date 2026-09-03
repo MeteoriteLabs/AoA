@@ -1,0 +1,237 @@
+# HANDOFF — the orchestration session
+
+**Written 2026-09-03 at HEAD `e8d2d8a52`, from a 15-agent audit whose five load-bearing claims were
+each adversarially verified.** Supersedes the parallel-lane framing in `HANDOFF-wave-4.md` and
+`HANDOFF-lane-b-browser-service.md`, both of which are stale in specific named ways (§7).
+
+> **You are the orchestrator.** You do not build. You hold the track board, hand out units, verify
+> what comes back, serialize the merges, and keep the registers honest. Every line of code is written
+> by a different session.
+
+---
+
+## 1. The one operational rule
+
+**Feature-branch PRs are free. Merges into the integration branch are not.**
+
+- `pr.yml` scopes the CI concurrency group **per PR**. Four `claude/*` PRs run four independent CI
+  suites and never contend. PRs #339 and #340 proved this.
+- The **integration branch** (`docs/replatform-program`, PR #323) keeps **one in-progress + one
+  pending** run. A newer push replaces the older *pending* one, which then executes **zero jobs and
+  carries no verdict**. 12 of the last 100 pushes produced no check-runs at all.
+
+**So:** let tracks run concurrently on their own branches. **Serialize merges ~20 minutes apart**
+(a full run is ~18 min today), and after each merge **confirm a run exists for that sha**:
+
+```bash
+gh pr checks 323 --json name,bucket --jq '"pass=\([.[]|select(.bucket=="pass")]|length) fail=\([.[]|select(.bucket=="fail")]|length) pending=\([.[]|select(.bucket=="pending")]|length)"'
+```
+
+★ **There is no threshold at two tracks.** The failure mode is push-rate versus run-duration. On
+2026-09-01 a *single* lane dropped four verdicts with five pushes ~5 min apart against a ~23 min run;
+three lanes pushing hourly would drop nothing. Do not let anyone reintroduce a track cap as a CI rule.
+
+★★ **`jq` is not installed** in the agent Bash environment — use `gh --jq`. A monitor built on
+standalone `jq` exits 0 with no output and looks exactly like "nothing to report". Three did, this
+session, while CI was red.
+
+---
+
+## 2. The track board
+
+| Track | Branch | First unit | Size | Blocked by |
+|---|---|---|---|---|
+| **A — E7 critical path** | `claude/cli-008-unit-d` | CLI-008 **Unit D** — the instructions bundle | M | nothing |
+| **B — free parallel** | `claude/wrk-017-container-enrol` | **WRK-017** — CI-exercised first container-enrol on d1 | M–L | nothing |
+| **C — register repair** | `claude/register-repair` | the three duplicate-id / guard-blindness defects | S–M | nothing |
+| **D — Lane B revival** | `C:\e8`, branch `lane-b` | **rebase**, then BRW-004 | M | its own rebase |
+
+### Why A takes D before C
+Unit D is **M** against Unit C's **L–XL**; it is the first real consumer of the channel Unit B just
+built, so it validates that work rather than stacking a second unbuilt thing beside it; and *"the
+prompt stops being a positional"* **is** the fix for **E7-F008** — the only **live** refusal among the
+open findings (a task whose assembled prompt exceeds 8,192 characters cannot dispatch distributed at
+all, today).
+
+### What no track achieves
+**None of these flips `capabilityProven`.** That needs Unit F (output capture — four unbuilt links).
+A green E7-1 proves the **mechanism**, not capability; the verifier has computed and printed both
+since Unit A, and `--require-capability` is the flag the campaign flips at F. Do not let a green
+canary be reported as capability.
+
+---
+
+## 3. Handoff prompts
+
+Give a builder session the ticket, the plan doc if one exists, and these standing rules. **Do not
+paste a summary of the code — make them read it.**
+
+### Standing rules for every builder session
+
+```
+Repo C:/e3 (git worktree), branch off docs/replatform-program. Work on claude/<unit-name>,
+open a PR into docs/replatform-program, do NOT merge — report back.
+
+Before you start: read docs/replatform/GO-BOOK.md §1.9 (current state, measured 2026-09-03).
+Several docs retain SUPERSEDED text deliberately, with a banner — check for one before quoting
+any design doc. Two sessions have already quoted CLI-008-design.md §3's refuted body as live.
+
+Gate locally before pushing: `node scripts/ci-local.mjs` (~3.5 min: policy, lint, brand-check,
+contract-bytes). It is a first filter, NOT a verdict — it has missed real CI failures.
+
+`tsc -p server` does NOT cover server/src/__tests__. Run the actual suite.
+`jq` is not installed; use `gh --jq`.
+
+If you file a finding, add its scripts/finding-ownership.json entry in the same commit or the
+policy job goes red. `owned` by a SHIPPED ticket needs a real successor on disk that is not
+itself complete; otherwise use `unowned` with a reason saying what it blocks.
+
+Report: what you built, what you measured, what you could NOT establish, and every mutation you
+ran to prove a test bites. Do not report a guard as passing without having made it fail once.
+```
+
+### Track A — CLI-008 Unit D
+
+```
+Build CLI-008 Unit D: the instructions bundle reaches the sandbox, and the prompt stops being a
+positional argument.
+
+Authority: docs/replatform/epics/E7-coding-e2b/tickets/CLI-008-design.md §4 row D.
+Channel: docs/replatform/qa/2026-09-03-cli-008-unit-b-channel-decision.md — Unit B shipped the
+staging channel (merged 393f7a251). The pointer rides extensions[]; the bytes ride object storage.
+
+★ STATE WHICH LANE YOU TARGET. E7-F011: there is no stage_files route on the networked/container
+lane. That lane is inert and actively guarded against, so you are NOT blocked — but say in the PR
+that you target the E2B/desktop lane.
+
+★ This unit should CLOSE E7-F008 (FROZEN_MAX_ARG_CHARS = 8192 in
+server/src/services/task-run-batch-workload.ts). If your design does not close it, say why.
+
+★ E7-F009 is open in the code you will touch: pointerFitsExtension projects input.files only, never
+the union with already-committed rows. Its cited line numbers have DRIFTED (now ~:194 and ~:260).
+Fixing it is a one-argument change and in scope; deduping at the reader instead is explicitly
+rejected in the finding.
+
+Read E7-F010's lesson before you start: growing the non-frozen supervisor port leaves every
+structure DERIVED from the frozen PROVIDER_OPERATIONS vocabulary behind, and nothing adds the
+entry for you.
+```
+
+### Track B — WRK-017
+
+```
+Build WRK-017: a CI-exercised first container-enrol on d1 (WRK-015 Part 2, split out).
+Authority: docs/replatform/epics/E4-worker-daemon/tickets/WRK-017-design.md — it carries a concrete
+lettered work plan and its own sequencing section. Both deps (WRK-014, WRK-015) have result docs.
+
+Its Status line reads `scope` but it is NOT a scoping stub — read the whole file before deciding
+that a design pass is needed.
+```
+
+### Track C — register repair
+
+```
+Three live defects, in this order. Each is the programme's own named worst failure class.
+
+1. ★★★ scripts/lib/finding-ownership.mjs parses `**Status:**` (:175) and filters status==="open"
+   (:82). E0/E1/E2 findings use the OLDER documented house style (`- **Severity:** /
+   - **Disposition:**`, artifact-policy.md:48), so all three registers are INVISIBLE to the guard.
+   Positive control before you fix: a synthetic HIGH gate-blocking unowned finding in E0's own
+   style returns {ok:true, openCount:0}; the same finding with a `**Status:**` line returns
+   undeclared_finding. Decide deliberately whether to teach the parser the old style or migrate the
+   registers — and say which, and why, in the PR. Note that fixing this will SURFACE previously
+   invisible open findings and may red the policy job; that is the point, not a regression.
+
+2. docs/architecture/decisions.md:854 and :913 are BOTH "## Decision #104" — different locked
+   decisions, one day apart. CLAUDE.md cites #104 as load-bearing in four places. Renumbering a
+   locked decision is not obviously safe; propose before you act.
+
+3. E1-worker-protocol/findings.md:96 and :132 are both "## E1-F008". The ownership checker keys by
+   id, so one silently shadows the other.
+
+Then the GO-BOOK drift named in §1.9.4. Add a uniqueness check for decision and finding ids —
+without one, all three recur.
+```
+
+### Track D — Lane B revival
+
+```
+C:\e8 is on branch lane-b at 30861d0be (2026-08-24): 275 commits behind origin/docs/replatform-program,
+0 ahead, ~10 days idle. Rebase it FIRST.
+
+★ Re-pin the migration baseline before generating anything.
+HANDOFF-lane-b-browser-service.md §5.4 says "Lane A has taken 0262 and 0263" — the tip is 0271.
+Following that text literally collides.
+
+Then BRW-004 (browser secrets, network, human approval). It has NO ticket file — the spec is
+program-design.md:972 — so it needs a design pass first, in its own session, before code.
+```
+
+---
+
+## 4. Verifying what comes back
+
+**Do not merge on a builder's report.** This session's own record is the argument: five design rounds
+failed on the remedy while the diagnosis held every time, and every failure was caught only by
+*running* something.
+
+- **Re-run the mutations yourself.** A test that has never been made to fail is not a test.
+- **Check the sha the checks ran against**, not just the colour: `gh pr view <n> --json headRefOid`.
+  This session reported "all 16 green" from a run belonging to an earlier commit while a newer push
+  was already red.
+- **A finding's citation must say what the finding says it says.** E7-F011 was filed citing
+  `Dockerfile:13` — a comment that establishes the opposite of what it was used for. The audit caught
+  it; the author (me) did not.
+- **When two sub-agents disagree on a fact, check it yourself.** One searched CI history for a prior
+  flake and found nothing; another found it. Verifying the finder took one command.
+
+---
+
+## 5. Merge protocol
+
+1. Builder reports; you verify (§4).
+2. `gh pr checks <n>` green **and** `headRefOid` matches what you verified.
+3. Squash-merge — the precedent (#339 `0e0904206`, #340 `393f7a251` are both single-parent).
+4. **Wait for the integration run to finish** before merging the next track's PR.
+5. Update the GO-BOOK row and, if the finding set changed, `finding-ownership.json`.
+
+★ The GO-BOOK and the findings registers are the **most-touched files across the last 12 landings** —
+more than any source file. Two tracks editing §1.9 will conflict before their code does. Have each
+track write its GO-BOOK row in its **own** commit at the end, and land those last.
+
+---
+
+## 6. What is NOT true, however often it is repeated
+
+| Claim | Reality |
+|---|---|
+| "Only two tracks are safe" | No threshold at two. It is a push-cadence limit, and a single lane already tripped it. |
+| "Lane B is an active parallel track" | 275 commits behind, ~10 days idle. The GO-BOOK says this in five places; it is a plan, not a state. |
+| "The `SandboxProvider` port is frozen" | Measured false 2026-09-03. `capabilities.ts` is a wire vocabulary; the port is non-frozen and already at 13 methods. |
+| "argv caps at ~8 KB per job" | The cliff is 8,192 chars **per argument**. What survives is E7-F008. |
+| "E7 is code-complete, blocked only on deployment" | True of CLI-001…007. CLI-008 (size L) has four unbuilt units. |
+| "WRK-013 unblocks E5-3" | It unblocks **E4-3**. E5-3's symbol is `createPatchApplyService`, which WRK-013 never touches. |
+| "`verify` takes 30–40 minutes" | ~18 min since the 4-way shard. |
+| "A cancelled run means another lane cancelled yours" | An in-progress run is never cancelled on this branch. The **pending** one is, and it never runs at all — which looks like nothing happened. |
+
+---
+
+## 7. Superseded handoffs
+
+`HANDOFF-wave-4.md` and `HANDOFF-lane-b-browser-service.md` remain useful for their **deconfliction
+contract** (§5 of the latter names the files a second lane may not touch without coordination — that
+list is still right). Their **numbers** are not: run duration, the cancellation mechanism, and the
+migration slot are all stale, per §6.
+
+---
+
+## 8. State at handoff
+
+- **HEAD:** `e8d2d8a52` on `docs/replatform-program`. Nothing is on `main`; PR #323 is the open
+  integration PR, titled "[WIP integration, do not merge]".
+- **Just landed:** CLI-008 Unit A (`0e0904206`, PR #339) and Unit B (`393f7a251`, PR #340) — the judge
+  and the inbound channel.
+- **Open findings:** 17 across 9 registers, 4 unowned. ★ That count **excludes E0/E1/E2 entirely**
+  (Track C defect 1), so it is a floor.
+- **Dashboard:** the control-room view of all of this is published as an artifact; the GO-BOOK's
+  `§1.9` is its source of truth.
