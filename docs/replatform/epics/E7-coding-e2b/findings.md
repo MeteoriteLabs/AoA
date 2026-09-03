@@ -642,3 +642,17 @@ schedules C or D must state which lane it targets**; that sentence is the durabl
 
 **Not to be confused with E7-F009**, which is about the fit check measuring the wrong set on a
 lane where staging *does* work. Both are open; they are independent.
+
+★★ **RELATIONSHIP TO E6-F003 (HIGH, open, owner DEP-011) — this is its residual, not a duplicate.**
+E6-F003 is "the networked worker→provider driver API is unspecified"; the route this finding needs
+is literally the work E6-F003 exists to cover. Read them together before building either.
+
+★ **And E6-F003's text is now STALE in one load-bearing sentence.** It says *"`adapter-manager` has
+zero implementation … and no worker dispatches"*, and concludes that specifying a wire "against an
+unimplemented peer for an unbuilt caller" is why deferring is correct. That was true when filed; it
+is not true at HEAD. `packages/adapter-manager/src/server.ts` exists and serves `create` and
+`execute` through a gated handler map (`:88-97`, `:115-120`), and `packages/provider-wire/src/driver.ts`
+is a working client binding — DEP-011/DEP-012 built them. **The deferral's own stated precondition
+has therefore partly arrived**, which is exactly the kind of change a finding's reachability must be
+re-derived against rather than inherited. Not corrected here because E6-F003 belongs to DEP-011, not
+to CLI-008; flagged so its owner can re-derive it.
