@@ -541,11 +541,45 @@ through a structure derived from the frozen list, check the derivation.
 
 ---
 
-## E7-F011 — Unit B's channel does not reach the lane that actually ships, and the prerequisite exists only as a comment
+## E7-F011 — Unit B's channel has no route on the networked/container lane, and the prerequisite exists only as a comment
 
-**Status:** open · **Owner:** CLI-008 · **Severity:** HIGH (latent today; a hard blocker between
-Unit B and Units C/D) · **Filed:** 2026-09-03, immediately after CLI-008 Unit B merged as
-`393f7a251`. **Filed against my own work.**
+**Status:** open · **Owner:** CLI-008 · **Severity:** MEDIUM (**corrected down from HIGH** — see the
+correction banner) · **Filed:** 2026-09-03 immediately after CLI-008 Unit B merged as `393f7a251`,
+**corrected the same day**. Filed against my own work, and then corrected against my own work.
+
+> ### ★★★ CORRECTION — link 4 of this finding was WRONG, and its own citation did not support it
+>
+> **As filed, this said "the lane that actually ships" and cited `docker/worker/Dockerfile:13` for
+> the claim that the shipped image boots the networked-host root. Both are false.**
+>
+> `docker/worker/Dockerfile:196` is `CMD ["node", "dist/bin/worker-daemon.js"]` — the **local
+> daemon** root. The networked tree is copied to `/worker-net-app` under a comment at `:158-159`
+> that says in terms: *"DEP-011 Slice 2b's CONTAINER boot root, in its own pruned tree. **Present
+> but NOT entered**"*. Line 13, which I cited, is a comment in the header block establishing
+> CONTAINMENT of that root in the image — not entry into it.
+>
+> Three independent sources say the same, and I checked each: `scripts/boot-roots-expectation.json`
+> ("the image `CMD` is UNCHANGED and still enters the daemon bin, so no shipped service runs it"),
+> `docs/deploy/environment-variables.md:196` ("**Ships inert.**"), and `DEP-010-design.md:704`
+> ("reachable only from the networked-host bin, which this CMD does not enter"). Entering it needs a
+> per-service `command:` override, and that override is **actively rejected** by
+> `scripts/lib/d1-compose-invariants.mjs:503-523` `checkWorkersEnterTheDaemonBin` — with an
+> anti-vacuity test asserting the shipped D1 compose does not enter it.
+>
+> ★ **A second, independent gate I had also missed:** even if the bin *were* entered,
+> `worker-networked-host/src/resolve-provider-url.ts:31` returns `{kind:"none"}` when
+> `AOA_WORKER_PROVIDER_URL` is unset, so `make-run-provider.ts:86` — the sole construction site —
+> never builds a `NetworkedProviderDriver` at all, and dispatch refuses `no_provider`.
+>
+> **So there is no shipped boot on which "every container-lane run hard-fails".** The defect is
+> real; its present reach is not. Severity drops HIGH → MEDIUM, and the headline no longer claims
+> the shipping lane.
+>
+> ★★ **Why this correction is kept in place rather than edited away.** I wrote a finding warning
+> that a constraint recorded only in a comment is invisible — and supported its central claim with a
+> citation to a comment that says the opposite of what I used it for. The lesson is not "check
+> citations"; it is that **a finding filed in a hurry against your own fresh work inherits that
+> work's blind spots**, and the register is exactly where that must not stand uncorrected.
 
 **What.** Unit B's staging channel works on the **E2B/desktop** lane and is structurally unreachable
 on the **networked/container** lane — which is the one the shipped worker image boots.
@@ -557,22 +591,31 @@ The chain, verified link by link:
 | 1 | `stage_files` is **not** in the frozen operation vocabulary — deliberately; that WAS Unit B's decision | `worker-protocol/src/capabilities.ts:142-153` — 8 core + 3 optional, no `stage_files` |
 | 2 | the wire's `#post` is typed to that vocabulary, so the driver has **no route** to a remote `stageFiles` | `provider-wire/src/driver.ts` `#post<R>(op: ProviderOperation, …)` |
 | 3 | so `NetworkedProviderDriver` declares `fileStagingMode = "none"` and its `stageFiles` **throws** | `driver.ts:93`, `:193-199` — `throw new UnsupportedProviderOperation("stage_files")` |
-| 4 | the **shipped worker image** boots the networked-host root, which constructs exactly that driver | `docker/worker/Dockerfile:13`; `worker-networked-host/src/make-run-provider.ts:86` |
+| 4 | ~~the shipped worker image boots the networked-host root~~ **— REFUTED, see the correction banner.** The shipped `CMD` enters the LOCAL daemon bin; the networked root is present but not entered, and is gated twice over | `docker/worker/Dockerfile:196` + `:158-159`; `resolve-provider-url.ts:31` |
 | 5 | the supervisor **fails closed** on a staging throw | `worker-daemon/src/supervisor/supervisor.ts:700` → `stage_input_failed` + `escalateCleanup` |
 
-**So the first moment Unit C or D supplies a staged file, every container-lane run terminates as a
-hard failure.** Nothing breaks today only because there is no producer: `resolveStagedFiles` returns
-`[]`, `staged.length > 0` is false, and `stageFiles` is never called.
+**So IF the networked lane is entered — a per-service `command:` override plus
+`AOA_WORKER_PROVIDER_URL` — AND a producer supplies a staged file, that run terminates
+`stage_input_failed`.** Two independent reasons keep it unreachable today: no shipped boot enters
+that root (see the correction), and there is no producer anyway — `lease/staged-input.ts:230`
+returns `[]` when there are no pointers, so `staged.length > 0` is false and `stageFiles` is never
+called.
 
 ★ **The fail-closed behaviour in link 5 is CORRECT and must not be "fixed".** Running an agent
 without the files the control plane meant it to have produces a clean terminal for mutilated work —
 the one outcome nothing downstream can detect. The defect is the missing route, not the refusal.
 
-★★ **The fix is well-scoped, and smaller than it first looks.** `E2bSandboxProvider.stageFiles`
-already works and already lives on the **remote** side of this wire (`adapter-manager/src/server.ts`
-constructs it). The adapter-manager *can* stage; the driver simply cannot ask it to. What is needed
-is an **inbound staging route on the adapter-manager wire** — not a new provider, and not a change
-to the frozen vocabulary.
+★★ **The fix is well-scoped but LARGER than I first wrote.** `E2bSandboxProvider.stageFiles`
+genuinely works (`e2b-provider.ts:189` `fileStagingMode = "grant_download"`, real implementation at
+`:420-444`) and the adapter-manager host root does hold that object
+(`adapter-manager/src/bin/adapter-manager.ts:141`). So the remote side can stage.
+
+But it is **not only the driver's TypeScript type**. `adapter-manager/src/server.ts:115-120` — the
+raw handler map — holds only `"create"` and `"execute"`, and `GATE_REQUIRED_OPS` at `:88-97` is the
+eight core ops. The route regex `/^\/op\/([a-z_]+)$/` would *match* `stage_files`, but both the
+gated branch and the handler lookup miss, so it 404s with a `WireProtocolError`. **A route must be
+added to the server AND to its capability gate**, not just to the driver. Still no new provider, and
+still no change to the frozen vocabulary.
 
 ★★★ **WHY THIS IS FILED AS A FINDING RATHER THAN LEFT AS A COMMENT — THE ACTUAL DEFECT.** The
 builder knew. `driver.ts:84-92` says it in terms: *"this driver has no wire route to reach a remote
@@ -590,11 +633,12 @@ honest — it says `wired` means reachable from a boot root, not "runs today", a
 driver plus the mock transport as what it proved. That is true. What it does not say, and what this
 finding adds, is that **the boot root it is reachable from is not the boot root that ships.**
 
-**Sequencing consequence — this is the part that changes plans.** Units C and D were both described
-as "now have a channel to ride". On the desktop lane they do. On the container lane they do not, and
-building either before this route exists means their first real run fails closed with
-`stage_input_failed` and no obvious pointer back to here. **This belongs between B and C/D**, and any
-plan that schedules C or D first should say explicitly which lane it is targeting.
+**Sequencing consequence — survives the correction, at lower urgency.** Units C and D were both
+described as "now have a channel to ride". **On the E2B/desktop lane they do, and that is the lane
+everything runs on today**, so C and D are NOT blocked by this. What this finding buys is the
+knowledge that the networked lane will need the route before it is ever entered — so the work
+belongs *before* the container lane is switched on, not necessarily before C and D. **Any plan that
+schedules C or D must state which lane it targets**; that sentence is the durable output here.
 
 **Not to be confused with E7-F009**, which is about the fit check measuring the wrong set on a
 lane where staging *does* work. Both are open; they are independent.
