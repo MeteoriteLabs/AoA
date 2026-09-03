@@ -454,19 +454,37 @@ The shapes are not guesswork — they are parsed in-repo today at
   frames** — a CLI that fails to authenticate emits `system` + `result` and nothing else. So its mere
   existence is **not** a productivity claim. §6.6 says so as acceptance; §7 says so as scope.
 
-★★★ **The productivity floor therefore lives in the PRODUCER, not the judge — and it is nearly free,
-because the frame shapes are already parsed in this repo.** The worker refuses to export, and so
-refuses to manufacture a committed artifact, when the transcript is:
+★★★ **The productivity floor therefore lives in the PRODUCER, not the judge. One half of it is free
+today; the other half is NOT BUILDABLE within the existing port, and saying so is the point of this
+paragraph.**
 
-1. **empty** — mandatory, trivial, universal across adapters; and
-2. **free of any model turn** — recommended: `type === "assistant"` for claude
-   (`claude-local/src/server/parse.ts:25`), `type === "item.completed"` for codex
-   (`codex-local/src/server/parse.ts:194`).
+**(1) The zero-length floor — MANDATORY, buildable now, no port change.** `ArtifactDigestResult` is
+`{sha256, sizeBytes}` (`supervisor/provider.ts:77-80`), so the supervisor can refuse on
+`sizeBytes === 0` before minting any grant. A refusal exports nothing, so `capabilityProven` stays
+`false` — the true statement for a run that emitted nothing at all. Control §5.16.
 
-A refusal exports nothing, so `capabilityProven` stays `false` — which is the **true** statement for
-a run in which the model never spoke. ★ **Re-implement the predicate over those shapes; do NOT import
-the adapter packages** — `worker-daemon` does not depend on them and must not start. Open question 5
-carries the codex half, which is the less certain of the two.
+★★★ **(2) The model-turn floor — MEASURED AS NOT BUILDABLE AT THE WORKER, and demoted to an open
+question rather than asserted.** The obvious form (*"the worker parses the JSONL for an `assistant`
+frame"*) requires the worker to hold the bytes, and it cannot: `digestArtifact` is documented
+**"Metadata only; never returns content"** (`supervisor/provider.ts:412`), `ArtifactExportResult` is
+`{objectKey}` — *"A REFERENCE to what was exported — never the bytes"* (`:82-85`) — and the governing
+byte-egress decision is Option D, *"the port carries a grant inbound and a reference outbound, and
+**never bytes**"*. An earlier pass of this revision wrote the worker-side predicate as a
+recommendation; the port forbids it. Three candidate homes remain, each with a real cost, and
+**open question 5 chooses among them before slice C ships**:
+
+| home | cost, measured |
+|---|---|
+| in the **sandbox script** (slice B) | A post-exec `grep -q '"type":"assistant"'` is impossible after `exec` — `exec` **replaces** the shell, so nothing runs after it. Getting a post-check means dropping `exec`, which forfeits exact exit-code preservation — the first of §3.1's four deliberate properties. A real trade, not a free one |
+| in the **provider** (slice C) | `E2bSandboxProvider` does read the file, so it *could* check — but that puts **adapter semantics** (claude/codex frame shapes) inside a sandbox provider shared by every workload, and `provider-wire` would have to diverge or duplicate |
+| **widen the non-frozen port** | `digestArtifact` grows an optional caller-supplied `markers: readonly string[]` and returns `matchedMarkers` — literal substrings only, **no content returned**, adapter knowledge stays in the worker. Additive on a non-frozen port, but it is a port change plus a conformance-suite addition, and §5.5's decline test must cover it |
+
+★ **Until that is decided, the floor is the zero-length one alone, and §6.6 states the residual
+plainly**: a run whose CLI failed to authenticate emits `system` + `result` frames, is non-empty,
+and would clear the bar. That is a measured weakness of this design, written down rather than
+designed around. ★★ **Do NOT import the adapter packages wherever the check lands** —
+`worker-daemon` does not depend on them and must not start; the frame shapes are re-derived from
+`claude-local/src/server/parse.ts:25` and `codex-local/src/server/parse.ts:194`.
 
 ★ **This is the whole reason the unit is L.** "What did the agent produce?" is an open question if
 you have to *discover* it — walk a tree, diff a repository, ask the provider to enumerate. It is a
@@ -699,16 +717,14 @@ Implement `digestArtifact` and `exportArtifact` on `E2bSandboxProvider` and flip
   `x-amz-checksum-sha256` (§1.5's sharp edge), returning `{objectKey}` — a **reference**, never
   bytes. Refuse if the read exceeds `grant.maxBytes` or its digest differs from
   `grant.expectedSha256`, before any PUT.
-- ★★★ **The productivity floor lives here, in the producer** (§3.1). `digestArtifact` returns a
-  **zero length** for an empty transcript and the supervisor must refuse to grant/export on it; and —
-  recommended — the worker declines a transcript containing **no model turn**
-  (`type === "assistant"` for claude, `type === "item.completed"` for codex; shapes measured at
-  `claude-local/src/server/parse.ts:25` and `codex-local/src/server/parse.ts:194`). A refusal exports
-  nothing, so `capabilityProven` stays `false`, which is the true statement for a run in which the
-  model never spoke. ★ **Re-implement the predicate over those shapes; do NOT import the adapter
-  packages** — `worker-daemon` does not depend on them and must not start. Open question 5 carries
-  the codex half. This is the only content inspection anywhere in Unit F, and it is deliberately on
-  the producer side: the judge reads rows and can never assert productivity (§0).
+- ★★★ **The productivity floor lives here, in the producer — but only HALF of it is buildable within
+  this port** (§3.1). Buildable now: `digestArtifact` already returns `{sha256, sizeBytes}`
+  (`supervisor/provider.ts:77-80`), so the supervisor refuses on `sizeBytes === 0` before minting a
+  grant. **Not buildable at the worker:** a model-turn predicate needs the bytes, and
+  `digestArtifact` is *"Metadata only; never returns content"* (`:412`) while `exportArtifact`
+  returns `{objectKey}` — the byte-egress decision's "never bytes". **Open question 5 picks its home
+  before this slice ships the check**; do not improvise one, and do not import the adapter packages
+  wherever it lands (`worker-daemon` does not depend on them).
 - **Boundary-legal without a new dependency:** `scripts/check-sandbox-e2b-provider-boundary.mjs`
   enforces an exact dependency set plus Node built-ins; global `fetch` is a Node global, not an
   import, and a presigned PUT carries no credential, so nothing enters the `E2B_API_KEY` /`e2b`-SDK
@@ -839,7 +855,7 @@ turn it red.
 | 5.14 | ★★★ **The declared output path is NOT staged and NOT guarded** (slice B) | Over all four (adapter × bundle) shapes: `DECLARED_OUTPUT_PATH` is in `args[1]`, absent from `stagedFiles`, absent from the guard prefix, and absent from `args` as an element | Add it to the `staged` array → the guard 78-refuses the happy path AND this test reds. Promote it to a positional → this test reds. **Without this test the exception at `task-run-batch-workload.test.ts:229-252` is unstated**, which is the failure class §3.1 exists to avoid |
 | 5.15 | **The redirect is present in every shape** (slice B) | All four scripts end in `> ${DECLARED_OUTPUT_PATH}`; the existing `:208`/`:220` `toEqual` shape tests and `:229-252` still pass unedited | Drop the redirect from any one shape → 5.14's first bullet reds for that shape (and nothing else does — which is exactly why it is asserted) |
 | 5.16 | ★★ **An EMPTY transcript never becomes a committed artifact** (slice C/D) | A run whose declared output file is zero bytes: assert no grant is minted, no PUT is issued, no `job_artifacts` row persists, a `terminal` IS emitted, and `capabilityProven === false` | Remove the zero-length refusal → an empty file commits → `capabilityProven` goes true on a run that produced nothing → red |
-| 5.17 | ★★★ **A transcript with NO MODEL TURN never becomes a committed artifact** (slice C/D, recommended) | Feed a claude transcript of `system` + `result` frames only (the shape a failed CLI login emits): assert no commit, a `terminal`, and `capabilityProven === false` | Remove the model-turn predicate → the gate goes green for a run in which the model never spoke. **This is the productivity floor, and it is the only test that pins it** — §0 puts the floor in the producer precisely because no row predicate can |
+| 5.17 | ★★★ **A transcript with NO MODEL TURN never becomes a committed artifact** — **CONDITIONAL on open question 5**, because the check is NOT buildable at the worker as the port stands (`digestArtifact` is "metadata only; never returns content", `supervisor/provider.ts:412`) | Feed a claude transcript of `system` + `result` frames only (the shape a failed CLI login emits): assert no commit, a `terminal`, and `capabilityProven === false` | Remove the model-turn predicate → the gate goes green for a run in which the model never spoke. ★ **If open question 5 declines all three homes, this control is NOT written and §6.6's residual stands unmitigated** — an unwritten control that is named is honest; a control asserted against a port that forbids it is not |
 
 ★ **The gate this unit must NOT create.** Unit A faced a clause nobody could pass and the remedy was
 a **second verdict computed beside `ok`**, never a fold into `ok`. Unit F does not fold anything into
@@ -865,8 +881,10 @@ arm anything could satisfy. That is the failure mode to watch for in review, and
    surviving a redelivered terminal;
 4. and a run whose **export failed** still reaching a durable `terminal`, with
    `capabilityProven === false` — the true statement, not a masked one;
-5. and a run whose transcript was **empty or model-turn-free** committing nothing, reaching a durable
-   `terminal`, with `capabilityProven === false` (§3.1's producer-side floor; controls §5.16–§5.17).
+5. and a run whose transcript was **empty** committing nothing, reaching a durable `terminal`, with
+   `capabilityProven === false` (§3.1(1)'s producer-side floor; control §5.16). ★ The **model-turn**
+   half of that floor is conditional on open question 5 and is NOT an acceptance criterion — see
+   §6.6 for the residual it leaves.
 
 **Explicitly NOT acceptance, and stated so a green cannot be over-read:**
 
@@ -874,8 +892,13 @@ arm anything could satisfy. That is the failure mode to watch for in review, and
    asserts *attested bytes from this run's sandbox reached durable AoA storage*. It does **not**
    assert that the agent did the task, or that the bytes are a deliverable — they are a JSONL
    protocol transcript, and a run in which the model spoke once but did nothing useful clears the bar
-   exactly as one that worked well does. The producer-side floor (§3.1, controls §5.16–§5.17) rules
-   out only the degenerate cases: empty, and no model turn at all. **The symbol's NAME outruns what
+   exactly as one that worked well does. The producer-side floor rules out **only the zero-length
+   case** (§3.1(1), control §5.16) — that half is buildable within the port and is mandatory. ★ The
+   **model-turn** half is measured as **not buildable at the worker** (`digestArtifact` is "metadata
+   only; never returns content"), so it is an open question (§9.5), not a commitment. **Residual, in
+   plain terms: a run whose CLI failed to authenticate emits `system` + `result` frames, is
+   non-empty, and would clear this bar.** That is a weakness of this design, recorded rather than
+   designed around. **The symbol's NAME outruns what
    it proves; that is recorded in E7-F016 and is not fixed by a rename here** (§4 slice A.4).
 7. **E7-F003 is not closed.** No clause reads the artifact's *content*, so a run that produced a
    transcript and a run that produced a *good* transcript are still indistinguishable to the
@@ -972,14 +995,20 @@ carry):
    the commit server-side, and the grant carries `maxBytes`. Decide whether the worker refuses before
    the PUT (recommended — a rejected commit wastes the upload) and what the operator sees when it
    does.
-5. ★ **The codex half of the model-turn floor.** The claude predicate is certain
-   (`type === "assistant"`, `claude-local/src/server/parse.ts:25`). Codex's `exec --json` stream
-   distinguishes `thread.started` / `response_item` / `event_msg` / `item.completed` /
-   `turn.completed` / `turn.failed` (`codex-local/src/server/parse.ts:136-238`), and **which of those
-   is the minimal "the model spoke" marker was not established in this pass**. Decide it against that
-   parser before slice C ships the codex branch; until then, ship the **zero-length** refusal (which
-   is universal and certain) for codex and the full predicate for claude, and say so at the constant.
-   Do not guess — a wrong predicate here silently suppresses real runs.
+5. ★★★ **Where does the model-turn floor live — or does it not get built?** This is the sharpest
+   open question in the design, and it exists because the obvious answer is **measurably wrong**: the
+   worker cannot parse the transcript, because `digestArtifact` is *"Metadata only; never returns
+   content"* (`supervisor/provider.ts:412`) and `exportArtifact` returns `{objectKey}` only (`:82-85`)
+   — the byte-egress decision's "never bytes". §3.1(2) tables the three candidate homes with their
+   costs (post-exec check → forfeits `exec`'s exit code; provider-side → adapter semantics inside a
+   shared provider; a `markers`/`matchedMarkers` widening of the **non-frozen** port → a port change
+   plus conformance work). **Decide before slice C ships any content check.** Two sub-questions ride
+   on it: (a) if the answer is "none of the three", say so and let §6.6's residual stand — an
+   unmitigated weakness that is named beats a mitigation that the port forbids; (b) the **codex**
+   marker is additionally unsettled — its stream distinguishes `thread.started` / `response_item` /
+   `event_msg` / `item.completed` / `turn.completed` / `turn.failed`
+   (`codex-local/src/server/parse.ts:136-238`) and **which is the minimal "the model spoke" marker was
+   not established in this pass**. Do not guess: a wrong predicate silently suppresses real runs.
 6. ★★ **Does the deliverable-directive route belong to Unit C or Unit E?** §7 names it as the
    successor that would upgrade the bar from provenance to productivity: instruct the agent, in its
    staged bundle, to write a deliverable to a declared path, and count only that. It is deliberately
@@ -998,7 +1027,7 @@ recorded instead of erased:
 | the first draft said | measured, and where the correction lives |
 |---|---|
 | the redirect is `> "$3"`, with the output path appended to the argv | Wrong three ways, each caught by a shipped test: `$3` is not a stable index (the instructions path is conditional, `task-run-sandbox-invocation.ts:164,169`, and the no-bundle argv is pinned at `task-run-batch-workload.test.ts:215,371`); routing it through `paths` makes `readableGuard` 78-refuse the happy path (`:176`, pinned `:388`); routing it around `paths` breaks the set-equality invariant (`:229-252`). **§3.1** has the shape that survives — a constant in the script literal, no argv change, no test edits, plus one new assertion that states the exception |
-| the captured bytes are "the thing the agent produced, byte for byte" | They are JSONL **protocol frames** (shapes at `claude-local/src/server/parse.ts:19-45`), non-empty even when the model never spoke. **§0** picks provenance over productivity and follows it through §3.1, §3.3, §5.16–17, §6.6 and §7 |
+| the captured bytes are "the thing the agent produced, byte for byte" | They are JSONL **protocol frames** (shapes at `claude-local/src/server/parse.ts:19-45`), non-empty even when the model never spoke. **§0** picks provenance over productivity and follows it through §3.1, §3.3, §5.16 (and §5.17, conditional — the model-turn check is measured as not buildable at the worker), §6.6 and §7 |
 
 ★★ **And a third correction of altitude rather than fact:** the first draft removed the task-output
 arm without saying where its question then lived, or measuring whether the surviving arm was
