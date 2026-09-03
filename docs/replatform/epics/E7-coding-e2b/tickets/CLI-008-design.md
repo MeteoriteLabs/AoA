@@ -266,14 +266,73 @@ own was part of D.
 5. A worker that **ignores the pointer** (it is `critical: false`) produces an **attributable
    failure**, not a context-free success: exit 78 with a named cause on stderr. *Met at the script
    level; the end-to-end exercise of that path needs a real sandbox and is NOT met in CI.*
+   ★ **NOT MET end to end — corrected 2026-09-03 by the live lane.** The script's half holds in a
+   real sandbox (the guard fires, exit 78, the cause on stderr). The ATTRIBUTION does not survive
+   the trip out: a non-zero exit is THROWN by the e2b SDK rather than returned, and the attempt
+   terminalizes `failed / exitCode: null / execute_failed / errorMessage: null` — a context-free
+   failure, which is the thing this criterion was written to prevent. **E7-F014**, owned by Unit F.
 6. **Nothing about `capabilityProven` changes.** *Met — and stated as a criterion so a green E7-1
    after this unit cannot be read as capability.*
 
-★ **What is NOT established.** No run of this shape has executed in a real E2B sandbox. The staging
-channel end to end, the `sh -c` collapse through `shellJoin`, the redirect, and the CLI's acceptance
-of `--print -` with a redirected stdin are all argued from the legacy adapters' behaviour and from
-transport code — not observed. That is the same gap CLI-008 Unit B shipped with, and it closes on
-the staging fleet, not in this unit.
+## 5b. ★ What WAS established, 2026-09-03 — the shape has now run in a real E2B sandbox
+
+> This section replaces the "What is NOT established" paragraph that shipped with Unit D. That
+> paragraph is reproduced below because it named the gap correctly and the record should show it.
+>
+> > ★ **What is NOT established.** No run of this shape has executed in a real E2B sandbox. The
+> > staging channel end to end, the `sh -c` collapse through `shellJoin`, the redirect, and the
+> > CLI's acceptance of `--print -` with a redirected stdin are all argued from the legacy adapters'
+> > behaviour and from transport code — not observed. That is the same gap CLI-008 Unit B shipped
+> > with, and it closes on the staging fleet, not in this unit.
+
+It did not need the staging fleet. `packages/sandbox-e2b-provider/src/__tests__/keyed-cli-008-unit-d-invocation.test.ts`
+runs the shape against REAL E2B from a GitHub runner using the `E2B_API_KEY` repo secret that has
+existed since 2026-08-17 (lane `keyed-e2b-unit-d.yml`; first green run `33789547290`, 3/3).
+
+**OBSERVED in a real E2B sandbox** — the production builder's exact `command` + `args`, through the
+real transport, with a staged shell probe as `$0`:
+
+- **The `shellJoin` collapse survives.** `sh -c '<script>' '<binary>' '<prompt path>' '<bundle path>'`
+  round-trips through e2b's single command-STRING API with its positional parameters intact.
+- **The prompt arrives on stdin byte for byte**, including `$HOME`, backticks, quotes, `|`, `&`, `>`
+  and `<` — all literal, none expanded by the sandbox's shell.
+- **`--append-system-prompt-file` receives the staged bundle path as its own argv element**, and the
+  bundle is readable at that path with the exact staged bytes. The FLAT `/home/user/...` staging
+  paths write successfully.
+- **The exit-78 guard fires** when the unit's files are deliberately not staged.
+
+**OBSERVED locally with the real `claude` CLI (2.1.126)** — the bare `base` template has no `claude`
+binary, so this half was measured separately and is NOT an E2B result:
+
+- **`claude --print -` reads a redirected stdin and does not wait on a TTY.** Decisive: with
+  `--input-format stream-json` and a malformed line redirected in, the CLI echoed **the exact bytes
+  from the file** back (`Error parsing streaming input line: THIS_IS_NOT_JSON_AT_ALL`).
+- **`--append-system-prompt-file` is real and validated**, not silently ignored: a nonexistent path
+  gives `Error: Append system prompt file not found: …`, against a control proving the CLI does
+  reject unknown flags.
+
+**STILL NOT ESTABLISHED**, stated as plainly as the paragraph it replaces:
+
+- The real `claude`/`codex` **binaries have not run inside E2B**. Everything between
+  `buildSandboxInvocation` and the binary's own `main` is proven; nothing beyond it is claimed.
+- That the prompt's **content reaches the model** — the local probe fails auth first, and an
+  empty-stdin control produced byte-identical output, so auth masks it.
+- **Unit B's staging channel end to end** (control plane → object storage → download grant →
+  `transport.writeFiles`). The lane calls `writeFiles` directly, proving the sandbox-side half —
+  the paths, the bytes, the argv — not the pointer's journey. That still needs the fleet.
+
+**★★ The lane was made to FAIL, on purpose, before it was trusted.** A green live lane that cannot
+go red proves nothing. `shellJoin` was mutated to the naive `[command, ...args].join(" ")` on a
+throwaway branch and the lane was dispatched against it (`33790235730`): **3/3 red**, with
+`CommandExitError: exit status 2` — `sh`'s own usage error, because `sh -c` received only the first
+word of the script. That is exactly the historical bug `real-transport-helpers.ts` was written to fix
+(*"`sh -c` received only `printf` and the rest became `$0`/redirections"*), so the lane reds on the
+real defect in the mechanism it claims to prove, not on an incidental. The branch was deleted.
+
+**Two findings came out of running it:** **E7-F013** (LOW — the codex separator is one newline or two
+depending on the staged bundle's trailing newline, so the legacy-parity claim holds conditionally)
+and **E7-F014** (MEDIUM — a non-zero exit is thrown rather than returned, so every failing
+distributed run terminalizes with `exitCode: null`; it defeats criterion 5 above).
 
 ★ **No green E7-1 should be read as evidence of capability.** Since Unit A that is computed rather
 than asserted: the verifier prints `CAPABILITY: NOT PROVEN` beside every PASS, and

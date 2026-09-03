@@ -409,7 +409,7 @@ Each track runs on its own `claude/*` branch with its own PR. Sizes are the tick
 
 | Track | Scope | First unit | Blocked by |
 |---|---|---|---|
-| **A — E7 critical path** | CLI-008 Units C and D | ~~**D** (M)~~ ✅ **D SHIPPED 2026-09-03** — instructions bundle + the prompt off argv; closed **E7-F008** (the LIVE refusal) and **E7-F009**. Next: **C** (L–XL) | nothing. Runs on the E2B/desktop lane |
+| **A — E7 critical path** | CLI-008 Units C and D | ~~**D** (M)~~ ✅ **D SHIPPED 2026-09-03** — instructions bundle + the prompt off argv; closed **E7-F008** (the LIVE refusal) and **E7-F009**. ✅ **D VERIFIED LIVE 2026-09-03** — the shape ran in a real E2B sandbox (see ★★★ below); filed **E7-F013** + **E7-F014**. Next: **C** (L–XL) | nothing. Runs on the E2B/desktop lane |
 | **B — free parallel** | WRK-017, DAT-009 slice 3, DBR-001 | **WRK-017** (M–L) — both deps (WRK-014, WRK-015) shipped | nothing |
 | **C — register + doc repair** | the three register defects + the drift below | the **duplicate-id defects** (see 1.9.5) | nothing |
 | **D — Lane B revival** | BRW-004 → 005/006, SVC-002 → 003+ | **rebase `C:\e8`**, then BRW-004 (M) | its own rebase; BRW-004 itself is unblocked |
@@ -422,6 +422,29 @@ the open findings.
 ★★ **Nothing in Track A, B or D flips `capabilityProven`.** That needs Unit F (output capture),
 which is four unbuilt links. A green E7-1 proves the MECHANISM, not capability — the verifier
 computes and prints both since Unit A, and `--require-capability` is the flag the campaign flips at F.
+
+★★★ **A REAL E2B RUN IS REACHABLE FROM A SESSION — measured 2026-09-03. This changes what "needs the
+fleet" means.** Unit D shipped saying its shape could only be observed "on the staging fleet". It
+could not: `keyed-e2b-unit-d.yml` ran the shape against real E2B from a GitHub runner (`33789547290`,
+3/3 green) and closed the gap the same day. Three facts, each established by running a command:
+
+- **`E2B_API_KEY` is a live repo secret**, working today — `keyed-e2b-conformance.yml` dispatched and
+  passed on demand (`33788025048`). It has existed since 2026-08-17.
+- **`workflow_dispatch` works from a NON-DEFAULT branch** via `gh workflow run --ref <branch>`.
+  `keyed-e2b-conformance.yml` is not on `main` and dispatched fine. **The comments in
+  `keyed-e2b-conformance.yml` and `keyed-e2b-cdp-probe.yml` saying dispatch "only registers from the
+  DEFAULT branch" are WRONG**, and the `.github/*-trigger` file-bump pattern they invented to work
+  around it is unnecessary (harmless, and left in place). A `push:` trigger listing a `claude/*`
+  branch also fires with the secret available.
+- **Nothing local is required** — no `E2B_API_KEY`, no `AOA_APP_DATABASE_URL`/
+  `AOA_OPERATOR_DATABASE_URL`, no deployed control plane.
+
+**So "prove it on the fleet" is the wrong default for anything that only needs a sandbox.** Before
+deferring a claim to the staging campaign, ask whether a keyed lane can settle it this week. Two
+findings came out of the first one that did — **E7-F013** (LOW) and **E7-F014** (MEDIUM, the mock
+encodes the OPPOSITE contract to real E2B for a non-zero exit, so no no-key test could ever surface
+it). What the fleet is still needed for is genuinely narrower than it looked: the real agent binaries
+running inside the sandbox, and Unit B's staging channel end to end.
 
 ### 1.9.4 Stale passages in THIS document, named — ✅ ALL FOUR CORRECTED 2026-09-03 (Track C)
 

@@ -753,3 +753,112 @@ adapters to resolve against `cwd` may well be the right end state — but it cha
 legacy path for every agent, it is not CLI-008's remit, and doing it inside the unit whose claim is
 "we now match legacy" would make that claim untestable. Whoever owns agent instructions should pick
 ONE resolution rule and apply it at all three sites at once.
+
+## E7-F013 — The codex bundle separator is one newline or two depending on the staged file's trailing newline, so it matches the legacy adapter only sometimes
+
+**Status:** open · **Owner:** unowned (see `scripts/finding-ownership.json` for the reason)
+**Severity:** LOW · **Filed:** 2026-09-03, by the CLI-008 Unit D LIVE verification lane —
+**observed in a real Linux `/bin/sh`, not argued from source.**
+
+**What.** `task-run-sandbox-invocation.ts` emits, for `codex_local` with a bundle:
+
+```
+{ cat "$2"; echo; cat "$1"; } | "$0" exec --json -
+```
+
+and its own comment states the reason: *"The legacy adapter joins the two with a blank line … a bare
+`cat "$2" "$1"` gives at most the bundle's own trailing newline … Inserting the blank line at the
+point of USE rather than baking it into the staged bytes keeps the staged file byte-identical."*
+
+Measured (`od -c` on the bytes the pipeline actually delivered to `$0`'s stdin, Debian `/bin/sh`):
+
+| staged bundle | delivered separator | matches legacy? |
+|---|---|---|
+| ends **without** `\n` | `…LAST_LINE_OF_BUNDLE\nFIRST_LINE…` — **one** newline | **no** |
+| ends **with** `\n` | `…LAST_LINE_OF_BUNDLE\n\nFIRST_LINE…` — a blank line | yes |
+
+The legacy codex adapter is **unconditional**: `codex-local/src/server/execute.ts:505` builds
+`` `${instructionsContents}\n\n` `` regardless of what the file ends with. `echo` contributes exactly
+one newline, so the shell shape reproduces legacy's blank line only when `cat` already supplied one.
+
+**★ The case the comment names as the motivating risk is the case that does not match.** The comment
+singles out a bundle with *no* trailing newline ("a real possibility for an operator-edited file") —
+and that is precisely the branch where the distributed path and the legacy path differ.
+
+**What is NOT wrong.** The disaster the `echo` was added to prevent **does not occur**: in both
+branches the bundle's last line and the prompt's first line land on separate lines. A bare
+`cat "$2" "$1"` would have fused them; this does not. The defect is a parity claim that is
+conditionally true, not a fused prompt.
+
+**Reachability.** LOW. The delta is one newline of separation inside a prompt, on the codex adapter
+only, only for bundles lacking a trailing newline, and only on the distributed path — which no
+production run reaches yet. It is filed because the commit that shipped it states it "addressed" a
+Codex P2 "by matching the shipped adapters", and the match is conditional. A LOW that is written
+down beats a LOW that is remembered.
+
+**Why unowned.** The fix is a judgement call about the shape, not a gap in it — normalising in the
+script (`{ cat "$2"; echo; echo; cat "$1"; }` would overshoot to two blank lines when the bundle DOES
+end in a newline; matching legacy exactly needs a trailing-newline-aware shell idiom) changes shipped
+Unit D behaviour, and CLI-008's remaining units are C/E/F. Whoever next touches the codex invocation
+shape should settle it. **Both branches are now pinned by the live lane**
+(`keyed-cli-008-unit-d-invocation.test.ts`), so the behaviour cannot drift while the finding is open.
+
+## E7-F014 — Against real E2B a non-zero exit is THROWN, not returned, so every failing distributed run terminalizes with `exitCode: null` and no message
+
+**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-design.md`) — Unit F, output capture
+**Severity:** MEDIUM · **Filed:** 2026-09-03, by the CLI-008 Unit D LIVE verification lane.
+**Observed in a real E2B sandbox**, not argued: run `33789547290`, log line
+`[cli-008 unit-d] non-zero exit carrier = throw, exitCode = 78`. Confirmed a second time by the
+mutation run `33790235730`, whose stack trace names the SDK class and the exact line:
+
+```
+CommandExitError: exit status 2
+ ❯ CommandHandle.wait  node_modules/e2b@2.30.5/src/sandbox/commands/commandHandle.ts:176:13
+ ❯ RealE2bTransport.runCommand  src/real-transport.ts:116:22
+```
+
+**What.** `MockE2bTransport.runCommand` RETURNS a crashed terminal —
+`{ exitCode: 1, crashed: true }` (`mock-transport.ts:130-137`). The real transport does not: the
+`e2b` SDK's `commands.run` THROWS `CommandExitError` on a non-zero exit, and nothing on the way out
+converts it back:
+
+1. `RealE2bTransport.runCommand` maps **only** a timeout-named error and rethrows everything else
+   (`real-transport.ts:123-131`).
+2. `E2bSandboxProvider.execute` classifies **only** `E2bTransportEgressBlockedError` and
+   `E2bTransportNotFoundError`, then `throw err` (`e2b-provider.ts:297-303`).
+3. `supervisor.ts:742-756` catches it and writes the durable terminal:
+   `status: "failed"`, **`exitCode: null`**, `errorCode: "execute_failed"`, **`errorMessage: null`**,
+   then `escalateCleanup(run, "execute_error")`.
+
+So against real E2B the `ExecuteResult`'s `exitCode` can only ever be **0**, and
+`crashed: exitCode !== 0` in `real-transport.ts:122` is **dead code** — the branch cannot be taken.
+
+**What is NOT wrong.** The run still reaches a durable terminal, and a failure is still recorded as a
+failure. Nothing is stranded and nothing succeeds falsely. What is lost is **attribution**: the exit
+code, the CLI's stderr, and the distinction between "the agent exited N" and "the provider faulted"
+all collapse into one `execute_failed` with two nulls.
+
+**★ It defeats CLI-008 Unit D's own acceptance criterion 5**, which reads: *"A worker that ignores the
+pointer (it is `critical: false`) produces an **attributable failure**, not a context-free success:
+exit 78 with a named cause on stderr."* Measured: the 78 is **not** recorded on the attempt and the
+named cause is **not** recorded. The guard runs correctly inside the sandbox and its attribution is
+discarded one layer up. Criterion 5 said this was "Met at the script level; the end-to-end exercise
+of that path needs a real sandbox and is NOT met in CI" — the real sandbox now says the script level
+was the only level at which it held.
+
+**Reachability.** MEDIUM, and it is the COMMON case rather than an edge: a coding agent exiting
+non-zero is a failed build, a failing test, a lint error, or the agent's own error exit. Every such
+distributed run loses its exit code. It is not HIGH because no run succeeds falsely and none strands.
+
+**★★ The same class as `real-transport-helpers.ts`'s own founding lesson, one layer up.** That file
+exists to close *"the 'the mock never execs a shell, so the real bug hid' gap that the first keyed run
+surfaced (8/18 real-E2B failures)"*. Here the mock does not merely fail to exercise the path — it
+encodes the **opposite** contract, so no amount of no-key testing can surface this, and the keyed
+lane had never run a command that exits non-zero. This finding exists because a lane finally did.
+
+**Why CLI-008 / Unit F.** Unit F is output capture — the run's exit code and stderr ARE its output,
+and Unit F is the unit that has to make a distributed run's results legible. The minimal remedy is at
+the transport: catch the SDK's `CommandExitError` in `RealE2bTransport.runCommand` and return
+`{ exitCode, signal: null, timedOut: false, crashed: true }`, restoring the shape the mock already
+models and the provider already expects. That is a change to CLI-001's shipped transport and belongs
+with whoever next needs the exit code, not with a verification lane.
