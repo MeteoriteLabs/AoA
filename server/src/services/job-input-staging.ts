@@ -179,7 +179,8 @@ function sha256Hex(bytes: Uint8Array): string {
 }
 
 /**
- * Would this file set's POINTER fit the frozen per-extension value budget?
+ * Would the ATTEMPT'S POINTER — everything already committed, plus what this call adds — fit
+ * the frozen per-extension value budget?
  *
  * ★ WHY THIS IS A REFUSAL AND NOT A SURPRISE. The pointer is small — about 200 bytes a file —
  * but `valueMaxCanonicalBytes` is 16,384, so somewhere past ~70 files the extension stops
@@ -188,22 +189,55 @@ function sha256Hex(bytes: Uint8Array): string {
  * naming the cause. Refusing here — before a single byte is written, with an attributable
  * reason the caller can act on — turns an undiagnosable cliff into an answer.
  *
+ * ★★★ E7-F009 — IT USED TO PROJECT `input.files` ALONE, WHICH IS THE WRONG SET. The offer is
+ * built from ALL committed rows for the attempt (`job-leasing.ts:628` `listForJob` → `:638`
+ * `stagedInputPointersFromRows` → `:399` `stagedInputExtension`), so repeated stages against
+ * one attempt inflated the REAL extension past the budget while every individual call reported
+ * "fits". The front door was closed and the side door was not, and the side door led to
+ * verbatim the cliff the refusal was written to prevent.
+ *
+ * The route was never the duplicate-row defect that was fixed alongside it: same-digest
+ * restages replay and add nothing, different-digest restages now throw, but a second stage
+ * adding a DIFFERENT PATH still appends committed rows. So the fix is the UNION, not a dedupe
+ * at the reader — a dedupe would make this unreachable by accident and leave the projection
+ * measuring the wrong set for the next multi-stage caller, which is a false claim of
+ * enforcement rather than a guard.
+ *
+ * `existing` is deduped against by PATH: a file already committed at the same path either
+ * replays (adding no row) or throws (`conflicting_restage`), so counting it twice would refuse
+ * a bundle that fits. The union is the post-condition set — what `listForJob` will return
+ * after this call — which is exactly what the offer will project.
+ *
  * Computed from placeholder ids of the exact minted LENGTH (a uuid is 36 chars, a sha256 hex
  * digest is 64), so the projection is an upper bound on the real pointer rather than a guess.
+ *
+ * EXPORTED FOR TEST. The multi-stage route that reaches the union is only exercisable against
+ * a real database, and the suite that has one is `job-input-staging.integration.test.ts` —
+ * which does not run on every developer's machine. An untestable guard is a guard nobody can
+ * prove is a guard, and F009's whole lesson is about a projection that measured the wrong set
+ * unnoticed. Both lanes assert it: this one directly, that one end to end.
  */
-function pointerFitsExtension(
+export function pointerFitsExtension(
+  existing: readonly StagedInputPointer[],
   files: readonly StagedInputFile[],
   prefix: string,
 ): boolean {
   const placeholderId = "0".repeat(36);
+  const project = (path: string, size: number) => ({
+    id: placeholderId,
+    path,
+    key: `${prefix}${placeholderId}`,
+    sha256: "0".repeat(64),
+    size,
+  });
+  const existingPaths = new Set(existing.map((pointer) => pointer.path));
   const projected = {
-    files: files.map((file) => ({
-      id: placeholderId,
-      path: file.path,
-      key: `${prefix}${placeholderId}`,
-      sha256: "0".repeat(64),
-      size: file.bytes.byteLength,
-    })),
+    files: [
+      ...existing.map((pointer) => project(pointer.path, pointer.sizeBytes)),
+      ...files
+        .filter((file) => !existingPaths.has(file.path))
+        .map((file) => project(file.path, file.bytes.byteLength)),
+    ],
   };
   const bytes = new TextEncoder().encode(canonicalizeJsonV1(projected)).length;
   return bytes <= WIRE_EXTENSION_LIMITS.valueMaxCanonicalBytes;
@@ -257,10 +291,12 @@ export async function stageJobInputFiles(
     attempt: resolved.attempt,
   });
   // 1b. Refuse a bundle whose POINTER could not ride the envelope, BEFORE a byte moves.
-  if (!pointerFitsExtension(input.files, prefix)) {
+  //     E7-F009: measured against the ATTEMPT's post-condition set (`existing` ∪ new), which
+  //     is what the offer projects — not against this call's files alone.
+  if (!pointerFitsExtension(existing, input.files, prefix)) {
     throw new StagedInputRefusedError(
       "pointer_too_large",
-      `${input.files.length} files project past the ${WIRE_EXTENSION_LIMITS.valueMaxCanonicalBytes}-byte extension budget`,
+      `${input.files.length} new file(s) on top of ${existing.length} already committed project past the ${WIRE_EXTENSION_LIMITS.valueMaxCanonicalBytes}-byte extension budget`,
     );
   }
 

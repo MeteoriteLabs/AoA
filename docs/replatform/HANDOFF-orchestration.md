@@ -41,7 +41,7 @@ session, while CI was red.
 
 | Track | Branch | First unit | Size | Blocked by |
 |---|---|---|---|---|
-| **A — E7 critical path** | `claude/cli-008-unit-d` | CLI-008 **Unit D** — the instructions bundle | M | nothing |
+| **A — E7 critical path** | `claude/cli-008-unit-d` | ~~CLI-008 **Unit D**~~ ✅ **SHIPPED 2026-09-03** (PR into `docs/replatform-program`) — closed **E7-F008** and **E7-F009**. Next: **Unit C** — the brokered MCP config | M → L–XL | nothing |
 | **B — free parallel** | `claude/wrk-017-container-enrol` | **WRK-017** — CI-exercised first container-enrol on d1 | M–L | nothing |
 | **C — register repair** | `claude/register-repair` | the three duplicate-id / guard-blindness defects | S–M | nothing |
 | **D — Lane B revival** | `C:\e8`, branch `lane-b` | **rebase**, then BRW-004 | M | its own rebase |
@@ -52,6 +52,11 @@ built, so it validates that work rather than stacking a second unbuilt thing bes
 prompt stops being a positional"* **is** the fix for **E7-F008** — the only **live** refusal among the
 open findings (a task whose assembled prompt exceeds 8,192 characters cannot dispatch distributed at
 all, today).
+
+> **Outcome, 2026-09-03: that reasoning held.** Unit D shipped and closed E7-F008 — though not by the
+> chunked-argv remedy the finding proposed: it removed the prompt from argv entirely, because Unit D
+> had to stage the instructions bundle anyway. It also closed E7-F009, and surfaced two
+> [[checks-that-nothing-runs]] instances in the code it touched. Track A's next unit is **C**.
 
 ### What no track achieves
 **None of these flips `capabilityProven`.** That needs Unit F (output capture — four unbuilt links).

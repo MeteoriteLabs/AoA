@@ -164,6 +164,8 @@ import {
   type RunExecutionOwner,
 } from "./run-execution-owner.js";
 import { buildTaskRunBatchWorkload } from "./task-run-batch-workload.js";
+import { resolveTaskRunInstructionsBundle } from "./task-run-instructions-bundle.js";
+import { SANDBOX_INVOCATION_BINARY_ARG_INDEX } from "./task-run-sandbox-invocation.js";
 import {
   dispatchCancel,
   getDistributedCancellationPort,
@@ -5283,12 +5285,33 @@ export function heartbeatService(
         // Converting without one places a leasable attempt whose only possible
         // outcome is a sandbox running a nonexistent command — while the legacy
         // executor has already been suppressed. Staying legacy is correct.
-        const canaryWorkload = buildTaskRunBatchWorkload({
-          adapterType: agent.adapterType,
-          runtimeCommandSpec,
+        //
+        // ── CLI-008 Unit D — the CONTEXT the workload's argv reads. ─────────
+        // The agent's instructions bundle entry file lives on the HOST; the
+        // sandbox has no host filesystem, so the control plane reads it here and
+        // Unit B's staging channel puts the bytes inside the sandbox, where
+        // `--append-system-prompt-file` (claude) / the stdin prepend (codex) can
+        // reach them. A configured-but-UNREADABLE bundle is a refusal, not an
+        // absence: running a canary agent without its identity produces plausible
+        // work and a clean terminal, which is the one failure nothing downstream
+        // detects. `resolveTaskRunInstructionsBundle` never throws.
+        const canaryInstructions = await resolveTaskRunInstructionsBundle({
           adapterConfig: runScopedConfig,
-          currentTaskMarkdown: context.currentTaskMarkdown,
         });
+        const canaryWorkload = canaryInstructions.ok
+          ? buildTaskRunBatchWorkload({
+              adapterType: agent.adapterType,
+              runtimeCommandSpec,
+              adapterConfig: runScopedConfig,
+              currentTaskMarkdown: context.currentTaskMarkdown,
+              instructions: canaryInstructions.configured ? canaryInstructions.content : null,
+            })
+          // ★ The `reason` here is never read: the `detail` below reports the INSTRUCTIONS
+          //   failure whenever `canaryInstructions.ok` is false, so this branch exists only to
+          //   give the union an `ok: false` arm the code below can narrow on. It is a
+          //   placeholder, and saying so is cheaper than someone later chasing why an
+          //   unreadable bundle is logged as a schema problem.
+          : ({ ok: false, reason: "invalid_workload" } as const);
         canaryExecutionOwner = canaryWorkload.ok
           ? await distributedRolloutHook.resolveExecutionOwner({
               source: { kind: "task_run", runId: run.id, issueId, assigneeAgentId: agent.id },
@@ -5297,11 +5320,19 @@ export function heartbeatService(
               idempotencyKey: run.id,
               rolloutState: distributedRolloutState,
               input: canaryWorkload.workload,
+              // ★ The files the argv above READS. Passed from the SAME build result, so a
+              // future edit cannot give the sandbox one and not the other.
+              stagedFiles: canaryWorkload.stagedFiles,
             })
           : {
               owner: "legacy",
               reason: "workload_unavailable",
-              detail: canaryWorkload.reason,
+              // The instructions refusal is reported under its own reason rather than
+              // folded into `invalid_workload`, which would send someone reading this log
+              // to the frozen schema instead of to a file they cannot read.
+              detail: canaryInstructions.ok
+                ? canaryWorkload.reason
+                : `instructions_${canaryInstructions.reason}: ${canaryInstructions.detail}`,
             };
 
         // ★ A NEW REASON ALONE IS INVISIBLE. Before this, `reason`/`detail` was
@@ -5321,7 +5352,18 @@ export function heartbeatService(
               adapterType: agent.adapterType,
               jobId: canaryExecutionOwner.jobId,
               attemptId: canaryExecutionOwner.attemptId,
+              // ★ SINCE UNIT D `workload.command` IS ALWAYS `sh`, so logging it alone tells an
+              // operator nothing about what actually runs. `binary` is the argv element the
+              // script execs as `$0` — the adapter's real CLI, which is what this line existed
+              // to report. Both are logged: `command` because it is what the supervisor
+              // receives, `binary` because it is what the sandbox runs.
               command: canaryWorkload.ok ? canaryWorkload.workload.command : null,
+              binary: canaryWorkload.ok
+                ? (canaryWorkload.workload.args[SANDBOX_INVOCATION_BINARY_ARG_INDEX] ?? null)
+                : null,
+              stagedPaths: canaryWorkload.ok
+                ? canaryWorkload.stagedFiles.map((file) => file.path)
+                : null,
               maxRuntimeSeconds: canaryWorkload.ok
                 ? canaryWorkload.workload.maxRuntimeSeconds
                 : null,

@@ -1,10 +1,13 @@
 # CLI-008 — The capability half: make the sandbox agent able to work, and make that CHECKABLE
 
-**Status:** **Units A and B are SHIPPED** — A merged `0e0904206` (PR #339, 2026-09-02), B merged
-`393f7a251` (PR #340, 2026-09-03). Units **C–F remain unbuilt**; no result doc yet, because the
-ticket closes on the capability, not on the channel. Unit A changed the JUDGE, not the capability;
-Unit B built the inbound CHANNEL and nothing that rides it. **E7-F003 stays open and every row of
-§1 is still true**, so `capabilityProven` is false on every real run.
+**Status:** **Units A, B and D are SHIPPED** — A merged `0e0904206` (PR #339, 2026-09-02), B merged
+`393f7a251` (PR #340, 2026-09-03), D on a PR into `docs/replatform-program` (2026-09-03). Units
+**C, E and F remain unbuilt**; no result doc yet, because the ticket closes on the capability, not
+on the channel or on one thing riding it. Unit A changed the JUDGE, not the capability; Unit B
+built the inbound CHANNEL and nothing that rides it; **Unit D is the first thing that rides it** —
+the prompt and the instructions bundle — which closes §1's row 5 and the argv-shaped half of row 2.
+**E7-F003 stays open**, because rows 1 (tools), 3-4 (workspace) and the return path are untouched,
+so `capabilityProven` is still false on every real run.
 
 > ★ **This line was stale until 2026-09-03 and said the opposite.** It read *"units B–F remain a
 > `scoping stub` and Unit B's channel decision is **undecided**"* — while §3 of THIS SAME FILE
@@ -12,10 +15,11 @@ Unit B built the inbound CHANNEL and nothing that rides it. **E7-F003 stays open
 > predated its own build. If you are reading a Status line here, check it against
 > `git log --oneline -- <this file>` and the GO-BOOK row before trusting it.
 
-**Open findings owned by this ticket:** E7-F003 (the capability gap itself), E7-F008 (a LIVE refusal
-— a prompt over 8,192 chars cannot dispatch distributed at all), E7-F009 (the fit check measures the
-wrong set), E7-F011 (no `stage_files` route on the networked/container lane — MEDIUM, corrected down
-from HIGH; **C and D are NOT blocked by it**, they run on the E2B/desktop lane).
+**Open findings owned by this ticket:** E7-F003 (the capability gap itself), E7-F011 (no
+`stage_files` route on the networked/container lane — MEDIUM, corrected down from HIGH; **C and D
+are NOT blocked by it**, they run on the E2B/desktop lane). **E7-F008 and E7-F009 are CLOSED by
+Unit D** — F008 by removing the prompt from argv rather than by the chunking it proposed, F009 by
+projecting the union at the call site.
 **Epic:** `E7 — Coding/CLI workload on E2B`. **Owns:** `E7-F003`.
 
 ---
@@ -30,10 +34,15 @@ has quietly closed.
 - `ExecuteInput` is exactly `{sandboxId, command, args, env}` — **no stdin** (`provider.ts:200-205`).
 - `workspace: null` is hard-coded (`job-leasing.ts:371`) and the field has **zero consumers**.
 - `stdinArtifactId` still has zero consumers; every non-test occurrence is a literal `: null`.
-- The distributed argv is two literal shapes (`task-run-batch-workload.ts:192-203`), against a legacy
-  adapter that assembles `--settings`, `--allowedTools mcp__aoa`, `--model`,
+- ~~The distributed argv is two literal shapes (`task-run-batch-workload.ts:192-203`), against a
+  legacy adapter that assembles `--settings`, `--allowedTools mcp__aoa`, `--model`,
   `--append-system-prompt-file`, `--add-dir` and delivers the prompt on **stdin**
-  (`claude-local/src/server/execute.ts:736-772, :879`).
+  (`claude-local/src/server/execute.ts:736-772, :879`).~~ **CLOSED by Unit D**, partly: the argv is
+  now `sh -c <script> <binary> <paths>`, the prompt arrives on **stdin from a staged file** and the
+  instructions bundle on `--append-system-prompt-file` pointed at a staged path (codex, which has no
+  such flag, gets the bundle prepended to stdin, exactly as its legacy adapter does). Still missing
+  from the argv: `--mcp-config` + `--allowedTools mcp__aoa` (Unit C), `--add-dir` (Unit E) and
+  `--model` (still open from Unit A's row).
 
 ---
 
@@ -142,7 +151,7 @@ Sizes are the sweep's, corrected by a verification pass. They are indicative, no
 | **A — the judge** | **S** | ✅ **DONE 2026-09-02** (§2). `producedArtifacts` promoted to a `capabilityProven` dimension separate from `ok`, pinned fixture, `--require-capability` off by default. **`--model` in the argv was NOT done** and stays open |
 | **B — the channel** | **M** (decision) | ✅ **DECIDED 2026-09-03** — `stageFiles` on the NON-FROZEN port + a local `fileStagingMode`, the DAT-009 shape; the frozen vocabulary is untouched. See `qa/2026-09-03-cli-008-unit-b-channel-decision.md`. ✅ **BUILT AND MERGED `393f7a251`** (PR #340) |
 | **C — tools** | **L–XL** | A brokered HTTP `aoa` MCP config plus its env vars, and a run-identity credential as a second secret handle, so `mcp__aoa__*` is actually callable |
-| **D — context** | **M** | The instructions bundle reaches the sandbox (`--append-system-prompt-file`), and the prompt stops being a positional |
+| **D — context** | **M** | ✅ **DONE 2026-09-03** (§4a). The instructions bundle reaches the sandbox on `--append-system-prompt-file` (claude) / prepended to stdin (codex), and the prompt stops being a positional — it is a staged file the script redirects onto stdin. **Closes E7-F008 and E7-F009.** Targets the **E2B/desktop lane** (E7-F011 leaves the networked lane refusing, not silently context-free) |
 | **E — workspace** | **XL** | A repository to work in. `workspaceV1Schema` requires a `manifestArtifactId` that has **zero producers**; `buildWorkspaceManifest` walks a LOCAL filesystem and cannot be pointed at an E2B sandbox |
 | **F — the return path** | **XL** | Output capture is **four** unbuilt links: the E2B driver never passes stream handlers; `stdoutRef`/`stderrRef` are fabricated literals, not references to stored bytes; `observeRun` is uncomposed (its absence is *pinned by a test*); `buildWorkspacePatch` and `createResultCommitter` have zero production callers |
 
@@ -150,13 +159,121 @@ Sizes are the sweep's, corrected by a verification pass. They are indicative, no
 path, an orphan sweeper and DR manifest reconciliation. What is missing is a **producer**. That is
 worth knowing before anyone estimates F as greenfield.
 
+
 ---
 
-## 5. Acceptance (to be fixed when this stops being a stub)
+## 4a. Unit D — what shipped, 2026-09-03
+
+**The one-sentence shape.** `workload.command` becomes `sh`; `args` becomes a FIXED `-c <script>`
+plus the adapter's real binary and one or two constant absolute paths; the prompt and the
+instructions bundle ride Unit B's staging channel as bytes; the script redirects the prompt onto the
+CLI's stdin and points `--append-system-prompt-file` at the staged bundle. For codex — which has no such flag — the bundle
+is concatenated ahead of the prompt on stdin **with a blank line between them**, matching the legacy
+adapter's own separator; the separator is inserted at the point of USE (`{ cat "$2"; echo; cat "$1"; }`)
+rather than baked into the staged bytes, so the same staged object stays byte-identical to the host
+file and can also serve claude's flag.
+
+```
+sh -c 'for f in "$1" "$2"; do [ -r "$f" ] || { echo "[cli-008] staged input missing: $f" >&2; exit 78; }; done;
+       exec "$0" --print - --output-format stream-json --verbose --append-system-prompt-file "$2" < "$1"'
+   claude  /home/user/.aoa-run-prompt.md  /home/user/.aoa-run-instructions.md
+```
+
+★ **The staged paths are FLAT siblings in `/home/user`, not a `.aoa-run/` subdirectory.** A nested
+path rests on `sandbox.files.write` MKDIRing its parent — believed true of the E2B SDK, but the only
+test in this repo that writes against a REAL sandbox (`keyed-real-e2b.test.ts`) writes flat paths, and
+the no-key lanes use an in-memory map that accepts anything. Staging into a directory that does not
+exist fails the attempt closed — the right direction, a bad trade for tidiness. Nest them when Unit E
+needs a staged directory and something proves the mkdir.
+
+**Why `sh -c`.** The sandbox's only execution channel is `createSpecFor` → `ExecuteInput{command,
+args}`, and the real E2B transport `shellJoin`s the whole argv into one QUOTED command string. That
+quoting is what makes argv boundaries survive the collapse — and it is also what makes a bare `<`
+in the argv a literal rather than a redirection. So the redirect has to live inside a script a shell
+is asked to interpret. `ExecuteInput` still has no stdin field; §1's row 2 is unchanged as a
+*protocol* fact, and worked around at the shell.
+
+**Nothing is interpolated into the script.** It is a fixed literal per (adapter, has-bundle) pair;
+the binary and the paths are separate argv elements read back as `$0`/`$1`/`$2`. A founder-supplied
+`adapterConfig.command` cannot close a quote and append a command — structurally, not by
+sanitizing. Four mutants (one per script branch) that interpolate the binary all go red.
+
+**Three things this unit had to get right that are not the headline.**
+
+1. ★★★ **An uncomposed staging port stopped being a silent skip.** Unit B guarded the staging call
+   with `if (stageJobInput && stagedFiles?.length)`, so a deployment without the port staged
+   nothing — harmless while nothing rode the channel. With the argv now READING those paths, the
+   same skip would place a leasable attempt whose sandbox reads a file nobody wrote. It is now
+   `legacy("staging_unavailable")`, refused **before the convert**, so nothing is submitted and no
+   capacity slot is claimed. Same shape as E7-F010 one layer up: grow one side of a seam, and the
+   structures derived from the other side do not follow you.
+2. **A configured-but-unreadable instructions bundle keeps the run LEGACY.** `resolveTask
+   RunInstructionsBundle` returns three outcomes, not two — "no bundle", "bytes", "could not read
+   it" — because folding the third into the first runs a canary agent without its identity,
+   producing plausible work and a clean terminal, which is the one failure nothing downstream can
+   detect. This deliberately diverges from the legacy codex adapter, which warns and continues.
+3. **The in-sandbox guard.** The staged-input pointer is `critical: false` (Unit B's decision,
+   unchanged), so a worker that does not understand the namespace stages nothing. The script
+   therefore checks each path is readable and exits **78** (`EX_CONFIG`) with a message on stderr —
+   an attributable cause instead of a bare `sh` redirection error, or, for codex's `cat |` shape,
+   an apparently-successful context-free run.
+
+**What Unit D deliberately does NOT do.**
+
+- **It stages the bundle's ENTRY FILE only.** `--append-system-prompt-file` takes one file and the
+  legacy adapter passes one path, so this is byte-parity with legacy. The bundle's siblings
+  (`HEARTBEAT.md`, `SOUL.md`, `TOOLS.md`) are not staged, and the legacy path directive — "resolve
+  relative references from `<host dir>`" — is deliberately NOT emitted, because that directory does
+  not exist in the sandbox. A relative reference inside the entry file is therefore unresolvable
+  there. That needs `--add-dir` and a directory-staging shape: **Unit E**. It is a sub-case of
+  E7-F003 row 1, not a new finding.
+- **It does not add `--model`.** Still open from Unit A's row.
+- **It does not touch `capabilityProven`.** No output capture, so the counts are still structurally
+  zero. A green E7-1 after this proves a richer MECHANISM, not capability.
+
+**Lane.** The **E2B/desktop** lane. On the networked/container lane
+`ProviderWireDriver.fileStagingMode` is `"none"` and `stageFiles` throws
+`UnsupportedProviderOperation`, which the supervisor turns into a FAILED attempt (E7-F011). That is
+a refusal rather than a context-free success — the right direction — but it is a refusal, and Unit D
+does not fix it. It is also unreachable today: the shipped image's `CMD` enters the local daemon
+bin, and `checkWorkersEnterTheDaemonBin` rejects an override.
+
+---
+
+## 5. Acceptance
 
 A distributed coding run that the verifier **can distinguish** from a context-free one: the agent had
 tools, had its identity and company context, had a repository, and something it produced reached AoA
-— each asserted by a clause, not printed as an observation.
+— each asserted by a clause, not printed as an observation. **That is the TICKET's acceptance, and it
+is not met.** Per-unit criteria below; §5 was a stub for this ticket until Unit D, and writing D's
+own was part of D.
+
+### 5a. Unit D's acceptance — met
+
+1. The workload emits **no argv element carrying task content**. The prompt is a staged file.
+   *Met, and measured:* the realistic workload's submission payload fell from **790 to 295 bytes**;
+   prompts at the old 8,192-char cliff +1, at 8×, and at 100× all build.
+2. Every **absolute path the argv names is a path the same build stages**, and the converse. *Met,
+   asserted structurally (derived from the emitted argv, not from a fixture) across all four
+   (adapter × has-bundle) shapes.*
+3. The **instructions bundle entry file reaches the sandbox** by the flag the legacy adapter uses —
+   `--append-system-prompt-file` for claude, a stdin prepend for codex — pointed at the STAGED path,
+   never a host path. *Met.*
+4. A run that **needs staged files and cannot get them never becomes leasable**: no staging port →
+   `legacy("staging_unavailable")` before the convert; an unreadable configured bundle →
+   `legacy("workload_unavailable")` with an `instructions_*` detail; a staging refusal →
+   `legacy("transfer_error")` before placement (Unit B's property, still held). *Met.*
+5. A worker that **ignores the pointer** (it is `critical: false`) produces an **attributable
+   failure**, not a context-free success: exit 78 with a named cause on stderr. *Met at the script
+   level; the end-to-end exercise of that path needs a real sandbox and is NOT met in CI.*
+6. **Nothing about `capabilityProven` changes.** *Met — and stated as a criterion so a green E7-1
+   after this unit cannot be read as capability.*
+
+★ **What is NOT established.** No run of this shape has executed in a real E2B sandbox. The staging
+channel end to end, the `sh -c` collapse through `shellJoin`, the redirect, and the CLI's acceptance
+of `--print -` with a redirected stdin are all argued from the legacy adapters' behaviour and from
+transport code — not observed. That is the same gap CLI-008 Unit B shipped with, and it closes on
+the staging fleet, not in this unit.
 
 ★ **No green E7-1 should be read as evidence of capability.** Since Unit A that is computed rather
 than asserted: the verifier prints `CAPABILITY: NOT PROVEN` beside every PASS, and

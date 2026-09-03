@@ -271,8 +271,13 @@ describe("CLI-008 Unit B · Task 1 — byte-source ceilings, measured", () => {
     MEASURED.submissionHeadroomBytes = SUBMISSION_MAX_INPUT_BYTES - workloadBytes;
 
     expect(SUBMISSION_MAX_INPUT_BYTES).toBe(65_536);
-    expect(workloadBytes).toBe(790);
-    expect(MEASURED.submissionHeadroomBytes).toBe(64_746);
+    // ★ 790 UNTIL UNIT D, 295 AFTER IT — and the drop IS the change. The workload used to
+    // carry the whole assembled prompt as an argv positional; it now carries a fixed `sh -c`
+    // script plus the binary and two constant paths, and the prompt rides Unit B's staging
+    // channel as bytes. That is E7-F008 closed, visible as a number: the submission payload no
+    // longer grows with the task.
+    expect(workloadBytes).toBe(295);
+    expect(MEASURED.submissionHeadroomBytes).toBe(65_241);
 
     // ★ And the headroom is UNUSABLE. `buildJobEnvelope` sets `workload: input.job.input`
     // (job-leasing.ts) — the submission `input` IS the batch workload — and

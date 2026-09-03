@@ -442,6 +442,55 @@ describe("CLI-008 Unit B — a staged-input refusal resolves to LEGACY, before p
     expect(stageJobInput).not.toHaveBeenCalled();
   });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // CLI-008 Unit D — AN UNCOMPOSED STAGING PORT IS NOW A REFUSAL, NOT A SKIP.
+  //
+  // ★★★ THE TRAP THIS CLOSES. Under Unit B the staging call was guarded by
+  // `if (stageJobInput && stagedFiles?.length)`. That `stageJobInput &&` conjunct meant an
+  // uncomposed port SILENTLY STAGED NOTHING — harmless while nothing rode the channel. Unit D
+  // put the prompt and the instructions bundle on it and made the argv READ those paths, so
+  // the same silent skip would place a leasable attempt whose sandbox runs
+  // `sh -c '… < /home/user/.aoa-run-prompt.md'` against a file that is not there: the legacy
+  // executor suppressed, a worker running, and nothing anywhere naming the cause.
+  //
+  // It is the same shape as E7-F010 one layer up — growing one side of a seam and leaving a
+  // structure derived from the other side behind.
+  describe("CLI-008 Unit D — staged files with no staging port composed", () => {
+    it("resolves to legacy(staging_unavailable) and NEVER converts or places", async () => {
+      const place = vi.fn(async () => ({ disposition: "selected", leaseEligible: true }) as never);
+      const convertRunToJob = vi.fn(async () => ({
+        converted: true,
+        reason: "submitted",
+        response: { jobId: JOB, attemptId: ATTEMPT, replayed: false } as never,
+      }));
+      const result = await createRunExecutionOwnerResolver(
+        // NO `stageJobInput` — the pre-Unit-B deployment shape.
+        deps({ placement: { place }, convert: { convertRunToJob } }),
+      ).resolve({ ...input, stagedFiles: FILES });
+
+      expect(result.owner).toBe("legacy");
+      if (result.owner !== "legacy") throw new Error("unreachable");
+      expect(result.reason).toBe("staging_unavailable");
+      expect(result.detail).toContain("no staging port");
+      // ★ The refusal is BEFORE the convert, so nothing was submitted and no capacity slot was
+      //   claimed — there is no inert attempt to release and none to reap.
+      expect(convertRunToJob).not.toHaveBeenCalled();
+      expect(place).not.toHaveBeenCalled();
+    });
+
+    it("★ a run that stages NOTHING is unaffected — which is every run before Unit D", async () => {
+      // The counter-test. Making the port mandatory outright would have taken every
+      // deployment that never stages a file off the distributed path with it.
+      for (const stagedFiles of [undefined, []]) {
+        const result = await createRunExecutionOwnerResolver(deps()).resolve({
+          ...input,
+          stagedFiles,
+        });
+        expect(result.owner).toBe("distributed");
+      }
+    });
+  });
+
   it("stages BEFORE placement when there are files, and the run goes distributed", async () => {
     const order: string[] = [];
     const result = await createRunExecutionOwnerResolver(

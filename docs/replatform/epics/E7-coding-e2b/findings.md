@@ -423,9 +423,36 @@ construction. MIG-010 owns choosing.
 
 ## E7-F008 — A task whose assembled prompt exceeds 8,192 characters cannot run distributed, and the ceiling is per-ARGUMENT
 
-**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-design.md`, no result doc)
+**Status:** FIXED (CLI-008 Unit D) · **Owner:** CLI-008
 **Severity:** MEDIUM
 **Filed:** 2026-09-03, by the Unit B channel sweep, which measured it rather than inferring it.
+**Closed:** 2026-09-03, by CLI-008 Unit D — not by the remedy this finding proposed.
+
+> ### Closed by REMOVING the prompt from argv, not by chunking it
+>
+> The finding's own remedy was chunked argv (`sh -c '<script>' _ c1..c10`, 65,306 characters,
+> 8× today's capacity, no new channel). Unit D did not do that, and the reason is worth
+> recording: Unit D had to stage the instructions bundle anyway — that is its whole job — so
+> once a staging channel is carrying one file it may as well carry the prompt, and then the
+> per-element ceiling does not apply at all rather than applying 8× further out.
+>
+> **What changed.** `workload.command` is now `sh` and `args` is a fixed `-c <script>` plus the
+> adapter's binary and two constant paths. The assembled markdown rides CLI-008 Unit B's
+> staging channel as bytes and the script reads it with a stdin redirect — which is what the
+> legacy adapters have always done (`claude --print -`, `codex exec --json -`). The bound that
+> replaces `FROZEN_MAX_ARG_CHARS` is `MAX_STAGED_FILE_BYTES` (1 MiB, 128×), which is a sanity
+> ceiling on what the control plane pushes into a tenant sandbox rather than a wire limit.
+>
+> ★ **The refusal was MOVED, not deleted.** `prompt_too_large` became
+> `staged_input_too_large` at a much larger bound. Deleting the last size check on content that
+> goes into a sandbox would have been the other half of the same mistake, and a reason nobody
+> can trip is a false claim of enforcement.
+>
+> **Measured, not asserted.** The realistic workload's submission payload went from **790 bytes
+> to 295** (`cli-008-unit-b-byte-source.integration.test.ts` pins both numbers and says why the
+> drop is the change): the payload no longer grows with the task. Prompts at the old cliff + 1,
+> at 8× it, and at 100× it now all build and still parse against the frozen schema. Mutation:
+> re-applying `FROZEN_MAX_ARG_CHARS` to the prompt reds all three.
 
 **What.** `buildTaskRunBatchWorkload` refuses with `prompt_too_large` when the assembled task markdown
 exceeds `FROZEN_MAX_ARG_CHARS = 8192` (`task-run-batch-workload.ts:80, :237-241`), mirroring the
@@ -453,8 +480,34 @@ to dispatch today, and the fix is a different shape from anything in C–F.
 
 ## E7-F009 — The staged-input fit check measures the wrong set, so the front door is closed and the side door is not
 
-**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-design.md`, no result doc)
+**Status:** FIXED (CLI-008 Unit D) · **Owner:** CLI-008
 **Severity:** MEDIUM (latent) · **Filed:** 2026-09-03, surfaced while designing the fix for a Codex P2.
+**Closed:** 2026-09-03, by CLI-008 Unit D — the first unit that stages anything at all, which is
+what made it worth fixing then rather than later.
+
+> ### Fixed as the finding specified: the UNION, at the call site
+>
+> `pointerFitsExtension(existing, files, prefix)` now projects the attempt's POST-CONDITION set
+> — everything `listForJob` will return after this stage — instead of `input.files` alone.
+> `existing` was already resolved two statements above the call, exactly as the finding said.
+> Already-committed PATHS are deduped against, because such a file either replays (adding no
+> row) or throws `conflicting_restage`, so counting it twice would refuse a bundle that fits.
+>
+> **Deduping at the reader stayed rejected**, and there is now a mutation that says so: making
+> the projection count duplicates — the shape a reader-side dedupe would leave behind — reds
+> both lanes.
+>
+> **Two lanes, because one was not enough.** `cli-008-unit-d-fit-union.test.ts` measures the
+> cliff at runtime and asserts the projection; `cli-008-unit-d-fit-union-callsite.test.ts`
+> stubs the tenant transaction and proves `stageJobInputFiles` actually HANDS the check the
+> committed rows — a correct projection called with the wrong argument being the defect itself.
+> The integration lane (`job-input-staging.integration.test.ts`, embedded Postgres) is the
+> third, and is CI-only.
+>
+> ★ **Mutation-proven both ways.** Reverting the argument to `[]` reds both lanes. The
+> dedupe-removal mutant initially SURVIVED — the first draft compared two verdicts that were
+> both `true` — so the fixture is now sized at the cliff, where a double-count is exactly what
+> tips it.
 
 **What.** `pointerFitsExtension` (`job-input-staging.ts:129-145`, called at `:189`) projects
 **`input.files` only** — never the accumulated durable set. But the lease offer is built from **all**
@@ -656,3 +709,47 @@ is a working client binding — DEP-011/DEP-012 built them. **The deferral's own
 has therefore partly arrived**, which is exactly the kind of change a finding's reachability must be
 re-derived against rather than inherited. Not corrected here because E6-F003 belongs to DEP-011, not
 to CLI-008; flagged so its owner can re-derive it.
+
+
+## E7-F012 — A relative `instructionsFilePath` resolves against two different directories, so the editor can show one file while the agent reads another
+
+**Status:** open · **Owner:** unowned (see `scripts/finding-ownership.json` for the reason)
+**Severity:** LOW · **Filed:** 2026-09-03, by CLI-008 Unit D, which HAD to match the shipped
+behaviour rather than fix it — and got that wrong once first.
+
+**What.** `adapterConfig.instructionsFilePath` is read by two consumers that disagree about what a
+RELATIVE value means:
+
+- **The adapters** (the path that actually runs an agent) pass the raw string to `fs.readFile`:
+  `claude-local/src/server/execute.ts:629` and `codex-local/src/server/execute.ts:503`. Node
+  resolves that against the **SERVER PROCESS's working directory**. Neither adapter consults
+  `adapterConfig.cwd` for this read — that field is the CHILD process's cwd (`execute.ts:192` /
+  `:249`), used for spawning.
+- **The route-level bundle service** (`agent-instructions.ts:165-174`,
+  `resolveLegacyInstructionsPath`) resolves a relative path against `adapterConfig.cwd`, and
+  THROWS `unprocessable` when that is absent or itself relative.
+
+So for any agent whose `instructionsFilePath` is relative and whose `adapterConfig.cwd` differs from
+the server's working directory, **the Instructions editor reads, lists and writes one file while the
+running agent reads another** — or the editor refuses outright while the agent runs fine.
+
+**Reachability.** LOW, and honestly so: every path the product WRITES is absolute
+(`syncInstructionsBundleConfigFromFilePath` stores `path.dirname(resolvedPath)` +
+`path.basename`, and the managed root is absolute), so a relative value arrives only by direct
+`adapterConfig` authoring — the import/export bundle path, a hand-edited config, or a marketplace
+package. It is a real inconsistency with a plausible user-visible symptom, not a live incident.
+
+★ **Why CLI-008 Unit D filed it instead of fixing it.** Unit D stages the bundle bytes into the
+sandbox and its entire claim is PARITY: the distributed run must read the file the legacy run would.
+An earlier draft resolved relative paths against `adapterConfig.cwd` — matching the *editor* — and
+cited `agent-instructions.ts:165-174` as "the legacy contract". That citation is real and it is
+about the wrong consumer. **The consequence was the sharpest failure available here: a canary could
+read a different bundle from its legacy fallback, or SUCCEED where legacy would have failed — a
+canary green for the wrong reason**, which is the class this ticket exists to eliminate. Codex
+caught it in review; the resolver now passes the configured string through verbatim.
+
+★★ **A unit that "fixes" the path it is measuring against destroys its own evidence.** Changing the
+adapters to resolve against `cwd` may well be the right end state — but it changes the SHIPPED
+legacy path for every agent, it is not CLI-008's remit, and doing it inside the unit whose claim is
+"we now match legacy" would make that claim untestable. Whoever owns agent instructions should pick
+ONE resolution rule and apply it at all three sites at once.

@@ -104,8 +104,12 @@ export interface RunExecutionOwnerDeps {
    * direction intact: a staging failure is still a legacy run, because nothing that can fail
    * back to legacy runs after placement.
    *
-   * Optional, exactly like `releaseCapacity`: a deployment that has not composed it behaves
-   * as before. Returns the staged pointers for logging; the LEASE path re-reads the durable
+   * Optional in the type, but NO LONGER OPTIONAL IN EFFECT once a run asks for files. Unit B
+   * could leave it uncomposed because nothing rode the channel; since Unit D the argv reads
+   * the staged paths, so a run with `stagedFiles` and no port resolves to
+   * `legacy("staging_unavailable")` above rather than being placed with nothing staged. It
+   * stays optional so a deployment that stages NOTHING still behaves exactly as before.
+   * Returns the staged pointers for logging; the LEASE path re-reads the durable
    * rows rather than trusting anything returned here, because the offer is built in a
    * different transaction and possibly a different process.
    *
@@ -163,6 +167,20 @@ export type LegacyOwnerReason =
    * empty_prompt / prompt_too_large / workload_too_large / invalid_workload).
    */
   | "workload_unavailable"
+  /**
+   * CLI-008 Unit D — this run's workload REQUIRES staged files and no staging port is
+   * composed, so the files could never arrive.
+   *
+   * ★ THIS EXISTS BECAUSE UNIT B's OPTIONALITY BECAME A TRAP THE MOMENT SOMETHING RODE THE
+   * CHANNEL. Under Unit B the staging call was guarded by `if (stageJobInput && …)`: an
+   * uncomposed port meant "stage nothing", which was harmless while nothing was ever staged.
+   * Since Unit D the argv READS the staged paths, so the same silent skip would place a
+   * leasable attempt whose sandbox runs `sh -c '… < /home/user/.aoa-run-prompt.md'` against a
+   * file that does not exist. Refusing BEFORE the convert is the only outcome that is neither
+   * a broken run nor a context-free one: nothing is submitted, nothing claims capacity, and
+   * the legacy executor runs the task exactly as it does today.
+   */
+  | "staging_unavailable"
   /** Something threw. An unreadable decision is a legacy decision. */
   | "transfer_error";
 
@@ -295,6 +313,17 @@ export function createRunExecutionOwnerResolver(
           return legacy("rollout_not_canary", `rollout state is ${state}`);
         }
 
+        // 1b. CLI-008 Unit D — a workload that DEPENDS on staged files cannot run on a
+        //     deployment with no staging port. Checked FIRST, before the convert claims
+        //     anything, so the refusal costs nothing and leaves no inert attempt behind.
+        //     See `staging_unavailable` for why this is a refusal rather than a silent skip.
+        if (stagedFiles && stagedFiles.length > 0 && !stageJobInput) {
+          return legacy(
+            "staging_unavailable",
+            `${stagedFiles.length} staged file(s) required but no staging port is composed`,
+          );
+        }
+
         // 2. MIG-008 preflight. Nothing may become leasable behind a refused gate.
         const gate = await preflight.check({ organizationId });
         if (!gate.ok) {
@@ -327,6 +356,8 @@ export function createRunExecutionOwnerResolver(
         // which releases the claimed capacity and returns `transfer_error`. That is the
         // correct direction — a sandbox missing the files the control plane meant it to have
         // is worse than a legacy run, and nothing has been placed yet.
+        // `stageJobInput` is already known present whenever `stagedFiles` is non-empty (step
+        // 1b returned otherwise); the conjunct stays for the type narrowing, not as a policy.
         if (stageJobInput && stagedFiles && stagedFiles.length > 0) {
           await stageJobInput({
             organizationId,

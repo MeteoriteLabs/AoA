@@ -11,6 +11,22 @@
 // into it: every canary job carried `{}`, `createSpecFor` fell back to `command =
 // workloadType` ("batch"), and no lease could ever run a real agent.
 //
+// ── CLI-008 Unit D — argv is no longer the whole contract ─────────────────────────────
+// The module now emits TWO things that must agree: the workload, and the FILES that must
+// exist inside the sandbox for that workload's argv to mean anything. The prompt and the
+// instructions bundle ride CLI-008 Unit B's staging channel (control plane → object storage
+// → download grant → `transport.writeFiles`); the argv reads them by absolute path, through
+// `sh -c`, exactly as the legacy adapters read them from disk. See
+// `task-run-sandbox-invocation.ts` for the shapes and for why nothing is interpolated into
+// the script.
+//
+// ★ THAT CLOSES E7-F008. `FROZEN_MAX_ARG_CHARS` used to gate the PROMPT, so a task whose
+// assembled markdown exceeded 8,192 characters could not dispatch distributed at all — a live
+// refusal, the only one among the open findings. The prompt is no longer an argv element, so
+// the frozen per-element ceiling no longer applies to it. It is bounded instead by
+// `MAX_STAGED_FILE_BYTES`, a staging-side sanity ceiling 128× larger, and the mirror constant
+// stays because the ARGV is still bounded by the frozen schema.
+//
 // WHAT IT IS NOT. It is not the shadow comparator (`job-shadow-comparator.ts`), which
 // hand-writes `command: agent.adapterType` — a REGISTRY KEY ("claude_local"), not a binary,
 // as its own comment concedes. Mirror that module's SHAPE, never its VALUES. The precedent
@@ -33,6 +49,10 @@ import {
 } from "@armyofagents/worker-protocol";
 import { dispositionForAdapter } from "./sandbox-coding-disposition.js";
 import {
+  buildSandboxInvocation,
+  type SandboxStagedFile,
+} from "./task-run-sandbox-invocation.js";
+import {
   resolveHeartbeatRunTimeoutPolicy,
   type HeartbeatRunTimeoutPolicy,
 } from "./heartbeat-stop-metadata.js";
@@ -46,15 +66,42 @@ export type TaskRunBatchWorkloadRejection =
   | "no_runtime_command_spec"
   /** No task content was assembled for this run, so there is no prompt to deliver. */
   | "empty_prompt"
-  /** The prompt exceeds the frozen 8192-char per-arg ceiling. REFUSED, never truncated. */
-  | "prompt_too_large"
+  /**
+   * A file this run must stage exceeds {@link MAX_STAGED_FILE_BYTES}. REFUSED, never
+   * truncated.
+   *
+   * ★ THIS REPLACES `prompt_too_large` (E7-F008). That reason gated the prompt at the frozen
+   * 8,192-CHARACTER per-argv-element ceiling, because the prompt WAS an argv element. It is
+   * now a staged file, so the frozen ceiling does not reach it and the bound is the staging
+   * path's own. The reason was renamed rather than deleted so a refusal still exists and is
+   * still attributable: a guard nobody can trip is a false claim of enforcement, and silently
+   * dropping the last size check on content that goes into a sandbox is the other half of
+   * that mistake.
+   */
+  | "staged_input_too_large"
   /** The serialized workload exceeds the submission surface's 64 KiB `input` bound. */
   | "workload_too_large"
   /** The assembled workload failed the FROZEN schema — the schema always has the last word. */
   | "invalid_workload";
 
+/** Re-exported so callers of this module do not have to know which module owns the paths. */
+export type TaskRunStagedFile = SandboxStagedFile;
+
+/**
+ * ★★★ THE WORKLOAD AND THE FILES ARE ONE RESULT, NOT TWO.
+ *
+ * The argv reads absolute paths; the staged set writes them. A caller that could take one
+ * without the other could place a leasable attempt whose command reads a file nobody staged —
+ * which is a sandbox that fails at exec, or (worse, if the guard in the script were ever
+ * removed) an agent working from nothing. `run-execution-owner.ts` refuses to go distributed
+ * when staged files are requested and no staging port is composed, for the same reason.
+ */
 export type BuildTaskRunBatchWorkloadResult =
-  | { readonly ok: true; readonly workload: BatchWorkloadV1 }
+  | {
+      readonly ok: true;
+      readonly workload: BatchWorkloadV1;
+      readonly stagedFiles: readonly TaskRunStagedFile[];
+    }
   | { readonly ok: false; readonly reason: TaskRunBatchWorkloadRejection };
 
 export interface TaskRunBatchWorkloadInput {
@@ -72,12 +119,49 @@ export interface TaskRunBatchWorkloadInput {
    * happens inside `adapter.execute`, two lines after the canary returns) and is DELETED
    * outright for agents migrated to the instructions bundle. Template rendering is Unit 2. */
   readonly currentTaskMarkdown: unknown;
+  /**
+   * CLI-008 Unit D — the agent's instructions bundle ENTRY FILE content, already read off the
+   * host by `resolveTaskRunInstructionsBundle`. `null`/absent means this agent has no bundle
+   * configured, which is legal and common: the invocation then omits the bundle flag entirely
+   * rather than staging an empty file.
+   *
+   * ★ A CONFIGURED-BUT-UNREADABLE bundle must NEVER arrive here as `null`. That is the
+   * distinction the resolver exists to preserve, and it resolves it before this module is
+   * called: "no bundle" is a shape, "could not read the bundle" is a refusal, and collapsing
+   * them here would run a canary agent without its identity while every gate downstream
+   * stayed green.
+   */
+  readonly instructions?: string | null;
 }
 
 /** The frozen per-arg ceiling (`batchWorkloadV1Schema`: `z.array(z.string().max(8192))`).
- * Mirrored so the prompt can be refused with an attributable reason before the schema
- * rejects it generically; the frozen schema still has the last word. */
+ * Mirrored so an argv element can be refused with an attributable reason before the schema
+ * rejects it generically; the frozen schema still has the last word.
+ *
+ * ★ SINCE UNIT D THE PROMPT IS NOT AN ARGV ELEMENT, so this no longer bounds task content —
+ * that was E7-F008, and it is closed. What it still bounds is what the argv actually carries:
+ * a fixed script and the adapter's resolved binary. The constant stays because the mirror is
+ * still true and `task-run-batch-workload.test.ts` value-imports the frozen schema to prove
+ * it; it is documentation of a wire fact, not a content policy. */
 export const FROZEN_MAX_ARG_CHARS = 8192;
+
+/**
+ * The per-file ceiling on control-plane-staged content — 1 MiB, 128× the old argv ceiling.
+ *
+ * ★ WHY A NUMBER AT ALL, WHEN THE CHANNEL HAS NO SMALL BOUND. Object storage does not care,
+ * the `job_artifacts` row does not care, and the `extensions[]` pointer is ~200 bytes per file
+ * whatever the payload is — so this is not a protocol limit and it must not pretend to be one.
+ * It is a sanity ceiling on bytes the control plane pushes into a tenant sandbox, at the one
+ * place that decides to push them. Without it, an assembled prompt that grew without bound
+ * (a runaway comment thread, a pathological task body) would be uploaded, granted, fetched and
+ * written with nothing anywhere saying no.
+ *
+ * ★★ IT IS DELIBERATELY FAR ABOVE ANY REAL BUNDLE. The largest onboarding bundle entry
+ * measured on this branch is the `commander` bundle at ~26 KB across four files; a single
+ * entry file is a few KB. A refusal here means something is wrong, not that a founder wrote a
+ * long task — which was exactly the complaint against the 8,192 ceiling this replaces.
+ */
+export const MAX_STAGED_FILE_BYTES = 1_048_576;
 
 /** The submission surface's `input` bound (`packages/shared/src/validators/job-control.ts`:
  * `TextEncoder().encode(JSON.stringify(input)).byteLength > 65_536`). Mirrored exactly. */
@@ -175,35 +259,6 @@ export function maxRuntimeSecondsForPolicy(
 }
 
 /**
- * The per-adapter argv shapes. TWO explicit shapes, never one: the claude flags are
- * meaningless to codex and vice versa, and the argv is the ONLY thing the sandbox executes.
- *
- * Both shapes deliver the prompt as an argv POSITIONAL, a deliberate divergence from the
- * legacy adapters — `claude` is spawned as `--print -` with the prompt on stdin
- * (claude-local/src/server/execute.ts) and `codex exec … -` likewise. There is no stdin
- * channel into the sandbox, so the `-` placeholder is replaced by the prompt itself;
- * `codex exec <PROMPT>` is a supported positional form.
- *
- * Everything else the legacy adapters pass — `--mcp-config`, `--append-system-prompt-file`,
- * `--add-dir`, `--settings` — names HOST paths that do not exist inside the sandbox. Model
- * pinning, permission flags and the instructions bundle are Unit 2 (CAPABILITY); Unit 1 is
- * the MECHANISM and deliberately emits the minimal shape that runs.
- */
-function buildArgsFor(adapterType: string, prompt: string): readonly string[] | null {
-  switch (adapterType) {
-    case "claude_local":
-      return ["--print", prompt, "--output-format", "stream-json", "--verbose"];
-    case "codex_local":
-      return ["exec", "--json", prompt];
-    default:
-      // Unreachable while the disposition gate admits exactly the two v1 adapters. Kept as a
-      // refusal rather than a throw so widening the matrix without widening this switch fails
-      // closed instead of emitting a claude-shaped argv for an unrelated binary.
-      return null;
-  }
-}
-
-/**
  * Build the `batch` workload for one canary task run, or refuse with an attributable reason.
  *
  * Never throws; never mutates its input; emits keys in a fixed order so an equivalent
@@ -230,22 +285,41 @@ export function buildTaskRunBatchWorkload(
   const command = readCommand(input.runtimeCommandSpec);
   if (command === null) return { ok: false, reason: "no_runtime_command_spec" };
 
-  // 3. The prompt: the REAL assembled task content.
+  // 3. The prompt: the REAL assembled task content. Delivered as a STAGED FILE since Unit D.
   const prompt =
     typeof input.currentTaskMarkdown === "string" ? input.currentTaskMarkdown.trim() : "";
   if (prompt.length === 0) return { ok: false, reason: "empty_prompt" };
+
+  // 3b. The instructions bundle entry file, when this agent has one. An empty/whitespace-only
+  //     bundle is treated as ABSENT rather than staged: `--append-system-prompt-file` on an
+  //     empty file is a flag that promises context and delivers none.
+  const instructions =
+    typeof input.instructions === "string" && input.instructions.trim().length > 0
+      ? input.instructions
+      : null;
+
+  // 3c. The argv AND the files it reads, from one function. `buildSandboxInvocation` owns the
+  //     paths, so there is nowhere for the two to disagree about them.
+  const invocation = buildSandboxInvocation({
+    adapterType: input.adapterType,
+    binary: command,
+    prompt,
+    instructions,
+  });
+  if (invocation === null) return { ok: false, reason: "adapter_not_v1_scope" };
+  const stagedFiles = invocation.stagedFiles;
+
   // REFUSE, never truncate. A truncated prompt still creates a sandbox, still runs, still
   // terminalizes, and still satisfies the acceptance verifier — while the agent works from a
-  // mutilated task. The repo's own audit cap (`prompt-snapshot.ts`,
-  // MAX_PROMPT_SNAPSHOT_CHARS = 16_000) is 2x this ceiling, so real prompts DO exceed it.
-  if (prompt.length > FROZEN_MAX_ARG_CHARS) return { ok: false, reason: "prompt_too_large" };
-
-  const args = buildArgsFor(input.adapterType, prompt);
-  if (args === null) return { ok: false, reason: "adapter_not_v1_scope" };
+  // mutilated task. The ceiling is now the staging path's (1 MiB/file), not the frozen argv
+  // element's (8,192 chars) — see E7-F008 and `MAX_STAGED_FILE_BYTES`.
+  if (stagedFiles.some((file) => file.bytes.byteLength > MAX_STAGED_FILE_BYTES)) {
+    return { ok: false, reason: "staged_input_too_large" };
+  }
 
   const candidate = {
-    command,
-    args: [...args],
+    command: invocation.command,
+    args: [...invocation.args],
     // Zero consumers anywhere in the daemon; a value here would be inert, so `null` is the
     // honest encoding rather than a promise the runtime does not keep.
     stdinArtifactId: null,
@@ -257,13 +331,15 @@ export function buildTaskRunBatchWorkload(
   const parsed = batchWorkloadV1Schema.safeParse(candidate);
   if (!parsed.success) return { ok: false, reason: "invalid_workload" };
 
-  // 5. The submission surface's own bound, mirrored. A prompt within the 8192-CHAR arg
-  //    ceiling can still exceed 64 KiB once JSON-escaped (a `\uXXXX` escape is 6 bytes per
-  //    source char), and that failure would otherwise surface far from its cause.
+  // 5. The submission surface's own bound, mirrored. Since Unit D the argv is a fixed script
+  //    plus the resolved binary and two constant paths, so this cannot fire on task content
+  //    any more — but the binary is founder-influenced (`adapterConfig.command`) and the
+  //    frozen schema admits 8,192 chars per element against a 64 KiB job, so the backstop
+  //    keeps a reachable remit. It stays where it is rather than being deleted as unreachable.
   const encoded = JSON.stringify(parsed.data);
   if (new TextEncoder().encode(encoded).byteLength > SUBMISSION_MAX_INPUT_BYTES) {
     return { ok: false, reason: "workload_too_large" };
   }
 
-  return { ok: true, workload: parsed.data };
+  return { ok: true, workload: parsed.data, stagedFiles };
 }
