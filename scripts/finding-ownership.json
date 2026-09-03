@@ -86,6 +86,16 @@
       "ticket": "CLI-008",
       "ownerStillOpen": "CLI-008 is a filed scoping stub (ticket file + #### CLI-008 program node, no result doc) and already owns E7-F003 and E7-F008. This is the same job-input-staging surface Unit B built and Units C/D will first exercise, so it belongs with them rather than split to another owner.",
       "reason": "pointerFitsExtension projects input.files only, while the lease offer is built from ALL committed rows for the attempt. Repeated stages therefore inflate the real extension past the 16,384-byte canonical limit while every individual call reports 'fits'; buildJobEnvelope then returns null and leasing throws internal_unavailable, leaving the job permanently unleaseable with nothing naming the cause. MEDIUM: latent until a producer stages more than once per attempt, but strictly worse than the duplicate-row defect it rides on - a dead job rather than a wrong file."
+    },
+    "E8-F001": {
+      "status": "owned",
+      "ticket": "BRW-004",
+      "reason": "MED, design-time. A frozen golden-journey fixture (browser-approval-download.json:205-207) declares control.productApproval='requested_granted'/runtimeDecision='none' for a browser_request source, while shipped JOB-011 describeSourceGovernance (job-approval-bridge.ts:173-183, pinned by job-source-governance-matrix.test.ts:134-140) returns productApprovalAuthority='none' and runtimeDecisionAuthority='permission_download_egress'. validateFixtureSourceParity (check-distributed-execution-foundation.mjs:2722-2752) never reads the control block, so nothing can see the disagreement, and BRW-003-terrain.md:205-208 already propagated the fixture's side into advice written FOR BRW-004. BRW-004 owns it: it is the ticket the wrong answer would have misdirected, its design (BRW-004-design.md section 2 D2) takes the code's side, and slice (b) adds the control-block check that would have caught it. BRW-004 has a design + terrain on disk and NO result doc, so this is a live owner, not a shipped one."
+    },
+    "E8-F002": {
+      "status": "owned",
+      "ticket": "BRW-004",
+      "reason": "MED, latent. describeSourceGovernance designates aggregateKind='agent_runtime_decisions' for browser_request (job-approval-bridge.ts:176-182), but agent_runtime_decisions.agent_id and .run_id are NOT NULL with FKs to agents and heartbeat_runs (packages/db/src/schema/agent_runtime_decisions.ts:21-22), and a distributed browser job has neither. The only end-to-end exercise (job-approval-parity.integration.test.ts:146-171) passes only because it manufactures a synthetic agent and a seeded heartbeat run. Not live: jobApprovalBridge has zero production callers, is flag-gated off, and nothing submits a browser_request job. BRW-004 owns it because BRW-004 is the first ticket that must write this aggregate; its design section 2 D2 relaxes both columns to nullable behind a (agent_id IS NULL)=(run_id IS NULL) CHECK (migration slot to be re-pinned at generation; tip is 0271) and binds the distributed side through the existing fence-guarded job_projection_receipts row. BRW-004 has no result doc, so the owner is still open."
     }
   }
 }
