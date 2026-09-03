@@ -37,6 +37,17 @@ import { buildMcpConfig, type McpConfigParams } from "../services/internal-agent
 import { loadDefaultAgentInstructionsBundle } from "../services/default-agent-instructions.js";
 
 const utf8Bytes = (value: string): number => new TextEncoder().encode(value).byteLength;
+// ★ CR-STRIPPED, for the same reason `security-definer-manifest.ts:56` strips CRs before
+// hashing a migration body: a Windows checkout with `core.autocrlf=true` expands the LF blobs
+// to CRLF, so a raw count pins ONE platform and fails on the other. It did: this file asserted
+// 26,568 for the `commander` bundle (Windows) and Linux CI measured 26,351 — exactly the 217
+// CRLF pairs in AGENTS.md + HEARTBEAT.md + SOUL.md. `.gitattributes` now pins these files, but
+// this stays as the second line of defence: a pin protects the files it names, and an unpinned
+// sibling added later would re-break the measurement without it.
+//
+// The exact-equality assertions below are deliberately KEPT. Pinning a measured number is the
+// point of a measurement test; what was wrong was measuring a platform-dependent quantity.
+const utf8BytesLf = (value: string): number => utf8Bytes(value.replace(/\r/g, ""));
 const canonicalBytes = (value: unknown): number => utf8Bytes(canonicalizeJsonV1(value));
 
 // -----------------------------------------------------------------------------------
@@ -357,22 +368,22 @@ describe("CLI-008 Unit B · Task 1 — byte-source ceilings, measured", () => {
     for (const role of roles) {
       const bundle = await loadDefaultAgentInstructionsBundle(role);
       MEASURED.instructionsBundleBytes[role] = Object.values(bundle)
-        .reduce((total, content) => total + utf8Bytes(content), 0);
+        .reduce((total, content) => total + utf8BytesLf(content), 0);
     }
     MEASURED.largestInstructionsBundleBytes = Math.max(
       ...Object.values(MEASURED.instructionsBundleBytes),
     );
 
     // The largest real bundle is `commander` — the number a channel has to carry.
-    expect(MEASURED.instructionsBundleBytes.commander).toBe(26_568);
-    expect(MEASURED.largestInstructionsBundleBytes).toBe(26_568);
-    expect(MEASURED.instructionsBundleBytes.cxo).toBe(12_356);
-    expect(MEASURED.instructionsBundleBytes.lead).toBe(14_739);
-    expect(MEASURED.instructionsBundleBytes.engineer).toBe(10_836);
-    expect(MEASURED.instructionsBundleBytes.default).toBe(3_334);
+    expect(MEASURED.instructionsBundleBytes.commander).toBe(26_351);
+    expect(MEASURED.largestInstructionsBundleBytes).toBe(26_351);
+    expect(MEASURED.instructionsBundleBytes.cxo).toBe(12_139);
+    expect(MEASURED.instructionsBundleBytes.lead).toBe(14_471);
+    expect(MEASURED.instructionsBundleBytes.engineer).toBe(10_626);
+    expect(MEASURED.instructionsBundleBytes.default).toBe(3_268);
 
     MEASURED.cPlusDBytes = MEASURED.mcpConfigBytes + MEASURED.largestInstructionsBundleBytes;
-    expect(MEASURED.cPlusDBytes).toBe(26_814);
+    expect(MEASURED.cPlusDBytes).toBe(26_597);
   });
 
   // --- Step 3: the decision, with the numbers in it ---------------------------------
@@ -448,7 +459,7 @@ describe("CLI-008 Unit B · Task 1 — byte-source ceilings, measured", () => {
 
     // The claims above, as assertions, so the comment cannot rot away from the code.
     expect(MEASURED.cPlusDBytes).toBeLessThan(MEASURED.extensionsSelfDescribingMaxRawBytes);
-    expect(MEASURED.extensionsSelfDescribingMaxRawBytes - MEASURED.cPlusDBytes).toBe(22_146);
+    expect(MEASURED.extensionsSelfDescribingMaxRawBytes - MEASURED.cPlusDBytes).toBe(22_363);
     expect(envelopeAdmits([
       { path: "/home/user/.aoa/mcp.json", bytes: new Uint8Array(MEASURED.mcpConfigBytes) },
       { path: "/home/user/.aoa/AGENTS.md", bytes: new Uint8Array(MEASURED.largestInstructionsBundleBytes) },

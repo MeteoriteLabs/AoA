@@ -259,3 +259,30 @@ envelope's **`extensions[]`** (measured ceiling ~49 KB, which fits an MCP config
 bundle but not a repository). Sweep 1 rejected inline extensions; sweep 2 recommended it. **That is a
 live conflict and the plan resolves it by measurement, not by preference** — and it does not block
 the provider-side work, which is identical either way.
+
+---
+
+## 9. Correction — the Unit C+D byte figures above were the WINDOWS numbers
+
+The measurement that produced them ran on a Windows checkout, where `core.autocrlf=true` expands the
+LF blobs to CRLF. Linux CI measured **217 bytes less** for the `commander` bundle
+(110 + 65 + 42 CRLF pairs across `AGENTS.md`, `HEARTBEAT.md`, `SOUL.md`), and reds `verify (1)`.
+
+The figures in §8 and the Task 1 table are now the **LF** values — what CI checks out and what a Linux
+sandbox actually receives:
+
+| | was (Windows) | is (LF) |
+|---|---|---|
+| `commander` bundle | 26,568 | **26,351** |
+| C + D | 26,814 | **26,597** |
+| headroom under the 48,960 ceiling | 22,146 | **22,363** |
+
+★ **The decision is unaffected**, and it is worth saying why rather than silently editing numbers:
+C+D fits with ~46% of the container to spare either way, and the channel choice never rested on
+capacity — it rested on `extensions[]` having no producer that submission can supply. A 217-byte
+correction cannot move that.
+
+**The real fix is not in the test.** `.gitattributes` now pins the bundle files `eol=lf`, because
+these bytes are **delivered into a Linux sandbox as an agent's system prompt** — CRLF there is wrong
+on its own terms. The precedent was one line away: `TOOLS.md` was already pinned for exactly this
+reason, which is why it was the only bundle file the discrepancy did not touch.
