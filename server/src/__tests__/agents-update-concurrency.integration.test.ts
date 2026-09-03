@@ -11,7 +11,7 @@ import {
 } from "@armyofagents/db";
 import { agentService } from "../services/agents.js";
 
-// Follow-up #3 (Decision #104) — the optimistic-concurrency guard is an atomic
+// Follow-up #3 (Decision #125) — the optimistic-concurrency guard is an atomic
 // conditional UPDATE whose correctness hinges on a MILLISECOND-precision compare:
 // `date_trunc('milliseconds', agents.updatedAt) = <ms token>`. `agents.updatedAt`
 // is stored at Postgres MICROSECOND resolution (defaultNow() on a freshly-created
