@@ -450,3 +450,39 @@ and the resulting `shellJoin`'d string is 65,464 bytes, still half of Linux `MAX
 **Why it is filed separately from E7-F003.** F003 is about what the sandbox *lacks* (tools, context,
 workspace, output). This is a live refusal on the path that exists: a sufficiently detailed task fails
 to dispatch today, and the fix is a different shape from anything in C–F.
+
+## E7-F009 — The staged-input fit check measures the wrong set, so the front door is closed and the side door is not
+
+**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-design.md`, no result doc)
+**Severity:** MEDIUM (latent) · **Filed:** 2026-09-03, surfaced while designing the fix for a Codex P2.
+
+**What.** `pointerFitsExtension` (`job-input-staging.ts:129-145`, called at `:189`) projects
+**`input.files` only** — never the accumulated durable set. But the lease offer is built from **all**
+committed rows for the attempt: `job-leasing.ts:628` `listForJob` → `:638`
+`stagedInputPointersFromRows` → `:399` `stagedInputExtension`.
+
+So repeated stages against one attempt inflate the **real** extension past
+`WIRE_EXTENSION_LIMITS.valueMaxCanonicalBytes` (16,384) while **every individual call reports
+"fits"**. Then `jobEnvelopeV1Schema.safeParse` fails, `buildJobEnvelope` returns null
+(`job-leasing.ts:402-403`), and `:640` throws `JobLeasingError("internal_unavailable")` — **the job
+is permanently unleaseable with nothing naming the cause.**
+
+★ **That is verbatim the cliff the refusal was written to prevent.** Commit `21a9fc4dd` added the
+check precisely so an over-large pointer set is refused *before a byte moves*, and its docstring
+(`:119-124`) says so. **It closed the front door; this is the side door** — reached by the one route
+the check does not measure.
+
+**Reachability.** Latent, and downstream of the duplicate-path defect (the replay probe matches on
+path AND sha256, so a changed-bytes restage mints a second committed row). It needs a producer that
+stages more than once for an attempt. Its consequence is strictly **worse** than the duplicate-row
+defect it rides on: a dead job rather than a wrong file.
+
+**Fix, when built.** `pointerFitsExtension` must project the **union** of `existing` (already
+resolved at `:182`) and the new files, not `input.files` alone — a one-argument change, since the
+data is already in scope at the call site.
+
+**Filed separately, deliberately.** Deduping at the reader would make this unreachable *by accident*
+and leave the projection still measuring the wrong set for any future multi-stage caller — a guard
+that happens to be unreachable is a false claim of enforcement. And moving the fit check into
+`buildJobEnvelope` was rejected: that refuses at LEASE time, minutes later, which is exactly the
+undiagnosable cliff the check exists to move earlier.

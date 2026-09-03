@@ -70,6 +70,12 @@
       "ticket": "CLI-008",
       "ownerStillOpen": "CLI-008 is a filed scoping stub (ticket file + #### CLI-008 program node, no result doc) and already owns E7-F003. This is the same argv surface CLI-008 unit D touches when the prompt stops being a positional, so splitting it to another ticket would split one edit across two owners. Fixable independently of the Unit B channel decision: chunked argv gives 8x without a new channel.",
       "reason": "buildTaskRunBatchWorkload refuses prompt_too_large above FROZEN_MAX_ARG_CHARS = 8192, mirroring the frozen schema's per-element cap, so a task whose assembled markdown exceeds ~7.4-7.7k description characters cannot dispatch distributed at all. Measured, not inferred. MEDIUM: a refusal rather than a truncation, and the protocol allows ~64 KiB per job across elements, so chunking is 8x headroom."
+    },
+    "E7-F009": {
+      "status": "owned",
+      "ticket": "CLI-008",
+      "ownerStillOpen": "CLI-008 is a filed scoping stub (ticket file + #### CLI-008 program node, no result doc) and already owns E7-F003 and E7-F008. This is the same job-input-staging surface Unit B built and Units C/D will first exercise, so it belongs with them rather than split to another owner.",
+      "reason": "pointerFitsExtension projects input.files only, while the lease offer is built from ALL committed rows for the attempt. Repeated stages therefore inflate the real extension past the 16,384-byte canonical limit while every individual call reports 'fits'; buildJobEnvelope then returns null and leasing throws internal_unavailable, leaving the job permanently unleaseable with nothing naming the cause. MEDIUM: latent until a producer stages more than once per attempt, but strictly worse than the duplicate-row defect it rides on - a dead job rather than a wrong file."
     }
   }
 }
