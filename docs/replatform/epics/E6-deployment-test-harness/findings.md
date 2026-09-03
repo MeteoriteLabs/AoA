@@ -267,3 +267,37 @@ about *workers* had never been executed by anything.
 **Resolved** by adding `toxiproxy` to `AOA_ALLOWED_HOSTNAMES` on BOTH control-plane replicas, with
 the reasoning recorded at the line. No product code changed: the guard behaved exactly as designed;
 the harness's allowlist was simply wrong about who its clients are.
+
+## E6-F012 — the deps-stage parity guard compares the PRODUCTION closure while the build stage traverses dev edges too
+
+**Status:** `open` · Severity: MED · Source: WRK-017 (2026-09-03), promoted out of E6-F010's residual
+so it is countable by `check-finding-ownership.mjs` — a residual recorded inside a `resolved` finding
+is invisible to the guard, which is its own small instance of this programme's failure class.
+
+`scripts/check-image-deps-stages.mjs` enforces that each split image's `deps` stage COPYs EXACTLY the
+workspace manifests in that image's **runtime** closure. Its `computeRuntimeClosure`
+(`scripts/lib/image-deps-stage.mjs`) walks `.dependencies` **only** — deliberately, and the module's
+own header says so, because that is what makes it byte-equal to pnpm's `--filter-prod "X..."`.
+
+The BUILD stage does not run `--filter-prod`. It runs `pnpm --filter "@armyofagents/server..."
+--filter "@armyofagents/ui..." build`, and `pkg...` traverses **`devDependencies` too**. The two sets
+were equal until DEP-011 Slice 1 (`c3d26657d`) added a workspace DEVdependency
+(`@armyofagents/adapter-manager`) to `server`, whose graph reaches
+`provider-wire → sandbox-e2b-provider → sandbox-provider-contract → (devDep) sandbox-fake-provider`.
+Five packages the deps stage never installed entered the build selection and `tsc` died on
+`Cannot find module 'node:crypto'` in a package with no `node_modules` — **and the parity guard stayed
+PASS throughout, correctly**, because the manifest it guards was still exactly right.
+
+**What WRK-017 did and did not close.** It fixed the break, using the mechanism the worker Dockerfile
+already used for the identical reason: re-install in the build stage against the manifest set that
+stage actually has after `COPY . .`. That **absorbs** the divergence. It does **not detect** it. The
+next workspace devDependency added to `server` or `ui` widens the build selection again, silently,
+with no guard saying so and no PR-time job that builds either image.
+
+**Blocks:** nothing today — the re-install makes the current tree build. It is filed `unowned` because
+no ticket is building the detector, and because the honest remediation is a design choice, not a line:
+either teach the deps-stage guard to compare the DEV closure as a second, separately-reported set, or
+give the image build a PR-time consumer. Note the relationship to **DEP-013** without conflating them:
+DEP-013 makes the next occurrence LOUD within a bounded time; this finding's successor would make it
+IMPOSSIBLE. Neither substitutes for the other, which is why WRK-017's designer declined to fold this
+into DEP-013.
