@@ -361,13 +361,32 @@ by the argv and deliberately **not** staged, so the naive assertion fails. Split
 (staged inputs ↔ argv input positions; declared outputs ↔ argv output positions) rather than
 loosening it to one, or the property Unit D bought stops discriminating.
 
-★★ **Slice B also EMITS the pointer the worker will read.** The control plane knows the declared
-output path; the worker must be told it. Use the namespace Unit B established — a per-run pointer on
-the frozen envelope's `extensions[]` — as a **new** entry beside `com.armyofagents.job/staged-input`
-(say `com.armyofagents.job/declared-output`), carrying `{path, kind: "log", contentType}`. Nothing
-about the frozen schema changes; `extensions[]` is the bounded additive channel that exists for
-exactly this (`packages/worker-protocol/src/extensions.ts`). See open question 3 for the
-`critical` flag, which is a real fork and must be decided before slice D starts.
+★★ **Slice B also EMITS the pointer the worker will read, and the emit site is NOT the workload
+builder.** The control plane knows the declared output path; the worker must be told it, and the only
+channel is the frozen envelope's `extensions[]` — the bounded additive container
+(`packages/worker-protocol/src/extensions.ts`) that Unit B already uses for exactly this shape. Copy
+`stagedInputExtension` (`server/src/services/job-input-staging.ts:481-501`) into a sibling
+`declaredOutputExtension` under a new namespace `com.armyofagents.job/declared-output`, carrying
+`{path, kind: "log", contentType}`. **No frozen schema change.**
+
+★★★ **The attach point is the LEASE-OFFER builder, `server/src/services/job-leasing.ts:399`, not the
+workload builder — and this is the one non-obvious piece of plumbing in slice B.** That line is
+`extensions: input.stagedInput.length > 0 ? [stagedInputExtension(input.stagedInput)] : []`, and
+`input.stagedInput` is derived at lease time from durable `job_artifacts` rows
+(`:628`, `:638`). A declared **output** has no such row — nothing has been produced yet — so it
+cannot ride that derivation. Two shapes, and the implementer must pick one **in slice B**, not
+discover the fork in slice D:
+
+- **(recommended) Derive it at lease time from the workload type.** The builder already holds
+  `input.job.workloadType` (`:400`). The declared output path is a property of the task-run workload
+  shape *the control plane itself authored*, so emitting the pointer whenever the workload is the
+  coding one needs no new storage and cannot drift from the argv — both come from the same constant.
+- **(alternative) Persist it at submission.** More faithful for a future per-run path, but `workload`
+  is the `.strict()` frozen shape, so it needs a column or a job-side blob. Only worth it if open
+  question 2 is answered "a list".
+
+See open question 3 for the `critical` flag, which is a real fork and must be decided before slice D
+starts.
 
 ★ **The in-sandbox guard does NOT grow to cover `$3`.** `STAGED_INPUT_MISSING_EXIT_CODE = 78`
 (`:80`) fires when a needed *input* is unreadable, before the agent starts. An unwritable output
