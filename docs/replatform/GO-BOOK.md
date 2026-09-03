@@ -597,6 +597,17 @@ i.e. after merge. A red verdict nobody consumes is operationally identical to a 
 run — this programme's own worst failure class, one lane over. **After every merge that touches
 `docker/**`, `docker-compose.d1.yml` or `tests/d1/**`, check the lane's verdict for that sha.**
 
+★ **That last instruction is a HABIT, and the gap it papers over is now chartered as
+[`DEP-013`](./epics/E6-deployment-test-harness/tickets/DEP-013-design.md) — give the verdict a
+READER.** Two things measured while filing it are worth carrying even before it is built:
+DEP-004 specified that failure evidence is *retained* and it was — all three red runs uploaded a
+complete evidence bundle, and all three expired **unread**; production was specified, consumption
+never was. And it is not one lane: `cross-platform-weekly.yml`'s last three scheduled runs
+(08-16 / 08-23 / 08-30) are all `cancelled` — **three weeks with no cross-platform verdict at all,
+still true today** — so any session that has been treating that lane as evidence should stop.
+DEP-013 also records why "just make it a required check" is not the fix: this branch has **no
+branch protection at all** (404), and the lane never runs on `pull_request`.
+
 ---
 
 ## 2. How to run a sprint (read once, applies to every sprint)
