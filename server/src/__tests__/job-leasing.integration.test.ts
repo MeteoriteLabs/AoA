@@ -28,7 +28,9 @@ import {
 } from "../services/job-leasing.js";
 import { createJobReadyScheduler } from "../services/job-ready-scheduler.js";
 import { createJobOutboxWorker } from "../services/job-outbox-worker.js";
+import { sql } from "drizzle-orm";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
+import { settleAllClaimers } from "./helpers/settle-all-claimers.js";
 import { runInTenant } from "../db/tenant-context.js";
 import { createJobControlRepository } from "../../../packages/db/src/repositories/tenant/job-control.js";
 import type { Db } from "../../../packages/db/src/client.js";
@@ -55,6 +57,39 @@ const PLATFORM_LOGICAL_WORKER_B = "a3000000-0000-4000-8000-000000000012";
 const ALT_COMPANY = "a3000000-0000-4000-8000-000000000013";
 const PASSWORD = "job-003-role-password";
 const POLICY_HASH = "3".repeat(64);
+
+// ★★★ E3-F034 — THE CONTENDED-CLAIMER BUDGET, AND WHY IT IS DERIVED RATHER THAN PICKED.
+//
+// The single-winner race below fires CONTENDED_CLAIMERS concurrent `poll()`s at ONE
+// `execution_targets` row. Each poll takes that row `FOR UPDATE`
+// (`repositories/tenant/job-control.ts` `lockWorkerLeaseAuthority`) and holds it to COMMIT,
+// with ~8-10 further round trips inside — so the claimers SERIALIZE, by design, and that
+// serialization IS the race the test exists to run.
+//
+// The pool cap is what decides how much of that queue is held on the DATABASE: postgres.js
+// admits at most `max` sessions, so at any instant one holds the lock and at most `max - 1`
+// are waiting on it CLIENT-SIDE-free, inside Postgres, against the connection's `lock_timeout`.
+// The remaining claimers queue in the driver and are not waiting on a lock at all.
+//
+// On the shared pool that budget was production's 750 ms. So the test silently ALSO asserted
+// "23 serialized poll transactions complete in under 750 ms on this runner's storage" — an
+// ENVIRONMENT assertion, never written down and never in the test's name. It held at ~9 ms per
+// poll (measured locally) and broke at the ~32 ms implied by the observed CI failure, where
+// 93 polls succeeded and 7 raised `55P03`. The design converted slow storage into a red gate.
+//
+// The fix gives THIS test its own connection with a budget sized to the queue it deliberately
+// creates. Nothing about the property changes: same claimer count, same single row, same pool
+// cap, so the DATABASE-level overlap — the thing that makes it a race — is identical. What is
+// dropped is a latency assertion the test never made on purpose.
+const CONTENDED_CLAIMERS = 100;
+/** Unchanged from the shared pool: the DB-level overlap must not move. */
+const CONTENDED_POOL_MAX = 24;
+/** Per queued waiter. ~55x the 9 ms measured locally, ~15x the ~32 ms implied by the CI failure. */
+const CONTENDED_PER_POLL_ALLOWANCE_MS = 500;
+/** The floor the connection's lock budget must clear; raising the pool raises this too. */
+const CONTENDED_REQUIRED_LOCK_BUDGET_MS = (CONTENDED_POOL_MAX - 1) * CONTENDED_PER_POLL_ALLOWANCE_MS;
+/** What is configured. Must clear the floor, and stay inside the test's own 60 s timeout. */
+const CONTENDED_TIMEOUT_MS = 20_000;
 const THUMBPRINT = "4".repeat(64);
 
 const integration = describe.skipIf(
@@ -247,6 +282,53 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
     if (!admin || !app || !operator) throw new Error("test setup incomplete");
     return { admin, app, operator };
+  }
+
+  /** A pool used ONLY by the single-winner race: same role, same cap, a lock budget sized to
+   * the queue the race deliberately creates. Every other test keeps production's 750 ms. */
+  function createContendedAppDb(): NonOwnerDbConnection {
+    guard();
+    return createTenantAppDbConnection(adminUrl.replace("test:test", `aoa_app:${PASSWORD}`), {
+      max: CONTENDED_POOL_MAX,
+      lockTimeoutMs: CONTENDED_TIMEOUT_MS,
+      // A `FOR UPDATE` that waits also spends that time inside its STATEMENT, and a poll
+      // transaction is idle between round trips while the ones ahead of it commit. Raising
+      // `lock_timeout` alone would just move the abort to `57014`/`25P03`.
+      statementTimeoutMs: CONTENDED_TIMEOUT_MS,
+      idleInTransactionSessionTimeoutMs: CONTENDED_TIMEOUT_MS,
+    });
+  }
+
+  /** ★ THE ANTI-REGRESSION PIN FOR THE BUDGET HALF OF E3-F034.
+   *
+   * The threshold defect cannot be reproduced on demand — it needs a slow runner — so timing
+   * can never be the evidence that it is fixed. This asserts the PROPERTY instead, read back
+   * from the live session: the budget this race runs on clears the queue it creates. Drop the
+   * options and it reads 750 ms and reds; raise `CONTENDED_POOL_MAX` without raising the
+   * budget and it reds too, because the floor is derived from the pool. */
+  async function assertContendedLockBudget(connection: NonOwnerDbConnection): Promise<void> {
+    const [settings] = await connection.db.execute<{ lock: string; statement: string; idle: string }>(sql`
+      SELECT current_setting('lock_timeout') AS "lock",
+             current_setting('statement_timeout') AS "statement",
+             current_setting('idle_in_transaction_session_timeout') AS "idle"`);
+    const budgets = {
+      lock: parseGucMillis(settings?.lock),
+      statement: parseGucMillis(settings?.statement),
+      idle: parseGucMillis(settings?.idle),
+    };
+    expect.soft(CONTENDED_TIMEOUT_MS).toBeGreaterThanOrEqual(CONTENDED_REQUIRED_LOCK_BUDGET_MS);
+    expect.soft(budgets.lock).toBeGreaterThanOrEqual(CONTENDED_REQUIRED_LOCK_BUDGET_MS);
+    expect.soft(budgets.statement).toBeGreaterThanOrEqual(CONTENDED_REQUIRED_LOCK_BUDGET_MS);
+    expect.soft(budgets.idle).toBeGreaterThanOrEqual(CONTENDED_REQUIRED_LOCK_BUDGET_MS);
+  }
+
+  /** Postgres reports a millisecond GUC as `"20s"`, `"750ms"` or a bare `"20000"`. */
+  function parseGucMillis(raw: string | undefined): number {
+    if (!raw) return Number.NaN;
+    const match = /^(\d+(?:\.\d+)?)\s*(us|ms|s|min|h|d)?$/.exec(raw.trim());
+    if (!match) return Number.NaN;
+    const unit = { us: 0.001, ms: 1, s: 1_000, min: 60_000, h: 3_600_000, d: 86_400_000 }[match[2] ?? "ms"];
+    return Number(match[1]) * (unit ?? 1);
   }
 
   function auth(
@@ -1464,31 +1546,46 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     expect.soft(state).toEqual({ certificates: 1, attemptStatus: "pending" });
   }, 60_000);
 
+  // ★ E3-F034. This test deliberately creates the worst lock queue in the file, and it used
+  // to run on the SHARED `app` pool, whose `lock_timeout` is production's 750 ms. See
+  // CONTENDED_* above for why that made a correctness test assert a storage-speed property.
   it("gives exactly one of 100 concurrent claimers one opaque offer and reveals nothing to losers", async () => {
-    const { admin, app } = guard();
+    const { admin } = guard();
     await resetRuntimeRows();
     const seeded = await seedPlacedJob({ ordinal: 1 });
-    const service = createJobLeasingService({ appDb: app.db });
-    const results = await Promise.all(Array.from({ length: 100 }, (_, index) => service.poll({
-      auth: auth(`poll-race-${index}`),
-      request: pollRequest(WORKER, TARGET, `poll-race-${index}`),
-    })));
-    const offers = results.filter((result) => result.outcome === "offer");
-    const noWork = results.filter((result) => result.outcome === "no_work");
-    expect(offers).toHaveLength(1);
-    expect(noWork).toHaveLength(99);
-    expect(Object.keys(noWork[0] ?? {}).sort()).toEqual([
-      "correlationId", "outcome", "protocolVersion", "retryAfterMs", "serverTime",
-    ]);
-    if (offers[0]?.outcome !== "offer") throw new Error("offer missing");
-    expect(offers[0].body.job.jobId).toBe(seeded.jobId);
-    expect(offers[0].body.fenceToken).toMatch(/^[A-Za-z0-9_-]{43,}$/);
-    const [counts] = await admin<{ leases: number; offered: number; queued: number }[]>`
-      SELECT
-        (SELECT count(*)::int FROM leases WHERE attempt_id = ${seeded.attemptId}) AS leases,
-        (SELECT count(*)::int FROM job_attempts WHERE id = ${seeded.attemptId} AND status = 'offered') AS offered,
-        (SELECT count(*)::int FROM jobs WHERE id = ${seeded.jobId} AND status = 'queued') AS queued`;
-    expect(counts).toEqual({ leases: 1, offered: 1, queued: 1 });
+    const contended = createContendedAppDb();
+    try {
+      await assertContendedLockBudget(contended);
+      const service = createJobLeasingService({ appDb: contended.db });
+      // `settleAllClaimers`, not `Promise.all`: a rejected claimer is still a failure, but it
+      // is not REPORTED until all 100 have settled, so a failure here cannot leak transactions
+      // into the next test's fixture. That leak is what made one flake report as two. E3-F034.
+      const results = await settleAllClaimers(
+        Array.from({ length: CONTENDED_CLAIMERS }, (_, index) => service.poll({
+          auth: auth(`poll-race-${index}`),
+          request: pollRequest(WORKER, TARGET, `poll-race-${index}`),
+        })),
+        `${CONTENDED_CLAIMERS}-claimer single-winner poll race`,
+      );
+      const offers = results.filter((result) => result.outcome === "offer");
+      const noWork = results.filter((result) => result.outcome === "no_work");
+      expect(offers).toHaveLength(1);
+      expect(noWork).toHaveLength(CONTENDED_CLAIMERS - 1);
+      expect(Object.keys(noWork[0] ?? {}).sort()).toEqual([
+        "correlationId", "outcome", "protocolVersion", "retryAfterMs", "serverTime",
+      ]);
+      if (offers[0]?.outcome !== "offer") throw new Error("offer missing");
+      expect(offers[0].body.job.jobId).toBe(seeded.jobId);
+      expect(offers[0].body.fenceToken).toMatch(/^[A-Za-z0-9_-]{43,}$/);
+      const [counts] = await admin<{ leases: number; offered: number; queued: number }[]>`
+        SELECT
+          (SELECT count(*)::int FROM leases WHERE attempt_id = ${seeded.attemptId}) AS leases,
+          (SELECT count(*)::int FROM job_attempts WHERE id = ${seeded.attemptId} AND status = 'offered') AS offered,
+          (SELECT count(*)::int FROM jobs WHERE id = ${seeded.jobId} AND status = 'queued') AS queued`;
+      expect(counts).toEqual({ leases: 1, offered: 1, queued: 1 });
+    } finally {
+      await contended.close({ timeoutSeconds: 5 });
+    }
   }, 60_000);
 
   it("chooses the oldest compatible attempt and clamps a widening report to registered slots", async () => {
@@ -4335,61 +4432,79 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     if (second.outcome === "offer") expect.soft(second.body.job.jobId).toBe(newer.jobId);
   });
 
+  // ★ E3-F034, the adjacent case. This is the SAME hazard as the 100-claimer poll race one
+  // test-shape over: 100 concurrent `ack()`s, every one of which takes the same
+  // `execution_targets` and `workers` rows FOR UPDATE in `lockWorkerLeaseAuthority` and holds
+  // them to COMMIT. The finding named only the poll test, because that is the one CI was
+  // observed failing — and closing a defect on the case that motivated it while leaving the
+  // identical adjacent case open is this programme's own named recurring mistake (§1.9.5).
   it("activates exactly once across 100 concurrent ACKs and semantically replays after restart", async () => {
     const { admin, app } = guard();
     await resetRuntimeRows();
-    const { seeded, offer, service } = await offerPlacedJob({ ordinal: 300 });
-    const idempotencyKey = crypto.randomUUID();
-    const first = ackRequest(offer, idempotencyKey);
-    const results = await Promise.all(Array.from({ length: 100 }, (_, index) => service.ack({
-      auth: auth(`ack-race-${index}`),
-      request: {
-        ...first,
-        correlationId: crypto.randomUUID(),
-        issuedAt: new Date().toISOString(),
-        nonce: `ack-race-${index}`,
-      },
-    })));
-    expect(results.every((result) => result.outcome === "acknowledged")).toBe(true);
-    expect(new Set(results.map((result) => `${result.leaseId}:${result.expiresAt}`))).toEqual(
-      new Set([`${offer.leaseId}:${offer.expiresAt}`]),
-    );
-    const [state] = await admin<{
-      leaseStatus: string;
-      attemptStatus: string;
-      jobStatus: string;
-      activated: boolean;
-      receipts: number;
-    }[]>`SELECT
-      (SELECT status FROM leases WHERE id = ${offer.leaseId}) AS "leaseStatus",
-      (SELECT status FROM job_attempts WHERE id = ${seeded.attemptId}) AS "attemptStatus",
-      (SELECT status FROM jobs WHERE id = ${seeded.jobId}) AS "jobStatus",
-      (SELECT activated_at IS NOT NULL FROM leases WHERE id = ${offer.leaseId}) AS activated,
-      (SELECT count(*)::int FROM worker_operation_receipts WHERE lease_id = ${offer.leaseId}) AS receipts`;
-    expect(state).toEqual({
-      leaseStatus: "active",
-      attemptStatus: "leased",
-      jobStatus: "queued",
-      activated: true,
-      receipts: 1,
-    });
+    const contended = createContendedAppDb();
+    try {
+      await assertContendedLockBudget(contended);
+      const { seeded, offer, service } = await offerPlacedJob({
+        ordinal: 300,
+        service: createJobLeasingService({ appDb: contended.db }),
+      });
+      const idempotencyKey = crypto.randomUUID();
+      const first = ackRequest(offer, idempotencyKey);
+      const results = await settleAllClaimers(
+        Array.from({ length: CONTENDED_CLAIMERS }, (_, index) => service.ack({
+          auth: auth(`ack-race-${index}`),
+          request: {
+            ...first,
+            correlationId: crypto.randomUUID(),
+            issuedAt: new Date().toISOString(),
+            nonce: `ack-race-${index}`,
+          },
+        })),
+        `${CONTENDED_CLAIMERS}-claimer idempotent ACK race`,
+      );
+      expect(results.every((result) => result.outcome === "acknowledged")).toBe(true);
+      expect(new Set(results.map((result) => `${result.leaseId}:${result.expiresAt}`))).toEqual(
+        new Set([`${offer.leaseId}:${offer.expiresAt}`]),
+      );
+      const [state] = await admin<{
+        leaseStatus: string;
+        attemptStatus: string;
+        jobStatus: string;
+        activated: boolean;
+        receipts: number;
+      }[]>`SELECT
+        (SELECT status FROM leases WHERE id = ${offer.leaseId}) AS "leaseStatus",
+        (SELECT status FROM job_attempts WHERE id = ${seeded.attemptId}) AS "attemptStatus",
+        (SELECT status FROM jobs WHERE id = ${seeded.jobId}) AS "jobStatus",
+        (SELECT activated_at IS NOT NULL FROM leases WHERE id = ${offer.leaseId}) AS activated,
+        (SELECT count(*)::int FROM worker_operation_receipts WHERE lease_id = ${offer.leaseId}) AS receipts`;
+      expect(state).toEqual({
+        leaseStatus: "active",
+        attemptStatus: "leased",
+        jobStatus: "queued",
+        activated: true,
+        receipts: 1,
+      });
 
-    const restarted = createJobLeasingService({ appDb: app.db });
-    const replay = await restarted.ack({
-      auth: auth("ack-restart-replay"),
-      request: { ...first, correlationId: crypto.randomUUID(), nonce: "ack-restart-replay" },
-    });
-    expect(replay).toMatchObject({ outcome: "acknowledged", leaseId: offer.leaseId, expiresAt: offer.expiresAt });
+      const restarted = createJobLeasingService({ appDb: app.db });
+      const replay = await restarted.ack({
+        auth: auth("ack-restart-replay"),
+        request: { ...first, correlationId: crypto.randomUUID(), nonce: "ack-restart-replay" },
+      });
+      expect(replay).toMatchObject({ outcome: "acknowledged", leaseId: offer.leaseId, expiresAt: offer.expiresAt });
 
-    const changed = ackRequest(offer, idempotencyKey, {
-      ackedAt: new Date(Date.parse(first.body.ackedAt) + 1_000).toISOString(),
-    });
-    await expect(restarted.ack({ auth: auth("ack-changed-digest"), request: changed }))
-      .rejects.toMatchObject({ code: "malformed" });
-    await expect(restarted.ack({
-      auth: auth("ack-restart-replay"),
-      request: ackRequest(offer, crypto.randomUUID()),
-    })).rejects.toMatchObject({ code: "unauthorized" });
+      const changed = ackRequest(offer, idempotencyKey, {
+        ackedAt: new Date(Date.parse(first.body.ackedAt) + 1_000).toISOString(),
+      });
+      await expect(restarted.ack({ auth: auth("ack-changed-digest"), request: changed }))
+        .rejects.toMatchObject({ code: "malformed" });
+      await expect(restarted.ack({
+        auth: auth("ack-restart-replay"),
+        request: ackRequest(offer, crypto.randomUUID()),
+      })).rejects.toMatchObject({ code: "unauthorized" });
+    } finally {
+      await contended.close({ timeoutSeconds: 5 });
+    }
   }, 60_000);
 
   it("never replays an exact expired ACK receipt hidden behind more than 100 older rows", async () => {
