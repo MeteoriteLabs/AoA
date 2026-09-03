@@ -154,8 +154,28 @@ Why (c):
   alternative is a second implementation and a divergence waiting to happen.
 - BRW-002 proved the sandbox contains what runs inside it: no CDP port, an OS-sandboxed Chromium, a
   measured listening-socket delta with a negative control. A loopback proxy inherits that.
-- It survives the frozen-wire constraint: the policy travels on the envelope
-  (`networkPolicy: networkPolicyRefSchema`, already there); nothing new crosses the wire.
+- It survives the frozen-wire constraint **only in one direction**:
+  `networkPolicyRefSchema` (`policy.ts:97-101`) is `.strict()` `{policyId, version, digest}` — a
+  REFERENCE. The `allow` rules live in `networkPolicyV1Schema` (`:81-93`, `allow:
+  z.array(networkAllowRuleSchema).max(256)`), which is **not on the envelope and does not cross the
+  wire at all**.
+
+> ★★ **CORRECTION (Codex review, verified in source).** An earlier draft of this section said "the
+> policy travels on the envelope." **That is factually wrong** and it hid a missing hop: with only a
+> `{policyId, version, digest}` ref in hand, the in-sandbox enforcement point **cannot know which
+> destinations are allowed**, so D3(c) as drafted could not classify anything. A resolver on the
+> server (slice (f) part 2) does not fix this — it resolves the policy *server-side*, and nothing
+> carries the result to the guest.
+>
+> **The design must therefore specify a delivery hop for the effective policy BYTES**, and it is
+> subject to the same constraint as every other guest-bound payload: it must be authenticated and
+> digest-checked against the envelope's `networkPolicy.digest`, so a substituted or stale policy
+> fails closed rather than widening the allowlist. The natural carrier is the staged-config channel
+> BRW-002 already uses for the runner's config (`BRW-002-result.md` §6: "the runner reads its config
+> from a staged file"), because the seven frozen browser workload fields cannot carry it either. The
+> enforcement point must **refuse to start** when the staged policy's digest does not equal the
+> envelope ref's, and must never fall back to an empty allowlist — an empty allowlist denies
+> everything and would read as working enforcement.
 - **It is defence-in-depth, not sole defence.** If (b) turns out to be available, (c) stays as the
   inner layer. If (b) is unavailable, (c) is the only layer, and the design must say so plainly in
   the result doc rather than implying a boundary that does not exist.
@@ -235,19 +255,63 @@ code does not implement fails the `policy` lane.
 
 - **Artifact:** the new check + `scripts/check-distributed-execution-foundation.test.mjs` cases.
 - ★ **Positive control (mandatory):** the guard must be shown to go RED against
-  `browser-approval-download.json` as it stands today, and GREEN once the expectation is expressed as
-  "the fixture's `productApproval` spelling maps to the profile's runtime-decision authority."
-  A guard that is green on first run against a known-contradictory input is the
-  `checks-that-nothing-runs` failure mode.
-- **Note:** the fixture bytes are NOT edited (D2). The check encodes the mapping; the finding records
-  why the two spellings coexist.
+  `browser-approval-download.json` as it stands today.
+
+> ★★★ **CORRECTION (Codex review — and it overturns a clearance I was given).** This slice previously
+> said the guard goes GREEN "once the expectation is expressed as: the fixture's `productApproval`
+> spelling maps to the profile's runtime-decision authority." **That mapping is not allowed, and it
+> would not have resolved E8-F001 anyway.**
+>
+> Two separate defects in one sentence:
+>
+> 1. **It is forbidden.** `tests/fixtures/distributed-execution/README.md` — the fixtures' own
+>    governing document — says: *"Any breaking change (removing or **repurposing a field**, changing
+>    an event sequence or a computed digest, tightening an existing constraint) requires a **new
+>    versioned directory** and a new `schemaVersion`, leaving v1 intact."* Reading
+>    `control.productApproval` as a runtime-decision authority is repurposing a field, by that
+>    document's own words. ★ I was told earlier that fixtures are not frozen under
+>    `artifact-policy.md`. That is true and irrelevant — `artifact-policy.md` governs result docs and
+>    QA/gate records; the fixtures are governed by this README, which is stricter. **The clearance was
+>    too broad and this design was wrong to rely on it.**
+> 2. **It would not have worked.** `control.productApproval` and `control.runtimeDecision` are two
+>    separate enum fields. Mapping the first onto runtime-decision authority leaves the second still
+>    reading `"none"` against shipped code that says `permission_download_egress`. The guard would
+>    have **blessed the contradiction it was built to detect** — the `checks-that-nothing-runs`
+>    failure mode, in the very slice that cites it.
+>
+> **Revised slice (b).** The check binds `control.productApproval` / `control.runtimeDecision` to the
+> shipped `describeSourceGovernance` profile and **stays RED for `browser-approval-download.json`**,
+> reported as a named, recorded divergence carrying `E8-F001` — a guard that detects, not one that
+> maps the problem away. The actual resolution is the README's own escape hatch: **a new versioned
+> fixture directory** with `control` corrected, leaving v1 intact. **That is a fixture-owner /
+> Protocol Custodian decision, not BRW-004's to take**, so it is raised in §7 rather than assumed.
+> Until it is taken, E8-F001 stays open and BRW-004 builds against the CODE's authority (D2).
+
+- **Note:** the fixture bytes are NOT edited, and under the README they cannot be — not even to
+  "correct" them in place. Only an additive field, or a new versioned directory, is permitted.
 
 ### (c) — The browser-side approval producer. **M. Self-contained.**
 
 In `packages/browser-runtime`: a `requestApproval(action, summary, target)` seam on
-`runBrowserSession` that (i) emits a `browser_approval_requested` event through the worker's existing
+`runBrowserSession` that (i) emits a **`runtime_decision_requested`** event through the worker's existing
 `EventSequencer` (which already redacts before digesting) and (ii) **blocks the action** until a
 decision arrives or the deadline passes. Default decision on deadline: refuse.
+
+> ★★ **CORRECTION (Codex review, verified in source).** An earlier draft of this slice emitted
+> `browser_approval_requested` as the REQUEST. It cannot be one.
+> `browserApprovalRequestedPayloadV1Schema` (`events.ts:106-113`) is `.strict()` with exactly three
+> fields — `approvalId`, `action`, `summary`. It cannot carry the `nonce`, `requestDigest`,
+> `expiresAt`, `sourceRevision`, `timeoutPolicy`, `defaultDecision`, `networkTarget` or `riskClass`
+> that `openGovernedDecision` requires and that `matchRuntimeDecisionResultToRequestV1`
+> (`transport.ts:567-594`) later matches the result against. **Slice (d) would have had no valid
+> input.** The frozen event that carries all of them is `runtime_decision_requested` with
+> `permissionRuntimeDecisionRequestV1Schema` (`events.ts:185-199`) over
+> `runtimeDecisionCommonShape` (`:164-173`: `requestId`, `nonce`, `requestDigest`, `schemaVersion`,
+> `sourceRevision`, `expiresAt`, `title`, `summary`).
+>
+> `browser_approval_requested` keeps a real but *secondary* role: it carries `approvalId` and is the
+> human-readable **observability** record for BRW-006's session view. Emit it in addition, never
+> instead — and never as the thing slice (d) reads.
 
 - The seam is injected, exactly like `playwright-driver`. Slice (c) ships it with an
   **inert** resolver that always refuses; slice (f) supplies the real one.
@@ -262,8 +326,11 @@ decision arrives or the deadline passes. Default decision on deadline: refuse.
 
 ### (d) — The control-plane approval producer. **M.**
 
-Wire `jobApprovalBridge.openGovernedDecision` to the `browser_approval_requested` /
-`runtime_decision_requested` event on ingest, and `resolveGovernedDecision` to the founder's answer
+Wire `jobApprovalBridge.openGovernedDecision` to the **`runtime_decision_requested`** event on
+ingest — that event, and only that event, carries the `nonce`, `requestDigest`, `expiresAt`,
+`sourceRevision`, `timeoutPolicy` and `defaultDecision` the bridge and later result-matching need
+(slice (c) correction). A `browser_approval_requested` on the same session is an observability
+record and is **not** a valid input here. Then wire `resolveGovernedDecision` to the founder's answer
 route. Land D2's migration **0272** (re-pin the slot at generation time) plus the two null branches.
 
 - The bridge is written and adversarially reviewed; this slice **composes** it, and composition is
@@ -306,7 +373,13 @@ Three parts, in order:
 2. **The resolver implementation** — the first production implementation of `resolveNetworkPolicy`,
    and the discharge of DAT-005's residual deferral #2 (bind the resolved policy to the envelope's
    `networkPolicyRef` and assert it).
-3. **The in-sandbox enforcement point** (D3(c)) calling the shared `classifyEgressDestination`,
+3. **The policy-bytes delivery hop** (D3 correction). Resolving the policy server-side is not
+   enough — the ref on the envelope carries no `allow` rules. Stage the effective policy into the
+   sandbox alongside the runner config, and have the enforcement point verify its SHA-256 against
+   the envelope's `networkPolicy.digest` before it starts. **Digest mismatch, missing policy, or an
+   unparseable one must refuse to start** — never fall back to an empty allowlist, which denies
+   everything and is indistinguishable from working enforcement.
+4. **The in-sandbox enforcement point** (D3(c)) calling the shared `classifyEgressDestination`,
    emitting `network_denied` with the frozen `destinationClass` on refusal.
 
 - **Artifacts:** the denied-domain, metadata and private-IP cases from the spec's Test line, run in
@@ -330,6 +403,21 @@ Only once an enforcement point exists:
   must keep throwing for the sandbox-local route; the implementation belongs where
   `authorizeSecretResolve` has already proven `fence_proxy` + `proxy`.
 - Write `applied_policy_version` (a column DAT-005 added that can never be written today).
+
+> ★★ **CORRECTION (Codex review, verified in source): resolving a credential is not delivering one.**
+> `createFenceAwareEgressProxy` performs a hard-coded `method: "GET"` with a hard-coded
+> `Authorization: Bearer ${material.value}` and returns `{outcome, status, appliedPolicyVersion,
+> destination}` — **a status, never a body and never a cookie** (`egress-proxy.ts:242-264`). D3
+> rejects widening it, and routes Chromium through an unrelated in-sandbox loopback proxy. So as
+> drafted, **no planned component ever turns a resolved credential into browser session state**, and
+> both the Outcome's "materialize scoped session or connector credentials" and the spec's "login
+> fixture" test stay impossible.
+>
+> Slice (g) must therefore name the session-establishment component explicitly: the thing that takes
+> a broker-resolved credential and produces an authenticated browser context (a scoped cookie or
+> storage-state injection performed **inside** the sandbox, never a token handed to page script).
+> Until that component is named and built, slice (g) delivers the broker arm only — and the result
+> doc must say the login fixture is unmet rather than implying otherwise.
 
 - ★ **Positive control:** the same `connector_oauth` handle presented on the **sandbox-local**
   redemption route must still be refused `ref_kind_policy_conflict`. Otherwise the implementation has
@@ -368,6 +456,8 @@ The programme's standing requirement, gathered in one place.
 | `connector_oauth` via sandbox-local → `ref_kind_policy_conflict` | (g) `authorizeSecretResolve` | the same handle via the proxy path resolves |
 | Secret value in an event → `«redacted»` | (g) per-run canaries | a non-canary string in the same field survives verbatim |
 | Session state destroyed at terminal | (h) teardown assertion | the check FAILS against a deliberately-preserved profile |
+| Staged policy digest ≠ envelope `networkPolicy.digest` → refuse to start | (f) enforcement point | a matching digest starts and classifies normally |
+| Missing/unparseable staged policy → refuse to start, never empty-allowlist | (f) | a present policy starts; ★ an empty allowlist must be shown to be DISTINGUISHABLE from a refusal, since both deny everything |
 | Sandbox egress boundary (if any) | (a) probe | an allowlisted host succeeds in the same probe run |
 
 Each row's guard is mutation-tested; survivors are questions, not verdicts, and the harness is
@@ -431,6 +521,14 @@ an idempotency guard beneath generated DDL, nothing more.
    for an agent-shaped assumption.
 4. **Does anything in the hub/UI read `agent_runtime_decisions.agentId` unconditionally?** A nullable
    column with a non-null reader is a runtime error waiting for the first browser prompt.
+5. **★ Who authorises a v2 fixture directory, and will they?** Resolving `E8-F001` properly means a
+   new versioned fixture directory with `control` corrected for `browser_request`, per
+   `tests/fixtures/distributed-execution/README.md`'s own rule. That is a fixture-owner / Protocol
+   Custodian call. Until it is taken, slice (b)'s guard stays RED on that one fixture by design and
+   `E8-F001` stays open. **Do not resolve it by weakening the guard.**
+6. **What component turns a broker-resolved credential into browser session state?** None is named
+   anywhere today (slice (g) correction). Until one exists the spec's "login fixture" test cannot
+   pass, and the Outcome's "materialize scoped session credentials" is unmet.
 
 ---
 
