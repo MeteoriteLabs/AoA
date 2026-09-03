@@ -753,3 +753,52 @@ adapters to resolve against `cwd` may well be the right end state — but it cha
 legacy path for every agent, it is not CLI-008's remit, and doing it inside the unit whose claim is
 "we now match legacy" would make that claim untestable. Whoever owns agent instructions should pick
 ONE resolution rule and apply it at all three sites at once.
+
+## E7-F013 — The codex bundle separator is one newline or two depending on the staged file's trailing newline, so it matches the legacy adapter only sometimes
+
+**Status:** open · **Owner:** unowned (see `scripts/finding-ownership.json` for the reason)
+**Severity:** LOW · **Filed:** 2026-09-03, by the CLI-008 Unit D LIVE verification lane —
+**observed in a real Linux `/bin/sh`, not argued from source.**
+
+**What.** `task-run-sandbox-invocation.ts` emits, for `codex_local` with a bundle:
+
+```
+{ cat "$2"; echo; cat "$1"; } | "$0" exec --json -
+```
+
+and its own comment states the reason: *"The legacy adapter joins the two with a blank line … a bare
+`cat "$2" "$1"` gives at most the bundle's own trailing newline … Inserting the blank line at the
+point of USE rather than baking it into the staged bytes keeps the staged file byte-identical."*
+
+Measured (`od -c` on the bytes the pipeline actually delivered to `$0`'s stdin, Debian `/bin/sh`):
+
+| staged bundle | delivered separator | matches legacy? |
+|---|---|---|
+| ends **without** `\n` | `…LAST_LINE_OF_BUNDLE\nFIRST_LINE…` — **one** newline | **no** |
+| ends **with** `\n` | `…LAST_LINE_OF_BUNDLE\n\nFIRST_LINE…` — a blank line | yes |
+
+The legacy codex adapter is **unconditional**: `codex-local/src/server/execute.ts:505` builds
+`` `${instructionsContents}\n\n` `` regardless of what the file ends with. `echo` contributes exactly
+one newline, so the shell shape reproduces legacy's blank line only when `cat` already supplied one.
+
+**★ The case the comment names as the motivating risk is the case that does not match.** The comment
+singles out a bundle with *no* trailing newline ("a real possibility for an operator-edited file") —
+and that is precisely the branch where the distributed path and the legacy path differ.
+
+**What is NOT wrong.** The disaster the `echo` was added to prevent **does not occur**: in both
+branches the bundle's last line and the prompt's first line land on separate lines. A bare
+`cat "$2" "$1"` would have fused them; this does not. The defect is a parity claim that is
+conditionally true, not a fused prompt.
+
+**Reachability.** LOW. The delta is one newline of separation inside a prompt, on the codex adapter
+only, only for bundles lacking a trailing newline, and only on the distributed path — which no
+production run reaches yet. It is filed because the commit that shipped it states it "addressed" a
+Codex P2 "by matching the shipped adapters", and the match is conditional. A LOW that is written
+down beats a LOW that is remembered.
+
+**Why unowned.** The fix is a judgement call about the shape, not a gap in it — normalising in the
+script (`{ cat "$2"; echo; echo; cat "$1"; }` would overshoot to two blank lines when the bundle DOES
+end in a newline; matching legacy exactly needs a trailing-newline-aware shell idiom) changes shipped
+Unit D behaviour, and CLI-008's remaining units are C/E/F. Whoever next touches the codex invocation
+shape should settle it. **Both branches are now pinned by the live lane**
+(`keyed-cli-008-unit-d-invocation.test.ts`), so the behaviour cannot drift while the finding is open.
