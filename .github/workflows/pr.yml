@@ -301,6 +301,24 @@ jobs:
           node --test scripts/lib/__tests__/finding-ownership.test.mjs
           node scripts/check-finding-ownership.mjs
 
+      - name: Register id uniqueness (an id must name one thing)
+        run: |
+          # On 2026-09-03 this repo had THREE live duplicate-id defects at once and nothing
+          # anywhere asked the question. `## Decision #104` appeared TWICE in the locked
+          # decisions register - two unrelated decisions one day apart, with CLAUDE.md citing
+          # #104 as load-bearing in four places. `## E1-F008` appeared TWICE in one findings
+          # register, both severity HIGH, and the ownership guard above keys by id, so one
+          # silently SHADOWED the other and stopped existing for every check.
+          #
+          # It cannot be a line in the ownership checker: that checker consumes findings
+          # through a map keyed by id, which is the very structure that hides a duplicate.
+          # Uniqueness has to be asked of the RAW headings, before anything keys on them.
+          #
+          # Both commands in ONE step deliberately: two steps are two chances to run only one
+          # of them, and the one skipped is the one that failed.
+          node --test scripts/lib/__tests__/register-id-uniqueness.test.mjs
+          node scripts/check-register-id-uniqueness.mjs
+
       - name: Guard inventory (every check declares what runs it)
         run: |
           node --test scripts/lib/__tests__/guard-inventory.test.mjs

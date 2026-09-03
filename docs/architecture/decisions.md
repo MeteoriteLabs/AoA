@@ -851,7 +851,33 @@ cannot execute during boot reconciliation. The stable persisted/HTTP reason is
 does not cover plugin workers. See
 `docs/guides/cloud-plugin-execution.md`.
 
-## Decision #104 — Optimistic concurrency for agent updates: optional `updatedAt` token → 409 (2026-06-25)
+## Decision #125 — Optimistic concurrency for agent updates: optional `updatedAt` token → 409 (2026-06-25)
+
+> ★ **RENUMBERED 2026-09-03: this was filed as `#104`, and so was
+> [Decision #104 — Keyless-except-embeddings](#decision-104--keyless-except-embeddings-selectable-extraction-engine--embedding-resilience-2026-06-26)
+> one day later.** Two different locked decisions, one number, for over two months. The
+> ownership/uniqueness guards key by id, and `DEP-012-design.md:1449` had already resorted to
+> disambiguating by LINE NUMBER ("Decision #104 (`decisions.md:913`, the Keyless-except-embeddings
+> one)") because the id alone was not enough.
+>
+> **Why THIS one moved, even though it is the OLDER of the two** — which puts the earlier decision
+> (2026-06-25) at the higher number, out of chronological order. That is deliberate, and it is the
+> only direction that avoids editing frozen evidence:
+>
+> - **Every citation of the OTHER #104 that lives in a frozen record** — `artifact-policy.md` makes
+>   `tickets/*-result.md` immutable once `complete`, and QA/handoff records write-once from first
+>   commit — means Keyless-except-embeddings. `e7-1-evidence-verifier-result.md` alone cites it three
+>   times (leak class, provider-key security), and CLI-006-campaign-result, CLI-007-result,
+>   CLI-006-D2-step1-result, REL-003-result and the `docs/replatform/qa/*` records do the same.
+>   Renumbering that one would require rewriting evidence policy forbids touching.
+> - **All four `CLAUDE.md` citations mean the other one too** — rule 11 and the Discussion Pipeline
+>   (extraction is CLI-only), the Adapters section (provider SDK), and the memory-write→RAG line.
+>   None is about optimistic concurrency, so none of them moves.
+> - **This decision's own citations are ALL live source, tests, and one historical plan doc** — none
+>   frozen, all updated in the same commit as this rename.
+>
+> So: chronological order was traded for not falsifying immutable records. If you are here because
+> the numbering looks wrong, that is why — please do not "fix" it back.
 
 Agent updates (`PATCH /api/agents/:id` → `agentService.update`) were pure
 last-write-wins (guarded by `id` only). Two concurrent human editors of the same
@@ -911,6 +937,13 @@ Refs: `packages/shared/src/validators/agent.ts`, `server/src/services/agents.ts`
 ---
 
 ## Decision #104 — Keyless-except-embeddings: selectable extraction engine + embedding resilience (2026-06-26)
+
+> ★ **This is the sole `#104` as of 2026-09-03.** A second, unrelated locked decision (*Optimistic
+> concurrency for agent updates*, 2026-06-25) carried the same number for over two months and is now
+> [Decision #125](#decision-125--optimistic-concurrency-for-agent-updates-optional-updatedat-token--409-2026-06-25),
+> which records why that one moved rather than this one. **Every citation of "#104" anywhere in this
+> repository — all four in `CLAUDE.md`, and every frozen ticket-result and QA record — means THIS
+> decision, and none of them needed to change.**
 
 **Status:** Locked 2026-06-26. **Amended 2026-06-27 (extraction is CLI-only; hosted-API fallback removed) and 2026-08-08 (PR #320 `cloud_auth` sandbox credential alignment).**
 

@@ -4,6 +4,7 @@ New findings use IDs `E1-F001`, `E1-F002`, and so on.
 
 ## E1-F001 — PRT-002 Step-2 illustrative transition maps diverge from the E0 lifecycle JSON authority
 
+- **Status:** resolved
 - **Severity:** Medium (would produce an incorrect state machine if transcribed literally).
 - **Blocks gate:** No.
 - **Blocks execution until amended:** Yes (execution paused for a plan amendment per operator directive; PRT-002 must not be implemented from the divergent examples).
@@ -18,6 +19,7 @@ New findings use IDs `E1-F001`, `E1-F002`, and so on.
 
 ## E1-F002 — PRT-006 golden-journey parity is vocabulary/enum membership, not full-object schema parse; `emits` vocabulary is broader than the worker-event union
 
+- **Status:** resolved
 - **Severity:** Medium (literal implementation of two Step-6 bullets would fail against the frozen fixtures).
 - **Blocks gate:** No.
 - **Blocks execution until amended:** Yes (PRT-006 `golden-journeys.test.ts` design).
@@ -47,6 +49,7 @@ New findings use IDs `E1-F001`, `E1-F002`, and so on.
 
 ## E1-F003 — PRT-002 `index.ts` uses `export *`, defeating the package's explicit-public-exports review convention
 
+- **Status:** resolved
 - **Severity:** Medium (review integrity). The functional wire surface is currently correct — I verified `export *` re-exports exactly the intended 48 identifiers and leaks no transition-map/guard/private helper — so this does **not** block the E1 gate. It does, however, require a fix before PRT-002 approval (reviewer disposition `changes_requested`), because it violates a stated, twice-documented convention on the one file whose diff the reviewer must scrutinize, and it compounds across the remaining tickets.
 - **Blocks gate:** No. **Requires fix before PRT-002 approval:** Yes.
 - **Discovered during:** PRT-002 independent review (reviewed revision `5288189b73b2fad3709efecf002fef6dcdb24d39`).
@@ -85,6 +88,7 @@ New findings use IDs `E1-F001`, `E1-F002`, and so on.
 
 ## E1-F006 — PRT-004 ticket-result `Reviewed revision:` line carries trailing annotation that the plan's Task-8 Step-1 verification regex rejects
 
+- **Status:** open
 - **Severity:** Low (documentation/tooling format; the reviewed revision is substantively correct and independently verifiable).
 - **Blocks gate:** No.
 - **Discovered during:** E1 integration gate (Task 8) Step-1 ticket-completeness verification, gate revision `93c5e9f2763a16ce17507fde11b8cac770d5478a`.
@@ -94,6 +98,14 @@ New findings use IDs `E1-F001`, `E1-F002`, and so on.
 - **Root cause / resolution:** The reviewer appended attempt/history annotation onto the summary `Reviewed revision:` field instead of keeping the summary field to the bare backticked latest SHA (the attempt-1/attempt-2 detail already lives in the Review-attempt-history table). Because the ledger is frozen at `complete`, it is not rewritten (a correction would be a new finding/record, not an edit). Disposition (analogous to E0-F001's template-vs-gate-regex format conflict): **non-blocking**; the Task-8 Step-1 regex should tolerate trailing annotation after the 40-hex (capture the first hex; drop the `$` anchor), and future reviewers should keep the `Reviewed revision:` summary line to a bare backticked SHA. Does not block the gate.
 
 ## E1-F008 - frozen-consumer checker couples immutable E1 evidence to a later consumer's working tree and installed dependencies
+
+> ★ **This is the ORIGINAL E1-F008** (filed 2026-08-10, `c90908281`), and it keeps the id.
+> A second, unrelated finding was filed under the same id on 2026-08-24 and is now
+> [E1-F009](#e1-f009--the-frozen-matchers-five-placement-guards-had-no-falsifiable-test).
+> A citation of "E1-F008" means THIS finding when it is about the frozen-consumer checker
+> or E3 prerequisite P2 — as in `README.md:10`, the a4/a5/a6 QA records, the a6 completion
+> handoff, and `E3-job-control/prerequisites/E1-frozen-checker-correction-result.md`. It
+> means E1-F009 when it is about five placement guards with no falsifiable test.
 
 - **Severity:** High (verification false failure blocks the prerequisite to JOB-001 despite unchanged frozen evidence).
 - **Blocks gate:** **No** - resolved by distinct review attempt 3 on revision `01ad1ab554fe25c5178c7552ec047d4df45b7dcf`.
@@ -129,7 +141,24 @@ New findings use IDs `E1-F001`, `E1-F002`, and so on.
   - **Verification on the fix revision:** smoke now exits 0 for the RIGHT reasons (zod provisioned + tolerant surface; no check disabled), 3× consecutively (D0-stable); `pnpm --filter @armyofagents/worker-protocol test:run` = 543/543 green; typecheck / build / `pnpm check:worker-protocol-boundary` all exit 0; the smoke cleans up its temp dirs and the worktree is byte-clean. Runtime wire-contract source is untouched.
   - **Independent reviewer re-gate (CONFIRMED RESOLVED, reviewed revision `233e65b2b22109b6758af337e65f5b36318faa4b`; reviewer did NOT author the fix).** Re-ran the smoke (exit 0) + 3× consecutive (all exit 0, no `wpp-` temp leftovers in `os.tmpdir()`, `git status` byte-clean); 543/543 package tests, typecheck, build, boundary all exit 0; `git diff --check` clean. **Adversarial proof the checks still ENFORCE** (each demonstrated to still FAIL when it should, via a fidelity-preserving parameterized copy of the real checker fed tampered package copies + the real fixture run against stub packages — the real package/fixtures were never mutated): **(a) tarball allow-list** — a package that ships `src/leak.js` → `tarball must not ship src` (exit 1); a `dist/sneaky.test.js` → `tarball must not ship test files`; a stray top-level `secret.txt` → `unexpected tarball entry` (all exit 1). **(b) undeclared runtime dep** — `dependencies` = `{zod,lodash}` → `packed runtime dependencies must equal ["zod"], got ["lodash","zod"]` (exit 1). **(c) deep-subpath encapsulation** — in a genuinely-provisioned consumer (real `dist` + real `zod`), `/dist/index.js`, `/src/version.js`, and `/package.json` each throw `ERR_PACKAGE_PATH_NOT_EXPORTED` (blocked by the `exports` map, NOT an incidental missing-module error) while the root import + `jobEnvelopeV1Schema.safeParse({})` run live. **(d) broken surface** — the tolerant `worker-consumer.mjs` still fails on a missing sampled export (`expected public export missing: jobEnvelopeV1Schema`), a wrong version constant (`PROTOCOL_VERSION must be 1`), a removed sampled export (`…missing: canonicalizeJsonV1`), AND a non-enforcing schema whose `safeParse({})` returns `success:true` (`empty object must fail jobEnvelopeV1Schema`) — proving the zod-exercise assertion is load-bearing, not cosmetic (all exit 1). **(e) zod not resolvable** — with the resolution anchor pointed at a dir with no reachable `zod`, the checker fails **CLOSED** (`cannot resolve the declared runtime dependency "zod" to provision offline`, exit 1), it does not silently skip the import. **zod is provisioned by OFFLINE COPY** (`createRequire().resolve` + `fs.cpSync` only; no `npm/pnpm install`, no `fetch`/`http` anywhere in the provisioning path) and is **load-bearing**: the same real fixture against the real package with `zod` absent dies at the root import with `ERR_MODULE_NOT_FOUND` (the exact E1-F007 root cause). Diff `9224bd771..233e65b2b` touches ONLY `scripts/check-worker-protocol-package.mjs`, `tests/fixtures/worker-protocol-import/worker-consumer.mjs`, `.github/workflows/pr.yml`, and this `findings.md` — `packages/worker-protocol/**` (wire contract), `tests/fixtures/worker-protocol-consumers/v1/**` (frozen fixture), and the PRT ledger are all untouched. CI step is inside the `verify` job after `Build` (`pnpm -r build` builds this leaf), NOT the dependency-free `policy` job; YAML parses. The fix restores the smoke by making the packaging genuinely correct — no check was weakened or disabled.
 
-## E1-F008 — the frozen matcher's five placement guards had NO falsifiable test
+## E1-F009 — the frozen matcher's five placement guards had NO falsifiable test
+
+> ★ **RENUMBERED 2026-09-03. This finding was filed on 2026-08-24 (commit `488d044c5`) as
+> `E1-F008`, colliding with the `E1-F008` above — filed 2026-08-10 (commit `c90908281`),
+> about the frozen-consumer checker. Two different findings, one id.
+> `check-finding-ownership.mjs` keys by id, so one silently shadowed the other in every
+> ownership answer the guard gave.**
+>
+> The later-filed one is renumbered, so the id in E1's README, its immutable QA and handoff
+> records, and the E3 prerequisite ledger — all of which mean the frozen-consumer finding —
+> keeps pointing at the finding they were written about. Nothing frozen is edited.
+>
+> **Documents citing "E1-F008" for the five-placement-guards LESSON mean THIS finding**
+> (`WRK-010-design.md:680`, `WRK-010-slice-2-design.md:509`, `WRK-010-result.md:106`,
+> `WRK-011-design.md:684` and `:825`, `DAT-008-slice-5-result.md:141`,
+> `E4-F013-ownership-successor-design.md:278`, `REL-003-design.md:551`,
+> `REL-003-result.md:135`). They were written before the collision was noticed and several
+> are frozen result ledgers, so they are left exactly as written; this note is the bridge.
 
 **Status:** `resolved` (2026-08-24, test-only; no runtime source touched) · Severity: HIGH
 (the guard is the placement security boundary) · Source: WRK-008/DAT-008 terrain, while

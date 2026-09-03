@@ -958,7 +958,13 @@ this finding does not mark a pass or completion.
 ## E3-F028 - Bounded pools are not bound to one advisory-lock authority domain
 
 **Date:** 2026-08-11
-**Status:** `needs_changes`
+**Status:** `resolved` — resolving revision `d2040591f` (JOB-003 final acceptance 2026-08-12;
+`JOB-003-result.md` is `complete`). AMENDED IN PLACE 2026-09-03: this block read
+`needs_changes` — the contemporaneous review-3 disposition — while the
+`E3-F028–E3-F033 — RESOLVED` roll-up below already recorded the resolution. The register
+contradicted itself and `check-finding-ownership.mjs` read the losing side, so its correct
+answer here was luck rather than evidence. The original disposition is superseded, not
+deleted; the roll-up keeps the full per-item detail.
 **Severity:** P0 STOP - H-02 revocation linearization / split-brain authority
 **Affected ticket:** JOB-003
 
@@ -1032,7 +1038,13 @@ all-settled-before-close hangs without changing roles, grants, schema, or servin
 ## E3-F029 - Startup exact-authority audit omits required relations and RLS posture
 
 **Date:** 2026-08-11
-**Status:** `needs_changes`
+**Status:** `resolved` — resolving revision `d2040591f`/`820515991` (JOB-003 final acceptance 2026-08-12;
+`JOB-003-result.md` is `complete`). AMENDED IN PLACE 2026-09-03: this block read
+`needs_changes` — the contemporaneous review-3 disposition — while the
+`E3-F028–E3-F033 — RESOLVED` roll-up below already recorded the resolution. The register
+contradicted itself and `check-finding-ownership.mjs` read the losing side, so its correct
+answer here was luck rather than evidence. The original disposition is superseded, not
+deleted; the roll-up keeps the full per-item detail.
 **Severity:** P1 Important - H-01 fail-closed startup / exact grant and RLS authority
 **Affected ticket:** JOB-003
 
@@ -1068,7 +1080,13 @@ correction is independently accepted.
 ## E3-F030 - Certificate cleanup is uncomposed and Cartesian rather than tuple-bounded
 
 **Date:** 2026-08-11
-**Status:** `needs_changes`
+**Status:** `resolved` — resolving revision `cdfa70731` (JOB-003 final acceptance 2026-08-12;
+`JOB-003-result.md` is `complete`). AMENDED IN PLACE 2026-09-03: this block read
+`needs_changes` — the contemporaneous review-3 disposition — while the
+`E3-F028–E3-F033 — RESOLVED` roll-up below already recorded the resolution. The register
+contradicted itself and `check-finding-ownership.mjs` read the losing side, so its correct
+answer here was luck rather than evidence. The original disposition is superseded, not
+deleted; the roll-up keeps the full per-item detail.
 **Severity:** P1 Important - H-03 bounded storage / certificate stability
 **Affected ticket:** JOB-003
 
@@ -1088,7 +1106,13 @@ dense multi-worker/multi-attempt PostgreSQL plus runtime-composition regressions
 ## E3-F031 - E3-PERF-01 has no executable real campaign adapter
 
 **Date:** 2026-08-11
-**Status:** `needs_changes`
+**Status:** `resolved` — resolving revision `d24dd68a7` (JOB-003 final acceptance 2026-08-12;
+`JOB-003-result.md` is `complete`). AMENDED IN PLACE 2026-09-03: this block read
+`needs_changes` — the contemporaneous review-3 disposition — while the
+`E3-F028–E3-F033 — RESOLVED` roll-up below already recorded the resolution. The register
+contradicted itself and `check-finding-ownership.mjs` read the losing side, so its correct
+answer here was luck rather than evidence. The original disposition is superseded, not
+deleted; the roll-up keeps the full per-item detail.
 **Severity:** P1 Important - executable evidence / H-04 and H-08 attestation
 **Affected ticket:** JOB-003
 
@@ -1108,7 +1132,13 @@ campaign remains correctly unrun and is not waived.
 ## E3-F032 - Required payload-free leasing and scheduler telemetry is absent
 
 **Date:** 2026-08-11
-**Status:** `needs_changes`
+**Status:** `resolved` — resolving revision `b369ae7e5`/`c4b401047`/`cdfa70731`/`d99945874` (JOB-003 final acceptance 2026-08-12;
+`JOB-003-result.md` is `complete`). AMENDED IN PLACE 2026-09-03: this block read
+`needs_changes` — the contemporaneous review-3 disposition — while the
+`E3-F028–E3-F033 — RESOLVED` roll-up below already recorded the resolution. The register
+contradicted itself and `check-finding-ownership.mjs` read the losing side, so its correct
+answer here was luck rather than evidence. The original disposition is superseded, not
+deleted; the roll-up keeps the full per-item detail.
 **Severity:** P1 Important - plan alignment / starvation and storage observability
 **Affected ticket:** JOB-003
 
@@ -1126,7 +1156,13 @@ non-vacuous tests that reject job input, requirements, fence, proof, and credent
 ## E3-F033 - Non-platform poll and revoke invert target/worker lock order
 
 **Date:** 2026-08-11
-**Status:** `needs_changes`
+**Status:** `resolved` — resolving revision `d99945874` (JOB-003 final acceptance 2026-08-12;
+`JOB-003-result.md` is `complete`). AMENDED IN PLACE 2026-09-03: this block read
+`needs_changes` — the contemporaneous review-3 disposition — while the
+`E3-F028–E3-F033 — RESOLVED` roll-up below already recorded the resolution. The register
+contradicted itself and `check-finding-ownership.mjs` read the losing side, so its correct
+answer here was luck rather than evidence. The original disposition is superseded, not
+deleted; the roll-up keeps the full per-item detail.
 **Severity:** P2 Minor - control-plane contention / bounded revoke availability
 **Affected ticket:** JOB-003
 
@@ -1249,7 +1285,21 @@ reused the campaign bootstrap but invoked a different hardcoded script. The dist
 bootstrap/realpath/digest contract above closes that plan P1 without changing ticket status or
 claiming implementation.
 
-## E3-F028–E3-F033 — RESOLVED (JOB-003 final acceptance 2026-08-12)
+## Resolution round — JOB-003 final acceptance, 2026-08-12 (findings F028 through F033)
+
+> ★ **RE-HEADED 2026-09-03, prose unchanged.** This section was `## E3-F028–E3-F033 —
+> RESOLVED (…)`: a heading that named six findings and was addressable as none of them. That
+> one idiom caused three distinct failures in a single day — a false-positive duplicate in
+> `check-register-id-uniqueness.mjs`, the same false positive independently hit by another
+> track (its EN dash escapes the `[—-]` class in `parseFindings`), and, worst, **six stale
+> per-finding `Status:` lines — including a P0 STOP — masked by this roll-up**, which no
+> parser can associate with its members. The ownership guard read the stale side, excluded
+> them, and was correct only by luck.
+>
+> The **prose is the valuable part and none of it is lost**; only the heading changed, so it
+> is no longer id-shaped and no extractor claims it. Each member now carries its own amended
+> `Status:` and resolving revision. `check-register-id-uniqueness.mjs` refuses the id-range
+> heading form from here on (`id_range_heading`).
 
 All six final-review-3 findings are resolved on the cumulative branch and JOB-003 is
 `complete` / `pass` (see `tickets/JOB-003-result.md` § "Final acceptance — 2026-08-12").
@@ -1352,22 +1402,26 @@ unrecorded flake on a required check is a trap for whoever hits it next.
 
 ## E3-F035 — `listPendingControlCommands` has no caller, and its docstring asserts a consumer that does not exist
 
-**Status:** open · **Owner:** JOB-015 (`epics/E3-job-control/tickets/JOB-015-design.md` §1.3, slice (e)) · Severity: MEDIUM (latent; a capability that looks built and cannot fire).
+**Status:** open · **Owner:** JOB-015 (`epics/E3-job-control/tickets/JOB-015-design.md` §1.3, slice (e))
+**Severity:** MEDIUM (latent; a capability that looks built and cannot fire).
 **Filed:** 2026-09-03, by BRW-004 (E8) terrain mapping, re-measured in E3 at `203853b3a`.
 
-> ★ **Note on this entry's `Severity:` spelling.** It is deliberately unbolded, matching E4's
-> register rather than E3's own `**Severity:**` house style, because `parseFindings`
-> (`scripts/lib/finding-ownership.mjs:176`) puts `**` *after* the colon in the bolded form, so its
-> capture never fires. Raised from this ticket after measuring E3 and E7; the register-repair track
-> then measured the real scope at **82 of 108 findings across nine registers** (E0 9/9, E1 8/9,
-> E2 15/15, E3 34/34, E7 11/11, E4 2/17, E6 2/9, E10 1/2; E11 clean) — so the registers disagree with
-> **each other** about house style, which is the deeper problem.
+> ★ **The `Severity:` workaround this entry carried is RESOLVED and has been removed (2026-09-03).**
+> This entry was deliberately written with an *unbolded* `Severity:` — matching E4's register rather
+> than E3's own house style — because `parseFindings` put `**` after the colon in the bolded form, so
+> its capture never fired. **That defect is fixed**: the regex now reads the bolded, unbolded and
+> backticked forms alike, an OPEN finding whose severity is unreadable or off-vocabulary is a hard
+> failure, and `NOT_ACCEPTABLE` is derived from a `SEVERITY_VOCABULARY` table rather than a
+> hand-written `["HIGH","CRITICAL"]` that had silently omitted the entire P-scale. This entry is
+> restored to E3's `**Severity:**` house style, and **both spellings now parse to MEASURED `MEDIUM`.**
 >
-> ★ **It is a DEAD LEVER, not a breach.** The rule it disables is `NOT_ACCEPTABLE` (a HIGH may never
-> be `accepted`), and all four `accepted` entries (`E6-F005/006/007`, `E4-F016`) are genuinely LOW in
-> their text — no HIGH has been waved away. Owned by the register-repair track, which will normalise
-> the spelling and drop this note; deliberately NOT fixed here, because two tracks editing that
-> parser would collide.
+> The scope this note recorded was right and is kept for the record: **82 of 108 findings across nine
+> registers** parsed as UNKNOWN (E0 9/9, E1 8/9, E2 15/15, E3 34/34, E7 11/11, E4 2/17, E6 2/9,
+> E10 1/2; E11 clean). It was a **DEAD LEVER, not a breach** — every `accepted` entry is genuinely
+> LOW/MINOR in its text and no HIGH was ever waved away. The registers still disagree with each other
+> about house style; that is deliberate (E3 and its neighbours use a P0/P1/P2 STOP scale, the rest
+> HIGH/MEDIUM/LOW), and the remedy chosen was to teach the checker the real vocabulary rather than
+> rewrite 108 severity values across frozen-evidence epics.
 
 **What.** `packages/db/src/repositories/tenant/job-control.ts:498-503` is a complete, correct
 repository method with **zero production callers** — and its own docstring names the consumer:

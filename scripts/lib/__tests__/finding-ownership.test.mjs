@@ -175,12 +175,171 @@ test("parseFindings reads id, status and severity from the real register shape",
   );
 });
 
-test("★ a finding with no parseable Status is NOT treated as open", () => {
-  // Guessing would make the guard noisy, and a noisy guard gets switched off — which is a
-  // worse outcome than a narrower guard that is trusted.
+// ─────────────────────────────────────────────────────────────────────────────
+// ★★★ THE GUARD'S OWN WORST FAILURE CLASS, FOUND INSIDE THE GUARD.
+//
+// This test used to assert the OPPOSITE — "a finding with no parseable Status is NOT
+// treated as open", ok === true — with the rationale that guessing would make the guard
+// noisy and a noisy guard gets switched off.
+//
+// That rationale is right about GUESSING and wrong about SILENCE, and the cost was
+// measured on 2026-09-03: the E0, E1 and E2 registers write their status in shapes the
+// parser could not read, or (25 of 34 findings) do not write one at all, so ALL THREE
+// REGISTERS WERE INVISIBLE. A synthetic HIGH, gate-blocking, undeclared finding appended
+// to E0's register in E0's own documented house style left the checker printing
+// `OK (17 open finding(s))` and exiting 0. Two open HIGH findings (E2-F014, E2-F015) sat
+// unreadable in a `complete` epic the whole time.
+//
+// The third option the old comment missed is neither noisy nor a guess: REFUSE, and make a
+// human write the field. That is what this now asserts.
+test("★★★ a finding with no readable Status FAILS CLOSED — it is not silently 'not open'", () => {
   const parsed = parseFindings("## E9-F001 — no status line here\n\nBody.");
   assert.equal(parsed[0].status, "unknown");
-  assert.equal(evaluateFindingOwnership({ findings: parsed, declared: {}, ticketIds: [] }).ok, true);
+  const r = evaluateFindingOwnership({ findings: parsed, declared: {}, ticketIds: [] });
+  assert.equal(r.ok, false);
+  assert.deepEqual(kinds(r), ["unparseable_status"]);
+  assert.equal(r.problems[0].finding, "E9-F001");
+});
+
+test("★★★ the E0 house style is caught — a HIGH gate-blocker with no Status line cannot ship green", () => {
+  // The exact positive control, as a permanent regression test. Written in the older
+  // documented house style (`- **Severity:** / - **Blocks gate:** / - **Disposition:**`,
+  // artifact-policy.md:48) with no Status field of any kind.
+  const parsed = parseFindings(
+    [
+      "## E0-F999 — the control plane ships tenant credentials in cleartext",
+      "",
+      "- **Severity:** HIGH",
+      "- **Blocks gate:** **Yes** — this is a gate blocker.",
+      "- **Disposition:** Open — nobody owns this.",
+    ].join("\n"),
+  );
+  const r = evaluateFindingOwnership({ findings: parsed, declared: {}, ticketIds: [] });
+  assert.equal(r.ok, false, "a gate-blocking HIGH in the old house style must not pass");
+  assert.deepEqual(kinds(r), ["unparseable_status"]);
+  // And the severity IS readable now, so the report can lead with what blocks the programme.
+  assert.equal(parsed[0].severity, "HIGH");
+});
+
+test("★ all three real-world Status shapes are read — the same field, different punctuation", () => {
+  const shapes = [
+    // The shape the parser already read.
+    ["**Status:** open", "open"],
+    ["**Status:** `open`", "open"],
+    // Bold VALUE — E2-F001/002/008, E7-F004/005/006, E10-F002 all write this.
+    ["**Status:** **RESOLVED 2026-08-09** — operator locked E2-D01", "resolved"],
+    // Colon INSIDE the bold — E1-F004/F005/F007. The old expression required the colon
+    // inside and the value outside, so it matched neither this nor the line above.
+    ["- **Status: RESOLVED (resolving revision `e62921b17`).** `job.ts` now throws", "resolved"],
+    // Case-folded: a register that SHOUTS its status must still be open.
+    ["**Status:** OPEN", "open"],
+  ];
+  for (const [line, expected] of shapes) {
+    const parsed = parseFindings(`## E9-F001 — probe\n\n${line}\n`);
+    assert.equal(parsed[0].status, expected, `failed to read: ${line}`);
+  }
+});
+
+test("★ **Severity:** HIGH is readable — the shape EVERY register uses", () => {
+  // The old expression consumed the closing `**` and then demanded a letter where a SPACE
+  // stood, so 82 of 108 findings — all 34 in E3, all 11 in E7 — parsed as UNKNOWN, and
+  // `severity_not_acceptable` could not fire for any of them.
+  for (const [line, expected] of [
+    ["- **Severity:** HIGH", "HIGH"],
+    ["**Severity:** Minor", "MINOR"],
+    ["**Status:** `open` · Severity: HIGH (blocks long-running workers)", "HIGH"],
+    ["- **Severity:** P1 STOP — locked-decision contradiction", "P1"],
+    ["- **Severity:** High; blocked the E3 predecessor gate", "HIGH"],
+  ]) {
+    assert.equal(parseFindings(`## E9-F001 — probe\n\n**Status:** open\n${line}\n`)[0].severity, expected, line);
+  }
+});
+
+test("★ a HIGH may not be 'accepted' — now that severities actually parse", () => {
+  // This clause existed before but could not fire on any register that wrote `**Severity:**`.
+  const parsed = parseFindings("## E9-F001 — probe\n\n**Status:** open\n- **Severity:** HIGH\n");
+  const r = evaluateFindingOwnership({
+    findings: parsed,
+    declared: { "E9-F001": { status: "accepted", reason: "waving this away" } },
+    ticketIds: [],
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(kinds(r), ["severity_not_acceptable"]);
+});
+
+test("★★ the coordinator's positive control: a HIGH in the BOLDED house style cannot be 'accepted'", () => {
+  // MEASURED at base 203853b3a, against the original parser, both halves:
+  //   `- **Severity:** HIGH` -> severity=UNKNOWN, ok=TRUE,  problems=[]                  <- waved away
+  //   `- Severity: HIGH`     -> severity=HIGH,    ok=false, problems=[severity_not_acceptable]
+  // The bolded form is what EVERY register writes, so the rule the guard's own comment says
+  // exists "to make [waving away a HIGH] impossible to do quietly" could not fire at all.
+  // Both spellings must now refuse.
+  for (const severityLine of ["- **Severity:** HIGH", "- Severity: HIGH", "**Severity:** HIGH"]) {
+    const findings = parseFindings(`## E9-F001 — probe\n\n**Status:** open\n${severityLine}\n`);
+    assert.equal(findings[0].severity, "HIGH", severityLine);
+    const r = evaluateFindingOwnership({
+      findings,
+      declared: { "E9-F001": { status: "accepted", reason: "waving away a HIGH" } },
+      ticketIds: [],
+    });
+    assert.equal(r.ok, false, severityLine);
+    assert.deepEqual(kinds(r), ["severity_not_acceptable"], severityLine);
+  }
+});
+
+test("★★ an OPEN finding with an UNREADABLE severity FAILS — not a silent UNKNOWN", () => {
+  // Scoped to open findings on purpose: the guard reasons about nothing else, and four
+  // RESOLVED findings legitimately carry no readable severity.
+  const open = evaluateFindingOwnership({
+    findings: [{ id: "E9-F001", status: "open", severity: "UNKNOWN", title: "probe" }],
+    declared: { "E9-F001": { status: "unowned", reason: "nobody yet" } },
+    ticketIds: [],
+  });
+  assert.equal(open.ok, false);
+  assert.deepEqual(kinds(open), ["severity_unreadable"]);
+
+  const resolved = evaluateFindingOwnership({
+    findings: [{ id: "E9-F001", status: "resolved", severity: "UNKNOWN", title: "probe" }],
+    declared: {},
+    ticketIds: [],
+  });
+  assert.equal(resolved.ok, true, JSON.stringify(resolved.problems));
+});
+
+test("★ a severity spelling the vocabulary does not know FAILS — a tenth style is a deliberate edit", () => {
+  // Without this, the whole defect recurs the moment someone writes a fourth style: it would
+  // parse to something, fail the NOT_ACCEPTABLE membership test, and go quiet again.
+  const r = evaluateFindingOwnership({
+    findings: [{ id: "E9-F001", status: "open", severity: "SEV1", title: "probe" }],
+    declared: { "E9-F001": { status: "unowned", reason: "nobody yet" } },
+    ticketIds: [],
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(kinds(r), ["severity_unknown_vocabulary"]);
+  assert.equal(r.problems[0].detail, "SEV1");
+});
+
+test("★★ NOT_ACCEPTABLE covers the WHOLE P-scale, not just HIGH/CRITICAL", () => {
+  // The hand-written list was ["HIGH","CRITICAL"], which omitted P0 and P1 entirely — 30 of
+  // this repo's 108 findings. So even with the regex fixed, a P1 STOP could still have been
+  // quietly `accepted`. The list is now DERIVED from SEVERITY_VOCABULARY.
+  for (const severity of ["HIGH", "CRITICAL", "P0", "P1"]) {
+    const r = evaluateFindingOwnership({
+      findings: [{ id: "E9-F001", status: "open", severity, title: "probe" }],
+      declared: { "E9-F001": { status: "accepted", reason: "nit" } },
+      ticketIds: [],
+    });
+    assert.equal(r.ok, false, `${severity} must not be acceptable`);
+    assert.deepEqual(kinds(r), ["severity_not_acceptable"], severity);
+  }
+  for (const severity of ["MEDIUM", "MED", "P2", "LOW", "MINOR"]) {
+    const r = evaluateFindingOwnership({
+      findings: [{ id: "E9-F001", status: "open", severity, title: "probe" }],
+      declared: { "E9-F001": { status: "accepted", reason: "genuinely a nit" } },
+      ticketIds: [],
+    });
+    assert.equal(r.ok, true, `${severity} must remain acceptable: ${JSON.stringify(r.problems)}`);
+  }
 });
 
 test("parseFindings tolerates junk without throwing", () => {
@@ -297,4 +456,50 @@ test("★ E4-F013 calibration preserved — a valid successor does NOT waive the
   });
   assert.equal(r.ok, false);
   assert.ok(kinds(r).includes("owner_ticket_already_complete"), JSON.stringify(kinds(r)));
+});
+
+test("★★★ a TYPO'd status FAILS CLOSED — not just an absent one", () => {
+  // ROUND 2, found by external review. The first fail-closed arm caught only the synthetic
+  // "unknown" the parser invents when no Status field exists. A typo sailed through:
+  // `**Status:** opne` parses to "opne", is not "open", matches no manifest entry, and the
+  // check exited 0 — recreating, INSIDE the fix, the blind spot the fix exists to remove.
+  const parsed = parseFindings("## E9-F001 — probe\n\n**Status:** opne\n- **Severity:** HIGH\n");
+  assert.equal(parsed[0].status, "opne");
+  const r = evaluateFindingOwnership({ findings: parsed, declared: {}, ticketIds: [] });
+  assert.equal(r.ok, false, "a status the vocabulary does not recognise must fail closed");
+  assert.deepEqual(kinds(r), ["unknown_status_vocabulary"]);
+  assert.equal(r.problems[0].detail, "opne");
+});
+
+test("★★ the status vocabulary admits real wordings without a table edit, but not typos of 'open'", () => {
+  // 15 distinct statuses are already in use, several one-offs. A flat closed enum would red
+  // CI on every new resolution wording — the cry-wolf failure that gets a guard switched
+  // off. Families absorb those; `open` stays EXACT so its misspellings cannot be read as
+  // closed, which is the one direction that actually loses a finding.
+  const classify = (s) =>
+    evaluateFindingOwnership({
+      findings: [{ id: "E9-F001", status: s, severity: "LOW", title: "p" }],
+      declared: {},
+      ticketIds: [],
+    });
+  // Recognised as NOT open -> silent, no problem raised.
+  for (const s of [
+    "resolved",
+    "resolved_in_job",
+    "resolved_in_fix_round_2_red_pending_final_review",
+    "superseded_after_rejected_four_field_amendment",
+    "needs_changes",
+    "fixed",
+    "partially_resolved_in_job",
+    "approved_pending_job",
+    "resolved_in_some_brand_new_wording",
+  ]) {
+    assert.deepEqual(kinds(classify(s)), [], `${s} must be accepted as a non-open status`);
+  }
+  // Recognised as OPEN -> must be declared.
+  assert.deepEqual(kinds(classify("open")), ["undeclared_finding"]);
+  // Every misspelling of "open" must be REFUSED, never silently treated as closed.
+  for (const s of ["opne", "oepn", "opened", "reopened", "OPE N", "op en"]) {
+    assert.deepEqual(kinds(classify(s)), ["unknown_status_vocabulary"], `${s} must be refused`);
+  }
 });

@@ -93,6 +93,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-register-id-uniqueness.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow"
+    },
     "scripts/check-release-admission.mjs": {
       "status": "ci_logic_only",
       "reason": "REL-004 promotion gate. It has no release directory to check until a promotion pipeline with a recorded allowlist exists (REL-004-result.md §5); its end-to-end CLI suite runs in CI and exercises the real invocation.",

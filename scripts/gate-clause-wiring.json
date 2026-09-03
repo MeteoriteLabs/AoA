@@ -58,7 +58,7 @@
       "epic": "E5",
       "status": "unwired",
       "symbol": "createPatchApplyService",
-      "reason": "Zero callers. Its sibling runOrphanQuarantine now has a producer (startup-reconcile) but that reconciler itself has no caller, so the clause is blocked on E4 wiring (Sprint 3), not on E5."
+      "reason": "Zero callers on the DECLARED symbol createPatchApplyService, a server-side DAT-003 service. CORRECTED 2026-09-03: the previous reason reasoned about the SIBLING runOrphanQuarantine (whose producer startup-reconcile is itself uncalled) and concluded the clause is 'blocked on E4 wiring'. That is a substitution, not an addition — the checker reads the caller count of createPatchApplyService, which no E4 daemon ticket touches, so wiring the startup reconciler (WRK-013) flips E4-3-survives-restart and does NOT flip this clause. The GO-BOOK's WRK-013 row inherited the same error and is corrected in the same change."
     },
     "E5-5-redaction": {
       "epic": "E5",

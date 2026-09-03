@@ -41,10 +41,107 @@ export const FINDING_OWNERSHIP_STATUSES = Object.freeze(["owned", "unowned", "ac
  * CLI-001/D2" and CLI-001 shipped. They were carried past their own resolution point and
  * nothing noticed, because nothing was looking. */
 
+/**
+ * The severity vocabulary this programme's registers ACTUALLY use, and whether each value
+ * is gate-blocking. Measured across all 9 registers (108 findings) on 2026-09-03:
+ *
+ *   P1=29  HIGH=26  MEDIUM=15  LOW=11  MED=11  MINOR=8  P2=3  P0=1
+ *
+ * Two scales coexist deliberately — E3 and its neighbours use a P0/P1/P2 STOP scale, the
+ * rest use HIGH/MEDIUM/LOW — and `MED`/`MEDIUM` and `LOW`/`MINOR` are the same rung spelled
+ * two ways. They are NOT normalised in the registers: rewriting 108 severity values across
+ * frozen-evidence epics would be large, risky churn to make a parser's life easier, and the
+ * P-scale is real information rather than a typo. The remedy is the same one chosen for the
+ * status field — READ WHAT IS ACTUALLY WRITTEN, and REFUSE what cannot be read.
+ *
+ * Anything outside this table is `severity_unknown_vocabulary`: a fourth spelling must be
+ * added here deliberately, by a human, rather than silently degrading to UNKNOWN and taking
+ * the HIGH-may-never-be-accepted rule down with it.
+ */
+export const SEVERITY_VOCABULARY = Object.freeze({
+  CRITICAL: { blocking: true },
+  P0: { blocking: true },
+  HIGH: { blocking: true },
+  P1: { blocking: true },
+  MEDIUM: { blocking: false },
+  MED: { blocking: false },
+  P2: { blocking: false },
+  LOW: { blocking: false },
+  MINOR: { blocking: false },
+});
+
 /** Severities that may NOT be `accepted`. Waving away a HIGH is exactly the move this
  * guard exists to make impossible to do quietly — it must be `owned`, or `unowned` with a
- * reason someone can read and argue with. */
-const NOT_ACCEPTABLE = Object.freeze(["HIGH", "CRITICAL"]);
+ * reason someone can read and argue with.
+ *
+ * ★ DERIVED from the vocabulary rather than hand-listed. The hand-listed version was
+ * `["HIGH", "CRITICAL"]`, which silently omitted the ENTIRE P-scale — so even once the
+ * severity regex is fixed, 30 of the 108 findings (P0 + P1) could still have been quietly
+ * `accepted`. Deriving it means adding a blocking spelling to the table above cannot leave
+ * this list behind. */
+const NOT_ACCEPTABLE = Object.freeze(
+  Object.keys(SEVERITY_VOCABULARY).filter((k) => SEVERITY_VOCABULARY[k].blocking),
+);
+
+/** The status value a finding gets when no `Status:` field could be read from its block.
+ * It is a HARD FAILURE, not a shrug — see `unparseable_status` below. */
+export const UNPARSEABLE_STATUS = "unknown";
+
+/**
+ * ★★★ FAIL CLOSED ON EVERY UNRECOGNISED STATUS, NOT JUST THE ABSENT ONE.
+ *
+ * The first version of the fail-closed arm caught only the synthetic `"unknown"` — the value
+ * the parser invents when no `Status:` field exists at all. A TYPO sailed straight through:
+ * `**Status:** opne` parses to `"opne"`, is not `"open"`, matches no manifest entry, and so
+ * exits 0. **That recreates, inside the fix, the exact blind spot the fix exists to remove.**
+ * Found by external review; reproduced before fixing.
+ *
+ * A flat closed enum would be the wrong shape here — measured, the corpus already uses
+ * FIFTEEN distinct statuses, several of them one-offs like
+ * `resolved_in_fix_round_2_red_pending_final_review`. Requiring a table edit for every new
+ * bespoke resolution wording is the cry-wolf failure that gets a guard switched off.
+ *
+ * So: `open` must be spelled EXACTLY (no family, so every misspelling of it — `opne`,
+ * `oepn`, `opne_` — is rejected rather than silently read as closed, which is the one
+ * direction that actually loses a finding), a small set of exact non-open statuses is
+ * listed, and two FAMILIES (`resolved*`, `superseded*`) absorb the open-ended resolution
+ * wordings. Anything else is `unknown_status_vocabulary`.
+ *
+ * ★ SCOPE NOTE, deliberately conservative: this changes NO finding's open/closed
+ * classification. `needs_changes` (6 findings, all in E3) is recorded here as non-open
+ * because that is how the guard has always treated it — NOT because that is settled. If it
+ * should count as open, that is a real decision with real consequences (six findings would
+ * need declarations) and it belongs to a human, not to a parser change smuggling it in.
+ */
+export const NON_OPEN_STATUS_FAMILIES = Object.freeze(["resolved", "superseded"]);
+export const EXACT_NON_OPEN_STATUSES = Object.freeze([
+  "needs_changes",
+  "approved_pending_job",
+  "partially_resolved_in_job",
+  "fixed",
+]);
+
+/** Statuses that MEAN open. Deliberately just `open`.
+ *
+ * ★ `needs_changes` was briefly moved here and the operator ruled against it. The reasoning
+ * that made it tempting — "a review refused the work, so it is not resolved" — is sound in
+ * the abstract and wrong for this corpus: all six findings carrying it (E3-F028..F033) are
+ * genuinely RESOLVED, per the `E3-F028–E3-F033` roll-up and JOB-003's `complete` result
+ * ledger. Their per-finding `Status:` lines were simply never amended. Reclassifying the
+ * status would have manufactured six phantom open findings — including a P0 STOP — out of a
+ * documentation lag. The lag is fixed in the register instead, where it belongs. */
+export const EXACT_OPEN_STATUSES = Object.freeze(["open"]);
+
+/** @returns {"open"|"not_open"|"unrecognised"} */
+export function classifyStatus(status) {
+  const value = String(status ?? "").toLowerCase();
+  if (EXACT_OPEN_STATUSES.includes(value)) return "open";
+  if (EXACT_NON_OPEN_STATUSES.includes(value)) return "not_open";
+  if (NON_OPEN_STATUS_FAMILIES.some((f) => value.startsWith(f))) return "not_open";
+  return "unrecognised";
+}
+/** Likewise for severity: an unclassifiable finding may not be quietly `accepted`. */
+export const UNPARSEABLE_SEVERITY = "UNKNOWN";
 
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -76,9 +173,73 @@ export function evaluateFindingOwnership(input) {
   const tickets = new Set(Array.isArray(ticketIds) ? ticketIds : []);
   const completed = new Set(Array.isArray(input.completedTicketIds) ? input.completedTicketIds : []);
 
-  const open = findings.filter((f) => isPlainObject(f) && f.status === "open");
+  // ★★★ FAIL CLOSED ON AN UNREADABLE STATUS. This arm is the fix for the guard's own
+  // worst failure class, found INSIDE the guard that exists to catch it.
+  //
+  // Until 2026-09-03 a finding whose `Status:` could not be parsed was silently treated as
+  // NOT OPEN, and the E0, E1 and E2 registers write their status in shapes the parser did
+  // not read — or, for 25 of their 34 findings, do not write one at all. So all three
+  // registers were INVISIBLE. Measured by positive control: a synthetic HIGH, gate-blocking,
+  // undeclared finding appended to `E0-foundation/findings.md` in E0's OWN documented house
+  // style (`- **Severity:** / - **Blocks gate:** / - **Disposition:**`) left
+  // `node scripts/check-finding-ownership.mjs` reporting `OK (17 open ...)` and exiting 0.
+  // The same finding with a `**Status:**` line correctly failed `undeclared_finding`.
+  //
+  // The old behaviour was a deliberate choice with a stated rationale — "guessing would make
+  // the guard noisy, and a noisy guard gets switched off". That rationale is sound about
+  // GUESSING and wrong about SILENCE: the third option, refusing to proceed until a human
+  // writes the field, is neither noisy nor a guess. It is also the only version that cannot
+  // rot, because a register that drifts back to the old style now fails on the next PR
+  // rather than going quiet again.
+  //
+  // A FALSE CLAIM OF ENFORCEMENT IS WORSE THAN A MISSING CHECK: for 108 findings across 9
+  // registers this guard reported a confident `OK` while reading the status of only 73.
+  for (const finding of [...findings].filter((f) => isPlainObject(f))
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
+    if (finding.status === UNPARSEABLE_STATUS) {
+      problems.push({ kind: "unparseable_status", finding: finding.id, detail: finding.register });
+    } else if (classifyStatus(finding.status) === "unrecognised") {
+      // A TYPO is the dangerous case: `opne` is not `open`, matches no manifest entry, and
+      // under the first version of this arm exited 0 — losing the finding exactly as a
+      // missing status line did. Catching only the absent field left the blind spot inside
+      // the fix built to remove it.
+      problems.push({ kind: "unknown_status_vocabulary", finding: finding.id, detail: String(finding.status) });
+    }
+  }
+
+  // ★ ONE notion of "open", not two. This filter used to compare the literal string while
+  // `classifyStatus` had its own opinion — two definitions of the same concept in one file,
+  // which is the "two guards disagreeing about what a thing IS" class this branch already
+  // fixed once between `parseFindings` and the uniqueness extractor. Now the classifier is
+  // the single source, so adding a status to EXACT_OPEN_STATUSES cannot leave the filter
+  // behind.
+  const open = findings.filter((f) => isPlainObject(f) && classifyStatus(f.status) === "open");
   const openIds = new Set(open.map((f) => f.id));
   const unowned = [];
+
+  // ★★ AN OPEN FINDING'S SEVERITY MUST BE READABLE AND KNOWN. The second axis of the same
+  // failure, and it composes with the first: `unparseable_status` decides whether a finding
+  // is VISIBLE at all; this decides whether a visible one's severity is KNOWABLE.
+  //
+  // Until 2026-09-03 the severity regex could not read `**Severity:** HIGH` — the bolded
+  // house style — so 82 of 108 findings parsed as UNKNOWN, `String(undefined).toUpperCase()`
+  // was never in NOT_ACCEPTABLE, and the rule the guard's own comment says exists "to make
+  // [waving away a HIGH] impossible to do quietly" COULD NOT FIRE for any of them.
+  //
+  // ★ It was a DEAD LEVER, NOT A BREACH. All eight `accepted` declarations parse LOW or
+  // MINOR against their register text; nobody waved away a HIGH through this hole. Said
+  // explicitly because the register is exactly where an overstatement would stick.
+  //
+  // Scoped to OPEN findings: this guard reasons about nothing else, and four resolved
+  // findings legitimately carry no readable severity. Flipping one back to open demands one.
+  for (const finding of [...open].sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
+    const severity = String(finding.severity ?? "").toUpperCase();
+    if (severity === UNPARSEABLE_SEVERITY) {
+      problems.push({ kind: "severity_unreadable", finding: finding.id, detail: finding.register });
+    } else if (!Object.prototype.hasOwnProperty.call(SEVERITY_VOCABULARY, severity)) {
+      problems.push({ kind: "severity_unknown_vocabulary", finding: finding.id, detail: severity });
+    }
+  }
 
   for (const finding of [...open].sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
     const entry = declared[finding.id];
@@ -140,6 +301,9 @@ export function evaluateFindingOwnership(input) {
       }
       continue;
     }
+    // An unreadable or off-vocabulary severity is already reported by the pass above, for
+    // EVERY open finding rather than only the accepted ones — so this arm can trust that a
+    // severity reaching it is one the table knows.
     if (entry.status === "accepted" && NOT_ACCEPTABLE.includes(String(finding.severity).toUpperCase())) {
       problems.push({ kind: "severity_not_acceptable", finding: finding.id, detail: finding.severity });
       continue;
@@ -159,12 +323,39 @@ export function evaluateFindingOwnership(input) {
 }
 
 /**
+ * The `Status:` shapes that occur in this repo's registers, in match order.
+ *
+ * All three are the SAME explicit field in different punctuation, so reading them is not
+ * inference — it is not the ticket-prose scanning the header rejects. What is deliberately
+ * NOT here is any attempt to divine open-ness from `- **Disposition:**` prose ("Open —
+ * non-blocking hardening", "Resolved (items 1–3) … Item 4 remains open/optional"). That is
+ * the guessing this guard's header records as having been WRONG FIVE TIMES IN BOTH
+ * DIRECTIONS for a neighbouring guard. A block with no status field is a hard failure
+ * instead — see `unparseable_status`.
+ */
+const STATUS_PATTERNS = Object.freeze([
+  // `**Status:** open` · `**Status:** \`open\`` · `**Status:** **RESOLVED 2026-08-09**`
+  // The bold-value form is E2-F001/002/008 and E7-F004/005/006 and E10-F002.
+  /\*\*Status:\*\*\s*[`*]{0,2}\s*([A-Za-z0-9_]+)/,
+  // `- **Status: RESOLVED (resolving revision \`e62921b17\`).**` — colon INSIDE the bold.
+  // E1-F004/F005/F007. The old expression required the colon inside and the value outside,
+  // so it read neither this nor the bold-value form above.
+  /\*\*Status:\s*([A-Za-z0-9_]+)/,
+]);
+
+/** `**Severity:** HIGH` · `Severity: HIGH` · `- **Severity:** P1 STOP`.
+ * The old expression (`/Severity:\s*\*{0,2}([A-Za-z]+)/`) could not read the bolded form at
+ * all: after `Severity:` it consumed the closing `**` and then required a letter where a
+ * SPACE stood. 82 of 108 findings — every one in E3 and E7 — parsed as UNKNOWN. */
+const SEVERITY_PATTERN = /\*{0,2}Severity:\*{0,2}\s*[`*]{0,2}\s*([A-Za-z][A-Za-z0-9]*)/;
+
+/**
  * Parse `findings.md` text into finding records.
  *
  * Deliberately tolerant about everything except the two fields the guard reasons over.
- * A heading with no parseable `Status:` yields `status: "unknown"` and is therefore NOT
- * treated as open — the alternative (guessing) would make the guard noisy and get it
- * switched off, which is worse than a narrower guard that is trusted.
+ * A heading with no readable `Status:` yields `status: "unknown"`, which the evaluator
+ * treats as a HARD FAILURE (`unparseable_status`) rather than as "not open" — the silent
+ * version is what made three whole registers invisible.
  */
 export function parseFindings(text) {
   if (typeof text !== "string") return [];
@@ -172,13 +363,23 @@ export function parseFindings(text) {
   for (const block of text.split(/\n(?=## )/)) {
     const heading = /^## ([A-Z0-9]+-F\d+)\s*[—-]\s*(.*)/.exec(block);
     if (!heading) continue;
-    const status = /\*\*Status:\*\*\s*`?([A-Za-z0-9_]+)`?/.exec(block);
-    const severity = /Severity:\s*\*{0,2}([A-Za-z]+)/.exec(block);
+    let status;
+    for (const pattern of STATUS_PATTERNS) {
+      const match = pattern.exec(block);
+      if (match) {
+        status = match[1];
+        break;
+      }
+    }
+    const severity = SEVERITY_PATTERN.exec(block);
     out.push({
       id: heading[1],
       title: heading[2].trim(),
-      status: status ? status[1] : "unknown",
-      severity: severity ? severity[1].toUpperCase() : "UNKNOWN",
+      // Lower-cased so `**Status:** OPEN` is open. The evaluator compares against the
+      // literal "open"; without folding, a register that shouts its status is invisible
+      // for exactly the same reason the three registers above were.
+      status: status ? status.toLowerCase() : UNPARSEABLE_STATUS,
+      severity: severity ? severity[1].toUpperCase() : UNPARSEABLE_SEVERITY,
     });
   }
   return out;

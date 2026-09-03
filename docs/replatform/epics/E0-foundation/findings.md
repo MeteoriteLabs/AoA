@@ -4,15 +4,21 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
 
 ## E0-F001 — Ticket-result template vs Task-9 gate-regex format conflict (Start SHA / Disposition)
 
+- **Status:** resolved
 - **Severity:** Minor
 - **Blocks gate:** No (resolved inline by conforming the ledger to the gate format; template fix tracked below).
 - **Discovered during:** FND-001 independent review / controller gate-format pre-check.
 - **Evidence:** The Task-9 integration-gate parser in [`../implementation-plan.md`](../implementation-plan.md) Step 1 requires (a) FND-001's Start SHA as a **bare** 40-hex — `^\*\*Start SHA:\*\*\s*([0-9a-f]{40})\s*$` (no surrounding backticks), and (b) each ticket's Disposition as **backtick-wrapped** — `^\*\*Disposition:\*\*\s*` + `` `approved` ``. But [`../../../templates/ticket-result-template.md`](../../../templates/ticket-result-template.md) line 8 renders the Start SHA example **backtick-wrapped** (`**Start SHA:** \`<...>\``). The FND-001 implementer faithfully followed the template (backtick-wrapped Start SHA), and the FND-001 reviewer wrote a bare `approved` Disposition — both would fail the Task-9 regex.
 - **Affected tickets:** FND-001 (result ledger), FND-005 (owns `docs/replatform/templates`), all FND-00x result ledgers (format convention).
 - **Disposition:** Resolved for FND-001 by editing `tickets/FND-001-result.md` to the gate-conformant format — **bare** Start SHA, **backtick-wrapped** `` `approved` `` Disposition, `` `complete` `` Status — with the review substance (reviewer identity, reviewed revision, approved disposition, attempt-1 row) unchanged. **Convention for all remaining tickets:** implementers write `**Start SHA:** <bare-40-hex>`; reviewers write `**Status:** ` + `` `complete` `` and `**Disposition:** ` + `` `approved` ``; Reviewed revision may be bare or backticked (the gate regex allows optional backticks). **Carry-forward:** FND-005 should correct `ticket-result-template.md` line 8 so its Start SHA example is bare, matching the gate parser. Until then, this convention is authoritative over the template's example.
+- **Carry-forward closed (verified 2026-09-03):** `docs/replatform/templates/ticket-result-template.md:8`
+  now reads `**Start SHA:** 0000000000000000000000000000000000000000` — bare, not
+  backtick-wrapped — and lines 10-12 spell the requirement out in prose. The FND-005
+  carry-forward this finding was held open for is done, so the `Status:` is `resolved`.
 
 ## E0-F002 — FND-001 shared-checker code-hygiene carry-forward (fold into FND-002)
 
+- **Status:** open
 - **Severity:** Minor
 - **Blocks gate:** No.
 - **Discovered during:** FND-001 code-quality review (disposition `approved`; items explicitly deferred to a later-ticket extension).
@@ -26,6 +32,7 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
 
 ## E0-F003 — Structural-checker negation/row-pinning hardening (carry into FND-003/FND-007)
 
+- **Status:** open
 - **Severity:** Minor
 - **Blocks gate:** No.
 - **Discovered during:** FND-002 code-quality review (disposition `approved`; both notes make the checker stronger than the plan's substring-only requirement, so neither violates the stated acceptance).
@@ -37,6 +44,7 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
 
 ## E0-F004 — Threat-controls parity fields not in required-field set (carry into FND-004)
 
+- **Status:** resolved
 - **Severity:** Minor
 - **Blocks gate:** No.
 - **Discovered during:** FND-003 code-quality review (disposition `approved`).
@@ -46,6 +54,7 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
 
 ## E0-F005 — FND-005 exclusions test: plan `createApp()` unit-import vs. codebase drizzle-ESM constraint (ratified deviation)
 
+- **Status:** resolved
 - **Severity:** Minor
 - **Blocks gate:** No.
 - **Discovered during:** FND-005 implementation (reported DONE_WITH_CONCERNS) + controller investigation.
@@ -56,6 +65,7 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
 
 ## E0-F006 — FND-005 build reproducibility: digest-manifest pin vs. committed snapshot bytes (ratified deviation)
 
+- **Status:** resolved
 - **Severity:** Minor
 - **Blocks gate:** No.
 - **Discovered during:** FND-005 implementation (reported DONE_WITH_CONCERNS) + controller investigation.
@@ -67,6 +77,7 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
 
 ## E0-F007 — FND-006 test-flip scope deviation + FND-008 carry-forwards (ratified)
 
+- **Status:** open
 - **Severity:** Minor
 - **Blocks gate:** No.
 - **Discovered during:** FND-006 implementation (DONE_WITH_CONCERNS) + spec + code-quality review (both approved; every flip corroborated source-correct).
@@ -79,6 +90,7 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
 
 ## E0-F008 — FND-008 marketplace-install 404 deviation + residual minors (ratified)
 
+- **Status:** open
 - **Severity:** Minor
 - **Blocks gate:** No (marketplace-install is fail-closed; Decision #103 execution exclusion fully met).
 - **Discovered during:** FND-008 implementation (DONE_WITH_CONCERNS) + spec + code-quality review (both approved).
@@ -91,6 +103,7 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
 
 ## E0-F009 — Task-9 embedded-PG integration gate caught 2 defects (fixed)
 
+- **Status:** resolved
 - **Severity:** Medium
 - **Blocks gate:** No (both fixed + re-verified green before the gate decision).
 - **Discovered during:** Task-9 integration gate — the short-path detached worktree (`C:/e0gate`) embedded-Postgres run (`AOA_RUN_WIN_INTEGRATION=1`) of the FND-006/008 cloud-denial integration proofs, which the OneDrive worktree cannot run (embedded-PG MAX_PATH). The unit tests + `pnpm -r typecheck` + independent source-review did NOT catch these — running the DB-backed integration tests locally did (initial run: 84/86; after fix: 86/86).
