@@ -153,11 +153,18 @@ Sizes are the sweep's, corrected by a verification pass. They are indicative, no
 | **C — tools** | **L–XL** | A brokered HTTP `aoa` MCP config plus its env vars, and a run-identity credential as a second secret handle, so `mcp__aoa__*` is actually callable |
 | **D — context** | **M** | ✅ **DONE 2026-09-03** (§4a). The instructions bundle reaches the sandbox on `--append-system-prompt-file` (claude) / prepended to stdin (codex), and the prompt stops being a positional — it is a staged file the script redirects onto stdin. **Closes E7-F008 and E7-F009.** Targets the **E2B/desktop lane** (E7-F011 leaves the networked lane refusing, not silently context-free) |
 | **E — workspace** | **XL** | A repository to work in. `workspaceV1Schema` requires a `manifestArtifactId` that has **zero producers**; `buildWorkspaceManifest` walks a LOCAL filesystem and cannot be pointed at an E2B sandbox |
-| **F — the return path** | **XL** | Output capture is **four** unbuilt links: the E2B driver never passes stream handlers; `stdoutRef`/`stderrRef` are fabricated literals, not references to stored bytes; `observeRun` is uncomposed (its absence is *pinned by a test*); `buildWorkspacePatch` and `createResultCommitter` have zero production callers |
+| **F — the return path** | ~~**XL**~~ **L** | ★ **RE-MEASURED 2026-09-03 — see [`CLI-008-unit-f-design.md`](./CLI-008-unit-f-design.md).** The XL estimate sized the `workspace_patch` route, which really is XL and really is Unit-E-blocked — but clause 6 is an **OR**, and that route is not the cheapest honest satisfier. **Three of the four links below flip NEITHER counter** (`log` events are not `job_artifacts` rows and not `task_outputs` rows), and the fourth is blocked behind Unit E *and* an in-sandbox manifest capture that does not exist — filed as **E7-F016**. The L route is one named file at a fixed absolute path Unit D's script already owns → provider export under an upload grant (grant→PUT→commit is live-proven 13/13 on the D1 lane, DAT-002 slice 7) → `log` artifact → projected onto the task from the already-composed terminal projector. **E7-F015** (the bar is forgeable by a board POST) closes first |
 
 ★ **The control-plane half of F is already shipped** — `job_artifacts` carries RLS, grants, a commit
 path, an orphan sweeper and DR manifest reconciliation. What is missing is a **producer**. That is
 worth knowing before anyone estimates F as greenfield.
+
+★★ **And the producer is now named, concretely, rather than left as "output capture".** Unit F's
+design refuses to compose a bridge before its feed exists — the defect `job_artifacts` itself is the
+standing example of — so its slice order puts the producer (a declared output path, a real
+`exportArtifact`, a worker-side digest→grant→export→commit) ahead of the consumer (the projector),
+and its acceptance requires a `capabilityProven === false` run whose export failed, so a green cannot
+be manufactured by the consumer alone.
 
 
 ---
