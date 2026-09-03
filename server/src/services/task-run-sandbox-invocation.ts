@@ -150,11 +150,22 @@ export function buildSandboxInvocation(input: {
       break;
     case "codex_local":
       // No `--append-system-prompt-file` equivalent exists, so the bundle is concatenated
-      // ahead of the prompt on stdin — byte-for-byte what the legacy codex adapter does in
-      // process. `cat` is the last-but-one stage of a pipeline, so the invocation's exit
-      // code is still codex's own.
+      // ahead of the prompt on stdin — what the legacy codex adapter does in process
+      // (`codex-local/src/server/execute.ts:501-507`).
+      //
+      // ★ THE `echo` IS THE SEPARATOR, AND IT IS NOT COSMETIC. The legacy adapter joins the two
+      // with a blank line; a bare `cat "$2" "$1"` gives at most the bundle's own trailing
+      // newline, so the agent's standing instructions and its task run together — and if the
+      // bundle has NO trailing newline (a real possibility for an operator-edited file) its last
+      // line and the task's first line become one line. Inserting the blank line at the point of
+      // USE rather than baking it into the staged bytes keeps the staged file byte-identical to
+      // the host file, which is what lets the same object serve claude's
+      // `--append-system-prompt-file`.
+      //
+      // A pipeline's exit status is its LAST command's, so the invocation still reports codex's
+      // exit code, not `cat`'s.
       script = input.hasInstructions
-        ? `${guard}; cat "$2" "$1" | "$0" exec --json -`
+        ? `${guard}; { cat "$2"; echo; cat "$1"; } | "$0" exec --json -`
         : `${guard}; exec "$0" exec --json - < "$1"`;
       break;
     default:

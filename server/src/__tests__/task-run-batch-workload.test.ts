@@ -284,7 +284,25 @@ describe("the instructions bundle (CLI-008 Unit D)", () => {
     const result = buildTaskRunBatchWorkload(
       input({ adapterType: "codex_local", runtimeCommandSpec: { command: "codex" }, instructions: INSTRUCTIONS }),
     );
-    expect(result.ok && result.workload.args[1]).toContain('cat "$2" "$1" | "$0" exec --json -');
+    expect(result.ok && result.workload.args[1]).toContain('{ cat "$2"; echo; cat "$1"; } | "$0" exec --json -');
+  });
+
+  // ★ The blank line between the bundle and the task is the legacy adapter's own \n\n
+  // separator, moved to the point of use. Without it the agent's standing instructions and its
+  // task run together as one block — and a bundle with no trailing newline would join its last
+  // line to the task's first. Staging the separator INTO the bytes was rejected: the same staged
+  // object also serves claude's `--append-system-prompt-file`, and it should stay byte-identical
+  // to the host file the legacy path reads.
+  it("separates the codex bundle from the prompt with a blank line", () => {
+    const result = buildTaskRunBatchWorkload(
+      input({ adapterType: "codex_local", runtimeCommandSpec: { command: "codex" }, instructions: INSTRUCTIONS }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.workload.args[1]).toContain("; echo; ");
+    // …and the staged bytes are still exactly the host file's.
+    const staged = result.stagedFiles.find((file) => file.path === STAGED_INSTRUCTIONS_PATH);
+    expect(new TextDecoder().decode(staged!.bytes)).toBe(INSTRUCTIONS);
   });
 
   it.each([

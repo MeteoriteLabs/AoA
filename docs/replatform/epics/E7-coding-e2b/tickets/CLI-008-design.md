@@ -167,7 +167,11 @@ worth knowing before anyone estimates F as greenfield.
 **The one-sentence shape.** `workload.command` becomes `sh`; `args` becomes a FIXED `-c <script>`
 plus the adapter's real binary and one or two constant absolute paths; the prompt and the
 instructions bundle ride Unit B's staging channel as bytes; the script redirects the prompt onto the
-CLI's stdin and points `--append-system-prompt-file` at the staged bundle.
+CLI's stdin and points `--append-system-prompt-file` at the staged bundle. For codex — which has no such flag — the bundle
+is concatenated ahead of the prompt on stdin **with a blank line between them**, matching the legacy
+adapter's own separator; the separator is inserted at the point of USE (`{ cat "$2"; echo; cat "$1"; }`)
+rather than baked into the staged bytes, so the same staged object stays byte-identical to the host
+file and can also serve claude's flag.
 
 ```
 sh -c 'for f in "$1" "$2"; do [ -r "$f" ] || { echo "[cli-008] staged input missing: $f" >&2; exit 78; }; done;
