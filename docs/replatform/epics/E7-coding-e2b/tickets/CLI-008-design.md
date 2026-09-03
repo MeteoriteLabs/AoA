@@ -321,6 +321,14 @@ binary, so this half was measured separately and is NOT an E2B result:
   `transport.writeFiles`). The lane calls `writeFiles` directly, proving the sandbox-side half —
   the paths, the bytes, the argv — not the pointer's journey. That still needs the fleet.
 
+**★★ The lane was made to FAIL, on purpose, before it was trusted.** A green live lane that cannot
+go red proves nothing. `shellJoin` was mutated to the naive `[command, ...args].join(" ")` on a
+throwaway branch and the lane was dispatched against it (`33790235730`): **3/3 red**, with
+`CommandExitError: exit status 2` — `sh`'s own usage error, because `sh -c` received only the first
+word of the script. That is exactly the historical bug `real-transport-helpers.ts` was written to fix
+(*"`sh -c` received only `printf` and the rest became `$0`/redirections"*), so the lane reds on the
+real defect in the mechanism it claims to prove, not on an incidental. The branch was deleted.
+
 **Two findings came out of running it:** **E7-F013** (LOW — the codex separator is one newline or two
 depending on the staged bundle's trailing newline, so the legacy-parity claim holds conditionally)
 and **E7-F014** (MEDIUM — a non-zero exit is thrown rather than returned, so every failing

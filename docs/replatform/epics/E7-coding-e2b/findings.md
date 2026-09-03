@@ -808,7 +808,14 @@ shape should settle it. **Both branches are now pinned by the live lane**
 **Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-design.md`) — Unit F, output capture
 **Severity:** MEDIUM · **Filed:** 2026-09-03, by the CLI-008 Unit D LIVE verification lane.
 **Observed in a real E2B sandbox**, not argued: run `33789547290`, log line
-`[cli-008 unit-d] non-zero exit carrier = throw, exitCode = 78`.
+`[cli-008 unit-d] non-zero exit carrier = throw, exitCode = 78`. Confirmed a second time by the
+mutation run `33790235730`, whose stack trace names the SDK class and the exact line:
+
+```
+CommandExitError: exit status 2
+ ❯ CommandHandle.wait  node_modules/e2b@2.30.5/src/sandbox/commands/commandHandle.ts:176:13
+ ❯ RealE2bTransport.runCommand  src/real-transport.ts:116:22
+```
 
 **What.** `MockE2bTransport.runCommand` RETURNS a crashed terminal —
 `{ exitCode: 1, crashed: true }` (`mock-transport.ts:130-137`). The real transport does not: the
