@@ -406,6 +406,12 @@ distinction matters — a 60-minute `verify` cap once masked a real hang here fo
 a cap is a legitimate move only when the cause is measured and is not a hang. It is measured, and
 it is not a hang.
 
+★ **It is still growing, and the raise was not generous — it was necessary.** The very next run
+after the cap went to 12 minutes (`33859560367`, sha `da8abcc2f`) recorded `Setup pnpm` at
+**424s** — worse than the 287s that caused the cancellation, ~100× the 4s baseline — for a job
+total of **499s**. An 8-minute cap would also have failed. DEP-013's own two steps in that job
+cost **1s each**, so nothing in this ticket is the load.
+
 **Blocks:** nothing, now that the cap is raised.
 
 **What would have to change.** Two candidate remediations, and choosing between them is a real
@@ -415,3 +421,9 @@ almost entirely the action's own download/cache work rather than dependency inst
 pinned-binary or cached-store approach would remove it; or (b) if the cost is irreducible, give
 job durations a consumer — the same argument as DEP-013 one register over, since a step time is a
 verdict nobody reads until it crosses a cap. Filed `unowned` because no ticket is doing either.
+
+★ **One free lead for whoever takes it:** PR **#321** (`bump pnpm/action-setup from 6.0.9 to
+6.0.10`) is open and untouched. It is a CANDIDATE, not a diagnosis — the correlation has not been
+measured, and the growth could equally be CDN-side. But it is the cheapest thing to test first,
+and it is already sitting in the queue: check whether 6.0.10 restores the 4s step before
+attempting anything larger.
