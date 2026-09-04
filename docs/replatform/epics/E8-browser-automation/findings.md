@@ -215,17 +215,74 @@ finding's residual.
 
 ---
 
-## E8-F003 — Sandbox egress is enforced at none of the three candidate points, and four programme records state the constraint as fact
+## E8-F003 — A Critical threat control is recorded as owned-and-delivered while its enforcement does not exist anywhere: sandbox egress is filtered at none of the three candidate points, and the cloud metadata endpoint answers from inside the guest
 
 **Status:** open · **Owner:** `unowned`
 **Severity:** HIGH
 **Filed:** 2026-09-04, by BRW-004 slice (a), MEASURED against real E2B sandboxes in workflow run
 `33857218680` (`.github/workflows/keyed-e2b-egress-constraint-probe.yml`).
-**Re-verified and re-scoped 2026-09-04** at `da1a90597` by the E8-F003 disposition unit. Every
-claim below was re-measured rather than inherited; §3 and §4 are new, and §5 corrects a claim the
-triage that opened this unit carried.
+**Re-verified 2026-09-04** at `da1a90597` by the E8-F003 disposition unit; **re-headlined, and the
+machine-readable register entry repaired, 2026-09-05** after review. Every claim below was
+re-measured rather than inherited. §7 states what changed on review — including a correction to
+this unit's own first commit, which took a downgrade it said it had not taken.
 
-### 1. What was measured, and how
+### 1. ★★★ The headline: four programme records state this control as fact, and one is a Critical crossing whose sole owner has already shipped
+
+This is what the finding is *for*. The measurement (§2–§4) is the evidence; **the misrepresentation
+is the defect**, and it outranks the disposition question this unit was opened to answer.
+
+**1. `docs/architecture/distributed-execution-threat-controls.json`, `DE-08`, severity `Critical`.**
+Its `failureMode` is *"a workload reaches cloud metadata or the control plane"* — **which is
+literally what §2 measured happening**. Its clauses are written as statements of fact:
+`confidentiality` = *"internal metadata and control-plane ranges are unreachable"*; `authorization`
+= *"default-deny; only allowlisted destinations are permitted"*; `integrity` = *"blocked IP/DNS
+ranges cannot be reached via rebinding"*; `trustedSide` = *"filtered egress and a
+credential-injecting proxy"*. Its **sole** `ownerTickets` entry is **DAT-005**, whose chartered
+outcome (`program-design.md:726`) was to *"**Enforce** default-deny destination policy through the
+fence-aware egress path, block private/metadata/control-plane ranges and direct bypass"* — and
+whose result doc (`DAT-005-result.md:3`) reads **`Status: COMPLETE`**.
+
+> **A Critical control whose owner column is exhausted, whose enforcement does not exist at any
+> layer, and whose record carries no field able to distinguish *required* from *delivered*, is a
+> live misrepresentation of this programme's security posture.** Nothing in the JSON is marked
+> pending, deferred, or planned; a reader — human, or the `REL-001` release gate the record itself
+> names as its `releaseTest` — has no way to tell it apart from a control that is genuinely
+> enforced.
+
+**2. `docs/replatform/program-design.md:149`, under a heading reading "Security invariants":**
+*"Sandbox egress is default deny. Metadata endpoints, RFC1918 destinations, worker-host control
+ports, and the AoA data plane are denied unless explicitly required."* `:146` adds *"Every governed
+or metered external effect uses a fence-aware egress proxy…"*. It sits in a list beside invariants
+that **do** hold (non-owner role plus forced RLS; secret handles, not plaintext secrets, in job
+envelopes). Nothing in the section distinguishes an invariant that is enforced from one that must
+still be built.
+
+**3. `docs/architecture/distributed-execution-threat-model.md:121`, "Residual risks and release
+exclusions"** — the one place in the programme where an unmitigated Critical would be disclosed —
+**omits DE-08, while listing a sibling egress exclusion** (*"Unvalidated gVisor bridge egress"*,
+`:129`). A reader is entitled to infer from that asymmetry that this one is covered. The section's
+own preamble says the items it lists *"are not mitigated by the controls above"*, which places
+everything absent from it on the mitigated side.
+
+**4. `epics/E5-workspaces-secrets/qa/2026-08-24-d0-e5-exit-gate-audit-a1.md:36`** grades the E5
+exit-gate clause **"denied egress"** as one of only **two** clauses `proven_in_d1` — the strongest
+grade the audit issues, in an audit whose own thesis is that most clauses are graded too generously.
+Its basis is `tests/d1/e6f-08-egress-isolation.test.mjs`, which proves unreachability of *the
+identical targets* — `169.254.169.254`, ECS metadata, private ranges, an arbitrary public address —
+by **docker-compose `internal: true` network segmentation around a container analog** (`worker-a`
+plus `fake-provider`). It never touches `createFenceAwareEgressProxy`, `classifyEgressDestination`,
+or the real provider. **The same words name two different subjects, and on the real one the result
+is the opposite.**
+
+**The line is sharp, and it is worth stating precisely:** the layer that *runs today* never claimed
+this — the deployed `cloud_auth` spec discloses the gap in writing, and every producer comment and
+ticket-level doc is honest (§5), and the measurement CONFIRMS them. The layer that *claims* it is
+the distributed programme, four times. **Confirms at the layer that runs; contradicts at the layer
+that claims.** That the claiming path is default-off is why this is a finding and not an incident —
+a reason with an expiry date, because it holds only while distributed execution stays off, and the
+record's own `releaseTest` is chartered to turn it on.
+
+### 2. What was measured, and how
 
 BRW-004 design §D3 option (b) and §7 Q2 both rest on a question terrain §12 recorded as
 unestablished: can the sandbox provider constrain a sandbox's outbound egress at all? The probe
@@ -246,18 +303,41 @@ run; runs `33855470353` and `33856090430` were reported INCONCLUSIVE by the appa
 no verdict was taken from either. The per-run record, including both inconclusive runs and what
 each fixed, is `.github/keyed-e2b-egress-constraint-trigger`.
 
-**The metadata row is an observation in its own right, and the status code is the whole point.**
-`169.254.169.254` returned **HTTP 401**, not a timeout and not a connection error — that is an
-IMDSv2 token challenge, i.e. a **live metadata service answering**, not a dropped packet. It
-answered in BOTH arms. So only IMDSv2's token requirement stands between sandboxed, agent-authored
-code and that endpoint. This half is broader than E8: every workload in a sandbox shares the
-reachability, not only browser sessions.
+**The metadata row is a second measured finding in its own right, not a footnote to the first, and
+the status code is the whole point.** `169.254.169.254` returned **HTTP 401** — not a timeout and
+not a connection error. That is an IMDSv2 token challenge: a **live metadata service answering**,
+not a dropped packet. It answered in **both** arms. So only IMDSv2's token requirement stands
+between sandboxed, agent-authored code and that endpoint. **This half is broader than E8**: every
+workload in a sandbox shares the reachability, not only browser sessions — which is why a successor
+scoped to browser sessions alone would not close it.
 
 **Consequence for BRW-004's design.** §D3 option (b) — constrain egress at the provider — is
 **unavailable**, so the in-sandbox enforcement point D3(c) is the ONLY layer rather than defence in
 depth. A browser induced to reconfigure its own proxy is contained by nothing else.
 
-### 2. The producer seam, traced end to end
+### 3. There is no enforcement layer at ANY of the three candidate points
+
+Each point was measured separately, at this SHA.
+
+1. **Provider level — MEASURED INERT.** §2. A host absent from the declared allowlist was reached
+   from inside the sandbox that declared it, identically to a control sandbox that declared none.
+2. **In-sandbox — UNBUILT.** BRW-004 §D3 option (c) is the chosen enforcement point and is slice
+   (f). `BRW-004-result.md:15` and `:99` record slices (f)–(h) as not attempted, and `:366` books
+   the acceptance condition *"allowed domains … are enforced"* as `deferred`.
+3. **Proxy — ZERO PRODUCTION CALLERS.** `classifyEgressDestination` (`egress-policy.ts:228`) is
+   correct, ranks `metadata` as the highest-precedence deny class (`NETWORK_DENIAL_CLASSES`,
+   `:69-74`), and is dual-driven in the always-on `policy` lane against two committed fixture
+   corpora. Its **only** non-test consumer is `createFenceAwareEgressProxy`
+   (`egress-proxy.ts:146,239`) — and `egress-proxy.ts` is imported by exactly one file in the
+   repository, the integration test `server/src/__tests__/egress-proxy.integration.test.ts:29`. Two
+   production comments assert the same independently (`routes/worker-control.ts:160`,
+   `services/execution-secret-resolve.ts:7`). The chain is unreachable from boot: the classifier's
+   only route into production is a module nothing imports.
+
+**So the classification exists and the enforcement does not — at any layer.** What that blocks is
+therefore not a build task. It is THE CLAIM (§1) that sandbox egress is constrained.
+
+### 4. The producer seam, traced end to end
 
 Both production sites compute the allowlist and pass it into a real acquire — verified at this SHA,
 not quoted: `heartbeat.ts:4448` (org runs) and `internal-agent/aoa-agents/runner.ts:714` (crew runs)
@@ -270,84 +350,27 @@ none of which enforce**: the E2B `Sandbox.create` call's `metadata` as a comma-j
 metadata (`:385`). There is no fourth consumer. The comment at the E2B site says so itself —
 *"S4 — best-effort managed recording only"*.
 
-### 3. ★ There is no enforcement layer at ANY of the three candidate points
+### 5. The other side of the line — where the gap IS disclosed, honestly
 
-This is the part that makes the finding what it is, and each point was measured separately.
+The measurement **confirms** every one of these; none is contradicted, and none is the defect in §1.
 
-1. **Provider level — MEASURED INERT.** §1. A host absent from the declared allowlist was reached
-   from inside the sandbox that declared it, identically to a control sandbox that declared none.
-2. **In-sandbox — UNBUILT.** BRW-004 §D3 option (c) is the chosen enforcement point and is slice
-   (f). `BRW-004-result.md:15` and `:99` record slices (f)–(h) as not attempted, and `:366` books
-   the acceptance condition *"allowed domains … are enforced"* as `deferred`.
-3. **Proxy — ZERO PRODUCTION CALLERS.** `classifyEgressDestination` (`egress-policy.ts:228`) is
-   correct, ranks `metadata` highest (`:69-74`), and is dual-driven in the always-on `policy` lane
-   against two committed fixture corpora. Its **only** non-test consumer is
-   `createFenceAwareEgressProxy` (`egress-proxy.ts:146,239`) — and `egress-proxy.ts` is imported by
-   exactly one file in the repository, the integration test
-   `server/src/__tests__/egress-proxy.integration.test.ts:29`. Two production comments assert the
-   same independently (`routes/worker-control.ts:160`, `services/execution-secret-resolve.ts:7`).
-   The chain is unreachable from boot: the classifier's only route into production is a module
-   nothing imports.
-
-**So the classification exists and the enforcement does not — at any layer.** What that blocks is
-therefore not a build task. It is THE CLAIM that sandbox egress is constrained.
-
-### 4. ★★ Where the constraint is claimed — the answer is both, and the line is sharp
-
-The producer comments already say *"NOT a security boundary"*
-(`mcp-connectors-env.ts:59-66`: "NOT a security boundary … advisory, managed-E2B-best-effort").
-The measurement **CONFIRMS** them, and confirms the rest of the honest set too:
-
-- **The deployed system's own spec discloses it.** `docs/aoa/plans/2026-08-05-cloud-execution-isolation-e2b-spec.md`
-  §12 first bullet: *"Managed-E2B egress is not fully lockable. On managed E2B, sandboxes get fairly
-  open egress; the 'allowlist' (Q2) may be closer to open in practice there."* Its §9 **Security
-  invariants** list contains **no egress invariant at all**, and Q2's own rationale (§3) says the
-  choice is *"not a cross-tenant control (data plane owns that)"*. Nothing at the deployed
+- **The producer comments.** `mcp-connectors-env.ts:59-66`: the allowlist is *"NOT a security
+  boundary … advisory, managed-E2B-best-effort"*. The probe measures that they are right, rather
+  than quoting them.
+- **The deployed system's own spec.** `docs/aoa/plans/2026-08-05-cloud-execution-isolation-e2b-spec.md`
+  §12, first bullet: *"Managed-E2B egress is not fully lockable. On managed E2B, sandboxes get
+  fairly open egress; the 'allowlist' (Q2) may be closer to open in practice there."* Its §9
+  **Security invariants** list contains **no egress invariant at all**, and Q2's rationale (§3)
+  calls the choice *"not a cross-tenant control (data plane owns that)"*. Nothing at the deployed
   `cloud_auth` layer represents egress as a security boundary, so the measurement breaks no promise
   there.
-- **Every ticket-level document is honest.** `DAT-005-result.md:14` records its own outbound channel
-  as the inert E4-D12 seam; `DSK-001-lane-B-design.md:20-31` states the zero-caller fact up front
-  and calls it the plan rather than an oversight; `DSK-002-result.md:161-163` explicitly refuses to
-  report `sandbox.filtered_egress` because *"neither Docker's default bridge nor a bare OS sandbox
-  filters egress"*.
+- **Every ticket-level document.** `DAT-005-result.md:14` records its own outbound channel as the
+  inert E4-D12 seam; `DSK-001-lane-B-design.md:20-31` states the zero-caller fact up front and calls
+  it the plan rather than an oversight; `DSK-002-result.md:161-163` explicitly refuses to report
+  `sandbox.filtered_egress` because *"neither Docker's default bridge nor a bare OS sandbox filters
+  egress"*.
 
-Four **programme-level** records, however, state the constraint in the present indicative, and it is
-these the measurement **CONTRADICTS**:
-
-1. `docs/replatform/program-design.md:149`, in a section headed **"Security invariants"**, beside
-   invariants that are genuinely enforced (non-owner role + forced RLS; secret handles, not
-   plaintext): *"Sandbox egress is default deny. Metadata endpoints, RFC1918 destinations,
-   worker-host control ports, and the AoA data plane are denied unless explicitly required."*
-   `:146` adds *"Every governed or metered external effect uses a fence-aware egress proxy…"*.
-   Nothing in the section distinguishes an invariant that holds from one that must be built.
-2. `docs/architecture/distributed-execution-threat-controls.json`, **DE-08**, severity **Critical**:
-   `confidentiality` = *"internal metadata and control-plane ranges are unreachable"*;
-   `authorization` = *"default-deny; only allowlisted destinations are permitted"*; `trustedSide` =
-   *"filtered egress and a credential-injecting proxy"*. Its `failureMode` is *"a workload reaches
-   cloud metadata or the control plane"* — **which is literally what §1 measured**. Its sole
-   `ownerTickets` entry is DAT-005, whose chartered outcome (`program-design.md:726`) is to
-   *"**Enforce** default-deny destination policy … and block private/metadata/control-plane ranges
-   and direct bypass"* and which is marked **COMPLETE**. The owner column is exhausted; the control
-   is absent; the record carries no field that could tell those apart.
-3. `docs/architecture/distributed-execution-threat-model.md` renders DE-08 and then, in **"Residual
-   risks and release exclusions"** — the one place an unmitigated Critical would be disclosed —
-   omits it, **while listing a sibling egress exclusion** (*"Unvalidated gVisor bridge egress"*). A
-   reader is entitled to infer from that asymmetry that this one is covered.
-4. `epics/E5-workspaces-secrets/qa/2026-08-24-d0-e5-exit-gate-audit-a1.md` grades the E5 exit-gate
-   clause **"denied egress"** as one of only two clauses `proven_in_d1`. Its basis is
-   `tests/d1/e6f-08-egress-isolation.test.mjs`, which proves unreachability of *the identical
-   targets* — `169.254.169.254`, an arbitrary public address — by **docker-compose `internal: true`
-   network segmentation around a container analog** (`worker-a` plus `fake-provider`). It never
-   touches `createFenceAwareEgressProxy`, `classifyEgressDestination`, or the real provider. The
-   same words name two different subjects, and on the real one the result is the opposite.
-
-**The answer to "confirms or contradicts" is therefore: confirms at the layer that runs, contradicts
-at the layer that claims.** The deployed `cloud_auth` path never asserted egress as a control; the
-distributed programme asserts it four times and is default-off, so nothing is currently exploitable
-*through the claiming path*. That is the reason this is not an incident — and it is a reason with an
-expiry date, because it holds only while distributed execution stays off.
-
-### 5. A correction to the record
+### 6. A correction to the record — the guard that should have kept this visible had gone silent
 
 The triage that opened this unit stated that the zero-caller status is evidenced in part by the
 symbol's *"presence in the repo's own unprovable-clause inventory"*. At `da1a90597` that was **not
@@ -361,35 +384,48 @@ impossible reported nothing about the one capability that was in exactly that st
 Fixed in the same branch: re-enrolled as `E5-6-denied-egress` → `unwired`, mutation-proven to go red
 if it is ever flipped to `wired`, and now printed in the DORMANT line on every green run.
 
-### 6. Disposition — HIGH is unchanged, and here is why it does not move
+### 7. Disposition — HIGH is unchanged; and a correction to this unit's own first commit
 
-The evidence that arrived since filing **raises** the case rather than lowering it: three
-enforcement points instead of one are measured absent (§3); four programme records assert the
-control (§4), one of them rating the exact measured event Critical with an exhausted owner; and the
-mechanism that would have kept the gap visible had gone silent (§5). No evidence supports a
-downgrade. The nearest thing to an argument for one — "the claiming system is default-off" — is a
-statement about *reachability of the claim*, not about the truth of it, and it is already the reason
-this is filed rather than escalated.
+**The severity does not move, and the reason is positive rather than an absence of evidence.**
+Everything found since filing **raises** the case: three enforcement points instead of one measured
+absent (§3); four programme records asserting the control (§1), one of them rating the exact
+measured event `Critical` with an exhausted owner; and the mechanism that would have kept the gap
+visible had itself gone silent (§6). The nearest thing to an argument for a downgrade — "the
+claiming system is default-off" — is a statement about the *reachability of the claim*, not about
+its truth, and it is already the reason this is filed rather than escalated.
+
+**★ A downgrade was nevertheless taken, and this corrects it.** Commit `2e548fdae` on this branch
+rewrote `scripts/finding-ownership.json`'s `E8-F003` entry and, in doing so, **dropped the entire
+second measured half** — the metadata endpoint answering `401` from inside the guest, IMDSv2 as the
+only remaining barrier, and the "broader than E8, every sandboxed workload" scope — from both
+`reason` and `successor`, while that commit's own message asserted *"Nothing supports a downgrade,
+so none is taken."* The `Severity` field never moved, so no guard could see it: **the register entry
+had silently become weaker than the prose it indexes, which is a downgrade by subtraction.** Both
+halves are restored, and the entry now leads with the §1 misrepresentation. The rule this cost:
+*a machine-readable entry must never be weaker than the prose beside it, and a claim about a diff is
+part of the deliverable and is reviewed like the diff.*
 
 **Scope, stated so it is not over-read.** This measures the seam AoA production actually uses. It
 says nothing about an E2B capability AoA does not call; it does not establish that the metadata
-endpoint is exploitable, only that it is reachable and answering; and the `169.254.169.254` service
-belongs to the **provider's** infrastructure, so what credentials it might yield to a token-bearing
+endpoint is **exploitable**, only that it is reachable and answering; and the `169.254.169.254`
+service belongs to the **provider's** infrastructure, so what it would yield to a token-bearing
 caller is unmeasured. Nothing here asserts a cross-tenant breach: the deployed blast-radius reframe
 (spec §9) is untouched.
 
 **Why `unowned`, and what it blocks.** No ticket in the roster is chartered to wire egress
 enforcement for the path that was measured. BRW-004 slice (f) is real, open (`gate_review`) and the
 only chartered candidate — but it is scoped to browser sessions, and the measurement is of org
-heartbeat runs and crew runs, neither of which is a browser session. The two tickets that *were*
+heartbeat runs and crew runs, neither of which is a browser session; and the metadata half (§2) is
+broader still, since every sandboxed workload shares the reachability. The two tickets that *were*
 chartered to reach this path have both shipped without it and said so: DAT-005 (COMPLETE) and
 DSK-002 (`…mediate device-local handles through the DAT-004 broker plus fence-aware egress path`).
 Naming either as the successor would be filing against a closed ticket; naming a new one would be
 inventing an owner. So this stays `unowned` **with a reason saying what it blocks**: until an
 enforcement point exists, `program-design.md:149`, DE-08's `confidentiality`/`authorization`/
-`integrity` clauses, and the E5 gate's "denied egress" clause cannot be asserted of the real
-provider. **Repoint it when a ticket takes egress enforcement for the sandbox path — not for the
-browser path alone. Do NOT close it by citing `classifyEgressDestination`, the `policy`-lane vectors
+`integrity` clauses, and the E5 gate's "denied egress" clause **cannot be asserted of the real
+provider**, and DE-08's own record cannot distinguish that from delivery. **Repoint it when a ticket
+takes egress enforcement for the sandbox path — not for the browser path alone, and not for the
+egress half alone. Do NOT close it by citing `classifyEgressDestination`, the `policy`-lane vectors
 gates, or `e6f-08`: the first two exercise a pure function no production path reaches, and the third
 measures a docker network, not a sandbox.**
 
