@@ -17,13 +17,16 @@
  *     FAILS (least-privilege "no more");
  *   - a missing `deps` stage / missing Dockerfile is reported.
  *
- * E6-F012 added a SECOND, separately-reported question about the NEXT stage —
- * whether the `build` stage absorbs the wider set `pnpm --filter "X..." build`
- * selects (it traverses devDependencies; the deps stage's closure does not). Those
- * cases are grouped at the bottom of this file. Two of them exist specifically to
- * pin the rule as CONDITIONAL: an image with no divergence owes nothing, and one
- * workspace devDependency is what flips the obligation on — with the deps-stage
- * verdict provably unmoved, because the wrong fix is to widen `deps`.
+ * E6-F012 added TWO further, separately-reported questions about the NEXT stage:
+ *   (a)+(b) does the `build` stage ABSORB the wider set `pnpm --filter "X..." build`
+ *           selects (it traverses devDependencies; the deps stage's closure does not)?
+ *   (a2)    is what the build line SELECTS actually covered by what an install there
+ *           selected? (a) tests only the FLAG on the re-install and is satisfied by an
+ *           install that absorbs nothing — measured, on the real tree.
+ * Those cases are grouped at the bottom of this file. Two of them exist specifically to
+ * pin the (a)/(b) rule as CONDITIONAL: an image with no divergence owes nothing, and one
+ * workspace devDependency is what flips the obligation on — with the deps-stage verdict
+ * provably unmoved, because the wrong fix is to widen `deps`.
  */
 
 import { test } from "node:test";
@@ -561,4 +564,269 @@ test("E6-F012: `FROM deps AS build` inherits the deps stage's COPYs", (t) => {
     0,
     "inheritance not followed: " + errors.join(" | "),
   );
+});
+
+
+// ===========================================================================
+// E6-F012 clause (a2) — the BUILD selection vs the INSTALLED selection.
+//
+// ★ WHY THIS BLOCK EXISTS: clause (a) above tests a FLAG, not a SELECTION. It asks
+// only "is there a `pnpm install` in this stage without `--prod`/`--filter-prod`?",
+// so it is satisfied by an install that absorbs nothing. That was MEASURED on the
+// real tree at `da1a90597`: narrowing the control-plane build stage's re-install to
+// `--filter "@armyofagents/worker-protocol..."` while leaving its
+// `--filter "@armyofagents/server..." --filter "@armyofagents/ui..." build` line alone
+// left the entire gate GREEN — which is `c3d26657d`'s failure mode exactly. The first
+// case below is that probe in fixture form, and it is the anti-regression pin.
+//
+// TWO fixture shapes are needed here and the difference is load-bearing:
+//   * `dockerfile()` above emits `FROM deps AS build`, and its `deps` stage runs a
+//     BARE `pnpm install` — the whole workspace. Inheritance therefore makes every
+//     build line covered, which is CORRECT and is the fourth case below.
+//   * the real control-plane and adapter-manager images use `FROM base AS build`,
+//     so nothing is inherited and the stage's own install is the whole story. That
+//     is `unrootedDockerfile()`, and it is the shape the measured probe lives in.
+// A case written against the wrong one of these passes for the wrong reason.
+// ===========================================================================
+
+/**
+ * The real control-plane/adapter-manager shape: a `build` stage rooted at `base`
+ * rather than at `deps`, so it inherits NO install and NO COPYs.
+ */
+function unrootedDockerfile(depsCopies, depsInstall, buildLines) {
+  return [
+    "FROM node@sha256:" + "0".repeat(64) + " AS base",
+    "FROM base AS deps",
+    "WORKDIR /app",
+    "COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./",
+    ...depsCopies,
+    "COPY patches/ patches/",
+    depsInstall,
+    "FROM base AS build",
+    "COPY --from=deps /app /app",
+    ...buildLines,
+    "FROM base AS production",
+    'CMD ["node","x.js"]',
+    "",
+  ].join("\n");
+}
+
+const CP_BUILD_LINE = 'RUN pnpm --filter "@armyofagents/server..." --filter "@armyofagents/ui..." build';
+const CP_DEPS_INSTALL =
+  'RUN pnpm install --frozen-lockfile --filter "@armyofagents/server..." --filter "@armyofagents/ui..."';
+
+test("E6-F012 (a2): install and build selecting the SAME set passes clean", (t) => {
+  const root = setup(t, {
+    control: unrootedDockerfile(CONTROL_DEPS, CP_DEPS_INSTALL, [
+      "COPY . .",
+      CP_DEPS_INSTALL,
+      CP_BUILD_LINE,
+    ]),
+  });
+  const { errors } = runDepsStageCheck(root);
+  assert.deepEqual(errors, [], errors.join(" | "));
+});
+
+test("E6-F012 (a2): a build stage that BUILDS NOTHING owes clause (a2) nothing", (t) => {
+  // The conditional, from the other side. The default fixture has an install and no
+  // build line; the subset test has no left-hand side and must not invent one.
+  const root = setup(t);
+  const { errors } = runDepsStageCheck(root);
+  assert.deepEqual(errors, [], errors.join(" | "));
+});
+
+test("E6-F012 (a2): an install INHERITED through `FROM deps` counts toward coverage", (t) => {
+  // A build stage may legitimately rely on its parent's install — the real worker image
+  // is `FROM deps AS build`, whose layer already holds that install. Reading installs
+  // stage-locally would red this shape as a false positive.
+  //
+  // The local install here is deliberately a NARROW one that covers almost nothing, so
+  // the parent's install is the ONLY thing covering server/ui/db/shared. Without it the
+  // case reds with four uncovered packages — which is what makes this a real test of the
+  // inheritance rather than of the "no install lines at all" early return.
+  const root = setup(t, {
+    control: dockerfile(CONTROL_DEPS, [
+      "COPY . .",
+      'RUN pnpm install --frozen-lockfile --filter "@armyofagents/worker-protocol..."',
+      CP_BUILD_LINE,
+    ]),
+  });
+  const { errors } = runDepsStageCheck(root);
+  assert.deepEqual(errors, [], errors.join(" | "));
+});
+
+test("E6-F012 (a2): a filter selector the parser cannot read is REPORTED, never silently skipped", (t) => {
+  // A glob (or any selector syntax this parser does not model) must not be read as
+  // "selects nothing" — that would turn the subset test into a vacuous pass, which is
+  // this programme's signature failure. It is named, with the fix pointed at the parser.
+  const root = setup(t, {
+    control: unrootedDockerfile(CONTROL_DEPS, CP_DEPS_INSTALL, [
+      "COPY . .",
+      CP_DEPS_INSTALL,
+      'RUN pnpm --filter "@armyofagents/*" build',
+    ]),
+  });
+  const { errors } = runDepsStageCheck(root);
+  assert.ok(
+    hasSubstr(errors, 'unparseable pnpm filter selector "@armyofagents/*" on a build line'),
+    errors.join(" | "),
+  );
+  assert.ok(hasSubstr(errors, "teach parseFilterSelectors about it"), errors.join(" | "));
+});
+
+
+test("E6-F012 (a2): a non-prod re-install NARROWER than the build line FAILS while (a) and (b) both pass", (t) => {
+  // ★ THE ANTI-REGRESSION PIN, and it is the measured evasion in fixture form.
+  //
+  // One workspace devDependency (`ui` -> `cli`) widens the build closure by one, exactly
+  // as `c3d26657d` did. Then:
+  //   clause (a) is SATISFIED  — the build stage does re-install, and non-prod.
+  //   clause (b) is SATISFIED  — `COPY . .` puts cli's manifest in the stage.
+  //   the deps stage cannot vouch for cli either: its `--filter "…/server…" "…/ui…"`
+  //     runs where only the five runtime manifests exist, and pnpm's `...` walks the
+  //     DISCOVERED workspace, so it installed five packages and not six.
+  // …and `pnpm --filter "…/server…" --filter "…/ui…" build` still compiles cli, with no
+  // node_modules. Only the SELECTION comparison sees it. Before clause (a2) existed the
+  // whole gate returned "split-image deps-stage parity: PASS" on precisely this shape.
+  const root = setup(t, {
+    control: unrootedDockerfile(CONTROL_DEPS, CP_DEPS_INSTALL, [
+      "COPY . .",
+      'RUN pnpm install --frozen-lockfile --filter "@armyofagents/worker-protocol..."',
+      CP_BUILD_LINE,
+    ]),
+    manifests: {
+      "ui/package.json": {
+        name: "@armyofagents/ui",
+        dependencies: { "@armyofagents/shared": "workspace:*" },
+        devDependencies: { "@armyofagents/cli": "workspace:*" },
+      },
+    },
+  });
+  const { errors } = runDepsStageCheck(root);
+  assert.ok(
+    hasSubstr(
+      errors,
+      "control-plane: the 'build' stage BUILDS 1 package(s) that no install there selected (@armyofagents/cli)",
+    ),
+    errors.join(" | "),
+  );
+  // The remedy must name the SELECTION, not the flag — the flag is what misled here.
+  assert.ok(hasSubstr(errors, "being non-prod is not enough"), errors.join(" | "));
+  // …and the other two clauses must stay silent, or this case would prove nothing about (a2).
+  assert.equal(
+    errors.filter((e) => e.includes("has NO re-install") || e.includes("absorbs nothing") || e.includes("has no manifest")).length,
+    0,
+    "clauses (a)/(b) must be satisfied here: " + errors.join(" | "),
+  );
+});
+
+test("E6-F012 (a2): a `COPY --from=<stage>` of the installed tree COUNTS as an install", (t) => {
+  // The control-plane/adapter-manager shape. `COPY --from=deps /app /app` brings deps'
+  // node_modules in wholesale, so the packages deps installed ARE resolvable here and
+  // reporting them would be a false positive. This case has NO local install at all and
+  // must pass; if the credit is ever dropped, every narrowed-but-legitimate build stage
+  // starts crying wolf, and a guard that cries wolf gets deleted.
+  const root = setup(t, {
+    control: unrootedDockerfile(CONTROL_DEPS, CP_DEPS_INSTALL, ["COPY . .", CP_BUILD_LINE]),
+  });
+  const { errors } = runDepsStageCheck(root);
+  assert.deepEqual(errors, [], errors.join(" | "));
+});
+
+test("E6-F012 (a2): a copy of something OTHER than the stage's workdir earns no install credit", (t) => {
+  // The limit on the rule above. `COPY --from=deps /app/patches ./patches` moves no
+  // install; crediting any `--from=` would let a narrowed re-install hide behind an
+  // unrelated cross-stage copy.
+  const control = unrootedDockerfile(CONTROL_DEPS, CP_DEPS_INSTALL, [
+    "COPY . .",
+    'RUN pnpm install --frozen-lockfile --filter "@armyofagents/worker-protocol..."',
+    CP_BUILD_LINE,
+  ]).replace("COPY --from=deps /app /app", "COPY --from=deps /app/patches ./patches");
+  const root = setup(t, { control });
+  const { errors } = runDepsStageCheck(root);
+  assert.ok(
+    hasSubstr(errors, "control-plane: the 'build' stage BUILDS 4 package(s) that no install there selected"),
+    errors.join(" | "),
+  );
+});
+
+test("E6-F012 (a2): a package ABSENT from the stage is left to clause (b), not double-reported", (t) => {
+  // pnpm's `...` walks the DISCOVERED workspace, so a package whose directory never
+  // entered the stage cannot be selected by the build line either. Clause (b) owns that
+  // case and names the right remedy (copy the manifest into `build`, NEVER into `deps`);
+  // clause (a2) must stay quiet about it, or one gap gets reported twice with two
+  // different fixes and the reader follows the wrong one.
+  //
+  // Here `shared` IS present and uninstalled (a2's case) while `sandbox-fake-provider`
+  // is absent (clause (b)'s case) — so the split is observable in a single run.
+  const root = setup(t, {
+    worker: unrootedDockerfile(
+      WORKER_DEPS,
+      'RUN pnpm install --frozen-lockfile --filter-prod "@armyofagents/worker-daemon..." --filter-prod "@armyofagents/worker-networked-host..."',
+      [
+        "COPY tsconfig.json ./",
+        "COPY packages/shared/ packages/shared/",
+        "COPY packages/worker-daemon/ packages/worker-daemon/",
+        "COPY packages/worker-protocol/ packages/worker-protocol/",
+        "COPY packages/worker-networked-host/ packages/worker-networked-host/",
+        "COPY packages/provider-wire/ packages/provider-wire/",
+        "COPY packages/provider-capability/ packages/provider-capability/",
+        "COPY packages/sandbox-e2b-provider/ packages/sandbox-e2b-provider/",
+        "COPY packages/sandbox-provider-contract/ packages/sandbox-provider-contract/",
+        'RUN pnpm install --frozen-lockfile --filter "@armyofagents/worker-protocol..."',
+        'RUN pnpm --filter "@armyofagents/worker-networked-host..." build',
+      ],
+    ),
+  });
+  const { errors } = runDepsStageCheck(root);
+  const a2 = errors.filter((e) => e.includes("that no install there selected"));
+  assert.equal(a2.length, 1, errors.join(" | "));
+  assert.ok(a2[0].includes("@armyofagents/shared"), a2[0]);
+  assert.ok(
+    !a2[0].includes("sandbox-fake-provider"),
+    "clause (a2) must not claim an ABSENT package as an install gap: " + a2[0],
+  );
+  assert.ok(
+    hasSubstr(errors, "worker: build-only closure package @armyofagents/sandbox-fake-provider has no manifest"),
+    errors.join(" | "),
+  );
+});
+
+test("E6-F012 (a2): `pnpm ... run build` is recognised, `pnpm ... deploy --prod` is not", (t) => {
+  // Two forms of the same thing must both count, or an image can rename its way out of
+  // the check. `pnpm deploy --prod` is excluded for a plain reason and not by a special
+  // case: it carries no whole-token `build`. All three real Dockerfiles run one in their
+  // `build` stage, so reading it as a build selection would red correct images — and a
+  // guard that reds correct Dockerfiles gets deleted rather than fixed.
+  //
+  // The deps credit is deliberately withheld (the cross-stage copy is of `patches`, not
+  // the workdir) so the ONLY install is the narrow local one; otherwise this case would
+  // pass no matter which lines were recognised.
+  const mk = (lastLine) =>
+    unrootedDockerfile(CONTROL_DEPS, CP_DEPS_INSTALL, [
+      "COPY . .",
+      'RUN pnpm install --frozen-lockfile --filter "@armyofagents/worker-protocol..."',
+      lastLine,
+    ]).replace("COPY --from=deps /app /app", "COPY --from=deps /app/patches ./patches");
+
+  const built = runDepsStageCheck(
+    setup(t, { control: mk('RUN pnpm --filter "@armyofagents/server..." run build') }),
+  ).errors;
+  assert.ok(
+    built.some((e) => e.includes("the 'build' stage BUILDS 3 package(s) that no install there selected")),
+    built.join(" | "),
+  );
+
+  const deployed = runDepsStageCheck(
+    setup(t, { control: mk('RUN pnpm --filter "@armyofagents/server..." deploy --prod /cp-app') }),
+  ).errors;
+  assert.deepEqual(deployed, [], deployed.join(" | "));
+
+  // …and `build` as a SUBSTRING is not a build line. Relaxing the token match to a
+  // substring would make `prebuild`, `/app/build` and `build-info` all read as build
+  // selections and red three correct images.
+  const substring = runDepsStageCheck(
+    setup(t, { control: mk('RUN pnpm --filter "@armyofagents/server..." exec node ./scripts/prebuild.mjs') }),
+  ).errors;
+  assert.deepEqual(substring, [], substring.join(" | "));
 });

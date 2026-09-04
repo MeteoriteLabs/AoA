@@ -307,6 +307,10 @@ into DEP-013.
 
 **RESOLUTION (2026-09-04).** Both halves closed, and the second half was worse than filed.
 
+> ★ **READ THE CORRECTION BELOW BEFORE QUOTING ANYTHING IN THIS SECTION.** Review refuted this
+> resolution's headline on 2026-09-05 — twice. The measurements below stand; two of the claims made
+> about them did not. The corrected statement of what actually ships is at the end of this entry.
+
 **Measured first.** The divergence was never hypothetical — every one of the three split images
 already diverges at `da1a90597`:
 
@@ -371,17 +375,102 @@ mutations 3 and 4 are what distinguish those two readings. What the guard newly 
 build stage copies selectively — i.e. the worker.
 
 **Not claimed.** This is static text analysis over the Dockerfiles and the manifests. It does not
-build an image, and it cannot see a manifest arriving by an explicit `COPY --from=<stage>` (none
-does today; `copiedContextSources` says so and must learn if one ever appears). The stated remedy
-in every error message points at the `build` stage and says "never to deps", because a guard whose
-message advises the least-privilege violation is worse than no guard. DEP-013's verdict consumer
-remains the mechanism that makes an actual image-build failure loud; this makes one class of it
-impossible to introduce silently, and the trigger fix is what lets the lane observe the class at all.
+build an image. The stated remedy in every error message points at the `build` stage and says
+"never to deps", because a guard whose message advises the least-privilege violation is worse than
+no guard. DEP-013's verdict consumer remains the mechanism that makes an actual image-build failure
+loud; this makes one class of it impossible to introduce silently, and the trigger fix is what lets
+the lane observe the class at all.
 
-Corpus: 10 new cases in `scripts/check-image-deps-stages.test.mjs` (25 total, all green). Two of
-them exist specifically to pin the rule as CONDITIONAL — an image with no divergence owes nothing,
-and one workspace devDependency flips the obligation on with the deps-stage verdict provably
-unmoved.
+---
+
+### ★★★ CORRECTION (2026-09-05) — the shipped HEADLINE overstated the shipped MECHANISM, twice
+
+Review refuted this entry's claim, not its measurements. Both corrections are recorded here in full,
+because a future reader believes the headline and only reaches the body once the headline has already
+misled them.
+
+**Correction 1 — a FALSE CLAIM OF ENFORCEMENT in the one file a filter-editor reads.** The comment
+added to `.github/workflows/d1-merge-train.yml` said `check-image-deps-stages.mjs` "now detects the
+divergence statically on every PR", directly beneath an antecedent naming *"a single workspace
+devDependency added to `server`"*. **On exactly that class the script is silent** —
+`evaluateBuildStageAbsorption` returns `[]` before any report once the divergence is absorbed, and
+the only passing output is the single line `split-image deps-stage parity: PASS`. No divergence is
+ever printed. This register said so in the same commit (mutation 2 green, "no longer a defect
+there"), so the workflow comment contradicted its own evidence. Worse than wrong: it sat directly
+above the paragraph that costs 45 minutes of CI, where it reads as the reassurance that would
+license trimming the `**/package.json` trigger. The comment now states what the guard checks, states
+that it stays green on the antecedent class *and why that is correct*, and says plainly that the
+static guard is **not** grounds for trimming these entries.
+
+**Correction 2 — clause (a) tested the wrong half, and that was not disclosed.** Clause (a) asks
+"is there a `pnpm install` in the build stage without `--prod`/`--filter-prod`?" — a question about
+a FLAG. It is satisfied by an install that absorbs nothing. **Measured on `da1a90597`:** replacing
+the control-plane build stage's re-install with
+`RUN pnpm install --frozen-lockfile --filter "@armyofagents/worker-protocol..."`, leaving its
+`--filter "…/server…" --filter "…/ui…" build` line untouched, left the whole gate GREEN — and that
+is `c3d26657d`'s failure mode exactly (the build selection strictly exceeding the installed
+selection). Disclosing that would have left a guard whose name promises more than it does, so it is
+FIXED: `evaluateBuildSelectionCoverage` (clause **a2**) compares the two SELECTIONS. Every package a
+`pnpm … build` line selects must have been selected by an install visible to that stage. It is
+unconditional — "build only what you installed" holds with no dev/prod divergence at all.
+
+Three subtleties the fix had to get right, each of which is a test:
+
+* **Discovery bounds a selection.** `--filter "…/server…"` in a `deps` stage holding only the 19
+  runtime manifests installs 19, not the 25 the same flag selects against the whole tree — pnpm's
+  `...` walks the DISCOVERED workspace. Unbounded, the deps filter would vouch for packages it never
+  installed and the fix would be vacuous.
+* **`COPY --from=<stage> <workdir>` IS an install.** The control-plane and adapter-manager build
+  stages take deps' node_modules wholesale, so reporting those packages is a FALSE POSITIVE. Credit
+  is given only for a copy of that stage's own workdir (or its `node_modules`) — an unrelated
+  `COPY --from=deps /app/patches ./patches` earns none, or a narrowed re-install could hide behind it.
+  Finding this cost the first draft of clause (a2): it would have red-flagged a correct Dockerfile.
+  ★ Note the deliberate asymmetry with clause (b), which still does **not** count a `COPY --from=`
+  as manifest delivery: a cross-stage copy moves an *installed tree*, which is what (a2) asks about,
+  and does not move *source manifests*, which is what (b) asks about. The same line legitimately
+  answers one question and not the other; collapsing them would make (b) vacuous for both
+  `COPY . .` images.
+* **An ABSENT package is clause (b)'s, not (a2)'s.** A package whose directory never entered the
+  stage cannot be selected by the build line either. Double-reporting one gap with two different
+  remedies sends the reader to the wrong fix.
+
+Also removed while proving this: an `isPnpmBuildLine` exclusion for lines containing `deploy`. It
+could not change a verdict on any realistic line (a `pnpm deploy --prod` line carries no whole-token
+`build`) and would have SUPPRESSED a real build on a compound `RUN pnpm deploy … && pnpm build`.
+
+**Measured, on the real tree, each mutation restored and the restore verified green:**
+
+| # | mutation | result |
+|---|---|---|
+| a2-1 | worker build-stage install narrowed to `worker-protocol...` | RED — "BUILDS 1 package(s) that no install there selected (sandbox-fake-provider)" |
+| a2-2 | adapter-manager build-stage install narrowed to `provider-capability...` | RED — 5 packages |
+| a2-3 | control-plane install covers `server` only; the build line still selects server+ui | RED — 1 package (`ui`) |
+| a2-4 | a glob selector (`--filter "@armyofagents/*"`) on the build line | RED — reported as unparseable, never read as "selects nothing" |
+| 3′ | control-plane build-stage re-install DELETED | RED — clause (a), unchanged |
+| 4′ | that line `--filter` → `--filter-prod` | RED — clauses (a) AND (a2) |
+| 5′ | worker build stage loses both `sandbox-fake-provider` COPYs | RED — clause (b), unchanged |
+
+And eleven mutations of the guard's own source, each restored: neutering `evaluateBuildSelectionCoverage`,
+dropping the unparseable-selector report, dropping the present-set filter, dropping `FROM <stage>`
+install inheritance, dropping `COPY --from=` install credit, widening that credit to any source,
+un-bounding a selection by its stage's discovery, making a bare install select nothing, making
+build lines invisible, and matching `build` as a substring — **all red**.
+
+**What clause (a2) still does NOT cover, stated rather than implied.** pnpm filter syntax beyond a
+plain package name with an optional `...` (`^...`, `...^`, globs, path and changed-since selectors)
+is REPORTED as unparseable rather than silently treated as empty — loud, but not understood.
+ORDERING is invisible: an install placed *after* the build line reads the same as one before it. And
+nothing here builds an image.
+
+**The claim, at its weakest fully-supported strength.** This PR does two things. It gives
+`d1-merge-train.yml` a manifest/lockfile trigger, so the commit class that re-widens the build
+selection can fire the only lane that builds these images — verified, and the valuable half. And it
+adds a static guard that makes three specific evasions impossible: removing or `--prod`-ing a
+load-bearing absorber, narrowing a re-install below what the build line compiles, and a widening on
+an image whose build stage copies selectively. It does **not** detect "a workspace devDependency
+was added", it prints no divergence, and it is not a substitute for building the image.
+
+Corpus: 19 new cases in `scripts/check-image-deps-stages.test.mjs` (34 total, all green).
 
 ## E6-F013 — the verdict consumer has never been OBSERVED publishing: DEP-013's live control is owed, and the reader is in its one tolerated state until it is
 

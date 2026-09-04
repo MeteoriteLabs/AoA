@@ -17,6 +17,14 @@
  * This file is the filesystem/command layer only; all parity logic lives in the
  * pure `scripts/lib/image-deps-stage.mjs`.
  *
+ * ★ WHAT THIS GATE DOES NOT DO, because its name reads wider than its reach. It is
+ * static text analysis over three Dockerfiles and the workspace manifests. It builds
+ * NO image and reads NO lockfile, and it does not report "a workspace devDependency
+ * was added" — when a `COPY . .` build stage absorbs a widening by construction it
+ * stays green, correctly, and prints nothing but `split-image deps-stage parity: PASS`.
+ * It is therefore NOT coverage for a manifest or lockfile edit; the lane that builds
+ * the images (`.github/workflows/d1-merge-train.yml`) is, and that file says so.
+ *
  * Usage:
  *   node scripts/check-image-deps-stages.mjs
  *   node scripts/check-image-deps-stages.mjs --root <fixture-dir>
@@ -28,6 +36,7 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 
 import {
+  evaluateBuildSelectionCoverage,
   evaluateBuildStageAbsorption,
   evaluateImageDepsStage,
   indexPackages,
@@ -146,6 +155,16 @@ export function runDepsStageCheck(root, deps = {}) {
         imageName: image.imageName,
         dockerfileText,
         entryPackages: image.entryPackages,
+        packagesByName,
+      }),
+      // E6-F012 clause (a2). The absorption pass above tests the FLAG on the
+      // build stage's re-install ("is it non-prod?"); it is satisfied by an
+      // install that selects a narrower set than the build line and therefore
+      // absorbs nothing — measured green on the real tree before this pass
+      // existed. This one compares the two SELECTIONS.
+      ...evaluateBuildSelectionCoverage({
+        imageName: image.imageName,
+        dockerfileText,
         packagesByName,
       }),
     );
