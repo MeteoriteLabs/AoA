@@ -427,3 +427,123 @@ verdict nobody reads until it crosses a cap. Filed `unowned` because no ticket i
 measured, and the growth could equally be CDN-side. But it is the cheapest thing to test first,
 and it is already sitting in the queue: check whether 6.0.10 restores the 4s step before
 attempting anything larger.
+
+---
+
+### ★ Addendum (2026-09-04, independent track) — the misdiagnosis this causes, and one correction
+
+Filed from a separate investigation that was handed the *symptom* — "the `policy` step
+`Worker route-path parity (WRK-008)` hangs for ~5 minutes" — and measured its way to the same step
+E6-F014 already names. **It reproduces this finding rather than adding a defect**, so it is recorded
+here instead of taking a second id: an id must name one thing, and so must a defect. What follows is
+only what was *not* already above. It was filed as a separate finding first and withdrawn on contact
+with this one; `check-register-id-uniqueness.mjs` refused the duplicate id, which is the guard doing
+exactly its job.
+
+**Independent confirmation of the baseline.** `Setup pnpm` measured **3 s** on run `33871439141`
+(job total 1m 10s) — consistent with the 4 s / 4 s / 5 s above, from a different track on a
+different day's tip.
+
+#### ★★★ 1. The cancellation is reported against an ARBITRARY INNOCENT STEP — which is how it gets misdiagnosed
+
+E6-F014 says "no guard having failed and most having never started". The sharper and more damaging
+fact is that GitHub does not report the job as timing out: **it marks whichever step happened to be
+executing at the wall as `cancelled`**, and that step is a coincidence of scheduling. Across the
+**eight** cancelled `policy` attempts measured on four shas, the accused step was **four different
+steps**:
+
+| accused step | times accused | its own cost on a normal run |
+|---|---|---|
+| `#4 Setup pnpm` | 5 | 3 s |
+| `#10 Sandbox e2b provider dependency boundary` | 1 (run `33858466826`, the one cited above) | <1 s |
+| `#16 Frozen worker-protocol v1 consumer (E1)` | 1 | 37 s |
+| `#18 Worker route-path parity (WRK-008)` | 1 | **0 s** |
+
+**This is not theoretical — it already produced a wrong bug report.** `#18` was escalated as a
+five-minute hang. On a green run it costs **zero seconds** (`07:05:51 -> 07:05:51`), and on the
+attempt where it was accused it was cancelled at zero seconds too (`06:39:53 -> 06:39:53`): the wall
+arrived one second after it started. `scripts/check-worker-path-parity.mjs` performs **ten**
+`readFileSync` calls over four files (counted by instrumenting a copy) and **spawns nothing, reads
+no stdin, globs nothing and touches no network**. It cannot stall. Anyone taking the report at face
+value searches `scripts/check-*.mjs` — the one place the defect is not.
+
+So this failure does not merely *misattribute* the way E3-F034 and E3-F036 do (a real red on the
+thing that was genuinely slow); it **misdirects**, pointing at a file that is not involved. That is
+worth knowing before the next one is triaged, and it is the reason the symptom reached a second
+track as "a hang" at all. **Nothing hangs**: every step runs to its ordinary cost and the job's
+fixed wall arrives first.
+
+#### ★★ 2. It is per-runner, not a uniform slowdown — measured inside a single run
+
+The series above is across runs, which is equally consistent with a global CDN degradation. It is
+not global. Within **one run** (`33842573550` attempt 1), the identical pinned action ran in five
+jobs starting inside a 20-second window:
+
+| job | `Setup pnpm` | its own report |
+|---|---|---|
+| `distributed-contract` | **11 s** | `added 1 package, and audited 2 packages in 11s` |
+| `browser` | 2m 14s | — |
+| `migrations` | 3m 03s | `in 3m` |
+| `lint` | 3m 27s | `in 3m` |
+| `policy` | **>= 4m 58s** | cancelled before it could report |
+
+**A 27× spread at one minute, against one registry, from one pinned action.** An outage would slow
+all five alike. This bears on the choice between remediations (a) and (b): the cost is not a new
+fixed price that could be re-budgeted, it is a **heavy tail on each runner independently**, so no
+cap chosen against typical behaviour is safe while the dependency stands. It also explains why only
+`policy` ever dies — it holds the smallest budget of any job that runs the step
+(`policy` was 5m; `brand-check` 10m, `lint`/`migrations` 15m, `distributed-contract`/`browser` 20m,
+`e2e-pgvector` 25m, `e2e` 30m, `verify` 60m). `lint` and `migrations` absorbed the same three-minute
+install on that very run with eleven minutes to spare. The two other five-minute jobs, `changes` and
+`worker-protocol-contract-bytes`, do not run the step at all.
+
+#### 3. The blast radius is two jobs wider than "policy went red"
+
+Observed on all eight cancelled attempts (steps 1 and 2 on 8/8; step 3 as `failure` on 7/8 and as
+`cancelled` on the eighth — never `success`, which is the only value branch protection accepts):
+
+1. `policy` is cancelled at the wall.
+2. `brand-check` (`needs: [policy]`) is **skipped**, and GitHub stamps the skipped job with
+   `completed_at` **before** `started_at` (e.g. started `06:05:12`, completed `06:05:11`). A reader
+   who checks that job sees an inverted timestamp and reasonably suspects a second, unrelated fault.
+   It is an artefact of the cancel path.
+3. `ci-required` requires `policy` **and** `brand-check` in its **always-on** arm — not the
+   `code=true`-gated one — so it emits two `::error::` lines and fails. (On run `33858466826`
+   `ci-required` was itself `cancelled` rather than `failure`; the gate is red either way.)
+
+No compute is lost (re-running the failed jobs carries the green ones forward — `verify (2)` keeps
+its original timestamps across attempts). The cost is latency, attention, and the re-run reflex:
+**PR #353 needed five attempts** to get a green `policy`, and the integration tip `717475f63` was
+cancelled too. Occurrences on four shas: `46c27e38b`, `5d91afff5` (#353), `717475f63` (the integration tip), and
+`f5daf62fc` — DEP-013's own build branch, the run `33858466826` cited above.
+
+#### ★★★ 4. ONE CORRECTION — "it is still growing" is not sustained, and that is a trap for the PR #321 lead
+
+The section above records `Setup pnpm` at **424 s** on run `33859560367` (09:41Z) and concludes it
+is *still growing*. Measured **2.5 hours later**, on run `33871439141` (12:10Z), the same step on the
+same branch took **3 seconds** — back to baseline, with no change to the action, the pin, or the
+workflow in between.
+
+So the distribution is **episodic with a heavy tail, not monotonic growth**. Every cancellation and
+every multi-minute sample falls inside one window on 2026-09-04 (roughly 05:34Z–09:48Z); the **18**
+`policy` runs on `docs/replatform-program` that PRECEDE that day are green to a run, and the run
+after the window is 3 s. (The remaining three greens are ON 09-04 and two of them are the degraded
+135 s / 149 s samples above — the episode shows up in the greens as well as the reds, which is why
+"all the greens are before it" would have been the wrong summary.)
+
+**Why this matters more than a corrected adjective.** The free lead above suggests testing whether
+`pnpm/action-setup` 6.0.10 (PR #321) "restores the 4s step". Outside an episode **the step reads
+~4 s with or without the bump**, so a single post-episode measurement will look like a fix whatever
+the bump does. Testing that lead needs either a paired comparison (both versions in the same run, so
+they see the same runner conditions) or a sample large enough to contain a tail — otherwise the
+likely outcome is a confident, wrong "fixed", which costs more than the open question does. The
+correlation remains unmeasured either way, and the growth may still be CDN-side.
+
+**Method note, since the addendum corrects the section above.** This addendum's own first draft made
+the same error one scale down: it took a *degraded* run (`33842573550` attempt 3 — job 4m 25s, step
+3m 15s) for "the green baseline", and asserted a failure rate of "roughly one sha in two" from two
+shas that had been handed to it *because* both were red. Measuring the population instead — the last
+25 `PR` runs on `docs/replatform-program`, 23 with attempt-1 `policy` data — gives **21 success, 2
+cancelled**, of which 18 (5 on 09-02, 13 on 09-03) precede the episode and the other 5 are inside it. Selection bias in the same direction is what
+produced both the withdrawn rate and the "still growing" reading: **a sample drawn from an episode
+describes the episode, not the distribution.**
