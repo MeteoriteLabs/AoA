@@ -523,9 +523,11 @@ same branch took **3 seconds** — back to baseline, with no change to the actio
 workflow in between.
 
 So the distribution is **episodic with a heavy tail, not monotonic growth**. Every cancellation and
-every multi-minute sample falls inside one window on 2026-09-04 (roughly 05:34Z–09:48Z); the 21
-`policy` runs on `docs/replatform-program` before that day are all green, and the run after the
-window is 3 s.
+every multi-minute sample falls inside one window on 2026-09-04 (roughly 05:34Z–09:48Z); the **18**
+`policy` runs on `docs/replatform-program` that PRECEDE that day are green to a run, and the run
+after the window is 3 s. (The remaining three greens are ON 09-04 and two of them are the degraded
+135 s / 149 s samples above — the episode shows up in the greens as well as the reds, which is why
+"all the greens are before it" would have been the wrong summary.)
 
 **Why this matters more than a corrected adjective.** The free lead above suggests testing whether
 `pnpm/action-setup` 6.0.10 (PR #321) "restores the 4s step". Outside an episode **the step reads
@@ -540,6 +542,6 @@ the same error one scale down: it took a *degraded* run (`33842573550` attempt 3
 3m 15s) for "the green baseline", and asserted a failure rate of "roughly one sha in two" from two
 shas that had been handed to it *because* both were red. Measuring the population instead — the last
 25 `PR` runs on `docs/replatform-program`, 23 with attempt-1 `policy` data — gives **21 success, 2
-cancelled**, all 21 greens preceding 2026-09-04. Selection bias in the same direction is what
+cancelled**, of which 18 (5 on 09-02, 13 on 09-03) precede the episode and the other 5 are inside it. Selection bias in the same direction is what
 produced both the withdrawn rate and the "still growing" reading: **a sample drawn from an episode
 describes the episode, not the distribution.**
