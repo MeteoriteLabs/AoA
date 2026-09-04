@@ -237,7 +237,7 @@ export class E2bSandboxProvider implements SandboxProvider {
    * (`e7-distributed-run-verifier-store.ts:201-211`), so this file moves no capability
    * counter. See `CLI-008-unit-f-design.md` §1.6 link 2.
    */
-  readonly artifactExportMode: ArtifactExportMode = "grant_upload";
+  readonly artifactExportMode: ArtifactExportMode = "none";
 
   /**
    * CLI-008 Unit B — declared `"grant_download"`, and this one is REAL.
@@ -477,10 +477,8 @@ export class E2bSandboxProvider implements SandboxProvider {
    * only the provider can see inside the sandbox. That is the whole reason this is a separate
    * operation from the export rather than one call.
    */
-  async digestArtifact(sandboxId: string, path: string, _ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
-    if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("digest_artifact");
-    const bytes = await this.#readArtifactBytes(sandboxId, path);
-    return { sha256: createHash("sha256").update(bytes).digest("hex"), sizeBytes: bytes.byteLength };
+  async digestArtifact(_sandboxId: string, _path: string, _ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
+    throw new UnsupportedProviderOperation("digest_artifact");
   }
 
   /**
@@ -501,23 +499,12 @@ export class E2bSandboxProvider implements SandboxProvider {
    * Errors carry the path and the digests, never the grant, the url or the headers.
    */
   async exportArtifact(
-    sandboxId: string,
-    path: string,
-    grant: ArtifactUploadGrantV1,
+    _sandboxId: string,
+    _path: string,
+    _grant: ArtifactUploadGrantV1,
     _ctx: ProviderOpContext,
   ): Promise<ArtifactExportResult> {
-    if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("export_artifact");
-    const bytes = await this.#readArtifactBytes(sandboxId, path);
-    if (bytes.byteLength > grant.maxBytes) {
-      throw new Error(`artifact at ${path} is ${bytes.byteLength} bytes, over the granted ${grant.maxBytes}`);
-    }
-    const digest = createHash("sha256").update(bytes).digest("hex");
-    if (digest !== grant.expectedSha256) {
-      // The digests, never the url.
-      throw new Error(`artifact at ${path} hashed ${digest}, expected ${grant.expectedSha256}`);
-    }
-    await this.#performUploadGrant(grant, bytes);
-    return { objectKey: grant.objectKey };
+    throw new UnsupportedProviderOperation("export_artifact");
   }
 
   /**
