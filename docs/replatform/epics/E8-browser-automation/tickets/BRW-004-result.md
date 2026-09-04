@@ -233,6 +233,9 @@ below proves the pairs catch exactly that.
 | `npx vitest run` (packages/browser-runtime) | `0` | 127 pass / 17 skipped (93 before; +24 approval, +10 frozen-parity) |
 | `npx vitest run src/__tests__/brw-004-distributed-decision-binding.test.ts` | `0` | 13 pass |
 | `npx vitest run` × 4 neighbouring decision suites | `0` | 90 pass / 0 fail — no regression |
+| `AOA_RUN_WIN_INTEGRATION=1 npx vitest run …brw-004-decision-binding.integration.test.ts` | `0` | 5 pass — the CHECK fires against REAL Postgres |
+| `AOA_RUN_WIN_INTEGRATION=1 npx vitest run …job-approval-parity.integration.test.ts` | `0` | 13 pass with 0272 applied |
+| `npx vitest run --shard=1/4` | `1` | 5762 pass / **2 fail, NOT mine** — see below |
 | `npx tsc -p . --noEmit` (server) | `0` | clean (pre-existing `TS18046` noise in `routes/plugins.ts` unrelated) |
 | `npx tsc -p . --noEmit` (ui) | `0` | clean |
 | `npx tsc --noEmit` (packages/browser-runtime) | `0` | clean |
@@ -258,6 +261,21 @@ below proves the pairs catch exactly that.
 | D6 | sentinel replaced by template-null | 3 | ✔ |
 | D7 | hub type claim restored unconditionally | 1 | ✔ |
 | D8 | the bridge's duplicate identity implementation reintroduced | 1 | ✔ |
+| D9 | migration 0272's predicate weakened to `CHECK (true)` | 3 (real PG) | ✔ |
+| D10 | 0272's predicate weakened to the one-directional variant | 3 (real PG) | ✔ |
+
+### The two shard-1 failures are NOT mine, and I checked rather than said so
+
+`debrief-redirect.test.ts` and `discussions-routes-contract.test.ts` each failed one assertion:
+`expect(performance.now() - startedAt).toBeLessThan(3000)` around a dynamic `import()`, measured at
+4746ms and 4887ms. A wall-clock budget on a module import, failing while this machine was running
+vitest shards, embedded Postgres and a pnpm install concurrently — the same family as E3-F034 and
+E3-F036. **Verified, not assumed:** re-run alone on a quiet machine, both files pass 12/12. I touched
+no route module, and the assertion that fails is the timing one, not the export check on the next line.
+
+★ A method note worth carrying: the first shard run was piped through `tail`, so the tool reported
+`exit 0` — the pipeline's exit is `tail`'s, not vitest's. A red suite read as green. Re-run
+unpiped to a file before believing any shard result.
 
 Final restored state verified green, not assumed: 127 (browser-runtime), 190 (foundation), 77
 (server decision suites; 78 after the bridge change).
