@@ -1577,8 +1577,8 @@ the method **acquired a real caller**, not a corrected docstring.
 - `extensions: []` is no longer hardcoded. The projector is a **required** parameter on
   `renewLease`, so a future caller cannot silently reintroduce the empty array — the type checker
   asks for it.
-- `drain`, `product_approval_result` and `runtime_decision_result` are now delivered. **`drain` is
-  APPLIED** by a worker-side handler (`dispatch-runtime.ts` composes `pollLoop.stopLeasing()`); the
+- `drain`, `product_approval_result` and `runtime_decision_result` now have a delivery CHANNEL.
+  ★ **No command travels it end to end from a PRODUCTION-QUEUED row.** `drain` is the only kind with a worker-side applier (`dispatch-runtime.ts` composes `pollLoop.stopLeasing()`) and has **no production writer at all**; the two kinds that DO have writers have no applier. The
   two result kinds have a delivery path and a fail-closed terminal but **no applier yet**, so they
   are counted `control_command{outcome="unhandled"}` and stay pending for redelivery. That residue is
   E8/BRW-004's and E9/SVC-001's to close and is stated in `JOB-015-result.md`, not hidden here.

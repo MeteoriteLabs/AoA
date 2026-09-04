@@ -253,8 +253,8 @@ export async function awaitApprovalDecision(input: AwaitApprovalInput): Promise<
  *
  * ★ This is NOT a placeholder that "will be replaced". It is the correct default for a runtime
  * with no delivery channel: BRW-004 terrain §4 measured that no control-plane hop delivers a
- * decision to a running worker at all — `commandKind` appears zero times in
- * `packages/worker-daemon/src` and `decideControlReceiverV1` has zero production callers. The
+ * decision to a running worker at all — `commandKind` appeared zero times in
+ * `packages/worker-daemon/src` and `decideControlReceiverV1` HAD zero production callers — ★ BOTH ARE NOW FALSE as of JOB-015 (`lease/control-commands.ts` calls it), though no command reaches the channel from a production-queued row yet. The
  * hop is chartered as JOB-015 and is NOT this ticket's. Until it exists, a resolver that
  * pretended to grant would be a lie about a channel that does not carry anything.
  */
