@@ -628,12 +628,25 @@ mattered most.** The ceiling covered `workBudgetSeconds` only. `setupAllowanceSe
 as a positive number and nothing else, so editing that one **uniform** value 480 → 3000 plus the two
 caps it derives — a three-line diff with no measurement in it — took `policy` from an 11-minute cap to
 **53**, and its step cap from 8 to **50**, on **all eight jobs at once**, and the guard printed OK.
-That is the same failure mode this finding filed against DEP-013's raise, one level up: the cost was
-declared, not charged. It is charged now — the manifest carries a `setupAllowance` measurement
-(431 s worst over 156 observations, dated, 13 run ids) and a **1.5×** ceiling, deliberately tighter
-than the work budget's 2× because growth in the third-party fetch is the SIGNAL, not headroom to
-spend. **No cap changed**, so the live evidence in item 4 below still holds. Six new test cases pin
-the refuting diff; all six were RED against the pre-correction library.
+That is the same failure mode this finding filed against DEP-013's raise, one level up. The manifest
+now carries a `setupAllowance` measurement (431 s worst over 156 observations, dated, 13 run ids)
+and a **1.5×** ceiling, deliberately tighter than the work budget's 2× because this one number is
+additive into all eight caps. **No cap changed**, so the live evidence in item 4 below still holds.
+Six new test cases pin the refuting diff; all six were RED against the pre-correction library.
+
+★★★ **CORRECTED AGAIN, same day, and this time the correction is a WITHDRAWAL.** The paragraph above
+first continued "*the cost was declared, not charged — it is charged now*", and the register said
+raising a cap costs a re-measurement on BOTH dials. **That is false too, and computable from the
+shipped manifest without running anything.** Each clause compares a **declared** number to a
+measurement **declared in the same file**; none compares anything to a **previously committed**
+value. So 3000 is refused and 646 is not: the shipped 480 sits **166.5 s** below its 646.5 s ceiling,
+uniformly across the eight jobs, and every `workBudgetSeconds` sits below its own 2× ceiling too
+(`verify` 1700/2184, `e2e` 1500/2092). MEASURED: pushing every declared number to its ceiling with
+**no `measured*` field edited** moves the eight derived caps from **142 to 187 minutes** and every
+step cap **8 → 11**, and the guard prints OK. Full residue table, and the reason a previous-value
+clause cannot live in this guard, in the **E3-F036 addendum §5c**. A second miss found in the same
+read — a required-lane job with no `timeout-minutes` at all is skipped by the coverage clause
+entirely — is in **§5d**. Neither is closed, and no third claim replaces them.
 
 #### 5. ★ What is still open
 
@@ -652,6 +665,11 @@ the refuting diff; all six were RED against the pre-correction library.
    cap on work (`lint` 9.8× its measured worst work, `policy` 7.5×). The magnitudes improved; the
    shape did not. See E3-F036 addendum §4 and §6 item 4 for the full ratios and what closing it
    would take.
+3c. ★ **Two further things the guard does not see**, both stated rather than left for the next
+   reader: a raise that stays **inside** either ceiling (E3-F036 §5c — up to +166.5 s of allowance
+   on all eight jobs at once, and +484 s / +592 s of work budget on `verify` / `e2e`, with no
+   measurement edited), and a required-lane job that arrives with **no `timeout-minutes` at all**
+   (E3-F036 §5d — skipped by the coverage clause, inheriting GitHub's 360-minute default).
 4. ~~**No live CI evidence at the time of writing.**~~ **SUPERSEDED.** Run **`33902312371`** on
    `claude/ci-timeout-class` is fully green including `ci-required`; every job landed inside both its
    new cap and its declared work budget (full table in the E3-F036 addendum), and `brand-check`

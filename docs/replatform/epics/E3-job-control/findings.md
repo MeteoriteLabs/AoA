@@ -1816,7 +1816,7 @@ mutations were then made against the fixed tree and restored: raising `verify` b
 `work_budget_unjustified` — so passing requires editing `measuredMaxWorkSeconds`, which is a dated
 claim about reality sitting in the diff where review can argue with it.
 
-#### 5b. ★★★ The claim "the escape hatch is closed" was FALSE, and this is what closing it took
+#### 5b. ★★★ The claim "the escape hatch is closed" was FALSE, and this is what the ceiling added
 
 This addendum first ended §5 with "*so the escape hatch is closed*". Review refuted it. **The ceiling
 applied to `workBudgetSeconds` alone.** `setupAllowanceSeconds` was validated as a positive finite
@@ -1836,8 +1836,8 @@ more damaging**, because the allowance is uniform: one edit moves eight job caps
 step caps at once. The true statement about the shipped state was: *the WORK dial cost a
 re-measurement; the INFRASTRUCTURE dial cost nothing.*
 
-**What closes it (2026-09-05).** The manifest gains a `setupAllowance` block carrying the same
-discipline as a work measurement — `measuredMaxSetupSeconds: 431`, `measuredSampleSize: 156`
+**What the ceiling added (2026-09-05) — and see 5c for what it did NOT add.** The manifest gains a
+`setupAllowance` block carrying the same shape as a work measurement — `measuredMaxSetupSeconds: 431`, `measuredSampleSize: 156`
 (13 runs × the 12 job instances that then ran the step), `measuredOn`, and the 13 run ids — declared
 **once**, because the measurement is workflow-wide and a per-job copy would be a per-job claim the
 evidence does not support. ★ That measurement was **re-derived first-hand from the Actions jobs API
@@ -1849,14 +1849,74 @@ populations, and every ratio quoted here is unchanged at either value to the pre
 `setup_allowance_below_measurement`, `setup_allowance_unjustified`, and the ceiling
 `MAX_SETUP_ALLOWANCE_FACTOR = 1.5` — **tighter** than the work budget's 2×, because growth in a
 third-party fetch is the signal this file exists to surface rather than something to grow into, and
-because this one number is additive into all eight caps. 480 s sits at 1.11× its measurement. **No
-cap in the manifest changed**, so the live evidence in §6 below still describes the shipped caps.
+because this one number is additive into all eight caps. 480 s sits at 1.11× its measurement — i.e.
+well inside the 1.5× ceiling, which is the residue 5c states. **No cap in the manifest changed**, so the live evidence in §6 below still describes the shipped caps.
 
 The refuting diff is now a test. Six new cases (corpus part **(C)**) were run against the
 pre-correction library: **6 of 6 RED**, then green after the fix, and the library restored and
-re-verified. One of them — "the hatch has a PRICE, not a lock" — opens with a **positive control**,
+re-verified. One of them — "raising the allowance PAST ITS CEILING costs a dated re-measurement" — opens with a **positive control**,
 because an assertion that a finding code is *absent* passes vacuously against a build that never
 emits it, which is exactly how the hole shipped.
+
+#### 5c. ★★★ The replacement claim was ALSO false: a raise INSIDE the ceiling is free
+
+§5b ended by saying the allowance now carries "the same discipline as a work measurement", and the
+register entry, the GO-BOOK row, the manifest and the library all went further and said **raising a
+cap now costs a re-measurement in the same diff on BOTH dials**. Second review refuted that too, and
+it is **computable from the shipped manifest without running anything**. It is withdrawn here and
+**not replaced with a third claim**.
+
+Both clauses compare a **declared** number to a measurement **declared in the same file**:
+`work_budget_unjustified` tests `workBudgetSeconds <= 2 x` the DECLARED `measuredMaxWorkSeconds`,
+`setup_allowance_unjustified` tests `setupAllowanceSeconds <= 1.5 x` the DECLARED
+`measuredMaxSetupSeconds`. **No clause compares any number to a PREVIOUSLY COMMITTED value.** So the
+shipped numbers are not a floor for the next diff — only the ceilings are, and the room below them is
+large. MEASURED 2026-09-05 by evaluating the library against the real `pr.yml` with every declared
+number pushed to its own ceiling and **no `measured*` field edited**:
+
+| number | declared | its ceiling | free |
+|---|---|---|---|
+| `verify` work | 1700 s | 2184 s | +484 s |
+| `e2e` work | 1500 s | 2092 s | +592 s |
+| `e2e-pgvector` work | 600 s | 776 s | +176 s |
+| `browser` work | 200 s | 210 s | +10 s |
+| `migrations` work | 170 s | 178 s | +8 s |
+| `policy` work | 170 s | 176 s | +6 s |
+| `distributed-contract` work | 120 s | 128 s | +8 s |
+| `lint` work | 120 s | 122 s | +2 s |
+| `setupAllowanceSeconds` | 480 s | 646.5 s | **+166.5 s, uniform across all eight** |
+
+Taking all of it: the eight derived job caps go **142 min → 187 min** in total (`verify` 37→48,
+`e2e` 33→46) and every step cap **8→11**, and the guard prints **OK**. This also corrects §5b's
+closing sentence — the two numbers are *not* "as tight as the measurements allow"; 480 sits at 1.11×
+its measurement against a 1.5× ceiling, and `verify`'s budget at 1.56× against a 2× ceiling.
+
+**No clause was added for it, deliberately.** Pinning a budget to its previous value **cannot** be a
+clause in this guard: `evaluateCiTimeoutBudgets` is pure over ONE commit's `pr.yml` plus the
+manifest and has no access to the prior revision of either. That is a separate, diff-aware
+instrument. It is not built, and describing the hole exactly is what this section is for.
+
+#### 5d. ★★ A second miss, found in the same read: a required-lane job with NO cap
+
+The coverage clause reads `if (job.timeoutMinutes === null) continue`. So a required-lane job that
+arrives with **no `timeout-minutes` at all** is neither budgeted, nor exempt, nor flagged — it
+inherits GitHub's **360-minute** default, while every job cap in `pr.yml` **sums to 159 minutes**.
+That is the exact shape the clause was written for ("instance ten" arriving with a number nobody
+justified), **missed when the number is absent rather than wrong**.
+
+MEASURED 2026-09-05: deleting `brand-check`'s `timeout-minutes` **and** its exemption together
+yields `{ok: true, findings: []}`. All eleven required-lane jobs carry a cap today, so this is a hole
+in the guard, not a defect in the tree. A job that runs `pnpm/action-setup` is still caught by
+`job_missing_budget` either way.
+
+Both misses are pinned by disclosure tests (corpus part **(D)**) that assert the guard *passes* those
+diffs and that the figures quoted in prose are the figures the manifest implies. Each opens with a
+**positive control**, because asserting `ok: true` proves nothing unless the same harness can produce
+a red for the same inputs. Four mutations were made and restored (removing the null-cap skip;
+stripping the disclosure from the library, the register and the GO-BOOK; moving a cap). **25/25 pass.**
+
+★ Codex was **unavailable** for an outside adversarial pass on this round (usage limit; retry
+2026-09-07), so 5c and 5d are the result of a first-hand re-read, not an external verdict.
 
 #### 6. ★ What this does NOT close — stated plainly
 
@@ -1874,18 +1934,21 @@ emits it, which is exactly how the hole shipped.
    `catalog-audit.yml`, `thread-v2-e2e.yml`).
 4. ★ **The job cap still does not bound the work — by design of GitHub's `timeout-minutes`, not by
    oversight, but it is a real residue and it is NOT closed.** The allowance is additive and
-   unreserved; the ratios are in §4 above (worst: `lint` at 9.8×). Both declared numbers are now
-   bounded by dated measurements, and both are as tight as the measurements allow, so the only
-   remaining lever is a runtime comparison of realized work against `workBudgetSeconds` — a
+   unreserved; the ratios are in §4 above (worst: `lint` at 9.8×). Each declared number is compared
+   against a measurement declared beside it, but the only lever that would bound REALIZED work is a
+   runtime comparison of the work duration against `workBudgetSeconds` — a
    post-`Run tests` step that reads the step durations and fails the job when work overran its own
    budget. That is a different mechanism (a report becoming a gate, after the fact) and is not built.
-   Until it is, `workBudgetSeconds` is a **declared** bound used by the derivation and the ceilings,
-   not an **enforced** one, and this addendum should not be read as saying otherwise.
-   ★ A smaller one in the same family: **an `exempt` job's cap is not derived at all** — the
+   Until it is, `workBudgetSeconds` is a **declared** number used by the derivation and the ceilings,
+   not one compared against a running job, and this addendum should not be read as saying otherwise.
+   ★ Two smaller ones in the same family. **An `exempt` job's cap is not derived at all** — the
    exemption waives the pnpm allowance and asks only for a reason, so a job that stops fetching pnpm
    may carry any `timeout-minutes`. It cannot be used as a shortcut (a job that still runs
    `pnpm/action-setup` gets `job_missing_budget` exempt or not), but the three exempt jobs' 5-minute
-   caps rest on their stated reasons, not on arithmetic.
+   caps rest on their stated reasons, not on arithmetic. And **a required-lane job with no
+   `timeout-minutes` at all is skipped by the coverage clause entirely** — see 5d.
+   ★ **A raise inside either ceiling is not seen either** — see 5c for the measured room. Neither
+   number is "as tight as its measurement allows"; each is only inside its own ceiling.
 5. **Other network steps are inside "work", not separately allowanced** — `playwright install` in
    `e2e`/`browser` (spread 9 s and 34 s) and `Initialize containers` in `migrations`/`e2e-pgvector`
    (spread 11–13 s). Two orders of magnitude below the pnpm step, so they do not yet earn their own
