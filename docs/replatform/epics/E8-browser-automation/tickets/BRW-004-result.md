@@ -519,6 +519,16 @@ avoided, and the two escalations are reported as resolved (Q1) and handed back (
    status flip.
 4. **§7a's campaign.env non-bump.** A judgement call about whether the `server/src` diff is live.
 
+**CI verdict: `ci-required` PASS**, all 16 checks green on `0eca473a7` (run `33863983798`),
+including `verify (2)` — the shard that caught the migration defect — and `browser`, `migrations`,
+`policy`, `e2e`, `e2e-pgvector` and `worker-protocol-contract-bytes` on both platforms.
+
+★ The first attempt at that run was CANCELLED, not red: the `policy` job hung in
+`pnpm/action-setup`'s self-installer and took the run with it. That is infrastructure, and it is
+recorded rather than glossed because a cancelled run and a failing one look identical in
+`ci-required`, and reading the first as "my change is broken" — or the reverse — would both have
+been wrong. Re-run of the failed jobs: green.
+
 **Codex verdict: ABSENT.** No independent Codex review was obtained for this build. Recorded in
 words rather than read as approval.
 
