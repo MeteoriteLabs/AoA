@@ -41,6 +41,20 @@ export {
   type SessionResult,
   type SessionStep,
 } from "./run-session.js";
+export {
+  awaitApprovalDecision,
+  buildApprovalIntent,
+  classifyBrowserPermissionDecision,
+  inertRefusingResolver,
+  navigationTarget,
+  type ApprovalOutcome,
+  type ApprovalRefusalReason,
+  type ApprovalResolver,
+  type BrowserApprovalAction,
+  type BrowserApprovalIntent,
+  type BrowserPermissionDecision,
+  type Delay,
+} from "./approval.js";
 export { createPlaywrightDriver, type PlaywrightDriverOptions } from "./playwright-driver.js";
 export { startFixtureSite, type FixtureSite } from "./fixture-site.js";
 export { main as runnerMain, runFromConfig, type RunnerConfig } from "./runner.js";

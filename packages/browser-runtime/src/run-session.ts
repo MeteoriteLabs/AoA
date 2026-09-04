@@ -20,6 +20,13 @@
 // the sandbox boundary — it can only start this and read what it emits.
 import { checkBrowserLaunchSafety, type BrowserLaunchOptions } from "./launch-guard.js";
 import { listeningPortDelta } from "./listening-ports.js";
+import {
+  awaitApprovalDecision,
+  buildApprovalIntent,
+  navigationTarget,
+  type ApprovalResolver,
+  type Delay,
+} from "./approval.js";
 
 export interface SessionStep {
   readonly action: "navigate";
@@ -30,6 +37,22 @@ export interface SessionConfig {
   readonly downloadRoot: string;
   readonly steps: readonly SessionStep[];
   readonly launch: BrowserLaunchOptions;
+  /**
+   * BRW-004 slice (c) — when true, every navigation and every download must carry an
+   * `allow_once` decision before it happens.
+   *
+   * ★ IT DEFAULTS OFF, and that is the honest default rather than a timid one. Terrain §4
+   * measured that NO control-plane hop delivers a decision to a running worker
+   * (`commandKind` appears zero times in `packages/worker-daemon/src`; the hop is chartered
+   * as JOB-015 and is not BRW-004's). With the gate ON and no delivery channel, every
+   * session refuses at its first step. Defaulting it ON would therefore not be "safer" — it
+   * would break every existing session in exchange for enforcement that nothing can satisfy,
+   * which is how a fail-closed lever gets disabled wholesale by the next person who trips
+   * over it. It turns on when a resolver that can actually answer is wired.
+   */
+  readonly requireApproval?: boolean;
+  /** Budget for one decision to arrive. Ignored unless `requireApproval` is set. */
+  readonly approvalTimeoutMs?: number;
 }
 
 /** A download the browser produced. `saveAs` is the only durable sink. */
@@ -78,6 +101,16 @@ export interface SessionDeps {
   readonly measurePorts: () => Promise<readonly number[]>;
   readonly resolvePath: (root: string, name: string) => ResolveResult;
   readonly env: NodeJS.ProcessEnv;
+  /**
+   * BRW-004 slice (c) — the injected decision channel, exactly like `driver`.
+   *
+   * Injected for the same reason the driver is: it makes the ORDER an assertion. An approval
+   * that is asked for AFTER the action has run is not an approval, and only an injected seam
+   * lets a test observe that the action never reached the driver.
+   */
+  readonly requestApproval?: ApprovalResolver;
+  /** Injected timer, so the approval deadline is a test assertion, not a wall-clock wait. */
+  readonly delay?: Delay;
 }
 
 export type SessionFailure =
@@ -89,7 +122,9 @@ export type SessionFailure =
   | "port_opened"
   | "download_refused"
   | "launch_failed"
-  | "step_failed";
+  | "step_failed"
+  /** BRW-004 slice (c): an action required an approval and did not get an `allow_once`. */
+  | "approval_refused";
 
 export type SessionResult =
   | { readonly ok: true; readonly savedDownloads: readonly string[] }
@@ -141,6 +176,19 @@ export async function runBrowserSession(
     }
 
     for (const step of config.steps) {
+      // BRW-004 slice (c) — ASK BEFORE ACTING. The order is the property: on a refusal the
+      // navigation must never reach the driver, which is what an injected driver lets a test
+      // observe directly rather than infer from an outcome.
+      const gate = await gateAction(config, deps, {
+        action: "navigate",
+        title: `Navigate to ${step.url}`,
+        summary: `The browser session requests navigation to ${step.url}.`,
+        networkTarget: navigationTarget(step.url),
+        riskClass: "network_egress",
+      });
+      if (gate !== null) {
+        return await finish(page, config, deps, gate);
+      }
       try {
         await page.navigate(step.url);
       } catch (error) {
@@ -158,6 +206,55 @@ export async function runBrowserSession(
     deps,
     stepFailure === null ? null : { ok: false, reason: "step_failed", detail: stepFailure },
   );
+}
+
+/**
+ * BRW-004 slice (c) — the one place an action is gated on a human decision.
+ *
+ * Returns null when the action may proceed, or the failure that must stop it.
+ *
+ * ★★ THE FAIL-CLOSED CLAUSE IS IN THE `requireApproval && !requestApproval` BRANCH, and it is
+ * the branch most likely to be written the other way. If the gate is demanded but no resolver
+ * was injected, this REFUSES. The tempting alternative — "no resolver configured, so carry on"
+ * — turns the entire approval story into a dead lever the moment a composition root forgets a
+ * dependency, and it would look identical to a gate that works: green tests, no approvals, no
+ * error. Configuring enforcement and then not wiring it is a misconfiguration, and a
+ * misconfigured guard must fail closed.
+ */
+async function gateAction(
+  config: SessionConfig,
+  deps: SessionDeps,
+  intentInput: {
+    action: "navigate" | "download";
+    title: string;
+    summary: string | null;
+    networkTarget: string | null;
+    riskClass: string;
+  },
+): Promise<{ ok: false; reason: SessionFailure; detail: string } | null> {
+  if (config.requireApproval !== true) return null;
+  if (deps.requestApproval === undefined) {
+    return {
+      ok: false,
+      reason: "approval_refused",
+      detail: "approval is required but no resolver was injected — a misconfigured gate fails closed",
+    };
+  }
+  const outcome = await awaitApprovalDecision({
+    resolver: deps.requestApproval,
+    intent: buildApprovalIntent(intentInput),
+    timeoutMs: config.approvalTimeoutMs ?? 60_000,
+    // A missing timer is the same misconfiguration as a missing resolver, so the fallback
+    // is a REAL timer rather than a never-resolving one: a deadline that can never fire is a
+    // hang, and a hang is the failure mode this whole clause exists to remove.
+    delay: deps.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+  });
+  if (outcome.ok) return null;
+  return {
+    ok: false,
+    reason: "approval_refused",
+    detail: `${intentInput.action} refused (${outcome.reason}): ${outcome.detail}`,
+  };
 }
 
 /**
@@ -195,6 +292,20 @@ async function finish(
   try {
     const downloads = await page.collectDownloads();
     for (const download of downloads) {
+      // BRW-004 slice (c) — the download half of `permission_download_egress`. Asked BEFORE
+      // `saveAs`, so a refused download is never written and then deleted; the bytes simply
+      // never leave the staging area, which `close()` reclaims.
+      const gate = await gateAction(config, deps, {
+        action: "download",
+        title: `Save download ${download.suggestedFilename()}`,
+        summary: `The browser session produced a download named ${download.suggestedFilename()}.`,
+        networkTarget: null,
+        riskClass: "download",
+      });
+      if (gate !== null) {
+        refusal ??= { reason: gate.reason, detail: gate.detail };
+        continue;
+      }
       const resolved = deps.resolvePath(config.downloadRoot, download.suggestedFilename());
       if (!resolved.ok) {
         // Do NOT write. A refused destination is the case this guard exists for.

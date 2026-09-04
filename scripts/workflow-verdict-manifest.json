@@ -80,6 +80,17 @@
       "branch": "docs/replatform-program",
       "watch": "coverage"
     },
+    "keyed-e2b-egress-constraint-probe.yml@docs/replatform-program": {
+      "workflow": "keyed-e2b-egress-constraint-probe.yml",
+      "branch": "docs/replatform-program",
+      "watch": "coverage"
+    },
+    "keyed-e2b-egress-constraint-probe.yml@claude/brw-004-**": {
+      "workflow": "keyed-e2b-egress-constraint-probe.yml",
+      "branch": "claude/brw-004-**",
+      "watch": "coverage",
+      "note": "BRW-004's own bootstrap branch pattern, declared because the workflow declares it. Slice (a) is a keyed real-provider probe whose whole point is to run BEFORE its PR merges, so the pattern cannot be dropped; after the ticket lands no such branch is pushed, the coverage evaluator is silent for a branch with no commits, and a dead bootstrap branch therefore costs no false incident. Same shape and same rationale as the keyed-e2b-unit-d proving-branch entry above."
+    },
     "keyed-e2b-unit-d.yml@docs/replatform-program": {
       "workflow": "keyed-e2b-unit-d.yml",
       "branch": "docs/replatform-program",
