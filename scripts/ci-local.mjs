@@ -59,6 +59,18 @@ const NEEDS_ENV = [
     ok: () => Boolean(process.env.DATABASE_URL),
     why: "needs DATABASE_URL pointing at the postgres CI supplies as a service container",
   },
+  {
+    // DEP-013's terminating reader. It queries the verdict consumer's PUBLISHED tracking
+    // issue over the GitHub API, so without a token it cannot see — and it REFUSES rather
+    // than reporting health, which is correct in CI and a lie locally. Note the anchor: this
+    // gates ONLY the live CLI. `node --test …check-verdict-consumer-freshness.test.mjs` needs
+    // no token, spawns the CLI once per vector and asserts its real exit codes, and is the
+    // half that actually catches a regression here — so it must keep running locally. That
+    // per-step precision is the same lesson the DATABASE_URL rule above records.
+    match: /^node scripts\/check-verdict-consumer-freshness\.mjs\s*$/,
+    ok: () => Boolean(process.env.GITHUB_TOKEN || process.env.GH_TOKEN),
+    why: "reads the verdict consumer's published issue over the GitHub API; needs GITHUB_TOKEN (CI supplies it). Locally: GITHUB_TOKEN=$(gh auth token) GITHUB_REPOSITORY=MeteoriteLabs/AoA node scripts/ci-local.mjs",
+  },
 ];
 
 /** The reason a single STEP cannot run here, or undefined if it can. */

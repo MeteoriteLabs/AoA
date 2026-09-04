@@ -301,3 +301,129 @@ give the image build a PR-time consumer. Note the relationship to **DEP-013** wi
 DEP-013 makes the next occurrence LOUD within a bounded time; this finding's successor would make it
 IMPOSSIBLE. Neither substitutes for the other, which is why WRK-017's designer declined to fold this
 into DEP-013.
+
+## E6-F013 — the verdict consumer has never been OBSERVED publishing: DEP-013's live control is owed, and the reader is in its one tolerated state until it is
+
+**Status:** `open` · Severity: MED · Source: DEP-013 build (2026-09-04), filed by the builder
+against its own work rather than discovered later.
+
+DEP-013 ships the consumer, the reconciler workflow and the terminating reader in `policy`.
+Three of the design's controls were executed and are recorded in `DEP-013-result.md`: PC-1 (a
+12-mutant sweep over the pure evaluator, 12/12 killed and the source restored byte-identical),
+PC-2 (the replay against the **recorded** 08-25 → 09-03 `d1-merge-train` history, which reports
+from `c3d26657d` and stops at `ee74f9c8c`), and a LIVE evaluation of all eleven watched streams
+against the real GitHub API, which correctly reports `cross-platform-weekly.yml@main` as
+`not_success (cancelled)` — §6's free positive control, fired with nothing broken to arrange it.
+
+**What is NOT proven, and it is the half that involves a write.** The reconciler has never
+published. Two independent reasons, and neither is a shortcut:
+
+1. **The builder may not publish.** `MeteoriteLabs/AoA` is a PUBLIC repository, and opening the
+   tracking issue is publishing public content — outside an automated builder's authority. It
+   was therefore run as `--dry-run`, which performs the entire evaluation and prints the exact
+   issue body it would post. Everything except the `POST` is measured; the `POST` is not.
+2. **The workflow cannot fire from this branch anyway.** GitHub registers `schedule` and
+   `workflow_dispatch` only from the DEFAULT branch. That is not an assumption: this repository
+   already states it at the line in `d1-merge-train.yml` ("workflow_dispatch is omitted
+   deliberately: it requires the workflow on the default branch (main)") and in
+   `keyed-e2b-conformance.yml`, and every scheduled run of `cross-platform-weekly`,
+   `catalog-audit` and `thread-v2-e2e` in the API is on `main`. The `push` trigger added for
+   exactly this reason makes the reconciler's FIRST real run the push that merges it.
+
+**What that means for the gate today — stated plainly, because a false claim of enforcement is
+worse than a missing check.** `policy` runs the reader on every PR and the reader FAILS the job
+(proven by six spawned vectors asserting real exit codes). But with no published issue and no
+completed reconciler run, its verdict today is `not_bootstrapped`, which PASSES. **So the
+blocking half of DEP-013 is wired and exercised but has not yet blocked anything.** The
+tolerance is deliberately the narrowest possible and it is not a dial: it is removed by the
+FIRST completed reconciler run, automatically, with no manifest edit and nobody to remember —
+after that, a missing issue is `ran_but_never_published` and reds `policy`. It cannot mask any
+other failure: with the issue present, a wiped marker, an unparseable marker and a stale marker
+all fail regardless.
+
+**Blocks:** nothing merging. It leaves one claim unmade — *the consumer has published and the
+reader has been seen going red on real silence*.
+
+**What would have to change, precisely.** After this lands on `docs/replatform-program`: (a) the
+merge push runs `verdict-reconcile.yml`, which opens the tracking issue — confirm the run is
+`success` and that the issue carries a `verdict-consumer:v1` marker; (b) confirm the next PR's
+`policy` prints `OK (fresh)` rather than `OK (not_bootstrapped)`, which is the observation that
+the tolerance is gone; (c) for PC-3(2), re-run the reader against a marker older than
+`consumer.toleratedSilenceHours` — the `--self-test-case=stale` vector already does this locally
+and exits 1, so the live version adds only the CI surface; (d) when `verdict-reconcile.yml`
+reaches `main` and its 6h cron is observed firing, drop `consumer.toleratedSilenceHours` from
+72 to 26, which the manifest's own `toleratedSilenceReason` already names as its successor
+condition.
+
+**Filed rather than fudged.** The alternative was to wire the reader as a no-op until someone
+flips a manifest flag. That is the shape this programme has already had to delete once — a gate
+nobody can pass, or a dial nobody remembers — and it would have made the enforcement claim false
+in a way no guard could see.
+
+## E6-F014 — `Setup pnpm` in the `policy` job grew ~40× (4s → 195s) and nobody noticed until it cancelled a required check
+
+**Status:** `open` · Severity: MED · Source: DEP-013 build (2026-09-04). Found because DEP-013's
+own PR was the run that finally crossed the cap.
+
+`policy` is the only job branch protection's `ci-required` aggregator needs on **every** PR. On
+run `33858466826` it was **cancelled at exactly 5:04** against its `timeout-minutes: 5`, with no
+guard having failed and most having never started. The whole budget went to one step:
+
+| step | duration |
+|---|---|
+| Checkout | 6s |
+| **Setup pnpm** | **4m 47s** |
+| everything else (5 guard steps reached before the cancel) | 6s |
+
+**The step used to cost nothing.** Measured across the last six `policy` runs on
+`docs/replatform-program` (`gh api …/actions/jobs/<id>`), newest last:
+
+| run | `Setup pnpm` | job total |
+|---|---|---|
+| 33769476886 | 4s | 74s |
+| 33799136579 | 4s | 74s |
+| 33799234615 | 5s | 84s |
+| 33840970676 | **135s** | 206s |
+| 33842573550 | **195s** | 265s |
+| 33847376840 | **149s** | 208s |
+
+**So the job total moved from 74s to 265s against a 300s cap.** Every PR in this repository was
+one slow registry response away from a cancelled required check, on all four live tracks, for a
+reason having nothing to do with any of their commits.
+
+**This is the third instance in three days of one class:** *a required check whose verdict is a
+function of something the commit does not contain.* The other two are E3-F034 (a runner's fsync
+against a 750 ms `lock_timeout`) and E3-F036 (npm-registry latency against a 30s `testTimeout`,
+where the install is allowed 120,000 ms and the test awaiting it gets 30,000 — an inverted
+budget). The standing response to all three — re-run until green — is **indistinguishable from
+ignoring a real regression**, which is the same sentence DEP-013 was chartered to write about
+verdicts.
+
+**Absorbed, not detected.** DEP-013 raised the cap to 12 minutes on this measurement, with the
+reasoning at the line. That stops the cancellations; it does **not** detect the next 40×. A cap
+raised without a filed cause is exactly how this one went unnoticed for three runs, and the
+distinction matters — a 60-minute `verify` cap once masked a real hang here for weeks, so raising
+a cap is a legitimate move only when the cause is measured and is not a hang. It is measured, and
+it is not a hang.
+
+★ **It is still growing, and the raise was not generous — it was necessary.** The very next run
+after the cap went to 12 minutes (`33859560367`, sha `da8abcc2f`) recorded `Setup pnpm` at
+**424s** — worse than the 287s that caused the cancellation, ~100× the 4s baseline — for a job
+total of **499s**. An 8-minute cap would also have failed. DEP-013's own two steps in that job
+cost **1s each**, so nothing in this ticket is the load.
+
+**Blocks:** nothing, now that the cap is raised.
+
+**What would have to change.** Two candidate remediations, and choosing between them is a real
+decision rather than a line: (a) find and fix the growth — the step is
+`pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271` with `run_install: false`, so 195s is
+almost entirely the action's own download/cache work rather than dependency installation, and a
+pinned-binary or cached-store approach would remove it; or (b) if the cost is irreducible, give
+job durations a consumer — the same argument as DEP-013 one register over, since a step time is a
+verdict nobody reads until it crosses a cap. Filed `unowned` because no ticket is doing either.
+
+★ **One free lead for whoever takes it:** PR **#321** (`bump pnpm/action-setup from 6.0.9 to
+6.0.10`) is open and untouched. It is a CANDIDATE, not a diagnosis — the correlation has not been
+measured, and the growth could equally be CDN-side. But it is the cheapest thing to test first,
+and it is already sitting in the queue: check whether 6.0.10 restores the 4s step before
+attempting anything larger.

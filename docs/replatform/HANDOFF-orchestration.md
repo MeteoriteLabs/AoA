@@ -84,8 +84,21 @@ any design doc. Two sessions have already quoted CLI-008-design.md §3's refuted
 Gate locally before pushing: `node scripts/ci-local.mjs` (~3.5 min: policy, lint, brand-check,
 contract-bytes). It is a first filter, NOT a verdict — it has missed real CI failures.
 
+`ci-local.mjs` runs the FAST gate only. It does not run `verify` — and `verify` is not
+*skipped* there, it is never *selected*, so the tool's own honest "skipped jobs are NOT green"
+warning never fires for it. If you touched anything a vitest spec reads — including non-TS
+files a test PARSES — run that package's suite yourself.
+
 `tsc -p server` does NOT cover server/src/__tests__. Run the actual suite.
 `jq` is not installed; use `gh --jq`.
+
+After any rebase or conflict resolution in `scripts/finding-ownership.json`, CHAIN the JSON
+parse to the `git add` with `&&` — never two lines. `git rerere` is trained on that file's
+conflicts (four branches touched it in one day), and on 2026-09-03 a replayed stale resolution
+produced a duplicated key that a running validation caught and an unchained `git add` ignored.
+That one operator is the whole difference. Note also which hunks fail SILENTLY: a conflict in a
+guarded key (`findings.<id>`) fails loudly as `undeclared_finding`; a conflict inside a `reason`
+STRING is read by no guard at all, so read those resolved hunks line by line.
 
 If you file a finding, add its scripts/finding-ownership.json entry in the same commit or the
 policy job goes red. `owned` by a SHIPPED ticket needs a real successor on disk that is not
@@ -199,6 +212,27 @@ failed on the remedy while the diagnosis held every time, and every failure was 
 3. Squash-merge — the precedent (#339 `0e0904206`, #340 `393f7a251` are both single-parent).
 4. **Wait for the integration run to finish** before merging the next track's PR.
 5. Update the GO-BOOK row and, if the finding set changed, `finding-ownership.json`.
+6. ★ **Read the verdict consumer instead of checking `d1-merge-train` by hand.** DEP-013
+   replaced the old habit ("after every merge that touches `docker/**`, check the lane's verdict
+   for that sha") with a mechanism. Every merge push runs `verdict-reconcile.yml`, which sweeps
+   all watched `(workflow, branch)` streams and rewrites ONE tracking issue — labelled
+   `verdict-consumer` — **including when everything is green**, so quiet-and-healthy stays
+   distinguishable from dead. A finding there is a verdict that has been read, **not** a claim
+   that the lane must be green before anything merges.
+
+   What you should now expect to see:
+   - `policy` carries a step **"Verdict consumer is alive (DEP-013)"**. It fails **only** when
+     the consumer has gone silent — never because a watched lane is red. If it reds, the
+     consumer is broken, not the lane; `gh run list --workflow=verdict-reconcile.yml` is the
+     first thing to read.
+   - Until the first reconciler run publishes, that step prints `OK (not_bootstrapped)`. **The
+     merge that lands DEP-013 is what ends that**, and the very next PR should print
+     `OK (fresh)`. If it still says `not_bootstrapped`, the reconciler did not run; if it says
+     `ran_but_never_published`, it ran and died before publishing — that one is a real incident
+     and is the case the check exists for. Closing steps are in **E6-F013**.
+   - The first published sweep will name `cross-platform-weekly.yml@main` (three consecutive
+     `cancelled` scheduled runs). That is correct and expected; fixing that lane is its own
+     work, not a merge blocker.
 
 ★ The GO-BOOK and the findings registers are the **most-touched files across the last 12 landings** —
 more than any source file. Two tracks editing §1.9 will conflict before their code does. Have each
