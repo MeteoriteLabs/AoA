@@ -196,6 +196,14 @@ the guard it skips still fires for a heartbeat run. A test that only shows the n
 cannot tell "correctly skipped" from "accidentally disabled for everyone" — and mutation D2/D4
 below proves the pairs catch exactly that.
 
+★ The design also names `job-approval-parity.integration.test.ts` as the place to add a browser case
+that does NOT seed a synthetic agent or heartbeat run. That extension is **not** landed: the case it
+would assert is the bridge WRITING a null-bound decision, and the bridge composition is unbuilt
+(§10). What is landed instead is the layer beneath it —
+`brw-004-decision-binding.integration.test.ts` proves the aggregate ACCEPTS the row the bridge would
+write, and 13 unit cases prove the service builds it. Saying so rather than implying the design's
+named artifact exists.
+
 ---
 
 ## 5. Changed files
@@ -217,7 +225,9 @@ below proves the pairs catch exactly that.
 | `packages/shared/src/validators/hub.ts` | (d) hazard 8: the API boundary would have rejected the null |
 | `server/src/services/agent-runtime-decisions.ts` | (d) hazards 1–7 |
 | `server/src/services/job-approval-bridge.ts` | (d) hazard 9: the entry point, and the duplicate identity implementation removed |
-| `server/src/__tests__/brw-004-distributed-decision-binding.test.ts` | (d) 12 cases, each a distributed/legacy pair |
+| `server/src/__tests__/brw-004-distributed-decision-binding.test.ts` | (d) 13 unit cases, each a distributed/legacy pair |
+| `server/src/__tests__/brw-004-decision-binding.integration.test.ts` | (d) 5 cases proving the CHECK fires against REAL Postgres |
+| `packages/db/src/migrations/meta/0272_snapshot.json`, `meta/_journal.json` | (d) `db:generate` output that accompanies the migration |
 | `docs/replatform/epics/E8-browser-automation/findings.md` | E8-F003, E8-F004 |
 | `scripts/finding-ownership.json` | their `unowned` entries with checkable successors |
 
@@ -232,7 +242,7 @@ below proves the pairs catch exactly that.
 | "denial/timeout fails closed" — decision delivered | **DEFERRED to JOB-015** (§1). Nothing carries a control command to a running worker | `deferred` |
 | D5: a browser prompt accepts `allow_once` only | (c) `classifyBrowserPermissionDecision` + frozen-source parity test asserting exactly one frozen decision proceeds | `pass` |
 | E8-F001 is visible to a guard | (b) `node scripts/check-distributed-execution-foundation.mjs` prints the census naming E8-F001; a different fixture with the same contradiction is RED | `pass` |
-| E8-F002: the aggregate can hold a distributed row | (d) migration 0272 + the CHECK + 12 tests | `pass` |
+| E8-F002: the aggregate can hold a distributed row | (d) migration 0272 + the CHECK + 13 unit tests + 5 REAL-Postgres integration tests (observed constraint-violation error text), 10 killed mutants | `pass` |
 | "session state is destroyed at terminal state" | Slice (h) not attempted | `deferred` |
 | "OAuth refresh remains control-plane-owned" | Unchanged by this build; no browser path touches the refresh lease | `pass (by inheritance)` |
 | Test: login fixture / connector rotation / log-leak | Slice (g) not attempted; §7 Q6 still unanswered | `deferred` |
@@ -279,7 +289,7 @@ below proves the pairs catch exactly that.
 | D9 | migration 0272's predicate weakened to `CHECK (true)` | 3 (real PG) | ✔ |
 | D10 | 0272's predicate weakened to the one-directional variant | 3 (real PG) | ✔ |
 
-### The two shard-1 failures are NOT mine, and I checked rather than said so
+### The three shard failures are NOT mine, and I checked rather than said so
 
 `debrief-redirect.test.ts` and `discussions-routes-contract.test.ts` each failed one assertion:
 `expect(performance.now() - startedAt).toBeLessThan(3000)` around a dynamic `import()`, measured at
@@ -287,6 +297,11 @@ below proves the pairs catch exactly that.
 vitest shards, embedded Postgres and a pnpm install concurrently — the same family as E3-F034 and
 E3-F036. **Verified, not assumed:** re-run alone on a quiet machine, both files pass 12/12. I touched
 no route module, and the assertion that fails is the timing one, not the export check on the next line.
+
+Shard 2's single failure is `workspace-runtime.test.ts` — a `vi.waitFor` on a spawned runtime log
+sink, the same timing family. **Verified, not assumed:** re-run alone, 40 pass / 13 skipped, 0 fail.
+Shards 3 and 4 were clean (5416 and 5488 pass, 0 fail). Across all four shards, every failure was a
+timing assertion in a file this change does not touch, and every one passed on re-run in isolation.
 
 ★ A method note worth carrying: the first shard run was piped through `tail`, so the tool reported
 `exit 0` — the pipeline's exit is `tail`'s, not vitest's. A red suite read as green. Re-run
