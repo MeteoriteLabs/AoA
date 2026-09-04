@@ -124,7 +124,7 @@ bug this ticket closes.
 | over budget → extension emitted WITH a marker | an under-budget list carries no marker; and the three states (`[]`, complete, truncated) are asserted to be **three distinct byte strings** |
 | marker cannot fit → throws | a fitting marker returns normally |
 | oversized leading → `oversizedLeading` + a `rejected` ACK | ★ **the command BEHIND it is delivered on the next renewal** — a test asserting only the marker would pass against the stalling design |
-| malformed extension → delivery fault (lease loss), never "no commands" | a well-formed extension on the same path renews and applies |
+| malformed extension → counted `control_command{outcome="malformed"}`, nothing applied, nothing ACKed — never "no commands" | a well-formed extension on the same path renews and applies |
 | sequence gap → not applied | the next contiguous sequence is accepted |
 | stale fence → not applied | the same command on the live fence is applied |
 | duplicate `commandId` → replay, applied once | a distinct id alongside a known one is accepted separately |
@@ -171,7 +171,7 @@ running, exactly as an operator drain and a rolling shutdown do.
 |---|---|---|
 | M1 | delete the ACK after a successful apply | 3/9 driver tests RED |
 | M2 | apply `drain` even with no handler composed | 1/9 RED (the `unhandled` control) |
-| M3 | malformed extension → `renewed` with `control: null` | 1/9 RED |
+| M3 | malformed extension → `renewed` with `control: null` and no fault flag | 1/9 RED |
 | M4 | drop the `oversizedLeading` terminal | 1/9 RED |
 | P1 | OMIT the extension when the queue overflows | 3/22 RED |
 | P2 | drop the sibling union from the fit probe (make it sibling-blind) | 1/22 RED |
@@ -238,6 +238,20 @@ extension arm does not act on them: the boolean short-circuits first and ends th
 worker still cannot *distinguish* the two (design open question 3), which is a product
 question, not a delivery one — the distinction is now available on the wire for the first
 time.
+
+### A deliberate deviation from D3, recorded rather than quietly taken
+
+The design's D3 says an unreadable extension is "a delivery fault" and the worker "keeps
+the run's existing posture". An earlier build of this made it a **lease loss**. That was
+wrong and was changed before merge: the extension is `critical:false`, and the frozen
+container's whole contract is that failing to understand a non-critical extension must not
+break the run. A fatal reading would make it effectively critical — one bad server
+projection would tear down every lease in the fleet — and it would contradict the
+`critical:false` positive control two tests over. The shipped behaviour is D3 as written:
+the renewal succeeds, nothing is applied, nothing is ACKed, and the fault gets its own
+counter (`control_command{outcome="malformed"}`) plus a warn log. Loud, and distinguishable
+from an empty queue, which is the property this ticket exists to create. Mutation-tested:
+folding the fault into silence reds the test.
 
 `checkpoint` remains unpersistable (the schema CHECK omits it). **SVC-004's**, unchanged.
 

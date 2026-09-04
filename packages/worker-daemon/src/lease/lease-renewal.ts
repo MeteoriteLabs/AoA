@@ -105,6 +105,24 @@ export type RenewAttempt =
       // a `renewed` carrying `null`: a delivery fault must never wear the same shape as
       // an empty queue, which is the defect this ticket closes (D3).
       readonly control: ControlCommandDelivery | null;
+      /**
+       * JOB-015 / D3 — the control extension was PRESENT and could not be read.
+       *
+       * ★ This is `true` with `control: null`, and the pairing is the whole point: an
+       * unreadable delivery must never wear the same shape as an empty queue. It is
+       * counted `control_command{outcome="malformed"}` and logged, so "the server
+       * addressed a command to this run and we could not read it" is observable — which
+       * is the property this ticket exists to create.
+       *
+       * ★★ It is NOT a lease loss, and that is deliberate. The extension is
+       * `critical:false`, and the frozen container's entire contract is that failing to
+       * understand a non-critical extension must not break the run. Tearing the lease
+       * down on an unparseable optional extension would make it effectively critical —
+       * one bad server projection would kill every run in the fleet. The run keeps its
+       * posture: the boolean floor still governs cancel, the command stays un-ACKed, and
+       * the next renewal rebuilds and redelivers it.
+       */
+      readonly controlFault: boolean;
     }
   | { readonly kind: "rejected"; readonly code: string }
   | { readonly kind: "terminal"; readonly reason: "unauthorized" | "target_revoked" }
@@ -222,20 +240,18 @@ function classifyRenewResponse(response: WorkerOperationHttpResponse): RenewAtte
     const parsed = leaseRenewOperationResponseV1Schema.safeParse(response.body);
     if (!parsed.success) return { kind: "protocol", label: "malformed", code: "malformed" };
     if (parsed.data.outcome === "renewed") {
-      let control: ControlCommandDelivery | null;
+      let control: ControlCommandDelivery | null = null;
+      let controlFault = false;
       try {
         control = readControlCommandDelivery(parsed.data.body.extensions);
       } catch (err) {
-        // ★ D3 — fail-closed DIRECTION. The extension was addressed to this run and
-        // could not be read. Returning `renewed` with `control: null` would be
-        // indistinguishable from "nothing queued"; the boolean floor still governs
-        // cancel, so the safe classification is a protocol refusal the driver treats as
-        // a lease loss rather than a silent drop.
-        return {
-          kind: "protocol",
-          label: "malformed",
-          code: err instanceof ControlDeliveryMalformedError ? "control_malformed" : "malformed",
-        };
+        // ★ D3 — the fail-closed DIRECTION is "never silently 'no commands'", not "kill
+        // the lease". The extension was addressed to this run and could not be read; that
+        // is reported as a distinct fault (counted + logged, and the commands are NOT
+        // applied), while the renewal itself succeeds. See `controlFault` above for why a
+        // `critical:false` extension must not be able to terminate a run.
+        if (!(err instanceof ControlDeliveryMalformedError)) throw err;
+        controlFault = true;
       }
       return {
         kind: "renewed",
@@ -243,6 +259,7 @@ function classifyRenewResponse(response: WorkerOperationHttpResponse): RenewAtte
         cancelRequested: parsed.data.body.cancelRequested,
         cancelReason: parsed.data.body.cancelReason,
         control,
+        controlFault,
       };
     }
     return { kind: "rejected", code: parsed.data.reason };
@@ -767,7 +784,16 @@ export function createLeaseRenewalDriver(deps: LeaseRenewalDriverDeps): LeaseRen
           await cooperativeCancel(state, attempt.cancelReason ?? "cancel_requested");
           return;
         }
-        if (attempt.control) await applyControlDelivery(state, session, attempt.control);
+        if (attempt.controlFault) {
+          // Loud, and distinguishable from an empty queue. The commands stay pending.
+          emitControl("malformed");
+          deps.logger?.warn(
+            { leaseId: state.leaseId },
+            "lease-renewal: the control-command extension could not be read; commands stay pending",
+          );
+        } else if (attempt.control) {
+          await applyControlDelivery(state, session, attempt.control);
+        }
         if (state.terminated) return;
         reschedule(state);
         return;

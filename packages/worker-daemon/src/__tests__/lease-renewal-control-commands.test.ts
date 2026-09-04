@@ -221,7 +221,7 @@ describe("JOB-015 — the oversized-leading terminal, and its positive control",
 });
 
 describe("JOB-015 — fail-closed direction: an unreadable delivery is never 'no commands'", () => {
-  it("treats a malformed control extension as a protocol refusal, not an empty queue", async () => {
+  it("counts a malformed control extension as a FAULT — loud, and never folded into 'no commands'", async () => {
     const c = await makeDriverCase();
     fake.enqueueRenew({
       kind: "renewed",
@@ -230,12 +230,19 @@ describe("JOB-015 — fail-closed direction: an unreadable delivery is never 'no
     void c.driver.accept(makeRenewalHandoff({ windowMs: 100_000 }));
     await fireNextTimer();
 
-    // A delivery fault the worker cannot read is a lease loss, which is loud. Silently
-    // renewing with `control: null` would make it indistinguishable from an empty queue
-    // — the precise shape of the bug this ticket closes.
-    expect(c.log).toContain(`onLeaseLost:${POLL_FIXTURE_IDS.lease}`);
+    // ★ The property this ticket exists to create: an unreadable delivery is
+    // DISTINGUISHABLE from an empty one. Nothing is applied, nothing is ACKed, and the
+    // fault has its own counter.
+    expect(c.metrics.renderPrometheus()).toContain('control_command{outcome="malformed"} 1');
     expect(c.drains).toEqual([]);
     expect(fake.controlAcks()).toEqual([]);
+
+    // ★★ And it is NOT a lease loss. The extension is `critical:false`; the frozen
+    // container's contract is that failing to understand a non-critical extension must
+    // not break the run. Making it fatal would turn one bad server projection into a
+    // fleet-wide outage — and the boolean floor still governs cancel either way.
+    expect(c.log).not.toContain(`onLeaseLost:${POLL_FIXTURE_IDS.lease}`);
+    expect(c.driver.activeRenewalCount()).toBe(1);
   });
 
   it("★ POSITIVE CONTROL — a WELL-FORMED extension on the same path renews and applies", async () => {
