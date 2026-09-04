@@ -212,6 +212,20 @@ export async function awaitApprovalDecision(input: AwaitApprovalInput): Promise<
   // must not be able to impersonate the deadline, and reference identity makes that impossible.
   const TIMED_OUT: { readonly timedOut: true } = { timedOut: true };
   let decision: BrowserPermissionDecision | typeof TIMED_OUT;
+
+  // ★★★ A BELIEF THIS CODE USED TO DEFEND AGAINST, MEASURED AND FOUND FALSE. An earlier version
+  // added `void Promise.allSettled([...])` here, reasoning that `Promise.race` settles once, so a
+  // resolver that rejects AFTER the deadline has won would leave a rejected promise with nothing
+  // listening — fatal under `--unhandled-rejections=strict`, and this code runs as the sandbox's
+  // entrypoint process. The mutation that deletes the guard SURVIVED, which is a question, not a
+  // verdict, and the answer was that the guard was unnecessary: `Promise.race` calls `.then` on
+  // EVERY element, so the loser's rejection is already observed. Measured directly in a strict-mode
+  // child process — the late rejection does not kill it. The guard was removed rather than shipped
+  // beside a test that could never fail, because a defensive line nothing can falsify is a false
+  // claim of enforcement, which this programme treats as worse than the absent check.
+  //
+  // The rejection that WINS the race still reaches the catch below and still becomes
+  // `resolver_failed`; that path has its own test.
   try {
     decision = await Promise.race<BrowserPermissionDecision | typeof TIMED_OUT>([
       input.resolver(input.intent),

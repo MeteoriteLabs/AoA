@@ -310,3 +310,59 @@ describe("BRW-004 — the intent carries a scope the control plane can act on", 
     expect(intent.networkTarget).toBeNull();
   });
 });
+
+describe("BRW-004 — a late rejection is harmless, and that was MEASURED, not assumed", () => {
+  // ★★★ THE MOST USEFUL THING IN THIS FILE IS THE TEST THAT IS NOT HERE.
+  //
+  // An earlier version of `awaitApprovalDecision` carried a `void Promise.allSettled([...])` guard
+  // and a test for it, on the reasoning that `Promise.race` settles once, so a resolver rejecting
+  // AFTER the deadline had won would leave a rejected promise with nothing listening — fatal under
+  // `--unhandled-rejections=strict`, and this code runs as the sandbox's entrypoint process.
+  //
+  // The mutation deleting that guard SURVIVED. A surviving mutant is a question, and the question
+  // had two possible answers: the test cannot see the property, or the guard is unnecessary. The
+  // FIRST attempt at the test listened for `process.on("unhandledRejection")` inside vitest, which
+  // installs its own handler — so it genuinely could not see it, and the second attempt moved to a
+  // real strict-mode child process. The mutant survived THAT too, and a direct experiment settled
+  // it: `Promise.race` calls `.then` on every element, so the loser's rejection is already
+  // observed and a strict-mode process is not killed by it.
+  //
+  // So the guard was removed. Shipping a defensive line beside a test that can never fail is a
+  // FALSE CLAIM OF ENFORCEMENT, which this programme treats as worse than a missing check — and it
+  // would have read, to any later reader, as a hazard someone had handled.
+  //
+  // What remains is the property that IS real and IS falsifiable: a rejection that WINS the race
+  // must become `resolver_failed` rather than being swallowed.
+  it("a resolver that rejects FIRST becomes resolver_failed, not a silent pass", async () => {
+    const out = await awaitApprovalDecision({
+      resolver: async () => {
+        throw new Error("channel down");
+      },
+      intent: buildApprovalIntent({ action: "navigate", title: "t", riskClass: "r" }),
+      timeoutMs: 5,
+      delay: () => new Promise<void>(() => {}),
+    });
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.reason).toBe("resolver_failed");
+    expect(out.detail).toContain("channel down");
+  });
+
+  it("a resolver that rejects LATE leaves the deadline's refusal untouched", async () => {
+    // Not a guard test — an outcome test. The late rejection must not turn a `timed_out` refusal
+    // into something else, which is the only observable the guest actually owns here.
+    const out = await awaitApprovalDecision({
+      resolver: () =>
+        new Promise<BrowserPermissionDecision>((_r, reject) => {
+          setTimeout(() => reject(new Error("late collapse")), 5);
+        }),
+      intent: buildApprovalIntent({ action: "navigate", title: "t", riskClass: "r" }),
+      timeoutMs: 1,
+      delay: async () => {},
+    });
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.reason).toBe("timed_out");
+    await new Promise((r) => setTimeout(r, 20));
+  });
+});
