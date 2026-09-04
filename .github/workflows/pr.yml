@@ -125,6 +125,15 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     timeout-minutes: 5
+    # DEP-013 Slice C reads the verdict consumer's PUBLISHED artifact (an issue) and, only
+    # when no artifact exists, the reconciler's run count — the one query that can turn a pass
+    # into a fail and never the reverse. Both are READ-only and additive to the workflow-level
+    # `contents: read`; a job-level block REPLACES the workflow default, so `contents` is
+    # restated here rather than inherited.
+    permissions:
+      contents: read
+      issues: read
+      actions: read
 
     steps:
       - name: Checkout repository
@@ -443,6 +452,44 @@ jobs:
         run: |
           node scripts/check-ci-lanes.mjs
           node --test scripts/lib/__tests__/ci-lanes.test.mjs scripts/lib/__tests__/d1-evidence-bundle.test.mjs
+
+      # DEP-013 Slice A — INERT. It queries no live verdict and blocks nothing new: it asserts
+      # only that the declaration still matches the tree (every workflow file has an entry,
+      # every `push` branch has its own, every not-watched entry says what would have to change,
+      # and the sweep is non-vacuous).
+      - name: Workflow-verdict manifest completeness (DEP-013)
+        run: |
+          node --test scripts/lib/__tests__/workflow-verdict.test.mjs
+          node --test scripts/check-workflow-verdict-manifest.test.mjs
+          node scripts/check-workflow-verdict-manifest.mjs
+
+      # DEP-013 Slice C — THE TERMINATING READER, and the only thing in this ticket that
+      # BLOCKS. `d1-merge-train` was red for five days and three merges, produced a complete
+      # evidence bundle every time, and reached nobody. Making it a required check is not the
+      # fix (it never runs on `pull_request`, and the branch where that happened has NO branch
+      # protection at all), and failing this job on a red lane would red every unrelated PR in
+      # the repo — during the 08-29→08-31 window, all of them.
+      #
+      # ★★ SO THE GATE IS ON THE VERDICT HAVING BEEN READ, NEVER ON THE VERDICT ITSELF. A red
+      # watched lane updates the tracking issue and blocks nothing. A SILENT consumer — no
+      # published reconciliation within the tolerated window — fails this step, and therefore
+      # `ci-required`. The recursion stops here because this is the one check branch protection
+      # already requires and it runs on every non-draft PR by construction.
+      #
+      # ★★★ IT MEASURES THE PUBLISH, NOT THE RUN. A reconciler that starts and dies still
+      # records a recent COMPLETED run; a reader that trusted the run list would stay green
+      # while nothing was read. See scripts/lib/workflow-verdict.mjs §5.3.
+      #
+      # ★ IT FAILS THE JOB. It is a plain `run:` whose non-zero exit fails `policy` — no
+      # `continue-on-error`, no `|| true`. A step that echoes a warning and exits 0 is a
+      # verdict computed with the next thing running anyway, which is the failure class this
+      # whole ticket is about.
+      - name: Verdict consumer is alive (DEP-013)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node --test scripts/check-verdict-consumer-freshness.test.mjs
+          node scripts/check-verdict-consumer-freshness.mjs
 
       - name: Validate Dockerfile deps stage
         run: |

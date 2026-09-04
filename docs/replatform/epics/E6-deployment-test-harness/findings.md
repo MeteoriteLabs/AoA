@@ -301,3 +301,61 @@ give the image build a PR-time consumer. Note the relationship to **DEP-013** wi
 DEP-013 makes the next occurrence LOUD within a bounded time; this finding's successor would make it
 IMPOSSIBLE. Neither substitutes for the other, which is why WRK-017's designer declined to fold this
 into DEP-013.
+
+## E6-F013 — the verdict consumer has never been OBSERVED publishing: DEP-013's live control is owed, and the reader is in its one tolerated state until it is
+
+**Status:** `open` · Severity: MED · Source: DEP-013 build (2026-09-04), filed by the builder
+against its own work rather than discovered later.
+
+DEP-013 ships the consumer, the reconciler workflow and the terminating reader in `policy`.
+Three of the design's controls were executed and are recorded in `DEP-013-result.md`: PC-1 (a
+12-mutant sweep over the pure evaluator, 12/12 killed and the source restored byte-identical),
+PC-2 (the replay against the **recorded** 08-25 → 09-03 `d1-merge-train` history, which reports
+from `c3d26657d` and stops at `ee74f9c8c`), and a LIVE evaluation of all eleven watched streams
+against the real GitHub API, which correctly reports `cross-platform-weekly.yml@main` as
+`not_success (cancelled)` — §6's free positive control, fired with nothing broken to arrange it.
+
+**What is NOT proven, and it is the half that involves a write.** The reconciler has never
+published. Two independent reasons, and neither is a shortcut:
+
+1. **The builder may not publish.** `MeteoriteLabs/AoA` is a PUBLIC repository, and opening the
+   tracking issue is publishing public content — outside an automated builder's authority. It
+   was therefore run as `--dry-run`, which performs the entire evaluation and prints the exact
+   issue body it would post. Everything except the `POST` is measured; the `POST` is not.
+2. **The workflow cannot fire from this branch anyway.** GitHub registers `schedule` and
+   `workflow_dispatch` only from the DEFAULT branch. That is not an assumption: this repository
+   already states it at the line in `d1-merge-train.yml` ("workflow_dispatch is omitted
+   deliberately: it requires the workflow on the default branch (main)") and in
+   `keyed-e2b-conformance.yml`, and every scheduled run of `cross-platform-weekly`,
+   `catalog-audit` and `thread-v2-e2e` in the API is on `main`. The `push` trigger added for
+   exactly this reason makes the reconciler's FIRST real run the push that merges it.
+
+**What that means for the gate today — stated plainly, because a false claim of enforcement is
+worse than a missing check.** `policy` runs the reader on every PR and the reader FAILS the job
+(proven by six spawned vectors asserting real exit codes). But with no published issue and no
+completed reconciler run, its verdict today is `not_bootstrapped`, which PASSES. **So the
+blocking half of DEP-013 is wired and exercised but has not yet blocked anything.** The
+tolerance is deliberately the narrowest possible and it is not a dial: it is removed by the
+FIRST completed reconciler run, automatically, with no manifest edit and nobody to remember —
+after that, a missing issue is `ran_but_never_published` and reds `policy`. It cannot mask any
+other failure: with the issue present, a wiped marker, an unparseable marker and a stale marker
+all fail regardless.
+
+**Blocks:** nothing merging. It leaves one claim unmade — *the consumer has published and the
+reader has been seen going red on real silence*.
+
+**What would have to change, precisely.** After this lands on `docs/replatform-program`: (a) the
+merge push runs `verdict-reconcile.yml`, which opens the tracking issue — confirm the run is
+`success` and that the issue carries a `verdict-consumer:v1` marker; (b) confirm the next PR's
+`policy` prints `OK (fresh)` rather than `OK (not_bootstrapped)`, which is the observation that
+the tolerance is gone; (c) for PC-3(2), re-run the reader against a marker older than
+`consumer.toleratedSilenceHours` — the `--self-test-case=stale` vector already does this locally
+and exits 1, so the live version adds only the CI surface; (d) when `verdict-reconcile.yml`
+reaches `main` and its 6h cron is observed firing, drop `consumer.toleratedSilenceHours` from
+72 to 26, which the manifest's own `toleratedSilenceReason` already names as its successor
+condition.
+
+**Filed rather than fudged.** The alternative was to wire the reader as a no-op until someone
+flips a manifest flag. That is the shape this programme has already had to delete once — a gate
+nobody can pass, or a dial nobody remembers — and it would have made the enforcement claim false
+in a way no guard could see.

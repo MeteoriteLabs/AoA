@@ -130,6 +130,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-verdict-consumer-freshness.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow"
+    },
     "scripts/check-worker-daemon-boundary.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"
@@ -147,6 +151,10 @@
       "reason": "invoked by a workflow"
     },
     "scripts/check-worker-protocol-package.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow"
+    },
+    "scripts/check-workflow-verdict-manifest.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"
     },
