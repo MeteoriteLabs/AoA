@@ -49,6 +49,10 @@ on:
       - "packages/sandbox-e2b-provider/src/__tests__/keyed-cli-008-unit-d-invocation.test.ts"
       # The module under test. A change to the emitted script re-fires the lane.
       - "server/src/services/task-run-sandbox-invocation.ts"
+      # E7-F014. The lane now also pins WHICH SURFACE carries a non-zero exit, so
+      # the transport that decides it belongs in `paths` too — reverting the
+      # `CommandExitError` conversion must re-fire this lane, not pass silently.
+      - "packages/sandbox-e2b-provider/src/real-transport.ts"
 
 permissions:
   contents: read

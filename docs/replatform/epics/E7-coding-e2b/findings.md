@@ -805,7 +805,8 @@ shape should settle it. **Both branches are now pinned by the live lane**
 
 ## E7-F014 — Against real E2B a non-zero exit is THROWN, not returned, so every failing distributed run terminalizes with `exitCode: null` and no message
 
-**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-design.md`) — Unit F, output capture
+**Status:** **resolved** · **Resolved by:** the E7-F014 carrier fix, 2026-09-04 (PR #351) — see
+**Resolution** at the end of this block, and the ★ carve-out for the half it did NOT fix.
 **Severity:** MEDIUM · **Filed:** 2026-09-03, by the CLI-008 Unit D LIVE verification lane.
 **Observed in a real E2B sandbox**, not argued: run `33789547290`, log line
 `[cli-008 unit-d] non-zero exit carrier = throw, exitCode = 78`. Confirmed a second time by the
@@ -862,3 +863,68 @@ the transport: catch the SDK's `CommandExitError` in `RealE2bTransport.runComman
 `{ exitCode, signal: null, timedOut: false, crashed: true }`, restoring the shape the mock already
 models and the provider already expects. That is a change to CLI-001's shipped transport and belongs
 with whoever next needs the exit code, not with a verification lane.
+
+### Resolution — 2026-09-04, PR #351
+
+`RealE2bTransport.runCommand` now narrows on **`CommandExitError`** and returns
+`{ exitCode, signal: null, timedOut: false, crashed: exitCode !== 0 }`. The `crashed` expression is
+reused rather than hardcoded to `true` on purpose: it was the dead branch this finding names, and
+reusing it is what brings it back to life instead of leaving a second, divergent copy of the rule.
+`e2b-provider.ts` and `supervisor.ts` are **unchanged** — the carrier fix alone was sufficient, and
+the live lane is what establishes that rather than an argument. A converted result stops being an
+exception, so the supervisor's execute-catch never sees it, the run reaches its **ordinary** terminal
+(`status` computed from the exit code), and the destroy-and-return path is left for genuine faults.
+
+**★ The distinction the fix is built around, and the reason it is not a bare try/catch.** Two things
+the old code conflated are now kept apart:
+
+- **(a) the command RAN and exited non-zero** — a normal outcome (a failed build, a failing test, the
+  agent's own error exit). Converted to a result, with the status **read off the error object**, never
+  defaulted. A `CommandExitError` whose `exitCode` is not a number carries no status and keeps throwing.
+- **(b) the sandbox or transport FAULTED** — no exit status was ever produced. Still an exception.
+
+The narrowing is not a guess about the SDK: `CommandExitError` `implements CommandResult` and exposes
+an `exitCode: number` getter, and **e2b@2.30.5 draws this exact line itself** inside the same
+`CommandHandle.wait()` that throws it — a command that produced no exit status throws `iterationError`
+or a bare `SandboxError("Process exited without a result")`, neither of which is a `CommandExitError`.
+`instanceof` is also the SDK's own idiom for the narrowing (`isAuthFailure`, `isMissingUpstream`), and
+it fails **closed**: anything that is not that class keeps its pre-fix path. Collapsing (b) into (a)
+would manufacture a plausible exit code for an infrastructure failure — strictly worse than the defect
+being fixed, by this programme's standing rule that a false claim of a result beats no result only in
+the wrong direction.
+
+**Proved LIVE against a real E2B sandbox, with a positive control.** Both dispatched at
+`keyed-e2b-unit-d.yml`:
+
+| | run | verdict | the measured line |
+|---|---|---|---|
+| fix (`claude/e7-f014-throw-carrier`, `5fc11469f`) | `33832930572` | **success**, 5/5 | `[cli-008 unit-d] non-zero exit carrier = result, exitCode = 78` |
+| ★★★ mutant control (`claude/e7-f014-mutant-control`) | `33832956461` | **failure**, 2 red / 3 green | `[cli-008 unit-d] non-zero exit carrier = throw, exitCode = 78` |
+
+The mutant reverts **only** `real-transport.ts` to `c48259358` and keeps the cases verbatim. It reds
+with `AssertionError: expected 'throw' to be 'result'` and `CommandExitError: exit status 42`. The
+**same log line** that filed this finding (`carrier = throw`) now reads `carrier = result` on the fix
+and reverts to `carrier = throw` on the mutant — a direct before/after on one measurement, not two
+different assertions. Critically the **fault case stays GREEN on both** (`[e7-f014] fault carrier
+threw = true, returned = "NOTHING_RETURNED"`), so the mutation is targeted: it moves exactly the two
+assertions about (a) and does not move (b).
+
+Three cases carry it, all against a real sandbox: a command exiting **42** arrives as a result
+carrying 42 (a fabricated code — the SDK's own `1`, the seam's `null` — cannot pass, so the status was
+read and not defaulted); a run against a **TERMINATED** sandbox must still throw and must not resolve
+to a number; and the original exit-**78** case now **pins** `carrier === "result"`.
+`packages/sandbox-e2b-provider/src/real-transport.ts` was added to the lane's `paths`, so reverting
+the conversion re-fires the lane rather than passing silently.
+
+**★ WHAT THIS DID NOT FIX — the "and no message" half of this finding's own title.** The exit code
+arrives; the **stderr text still does not**, and that is by design one layer up rather than by defect
+here. `ExecuteResult` carries `stdoutRef`/`stderrRef` as **opaque references** because
+`e2b-provider.ts` holds the E5 rule that *no customer bytes cross this boundary*, and the frozen
+terminal payload has no message field of its own. So a failing run's terminal is now
+`status: "failed"`, `exitCode: 78`, `errorCode: null`, `errorMessage: null` — attributable by code,
+still silent on cause. Note that `errorCode` changing from `"execute_failed"` to `null` is a
+**correction**, not a regression: execute did not fail, the command ran and exited 78, and the old
+value asserted the wrong thing. Carrying the cause text is **output capture — CLI-008 Unit F**, which
+is unbuilt; no separate finding is filed because the silence is an enforced architectural boundary
+with an owner, not an undocumented constraint. Unit D's acceptance criterion 5 is therefore **half
+met**: "exit 78" is now recorded on the attempt; "with a named cause on stderr" is not.

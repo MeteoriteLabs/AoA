@@ -443,7 +443,12 @@ could not: `keyed-e2b-unit-d.yml` ran the shape against real E2B from a GitHub r
 deferring a claim to the staging campaign, ask whether a keyed lane can settle it this week. Two
 findings came out of the first one that did — **E7-F013** (LOW) and **E7-F014** (MEDIUM, the mock
 encodes the OPPOSITE contract to real E2B for a non-zero exit, so no no-key test could ever surface
-it). What the fleet is still needed for is genuinely narrower than it looked: the real agent binaries
+it). ✅ **E7-F014 was then FIXED AND PROVED on that same lane, 2026-09-04** (PR #351) — the transport
+narrows on the SDK's `CommandExitError` so a non-zero exit returns its code, while a genuine fault
+keeps throwing; green run `33832930572`, and a mutant-control run `33832956461` shows it RED. The
+week-long round trip from "filed by a keyed lane" to "fixed and proved by the same keyed lane" is the
+argument in this section, measured.
+What the fleet is still needed for is genuinely narrower than it looked: the real agent binaries
 running inside the sandbox, and Unit B's staging channel end to end.
 
 ### 1.9.4 Stale passages in THIS document, named — ✅ ALL FOUR CORRECTED 2026-09-03 (Track C)

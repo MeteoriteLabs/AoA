@@ -19,7 +19,7 @@
 // correctness is the keyed lane's job, not the typechecker's.
 // -----------------------------------------------------------------------------
 
-import { Sandbox } from "e2b";
+import { CommandExitError, Sandbox } from "e2b";
 
 import {
   E2bTransportNotFoundError,
@@ -122,6 +122,48 @@ export class RealE2bTransport implements E2bTransport {
       const exitCode = typeof result?.exitCode === "number" ? result.exitCode : 0;
       return { exitCode, signal: null, timedOut: false, crashed: exitCode !== 0 };
     } catch (err) {
+      // ── (a) THE COMMAND RAN AND EXITED NON-ZERO. A normal outcome, NOT a fault.
+      //
+      // E7-F014, observed in a real E2B sandbox (run 33789547290, confirmed by the
+      // mutant run 33790235730): `sandbox.commands.run()` is `start()` then
+      // `CommandHandle.wait()`, and `wait()` THROWS for any non-zero exit —
+      // `if (this.result.exitCode !== 0) throw new CommandExitError(this.result)`
+      // (e2b@2.30.5, `src/sandbox/commands/commandHandle.ts:176`). Nothing on the way
+      // out converted it back, so `result` above was never assigned, the throw
+      // travelled through `E2bSandboxProvider.execute` untouched, and the supervisor's
+      // execute-catch wrote the durable terminal as `exitCode: null` +
+      // `errorCode: "execute_failed"`. Every failing distributed run lost its exit
+      // code, and `crashed: exitCode !== 0` above was unreachable.
+      //
+      // `CommandExitError` is an exception carrying a COMPLETED `CommandResult`
+      // (`implements CommandResult`, with an `exitCode: number` getter), so convert it
+      // back into the ordinary result shape this seam already models — and which
+      // `MockE2bTransport` has always returned for a crashed command
+      // (`{ exitCode: 1, crashed: true }`). That restores attribution without any new
+      // shape: the provider passes `exitCode` straight through, and the supervisor
+      // reaches its ORDINARY terminal (`status` from the code, not the catch).
+      //
+      // ★ NARROW ON THE CLASS, AND READ THE STATUS OFF IT — never manufacture one.
+      // The SDK draws precisely this line itself, in the same `wait()`: a command that
+      // produced NO exit status throws `iterationError` or a bare
+      // `SandboxError("Process exited without a result")` instead of a
+      // `CommandExitError`. Those are case (b) — the sandbox or transport FAULTED —
+      // and they must keep throwing, so the supervisor still tears down and reports
+      // `execute_failed`. Reporting a fault as "exited N" would invent an exit status
+      // that never existed, which is strictly worse than losing a real one. The
+      // `instanceof` is the SDK's own idiom for this narrowing (`isAuthFailure`,
+      // `isMissingUpstream` both gate on `err instanceof CommandExitError`), and it
+      // fails CLOSED: anything that is not that class keeps its current path.
+      if (err instanceof CommandExitError) {
+        const exitCode = err.exitCode;
+        // Defensive: the status is READ, never defaulted. A `CommandExitError` whose
+        // `exitCode` is not a number carries no status to report, so it stays a throw
+        // rather than becoming a fabricated "exited 1".
+        if (typeof exitCode === "number") {
+          return { exitCode, signal: null, timedOut: false, crashed: exitCode !== 0 };
+        }
+      }
+      // ── (b) THE SANDBOX OR TRANSPORT FAULTED — no exit status exists.
       // A real timeout surfaces as an SDK timeout error; map it to a timed-out
       // terminal (the keyed lane refines egress/crash mapping against real infra).
       const name = err instanceof Error ? err.name : "";
