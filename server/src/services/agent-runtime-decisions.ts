@@ -136,8 +136,16 @@ export class RuntimeDecisionCancelledError extends Error {
 
 type CreatePromptInput = {
   companyId: string;
-  agentId: string;
-  runId: string;
+  /**
+   * BRW-004 (E8-F002) — NULL for a distributed job decision.
+   *
+   * A `browser_request` job has no `agents` row and no `heartbeat_runs` row; its binding
+   * rides the fence-guarded `job_projection_receipts` row instead. The DB CHECK
+   * `(agent_id IS NULL) = (run_id IS NULL)` makes the pair all-or-nothing, so these two are
+   * either both set or both null and nothing in between reaches a reader.
+   */
+  agentId: string | null;
+  runId: string | null;
   adapterType: string;
   adapterSessionId?: string | null;
   adapterSessionParams?: Record<string, unknown> | null;
@@ -292,8 +300,34 @@ function hashString(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function sourceUniqueKey(input: { companyId: string; runId: string; nonce: string }) {
-  return `runtime:${input.companyId}:${input.runId}:${input.nonce}`;
+/**
+ * The runtime-decision source identity.
+ *
+ * ★★ BRW-004 (E8-F002). `runId` became nullable, and a null rendered by template
+ * interpolation would produce the literal string "null" in the key — an identity that WORKS
+ * by accident and would break the first time anyone touched the template. The distributed
+ * case gets an explicit sentinel instead. A UUID can never collide with it.
+ *
+ * ★★★ AND THIS FUNCTION IS DUPLICATED. `job-approval-bridge.ts` computes the same string in
+ * its own `runtimeSourceIdentity`, bound to this one only by a comment saying they must be
+ * byte-identical. Nothing checked that before; making `runId` nullable is exactly the change
+ * that could have silently diverged them, so `runtime-decision-source-identity.test.ts` now
+ * pins both implementations against the same vectors, INCLUDING the null case. Exported for
+ * that test — a second implementation of an identity rule is a divergence waiting to happen,
+ * and the only reason there are still two is that the bridge must not import the service.
+ */
+export const DISTRIBUTED_RUN_SENTINEL = "distributed";
+
+export function runtimeDecisionSourceUniqueKey(input: {
+  companyId: string;
+  runId: string | null;
+  nonce: string;
+}) {
+  return `runtime:${input.companyId}:${input.runId ?? DISTRIBUTED_RUN_SENTINEL}:${input.nonce}`;
+}
+
+function sourceUniqueKey(input: { companyId: string; runId: string | null; nonce: string }) {
+  return runtimeDecisionSourceUniqueKey(input);
 }
 
 function toIso(value: Date | string | null): string | null {
@@ -605,6 +639,28 @@ function realRepo(db: Db): DecisionRepo {
         .orderBy(asc(agentRuntimeDecisions.expiresAt))
         .limit(input.limit);
     },
+    /**
+     * ★★★ BRW-004 (E8-F002) — THE HAZARD TYPESCRIPT CANNOT SEE.
+     *
+     * This is an INNER JOIN on `run_id`. Making that column nullable does not produce a type
+     * error here, does not produce a runtime error, and does not produce a wrong row: it
+     * SILENTLY EXCLUDES every distributed decision from the stranded-answer sweep. A hole,
+     * not a crash — which is strictly worse, because nothing reports it.
+     *
+     * ★ It is CORRECT that they are excluded, and the join is left as the join. This sweep
+     * exists to catch an answer whose HEARTBEAT RUN went terminal before the in-band relay
+     * could deliver it (`index.ts`'s R2 sweep). A distributed decision has no heartbeat run
+     * and no in-band relay, so this sweep has nothing to say about it.
+     *
+     * ★★ BUT THAT MEANS A DISTRIBUTED DECISION HAS NO STRANDED-ANSWER SWEEP AT ALL, and the
+     * equivalent — noticing that the job/attempt went terminal before the queued
+     * `runtime_decision_result` was delivered — does not exist anywhere yet. It cannot: no
+     * control-plane hop delivers a control command to a running worker (BRW-004 terrain §4),
+     * so there is no delivery to be stranded from. Tracked as E8-F004; the sweep belongs
+     * beside JOB-015's delivery hop, not in front of it. Recorded here rather than left as an
+     * unexplained absence, because an exclusion nobody wrote down is an exclusion nobody
+     * finds.
+     */
     async listStrandedAnswers(input) {
       const conditions = [
         inArray(agentRuntimeDecisions.status, ["answered", "relay_failed"]),
@@ -759,10 +815,18 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       sourceId: decision.id,
       title: decision.title,
       summary: decision.summary ?? decision.promptText ?? decision.relayError ?? null,
-      relatedEntityType: "heartbeat_run",
-      relatedEntityId: decision.runId,
-      sourceActorType: "agent",
-      sourceActorId: decision.agentId,
+      // ★★ BRW-004 (E8-F002) — a TYPE CLAIM must not outlive its referent. `relatedEntityId`
+      // and `sourceActorId` are nullable columns and `hub-items.ts:339` guards the ancestry
+      // lookup, so a null does not crash — it produces a hub item that DECLARES
+      // relatedEntityType "heartbeat_run" and sourceActorType "agent" while pointing at
+      // neither. A row that lies quietly is worse than one that throws, so the type is
+      // dropped with the id rather than left asserting a run that does not exist.
+      ...(decision.runId !== null
+        ? ({ relatedEntityType: "heartbeat_run", relatedEntityId: decision.runId } as const)
+        : {}),
+      ...(decision.agentId !== null
+        ? ({ sourceActorType: "agent", sourceActorId: decision.agentId } as const)
+        : {}),
       priority: decision.status === "relay_failed" ? "urgent" : "high",
       sourcePermissionRevision: String(decision.sourceRevision),
     });
@@ -826,9 +890,21 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     // makes the hook route's catch map it to a DENY, so the zombie's tools are
     // refused instead of minting decisions that later expire into agent_error
     // noise (and cannot resurrect the run — the setRunStatus latch blocks that).
-    const runStatus = await repo.getRunStatus(input.runId);
-    if (runStatus == null || TERMINAL_RUN_STATUSES.has(runStatus)) {
-      throw conflict("run is terminal");
+    // ★★★ BRW-004 (E8-F002) — THE GUARD IS SKIPPED WHEN THERE IS NO RUN, and getting this
+    // wrong would have been the ticket's worst defect. `getRunStatus(null)` finds no row, the
+    // `runStatus == null` arm fires, and EVERY distributed browser decision would be refused
+    // at creation as "run is terminal". The typecheck would have been perfectly green: the
+    // parameter widens to `string | null` without complaint. The result would be an approval
+    // feature that refuses 100% of its own prompts — a dead lever that looks exactly like a
+    // working fail-closed guard, which is the failure this programme names its worst.
+    //
+    // A distributed decision's liveness is the JOB FENCE, checked by the bridge before this
+    // is ever reached, not a heartbeat run. There is nothing here to check, so nothing is.
+    if (input.runId !== null) {
+      const runStatus = await repo.getRunStatus(input.runId);
+      if (runStatus == null || TERMINAL_RUN_STATUSES.has(runStatus)) {
+        throw conflict("run is terminal");
+      }
     }
 
     const nowDate = now();
@@ -860,7 +936,11 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     // request falls through to the human → timeout path (deny direction) — a probe
     // error never allows, and never lets a stale trust rule allow either.
     let connectorProbePassed = false;
-    if (isConnectorShaped) {
+    // BRW-004 (E8-F002): the probe is scoped to an AGENT's connector configuration. A
+    // distributed browser decision has no agent, so there is nothing to probe and the request
+    // falls through to the human/timeout path — the deny direction, which is the correct
+    // default for a scope that does not exist rather than one that failed to load.
+    if (isConnectorShaped && input.agentId !== null) {
       try {
         connectorProbePassed = await connectorAutoAllow({
           companyId: input.companyId,
@@ -1063,10 +1143,18 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     // forever-stalled ghost — non-terminal, invisible to the expiry sweep, never
     // relayable. Instead, cancel the decision honestly and 409 so the founder
     // sees a real error rather than a phantom "answered" item.
-    const runStatus = await repo.getRunStatus(row.runId);
-    if (runStatus == null || TERMINAL_RUN_STATUSES.has(runStatus)) {
-      await cancelStrandedDecision(row, "run ended before the answer could be delivered");
-      throw conflict("run ended before the answer could be delivered");
+    // ★★★ BRW-004 (E8-F002) — the ANSWER-side twin of the createPrompt guard, and just as
+    // lethal: with a null `runId` the `runStatus == null` arm fires, so every founder answer
+    // to a browser prompt would be cancelled-and-409'd. The prompt could be raised and never
+    // answered. Skipped when there is no run, for the same reason: a distributed decision's
+    // liveness is the job fence, and the in-band heartbeat relay this gate protects does not
+    // exist for it.
+    if (row.runId !== null) {
+      const runStatus = await repo.getRunStatus(row.runId);
+      if (runStatus == null || TERMINAL_RUN_STATUSES.has(runStatus)) {
+        await cancelStrandedDecision(row, "run ended before the answer could be delivered");
+        throw conflict("run ended before the answer could be delivered");
+      }
     }
     const answerPatch: Partial<typeof agentRuntimeDecisions.$inferInsert> = {
       status: "answered",
@@ -1257,17 +1345,25 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
           sourceId: updated.id,
           title: `Permission request timed out: ${updated.title}`,
           summary: updated.relayError ?? "timeout policy parked the run",
-          relatedEntityType: "heartbeat_run",
-          relatedEntityId: updated.runId,
-          sourceActorType: "agent",
-          sourceActorId: updated.agentId,
+          // Same rule as the projection above: no run, no "heartbeat_run" claim.
+          ...(updated.runId !== null
+            ? ({ relatedEntityType: "heartbeat_run", relatedEntityId: updated.runId } as const)
+            : {}),
+          ...(updated.agentId !== null
+            ? ({ sourceActorType: "agent", sourceActorId: updated.agentId } as const)
+            : {}),
           priority: "high",
         });
       }
       // Deny-timeout flips to "answered" (non-terminal) — the close is a safe
       // no-op there (reconcile refreshes, never archives a live source).
       await closeProjectedHubItem(updated);
-      if (outcome.cancelsRun) {
+      // BRW-004 (E8-F002): `cancelsRun` means cancel the HEARTBEAT run. A distributed decision
+      // has none, and the injected canceller is `heartbeatService.cancelRun` — passing it a
+      // null would be a cancellation aimed at nothing, silently swallowed by the catch below
+      // and indistinguishable from a successful cancel. The distributed cancellation path is
+      // the control command the bridge queues, which is JOB-015's to deliver.
+      if (outcome.cancelsRun && updated.runId !== null) {
         try {
           await runCanceller?.({
             companyId: updated.companyId,

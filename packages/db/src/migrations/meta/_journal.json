@@ -1905,6 +1905,13 @@
       "when": 1788367848868,
       "tag": "0271_real_frightful_four",
       "breakpoints": true
+    },
+    {
+      "idx": 272,
+      "version": "7",
+      "when": 1788513475295,
+      "tag": "0272_browser_request_decision_binding",
+      "breakpoints": true
     }
   ]
 }
