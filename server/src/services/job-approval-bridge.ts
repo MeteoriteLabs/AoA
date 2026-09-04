@@ -68,6 +68,7 @@ import { resolveCompanyOrganizationId } from "./org-concurrency.js";
 import { assertAdmissibleMappedOrganization } from "./tenant-admission.js";
 import {
   agentRuntimeDecisionService,
+  runtimeDecisionSourceUniqueKey,
 } from "./agent-runtime-decisions.js";
 import { approvalService } from "./approvals.js";
 import { publishLiveEvent } from "./live-events.js";
@@ -224,8 +225,21 @@ export function describeSourceGovernance(source: SubmitJobSource): SourceGoverna
 
 /** A runtime-decision open request (task_run work_question / browser permission). */
 export interface RuntimeDecisionOpenRequest {
-  agentId: string;
-  runId: string;
+  /**
+   * BRW-004 (E8-F002) — NULL for a distributed job decision, in an all-or-nothing pair.
+   *
+   * ★ THIS IS THE ENTRY POINT, and widening only the service beneath it would have been a
+   * silent no-op: a widened parameter still accepts a narrower argument, so `tsc` stays green
+   * while the bridge remains string-only and a browser job can never reach the relaxed
+   * aggregate at all. The design names "the bridge's request shape" as one of the two null
+   * branches for exactly this reason.
+   *
+   * A `browser_request` job has no `agents` row and no `heartbeat_runs` row; its binding rides
+   * the fence-guarded `job_projection_receipts` row this function already writes. The DB CHECK
+   * `(agent_id IS NULL) = (run_id IS NULL)` keeps the pair all-or-nothing.
+   */
+  agentId: string | null;
+  runId: string | null;
   adapterType: string;
   kind: "permission" | "work_question";
   nonce: string;
@@ -356,8 +370,20 @@ function sha256Hex(value: unknown): string {
 /** The runtime-decision source identity — byte-identical to the service's own
  * `sourceUniqueKey`, so the receipt keys on the SAME identity the aggregate dedupes
  * on (defense in depth on top of the aggregate's native idempotency). */
-function runtimeSourceIdentity(companyId: string, runId: string, nonce: string): string {
-  return `runtime:${companyId}:${runId}:${nonce}`;
+function runtimeSourceIdentity(companyId: string, runId: string | null, nonce: string): string {
+  // ★★★ ONE IMPLEMENTATION, NOT TWO. This used to re-implement the service's key as its own
+  // template literal, bound to it by nothing but the comment above saying they must be
+  // byte-identical. That is the "second implementation of an identity rule" this programme keeps
+  // paying for, and BRW-004 nearly paid again: `runId` became nullable, and two independent
+  // template literals would each have had to render null identically — by accident, forever.
+  //
+  // A divergence here does NOT fail loudly. The receipt fast-path simply never hits, so every
+  // replay mints a duplicate aggregate — a silent idempotency failure, not an error.
+  //
+  // The bridge already imports this module (`agentRuntimeDecisionService`, above), so there was
+  // never a dependency reason for the copy. It now DELEGATES, and the wrapper is kept only so
+  // the two call sites below read the same as they did.
+  return runtimeDecisionSourceUniqueKey({ companyId, runId, nonce });
 }
 
 /** The product-approval source identity — keyed on the bridge idempotency key, since

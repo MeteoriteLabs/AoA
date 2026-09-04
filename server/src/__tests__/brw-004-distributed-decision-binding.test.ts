@@ -14,6 +14,8 @@
 // test that only shows the null path succeeding cannot tell "correctly skipped" from
 // "accidentally disabled for everyone".
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   agentRuntimeDecisionService,
   runtimeDecisionSourceUniqueKey,
@@ -108,7 +110,7 @@ const distributedPrompt = {
   timeoutPolicy: "deny" as const,
 };
 
-describe("E8-F002 — the source identity is null-safe and stays byte-identical across both implementations", () => {
+describe("E8-F002 — the source identity is null-safe, and there is exactly ONE implementation of it", () => {
   it("a legacy run renders exactly as it always did", () => {
     // The format for a non-null run is UNCHANGED, or every existing row's dedupe key moves.
     expect(runtimeDecisionSourceUniqueKey({ companyId: "c", runId: LEGACY_RUN, nonce: "n" })).toBe(
@@ -125,16 +127,29 @@ describe("E8-F002 — the source identity is null-safe and stays byte-identical 
     expect(runtimeDecisionSourceUniqueKey({ companyId: "c", runId: null, nonce: "n" })).not.toContain("null");
   });
 
-  it("★ the bridge's INDEPENDENT copy of the rule produces the same bytes, including for null", () => {
-    // `job-approval-bridge.ts` computes this identity itself and must not import the service.
-    // Two implementations bound only by a comment is a divergence waiting to happen, and
-    // making runId nullable is exactly the edit that could have diverged them silently.
-    const bridgeCopy = (companyId: string, runId: string | null, nonce: string) =>
-      `runtime:${companyId}:${runId ?? DISTRIBUTED_RUN_SENTINEL}:${nonce}`;
+  it("★★★ the bridge DELEGATES to this helper — there is no second implementation to diverge", () => {
+    // `job-approval-bridge.ts` used to re-implement this key as its own template literal, bound
+    // to the service's only by a comment saying they must be byte-identical. Making `runId`
+    // nullable would have required two independent literals to render null identically, by
+    // accident, forever — and a divergence in a dedupe key does NOT fail loudly: the receipt
+    // fast-path simply never hits, so every replay mints a duplicate aggregate.
+    //
+    // The copy is gone. This test is the anti-regression: it reads the bridge's SOURCE and
+    // asserts it calls the shared helper and contains no `runtime:${...}` literal of its own.
+    // A source-text assertion, because the bridge's function is not exported and the property
+    // being protected is "there is only one implementation", which a value test cannot see.
+    const bridgeSrc = readFileSync(
+      fileURLToPath(new URL("../services/job-approval-bridge.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(bridgeSrc).toContain("runtimeDecisionSourceUniqueKey({ companyId, runId, nonce })");
+    expect(bridgeSrc).not.toMatch(/return `runtime:\$\{/);
+  });
+
+  it("the shared helper is the one both paths agree on, for a legacy run and for null", () => {
     for (const runId of [LEGACY_RUN, null]) {
-      expect(bridgeCopy("company-1", runId, "n1")).toBe(
-        runtimeDecisionSourceUniqueKey({ companyId: "company-1", runId, nonce: "n1" }),
-      );
+      const expected = `runtime:company-1:${runId ?? DISTRIBUTED_RUN_SENTINEL}:n1`;
+      expect(runtimeDecisionSourceUniqueKey({ companyId: "company-1", runId, nonce: "n1" })).toBe(expected);
     }
   });
 });

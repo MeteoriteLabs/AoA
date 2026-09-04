@@ -2,7 +2,7 @@
 
 ## E8-F001 — A frozen fixture and shipped code name DIFFERENT approval authorities for `browser_request`, and nothing can see the disagreement
 
-**Status:** open · **Owner:** BRW-004 (`epics/E8-browser-automation/tickets/BRW-004-design.md` §2 D2, slice (b))
+**Status:** open · **Owner:** `unowned` (BRW-004 shipped its half; see the disposition)
 **Severity:** MED
 **Filed:** 2026-09-03, by BRW-004 terrain mapping at `203853b3a`.
 
@@ -76,11 +76,32 @@ turns the gate red. The real resolution is a **v2 fixture directory** with
 BRW-004 design §7 Q5 and **not** BRW-004's to take. This finding therefore stays open until that
 decision is made, and **must not be closed by weakening the guard**.
 
+**UPDATE 2026-09-04 — BRW-004 SHIPPED its half; the residual is UNOWNED.** Slice (b) landed the
+guard (`scripts/check-distributed-execution-foundation.mjs`): every fixture's `control` block is now
+bound to the shipped `describeSourceGovernance` profile, this divergence is pinned by VALUE TUPLE,
+and an always-printed census names it and this finding on every `policy` run. A NEW fixture with the
+same contradiction is RED; any change to the pinned fixture's `control` block is RED. Eight mutation
+cases prove the gate can fire, and an anti-vacuity mutation — replacing the check with an empty
+census — turns exactly those eight red and nothing else.
+
+★ One correction to the design, made while building it: the guard's runtime-decision arm is narrower
+than §3 slice (b) specifies. `control.runtimeDecision` is a 7-value SCENARIO enum spanning unrelated
+mechanisms, while `RuntimeDecisionAuthority` has four members, so binding all seven is a category
+error that would have red-lit three innocent fixtures on the first run. The arm binds `egress_denied`
+and `budget_stop`; the other four are declared `unmodelled` with a written reason and censused.
+
+What remains is not buildable by any E8 ticket. The resolution is a **new versioned fixture
+directory** with `control` corrected, and no ticket in the programme owns the fixture corpus — the
+README states the rule but names no authority who may create a v2. BRW-004 design §7 Q5 raised it;
+BRW-004's result doc §1 re-escalated it unanswered. Ownership therefore moves to `unowned` with the
+successor recorded as "none exists yet", rather than left pointing at a ticket that has shipped —
+which is E4-F013's exact failure. Repoint when a fixture owner is named.
+
 ---
 
 ## E8-F002 — `agent_runtime_decisions` is the designated aggregate for `browser_request` and cannot hold a row for one
 
-**Status:** open · **Owner:** BRW-004 (`epics/E8-browser-automation/tickets/BRW-004-design.md` §2 D2, slice (d))
+**Status:** resolved · **Owner:** BRW-004 (`epics/E8-browser-automation/tickets/BRW-004-result.md` §4, slice (d))
 **Severity:** MED
 **Filed:** 2026-09-03, by BRW-004 terrain mapping at `203853b3a`.
 
@@ -121,6 +142,33 @@ null branches follow: the bridge's request shape, and the timeout sweeper's `run
 (`server/src/index.ts:2116-2118`), which today would call `heartbeatService.cancelRun` on a null
 `runId`. Rejected alternatives (minting synthetic `agents`/`heartbeat_runs` rows; a parallel browser
 decision table) are costed in the design.
+
+**RESOLVED, 2026-09-04, by BRW-004 slice (d)** — `packages/db/src/migrations/0272_browser_request_decision_binding.sql`.
+
+The named defect is fixed: both columns are nullable, `db:generate` emitted the DDL (nothing
+hand-authored), and the all-or-nothing CHECK `(agent_id IS NULL) = (run_id IS NULL)` means no row
+can be half-bound. Both null branches the disposition names are landed — the bridge's
+`RuntimeDecisionOpenRequest` shape and the timeout sweeper's `runCanceller`.
+
+★★★ The disposition named TWO null branches. There were EIGHT, and two of the six it missed were
+lethal: `createPrompt`'s zombie-run guard and `answerPrompt`'s liveness gate both call
+`getRunStatus(...)`, which with a null finds no row and reads that as "the run is terminal" — so the
+relaxation would have shipped an approval feature that refuses every one of its own prompts at
+creation and rejects every answer, with a completely green typecheck. All eight are closed and
+mutation-tested, each as a distributed/legacy PAIR so "correctly skipped" cannot be confused with
+"accidentally disabled for everyone"; the full table is in the result doc §4.
+
+One of them is left in place deliberately and filed separately: `listStrandedAnswers`' INNER JOIN
+excludes distributed decisions from the R2 sweep. The exclusion is correct; the sweep that should
+replace it cannot exist before JOB-015. That is `E8-F004`.
+
+★ Resolved on the MECHANISM, not on a writer. Nothing submits a `browser_request` job and
+`jobApprovalBridge` still has zero production callers, so no distributed decision exists yet. The
+finding said the aggregate *cannot hold a row*; it can now, and that is proven by 13 tests and 8
+killed mutants. The absence of a writer is BRW-004's own unbuilt scope (result doc §10), not this
+finding's residual.
+
+---
 
 ## E8-F003 — A sandbox guest can reach the cloud instance-metadata endpoint, and AoA's only egress-shaped provider input does nothing
 
