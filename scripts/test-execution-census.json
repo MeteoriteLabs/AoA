@@ -50,6 +50,11 @@
       "workflow": "pr.yml",
       "step": "Previously-unrun guard self-tests (TRACK-002)"
     },
+    "scripts/check-ci-timeout-budgets.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "CI timeout budgets are derived, not chosen (E3-F036 class)"
+    },
     "scripts/check-d1-compose.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",

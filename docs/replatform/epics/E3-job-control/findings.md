@@ -1600,7 +1600,11 @@ WHERE clause; a mismatch matches zero rows and the command stays pending.
 
 ## E3-F036 — A required check whose verdict depends on the npm registry: `/adapters/install` is really installed, under a budget 4× shorter than the operation's own
 
-**Status:** open (the INSTANCE is fixed in this commit; the CLASS has no guard)
+**Status:** open — NARROWED, not closed. The INSTANCE was fixed when this was filed. The CLASS now
+has a guard for ONE of its two carriers: `scripts/check-ci-timeout-budgets.mjs` covers required-lane
+JOB and STEP budgets in `pr.yml` (see the 2026-09-04 addendum below). The carrier this finding's own
+instance rode — a *test* inside the vitest suite that awaits the network — is still unguarded, and
+E3-F036's own repro would NOT be caught by the new guard.
 **Severity:** MEDIUM (CI reliability on a required check; no production defect)
 **Filed:** 2026-09-04, from the reproducible red on the integration tip `c48259358`.
 
@@ -1694,3 +1698,137 @@ refuses additions to it) is a CI-platform decision with a blast radius across fo
 in a job-control ticket. Force-fitting it onto a shipped owner would read as owned by nobody
 (E4-F013). It blocks nothing today; it costs a false red every few days and it trains the reflex that
 turns a real regression into a re-run.
+
+---
+
+### ★ Addendum (2026-09-04) — the class gets a guard for one of its two carriers, and the fix that leaked is measured
+
+Filed by the track chartered to close the CLASS rather than a fourth instance. Everything below is
+measured from the GitHub Actions jobs API over **13 `pr.yml` runs on `docs/replatform-program`**
+(`33757510288` … `33882094462`, 2026-09-03 12:50Z → 2026-09-04 14:09Z), 12 job instances each.
+
+#### 1. The leak, counted
+
+E6-F014's fix raised the cap on `policy`. **Nine jobs in `pr.yml` run `pnpm/action-setup`** — `policy`,
+`brand-check`, `verify` (a 4-shard matrix), `lint`, `e2e`, `migrations`, `e2e-pgvector`,
+`distributed-contract`, `browser` — so one of nine exposures on the required lane was closed. Repo-wide
+the step appears **21 times across 12 workflows**; the other 12 uses are on non-required lanes and are
+NOT addressed here.
+
+#### 2. Why a job cap is the wrong instrument — the measurement that settles it
+
+Split each job's wall clock into WORK (total minus `Setup pnpm`) and the setup step:
+
+| | p50 | max | max/p50 |
+|---|---|---|---|
+| WORK, worst-spread job of the nine (`browser` 51/59/105 s) | 59 s | 105 s | **1.78×** |
+| WORK, tightest job of the nine (`lint` 48/56/61 s) | 56 s | 61 s | 1.09× |
+| `Setup pnpm`, all nine | 4 s | **431 s** | **~108×** |
+
+Ranking every step in the workflow by spread (max − p50), **the nine `Setup pnpm` rows are the nine
+largest**, at 191–426 s. The tenth is `verify :: Run tests` at 173 s, which is real work. So one job
+`timeout-minutes` is a single number asked to bound two distributions that differ by two orders of
+magnitude in variance — and it therefore hides a work regression by the entire size of whatever
+infrastructure allowance is folded into it. `verify` was the extreme case: a 60-minute cap over a
+worst measured shard-work of 1092 s, i.e. **~42 minutes of undeclared slack**, which is the same shape
+as the hang that cap once masked for weeks.
+
+#### 3. ★★★ It is an EPISODE, not a trend — which strengthens the case rather than weakening it
+
+E6-F014's own withdrawn "still growing" reading warned that a sample drawn from an episode describes
+the episode. Measuring the population says the same thing about the slowdown itself. Per run, the
+number of the 12 job instances whose `Setup pnpm` exceeded 60 s:
+
+| run (started) | p50 setup | max setup | jobs > 60 s |
+|---|---|---|---|
+| 5 runs, 09-03 12:50Z → 19:54Z | 4 s | 5–12 s | **0** |
+| `33840970676` 09-04 05:34Z | 174 s | 424 s | 10 |
+| `33842573550` 09-04 06:34Z | 297 s | 431 s | 10 |
+| `33847376840` 09-04 07:08Z | 193 s | 425 s | 12 |
+| `33869236742` 09-04 11:42Z | 81 s | 423 s | 7 |
+| 4 runs, 09-04 12:10Z → 14:09Z | 4–6 s | 8–22 s | **0** |
+
+**The slowdown is a ~6-hour window on 2026-09-04, with 4 s either side of it.** If the cost were a
+permanent 400 s the honest answer would be to raise every cap once and move on. Because it is an
+intermittent episode that leaves no trace in any commit, a single cap is precisely the wrong
+instrument: it silently absorbs the episode when it fits, and when it does not it kills the job and
+GitHub names an innocent step.
+
+**A control fell out of the same data.** Comparing each job's WORK inside the episode against outside
+it: `verify` 857 s vs 909 s, `e2e` 1003 vs 989, `policy` 71 vs 73, `browser` 60 vs 59, `lint` 56 vs 57.
+Identical within noise, in both directions. **The episode was in the registry fetch, not in the
+runners** — so it did not contaminate the work budgets derived from the same window.
+
+#### 4. What shipped
+
+- **One exposure DELETED rather than capped.** `brand-check` never ran `pnpm install`; its single
+  `pnpm exec node scripts/check-forbidden-tokens.mjs` was equivalent to plain `node`, because that
+  script imports only `node:` builtins. The `Setup pnpm` step existed to make `pnpm exec` resolvable
+  and bought nothing while exposing a required check to registry latency (3 s median, 234 s worst,
+  measured here). Step removed, `pnpm exec` dropped, cap 10 → 5. **Nine exposures → eight.**
+- **The budget is SPLIT on the remaining eight.** Each `Setup pnpm` step carries its own
+  `timeout-minutes: 8`, and each job's cap is now
+  `ceil((workBudgetSeconds + setupAllowanceSeconds) / 60)` from `.github/ci-timeout-budgets.json`.
+  A slow registry now fails *by name*, in a step whose name is the diagnosis; the job cap bounds only
+  the work, which is the part the commit owns.
+- **Caps are derived, and seven go DOWN:** `policy` 12→11, `lint` 15→10, `migrations` 15→11,
+  `browser` 20→12, `distributed-contract` 20→10, `e2e-pgvector` 25→18, `verify` 60→37. **One goes
+  up:** `e2e` 30→33.
+  ★ `e2e` was the thinnest real exposure of the nine, not `brand-check`: at the worst measured work
+  (1046 s) plus the worst measured setup (431 s) it had 323 s of margin against its 1800 s cap.
+  `brand-check` — the job that *looked* worst, 12 s of work behind a 10-minute cap — had 153 s of
+  margin, less in absolute seconds but never close to failing. **The job with the most alarming ratio
+  was not the job most likely to fail**, and the ratio is what the eye reaches for.
+- `setupAllowanceSeconds` is **480 s** uniformly, the smallest whole minute above every one of the 156
+  observations. Adopting it changes no past outcome; it is sized on the episode's worst, which is
+  deliberately conservative and is said here so the number is not mistaken for a typical cost.
+- ★ **A cold pnpm store was checked for and headroom left for it.** Every run in the window had a
+  warm `actions/setup-node` `cache: pnpm`: `Install dependencies` measured 8–14 s and `Setup Node.js`
+  7–23 s in every job. A branch with no cache to fall back on pays more, so each work budget carries
+  at least ~56 s above its measured worst work, and the three tightest jobs were widened for it
+  (`policy` 150→170, `migrations` 150→170, `lint` 110→120) **without moving a single derived cap** —
+  650 s and 600 s still round to 11 and 10 minutes. This is not a measurement of a cold run; it is
+  headroom sized against one, and it is recorded as such in the manifest.
+
+#### 5. The guard, and the red it produced
+
+`scripts/check-ci-timeout-budgets.mjs` (+ `scripts/lib/ci-timeout-budgets.mjs`, 15-case corpus in
+`scripts/check-ci-timeout-budgets.test.mjs`), wired into `policy`. It refuses: a required-lane job
+running `pnpm/action-setup` with no budget entry; a `Setup pnpm` step with no cap of its own; a job or
+step cap that is not the derived value; a work budget below its own measurement or **more than 2× it**;
+a measurement with fewer than 5 samples, no ISO date, or no run ids; a stale budget for a job that no
+longer fetches pnpm; and a required-lane job carrying a cap that is neither budgeted nor exempt with a
+stated reason. A scan that matches nothing FAILS rather than reporting clean.
+
+**It failed once on the real, unmodified tip before anything was edited: 17 findings across all 9
+jobs** — 8 × `setup_step_uncapped`, 8 × `job_cap_mismatch`, 1 × `job_missing_budget`. Two live
+mutations were then made against the fixed tree and restored: raising `verify` back to 60 alone gives
+`job_cap_mismatch`; raising the cap **and** the work budget together to make it "legal" gives
+`work_budget_unjustified` — so the escape hatch is closed, and passing requires editing
+`measuredMaxWorkSeconds`, which is a dated claim about reality sitting in the diff where review can
+argue with it.
+
+#### 6. ★ What this does NOT close — stated plainly
+
+1. **This finding's own instance would not be caught.** The guard reasons about jobs and steps in
+   `pr.yml`. E3-F036's defect was a *vitest test* awaiting a network install under a shorter budget
+   than the install's own. **The test-level inventory this finding asked for still does not exist**,
+   and a new test that reaches the network is still admitted silently. That is the larger half of the
+   class and it remains `unowned`.
+2. **The cause of the episode is undiagnosed.** Nothing here explains why `pnpm/action-setup` went
+   4 s → 431 s for six hours. E6-F014's free lead — PR **#321**, `pnpm/action-setup` 6.0.9 → 6.0.10,
+   still open and untested — was **not** tested by this track. Splitting the budget makes the next
+   episode legible; it does not prevent one.
+3. **12 of the 21 repo-wide uses are untouched** (non-required lanes: `release.yml`,
+   `release-smoke.yml`, `cross-platform-weekly.yml` ×2, five `keyed-e2b-*`, `llm-evals.yml`,
+   `catalog-audit.yml`, `thread-v2-e2e.yml`).
+4. **Other network steps are inside "work", not separately allowanced** — `playwright install` in
+   `e2e`/`browser` (spread 9 s and 34 s) and `Initialize containers` in `migrations`/`e2e-pgvector`
+   (spread 11–13 s). Two orders of magnitude below the pnpm step, so they do not yet earn their own
+   allowance; the manifest records where to put one if they ever do.
+5. **No live CI evidence at the time of writing.** Every number above is from the API and every
+   verdict is from a local run of the guard and its corpus. The caps themselves are only proven by the
+   first green `pr.yml` run on this branch.
+
+**Disposition:** stays `unowned`. Items 1 and 2 are the open remainder, and neither is a line in a
+job-control ticket.

@@ -124,24 +124,29 @@ jobs:
   policy:
     runs-on: ubuntu-latest
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    # RAISED 5 → 12 on 2026-09-04, on measurement rather than on a red run.
+    # 5 → 12 (DEP-013, 2026-09-04) → 11 (this change, same day, same measurement re-derived).
     #
+    # HISTORY, because the number moving DOWN after a raise looks like a revert and is not one.
     # `policy` was cancelled at exactly 5:04 on run 33858466826 with NO guard having failed and
-    # most having never started. The cause is a step that used to cost nothing: `Setup pnpm`
-    # took 4m47s, leaving ~13s of the 300s budget for forty checks. Measured across the last six
-    # `policy` runs on docs/replatform-program, that step is 4s, 4s, 5s … then 135s, 195s, 149s —
-    # it has degraded by ~40× in a few days, and the job total moved with it, 74s → 265s. At 265s
-    # against a 300s cap, EVERY PR in this repo was one slow registry response from a cancelled
-    # required check.
+    # most having never started. The cause was a step that used to cost nothing: `Setup pnpm`
+    # took 4m47s, leaving ~13s of the 300s budget for forty checks. That step had gone 4s, 4s,
+    # 5s … 135s, 195s, 149s across six runs — ~40× in a few days — and the job total moved with
+    # it, 74s → 265s against a 300s cap. DEP-013 raised the cap to 12 and filed the growth as
+    # E6-F014 rather than letting the raise stand in for a diagnosis.
     #
-    # ★ This is not "raise the timeout until it stops complaining", which is how a 60-minute cap
-    # once masked a real hang in `verify` for weeks. The distinction is that the cause here is
-    # MEASURED and is not a hang: a fixed setup cost genuinely grew, and a cap that leaves a
-    # 40-check job seconds of headroom is a coin flip, not a safety margin. The growth itself is
-    # NOT absorbed by this line — it is filed as E6-F013's neighbour E6-F014, because absorbing a
-    # regression is not the same as detecting it, and a cap raised without a filed cause is how
-    # the next 40× goes unnoticed.
-    timeout-minutes: 12
+    # ★ WHY 12 BECAME 11. The 12 was work AND worst-observed infrastructure folded into one
+    # number, which is what makes a cap dishonest: it cannot tell a slow registry from a hung
+    # guard, and it hides a work regression by however much infrastructure allowance is baked
+    # into it. The two are now separated — `Setup pnpm` carries its own 8-minute cap below, and
+    # this cap covers only the 170s work budget on top of it. 11 is therefore MORE protective
+    # than 12, not less: the same total wall clock, with the infrastructure share named and
+    # failing under its own name. Both halves are derived in .github/ci-timeout-budgets.json
+    # from `policy` work measured at 59/71/88s over 13 runs, and
+    # scripts/check-ci-timeout-budgets.mjs refuses this line if it stops being their sum.
+    #
+    # Cap DERIVED: workBudgetSeconds 170 + setupAllowanceSeconds 480
+    # in .github/ci-timeout-budgets.json. Do not edit this number alone.
+    timeout-minutes: 11
     # DEP-013 Slice C reads the verdict consumer's PUBLISHED artifact (an issue) and, only
     # when no artifact exists, the reconciler's run count — the one query that can turn a pass
     # into a fail and never the reverse. Both are READ-only and additive to the workflow-level
@@ -173,6 +178,10 @@ jobs:
           fi
 
       - name: Setup pnpm
+        # This step's OWN cap, derived from setupAllowanceSeconds in
+        # .github/ci-timeout-budgets.json. Without it a slow registry spends the JOB
+        # budget and GitHub blames whichever step is at the wall (E6-F014 addendum).
+        timeout-minutes: 8
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 9.15.4
@@ -470,6 +479,17 @@ jobs:
           node scripts/check-ci-lanes.mjs
           node --test scripts/lib/__tests__/ci-lanes.test.mjs scripts/lib/__tests__/d1-evidence-bundle.test.mjs
 
+      # E3-F036 class / E6-F014. Every required-lane cap in this file — including this job's
+      # own — must be the sum of a declared work budget and a declared infrastructure
+      # allowance, both derived in .github/ci-timeout-budgets.json from a dated measurement.
+      # It refuses a cap edited on its own, a work budget raised past its own measurement, a
+      # pnpm setup step with no cap of its own, and a new required-lane job that arrives with
+      # a number nobody justified.
+      - name: CI timeout budgets are derived, not chosen (E3-F036 class)
+        run: |
+          node scripts/check-ci-timeout-budgets.mjs
+          node --test scripts/check-ci-timeout-budgets.test.mjs
+
       # DEP-013 Slice A — INERT. It queries no live verdict and blocks nothing new: it asserts
       # only that the declaration still matches the tree (every workflow file has an entry,
       # every `push` branch has its own, every not-watched entry says what would have to change,
@@ -595,18 +615,21 @@ jobs:
     needs: [policy]
     runs-on: ubuntu-latest
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    timeout-minutes: 10
+    # No pnpm and no node_modules: this job is a grep pass plus one builtins-only node script.
+    # It is `exempt` in .github/ci-timeout-budgets.json for that reason, and its cap matches the
+    # workflow's two other dependency-free jobs. Measured work 7/10/16 s over 13 runs.
+    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        with:
-          version: 9.15.4
-          run_install: false
-
+      # ★ The `Setup pnpm` step that used to sit here was DELETED, not capped. This job never
+      # ran `pnpm install`, so its lone `pnpm exec node scripts/check-forbidden-tokens.mjs` was
+      # already equivalent to plain `node` — that script imports only `node:` builtins. The step
+      # existed to make `pnpm exec` resolvable and bought nothing, while exposing a required
+      # check to registry latency (measured here at 3 s median, 234 s worst). Removing an
+      # exposure beats capping one.
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -782,7 +805,7 @@ jobs:
           echo "Brand check passed: no user-facing Paperclip regressions."
 
       - name: Forbidden tokens scan (.forbidden-tokens.json)
-        run: pnpm exec node scripts/check-forbidden-tokens.mjs
+        run: node scripts/check-forbidden-tokens.mjs
 
   # Deterministic worker-protocol contract bytes (PRT-006). A dependency-free
   # matrix (no pnpm install) that runs the generator's mutation corpus and the
@@ -843,16 +866,29 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    # UNCHANGED — a PER-SHARD cap now; each shard lands far under it. Do NOT raise:
-    # a shard that still can't finish under 60 is a signal to shard finer or to
-    # investigate a slow test, never to raise the cap (GO-BOOK §2.0).
-    timeout-minutes: 60
+    # A PER-SHARD cap. Do NOT raise: a shard that still can't finish under it is a signal
+    # to shard finer or to investigate a slow test, never to raise the cap (GO-BOOK §2.0).
+    #
+    # ★ 60 → 37 (2026-09-04). The 60 predates sharding and was never re-derived after it:
+    # measured across 52 shard runs, a shard's WORK is 703/902/1092s, so the old cap carried
+    # ~42 minutes of undeclared slack above the worst observed shard. That is the same shape
+    # as the hang this cap once masked for weeks — a number large enough that nothing short of
+    # a total stall could reach it, which is a cap that has stopped being a check. 37 is
+    # 1700s of work budget (1.56× the worst measured shard) plus the 480s pnpm allowance the
+    # step below now carries under its own name.
+    # Cap DERIVED: workBudgetSeconds 1700 + setupAllowanceSeconds 480
+    # in .github/ci-timeout-budgets.json. Do not edit this number alone.
+    timeout-minutes: 37
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
+        # This step's OWN cap, derived from setupAllowanceSeconds in
+        # .github/ci-timeout-budgets.json. Without it a slow registry spends the JOB
+        # budget and GitHub blames whichever step is at the wall (E6-F014 addendum).
+        timeout-minutes: 8
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 9.15.4
@@ -933,13 +969,19 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    timeout-minutes: 15
+    # Cap DERIVED: workBudgetSeconds 120 + setupAllowanceSeconds 480
+    # in .github/ci-timeout-budgets.json. Do not edit this number alone.
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
+        # This step's OWN cap, derived from setupAllowanceSeconds in
+        # .github/ci-timeout-budgets.json. Without it a slow registry spends the JOB
+        # budget and GitHub blames whichever step is at the wall (E6-F014 addendum).
+        timeout-minutes: 8
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 9.15.4
@@ -960,13 +1002,19 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    timeout-minutes: 30
+    # Cap DERIVED: workBudgetSeconds 1500 + setupAllowanceSeconds 480
+    # in .github/ci-timeout-budgets.json. Do not edit this number alone.
+    timeout-minutes: 33
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
+        # This step's OWN cap, derived from setupAllowanceSeconds in
+        # .github/ci-timeout-budgets.json. Without it a slow registry spends the JOB
+        # budget and GitHub blames whichever step is at the wall (E6-F014 addendum).
+        timeout-minutes: 8
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 9.15.4
@@ -1059,7 +1107,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    timeout-minutes: 15
+    # Cap DERIVED: workBudgetSeconds 170 + setupAllowanceSeconds 480
+    # in .github/ci-timeout-budgets.json. Do not edit this number alone.
+    timeout-minutes: 11
 
     services:
       postgres:
@@ -1081,6 +1131,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
+        # This step's OWN cap, derived from setupAllowanceSeconds in
+        # .github/ci-timeout-budgets.json. Without it a slow registry spends the JOB
+        # budget and GitHub blames whichever step is at the wall (E6-F014 addendum).
+        timeout-minutes: 8
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 9.15.4
@@ -1187,7 +1241,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    timeout-minutes: 25
+    # Cap DERIVED: workBudgetSeconds 600 + setupAllowanceSeconds 480
+    # in .github/ci-timeout-budgets.json. Do not edit this number alone.
+    timeout-minutes: 18
 
     services:
       postgres:
@@ -1209,6 +1265,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
+        # This step's OWN cap, derived from setupAllowanceSeconds in
+        # .github/ci-timeout-budgets.json. Without it a slow registry spends the JOB
+        # budget and GitHub blames whichever step is at the wall (E6-F014 addendum).
+        timeout-minutes: 8
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 9.15.4
@@ -1290,13 +1350,19 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ (needs.changes.outputs.protocol == 'true' || needs.changes.outputs.schema == 'true' || needs.changes.outputs.fixtures == 'true' || needs.changes.outputs.provider == 'true') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    timeout-minutes: 20
+    # Cap DERIVED: workBudgetSeconds 120 + setupAllowanceSeconds 480
+    # in .github/ci-timeout-budgets.json. Do not edit this number alone.
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
+        # This step's OWN cap, derived from setupAllowanceSeconds in
+        # .github/ci-timeout-budgets.json. Without it a slow registry spends the JOB
+        # budget and GitHub blames whichever step is at the wall (E6-F014 addendum).
+        timeout-minutes: 8
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 9.15.4
@@ -1366,13 +1432,19 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    timeout-minutes: 20
+    # Cap DERIVED: workBudgetSeconds 200 + setupAllowanceSeconds 480
+    # in .github/ci-timeout-budgets.json. Do not edit this number alone.
+    timeout-minutes: 12
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
+        # This step's OWN cap, derived from setupAllowanceSeconds in
+        # .github/ci-timeout-budgets.json. Without it a slow registry spends the JOB
+        # budget and GitHub blames whichever step is at the wall (E6-F014 addendum).
+        timeout-minutes: 8
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 9.15.4
