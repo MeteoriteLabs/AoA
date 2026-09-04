@@ -589,7 +589,21 @@ convenience.**
   absence of a production writer is BRW-004's own unbuilt scope (§10), not this finding's residual —
   saying otherwise would leave a fixed defect open forever.
 - **`E8-F003`** — **NEW, HIGH, unowned.** The sandbox's egress allowlist is inert and the cloud
-  instance-metadata endpoint answers from inside the guest. Successor named.
+  instance-metadata endpoint answers from inside the guest. ~~Successor named.~~
+  **CORRECTED 2026-09-04, re-headlined 2026-09-05 by the E8-F003 disposition unit — no successor
+  covers the measured path, and the finding's headline is not the measurement.** What the finding
+  is *for* is a **misrepresentation**: `distributed-execution-threat-controls.json` **DE-08** is
+  severity **Critical**, its `failureMode` is literally the measured event, and its sole owner
+  **DAT-005 is COMPLETE** while its chartered outcome was to *enforce* default-deny — a Critical
+  control whose owner column is exhausted and whose enforcement exists at no layer. Three more
+  programme records assert the same constraint in the present indicative (`program-design.md:149`
+  under "Security invariants"; the threat model's residual-risk list, which omits DE-08 while
+  listing a sibling egress exclusion; the E5 exit-gate audit's `proven_in_d1` grade for "denied
+  egress"). Enforcement is absent at ALL THREE candidate points (provider measured inert,
+  in-sandbox unbuilt, proxy zero-caller). BRW-004 slice (f) is still the only chartered candidate
+  but is scoped to BROWSER sessions, while slice (a) measured org heartbeat runs and crew runs —
+  and the metadata-reachability half is broader than E8 in any case. Severity stays HIGH. See
+  `findings.md` E8-F003 §1 for the headline and §7 for the disposition.
 - **`E8-F004`** — **NEW, LOW, unowned.** No stranded-delivery sweep for a distributed decision;
   it cannot exist before JOB-015. Successor named; must not be closed by deleting the join.
 - **`E8-F005`** — **NEW, MED, unowned.** Nothing in CI compares the Drizzle schema to the
