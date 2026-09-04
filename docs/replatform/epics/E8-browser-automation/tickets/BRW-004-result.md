@@ -255,7 +255,7 @@ named artifact exists.
 |---|---:|---|
 | `node scripts/check-distributed-execution-foundation.mjs` | `0` | PASS; census names E8-F001 + 4 unmodelled values |
 | `node --test scripts/check-distributed-execution-foundation.test.mjs` | `0` | 190 pass / 0 fail (182 before, +8) |
-| `npx vitest run` (packages/browser-runtime) | `0` | 127 pass / 17 skipped (93 before; +24 approval, +10 frozen-parity) |
+| `npx vitest run` (packages/browser-runtime) | `0` | 129 pass / 17 skipped (93 before; +26 approval, +10 frozen-parity) |
 | `npx vitest run src/__tests__/brw-004-distributed-decision-binding.test.ts` | `0` | 13 pass |
 | `npx vitest run` × 4 neighbouring decision suites | `0` | 90 pass / 0 fail — no regression |
 | `AOA_RUN_WIN_INTEGRATION=1 npx vitest run …brw-004-decision-binding.integration.test.ts` | `0` | 5 pass — the CHECK fires against REAL Postgres |
@@ -278,6 +278,7 @@ named artifact exists.
 | C3 | the gate neutered entirely | 5, incl. the download half | ✔ |
 | C4 | a throwing resolver fails OPEN | 1 | ✔ |
 | C5 | the timeout returns proceed | 2 | ✔ |
+| C6 | an unhandled-rejection guard removed | **SURVIVED — the guard was wrong, see below** | n/a |
 | D1 | `createPrompt` guard un-skipped for a null run | 1 | ✔ |
 | D2 | `createPrompt` guard removed for **everyone** | 2 (both positive controls) | ✔ |
 | D3 | `answerPrompt` gate un-skipped | 1 | ✔ |
@@ -288,6 +289,29 @@ named artifact exists.
 | D8 | the bridge's duplicate identity implementation reintroduced | 1 | ✔ |
 | D9 | migration 0272's predicate weakened to `CHECK (true)` | 3 (real PG) | ✔ |
 | D10 | 0272's predicate weakened to the one-directional variant | 3 (real PG) | ✔ |
+
+### ★★★ One mutant SURVIVED, and the answer was that my fix was unnecessary
+
+C6 is recorded because a surviving mutant is a question and this one had a useful answer.
+
+Reading `awaitApprovalDecision` end to end before calling the work done, I convinced myself of a
+hazard — `Promise.race` settles once, so a resolver rejecting AFTER the deadline wins would leave a
+rejected promise with nothing listening, fatal under `--unhandled-rejections=strict` in a module
+that runs as the sandbox ENTRYPOINT — and added `void Promise.allSettled([...])` plus a test.
+
+Deleting the guard did not turn the test red. Two possible answers, and I checked both:
+
+1. **The test could not see the property.** True of the first attempt, which listened for
+   `process.on("unhandledRejection")` inside vitest — vitest installs its own handler, so Node never
+   reports it. That test passed identically with and without the guard: **a check that nothing runs,
+   written by me, in the file whose header is about that exact failure mode.**
+2. **The guard was unnecessary.** The real answer. Rewritten as a strict-mode child process the
+   mutant survived again, and a direct experiment settled it: `Promise.race` calls `.then` on every
+   element, so the loser's rejection is already observed.
+
+**The guard was removed** and the belief recorded in the source as measured-and-false. Shipping a
+defensive line beside a test that can never fail is a false claim of enforcement — worse than an
+absent check, because every later reader takes it for a handled hazard.
 
 ### The three shard failures are NOT mine, and I checked rather than said so
 
