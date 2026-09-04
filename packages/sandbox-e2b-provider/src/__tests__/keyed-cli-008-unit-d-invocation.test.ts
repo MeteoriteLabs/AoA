@@ -283,15 +283,23 @@ describeKeyed("CLI-008 Unit D — the invocation shape, executed in a REAL E2B s
         // NOTE: inv.stagedFiles deliberately NOT written.
 
         let stderr = "";
-        // ★ WHICH SURFACE CARRIES A NON-ZERO EXIT IS ITSELF UNOBSERVED. No keyed
-        // case before this one ever ran a command that exits non-zero through the
-        // REAL transport, and the `e2b` SDK's `commands.run` is documented to
-        // throw `CommandExitError` on a non-zero exit — which `runCommand` does
-        // NOT catch (it maps only timeouts and rethrows everything else). So the
-        // guard's refusal may arrive as a RESULT or as a THROW. This case asserts
-        // the SUBSTANCE — code 78, and a stderr line naming the missing path —
-        // from whichever surface carries it, and records which one that was, so
-        // the answer is measured rather than assumed either way.
+        // ★ WHICH SURFACE CARRIES A NON-ZERO EXIT WAS UNOBSERVED WHEN THIS CASE WAS
+        // WRITTEN, AND THE ANSWER WAS A DEFECT. The `e2b` SDK's `commands.run`
+        // throws `CommandExitError` on a non-zero exit, and `runCommand` did NOT
+        // catch it (it mapped only timeouts and rethrew everything else), so this
+        // case measured `carrier = throw, exitCode = 78` — filed as E7-F014, because
+        // the throw reached the supervisor's execute-catch and the 78 was discarded
+        // into `exitCode: null`. Unit D's acceptance criterion 5 ("an ATTRIBUTABLE
+        // failure … exit 78 with a named cause on stderr") was met at the script
+        // level and nowhere above it.
+        //
+        // The carrier is now CONVERTED at the transport (`real-transport.ts`
+        // narrows on `CommandExitError` and reads the status off it), so the shape
+        // below is retained — it still accepts either surface and still asserts the
+        // SUBSTANCE from whichever one carried it — but the carrier itself is now
+        // PINNED to "result" at the end of the case. Keeping the tolerant read means
+        // a regression reports the substance it recovered instead of dying on an
+        // unhandled rejection, and the pin is what makes it fail.
         let exitCode: number | null = null;
         let carrier: "result" | "throw" = "result";
         try {
@@ -323,7 +331,122 @@ describeKeyed("CLI-008 Unit D — the invocation shape, executed in a REAL E2B s
         expect(exitCode).toBe(STAGED_INPUT_MISSING_EXIT_CODE);
         expect(stderr).toContain("[cli-008] staged input missing");
         expect(stderr).toContain(STAGED_PROMPT_PATH);
+
+        // ★★ THE E7-F014 PIN, AND THE POINT OF UNIT D's CRITERION 5. The refusal must
+        // arrive as a RESULT, because only a result carries the code past
+        // `E2bSandboxProvider.execute` into the supervisor's ordinary terminal. A
+        // throw here is exactly the defect: it lands in the supervisor's execute-catch
+        // and the 78 becomes `exitCode: null`. This is the assertion that reds if the
+        // conversion is reverted.
+        expect(carrier).toBe("result");
       });
+    },
+    240_000,
+  );
+
+  it(
+    "E7-F014 — a command that RUNS and exits non-zero comes back as a RESULT carrying the real exit code",
+    async () => {
+      // The narrowest statement of the fix, independent of Unit D's script: an
+      // ordinary command that exits non-zero is a NORMAL outcome and must be
+      // returned, not thrown. Before the fix this case throws `CommandExitError`
+      // out of `runCommand` and never reaches an assertion.
+      //
+      // 42 is arbitrary and distinctive — a fabricated code (the SDK's own `1`, or
+      // the seam's `null`) cannot pass, so the case proves the status was READ off
+      // the error rather than defaulted.
+      await withSandbox(async (t, sandboxId) => {
+        let stderr = "";
+        let stdout = "";
+        const res = await t.runCommand(
+          {
+            sandboxId,
+            command: "sh",
+            args: ["-c", 'printf "out\n"; printf "boom\n" >&2; exit 42'],
+            envVars: {},
+            timeoutMs: 60_000,
+          },
+          {
+            onStdout: (chunk) => { stdout += chunk; },
+            onStderr: (chunk) => { stderr += chunk; },
+          },
+        );
+
+        expect(res.exitCode).toBe(42);
+        // `crashed: exitCode !== 0` was DEAD CODE against real E2B (the branch could
+        // not be reached, because a non-zero exit never returned). It is alive now.
+        expect(res.crashed).toBe(true);
+        // A non-zero exit is NOT a timeout and NOT a signal — the fault mappings must
+        // not have been borrowed to carry it.
+        expect(res.timedOut).toBe(false);
+        expect(res.signal).toBeNull();
+        // Streaming still binds on the converted path (the chunks are delivered
+        // before `wait()` throws, and the conversion must not drop them).
+        expect(stdout).toContain("out");
+        expect(stderr).toContain("boom");
+      });
+    },
+    240_000,
+  );
+
+  it(
+    "E7-F014 — a zero exit is untouched, and a genuine sandbox FAULT still THROWS rather than being reported as an exit code",
+    async () => {
+      // ★★★ THE OTHER HALF OF THE FIX, AND THE ONE THAT MATTERS MORE. Collapsing a
+      // fault into "exited N" would be strictly worse than losing an exit code: it
+      // manufactures a plausible result for an infrastructure failure. The
+      // conversion is narrowed to `CommandExitError` — the SDK class that carries a
+      // completed `CommandResult` — and the SDK draws the same line itself inside
+      // `CommandHandle.wait()`: a command that produced no exit status throws
+      // `iterationError` or a bare `SandboxError("Process exited without a result")`,
+      // neither of which is a `CommandExitError`.
+      //
+      // Observed here by running against a sandbox that has been TERMINATED. There is
+      // no exit status anywhere in that story, so the ONLY correct behaviours are to
+      // throw, or to report the uniform not-found signal. What must NEVER happen is a
+      // resolved result carrying a number.
+      const t = await realTransport();
+      const { sandboxId } = await t.create({
+        templateId: TEMPLATE,
+        timeoutMs: 120_000,
+        metadata: { aoa_lane: "cli-008-unit-d" },
+        envVars: {},
+      });
+      try {
+        // Control: the happy path is unchanged by the conversion.
+        const ok = await t.runCommand({
+          sandboxId,
+          command: "sh",
+          args: ["-c", "exit 0"],
+          envVars: {},
+          timeoutMs: 60_000,
+        });
+        expect(ok.exitCode).toBe(0);
+        expect(ok.crashed).toBe(false);
+
+        await t.terminate(sandboxId);
+
+        let threw = false;
+        let fabricated: unknown = "NOTHING_RETURNED";
+        try {
+          const res = await t.runCommand({
+            sandboxId,
+            command: "sh",
+            args: ["-c", "exit 0"],
+            envVars: {},
+            timeoutMs: 30_000,
+          });
+          fabricated = res;
+        } catch {
+          threw = true;
+        }
+        // eslint-disable-next-line no-console
+        console.log(`[e7-f014] fault carrier threw = ${String(threw)}, returned = ${JSON.stringify(fabricated)}`);
+        expect(threw, "a fault against a terminated sandbox must not resolve to a result").toBe(true);
+        expect(fabricated).toBe("NOTHING_RETURNED");
+      } finally {
+        await t.terminate(sandboxId).catch(() => undefined);
+      }
     },
     240_000,
   );
