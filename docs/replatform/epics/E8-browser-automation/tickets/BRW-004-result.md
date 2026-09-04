@@ -312,6 +312,41 @@ Final restored state verified green, not assumed: 127 (browser-runtime), 190 (fo
 
 ---
 
+## 7a. Gates this touches, and the one deliberate non-action
+
+Design §5's list, each checked rather than assumed:
+
+| Gate | State |
+|---|---|
+| `policy` — slice (b) extends `check-distributed-execution-foundation.mjs`; slice (d) adds a migration | green locally (`ci-local`, 210s) and in CI |
+| `browser` lane — slice (c) | **pass** on PR #356 |
+| `check:frozen-worker-protocol-v1` — must stay OK with ZERO `packages/worker-protocol` edits | `worker-protocol-contract-bytes` **pass** on ubuntu AND windows; no worker-protocol file is in the diff |
+| `check-guard-inventory.mjs` — every new guard needs a CI invocation | slice (b)'s guard rides `check-distributed-execution-foundation.mjs`, already invoked at `pr.yml:162-163` and `:1267`. The probe is not a guard: it gates nothing |
+| `check-gate-clause-wiring.mjs` — composing a previously-uncalled symbol reds `policy` | no gate-clause symbol is composed. The bridge's `openGovernedDecision`/`resolveGovernedDecision` are deliberately NOT wired (§10); the new symbols are new |
+| `check-finding-ownership.mjs` | OK, 29 open across 10 registers, with E8-F001/F003/F004 declared |
+| `check-ticket-graph-coverage.mjs` — `#### BRW-004` in `program-design.md:984` | present; `policy` green |
+
+### ★ `docker/d1/campaign.env` is deliberately NOT bumped
+
+Design §5 says to bump it if a slice alters runtime behaviour under `server/src`, "and only after
+the last such change. Coordinate — the last bump wins and that trap has bitten this programme five
+times." Slice (d) does touch `server/src`, and `server/src` is not on the D1 lane's push path
+filter, so the rule appears to apply. **It is not bumped, on purpose, for two reasons:**
+
+1. **The change alters no live path.** Every new branch is guarded on a null `runId`/`agentId`, and
+   no production writer produces one: nothing submits a `browser_request` job, `jobApprovalBridge`
+   has zero production callers and is flag-gated off. A D1 campaign would rebuild the image and
+   exercise exactly the same behaviour it does today. A bump that proves nothing is not free — it
+   costs a full live 2-replica campaign.
+2. **Four tracks are live and the last bump wins.** Bumping for a no-op risks clobbering a
+   concurrent track's bump that is not a no-op, which is the exact trap §5 warns about.
+
+Recorded as a decision so a reviewer can overrule it, rather than as an omission. **If any reviewer
+judges the `server/src` diff live, bump it — the argument above is about behaviour, not about
+convenience.**
+
+---
+
 ## 8. Deviations
 
 1. **★★★ Slice (b)'s runtime-decision arm is narrower than the design specifies, and the design as
