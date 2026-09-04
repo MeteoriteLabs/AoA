@@ -359,3 +359,59 @@ condition.
 flips a manifest flag. That is the shape this programme has already had to delete once — a gate
 nobody can pass, or a dial nobody remembers — and it would have made the enforcement claim false
 in a way no guard could see.
+
+## E6-F014 — `Setup pnpm` in the `policy` job grew ~40× (4s → 195s) and nobody noticed until it cancelled a required check
+
+**Status:** `open` · Severity: MED · Source: DEP-013 build (2026-09-04). Found because DEP-013's
+own PR was the run that finally crossed the cap.
+
+`policy` is the only job branch protection's `ci-required` aggregator needs on **every** PR. On
+run `33858466826` it was **cancelled at exactly 5:04** against its `timeout-minutes: 5`, with no
+guard having failed and most having never started. The whole budget went to one step:
+
+| step | duration |
+|---|---|
+| Checkout | 6s |
+| **Setup pnpm** | **4m 47s** |
+| everything else (5 guard steps reached before the cancel) | 6s |
+
+**The step used to cost nothing.** Measured across the last six `policy` runs on
+`docs/replatform-program` (`gh api …/actions/jobs/<id>`), newest last:
+
+| run | `Setup pnpm` | job total |
+|---|---|---|
+| 33769476886 | 4s | 74s |
+| 33799136579 | 4s | 74s |
+| 33799234615 | 5s | 84s |
+| 33840970676 | **135s** | 206s |
+| 33842573550 | **195s** | 265s |
+| 33847376840 | **149s** | 208s |
+
+**So the job total moved from 74s to 265s against a 300s cap.** Every PR in this repository was
+one slow registry response away from a cancelled required check, on all four live tracks, for a
+reason having nothing to do with any of their commits.
+
+**This is the third instance in three days of one class:** *a required check whose verdict is a
+function of something the commit does not contain.* The other two are E3-F034 (a runner's fsync
+against a 750 ms `lock_timeout`) and E3-F036 (npm-registry latency against a 30s `testTimeout`,
+where the install is allowed 120,000 ms and the test awaiting it gets 30,000 — an inverted
+budget). The standing response to all three — re-run until green — is **indistinguishable from
+ignoring a real regression**, which is the same sentence DEP-013 was chartered to write about
+verdicts.
+
+**Absorbed, not detected.** DEP-013 raised the cap to 12 minutes on this measurement, with the
+reasoning at the line. That stops the cancellations; it does **not** detect the next 40×. A cap
+raised without a filed cause is exactly how this one went unnoticed for three runs, and the
+distinction matters — a 60-minute `verify` cap once masked a real hang here for weeks, so raising
+a cap is a legitimate move only when the cause is measured and is not a hang. It is measured, and
+it is not a hang.
+
+**Blocks:** nothing, now that the cap is raised.
+
+**What would have to change.** Two candidate remediations, and choosing between them is a real
+decision rather than a line: (a) find and fix the growth — the step is
+`pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271` with `run_install: false`, so 195s is
+almost entirely the action's own download/cache work rather than dependency installation, and a
+pinned-binary or cached-store approach would remove it; or (b) if the cost is irreducible, give
+job durations a consumer — the same argument as DEP-013 one register over, since a step time is a
+verdict nobody reads until it crosses a cap. Filed `unowned` because no ticket is doing either.

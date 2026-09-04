@@ -124,7 +124,24 @@ jobs:
   policy:
     runs-on: ubuntu-latest
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    timeout-minutes: 5
+    # RAISED 5 → 12 on 2026-09-04, on measurement rather than on a red run.
+    #
+    # `policy` was cancelled at exactly 5:04 on run 33858466826 with NO guard having failed and
+    # most having never started. The cause is a step that used to cost nothing: `Setup pnpm`
+    # took 4m47s, leaving ~13s of the 300s budget for forty checks. Measured across the last six
+    # `policy` runs on docs/replatform-program, that step is 4s, 4s, 5s … then 135s, 195s, 149s —
+    # it has degraded by ~40× in a few days, and the job total moved with it, 74s → 265s. At 265s
+    # against a 300s cap, EVERY PR in this repo was one slow registry response from a cancelled
+    # required check.
+    #
+    # ★ This is not "raise the timeout until it stops complaining", which is how a 60-minute cap
+    # once masked a real hang in `verify` for weeks. The distinction is that the cause here is
+    # MEASURED and is not a hang: a fixed setup cost genuinely grew, and a cap that leaves a
+    # 40-check job seconds of headroom is a coin flip, not a safety margin. The growth itself is
+    # NOT absorbed by this line — it is filed as E6-F013's neighbour E6-F014, because absorbing a
+    # regression is not the same as detecting it, and a cap raised without a filed cause is how
+    # the next 40× goes unnoticed.
+    timeout-minutes: 12
     # DEP-013 Slice C reads the verdict consumer's PUBLISHED artifact (an issue) and, only
     # when no artifact exists, the reconciler's run count — the one query that can turn a pass
     # into a fail and never the reverse. Both are READ-only and additive to the workflow-level
