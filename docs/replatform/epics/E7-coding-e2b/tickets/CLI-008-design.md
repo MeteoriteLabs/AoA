@@ -271,6 +271,11 @@ own was part of D.
    the trip out: a non-zero exit is THROWN by the e2b SDK rather than returned, and the attempt
    terminalizes `failed / exitCode: null / execute_failed / errorMessage: null` — a context-free
    failure, which is the thing this criterion was written to prevent. **E7-F014**, owned by Unit F.
+   ★★ **HALF MET — updated 2026-09-04, E7-F014 RESOLVED** (PR #351, live runs `33832930572` green /
+   mutant `33832956461` red). The transport now narrows on the SDK's `CommandExitError` and returns
+   the exit code, so the attempt terminalizes `failed / exitCode: 78` and the **78 is recorded**. The
+   **named cause is still not** — `ExecuteResult` carries only opaque `stderrRef`s under E5's
+   no-customer-bytes rule, so carrying the cause text remains **Unit F**'s (output capture).
 6. **Nothing about `capabilityProven` changes.** *Met — and stated as a criterion so a green E7-1
    after this unit cannot be read as capability.*
 
@@ -333,6 +338,8 @@ real defect in the mechanism it claims to prove, not on an incidental. The branc
 depending on the staged bundle's trailing newline, so the legacy-parity claim holds conditionally)
 and **E7-F014** (MEDIUM — a non-zero exit is thrown rather than returned, so every failing
 distributed run terminalizes with `exitCode: null`; it defeats criterion 5 above).
+**E7-F014 is RESOLVED** as of 2026-09-04 (PR #351): the transport narrows on `CommandExitError`, a
+fault keeps throwing, and the same lane now pins the carrier. **E7-F013 remains open** (unowned).
 
 ★ **No green E7-1 should be read as evidence of capability.** Since Unit A that is computed rather
 than asserted: the verifier prints `CAPABILITY: NOT PROVEN` beside every PASS, and
