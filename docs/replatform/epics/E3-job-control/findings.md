@@ -1570,3 +1570,102 @@ other side and wrote the workaround into schema prose at
 editing the docstring. If JOB-015's slices (b)/(c) are descoped, this must be repointed to a live
 successor rather than marked resolved — an open finding owned by shipped or abandoned work is owned
 by nobody (E4-F013).
+
+---
+
+## E3-F036 — A required check whose verdict depends on the npm registry: `/adapters/install` is really installed, under a budget 4× shorter than the operation's own
+
+**Status:** open (the INSTANCE is fixed in this commit; the CLASS has no guard)
+**Severity:** MEDIUM (CI reliability on a required check; no production defect)
+**Filed:** 2026-09-04, from the reproducible red on the integration tip `c48259358`.
+
+**What was red.** `verify (3)` and therefore `ci-required` failed on the untouched base tip
+`c48259358` (run `33799234615`), and re-running the failed jobs on both open PRs reproduced it.
+The failing test is `server/src/__tests__/adapters-routes-instance-admin.test.ts` →
+*"not 403 install as instance admin"* → `Test timed out in 30000ms`.
+
+**The mechanism, measured.** That test POSTs `/api/adapters/install`, and the route
+(`server/src/routes/adapters.ts:417`) calls `execNpm(["install", "--no-save", spec])` INLINE — a real
+network install against `registry.npmjs.org`, awaited before the handler can produce the status code
+the test reads. `execNpm` (`server/src/utils/npm-spawn.ts:19`) gives that install **120_000 ms**;
+vitest's `testTimeout` (`vitest.config.ts:18`) gives the test **30_000 ms**. **The budget is
+inverted: the test is allowed a quarter of what the operation it awaits is allowed.** So the verdict
+of a required check is a function of npm-registry latency on a GitHub runner — something outside
+this repository, unversioned, and not reproducible from the commit.
+
+The log says so precisely: the file reported `3 tests | 1 failed` at `31768ms`. The FIRST install (cold
+npm cache) crossed 30 s; the SECOND, in the same file seconds later against a now-warm cache, passed.
+Same runner, same registry, same commit, different verdict.
+
+**Two hypotheses were tested. The one that named this commit is REFUTED.**
+
+*H-B (shard reshuffling).* This repo's vitest shards by SHA-1 of the path
+(`BaseSequencer.shard`, vitest 3.2.6), so any new test file redistributes every shard, and
+`c48259358` added one (`packages/sandbox-e2b-provider/src/__tests__/keyed-cli-008-unit-d-invocation.test.ts`).
+Replaying that exact algorithm over the collected 2,538-spec set gives:
+
+- `adapters-routes-instance-admin.test.ts` — **shard 3 BEFORE, shard 3 AFTER** (index 1772 → 1773).
+  It did not move.
+- **Exactly one** file changed shard: `server/src/__tests__/cli-008-unit-b-staging-channel.integration.test.ts`,
+  **3 → 4** — i.e. shard 3 lost an integration test and got *lighter*.
+- The new file is `describe.skip` without `E2B_API_KEY` (`:59-60`), which `verify` does not set, so it
+  adds ~0 s wherever it lands.
+- Shard count is still 4; `scripts/test-inventory.json` moved by one pinned count and nothing else.
+- Wall-clock agrees: `verify (3)` ran 14, 14, 13, 15, 15, 14, 14 minutes over the seven green
+  predecessors and **16 minutes** on the red run — and two 30 s timeouts account for a minute of that.
+  **There is no time jump at `c48259358`.**
+
+*H-A (registry latency).* Confirmed, with the correction above that it is not "latency" alone but an
+inverted budget that makes ordinary latency fatal.
+
+**The correlation with `c48259358` is spurious**, and one datum reported as "same commit green then
+red" is a misreading worth recording: the green run one minute earlier (`33799136579`, 19:54Z) is on
+`da6e8ffec`, the PARENT — not on `c48259358`. The genuine evidence for non-determinism is inside the
+red run itself: two identical operations, one over budget and one under, 30 s apart.
+
+**The fix, and why not a bigger timeout.** Raising `testTimeout` would hide a real slowdown and keep
+the external dependency; deleting the tests would drop the authz coverage. Neither is the shape.
+What these tests prove is an **authz** property — who the `/adapters/install` gate admits — which does
+not need a package to actually be installed. So the tests now pin npm to **offline mode against an
+empty cache** for their duration (`npm_config_offline`, `npm_config_cache` under the per-test
+`tmpHome`). `npm install --no-save x` then fails immediately with `ENOTCACHED`, the route still
+returns a non-403 status, and the assertion is untouched. Measured: the file goes from ~31.8 s in CI
+(2 tests) to **0.97 s for 3 tests**, with zero network.
+
+**It also recovers coverage.** The two tests were `skipIf(win32)` because a real install locked the
+temp dir (EBUSY on cleanup). Offline mode installs nothing, so that reason is gone: **both tests now
+run on Windows**, verified locally at 3/3 green. The advisory Windows lane gains two tests rather than
+losing any.
+
+**Positive control.** The fix was made to fail on purpose. Dropping `operator: true` from the
+`instanceAdmin` actor reds it — `AssertionError: expected 403 not to be 403` — so the offline pin did
+not neuter the assertion; the gate is still what is being measured. A second control removed the
+`npm_config_offline` line and the same file went from 3.7 s to 9.0 s of wall clock on a warm-cached
+developer machine, i.e. the removed cost is exactly the network.
+
+**★ The class, and why it is filed rather than closed.** This is the SECOND required-check failure in
+two days whose verdict depended on something outside the repository. **E3-F034** was the first: a
+100-claimer poll test sitting on a 750 ms Postgres `lock_timeout`, where the deciding variable was
+runner fsync speed (median 2.493 s vs 1.193 s on the slow runner). This one's deciding variable is
+npm-registry response time. They are one class:
+
+> **A required check whose verdict is a function of something the commit does not contain.**
+
+Both instances present identically — an intermittent red that clears on re-run — and the standing
+response to both has been *"re-run until green."* That response is **indistinguishable from ignoring a
+real regression**, which is the operational cost: the same signal is produced by an environment blip
+and by a genuine performance defect, and the gate gives you no way to tell them apart. This programme
+already has a name for the neighbouring failure — a check that nothing runs — and this is its mirror:
+a check that runs, but decides on evidence the repository does not own.
+
+The instance is closed here. The class is not: **there is no guard that would refuse a new required
+test which reaches the network or wall-clock-races an external service.** Nothing enumerates such
+tests today, so a third instance would be found the same way the first two were — by a red on the
+integration branch, days after it landed.
+
+**Disposition.** `unowned`, on the record. Every E3 ticket has shipped, and the class remediation
+(an inventory of required-lane tests that touch the network or an external clock, plus a guard that
+refuses additions to it) is a CI-platform decision with a blast radius across four shards — not a line
+in a job-control ticket. Force-fitting it onto a shipped owner would read as owned by nobody
+(E4-F013). It blocks nothing today; it costs a false red every few days and it trains the reflex that
+turns a real regression into a re-run.
