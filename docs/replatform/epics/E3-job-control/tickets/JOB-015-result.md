@@ -179,8 +179,20 @@ running, exactly as an operator drain and a rolling shutdown do.
 | P4 | marker-cannot-fit returns `[]` instead of throwing | 1/22 RED |
 | I1 | restore `extensions: []` in the renew mutator | 5/12 integration RED |
 | I2 | drop `eq(commandSeq)` from the ACK WHERE clause | 1/12 integration RED |
+| I3 | drop the frozen `nonce` from `requestCancellation`'s inline body (producer drift) | 1/12 integration RED |
+| M3b | fold the malformed-delivery fault into silence (`controlFault = false`) | 1/9 driver RED |
 
 Restore verified green after every one.
+
+**I3 closes a gap the design did not name.** The worker re-validates every delivered
+command against the frozen `controlCommandV1Schema` — the extension container bounds size
+and structure, not fields (`value` is `z.unknown()` on the frozen envelope), so an
+unvalidated body would be a control-plane-shaped object trusted on the strength of its
+namespace. But `requestCancellation` builds its `command` jsonb **inline and never
+`.parse`s it**. A drift there would make every real cancel arrive as a delivery FAULT, and
+nothing else in the tree would notice: the boolean floor would keep cancelling while the
+extension quietly failed to read. The integration test now parses the delivered body
+against the frozen schema, and dropping one required field from the producer reds it.
 
 ---
 

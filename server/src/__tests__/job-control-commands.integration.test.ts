@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { LeaseOfferV1, LeaseRenewOperationRequestV1 } from "@armyofagents/worker-protocol";
+import { controlCommandV1Schema } from "@armyofagents/worker-protocol";
 import { CONTROL_EXTENSION_NAMESPACE } from "../services/control-command-projection.js";
 import { createJobReconciliationService } from "../services/job-reconciliation.js";
 import { createJobLeaseRenewalService } from "../services/job-fencing.js";
@@ -8,6 +9,7 @@ import {
   auth,
   COMPANY,
   ORG,
+  WORKER,
   setupJobControlFixture,
   type JobControlFixture,
 } from "./helpers/job-control-fixture.js";
@@ -264,15 +266,46 @@ integration("JOB-015 control-command delivery on the lease-renew response", () =
   ): Promise<string> {
     const { admin } = ctx();
     const commandId = crypto.randomUUID();
-    const wireBody = {
+    // A body the FROZEN schema accepts. The worker re-validates every delivered command
+    // against `controlCommandV1Schema` (the extension container bounds size and
+    // structure, not fields), so a fixture that stored a loose body would be testing a
+    // shape production can never produce.
+    const wireBody: Record<string, unknown> = {
       protocolVersion: 1,
       audience: "control_channel",
       commandId,
       commandSeq: seq,
-      commandKind: kind,
+      idempotencyKey: commandId,
+      issuedAt: new Date().toISOString(),
+      nonce: `nonce-${commandId}`,
+      organizationId: ORG,
+      companyId: COMPANY,
+      workerId: WORKER,
+      jobId: seeded.jobId,
+      attempt: 1,
+      leaseId,
       fenceToken,
-      reason: kind === "drain" ? "fleet rollout" : null,
+      commandKind: kind,
+      ...(kind === "drain"
+        ? { reason: "fleet rollout" }
+        : {
+          result: {
+            decisionKind: "permission",
+            requestId: crypto.randomUUID(),
+            nonce: "decision-nonce",
+            requestDigest: "a".repeat(64),
+            schemaVersion: 1,
+            sourceRevision: 0,
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            decidedBy: { principalType: "user", principalId: "operator-1" },
+            decidedAt: new Date().toISOString(),
+            idempotencyKey: crypto.randomUUID(),
+            timeoutPolicy: "deny",
+            decision: "deny",
+          },
+        }),
     };
+    expect(controlCommandV1Schema.safeParse(wireBody).success).toBe(true);
     await admin`INSERT INTO job_control_commands
       (organization_id, company_id, job_id, attempt_id, attempt_number, lease_id, command_id,
        command_seq, command_kind, fence_token, command)
@@ -352,7 +385,16 @@ integration("JOB-015 control-command delivery on the lease-renew response", () =
     expect(renewed.body.cancelRequested).toBe(true);
     expect(renewed.body.cancelReason).toBe("please stop");
     // ...and the extension an adopting worker reads. Intentional redundancy (D2).
-    expect(controlExtension(renewed.body)!.commands[0]!.commandKind).toBe("cancel");
+    const delivered = controlExtension(renewed.body)!.commands[0]!;
+    expect(delivered.commandKind).toBe("cancel");
+    // ★★ THE PRODUCER MUST STORE WHAT THE CONSUMER ACCEPTS. `requestCancellation` builds
+    // its `command` jsonb INLINE and never `.parse`s it, while the worker re-validates
+    // every delivered body against the frozen `controlCommandV1Schema`. A drift between
+    // the two would make every real cancel arrive as a delivery FAULT, and nothing else
+    // in the tree would notice: the boolean floor would keep cancelling and the
+    // extension would keep failing to read. This is that check.
+    const parsed = controlCommandV1Schema.safeParse(delivered);
+    expect(parsed.success ? "valid" : JSON.stringify(parsed.error?.issues)).toBe("valid");
   }, 60_000);
 
   it("stops delivering a command once it is ACKed — the ACK is what suppresses redelivery", async () => {
