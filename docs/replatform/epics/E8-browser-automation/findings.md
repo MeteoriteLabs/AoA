@@ -121,3 +121,83 @@ null branches follow: the bridge's request shape, and the timeout sweeper's `run
 (`server/src/index.ts:2116-2118`), which today would call `heartbeatService.cancelRun` on a null
 `runId`. Rejected alternatives (minting synthetic `agents`/`heartbeat_runs` rows; a parallel browser
 decision table) are costed in the design.
+
+## E8-F003 — A sandbox guest can reach the cloud instance-metadata endpoint, and AoA's only egress-shaped provider input does nothing
+
+**Status:** open · **Owner:** `unowned`
+**Severity:** HIGH
+**Filed:** 2026-09-04, by BRW-004 slice (a), MEASURED against real E2B sandboxes in workflow run
+`33857218680` (`.github/workflows/keyed-e2b-egress-constraint-probe.yml`).
+
+**What was measured, and how.** BRW-004 design §D3 option (b) and §7 Q2 both rest on a question
+terrain §12 recorded as unestablished: can the sandbox provider constrain a sandbox's outbound
+egress at all? The probe answers it differentially — sandbox **A** created with
+`metadata.egressAllowlist = "example.com"` (production's exact spelling,
+`sandbox-provider-runtime.ts:785-789`), sandbox **B** with none — and runs the identical target set
+from inside each guest.
+
+| target | role | A (allowlist declared) | B (control) |
+|---|---|---|---|
+| `https://example.com/` | positive control | REACHED 200 | REACHED 200 |
+| `https://api.github.com/` — **NOT allowlisted** | **the question** | **REACHED 200** | **REACHED 200** |
+| `http://169.254.169.254/latest/meta-data/` | observation | **REACHED 401** | **REACHED 401** |
+| `https://…invalid/` | apparatus control | FAILED (curl 6) | FAILED (curl 6) |
+
+Both controls held: the allowlisted host succeeded (so the run is not a total-failure artefact) and
+the RFC-2606 `.invalid` host failed (so the instrument can observe a failure). This is the third
+run; runs `33855470353` and `33856090430` were reported INCONCLUSIVE by the apparatus control and
+no verdict was taken from either.
+
+**Two findings in one measurement.**
+
+1. **`SandboxProviderAcquireInput.egressAllowlist` is INERT.** A host absent from the declared
+   allowlist was reached from inside sandbox A exactly as from the control sandbox B. Its producers'
+   comments already say *"NOT a security boundary"* (`mcp-connectors-env.ts:61-64`); this measures
+   that they are correct rather than quoting them. **Consequence:** BRW-004 §D3 option (b) is
+   unavailable, so the in-sandbox enforcement point (D3(c)) is the **ONLY** layer, not defence in
+   depth. A browser induced to reconfigure its own proxy is not contained by anything else.
+2. **The cloud instance-metadata endpoint answers from inside the guest.** `169.254.169.254`
+   returned HTTP 401 — an IMDSv2 token challenge, i.e. a live metadata service, not a dropped
+   packet. Only IMDSv2's token requirement stands between sandboxed agent-authored code and instance
+   credentials. `NETWORK_DENIAL_CLASSES` names `metadata` as the **highest-precedence** deny class
+   (`egress-policy.ts:69-74`) and `classifyEgressDestination` implements it correctly — but nothing
+   calls it in production (terrain §5), so the classification exists and the enforcement does not.
+
+**Scope, stated so it is not over-read.** This measures the seam AoA production actually uses. It
+says nothing about an E2B capability AoA does not call, and it does not establish that the metadata
+endpoint is exploitable — only that it is reachable and answering.
+
+**Why `unowned`.** Enforcement is BRW-004 slice (f), which is not in this ticket's landed scope, and
+the metadata half is broader than E8: every workload in a sandbox shares the reachability, not just
+browser sessions. Recording it against a live successor rather than silently absorbing it into a
+result doc.
+
+---
+
+## E8-F004 — A distributed runtime decision has no stranded-answer sweep, and the exclusion is invisible
+
+**Status:** open · **Owner:** `unowned`
+**Severity:** LOW
+**Filed:** 2026-09-04, by BRW-004 slice (d) while closing E8-F002.
+
+**What.** `listStrandedAnswers` (`server/src/services/agent-runtime-decisions.ts`) is an INNER JOIN
+on `run_id`. Now that `run_id` is nullable, every distributed decision is silently excluded from the
+R2 stranded-answer sweep wired at `server/src/index.ts`. There is no type error, no runtime error and
+no wrong row — a hole, not a crash, which is why it needed measuring rather than typechecking.
+
+**The exclusion is correct; the absence it leaves is not recorded anywhere else.** That sweep exists
+to catch an answer whose HEARTBEAT RUN went terminal before the in-band relay could deliver it. A
+distributed decision has no heartbeat run and no in-band relay, so the sweep has nothing to say about
+it. The join is therefore left as a join.
+
+**But the equivalent does not exist.** Noticing that a job/attempt went terminal before its queued
+`runtime_decision_result` was delivered has no implementation. It cannot have one yet: no
+control-plane hop delivers a control command to a running worker at all (BRW-004 terrain §4), so
+there is no delivery to be stranded from. The sweep belongs beside **JOB-015**'s delivery hop, not in
+front of it.
+
+**Not live.** Nothing submits a `browser_request` job and the bridge has no production callers, so no
+distributed decision exists to be stranded.
+
+**Disposition.** Repoint to JOB-015, or to whichever ticket lands the distributed delivery path, once
+one exists. Do not close it by deleting the join — the join is right; the missing sweep is the gap.
