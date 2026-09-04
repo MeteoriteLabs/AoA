@@ -653,10 +653,28 @@ recorded word was "awaiting distinct re-review; not resolved/pass". They **are**
 completion handoff records `Decision: pass` by a distinct gate owner on exactly the candidate
 revision they name; the register was simply never updated). Had that review not passed, two open
 HIGH findings would have sat in a `complete` epic with nothing able to see them. The other newly
-visible ones are MINOR/LOW and all declared, including **E0-F003 `unowned`** — its item 1, a
-same-sentence negation smuggle in `check-distributed-execution-foundation.mjs`, is measured still
-live, and both tickets its own disposition named as the remediation window (FND-003, FND-007)
-shipped without doing it.
+visible ones are MINOR/LOW and all declared. **E0-F003 is now RESOLVED** (`86db5238d`) and its
+manifest entry is deleted, so it is no longer in the unowned list above — another demonstration
+that the list is a timestamp. Its entry was not stale but WRONG: it asserted item 2 had been
+"applied by FND-003's exact-set parity" while also saying both named tickets "shipped without
+doing so". Measured before fixing: mutations of BOTH original sites in
+`check-distributed-execution-foundation.mjs` produced ZERO errors. FND-003 and FND-007 had applied
+the patterns to their OWN new surfaces and never retrofitted the originals — and measuring that
+turned up a THIRD live instance at FND-007's own CM-015 clause check, whose private splitter was
+punctuation-only. **★ Reading the register would have closed this as done; only mutating it found
+three live holes.**
+
+★★ **And the first fix for it was itself an instance of the same mistake, caught on review.** The
+finding's defect is stated generally — "an affirmative clause appended to a sentence that already
+carries a negation is missed" — but the fix closed the one *probe* the finding printed. Changing
+one word of that probe from `except` to `and` re-opened the smuggle at both scanned invariants.
+Worse, the code carried a comment *justifying* the gap ("splitting there would reject correct
+prose"); when the reviewer measured it, widening the split produced **zero** errors on the real
+corpus. **A false rationale is worse than an unexplained gap: it tells the next reader the hole was
+considered and closed.** The remedy was to stop enumerating joiners — an enumeration is always one
+word short — and add a vocabulary-free arm that counts negations per mention of the needle, which
+holds even when the clauses are joined by nothing at all. **Fixing the instance a finding
+illustrates is not fixing the defect it states.**
 
 
 ### 1.9.8 The D1 merge-train lane was RED for three merges, and nothing was waiting on it
