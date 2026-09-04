@@ -474,14 +474,26 @@ that is here and none of it is claimed.
 
 **Ready for independent review**, for slices (a)–(d) as scoped.
 
-Every fail-closed clause implemented here has a positive control that was shown to fire, and every
-guard was mutated red and restored. The deferrals are named with their reasons rather than implied,
-the capability question is answered in the negative rather than avoided, and the two escalations are
-reported as resolved (Q1) and handed back (Q5).
+Every fail-closed clause implemented here has a positive control that was shown to fire. **Twelve
+mutations were run; eleven were killed and restored, and the twelfth (C6) SURVIVED — the guard it
+deleted was unnecessary, so the guard was removed rather than kept beside a test that could never
+fail.** That is stated here rather than smoothed into "every guard was mutated red", which an
+earlier draft of this paragraph said and which was not true. The deferrals are named with their
+reasons rather than implied, the capability question is answered in the negative rather than
+avoided, and the two escalations are reported as resolved (Q1) and handed back (Q5).
 
-**What a reviewer should attack first:** deviation 1 (I narrowed a design-specified binding — check
-that the narrowing is honest and not convenient), and §4 hazard 7 (I left an INNER JOIN in place and
-filed the gap; check the exclusion really is correct rather than merely convenient).
+**What a reviewer should attack first**, in order:
+
+1. **Deviation 1** — I narrowed a design-specified binding (slice (b)'s runtime-decision arm).
+   Check that the narrowing is honest rather than convenient: the test is whether the four
+   `unmodelled` values genuinely have no member in `RuntimeDecisionAuthority`.
+2. **§4 hazard 7** — I left an INNER JOIN in place and filed the gap as E8-F004. Check the exclusion
+   really is correct rather than merely convenient.
+3. **E8-F002's closure.** I marked it resolved on the mechanism with no production writer. If you
+   think a finding about "the aggregate cannot hold a row" should stay open until something writes
+   one, say so — but note that BRW-004 has shipped, so re-opening it needs a successor, not a
+   status flip.
+4. **§7a's campaign.env non-bump.** A judgement call about whether the `server/src` diff is live.
 
 **Codex verdict: ABSENT.** No independent Codex review was obtained for this build. Recorded in
 words rather than read as approval.
