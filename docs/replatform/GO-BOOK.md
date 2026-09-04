@@ -419,9 +419,23 @@ of Unit B's channel (so it validates that work rather than stacking a second unb
 it), and "the prompt stops being a positional" IS the fix for E7-F008 — the only LIVE refusal among
 the open findings.
 
-★★ **Nothing in Track A, B or D flips `capabilityProven`.** That needs Unit F (output capture),
-which is four unbuilt links. A green E7-1 proves the MECHANISM, not capability — the verifier
-computes and prints both since Unit A, and `--require-capability` is the flag the campaign flips at F.
+★★ **Nothing in Track A, B or D flips `capabilityProven`.** That needs Unit F (output capture). A
+green E7-1 proves the MECHANISM, not capability — the verifier computes and prints both since Unit A,
+and `--require-capability` is the flag the campaign flips at F.
+
+★★★ **"which is four unbuilt links" was WRONG, and it is corrected here rather than deleted, because
+it is the sentence that sized Unit F XL.** Re-measured 2026-09-03 at `d0b75be19`
+([`CLI-008-unit-f-design.md`](./epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md)): the four
+links are the verifier's own clause-6 reason string, and **three of them flip NEITHER counter** — a
+`log` event is not a `job_artifacts` row and not a `task_outputs` row, so stream handlers, real
+stdout/stderr refs and a composed `observeRun` all improve evidence without touching capability. The
+fourth (`buildWorkspacePatch`/`createResultCommitter`) is the only one that touches a counter and is
+blocked behind Unit E **and** behind an in-sandbox manifest capture that does not exist anywhere in
+the tree. Filed as **E7-F016**. ★★★ **But the "L, and Unit E is not required" that replaced XL is now
+WITHDRAWN, and Unit F is UNSIZED** — see the box below. ★ Filed alongside it: **E7-F015** —
+`capabilityProven`'s task-output arm has no provenance filter and `POST /api/issues/:id/outputs`
+accepts `createdByRunId` from the request body, so **one authenticated POST flips the programme's
+headline gate** with no agent, worker or sandbox. It stands **OPEN with no designed fix**.
 
 ★★★ **A REAL E2B RUN IS REACHABLE FROM A SESSION — measured 2026-09-03. This changes what "needs the
 fleet" means.** Unit D shipped saying its shape could only be observed "on the staging fleet". It
@@ -450,6 +464,38 @@ week-long round trip from "filed by a keyed lane" to "fixed and proved by the sa
 argument in this section, measured.
 What the fleet is still needed for is genuinely narrower than it looked: the real agent binaries
 running inside the sandbox, and Unit B's staging channel end to end.
+
+★★★ **UNIT F HAS NO BUILDABLE PLAN, AND A SCHEDULER MUST NOT TREAT IT AS SIZED** — updated
+2026-09-04 after the design's fourth pass.
+[`CLI-008-unit-f-design.md`](./epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md) is now **TERRAIN +
+FINDINGS ONLY**; its lettered slice plan, positive-control table and acceptance section were deleted,
+not demoted, because a refuted plan left in a design document gets built.
+
+- ★★★ **Three supply mechanisms have been refuted: argv SHAPE, argv SIZE, then THE PREDICATE
+  ITSELF.** The third is the one that changed the document's kind. Its plan removed clause 6's
+  forgeable `task_outputs` arm and **widened** the artifact arm off `kind = 'workspace_patch'`.
+  Measured: `stageJobInputFiles` commits **fenceless** `job_artifacts` rows on the run's own `jobId`
+  for the prompt bundle staged on **every** task run (`job-input-staging.ts:374,381-384`), so the
+  widened arm would be satisfied by the run's **own input**, with no export and no producer — and
+  **`capabilityProven` would be true by construction on every run**. That is strictly worse than the
+  forgery it was meant to close, and it is the **same class** as it: drop one forgeable arm, widen the
+  other into a differently-forgeable one. Design §4.3.
+- **Unit F is UNSIZED.** The XL→L correction was the size of that slice plan. The XL *critique*
+  stands (three of four blamed links flip neither counter, E7-F016); the L *replacement* does not.
+- **`capabilityProven` is a PROVENANCE verdict, not a productivity one, whatever gets built.** Both
+  arms are SQL counts over control-plane rows; neither reads a byte of an artifact. The verdict's NAME
+  outruns its predicate — carried by **E7-F016**, symbol deliberately not renamed. **A green E7-1 with
+  `--require-capability` could only ever prove a RETURN PATH, not that an agent did a task.**
+- **The artifact arm has zero producers today** (the daemon's `artifactCommit` client method has no
+  production caller; both shipped providers declare `artifactExportMode: "none"`). That is the
+  pressure that drove the refuted widening, and it is **unrelieved**.
+- ★★★ **E7-F014 is a HARD PREREQUISITE for ANY return path, not an objection to one mechanism.**
+  Against real E2B a non-zero exit THROWS; traced one layer past the finding, `supervisor.ts:743-758`
+  catches it, emits the terminal, **destroys the sandbox** and **returns**. So a redirected file, a
+  provider-side capture and a post-run `readFile` all die **equally** on every failing run — which is
+  precisely the run an operator wants output from. The remedy (catch `CommandExitError` in the
+  transport and return the exit code) is being built on `claude/e7-f014-throw-carrier`; it depends on
+  nothing in Unit F and is worth landing on its own.
 
 ### 1.9.4 Stale passages in THIS document, named — ✅ ALL FOUR CORRECTED 2026-09-03 (Track C)
 

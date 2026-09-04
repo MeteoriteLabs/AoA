@@ -864,6 +864,33 @@ the transport: catch the SDK's `CommandExitError` in `RealE2bTransport.runComman
 models and the provider already expects. That is a change to CLI-001's shipped transport and belongs
 with whoever next needs the exit code, not with a verification lane.
 
+★★★ **TRACED ONE LAYER PAST THIS FINDING, 2026-09-04 — and that layer promotes it from "a lost exit
+code" to a PREREQUISITE for the entire return path.** `packages/worker-daemon/src/supervisor/supervisor.ts`
+catches the throw at `:743` and then, before anything else runs:
+`emitOp("execute", "failed")` (`:744`) → `events.terminal({status:"failed", exitCode:null,
+errorCode:"execute_failed"})` (`:751-756`) → **`escalateCleanup(run, "execute_error")` (`:757`), which
+DESTROYS THE SANDBOX** → **`return` (`:758`)**. The normal path only resumes at `:760`
+(`emitOp("execute","success")`), so **every step written after `execute` is skipped on every failing
+run, with its sandbox already gone.**
+
+Consequences, both load-bearing:
+
+- **It kills every candidate output-capture mechanism EQUALLY** — a redirected file inside the
+  sandbox, a provider-side command wrap, a post-run `readFile`, anything read from the command result.
+  So it cannot be used to choose between them; it must be satisfied before any of them can work.
+- **The runs it destroys are exactly the runs an operator wants output from.** A non-zero exit is a
+  failed build, a failing test, a lint error, or the agent's own error exit — which this finding
+  measures as the common case.
+
+★ **Therefore CLI-008 Unit F is blocked on this finding, not merely adjacent to it**
+([`CLI-008-unit-f-design.md`](./tickets/CLI-008-unit-f-design.md) §3.7, §5). ★ A repair carrying this
+finding's own recommended remedy is in progress on the branch `claude/e7-f014-throw-carrier`
+(**MERGED 2026-09-04 as `46c27e38b`, PR #351** — see the Resolution below). It depends on nothing in Unit F's
+undesigned supply path and is worth landing on its own: it also takes a branch measured **dead** today
+(`crashed: exitCode !== 0`, `real-transport.ts:122`) and makes an already-shipped keyed assertion true
+end to end (`keyed-cli-008-unit-d-invocation.test.ts:323-325`).
+
+
 ### Resolution — 2026-09-04, PR #351
 
 `RealE2bTransport.runCommand` now narrows on **`CommandExitError`** and returns
@@ -928,3 +955,176 @@ value asserted the wrong thing. Carrying the cause text is **output capture — 
 is unbuilt; no separate finding is filed because the silence is an enforced architectural boundary
 with an owner, not an undocumented constraint. Unit D's acceptance criterion 5 is therefore **half
 met**: "exit 78" is now recorded on the attempt; "with a named cause on stderr" is not.
+## E7-F015 — The capability bar is forgeable: one board POST flips `capabilityProven` with no agent, no worker and no sandbox
+
+**Status:** open · **Owner:** CLI-008 (Unit F — terrain filed, **no fix designed**)
+**Severity:** MEDIUM · **Filed:** 2026-09-03, by CLI-008 Unit F's terrain pass, before designing
+anything that would make an operator start trusting this gate.
+
+**What.** `capabilityProven` — the programme's headline capability verdict — is an OR over two
+counters (`server/src/services/e7-distributed-run-verifier.ts:506`, `:522`). One of the two arms is
+writable over HTTP by any company-scoped actor, with no provenance check anywhere on the path.
+
+The chain, verified link by link at `d0b75be19`:
+
+1. `countProducedOutputs`'s task-output arm is **one predicate** —
+   `.where(eq(taskOutputs.createdByRunId, run.id))`
+   (`server/src/services/e7-distributed-run-verifier-store.ts:213-216`). It selects `id` and returns
+   `.length`. There is **no** filter on `type`, `provider`, `created_by_agent_id`, `asset_id`, or any
+   projection receipt.
+2. `POST /api/issues/:issueId/outputs` passes `req.body` straight into `svc.upsertForIssue`
+   (`server/src/routes/task-outputs.ts:45,53`), and the router is mounted unconditionally
+   (`server/src/app.ts:566`) — outside the `distributedExecutionEnabled` gate.
+3. `upsertTaskOutputSchema` admits `createdByRunId: z.string().uuid().nullable().optional()`
+   (`packages/shared/src/validators/task-output.ts:50`). Only `type` and `title` are required;
+   `assetId`, `artifactId` and `executionWorkspaceId` are all optional.
+4. The **only** guard on the field is
+   `assertCompanyOwnedRef(db, heartbeatRuns, input.createdByRunId, companyId, "Heartbeat run")`
+   (`server/src/services/task-outputs.ts:123`) — the run must merely belong to the issue's company.
+   Nothing checks that the caller *is* that run, that the run produced anything, or that the run is
+   distributed at all.
+
+So `{"type":"external_link","title":"x","createdByRunId":"<the canary run>"}` satisfies clause 6.
+
+**Reachability.** MEDIUM, and stated honestly rather than inflated. `--require-capability` is OFF by
+default (`server/src/cli/verify-e7-1-distributed-run.ts:65`), no workflow or script runs the
+verifier, and GO-BOOK §9 currently tells the operator not to pass it — so nothing is being decided on
+this signal **today**. But Unit F exists to make an operator start passing it, and both counters are
+structurally 0 until then, which means the first time this gate is trusted is also the first time it
+matters that it can be forged. It is filed now, and must close BEFORE the bar is made flippable —
+which, as the next block records, has not happened.
+
+★★★ **THE FIX THIS FINDING ORIGINALLY RECOMMENDED IS REFUTED. THE FINDING STANDS.** Recorded here,
+in the register, because a register that carries a finding at MEDIUM must not carry its remedy at the
+same confidence — and because a remedy left standing beside a live finding is what gets built.
+
+**Why tightening the route does not close it.** Tightening `assertCompanyOwnedRef` into "the caller
+must be this run" does not work: an agent can stamp its own real run id, and the board route has
+legitimate non-distributed users. That part of the original reasoning survives.
+
+**What does NOT survive is the replacement.** The finding's first draft prescribed: *take the
+task-output count out of the clause-6 predicate (leaving it observed and printed) and widen the
+artifact arm off its `kind = 'workspace_patch'` filter*, on the argument that *"a `job_artifacts` row
+can only be written by `commitArtifactVersion` behind a live fence, a verified device proof, an
+attempt-scoped object prefix, and a control-plane `headObject`"*. **That argument is false, and the
+counter-example is a producer CLI-008 itself shipped in Unit B.** Measured at `611a78bfb`:
+
+1. `buildSandboxInvocation` stages the prompt **unconditionally** on every task run
+   (`server/src/services/task-run-sandbox-invocation.ts:163-164`; only the instructions entry is
+   conditional, `:165-173`).
+2. `stageJobInput({ …, jobId, …, files: stagedFiles })` runs between convert and placement, before
+   the attempt is leasable (`server/src/services/run-execution-owner.ts:361-368`, `jobId` from
+   `convert.convertRunToJob` at `:340`).
+3. `stageJobInputFiles` commits `job_artifacts` rows **directly and fencelessly** —
+   `jobId: input.jobId` (`server/src/services/job-input-staging.ts:374`),
+   `kind: STAGED_INPUT_ARTIFACT_KIND` (`:381`, `"staged_input"` at `:64`), `status: "committed"`
+   (`:382`), `leaseId: null` (`:383`), `fenceToken: null` (`:384`). Its own comment says why:
+   *"NO LEASE, NO FENCE … That is the property that makes an inbound write possible at all"*
+   (`:366-369`).
+4. That job id is the verifier's: `buildHandoffRunPatch` sets `distributedJobId: owner.jobId`
+   (`run-execution-owner.ts:237`), and the counter binds
+   `eq(jobArtifacts.jobId, run.distributedJobId)` (`e7-distributed-run-verifier-store.ts:206`).
+5. Dropping `eq(jobArtifacts.kind, "workspace_patch")` (`:207`) leaves `jobId` (`:206`) and
+   `status = 'committed'` (`:208`) — both satisfied by step 3.
+
+**So the widened arm would be satisfied on every converted distributed run by the run's OWN INPUT** —
+the prompt bundle the control plane writes *into* the sandbox — with no export, no worker producer
+and no agent output. It is **strictly worse than the arm it replaces**: this finding's forgery needs a
+deliberate authenticated POST; that one needs nothing, and `capabilityProven` would be `true` by
+construction before the agent starts.
+
+★★★ **And that is the SAME CLASS as this finding itself.** The move — *drop one forgeable arm, widen
+the other* — produced a differently-forgeable arm on the first attempt, because the widening was
+justified by an argument about a **class of writers** while the predicate binds a **class of rows**
+(`kind`, `status`, `job_id`), and the census of who writes rows of that shape was never taken. **The
+defect is in the move, not in the filter that was dropped**, so narrowing the widening is not a patch
+— it is a fresh attempt that needs its own census first. Full chain and consequences:
+[`CLI-008-unit-f-design.md`](./tickets/CLI-008-unit-f-design.md) §4.3.
+
+★★ **The axis this finding turns on is PROVENANCE, not probative value.** Both counters are SQL counts
+over control-plane rows and neither reads a byte of an artifact, so provenance — *who can cause the row
+to exist* — is the only claim clause 6 can honestly make, and it is the axis on which the two arms
+genuinely differ **today** (a `task_outputs` row can be written by anyone who can reach the API; a
+`kind = 'workspace_patch'` row has no writer but `commitArtifactVersion`). Naming the axis precisely
+is what keeps the finding correct; the looser framing — *"the arm is non-probative"* — would disqualify
+any candidate replacement too. See `CLI-008-unit-f-design.md` §0. ★ Naming the axis correctly did
+**not** make the predicate change safe, which is the transferable half: getting the principle right is
+not the same as getting the census right.
+
+★★★ **Removing the arm from the predicate would not withdraw the question it stands for, and only one
+pre-existing owner holds it.** `gate-clause-wiring.json`'s `E3-17-output` (`unwired`, symbol
+`jobOutputBridge`, "wire at sink cutover (Sprint 6)", `scripts/gate-clause-wiring.json:21-26`, checked
+by the required `policy` job) owns the general distributed-job → `task_outputs` projection. There is no
+second owner: clause 6's task-output arm is the only *verify-time* enforcement, and it is the forgeable
+one. Any future removal moves enforcement from *a clause a verify run prints* to unit tests — weaker in
+a specific way, and it must be priced rather than rediscovered (design §1.7).
+
+★ **A second measured consequence, which binds any future fix's release shape.** The artifact arm has
+**zero producers today** — the daemon's `artifactCommit` client method
+(`packages/worker-daemon/src/transport/client.ts:266,567`) has no production caller, and both shipped
+providers declare `artifactExportMode: "none"`. So removing the task-output arm without shipping a
+producer converts a forgeable gate into an **unpassable** one, which is CLI-008 Unit A's precedent
+inverted. **That pressure is exactly what drove the refuted widening**, and it remains unrelieved
+(design §1.8, §6).
+
+**Current disposition: OPEN, unfixed, and with no mechanism.** CLI-008 Unit F is the owner and its
+supply mechanism is not yet designed (design §4). The reach stays bounded meanwhile —
+`--require-capability` is off by default and no workflow runs the verifier — and it stays bounded
+precisely as long as nobody makes the bar flippable.
+
+## E7-F016 — Clause 6's operator-facing text misdescribes its own subject: four blamed links (three of which flip neither counter), and a verdict named for more than it proves
+
+**Status:** open · **Owner:** CLI-008 (Unit F — part (a) repairable, part (b) recorded)
+**Severity:** LOW · **Filed:** 2026-09-03, by CLI-008 Unit F's terrain pass — which was sent to size
+Unit F against this text and found the text wrong about its own subject.
+
+**What.** The reason string at `server/src/services/e7-distributed-run-verifier.ts:509-515` is
+printed to the operator beside every verdict and is the programme's standing answer to "what does
+Unit F have to build". It attributes the structural zero to four links:
+
+| the text's link | measured at `d0b75be19` |
+|---|---|
+| "the E2B driver passes no stream handlers" | True (`packages/sandbox-e2b-provider/src/e2b-provider.ts:261-297`) — but the transport **already implements them**: `RealE2bTransport.runCommand(req, handlers?)` binds `onStdout`/`onStderr` to the E2B SDK (`real-transport.ts:107-120`). And wiring them flips **neither** counter: a `log` event is not a `job_artifacts` row and not a `task_outputs` row |
+| "`stdoutRef`/`stderrRef` are fabricated literals" | True (`e2b-provider.ts:276,293`) — but making them real IS exporting bytes to object storage, i.e. the same work as the artifact path counted twice, not an independent link |
+| "`observeRun` is uncomposed" | True (`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:178-181`). `RunObservation` is `{logs?, progress?, usage?}` (`supervisor/supervisor.ts:73-77`) — flips **neither** counter |
+| "`buildWorkspacePatch`/`createResultCommitter` have zero production callers" | True, and the only one of the four that touches a counter — but it is blocked behind Unit E **and** behind an in-sandbox manifest capture that does not exist: `buildWorkspaceManifest` imports `node:fs` (`snapshot/build-manifest.ts:24`) and walks the DAEMON's filesystem, which on the E2B lane is not where the agent's files are. The text names neither blocker |
+
+Omitted, and decisive: `artifactExportMode: "none"` on **both** shipped providers
+(`e2b-provider.ts:178`, `packages/provider-wire/src/driver.ts:83`); no `artifactPrepared` emitter on
+`EventSequencer` (seven emitters at `packages/worker-daemon/src/supervisor/events.ts:147,155,162,170,178,206,220`,
+while `artifact_prepared` is already frozen at `packages/worker-protocol/src/events.ts:358`); no
+**upload-direction** grant consumer in the daemon (the sole `artifactTransferGrant` caller,
+`lease/staged-input.ts:242`, is download-only and explicitly rejects a cross-paired
+`upload_granted`); and no control-plane projector from durable evidence onto `task_outputs`.
+
+**Reachability.** LOW: it fails no gate and fails open in no direction. It is filed because it is an
+**evidence surface** — printed, quoted, and load-bearing for scheduling. It produced CLI-008's XL
+sizing for Unit F. ★ The XL *correction* stands — three of the four links flip neither counter, so the
+cheapest honest route is not the one the text names. The **L** that a later pass substituted is
+**withdrawn**: it was the size of a slice plan since refuted at the predicate
+([`CLI-008-unit-f-design.md`](./tickets/CLI-008-unit-f-design.md) §4.3), and Unit F is now UNSIZED.
+
+★★ **The second half, added on review: the VERDICT'S NAME overclaims too.** `capabilityProven` is
+computed from two SQL counts over control-plane rows. A row predicate can assert **provenance** —
+*these bytes reached durable storage through an attested path* — and can never assert
+**productivity** — *these bytes are the work*. Neither arm reads a byte of the artifact. So the name
+promises a capability judgement the predicate structurally cannot make, and no candidate replacement
+arm changes that — a captured CLI transcript would be non-empty even for a run in which the model
+never spoke. Same defect class as the reason string: operator-facing text asserting more than the code
+beneath it.
+
+**Fix, and the deliberate non-fix.** Part **(a)** — rewriting the reason string to name the links that
+actually gate the counters — is **independent of any predicate change** and survives the refutation of
+Unit F's slice plan; it is available to whoever next edits that module. Part **(b)** is **not** fixed by
+a rename: `capabilityProven` appears in 15 files across five epics (`grep -rl capabilityProven`), and a
+cross-epic rename is churn Unit F has no mandate for. The name's overclaim is therefore carried HERE,
+in the register — recorded rather than silently tolerated. ★ Note that rewriting the reason string is a
+**text** repair; it does not make the gate honest, because the gate's defect is E7-F015 and that has no
+designed fix.
+
+★ **The transferable part.** A failure reason is a claim like any other, and this one was assembled
+from symptoms rather than from the predicate directly above it. Three of its four links are true
+statements about the system that are **irrelevant to the counter the clause reads** — which is what
+made the list feel comprehensive while pointing at the most expensive route. When a clause explains
+itself, check each link against the clause's own predicate, not against the subject area — **and
+check the clause's own NAME the same way.**

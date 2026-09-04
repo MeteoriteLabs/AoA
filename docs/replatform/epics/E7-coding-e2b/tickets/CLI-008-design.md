@@ -153,11 +153,19 @@ Sizes are the sweep's, corrected by a verification pass. They are indicative, no
 | **C — tools** | **L–XL** | A brokered HTTP `aoa` MCP config plus its env vars, and a run-identity credential as a second secret handle, so `mcp__aoa__*` is actually callable |
 | **D — context** | **M** | ✅ **DONE 2026-09-03** (§4a). The instructions bundle reaches the sandbox on `--append-system-prompt-file` (claude) / prepended to stdin (codex), and the prompt stops being a positional — it is a staged file the script redirects onto stdin. **Closes E7-F008 and E7-F009.** Targets the **E2B/desktop lane** (E7-F011 leaves the networked lane refusing, not silently context-free) |
 | **E — workspace** | **XL** | A repository to work in. `workspaceV1Schema` requires a `manifestArtifactId` that has **zero producers**; `buildWorkspaceManifest` walks a LOCAL filesystem and cannot be pointed at an E2B sandbox |
-| **F — the return path** | **XL** | Output capture is **four** unbuilt links: the E2B driver never passes stream handlers; `stdoutRef`/`stderrRef` are fabricated literals, not references to stored bytes; `observeRun` is uncomposed (its absence is *pinned by a test*); `buildWorkspacePatch` and `createResultCommitter` have zero production callers |
+| **F — the return path** | ~~**XL**~~ ~~**L**~~ **UNSIZED** | ★★★ **NO BUILDABLE PLAN — see [`CLI-008-unit-f-design.md`](./CLI-008-unit-f-design.md), which is TERRAIN + FINDINGS only.** The XL estimate is wrong in a way worth keeping: **three of its four links flip NEITHER counter** (`log` events are not `job_artifacts` rows and not `task_outputs` rows), and the fourth is blocked behind Unit E *and* an in-sandbox manifest capture that does not exist — filed as **E7-F016**. But the **L** that replaced it is **withdrawn**: it was the size of a slice plan whose first step (remove the forgeable `task_outputs` arm, widen the artifact arm off `kind='workspace_patch'`) is **refuted** — the widened arm is satisfied on every run by the run's **own staged input bundle** (design §4.3). Three supply mechanisms have now been refuted (argv shape, argv size, then the predicate). **Blocked on E7-F014** (a non-zero exit throws, the supervisor destroys the sandbox and returns, so every post-execute capture is skipped on every failing run) **and on a supply mechanism that does not exist**. **E7-F015** — the bar is forgeable by one board POST — stands OPEN with no designed fix |
 
 ★ **The control-plane half of F is already shipped** — `job_artifacts` carries RLS, grants, a commit
 path, an orphan sweeper and DR manifest reconciliation. What is missing is a **producer**. That is
 worth knowing before anyone estimates F as greenfield.
+
+★★★ **And the producer is still NOT named.** Three passes tried and were refuted (design §4). What
+those passes did establish, and what a fourth should start from: reading a file out of a sandbox is
+already solved (`E2bTransport.readFile` is implemented on **both** drivers and exercised live), so the
+unsolved half is **writing**; the workload seam is the most heavily pinned surface in the repo and its
+census is written down (design §3.2, 16 pins); and **E7-F014 is a prerequisite for every candidate
+equally** — the supervisor destroys the sandbox and returns before any post-`execute` step on a failing
+run.
 
 
 ---
