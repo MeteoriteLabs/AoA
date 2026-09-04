@@ -493,6 +493,11 @@ jobs:
       # in total, with no measured* field edited. `--explain` prints the room. See (c) in
       # scripts/lib/ci-timeout-budgets.mjs; closing it needs a diff-aware instrument that does
       # not exist.
+      #
+      # A second miss, same shape: a required-lane job with NO timeout-minutes at all is skipped by
+      # the coverage clause, so it is neither budgeted nor exempt nor flagged, and it inherits
+      # GitHub's 360-minute default. All eleven required-lane jobs carry a cap today; see (d) in
+      # scripts/lib/ci-timeout-budgets.mjs.
       - name: CI timeout caps derive from budgets bounded by declared measurements (E3-F036 class)
         run: |
           node scripts/check-ci-timeout-budgets.mjs

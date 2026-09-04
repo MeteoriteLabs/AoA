@@ -5,7 +5,7 @@
  * Run with:
  *   node --test scripts/check-ci-timeout-budgets.test.mjs
  *
- * Three halves, deliberately — the third added after review.
+ * Four sections. (C) was added after the first review, (D) after the second.
  *
  * (A) THE REAL FILES. The scanner runs against the actual .github/workflows/pr.yml and the
  *     actual manifest, and asserts both that it FINDS the nine-job exposure it was written
@@ -19,13 +19,24 @@
  *     own inside a job whose cap silently absorbs it — and asserts red. That state was the tip
  *     of this branch before this commit, and 17 findings across 9 jobs were the measured red.
  *
- * (C) THE OTHER DIAL, added 2026-09-05. The first version of this guard bounded the WORK budget
- *     and left `setupAllowanceSeconds` bounded by nothing — a uniform number that derives eight
+ * (C) THE OTHER DIAL, added 2026-09-05. The first version of this guard gave the WORK budget a
+ *     ceiling and gave `setupAllowanceSeconds` none — a uniform number that derives eight
  *     job caps and eight step caps, so one measurement-free edit moved all sixteen and the
  *     guard printed OK. Review demonstrated it (480 -> 3000: `policy` 11 m -> 53 m, step cap
  *     8 -> 50). Every test in (C) was run against the pre-correction library and RED: 6 of 6.
- *     "the hatch has a PRICE" opens with a positive control, because an assertion that a code
- *     is ABSENT passes vacuously against a build that never emits it.
+ *     "raising the allowance PAST ITS CEILING" opens with a positive control, because an
+ *     assertion that a code is ABSENT passes vacuously against a build that never emits it.
+ *
+ * (D) WHAT THE GUARD DOES NOT SEE, added 2026-09-05 after a SECOND review. (C) closed the case
+ *     where a number leaves its ceiling; it did not close the case where a number moves UP TO
+ *     its ceiling, nor the case where a required-lane job arrives with no cap at all. These are
+ *     DISCLOSURE tests: they assert the guard PASSES those diffs, and that the figures quoted in
+ *     the library, the manifest, the GO-BOOK and the finding register are the figures the
+ *     shipped manifest implies. Every test here that asserts the guard PASSES something opens
+ *     with a positive control first, because asserting `ok: true` proves nothing unless the same
+ *     harness can produce a red for the same inputs. If someone later builds the
+ *     diff-aware instrument that closes either hole, these go RED and the prose is corrected
+ *     with them.
  */
 
 import { test } from "node:test";
@@ -497,4 +508,37 @@ test("★ (D) the withdrawal is written where the register can be read from", ()
 
   const goBook = fs.readFileSync(path.join(repoRoot, "docs", "replatform", "GO-BOOK.md"), "utf8");
   assert.match(goBook, /142 min → 187 min/);
+});
+
+test("★ (D) a required-lane job with NO cap is not budgeted, not exempt, and not reported", () => {
+  // The coverage clause reads `if (job.timeoutMinutes === null) continue`. So the one shape it
+  // was written for — a new required-lane job arriving with a number nobody justified — is
+  // missed when the job arrives with NO number at all and inherits GitHub's 360-minute default.
+  // Disclosure, not a clause: this asserts the miss so the prose describing it cannot go stale.
+  const uncapped = parseWorkflowJobs(workflowText).map((j) =>
+    j.id === "brand-check" ? { ...j, timeoutMinutes: null } : j,
+  );
+
+  // POSITIVE CONTROL. With its cap present, deleting the exemption MUST red — otherwise this
+  // test would be asserting the absence of a code the harness cannot produce for these inputs.
+  const m = clone(manifest);
+  delete m.exempt["brand-check"];
+  const capped = evaluateCiTimeoutBudgets({ jobs: parseWorkflowJobs(workflowText), manifest: m });
+  const control = capped.findings.find((f) => f.code === "required_lane_unbudgeted");
+  assert.ok(control, "control: an unbudgeted required-lane job WITH a cap must red");
+  assert.equal(control.job, "brand-check");
+
+  // Remove the cap as well, and the finding disappears rather than getting worse.
+  const result = evaluateCiTimeoutBudgets({ jobs: uncapped, manifest: m });
+  assert.equal(result.ok, true, "the miss is real: " + JSON.stringify(result.findings));
+
+  // The shipped tree has no such job — this is a hole in the guard, not a defect in the tree.
+  const required = parseWorkflowJobs(workflowText).find((j) => j.id === "ci-required");
+  for (const id of required.needs) {
+    const job = parseWorkflowJobs(workflowText).find((j) => j.id === id);
+    if (job) assert.notEqual(job.timeoutMinutes, null, `${id} must carry a cap`);
+  }
+
+  const lib = fs.readFileSync(path.join(repoRoot, "scripts", "lib", "ci-timeout-budgets.mjs"), "utf8");
+  assert.match(lib, /A REQUIRED-LANE JOB WITH NO CAP AT ALL IS NOT REPORTED/);
 });

@@ -718,13 +718,13 @@ was one job running the whole vitest suite in a single lane (~56 min at `maxFork
 plan + evidence: `docs/replatform/CI-VERIFY-PARALLELIZATION.md`.
 
 > ★ **Correction 2026-09-04 (TRACK A, commit `c74bb23ea`): the per-shard cap is now 37, and every
-> required-lane cap in `pr.yml` is DERIVED rather than chosen.** Leaving 60 in place was the right
+> required-lane cap that carries a pnpm fetch is DERIVED from the manifest rather than chosen.** Leaving 60 in place was the right
 > call in August — a cap must not be raised to chase green — but it was never re-derived after
 > sharding, and a cap far above anything a healthy run can reach has stopped being a check: measured
 > across 52 shard runs, a shard's WORK is 703/902/1092 s, so 60 carried ~42 minutes of undeclared
 > slack, the same shape as the hang it once masked. Each job cap is now
 > `ceil((workBudgetSeconds + setupAllowanceSeconds) / 60)` from `.github/ci-timeout-budgets.json`,
-> where `workBudgetSeconds` bounds what this repo does and `setupAllowanceSeconds` (480 s) bounds a
+> where `workBudgetSeconds` is a DECLARED allowance for what this repo does and `setupAllowanceSeconds` (480 s) a DECLARED allowance for a
 > third-party fetch it does not control — the `Setup pnpm` step, measured at 4 s p50 and 431 s worst,
 > which now carries its own step-level cap so a slow registry fails under its own name.
 > `scripts/check-ci-timeout-budgets.mjs` (in `policy`) refuses a cap edited on its own, a work budget
@@ -757,6 +757,15 @@ plan + evidence: `docs/replatform/CI-VERIFY-PARALLELIZATION.md`.
 > to its previous value cannot live in this guard — it is pure over one commit's `pr.yml` plus the
 > manifest and cannot see the prior revision of either; it would be a separate diff-aware instrument.
 > Not built, not claimed. The residue is pinned by a test so it cannot drift silently.
+>
+> ★ **A second miss, found in the same pass: a required-lane job with no `timeout-minutes` at all
+> is skipped by the coverage clause entirely** — neither budgeted, nor exempt, nor flagged, and it
+> inherits GitHub's **360-minute** default, while every job cap in `pr.yml` sums to **159 minutes**.
+> MEASURED: deleting `brand-check`'s cap *and* its
+> exemption together yields `ok: true` with zero findings. That is the exact shape the clause was
+> written for, missed when the number is absent rather than wrong. All eleven required-lane jobs
+> currently carry a cap, so it is a hole in the guard, not a defect in the tree. Both misses are in
+> `scripts/finding-ownership.json` under E3-F036 items (4) and (5).
 >
 > ★ **And one claim is WITHDRAWN rather than fixed. "The job cap bounds only the work" was never
 > true.** GitHub's `timeout-minutes` covers every step, so the allowance is additive and

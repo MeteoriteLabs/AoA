@@ -44,8 +44,9 @@
 //     `setup_step_cap_mismatch`
 //   `setup_step_uncapped`             a `Setup pnpm` step with no timeout-minutes
 //   `job_missing_budget`              a job running pnpm/action-setup with no manifest entry
-//   `required_lane_unbudgeted` /      a required-lane job that is neither budgeted nor
-//     `exempt_without_reason`         exempt with a reason of at least 20 characters
+//   `required_lane_unbudgeted` /      a required-lane job THAT CARRIES A CAP and is neither
+//     `exempt_without_reason`         budgeted nor exempt with a reason of >= 20 characters
+//                                     (a required-lane job with NO cap is skipped — see (d))
 //
 // ★ WHAT THIS DOES NOT DO — stated here because the first version of this file claimed it did,
 // and the claim was refuted on review (2026-09-05).
@@ -56,9 +57,9 @@
 //     against cap-minus-p50-setup — ALL EIGHT, so the list cannot be read as a selection:
 //     `lint` 9.8×, `distributed-contract` 9.3×, `policy` 7.5×, `migrations` 7.4×,
 //     `browser` 6.8×, `e2e-pgvector` 2.8×, `verify` 2.0×, `e2e` 1.9×. That is the SAME SHAPE the
-//     paragraph above indicts a combined cap for; the split shrank the magnitudes (the caps
-//     went down) and made the infrastructure half fail under its own name, but it did not
-//     change the shape. Bounding realized work independently of setup would need a runtime
+//     paragraph above indicts a combined cap for; the split shrank the magnitudes (seven of the
+//     eight caps went down, `e2e` went up) and made the infrastructure half fail under its own
+//     name, but it did not change the shape. Bounding realized work independently of setup would need a runtime
 //     comparison of the work duration against `workBudgetSeconds`. Nothing here does that, and
 //     no clause below asserts it.
 //
@@ -93,7 +94,19 @@
 //     prior revision of either. It would be a different instrument (a diff-aware check).
 //     Not built here, and not claimed.
 //
-// (d) What the split DOES buy, and this is the whole of it: (1) the infrastructure half fails
+// (d) A REQUIRED-LANE JOB WITH NO CAP AT ALL IS NOT REPORTED. The coverage clause skips a job
+//     whose `timeout-minutes` is absent (`if (job.timeoutMinutes === null) continue`), so such a
+//     job is neither budgeted, nor exempt, nor flagged — it silently inherits GitHub's
+//     360-minute default. Every job cap in this workflow SUMS to 159 minutes, so one uncapped
+//     required job may outlast the entire declared workflow by more than 2x.
+//     MEASURED 2026-09-05: deleting `brand-check`'s `timeout-minutes` AND its exemption
+//     together yields `{ok: true, findings: []}`. The shipped tree has no such job (all eleven
+//     required-lane jobs carry a cap), so this is a hole in the guard, not a defect in the tree
+//     — but a new job arriving without a cap is exactly the shape of "instance ten" this guard
+//     was written for, and that shape is the one it misses. Pinned by a test in section (D).
+//     A job that runs `pnpm/action-setup` is still caught by `job_missing_budget` regardless.
+//
+// (e) What the split DOES buy, and this is the whole of it: (1) the infrastructure half fails
 //     by name at its own step cap instead of consuming an unrelated step's budget and being
 //     misattributed, and (2) two numbers each compared against a dated measurement declared
 //     beside them, in place of one number compared against nothing.
@@ -101,8 +114,8 @@
 // Pure. The caller supplies the parsed workflow and the manifest.
 
 /** A work budget may exceed the DECLARED measured maximum by at most this factor. Two is
- * deliberately generous — the point is not to squeeze, it is that an UNBOUNDED number becomes
- * a bounded one. `verify` sat at 60 minutes against a measured 18-minute worst work, and that
+ * deliberately generous — the point is not to squeeze, it is that a number with no upper check
+ * acquires one. `verify` sat at 60 minutes against a measured 18-minute worst work, and that
  * 42 minutes of undeclared slack once masked a real hang for weeks.
  *
  * ★ Read with (c) above: because the comparison is to the declared measurement and not to the
@@ -252,7 +265,7 @@ export function evaluateCiTimeoutBudgets({ jobs, manifest, requiredJobId = "ci-r
   //
   // `setupAllowanceSeconds` is one number, uniform across every budgeted job, and it is added
   // to every derived cap. Until 2026-09-05 it was validated only as "a positive finite number",
-  // so it was the escape hatch the work-budget ceiling closed on the other dial: edit it, edit
+  // so until then it had no ceiling on the dial the work budget did have one on: edit it, edit
   // the two caps it derives, and the guard printed OK. It is declared ONCE here — the
   // measurement is workflow-wide (the worst `Setup pnpm` observed in ANY job in the window), so
   // a per-job copy of it would be a per-job claim the evidence does not support.
@@ -262,8 +275,8 @@ export function evaluateCiTimeoutBudgets({ jobs, manifest, requiredJobId = "ci-r
     add(
       "setup_measurement_incomplete",
       null,
-      "manifest has no `setupAllowance` block; `setupAllowanceSeconds` would then be bounded " +
-        "by nothing, which is the hole this clause exists to close",
+      "manifest has no `setupAllowance` block; `setupAllowanceSeconds` would then be compared " +
+        "against nothing at all, which is the state this clause was added to refuse",
     );
   } else {
     const problems = [];
@@ -463,8 +476,13 @@ export function evaluateCiTimeoutBudgets({ jobs, manifest, requiredJobId = "ci-r
     }
   }
 
-  // CLOSURE — the required lane is closed: every job the aggregator consumes is budgeted, or
-  // exempt WITH A REASON. This is the clause that catches instance ten, whatever step carries it.
+  // COVERAGE OF THE REQUIRED LANE — every job the aggregator consumes that CARRIES A CAP must be
+  // budgeted, or exempt WITH A REASON. This is the clause that catches instance ten, whatever step
+  // carries it.
+  //
+  // ★ Note the qualifier, and see (e) in the header: a required-lane job with NO `timeout-minutes`
+  // at all is skipped by the `continue` below, so it is neither budgeted nor exempt nor reported.
+  // It inherits GitHub's 360-minute default, which is the largest un-derived cap in the lane.
   const required = byId.get(requiredJobId);
   if (!required) {
     add("required_job_missing", requiredJobId, "aggregator job not found in the workflow");
