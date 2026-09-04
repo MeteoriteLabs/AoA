@@ -2751,6 +2751,359 @@ function validateFixtureSourceParity(rel, fixture, parity, errors) {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// BRW-004 slice (b) — E8-F001: the fixture<->code APPROVAL-AUTHORITY disagreement,
+// made visible, with a second verdict instead of a permanently-red gate.
+//
+// THE DEFECT (E8-F001). For a `browser_request` source the frozen golden-journey
+// fixture `browser-approval-download.json` declares
+// `control.productApproval: "requested_granted"`, while shipped JOB-011 code
+// (`describeSourceGovernance`) says `productApprovalAuthority: "none"` and routes a
+// browser approval through a runtime PERMISSION decision instead. The two browser
+// fixtures do not even agree with each other. `validateFixtureSourceParity` above
+// reads requester, executor and `source` fields and NEVER reads the `control` block,
+// so nothing in the repository can see the disagreement -- and BRW-003's terrain
+// already propagated the fixture's (wrong) side into advice written for BRW-004.
+//
+// WHY THIS IS TWO VERDICTS AND NOT ONE RED GATE. The fixtures' own README keeps v1
+// present even after a v2 directory exists, so the contradictory input never
+// disappears on its own. A required `policy`-lane check that can never go green is not
+// a strict guard; it is a guard that gets deleted, and meanwhile it trains everyone to
+// ignore the lane. CLI-008 Unit A resolved exactly this shape once already: the fix was
+// a SECOND verdict computed beside `ok`, never a permanently-red `ok`. So:
+//
+//   1. the production gate (`errors`) binds both `control` fields to the SHIPPED
+//      profile for every fixture EXCEPT those on a pinned historical-divergence list;
+//   2. the DIVERGENCE CENSUS is always printed, names every pin and its finding id,
+//      and fails nothing.
+//
+// WHY THE PIN IS A VALUE TUPLE AND NOT A FILENAME. A filename pin is a blanket
+// exemption for that file forever. The tuple records
+// `(fixture, productApproval, runtimeDecision, sourceKind, both authorities)`, so:
+//   * a NEW fixture carrying the same contradiction is RED (it is not pinned);
+//   * CHANGING the pinned fixture's `control` block is RED (the values no longer
+//     match) -- which is also how the README's "no in-place repurposing" rule becomes
+//     mechanically enforced;
+//   * a pin that matches NOTHING is RED, because a stale exemption that stopped
+//     meaning anything is the same failure as no check at all;
+//   * a v2 directory with `control` corrected goes GREEN and the pin is deleted with
+//     v1's retirement.
+//
+// A CORRECTION TO THE DESIGN, made while implementing it. Design section 3 slice (b)
+// says to bind BOTH `control.productApproval` AND `control.runtimeDecision` to the
+// shipped profile. That is right for `productApproval` and WRONG as stated for
+// `runtimeDecision`, and taking it literally would have red-lit three innocent
+// fixtures on the first run:
+//
+//   * `control.productApproval` is a 3-value enum -- none | requested_granted |
+//     requested_denied -- and every non-`none` value asserts one thing: a product
+//     approval existed on this journey. That maps cleanly onto
+//     `productApprovalAuthority`, and E8-F001 lives exactly there.
+//   * `control.runtimeDecision` is a 7-value SCENARIO enum spanning several unrelated
+//     mechanisms. `describeSourceGovernance`'s `RuntimeDecisionAuthority` union has
+//     only four members (`ask_human_work_question`, `permission_download_egress`,
+//     `budget_stop`, `none`), and FOUR of the seven scenario values name mechanisms it
+//     does not model at all. Binding them to it is a category error, not a check:
+//     `plaintext-secret-in-argv-rejected` (one_shot, authority `none`, control
+//     `plaintext_secret_rejected`), `service-provider-pause-resume` and
+//     `service-restart-checkpoint` would all have failed on a contract they never
+//     claimed to satisfy.
+//
+// So the runtime-decision arm binds ONLY the two values that unambiguously name a
+// modelled authority, and the other four are declared `unmodelled` WITH A WRITTEN
+// REASON and printed in the census. Naming an omission is the `unowned`-with-reason
+// deferral pattern; leaving it silent would be the blanket exemption this whole slice
+// exists to avoid.
+//
+// AND THE MAPS ARE EXHAUSTIVE OVER THE SCHEMA. Every value in the fixture schema's
+// `control.productApproval` / `control.runtimeDecision` enums must have an entry here.
+// A new schema value with no entry is an ERROR, not a pass -- otherwise the map decays
+// into precisely the blanket exemption the value-tuple pin was designed to prevent.
+
+const JOB_APPROVAL_BRIDGE_TS = "server/src/services/job-approval-bridge.ts";
+const GOVERNANCE_FN = "describeSourceGovernance";
+
+/**
+ * What a `control.productApproval` value ASSERTS about the source's governance.
+ * `requiresProductAuthority: true` means "this journey shows a product approval, so
+ * the shipped profile must grant this source a real product-approval authority".
+ * Exhaustive over the schema enum; see the header.
+ */
+const PRODUCT_APPROVAL_ASSERTIONS = {
+  none: { requiresProductAuthority: false },
+  requested_granted: { requiresProductAuthority: true },
+  requested_denied: { requiresProductAuthority: true },
+};
+
+/**
+ * What a `control.runtimeDecision` value asserts. `authority` names the
+ * `RuntimeDecisionAuthority` the shipped profile must carry; `unmodelled` records --
+ * in writing -- that `describeSourceGovernance` has no authority for this mechanism,
+ * so nothing can be bound and the census reports it. Exhaustive over the schema enum.
+ */
+const RUNTIME_DECISION_ASSERTIONS = {
+  none: { authority: null },
+  egress_denied: { authority: "permission_download_egress" },
+  budget_stop: { authority: "budget_stop" },
+  provider_pause_resume: {
+    unmodelled:
+      "provider pause/resume is a placement/lease mechanism; RuntimeDecisionAuthority has no member for it",
+  },
+  checkpoint_restore: {
+    unmodelled:
+      "checkpoint restore is a service-lifecycle mechanism; RuntimeDecisionAuthority has no member for it",
+  },
+  late_output_quarantine: {
+    unmodelled:
+      "quarantine is an artifact-admission mechanism (E4), not a runtime decision the bridge mints",
+  },
+  plaintext_secret_rejected: {
+    unmodelled:
+      "producer-safety rejection happens before any aggregate is minted; RuntimeDecisionAuthority has no member for it",
+  },
+};
+
+/** The authorities that mean "this source mints NO product approval". */
+const ABSENT_PRODUCT_AUTHORITIES = new Set(["none", "not_applicable"]);
+
+/**
+ * The pinned historical divergences, by VALUE TUPLE. Each entry must carry the finding
+ * that tracks it and the disposition that closes it. Adding an entry here is a
+ * deliberate, reviewable act; it is NOT a way to silence a new contradiction.
+ */
+const PINNED_CONTROL_DIVERGENCES = [
+  {
+    fixture: "browser-approval-download.json",
+    sourceKind: "browser_request",
+    productApproval: "requested_granted",
+    runtimeDecision: "none",
+    expectedProductApprovalAuthority: "none",
+    expectedRuntimeDecisionAuthority: "permission_download_egress",
+    finding: "E8-F001",
+    disposition:
+      "The fixture declares a PRODUCT approval for a source whose shipped authority is a runtime PERMISSION decision. " +
+      "Resolved properly only by a v2 fixture directory with a corrected control block (the fixtures' README forbids " +
+      "editing v1 in place), which is a fixture-owner / Protocol Custodian decision -- BRW-004 design section 7 Q5. " +
+      "Must NOT be closed by deleting this pin or by weakening the gate.",
+  },
+];
+
+/** Parse the SHIPPED per-source governance profiles out of `describeSourceGovernance`. */
+function parseSourceGovernanceProfiles(src, errors) {
+  const body = extractFunctionBody(src, GOVERNANCE_FN);
+  if (body == null) {
+    // A check that cannot find its authority and passes anyway is a check that nothing
+    // runs. This is an ERROR, never a skip.
+    errors.push(
+      `${JOB_APPROVAL_BRIDGE_TS}: cannot locate the ${GOVERNANCE_FN} function body -- the fixture control-block parity check has no authority to bind to`,
+    );
+    return null;
+  }
+  const b = stripComments(body);
+  const marks = [];
+  const caseRe = /case\s+"([a-z_]+)"\s*:/g;
+  let m;
+  while ((m = caseRe.exec(b)) !== null) {
+    marks.push({ kind: m[1], at: m.index, end: caseRe.lastIndex });
+  }
+
+  const profiles = new Map();
+  for (let i = 0; i < marks.length; i += 1) {
+    const seg = b.slice(marks[i].end, i + 1 < marks.length ? marks[i + 1].at : b.length);
+    const pa = /productApprovalAuthority\s*:\s*"([a-z_]+)"/.exec(seg);
+    const ra = /runtimeDecisionAuthority\s*:\s*"([a-z_]+)"/.exec(seg);
+    if (!pa || !ra) {
+      errors.push(
+        `${JOB_APPROVAL_BRIDGE_TS}: ${GOVERNANCE_FN} case "${marks[i].kind}" does not declare both productApprovalAuthority and runtimeDecisionAuthority`,
+      );
+      continue;
+    }
+    profiles.set(marks[i].kind, {
+      productApprovalAuthority: pa[1],
+      runtimeDecisionAuthority: ra[1],
+    });
+  }
+  for (const kind of SOURCE_KINDS) {
+    if (!profiles.has(kind)) {
+      errors.push(
+        `${JOB_APPROVAL_BRIDGE_TS}: ${GOVERNANCE_FN} declares no profile for source kind "${kind}"`,
+      );
+    }
+  }
+  return profiles;
+}
+
+/** Assert the interpretation maps cover every value the fixture schema admits. */
+function validateControlAssertionCoverage(schema, errors) {
+  const control = schema && schema.$defs && schema.$defs.Control;
+  const props = control && control.properties;
+  if (!isPlainObject(props)) {
+    errors.push(
+      `${GJ_DIR}/schema-v1.json: cannot read $defs.Control.properties -- the control-block parity check cannot prove its maps are exhaustive`,
+    );
+    return;
+  }
+  const pairs = [
+    ["productApproval", PRODUCT_APPROVAL_ASSERTIONS],
+    ["runtimeDecision", RUNTIME_DECISION_ASSERTIONS],
+  ];
+  for (const [field, map] of pairs) {
+    const values = props[field] && props[field].enum;
+    if (!Array.isArray(values) || values.length === 0) {
+      errors.push(`${GJ_DIR}/schema-v1.json: $defs.Control.properties.${field} declares no enum`);
+      continue;
+    }
+    for (const v of values) {
+      if (!Object.prototype.hasOwnProperty.call(map, v)) {
+        errors.push(
+          `${GJ_DIR}/schema-v1.json: control.${field} value ${JSON.stringify(v)} has no entry in the source-governance interpretation map (scripts/check-distributed-execution-foundation.mjs) -- an unmapped value would pass unchecked`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Bind every fixture's `control` block to the SHIPPED source-governance profile.
+ *
+ * Returns the divergence census: the always-printed second verdict. Errors are pushed
+ * into `errors` and fail the gate; the census fails nothing.
+ */
+async function validateFixtureControlAuthorityParity(root, errors) {
+  const census = { pinned: [], unmodelled: [], authorityUnavailable: false };
+
+  const bridgeSrc = await readOrError(root, JOB_APPROVAL_BRIDGE_TS, errors);
+  if (bridgeSrc == null) {
+    census.authorityUnavailable = true;
+    return census;
+  }
+  const profiles = parseSourceGovernanceProfiles(bridgeSrc, errors);
+  if (profiles == null) {
+    census.authorityUnavailable = true;
+    return census;
+  }
+
+  let schema = null;
+  const schemaRaw = await readOrError(root, `${GJ_DIR}/schema-v1.json`, errors);
+  if (schemaRaw != null) {
+    try {
+      schema = parseJsonStrict(schemaRaw);
+    } catch {
+      schema = null;
+    }
+  }
+  if (schema != null) validateControlAssertionCoverage(schema, errors);
+
+  // A pin that matches nothing is a blanket exemption that stopped meaning anything.
+  const pinsMatched = new Set();
+
+  for (const name of GJ_FIXTURES) {
+    const rel = `${GJ_DIR}/${name}`;
+    const raw = await readOrError(root, rel, errors);
+    if (raw == null) continue;
+    let fixture;
+    try {
+      fixture = parseJsonStrict(raw);
+    } catch {
+      continue; // already reported by the fixture pass
+    }
+    const kind = isPlainObject(fixture.source) ? fixture.source.kind : undefined;
+    const control = fixture.control;
+    if (typeof kind !== "string" || !isPlainObject(control)) continue;
+    const profile = profiles.get(kind);
+    if (!profile) continue; // unknown kind already flagged by the schema enum
+
+    const pa = control.productApproval;
+    const rd = control.runtimeDecision;
+
+    const pin = PINNED_CONTROL_DIVERGENCES.find(
+      (p) =>
+        p.fixture === name &&
+        p.sourceKind === kind &&
+        p.productApproval === pa &&
+        p.runtimeDecision === rd &&
+        p.expectedProductApprovalAuthority === profile.productApprovalAuthority &&
+        p.expectedRuntimeDecisionAuthority === profile.runtimeDecisionAuthority,
+    );
+    if (pin) {
+      pinsMatched.add(pin);
+      census.pinned.push({
+        fixture: name,
+        sourceKind: kind,
+        productApproval: pa,
+        runtimeDecision: rd,
+        finding: pin.finding,
+        disposition: pin.disposition,
+      });
+      continue;
+    }
+
+    // (1) product-approval arm.
+    const paAssertion = PRODUCT_APPROVAL_ASSERTIONS[pa];
+    if (paAssertion === undefined) {
+      errors.push(`${rel}: control.productApproval ${JSON.stringify(pa)} has no governance interpretation`);
+    } else if (
+      paAssertion.requiresProductAuthority &&
+      ABSENT_PRODUCT_AUTHORITIES.has(profile.productApprovalAuthority)
+    ) {
+      errors.push(
+        `${rel}: control.productApproval ${JSON.stringify(pa)} asserts a product approval, but the shipped ${GOVERNANCE_FN} profile for source kind "${kind}" declares productApprovalAuthority ${JSON.stringify(profile.productApprovalAuthority)} -- the fixture depicts an authority the code does not implement`,
+      );
+    }
+
+    // (2) runtime-decision arm, bound only where the value names a MODELLED authority.
+    const rdAssertion = RUNTIME_DECISION_ASSERTIONS[rd];
+    if (rdAssertion === undefined) {
+      errors.push(`${rel}: control.runtimeDecision ${JSON.stringify(rd)} has no governance interpretation`);
+    } else if (typeof rdAssertion.unmodelled === "string") {
+      census.unmodelled.push({ fixture: name, value: rd, reason: rdAssertion.unmodelled });
+    } else if (
+      rdAssertion.authority !== null &&
+      rdAssertion.authority !== profile.runtimeDecisionAuthority
+    ) {
+      errors.push(
+        `${rel}: control.runtimeDecision ${JSON.stringify(rd)} asserts runtime-decision authority ${JSON.stringify(rdAssertion.authority)}, but the shipped ${GOVERNANCE_FN} profile for source kind "${kind}" declares ${JSON.stringify(profile.runtimeDecisionAuthority)}`,
+      );
+    }
+  }
+
+  for (const pin of PINNED_CONTROL_DIVERGENCES) {
+    if (!pinsMatched.has(pin)) {
+      errors.push(
+        `scripts/check-distributed-execution-foundation.mjs: pinned control divergence for ${pin.fixture} (${pin.finding}) matched NO fixture -- a stale pin is a blanket exemption; delete it, or correct it to the values it is meant to record`,
+      );
+    }
+  }
+
+  return census;
+}
+
+/** Render the always-printed second verdict. Never fails the gate. */
+export function formatDivergenceCensus(census) {
+  const lines = ["fixture control-block divergence census (reports; never fails):"];
+  if (!census || census.authorityUnavailable) {
+    lines.push(
+      "  AUTHORITY UNAVAILABLE -- the shipped governance profiles could not be read; the census is empty and the gate has already reported why.",
+    );
+    return lines.join("\n");
+  }
+  if (census.pinned.length === 0) {
+    lines.push("  pinned divergences: none");
+  } else {
+    for (const d of census.pinned) {
+      lines.push(
+        `  PINNED ${d.finding}: ${d.fixture} (source ${d.sourceKind}) productApproval=${d.productApproval} runtimeDecision=${d.runtimeDecision}`,
+      );
+      lines.push(`    ${d.disposition}`);
+    }
+  }
+  for (const u of census.unmodelled) {
+    lines.push(`  UNMODELLED ${u.fixture}: control.runtimeDecision=${u.value} -- ${u.reason}`);
+  }
+  return lines.join("\n");
+}
+
 export async function runCheck(root) {
   const errors = [];
 
@@ -2893,7 +3246,12 @@ export async function runCheck(root) {
     }
   }
 
-  return { errors };
+  // BRW-004 slice (b) — the fixture control-block authority binding. Runs LAST so its
+  // census can be reported even when earlier layers produced errors. The census is a
+  // SECOND verdict computed BESIDE the gate, never folded into it (CLI-008 Unit A).
+  const divergenceCensus = await validateFixtureControlAuthorityParity(root, errors);
+
+  return { errors, divergenceCensus };
 }
 
 function resolveRoot(argv) {
@@ -2906,7 +3264,11 @@ function resolveRoot(argv) {
 
 async function main() {
   const root = resolveRoot(process.argv.slice(2));
-  const { errors } = await runCheck(root);
+  const { errors, divergenceCensus } = await runCheck(root);
+  // ALWAYS printed, pass or fail: a divergence that is NAMED AND TRACKED, not one that
+  // reds CI forever. It fails nothing by construction — that is the whole point of it
+  // being a second verdict rather than a clause folded into the gate.
+  console.log(formatDivergenceCensus(divergenceCensus));
   if (errors.length > 0) {
     console.error(errors.join("\n"));
     process.exit(1);

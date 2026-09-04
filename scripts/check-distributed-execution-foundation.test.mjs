@@ -27,6 +27,7 @@ import {
   computeEventDigest,
   parseJsonStrict,
   checkEvidenceImmutability,
+  formatDivergenceCensus,
 } from "./check-distributed-execution-foundation.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -63,6 +64,11 @@ const REL = {
   // and the deferral manifest is the tracked-debt source for the release-test gate.
   relTicketsDir: "docs/replatform/epics/E11-hardening-release/tickets",
   releaseTests: "docs/architecture/distributed-execution-release-tests.json",
+  // BRW-004 slice (b): the SHIPPED source-governance authority the fixture
+  // control-block parity check binds to. It must be copied into the fixture root
+  // or the check reports "missing" and the unmutated baseline breaks — which is
+  // the check working, not a reason to make it fail open.
+  jobApprovalBridge: "server/src/services/job-approval-bridge.ts",
 };
 
 function makeFixture(t, mutate) {
@@ -109,6 +115,8 @@ function makeFixture(t, mutate) {
     // REL-FOUNDATION-GATE
     relTicketsDir: path.join(root, REL.relTicketsDir),
     releaseTestsPath: path.join(root, REL.releaseTests),
+    // BRW-004 slice (b)
+    jobApprovalBridgePath: path.join(root, REL.jobApprovalBridge),
   };
   fs.copyFileSync(path.join(repoRoot, REL.json), files.jsonPath);
   fs.copyFileSync(path.join(repoRoot, REL.md), files.mdPath);
@@ -156,6 +164,11 @@ function makeFixture(t, mutate) {
     recursive: true,
   });
   fs.copyFileSync(path.join(repoRoot, REL.releaseTests), files.releaseTestsPath);
+  // BRW-004 slice (b): the shipped describeSourceGovernance authority. Copied for the
+  // same reason as the release-test inputs above — the check must resolve it against
+  // the FIXTURE root, not the real tree, or a mutation to the authority would be
+  // silently ignored and the "authority mutated" cases below could not turn red.
+  fs.copyFileSync(path.join(repoRoot, REL.jobApprovalBridge), files.jobApprovalBridgePath);
   if (mutate) mutate(files);
   return root;
 }
@@ -1984,4 +1997,137 @@ test("decisions: Decision #121 loses the current-main crosswalk back-reference",
     hasError(errors, `missing reference to "current-main-crosswalk.md"`),
     report(errors),
   );
+});
+
+// ---------------------------------------------------------------------------
+// BRW-004 slice (b) — E8-F001: the fixture control-block ↔ shipped-authority binding.
+//
+// These are the POSITIVE CONTROLS the design makes mandatory. Without them, "green
+// because the divergence is pinned" and "green because the check reads nothing" are
+// indistinguishable — which is the exact failure mode this slice exists inside.
+
+test("valid: the pinned E8-F001 divergence is reported in the census and fails nothing", async (t) => {
+  const root = makeFixture(t);
+  const { errors, divergenceCensus } = await runCheck(root);
+  assert.deepEqual(errors, [], report(errors));
+  const rendered = formatDivergenceCensus(divergenceCensus);
+  assert.ok(rendered.includes("E8-F001"), rendered);
+  assert.ok(rendered.includes("browser-approval-download.json"), rendered);
+  // The census must be a SECOND verdict, not a clause folded into the gate.
+  assert.equal(divergenceCensus.pinned.length, 1);
+});
+
+test("control parity: a DIFFERENT fixture carrying the same contradiction is RED (the pin is not a blanket exemption)", async (t) => {
+  // batch-success is a task_run, whose shipped productApprovalAuthority is "none".
+  // Declaring a product approval on it is the same contradiction E8-F001 records, on a
+  // fixture that is NOT pinned. If this stays green, the check is reading nothing.
+  const root = makeFixture(t, ({ fixturePath }) => {
+    const p = fixturePath("batch-success.json");
+    const fx = readJson(p);
+    fx.control.productApproval = "requested_granted";
+    writeJson(p, fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "batch-success.json: control.productApproval \"requested_granted\" asserts a product approval"),
+    report(errors),
+  );
+});
+
+test("control parity: MUTATING the pinned fixture's control block is RED (the pin is a VALUE tuple, not a filename)", async (t) => {
+  // This is what mechanically enforces the fixtures README's "no in-place repurposing"
+  // rule: the pin records the exact values, so editing them stops matching it.
+  const root = makeFixture(t, ({ fixturePath }) => {
+    const p = fixturePath("browser-approval-download.json");
+    const fx = readJson(p);
+    fx.control.productApproval = "requested_denied";
+    writeJson(p, fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "browser-approval-download.json: control.productApproval \"requested_denied\" asserts a product approval"),
+    report(errors),
+  );
+  assert.ok(
+    hasError(errors, "pinned control divergence for browser-approval-download.json (E8-F001) matched NO fixture"),
+    report(errors),
+  );
+});
+
+test("control parity: a runtimeDecision naming a MODELLED authority the source does not carry is RED", async (t) => {
+  // `egress_denied` asserts permission_download_egress. A task_run's shipped authority
+  // is ask_human_work_question, so this must fail — and it proves the runtime-decision
+  // arm is live and not merely present.
+  const root = makeFixture(t, ({ fixturePath }) => {
+    const p = fixturePath("batch-success.json");
+    const fx = readJson(p);
+    fx.control.runtimeDecision = "egress_denied";
+    writeJson(p, fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "batch-success.json: control.runtimeDecision \"egress_denied\" asserts runtime-decision authority"),
+    report(errors),
+  );
+});
+
+test("control parity: mutating the SHIPPED authority reds the fixture that agreed with it", async (t) => {
+  // The binding must be to the CODE, not to a copy of the code's answer. Flipping
+  // browser_request's runtime authority to `none` must red browser-denied-egress, which
+  // declares `egress_denied`. If this stays green the check is bound to nothing.
+  const root = makeFixture(t, ({ jobApprovalBridgePath }) => {
+    patchText(
+      jobApprovalBridgePath,
+      'runtimeDecisionAuthority: "permission_download_egress"',
+      'runtimeDecisionAuthority: "budget_stop"',
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "browser-denied-egress.json: control.runtimeDecision \"egress_denied\" asserts runtime-decision authority"),
+    report(errors),
+  );
+  // ...and the pin, which records the expected authority as part of its tuple, stops matching.
+  assert.ok(
+    hasError(errors, "pinned control divergence for browser-approval-download.json (E8-F001) matched NO fixture"),
+    report(errors),
+  );
+});
+
+test("control parity: an UNPARSEABLE authority is an error, never a silent skip", async (t) => {
+  const root = makeFixture(t, ({ jobApprovalBridgePath }) => {
+    patchText(
+      jobApprovalBridgePath,
+      "export function describeSourceGovernance(",
+      "export function describeSourceGovernanceRenamedByMutation(",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "cannot locate the describeSourceGovernance function body"),
+    report(errors),
+  );
+});
+
+test("control parity: a schema enum value with NO interpretation entry is RED", async (t) => {
+  // Otherwise the interpretation map decays into the blanket exemption the value-tuple
+  // pin was designed to prevent: a new control value would simply pass unchecked.
+  const root = makeFixture(t, ({ schemaPath }) => {
+    const schema = readJson(schemaPath);
+    schema.$defs.Control.properties.runtimeDecision.enum.push("invented_by_mutation");
+    writeJson(schemaPath, schema);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'control.runtimeDecision value "invented_by_mutation" has no entry in the source-governance interpretation map'),
+    report(errors),
+  );
+});
+
+test("control parity: a missing authority file is an error, and the census says so rather than reporting a clean sheet", async (t) => {
+  const root = makeFixture(t, ({ jobApprovalBridgePath }) => fs.rmSync(jobApprovalBridgePath));
+  const { errors, divergenceCensus } = await runCheck(root);
+  assert.ok(hasError(errors, `${REL.jobApprovalBridge}: missing`), report(errors));
+  assert.equal(divergenceCensus.authorityUnavailable, true);
+  assert.ok(formatDivergenceCensus(divergenceCensus).includes("AUTHORITY UNAVAILABLE"));
 });
