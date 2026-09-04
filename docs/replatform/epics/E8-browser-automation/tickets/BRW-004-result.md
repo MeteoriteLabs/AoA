@@ -289,6 +289,30 @@ named artifact exists.
 | D8 | the bridge's duplicate identity implementation reintroduced | 1 | ✔ |
 | D9 | migration 0272's predicate weakened to `CHECK (true)` | 3 (real PG) | ✔ |
 | D10 | 0272's predicate weakened to the one-directional variant | 3 (real PG) | ✔ |
+| D11 | 0272's `DROP CONSTRAINT IF EXISTS` guard removed | 1 (`migration-readiness`, real PG) | ✔ |
+
+### ★★★ CI caught a real defect in migration 0272 that every local check had missed
+
+`verify (2)` went RED on `migration-readiness.integration.test.ts` — *"recovers to READY after the
+privileged migration job re-applies the pending tail idempotently"*. It is mine, and it is a real
+defect, not a flake.
+
+That test deletes the last row from `drizzle.__drizzle_migrations` and re-runs the privileged
+migration job. **0272 was the tail.** `ALTER COLUMN … DROP NOT NULL` is idempotent; **`ADD
+CONSTRAINT` is not** — Postgres raises 42710 `constraint … already exists`. So a re-apply failed and
+the app would never have recovered to READY.
+
+Everything local had passed: `ci-local` ×2, the CHECK's own five real-Postgres cases, the JOB-011
+parity suite with 0272 applied, and all four vitest shards — **because none of them re-applies the
+tail.** "Generated DDL" and "re-appliable DDL" are not the same property, and only the second is what
+the migration job requires. This is the same class as the ADD COLUMN trap this programme has already
+paid for once.
+
+Fixed with the C14 class-(a) guard — one hand-appended
+`ALTER TABLE … DROP CONSTRAINT IF EXISTS` line, the identical pattern and rationale as
+`0264_public_patch.sql`. **Reproduced locally before the fix** (the exact 42710 error), **and re-run
+green after** (9/9 across migration-readiness and the CHECK suite). The pre-fix failure is mutation
+D11's red.
 
 ### ★★★ One mutant SURVIVED, and the answer was that my fix was unnecessary
 
