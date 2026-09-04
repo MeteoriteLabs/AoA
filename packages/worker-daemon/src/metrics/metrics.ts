@@ -100,6 +100,20 @@ export const CLOSED_LABEL_VALUES: Readonly<Record<string, ReadonlySet<string>>> 
     // would be torn down and stranded non-terminal, which is the exact outcome the staging arms'
     // fail-closed handling exists to prevent.
     "stage_files",
+    // ★ DAT-009 slice 3 — `digest_artifact` and `export_artifact` are in EXACTLY the position
+    // `stage_files` was in, and are registered here for exactly the reason above. They are
+    // methods on the NON-FROZEN supervisor port (DAT-009 slice 1 grew the port and left the
+    // wire vocabulary alone — the same decision Unit B made), so they do not arrive with the
+    // eleven frozen ops and nothing adds them for you.
+    //
+    // Registered in the SLICE THAT ADDS THE METHODS TO `EffectAuthority`, not in the later
+    // slice that first calls `emitOp` with them. Two lines whose absence is a run stranded
+    // with NO TERMINAL on the happy path (E7-F010) are not a thing to leave for a later PR,
+    // and by then the omission is invisible: the throw happens inside the fail-closed arms,
+    // so the failure arm re-throws from its own emit and the escape lands in `accept()`'s
+    // last-resort catch, which emits nothing at all.
+    "digest_artifact",
+    "export_artifact",
   ]),
   outcome: new Set([
     // poll outcomes

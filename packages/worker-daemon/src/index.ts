@@ -147,6 +147,22 @@ export {
   readStagedInputPointers,
 } from "./lease/staged-input.js";
 export type { StagedInputPointer } from "./lease/staged-input.js";
+// DAT-009 slice 3 — the worker-side artifact EXPORT consumer (the upload mirror of the above).
+// `grantPutHeaders` is exported for the provider implementations that redeem the grant
+// (slice e); `sandbox-e2b-provider` already declares `worker-daemon` as a runtime dependency,
+// so the header knowledge has exactly one home rather than one per provider.
+export {
+  ArtifactExportFailedError,
+  createArtifactExportSequencer,
+  exportArtifactId,
+  grantPutHeaders,
+} from "./lease/artifact-export.js";
+export type {
+  ArtifactExportRequest,
+  ArtifactExportStage,
+  ExportedArtifactRef,
+  SandboxArtifactExporter,
+} from "./lease/artifact-export.js";
 
 export { createEnroller, EnrollmentError, mapErrorStatus, DEFAULT_SESSION_TTL_MS } from "./enrollment/enroll.js";
 export type {
