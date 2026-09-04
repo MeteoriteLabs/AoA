@@ -47,6 +47,29 @@ on:
       # It was not previously a trigger, so a change to it could alter the contents
       # of both shipped images without the image-building lane ever running.
       - ".dockerignore"
+      # E6-F012 — THE SAME LESSON, FOR THE MANIFESTS. The workspace manifests and the
+      # lockfile decide what each image INSTALLS (`--filter-prod "X..."` in the deps
+      # stage) and what each image BUILDS (`--filter "X..."`, which traverses
+      # devDependencies too). A single workspace devDependency added to `server`
+      # widened the build selection by five packages at `c3d26657d`, `tsc` died, and
+      # this lane went red for three merges.
+      #
+      # ★ AND THAT COMMIT COULD NOT FIRE THIS LANE. Until this entry existed, the list
+      # above contained NOTHING matching `package.json`, `pnpm-lock.yaml` or
+      # `pnpm-workspace.yaml` — so the exact commit class that re-widens the build
+      # selection could not trigger even the POST-merge consumer, let alone a PR-time
+      # one. It went red only because `c3d26657d` happened to touch `docker/**` too.
+      # `scripts/check-image-deps-stages.mjs` now detects the divergence statically on
+      # every PR; this makes the lane that actually BUILDS the images see it as well.
+      #
+      # Cost, stated rather than hidden: this fires the 45-minute lane on any manifest
+      # or lockfile edit, and `cancel-in-progress: false` means those queue. That is
+      # the deliberate trade — the alternative is the state above, where the one class
+      # of commit that breaks these builds is the one class the lane cannot observe.
+      - "package.json"
+      - "**/package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - "tests/d1/**"
       - "scripts/check-d1-compose.mjs"
       - "scripts/collect-d1-evidence.mjs"

@@ -16,6 +16,14 @@
  *   - a control-plane deps stage that COPYs an OUT-OF-CLOSURE manifest (cli)
  *     FAILS (least-privilege "no more");
  *   - a missing `deps` stage / missing Dockerfile is reported.
+ *
+ * E6-F012 added a SECOND, separately-reported question about the NEXT stage —
+ * whether the `build` stage absorbs the wider set `pnpm --filter "X..." build`
+ * selects (it traverses devDependencies; the deps stage's closure does not). Those
+ * cases are grouped at the bottom of this file. Two of them exist specifically to
+ * pin the rule as CONDITIONAL: an image with no divergence owes nothing, and one
+ * workspace devDependency is what flips the obligation on — with the deps-stage
+ * verdict provably unmoved, because the wrong fix is to widen `deps`.
  */
 
 import { test } from "node:test";
@@ -157,7 +165,15 @@ const ADAPTER_DEPS = [
   "COPY packages/sandbox-provider-contract/package.json packages/sandbox-provider-contract/",
 ];
 
-function dockerfile(depsCopies) {
+// E6-F012 — the DEFAULT build stage. `COPY . .` + a non-prod re-install is the
+// control-plane/adapter-manager shape: whatever the dev closure turns out to be, the
+// whole tree is present and the install covers it. Passing `null` omits the build
+// stage entirely (legal ONLY where the dev closure equals the prod closure); passing
+// an array models the worker's SELECTIVE shape, which copies named paths and must
+// therefore name every build-only package itself.
+const ABSORBING_BUILD = ["COPY . .", "RUN pnpm install --frozen-lockfile"];
+
+function dockerfile(depsCopies, buildLines = ABSORBING_BUILD) {
   return [
     "FROM node@sha256:" + "0".repeat(64) + " AS base",
     "FROM base AS deps",
@@ -166,6 +182,7 @@ function dockerfile(depsCopies) {
     ...depsCopies,
     "COPY patches/ patches/",
     'RUN pnpm install --frozen-lockfile',
+    ...(buildLines === null ? [] : ["FROM deps AS build", ...buildLines]),
     "FROM base AS production",
     'CMD ["node","x.js"]',
     "",
@@ -178,11 +195,15 @@ function setup(
     control = dockerfile(CONTROL_DEPS),
     worker = dockerfile(WORKER_DEPS),
     adapterManager = dockerfile(ADAPTER_DEPS),
+    // E6-F012: overlay manifests onto WORKSPACE, so a case can add the ONE workspace
+    // devDependency whose whole point is that it changes nothing the deps-stage pass
+    // can see.
+    manifests = {},
   } = {},
 ) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ideps-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  for (const [rel, obj] of Object.entries(WORKSPACE)) {
+  for (const [rel, obj] of Object.entries({ ...WORKSPACE, ...manifests })) {
     const abs = path.join(root, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, JSON.stringify(obj, null, 2));
@@ -360,4 +381,184 @@ test("COPY with a --chown flag is still parsed for its workspace source", (t) =>
   const root = setup(t, { control });
   const { errors } = runDepsStageCheck(root);
   assert.deepEqual(errors, [], errors.join(" | "));
+});
+
+// ===========================================================================
+// E6-F012 — the build-stage ABSORPTION clauses.
+//
+// The cases above all reason about the deps stage: what is INSTALLED. These
+// reason about the stage after it: `pnpm --filter "X..." build` traverses
+// devDependencies, so what is BUILT can be a strictly larger set, and nothing
+// used to say so. The rule is conditional — no divergence, no obligation — and
+// the first two cases here are what stops it becoming the unconditional
+// "copy the dev closure into deps" rule that would destroy least privilege.
+//
+// Fixture divergences (build closure minus runtime closure):
+//   control-plane {server, ui} .......... 0  (no workspace devDeps in reach)
+//   worker {daemon, networked-host} ..... 2  (shared via worker-daemon's devDep,
+//                                             sandbox-fake-provider via the contract's)
+//   adapter-manager ..................... 2  (the same two)
+// ===========================================================================
+
+const WORKER_SELECTIVE_BUILD = [
+  // The REAL worker build stage's shape: named copies, never `COPY . .` (a whole-tree
+  // copy would make every `dockerfile-static` exclusion grep vacuous). It must
+  // therefore name the build-only packages itself.
+  "COPY tsconfig.json ./",
+  "COPY packages/shared/package.json packages/shared/",
+  "COPY packages/sandbox-fake-provider/package.json packages/sandbox-fake-provider/",
+  "RUN pnpm install --frozen-lockfile",
+];
+
+test("E6-F012: no divergence ⇒ NO build-stage obligation (control-plane needs no re-install)", (t) => {
+  // The conditional, asserted directly. control-plane's fixture closure has no
+  // workspace devDependency in reach, so a Dockerfile with no build stage AT ALL is
+  // legal. If this ever reds, the guard has become the unconditional rule that would
+  // force the dev closure into the deps stage — the thing E6-F012 says not to do.
+  const root = setup(t, { control: dockerfile(CONTROL_DEPS, null) });
+  const { errors } = runDepsStageCheck(root);
+  assert.deepEqual(errors, [], errors.join(" | "));
+});
+
+test("E6-F012: ONE workspace devDependency flips the obligation on", (t) => {
+  // The exact commit class from `c3d26657d`, minimized: a single workspace DEVdependency
+  // added to an entry package. Nothing the deps-stage pass looks at changes — the prod
+  // closure, and therefore the required COPY set, is byte-identical — yet `pnpm --filter
+  // "@armyofagents/ui..." build` now selects `cli` too. Before this clause existed, this
+  // diff was invisible to every check in the repo.
+  const root = setup(t, {
+    control: dockerfile(CONTROL_DEPS, null),
+    manifests: {
+      "ui/package.json": {
+        name: "@armyofagents/ui",
+        dependencies: { "@armyofagents/shared": "workspace:*" },
+        devDependencies: { "@armyofagents/cli": "workspace:*" },
+      },
+    },
+  });
+  const { errors } = runDepsStageCheck(root);
+  assert.ok(
+    hasSubstr(
+      errors,
+      "control-plane: the build closure exceeds the runtime closure by 1 package(s) (@armyofagents/cli) but there is no 'FROM ... AS build' stage",
+    ),
+    errors.join(" | "),
+  );
+  // …and it must NOT have moved the deps-stage verdict. If it had, the fix would be
+  // "COPY cli into deps", which is precisely the least-privilege violation the older
+  // cases in this file exist to reject.
+  assert.equal(
+    errors.filter((e) => e.includes("deps stage")).length,
+    0,
+    "the deps-stage verdict must be untouched by a devDependency: " + errors.join(" | "),
+  );
+});
+
+test("E6-F012: a diverging image whose build stage has NO re-install FAILS", (t) => {
+  const root = setup(t, { worker: dockerfile(WORKER_DEPS, ["COPY . ."]) });
+  const { errors } = runDepsStageCheck(root);
+  assert.ok(hasSubstr(errors, "worker: the build closure exceeds the runtime closure by 2 package(s)"), errors.join(" | "));
+  assert.ok(hasSubstr(errors, "has NO re-install"), errors.join(" | "));
+});
+
+test("E6-F012: a build-stage re-install that is --filter-prod absorbs NOTHING and FAILS", (t) => {
+  // The trap both real Dockerfiles' comments warn about, from the other direction:
+  // `--filter-prod` in the BUILD stage re-selects the runtime closure, so the install
+  // runs, looks like the fix, and installs exactly the set that was already there.
+  const root = setup(t, {
+    worker: dockerfile(WORKER_DEPS, [
+      "COPY . .",
+      'RUN pnpm install --frozen-lockfile --filter-prod "@armyofagents/worker-networked-host..."',
+    ]),
+  });
+  const { errors } = runDepsStageCheck(root);
+  assert.ok(hasSubstr(errors, "worker: the 'build' stage re-installs, but every pnpm install there is --prod/--filter-prod"), errors.join(" | "));
+});
+
+test("E6-F012: --filter-prod on a CONTINUATION line is still seen", (t) => {
+  // `logicalLines` joins backslash continuations. Without that, the flag below sits on
+  // its own line, the RUN line reads as a bare `pnpm install`, and the case above passes
+  // while the image is in exactly the state it rejects.
+  const root = setup(t, {
+    worker: dockerfile(WORKER_DEPS, [
+      "COPY . .",
+      "RUN pnpm install --frozen-lockfile \\",
+      '  --filter-prod "@armyofagents/worker-networked-host..."',
+    ]),
+  });
+  const { errors } = runDepsStageCheck(root);
+  assert.ok(hasSubstr(errors, "worker: the 'build' stage re-installs, but every pnpm install there is --prod/--filter-prod"), errors.join(" | "));
+});
+
+test("E6-F012: a SELECTIVE build stage naming every build-only manifest passes clean", (t) => {
+  const root = setup(t, { worker: dockerfile(WORKER_DEPS, WORKER_SELECTIVE_BUILD) });
+  const { errors } = runDepsStageCheck(root);
+  assert.deepEqual(errors, [], errors.join(" | "));
+});
+
+test("E6-F012: a SELECTIVE build stage MISSING a build-only manifest FAILS", (t) => {
+  // The clause that makes this guard bite for the worker image specifically. The
+  // re-install is present and correct; it simply has nothing to resolve, because the
+  // package's directory never entered the stage. `pnpm install --frozen-lockfile` and
+  // then `tsc` both fail here — at build time, in a lane that is not a required check.
+  const trimmed = WORKER_SELECTIVE_BUILD.filter((l) => !l.includes("sandbox-fake-provider"));
+  const root = setup(t, { worker: dockerfile(WORKER_DEPS, trimmed) });
+  const { errors } = runDepsStageCheck(root);
+  assert.ok(
+    hasSubstr(
+      errors,
+      "worker: build-only closure package @armyofagents/sandbox-fake-provider has no manifest in the 'build' stage",
+    ),
+    errors.join(" | "),
+  );
+  // The remedy the message names must be the SAFE one: copy it into `build`, never into
+  // `deps`. A guard whose error message advises the least-privilege violation is worse
+  // than no guard.
+  assert.ok(hasSubstr(errors, "never to deps"), errors.join(" | "));
+});
+
+test("E6-F012: a whole-directory COPY covers the manifests beneath it", (t) => {
+  // `COPY packages/ packages/` is a legal delivery route and must not be read as absence.
+  const root = setup(t, {
+    worker: dockerfile(WORKER_DEPS, ["COPY packages/ packages/", "RUN pnpm install --frozen-lockfile"]),
+  });
+  const { errors } = runDepsStageCheck(root);
+  assert.deepEqual(errors, [], errors.join(" | "));
+});
+
+test("E6-F012: a cross-stage COPY --from= is NOT counted as manifest coverage", (t) => {
+  // `COPY --from=deps /app /app` moves an installed tree, not source manifests, and the
+  // deps stage by construction does not contain the build-only packages. Counting it
+  // would make the coverage clause vacuous for both `COPY . .` images.
+  const root = setup(t, {
+    worker: dockerfile(WORKER_DEPS, ["COPY --from=deps /app /app", "RUN pnpm install --frozen-lockfile"]),
+  });
+  const { errors } = runDepsStageCheck(root);
+  assert.ok(hasSubstr(errors, "worker: build-only closure package @armyofagents/shared has no manifest"), errors.join(" | "));
+  assert.ok(
+    hasSubstr(errors, "worker: build-only closure package @armyofagents/sandbox-fake-provider has no manifest"),
+    errors.join(" | "),
+  );
+});
+
+test("E6-F012: `FROM deps AS build` inherits the deps stage's COPYs", (t) => {
+  // Not cosmetic: the real worker build stage is `FROM deps`, and without following that
+  // edge every one of the seven runtime manifests would read as absent from `build`. This
+  // pins the inheritance by putting a build-only manifest in DEPS' reach via a directory
+  // copy there — if the walk stopped at `build`, this would red.
+  const root = setup(t, {
+    worker: dockerfile([...WORKER_DEPS, "COPY packages/shared/package.json packages/shared/"], [
+      "COPY packages/sandbox-fake-provider/package.json packages/sandbox-fake-provider/",
+      "RUN pnpm install --frozen-lockfile",
+    ]),
+  });
+  const { errors } = runDepsStageCheck(root);
+  // `shared` in DEPS is an out-of-closure least-privilege violation — that error MUST
+  // still fire — but it must NOT also be reported as missing from `build`.
+  assert.ok(hasSubstr(errors, "worker: deps stage COPYs packages/shared/package.json which is OUTSIDE"), errors.join(" | "));
+  assert.equal(
+    errors.filter((e) => e.includes("build-only closure package")).length,
+    0,
+    "inheritance not followed: " + errors.join(" | "),
+  );
 });

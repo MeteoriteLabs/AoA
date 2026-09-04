@@ -27,7 +27,11 @@ import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
-import { evaluateImageDepsStage, indexPackages } from "./lib/image-deps-stage.mjs";
+import {
+  evaluateBuildStageAbsorption,
+  evaluateImageDepsStage,
+  indexPackages,
+} from "./lib/image-deps-stage.mjs";
 
 /** Images validated by this gate and their build entry packages. */
 export const IMAGES = [
@@ -128,6 +132,17 @@ export function runDepsStageCheck(root, deps = {}) {
     }
     errors.push(
       ...evaluateImageDepsStage({
+        imageName: image.imageName,
+        dockerfileText,
+        entryPackages: image.entryPackages,
+        packagesByName,
+      }),
+      // E6-F012 — the SECOND, separately-reported set. The deps-stage pass above
+      // decides what is INSTALLED (prod closure, exact). This one decides whether
+      // the build stage absorbs the wider set `pnpm --filter "X..." build` will
+      // actually compile. They are different questions about different stages and
+      // neither may be relaxed into the other.
+      ...evaluateBuildStageAbsorption({
         imageName: image.imageName,
         dockerfileText,
         entryPackages: image.entryPackages,
