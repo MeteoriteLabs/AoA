@@ -73,7 +73,15 @@ function harness() {
   const sinkSentinel = { emit: () => {}, __sink: true } as never;
   const supSentinel = { accept: () => {}, cancel: () => {}, onLeaseLost: () => {}, shutdown: () => {}, activeRunCount: () => 0, __sup: true } as never;
   const driverSentinel = { accept: () => {}, stop: () => {}, activeRenewalCount: () => 0, proxyFor: () => undefined, __driver: true } as never;
-  const pollSentinel = { run: async () => ({ kind: "stopped" }), stopLeasing: () => {}, drain: async () => {}, activeLeaseCount: () => 0 } as never;
+  // JOB-015 (V3): `stopLeasing` RECORDS, so the composed drain handler can be proven to
+  // reach it with a real call rather than by the type checker agreeing the port exists.
+  const stopLeasingCalls: string[] = [];
+  const pollSentinel = {
+    run: async () => ({ kind: "stopped" }),
+    stopLeasing: () => { stopLeasingCalls.push("stopLeasing"); },
+    drain: async () => {},
+    activeLeaseCount: () => 0,
+  } as never;
 
   const seams: Partial<ComposeDispatchRuntimeDeps> = {
     probes: HUGE_PROBES,
@@ -81,11 +89,11 @@ function harness() {
     makeSink: ((d: { store: unknown; kek: unknown }) => { order.push("makeSink"); captured.sinkStore = d.store; captured.sinkKek = d.kek; return sinkSentinel; }) as never,
     makeDrain: ((d: { kek: unknown }) => { order.push("makeDrain"); captured.drainKek = d.kek; return { recover: () => { order.push("recover"); return 0; }, start: () => { order.push("drainStart"); }, stop: () => {}, drainOnce: async () => ({}), flush: async () => {} } as never; }) as never,
     makeSupervisor: ((d: { eventSink: unknown; redactionCanaries: unknown; observeRun?: unknown; opDeadlineMs?: unknown }) => { order.push("makeSupervisor"); captured.supEventSink = d.eventSink; captured.redactionCanaries = d.redactionCanaries; captured.observeRun = d.observeRun; captured.opDeadlineMs = d.opDeadlineMs; return supSentinel; }) as never,
-    makeDriver: ((d: { eventSink: unknown; supervisor: unknown; schedule: unknown }) => { order.push("makeDriver"); captured.driverEventSink = d.eventSink; captured.driverSupervisor = d.supervisor; captured.driverSchedule = d.schedule; return driverSentinel; }) as never,
+    makeDriver: ((d: { eventSink: unknown; supervisor: unknown; schedule: unknown; controlHandlers?: unknown }) => { order.push("makeDriver"); captured.driverEventSink = d.eventSink; captured.driverSupervisor = d.supervisor; captured.driverSchedule = d.schedule; captured.driverControlHandlers = d.controlHandlers; return driverSentinel; }) as never,
     makePollLoop: ((d: { supervisor: unknown; self: unknown; measure: unknown }) => { order.push("makePollLoop"); captured.pollSupervisor = d.supervisor; captured.pollSelf = d.self; captured.pollMeasure = d.measure; captured.pollRun = () => { order.push("pollRun"); }; return { ...pollSentinel, run: async () => { order.push("pollRun"); return { kind: "stopped" }; } } as never; }) as never,
     makeSchedule: (() => ({ __schedule: true }) as never) as never,
   };
-  return { order, captured, seams, sinkSentinel, driverSentinel };
+  return { order, captured, seams, sinkSentinel, driverSentinel, stopLeasingCalls };
 }
 
 async function compose(extra?: Partial<ComposeDispatchRuntimeDeps>) {
@@ -252,5 +260,53 @@ describe("resolveRunOpDeadlineMs — the pure resolver", () => {
 
   it("floors a fractional budget before converting to ms", () => {
     expect(resolveRunOpDeadlineMs(handoff({ maxRuntimeSeconds: 90.9 }))).toBe(90_000);
+  });
+});
+
+/**
+ * JOB-015 (V3) — THE COMPOSED CONTROL-COMMAND APPLIER.
+ *
+ * ★★★ Every behavioural JOB-015 test injects its OWN fake `controlHandlers`, so before
+ * these tests the production line `drain: () => pollLoop.stopLeasing()` had exactly three
+ * references — its declaration, its read in the driver, and this composition — and NOT
+ * ONE of them was a test that ran it. The thunk that makes the late binding work was
+ * therefore verified by the TYPE CHECKER alone: precisely the "a composition-root port is
+ * a NO-OP" class it was written to avoid, and a class this programme has shipped before.
+ * These assert with a CALL.
+ */
+describe("composeDispatchRuntime — JOB-015 control-command handlers", () => {
+  it("★★★ the composed drain handler REACHES pollLoop.stopLeasing()", async () => {
+    const { captured, stopLeasingCalls } = await compose();
+    const thunk = captured.driverControlHandlers as (() => { drain?: (reason: string | null) => void }) | undefined;
+    expect(typeof thunk).toBe("function");
+
+    // Nothing has drained yet — otherwise "1 call" could be composition side-effect.
+    expect(stopLeasingCalls).toEqual([]);
+    const handlers = thunk!();
+    expect(typeof handlers.drain).toBe("function");
+    handlers.drain!("fleet rollout");
+    // ★ THE BAR: the poll loop actually stopped taking offers.
+    expect(stopLeasingCalls).toEqual(["stopLeasing"]);
+  });
+
+  it("★ the port is a THUNK resolved LATE — the driver is built before the poll loop exists", async () => {
+    // `makeDriver` runs at composition line ~209 and `const pollLoop` is assigned at ~268,
+    // so a handler passed BY VALUE would read `pollLoop` in its temporal dead zone. The
+    // thunk is what makes the port legal, and this pins the ordering it depends on.
+    const { order } = await compose();
+    expect(order.indexOf("makeDriver")).toBeLessThan(order.indexOf("makePollLoop"));
+    expect(order.indexOf("makeDriver")).toBeGreaterThan(-1);
+  });
+
+  it("★ `result` is deliberately ABSENT — §5's disclosed gap, pinned in code", async () => {
+    // The two governance result kinds have no applier (E8/BRW-004 + E9/SVC-001 own them).
+    // The daemon must compose NOTHING for them rather than a stub that ACKs: an ACKed but
+    // unapplied command clears `ack_status` forever and reproduces this ticket's own
+    // finding. If a future commit composes `result`, this test reds and its author has to
+    // decide deliberately whether §5 is still true.
+    const { captured } = await compose();
+    const handlers = (captured.driverControlHandlers as () => Record<string, unknown>)();
+    expect(handlers.result).toBeUndefined();
+    expect(Object.keys(handlers)).toEqual(["drain"]);
   });
 });

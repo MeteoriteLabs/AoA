@@ -435,6 +435,13 @@ interface LeaseState {
   /** JOB-015 — this lease's control-command receiver memory (observed-through
    * sequence, per-id priors for replay/conflict, and what was actually applied). */
   readonly controlMemory: ControlReceiverMemory;
+  /** JOB-015 — an apply/ACK pass is in flight for this lease. The next renewal is now
+   * armed BEFORE the apply (see `driveRenewalInner`), so a slow ACK cannot strand the
+   * lease — but that also means the renewal timer can fire while a pass is still
+   * running. Two concurrent passes would share `controlMemory` and could apply the same
+   * un-ACKed command twice, so the second pass is skipped: nothing was ACKed, the rows
+   * stay pending, and the next renewal redelivers them. */
+  controlApplying: boolean;
 }
 
 const NOOP_SINK: WorkerEventSink = { emit: () => {} };
@@ -574,12 +581,40 @@ export function createLeaseRenewalDriver(deps: LeaseRenewalDriverDeps): LeaseRen
    *
    * Wrapped so a fault in this path can never strand a healthy lease: the run keeps its
    * renewal, the command keeps its pending row, and the next renewal retries.
+   *
+   * ★★★ THIS RUNS *AFTER* THE NEXT RENEWAL IS ARMED, and it has to. Every applied or
+   * oversized command performs a SEQUENTIAL awaited `sendControlAck` at the frozen
+   * `control_command` descriptor's 15 s timeout, up to
+   * `CONTROL_EXTENSION_MAX_COMMANDS` = 16 per delivery — 240 s of worst-case blocking.
+   * Against the 300 s default lease renewing at 50 % lead there are only ~150 s of
+   * headroom, so roughly eleven slow (not failed) ACKs awaited BEFORE `reschedule`
+   * would push the next renewal past expiry and lose a healthy lease. That directly
+   * contradicts `ackControl`'s own contract — "an ACK that does not land is a DELAY,
+   * never a lost command, which is why it must not be allowed to kill a healthy lease"
+   * — and no test could have caught it, because the fake control plane answered every
+   * ACK synchronously. The renewal timer is armed off `expiresAtMs`, not off "now", so
+   * arming it first costs nothing and removes the coupling entirely.
+   *
+   * The cost of that ordering is that the timer CAN fire mid-pass, so a pass is
+   * skipped while another is in flight (`state.controlApplying`): two passes share
+   * `controlMemory` and the second would see the first's commands still un-marked and
+   * apply them twice. Skipping ACKs nothing, so the rows stay pending and the pass
+   * after it redelivers them — the same fail-safe direction as every other refusal here.
    */
   async function applyControlDelivery(
     state: LeaseState,
     session: WorkerSession,
     delivery: ControlCommandDelivery,
   ): Promise<void> {
+    if (state.controlApplying) {
+      emitControl("deferred");
+      deps.logger?.warn(
+        { leaseId: state.leaseId },
+        "lease-renewal: a control-delivery pass is already in flight; commands stay pending",
+      );
+      return;
+    }
+    state.controlApplying = true;
     try {
       if (delivery.oversizedLeading) {
         emitControl("oversized");
@@ -627,6 +662,8 @@ export function createLeaseRenewalDriver(deps: LeaseRenewalDriverDeps): LeaseRen
         { leaseId: state.leaseId, error: err instanceof Error ? err.name : "unknown" },
         "lease-renewal: control delivery could not be applied; commands stay pending",
       );
+    } finally {
+      state.controlApplying = false;
     }
   }
 
@@ -791,11 +828,18 @@ export function createLeaseRenewalDriver(deps: LeaseRenewalDriverDeps): LeaseRen
             { leaseId: state.leaseId },
             "lease-renewal: the control-command extension could not be read; commands stay pending",
           );
-        } else if (attempt.control) {
-          await applyControlDelivery(state, session, attempt.control);
         }
         if (state.terminated) return;
+        // ★★★ ARM THE NEXT RENEWAL FIRST. The apply pass below performs up to 16
+        // sequential awaited ACKs at the frozen 15 s `control_command` timeout (240 s)
+        // against ~150 s of lease headroom, so awaiting it before this line would let a
+        // SLOW control plane strand a healthy lease — the opposite of what
+        // `ackControl`'s "best-effort, never a lease loss" contract promises. The timer
+        // fires off `expiresAtMs`, so arming it here schedules exactly the same instant.
         reschedule(state);
+        if (!attempt.controlFault && attempt.control) {
+          await applyControlDelivery(state, session, attempt.control);
+        }
         return;
       }
       if (attempt.kind === "rejected" || attempt.kind === "protocol") {
@@ -863,6 +907,7 @@ export function createLeaseRenewalDriver(deps: LeaseRenewalDriverDeps): LeaseRen
       terminated: false,
       recoveries: 0,
       controlMemory: createControlReceiverMemory(),
+      controlApplying: false,
     };
     leases.set(handoff.leaseId, state);
     reschedule(state);

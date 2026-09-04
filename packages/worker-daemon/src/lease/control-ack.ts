@@ -13,6 +13,15 @@
  * therefore a delay, never a lost command — which is why it may be, and is, treated as
  * best-effort by the renewal driver instead of being allowed to kill a healthy run.
  *
+ * ★★ "BEST-EFFORT" HAS TO COVER A SLOW ACK, NOT ONLY A FAILED ONE — and that is a
+ * property of WHERE the driver calls this, not of anything in this file. Nothing here
+ * retries, but the call is awaited, the driver runs them SEQUENTIALLY, and up to
+ * `CONTROL_EXTENSION_MAX_COMMANDS` = 16 run per delivery at this operation's frozen
+ * 15 s timeout — 240 s of worst-case blocking against ~150 s of headroom on a 300 s
+ * lease renewing at 50 % lead. So `lease-renewal.ts` arms the next renewal BEFORE the
+ * apply/ACK pass. Invert that ordering and this paragraph becomes false: a control
+ * plane that is merely SLOW starts losing healthy leases.
+ *
  * ★ `commandSeq` IS ECHOED BECAUSE THE SERVER NOW CHECKS IT. The frozen ACK schema has
  * always carried it and its docstring always said the worker echoes it, but
  * `ackControlCommand` matched on `(organizationId, leaseId, commandId)` alone and threw

@@ -254,9 +254,55 @@ integration("JOB-015 control-command delivery on the lease-renew response", () =
     return found ? (found.value as ControlValue) : null;
   }
 
-  // Insert a control command of an arbitrary kind directly, as the JOB-011 bridge would.
-  // `queueGovernedControlCommand` is the production writer for the two result kinds;
-  // `drain` has no production writer at all, which is part of the finding.
+  /** The E1 body `job-approval-bridge.ts` hands `queueGovernedControlCommand` — built
+   * here the way the bridge's private `buildControlCommandBody` builds it, and parsed
+   * against the FROZEN schema so a fixture can never store a shape production cannot
+   * produce. `commandSeq` is a placeholder: the repository stamps the lease-allocated
+   * one, which is exactly the allocation under test. */
+  function governedResultBody(
+    seeded: { jobId: string },
+    leaseId: string,
+    fenceToken: string,
+    commandId: string,
+  ): Record<string, unknown> {
+    return controlCommandV1Schema.parse({
+      protocolVersion: 1,
+      audience: "control_channel",
+      commandId,
+      commandSeq: 1,
+      idempotencyKey: commandId,
+      issuedAt: new Date().toISOString(),
+      nonce: `nonce-${commandId}`,
+      organizationId: ORG,
+      companyId: COMPANY,
+      workerId: WORKER,
+      jobId: seeded.jobId,
+      attempt: 1,
+      leaseId,
+      fenceToken,
+      commandKind: "runtime_decision_result",
+      result: {
+        decisionKind: "permission",
+        requestId: crypto.randomUUID(),
+        nonce: "decision-nonce",
+        requestDigest: "a".repeat(64),
+        schemaVersion: 1,
+        sourceRevision: 0,
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        decidedBy: { principalType: "user", principalId: "operator-1" },
+        decidedAt: new Date().toISOString(),
+        idempotencyKey: crypto.randomUUID(),
+        timeoutPolicy: "deny",
+        decision: "deny",
+      },
+    }) as unknown as Record<string, unknown>;
+  }
+
+  // Insert a control command of an arbitrary kind directly. There is no production
+  // writer for `drain` — the two insert sites are `requestCancellation` (which
+  // hardcodes `cancel`) and `queueGovernedControlCommand` (typed to the two result
+  // kinds) — so every `drain` exercised below is a row this test wrote. That gap is
+  // stated in JOB-015-result.md §5; the DELIVERY path it exercises is real.
   async function queueRaw(
     seeded: { jobId: string; attemptId: string },
     leaseId: string,
@@ -453,21 +499,49 @@ integration("JOB-015 control-command delivery on the lease-renew response", () =
     if (drained.outcome === "renewed") expect(drained.body.extensions).toEqual([]);
   }, 60_000);
 
-  it("answers open question 1 — the per-lease sequence is CONTIGUOUS, so `gap` is a real guard, not a dead lever", async () => {
+  it("answers open question 1 — the per-lease sequence is CONTIGUOUS across BOTH production writers", async () => {
     const f = ctx();
     const { admin } = f;
     const reconciliation = createJobReconciliationService({ appDb: f.app.db });
-    const { seeded, offer } = await f.activateLease(6_105);
-    // Both production writers allocate COALESCE(MAX(command_seq),0)+1 under the lease
-    // lock. Mixing them on one lease must still produce 1,2 with no hole — a
-    // non-contiguous sequence would make every worker-side classification a `gap`.
-    await reconciliation.requestCancellation({
+    const { seeded, offer, identity } = await f.activateLease(6_105);
+    // ★★★ BOTH WRITERS, FOR REAL. An earlier version of this test called
+    // `requestCancellation` and then `queueRaw(..., 2)` — a raw INSERT whose sequence
+    // was the literal 2. That could not fail: it asserted the number the test itself
+    // wrote. Only ONE writer was exercised, so a second writer that allocated
+    // non-contiguously would have left this green, and a hole makes EVERY worker-side
+    // classification a `gap` — the fail-closed dead lever the design warns about.
+    //
+    // The two production writers are `queueGovernedControlCommand` (JOB-011 governance
+    // results) and `requestCancellation` (JOB-006 cancel). Both allocate
+    // COALESCE(MAX(command_seq),0)+1 under the lease lock. Neither sequence below is
+    // supplied by this test: each is read back from what the writer returned.
+    const governedCommandId = crypto.randomUUID();
+    const governed = await runInTenant(f.app.db, ORG, async (repos) =>
+      repos.jobControl.queueGovernedControlCommand({
+        ...identity,
+        control: {
+          commandId: governedCommandId,
+          commandKind: "runtime_decision_result",
+          commandBody: governedResultBody(seeded, offer.leaseId, offer.fenceToken, governedCommandId),
+          now: new Date(),
+        },
+      }));
+    expect(governed.queued).toBe(true);
+    expect(governed.command?.commandSeq).toBe(1);
+
+    const cancel = await reconciliation.requestCancellation({
       organizationId: ORG, companyId: COMPANY, jobId: seeded.jobId, reason: "stop", graceful: true,
     });
-    await queueRaw(seeded, offer.leaseId, offer.fenceToken, "drain", 2);
+    expect(cancel.status).toBe("queued");
+    // ★ THE ASSERTION THAT CAN FAIL: the SECOND writer's own allocated sequence. A
+    // per-job counter, a global counter, an unlocked read, or an off-by-one would
+    // produce something other than 2 here and this reds.
+    expect(cancel.command?.commandSeq).toBe(2);
+
     const rows = await admin`
-      SELECT command_seq AS "commandSeq" FROM job_control_commands
-      WHERE lease_id = ${offer.leaseId} ORDER BY command_seq`;
-    expect(rows.map((r: { commandSeq: number }) => r.commandSeq)).toEqual([1, 2]);
+      SELECT command_seq AS "commandSeq", command_kind AS "commandKind"
+      FROM job_control_commands WHERE lease_id = ${offer.leaseId} ORDER BY command_seq`;
+    expect(rows.map((r: { commandSeq: number; commandKind: string }) => [r.commandSeq, r.commandKind]))
+      .toEqual([[1, "runtime_decision_result"], [2, "cancel"]]);
   }, 60_000);
 });

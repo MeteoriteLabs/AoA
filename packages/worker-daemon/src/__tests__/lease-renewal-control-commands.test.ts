@@ -299,3 +299,69 @@ describe("JOB-015 — a failing ACK leaves the command pending rather than killi
     expect(c.log).not.toContain(`onLeaseLost:${POLL_FIXTURE_IDS.lease}`);
   });
 });
+
+describe("JOB-015 (V4) — a SLOW control plane cannot strand a healthy lease", () => {
+  /** Poll a real-timer condition. The scheduler's clock is fake; the fake control plane
+   * is a real in-process HTTP server, so an in-flight ACK is observed in real time. */
+  async function waitFor(cond: () => boolean, label: string): Promise<void> {
+    for (let i = 0; i < 500; i += 1) {
+      if (cond()) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error(`timed out waiting for: ${label}`);
+  }
+
+  it("★★★ arms the next renewal BEFORE the apply/ACK pass, so an unanswered ACK is not a lease loss", async () => {
+    // ★ THE MEASUREMENT THAT DECIDES IT. Every applied command performs a SEQUENTIAL
+    // awaited `sendControlAck` at the frozen `control_command` 15s timeout, up to
+    // CONTROL_EXTENSION_MAX_COMMANDS = 16 per delivery (240s). A 300s lease renewing at
+    // 50% lead has ~150s of headroom, so ~11 slow ACKs awaited BEFORE `reschedule`
+    // would push the next renewal past expiry and lose a HEALTHY lease — contradicting
+    // `sendControlAck`'s own "must not be allowed to kill a healthy run" contract.
+    //
+    // Every other test in this file passes with the ACK either before or after the
+    // reschedule, because the fake answers ACKs synchronously. This one holds the ACK
+    // open and asserts the timer is ALREADY armed while it is still unanswered.
+    const c = await makeDriverCase();
+    let release!: () => void;
+    fake.setControlAckGate(new Promise<void>((resolve) => { release = resolve; }));
+    fake.enqueueRenew({ kind: "renewed", extensions: pending([1]) });
+
+    void c.driver.accept(makeRenewalHandoff({ windowMs: 100_000 }));
+    const armedAfterAccept = scheduler.setTimerLog.length;
+    const renewal = fireNextTimer();
+
+    // The handler ran and the ACK is on the wire, unanswered.
+    await waitFor(() => fake.controlAckAttempts() >= 1, "the control ACK to reach the server");
+    expect(c.drains).toEqual(["fleet rollout"]);
+    expect(fake.controlAcks()).toEqual([]); // still in flight — the gate holds the response
+
+    // ★ THE ASSERTION: the NEXT renewal is already scheduled while the ACK hangs.
+    expect(scheduler.setTimerLog.length).toBeGreaterThan(armedAfterAccept);
+    expect(c.driver.activeRenewalCount()).toBe(1);
+    expect(c.log).not.toContain(`onLeaseLost:${POLL_FIXTURE_IDS.lease}`);
+
+    release();
+    await renewal;
+    // ★ POSITIVE CONTROL — the deferred ACK still lands. Arming the timer first delays
+    // nothing; a suite that only proved "the timer exists" would pass with the ACK
+    // dropped entirely.
+    expect(fake.controlAcks()).toEqual([
+      { leaseId: POLL_FIXTURE_IDS.lease, commandId: uuid(1), commandSeq: 1, status: "completed", detail: null },
+    ]);
+  });
+
+  it("★ POSITIVE CONTROL — with the gate open the ordering is invisible: the ACK still lands within the renewal", async () => {
+    // Proves the gate, not the driver, is what makes the test above discriminating —
+    // otherwise a broken gate would make it pass vacuously.
+    const c = await makeDriverCase();
+    fake.setControlAckGate(null);
+    fake.enqueueRenew({ kind: "renewed", extensions: pending([1]) });
+    void c.driver.accept(makeRenewalHandoff({ windowMs: 100_000 }));
+    await fireNextTimer();
+
+    expect(fake.controlAckAttempts()).toBe(1);
+    expect(fake.controlAcks()).toHaveLength(1);
+    expect(c.driver.activeRenewalCount()).toBe(1);
+  });
+});

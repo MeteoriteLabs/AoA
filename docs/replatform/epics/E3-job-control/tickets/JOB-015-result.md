@@ -2,10 +2,25 @@
 
 **Epic:** E3 · **Lane:** A
 **Design Start SHA:** `203853b3a` (`JOB-015-design.md`) · **Build Start SHA:** `410da858d`
-**Status:** slices **(a)–(f)** built. `drain` is DELIVERED end to end;
-`product_approval_result` / `runtime_decision_result` have a delivery path, a fail-closed
-terminal, and **no applier yet** — see §5, which states that honestly rather than counting
-inclusion in a payload as delivery.
+**Status:** slices **(a)–(f)** built — the **general delivery channel**, from a queued
+`job_control_commands` row to an applier on a running worker, plus the ACK that clears it.
+
+**★★★ WHAT IS AND IS NOT DELIVERED, IN THE HEADER, BECAUSE A RESULT DOC FREEZES.**
+No control command travels this channel end to end from a PRODUCTION-queued row today.
+
+- **`drain` — applier composed, NO PRODUCER.** Nothing in the server queues a `drain`.
+  The two production insert sites into `job_control_commands` are `requestCancellation`
+  (which hardcodes `commandKind: "cancel"` in both the wire body and the insert values)
+  and `queueGovernedControlCommand` (typed to the two result kinds). The delivery half —
+  projection, worker read, classifier, `pollLoop.stopLeasing()`, ACK — is real, wired,
+  and tested; every `drain` any test exercises is a row the test inserted itself.
+- **`product_approval_result` / `runtime_decision_result` — PRODUCER, no applier.** They
+  are queued by JOB-011 for real, reach the worker, and find no handler.
+
+So the channel is proven in both directions and matched at neither end by the same kind.
+An earlier revision of this document said "`drain` is DELIVERED end to end" in this header
+and in §2(f). **That was false**, and it was false in the one place a false claim survives
+longest. Both halves of the gap now live in §5 with the other honest ones.
 
 ---
 
@@ -33,7 +48,8 @@ that "the poll/renew path surfaces" it (**E3-F035**).
 | `commandKind` in `packages/worker-daemon/src` | **0** |
 | a worker→server control-ACK client method | **absent.** `ControlPlaneClient` had no `controlAck`; the server route `/api/worker-control/control-acks` existed with no caller on the worker — the mirror image of the read with no caller on the server |
 | `ackControlCommand`'s WHERE clause | `(organizationId, leaseId, commandId)` **only**. The frozen `commandSeq` the worker echoes was accepted, returned in the response, and discarded |
-| is `command_seq` contiguous per lease? (design open question 1) | **YES.** Both writers allocate `COALESCE(MAX(command_seq),0)+1` under the lease lock (`requestCancellation`, `queueGovernedControlCommand`). Pinned by a test that mixes both writers on one lease and asserts `[1, 2]`. This matters: a non-contiguous sequence would make every worker-side classification a `gap` — a fail-closed dead lever |
+| production writers of a `drain` command | **0.** Exhaustive: two insert sites into `job_control_commands`, both in `job-control.ts` — `requestCancellation` (hardcodes `"cancel"`) and `queueGovernedControlCommand` (typed to the two result kinds). The literal `"drain"` appears three times in non-test `server/src` + `packages/db/src` TypeScript: a type-union member (`job-control.ts:680`), a metric label (`job-leasing.ts:736`), and a comment saying no worker-fleet drain seam exists (`job-operations.ts:292`) |
+| is `command_seq` contiguous per lease? (design open question 1) | **YES.** Both writers allocate `COALESCE(MAX(command_seq),0)+1` under the lease lock (`requestCancellation`, `queueGovernedControlCommand`). Pinned at embedded Postgres by a test that calls **both real writers** on one lease and asserts each writer's OWN returned `commandSeq` (`1`, then `2`) plus the stored `[[1,"runtime_decision_result"],[2,"cancel"]]`. Mutating either allocation to `MAX+2` reds it. This matters: a non-contiguous sequence would make every worker-side classification a `gap` — a fail-closed dead lever |
 
 ---
 
@@ -113,6 +129,42 @@ none today, so it is a guard against a future writer, and it is mutation-tested,
 assumed). The local counter tracks **observed**-through, not applied-through, so a command
 the worker could not apply does not make every later command look like a gap.
 
+### (c2) ★★★ The ACK pass runs AFTER the next renewal is armed — a slow control plane is not a lease loss
+
+Found by review, and it was a real defect, not a style point. `applyControlDelivery` was
+awaited **before** `reschedule(state)`. Each applied or oversized command performs a
+*sequential awaited* `sendControlAck`; the frozen `control_command` operation descriptor
+sets `timeoutMs: 15_000`, and `CONTROL_EXTENSION_MAX_COMMANDS = 16` ride one delivery. That
+is **240 s** of worst-case blocking before the next renewal could even be scheduled, against
+a 300 s default lease renewing at `leadFraction 0.5` — roughly **150 s** of headroom. About
+eleven *slow* (not failed) ACKs would push the reschedule past expiry and lose a **healthy**
+lease.
+
+It also contradicted the code's own stated contract. `sendControlAck`'s docstring said a
+failed ACK "is a DELAY, never a lost command — which is why it may be, and is, treated as
+best-effort by the renewal driver instead of being allowed to kill a healthy run." That was
+true for a *failed* ACK and false for a *slow* one, and the difference lived entirely in
+where the driver called it.
+
+Fixed by arming first: `reschedule(state)` now runs before the apply pass. The timer fires
+off `expiresAtMs`, not off "now", so arming it earlier schedules the identical instant and
+costs nothing. `control-ack.ts`'s docstring now names the placement it depends on, so
+inverting the order makes the comment visibly false.
+
+**The cost, taken deliberately:** the renewal timer can now fire mid-pass. Two concurrent
+passes share `state.controlMemory`, and the second would see the first's commands still
+un-marked and apply them twice — so a pass in flight makes the next one skip
+(`state.controlApplying`). Skipping ACKs nothing, so the rows stay pending and the pass
+after it redelivers them: the same fail-safe direction as every other refusal here.
+
+**Why no test caught it, and what does now.** The fake control plane answered every ACK
+synchronously, so latency was unrepresentable and the ordering was invisible to all ten
+existing driver tests — they pass with the call on either side. The fake gained a
+`setControlAckGate` knob plus `controlAckAttempts()` (counted *before* the gate, so an
+in-flight ACK is observable). The test holds one ACK open and asserts the next renewal is
+already armed while it hangs, with a `★ POSITIVE CONTROL` that the ACK still lands once
+released — otherwise "the timer exists" would pass with the ACK dropped entirely.
+
 ### (d) The fail-closed cases
 
 Every clause has its **allow-side twin in the same `describe`** — a denial suite with no
@@ -153,7 +205,11 @@ existing guard, `check-gate-clause-wiring.mjs`, tracks named symbols from
 `gate-clause-wiring.json`; `listPendingControlCommands` was not among them and still is
 not, because it is no longer unwired.
 
-### (f) `drain` — DELIVERED, with an applier
+### (f) `drain` — the APPLIER, composed and reached (there is no producer; see §5)
+
+**Scope, precisely:** this slice makes a delivered `drain` do something. It does not make
+anything queue one. A `drain` row inserted by hand — or by a future producer — is
+projected, read, classified, applied and ACKed; nothing in the server writes that row.
 
 `dispatch-runtime.ts` composes `drain: () => pollLoop.stopLeasing()`. The handler port is
 a **thunk**, and it has to be: `pollLoop` is constructed *after* the driver (the driver IS
@@ -163,9 +219,23 @@ everything built earlier. `stopLeasing()` is the existing drain semantic, not a 
 of it: the loop stops taking offers and `drainInFlight()` finishes the attempt already
 running, exactly as an operator drain and a rolling shutdown do.
 
+**The composed line is now covered by a CALL, not by the type checker.** Every behavioural
+test in `lease-renewal-control-commands.test.ts` injects its own fake `controlHandlers`, so
+`controlHandlers` had exactly three references — the declaration (`lease-renewal.ts:391`),
+the read (`:600`) and this composition (`dispatch-runtime.ts:241`) — and not one of them
+ran the composed thunk. `dispatch-runtime.test.ts` now records `stopLeasing` on the poll
+sentinel, invokes the captured thunk, and asserts the call arrives. **Mutation-verified:
+deleting `pollLoop.stopLeasing()` from the handler body and leaving the log line
+type-checks CLEAN (`tsc --noEmit` exits 0) and reds only the new test** — which is the
+whole point, because "verified by the type checker only" is the composition-root-no-op
+class this thunk exists to avoid. Two siblings pin what the thunk depends on: `makeDriver`
+runs before `makePollLoop` (the late binding is load-bearing), and `result` is asserted
+ABSENT, so composing an applier for the governance kinds reds this file and forces its
+author to re-decide whether §5 is still true.
+
 ---
 
-## 3. Mutation results — 10 mutants, 10 killed, every restore verified
+## 3. Mutation results — 15 mutants, 15 killed, every restore verified
 
 | # | Mutation | Result |
 |---|---|---|
@@ -181,8 +251,12 @@ running, exactly as an operator drain and a rolling shutdown do.
 | I2 | drop `eq(commandSeq)` from the ACK WHERE clause | 1/12 integration RED |
 | I3 | drop the frozen `nonce` from `requestCancellation`'s inline body (producer drift) | 1/12 integration RED |
 | M3b | fold the malformed-delivery fault into silence (`controlFault = false`) | 1/9 driver RED |
+| **V2** | `requestCancellation` allocates `MAX(command_seq)+2` (a hole) | 5/12 integration RED, **including the contiguity test on the second writer's OWN returned sequence** (`expected 3 to be 2`) |
+| **V3** | delete `pollLoop.stopLeasing()` from the composed `drain` handler, keep the log | 1/26 `dispatch-runtime` RED. **`tsc --noEmit -p packages/worker-daemon` exits 0** — the type checker does not see it, which is exactly why the assertion had to be a call |
+| **V4** | move `reschedule(state)` back BEHIND the apply/ACK pass | 1/11 driver RED (the gated-ACK test), **and its `★ POSITIVE CONTROL` sibling stays green** — proving the gate, not the ordering, is what makes the discriminating test discriminating |
 
-Restore verified green after every one.
+Restore verified green after every one (V2 re-run at embedded Postgres: 12/12; V3 26/26;
+V4 11/11).
 
 **I3 closes a gap the design did not name.** The worker re-validates every delivered
 command against the frozen `controlCommandV1Schema` — the extension container bounds size
@@ -231,6 +305,45 @@ against the frozen schema, and dropping one required field from the producer red
 
 ## 5. What is NOT delivered, stated plainly
 
+### ★★★ `drain` has NO PRODUCER — nothing in the server queues one
+
+This is the fact that decides the headline, so it goes first. The applier is composed
+(§2(f)) and the delivery path is real and tested, but **no production code path creates a
+`drain` control command**, and therefore no `drain` has ever travelled this channel outside
+a test that inserted the row itself.
+
+Measured, not inferred. There are exactly **two** `insert(jobControlCommands)` sites in the
+tree, both in `packages/db/src/repositories/tenant/job-control.ts`:
+
+| Site | Kind it can write |
+|---|---|
+| `requestCancellation` (`:3477`) | `"cancel"` — hardcoded in BOTH the wire body and the insert values |
+| `queueGovernedControlCommand` (`:3897`) | `commandKind` typed `"product_approval_result" \| "runtime_decision_result"` |
+
+The literal `"drain"` occurs three times in non-test `server/src` + `packages/db/src`
+TypeScript, and none is a writer: a member of `JobControlCommandKind`
+(`job-control.ts:680`), a metric label (`job-leasing.ts:736`, `outcome:"drain"`), and a
+comment recording that no worker-fleet drain seam exists (`job-operations.ts:292`). The
+integration suite says so at its own fixture (`job-control-commands.integration.test.ts`,
+the `queueRaw` docstring): every `drain` it exercises is a raw INSERT the test wrote.
+
+What that does and does not mean:
+
+- It does **not** weaken the delivery work. `drain` was chosen precisely because it is the
+  one admitted kind the pre-JOB-015 boolean channel could never carry, so it is the
+  sharpest available probe of the general channel — and it is the kind whose applier
+  already existed (`stopLeasing`), so the probe needed no new semantics invented for it.
+- It does mean **"delivered end to end" is not available to this ticket for any kind.**
+  The two kinds with real producers have no applier; the kind with an applier has no
+  producer. The channel is proven in both directions; no single command completes the
+  round trip in production yet.
+- The producer, when someone wants operator-initiated fleet drain, is a **new server seam**
+  (`job-operations.ts:292` is where its absence is already recorded). It is not in this
+  ticket's blast radius and no ticket currently owns it. Anyone adding it inherits a
+  delivery path that is already tested.
+
+### The two governance result kinds reach the worker and are not applied
+
 **`product_approval_result` and `runtime_decision_result` reach the worker and are not
 applied.** They are read, validated against the frozen schema, classified, and then find
 no handler: the daemon composes `drain` only. They are counted
@@ -278,3 +391,7 @@ folding the fault into silence reds the test.
   "a worker has no channel on which to receive a time bound at all", which is now stale.
   Left for SVC-001/SVC-004 to correct rather than edited from another epic's ticket.
 - **SVC-004** — gains a delivery path for `checkpoint` once the CHECK admits it.
+- **UNOWNED — a `drain` producer.** The applier is composed and the delivery path is
+  tested, and nothing queues a `drain` (§5). Whoever wants operator-initiated fleet drain
+  adds one server-side writer; `job-operations.ts:292` already records where its absence
+  sits. No ticket owns this today, and this document is not filing one.

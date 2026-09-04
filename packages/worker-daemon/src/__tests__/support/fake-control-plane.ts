@@ -309,6 +309,15 @@ export interface FakeControlPlane {
   /** Queue the `applied` verdicts the ACK route reports (default: true). A `false`
    * models the server matching NO row — e.g. a mismatched echoed `commandSeq`. */
   enqueueControlAckApplied(applied: boolean): void;
+  /** JOB-015 (V4) — hold every control ACK OPEN until `gate` settles. The frozen
+   * `control_command` descriptor allows 15 s per ACK and the driver runs up to 16
+   * sequentially, so a control plane that is merely SLOW is the case that decides
+   * whether the ACK pass can strand a lease. Without this knob the fake answers
+   * synchronously and no test can inject that latency. `null` clears it. */
+  setControlAckGate(gate: Promise<void> | null): void;
+  /** How many control ACKs have been RECEIVED (counted before the gate is awaited, so a
+   * test can observe an ACK that is in flight and still unanswered). */
+  controlAckAttempts(): number;
   /** WRK-007 (D6): seed the per-`leaseId` authority the renew/ack handlers consult
    * before the global FIFO. Re-seeding replaces the entry. */
   seedLeaseAuthority(leaseId: string, entry: FakeLeaseAuthorityEntry): void;
@@ -516,6 +525,10 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
   const renewRecords: FakeRenewRecord[] = [];
   const controlAckRecords: FakeControlAckRecord[] = [];
   const controlAckAppliedQueue: boolean[] = [];
+  // JOB-015 (V4): a settable latency gate for the control-ACK route + a count of ACKs
+  // RECEIVED (incremented before the gate, so an in-flight ACK is observable).
+  let controlAckGate: Promise<void> | null = null;
+  let controlAckAttemptCount = 0;
   // WRK-007 (D6): per-`leaseId` authority table (keyed), consulted before the FIFO.
   const leaseAuthority = new Map<string, FakeLeaseAuthorityEntry>();
   // Idempotency ledger: an already-seen renew key returns the SAME expiry.
@@ -1458,6 +1471,10 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
       protocolError(res, 400, "malformed", null);
       return;
     }
+    // Count BEFORE the gate so a test can observe an ACK that is in flight and
+    // deliberately unanswered — the slow-control-plane case.
+    controlAckAttemptCount += 1;
+    if (controlAckGate) await controlAckGate;
     const inner = (body.body ?? {}) as Record<string, unknown>;
     const ack = (inner.ack ?? {}) as Record<string, unknown>;
     controlAckRecords.push({
@@ -1967,6 +1984,12 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     },
     enqueueControlAckApplied(applied: boolean): void {
       controlAckAppliedQueue.push(applied);
+    },
+    setControlAckGate(gate: Promise<void> | null): void {
+      controlAckGate = gate;
+    },
+    controlAckAttempts(): number {
+      return controlAckAttemptCount;
     },
     seedLeaseAuthority(leaseId: string, entry: FakeLeaseAuthorityEntry): void {
       leaseAuthority.set(leaseId, entry);
