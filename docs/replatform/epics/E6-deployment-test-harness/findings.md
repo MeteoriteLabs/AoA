@@ -499,7 +499,8 @@ install on that very run with eleven minutes to spare. The two other five-minute
 
 #### 3. The blast radius is two jobs wider than "policy went red"
 
-Observed on all eight cancelled attempts:
+Observed on all eight cancelled attempts (steps 1 and 2 on 8/8; step 3 as `failure` on 7/8 and as
+`cancelled` on the eighth — never `success`, which is the only value branch protection accepts):
 
 1. `policy` is cancelled at the wall.
 2. `brand-check` (`needs: [policy]`) is **skipped**, and GitHub stamps the skipped job with
@@ -507,13 +508,14 @@ Observed on all eight cancelled attempts:
    who checks that job sees an inverted timestamp and reasonably suspects a second, unrelated fault.
    It is an artefact of the cancel path.
 3. `ci-required` requires `policy` **and** `brand-check` in its **always-on** arm — not the
-   `code=true`-gated one — so it emits two `::error::` lines and fails.
+   `code=true`-gated one — so it emits two `::error::` lines and fails. (On run `33858466826`
+   `ci-required` was itself `cancelled` rather than `failure`; the gate is red either way.)
 
 No compute is lost (re-running the failed jobs carries the green ones forward — `verify (2)` keeps
 its original timestamps across attempts). The cost is latency, attention, and the re-run reflex:
 **PR #353 needed five attempts** to get a green `policy`, and the integration tip `717475f63` was
-cancelled too. Occurrences on four shas: `46c27e38b`, `5d91afff5` (#353), `717475f63`, and DEP-013's
-own `33858466826`.
+cancelled too. Occurrences on four shas: `46c27e38b`, `5d91afff5` (#353), `717475f63` (the integration tip), and
+`f5daf62fc` — DEP-013's own build branch, the run `33858466826` cited above.
 
 #### ★★★ 4. ONE CORRECTION — "it is still growing" is not sustained, and that is a trap for the PR #321 lead
 
