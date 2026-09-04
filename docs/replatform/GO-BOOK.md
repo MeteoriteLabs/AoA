@@ -653,28 +653,35 @@ recorded word was "awaiting distinct re-review; not resolved/pass". They **are**
 completion handoff records `Decision: pass` by a distinct gate owner on exactly the candidate
 revision they name; the register was simply never updated). Had that review not passed, two open
 HIGH findings would have sat in a `complete` epic with nothing able to see them. The other newly
-visible ones are MINOR/LOW and all declared. **E0-F003 is now RESOLVED** (`86db5238d`) and its
-manifest entry is deleted, so it is no longer in the unowned list above — another demonstration
-that the list is a timestamp. Its entry was not stale but WRONG: it asserted item 2 had been
-"applied by FND-003's exact-set parity" while also saying both named tickets "shipped without
-doing so". Measured before fixing: mutations of BOTH original sites in
-`check-distributed-execution-foundation.mjs` produced ZERO errors. FND-003 and FND-007 had applied
-the patterns to their OWN new surfaces and never retrofitted the originals — and measuring that
-turned up a THIRD live instance at FND-007's own CM-015 clause check, whose private splitter was
-punctuation-only. **★ Reading the register would have closed this as done; only mutating it found
-three live holes.**
+visible ones are MINOR/LOW and all declared. **E0-F003** stays `open` and is now declared
+`accepted` with a reason, so it leaves the printed UNOWNED list without leaving the board — the
+guard prints only the unowned ones, and E0-F003 is still one of the 32 open findings it counts. Its old entry was not stale but WRONG: it asserted item 2 had been "applied by FND-003's
+exact-set parity" while also saying both named tickets "shipped without doing so". Measured before
+touching anything: mutations of BOTH original sites in `check-distributed-execution-foundation.mjs`
+produced ZERO errors. FND-003 and FND-007 had applied the patterns to their OWN new surfaces and
+never retrofitted the originals — and measuring that turned up a THIRD live instance at FND-007's
+own CM-015 clause check, whose private splitter was punctuation-only. **★ Reading the register
+would have closed this as done; only mutating it found three live holes.**
 
-★★ **And the first fix for it was itself an instance of the same mistake, caught on review.** The
-finding's defect is stated generally — "an affirmative clause appended to a sentence that already
-carries a negation is missed" — but the fix closed the one *probe* the finding printed. Changing
-one word of that probe from `except` to `and` re-opened the smuggle at both scanned invariants.
-Worse, the code carried a comment *justifying* the gap ("splitting there would reject correct
-prose"); when the reviewer measured it, widening the split produced **zero** errors on the real
-corpus. **A false rationale is worse than an unexplained gap: it tells the next reader the hole was
-considered and closed.** The remedy was to stop enumerating joiners — an enumeration is always one
-word short — and add a vocabulary-free arm that counts negations per mention of the needle, which
-holds even when the clauses are joined by nothing at all. **Fixing the instance a finding
-illustrates is not fixing the defect it states.**
+★★ **The first fix for it was an instance of the same mistake, and so was the correction to that
+fix.** The finding's defect is stated generally — "an affirmative clause appended to a sentence
+that already carries a negation is missed" — but the first fix covered the one *probe* the finding
+printed; changing one word of that probe from `except` to `and` re-opened the smuggle at both
+scanned invariants. Worse, the code carried a comment *justifying* the gap ("splitting there would
+reject correct prose"); measured, widening the split produced **zero** errors on the corpus. **A
+rationale asserted rather than measured is worse than an unexplained gap: it tells the next reader
+the hole was considered.** The second pass added a vocabulary-free arm that counts negations per
+mention of the needle, which rejects a smuggle joined by a word no list contains, or by nothing at
+all — and then announced the class shut. It is not. Both arms count negation TOKENS in a scope and
+neither binds a negation to the mention it must negate, so an appended affirmative that carries a
+negation word of its own meets its own budget and passes, under EVERY joiner including the
+punctuation the original splitter already split on. That class is orthogonal to the boundary set,
+widening cannot reach it, and it is now written into the register and pinned by two tests that
+assert the miss. **★★ The measurement that made the widening look safe is four sentences long** —
+the two documents contain exactly four needle-bearing sentences — which is enough to refute the
+"would reject correct prose" rationale and nowhere near enough to license a claim about English.
+**Fixing the instance a finding illustrates is not fixing the defect it states; and a correction
+that upgrades the claim instead of narrowing it is the same error wearing the reviewer's clothes.**
 
 
 ### 1.9.8 The D1 merge-train lane was RED for three merges, and nothing was waiting on it
