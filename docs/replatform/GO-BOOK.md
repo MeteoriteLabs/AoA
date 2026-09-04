@@ -636,6 +636,11 @@ E6-F012, E7-F012 — still six, and NOT the same six. A count that lands on the 
 the exact reason this line says run the checker.** The checker prints it on every green run; that
 output is the authority, not this line.
 
+★ **And again, in the other direction:** `6bd0811b4` RESOLVED **E6-F012** (the build closure is not
+the install closure) and removed its ownership entry, while E6-F013/E6-F014 and the E8 block were
+filed after the sentence above was written. At that sha the checker prints **thirteen** unowned
+across ten registers. Do not reconcile this paragraph against that one — re-run the checker.
+
 ★★ **THE COUNT MOVED FIVE TIMES IN A DAY ON 2026-09-03, AND TWICE IT LANDED BACK ON THE SAME
 NUMBER.** It was 17/9 registers; the register-repair track made E0/E1/E2 readable at all (→ 22);
 BRW-004's `919fcd3c4` filed **E8-F001/E8-F002** in a tenth register; JOB-015's `a83886308` filed

@@ -47,6 +47,47 @@ on:
       # It was not previously a trigger, so a change to it could alter the contents
       # of both shipped images without the image-building lane ever running.
       - ".dockerignore"
+      # E6-F012 — THE SAME LESSON, FOR THE MANIFESTS. The workspace manifests and the
+      # lockfile decide what each image INSTALLS (`--filter-prod "X..."` in the deps
+      # stage) and what each image BUILDS (`--filter "X..."`, which traverses
+      # devDependencies too). A single workspace devDependency added to `server`
+      # widened the build selection by five packages at `c3d26657d`, `tsc` died, and
+      # this lane went red for three merges.
+      #
+      # ★ AND THAT COMMIT COULD NOT FIRE THIS LANE. Until this entry existed, the list
+      # above contained NOTHING matching `package.json`, `pnpm-lock.yaml` or
+      # `pnpm-workspace.yaml` — so the exact commit class that re-widens the build
+      # selection could not trigger even the POST-merge consumer, let alone a PR-time
+      # one. It went red only because `c3d26657d` happened to touch `docker/**` too.
+      #
+      # ★★ DO NOT TRIM THESE ENTRIES ON THE GROUNDS THAT A STATIC GUARD COVERS THEM.
+      # `scripts/check-image-deps-stages.mjs` does run on every PR, and it is SILENT ON
+      # THE CLASS NAMED IN THE PARAGRAPH ABOVE. What it checks is the SHAPE of the three
+      # Dockerfiles, conditionally: that a diverging image's `build` stage re-installs
+      # non-prod; that what its build line SELECTS is covered by what its install
+      # selects; and that the divergent packages' manifests are present in that stage.
+      # Against "a workspace devDependency added to `server`" it stays GREEN — correctly,
+      # because the control-plane and adapter-manager build stages `COPY . .` and
+      # re-install non-prod, so a wider dev selection is absorbed by construction. It
+      # never PRINTS a divergence at all; its only passing output is the single line
+      # "split-image deps-stage parity: PASS". Treating it as coverage for a manifest
+      # edit is the mistake this comment exists to prevent.
+      #
+      # What it makes impossible is narrower: removing or `--prod`-ing an absorber that
+      # is load-bearing, narrowing a re-install below what the build line compiles, and
+      # a widening on an image whose build stage copies selectively (the worker). It
+      # builds NO image and reads NO lockfile. The only thing that can observe a
+      # manifest or lockfile change actually breaking an image build is a lane that
+      # builds one — this lane. Hence the entries below.
+      #
+      # Cost, stated rather than hidden: this fires the 45-minute lane on any manifest
+      # or lockfile edit, and `cancel-in-progress: false` means those queue. That is
+      # the deliberate trade — the alternative is the state above, where the one class
+      # of commit that breaks these builds is the one class the lane cannot observe.
+      - "package.json"
+      - "**/package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - "tests/d1/**"
       - "scripts/check-d1-compose.mjs"
       - "scripts/collect-d1-evidence.mjs"
