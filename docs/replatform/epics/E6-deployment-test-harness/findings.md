@@ -634,8 +634,13 @@ finding says a cap raise skipped.
    `catalog-audit.yml`, `thread-v2-e2e.yml`).
 3. **The other half of the E3-F036 class is untouched.** The guard covers workflow jobs and steps, not
    *tests* that reach the network — so E3-F036's own instance would not have been caught by it.
-4. **No live CI evidence at the time of writing.** All figures are from the Actions jobs API; all
-   verdicts are from local runs. The caps are proven only by the first green `pr.yml` run on the
-   branch that carries them.
+4. ~~**No live CI evidence at the time of writing.**~~ **SUPERSEDED.** Run **`33902312371`** on
+   `claude/ci-timeout-class` is fully green including `ci-required`; every job landed inside both its
+   new cap and its declared work budget (full table in the E3-F036 addendum), and `brand-check`
+   recorded **no `Setup pnpm` step at all**, confirming the deletion in CI. ★ It landed in a QUIET
+   window — `Setup pnpm` was 3–7 s — so **the 8-minute step cap has not yet fired.** The first real
+   test of it is the next episode, which is also the first time this finding's remaining question
+   (why the step grows) will be legible instead of showing up as a cancelled job blaming an innocent
+   step.
 
 **Disposition:** stays `unowned`. Item 1 is the remaining defect and is a diagnosis, not a line.

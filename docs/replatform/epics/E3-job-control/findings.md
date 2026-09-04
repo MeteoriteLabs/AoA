@@ -1826,9 +1826,24 @@ argue with it.
    `e2e`/`browser` (spread 9 s and 34 s) and `Initialize containers` in `migrations`/`e2e-pgvector`
    (spread 11–13 s). Two orders of magnitude below the pnpm step, so they do not yet earn their own
    allowance; the manifest records where to put one if they ever do.
-5. **No live CI evidence at the time of writing.** Every number above is from the API and every
-   verdict is from a local run of the guard and its corpus. The caps themselves are only proven by the
-   first green `pr.yml` run on this branch.
+5. ~~**No live CI evidence at the time of writing.**~~ **SUPERSEDED — the caps are now proven live.**
+   Run **`33902312371`** on `claude/ci-timeout-class` is **fully green including `ci-required`**, with
+   every job inside both its new cap and its declared work budget:
+
+   | job | total | `Setup pnpm` | work | budget | cap | headroom |
+   |---|---|---|---|---|---|---|
+   | `policy` | 78 s | 4 s | 74 s | 170 s | 11 m | 582 s |
+   | `lint` | 61 s | 7 s | 54 s | 120 s | 10 m | 539 s |
+   | `migrations` | 67 s | 3 s | 64 s | 170 s | 11 m | 593 s |
+   | `browser` | 59 s | 3 s | 56 s | 200 s | 12 m | 661 s |
+   | `e2e-pgvector` | 304 s | 4 s | 300 s | 600 s | 18 m | 776 s |
+   | `e2e` | 999 s | 4 s | 995 s | 1500 s | 33 m | 981 s |
+   | `verify` (4 shards) | 727–953 s | 3–7 s | 724–946 s | 1700 s | 37 m | 1267–1493 s |
+   | `brand-check` | 10 s | **absent** | 10 s | exempt | 5 m | 290 s |
+
+   `brand-check` recording **no `Setup pnpm` step at all** is the deletion confirmed in CI rather than
+   argued from the file. ★ What this run does **not** prove: it landed in a quiet window (setup 3–7 s),
+   so **the 8-minute step cap has never actually fired.** Its first real test is the next episode.
 
 **Disposition:** stays `unowned`. Items 1 and 2 are the open remainder, and neither is a line in a
 job-control ticket.
