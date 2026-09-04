@@ -424,8 +424,9 @@ export function evaluateCiTimeoutBudgets({ jobs, manifest, requiredJobId = "ci-r
             setupCeiling +
             "s). Re-measure `setupAllowance` and record it, or lower the allowance. This " +
             "number is added to EVERY job cap and is the step cap outright, so raising it " +
-            "moves every budgeted job at once — which is exactly why it may not be raised " +
-            "without a new dated measurement in the same diff.",
+            "moves every budgeted job at once. Raising it PAST THIS CEILING costs a new " +
+            "dated measurement in the same diff; a raise WITHIN the ceiling edits no " +
+            "measurement and is not seen — see item (c) in this file's header.",
         );
       }
     }

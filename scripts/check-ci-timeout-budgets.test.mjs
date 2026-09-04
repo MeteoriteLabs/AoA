@@ -496,6 +496,22 @@ test("★ (D) the withdrawal is written where the register can be read from", ()
   // A residue stated in a PR body and omitted from the durable files has not been disclosed.
   const lib = fs.readFileSync(path.join(repoRoot, "scripts", "lib", "ci-timeout-budgets.mjs"), "utf8");
   assert.match(lib, /A RAISE INSIDE THE CEILING IS NOT SEEN/);
+
+  // THE NEGATIVE HALF. Asserting the disclosure is PRESENT cannot catch the withdrawn
+  // wording surviving elsewhere - which is how an unqualified "may not be raised without
+  // a new dated measurement" sat in the setup_allowance_unjustified stderr string through
+  // two correction rounds, contradicting this same file header. The reader who meets that
+  // string is mid-edit raising the allowance: the precise reader the withdrawal protects.
+  // String matching, not regex: the details are built by concatenating literals, so a
+  // phrase spanning the join is invisible to a naive pattern. These fragments each sit
+  // inside ONE literal, which is what makes them findable.
+  for (const withdrawn of [
+    "may not be raised",
+    "costs a re-measurement in the same diff",
+    "enforced on BOTH dials",
+  ]) {
+    assert.ok(!lib.includes(withdrawn), `withdrawn claim survives in the library: ${withdrawn}`);
+  }
   assert.match(lib, /142 min → 187 min/);
 
   const manifestText = fs.readFileSync(MANIFEST, "utf8");
