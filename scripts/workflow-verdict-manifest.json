@@ -144,6 +144,18 @@
       "watch": "not-watched",
       "reason": "Same as verdict-reconcile.yml@main: the consumer may not be its own consumer. Declared per-branch because the workflow declares `push` on both branches and the completeness check requires an entry for each.",
       "wouldTakeToWatch": "Nothing here — see verdict-reconcile.yml@main."
+    },
+    "keyed-e2b-dat-009-export.yml@docs/replatform-program": {
+      "workflow": "keyed-e2b-dat-009-export.yml",
+      "branch": "docs/replatform-program",
+      "watch": "coverage",
+      "note": "Keyed lane for DAT-009 slice 3 link 2 (the real E2B exportArtifact/digestArtifact). Fires on push to this branch and on dispatch, so coverage is correctly silent between touches - the case a wall-clock rule would misreport."
+    },
+    "keyed-e2b-dat-009-export.yml@claude/e2b-export-artifact": {
+      "workflow": "keyed-e2b-dat-009-export.yml",
+      "branch": "claude/e2b-export-artifact",
+      "watch": "coverage",
+      "note": "The ticket own proving branch, declared because the workflow declares it. If the branch has been deleted the coverage evaluator is silent - nothing is owed for a branch with no commits - so a dead proving branch costs no false incident."
     }
   }
 }

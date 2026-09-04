@@ -102,6 +102,16 @@ export interface E2bSandboxProviderOptions {
    * capability, and the port already classifies this class of value as sensitive.
    */
   readonly redeemDownloadGrant?: (grant: ArtifactDownloadGrantV1) => Promise<Uint8Array>;
+  /**
+   * DAT-009 — how the provider turns an upload grant plus bytes into a stored object.
+   * Injected for the same reason `redeemDownloadGrant` is: the no-key lane must be able to
+   * prove the read -> verify -> reference path with no network, and the keyed lane must be
+   * able to prove the SANDBOX half against real E2B without standing up an object store.
+   *
+   * ★ The implementation MUST NOT log or re-throw the url or headers: the grant is a bearer
+   * capability that writes an attempt-scoped object key until it expires.
+   */
+  readonly performUploadGrant?: (grant: ArtifactUploadGrantV1, bytes: Uint8Array) => Promise<void>;
 }
 
 /** The default redemption: a plain GET against the presigned url with the grant's headers. */
@@ -112,6 +122,45 @@ async function fetchGrantBytes(grant: ArtifactDownloadGrantV1): Promise<Uint8Arr
     throw new Error(`staged-input download failed with status ${response.status}`);
   }
   return new Uint8Array(await response.arrayBuffer());
+}
+
+/**
+ * The default upload: a plain PUT of the bytes against the presigned url with the grant's
+ * headers, plus the checksum header the fenced commit's re-verification needs.
+ *
+ * ★★ `x-amz-checksum-sha256` IS NOT OPTIONAL, and this is the one non-obvious line in the
+ * export path. DAT-002's live MinIO run measured that the control plane binds
+ * `ChecksumAlgorithm: SHA256` when it signs but returns `headers: {}`, so the PUT itself must
+ * carry the checksum; `artifact-commit.ts` then fails CLOSED when the store cannot supply one
+ * to its `headObject` re-verification. An exporter that omits this header uploads
+ * successfully and is rejected at commit, far away from the cause.
+ *
+ * The value is the BASE64 of the raw digest (S3's encoding), while the grant's
+ * `expectedSha256` is hex (`sha256DigestSchema`) — two encodings of the same bytes, and
+ * mixing them up produces a store-side rejection that looks like a checksum mismatch.
+ */
+async function putGrantBytes(grant: ArtifactUploadGrantV1, bytes: Uint8Array): Promise<void> {
+  const response = await fetch(grant.url, {
+    method: "PUT",
+    headers: {
+      // Defaults FIRST so `grant.headers` wins. The grant is the authority on what the
+      // signature covers, and today it is empty (`s3-provider.ts` `presign` returns
+      // `headers: {}`) — but `presign` signs `ContentType` whenever its caller supplies one,
+      // and a signed content-type that disagreed with a hard-coded default here would fail
+      // the signature at the store. Letting the grant override is the only ordering that
+      // survives that change.
+      "content-type": "application/octet-stream",
+      "x-amz-checksum-sha256": createHash("sha256").update(bytes).digest("base64"),
+      ...grant.headers,
+    },
+    // A Uint8Array is a valid BodyInit at runtime; the cast is only for the lib's
+    // ArrayBufferLike variance.
+    body: bytes as unknown as BodyInit,
+  });
+  if (!response.ok) {
+    // The status, never the url — the url IS the capability.
+    throw new Error(`artifact export upload failed with status ${response.status}`);
+  }
 }
 
 function mapState(state: E2bRecordState): SandboxState {
@@ -163,19 +212,38 @@ export class E2bSandboxProvider implements SandboxProvider {
   readonly #templateId: string;
   readonly #defaultTtlMs: number;
   readonly #redeemDownloadGrant: (grant: ArtifactDownloadGrantV1) => Promise<Uint8Array>;
+  readonly #performUploadGrant: (grant: ArtifactUploadGrantV1, bytes: Uint8Array) => Promise<void>;
   readonly advertisedOperations: ReadonlySet<ProviderOperation>;
   readonly checkpointMode: CheckpointMode;
   readonly healthMode: HealthMode;
   /**
-   * DAT-009 slice 1 — declared `"none"` here DELIBERATELY.
+   * DAT-009 — declared `"grant_upload"`, and this one is REAL.
    *
-   * The transport already has `readFile`, so a real implementation is a small, provider-
-   * specific piece — but it is explicitly OUT OF SCOPE for slice 1 (`DAT-009-slice-1-design.md`
-   * §7). Declaring the mode honestly and declining is the correct interim state: a provider
-   * that CLAIMED support and then fabricated a reference would be the WRK-009 defect all over
-   * again, where a fabricated success is byte-identical to a real one on every gate.
+   * Slice 1 declared `"none"` deliberately and named the reason: the transport already has
+   * `readFile`, so a real implementation is "a small, provider-specific piece", explicitly out
+   * of scope for that slice (`DAT-009-slice-1-design.md` §7). This is that piece. The mode now
+   * says `"grant_upload"` because the two methods below actually read the sandbox, verify what
+   * they read against the grant, and move it to object storage — the same standard
+   * `fileStagingMode` is held to. A provider that CLAIMED support and then fabricated a
+   * reference would be the WRK-009 defect all over again, where a fabricated success is
+   * byte-identical to a real one on every gate; the refusal tests below are what keep this
+   * declaration honest.
+   *
+   * ★★ NOTHING IN PRODUCTION READS THIS FIELD — measured by search, not assumed: outside the
+   * two declarations (`provider-wire/src/driver.ts`, `supervisor/noop-provider.ts`), the port's
+   * own type, and tests, the only reads are the two decline guards in this file. No supervisor,
+   * placement or hello builder branches on it. So flipping it from `"none"` changes NO runtime
+   * behaviour anywhere today; it becomes consultable when link 3 exists to consult it.
+   *
+   * ★ WHAT THIS DOES NOT DO. Declaring the mode does not put an artifact on any run.
+   * Nothing in production calls `exportArtifact` — the worker-side sequencer
+   * (digest → mint grant → export → commit) is DAT-009 slice 3 and is unbuilt — and the
+   * kind an exported object is committed under is the COMMITTER's decision, not this
+   * provider's. `countProducedOutputs` filters `kind = 'workspace_patch'`
+   * (`e7-distributed-run-verifier-store.ts:201-211`), so this file moves no capability
+   * counter. See `CLI-008-unit-f-design.md` §1.6 link 2.
    */
-  readonly artifactExportMode: ArtifactExportMode = "none";
+  readonly artifactExportMode: ArtifactExportMode = "grant_upload";
 
   /**
    * CLI-008 Unit B — declared `"grant_download"`, and this one is REAL.
@@ -198,6 +266,7 @@ export class E2bSandboxProvider implements SandboxProvider {
     this.#templateId = options.templateId ?? "base";
     this.#defaultTtlMs = options.defaultTtlMs ?? DEFAULT_TTL_MS;
     this.#redeemDownloadGrant = options.redeemDownloadGrant ?? fetchGrantBytes;
+    this.#performUploadGrant = options.performUploadGrant ?? putGrantBytes;
 
     const requested = new Set<string>((options.advertisedOptionalOps ?? DEFAULT_ADVERTISED_OPTIONAL_OPS).map(String));
     const advertised = new Set<ProviderOperation>(CORE_PROVIDER_OPERATIONS);
@@ -388,18 +457,80 @@ export class E2bSandboxProvider implements SandboxProvider {
     };
   }
 
-  async digestArtifact(_sandboxId: string, _path: string, _ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
-    // See `artifactExportMode` above: honest decline, never a fabricated digest.
-    throw new UnsupportedProviderOperation("digest_artifact");
+  /**
+   * Read an in-sandbox file's bytes, mapping the transport's not-found onto the domain one.
+   *
+   * ★ BOTH drivers throw `E2bTransportNotFoundError` for a missing SANDBOX and for a missing
+   * PATH alike (`real-transport.ts` `readFile`, `mock-transport.ts` `readFile`), and the
+   * distinction does not matter here: either way there is nothing to describe, and the answer
+   * must stay a THROW. A fabricated digest would mint a grant for bytes that do not exist and
+   * push the refusal all the way out to the fenced commit, far from its cause.
+   */
+  async #readArtifactBytes(sandboxId: string, path: string): Promise<Uint8Array> {
+    try {
+      return await this.#transport.readFile(sandboxId, path);
+    } catch (err) {
+      if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
+      throw err;
+    }
   }
 
+  /**
+   * DAT-009 — describe an in-sandbox file. METADATA ONLY; never content.
+   *
+   * The digest and the size are what let the worker mint a grant at all:
+   * `artifactTransferGrantRequestV1Schema` requires BOTH `expectedSha256` and `maxBytes`, and
+   * only the provider can see inside the sandbox. That is the whole reason this is a separate
+   * operation from the export rather than one call.
+   */
+  async digestArtifact(sandboxId: string, path: string, _ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
+    // ★ HONEST LABEL: this guard is UNREACHABLE BY CONSTRUCTION here, because the mode above is a
+    // hard-coded literal. It is kept for exact symmetry with `stageFiles`'s identical shipped
+    // guard, and because the port's contract is "the methods are present on every implementer and
+    // only SUPPORT is optional" — so the decline path must exist even when this implementer never
+    // takes it. It is a contract stub, NOT a live check, and no mutation can kill it; saying so is
+    // the difference between a documented stub and a false claim of enforcement.
+    if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("digest_artifact");
+    const bytes = await this.#readArtifactBytes(sandboxId, path);
+    return { sha256: createHash("sha256").update(bytes).digest("hex"), sizeBytes: bytes.byteLength };
+  }
+
+  /**
+   * DAT-009 — move an in-sandbox file to object storage under `grant`, returning a REFERENCE.
+   *
+   * Grant in, reference out: the bytes go sandbox -> provider -> store and never cross this
+   * port. That is the exact inversion of `stageFiles`, and it is what the byte-egress decision
+   * (Option D) requires — the daemon is dependency-pinned precisely so it never handles them.
+   *
+   * ★★ VERIFY BEFORE UPLOADING, and this is not the same check the store does. The grant was
+   * minted from a PRIOR `digestArtifact` call, so between the two the file can have grown or
+   * changed — a long-running agent still writing, a retry against a mutated sandbox. Re-hashing
+   * here refuses AT THE CAUSE. Without it the PUT succeeds, and the fenced commit's `headObject`
+   * re-verification rejects a checksum that no longer matches the manifest, in a different
+   * process, with nothing left to point at. The size check is separate and comes first: a file
+   * that outgrew its grant must not be uploaded at all.
+   *
+   * Errors carry the path and the digests, never the grant, the url or the headers.
+   */
   async exportArtifact(
-    _sandboxId: string,
-    _path: string,
-    _grant: ArtifactUploadGrantV1,
+    sandboxId: string,
+    path: string,
+    grant: ArtifactUploadGrantV1,
     _ctx: ProviderOpContext,
   ): Promise<ArtifactExportResult> {
-    throw new UnsupportedProviderOperation("export_artifact");
+    // Unreachable by construction, exactly as in `digestArtifact` above — see the note there.
+    if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("export_artifact");
+    const bytes = await this.#readArtifactBytes(sandboxId, path);
+    if (bytes.byteLength > grant.maxBytes) {
+      throw new Error(`artifact at ${path} is ${bytes.byteLength} bytes, over the granted ${grant.maxBytes}`);
+    }
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    if (digest !== grant.expectedSha256) {
+      // The digests, never the url.
+      throw new Error(`artifact at ${path} hashed ${digest}, expected ${grant.expectedSha256}`);
+    }
+    await this.#performUploadGrant(grant, bytes);
+    return { objectKey: grant.objectKey };
   }
 
   /**

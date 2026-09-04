@@ -66,8 +66,12 @@ approval, and no D0-T04 corpus.** (REVISION 1 said otherwise; REVISION 2 correct
    - The plumbing is therefore pure data on both sides.
 
    **Ordered prerequisites, all of which must land first:**
-   1. a REAL provider implements export — `E2bSandboxProvider` currently declares
-      `artifactExportMode: "none"` and declines (DAT-009 slice 1 §4);
+   1. ~~a REAL provider implements export — `E2bSandboxProvider` currently declares
+      `artifactExportMode: "none"` and declines (DAT-009 slice 1 §4);~~ ✅ **DONE 2026-09-04
+      (PR #353)** — `E2bSandboxProvider` declares `"grant_upload"` and implements both methods,
+      proven against a real E2B sandbox. Nothing about the decision changes: the port still
+      carries a grant inbound and a reference outbound, and never bytes. Prerequisites 2 and 3
+      below are untouched, so no job is routed to it yet;
    2. targets advertise it in `capabilityCeiling` (operator action via the admin route);
    3. workers REPORT it in `reportedCapabilities` — which flows from the daemon's hello builder,
       and the daemon's only production builder is `buildDesktopHello`, whose own header says it

@@ -175,7 +175,10 @@ The reason string printed to the operator on every verify run
 
 And it omits the links that are actually decisive: `artifactExportMode: "none"` on **both** shipped
 providers (`sandbox-e2b-provider/src/e2b-provider.ts:178`,
-`provider-wire/src/driver.ts:83`), the absence of any `artifactPrepared` emitter on `EventSequencer`
+`provider-wire/src/driver.ts:83`) — ★ **half of this citation went stale 2026-09-04 (PR #353): the
+E2B provider now declares `"grant_upload"`. E7-F016 is UNAFFECTED — its subject is that clause 6's
+reason string omits the decisive links, and an omitted link being built later does not make the text
+name it** — the absence of any `artifactPrepared` emitter on `EventSequencer`
 (seven emitters at `supervisor/events.ts:147,155,162,170,178,206,220`; `artifact_prepared` is in the
 frozen vocabulary at `worker-protocol/src/events.ts:358` with payload `{artifactId, kind}` at
 `:92-94`), the absence of any **upload-direction** grant consumer in the daemon (the only
@@ -233,9 +236,20 @@ the judge, and §4 is three failed attempts at exactly those.
 
 1. **No file to export.** Unit D's script runs `claude --print -` and lets stdout go nowhere in
    particular. There is no agreed absolute path inside the sandbox holding anything this run emitted.
-2. **No real `exportArtifact`/`digestArtifact`.** `E2bSandboxProvider` declares
+2. ~~**No real `exportArtifact`/`digestArtifact`.** `E2bSandboxProvider` declares
    `artifactExportMode = "none"` and declines both (`e2b-provider.ts:178,391-402`) — honestly, and
-   with `#transport.readFile` (`real-transport.ts:196`) sitting one line away, uncalled.
+   with `#transport.readFile` (`real-transport.ts:196`) sitting one line away, uncalled.~~
+   ✅ **BUILT 2026-09-04 (PR #353, Track B).** The mode is `"grant_upload"` and both methods are
+   real: `digestArtifact` reads and returns `{sha256, sizeBytes}` (metadata only), `exportArtifact`
+   reads → size-checks → **re-hashes against the grant** → PUTs → returns `{objectKey}`. The
+   re-hash is the non-obvious part: the grant is minted from a *prior* digest call, so a file the
+   agent is still writing must be refused **at the cause** rather than at the fenced commit's
+   `headObject` check in another process. Proven against a **real E2B sandbox** on a file the
+   sandbox itself produced (`keyed-e2b-dat-009-export.yml`, 4/4, run `33856478690`), including the
+   TOCTOU refusal, and given a positive control on a reverted branch.
+   ★ **It flips NO counter, and §1.6's arithmetic is unchanged by it.** Link 3 is still unbuilt, so
+   nothing calls it; and the artifact arm still filters `kind = 'workspace_patch'`, so even a
+   committed export of another kind would not count. This closed a *prerequisite*, not the gate.
 3. **No worker-side consumer.** Nothing sequences digest → mint upload grant → export → commit. This
    is DAT-009 slice 3, chartered on Track B (GO-BOOK §1.9.3) and unbuilt.
 4. **No announcement.** `EventSequencer` has no `artifactPrepared` method, so a committed artifact is
@@ -273,8 +287,15 @@ so a fourth pass prices it rather than rediscovering it.
 
 Measured, and it constrains any future plan: the daemon's HTTP client declares `artifactCommit`
 (`worker-daemon/src/transport/client.ts:266,567`) and **no production code calls it** —
-`patch/result-commit.ts:25` names it only in a comment — and both shipped providers declare
-`artifactExportMode: "none"` (`e2b-provider.ts:178`, `provider-wire/src/driver.ts:83`).
+`patch/result-commit.ts:25` names it only in a comment.
+
+★ **Corrected 2026-09-04 (PR #353).** This paragraph used to add "and both shipped providers declare
+`artifactExportMode: "none"`". That half is **no longer true**: `E2bSandboxProvider` now declares
+`"grant_upload"` and implements both methods for real (§1.6 link 2). `provider-wire/src/driver.ts:83`
+still declares `"none"`, honestly. **The section's conclusion is unaffected and the correction must
+not be read as softening it** — the arm's producers are counted by who *calls* the export and the
+commit, not by who *can* serve them, and that count is still **zero**. A capable provider with no
+caller produces exactly as many `job_artifacts` rows as an incapable one.
 
 ★ **A sweep angle claimed this made the arm structurally unreachable, because `EventSequencer` has no
 `artifactPrepared` emitter. The premise is TRUE and the inference is FALSE.** Verified: `events.ts`

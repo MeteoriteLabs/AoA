@@ -42,7 +42,7 @@
     },
     "packages/sandbox-e2b-provider": {
       "mode": "pinned",
-      "count": 12
+      "count": 14
     },
     "packages/sandbox-fake-provider": {
       "mode": "pinned",
