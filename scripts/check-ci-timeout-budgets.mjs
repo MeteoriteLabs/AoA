@@ -13,6 +13,10 @@
 // `setupAllowance.measuredMaxSetupSeconds`. The allowance ceiling was missing until
 // 2026-09-05; it is the dial one edit moves across all eight jobs at once.
 //
+// Both comparisons are against a measurement DECLARED IN THE SAME COMMIT. Nothing here is
+// compared to a previously committed value, so a raise that stays inside a ceiling passes
+// silently — `--explain` prints how much room that is, per number. See (c) in the library.
+//
 // See scripts/lib/ci-timeout-budgets.mjs for why a single job cap is the wrong instrument
 // for a step whose duration is a third-party network fetch.
 // -----------------------------------------------------------------------------
@@ -24,6 +28,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   MAX_SETUP_ALLOWANCE_FACTOR,
+  MAX_WORK_BUDGET_FACTOR,
   evaluateCiTimeoutBudgets,
   parseWorkflowJobs,
   derivedJobCapMinutes,
@@ -51,8 +56,9 @@ function main() {
 
   if (process.argv.includes("--explain")) {
     const rows = Object.entries(manifest.jobs || {}).sort(([a], [b]) => a.localeCompare(b));
-    console.log("job                    work    setup     cap   (measured worst work)");
+    console.log("job                    work    setup     cap   (measured worst work)   free work raise");
     for (const [id, e] of rows) {
+      const workCeiling = MAX_WORK_BUDGET_FACTOR * e.measuredMaxWorkSeconds;
       console.log(
         id.padEnd(22) +
           String(e.workBudgetSeconds + "s").padStart(6) +
@@ -64,26 +70,43 @@ function main() {
           e.measuredSampleSize +
           ", step cap " +
           derivedStepCapMinutes(e) +
-          "m)",
+          "m)" +
+          "   +" +
+          (workCeiling - e.workBudgetSeconds) +
+          "s to the " +
+          workCeiling +
+          "s ceiling",
       );
     }
     const sa = manifest.setupAllowance || {};
+    const setupCeiling = MAX_SETUP_ALLOWANCE_FACTOR * (sa.measuredMaxSetupSeconds || 0);
+    // The allowance is one number repeated per job; say so from the data rather than assuming.
+    const declared = [...new Set(rows.map(([, e]) => e.setupAllowanceSeconds))].sort((a, b) => a - b);
     console.log(
       "\nsetup allowance ceiling: " +
         MAX_SETUP_ALLOWANCE_FACTOR +
         "x " +
         sa.measuredMaxSetupSeconds +
         "s = " +
-        MAX_SETUP_ALLOWANCE_FACTOR * sa.measuredMaxSetupSeconds +
+        setupCeiling +
         "s (measured " +
         sa.measuredOn +
         " over n=" +
         sa.measuredSampleSize +
-        ")",
+        ") — declared " +
+        declared.join("/") +
+        "s across " +
+        rows.length +
+        " job(s), so +" +
+        (setupCeiling - declared[declared.length - 1]) +
+        "s is free" +
+        (declared.length === 1 ? " on all " + rows.length + " at once" : " on the highest"),
     );
     console.log(
       "★ the job cap is work + allowance, and the allowance is UNRESERVED: a job whose setup is\n" +
-        "  fast may spend the cap on work. workBudgetSeconds is a DECLARED bound, not a runtime one.",
+        "  fast may spend the cap on work. workBudgetSeconds is a DECLARED bound, not a runtime one.\n" +
+        "★ the `free` figures are what this guard does NOT see: it compares each number to a\n" +
+        "  measurement declared in the same commit, never to the value previously committed.",
     );
     console.log("");
   }

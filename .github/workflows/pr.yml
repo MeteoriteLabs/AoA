@@ -481,11 +481,19 @@ jobs:
 
       # E3-F036 class / E6-F014. Every required-lane cap in this file — including this job's
       # own — must be the sum of a declared work budget and a declared infrastructure
-      # allowance, both derived in .github/ci-timeout-budgets.json from a dated measurement.
-      # It refuses a cap edited on its own, a work budget raised past its own measurement, a
-      # pnpm setup step with no cap of its own, and a new required-lane job that arrives with
+      # allowance, both declared in .github/ci-timeout-budgets.json beside a dated measurement.
+      # It refuses a cap edited on its own, a work budget above 2x — or below 1x — the
+      # measurement DECLARED BESIDE IT, an allowance outside 1x-1.5x the declared worst setup,
+      # a pnpm setup step with no cap of its own, and a new required-lane job that arrives with
       # a number nobody justified.
-      - name: CI timeout budgets are derived, not chosen (E3-F036 class)
+      #
+      # It does NOT compare any number to the value PREVIOUSLY COMMITTED, so a raise that stays
+      # inside a ceiling passes silently: shipped, that is +484s of work budget on verify, +592s
+      # on e2e and +166.5s of allowance on all eight at once — 142 to 187 minutes of derived cap
+      # in total, with no measured* field edited. `--explain` prints the room. See (c) in
+      # scripts/lib/ci-timeout-budgets.mjs; closing it needs a diff-aware instrument that does
+      # not exist.
+      - name: CI timeout caps derive from budgets bounded by declared measurements (E3-F036 class)
         run: |
           node scripts/check-ci-timeout-budgets.mjs
           node --test scripts/check-ci-timeout-budgets.test.mjs

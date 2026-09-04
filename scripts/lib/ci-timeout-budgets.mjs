@@ -28,13 +28,24 @@
 //     step timeout-minutes ==  ceil(setupAllowanceSeconds / 60)
 //
 // The step cap makes a slow registry fail BY NAME instead of eating an unrelated step's
-// budget. And BOTH declared numbers are bounded by a dated measurement, so raising EITHER is
-// not a free move: `workBudgetSeconds` may not exceed `MAX_WORK_BUDGET_FACTOR ×
-// measuredMaxWorkSeconds` (clause `work_budget_unjustified`), and `setupAllowanceSeconds` may
-// not exceed `MAX_SETUP_ALLOWANCE_FACTOR ×` the manifest's
-// `setupAllowance.measuredMaxSetupSeconds` (clause `setup_allowance_unjustified`). Both are
-// numbers that must be re-measured, dated, and attributed to real run ids in the same diff.
-// "Raise the cap until it stops complaining" is refused on both dials.
+// budget. Each declared number is then compared against a measurement declared beside it in
+// the same file. Stated as what the clauses literally refuse:
+//
+//   `work_budget_unjustified`         workBudgetSeconds > MAX_WORK_BUDGET_FACTOR ×
+//                                     that job's own declared measuredMaxWorkSeconds
+//   `work_budget_below_measurement`   workBudgetSeconds < that same declared number
+//   `setup_allowance_unjustified`     setupAllowanceSeconds > MAX_SETUP_ALLOWANCE_FACTOR ×
+//                                     the manifest's declared setupAllowance
+//                                     .measuredMaxSetupSeconds
+//   `setup_allowance_below_measurement`   setupAllowanceSeconds < that same declared number
+//   `measurement_incomplete` /        a measured* block with no ISO date, no run ids, or
+//     `setup_measurement_incomplete`  n < MIN_MEASUREMENT_SAMPLE_SIZE
+//   `job_cap_mismatch` /              a cap that is not the arithmetic above
+//     `setup_step_cap_mismatch`
+//   `setup_step_uncapped`             a `Setup pnpm` step with no timeout-minutes
+//   `job_missing_budget`              a job running pnpm/action-setup with no manifest entry
+//   `required_lane_unbudgeted` /      a required-lane job that is neither budgeted nor
+//     `exempt_without_reason`         exempt with a reason of at least 20 characters
 //
 // ★ WHAT THIS DOES NOT DO — stated here because the first version of this file claimed it did,
 // and the claim was refuted on review (2026-09-05).
@@ -59,17 +70,44 @@
 //     a job that still runs `pnpm/action-setup` gets `job_missing_budget` whether it is exempt
 //     or not, so exemption cannot launder a budgeted job.
 //
-// (c) What the split DOES buy, and this is the whole of it: (1) the infrastructure half fails
+// (c) A RAISE INSIDE THE CEILING IS NOT SEEN, AND THE ROOM IS LARGE. Every clause above
+//     compares a declared number to a measurement DECLARED IN THE SAME FILE. No clause
+//     compares anything to a previously committed value, so the shipped numbers are not a
+//     floor for the next diff — only the ceilings are. MEASURED against the shipped manifest
+//     (2026-09-05, by evaluating this library on the real pr.yml with the declared numbers
+//     pushed to their ceilings and NO `measured*` field edited):
+//
+//       declared vs its own ceiling   verify 1700 / 2184 s     e2e 1500 / 2092 s
+//                                     e2e-pgvector 600 / 776   browser 200 / 210
+//                                     migrations 170 / 178     policy 170 / 176
+//                                     distributed-contract 120 / 128    lint 120 / 122
+//       setupAllowanceSeconds         480 / 646.5 s — uniform, so it moves all eight
+//
+//     Taking all of it: the eight derived job caps go 142 min → 187 min in total (`verify`
+//     37→48, `e2e` 33→46, and every step cap 8→11), and `evaluateCiTimeoutBudgets` returns
+//     `{ok: true, findings: []}`. So "raise the cap until it stops complaining" is available
+//     for that much before any clause here has an opinion.
+//
+//     Pinning a budget to its PREVIOUS value is not a clause that can be added to this
+//     function: it is pure over one commit's workflow + manifest and has no access to the
+//     prior revision of either. It would be a different instrument (a diff-aware check).
+//     Not built here, and not claimed.
+//
+// (d) What the split DOES buy, and this is the whole of it: (1) the infrastructure half fails
 //     by name at its own step cap instead of consuming an unrelated step's budget and being
-//     misattributed, and (2) two numbers each bounded by their own dated measurement, in place
-//     of one number bounded by nothing.
+//     misattributed, and (2) two numbers each compared against a dated measurement declared
+//     beside them, in place of one number compared against nothing.
 //
 // Pure. The caller supplies the parsed workflow and the manifest.
 
-/** A work budget may exceed the measured maximum by at most this factor. Two is deliberately
- * generous — the point is not to squeeze, it is to make an UNBOUNDED raise impossible without
- * a new measurement. `verify` sat at 60 minutes against a measured 18-minute worst work, and
- * that 42 minutes of undeclared slack once masked a real hang for weeks. */
+/** A work budget may exceed the DECLARED measured maximum by at most this factor. Two is
+ * deliberately generous — the point is not to squeeze, it is that an UNBOUNDED number becomes
+ * a bounded one. `verify` sat at 60 minutes against a measured 18-minute worst work, and that
+ * 42 minutes of undeclared slack once masked a real hang for weeks.
+ *
+ * ★ Read with (c) above: because the comparison is to the declared measurement and not to the
+ * previous budget, everything between a shipped budget and 2× its measurement is a raise this
+ * clause does not see — 1700 → 2184 s on `verify`, 1500 → 2092 s on `e2e`. */
 export const MAX_WORK_BUDGET_FACTOR = 2;
 
 /** The infrastructure allowance may exceed the measured worst setup step by at most this
@@ -85,7 +123,11 @@ export const MAX_WORK_BUDGET_FACTOR = 2;
  * (2026-09-05) showed `setupAllowanceSeconds: 480 -> 3000` plus the two caps it derives was a
  * measurement-free three-line diff that the guard PASSED — taking `policy` from an 11-minute
  * cap to 53 and its step cap from 8 to 50, on all eight jobs at once. That was strictly easier
- * than the work-budget raise the guard already refused, and strictly more damaging. */
+ * than the work-budget raise the guard already refused, and strictly more damaging.
+ *
+ * ★ What the ceiling changed and what it did not: 3000 is now refused, 646 is not. The shipped
+ * 480 sits 166.5 s below 1.5 × 431, and that room is uniform, so a measurement-free edit still
+ * moves every budgeted job's cap by up to 3 minutes and every step cap 8 → 11. See (c). */
 export const MAX_SETUP_ALLOWANCE_FACTOR = 1.5;
 
 /** Fewer samples than this is not a measurement. Each instance of this class was first

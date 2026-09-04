@@ -48,7 +48,12 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const WORKFLOW = path.join(repoRoot, ".github", "workflows", "pr.yml");
 const MANIFEST = path.join(repoRoot, ".github", "ci-timeout-budgets.json");
 
-const workflowText = fs.readFileSync(WORKFLOW, "utf8");
+// Normalised to LF. On a Windows checkout with core.autocrlf the working tree is CRLF, and the
+// mutation helpers below rewrite lines by anchored regex (`...: 8$`), which then match nothing
+// and silently leave the workflow unmutated -- a mutation test that mutates nothing passes or
+// fails for reasons unrelated to the clause under test. The guard itself is line-ending
+// agnostic (parseWorkflowJobs splits on a CR-optional newline); only these helpers care.
+const workflowText = fs.readFileSync(WORKFLOW, "utf8").replace(/\r\n/g, "\n");
 const manifest = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -165,7 +170,9 @@ test("catches instance ten's other shape: a required-lane job with a cap and no 
   assert.equal(f.job, "worker-protocol-contract-bytes");
 });
 
-test("refuses raise-the-cap-until-it-is-green", () => {
+test("refuses a work budget past 2x the measurement DECLARED BESIDE IT", () => {
+  // Note what this does and does not say. The comparison is to `measuredMaxWorkSeconds` in the
+  // same file, not to the budget previously committed — see the (D) residue test below.
   const m = clone(manifest);
   const measured = m.jobs.policy.measuredMaxWorkSeconds;
   m.jobs.policy.workBudgetSeconds = MAX_WORK_BUDGET_FACTOR * measured + 1;
@@ -309,10 +316,13 @@ test("the allowance ceiling is exactly MAX_SETUP_ALLOWANCE_FACTOR x its measurem
   );
 });
 
-test("the hatch has a PRICE, not a lock: raising the allowance costs a dated re-measurement", () => {
+test("raising the allowance PAST ITS CEILING costs a dated re-measurement", () => {
   // The point is not that 3000 is forbidden forever. It is that reaching it requires editing
   // measuredMaxSetupSeconds -- a claim about reality, dated and attributed to run ids, sitting
   // in the diff where review can argue with it. Exactly the work dial's bargain.
+  //
+  // ★ SCOPE, because an earlier version of this file's title claimed more than this test shows:
+  // 3000 is past the ceiling. 646 is not, and costs nothing. See the (D) test below.
   const m = clone(manifest);
   for (const e of Object.values(m.jobs)) e.setupAllowanceSeconds = 3000;
 
@@ -389,4 +399,102 @@ test("★ the residue is stated, not bounded: work may spend the whole cap minus
   const lib = fs.readFileSync(path.join(repoRoot, "scripts", "lib", "ci-timeout-budgets.mjs"), "utf8");
   assert.match(lib, /THE JOB CAP DOES NOT BOUND THE WORK/);
   assert.match(lib, /`lint` 9\.8×/);
+});
+
+// ---------------------------------------------------------------------------
+// (D) THE RAISE THIS GUARD DOES NOT SEE, added 2026-09-05 after a second review.
+//
+// (C) closed the case where a number leaves its ceiling. It did not — and an earlier version
+// of this file's prose said it did — close the case where a number moves UP TO its ceiling.
+// Every clause compares a declared number to a measurement declared in the SAME FILE; none
+// compares anything to a previously committed value. So the shipped numbers are not a floor.
+//
+// These are DISCLOSURE tests, not guard clauses. They assert that the guard PASSES the free
+// raise, and that the figures quoted in the manifest, the library and the GO-BOOK are the
+// figures the shipped manifest actually implies. If someone later builds the diff-aware
+// instrument that closes this, these reds and the prose gets corrected with them.
+// ---------------------------------------------------------------------------
+
+/** Every declared number pushed to its own ceiling, with NO `measured*` field touched. */
+function freeRaise(m) {
+  const raised = clone(m);
+  raised.setupAllowance.measuredMaxSetupSeconds = m.setupAllowance.measuredMaxSetupSeconds;
+  const allowance = Math.floor(MAX_SETUP_ALLOWANCE_FACTOR * m.setupAllowance.measuredMaxSetupSeconds);
+  for (const e of Object.values(raised.jobs)) {
+    e.workBudgetSeconds = Math.floor(MAX_WORK_BUDGET_FACTOR * e.measuredMaxWorkSeconds);
+    e.setupAllowanceSeconds = allowance;
+  }
+  return raised;
+}
+
+test("★ (D) a raise to the ceiling edits NO measurement and the guard prints OK", () => {
+  const raised = freeRaise(manifest);
+
+  // Not a single measured* field differs from the shipped manifest.
+  for (const [id, e] of Object.entries(raised.jobs)) {
+    const shipped = manifest.jobs[id];
+    for (const k of ["measuredMaxWorkSeconds", "measuredSampleSize", "measuredOn"]) {
+      assert.deepEqual(e[k], shipped[k], `${id}.${k} must be untouched by a free raise`);
+    }
+  }
+  assert.deepEqual(raised.setupAllowance, manifest.setupAllowance);
+
+  // POSITIVE CONTROL. Asserting `ok` proves nothing unless this harness can produce a red at
+  // all — the same trap (C) records. One second past a ceiling must red on the same inputs.
+  const past = clone(raised);
+  past.jobs.policy.workBudgetSeconds += 1;
+  assert.ok(
+    codes(run(reDeriveCaps(workflowText, past), past)).includes("work_budget_unjustified"),
+    "control: one second past the ceiling must red, or this test proves nothing",
+  );
+
+  const result = run(reDeriveCaps(workflowText, raised), raised);
+  assert.equal(result.ok, true, "the free raise is not refused: " + JSON.stringify(result.findings));
+});
+
+test("★ (D) the size of the free raise is the size the docs quote", () => {
+  const raised = freeRaise(manifest);
+  const sum = (m) => Object.values(m.jobs).reduce((a, e) => a + derivedJobCapMinutes(e), 0);
+
+  assert.equal(sum(manifest), 142, "shipped total derived job cap");
+  assert.equal(sum(raised), 187, "total after a measurement-free raise to the ceilings");
+  assert.equal(derivedJobCapMinutes(manifest.jobs.verify), 37);
+  assert.equal(derivedJobCapMinutes(raised.jobs.verify), 48);
+  assert.equal(derivedJobCapMinutes(manifest.jobs.e2e), 33);
+  assert.equal(derivedJobCapMinutes(raised.jobs.e2e), 46);
+  for (const id of Object.keys(manifest.jobs)) {
+    assert.equal(derivedStepCapMinutes(manifest.jobs[id]), 8);
+    assert.equal(derivedStepCapMinutes(raised.jobs[id]), 11);
+  }
+
+  // The three headline pairs quoted in the manifest, the library and the GO-BOOK.
+  assert.equal(manifest.jobs.verify.workBudgetSeconds, 1700);
+  assert.equal(MAX_WORK_BUDGET_FACTOR * manifest.jobs.verify.measuredMaxWorkSeconds, 2184);
+  assert.equal(manifest.jobs.e2e.workBudgetSeconds, 1500);
+  assert.equal(MAX_WORK_BUDGET_FACTOR * manifest.jobs.e2e.measuredMaxWorkSeconds, 2092);
+  assert.equal(manifest.jobs.policy.setupAllowanceSeconds, 480);
+  assert.equal(MAX_SETUP_ALLOWANCE_FACTOR * manifest.setupAllowance.measuredMaxSetupSeconds, 646.5);
+});
+
+test("★ (D) the withdrawal is written where the register can be read from", () => {
+  // A residue stated in a PR body and omitted from the durable files has not been disclosed.
+  const lib = fs.readFileSync(path.join(repoRoot, "scripts", "lib", "ci-timeout-budgets.mjs"), "utf8");
+  assert.match(lib, /A RAISE INSIDE THE CEILING IS NOT SEEN/);
+  assert.match(lib, /142 min → 187 min/);
+
+  const manifestText = fs.readFileSync(MANIFEST, "utf8");
+  assert.match(manifestText, /WHAT IT DOES NOT SEE: A RAISE INSIDE THE CEILING/);
+  assert.match(manifestText, /142 to 187 minutes/);
+
+  const ownership = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, "scripts", "finding-ownership.json"), "utf8"),
+  );
+  for (const id of ["E3-F036", "E6-F014"]) {
+    const reason = ownership.findings[id].reason;
+    assert.match(reason, /WITHDRAWN/, `${id} must carry the withdrawal, not just the PR body`);
+    assert.match(reason, /142 to 187 minutes|E3-F036 item \(4\)/, `${id} must carry or cite the size`);
+  }
+
+  const goBook = fs.readFileSync(path.join(repoRoot, "docs", "replatform", "GO-BOOK.md"), "utf8");
+  assert.match(goBook, /142 min → 187 min/);
 });

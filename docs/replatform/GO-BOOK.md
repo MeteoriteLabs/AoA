@@ -728,30 +728,44 @@ plan + evidence: `docs/replatform/CI-VERIFY-PARALLELIZATION.md`.
 > third-party fetch it does not control — the `Setup pnpm` step, measured at 4 s p50 and 431 s worst,
 > which now carries its own step-level cap so a slow registry fails under its own name.
 > `scripts/check-ci-timeout-budgets.mjs` (in `policy`) refuses a cap edited on its own, a work budget
-> more than 2× that job's dated measurement, and — since the 2026-09-05 correction below — an
-> allowance more than 1.5× the dated worst `Setup pnpm` step. **The instruction above is unchanged
-> and is now enforced on BOTH dials: raising a cap costs a re-measurement in the same diff.** Seven
-> caps went down, one (`e2e` 30→33) went up, and `brand-check`'s pnpm step was deleted rather than
-> capped. See the 2026-09-04 addenda on E3-F036 and E6-F014 — both remain `open`/`unowned`: the
-> cause of the pnpm episode is still undiagnosed, and network-reaching *tests* are still unguarded.
+> above 2× — or below 1× — the `measuredMaxWorkSeconds` **declared beside it**, and, since the
+> 2026-09-05 correction below, an allowance above 1.5× — or below 1× — the `measuredMaxSetupSeconds`
+> **declared in the manifest**. Seven caps went down, one (`e2e` 30→33) went up, and `brand-check`'s
+> pnpm step was deleted rather than capped. See the 2026-09-04 addenda on E3-F036 and E6-F014 — both
+> remain `open`/`unowned`: the cause of the pnpm episode is still undiagnosed, and network-reaching
+> *tests* are still unguarded.
 >
-> ★★★ **Correction to the correction, 2026-09-05 — the sentence above was FALSE as first shipped,
-> and is only true now.** Review found the ceiling applied to `workBudgetSeconds` alone.
-> `setupAllowanceSeconds` was validated as a positive number and nothing else — so editing that one
-> uniform value 480 → 3000, plus the two caps it derives, was a **measurement-free three-line diff
-> that the guard PASSED**: `policy` 11 min → 53 min and its step cap 8 → 50, on all eight jobs at
-> once. Strictly easier than the raise the guard did refuse, and strictly more damaging. The
-> allowance now carries its own dated, run-attributed measurement (`setupAllowance` in the manifest)
-> and a 1.5× ceiling, and the refuting diff is pinned as a test.
+> ★★★ **Correction to the correction, 2026-09-05.** Review found the ceiling applied to
+> `workBudgetSeconds` alone. `setupAllowanceSeconds` was validated as a positive number and nothing
+> else — so editing that one uniform value 480 → 3000, plus the two caps it derives, was a
+> **measurement-free three-line diff that the guard PASSED**: `policy` 11 min → 53 min and its step
+> cap 8 → 50, on all eight jobs at once. Strictly easier than the raise the guard did refuse, and
+> strictly more damaging. The allowance now carries its own dated, run-attributed measurement
+> (`setupAllowance` in the manifest) and a 1.5× ceiling, and the refuting diff is pinned as a test.
+>
+> ★★ **Second correction, same day: an earlier version of this row said raising a cap now costs a
+> re-measurement on both dials. That is withdrawn — it is computable from the shipped manifest that
+> it is false.** Both clauses compare a declared number to a measurement declared **in the same
+> file**; neither compares anything to a **previously committed** value. So the shipped numbers are
+> not a floor for the next diff, and the room below the ceilings is large. MEASURED 2026-09-05 by
+> evaluating the guard library against the real `pr.yml` with every declared number pushed to its own
+> ceiling and **no `measured*` field edited**: `verify` 1700/2184 s, `e2e` 1500/2092 s,
+> `e2e-pgvector` 600/776, `browser` 200/210, `migrations` 170/178, `policy` 170/176,
+> `distributed-contract` 120/128, `lint` 120/122, allowance 480/646.5 (uniform, so it moves all
+> eight). Taking all of it: the eight derived job caps go **142 min → 187 min** in total (`verify`
+> 37→48, `e2e` 33→46) and every step cap 8→11, **and the guard prints OK**. A clause pinning a budget
+> to its previous value cannot live in this guard — it is pure over one commit's `pr.yml` plus the
+> manifest and cannot see the prior revision of either; it would be a separate diff-aware instrument.
+> Not built, not claimed. The residue is pinned by a test so it cannot drift silently.
 >
 > ★ **And one claim is WITHDRAWN rather than fixed. "The job cap bounds only the work" was never
 > true.** GitHub's `timeout-minutes` covers every step, so the allowance is additive and
 > **unreserved**: when `Setup pnpm` runs at its 4 s p50, work may spend the whole cap minus 4 s —
 > `lint` 9.8× its measured worst work, `distributed-contract` 9.3×, `policy` 7.5×. Nothing at runtime
-> compares realized work to `workBudgetSeconds`. What the split actually buys is two bounded numbers
-> instead of one unbounded one, and an infrastructure failure that arrives **under its own name**
-> instead of killing an innocent step. Bounding work independently would need a runtime work-duration
-> check; that is not built, and is not claimed.
+> compares realized work to `workBudgetSeconds`. What the split does buy is two numbers each compared
+> against a dated measurement in place of one compared against nothing, and an infrastructure failure
+> that arrives **under its own name** instead of killing an innocent step. Bounding work independently
+> would need a runtime work-duration check; that is not built, and is not claimed.
 
 **The timeout was masking two real, pre-existing failures** (verify had not *completed* since
 ~2026-08-24, so CI never reported them). Sharding surfaced both; both are fixed in the same PR:
