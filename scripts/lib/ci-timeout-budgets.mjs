@@ -42,8 +42,9 @@
 // (a) THE JOB CAP DOES NOT BOUND THE WORK. GitHub's job `timeout-minutes` covers every step in
 //     the job, so the allowance is ADDITIVE AND UNRESERVED. When the setup step is fast — 4 s
 //     at the p50 — the work may spend the whole cap minus those 4 s. Measured worst work
-//     against cap-minus-p50-setup: `lint` 9.8×, `distributed-contract` 9.3×, `policy` 7.5×,
-//     `migrations` 7.4×, `browser` 6.8×, `verify` 2.0×, `e2e` 1.9×. That is the SAME SHAPE the
+//     against cap-minus-p50-setup — ALL EIGHT, so the list cannot be read as a selection:
+//     `lint` 9.8×, `distributed-contract` 9.3×, `policy` 7.5×, `migrations` 7.4×,
+//     `browser` 6.8×, `e2e-pgvector` 2.8×, `verify` 2.0×, `e2e` 1.9×. That is the SAME SHAPE the
 //     paragraph above indicts a combined cap for; the split shrank the magnitudes (the caps
 //     went down) and made the infrastructure half fail under its own name, but it did not
 //     change the shape. Bounding realized work independently of setup would need a runtime
