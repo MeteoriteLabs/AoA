@@ -717,7 +717,7 @@ was one job running the whole vitest suite in a single lane (~56 min at `maxFork
 (`pnpm exec vitest run --shard=i/4`); the 60-min cap was left **unchanged** (as a per-shard cap). Full
 plan + evidence: `docs/replatform/CI-VERIFY-PARALLELIZATION.md`.
 
-> ★ **Correction 2026-09-04 (TRACK A, commit `c74bb23ea`): the per-shard cap is now 37, and every
+> ★ **Correction 2026-09-04 (TRACK A, PR #363): the per-shard cap is now 37, and every
 > required-lane cap that carries a pnpm fetch is DERIVED from the manifest rather than chosen.** Leaving 60 in place was the right
 > call in August — a cap must not be raised to chase green — but it was never re-derived after
 > sharding, and a cap far above anything a healthy run can reach has stopped being a check: measured
