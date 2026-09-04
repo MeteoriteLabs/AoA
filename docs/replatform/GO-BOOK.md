@@ -671,19 +671,38 @@ Cause and fix are in **E6-F010** (`E6-deployment-test-harness/findings.md`); WRK
 part worth carrying forward is structural, not the bug: **`d1-merge-train` is not a required check**
 (branch protection requires only `ci-required`, from `pr.yml`) and it runs on `push` to this branch,
 i.e. after merge. A red verdict nobody consumes is operationally identical to a check that does not
-run — this programme's own worst failure class, one lane over. **After every merge that touches
-`docker/**`, `docker-compose.d1.yml` or `tests/d1/**`, check the lane's verdict for that sha.**
+run — this programme's own worst failure class, one lane over.
 
-★ **That last instruction is a HABIT, and the gap it papers over is now chartered as
-[`DEP-013`](./epics/E6-deployment-test-harness/tickets/DEP-013-design.md) — give the verdict a
-READER.** Two things measured while filing it are worth carrying even before it is built:
-DEP-004 specified that failure evidence is *retained* and it was — all three red runs uploaded a
-complete evidence bundle, and all three expired **unread**; production was specified, consumption
-never was. And it is not one lane: `cross-platform-weekly.yml`'s last three scheduled runs
-(08-16 / 08-23 / 08-30) are all `cancelled` — **three weeks with no cross-platform verdict at all,
-still true today** — so any session that has been treating that lane as evidence should stop.
-DEP-013 also records why "just make it a required check" is not the fix: this branch has **no
-branch protection at all** (404), and the lane never runs on `pull_request`.
+★ **The habit is RETIRED: the verdict now has a reader.**
+[`DEP-013`](./epics/E6-deployment-test-harness/tickets/DEP-013-result.md) shipped 2026-09-04, all
+five slices. Do **not** hand-check the lane after a `docker/**` merge any more — read the
+consumer. `verdict-reconcile.yml` runs on every push to this branch (and on a 6h cron once it
+reaches `main`), sweeps every declared `(workflow, branch)` STREAM, and rewrites ONE tracking
+issue labelled `verdict-consumer` — **including when everything is green**, so quiet-and-healthy
+stays distinguishable from dead. `pr.yml`'s `policy` job carries the terminating reader
+("Verdict consumer is alive"), and **it gates on the verdict having been READ, never on the
+verdict itself**: a red watched lane updates the issue and blocks nothing, while a SILENT
+consumer reds `ci-required`. Making the lane a required check was rejected on measurement, not
+taste — this branch has **no branch protection at all** (404), the lane never runs on
+`pull_request`, and a second required context violates `ci-lanes.mjs` HARD RULE #2.
+
+Three things measured while building it, worth carrying:
+
+1. **DEP-004's evidence machinery worked perfectly and that was not enough.** All three red runs
+   uploaded a complete bundle; all three expired **unread**. Retention was specified, built and
+   honoured. Consumption was never specified at all. *A check's verdict needs a named consumer,
+   and the consumer's WIRING is a separate artifact from the check.*
+2. **It is not one lane.** `cross-platform-weekly.yml`'s last three scheduled runs (08-16 /
+   08-23 / 08-30) are all `cancelled` — **three weeks with no cross-platform verdict at all,
+   still true today** — so any session treating that lane as evidence should stop. It is the
+   consumer's first live finding, and reporting it is not the same claim as fixing it.
+3. ★ **What is enforced TODAY is narrower than "DEP-013 shipped".** The reader is wired and
+   fails the job, but until the first reconciler run publishes there is no artifact to read, so
+   it prints `OK (not_bootstrapped)` and passes. The blocking half is exercised and has not yet
+   blocked. That tolerance is one condition and removes itself on the first completed reconciler
+   run — no flag, nobody to remember. **E6-F013** (`open`, MED, `unowned`) carries it with the
+   exact closing steps, the first of which is: after the landing merge, confirm the next PR
+   prints `OK (fresh)`.
 
 ---
 
