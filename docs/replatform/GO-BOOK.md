@@ -714,8 +714,25 @@ Three things measured while building it, worth carrying:
 `33037143412`): all four `verify` shards pass in **12.8–16.2 min**, `ci-required` **PASS**. `verify`
 was one job running the whole vitest suite in a single lane (~56 min at `maxForks=2`), capping out at
 `timeout-minutes: 60` on 5+ consecutive runs. It is now a `fail-fast:false` shard matrix of 4 legs
-(`pnpm exec vitest run --shard=i/4`); the 60-min cap is **unchanged** (now a per-shard cap). Full
+(`pnpm exec vitest run --shard=i/4`); the 60-min cap was left **unchanged** (as a per-shard cap). Full
 plan + evidence: `docs/replatform/CI-VERIFY-PARALLELIZATION.md`.
+
+> ★ **Correction 2026-09-04 (TRACK A, commit `c74bb23ea`): the per-shard cap is now 37, and every
+> required-lane cap in `pr.yml` is DERIVED rather than chosen.** Leaving 60 in place was the right
+> call in August — a cap must not be raised to chase green — but it was never re-derived after
+> sharding, and a cap far above anything a healthy run can reach has stopped being a check: measured
+> across 52 shard runs, a shard's WORK is 703/902/1092 s, so 60 carried ~42 minutes of undeclared
+> slack, the same shape as the hang it once masked. Each job cap is now
+> `ceil((workBudgetSeconds + setupAllowanceSeconds) / 60)` from `.github/ci-timeout-budgets.json`,
+> where `workBudgetSeconds` bounds what this repo does and `setupAllowanceSeconds` (480 s) bounds a
+> third-party fetch it does not control — the `Setup pnpm` step, measured at 4 s p50 and 431 s worst,
+> which now carries its own step-level cap so a slow registry fails under its own name.
+> `scripts/check-ci-timeout-budgets.mjs` (in `policy`) refuses a cap edited on its own and a work
+> budget more than 2× its own dated measurement. **The instruction above is unchanged and is now
+> enforced: raising a cap costs a re-measurement in the same diff.** Seven caps went down, one (`e2e`
+> 30→33) went up, and `brand-check`'s pnpm step was deleted rather than capped. See the 2026-09-04
+> addenda on E3-F036 and E6-F014 — both remain `open`/`unowned`: the cause of the pnpm episode is
+> still undiagnosed, and network-reaching *tests* are still unguarded.
 
 **The timeout was masking two real, pre-existing failures** (verify had not *completed* since
 ~2026-08-24, so CI never reported them). Sharding surfaced both; both are fixed in the same PR:
