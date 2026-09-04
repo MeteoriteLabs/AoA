@@ -1062,7 +1062,11 @@ a specific way, and it must be priced rather than rediscovered (design §1.7).
 ★ **A second measured consequence, which binds any future fix's release shape.** The artifact arm has
 **zero producers today** — the daemon's `artifactCommit` client method
 (`packages/worker-daemon/src/transport/client.ts:266,567`) has no production caller, and both shipped
-providers declare `artifactExportMode: "none"`. So removing the task-output arm without shipping a
+providers declare `artifactExportMode: "none"`. ★ **Updated 2026-09-04 (PR #353): the E2B provider
+now declares `"grant_upload"` and implements export for real. THE ZERO STILL HOLDS and the
+consequence below is unchanged — producers are counted by who CALLS the export and the commit, not
+by who can serve them, and `artifactCommit` still has no production caller.** So removing the
+task-output arm without shipping a
 producer converts a forgeable gate into an **unpassable** one, which is CLI-008 Unit A's precedent
 inverted. **That pressure is exactly what drove the refuted widening**, and it remains unrelieved
 (design §1.8, §6).
@@ -1090,7 +1094,9 @@ Unit F have to build". It attributes the structural zero to four links:
 | "`buildWorkspacePatch`/`createResultCommitter` have zero production callers" | True, and the only one of the four that touches a counter — but it is blocked behind Unit E **and** behind an in-sandbox manifest capture that does not exist: `buildWorkspaceManifest` imports `node:fs` (`snapshot/build-manifest.ts:24`) and walks the DAEMON's filesystem, which on the E2B lane is not where the agent's files are. The text names neither blocker |
 
 Omitted, and decisive: `artifactExportMode: "none"` on **both** shipped providers
-(`e2b-provider.ts:178`, `packages/provider-wire/src/driver.ts:83`); no `artifactPrepared` emitter on
+(`e2b-provider.ts:178`, `packages/provider-wire/src/driver.ts:83`) — ★ **as of PR #353 the E2B half
+reads `"grant_upload"`; the finding is unaffected, since its subject is what the reason string omits,
+not whether an omitted link was later built**; no `artifactPrepared` emitter on
 `EventSequencer` (seven emitters at `packages/worker-daemon/src/supervisor/events.ts:147,155,162,170,178,206,220`,
 while `artifact_prepared` is already frozen at `packages/worker-protocol/src/events.ts:358`); no
 **upload-direction** grant consumer in the daemon (the sole `artifactTransferGrant` caller,
