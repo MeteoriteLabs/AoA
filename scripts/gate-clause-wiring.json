@@ -60,6 +60,12 @@
       "symbol": "createPatchApplyService",
       "reason": "Zero callers on the DECLARED symbol createPatchApplyService, a server-side DAT-003 service. CORRECTED 2026-09-03: the previous reason reasoned about the SIBLING runOrphanQuarantine (whose producer startup-reconcile is itself uncalled) and concluded the clause is 'blocked on E4 wiring'. That is a substitution, not an addition — the checker reads the caller count of createPatchApplyService, which no E4 daemon ticket touches, so wiring the startup reconciler (WRK-013) flips E4-3-survives-restart and does NOT flip this clause. The GO-BOOK's WRK-013 row inherited the same error and is corrected in the same change."
     },
+    "E5-2-fenced-object-commit-worker-half": {
+      "epic": "E5",
+      "status": "unwired",
+      "symbol": "createArtifactExportSequencer",
+      "reason": "DAT-009 slice 3, slice a. The E5 gate says fenced object commit passes in D1, and its SERVER half does: mint (artifact-transfer-grant.ts), commit (artifact-commit.ts) and a real presigned PUT are live-proven on the D1 lane against real MinIO (DAT-002-live-minio-result.md, d1-merge-train 31885553697, 13/13). This clause is deliberately named for the WORKER half, which is the half that has never run: nothing in production sequences digest -> mint upload grant -> export -> commit. Do NOT read this entry as saying the commit path is unbuilt - that substitution is the exact error E5-3-patch-quarantine had to be corrected for. createArtifactExportSequencer has ZERO production callers by construction: its only consumers are its own tests until DAT-009 slice 3c adds the supervisor hook (SupervisorDeps.resolveExportArtifacts) and 3d composes it in dispatch-runtime.ts, following the createStagedInputResolver precedent at E7-1-staged-input-grant. Promote then, with evidence. Note that composing it is NOT sufficient for a byte to move: BOTH shipped providers declare artifactExportMode=none (e2b-provider.ts:178, provider-wire/src/driver.ts:83), so slice 3e must implement a real exportArtifact first, and NOTHING yet produces the ArtifactExportRequest[] it would consume - that producer is CLI-008 Unit F. This clause therefore does NOT gate, and must not be read as gating, the E7-1 capabilityProven counter, which filters kind=workspace_patch (e7-distributed-run-verifier-store.ts:207)."
+    },
     "E5-5-redaction": {
       "epic": "E5",
       "status": "wired",

@@ -1128,3 +1128,67 @@ statements about the system that are **irrelevant to the counter the clause read
 made the list feel comprehensive while pointing at the most expensive route. When a clause explains
 itself, check each link against the clause's own predicate, not against the subject area — **and
 check the clause's own NAME the same way.**
+
+---
+
+## E7-F017 — `isTransferGrantResponsePairedV1` returns TRUE for `"rejected"`, so the staged-input resolver's refusal branch is unreachable and every server refusal is reported as a malformed grant
+
+**Status:** open · **Owner:** DAT-009 slice 3 (found by it; the repair is a one-line reorder in CLI-008 Unit B's module)
+**Severity:** LOW · **Filed:** 2026-09-04, by DAT-009 slice 3's design pass — which was reading
+`lease/staged-input.ts` in order to mirror it for the upload direction, and would have mirrored this.
+
+**What.** `isTransferGrantResponsePairedV1`
+(`packages/worker-protocol/src/transport.ts:350-358`) answers *"is this response outcome paired
+with that request operation"*, and its first line is:
+
+```ts
+if (responseOutcome === "rejected") return true;
+```
+
+which is correct for what it asks: a refusal is a legitimate answer to either direction. But
+`lease/staged-input.ts:252-258` uses its negation as the refusal guard:
+
+```ts
+if (!isTransferGrantResponsePairedV1("download", body.outcome)) {
+  // A `rejected` lands here, and so would a cross-paired `upload_granted`.
+  throw new StagedInputUnavailableError(pointer.artifactId, `outcome ${body.outcome}`);
+}
+const parsed = artifactDownloadGrantV1Schema.safeParse(body.grant);
+if (!parsed.success) {
+  throw new StagedInputUnavailableError(pointer.artifactId, "malformed grant");
+}
+```
+
+**A `rejected` does not land there.** `!true` is false, so it falls through to the schema parse
+with `body.grant` undefined, fails, and is reported as `"malformed grant"`. The inline comment
+asserts a behaviour the code does not have, and **the server's actual reason —
+`stale_fence` / `attempt_terminal` / `target_revoked` / `malformed`, which the frozen `rejected`
+arm carries at `transport.ts:342` — is discarded**. The operator is told the control plane sent a
+malformed grant when it sent a correct, well-formed refusal.
+
+**Reachability.** LOW, and the direction is what makes it low: it **fails closed**. The throw still
+happens, the run still fails, no file is staged from a refusal. Nothing is admitted that should not
+be. What is lost is **diagnosability** — and only on a path (a refused staged-input download) that
+has never run in production.
+
+★ **Why it is filed rather than shrugged at.** It is the same shape as
+[`DAT-009-terrain.md`](../E5-workspaces-secrets/tickets/DAT-009-terrain.md) §9's *"a value computed,
+handed to the thing that could act on it, and dropped"* — here the value is the refusal reason and
+the actor is the operator. And it is **load-bearing for the sibling direction**: DAT-009 slice 3
+mints an **upload** grant, whose most likely refusal is `attempt_terminal`, which means *"this ran
+outside the lifecycle window"* — the single most probable defect in that new code. Reported as
+"malformed grant", it would send the reader hunting a protocol bug instead.
+
+**Fix.** Check `body.outcome === "rejected"` explicitly and FIRST, and carry `body.reason` into the
+error. One reorder, no schema change, no frozen change. It is not taken here because this ticket is
+E5 work and the module is CLI-008 Unit B's; changing another unit's failure text inside an E5 PR is
+the kind of drive-by that makes a diff unreviewable. `packages/worker-daemon/src/lease/artifact-export.ts`
+does it correctly on the upload side and pins it with a test, so the two directions now disagree
+until this is closed — which is itself the cheapest possible reminder.
+
+★ **The transferable part.** A predicate's NAME told the truth and the CALL SITE read it as
+answering a different question. `isTransferGrantResponsePairedV1` answers *"is this pairing legal"*;
+the call site needed *"did I get a grant"*. Those coincide for every outcome except the one that
+matters. **Before negating a shared predicate as a guard, check it against the case you are actually
+guarding against** — and note that the comment beside it was written from the intent, not from the
+function.

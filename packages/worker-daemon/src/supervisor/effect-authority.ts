@@ -13,10 +13,17 @@
  * contexts (the supervisor supplies stable `idempotencyKey`s + deadlines) — it
  * only enforces the active-fence invariant before every effectful call.
  *
- * Runtime imports: relative `provider.ts` only — the E4-D01 boundary.
+ * Runtime imports: relative `provider.ts` only — the E4-D01 boundary. The one non-relative
+ * import is TYPE-ONLY (`ArtifactUploadGrantV1`, the frozen grant `exportArtifact` carries), so
+ * it is erased at compile time and adds no runtime edge; worker-protocol is an allowed
+ * dependency either way.
  */
 
+import type { ArtifactUploadGrantV1 } from "@armyofagents/worker-protocol";
+
 import type {
+  ArtifactDigestResult,
+  ArtifactExportResult,
   CheckpointResult,
   CleanupResult,
   CreateResult,
@@ -106,6 +113,41 @@ export class EffectAuthority {
   ): Promise<StageFilesResult> {
     this.#guard();
     return this.#provider.stageFiles(sandboxId, files, ctx);
+  }
+
+  /**
+   * DAT-009 slice 3 — describe an in-sandbox file (METADATA ONLY; never content), the first
+   * of the four steps that return a byte to the control plane.
+   *
+   * ★ GATED HERE FOR THE SAME REASON `stageFiles` IS, and it is not a formality. DAT-009 slice
+   * 1 grew the PORT with `digestArtifact`/`exportArtifact` and did not grow this authority, so
+   * until now the only way to reach them was to call the provider directly — which is exactly
+   * the "second, quieter door onto a gated action" DAT-009 slice 2 §4 names. A run whose lease
+   * was replaced must not still be reading out of the sandbox its successor is about to use,
+   * and must certainly not still be redeeming a bearer grant minted under the dead fence.
+   */
+  digestArtifact(sandboxId: string, path: string, ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
+    this.#guard();
+    return this.#provider.digestArtifact(sandboxId, path, ctx);
+  }
+
+  /**
+   * DAT-009 slice 3 — upload an in-sandbox file directly to object storage under `grant`,
+   * returning a REFERENCE. The bytes go sandbox → provider → store and never cross this class.
+   *
+   * ★ `grant` IS A BEARER CAPABILITY and this authority is the last gate before it reaches an
+   * implementation. It must not be logged here, and a withdrawn authority must refuse before
+   * the grant is passed on at all — a redeemed grant cannot be recalled, because no revocation
+   * concept exists and the TTL is the only revocation mechanism (DAT-009 slice 2 §6).
+   */
+  exportArtifact(
+    sandboxId: string,
+    path: string,
+    grant: ArtifactUploadGrantV1,
+    ctx: ProviderOpContext,
+  ): Promise<ArtifactExportResult> {
+    this.#guard();
+    return this.#provider.exportArtifact(sandboxId, path, grant, ctx);
   }
 
   /** Resume a checkpointed sandbox (the frozen optional `restore` op). Effectful:
