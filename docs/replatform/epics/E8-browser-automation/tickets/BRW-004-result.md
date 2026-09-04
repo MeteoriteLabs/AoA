@@ -589,7 +589,13 @@ convenience.**
   absence of a production writer is BRW-004's own unbuilt scope (§10), not this finding's residual —
   saying otherwise would leave a fixed defect open forever.
 - **`E8-F003`** — **NEW, HIGH, unowned.** The sandbox's egress allowlist is inert and the cloud
-  instance-metadata endpoint answers from inside the guest. Successor named.
+  instance-metadata endpoint answers from inside the guest. ~~Successor named.~~
+  **CORRECTED 2026-09-04 by the E8-F003 disposition unit — no successor covers the measured
+  path.** BRW-004 slice (f) is still the only chartered enforcement candidate but is scoped to
+  BROWSER sessions, while what slice (a) measured is org heartbeat runs and crew runs. The finding
+  now records the full re-verification: enforcement is absent at ALL THREE candidate points
+  (provider measured inert, in-sandbox unbuilt, proxy zero-caller), and four programme-level
+  records state the constraint as fact. Severity stays HIGH. See `findings.md` E8-F003 §3–§6.
 - **`E8-F004`** — **NEW, LOW, unowned.** No stranded-delivery sweep for a distributed decision;
   it cannot exist before JOB-015. Successor named; must not be closed by deleting the join.
 - **`E8-F005`** — **NEW, MED, unowned.** Nothing in CI compares the Drizzle schema to the
