@@ -229,6 +229,12 @@ export class E2bSandboxProvider implements SandboxProvider {
    * byte-identical to a real one on every gate; the refusal tests below are what keep this
    * declaration honest.
    *
+   * ★★ NOTHING IN PRODUCTION READS THIS FIELD — measured by search, not assumed: outside the
+   * two declarations (`provider-wire/src/driver.ts`, `supervisor/noop-provider.ts`), the port's
+   * own type, and tests, the only reads are the two decline guards in this file. No supervisor,
+   * placement or hello builder branches on it. So flipping it from `"none"` changes NO runtime
+   * behaviour anywhere today; it becomes consultable when link 3 exists to consult it.
+   *
    * ★ WHAT THIS DOES NOT DO. Declaring the mode does not put an artifact on any run.
    * Nothing in production calls `exportArtifact` — the worker-side sequencer
    * (digest → mint grant → export → commit) is DAT-009 slice 3 and is unbuilt — and the
@@ -478,6 +484,12 @@ export class E2bSandboxProvider implements SandboxProvider {
    * operation from the export rather than one call.
    */
   async digestArtifact(sandboxId: string, path: string, _ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
+    // ★ HONEST LABEL: this guard is UNREACHABLE BY CONSTRUCTION here, because the mode above is a
+    // hard-coded literal. It is kept for exact symmetry with `stageFiles`'s identical shipped
+    // guard, and because the port's contract is "the methods are present on every implementer and
+    // only SUPPORT is optional" — so the decline path must exist even when this implementer never
+    // takes it. It is a contract stub, NOT a live check, and no mutation can kill it; saying so is
+    // the difference between a documented stub and a false claim of enforcement.
     if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("digest_artifact");
     const bytes = await this.#readArtifactBytes(sandboxId, path);
     return { sha256: createHash("sha256").update(bytes).digest("hex"), sizeBytes: bytes.byteLength };
@@ -506,6 +518,7 @@ export class E2bSandboxProvider implements SandboxProvider {
     grant: ArtifactUploadGrantV1,
     _ctx: ProviderOpContext,
   ): Promise<ArtifactExportResult> {
+    // Unreachable by construction, exactly as in `digestArtifact` above — see the note there.
     if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("export_artifact");
     const bytes = await this.#readArtifactBytes(sandboxId, path);
     if (bytes.byteLength > grant.maxBytes) {
