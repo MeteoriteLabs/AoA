@@ -78,6 +78,8 @@ const QUARANTINE_GRANT_PATH = "/api/worker-control/quarantine/grant";
 const QUARANTINE_FINALIZE_PATH = "/api/worker-control/quarantine/finalize";
 // WRK-006: the event-upload route (audience worker_run; mirrors the client).
 const EVENT_UPLOAD_PATH = "/api/worker-control/events";
+// JOB-015 — the worker's control-command ACK upload (mirrors the client's CONTROL_ACK_PATH).
+const CONTROL_ACK_PATH = "/api/worker-control/control-acks";
 // DAT-008 slice 5 / CLI-006 D2 Step 1: the LOCAL execution-secret resolve route
 // (audience worker_run; mirrors the client's EXECUTION_SECRET_RESOLVE_PATH). A
 // denial is ALSO HTTP 200 (`{outcome:"denied"}`), so a status-only worker check
@@ -188,6 +190,9 @@ export type FakeRenewDirective =
       readonly expiresAt?: string;
       readonly cancelRequested?: boolean;
       readonly cancelReason?: string | null;
+      /** JOB-015 — the bounded extensions the renew response carries. Defaults to `[]`,
+       * which is byte-identical to the pre-JOB-015 hardcoded value. */
+      readonly extensions?: readonly unknown[];
     }
   | { readonly kind: "rejected"; readonly reason: ProtocolErrorCode }
   | { readonly kind: "error"; readonly status: number; readonly code: ProtocolErrorCode; readonly retryAfterMs?: number | null }
@@ -246,6 +251,15 @@ export interface FakeEventUploadRecord {
   readonly deviceThumbprint: string;
 }
 
+/** JOB-015 — one control ACK the worker uploaded. */
+export interface FakeControlAckRecord {
+  readonly leaseId: string;
+  readonly commandId: string;
+  readonly commandSeq: number;
+  readonly status: string;
+  readonly detail: string | null;
+}
+
 export interface FakeRenewRecord {
   readonly leaseId: string;
   readonly idempotencyKey: string;
@@ -289,6 +303,12 @@ export interface FakeControlPlane {
   acks(): readonly FakeAckRecord[];
   // --- WRK-005 renew controls ---
   enqueueRenew(directive: FakeRenewDirective): void;
+  // --- JOB-015 control-ACK controls ---
+  /** Every control ACK the worker uploaded, in order. */
+  controlAcks(): readonly FakeControlAckRecord[];
+  /** Queue the `applied` verdicts the ACK route reports (default: true). A `false`
+   * models the server matching NO row — e.g. a mismatched echoed `commandSeq`. */
+  enqueueControlAckApplied(applied: boolean): void;
   /** WRK-007 (D6): seed the per-`leaseId` authority the renew/ack handlers consult
    * before the global FIFO. Re-seeding replaces the entry. */
   seedLeaseAuthority(leaseId: string, entry: FakeLeaseAuthorityEntry): void;
@@ -494,6 +514,8 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
   const selfModelDirectives: FakeSelfModelDirective[] = [];
   const selfHelloDirectives: FakeSelfHelloDirective[] = [];
   const renewRecords: FakeRenewRecord[] = [];
+  const controlAckRecords: FakeControlAckRecord[] = [];
+  const controlAckAppliedQueue: boolean[] = [];
   // WRK-007 (D6): per-`leaseId` authority table (keyed), consulted before the FIFO.
   const leaseAuthority = new Map<string, FakeLeaseAuthorityEntry>();
   // Idempotency ledger: an already-seen renew key returns the SAME expiry.
@@ -660,6 +682,10 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     }
     if (method === "POST" && pathname === EVENT_UPLOAD_PATH) {
       await handleEventUpload(req, res, url, method);
+      return;
+    }
+    if (method === "POST" && pathname === CONTROL_ACK_PATH) {
+      await handleControlAck(req, res, url, method);
       return;
     }
     if (method === "POST" && pathname === EXECUTION_SECRET_RESOLVE_PATH) {
@@ -1403,9 +1429,55 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
         expiresAt,
         cancelRequested,
         cancelReason,
+        extensions:
+          directive && directive.kind === "renewed" && directive.extensions !== undefined
+            ? directive.extensions
+            : [],
       },
     });
     finish();
+  }
+
+  /** JOB-015 — record + answer the worker's control-command ACK. Deliberately DUMB: it
+   * echoes what the worker sent and reports `applied` from the directive queue, so a
+   * test can model "the server matched no row" (a mismatched sequence) without a
+   * database. The real matching rule lives in `ackControlCommand` and is proven against
+   * embedded Postgres in `job-control-commands.integration.test.ts`. */
+  async function handleControlAck(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: string,
+    method: string,
+  ): Promise<void> {
+    const raw = await readBody(req);
+    let body: Record<string, unknown> = {};
+    try {
+      body = JSON.parse(raw.toString("utf8")) as Record<string, unknown>;
+    } catch {
+      record(method, url, 400, "malformed", null, null);
+      protocolError(res, 400, "malformed", null);
+      return;
+    }
+    const inner = (body.body ?? {}) as Record<string, unknown>;
+    const ack = (inner.ack ?? {}) as Record<string, unknown>;
+    controlAckRecords.push({
+      leaseId: String(inner.leaseId ?? ""),
+      commandId: String(ack.commandId ?? ""),
+      commandSeq: Number(ack.commandSeq ?? 0),
+      status: String(ack.status ?? ""),
+      detail: ack.detail === null || ack.detail === undefined ? null : String(ack.detail),
+    });
+    const applied = controlAckAppliedQueue.length > 0 ? controlAckAppliedQueue.shift()! : true;
+    record(method, url, 200, "ok", null, null);
+    sendJson(res, 200, {
+      protocolVersion: 1,
+      correlationId: body.correlationId,
+      serverTime: new Date(now()).toISOString(),
+      commandId: ack.commandId,
+      commandSeq: ack.commandSeq,
+      status: ack.status,
+      applied,
+    });
   }
 
   /**
@@ -1889,6 +1961,12 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     },
     enqueueRenew(directive: FakeRenewDirective): void {
       renewDirectives.push(directive);
+    },
+    controlAcks(): readonly FakeControlAckRecord[] {
+      return controlAckRecords;
+    },
+    enqueueControlAckApplied(applied: boolean): void {
+      controlAckAppliedQueue.push(applied);
     },
     seedLeaseAuthority(leaseId: string, entry: FakeLeaseAuthorityEntry): void {
       leaseAuthority.set(leaseId, entry);

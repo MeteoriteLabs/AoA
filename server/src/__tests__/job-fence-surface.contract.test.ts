@@ -156,12 +156,39 @@ function findFunction(source: ts.SourceFile, name: string): ts.FunctionDeclarati
   return found;
 }
 
-/** The repository object literal returned as a DIRECT statement of `fn`'s body. */
+/**
+ * The repository object literal `fn` returns — either returned directly, or bound to a
+ * `const` in the same body and returned by name.
+ *
+ * ★ JOB-015 widened this. `createJobControlRepository` now binds its literal to
+ * `const repository` so `renewLease` can call the PUBLIC
+ * `repository.listPendingControlCommands(...)` instead of duplicating that query inline
+ * (E3-F035: the duplication is what left the method with zero callers). The parser
+ * previously accepted ONLY `return { … }` and threw "no returned object literal",
+ * failing this whole suite to collect — a red that looks like a contract violation but
+ * is a parser limitation. The widening is deliberately narrow: a `const` declared in
+ * the SAME function body whose initializer is an object literal, resolved by name from
+ * the return statement. An indirection the parser cannot follow still throws, which is
+ * the fail-closed direction (a surface it cannot see must never read as an empty one).
+ */
 function returnedObjectLiteral(fn: ts.FunctionDeclaration): ts.ObjectLiteralExpression {
+  const bound = new Map<string, ts.ObjectLiteralExpression>();
   for (const statement of fn.body!.statements) {
-    if (ts.isReturnStatement(statement) && statement.expression
-      && ts.isObjectLiteralExpression(statement.expression)) {
-      return statement.expression;
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)
+          && declaration.initializer
+          && ts.isObjectLiteralExpression(declaration.initializer)) {
+          bound.set(declaration.name.text, declaration.initializer);
+        }
+      }
+    }
+    if (ts.isReturnStatement(statement) && statement.expression) {
+      if (ts.isObjectLiteralExpression(statement.expression)) return statement.expression;
+      if (ts.isIdentifier(statement.expression)) {
+        const resolved = bound.get(statement.expression.text);
+        if (resolved) return resolved;
+      }
     }
   }
   throw new Error("no returned object literal");

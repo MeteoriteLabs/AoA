@@ -324,10 +324,25 @@ export interface JobControlRepository {
   // `service_instances`) do a thin real mutation; the three whose storage is not yet
   // built (events, projection receipts, control commands) are stubbed BUT STILL
   // gated — JOB-005/006/011 fill the storage behind this already-guarded interface.
+  //
+  // JOB-015 — `projectControlExtensions` is REQUIRED, not optional, and that is the
+  // fail-closed choice. It turns the lease's un-ACKed control commands into the frozen
+  // response's bounded `extensions` array. It is injected because `packages/db`
+  // deliberately does not depend on `@armyofagents/worker-protocol` (see
+  // `schema/services.ts:37-39`), the same topology `commitArtifactVersion` uses for the
+  // frozen prefix helper. Making it required means a new caller CANNOT silently
+  // reintroduce the hardcoded `extensions: []` this ticket exists to remove: the type
+  // checker asks for the projector. `existing` is always `[]` today; it is passed so
+  // the projector probes the UNION and is not sibling-blind if a second lease-envelope
+  // extension ever lands.
   renewLease(input: ActiveFenceRequest & {
     leaseDurationMs: number;
     idempotencyKey: string;
     semanticDigest: string;
+    projectControlExtensions: (
+      existing: readonly unknown[],
+      pending: readonly QueuedControlCommand[],
+    ) => readonly unknown[];
   }): Promise<{ lease: Lease; body: Record<string, unknown> }>;
   acceptEvent(
     input: ActiveFenceRequest & { batch?: AcceptEventBatchInput },
@@ -495,8 +510,25 @@ export interface JobControlRepository {
   // monotonically-sequenced E1 cancel command bound to the current lease fence
   // (idempotent: one cancel command per lease).
   requestCancellation(input: RequestCancellationInput): Promise<CancellationOutcome>;
-  /** Un-ACKed control commands for a lease, in monotonic sequence — the "return
-   * pending controls until ACK" read the poll/renew path surfaces. */
+  /**
+   * Un-ACKed control commands for a lease, in monotonic `command_seq` order — the
+   * "return pending controls until ACK" read.
+   *
+   * ★★★ E3-F035, CLOSED BY JOB-015. This docstring used to assert that "the poll/renew
+   * path surfaces" this read. It did not: the renew mutator ran its own inline query
+   * with a narrower filter (`command_kind IN ('cancel','graceful_stop')`), collapsed it
+   * to `cancelRequested: Boolean(...)`, and hardcoded `extensions: []` — so this method
+   * had ZERO production callers and its only non-definition reference was its NAME, as
+   * a string, in a contract test's inventory list. A false claim of enforcement written
+   * into the docstring of the method that would implement it.
+   *
+   * The claim is now TRUE, and it was made true by giving the method a caller rather
+   * than by editing the prose: `renewLease` sources both the `cancelRequested` boolean
+   * AND the `dev.aoa.job/control-v1` response extension from this one read. The poll
+   * path still does not surface it, and deliberately so — poll reaches IDLE workers
+   * looking for work, while a control command is addressed to a worker already holding
+   * the lease.
+   */
   listPendingControlCommands(input: {
     organizationId: string;
     leaseId: string;
@@ -729,9 +761,20 @@ export interface QueuedControlCommand {
   ackStatus: ControlCommandAckStatus | null;
 }
 
-/** The worker's echoed ACK for a control command, applied by `ackControlCommand`. */
+/** The worker's echoed ACK for a control command, applied by `ackControlCommand`.
+ *
+ * ★★★ JOB-015 (E3-F035's sibling). `commandSeq` is REQUIRED and it is CHECKED. The
+ * frozen `controlCommandAckV1Schema` has always carried `commandSeq`, and its own
+ * docstring says the worker "echoes the command ID + sequence" — but the mutator
+ * matched on `(organizationId, leaseId, commandId)` only and the echoed sequence was
+ * accepted, returned in the response, and otherwise discarded. A frozen validation
+ * field the server never checked is the same failure class as a docstring naming a
+ * consumer that does not exist. It is required rather than optional so a caller cannot
+ * quietly opt out of the check; a mismatch leaves the command PENDING (redelivered on
+ * the next renewal) rather than suppressing redelivery on a sequence nobody verified. */
 export interface ControlCommandAckInput {
   commandId: string;
+  commandSeq: number;
   status: ControlCommandAckStatus;
   observedAt: Date;
   detail: string | null;
@@ -1423,7 +1466,12 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     return companyMembership && kind ? { kind, id: input.userId } : null;
   }
 
-  return {
+  // JOB-015 — bound to a name so `renewLease` can call `listPendingControlCommands`
+  // through the PUBLIC interface method rather than duplicating its query inline. The
+  // duplication is precisely what left that method with zero callers while its own
+  // docstring claimed the renew path surfaced it (E3-F035); a private helper shared by
+  // both would have closed the query duplication and left the finding open.
+  const repository: JobControlRepository = {
     async classifyLeaseTruth(leaseIds) {
       // Default EVERY requested id to `absent` first — a leaseId with no row in this
       // tenant (unknown, or wrong-tenant → forced RLS returns zero rows) stays absent;
@@ -2469,19 +2517,30 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         gt(leases.expiresAt, sql`clock_timestamp()`),
       )).returning();
       if (!lease || !lease.expiresAt) throw new JobFenceError("stale_fence");
-      // JOB-006 — surface a queued, un-ACKed cancel/graceful_stop control command to
-      // the worker through the frozen renew response. The worker learns of a pending
-      // control on renewal and drains gracefully; the durable command remains for the
-      // explicit control-ACK path. Only an un-ACKed cancel/graceful_stop drives the
-      // frozen `cancelRequested` flag.
-      const [pendingCancel] = await tx.select({
-        reason: jobControlCommands.reason,
-      }).from(jobControlCommands).where(and(
-        eq(jobControlCommands.organizationId, input.organizationId),
-        eq(jobControlCommands.leaseId, input.leaseId),
-        inArray(jobControlCommands.commandKind, ["cancel", "graceful_stop"]),
-        isNull(jobControlCommands.ackStatus),
-      )).orderBy(asc(jobControlCommands.commandSeq)).limit(1);
+      // JOB-006 + JOB-015 — surface the lease's queued, un-ACKed control commands to
+      // the worker through the frozen renew response. ONE read now serves both halves.
+      //
+      // JOB-015: this used to be an inline `SELECT reason … WHERE command_kind IN
+      // ('cancel','graceful_stop') … LIMIT 1` whose result was collapsed to a boolean,
+      // sitting beside a hardcoded `extensions: []`. The complete read already existed
+      // as `listPendingControlCommands` — same table, same `ack_status IS NULL` filter,
+      // same `ORDER BY command_seq` — with ZERO production callers and a docstring
+      // asserting that "the poll/renew path surfaces" it, which it did not (E3-F035).
+      // Sourcing the renewal from that method is what closes the finding: the method
+      // ACQUIRES A CALLER rather than having its prose corrected.
+      //
+      // The `cancelRequested` boolean is DERIVED from the same list and is unchanged in
+      // value: the first un-ACKed cancel/graceful_stop in sequence order is exactly what
+      // the narrower query returned. It stays forever (D2) — it is the only signal a
+      // worker predating the extension understands, so an adopting worker receives
+      // cancel/graceful_stop TWICE and the extension is authoritative when understood.
+      const pendingControls = await repository.listPendingControlCommands({
+        organizationId: input.organizationId,
+        leaseId: input.leaseId,
+      });
+      const pendingCancel = pendingControls.find(
+        (command) => command.commandKind === "cancel" || command.commandKind === "graceful_stop",
+      ) ?? null;
       // The exact renewed response body — stored in the receipt AND returned, so a
       // lost-response replay reproduces this exact renewal and cannot extend twice.
       const body: Record<string, unknown> = {
@@ -2494,7 +2553,12 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         expiresAt: lease.expiresAt.toISOString(),
         cancelRequested: Boolean(pendingCancel),
         cancelReason: pendingCancel?.reason ?? null,
-        extensions: [],
+        // JOB-015 — was `extensions: []`, hardcoded. The projector NEVER omits the
+        // extension when something is pending: an omitted extension is byte-identical
+        // to `[]`, so omission cannot be distinguished from "nothing queued" and would
+        // re-commit this ticket's own defect. With nothing pending it returns `[]`
+        // unchanged, which is the positive control that the change is inert.
+        extensions: input.projectControlExtensions([], pendingControls),
       };
       await tx.insert(workerOperationReceipts).values({
         organizationId: input.organizationId,
@@ -3164,6 +3228,13 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         eq(jobControlCommands.organizationId, input.organizationId),
         eq(jobControlCommands.leaseId, input.leaseId),
         eq(jobControlCommands.commandId, input.ack.commandId),
+        // ★★★ JOB-015 — the echoed sequence is now part of the match. An ACK that
+        // names a real command id with the WRONG sequence matches zero rows, so
+        // `applied` is false and `ack_status` stays NULL: the command remains pending
+        // and is redelivered on the next renewal. Before this clause the sequence was
+        // read off the frozen schema and thrown away, so a worker could suppress
+        // redelivery of a command it had not actually identified.
+        eq(jobControlCommands.commandSeq, input.ack.commandSeq),
         or(
           isNull(jobControlCommands.ackStatus),
           eq(jobControlCommands.ackStatus, "accepted"),
@@ -3860,4 +3931,5 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       return guardActiveFence(input);
     },
   };
+  return repository;
 }

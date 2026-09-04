@@ -147,6 +147,28 @@ export {
   readStagedInputPointers,
 } from "./lease/staged-input.js";
 export type { StagedInputPointer } from "./lease/staged-input.js";
+// JOB-015 — the control-command delivery reader + classifier. `CONTROL_EXTENSION_NAMESPACE`
+// and `OVERSIZED_FOR_RENEW_CHANNEL` are exported so the server-side contract test can
+// value-import BOTH declarations and assert they agree: the daemon may not import the
+// server (E4-D01) and the server is not on the daemon's import list, so two independent
+// string constants have to be pinned against each other or they drift silently.
+export {
+  CONTROL_EXTENSION_NAMESPACE,
+  OVERSIZED_FOR_RENEW_CHANNEL,
+  ControlDeliveryMalformedError,
+  classifyControlDelivery,
+  controlCommandBodyDigest,
+  controlCommandIsApplicable,
+  createControlReceiverMemory,
+  markControlCommandApplied,
+  readControlCommandDelivery,
+} from "./lease/control-commands.js";
+export type {
+  ClassifiedControlCommand,
+  ControlCommandDelivery,
+  ControlReceiverMemory,
+  OversizedLeadingCommand,
+} from "./lease/control-commands.js";
 // DAT-009 slice 3 — the worker-side artifact EXPORT consumer (the upload mirror of the above).
 // `grantPutHeaders` is exported for the provider implementations that redeem the grant
 // (slice e); `sandbox-e2b-provider` already declares `worker-daemon` as a runtime dependency,

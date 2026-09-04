@@ -40,6 +40,7 @@ import {
   leaseRenewOperationRequestV1Schema,
   leaseRenewOperationResponseV1Schema,
   protocolErrorV1Schema,
+  type ControlCommandV1,
   type LeaseOfferV1,
   type LeaseRenewOperationRequestV1,
 } from "@armyofagents/worker-protocol";
@@ -49,11 +50,24 @@ import { signDeviceProof } from "../identity/device-proof.js";
 import type { WorkerSession } from "../enrollment/enroll.js";
 import type { Logger } from "../logging/logger.js";
 import {
+  CONTROL_COMMAND_METRIC,
   FENCE_CLOSE_METRIC,
   LEASE_LOSS_METRIC,
   LEASE_RENEW_METRIC,
   type Metrics,
 } from "../metrics/metrics.js";
+import {
+  ControlDeliveryMalformedError,
+  OVERSIZED_FOR_RENEW_CHANNEL,
+  classifyControlDelivery,
+  controlCommandIsApplicable,
+  createControlReceiverMemory,
+  markControlCommandApplied,
+  readControlCommandDelivery,
+  type ControlCommandDelivery,
+  type ControlReceiverMemory,
+} from "./control-commands.js";
+import { sendControlAck } from "./control-ack.js";
 import {
   ControlPlaneTransportError,
   type ControlPlaneClient,
@@ -80,7 +94,18 @@ import {
 
 /** The classification of ONE renew round-trip (mirrors `AckAttempt`). */
 export type RenewAttempt =
-  | { readonly kind: "renewed"; readonly expiresAt: string; readonly cancelRequested: boolean; readonly cancelReason: string | null }
+  | {
+      readonly kind: "renewed";
+      readonly expiresAt: string;
+      readonly cancelRequested: boolean;
+      readonly cancelReason: string | null;
+      // JOB-015 — the parsed `dev.aoa.job/control-v1` delivery, or `null` when the
+      // namespace is absent (a pre-JOB-015 server, or nothing queued). A PRESENT but
+      // unreadable extension is a `protocol` attempt with code `control_malformed`, NOT
+      // a `renewed` carrying `null`: a delivery fault must never wear the same shape as
+      // an empty queue, which is the defect this ticket closes (D3).
+      readonly control: ControlCommandDelivery | null;
+    }
   | { readonly kind: "rejected"; readonly code: string }
   | { readonly kind: "terminal"; readonly reason: "unauthorized" | "target_revoked" }
   | { readonly kind: "transient"; readonly label: TransientLabel; readonly retryAfterMs: number | null }
@@ -197,11 +222,27 @@ function classifyRenewResponse(response: WorkerOperationHttpResponse): RenewAtte
     const parsed = leaseRenewOperationResponseV1Schema.safeParse(response.body);
     if (!parsed.success) return { kind: "protocol", label: "malformed", code: "malformed" };
     if (parsed.data.outcome === "renewed") {
+      let control: ControlCommandDelivery | null;
+      try {
+        control = readControlCommandDelivery(parsed.data.body.extensions);
+      } catch (err) {
+        // ★ D3 — fail-closed DIRECTION. The extension was addressed to this run and
+        // could not be read. Returning `renewed` with `control: null` would be
+        // indistinguishable from "nothing queued"; the boolean floor still governs
+        // cancel, so the safe classification is a protocol refusal the driver treats as
+        // a lease loss rather than a silent drop.
+        return {
+          kind: "protocol",
+          label: "malformed",
+          code: err instanceof ControlDeliveryMalformedError ? "control_malformed" : "malformed",
+        };
+      }
       return {
         kind: "renewed",
         expiresAt: parsed.data.body.expiresAt,
         cancelRequested: parsed.data.body.cancelRequested,
         cancelReason: parsed.data.body.cancelReason,
+        control,
       };
     }
     return { kind: "rejected", code: parsed.data.reason };
@@ -314,6 +355,35 @@ export interface LeaseRenewalDriverDeps extends OperationRandomness {
    * too (uniform redaction). Absent = `[]` (the historical state; nothing to redact).
    */
   readonly canaryCoordinator?: RunCanaryCoordinator;
+  /**
+   * JOB-015 — the appliers for delivered control commands.
+   *
+   * ★ A THUNK, not a value, and that is the whole point. The poll loop that owns
+   * `stopLeasing()` is composed AFTER this driver (the driver IS the loop's supervisor
+   * seam), so a handler passed by value at construction would capture `undefined` and
+   * every delivered `drain` would silently do nothing — a composition-root port that is
+   * a NO-OP for everything built earlier. Resolving lazily, at the moment a command
+   * arrives, is what makes the wiring real.
+   *
+   * ★★ ABSENT = NOT DELIVERED, AND IT IS NOT ACKED. A command with no applier is left
+   * `ack_status IS NULL` so the server redelivers it on the next renewal; it is counted
+   * `control_command{outcome="unhandled"}` rather than quietly consumed. ACKing an
+   * unapplied command would clear it forever and make "was persisted, surfaced, and
+   * never acted on" — the exact defect JOB-015 was filed for — invisible one layer up.
+   */
+  readonly controlHandlers?: () => ControlCommandHandlers | undefined;
+}
+
+/** JOB-015 — what a worker can DO with a delivered control command. Inclusion in a
+ * payload is not delivery; an entry here is. */
+export interface ControlCommandHandlers {
+  /** Apply `drain`: stop accepting new leases, finish the in-flight attempt. */
+  drain?(reason: string | null): void | Promise<void>;
+  /** Apply a resolved governance decision (`product_approval_result` /
+   * `runtime_decision_result`). NOT composed by the daemon today — E8/BRW-004 owns the
+   * browser-side applier and E9/SVC-001 the service-side one. Until one is composed
+   * those kinds are counted `unhandled` and stay pending, which is the honest state. */
+  result?(command: ControlCommandV1): void | Promise<void>;
 }
 
 export interface LeaseRenewalDriver extends SupervisorSeam {
@@ -345,6 +415,9 @@ interface LeaseState {
   // counter would let a token rotation that 401s several leases at once corrupt each
   // other's cap (a healthy lease prematurely declared lost, or a stuck lease never capped).
   recoveries: number;
+  /** JOB-015 — this lease's control-command receiver memory (observed-through
+   * sequence, per-id priors for replay/conflict, and what was actually applied). */
+  readonly controlMemory: ControlReceiverMemory;
 }
 
 const NOOP_SINK: WorkerEventSink = { emit: () => {} };
@@ -422,6 +495,152 @@ export function createLeaseRenewalDriver(deps: LeaseRenewalDriverDeps): LeaseRen
     emitLoss(cls.loss);
     deps.logger?.info({ leaseId: state.leaseId, reason: cls.loss }, "lease-renewal: lease loss");
     await Promise.resolve(deps.supervisor.onLeaseLost(state.leaseId));
+  }
+
+  const emitControl = (outcome: string): void =>
+    deps.metrics?.inc(CONTROL_COMMAND_METRIC, { outcome });
+
+  /** Best-effort ACK. A failure leaves `ack_status IS NULL`, so the command is
+   * redelivered on the next renewal and the local `applied` set stops a second
+   * application. An ACK that does not land is a DELAY, never a lost command — which is
+   * why it must not be allowed to kill a healthy lease. */
+  async function ackControl(
+    state: LeaseState,
+    session: WorkerSession,
+    commandId: string,
+    commandSeq: number,
+    status: "completed" | "rejected",
+    detail: string | null,
+  ): Promise<void> {
+    try {
+      const outcome = await sendControlAck({
+        client: deps.client,
+        session,
+        offer: state.offer,
+        key: deps.key,
+        commandId,
+        commandSeq,
+        status,
+        detail,
+        now: deps.now,
+        newCorrelationId: deps.newCorrelationId,
+        newProofId: deps.newProofId,
+        newNonce: deps.newNonce,
+      });
+      if (outcome.kind !== "sent" || !outcome.applied) {
+        deps.logger?.warn(
+          { leaseId: state.leaseId, commandSeq, outcome: outcome.kind },
+          "lease-renewal: control ACK did not land; command stays pending",
+        );
+      }
+    } catch (err) {
+      deps.logger?.warn(
+        { leaseId: state.leaseId, commandSeq, error: err instanceof Error ? err.name : "unknown" },
+        "lease-renewal: control ACK threw; command stays pending",
+      );
+    }
+  }
+
+  /**
+   * JOB-015 — APPLY the delivered control commands, then ACK exactly what was applied.
+   *
+   * ★ THE ACCEPTANCE BAR IS THE APPLIER, NOT THE PAYLOAD. A command that reaches this
+   * function and finds no handler is counted `unhandled` and left un-ACKed. It is NOT
+   * consumed, because consuming it would reproduce this ticket's own finding — persisted,
+   * surfaced, never acted on — with a green test to hide it.
+   *
+   * ★★ THE OVERSIZED-LEADING TERMINAL RUNS FIRST. A leading command that cannot ride the
+   * channel is ACKed `rejected` / `oversized_for_renew_channel` — a frozen ACK status, no
+   * wire change — which clears `ack_status` and lets the command BEHIND it be delivered on
+   * the next renewal. Without this the projection would return the same marker forever:
+   * nothing to apply, nothing to ACK, no terminal (the E7-F010 shape).
+   *
+   * Wrapped so a fault in this path can never strand a healthy lease: the run keeps its
+   * renewal, the command keeps its pending row, and the next renewal retries.
+   */
+  async function applyControlDelivery(
+    state: LeaseState,
+    session: WorkerSession,
+    delivery: ControlCommandDelivery,
+  ): Promise<void> {
+    try {
+      if (delivery.oversizedLeading) {
+        emitControl("oversized");
+        deps.logger?.warn(
+          { leaseId: state.leaseId, commandSeq: delivery.oversizedLeading.commandSeq },
+          "lease-renewal: control command too large for the renew channel; rejecting to unblock the queue",
+        );
+        await ackControl(
+          state,
+          session,
+          delivery.oversizedLeading.commandId,
+          delivery.oversizedLeading.commandSeq,
+          "rejected",
+          OVERSIZED_FOR_RENEW_CHANNEL,
+        );
+      }
+
+      const handlers = deps.controlHandlers?.();
+      const classified = classifyControlDelivery(
+        state.controlMemory,
+        delivery,
+        String(state.offer.fenceToken),
+      );
+      for (const entry of classified) {
+        if (!controlCommandIsApplicable(entry)) {
+          // `gap` / `conflict` / `stale` are REFUSALS with distinct counters; an
+          // already-applied `replay` is a no-op. None of them ACK, so a refused command
+          // stays pending and a later renewal can reclassify it.
+          emitControl(entry.decision === "replay" ? "deferred" : entry.decision);
+          continue;
+        }
+        const command = entry.command;
+        const applied = await applyOneControlCommand(handlers, command);
+        if (!applied) {
+          emitControl("unhandled");
+          continue;
+        }
+        markControlCommandApplied(state.controlMemory, command.commandId);
+        emitControl("applied");
+        await ackControl(state, session, command.commandId, command.commandSeq, "completed", null);
+      }
+    } catch (err) {
+      emitControl("deferred");
+      deps.logger?.warn(
+        { leaseId: state.leaseId, error: err instanceof Error ? err.name : "unknown" },
+        "lease-renewal: control delivery could not be applied; commands stay pending",
+      );
+    }
+  }
+
+  /** Dispatch ONE command to its applier. Returns false when nothing applied it — an
+   * unhandled kind, or a handler that threw. Both leave the command pending. */
+  async function applyOneControlCommand(
+    handlers: ControlCommandHandlers | undefined,
+    command: ControlCommandV1,
+  ): Promise<boolean> {
+    try {
+      if (command.commandKind === "drain") {
+        if (!handlers?.drain) return false;
+        await Promise.resolve(handlers.drain(command.reason));
+        return true;
+      }
+      if (command.commandKind === "product_approval_result" || command.commandKind === "runtime_decision_result") {
+        if (!handlers?.result) return false;
+        await Promise.resolve(handlers.result(command));
+        return true;
+      }
+      // `cancel` / `graceful_stop` are owned by the boolean floor above and never reach
+      // here on a live cancel; `checkpoint` cannot be persisted at all (the schema CHECK
+      // omits it — SVC-004 owns that gap). Neither is applied here, and neither is ACKed.
+      return false;
+    } catch (err) {
+      deps.logger?.warn(
+        { commandSeq: command.commandSeq, error: err instanceof Error ? err.name : "unknown" },
+        "lease-renewal: control-command handler threw; command stays pending",
+      );
+      return false;
+    }
   }
 
   async function cooperativeCancel(state: LeaseState, reason: string): Promise<void> {
@@ -540,10 +759,16 @@ export function createLeaseRenewalDriver(deps: LeaseRenewalDriverDeps): LeaseRen
         state.leadMs = computeLeadMs(state.expiresAtMs, schedule.now());
         state.recoveries = 0;
         if (attempt.cancelRequested) {
+          // D2 — the boolean FLOOR, unchanged and permanent. It is the only signal a
+          // worker that predates the extension understands, so cancel/graceful_stop are
+          // delivered TWICE to an adopting worker and the boolean short-circuits first.
+          // A pending drain or governance result behind a cancel is moot: the run ends.
           emitRenew("cancel_requested");
           await cooperativeCancel(state, attempt.cancelReason ?? "cancel_requested");
           return;
         }
+        if (attempt.control) await applyControlDelivery(state, session, attempt.control);
+        if (state.terminated) return;
         reschedule(state);
         return;
       }
@@ -611,6 +836,7 @@ export function createLeaseRenewalDriver(deps: LeaseRenewalDriverDeps): LeaseRen
       timer: null,
       terminated: false,
       recoveries: 0,
+      controlMemory: createControlReceiverMemory(),
     };
     leases.set(handoff.leaseId, state);
     reschedule(state);

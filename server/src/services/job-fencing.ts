@@ -28,8 +28,10 @@ import {
   leaseRenewOperationResponseV1Schema,
   type LeaseRenewOperationRequestV1,
   type LeaseRenewOperationResponseV1,
+  type WireExtension,
 } from "@armyofagents/worker-protocol";
 import { runInTenant } from "../db/tenant-context.js";
+import { projectControlCommandExtensions } from "./control-command-projection.js";
 import {
   ackAuthorityCurrent,
   JobLeasingError,
@@ -228,6 +230,23 @@ export function createJobLeaseRenewalService(input: {
             leaseDurationMs,
             idempotencyKey: request.idempotencyKey,
             semanticDigest: digest,
+            // JOB-015 — the ONE production wiring of the control-command projection.
+            // `packages/db` cannot build the frozen extension itself (it has no
+            // worker-protocol dependency), so the server supplies the projector and the
+            // mutator supplies the un-ACKed commands it already reads for
+            // `cancelRequested`. A throw here (the overflow marker itself does not fit)
+            // is a protocol error on the renew, deliberately NOT a 200 whose body reads
+            // as "no commands pending".
+            projectControlExtensions: (existing, pending) =>
+              projectControlCommandExtensions(
+                existing as readonly WireExtension[],
+                pending.map((command) => ({
+                  commandId: command.commandId,
+                  commandSeq: command.commandSeq,
+                  commandKind: command.commandKind,
+                  command: command.command,
+                })),
+              ),
           });
           return leaseRenewOperationResponseV1Schema.parse({
             protocolVersion: 1,

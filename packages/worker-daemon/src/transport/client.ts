@@ -49,6 +49,20 @@ export const EVENT_UPLOAD_PATH = "/api/worker-control/events";
 export const ARTIFACT_COMMIT_PATH = "/api/worker-control/artifact-commits";
 
 /**
+ * The mounted control-ACK route path (audience `worker_run`, JOB-006/JOB-015). The
+ * worker uploads its ACK for a control command it received on the lease-renew
+ * response's `dev.aoa.job/control-v1` extension. Fixed (no id-in-path), so the device
+ * proof is signed over this EXACT pathname; mirrors the mounted route
+ * `/api/worker-control/control-acks`.
+ *
+ * ★ The ACK is the ONLY thing that clears `ack_status IS NULL` server-side, and that
+ * column is what stops redelivery. Before JOB-015 the daemon had no client method for
+ * this route at all — the ACK surface existed on the server with no caller on the
+ * worker, the mirror image of the read that had no caller on the server.
+ */
+export const CONTROL_ACK_PATH = "/api/worker-control/control-acks";
+
+/**
  * The mounted artifact-transfer-grant route path (audience `worker_run`,
  * DAT-002/CLI-003). Consumes the frozen `artifact_transfer_grant` op. The live
  * presigned-upload round-trip (grant → PUT → commit) is DAT-002 slice 7 (a
@@ -264,6 +278,8 @@ export interface ControlPlaneClient {
   eventUpload(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
   /** POST a signed artifact commit (audience `worker_run`, 256 KiB / 15s, CLI-003/D4). */
   artifactCommit(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
+  /** POST the frozen `control_command` ACK (JOB-015). */
+  controlAck(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
   /** POST a signed artifact transfer grant (audience `worker_run`, 64 KiB / 15s, CLI-003/D4). */
   artifactTransferGrant(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
   /** POST a device-authenticated read of this worker's own self-model (LOCAL op, 64 KiB / 15s).
@@ -308,6 +324,8 @@ export interface ControlPlaneClientOptions {
   readonly artifactCommitTimeoutMs?: number;
   /** Client timeout for artifact_transfer_grant; defaults to the descriptor's 15s. */
   readonly artifactTransferGrantTimeoutMs?: number;
+  /** JOB-015 control-ACK op timeout (default: the frozen `control_command` descriptor). */
+  readonly controlAckTimeoutMs?: number;
   /** Client timeout for session_renew; defaults to the renewal descriptor's 10s (WRK-010 slice 2). */
   readonly sessionRenewTimeoutMs?: number;
 }
@@ -328,6 +346,7 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
   const artifactCommitTimeoutMs = opts.artifactCommitTimeoutMs ?? OPERATION_DESCRIPTORS.artifact_commit.timeoutMs;
   const artifactTransferGrantTimeoutMs =
     opts.artifactTransferGrantTimeoutMs ?? OPERATION_DESCRIPTORS.artifact_transfer_grant.timeoutMs;
+  const controlAckTimeoutMs = opts.controlAckTimeoutMs ?? OPERATION_DESCRIPTORS.control_command.timeoutMs;
   const sessionRenewTimeoutMs = opts.sessionRenewTimeoutMs ?? SESSION_RENEW_DESCRIPTOR.timeoutMs;
   const selfHelloTimeoutMs = SELF_HELLO_DESCRIPTOR.timeoutMs;
 
@@ -347,7 +366,9 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
       | "artifact_commit"
       | "artifact_transfer_grant"
       | "self_model_read"
-      | "execution_secret_resolve",
+      | "execution_secret_resolve"
+      // JOB-015 — the worker's ACK upload rides the frozen `control_command` op.
+      | "control_command",
     targetPath: string,
     perOpTimeoutMs: number,
     maxBytes: number,
@@ -570,6 +591,15 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
         ARTIFACT_COMMIT_PATH,
         artifactCommitTimeoutMs,
         OPERATION_DESCRIPTORS.artifact_commit.maxRequestBytes,
+        request,
+      );
+    },
+    controlAck(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
+      return postOperation(
+        "control_command",
+        CONTROL_ACK_PATH,
+        controlAckTimeoutMs,
+        OPERATION_DESCRIPTORS.control_command.maxRequestBytes,
         request,
       );
     },

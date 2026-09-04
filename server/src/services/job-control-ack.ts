@@ -164,6 +164,9 @@ export function createJobControlAckService(input: {
             fence: body.fenceToken,
             ack: {
               commandId: ack.commandId,
+              // JOB-015 — the frozen ACK schema has always carried this; the mutator
+              // now MATCHES on it, so a mismatched echo cannot suppress redelivery.
+              commandSeq: ack.commandSeq,
               status: ack.status,
               observedAt: new Date(ack.observedAt),
               detail: ack.detail,

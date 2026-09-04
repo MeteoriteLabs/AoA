@@ -217,6 +217,33 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     canaryCoordinator,
     logger: deps.logger,
     metrics: deps.metrics,
+    // JOB-015 slice (f) — `drain` becomes a DELIVERED command here, and this is the
+    // line that makes it one. Being in the renew payload is not delivery; a worker-side
+    // handler applying it is.
+    //
+    // ★ A THUNK, and it has to be. `pollLoop` is composed BELOW this call (the driver IS
+    // its supervisor seam), so `stopLeasing` does not exist yet. Passing a value would
+    // capture `undefined` and every delivered drain would be a silent no-op — a
+    // composition-root port that is a NO-OP for everything built earlier. The thunk is
+    // only ever invoked while a lease is being renewed, which is necessarily after
+    // `pollLoop` is assigned.
+    //
+    // ★★ `stopLeasing()` is the EXISTING drain semantic, not a second copy of it: the
+    // poll loop stops taking offers and `drainInFlight()` at exit finishes the attempt
+    // already running. A `drain` command therefore does exactly what an operator drain
+    // and a rolling shutdown do, through the same code.
+    //
+    // `result` is deliberately ABSENT. Nothing in the daemon applies a
+    // `product_approval_result` / `runtime_decision_result` yet — E8/BRW-004 owns the
+    // browser-side applier — so those kinds are counted `control_command{outcome=
+    // "unhandled"}` and stay pending for redelivery. That is the honest state; a stub
+    // that ACKed them would clear the queue and hide the gap.
+    controlHandlers: () => ({
+      drain: () => {
+        deps.logger?.info({ reason: "control_command" }, "worker: drain requested by the control plane");
+        pollLoop.stopLeasing();
+      },
+    }),
   });
 
   const limiter = new ConcurrencyLimiter({
