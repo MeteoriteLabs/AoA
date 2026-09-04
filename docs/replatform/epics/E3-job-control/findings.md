@@ -1840,7 +1840,12 @@ re-measurement; the INFRASTRUCTURE dial cost nothing.*
 discipline as a work measurement — `measuredMaxSetupSeconds: 431`, `measuredSampleSize: 156`
 (13 runs × the 12 job instances that then ran the step), `measuredOn`, and the 13 run ids — declared
 **once**, because the measurement is workflow-wide and a per-job copy would be a per-job claim the
-evidence does not support. Four new clauses read it: `setup_measurement_incomplete`,
+evidence does not support. ★ That measurement was **re-derived first-hand from the Actions jobs API
+on 2026-09-05**, not carried forward on trust: exactly **156** steps named `Setup pnpm`, min 3 s, max
+**431 s** (run `33842573550`, job `verify (4)`), **zero** observations above 480 s and zero above the
+646.5 s ceiling. One reconciliation fell out of it: the "4 s p50" quoted above is the **quiet-window**
+p50; across all 156 including the episode the median is **5 s**. Both are true of different
+populations, and every ratio quoted here is unchanged at either value to the precision given. Four new clauses read it: `setup_measurement_incomplete`,
 `setup_allowance_below_measurement`, `setup_allowance_unjustified`, and the ceiling
 `MAX_SETUP_ALLOWANCE_FACTOR = 1.5` — **tighter** than the work budget's 2×, because growth in a
 third-party fetch is the signal this file exists to surface rather than something to grow into, and
