@@ -1508,7 +1508,7 @@ errors and is outside `server/tsconfig.json`, so the delta is the only honest si
 
 ## E3-F035 — `listPendingControlCommands` has no caller, and its docstring asserts a consumer that does not exist
 
-**Status:** open · **Owner:** JOB-015 (`epics/E3-job-control/tickets/JOB-015-design.md` §1.3, slice (e))
+**Status:** resolved · **Owner:** JOB-015 (`epics/E3-job-control/tickets/JOB-015-result.md`, slices (b)+(e))
 **Severity:** MEDIUM (latent; a capability that looks built and cannot fire).
 **Filed:** 2026-09-03, by BRW-004 (E8) terrain mapping, re-measured in E3 at `203853b3a`.
 
@@ -1565,11 +1565,36 @@ fails closed" (the decision is produced and durably recorded by the 30 s sweep a
 other side and wrote the workaround into schema prose at
 `packages/db/src/schema/service_generations.ts:61-67`.
 
-**Disposition.** Owned by **JOB-015**, filed for exactly this. The finding is closed by the method
-**acquiring a real caller** (design slice (b) sources the renew-response extension from it), not by
-editing the docstring. If JOB-015's slices (b)/(c) are descoped, this must be repointed to a live
-successor rather than marked resolved — an open finding owned by shipped or abandoned work is owned
-by nobody (E4-F013).
+**Disposition — RESOLVED by JOB-015 slices (b)+(e).** Closed the way the disposition required:
+the method **acquired a real caller**, not a corrected docstring.
+
+- `renewLease` now sources BOTH halves of its control read from
+  `repository.listPendingControlCommands(...)` — the `cancelRequested` boolean (identical value:
+  the first un-ACKed `cancel`/`graceful_stop` in sequence order is exactly what the narrower inline
+  query returned) and the new `dev.aoa.job/control-v1` response extension. The inline duplicate query
+  is gone. Deliberately routed through the PUBLIC interface method rather than a shared private
+  helper: a private helper would have removed the duplication and left the finding open.
+- `extensions: []` is no longer hardcoded. The projector is a **required** parameter on
+  `renewLease`, so a future caller cannot silently reintroduce the empty array — the type checker
+  asks for it.
+- `drain`, `product_approval_result` and `runtime_decision_result` now have a delivery CHANNEL.
+  ★ **No command travels it end to end from a PRODUCTION-QUEUED row.** `drain` is the only kind with a worker-side applier (`dispatch-runtime.ts` composes `pollLoop.stopLeasing()`) and has **no production writer at all**; the two kinds that DO have writers have no applier. The
+  two result kinds have a delivery path and a fail-closed terminal but **no applier yet**, so they
+  are counted `control_command{outcome="unhandled"}` and stay pending for redelivery. That residue is
+  E8/BRW-004's and E9/SVC-001's to close and is stated in `JOB-015-result.md`, not hidden here.
+- `decideControlReceiverV1` has its first production caller
+  (`packages/worker-daemon/src/lease/control-commands.ts`).
+
+The pin that proves this was ever broken is `server/src/__tests__/job-015-control-delivery-pin.test.ts`
+plus the `job-control-commands.integration.test.ts` block "JOB-015 control-command delivery ...";
+both were verified RED against the pre-fix `extensions: []` line and green after.
+
+**A sibling defect this finding did not name, fixed in the same commit.**
+`controlCommandAckV1Schema` is `.strict()` and carries `commandSeq`, and its docstring says the worker
+"echoes the command ID + sequence" — but `ackControlCommand` matched on
+`(organizationId, leaseId, commandId)` and threw the sequence away. A frozen validation field the
+server never checked, the same class as this finding. The echoed sequence is now part of the ACK's
+WHERE clause; a mismatch matches zero rows and the command stays pending.
 
 ---
 

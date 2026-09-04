@@ -60,6 +60,11 @@ export const LEASE_LOSS_METRIC = "lease_loss";
 export const FENCE_CLOSE_METRIC = "fence_close";
 export const GOVERNED_EFFECT_DENIED_METRIC = "governed_effect_denied";
 export const QUARANTINE_METRIC = "quarantine";
+/** JOB-015 — `control_command{outcome}`: one line per delivered control command
+ * (applied / deferred / gap / conflict / stale / oversized / unhandled). The counter
+ * that answers "did the command actually reach a handler?", which is the only question
+ * this ticket's acceptance turns on — a command appearing in a payload is not delivery. */
+export const CONTROL_COMMAND_METRIC = "control_command";
 
 /**
  * A bounded low-cardinality enum token: lowercase, starts with a letter, at most
@@ -165,6 +170,22 @@ export const CLOSED_LABEL_VALUES: Readonly<Record<string, ReadonlySet<string>>> 
     // `outcome` key is a closed allow-list — DEP-011 §2a.11 records this as a
     // build deviation from the design's "open string" wording).
     "orphaned",
+    // ★★★ JOB-015 — the control-command delivery outcomes, registered in the SAME
+    // commit that first emits them. `outcome` is a CLOSED allow-list: an unregistered
+    // value THROWS, and it throws on the HAPPY path (a delivered command) as readily as
+    // on a failure. In the renewal driver that throw would land in the renew loop's
+    // error handling, so a run could be torn down with NO TERMINAL — the E7-F010 shape,
+    // where growing the non-frozen port left a structure DERIVED from the frozen
+    // vocabulary behind and nothing added the entry. `CLOSED_LABEL_VALUES.outcome` (and
+    // its `packages/worker-daemon/src/index.ts` re-export) is the only structure derived
+    // from this vocabulary in the repo; that was enumerated before these lines were added.
+    "applied",
+    "deferred",
+    "gap",
+    "conflict",
+    "stale",
+    "oversized",
+    "unhandled",
   ]),
   workload: new Set(["batch", "browser_session", "service"]),
   bucket: new Set(["lt_1s", "lt_5s", "lt_30s", "gte_30s"]),

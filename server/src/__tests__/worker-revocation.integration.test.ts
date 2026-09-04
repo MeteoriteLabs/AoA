@@ -142,6 +142,11 @@ integration("JOB-007 worker/target revocation via generation cutoff", () => {
     const codes = await Promise.all([
       guardCode("renew", (id, repos) => repos.jobControl.renewLease({
         ...id, leaseDurationMs: 300_000, idempotencyKey: randomUUID(), semanticDigest: "d".repeat(64),
+        // JOB-015 — the fence guard runs BEFORE any control read, so this projector is
+        // never reached on a revoked fence. Throwing proves that: if the guard ever
+        // stopped preceding the projection, this case would fail loudly instead of
+        // quietly renewing.
+        projectControlExtensions: () => { throw new Error("projector must not run on a revoked fence"); },
       }), identity),
       guardCode("events", (id, repos) => repos.jobControl.acceptEvent({ ...id }), identity),
       guardCode("secrets", (id, repos) => repos.jobControl.readSecretHandle({ ...id, handle: "h" }), identity),
