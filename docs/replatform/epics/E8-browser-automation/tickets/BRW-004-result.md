@@ -58,8 +58,8 @@ making the gate permanently red (all three were tried and withdrawn in the desig
 - **Q2 — "Can the sandbox constrain outbound egress at all?"** **NO.** Measured, slice (a). See §3.
 - **Q3 — "What is a `browser_request` job's `agentId` when the requester is a founder?"** **NULL**,
   in an all-or-nothing pair with `runId`, enforced by a DB CHECK (slice (d)).
-- **Q4 — "Does anything read `agent_runtime_decisions.agentId` unconditionally?"** **YES — eight
-  places, and the design named one of them.** See §4. The UI half is better than feared:
+- **Q4 — "Does anything read `agent_runtime_decisions.agentId` unconditionally?"** **YES — NINE
+  places, and the design named two of them.** See §4. The UI half is better than feared:
   `ui/src/api/agent-runtime-decisions.ts` already typed both fields nullable and
   `RuntimeDecisionPanel` reads neither.
 - **Q6 — "What component turns a broker-resolved credential into browser session state?"** Still
@@ -81,7 +81,7 @@ making the gate permanently red (all three were tried and withdrawn in the desig
 - **(c)** An injected approval seam on `runBrowserSession` gating navigation and downloads, D5's
   refusal of standing grants, and a frozen-source parity test for the mirrored vocabulary.
 - **(d)** Migration 0272 relaxing `agent_runtime_decisions.agent_id`/`run_id` to nullable behind an
-  all-or-nothing CHECK, plus closure of all eight null-hazards the relaxation creates.
+  all-or-nothing CHECK, plus closure of all NINE null-hazards the relaxation creates.
 
 **Explicit non-goals preserved**
 
@@ -140,33 +140,48 @@ the other direction.
 
 ---
 
-## 4. ★★★ Slice (d): the design named ONE null-hazard of eight, and two of the seven were lethal
+## 4. ★★★ Slice (d): the design named TWO null-hazards of NINE, and two of the seven it missed were lethal
 
-Design §D2 names the timeout sweeper's `runCanceller`. Measuring Q3/Q4 found seven more. **Two of
-them would have shipped an approval feature that refuses every one of its own prompts and rejects
-every answer — with a completely green typecheck.**
+> ★ COUNT CORRECTED, and the correction is itself the point. An earlier draft of this section said
+> "one of eight". Both numbers were wrong: E8-F002's disposition names **two** branches — the
+> sweeper's `runCanceller` **and** "the bridge's request shape" — and the second (hazard 9) was one
+> I had not landed when I first wrote this. It surfaced only because the E4-F013 successor guard
+> forced a re-read of the disposition. Leaving a corrected conclusion sitting above an uncorrected
+> count is the exact failure this programme keeps paying for, so the count is restated rather than
+> patched.
+
+Design §D2 names two branches. Measuring Q3/Q4 found **seven more**. **Two of the seven would have
+shipped an approval feature that refuses every one of its own prompts and rejects every answer —
+with a completely green typecheck.**
 
 | # | Hazard | Named by design? | Failure shape |
 |---:|---|---|---|
 | 1 | `createPrompt` zombie-run guard: `getRunStatus(null)` finds no row → "run is terminal" | **no** | **every distributed decision refused at creation** |
 | 2 | `answerPrompt` liveness gate: same shape on the answer side | **no** | **every founder answer cancelled + 409'd** |
-| 3 | `runCanceller` aimed at a null run | yes | swallowed by the catch; indistinguishable from a successful cancel |
+| 3 | `runCanceller` aimed at a null run | **yes** | swallowed by the catch; indistinguishable from a successful cancel |
 | 4 | `sourceUniqueKey` template-interpolates `runId` → the literal string `"null"` | no | an identity that works by accident |
 | 5 | connector auto-allow probe scoped to an absent agent | no | a probe against a scope that does not exist |
 | 6 | two hub projections claim `relatedEntityType: "heartbeat_run"` beside a null id | no | a row that lies quietly (columns are nullable; nothing crashes) |
 | 7 | `listStrandedAnswers` INNER JOIN on `run_id` | no | **silent exclusion** — no type error, no runtime error, no wrong row |
 | 8 | `RuntimeDecisionDetail` is `.strict()` with `z.string().uuid()` | no | the decision exists in the DB and is unreadable through the hub |
+| 9 | `RuntimeDecisionOpenRequest` — the bridge's ENTRY POINT — still `string`-only | **yes** (§D2: "the bridge's request shape") | the relaxation is unreachable through the only door that matters |
 
-★ A ninth, caught only because the E4-F013 successor guard forced a re-read of the finding's own
-disposition: **`RuntimeDecisionOpenRequest` — the bridge's entry point — was still `string`-only.**
-Widening the service beneath it is a silent no-op, because a widened parameter still accepts a
-narrower argument: `tsc` stays green while a browser job can never reach the relaxed aggregate at
-all. Fixed, and while fixing it the bridge's own `runtimeSourceIdentity` — a SECOND implementation
-of the dedupe-key rule, bound to the service's only by a comment saying they must be byte-identical
-— was replaced by a delegation to the shared helper. The bridge already imported that module, so
-there had never been a dependency reason for the copy. A divergence there does not fail loudly: the
-receipt fast-path simply never hits, so every replay mints a duplicate aggregate. Mutation D8
-reintroduces the copy and is caught by a source-text assertion.
+★★ **Hazard 9 was design-named and this build still missed it on the first pass.** It surfaced only
+because the E4-F013 successor guard forced a re-read of the finding's own disposition after the
+result doc made BRW-004 "shipped" — the guard did not find the defect, it made me look. **Widening
+the service beneath an entry point is a silent no-op**, because a widened parameter still accepts a
+narrower argument: `tsc` stays perfectly green while the bridge remains string-only and a browser
+job can never reach the relaxed aggregate at all.
+
+Fixing it exposed one more thing worth recording. The bridge's `runtimeSourceIdentity` was a SECOND
+implementation of the dedupe-key rule, bound to the service's only by a comment saying the two must
+be byte-identical — and making `runId` nullable would have required two independent template
+literals to render null identically, by accident, forever. **A divergence there does not fail
+loudly:** the receipt fast-path simply never hits, so every replay mints a duplicate aggregate. The
+bridge already imported that module, so there had never been a dependency reason for the copy. It
+now delegates, and mutation D8 reintroduces the copy and is caught by a source-text assertion —
+source text, because the function is not exported and the property being protected is "there is only
+one implementation", which no value test can see.
 
 Hazards 1 and 2 are the ticket's own worst-case shape: *a guard that cannot pass looks exactly like
 a guard that works.* Both are skipped when there is no run, because a distributed decision's
@@ -297,9 +312,11 @@ Final restored state verified green, not assumed: 127 (browser-runtime), 190 (fo
    `budget_stop`; the other four are declared `unmodelled` **with a written reason** and printed in
    the census. Naming an omission is the `unowned`-with-reason pattern; leaving it silent would be
    the blanket exemption the whole slice exists to avoid.
-2. **The design's §D2 null-branch list is incomplete by seven.** §4 above. Not a disagreement with
-   the decision — the decision is right and is implemented as specified — but the work it implies is
-   materially larger than "two call sites then need a null branch".
+2. **The design's §D2 null-branch list is incomplete by seven.** It names two branches; there are
+   nine. §4 above. Not a disagreement with the decision — the decision is right and is implemented
+   as specified, both named branches included — but the work it implies is materially larger than
+   "two call sites then need a null branch", and two of the seven it does not name would each have
+   made the relaxation useless while every test and typecheck stayed green.
 3. **Slice (c) does not emit a `runtime_decision_requested` event, and cannot.** The design says the
    seam emits it "through the worker's existing `EventSequencer`". The sequencer is host-side, in
    the worker daemon; `packages/browser-runtime` is staged into the guest as bare files with no

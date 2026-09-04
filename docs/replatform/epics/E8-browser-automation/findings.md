@@ -150,13 +150,20 @@ hand-authored), and the all-or-nothing CHECK `(agent_id IS NULL) = (run_id IS NU
 can be half-bound. Both null branches the disposition names are landed — the bridge's
 `RuntimeDecisionOpenRequest` shape and the timeout sweeper's `runCanceller`.
 
-★★★ The disposition named TWO null branches. There were EIGHT, and two of the six it missed were
-lethal: `createPrompt`'s zombie-run guard and `answerPrompt`'s liveness gate both call
-`getRunStatus(...)`, which with a null finds no row and reads that as "the run is terminal" — so the
-relaxation would have shipped an approval feature that refuses every one of its own prompts at
-creation and rejects every answer, with a completely green typecheck. All eight are closed and
-mutation-tested, each as a distributed/legacy PAIR so "correctly skipped" cannot be confused with
-"accidentally disabled for everyone"; the full table is in the result doc §4.
+★★★ The disposition named TWO null branches — the sweeper's `runCanceller` and "the bridge's
+request shape". There were **NINE**, and two of the seven it missed were lethal: `createPrompt`'s
+zombie-run guard and `answerPrompt`'s liveness gate both call `getRunStatus(...)`, which with a null
+finds no row and reads that as "the run is terminal" — so the relaxation would have shipped an
+approval feature that refuses every one of its own prompts at creation and rejects every answer,
+with a completely green typecheck. All nine are closed and mutation-tested, each as a
+distributed/legacy PAIR so "correctly skipped" cannot be confused with "accidentally disabled for
+everyone"; the full table is in the result doc §4.
+
+★ The second design-named branch (`RuntimeDecisionOpenRequest`, the bridge's entry point) was
+initially MISSED BY THIS BUILD and surfaced only because the E4-F013 successor guard forced a
+re-read of this disposition. Widening the service beneath an entry point is a silent no-op — a
+widened parameter still accepts a narrower argument — so `tsc` stayed green while the relaxation was
+unreachable through the only door that matters.
 
 One of them is left in place deliberately and filed separately: `listStrandedAnswers`' INNER JOIN
 excludes distributed decisions from the R2 sweep. The exclusion is correct; the sweep that should
