@@ -420,10 +420,15 @@ test("★ the residue is stated, not bounded: work may spend the whole cap minus
 // Every clause compares a declared number to a measurement declared in the SAME FILE; none
 // compares anything to a previously committed value. So the shipped numbers are not a floor.
 //
-// These are DISCLOSURE tests, not guard clauses. They assert that the guard PASSES the free
-// raise, and that the figures quoted in the manifest, the library and the GO-BOOK are the
-// figures the shipped manifest actually implies. If someone later builds the diff-aware
-// instrument that closes this, these reds and the prose gets corrected with them.
+// A second miss is recorded here too: a required-lane job with NO cap at all is skipped by the
+// coverage clause, so it is neither budgeted nor exempt nor reported.
+//
+// These are DISCLOSURE tests, not guard clauses. They assert that the guard PASSES both of those
+// diffs, and that the figures quoted in the library, the manifest, the GO-BOOK and the FINDING
+// REGISTER are the figures the shipped manifest actually implies — the register especially,
+// because a residue stated in a PR body and left out of the register has not been disclosed.
+// If someone later builds the diff-aware instrument that closes either hole, these tests go RED
+// and the prose is corrected with them.
 // ---------------------------------------------------------------------------
 
 /** Every declared number pushed to its own ceiling, with NO `measured*` field touched. */
