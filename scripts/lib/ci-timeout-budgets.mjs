@@ -28,12 +28,40 @@
 //     step timeout-minutes ==  ceil(setupAllowanceSeconds / 60)
 //
 // The step cap makes a slow registry fail BY NAME instead of eating an unrelated step's
-// budget. The job cap then bounds the WORK, which is the only part the commit owns. And
-// because the cap is a function of two declared numbers, RAISING IT IS NOT A FREE MOVE: you
-// must raise `workBudgetSeconds`, which is bounded above by `MAX_WORK_BUDGET_FACTOR ×
-// measuredMaxWorkSeconds` — a number that must be re-measured, dated, and attributed to real
-// run ids in the same diff. "Raise the cap until it stops complaining" is refused by clause
-// `work_budget_unjustified`.
+// budget. And BOTH declared numbers are bounded by a dated measurement, so raising EITHER is
+// not a free move: `workBudgetSeconds` may not exceed `MAX_WORK_BUDGET_FACTOR ×
+// measuredMaxWorkSeconds` (clause `work_budget_unjustified`), and `setupAllowanceSeconds` may
+// not exceed `MAX_SETUP_ALLOWANCE_FACTOR ×` the manifest's
+// `setupAllowance.measuredMaxSetupSeconds` (clause `setup_allowance_unjustified`). Both are
+// numbers that must be re-measured, dated, and attributed to real run ids in the same diff.
+// "Raise the cap until it stops complaining" is refused on both dials.
+//
+// ★ WHAT THIS DOES NOT DO — stated here because the first version of this file claimed it did,
+// and the claim was refuted on review (2026-09-05).
+//
+// (a) THE JOB CAP DOES NOT BOUND THE WORK. GitHub's job `timeout-minutes` covers every step in
+//     the job, so the allowance is ADDITIVE AND UNRESERVED. When the setup step is fast — 4 s
+//     at the p50 — the work may spend the whole cap minus those 4 s. Measured worst work
+//     against cap-minus-p50-setup: `lint` 9.8×, `distributed-contract` 9.3×, `policy` 7.5×,
+//     `migrations` 7.4×, `browser` 6.8×, `verify` 2.0×, `e2e` 1.9×. That is the SAME SHAPE the
+//     paragraph above indicts a combined cap for; the split shrank the magnitudes (the caps
+//     went down) and made the infrastructure half fail under its own name, but it did not
+//     change the shape. Bounding realized work independently of setup would need a runtime
+//     comparison of the work duration against `workBudgetSeconds`. Nothing here does that, and
+//     no clause below asserts it.
+//
+// (b) AN EXEMPT JOB'S CAP IS NOT DERIVED AT ALL. `exempt` waives the pnpm allowance, and the
+//     only thing asked of it is a reason a human can argue with. A job that stops fetching pnpm
+//     may therefore carry any `timeout-minutes` it likes. That is deliberate — there is no
+//     measurement to derive from once the fetch is gone — but it is a hole, and it is stated
+//     rather than left for the next reader to find. Note that it cannot be used as a shortcut:
+//     a job that still runs `pnpm/action-setup` gets `job_missing_budget` whether it is exempt
+//     or not, so exemption cannot launder a budgeted job.
+//
+// (c) What the split DOES buy, and this is the whole of it: (1) the infrastructure half fails
+//     by name at its own step cap instead of consuming an unrelated step's budget and being
+//     misattributed, and (2) two numbers each bounded by their own dated measurement, in place
+//     of one number bounded by nothing.
 //
 // Pure. The caller supplies the parsed workflow and the manifest.
 
@@ -42,6 +70,22 @@
  * a new measurement. `verify` sat at 60 minutes against a measured 18-minute worst work, and
  * that 42 minutes of undeclared slack once masked a real hang for weeks. */
 export const MAX_WORK_BUDGET_FACTOR = 2;
+
+/** The infrastructure allowance may exceed the measured worst setup step by at most this
+ * factor. Bounded TIGHTER than the work budget, for two reasons that are not symmetric with
+ * it. (1) The work budget is deliberately loose because we want room to ADD work — guards,
+ * tests, shards. The allowance is not a place to grow into: growth in the third-party fetch is
+ * the signal this whole file exists to make visible, so accommodating it silently is the
+ * failure. (2) The allowance is additive into every budgeted job cap and is UNIFORM across
+ * them, so a single edit to it moves eight caps at once and widens the unreserved work
+ * headroom described in (a) above by the same amount, eight times over.
+ *
+ * ★ This ceiling exists because the first version of this file did not have one. Review
+ * (2026-09-05) showed `setupAllowanceSeconds: 480 -> 3000` plus the two caps it derives was a
+ * measurement-free three-line diff that the guard PASSED — taking `policy` from an 11-minute
+ * cap to 53 and its step cap from 8 to 50, on all eight jobs at once. That was strictly easier
+ * than the work-budget raise the guard already refused, and strictly more damaging. */
+export const MAX_SETUP_ALLOWANCE_FACTOR = 1.5;
 
 /** Fewer samples than this is not a measurement. Each instance of this class was first
  * "explained" from a single red run, before anyone counted. */
@@ -161,7 +205,55 @@ export function evaluateCiTimeoutBudgets({ jobs, manifest, requiredJobId = "ci-r
   const exempt = (manifest && manifest.exempt) || {};
   const byId = new Map(jobs.map((j) => [j.id, j]));
 
-  // 1 + 2 — the manifest and the workflow must describe the same set of exposures.
+  // 0 — the INFRASTRUCTURE allowance rests on a measurement too.
+  //
+  // `setupAllowanceSeconds` is one number, uniform across every budgeted job, and it is added
+  // to every derived cap. Until 2026-09-05 it was validated only as "a positive finite number",
+  // so it was the escape hatch the work-budget ceiling closed on the other dial: edit it, edit
+  // the two caps it derives, and the guard printed OK. It is declared ONCE here — the
+  // measurement is workflow-wide (the worst `Setup pnpm` observed in ANY job in the window), so
+  // a per-job copy of it would be a per-job claim the evidence does not support.
+  const setupBlock = manifest && manifest.setupAllowance;
+  let measuredMaxSetupSeconds = null;
+  if (!setupBlock || typeof setupBlock !== "object") {
+    add(
+      "setup_measurement_incomplete",
+      null,
+      "manifest has no `setupAllowance` block; `setupAllowanceSeconds` would then be bounded " +
+        "by nothing, which is the hole this clause exists to close",
+    );
+  } else {
+    const problems = [];
+    if (
+      !Number.isFinite(setupBlock.measuredMaxSetupSeconds) ||
+      setupBlock.measuredMaxSetupSeconds <= 0
+    ) {
+      problems.push("`measuredMaxSetupSeconds` must be a positive number");
+    }
+    if (
+      !Number.isFinite(setupBlock.measuredSampleSize) ||
+      setupBlock.measuredSampleSize < MIN_MEASUREMENT_SAMPLE_SIZE
+    ) {
+      problems.push(
+        "`measuredSampleSize` must be >= " +
+          MIN_MEASUREMENT_SAMPLE_SIZE +
+          "; got " +
+          String(setupBlock.measuredSampleSize),
+      );
+    }
+    if (typeof setupBlock.measuredOn !== "string" || !ISO_DATE.test(setupBlock.measuredOn)) {
+      problems.push("`measuredOn` must be a YYYY-MM-DD date");
+    }
+    if (!Array.isArray(setupBlock.measuredRuns) || setupBlock.measuredRuns.length === 0) {
+      problems.push("`measuredRuns` must name at least one workflow run id");
+    }
+    for (const p of problems) add("setup_measurement_incomplete", null, "setupAllowance: " + p);
+    if (problems.length === 0) measuredMaxSetupSeconds = setupBlock.measuredMaxSetupSeconds;
+  }
+  const setupCeiling =
+    measuredMaxSetupSeconds === null ? null : MAX_SETUP_ALLOWANCE_FACTOR * measuredMaxSetupSeconds;
+
+  // EXPOSURE — the manifest and the workflow must describe the same set of exposures.
   for (const job of jobs) {
     if (!job.pnpmSetup) continue;
     if (!Object.prototype.hasOwnProperty.call(budgets, job.id)) {
@@ -189,7 +281,8 @@ export function evaluateCiTimeoutBudgets({ jobs, manifest, requiredJobId = "ci-r
     }
   }
 
-  // 3-8 — every budgeted job's caps must be DERIVED from a dated measurement.
+  // DERIVATION — every budgeted job's two caps must be DERIVED from dated measurements,
+  // and BOTH declared numbers must sit inside their own measurement's ceiling.
   for (const [id, entry] of Object.entries(budgets)) {
     const job = byId.get(id);
     if (!job || !job.pnpmSetup) continue;
@@ -249,6 +342,38 @@ export function evaluateCiTimeoutBudgets({ jobs, manifest, requiredJobId = "ci-r
       );
     }
 
+    if (measuredMaxSetupSeconds !== null) {
+      if (entry.setupAllowanceSeconds < measuredMaxSetupSeconds) {
+        add(
+          "setup_allowance_below_measurement",
+          id,
+          "setupAllowanceSeconds " +
+            entry.setupAllowanceSeconds +
+            " is below the measured worst setup step " +
+            measuredMaxSetupSeconds +
+            "s — the step cap would fire on an episode the measurement already contains",
+        );
+      }
+      if (entry.setupAllowanceSeconds > setupCeiling) {
+        add(
+          "setup_allowance_unjustified",
+          id,
+          "setupAllowanceSeconds " +
+            entry.setupAllowanceSeconds +
+            " exceeds " +
+            MAX_SETUP_ALLOWANCE_FACTOR +
+            "x the measured worst setup step (" +
+            measuredMaxSetupSeconds +
+            "s -> " +
+            setupCeiling +
+            "s). Re-measure `setupAllowance` and record it, or lower the allowance. This " +
+            "number is added to EVERY job cap and is the step cap outright, so raising it " +
+            "moves every budgeted job at once — which is exactly why it may not be raised " +
+            "without a new dated measurement in the same diff.",
+        );
+      }
+    }
+
     const wantStep = derivedStepCapMinutes(entry);
     if (job.pnpmSetup.timeoutMinutes === null) {
       add(
@@ -295,7 +420,7 @@ export function evaluateCiTimeoutBudgets({ jobs, manifest, requiredJobId = "ci-r
     }
   }
 
-  // 9 + 10 — the required lane is closed: every job the aggregator consumes is budgeted, or
+  // CLOSURE — the required lane is closed: every job the aggregator consumes is budgeted, or
   // exempt WITH A REASON. This is the clause that catches instance ten, whatever step carries it.
   const required = byId.get(requiredJobId);
   if (!required) {

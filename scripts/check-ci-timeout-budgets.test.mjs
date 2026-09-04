@@ -5,7 +5,7 @@
  * Run with:
  *   node --test scripts/check-ci-timeout-budgets.test.mjs
  *
- * Two halves, deliberately.
+ * Three halves, deliberately — the third added after review.
  *
  * (A) THE REAL FILES. The scanner runs against the actual .github/workflows/pr.yml and the
  *     actual manifest, and asserts both that it FINDS the nine-job exposure it was written
@@ -18,6 +18,14 @@
  *     was built for` reconstructs the pre-fix state — a `Setup pnpm` step with no cap of its
  *     own inside a job whose cap silently absorbs it — and asserts red. That state was the tip
  *     of this branch before this commit, and 17 findings across 9 jobs were the measured red.
+ *
+ * (C) THE OTHER DIAL, added 2026-09-05. The first version of this guard bounded the WORK budget
+ *     and left `setupAllowanceSeconds` bounded by nothing — a uniform number that derives eight
+ *     job caps and eight step caps, so one measurement-free edit moved all sixteen and the
+ *     guard printed OK. Review demonstrated it (480 -> 3000: `policy` 11 m -> 53 m, step cap
+ *     8 -> 50). Every test in (C) was run against the pre-correction library and RED: 6 of 6.
+ *     "the hatch has a PRICE" opens with a positive control, because an assertion that a code
+ *     is ABSENT passes vacuously against a build that never emits it.
  */
 
 import { test } from "node:test";
@@ -27,6 +35,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  MAX_SETUP_ALLOWANCE_FACTOR,
   MAX_WORK_BUDGET_FACTOR,
   MIN_MEASUREMENT_SAMPLE_SIZE,
   derivedJobCapMinutes,
@@ -233,4 +242,151 @@ test("the derivation is the documented arithmetic", () => {
   assert.equal(derivedJobCapMinutes({ workBudgetSeconds: 1, setupAllowanceSeconds: 60 }), 2);
   assert.equal(derivedStepCapMinutes({ setupAllowanceSeconds: 480 }), 8);
   assert.equal(derivedStepCapMinutes({ setupAllowanceSeconds: 481 }), 9);
+});
+
+// ---------------------------------------------------------------------------
+// (C) The OTHER dial. Added 2026-09-05 after review refuted the claim that the escape hatch
+//     was closed: `setupAllowanceSeconds` had no ceiling, no measurement and no clause, and it
+//     is UNIFORM, so one edit moved all eight job caps and all eight step caps at once. Every
+//     test below fails against the guard as originally shipped.
+// ---------------------------------------------------------------------------
+
+/** Rewrite the real workflow's caps to whatever a mutated manifest derives, so the mutation
+ * under test is the ONLY thing wrong. This is the shape of the refuting diff: three lines. */
+function reDeriveCaps(text, m) {
+  const lines = text.split("\n");
+  for (const job of parseWorkflowJobs(text)) {
+    const entry = m.jobs[job.id];
+    if (!entry) continue;
+    for (let i = job.line - 1; i < lines.length; i += 1) {
+      if (/^ {4}timeout-minutes: \d+\s*$/.test(lines[i])) {
+        lines[i] = `    timeout-minutes: ${derivedJobCapMinutes(entry)}`;
+        break;
+      }
+    }
+  }
+  const step = derivedStepCapMinutes(Object.values(m.jobs)[0]);
+  return lines.map((l) => (/^ {8}timeout-minutes: 8$/.test(l) ? `        timeout-minutes: ${step}` : l)).join("\n");
+}
+
+test("refuses THE REFUTING DIFF: the uniform allowance raised with its two derived caps", () => {
+  // Verbatim the diff review demonstrated against the first version of this guard: allowance
+  // 480 -> 3000, job caps re-derived (policy 11 -> 53), step caps re-derived (8 -> 50). It
+  // printed OK. It must now red on every budgeted job, not just the first.
+  const m = clone(manifest);
+  for (const e of Object.values(m.jobs)) e.setupAllowanceSeconds = 3000;
+  const result = run(reDeriveCaps(workflowText, m), m);
+  assert.equal(result.ok, false, "the measurement-free three-line raise must be refused");
+  const bad = result.findings.filter((f) => f.code === "setup_allowance_unjustified");
+  assert.equal(
+    bad.length,
+    Object.keys(m.jobs).length,
+    "one edit moves every job's cap, so every job must be reported",
+  );
+  assert.match(bad[0].detail, /Re-measure `setupAllowance`/);
+});
+
+test("the allowance ceiling is exactly MAX_SETUP_ALLOWANCE_FACTOR x its measurement", () => {
+  const measured = manifest.setupAllowance.measuredMaxSetupSeconds;
+  const ceiling = MAX_SETUP_ALLOWANCE_FACTOR * measured;
+
+  const atCeiling = clone(manifest);
+  atCeiling.jobs.policy.setupAllowanceSeconds = Math.floor(ceiling);
+  assert.ok(
+    !codes(run(reDeriveCaps(workflowText, atCeiling), atCeiling)).includes(
+      "setup_allowance_unjustified",
+    ),
+    "the ceiling itself must be reachable",
+  );
+
+  const overCeiling = clone(manifest);
+  overCeiling.jobs.policy.setupAllowanceSeconds = Math.floor(ceiling) + 1;
+  assert.ok(
+    codes(run(reDeriveCaps(workflowText, overCeiling), overCeiling)).includes(
+      "setup_allowance_unjustified",
+    ),
+    "one second past the ceiling must red",
+  );
+});
+
+test("the hatch has a PRICE, not a lock: raising the allowance costs a dated re-measurement", () => {
+  // The point is not that 3000 is forbidden forever. It is that reaching it requires editing
+  // measuredMaxSetupSeconds -- a claim about reality, dated and attributed to run ids, sitting
+  // in the diff where review can argue with it. Exactly the work dial's bargain.
+  const m = clone(manifest);
+  for (const e of Object.values(m.jobs)) e.setupAllowanceSeconds = 3000;
+
+  // POSITIVE CONTROL first. Asserting the ABSENCE of a code passes vacuously against a build
+  // that never emits it — which is precisely how this guard shipped. So prove the code is
+  // present for this exact input before proving the re-measurement clears it.
+  assert.ok(
+    codes(run(reDeriveCaps(workflowText, m), m)).includes("setup_allowance_unjustified"),
+    "control: without a new measurement this allowance must be refused",
+  );
+
+  m.setupAllowance.measuredMaxSetupSeconds = 2000;
+  const result = run(reDeriveCaps(workflowText, m), m);
+  assert.ok(
+    !codes(result).includes("setup_allowance_unjustified"),
+    "a re-measured allowance must be admissible; the cost is the measurement, not a veto",
+  );
+});
+
+test("refuses an allowance below the worst setup already measured", () => {
+  const m = clone(manifest);
+  m.jobs.lint.setupAllowanceSeconds = m.setupAllowance.measuredMaxSetupSeconds - 1;
+  const result = run(reDeriveCaps(workflowText, m), m);
+  const f = result.findings.find((x) => x.code === "setup_allowance_below_measurement");
+  assert.ok(f, "a step cap the measured episode already exceeds must be refused");
+  assert.equal(f.job, "lint");
+});
+
+test("refuses deleting or gutting the setup measurement itself", () => {
+  const gutted = [
+    (m) => {
+      delete m.setupAllowance;
+    },
+    (m) => {
+      m.setupAllowance.measuredMaxSetupSeconds = 0;
+    },
+    (m) => {
+      m.setupAllowance.measuredSampleSize = MIN_MEASUREMENT_SAMPLE_SIZE - 1;
+    },
+    (m) => {
+      m.setupAllowance.measuredOn = "during the episode";
+    },
+    (m) => {
+      m.setupAllowance.measuredRuns = [];
+    },
+  ];
+  for (const mutate of gutted) {
+    const m = clone(manifest);
+    mutate(m);
+    const result = run(workflowText, m);
+    assert.equal(result.ok, false);
+    assert.ok(
+      codes(result).includes("setup_measurement_incomplete"),
+      "deleting the measurement must not delete the ceiling with it",
+    );
+  }
+});
+
+test("★ the residue is stated, not bounded: work may spend the whole cap minus a fast setup", () => {
+  // Not a guard clause -- an assertion that the number in the docs is the number in the files,
+  // so the honest statement cannot drift away from the manifest it describes. The job cap does
+  // NOT bound the work: the allowance is additive and unreserved, and no runtime check compares
+  // realized work to workBudgetSeconds.
+  const P50_SETUP_SECONDS = 4;
+  const worst = Object.entries(manifest.jobs)
+    .map(([id, e]) => ({
+      id,
+      ratio: (derivedJobCapMinutes(e) * 60 - P50_SETUP_SECONDS) / e.measuredMaxWorkSeconds,
+    }))
+    .sort((a, b) => b.ratio - a.ratio)[0];
+  assert.equal(worst.id, "lint");
+  assert.ok(worst.ratio > 9 && worst.ratio < 10, `expected ~9.8x, got ${worst.ratio.toFixed(2)}x`);
+
+  const lib = fs.readFileSync(path.join(repoRoot, "scripts", "lib", "ci-timeout-budgets.mjs"), "utf8");
+  assert.match(lib, /THE JOB CAP DOES NOT BOUND THE WORK/);
+  assert.match(lib, /`lint` 9\.8×/);
 });

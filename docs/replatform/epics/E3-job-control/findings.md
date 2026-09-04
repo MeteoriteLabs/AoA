@@ -1769,8 +1769,17 @@ runners** — so it did not contaminate the work budgets derived from the same w
 - **The budget is SPLIT on the remaining eight.** Each `Setup pnpm` step carries its own
   `timeout-minutes: 8`, and each job's cap is now
   `ceil((workBudgetSeconds + setupAllowanceSeconds) / 60)` from `.github/ci-timeout-budgets.json`.
-  A slow registry now fails *by name*, in a step whose name is the diagnosis; the job cap bounds only
-  the work, which is the part the commit owns.
+  A slow registry now fails *by name*, in a step whose name is the diagnosis.
+  ★★★ **CORRECTED 2026-09-05.** This bullet first continued "*and the job cap bounds only the work,
+  which is the part the commit owns*". **That was false as shipped and is withdrawn.** GitHub's job
+  `timeout-minutes` covers every step, so the allowance is **additive and unreserved**: when the
+  setup step runs at its 4 s p50, the work may spend the whole cap minus 4 s. Measured worst work
+  against cap-minus-p50-setup: `lint` 596 s vs 61 s (**9.8×**), `distributed-contract` 9.3×, `policy`
+  7.5×, `migrations` 7.4×, `browser` 6.8×, `e2e-pgvector` 2.8×, `verify` 2.0×, `e2e` 1.9×. Nothing at
+  runtime compares realized work to `workBudgetSeconds` — it is a declared bound the derivation and
+  the ceilings use, not an enforced one. **The magnitudes improved; the shape did not**, and the
+  shape is what §2 above indicts a combined cap for. Doing better needs a runtime work-duration
+  check, which is not built and is not claimed here.
 - **Caps are derived, and seven go DOWN:** `policy` 12→11, `lint` 15→10, `migrations` 15→11,
   `browser` 20→12, `distributed-contract` 20→10, `e2e-pgvector` 25→18, `verify` 60→37. **One goes
   up:** `e2e` 30→33.
@@ -1792,7 +1801,7 @@ runners** — so it did not contaminate the work budgets derived from the same w
 
 #### 5. The guard, and the red it produced
 
-`scripts/check-ci-timeout-budgets.mjs` (+ `scripts/lib/ci-timeout-budgets.mjs`, 15-case corpus in
+`scripts/check-ci-timeout-budgets.mjs` (+ `scripts/lib/ci-timeout-budgets.mjs`, 21-case corpus in
 `scripts/check-ci-timeout-budgets.test.mjs`), wired into `policy`. It refuses: a required-lane job
 running `pnpm/action-setup` with no budget entry; a `Setup pnpm` step with no cap of its own; a job or
 step cap that is not the derived value; a work budget below its own measurement or **more than 2× it**;
@@ -1804,9 +1813,45 @@ stated reason. A scan that matches nothing FAILS rather than reporting clean.
 jobs** — 8 × `setup_step_uncapped`, 8 × `job_cap_mismatch`, 1 × `job_missing_budget`. Two live
 mutations were then made against the fixed tree and restored: raising `verify` back to 60 alone gives
 `job_cap_mismatch`; raising the cap **and** the work budget together to make it "legal" gives
-`work_budget_unjustified` — so the escape hatch is closed, and passing requires editing
-`measuredMaxWorkSeconds`, which is a dated claim about reality sitting in the diff where review can
-argue with it.
+`work_budget_unjustified` — so passing requires editing `measuredMaxWorkSeconds`, which is a dated
+claim about reality sitting in the diff where review can argue with it.
+
+#### 5b. ★★★ The claim "the escape hatch is closed" was FALSE, and this is what closing it took
+
+This addendum first ended §5 with "*so the escape hatch is closed*". Review refuted it. **The ceiling
+applied to `workBudgetSeconds` alone.** `setupAllowanceSeconds` was validated as a positive finite
+number and nothing else: there was no `measuredMaxSetupSeconds` field anywhere — the 431 s figure
+lived only in unchecked `$comment` prose — and none of the 14 finding codes concerned the size or the
+provenance of the allowance. So this diff **passed the guard**, reproduced before anything was fixed:
+
+```
+setupAllowanceSeconds: 480 -> 3000   (all eight jobs; it is ONE uniform number)
++ the eight job caps re-derived        policy 11m -> 53m, verify 37m -> 79m
++ the step cap re-derived              8m -> 50m, on all eight
+=> evaluateCiTimeoutBudgets: ok = true, findings = []
+```
+
+That was **strictly easier** than the work-budget raise the guard already refused, and **strictly
+more damaging**, because the allowance is uniform: one edit moves eight job caps and neuters eight
+step caps at once. The true statement about the shipped state was: *the WORK dial cost a
+re-measurement; the INFRASTRUCTURE dial cost nothing.*
+
+**What closes it (2026-09-05).** The manifest gains a `setupAllowance` block carrying the same
+discipline as a work measurement — `measuredMaxSetupSeconds: 431`, `measuredSampleSize: 156`
+(13 runs × the 12 job instances that then ran the step), `measuredOn`, and the 13 run ids — declared
+**once**, because the measurement is workflow-wide and a per-job copy would be a per-job claim the
+evidence does not support. Four new clauses read it: `setup_measurement_incomplete`,
+`setup_allowance_below_measurement`, `setup_allowance_unjustified`, and the ceiling
+`MAX_SETUP_ALLOWANCE_FACTOR = 1.5` — **tighter** than the work budget's 2×, because growth in a
+third-party fetch is the signal this file exists to surface rather than something to grow into, and
+because this one number is additive into all eight caps. 480 s sits at 1.11× its measurement. **No
+cap in the manifest changed**, so the live evidence in §6 below still describes the shipped caps.
+
+The refuting diff is now a test. Six new cases (corpus part **(C)**) were run against the
+pre-correction library: **6 of 6 RED**, then green after the fix, and the library restored and
+re-verified. One of them — "the hatch has a PRICE, not a lock" — opens with a **positive control**,
+because an assertion that a finding code is *absent* passes vacuously against a build that never
+emits it, which is exactly how the hole shipped.
 
 #### 6. ★ What this does NOT close — stated plainly
 
@@ -1822,11 +1867,25 @@ argue with it.
 3. **12 of the 21 repo-wide uses are untouched** (non-required lanes: `release.yml`,
    `release-smoke.yml`, `cross-platform-weekly.yml` ×2, five `keyed-e2b-*`, `llm-evals.yml`,
    `catalog-audit.yml`, `thread-v2-e2e.yml`).
-4. **Other network steps are inside "work", not separately allowanced** — `playwright install` in
+4. ★ **The job cap still does not bound the work — by design of GitHub's `timeout-minutes`, not by
+   oversight, but it is a real residue and it is NOT closed.** The allowance is additive and
+   unreserved; the ratios are in §4 above (worst: `lint` at 9.8×). Both declared numbers are now
+   bounded by dated measurements, and both are as tight as the measurements allow, so the only
+   remaining lever is a runtime comparison of realized work against `workBudgetSeconds` — a
+   post-`Run tests` step that reads the step durations and fails the job when work overran its own
+   budget. That is a different mechanism (a report becoming a gate, after the fact) and is not built.
+   Until it is, `workBudgetSeconds` is a **declared** bound used by the derivation and the ceilings,
+   not an **enforced** one, and this addendum should not be read as saying otherwise.
+   ★ A smaller one in the same family: **an `exempt` job's cap is not derived at all** — the
+   exemption waives the pnpm allowance and asks only for a reason, so a job that stops fetching pnpm
+   may carry any `timeout-minutes`. It cannot be used as a shortcut (a job that still runs
+   `pnpm/action-setup` gets `job_missing_budget` exempt or not), but the three exempt jobs' 5-minute
+   caps rest on their stated reasons, not on arithmetic.
+5. **Other network steps are inside "work", not separately allowanced** — `playwright install` in
    `e2e`/`browser` (spread 9 s and 34 s) and `Initialize containers` in `migrations`/`e2e-pgvector`
    (spread 11–13 s). Two orders of magnitude below the pnpm step, so they do not yet earn their own
    allowance; the manifest records where to put one if they ever do.
-5. ~~**No live CI evidence at the time of writing.**~~ **SUPERSEDED — the caps are now proven live.**
+6. ~~**No live CI evidence at the time of writing.**~~ **SUPERSEDED — the caps are now proven live.**
    Run **`33902312371`** on `claude/ci-timeout-class` is **fully green including `ci-required`**, with
    every job inside both its new cap and its declared work budget:
 
@@ -1845,5 +1904,5 @@ argue with it.
    argued from the file. ★ What this run does **not** prove: it landed in a quiet window (setup 3–7 s),
    so **the 8-minute step cap has never actually fired.** Its first real test is the next episode.
 
-**Disposition:** stays `unowned`. Items 1 and 2 are the open remainder, and neither is a line in a
-job-control ticket.
+**Disposition:** stays `unowned`. Items 1, 2 and 4 are the open remainder, and none of them is a line
+in a job-control ticket.

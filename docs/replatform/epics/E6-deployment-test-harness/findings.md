@@ -620,9 +620,20 @@ corpus in `scripts/check-ci-timeout-budgets.test.mjs`), wired into `policy`. Run
 **unmodified** tip before any edit it produced **17 findings across all 9 jobs**. Two mutations against
 the fixed tree, both restored: raising `verify` back to 60 alone → `job_cap_mismatch`; raising the cap
 *and* the work budget together to make it arithmetically legal → `work_budget_unjustified`, because a
-work budget may not exceed **2× its own recorded `measuredMaxWorkSeconds`**. Passing therefore requires
-editing a dated, run-id-attributed measurement in the same diff — which is the specific thing this
-finding says a cap raise skipped.
+work budget may not exceed **2× its own recorded `measuredMaxWorkSeconds`**.
+
+★★★ **CORRECTED 2026-09-05.** This paragraph first concluded that "*passing therefore requires editing
+a dated, run-id-attributed measurement in the same diff*". **It did not — not on the dial that
+mattered most.** The ceiling covered `workBudgetSeconds` only. `setupAllowanceSeconds` was validated
+as a positive number and nothing else, so editing that one **uniform** value 480 → 3000 plus the two
+caps it derives — a three-line diff with no measurement in it — took `policy` from an 11-minute cap to
+**53**, and its step cap from 8 to **50**, on **all eight jobs at once**, and the guard printed OK.
+That is the same failure mode this finding filed against DEP-013's raise, one level up: the cost was
+declared, not charged. It is charged now — the manifest carries a `setupAllowance` measurement
+(431 s worst over 156 observations, dated, 13 run ids) and a **1.5×** ceiling, deliberately tighter
+than the work budget's 2× because growth in the third-party fetch is the SIGNAL, not headroom to
+spend. **No cap changed**, so the live evidence in item 4 below still holds. Six new test cases pin
+the refuting diff; all six were RED against the pre-correction library.
 
 #### 5. ★ What is still open
 
@@ -634,6 +645,13 @@ finding says a cap raise skipped.
    `catalog-audit.yml`, `thread-v2-e2e.yml`).
 3. **The other half of the E3-F036 class is untouched.** The guard covers workflow jobs and steps, not
    *tests* that reach the network — so E3-F036's own instance would not have been caught by it.
+3b. ★ **This finding's remedy (b) is answered as a GATE, not as a bound on the work.** The step cap
+   makes the infrastructure half fail under its own name — which is what this finding asked for. It
+   does **not** make the job cap bound the work: GitHub's `timeout-minutes` covers every step, so the
+   480 s allowance is additive and **unreserved**, and a job whose setup is fast may spend the whole
+   cap on work (`lint` 9.8× its measured worst work, `policy` 7.5×). The magnitudes improved; the
+   shape did not. See E3-F036 addendum §4 and §6 item 4 for the full ratios and what closing it
+   would take.
 4. ~~**No live CI evidence at the time of writing.**~~ **SUPERSEDED.** Run **`33902312371`** on
    `claude/ci-timeout-class` is fully green including `ci-required`; every job landed inside both its
    new cap and its declared work budget (full table in the E3-F036 addendum), and `brand-check`
