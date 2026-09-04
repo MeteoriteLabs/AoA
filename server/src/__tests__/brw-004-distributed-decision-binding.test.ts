@@ -19,7 +19,9 @@ import { fileURLToPath } from "node:url";
 import {
   agentRuntimeDecisionService,
   runtimeDecisionSourceUniqueKey,
+  standingGrantBinding,
   DISTRIBUTED_RUN_SENTINEL,
+  STANDING_GRANT_UNBOUND_REASON,
 } from "../services/agent-runtime-decisions.js";
 
 const now = () => new Date("2026-09-04T12:00:00.000Z");
@@ -309,5 +311,199 @@ describe("E8-F002 — answerPrompt's liveness gate is SKIPPED without a run, and
       }),
     ).rejects.toThrow(/run ended before the answer could be delivered/);
     expect(repo.getRunStatus).toHaveBeenCalledWith(LEGACY_RUN);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────────
+// ★★★ THE TENTH NULL-HAZARD, and the only one of the ten that is a PRIVILEGE ESCALATION rather
+// than a broken lever. Everything above closes a null that would have made the feature refuse
+// its own prompts; this one closes a null that would have made it grant too much.
+//
+// Design §D5 predicted it by name — "the moment slice (c) populates `networkTarget` …
+// `allow_always` becomes reachable for browser egress" — and slice (c) shipped without the
+// refusal §D5 says to land alongside it. It was found by adversarial review of PR #356, after
+// the result doc had already claimed closure of "all NINE".
+//
+// The chain, each link real: `hasConcreteTrustScope` is satisfied by `riskClass` OR
+// `networkTarget` ALONE → slice (c) sets both on every navigation → `answerPrompt` therefore
+// admits `allow_always` → `buildTrustRuleInsert` copied the now-nullable `row.agentId` into the
+// trust rule → and `trustRuleMatchesPrompt` skipped its agent clause on a null, so that rule was
+// a WILDCARD IN THE AGENT DIMENSION. One founder answering "always allow this browser session to
+// reach example.com" would have authorised sessions they never saw.
+//
+// ★ Blast radius re-derived rather than asserted: a match also needs equal `riskClass` and an exact
+// `networkScope`, and the browser seam emits `network_egress` + a URL ORIGIN while the CLI hook
+// bridge emits `network` + a bare HOSTNAME — so heartbeat prompts are out of reach TODAY by
+// coincidence, not by design. The tests below therefore hold `riskClass`/`networkScope` EQUAL on
+// both sides and vary only the agent, which isolates the dimension the guard actually closes.
+// ────────────────────────────────────────────────────────────────────────────────────────────
+describe("E8-F002 hazard 10 — a standing grant is REFUSED when there is no agent to bind it to", () => {
+  const distributedRow = () => baseDecision({ agentId: null, runId: null, status: "shown" });
+  const answer = (decision: string) => ({
+    companyId: "company-1",
+    decisionId: "decision-1",
+    actorUserId: "founder-1",
+    expectedSourceRevision: 2,
+    nonce: "nonce-1",
+    kind: "permission" as const,
+    decision: decision as "allow_always",
+    idempotencyKey: `answer-${decision}`,
+  });
+
+  it("★★★ allow_always on a distributed decision is refused, and NO trust rule is written", async () => {
+    const { service, repo } = makeService({ getDecision: vi.fn(async () => distributedRow()) });
+    await expect(service.answerPrompt(answer("allow_always"))).rejects.toThrow(/no agent/i);
+    // The load-bearing half. A guard that throws AFTER writing the rule would have left the
+    // wildcard grant behind and only made the founder's UI show an error.
+    expect(repo.answerWithTrustRule).not.toHaveBeenCalled();
+    expect(repo.createTrustRule).not.toHaveBeenCalled();
+  });
+
+  it("the refusal is NOT the pre-existing scope guard — the browser row HAS a concrete scope", async () => {
+    // `hasConcreteTrustScope` passes here (networkTarget + riskClass are both set by slice (c)),
+    // so this proves the NEW guard fired rather than the old one. Without it, deleting the new
+    // guard could stay green behind an error that happens to also be a refusal.
+    const row = distributedRow();
+    expect(row.networkTarget).toBe("https://site.test");
+    expect(row.riskClass).toBe("network_egress");
+    expect(standingGrantBinding(row)).toBeNull();
+    const { service } = makeService({ getDecision: vi.fn(async () => row) });
+    await expect(service.answerPrompt(answer("allow_always")))
+      .rejects.toThrow(STANDING_GRANT_UNBOUND_REASON);
+    await expect(service.answerPrompt(answer("allow_always")))
+      .rejects.not.toThrow(/concrete command, path, network, or risk scope/);
+  });
+
+  it("allow_run on a distributed decision is refused too", async () => {
+    // Reachable only through a different door today (`runtimeRunGrantEligibility` already
+    // refuses a network_egress row), which is exactly why it needs its own case: the run-scoped
+    // rule is the WORSE of the two, because `buildRunTrustRuleInsert` sets `expiresAt: null`.
+    // An unbound, never-expiring wildcard must not depend on an unrelated clause staying put.
+    const row = baseDecision({
+      agentId: null,
+      runId: null,
+      status: "shown",
+      riskClass: "filesystem",
+      networkTarget: null,
+      cwd: "/work/repo",
+      path: "/work/repo/src",
+    });
+    const { service, repo } = makeService({ getDecision: vi.fn(async () => row) });
+    await expect(service.answerPrompt(answer("allow_run"))).rejects.toThrow(/no agent/i);
+    expect(repo.answerWithTrustRule).not.toHaveBeenCalled();
+  });
+
+  it("allow_once on the SAME distributed decision still succeeds — the refusal is scoped", async () => {
+    // ★ The anti-overreach control. A guard that refused every answer to a distributed decision
+    // would pass all three tests above and break the feature completely, which is hazard 2's
+    // failure shape arriving through a different door.
+    const { service, repo } = makeService({
+      getDecision: vi.fn(async () => distributedRow()),
+      updateDecision: vi.fn(async (_id, patch) =>
+        baseDecision({ ...(patch as Record<string, unknown>), agentId: null, runId: null })),
+    });
+    const result = await service.answerPrompt(answer("allow_once"));
+    expect(result).toBeTruthy();
+    expect(repo.updateDecision).toHaveBeenCalled();
+    expect(repo.answerWithTrustRule).not.toHaveBeenCalled();
+  });
+
+  // ★★ POSITIVE CONTROL — the whole feature still works for a LEGACY decision. Without it,
+  // "refused because unbound" and "allow_always removed for everyone" are the same green test.
+  it("POSITIVE CONTROL — allow_always on a LEGACY decision still mints an agent-bound rule", async () => {
+    const { service, repo } = makeService();
+    await service.answerPrompt(answer("allow_always"));
+    expect(repo.answerWithTrustRule).toHaveBeenCalledOnce();
+    const rule = (repo.answerWithTrustRule as unknown as { mock: { calls: unknown[][] } })
+      .mock.calls[0][3] as Record<string, unknown>;
+    expect(rule.agentId).toBe("agent-1");
+    expect(rule.grantScope).toBe("persistent");
+    expect(rule.networkScope).toBe("https://site.test");
+  });
+
+  it("POSITIVE CONTROL — allow_run on an eligible LEGACY decision still mints a run-bound rule", async () => {
+    const { service, repo } = makeService({
+      getDecision: vi.fn(async () => baseDecision({
+        status: "shown",
+        riskClass: "filesystem",
+        networkTarget: null,
+        cwd: "/work/repo",
+        path: "/work/repo/src",
+      })),
+    });
+    await service.answerPrompt(answer("allow_run"));
+    const rule = (repo.answerWithTrustRule as unknown as { mock: { calls: unknown[][] } })
+      .mock.calls[0][3] as Record<string, unknown>;
+    expect(rule.agentId).toBe("agent-1");
+    expect(rule.runId).toBe(LEGACY_RUN);
+    expect(rule.grantScope).toBe("run");
+  });
+
+  it("the binding predicate refuses a HALF-bound row, not only a fully unbound one", async () => {
+    // The DB CHECK on `agent_runtime_decisions` already makes the pair all-or-nothing. This
+    // asserts the service does not DEPEND on that check surviving: if it were ever dropped, a
+    // half-bound row must still not mint a standing grant.
+    expect(standingGrantBinding({ agentId: "agent-1", runId: null })).toBeNull();
+    expect(standingGrantBinding({ agentId: null, runId: LEGACY_RUN })).toBeNull();
+    expect(standingGrantBinding({ agentId: "agent-1", runId: LEGACY_RUN }))
+      .toEqual({ agentId: "agent-1", runId: LEGACY_RUN });
+  });
+});
+
+describe("E8-F002 hazard 10 — the READ half: a standing rule never crosses the agent boundary", () => {
+  const egressRule = (overrides: Record<string, unknown> = {}) => ({
+    id: "rule-1",
+    companyId: "company-1",
+    agentId: "agent-1",
+    runId: null,
+    grantScope: "persistent",
+    adapterType: "claude_local",
+    toolName: null,
+    commandHash: null,
+    pathScope: null,
+    networkScope: "https://site.test",
+    riskClass: "network_egress",
+    enabled: true,
+    expiresAt: null,
+    createdByUserId: "founder-1",
+    lastUsedAt: null,
+    createdAt: now(),
+    updatedAt: now(),
+    ...overrides,
+  });
+
+  it("a DISTRIBUTED prompt is not auto-allowed by an agent-bound standing rule", async () => {
+    const { service, repo } = makeService({ listTrustRules: vi.fn(async () => [egressRule()]) });
+    await service.createPrompt(distributedPrompt);
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "created", decision: null }),
+    );
+    expect(repo.markTrustRuleUsed).not.toHaveBeenCalled();
+  });
+
+  it("★★★ an UNBOUND rule is not a company-wide wildcard for a DIFFERENT agent", async () => {
+    // The escalation itself. Before the fix `trustRuleMatchesPrompt` read
+    // `rule.agentId && rule.agentId !== input.agentId`, so a null agent matched everyone — and
+    // the browser answer path was the only producer of such a rule. The write guard means one
+    // can no longer be created; this proves that even if one arrived (a restored backup, a
+    // hand-inserted row), it grants nothing.
+    const { service, repo } = makeService({
+      listTrustRules: vi.fn(async () => [egressRule({ agentId: null })]),
+    });
+    await service.createPrompt({ ...distributedPrompt, agentId: "some-other-agent", runId: LEGACY_RUN });
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "created", decision: null }),
+    );
+  });
+
+  // ★★ POSITIVE CONTROL — the matcher still auto-allows the agent the rule was made for.
+  // Without it, "the wildcard is gone" and "trust rules stopped working" are the same green.
+  it("POSITIVE CONTROL — the SAME agent is still auto-allowed by its own standing rule", async () => {
+    const { service, repo } = makeService({ listTrustRules: vi.fn(async () => [egressRule()]) });
+    await service.createPrompt({ ...distributedPrompt, agentId: "agent-1", runId: LEGACY_RUN });
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "answered", decision: "allow_always" }),
+    );
+    expect(repo.markTrustRuleUsed).toHaveBeenCalled();
   });
 });

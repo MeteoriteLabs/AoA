@@ -51,14 +51,66 @@ export function defaultTimeoutPolicy(kind: RuntimeDecisionKind): RuntimeDecision
 
 const TRUST_RULE_DEFAULT_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
 
+export const STANDING_GRANT_UNBOUND_REASON =
+  "This request has no agent, so there is nothing a standing grant could be scoped to. Answer allow once or deny.";
+
+/**
+ * ★★★ BRW-004 (E8-F002) — THE TENTH NULL-HAZARD, and design §D5 named it in advance: "the
+ * moment slice (c) populates `networkTarget` … `allow_always` becomes reachable for browser
+ * egress". Slice (c) landed; this refusal did not, and it is the only one of the ten that is a
+ * PRIVILEGE ESCALATION rather than a broken lever.
+ *
+ * A standing grant (`allow_always` → persistent rule; `allow_run` → run-scoped rule) is scoped
+ * by the agent it is bound to. A distributed browser decision has no agent and no run, so the
+ * rule minted from it would have been bound to nothing — and an unbound rule was a COMPANY-WIDE
+ * WILDCARD IN THE AGENT DIMENSION, because `trustRuleMatchesPrompt` skipped its agent clause on a
+ * null. One founder answering "always allow this browser session to reach example.com" would have
+ * silently authorised sessions they never saw, with no second answer.
+ *
+ * ★★ THE BLAST RADIUS, RE-DERIVED RATHER THAN ASSERTED. An unbound rule drops the AGENT
+ * dimension entirely — the grant stops being scoped to a principal, which is the defect. It does
+ * not follow that every agent is reachable: a match also needs equal `riskClass` and an exact
+ * `networkScope`. Today the browser seam emits `riskClass: "network_egress"` with a URL ORIGIN
+ * (`navigationTarget` → `new URL(u).origin`), while the CLI hook bridge emits `"network"` with a
+ * bare HOSTNAME (`runtime-hook-bridge.ts` `resolveRiskClass` / `new URL(url).hostname`), so a
+ * heartbeat prompt cannot match a browser-minted rule today. What IS reachable is every other
+ * distributed browser prompt in the company on the same adapter and origin — a different job, a
+ * different session, a different requester — for ninety days, plus any future producer that emits
+ * the same pair. A per-session answer silently becoming a cross-session grant is the escalation;
+ * "every org agent" would have been an overclaim, and the two-clause coincidence that prevents it
+ * is not a guard anyone designed.
+ *
+ * ★★ THE PREDICATE IS THE BINDING, NOT THE SOURCE. §D5 words the refusal as "browser-sourced
+ * prompts", but the decision row carries NO source column (checked: `agent_runtime_decisions`
+ * has `sourceUniqueKey` and nothing else that names a job source). The binding is the only
+ * discriminator the row actually has — and it is also the load-bearing one, because "unbound"
+ * is precisely what makes the grant unsafe. Today the two sets coincide: `browser_request` is
+ * the only source that opens an agent-less decision.
+ *
+ * ★ It tests `runId` too, though the DB CHECK on the decisions table already makes the pair
+ * all-or-nothing. If that check were ever dropped, a half-bound row must still not mint a
+ * standing grant — the fail-closed direction costs one clause.
+ *
+ * Returns the narrowed binding rather than a boolean, so the ONLY way to build a trust rule is
+ * to have passed through here: both builders take `agentId: string`, and deleting this call is
+ * a compile error rather than a silently-missing guard.
+ */
+export function standingGrantBinding(
+  row: Pick<AgentRuntimeDecisionRow, "agentId" | "runId">,
+): { agentId: string; runId: string } | null {
+  if (row.agentId === null || row.runId === null) return null;
+  return { agentId: row.agentId, runId: row.runId };
+}
+
 function buildTrustRuleInsert(
   row: AgentRuntimeDecisionRow,
+  binding: { agentId: string },
   actorUserId: string,
   nowDate: Date,
 ): typeof agentRuntimeTrustRules.$inferInsert {
   return {
     companyId: row.companyId,
-    agentId: row.agentId,
+    agentId: binding.agentId,
     runId: null,
     grantScope: "persistent",
     adapterType: row.adapterType,
@@ -92,6 +144,7 @@ export function runtimeRunGrantEligibility(row: Pick<
 
 function buildRunTrustRuleInsert(
   row: AgentRuntimeDecisionRow,
+  binding: { agentId: string; runId: string },
   actorUserId: string,
 ): typeof agentRuntimeTrustRules.$inferInsert {
   const eligibility = runtimeRunGrantEligibility(row);
@@ -100,8 +153,8 @@ function buildRunTrustRuleInsert(
   }
   return {
     companyId: row.companyId,
-    agentId: row.agentId,
-    runId: row.runId,
+    agentId: binding.agentId,
+    runId: binding.runId,
     grantScope: "run",
     adapterType: row.adapterType,
     toolName: null,
@@ -115,6 +168,25 @@ function buildRunTrustRuleInsert(
     expiresAt: null,
     createdByUserId: actorUserId,
   };
+}
+
+/**
+ * BRW-004 (E8-F002) — the ONE place a standing grant is built, and therefore the one place the
+ * tenth null-hazard can be closed. `standingGrantBinding` is called exactly once in the module;
+ * both builders take the narrowed `agentId: string` it yields, so a future edit cannot reach
+ * `agentRuntimeTrustRules` without passing through this refusal.
+ */
+function buildStandingGrant(
+  row: AgentRuntimeDecisionRow,
+  decision: "allow_always" | "allow_run",
+  actorUserId: string,
+  nowDate: Date,
+): typeof agentRuntimeTrustRules.$inferInsert {
+  const binding = standingGrantBinding(row);
+  if (binding === null) throw unprocessable(STANDING_GRANT_UNBOUND_REASON);
+  return decision === "allow_run"
+    ? buildRunTrustRuleInsert(row, binding, actorUserId)
+    : buildTrustRuleInsert(row, binding, actorUserId, nowDate);
 }
 
 function isVisibleTimeoutFollowUp(row: AgentRuntimeDecisionRow) {
@@ -197,7 +269,13 @@ type WaitForAnswerInput = {
 
 type CreateTrustRuleInput = {
   companyId: string;
-  agentId?: string | null;
+  /**
+   * BRW-004 (E8-F002) — REQUIRED. Was `agentId?: string | null`, written through as `?? null`:
+   * a second door onto the tenth null-hazard's unbound wildcard rule. It has zero production
+   * callers (the routes expose only list + revoke; `internal-agent.ts` reaches a different
+   * service), so narrowing it costs nothing and closes the door before it acquires one.
+   */
+  agentId: string;
   adapterType: string;
   toolName?: string | null;
   command?: string | null;
@@ -404,7 +482,14 @@ function trustRuleMatchesPrompt(rule: AgentRuntimeTrustRuleRow, input: CreatePro
   if (rule.grantScope === "run" && rule.runId !== input.runId) return false;
   if (rule.grantScope !== "run" && rule.runId) return false;
   if (rule.adapterType !== input.adapterType) return false;
-  if (rule.agentId && rule.agentId !== input.agentId) return false;
+  // BRW-004 (E8-F002) — the READ half of the tenth null-hazard. This used to read
+  // `rule.agentId && rule.agentId !== input.agentId`, i.e. a rule with no agent matched EVERY
+  // prompt in the company. That branch was unreachable while `agent_runtime_decisions.agent_id`
+  // was NOT NULL; the relaxation made it reachable through browser egress. `agent_id` on this
+  // table is now NOT NULL, so the truthiness test protected nothing — and dropping it also means
+  // an unbound prompt (`input.agentId === null`) matches no standing rule at all, which is the
+  // same policy `standingGrantBinding` enforces on the write side.
+  if (rule.agentId !== input.agentId) return false;
   if (rule.toolName && rule.toolName !== input.toolName) return false;
   if (rule.commandHash && rule.commandHash !== commandHash(input.command)) return false;
   if (!pathMatchesScope(input.path, rule.pathScope)) return false;
@@ -1036,7 +1121,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     }
     const rule = await repo.createTrustRule({
       companyId: input.companyId,
-      agentId: input.agentId ?? null,
+      agentId: input.agentId,
       runId: null,
       grantScope: "persistent",
       adapterType: input.adapterType,
@@ -1057,7 +1142,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       entityType: "agent_runtime_trust_rule",
       entityId: rule.id,
       details: {
-        agentId: input.agentId ?? null,
+        agentId: input.agentId,
         adapterType: input.adapterType,
         toolName: input.toolName ?? null,
         hasCommandScope: Boolean(input.command),
@@ -1137,6 +1222,19 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       const eligibility = runtimeRunGrantEligibility(row);
       if (!eligibility.eligible) throw unprocessable(eligibility.reason ?? "Run access is unavailable for this action");
     }
+    // ★★★ BRW-004 (E8-F002) — THE TENTH NULL-HAZARD. `hasConcreteTrustScope` above is satisfied
+    // by `riskClass` OR `networkTarget` alone, and slice (c) sets both on every browser
+    // navigation — so this is the line the guard below stands in front of. A standing grant
+    // built from an UNBOUND decision would be scoped to no agent, and an unbound rule was a
+    // company-wide wildcard. See `standingGrantBinding`.
+    //
+    // The trust rule is BUILT HERE rather than at the write site because building it IS the
+    // admission check: there is exactly one call to `standingGrantBinding`, both builders demand
+    // the narrowed `string` it returns, and so a later edit cannot write a rule without it.
+    const trustRule =
+      input.kind === "permission" && (input.decision === "allow_always" || input.decision === "allow_run")
+        ? buildStandingGrant(row, input.decision, input.actorUserId, now())
+        : null;
     // R2 answer-time liveness gate (safety fix): the answer is relayed to the
     // run in-band by the broker (heartbeat waitAndRelay). If the run already
     // went terminal (or its row is gone), recording "answered" would mint a
@@ -1171,10 +1269,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     };
 
     let answered: AgentRuntimeDecisionRow | null;
-    if (input.kind === "permission" && (input.decision === "allow_always" || input.decision === "allow_run")) {
-      const trustRule = input.decision === "allow_run"
-        ? buildRunTrustRuleInsert(row, input.actorUserId)
-        : buildTrustRuleInsert(row, input.actorUserId, now());
+    if (trustRule !== null) {
       const result = await repo.answerWithTrustRule(row.id, answerPatch, guard, trustRule);
       answered = result.decision;
       if (answered && result.rule) {

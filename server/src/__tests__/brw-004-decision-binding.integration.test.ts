@@ -59,6 +59,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!fixture) return;
+  await fixture.admin`DELETE FROM agent_runtime_trust_rules`;
   await fixture.admin`DELETE FROM agent_runtime_decisions`;
   await fixture.admin`DELETE FROM heartbeat_runs`;
 });
@@ -109,6 +110,54 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       guard();
       await insertDecision(AGENT, null).catch(() => {});
       const [row] = await fixture!.admin`SELECT count(*)::int AS n FROM agent_runtime_decisions`;
+      expect((row as { n: number }).n).toBe(0);
+    });
+  },
+);
+
+describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
+  "BRW-004 / E8-F002 hazard 10 — the trust rule's agent binding (migration 0273)",
+  () => {
+    // ★★★ THE SIBLING TABLE. Adversarial review of PR #356 pointed at exactly this asymmetry:
+    // `agent_runtime_decisions` received the all-or-nothing CHECK and `agent_runtime_trust_rules`
+    // — declared immediately below it, with the same two nullable FK columns — received nothing.
+    // The relaxation made an unbound trust rule REACHABLE for the first time, through browser
+    // egress, and an unbound rule was a company-wide wildcard grant.
+    //
+    // The service refuses to mint one (unit tests). This file proves the DB refuses to HOLD one,
+    // which is the difference between "unreached" and "unrepresentable" — and it is also the only
+    // check that migration 0273 was applied at all rather than merely written.
+    async function insertTrustRule(agentId: string | null): Promise<void> {
+      await fixture!.admin`
+        INSERT INTO agent_runtime_trust_rules
+          (id, company_id, agent_id, adapter_type, created_by_user_id)
+        VALUES (${randomUUID()}, ${COMPANY}, ${agentId}, 'claude_local', 'founder-1')`;
+    }
+
+    it("★★ an UNBOUND trust rule is REJECTED by the database", async () => {
+      guard();
+      // The wildcard grant, refused at the storage layer. Postgres reports a NOT NULL violation
+      // as 23502 with the column name, so the assertion names the column rather than a
+      // constraint identifier that does not exist for a NOT NULL.
+      await expect(insertTrustRule(null)).rejects.toThrow(/agent_id/);
+    });
+
+    it("★ an AGENT-BOUND persistent rule is still ACCEPTED — run_id stays nullable", async () => {
+      guard();
+      // The positive control, and it is load-bearing in a way the decisions table's is not:
+      // copying the sibling's `(agent_id IS NULL) = (run_id IS NULL)` here would have REJECTED
+      // this row, because a persistent grant is agent-bound and run-less by design. This is the
+      // test that says the two tables need DIFFERENT invariants, not the same one.
+      await insertTrustRule(AGENT);
+      const [row] = await fixture!.admin`
+        SELECT count(*)::int AS n FROM agent_runtime_trust_rules WHERE run_id IS NULL`;
+      expect((row as { n: number }).n).toBe(1);
+    });
+
+    it("★ the refused insert left nothing behind", async () => {
+      guard();
+      await insertTrustRule(null).catch(() => {});
+      const [row] = await fixture!.admin`SELECT count(*)::int AS n FROM agent_runtime_trust_rules`;
       expect((row as { n: number }).n).toBe(0);
     });
   },

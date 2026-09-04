@@ -143,7 +143,8 @@ null branches follow: the bridge's request shape, and the timeout sweeper's `run
 `runId`. Rejected alternatives (minting synthetic `agents`/`heartbeat_runs` rows; a parallel browser
 decision table) are costed in the design.
 
-**RESOLVED, 2026-09-04, by BRW-004 slice (d)** — `packages/db/src/migrations/0272_browser_request_decision_binding.sql`.
+**RESOLVED, 2026-09-04, by BRW-004 slice (d)** — `packages/db/src/migrations/0272_browser_request_decision_binding.sql`
+and `0273_trust_rule_agent_binding.sql`.
 
 The named defect is fixed: both columns are nullable, `db:generate` emitted the DDL (nothing
 hand-authored), and the all-or-nothing CHECK `(agent_id IS NULL) = (run_id IS NULL)` means no row
@@ -151,13 +152,48 @@ can be half-bound. Both null branches the disposition names are landed — the b
 `RuntimeDecisionOpenRequest` shape and the timeout sweeper's `runCanceller`.
 
 ★★★ The disposition named TWO null branches — the sweeper's `runCanceller` and "the bridge's
-request shape". There were **NINE**, and two of the seven it missed were lethal: `createPrompt`'s
+request shape". There were **TEN**, and three of the eight it missed were lethal: `createPrompt`'s
 zombie-run guard and `answerPrompt`'s liveness gate both call `getRunStatus(...)`, which with a null
 finds no row and reads that as "the run is terminal" — so the relaxation would have shipped an
 approval feature that refuses every one of its own prompts at creation and rejects every answer,
-with a completely green typecheck. All nine are closed and mutation-tested, each as a
-distributed/legacy PAIR so "correctly skipped" cannot be confused with "accidentally disabled for
-everyone"; the full table is in the result doc §4.
+with a completely green typecheck. The third granted too much instead of too little: see below. All
+ten are closed and mutation-tested, each as a distributed/legacy PAIR so "correctly skipped" cannot
+be confused with "accidentally disabled for everyone"; the full table is in the result doc §4.
+
+★★★ **THIS RESOLUTION WAS PREMATURE WHEN FIRST WRITTEN, and said NINE.** The tenth was found by
+adversarial review of PR #356 after this finding had already been marked resolved and the branch was
+CI-green on 16 checks. It is the one hazard design §D5 predicted by name — *"the moment slice (c)
+populates `networkTarget` … `allow_always` becomes reachable for browser egress"* — and slice (c)
+DID land a §D5 refusal, in the GUEST (`classifyBrowserPermissionDecision`), which decides whether
+the browser acts on a decision and not whether the control plane writes a trust rule. `answerPrompt`
+mints the rule first. So `buildTrustRuleInsert` copied the newly-nullable `agentId` into
+`agent_runtime_trust_rules` — whose own `agent_id` was nullable and, unlike its sibling declared
+directly above it, carried NO check — and `trustRuleMatchesPrompt` read `rule.agentId && …`, making
+an unbound rule a **wildcard in the AGENT dimension**: one founder answering "always allow this
+browser session to reach example.com" would have authorised sessions they never saw.
+
+★ Blast radius RE-DERIVED, not asserted. A match also needs equal `riskClass` and an exact
+`networkScope`, and the browser seam emits `network_egress` + a URL ORIGIN while the CLI hook bridge
+emits `network` + a bare HOSTNAME — so heartbeat prompts are out of reach TODAY by a two-clause
+coincidence nobody designed, not by any guard. In reach: every other distributed browser prompt in
+the company on the same adapter and origin, for 90 days, and forever for `allow_run` (`expiresAt:
+null`). The fix is written on the BINDING rather than on the coincidence, because the coincidence is
+one edited string away from disappearing.
+
+★★ **The relaxation did not add the wildcard; it woke it up.** That clause was dead code while
+`agent_runtime_decisions.agent_id` was NOT NULL, because the only production writer of the trust
+table copies from it. Nothing in the ticket's diff is near `trustRuleMatchesPrompt`, and no test
+could have gone red — *relaxing a column can promote unreachable code to reachable code somewhere
+the diff never touches.*
+
+Closed in three layers: `standingGrantBinding` refuses a standing grant for an unbound decision
+(one call site; both builders take the narrowed `string` it returns, so the guard cannot be
+bypassed), the matcher compares agents strictly, and migration **0273** makes
+`agent_runtime_trust_rules.agent_id` NOT NULL — which turns the exact defect line into a `tsc`
+error. **Not the sibling's check:** `(agent_id IS NULL) = (run_id IS NULL)` would reject every
+persistent grant, because such a grant is agent-bound and run-less by design. Proven against real
+Postgres (8/8, including the `23502` rejection) and re-appliable
+(`migration-readiness.integration.test.ts` 4/4, the suite that caught 0272).
 
 ★ The second design-named branch (`RuntimeDecisionOpenRequest`, the bridge's entry point) was
 initially MISSED BY THIS BUILD and surfaced only because the E4-F013 successor guard forced a
@@ -171,8 +207,10 @@ replace it cannot exist before JOB-015. That is `E8-F004`.
 
 ★ Resolved on the MECHANISM, not on a writer. Nothing submits a `browser_request` job and
 `jobApprovalBridge` still has zero production callers, so no distributed decision exists yet. The
-finding said the aggregate *cannot hold a row*; it can now, and that is proven by 13 tests and 8
-killed mutants. The absence of a writer is BRW-004's own unbuilt scope (result doc §10), not this
+finding said the aggregate *cannot hold a row*; it can now, and that is proven by 23 unit tests, 8
+real-Postgres cases and 16 killed mutants (D1–D11 + E1–E5, counted from the result doc's log rather
+than carried forward — this sentence said "13 tests and 8 killed mutants" while the log had grown
+past it). The absence of a writer is BRW-004's own unbuilt scope (result doc §10), not this
 finding's residual.
 
 ---
@@ -256,3 +294,48 @@ distributed decision exists to be stranded.
 
 **Disposition.** Repoint to JOB-015, or to whichever ticket lands the distributed delivery path, once
 one exists. Do not close it by deleting the join — the join is right; the missing sweep is the gap.
+
+---
+
+## E8-F005 — Nothing in CI compares the Drizzle schema to the migrations, so a narrowing can be silently reverted
+
+**Status:** open · **Owner:** `unowned`
+**Severity:** MED
+**Filed:** 2026-09-04, by BRW-004 while closing E8-F002's tenth null-hazard. MEASURED by mutation,
+not inferred.
+
+**What.** `packages/db/src/schema/*.ts` and `packages/db/src/migrations/*.sql` are two independent
+statements of the same truth, and no check compares them. The `migrations` CI job validates the
+JOURNAL (idx contiguity, a SQL file per entry, the committed-snapshot `prevId` chain) — all of which
+stay perfectly valid when the schema and the DDL disagree. `drizzle-kit generate` is run by a human
+and its output is committed; nothing re-runs it in check mode.
+
+**How it was measured.** Mutation E5 of BRW-004: revert `agentRuntimeTrustRules.agentId`'s
+`.notNull()` in the schema while leaving migration `0273` in place. Before a pin was hand-written
+for that one column, **the mutation was GREEN** — `tsc` passes (`string` is assignable to
+`string | null`), every service test passes, `migrations` passes, `policy` passes. The drift is
+invisible, and the next `db:generate` would silently emit a re-narrowing migration as if it were a
+new intent.
+
+**Why it matters more than tidiness.** The direction that goes undetected is the RELAXING one. A
+narrowing is usually load-bearing — `0273`'s NOT NULL is what makes a company-wide wildcard trust
+rule unrepresentable, and what turns the defect line into a compile error. A revert of that one
+token restores the hazard while the migration that "closed" it is still sitting in the tree, still
+applied on every existing database, still cited in a result doc. **The artifact that proves the fix
+and the artifact that enforces it are different files, and only one of them is checked.**
+
+**Scope, stated so it is not over-read.** This is a DETECTION gap, not a live defect: the schema and
+the migrations agree at this SHA (verified against real Postgres by
+`brw-004-decision-binding.integration.test.ts`, 8/8). It says nothing about whether any existing
+migration has already drifted — that is exactly what nothing can currently answer.
+
+**What BRW-004 did about it, which is not a fix.** One hand-written assertion in
+`packages/db/src/__tests__/agent-runtime-decisions-schema.test.ts` pins `agent_id`'s `notNull` and
+`run_id`'s nullability for this one table. A per-column pin written by whoever remembers to write
+it is the "check that only exists where someone thought of it" pattern, not a guard over the class.
+
+**Disposition.** The real closure is a CI step that regenerates and fails on a non-empty delta
+(`drizzle-kit generate` into a scratch dir, then diff), which is a `policy`-lane change with a
+blast radius across every schema file — larger than any E8 ticket and unrelated to browser
+automation. **Do not close it by adding more per-column pins.**
+

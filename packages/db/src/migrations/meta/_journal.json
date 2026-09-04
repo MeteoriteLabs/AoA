@@ -1912,6 +1912,13 @@
       "when": 1788513475295,
       "tag": "0272_browser_request_decision_binding",
       "breakpoints": true
+    },
+    {
+      "idx": 273,
+      "version": "7",
+      "when": 1788523348119,
+      "tag": "0273_trust_rule_agent_binding",
+      "breakpoints": true
     }
   ]
 }
