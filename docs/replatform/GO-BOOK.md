@@ -675,8 +675,8 @@ mention of the needle, which rejects a smuggle joined by a word no list contains
 all — and then announced the class shut. It is not. Both arms count negation TOKENS in a scope and
 neither binds a negation to the mention it must negate, so an appended affirmative that carries a
 negation word of its own meets its own budget and passes, under EVERY joiner including the
-punctuation the original splitter already split on. That class is orthogonal to the boundary set,
-widening cannot reach it, and it is now written into the register and pinned by two tests that
+punctuation the original splitter already split on. Widening the joiner list does not reach that class - measured, not deduced;
+whether some other widening would was not measured. It is now written into the register and pinned by two tests that
 assert the miss. **★★ The measurement that made the widening look safe is four sentences long** —
 the two documents contain exactly four needle-bearing sentences — which is enough to refute the
 "would reject correct prose" rationale and nowhere near enough to license a claim about English.

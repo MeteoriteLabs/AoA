@@ -318,7 +318,7 @@ function countOccurrences(haystack, lowerNeedle) {
  * the mention it has to negate, and no arm here does. So a smuggle that carries
  * a negation word of its own meets its own budget and is NOT rejected — and not
  * rejected whatever the joiner, including the punctuation the pre-fix splitter
- * already split on, which is why widening the boundary set cannot reach it.
+ * already split on, which is why widening the joiner list does not reach it. Whether some other widening would is not measured, and is not claimed here.
  * Measured, and held by the two `E0-F003 item 1 KNOWN LIMIT` cases in
  * check-distributed-execution-foundation.test.mjs; declared in the E0 register.
  * The obvious next rule — require each mention to be PRECEDED by an unconsumed
