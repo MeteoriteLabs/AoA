@@ -28,6 +28,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-ci-timeout-budgets.mjs": {
+      "status": "ci",
+      "reason": "policy job — CI timeout caps derive from budgets bounded by declared measurements (E3-F036 class)"
+    },
     "scripts/check-d1-compose.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"

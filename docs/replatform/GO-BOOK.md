@@ -719,8 +719,67 @@ Three things measured while building it, worth carrying:
 `33037143412`): all four `verify` shards pass in **12.8–16.2 min**, `ci-required` **PASS**. `verify`
 was one job running the whole vitest suite in a single lane (~56 min at `maxForks=2`), capping out at
 `timeout-minutes: 60` on 5+ consecutive runs. It is now a `fail-fast:false` shard matrix of 4 legs
-(`pnpm exec vitest run --shard=i/4`); the 60-min cap is **unchanged** (now a per-shard cap). Full
+(`pnpm exec vitest run --shard=i/4`); the 60-min cap was left **unchanged** (as a per-shard cap). Full
 plan + evidence: `docs/replatform/CI-VERIFY-PARALLELIZATION.md`.
+
+> ★ **Correction 2026-09-04 (TRACK A, PR #363): the per-shard cap is now 37, and every
+> required-lane cap that carries a pnpm fetch is DERIVED from the manifest rather than chosen.** Leaving 60 in place was the right
+> call in August — a cap must not be raised to chase green — but it was never re-derived after
+> sharding, and a cap far above anything a healthy run can reach has stopped being a check: measured
+> across 52 shard runs, a shard's WORK is 703/902/1092 s, so 60 carried ~42 minutes of undeclared
+> slack, the same shape as the hang it once masked. Each job cap is now
+> `ceil((workBudgetSeconds + setupAllowanceSeconds) / 60)` from `.github/ci-timeout-budgets.json`,
+> where `workBudgetSeconds` is a DECLARED allowance for what this repo does and `setupAllowanceSeconds` (480 s) a DECLARED allowance for a
+> third-party fetch it does not control — the `Setup pnpm` step, measured at 4 s p50 and 431 s worst,
+> which now carries its own step-level cap so a slow registry fails under its own name.
+> `scripts/check-ci-timeout-budgets.mjs` (in `policy`) refuses a cap edited on its own, a work budget
+> above 2× — or below 1× — the `measuredMaxWorkSeconds` **declared beside it**, and, since the
+> 2026-09-05 correction below, an allowance above 1.5× — or below 1× — the `measuredMaxSetupSeconds`
+> **declared in the manifest**. Seven caps went down, one (`e2e` 30→33) went up, and `brand-check`'s
+> pnpm step was deleted rather than capped. See the 2026-09-04 addenda on E3-F036 and E6-F014 — both
+> remain `open`/`unowned`: the cause of the pnpm episode is still undiagnosed, and network-reaching
+> *tests* are still unguarded.
+>
+> ★★★ **Correction to the correction, 2026-09-05.** Review found the ceiling applied to
+> `workBudgetSeconds` alone. `setupAllowanceSeconds` was validated as a positive number and nothing
+> else — so editing that one uniform value 480 → 3000, plus the two caps it derives, was a
+> **measurement-free three-line diff that the guard PASSED**: `policy` 11 min → 53 min and its step
+> cap 8 → 50, on all eight jobs at once. Strictly easier than the raise the guard did refuse, and
+> strictly more damaging. The allowance now carries its own dated, run-attributed measurement
+> (`setupAllowance` in the manifest) and a 1.5× ceiling, and the refuting diff is pinned as a test.
+>
+> ★★ **Second correction, same day: an earlier version of this row said raising a cap now costs a
+> re-measurement on both dials. That is withdrawn — it is computable from the shipped manifest that
+> it is false.** Both clauses compare a declared number to a measurement declared **in the same
+> file**; neither compares anything to a **previously committed** value. So the shipped numbers are
+> not a floor for the next diff, and the room below the ceilings is large. MEASURED 2026-09-05 by
+> evaluating the guard library against the real `pr.yml` with every declared number pushed to its own
+> ceiling and **no `measured*` field edited**: `verify` 1700/2184 s, `e2e` 1500/2092 s,
+> `e2e-pgvector` 600/776, `browser` 200/210, `migrations` 170/178, `policy` 170/176,
+> `distributed-contract` 120/128, `lint` 120/122, allowance 480/646.5 (uniform, so it moves all
+> eight). Taking all of it: the eight derived job caps go **142 min → 187 min** in total (`verify`
+> 37→48, `e2e` 33→46) and every step cap 8→11, **and the guard prints OK**. A clause pinning a budget
+> to its previous value cannot live in this guard — it is pure over one commit's `pr.yml` plus the
+> manifest and cannot see the prior revision of either; it would be a separate diff-aware instrument.
+> Not built, not claimed. The residue is pinned by a test so it cannot drift silently.
+>
+> ★ **A second miss, found in the same pass: a required-lane job with no `timeout-minutes` at all
+> is skipped by the coverage clause entirely** — neither budgeted, nor exempt, nor flagged, and it
+> inherits GitHub's **360-minute** default, while every job cap in `pr.yml` sums to **159 minutes**.
+> MEASURED: deleting `brand-check`'s cap *and* its
+> exemption together yields `ok: true` with zero findings. That is the exact shape the clause was
+> written for, missed when the number is absent rather than wrong. All eleven required-lane jobs
+> currently carry a cap, so it is a hole in the guard, not a defect in the tree. Both misses are in
+> `scripts/finding-ownership.json` under E3-F036 items (4) and (5).
+>
+> ★ **And one claim is WITHDRAWN rather than fixed. "The job cap bounds only the work" was never
+> true.** GitHub's `timeout-minutes` covers every step, so the allowance is additive and
+> **unreserved**: when `Setup pnpm` runs at its 4 s p50, work may spend the whole cap minus 4 s —
+> `lint` 9.8× its measured worst work, `distributed-contract` 9.3×, `policy` 7.5×. Nothing at runtime
+> compares realized work to `workBudgetSeconds`. What the split does buy is two numbers each compared
+> against a dated measurement in place of one compared against nothing, and an infrastructure failure
+> that arrives **under its own name** instead of killing an innocent step. Bounding work independently
+> would need a runtime work-duration check; that is not built, and is not claimed.
 
 **The timeout was masking two real, pre-existing failures** (verify had not *completed* since
 ~2026-08-24, so CI never reported them). Sharding surfaced both; both are fixed in the same PR:
