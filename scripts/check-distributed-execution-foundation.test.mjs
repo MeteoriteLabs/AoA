@@ -431,6 +431,233 @@ test("authority mutation: auto-promoted quarantine output fails", async (t) => {
   assert.ok(hasError(errors, "must never be auto-applied"), report(errors));
 });
 
+// --- E0-F003: same-sentence negation smuggle + matrix reject-unknown ---------
+// Item 1. The pre-fix scan tested each SENTENCE for any negation word, so an
+// affirmative carve-out appended to an already-negated sentence was missed.
+// This is the finding's verbatim probe.
+
+test("E0-F003 item 1: an affirmative carve-out inside an already-negated sentence fails", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    patchText(
+      authorityPath,
+      "No AoA database is a peer replica. Desktop and cloud workers",
+      "No AoA database is a peer replica except the worker SQLite which is a peer replica. Desktop and cloud workers",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "peer-replica invariant"), report(errors));
+  assert.ok(hasError(errors, "asserted without negation"), report(errors));
+});
+
+// The punctuation boundary is a SEPARATE arm of the splitter from the
+// contrastive-conjunction boundary, so it needs its own probe: this smuggle
+// carries no "except"/"but", only a semicolon.
+test("E0-F003 item 1: a semicolon-joined affirmative clause in a negated sentence fails", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    patchText(
+      authorityPath,
+      "Expired or replaced attempts cannot update authoritative state.",
+      "Expired or replaced attempts cannot update authoritative state; a replayed attempt may update authoritative state.",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "must not update authoritative state"), report(errors));
+  assert.ok(hasError(errors, "asserted without negation"), report(errors));
+});
+
+// The `except` probe above is ONE INSTANCE of the finding's general defect:
+// "an affirmative clause appended to a sentence that already carries a
+// negation is missed". The first fix for it closed that instance only —
+// changing one word of the probe from `except` to `and` re-opened the smuggle
+// at BOTH scanned invariants. These probes pin the general case.
+
+test("E0-F003 item 1: an `and`-joined affirmative clause fails (peer-replica site)", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    patchText(
+      authorityPath,
+      "No AoA database is a peer replica. Desktop and cloud workers",
+      "No AoA database is a peer replica and the worker SQLite is a peer replica. Desktop and cloud workers",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "peer-replica invariant"), report(errors));
+});
+
+// The same smuggle at the OTHER scanned invariant, on the real corpus sentence.
+test("E0-F003 item 1: an `and`-joined affirmative clause fails (late-output site)", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    patchText(
+      authorityPath,
+      "Expired or replaced attempts cannot update authoritative state.",
+      "Expired or replaced attempts cannot update authoritative state and a replayed attempt may update authoritative state.",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "must not update authoritative state"), report(errors));
+});
+
+// The vocabulary-free arm, and the reason the boundary list alone is not a fix.
+// `whereupon` is on NO boundary list and carries NO punctuation, so the clause
+// split leaves the smuggle inside a single clause that DOES contain "cannot".
+// Only the per-mention negation budget rejects it: one negation, two mentions.
+test("E0-F003 item 1: a smuggle joined by an UNLISTED conjunction fails on the negation budget", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    patchText(
+      authorityPath,
+      "Expired or replaced attempts cannot update authoritative state.",
+      "Expired or replaced attempts cannot update authoritative state whereupon a replayed attempt may update authoritative state.",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "must not update authoritative state"), report(errors));
+  assert.ok(hasError(errors, "covering 2 mentions"), report(errors));
+});
+
+// The weakest possible joiner: none at all, just a space. Nothing lexical marks
+// the boundary, so this can only be caught by counting.
+test("E0-F003 item 1: a smuggle joined by NO conjunction at all fails on the negation budget", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    patchText(
+      authorityPath,
+      "No AoA database is a peer replica. Desktop and cloud workers",
+      "No AoA database is a peer replica the worker SQLite is a peer replica. Desktop and cloud workers",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "peer-replica invariant"), report(errors));
+  assert.ok(hasError(errors, "covering 2 mentions"), report(errors));
+});
+
+// The boundary arm in isolation, at the authority site. This smuggle MEETS its
+// negation budget — two mentions of "peer replica", two negations ("No",
+// "not") — so counting alone cannot reject it. Only splitting on `and` exposes
+// the trailing affirmative clause. This is the probe that pins the widening
+// itself: with `and` off the boundary list the whole sentence is one clause,
+// the budget is satisfied, and the smuggle ships.
+test("E0-F003 item 1: an affirmative clause that MEETS the negation budget still fails on the clause split", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    patchText(
+      authorityPath,
+      "No AoA database is a peer replica. Desktop and cloud workers",
+      "No AoA database is a peer replica and it is not authoritative and the worker SQLite is a peer replica. Desktop and cloud workers",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "peer-replica invariant"), report(errors));
+  assert.ok(hasError(errors, "asserted without negation"), report(errors));
+});
+
+// Anti-over-fitting: the corpus as written must stay clean under both arms.
+// The rationale the previous revision gave for excluding `and`/`or`/`while` was
+// that splitting there "would reject correct prose". Measured on this corpus it
+// rejects none. This test is what makes that a measurement rather than a claim.
+test("E0-F003 item 1: the unmodified corpus is clean under clause split + negation budget", async (t) => {
+  const root = makeFixture(t, () => {});
+  const { errors } = await runCheck(root);
+  assert.equal(
+    errors.filter((e) => /asserted without negation|covering \d+ mentions/.test(e)).length,
+    0,
+    report(errors),
+  );
+});
+
+// ★ KNOWN LIMIT, held here so it cannot be lost. Both arms count negation
+// TOKENS inside a scope; neither binds a negation to the mention it has to
+// negate. An appended affirmative clause that itself contains any word from the
+// negation vocabulary therefore meets its own budget and passes — and it passes
+// whatever the joiner is, INCLUDING the punctuation the pre-fix splitter
+// already split on, so this class is orthogonal to the boundary set and cannot
+// be reached by widening it.
+//
+// This test asserts the checker does NOT reject these. That is deliberate: it
+// is the measurement the E0-F003 register entry cites, re-run on every commit,
+// so the disclosed limit cannot silently drift into an assumed closure. If it
+// goes RED, the class was closed — delete this test and amend the register and
+// `scripts/finding-ownership.json` to match. Do not "fix" it by loosening the
+// checker.
+test("E0-F003 item 1 KNOWN LIMIT: a smuggle carrying its OWN negation token meets the budget and is not rejected", async (t) => {
+  const cases = [
+    [" whereupon ", "the worker SQLite is a peer replica that no operator may disable"],
+    [" and ", "the worker SQLite is a peer replica that no operator may disable"],
+    [", ", "the worker SQLite is a peer replica that no operator may disable"],
+    ["; ", "the worker SQLite is a peer replica which cannot be turned off"],
+  ];
+  for (const [join, smuggle] of cases) {
+    const root = makeFixture(t, ({ authorityPath }) => {
+      patchText(
+        authorityPath,
+        "No AoA database is a peer replica. Desktop and cloud workers",
+        `No AoA database is a peer replica${join}${smuggle}. Desktop and cloud workers`,
+      );
+    });
+    const { errors } = await runCheck(root);
+    assert.equal(
+      errors.filter((e) => /peer-replica invariant/.test(e)).length,
+      0,
+      `joiner ${JSON.stringify(join)} unexpectedly rejected — see the KNOWN LIMIT note above: ${report(errors)}`,
+    );
+  }
+});
+
+// The same limit at the second scanned site, whose negation vocabulary is much
+// wider (deny/reject/fail/zero/without/block/…), so the token a smuggle needs
+// in order to meet its budget is correspondingly easier to write by accident.
+test("E0-F003 item 1 KNOWN LIMIT: the CM-015 site has the same gap, and a wider vocabulary to satisfy", async (t) => {
+  const root = makeFixture(t, ({ crosswalkPath }) => {
+    patchText(
+      crosswalkPath,
+      "and never silently auto-bypasses the gate.",
+      "and never silently auto-bypasses the gate whereupon the operator override auto-bypasses the gate without delay.",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.equal(errors.filter((e) => /auto-bypass/.test(e)).length, 0, report(errors));
+});
+
+// Item 2. The pre-fix matrix built a state->row Map and iterated only the
+// EXPECTED rows, so an ADDED row was never read, and a DUPLICATE state placed
+// BEFORE the authoritative row was laundered by last-write-wins.
+
+test("E0-F003 item 2: an added contradictory authority-matrix row fails", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    patchText(
+      authorityPath,
+      "| Sandbox filesystem | Ephemeral cache | Never authoritative after lease loss or sandbox termination |",
+      "| Sandbox filesystem | Ephemeral cache | Never authoritative after lease loss or sandbox termination |\n| Worker SQLite mirror | Encrypted worker SQLite | Authoritative for job and lease state |",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "unknown row"), report(errors));
+});
+
+test("E0-F003 item 2: a malformed authority-matrix row is rejected, not silently skipped", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    // Two cells, not three. The pre-fix collector skipped any row it could not
+    // destructure, so an unparseable row vanished from the scan entirely.
+    patchText(
+      authorityPath,
+      "| Sandbox filesystem | Ephemeral cache | Never authoritative after lease loss or sandbox termination |",
+      "| Sandbox filesystem | Ephemeral cache | Never authoritative after lease loss or sandbox termination |\n| Worker SQLite mirror | Authoritative for job and lease state |",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "malformed row"), report(errors));
+});
+
+test("E0-F003 item 2: a duplicate authority-matrix row ordered before the real one fails", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    // Last-write-wins on the state Map means this contradictory copy is
+    // laundered by ORDER alone: the authoritative row overwrites it.
+    patchText(
+      authorityPath,
+      "| Sandbox filesystem | Ephemeral cache | Never authoritative after lease loss or sandbox termination |",
+      "| Sandbox filesystem | Worker-local disk | Authoritative until the operator deletes it |\n| Sandbox filesystem | Ephemeral cache | Never authoritative after lease loss or sandbox termination |",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "duplicate row"), report(errors));
+});
+
 // --- E0-F002 item 3: pin the previously unpinned checker branches ------------
 
 test("unreachable state: a state with no incoming edge is flagged", async (t) => {
@@ -1914,6 +2141,52 @@ test("crosswalk: an auto-bypassed migration-0188 gate fails the per-clause negat
   });
   const { errors } = await runCheck(root);
   assert.ok(hasError(errors, "CM-015 auto-bypass clause asserted without negation"), report(errors));
+});
+
+// E0-F003 item 1 at FND-007's site. The crosswalk's own splitter was
+// punctuation-only, so a contrastive carve-out with no punctuation stayed
+// inside the negated clause and rode the "never". Measured live at da1a90597:
+// this exact mutation produced ZERO checker errors.
+test("crosswalk: a contrastive auto-bypass carve-out with no punctuation fails (CM-015)", async (t) => {
+  const root = makeFixture(t, ({ crosswalkPath }) => {
+    patchText(
+      crosswalkPath,
+      "and never silently auto-bypasses the gate.",
+      "and never silently auto-bypasses the gate except when the operator sets the override in which case it auto-bypasses the gate.",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "CM-015 auto-bypass clause asserted without negation"), report(errors));
+});
+
+// The general case at this site too: one word of the probe above changed from
+// `except` to `and` re-opened the smuggle here as well.
+test("crosswalk: an `and`-joined auto-bypass carve-out fails (CM-015)", async (t) => {
+  const root = makeFixture(t, ({ crosswalkPath }) => {
+    patchText(
+      crosswalkPath,
+      "and never silently auto-bypasses the gate.",
+      "and never silently auto-bypasses the gate and the operator override auto-bypasses the gate.",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "CM-015 auto-bypass clause asserted without negation"), report(errors));
+});
+
+// The vocabulary-free arm at this site: `whereupon` is on no boundary list, so
+// the carve-out stays inside the clause carrying "never". Only the per-mention
+// budget rejects it.
+test("crosswalk: an UNLISTED-conjunction auto-bypass carve-out fails on the negation budget (CM-015)", async (t) => {
+  const root = makeFixture(t, ({ crosswalkPath }) => {
+    patchText(
+      crosswalkPath,
+      "and never silently auto-bypasses the gate.",
+      "and never silently auto-bypasses the gate whereupon the operator override auto-bypasses the gate.",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "CM-015 auto-bypass clause"), report(errors));
+  assert.ok(hasError(errors, "covering 2 mentions"), report(errors));
 });
 
 // -- fixture source/principal binding -----------------------------------------

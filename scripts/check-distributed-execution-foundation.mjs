@@ -249,8 +249,100 @@ const EXPECTED_AUTHORITY_ROWS = [
   },
 ];
 
-// Words that negate a forbidden assertion in a single sentence.
-const NEGATION_RE = /\b(?:no|not|never|cannot|can\s?not)\b/i;
+// Words that negate a forbidden assertion in a single clause. Global, because
+// every consumer now COUNTS negations rather than merely testing for one (see
+// `negationDeficit`). Only ever used via `String.prototype.match`, which resets
+// `lastIndex`; never via `.test()`, which on a /g/ regex is stateful.
+const NEGATION_RE_GLOBAL = /\b(?:no|not|never|cannot|can\s?not)\b/gi;
+
+// Clause boundaries for negation scoping (E0-F003 item 1). A negation scopes
+// over its own clause, not over everything that follows it in the sentence, so
+// an affirmative carve-out appended to an already-negated sentence has to be
+// read on its own. Two boundary classes:
+//   - punctuation that starts a new assertion: `;` `,` `|` `.` and the dashes;
+//   - exceptive/contrastive conjunctions, which flip polarity outright. The
+//     finding's own probe ("... is a peer replica except the worker SQLite
+//     which is a peer replica") carries NO punctuation, so a punctuation-only
+//     split would not catch it. That was the shape of the crosswalk's own
+//     splitter, which is why the CM-015 check below now shares this one.
+// The coordinating conjunctions `and|or|while|so|yet` ARE boundaries. An
+// earlier revision of this file excluded them, claiming that splitting there
+// "would reject correct prose" because a negation distributes over conjuncts in
+// "never X or Y". That claim was an assumption, and on this corpus it is false:
+// widening the set and re-running the full checker over the unmodified
+// authority doc and crosswalk produces ZERO errors. Note the size of that
+// measurement — the two documents contain FOUR needle-bearing sentences in
+// total, one per scanned invariant — so it says the exclusion bought no
+// precision HERE, not that splitting on `and` is safe for English generally.
+// What it cost is not in doubt: swapping the probe's `except` for `and`
+// re-opened the smuggle at BOTH scanned invariants.
+const NEGATION_CLAUSE_SPLIT_RE =
+  /[;,|.–—]|\b(?:except(?:ing)?|but|however|although|though|whereas|unless|and|or|while|so|yet|aside\s+from|apart\s+from|other\s+than|save\s+for)\b/i;
+
+/** Split one sentence into the clauses a negation can scope over. */
+function splitNegationClauses(sentence) {
+  return sentence
+    .split(NEGATION_CLAUSE_SPLIT_RE)
+    .map((c) => (c || "").trim())
+    .filter(Boolean);
+}
+
+/** Count occurrences of a lowercase literal needle in a clause. */
+function countOccurrences(haystack, lowerNeedle) {
+  const lower = haystack.toLowerCase();
+  let count = 0;
+  let at = 0;
+  while ((at = lower.indexOf(lowerNeedle, at)) !== -1) {
+    count += 1;
+    at += lowerNeedle.length;
+  }
+  return count;
+}
+
+/**
+ * The residual, VOCABULARY-FREE arm of E0-F003 item 1.
+ *
+ * A boundary list is an enumeration, and an enumeration is always one word
+ * short: `and|or|while|so|yet` closes the measured smuggles, but `plus`,
+ * `then`, `also`, `whereupon` — or no conjunction at all, just a space — walk
+ * straight through it. Adding words is not a fix, because the next word is not
+ * on the list either.
+ *
+ * So do not rely on recognising the joiner. Rely on what the smuggle cannot
+ * avoid: these invariants are needle-scoped, so an affirmative claim that this
+ * check is supposed to catch must MENTION THE NEEDLE AGAIN. Require the clause
+ * to carry at least one negation PER mention.
+ *
+ * ★ WHAT THIS COUNTS, AND WHAT IT DOES NOT BIND. It counts negation TOKENS in a
+ * scope against needle mentions in that scope. It does not bind a negation to
+ * the mention it has to negate, and no arm here does. So a smuggle that carries
+ * a negation word of its own meets its own budget and is NOT rejected — and not
+ * rejected whatever the joiner, including the punctuation the pre-fix splitter
+ * already split on, which is why widening the joiner list does not reach it. Whether some other widening would is not measured, and is not claimed here.
+ * Measured, and held by the two `E0-F003 item 1 KNOWN LIMIT` cases in
+ * check-distributed-execution-foundation.test.mjs; declared in the E0 register.
+ * The obvious next rule — require each mention to be PRECEDED by an unconsumed
+ * negation — is not applied here because it rejects correct English of the form
+ * "A peer replica is never created by any AoA database", and a corpus of four
+ * sentences cannot show otherwise.
+ *
+ * Returns null when the clause meets its budget, else the reason it does not.
+ * This does not subsume the boundary split and the boundary split does not
+ * subsume it: a clause can meet its negation budget and still append an
+ * unnegated affirmative ("No AoA database is a peer replica and it is not
+ * authoritative and the worker SQLite is a peer replica" — budget 2/2, caught
+ * only by the split), and a clause can be joined by an unlisted word (caught
+ * only by the budget). Both arms are load-bearing; each has its own mutation
+ * test at each of the two scanned sites.
+ */
+function negationDeficit(clause, mentionCount, negationRe = NEGATION_RE_GLOBAL) {
+  const negations = (clause.match(negationRe) || []).length;
+  if (negations === 0) return "asserted without negation";
+  if (negations < mentionCount) {
+    return `asserted with ${negations} negation(s) covering ${mentionCount} mentions`;
+  }
+  return null;
+}
 
 /** Read a file; classify ENOENT as `missing`, everything else as `unreadable`. */
 async function readOrError(root, relPath, errors) {
@@ -605,10 +697,22 @@ function splitSentences(text) {
 }
 
 /**
- * Require that `needle` appears at least once and that every sentence mentioning
- * it carries a negation. This is what makes the invariant structural: dropping
- * the sentence fails (absence), and adding an affirmative claim fails (a mention
- * without negation) even when the negated invariant is still present.
+ * Require that `needle` appears at least once and that every CLAUSE mentioning
+ * it carries a negation per mention. This is what makes the invariant
+ * structural rather than a substring test: dropping the sentence fails
+ * (absence), and adding an affirmative claim that carries NO negation word of
+ * its own fails (a mention without negation) even when the negated invariant is
+ * still present. An affirmative claim that does carry one is not rejected — see
+ * the KNOWN LIMIT note on `negationDeficit`.
+ *
+ * E0-F003 item 1: the scope is the clause, not the sentence, AND each clause
+ * must carry a negation per mention. Testing the whole sentence let an
+ * affirmative carve-out ride along on a negation earlier in the same sentence;
+ * testing the clause alone still let it ride whenever the joiner was not on the
+ * boundary list. Degenerate case: if clause splitting leaves no clause carrying
+ * the needle — the needle straddled a boundary — fall back to the sentence, so
+ * this is never weaker than the pre-fix scan. The budget rule still applies to
+ * that fallback scope, which is what makes the fallback safe.
  */
 function requireNegatedMention(text, needle, label, errors) {
   const lowerNeedle = needle.toLowerCase();
@@ -618,8 +722,14 @@ function requireNegatedMention(text, needle, label, errors) {
     return;
   }
   for (const s of hits) {
-    if (!NEGATION_RE.test(s)) {
-      errors.push(`${AUTHORITY_MD}: ${label} (asserted without negation: ${JSON.stringify(s)})`);
+    const mentioning = splitNegationClauses(s).filter((c) => c.toLowerCase().includes(lowerNeedle));
+    const scopes = mentioning.length > 0 ? mentioning : [s];
+    for (const scope of scopes) {
+      const mentions = Math.max(countOccurrences(scope, lowerNeedle), 1);
+      const deficit = negationDeficit(scope, mentions);
+      if (deficit) {
+        errors.push(`${AUTHORITY_MD}: ${label} (${deficit}: ${JSON.stringify(scope)})`);
+      }
     }
   }
 }
@@ -644,10 +754,39 @@ function validateAuthorityMatrix(md, errors) {
       `${AUTHORITY_MD}: authority matrix header must be ${JSON.stringify(AUTHORITY_MATRIX_HEADER)}, found ${JSON.stringify(table.header)}`,
     );
   }
+  // E0-F003 item 2: the row set is EXACT. Collecting rows into a state-keyed
+  // Map and then reading only the EXPECTED states meant an ADDED row was never
+  // read at all, and a DUPLICATE state was laundered by last-write-wins — row
+  // ORDER alone decided whether a contradiction was visible. Reject malformed,
+  // duplicate and unknown rows; the count follows (see below).
+  const expectedStates = new Set(EXPECTED_AUTHORITY_ROWS.map((r) => r.state));
   const byState = new Map();
   for (const cells of table.rows) {
-    if (cells.length === 3) byState.set(cells[0], { authority: cells[1], worker: cells[2] });
+    if (cells.length !== AUTHORITY_MATRIX_HEADER.length) {
+      errors.push(
+        `${AUTHORITY_MD}: authority matrix has a malformed row with ${cells.length} cells (expected ${AUTHORITY_MATRIX_HEADER.length}): ${JSON.stringify(cells.join(" | "))}`,
+      );
+      continue;
+    }
+    const [state, authority, worker] = cells;
+    if (byState.has(state)) {
+      errors.push(
+        `${AUTHORITY_MD}: authority matrix has a duplicate row for state ${JSON.stringify(state)}; row order must not decide which one is read`,
+      );
+      continue;
+    }
+    if (!expectedStates.has(state)) {
+      errors.push(
+        `${AUTHORITY_MD}: authority matrix has an unknown row for state ${JSON.stringify(state)}; the locked row set admits no additions`,
+      );
+      continue;
+    }
+    byState.set(state, { authority, worker });
   }
+  // No separate row-COUNT assertion: with unknown rows rejected, duplicates
+  // rejected, and every expected state required below, the count is entailed —
+  // a count clause could never fire on its own, and an unfalsifiable clause is
+  // the "check that nothing runs" failure class, not defence in depth.
   for (const row of EXPECTED_AUTHORITY_ROWS) {
     const got = byState.get(row.state);
     if (!got) {
@@ -2405,6 +2544,9 @@ const CROSSWALK_CP_HEADER = [
 const CM_EVIDENCE_TOKENS = ["shadow", "drain", "rollback"];
 const CROSSWALK_HARD_NEGATIVE_RE =
   /\b(?:no|never|not|cannot|deny|denies|denial|denied|reject|rejects|fail|fails|zero|without|block|blocks|blocked)\b/i;
+// Same alternation, global, for the per-mention negation budget at CM-015.
+const CROSSWALK_HARD_NEGATIVE_RE_GLOBAL =
+  /\b(?:no|never|not|cannot|deny|denies|denial|denied|reject|rejects|fail|fails|zero|without|block|blocks|blocked)\b/gi;
 
 // CM-015 is the post-PR #320 migration-0188 snapshot/`cloud_auth` flip-marker
 // seam; it must carry the marker write path + snapshot evidence + a no-auto-
@@ -2432,10 +2574,15 @@ function isEnumeratedTicketList(cell) {
   return residue === "";
 }
 
-/** Split a row's text into clauses for per-clause negation scoping (E0-F003). */
-function crosswalkClauses(text) {
-  return text.split(/[;.,|]/).map((c) => c.trim()).filter(Boolean);
-}
+// The crosswalk's own clause splitter used to live here, splitting on `[;.,|]`
+// only. That is a STRICT SUBSET of `splitNegationClauses`, and the gap is the
+// whole of E0-F003 item 1: a contrastive carve-out with no punctuation at all
+// ("never silently auto-bypasses the gate except when the operator sets the
+// override in which case it auto-bypasses the gate" — the measured probe, and
+// note it carries no comma) stayed inside ONE clause and rode the "never".
+// Measured live at `da1a90597` — the mutated crosswalk produced ZERO errors.
+// One splitter now serves both sites; two splitters where one is weaker is
+// precisely how this class comes back.
 
 /** Extract a section's first table restricted to a Row-ID-led table (CM/CP). */
 function extractCrosswalkTable(md, heading) {
@@ -2520,14 +2667,23 @@ function validateCrosswalkTable(table, kind, expectedIds, header, validTicketIds
           }
         }
         // No-auto-bypass invariant: every clause mentioning auto-bypass must be
-        // negated in that same clause (per-clause negation scoping — E0-F003).
-        const bypassClauses = crosswalkClauses(rowText).filter((c) => /auto-?bypass/i.test(c));
+        // negated in that same clause, once per mention (E0-F003 item 1 — the
+        // shared splitter plus the vocabulary-free budget; see
+        // `negationDeficit`). This site is the second scanned invariant, and
+        // the `and`-joined smuggle was live here too.
+        const bypassClauses = splitNegationClauses(rowText).filter((c) => /auto-?bypass/i.test(c));
         if (bypassClauses.length === 0) {
           errors.push(`${CROSSWALK_MD}: ${id} must state the migration-0188 gate never auto-bypasses`);
         }
         for (const clause of bypassClauses) {
-          if (!CROSSWALK_HARD_NEGATIVE_RE.test(clause)) {
-            errors.push(`${CROSSWALK_MD}: ${id} auto-bypass clause asserted without negation: ${JSON.stringify(clause)}`);
+          const mentions = (clause.match(/auto-?bypass/gi) || []).length;
+          const deficit = negationDeficit(
+            clause,
+            Math.max(mentions, 1),
+            CROSSWALK_HARD_NEGATIVE_RE_GLOBAL,
+          );
+          if (deficit) {
+            errors.push(`${CROSSWALK_MD}: ${id} auto-bypass clause ${deficit}: ${JSON.stringify(clause)}`);
           }
         }
       }
