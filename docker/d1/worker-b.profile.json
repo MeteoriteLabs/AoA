@@ -13,7 +13,7 @@
     "version": 1,
     "digest": "2222222222222222222222222222222222222222222222222222222222222222"
   },
-  "capabilityCeiling": ["workload.service", "provider.lifecycle_v1", "provider.cleanup_v1", "provider.health_v1"],
+  "capabilityCeiling": ["workload.batch", "workload.service", "provider.lifecycle_v1", "provider.cleanup_v1", "provider.health_v1"],
   "deviceGeneration": 1,
   "revokedAt": null,
   "policyHash": "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"
