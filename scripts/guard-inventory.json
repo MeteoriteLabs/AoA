@@ -138,6 +138,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-w10a-sdk-capability-premise.mjs": {
+      "status": "ci",
+      "reason": "policy job runs it (lockfile pin + stale-claim ban, no node_modules needed) and the verify job runs it again with --require-sdk after pnpm install, which is where the live SDK surface is measured. E8-F007."
+    },
     "scripts/check-worker-daemon-boundary.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"

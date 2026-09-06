@@ -10,14 +10,14 @@
 // engine behind the ABANDON question, the redactor and the durable-record builder are pure
 // functions here, and this file drives them.
 //
-// It also pins TWO PREMISES that would silently rot:
-//   * that the lane's YAML still carries its `always()` record guards, its fallback writer,
-//     its template default and its keyless positive control (`evaluateDurableRecord` run
-//     against the real workflow bytes);
-//   * that the stale-premise correction this unit made to
-//     `server/src/services/sandbox-provider-runtime.ts` is still there, so nobody restores
-//     "managed E2B egress is not fully lockable" as an unqualified claim without this step
-//     going red.
+// It also pins ONE premise that would silently rot: that the lane's YAML still carries its
+// `always()` record guards, its fallback writer, its template default and its keyless
+// positive control (`evaluateDurableRecord` run against the real workflow bytes).
+//
+// It does NOT pin the stale-premise correction in
+// `server/src/services/sandbox-provider-runtime.ts`. It used to, FILE-WIDE, which could not
+// fail on the thing it named; sibling unit W10A now enforces that invariant per occurrence
+// across every tracked file. See section 15 at the foot of this file, and finding E8-F007.
 
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
@@ -77,7 +77,6 @@ import {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..", "..");
 const WORKFLOW_PATH = path.join(ROOT, ".github", "workflows", "keyed-e2b-w10b-egress-enforcement-probe.yml");
-const PROVIDER_RUNTIME_PATH = path.join(ROOT, "server", "src", "services", "sandbox-provider-runtime.ts");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixture builders — a green baseline every negative case perturbs by ONE thing.
@@ -940,38 +939,28 @@ test("evaluateDurableRecord finds every violation it exists to find", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 15. THE STALE-PREMISE CORRECTION, PINNED
+// 15. THE STALE-PREMISE CORRECTION — DELIBERATELY NOT CHECKED HERE
 // ─────────────────────────────────────────────────────────────────────────────
-
-test("the provider runtime no longer books managed-E2B egress as unlockable without qualification", () => {
-  // ★★★ THE SINGLE LINE THIS UNIT WAS OPENED BY. `sandbox-provider-runtime.ts`'s
-  // `acquireLease` comment used to read "(§11/§12: managed E2B egress is not fully
-  // lockable)" as a bare statement of fact, and it is the line a future engineer actually
-  // reads before deciding whether a provider-level control is possible. Against the
-  // installed, lockfile-pinned e2b@2.30.5 that claim is false as a statement about the
-  // SEAM: `SandboxOpts.network` with allowOut/denyOut exists, reaches the POST body, and is
-  // read back by getInfo(). What is unmeasured is ENFORCEMENT, which is W10B's subject.
-  //
-  // This test pins the correction so nobody restores the unqualified claim silently.
-  //
-  // ★★ THE ASSERTION IS ABOUT THE PROPERTY, NOT ABOUT WHO WROTE IT. Sibling unit W10A
-  // (branch `replatform/w10a-e2b-lockable-premise`) corrects the same comment for the same
-  // reason and files E8-F007 against the stale wording; whichever text survives the merge,
-  // the invariant this guard exists for is identical. Requiring the literal string "W10B"
-  // would have turned a real invariant into a territorial claim that reds the moment the
-  // better-owned text wins — so the pointer clause accepts either unit's id.
-  const text = readFileSync(PROVIDER_RUNTIME_PATH, "utf8");
-  assert.ok(
-    /W10B|E8-F007/.test(text),
-    "sandbox-provider-runtime.ts must point at the measurement (W10B's probe, or E8-F007's finding against the stale wording) where it discusses egress lockability, so the next reader finds it instead of the stale premise",
-  );
-  assert.ok(
-    /SandboxOpts\.network/.test(text),
-    "the correction must NAME the seam that exists and was never called; a vague hedge would leave the option booked as unavailable",
-  );
-  assert.equal(
-    /not fully lockable\)/.test(text),
-    false,
-    "the bare, unqualified claim must not return: it is what kept the only enforcement layer outside the guest booked as unavailable",
-  );
-});
+//
+// ★★★ THIS SECTION USED TO HOLD A CHECK, AND DELETING IT IS THE FIX. It read
+// `sandbox-provider-runtime.ts` whole and asserted the correction appeared SOMEWHERE in
+// the file. That is a FILE-WIDE test standing in for a PER-OCCURRENCE invariant: one
+// marked quotation anywhere in the file satisfied it while an unqualified restatement
+// fifty lines away passed unseen. A check that cannot fail on the thing it names is a
+// false claim of enforcement, and it claimed exactly that in the `policy` job step that
+// runs this file.
+//
+// The invariant is REAL and is now enforced properly, per occurrence, by sibling unit
+// W10A, which landed first: `scripts/check-w10a-sdk-capability-premise.mjs` scans every
+// tracked file whose extension is in its list — `.ts` included, so
+// `server/src/services/sandbox-provider-runtime.ts` is covered in full — matches the
+// stale sentence family line by line, and requires the correction marker (the literal
+// E8-F007) within six lines of EACH match. It also fails if its own ban pattern ever
+// stops matching anything, so it cannot rot into a check that nothing runs. It runs in
+// the same required `policy` job as this file, and again under `--require-sdk` in
+// `verify`, where the dependency is installed.
+//
+// So there is nothing left for this file to add, and adding it anyway would ship two
+// mechanisms for one invariant — the weaker of which would be the one a reader trusts,
+// because it is the one named in the step comment. Do not reintroduce a check here. If
+// the ban needs to grow, grow `scripts/w10a-sdk-capability-premise.json`.

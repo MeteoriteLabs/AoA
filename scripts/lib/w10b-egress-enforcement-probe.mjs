@@ -32,7 +32,8 @@
 // THE STALE PREMISE THIS UNIT EXISTS TO RETIRE — MEASURED, NOT ARGUED
 // ─────────────────────────────────────────────────────────────────────────────
 // Three records in this repository book the provider layer as unavailable on the strength
-// of one sentence: "managed-E2B egress is not fully lockable".
+// of one sentence: "managed-E2B egress is not fully lockable" — REFUTED as a capability
+// claim by finding E8-F007, which owns that premise.
 //
 //   * `server/src/services/sandbox-provider-runtime.ts` (the `acquireLease` metadata
 //     comment), which is the line a future engineer actually reads;

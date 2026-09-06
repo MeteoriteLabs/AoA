@@ -54,12 +54,14 @@ costing the programme design time on an option that cannot exist.
 ## 3. The premise this probe retires, and what is still open
 
 Three records in this repository book the provider layer as unavailable on the strength of one
-sentence — *"managed-E2B egress is not fully lockable"*:
+sentence — *"managed-E2B egress is not fully lockable"* (REFUTED as a capability claim;
+finding **E8-F007** owns that premise, and `scripts/check-w10a-sdk-capability-premise.mjs`
+is what stops it being restated without a marker beside it):
 
 | Where | What it says |
 |---|---|
-| `server/src/services/sandbox-provider-runtime.ts`, the `acquireLease` metadata comment | **corrected by this unit's PR**, with the correction pinned by a test in the required `policy` job |
-| the 2026-08-05 cloud-execution-isolation spec, §12 | still stands as written; it is a spec about the *deployed* system and is corrected here by reference |
+| `server/src/services/sandbox-provider-runtime.ts`, the `acquireLease` metadata comment | **corrected by sibling unit W10A**, which landed first; the correction is pinned PER OCCURRENCE by W10A's guard in the required `policy` job, not by anything in this unit |
+| the 2026-08-05 cloud-execution-isolation spec, §12 | **carries W10A's dated correction beside the original sentence**; the bullet itself is left standing as the thing being corrected |
 | finding **E8-F003**'s own *"option (b) is unavailable"* | a clause was **added**, not removed — see §9 |
 
 Against the installed, **lockfile-pinned** `e2b@2.30.5` that sentence is **false as a statement about
@@ -351,7 +353,7 @@ route around is not a boundary against the very workload it is meant to contain.
 |---|---|
 | `packages/sandbox-e2b-provider/src/__tests__/keyed-w10b-egress-enforcement-probe.test.ts` | the probe: the four arms, the raw-socket helper, the report. Skips cleanly without `E2B_API_KEY`. Its no-key blocks PIN the `e2b` SDK seam (`ALL_TRAFFIC`, `network`, `updateNetwork`, `getInfo`) so the premise cannot rot in the other direction either. |
 | `scripts/lib/w10b-egress-enforcement-probe.mjs` | the pure core: template resolution, the deny sets, the CIDR engine behind the ABANDON question, the command builder and line parser, the four control rows, all five verdicts plus the regression verdict, the computed decision, the redactor, the durable-record builder, and `evaluateDurableRecord`. Zero imports; no network, no filesystem. |
-| `scripts/lib/__tests__/w10b-egress-enforcement-probe.test.mjs` | proves every one of those decisions **without a key**, on every PR, in the required `policy` job — and pins the stale-premise correction in `sandbox-provider-runtime.ts`. |
+| `scripts/lib/__tests__/w10b-egress-enforcement-probe.test.mjs` | proves every one of those decisions **without a key**, on every PR, in the required `policy` job. It does **not** pin the stale-premise correction: an earlier draft did, FILE-WIDE, which could not fail on the thing it named. Section 15 of that file records the deletion; W10A's per-occurrence guard is the enforcement. |
 | `.github/workflows/keyed-e2b-w10b-egress-enforcement-probe.yml` | the lane: the probe step, the `always()` fallback record writer, the `always()` artefact upload, and the positive-control step that refuses to let a skip read as success. |
 | `.github/keyed-e2b-w10b-egress-enforcement-trigger` | **not created by this PR.** Creating/appending it on `docs/replatform-program` is the push route to fire the lane. |
 

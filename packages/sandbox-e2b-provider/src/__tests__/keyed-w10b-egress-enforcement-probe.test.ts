@@ -31,8 +31,9 @@ import { describe, expect, it } from "vitest";
 // ─────────────────────────────────────────────────────────────────────────────
 // THE PREMISE THIS FILE RETIRES, RE-VERIFIED AGAINST THE PINNED SDK
 // ─────────────────────────────────────────────────────────────────────────────
-// "Managed-E2B egress is not fully lockable" is booked in three places and is FALSE as a
-// statement about the SEAM. `e2b@2.30.5` (pnpm-lock.yaml) exposes `SandboxOpts.network`
+// "Managed-E2B egress is not fully lockable" (REFUTED as a capability claim — E8-F007) is
+// booked in three places and is FALSE as a statement about the SEAM. `e2b@2.30.5`
+// (pnpm-lock.yaml) exposes `SandboxOpts.network`
 // with `allowOut`/`denyOut`, puts it in the `POST /sandboxes` body, exposes
 // `Sandbox.updateNetwork`, and maps the server's answer back through `getInfo()`. AoA has
 // never called any of it. What is UNMEASURED is ENFORCEMENT — and the no-key block at the
@@ -684,7 +685,8 @@ describeKeyed("W10B — the DE-08 egress-enforcement probe, against REAL E2B", (
 // ★★★ THIS BLOCK IS NOT `describeKeyed`, AND IT IS THE HALF THAT KEEPS THE PREMISE HONEST IN
 // BOTH DIRECTIONS. The pure core's own suite cannot reach the `e2b` package; what it records
 // about the SDK is therefore a CLAIM until something compares it with the real export. The
-// unit's whole thesis is that "managed-E2B egress is not fully lockable" was stale — so if a
+// unit's whole thesis is that "managed-E2B egress is not fully lockable" was stale (E8-F007
+// owns that refutation) — so if a
 // future `e2b` bump removed `network`, `updateNetwork` or `getInfo`, the thesis would become
 // stale in the opposite direction with nothing to say so. This runs in the same `verify` job
 // as the rest of the package, on every PR, with no key and no sandbox.
@@ -709,11 +711,20 @@ describe("W10B — the e2b SDK network seam, pinned (no key required)", () => {
   //
   // The first draft of this block wrote `{ network: … } satisfies Parameters<typeof
   // Sandbox.create>[0]` and its comment claimed "if a future SDK drops it, `pnpm typecheck`
-  // fails here". MEASURED FALSE: this package's `tsconfig.json` carries
-  // `"exclude": ["src/**/*.test.ts"]`, and CI's `Typecheck` step is `pnpm -r typecheck` —
-  // each package's own config — so NO test file in this repository is ever type-checked.
-  // vitest transpiles with esbuild and erases types without checking them, so the clause
-  // would have been a check that nothing runs, inside the guard written to stop exactly that.
+  // fails here". MEASURED FALSE FOR THIS FILE: CI's `Typecheck` step is `pnpm -r typecheck`,
+  // i.e. each package's own config, and THIS package's `tsconfig.json` carries
+  // `"exclude": ["src/**/*.test.ts"]`, so no test file under `packages/sandbox-e2b-provider`
+  // is type-checked at all. vitest transpiles with esbuild and erases types without checking
+  // them, so the clause would have been a check that nothing runs, inside the guard written
+  // to stop exactly that.
+  //
+  // ★ THE SCOPE OF THAT SENTENCE MATTERS, AND AN EARLIER DRAFT OVERSTATED IT — it claimed
+  // NO test file in this REPOSITORY is ever type-checked, which is false. The correction is
+  // measured, not reasoned: `cli`, `packages/adapter-utils`, `packages/db` and
+  // `packages/shared` each declare `include: ["src"]` with NO test exclusion, and appending
+  // `const x: number = "s";` to one test file in each made that package's own `tsc --noEmit`
+  // report TS2322 (1 each), while the identical append under `packages/sandbox-e2b-provider`
+  // reported 0. The exclusion is THIS package's, not the repository's.
   //
   // `network` is a TYPE-ONLY option: it is erased at runtime, so no reflection can see it on
   // a live object. What CAN be read is the SDK's own shipped declaration and its shipped

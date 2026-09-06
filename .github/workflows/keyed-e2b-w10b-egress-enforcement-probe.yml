@@ -28,8 +28,10 @@ name: Keyed E2B — W10B DE-08 egress-enforcement probe
 # THE PREMISE THIS LANE RETIRES
 # ─────────────────────────────────────────────────────────────────────────────
 # Three records book the provider layer as unavailable on one sentence — "managed-E2B egress
-# is not fully lockable": the `acquireLease` comment in
-# `server/src/services/sandbox-provider-runtime.ts` (corrected by this unit's PR), the
+# is not fully lockable" (REFUTED as a capability claim — finding E8-F007 owns that
+# premise): the `acquireLease` comment in
+# `server/src/services/sandbox-provider-runtime.ts` (corrected by W10A, and kept corrected
+# per occurrence by `scripts/check-w10a-sdk-capability-premise.mjs`), the
 # 2026-08-05 cloud-execution-isolation spec §12, and finding E8-F003's own "option (b) is
 # unavailable". Against the installed, lockfile-pinned `e2b@2.30.5` that sentence is FALSE AS
 # A STATEMENT ABOUT THE SEAM: `SandboxOpts.network` with `allowOut`/`denyOut` exists,

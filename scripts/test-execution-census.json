@@ -317,6 +317,11 @@
       "status": "runs",
       "workflow": "pr.yml",
       "step": "Verdict consumer is alive (DEP-013)"
+    },
+    "scripts/check-w10a-sdk-capability-premise.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "SDK capability premise (a negative claim about a dependency is a claim)"
     }
   }
 }

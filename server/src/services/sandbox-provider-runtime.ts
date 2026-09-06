@@ -780,31 +780,35 @@ export function createE2bSandboxRuntimeProvider(
           aoaProvider: "e2b",
           companyId: input.companyId,
           environmentId: input.environmentId,
-          // S4 — best-effort managed recording only. Omitted entirely when no
-          // allowlist was supplied, so the pre-existing exact `create(...)`
-          // call assertions in sandbox-provider-runtime.test.ts stay green.
+          // S4 — best-effort managed recording only. This is a `metadata`
+          // string; nothing reads it back and nothing enforces it (E8-F003
+          // measured that, against real E2B, with both controls holding).
           //
-          // ★★★ MEASURED INERT, AND THE OLD REASON FOR IT WAS STALE. This comment used to
-          // cite "§11/§12: managed E2B egress is not fully lockable" as the reason no real
-          // boundary is attempted here. That the METADATA seam is inert is now measured
-          // rather than assumed: BRW-004 slice (a), workflow run 33857218680, reached a host
-          // that was NOT on the declared allowlist from inside the sandbox that declared it,
-          // with a positive control and an apparatus control both holding (finding E8-F003,
-          // HIGH, open). But the GENERAL claim — that managed E2B egress cannot be locked —
-          // is FALSE as a statement about the seam. The installed, lockfile-pinned
-          // `e2b@2.30.5` exposes `SandboxOpts.network` with `allowOut`/`denyOut`, puts it in
-          // the `POST /sandboxes` body, exposes `Sandbox.updateNetwork`, and maps the
-          // server's answer back through `getInfo()`. AoA has never called any of it.
+          // ★ The old wording here said the spec's "§11/§12: managed E2B
+          // egress is not fully lockable" (E8-F007). Do not restate that as
+          // the reason. The installed, lockfile-pinned e2b@2.30.5 DOES expose
+          // an egress surface — `SandboxOpts.network` (allowOut/denyOut/rules)
+          // reaching the create body via `buildNetworkBody`, `updateNetwork`
+          // for a running sandbox, and a `getInfo()` read-back of what the
+          // server applied. What is UNMEASURED is whether the operator's E2B
+          // tier honours a network body at all; nothing client-side validates
+          // it, and the API target is per-company configurable, so a tolerant
+          // server can return 200 and leave the sandbox unpoliced. That is why
+          // this call still passes `metadata` and NOT `network`: adopting the
+          // real surface requires the probe plus a mandatory read-back, and is
+          // deliberately out of scope for a record-and-guard change.
           //
-          // Whether the operator's tier ENFORCES what that seam declares is UNMEASURED, and
-          // it is what unit W10B's keyed probe measures — including the stop condition that
-          // would end the option (a guest DNS resolver inside the deny set: `denyOut` has no
-          // exclude, and any `allowOut` entry flips the whole policy to default-deny). Do NOT
-          // restore the unqualified "not fully lockable" line: it is what kept the only
-          // candidate enforcement layer outside the guest booked as unavailable. See
+          // Unit W10B built the keyed probe that measures the tier question this
+          // comment leaves open, and the stop condition that would end the option
+          // (a guest DNS resolver inside the deny set: `denyOut` has no exclude, and
+          // any `allowOut` entry flips the whole policy to default-deny). It is built
+          // and NOT YET FIRED, so it is not a measurement. See
           // `docs/replatform/epics/E8-browser-automation/tickets/W10B-egress-enforcement-runbook.md`.
-          //
           // Nothing here applies a network policy: W10B measures, it does not enforce.
+          //
+          // Omitted entirely when no allowlist was supplied, so the
+          // pre-existing exact `create(...)` call assertions in
+          // sandbox-provider-runtime.test.ts stay green.
           ...(input.egressAllowlist && input.egressAllowlist.length > 0
             ? { egressAllowlist: input.egressAllowlist.join(",") }
             : {}),
