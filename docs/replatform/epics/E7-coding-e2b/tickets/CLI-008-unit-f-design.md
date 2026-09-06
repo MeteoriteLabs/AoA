@@ -26,6 +26,20 @@ stands) · Measured in `C:/uf` at `611a78bfb` (base `c48259358`), 2026-09-04, **
 > built. What survives is terrain, two findings, the three refutations, and a named blocking
 > dependency (§5). **Do not read §3 or §6 as a fourth mechanism** — §3 is measured ground, §6 is a
 > list of tests any future candidate must survive, and neither is a proposal.
+>
+> ★★★ **AMENDED 2026-09-06 (W6U1) — THE RULING IS NOW RECORDED: §12, DEFERRED PENDING
+> MEASUREMENT.** A 26-agent decision wave put this document's question to four candidate answers over
+> sixteen adversarial passes and returned **two** `sound` verdicts and **46** unrebutted fatal
+> problems; its recommendation was to build **no mechanism** and **measure first**. §12 records that
+> as the ticket's position and names the **three probes** that would decide it — (a) can a real
+> claude/codex under the EXACT production argv, with no permission flag, write a file in the
+> `aoa-base` template at all (**the decisive one**); (b) is the configured template already satisfying
+> a location-based convention; (c) does the stream handler deliver from real E2B. **A fourth
+> mechanism proposed before probe (a) returns will be refuted for the same reason as the first
+> three.** §13 records a fifth option — *"do not build it"* — that was LOST to a serialization
+> failure and therefore **never adversarially attacked**; it is recorded, NOT adopted, and §13.3 says
+> what must not be done with it. Six new findings were filed with this amendment: **E7-F021** (HIGH),
+> **E7-F022**, **E7-F023**, **E7-F024**, **E7-F025** (MEDIUM) and **E7-F026** (LOW).
 
 **Governing decision:** [`DECISION-byte-egress-and-provider-topology.md`](../../../DECISION-byte-egress-and-provider-topology.md)
 — Option D, "the provider reads the file from inside its sandbox and PUTs it directly to object
@@ -875,6 +889,18 @@ All three are entered in `scripts/finding-ownership.json` with their register bl
 | **E7-F020** | HIGH | The same arm, no actor at all: `emitRuntimeServiceTaskOutput` (§1.2 row 3) writes `created_by_run_id = run.id` from `heartbeat.ts:4524`, before the handoff, on the DEFAULT isolated-workspace configuration — so arm 2 reads non-zero for a run with zero agent output | Filed round 3 (§1.2a); **re-examined round 4 against the corrected census and NOT merged into E7-F015** — an authorization-shaped fix closes E7-F015 and leaves this untouched |
 | **E7-F016** | LOW | Clause 6's operator-facing text misdescribes its own subject: (a) the failure reason names four unbuilt links, three of which cannot flip either counter, and omits the decisive ones; (b) the verdict is named `capabilityProven` while both arms are row counts that can only assert provenance | ★ **SURVIVED.** Part (a)'s repair — rewriting the reason string — is independent of any predicate change and remains available; part (b) is recorded rather than fixed (a rename touches 15 files across five epics) |
 
+★ **SIX MORE WERE FILED 2026-09-06 (W6U1)**, all in
+`docs/replatform/epics/E7-coding-e2b/findings.md` with `scripts/finding-ownership.json` entries:
+**E7-F021** (HIGH, CLI-008) the distributed sandbox invocation carries no permission posture — the
+load-bearing premise under three of the four candidate answers; **E7-F022** (MEDIUM, unowned) the E2B
+template is an unpinned operator input under three uncoordinated variable names, invisible to every
+protocol surface; **E7-F023** (MEDIUM, CLI-008) clause 4 DOES scan `job_events`, so a hard-fail gate
+clause reads model-influenced content; **E7-F024** (MEDIUM, CLI-008) the frozen `log` payload
+truncates SILENTLY and caps at 480 events, so a reconstructed transcript is corrupt rather than
+absent; **E7-F025** (MEDIUM, unowned) no document records a green real-E2B stream-capture run and two
+re-fires have no recorded outcome; **E7-F026** (LOW, CLI-008) the *agent declares* option's
+completeness claim is false against three staged-prompt pins.
+
 **Observed, not filed** (each a candidate for a successor rather than a defect this unit carries):
 
 - `AOA_WORKER_S3_ENDPOINT` is documented (`docs/deploy/environment-variables.md:203`), injected by
@@ -984,3 +1010,201 @@ swapped.** Every error below was the *obvious* shape, which is why it is recorde
 command line), `CLI-006` (the canary seam and the terminal projector), `DAT-002` + slice 7 (the
 grant/commit pipeline and its live-MinIO proof), `DAT-009` slice 1 (the export port), and the frozen
 contracts in `packages/worker-protocol`.
+
+---
+
+## ★★★ 12. THE RULING: DEFERRED PENDING MEASUREMENT. Three probes decide it. A fourth mechanism proposed before probe (a) returns will be refuted for the same reason as the first three.
+
+**Recorded by the W6U1 output-ruling unit, 2026-09-06, measured at `31d33a3b0`.** This section exists
+because a 26-agent decision wave asked this document's question — *"what is an agent output?"* — and
+produced **four** candidate answers, **sixteen** adversarial passes, **two** `sound` verdicts out of
+sixteen, and **46 unrebutted fatal problems**. Its recommendation was to build **no mechanism** and
+**measure first**. That is now the ticket's position, on the record, so that the next session does not
+invent a fifth answer to an unmeasured question.
+
+### 12.1 The status, stated so it cannot be misread in either direction
+
+**The output ruling is DEFERRED PENDING MEASUREMENT.** Precisely:
+
+- **NOT abandoned.** The question is still the epic's last open one (§9.1) and Unit F still owns it.
+- **NOT unowned by accident.** CLI-008 remains the owner of every finding in this family
+  (E7-F003, E7-F011, E7-F015, E7-F016, E7-F017, E7-F020, and now E7-F021, E7-F023, E7-F024, E7-F026).
+- **NOT "blocked on a decision."** Nobody owes an opinion. What is owed is a **measurement**, and
+  §12.2 names three, all cheap, all standalone, none requiring a design.
+- **NOT a licence to build the cheapest option once someone is impatient.** §12.3.
+
+### 12.2 The three probes, in decision order
+
+★ **All three are worth taking whether or not any mechanism is ever proposed**, because they bound the
+option space rather than serve one option — which is exactly the property §9.2 already argued for the
+`files.read`-after-redirect question, and the reason that question stayed open through three rounds
+without ever being answered.
+
+**(a) THE DECISIVE PROBE — can a real `claude`/`codex`, under the EXACT production argv with no
+permission flag, write a file in the `aoa-base` template at all?**
+
+This is the load-bearing premise under **three of the four** candidate answers, and it has never been
+measured on any lane. `buildSandboxInvocation` emits four script literals
+(`server/src/services/task-run-sandbox-invocation.ts:183`, `:184`, `:203`, `:204`) and **none carries
+a permission posture** — no `--dangerously-skip-permissions`, `--settings` or `--allowedTools` on the
+claude branches, no `--dangerously-bypass-approvals-and-sandbox` on the codex ones — while the shipped
+adapters treat one of those as required for an unattended run
+(`claude-local/src/server/execute.ts:735-748`, `internal-agent/cli-mode.ts:598/:601`) and a
+UAT-measured production defect is recorded for the flag's absence
+(`resolve-crew-adapter.ts:145-153`). Filed as **E7-F021 (HIGH)**.
+
+*The probe.* On the keyed lane (`keyed-e2b-unit-d.yml` already runs the real invocation against a real
+sandbox), execute the **exact** `:184` literal — not a paraphrase, not a simplified `sh -c` — with a
+prompt whose only instruction is to write a known string to a known path, then read the path back with
+`#transport.readFile`. Three outcomes and what each means:
+
+| outcome | reading |
+|---|---|
+| the file exists with the expected bytes | the premise HOLDS; the option space is genuinely four-wide and the argument moves to which convention |
+| the run exits 0 and the file does not exist | ★★★ the "silently no-op" shape (`resolve-crew-adapter.ts:150-151`) reproduced in the distributed argv. **Every file-writing option is dead until the argv changes**, and the next unit is a permission-posture decision, not an output mechanism |
+| the run exits non-zero / hangs to the deadline | a third state nobody has predicted; record the stderr verbatim before theorising |
+
+★ Run it **on both branches** (with and without a staged instructions bundle) and **on both adapters**.
+The codex branch pipes through `cat` (`:203`), so its exit status is the pipeline's last command's —
+a different failure surface from claude's `exec`.
+
+**(b) IS THE CONFIGURED TEMPLATE ALREADY SATISFYING A LOCATION-BASED CONVENTION? — a positive control
+nobody has proposed.**
+
+Every location-based candidate ("the agent writes to `<path>` and we count what is there") assumes the
+path is empty before the agent runs. **Nothing checks that**, and the template is an operator-authored
+filesystem that no protocol surface can see: `templateId` reaches **zero** files under
+`packages/worker-daemon/src` and **zero** under `packages/worker-protocol/src`, deliberately
+(`capabilities.ts:36`, `:44-46`, `:104-105`), and it is named by **three uncoordinated environment
+variables** with opposite defaults. Filed as **E7-F022 (MEDIUM)**.
+
+*The probe.* Create a sandbox from the configured template and **read the candidate path BEFORE
+`exec`**. It is two SDK calls and no design. A non-empty read means the convention would have been
+satisfied by the image — E7-F020's class, evidence produced by something other than the agent — and
+would have been satisfied *silently*, on the very first green run someone quoted.
+
+★★ This is the shape of control this programme keeps discovering it needed afterwards. It costs
+minutes now and it is the difference between a counter that proves something and a counter that
+proves the Dockerfile.
+
+**(c) DOES THE STREAM HANDLER ACTUALLY DELIVER FROM REAL E2B?**
+
+The only real-E2B execution of that case **failed**: `CLI-realE2B-hardening-result.md:3` records the
+first keyed run as 18 cases → 10 pass / 8 fail, and its divergence row 3 is
+*"CLI-003 streaming | stdout `''` (expected `out-line`)"*. The fix was to a **different** component
+(argv collapse, repaired by `shellJoin`) and is pinned only by a **no-key** unit test. Two later
+re-fires were pushed (`.github/keyed-e2b-trigger` entries #3 and #4) and **neither outcome is
+recorded anywhere in `docs/replatform`**. Filed as **E7-F025 (MEDIUM)**.
+
+*The probe.* Dispatch `keyed-e2b-conformance.yml` with `e2b_template: aoa-base` — **named, not the
+default**, because a push trigger resolves the template to the bare `base` image that has no CLIs
+(`keyed-e2b-conformance.yml:24`, `e2b/e2b.Dockerfile:1-7`) — and then **write the run id and the
+pass/fail split into `CLI-realE2B-hardening-result.md`.** The measurement is not done until it is in
+the record; that is the whole content of E7-F025.
+
+★ Whatever (c) returns, the transcript family is already bounded independently by **E7-F024**: the
+frozen `log` payload is truncated **silently** at 65,536 UTF-16 code units
+(`worker-daemon/src/supervisor/events.ts:159-165`, `:82-87` — no marker, no flag) and capped at
+`MAX_LOG_EVENTS = 480` (`supervisor.ts:82`, `:777`). And by **E7-F023**: clause 4 **does** scan
+`job_events` (`e7-distributed-run-verifier.ts:463-467`), so routing model output into events makes a
+**hard-fail** gate clause read model-influenced content — one matcher fires on the bare literal
+`E2B_API_KEY=` (`:258`).
+
+### 12.3 ★★★ STATED PLAINLY, BECAUSE IT IS THE POINT OF THIS SECTION
+
+> **A fourth mechanism proposed before probe (a) returns will be refuted for the same reason as the
+> first three: it will be an invented answer to an unmeasured premise.**
+
+Round 1 was refuted on argv shape, round 2 on argv size, round 3 on the predicate itself (§4). §4.4
+already names the pattern — *each round reasoned confidently about a surface it had not enumerated* —
+and a fourth round that assumes a sandboxed agent can write a file, without having watched one do it,
+is that pattern again with a new noun. The 26-agent wave is the strongest available evidence for this:
+sixteen adversarial passes over four options returned **two** `sound` verdicts and **46** unrebutted
+fatal problems, which is not a signal that the wrong option was picked. It is a signal that the
+question was being answered above an unmeasured floor.
+
+**So: no mechanism section will be added to this document until probe (a) is on the record.** If a
+future author believes they have one anyway, the minimum bar is §9.1's census — *for the candidate
+predicate, enumerate every writer that can produce a row it admits* — plus probe (a)'s result quoted
+by run id. Anything less has already been tried three times.
+
+---
+
+## 13. THE FIFTH OPTION, RECOVERED — *"do not build it"* — **and it was NEVER ADVERSARIALLY ATTACKED**
+
+★★★ **READ THE WARNING BEFORE THE ARGUMENT.** A fifth option was generated during the 26-agent wave —
+*"DO NOT BUILD IT: retire the capability bar, delete the arm that lies about it, and spend the next
+unit on CLI-008 Unit C"* — and was **LOST to a serialization failure** before it reached the brief. It
+therefore went through **zero** of the sixteen adversarial passes the other four survived. It is
+recorded here so it does not vanish a second time, and it is recorded **with that asymmetry stated in
+its own heading**, because:
+
+> **An unattacked option must never be presented at the same confidence as options that were
+> attacked.** The other four have documented fatal problems *because someone looked for them*. This
+> one has none *because nobody looked*. Those are not the same state, and a comparison table that
+> puts them in adjacent rows is lying by layout.
+
+The argument below is **re-derived from the terrain in this worktree by W6U1**, not transcribed from
+the lost text — so it is at least honestly sourced, but it is one author's reconstruction of a
+position, not a surviving artefact.
+
+### 13.1 Its strongest case, re-derived and measured
+
+1. ★★★ **`capabilityProven` gates NOTHING, and the measurement is repo-wide.**
+   `--require-capability` defaults to **false** (`server/src/cli/verify-e7-1-distributed-run.ts:64-66`,
+   `requireCapability: false`). Measured at this tip for `capabilityProven` /
+   `--require-capability` / `requireCapability`:
+   - **`.github/` — ZERO files.** No workflow reads it, passes the flag, or asserts on it.
+   - **`scripts/` — THREE files, all PROSE, zero executable use:** `finding-ownership.json` and
+     `gate-clause-wiring.json` (register `reason` strings) and `scripts/lib/register-id-uniqueness.mjs:39`
+     (a comment citing it as a *precedent*). No `.mjs` guard evaluates it.
+   - **Production TypeScript — THREE files, all inside the verifier's own lane:**
+     `cli/verify-e7-1-distributed-run.ts`, `services/e7-distributed-run-verifier.ts`, and
+     `services/run-execution-owner.ts:265` (a prose comment).
+
+   So the bar is a string printed beside a verdict. Nothing anywhere fails because of it.
+2. **Arm 2 reads `PROVEN` with no agent output and no actor** — **E7-F020 (HIGH)**: an ordinary
+   `heartbeat.ts:4524` runtime-service emission writes `created_by_run_id = run.id` on the DEFAULT
+   isolated-workspace configuration, before the handoff. The bar does not merely fail to prove
+   capability; on the configuration the campaign will try first, it **asserts** capability falsely.
+3. **Nothing in the distributed path runs at all** — **E7-F018 (HIGH)**: both arms are structurally
+   unreachable in every checked-in configuration, and what is owed is two operator artefacts that sit
+   outside a code PR's blast radius.
+4. **The unit that would make the bar meaningful has been refuted three times** (§4), and the thing
+   the bar is supposed to certify — *the agent can do work* — is closer to being demonstrated by
+   **Unit C** (the MCP tool surface: `mcp__aoa__*` reaching a sandboxed agent) than by any counter
+   over control-plane rows, because §0 establishes that a row count can assert **provenance** and can
+   never assert **productivity**.
+
+**Put together, its claim is:** the cheapest honest move is to stop maintaining a verdict that gates
+nothing, currently lies on the default configuration, and cannot be made truthful without a mechanism
+that has failed three design rounds — and to spend the unit on capability the agent would actually
+use.
+
+### 13.2 What it would have had to survive, and did not
+
+Recorded so that whoever picks this up attacks it properly rather than adopting it because it is the
+only option in this document without a refutation attached. At minimum:
+
+- **Does deleting the bar delete the QUESTION?** E7-F015 and E7-F020 are defects in a judge; if the
+  judge goes, do the findings resolve, or do they become "there is no judge at all", which is worse?
+- **What replaces "did the distributed journey do anything?"** Clauses 1–5 corroborate the *journey*;
+  clause 6 is the only thing that gestures at *work*. Removing it makes a green E7-1 provably a
+  mechanism proof and nothing more — which E7-F003 already says it is, but saying it and *encoding*
+  it are different.
+- **Is Unit C actually unblocked?** This option asserts it as the better spend and offers no
+  measurement that Unit C's tools reach a sandboxed agent — which, per probe (a), is the same
+  unmeasured floor.
+- ★ **It is a SCOPE conclusion, which is exactly the kind round 3 also reached** (§4.3), and round 3's
+  scope conclusion was correct while its mechanism was not. Being right about scope does not transfer.
+
+### 13.3 ★★★ WHAT MUST NOT BE DONE WITH THIS SECTION
+
+- **Do NOT implement any part of it.** Recording an option is not adopting it.
+- ★★★ **Do NOT delete arm 2 of clause 6.** That is a **founder call**, it is **deliberately still
+  open**, and it is not this unit's to take — nor the next unit's, on the strength of an option that
+  no adversary has read. E7-F015's and E7-F020's register entries both state that no replacement
+  predicate is designed and that the two obvious candidates are unmeasured guesses; deleting the arm
+  is a third guess wearing a different hat.
+- **Do NOT cite this section as "the wave recommended retiring the bar."** The wave recommended
+  **measuring first** (§12). This option was lost before the wave could judge it.

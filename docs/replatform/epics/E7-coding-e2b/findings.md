@@ -1725,3 +1725,421 @@ in the verifier reading that linkage as *proof of agent capability*. It does not
 `emitRuntimeServiceTaskOutput`, and no code is changed by the round that filed it. And it does not
 weaken E7-F018: the shared blocker holds, arm 1 is still unreachable, and a `workspace_patch` producer
 is still necessary.
+
+---
+
+## E7-F021 — The distributed sandbox invocation carries NO permission posture, and the shipped product treats that flag as required for unattended runs
+
+**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)
+**Severity:** HIGH
+**Filed:** W6U1, 2026-09-06, by re-verification of the 26-agent output-decision wave against source at `31d33a3b0`.
+**Cross-links:** E7-F003 (the run reaches the agent through argv only), E7-F018 (nothing in the distributed path runs today).
+
+**What.** `buildSandboxInvocation` (`server/src/services/task-run-sandbox-invocation.ts:149-213`) emits
+FOUR script literals — `:183`, `:184` (claude, bundle / no bundle) and `:203`, `:204` (codex, bundle /
+no bundle). Measured at this tip, **none of the four carries any permission posture**: no
+`--dangerously-skip-permissions`, no `--settings`, no `--allowedTools` on the claude branches, and no
+`--dangerously-bypass-approvals-and-sandbox` on the codex ones. The literals are, in full:
+
+```
+:183  <guard>; exec "$0" --print - --output-format stream-json --verbose --append-system-prompt-file "$2" < "$1"
+:184  <guard>; exec "$0" --print - --output-format stream-json --verbose < "$1"
+:203  <guard>; { cat "$2"; echo; cat "$1"; } | "$0" exec --json -
+:204  <guard>; exec "$0" exec --json - < "$1"
+```
+
+**Why that is a defect and not a deliberate hardening.** The SHIPPED product treats the flag as
+REQUIRED for an unattended run, in three independent places:
+
+- `packages/adapters/claude-local/src/server/execute.ts:735-748` builds the same
+  `--print - --output-format stream-json --verbose` argv and then pushes EITHER `--settings`
+  (the PreToolUse permission bridge) OR `--dangerously-skip-permissions`. The two are mutually
+  exclusive by an explicit comment at `:740-742`. **Precisely measured, the construct is
+  `if (hookSettingsFilePath) … else if (dangerouslySkipPermissions) …` with NO `else`** —
+  `dangerouslySkipPermissions` is `asBoolean(config.dangerouslySkipPermissions, false)` (`:368`,
+  defaults FALSE) and `hookSettingsFilePath` is non-null only when the caller explicitly opts in via
+  `runtimeHookBridge?.enabled` (`:567`, `:571-591`) — so a `claude_local` agent whose config sets
+  NEITHER gets NEITHER flag. What is always true is narrower: **crew-resolved** agents always carry a
+  posture, because `resolve-crew-adapter.ts:53` sets `dangerouslySkipPermissions: true` on every
+  claude crew row it mints and `:197` backfills legacy rows that lack it. It ALSO pushes
+  `--allowedTools mcp__aoa` (`:756-758`) when a managed MCP config is present and skip-permissions is
+  not, *"so a headless agent run would otherwise be denied every `mcp__aoa__*` call … with no human
+  to grant it"*. The distributed literals choose NONE of the three.
+  ★ **That fall-through is STRENGTHENING, not weakening.** The no-posture state is not a benign
+  fourth option the adapter offers — it is exactly the state the crew backfill below exists to
+  eliminate, met in production and remedied by rewriting founder rows on boot. The distributed
+  literals put every run permanently into that state, with no resolver and no backfill above them.
+- `server/src/services/internal-agent/cli-mode.ts:598` / `:601` are the Commander/crew equivalents
+  (`claudeBypassArgs` / `codexBypassArgs`). These are likewise conditional, not unconditional —
+  both are gated on `vendorCliBypassEnabled` (`:597-602`) and are `[]` when it is false. The point
+  is the same as above: where the shipped product runs this argv shape unattended, a posture is
+  resolved deliberately by a caller; the distributed literals have no such caller.
+- ★★★ **A UAT-measured production defect is recorded for the flag's ABSENCE.**
+  `server/src/services/internal-agent/aoa-agents/resolve-crew-adapter.ts:145-153` records backfill
+  case 2 — claude_local crew agents missing `dangerouslySkipPermissions` — because the pre-fix
+  resolver *"didn't set this flag, so claude crew runs silently no-op on every MCP tool call
+  (permission gate hangs in `--print` mode)"* (`:150-151`). The remedy shipped was a **startup
+  backfill** that upgrades existing rows, i.e. the programme judged the absence severe enough to
+  rewrite founder data on boot.
+
+**And there is no second channel that could supply it.** The frozen `batchWorkloadV1Schema`
+(`packages/worker-protocol/src/job.ts:289-296`) is `.strict()` with exactly four fields —
+`command`, `args`, `stdinArtifactId`, `maxRuntimeSeconds`. **There is no `env`.** So a permission
+posture cannot ride the workload as an environment variable either; if it is not in these four script
+literals it is not in the distributed invocation at all. (A settings FILE could in principle be
+staged through CLI-008 Unit B's channel and named with `--settings`, but that is a mechanism nobody
+has proposed and it would still need an argv change here.)
+
+**WHAT THIS FINDING DOES NOT CLAIM, stated first because the temptation is to overstate it.** It does
+**not** claim that a sandboxed claude/codex provably cannot write a file. That has never been
+measured, on any lane, and the absence of the measurement is the point. The recorded UAT defect is
+about **MCP** tool calls, and the distributed invocation carries no MCP config at all (Unit C is
+unbuilt), so the exact recorded symptom is not the exact predicted symptom. What is measured is
+narrower and still decisive: the shipped product never runs this argv shape unattended without a
+permission decision attached, and the distributed path does.
+
+**WHY IT MATTERS BEYOND UNIT F.** It is the load-bearing premise under three of the four candidate
+answers to *"what is an agent output?"* — every option that assumes the agent writes a file
+(a declared path, a conventional path, a workspace patch) assumes a capability nobody has
+established the sandboxed agent has. A mechanism designed on top of an unmeasured premise is the
+shape all three of Unit F's refuted rounds already took (`CLI-008-unit-f-design.md` §4.4).
+
+**Severity — HIGH, argued both ways.** *For lower:* nothing in the distributed path runs in any
+checked-in configuration (E7-F018), so the blast radius TODAY is zero, and the defect might turn out
+to be a non-defect — a sandboxed `--print` run might tolerate built-in tool use without the flag,
+which is exactly probe (a). *For HIGH, which is why it is filed there:* (a) it is not a defect whose
+cost is bounded by a wrong answer — it is a MISSING MEASUREMENT under the entire remaining option
+space of the epic's last open question, and every hour spent designing above it is spent on sand;
+(b) the error direction is silent — the recorded symptom for this class is a run that *"silently
+no-op[s]"*, i.e. a green terminal with exit code 0 and no work, which is precisely the false-PASS
+shape clause 6 exists to exclude; (c) the omission is invisible at every review surface — the four
+literals read as complete, and the divergence from the shipped adapters is only visible by opening a
+different package.
+
+**Owner — CLI-008**, which has no result doc and whose Units C, E and F are unbuilt. The literals are
+Unit D's module and the consequence is Unit F's premise; splitting them would separate the argv from
+the only unit that can prove a posture change had any effect. ★ **The ticket carries the finding, not
+a fix.** Adding `--dangerously-skip-permissions` to the two claude literals is the obvious remedy and
+it is NOT recommended here: it is a security posture change to the argv of an agent running with a
+redeemed Company provider key, and it should be made *after* probe (a) says what the real behaviour
+is, not before.
+
+---
+
+## E7-F022 — The E2B template is an unpinned operator input under three uncoordinated variable names, invisible to every protocol surface, and the evidence lanes silently default to a template with no CLIs
+
+**Status:** open · **Owner:** unowned (see reason)
+**Severity:** MEDIUM
+**Filed:** W6U1, 2026-09-06. **Corrected DOWN from the HIGH stated in the tasking brief** — see
+severity below — and corrected UP in SCOPE: the brief named one variable; there are three.
+**Cross-links:** E7-F020 (evidence produced by something other than the agent), E7-F018 (the operator
+preconditions that sit outside a code PR).
+
+**What.** The sandbox template that determines what exists inside an agent's sandbox is named by an
+environment variable, is built by an operator from a repo Dockerfile with **nothing verifying that the
+registered template matches that Dockerfile**, and reaches **zero** files in either frozen-adjacent
+worker package.
+
+**Measured, four ways.**
+
+1. **It is REQUIRED for the distributed worker and has no default.**
+   `packages/worker-keystore/src/bin/sandbox-provider.ts:34` declares
+   `TEMPLATE_ENV = "AOA_WORKER_E2B_TEMPLATE"`; `:88-93` refuses to boot without it
+   (`` `${PROVIDER_ENV}=e2b requires ${TEMPLATE_ENV} to name a sandbox template` ``), and `:99`
+   passes it as `templateId` to `E2bSandboxProvider`.
+2. ★★★ **It is THREE variables, not one, and they do not agree.** Measured repo-wide:
+
+   | variable | consumer | behaviour when unset |
+   |---|---|---|
+   | `AOA_WORKER_E2B_TEMPLATE` | the distributed worker's provider resolver (`sandbox-provider.ts:34`) | **refuses to boot** (fail-closed) |
+   | `AOA_ADAPTER_MANAGER_E2B_TEMPLATE` | `packages/adapter-manager/src/bin/adapter-manager.ts:55`; fed from `AOA_STAGING_E2B_TEMPLATE` at `docker-compose.staging.yml:340` | — |
+   | `E2B_TEMPLATE` | every keyed real-E2B test lane and probe (`keyed-real-e2b.test.ts:33`, `keyed-cli-008-unit-d-invocation.test.ts:61`, `keyed-dat-009-artifact-export.test.ts:55`, `probe-e2b-egress-constraint.mjs:48`, `probe-e2b-port-exposure.mjs:28`) and `docker-compose.yml:74` | **silently defaults to the bare `base` template** |
+
+   So **the lane that produces real-E2B evidence and the lane that would run a distributed agent read
+   different variables with opposite defaults.** A green keyed run does not pin the production
+   template, and nothing anywhere asserts the two name the same image.
+3. ★★ **The evidence lane's default is a template with no agent CLIs.** `e2b/e2b.Dockerfile:1-7`
+   states that the E2B `base` template is bare, that `claude` and `codex` are absent from it, and
+   that a run fails with `env: 'claude': No such file or directory`; the custom `aoa-base` template
+   exists to fix exactly that. Yet `keyed-e2b-conformance.yml:78` sets
+   `E2B_TEMPLATE: ${{ inputs.e2b_template }}`, and its own comment at `:24` says a **push**-triggered
+   run *"carries no `inputs`, so `E2B_TEMPLATE` resolves to `""` → the bare `base` template"*. The
+   last recorded push trigger (`.github/keyed-e2b-trigger`, entry #4, 2026-08-26) says exactly that:
+   *"Bare `base` template (coreutils only)."*
+4. **It is invisible to the protocol, DELIBERATELY.** `templateId` appears in **zero** files under
+   `packages/worker-daemon/src` and **zero** under `packages/worker-protocol/src` (verified by
+   `grep -rn templateId` on each: 0 and 0). That is not an oversight — `capabilities.ts:36` states
+   *"provider-native regions/templates never enter the wire"*, `:44-46` that
+   *"Provider identity/region/template/credentials are NOT capabilities … they live in the
+   control-plane registry, never in this enum or on the wire"*, and `:104-105` that the platform
+   `runtime` label is *"never a provider region or template ID"*.
+
+**The consequence for the output question.** A location-based output convention — *"the agent writes
+to `/aoa/out/…` and we count what is there"* — can be satisfied **by the template itself**, because
+the template is an operator-authored filesystem that no protocol surface can see and no gate
+inspects. That is E7-F020's class (evidence produced by something other than the agent), with an
+input that is structurally unauditable rather than merely unfiltered. Because the invisibility is a
+locked design property, the remedy cannot be "put the template on the wire".
+
+**Severity — MEDIUM, and the correction is deliberate.** The tasking brief called this HIGH.
+*Against HIGH:* the production side fails **CLOSED** — no template, no boot — which is the opposite
+of the fail-open shape that earns HIGH in this register (cf. E7-F020, which needs nobody to do
+anything). No location-based output convention exists, so the E7-F020-class consequence is
+CONDITIONAL on a mechanism that Unit F has been refuted three times for proposing. And nothing in the
+distributed path runs at all (E7-F018). *For MEDIUM rather than LOW:* the evidence-lane half IS
+fail-open today — a keyed run against bare `base` can be reported green while the CLIs were never
+present, which is the same class as E7-F025 below — and the three-name divergence means a proof on one
+lane is quoted for another. ★ **Re-derive this to HIGH the moment any candidate output mechanism
+becomes location-based**; the conditional is the only thing holding it down.
+
+**Owner — unowned, with a reason.** The template is an OPERATOR/DEPLOYMENT artefact, not a code unit:
+the fix is either a boot-time or lane-time assertion that the registered template contains what the
+Dockerfile promises, or a decision to collapse the three variable names — and no ticket on disk owns
+either. Naming CLI-008 would be a false ownership claim in E7-F018's exact sense: that ticket could
+ship in full and this would not move. Recorded as unowned so the next Track A attempt reads it before
+quoting a keyed-lane result.
+
+---
+
+## E7-F023 — Clause 4 DOES scan `job_events`, so a hard-fail gate clause reads model-influenced content; two reviewers contradicted each other and both were half right
+
+**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)
+**Severity:** MEDIUM
+**Filed:** W6U1, 2026-09-06, to settle a direct contradiction between two reviewers in the 26-agent wave.
+**Cross-links:** E7-F016 (clause 6's text misdescribes its subject), E7-F024 (the `log` payload).
+
+**The contradiction, and the measurement that settles it.** One reviewer asserted that clause 4 scans
+`job_events`; another asserted it does not, citing `listRunSecretScanSurfaces`
+(`server/src/services/e7-distributed-run-verifier-store.ts:133-195`) building exactly THREE surfaces.
+**Both statements are individually true and the second is not a rebuttal of the first**, because the
+scanned set is COMPOSED at the call site rather than owned by that function:
+
+```
+e7-distributed-run-verifier.ts:463-467
+  const scanSurfaces = await store.listRunSecretScanSurfaces(run);
+  const allSurfaces: E7ScanSurface[] = [
+    ...events.map((e) => ({ surface: "job_events", fieldOrEventId: e.eventId, text: safeStringify(e.payload) })),
+    ...scanSurfaces,
+  ];
+```
+
+So the scanned set is **FOUR** surfaces: `job_events` (the whole raw event `payload` jsonb,
+JSON-stringified) plus `heartbeat_runs` text fields (`:139-158`), `task_outputs` summary+metadata
+(`:161-169`) and `job_artifacts` identifier+objectKey (`:172-183`). The verifier's own type comment
+already says so — `e7-distributed-run-verifier.ts:103`: *"The raw PRT-004 event jsonb — scanned by
+clause 4 (never a dedicated key)."* `events` is `store.listJobEvents(attemptId)` fetched at `:401`
+and is empty unless both distributed ids are present (`:396`), which is why a reader looking only at
+the store function sees three.
+
+**The consequence, which is the reason to file rather than just correct the record.** Clause 4 is a
+**hard-fail** clause: any `hardHits` match pushes a `clause: 4` failure (`:468-474`) and the run's
+`ok` verdict goes red. Its matchers (`:249-265`) are five regexes, and one of them —
+`{ matchedClass: "e2b_api_key_assignment", re: /E2B_API_KEY\s*[=:]/g }` (`:258`) — fires on the bare
+LITERAL `E2B_API_KEY=`, with no key value required. `connection_string` (`:261-264`) fires on any
+`postgres://…` substring; `private_key` (`:266`) on the literal `-----BEGIN … PRIVATE KEY-----`.
+
+★★★ **So routing agent stdout into `job_events` makes an attacker- and model-influenced string a
+hard gate failure.** An agent that prints a `psql` connection example, echoes a `.env.example` line,
+or pastes a PEM header into its transcript reds a clause whose name is *"no leaked secret"* — and the
+failure text names a leak class, so the operator's first reading is a security incident, not a
+false positive. This is a direct constraint on the "derive provenance from the transcript" option
+family: any mechanism that puts model output into `job_events` inherits it.
+
+**Not reachable today, and that is why it is MEDIUM and not HIGH.** Nothing emits a `log` event in
+production: `SupervisorDeps.observeRun` is the only producer (`supervisor.ts:774-783`) and it is
+uncomposed (E7-F016 §(a) records the same zero). And with no distributed run at all (E7-F018), the
+`events` array is empty by `:396`'s `bothIds` guard. MEDIUM rather than LOW because it becomes live
+on the SAME action that makes clause 6 meaningful — composing a stdout producer — so the two would
+land together and the false hard-fail would be discovered by an operator rather than by a designer.
+
+★ **A secondary observation, recorded but NOT the finding.** The `job_events` arm scans the
+UNFILTERED `events` array, whereas clause 5 evaluates `tenantEvents = events.filter(e => e.companyId
+=== run.companyId)` (`:412`). The two arms of the same function therefore disagree about tenancy. It
+is very likely harmless — `listJobEvents` is keyed on a globally-unique attempt id — and it is
+recorded here rather than filed separately because it is one line of the same code and a fix for
+either should look at both.
+
+**Owner — CLI-008.** This is a defect in the JUDGE, which CLI-008 owns (E7-F015, E7-F016, E7-F020 are
+all there for the same reason), and it is a hard constraint on Unit F's remaining option space rather
+than a standalone repair. ★ **No fix is proposed.** Narrowing the matchers, excluding `job_events`
+from the hard arm, or moving it to the advisory `heuristicHits` set are three non-equivalent
+remedies with different security postures, and choosing is the ticket work.
+
+---
+
+## E7-F024 — The frozen `log` payload SILENTLY TRUNCATES at 65,536 characters and caps at 480 events, so a reconstructed transcript is corrupt rather than absent
+
+**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)
+**Severity:** MEDIUM
+**Filed:** W6U1, 2026-09-06. **The tasking brief's framing is CORRECTED**: the schema does not reject
+an over-long frame, the emitter truncates it first.
+**Cross-links:** E7-F023 (the same events are a hard-fail scan surface), E7-F016 (a transcript is
+non-empty even when the model never spoke).
+
+**What the brief said, and what is actually there.** The brief stated that
+`logPayloadV1Schema` being `.strict()` with `message: z.string().max(65_536)`
+(`packages/worker-protocol/src/events.ts:59-65`) means the payload **cannot carry** a `stream-json`
+frame that exceeds it. The schema is exactly as stated. But the emitter never lets an over-long
+message reach it:
+
+```
+packages/worker-daemon/src/supervisor/events.ts:159-165
+  /** … The message is TRUNCATED to the frozen 65536-char ceiling so an
+   * over-long chunk can never fail the parse; … */
+  log(input) {
+    const message = truncateUtf16Safe(input.message, 65_536);
+    return this.#emit("log", { stream: input.stream, level: input.level, message });
+  }
+```
+
+`truncateUtf16Safe` (`:82-87`) slices and drops a trailing lone high surrogate. **It adds no marker,
+sets no flag, and emits no signal that truncation occurred.** So the failure mode is not "the frame
+is refused" — it is "the frame is silently cut", and a cut JSONL frame is **unparseable JSON that
+reads as a delivered event**.
+
+**Three additional bounds on the same path, all measured:**
+
+- **`MAX_LOG_EVENTS = 480`** (`supervisor.ts:82`), applied as `.slice(0, MAX_LOG_EVENTS)` at `:777`.
+  Logs past the 480th are dropped, also silently.
+- The ceiling is **65,536 UTF-16 code units, not bytes.** The file defines a byte-accurate helper —
+  `boundedUtf8(maxBytes)` (`events.ts:43-50`) — and the `log` payload does **not** use it, while
+  other fields do. So a multi-byte transcript is bounded lower in bytes than the number suggests.
+- The whole producer block is **best-effort by construction**: `supervisor.ts:774-786` wraps
+  `observeRun` and all three emitters in one `try` whose `catch` logs and swallows
+  (*"Instrumentation must NEVER fail the run"*).
+
+**Why this kills the "derive provenance from the transcript" family, and kills it harder than a
+refusal would.** A refusal is loud: a mechanism whose events bounce is a mechanism you notice on the
+first run. Silent truncation plus a silent 480-event cap means a transcript-derived provenance claim
+would be computed over data that is *sometimes* complete, with nothing in the record saying which
+runs those were. Combined with E7-F016 part (b) — a protocol transcript is non-empty even when the
+model never spoke — a transcript-derived counter can be simultaneously **non-empty and corrupt**,
+which is the worst of the two available failure directions for a capability bar.
+
+**Severity — MEDIUM.** *For lower:* nothing emits a `log` event today (`observeRun` uncomposed), so
+no data is being lost right now, and the truncation is a deliberate, commented choice that correctly
+protects the run's terminal from an instrumentation parse failure — the alternative (drop the event,
+and with it the run's trailing `usage` evidence, per the `truncateUtf16Safe` doc comment) is worse.
+*For MEDIUM rather than LOW:* the loss is **silent on a frozen contract**, so the ceiling cannot be
+raised by a later PR without a protocol change, and any future consumer inherits it without a signal.
+A cheap, non-frozen mitigation exists and is deliberately NOT proposed as a fix here: recording that
+truncation happened (a metric, a `system`-stream marker event) would make the loss visible without
+touching `worker-protocol`. That is a design decision, not an obvious repair.
+
+**Owner — CLI-008.** It bounds Unit F's option space and nothing else; it is not a live data-loss
+defect for any shipped path.
+
+---
+
+## E7-F025 — No document in the repo records a GREEN real-E2B execution of the stream-capture case; the one recorded run FAILED it, and two later re-fires have no recorded outcome at all
+
+**Status:** open · **Owner:** unowned (see reason)
+**Severity:** MEDIUM
+**Filed:** W6U1, 2026-09-06. **The tasking brief is CORRECTED**: it said the re-fire is "queued";
+measured, at least two re-fires were pushed and their results were never written down, which is a
+different and worse gap.
+**Cross-links:** E7-F022 (the lane's template default), and this programme's own
+"a check that nothing runs is not a check" class.
+
+**The claim under test.** The 26-agent wave repeatedly asserted that the stream-capture primitive is
+*"already live-proven against real E2B"*. Measured against the record:
+
+1. **The only document recording a keyed-lane OUTCOME says the opposite.**
+   `docs/replatform/epics/E7-coding-e2b/tickets/CLI-realE2B-hardening-result.md:3` —
+   > **Status:** `driver fixes landed (no-key green) + keyed re-fire queued`. The FIRST real-E2B run
+   > of the keyed lane (operator supplied `E2B_API_KEY`) executed 18 cases → **10 pass / 8 fail** …
+
+   and its divergence table row 3 is the streaming case verbatim:
+
+   | # | Case | Real-E2B symptom | Root cause | Fix | No-key cover |
+   |---|---|---|---|---|---|
+   | 3 | CLI-003 streaming | stdout `''` (expected `out-line`) | same argv collapse — the `printf` script never ran intact | (same `shellJoin`) | same |
+
+2. **The fix was to a DIFFERENT component and is pinned only by a no-key unit test.** The root cause
+   was argv collapse in `runCommand`, repaired by `shellJoin`; its regression cover is
+   `real-transport-helpers.test.ts`, which the same doc's local-verification table records as
+   *"7 passed"* with no key. So the stream handler itself has **zero** green real-E2B executions.
+3. ★★★ **Two later re-fires WERE pushed, and nothing records what they returned.**
+   `.github/keyed-e2b-trigger` carries entry #3 (2026-08-19) — *"real-E2B driver hardening — argv
+   shell-quoting … Expect the 8 first-run failures resolved"* — and entry #4 (2026-08-26). Both are
+   push-triggers on `docs/replatform-program` (`keyed-e2b-conformance.yml:26-30`), so the lane fired.
+   **No result document in `docs/replatform` records the outcome of either.** `CLI-003-result.md:3`
+   still reads *"complete (no-key core) + CI-GREEN + keyed-lane authored"* and says the real-E2B
+   streaming case *"ride[s] the operator-dispatched `keyed-e2b-conformance.yml`"* — an authoring
+   claim, not an outcome.
+
+**So the honest state is not "queued" and not "proven": it is FIRED AND UNRECORDED.** The evidence may
+well exist in CI logs; nothing brings it into the record, and the only written outcome is a failure.
+
+**Why file it as a finding rather than just correcting a sentence.** A `-result.md` on disk is this
+programme's own signal that a ticket shipped — `check-finding-ownership.mjs findCompletedTicketIds`
+treats the suffix that way — and `CLI-realE2B-hardening-result.md` reads as a completion while its own
+status line says the lane is unfinished. (It does **not** trip that guard: the id regex is
+`^([A-Z]+-\d+).*-result\.md$` and `CLI-realE2B…` has no digits after `CLI-`, so it registers as no
+ticket. That is luck, not design.) The practical consequence is direct: an option family gets sized
+as "already proven" from a document whose own table records it failing.
+
+**Severity — MEDIUM.** *For lower:* it is an evidence-surface defect that fails no gate; E7-F016, the
+closest analogue, is LOW. *For MEDIUM:* unlike E7-F016 it is not a misleading string beside a verdict —
+it is a **missing measurement presented as a completed one**, on the single primitive underneath one
+of four candidate answers to the epic's last open question, and this programme has recorded the same
+shape as its worst failure class. The remedy is genuinely cheap (re-dispatch the lane with a named
+template and write down the result), which is another reason not to leave it implicit.
+
+**Owner — unowned, with a reason.** What is owed is an OPERATOR ACTION — dispatch
+`keyed-e2b-conformance.yml` with `e2b_template: aoa-base` and record the run id and the pass/fail
+split — plus a one-paragraph amendment to `CLI-realE2B-hardening-result.md`. No code unit owns
+either; naming CLI-008 or CLI-003 would be a false ownership claim, since both could ship in full and
+this would not move. It is `unowned` on the record so that the next reader who wants to quote
+"live-proven against real E2B" finds this first.
+
+---
+
+## E7-F026 — The 'agent declares its own output' option's "no test edits" claim is false against three existing pins, because its mechanism touches the staged PROMPT while its argument is about the WORKLOAD
+
+**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)
+**Severity:** LOW
+**Filed:** W6U1, 2026-09-06, by re-verifying the 26-agent wave's fourth candidate answer against the
+pin corpus.
+**Cross-links:** `CLI-008-unit-f-design.md` §3.2 (the pin census enumerated BY SEARCH) and §4.2
+(round 2 was refuted on exactly this claim, in the other direction).
+
+**What.** One of the four candidate answers to *"what is an agent output?"* was *"the agent declares
+it"* — append a directive to the agent's prompt telling it to announce the file it produced, and parse
+the announcement. Its stated advantage was **completeness**: that it changes no existing test, because
+it does not touch the workload.
+
+**That is false, and the reason is a category slip.** The mechanism appends bytes to the STAGED PROMPT
+FILE. The claim reasons about the WORKLOAD (`command`/`args`), which the mechanism indeed leaves
+alone. But the staged prompt has its OWN pins, and three of them assert the staged bytes EXACTLY.
+Verified individually in `server/src/__tests__/task-run-batch-workload.test.ts` at this tip:
+
+| line | assertion | shape |
+|---|---|---|
+| `:180` | `expect(new TextDecoder().decode(staged!.bytes)).toBe(nasty)` | exact string equality on the staged prompt |
+| `:415` | `expect(new TextDecoder().decode(staged!.bytes)).toBe(PROMPT)` | exact string equality (trimmed) |
+| `:438` | `expect(staged!.bytes.byteLength).toBe(length)` | exact byteLength, inside `it.each` with **three** parameterized cases (`:429-433`) |
+
+`:438`'s three cases are the E7-F008 anti-regression pins (`FROZEN_MAX_ARG_CHARS + 1`, `× 8`, `× 100`),
+so appending any directive reds five assertions across three tests, not one.
+
+**Why this is worth a register entry and not just a review note.** ★ It is the SAME slip that refuted
+Unit F round 2, mirrored. Round 2 claimed *"measured against each pin, no test needs editing"* and was
+false because it enumerated the wrong pin set (§4.2, §10). This option repeats the error with the
+axes swapped — it reasons about the surface it does not touch and never enumerates the surface it
+does. §4.4's standing instruction is exactly this census, and the option skipped it.
+
+★★ **This finding is NOT an argument that the option is wrong.** Editing those three pins could be
+entirely legitimate — §3.3 of the Unit F design already argues that "zero test edits" was never the
+goal, and a pin asserting the staged bytes are byte-identical to the assembled markdown is precisely
+the pin a prompt-appending mechanism SHOULD have to argue with. What is false is the **completeness
+claim**, and a completeness claim is load-bearing when four options are being compared on cost.
+
+**Severity — LOW.** It changes no shipped behaviour, fails no gate, and is bounded by the fact that no
+mechanism is being built. It is filed because comparative sizing under time pressure is how the wrong
+option gets chosen, and this option's stated cost was understated by exactly the measurement §4.4
+already tells the next author to make first.
+
+**Owner — CLI-008**, which owns the option space this belongs to. ★ The ticket carries the finding,
+not a fix — there is nothing to fix until a mechanism is chosen, and choosing one before probe (a)
+is what §12 now forbids.
