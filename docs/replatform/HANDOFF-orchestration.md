@@ -59,10 +59,37 @@ all, today).
 > [[checks-that-nothing-runs]] instances in the code it touched. Track A's next unit is **C**.
 
 ### What no track achieves
-**None of these flips `capabilityProven`.** That needs Unit F (output capture — four unbuilt links).
-A green E7-1 proves the **mechanism**, not capability; the verifier has computed and printed both
-since Unit A, and `--require-capability` is the flag the campaign flips at F. Do not let a green
-canary be reported as capability.
+**None of these flips `capabilityProven`.** A green E7-1 proves the **mechanism**, not capability; the
+verifier has computed and printed both since Unit A. **Do not let a green canary be reported as
+capability.**
+
+★★★ **But the reason is NOT "Unit F has not shipped yet", and no producer unit will change it.**
+Measured 2026-09-06 and filed as **E7-F018** (HIGH, `unowned`): **both arms are structurally
+unreachable in every checked-in configuration.** Arm 1 short-circuits at
+`server/src/services/e7-distributed-run-verifier-store.ts:200` on `if (run.distributedJobId)` and
+issues **no query at all**, because the sole writer of `heartbeat_runs.distributed_job_id`
+(`markRunHandedOffToDistributed`, `heartbeat.ts:6921`) has exactly one call site
+(`heartbeat.ts:5422`), inside the block gated on `distributedRolloutState === "canary"`
+(`heartbeat.ts:5259-5274`) — and nothing checked in arms the rollout dial. Arm 2's projection
+(`jobOutputBridge`) is `unwired` with zero production callers.
+
+**So a `workspace_patch` producer is NECESSARY and NOT SUFFICIENT.** What is owed first is a
+**deployment precondition**, not a code unit: a compose diff enabling dispatch on a worker, and a
+rollout JSON naming an Organization canary. That is why E7-F018 is `unowned` — a ticket could ship in
+full and the finding would not move. ★ **Track A's producer chain has been attempted or proposed four
+times. Read E7-F018 before anyone starts a fifth.**
+
+★ **And `--require-capability` is not "the flag the campaign flips at F" in any load-bearing sense.**
+It is off by default (`server/src/cli/verify-e7-1-distributed-run.ts:65`), and `capabilityProven` is
+referenced by **no workflow and no script** — only the verifier, its own test, the CLI, a comment, one
+provider test, two registers and docs (re-measured 2026-09-06). Flipping it would gate only a verdict
+the campaign itself chooses to demand.
+
+★ **Keep the standing prohibition on redefining the counter — and know it is not airtight.**
+**E7-F019** (MEDIUM, `unowned`): `kind` is the caller's declaration, so exporting arbitrary bytes as
+`kind='workspace_patch'` satisfies arm 1's predicate *literally*, redefining nothing. The system's own
+consumer refuses them (`server/src/services/patch-apply.ts:126-127`, frozen manifest schema,
+fail-closed) — but at the **apply** path, not at the counter.
 
 ---
 
@@ -248,6 +275,7 @@ track write its GO-BOOK row in its **own** commit at the end, and land those las
 | "Lane B is an active parallel track" | 275 commits behind, ~10 days idle. The GO-BOOK says this in five places; it is a plan, not a state. |
 | "The `SandboxProvider` port is frozen" | Measured false 2026-09-03. `capabilities.ts` is a wire vocabulary; the port is non-frozen and already at 13 methods. |
 | "argv caps at ~8 KB per job" | The cliff is 8,192 chars **per argument**. What survives is E7-F008. |
+| ★★★ "Unit F / output capture is what flips `capabilityProven`" | **Measured false 2026-09-06 — E7-F018 (HIGH, unowned).** Both arms are structurally unreachable in every checked-in configuration, so a producer is **necessary and not sufficient**; the first thing owed is an operator/deployment precondition. One command: `grep -rn AOA_DISTRIBUTED_EXECUTION_ROLLOUT --include=*.yml --include=*.yaml --include=*.json --include=Dockerfile* .` → **the only hit is the finding register's own quotation of that command** (`scripts/finding-ownership.json:154`); add `\| grep -v finding-ownership.json` and it is **zero hits, exit 1**. No compose file, Dockerfile, workflow or manifest arms the dial, so `if (run.distributedJobId)` (`e7-distributed-run-verifier-store.ts:200`) is false and arm 1 issues no query. |
 | "E7 is code-complete, blocked only on deployment" | True of CLI-001…007. CLI-008 (size L) has four unbuilt units. |
 | "WRK-013 unblocks E5-3" | It unblocks **E4-3**. E5-3's symbol is `createPatchApplyService`, which WRK-013 never touches. |
 | "`verify` takes 30–40 minutes" | ~18 min since the 4-way shard. |
