@@ -82,28 +82,31 @@ It has **zero non-test callers**: `grep -rn grantPutHeaders --include=*.ts .` re
 the `packages/worker-daemon/src/index.ts:180` re-export, one comment at `index.ts:173`, and
 `artifact-export-sequencer.test.ts`. Nothing in production calls it.
 
-**Three independent derivations exist. They do not agree.**
+**FOUR independent derivations exist. They do not agree.** (The report named three; re-grepping
+the harness found a fourth, identical in header set to #3.)
 
 | # | site | `x-amz-checksum-sha256` is the digest of… | `x-amz-sdk-checksum-algorithm` | other |
 |---|---|---|---|---|
 | 1 | `artifact-export.ts:140` `grantPutHeaders` — the designated home, **0 callers** | the GRANT's `expectedSha256` (hex->base64) | **sent** | grant headers spread last |
 | 2 | `e2b-provider.ts:142` `putGrantBytes` — **the shipped default uploader** | the BYTES BEING UPLOADED | **absent** | also sends `content-type` |
-| 3 | `tests/d1/lib/e6f-harness.mjs:1502` `putPresignedBytes` — the D1 harness | the BYTES BEING UPLOADED | **sent** | — |
+| 3 | `tests/d1/lib/e6f-harness.mjs:1503` `putPresignedBytes` — the D1 harness | the BYTES BEING UPLOADED | **sent** | — |
+| 4 | `tests/d1/lib/e6f-harness.mjs:1712` `putPresignedBytesAllowError` — the harness's toxic-truncation variant | the BYTES BEING UPLOADED | **sent** | catches a severed TLS connection |
 
 Two divergences, both measured:
 
-1. **The header set differs.** #2 omits `x-amz-sdk-checksum-algorithm`. #3's own docstring says it
-   sets "both … headers **the signed PUT's query demands**".
-2. **The checksum SOURCE differs.** #1 signs the server's EXPECTATION; #2 and #3 sign what they
+1. **The header set differs.** #2 — the only one that would run in production — omits
+   `x-amz-sdk-checksum-algorithm`. #1, #3 and #4 all send it, and #3's own docstring says it sets
+   "both … headers **the signed PUT's query demands**".
+2. **The checksum SOURCE differs.** #1 signs the server's EXPECTATION; #2, #3 and #4 sign what they
    actually uploaded. #1's docstring anticipates precisely this and calls it out: "A provider that
    hashed what it actually uploaded would produce a PUT the store accepts and a commit the control
    plane refuses `hash_mismatch`." The shipped provider is that provider.
 
 **★ The sharpest part, and it is not in the original report.** The only live-store evidence for this
-contract was gathered with derivation **#3**, not #2. `keyed-dat-009-artifact-export.test.ts:28-34`
+contract was gathered with derivations **#3/#4**, not #2. `keyed-dat-009-artifact-export.test.ts:28-34`
 states it plainly: "It does not perform a real HTTPS PUT. The uploader is **injected**, so the store
 half is not exercised here — that half is already live-proven against real MinIO by DAT-002". DAT-002
-ran through the D1 harness. So the ONE of the three derivations that would actually execute in
+ran through the D1 harness. So the ONE of the four derivations that would actually execute in
 production is the ONLY one missing a header the live-proven path sends, and it has never met a real
 store on that path.
 
