@@ -42,6 +42,10 @@
 //   6. Capability (SEPARATE DIMENSION — CLI-008 Unit A) — did anything the agent
 //      produced reach AoA? Reported as `capabilityProven` / `capabilityFailures`,
 //      NEVER folded into `ok`. See E7VerifyResult.capabilityProven for why.
+//      ★ Clause 6 reports its own LIMIT alongside its verdict (`capabilityLimitations`,
+//      W7U2): arm 2 is satisfiable with no agent output at all (E7-F020). That is a
+//      DISCLOSURE printed with the verdict, not a control — clause 6's predicate and
+//      both of its arms are unchanged.
 // ---------------------------------------------------------------------------
 
 /**
@@ -197,14 +201,69 @@ export interface E7VerifyResult {
    * "could the agent work" — the CAPABILITY. They are different questions and E7-F003 exists
    * because one was being read as the other.
    *
-   * FALSE ON EVERY REAL RUN TODAY, and that is the intended outcome of CLI-008 Unit A: the
-   * verifier starts telling a truth it already had the data for. It becomes achievable when
-   * Unit F builds a producer for `job_artifacts` / `task_outputs`.
+   * FALSE ON EVERY RUN WITH NO PRODUCER OUTPUT, and that is the intended outcome of CLI-008
+   * Unit A: the verifier starts telling a truth it already had the data for. A producer for
+   * `job_artifacts` is what Unit F builds.
+   *
+   * ★ CORRECTED (W7U2). This used to read "FALSE ON EVERY REAL RUN TODAY". That is refuted by
+   * E7-F020: arm 2 counts `task_outputs` rows by `created_by_run_id` alone, and an ordinary
+   * heartbeat path already writes such a row when a run freshly starts a declared dev server,
+   * so this can read TRUE today on a run with zero agent output. `capabilityLimitations` carries
+   * that limit into the operator-facing output, where it cannot be missed by a reader of the
+   * verdict alone.
    */
   readonly capabilityProven: boolean;
   readonly capabilityFailures: readonly E7VerifyFailure[];
+  /**
+   * The MEASURED limits of `capabilityProven`, rendered beside every verdict and carried in
+   * `verdict-json` so the limitation cannot be dropped by quoting the machine-readable line.
+   *
+   * A DISCLOSURE, NOT A CONTROL. Nothing here filters, rejects, weights or corrects a count;
+   * the predicate and both arms are exactly what they were. See `E7_CAPABILITY_LIMITATIONS`.
+   */
+  readonly capabilityLimitations: readonly string[];
   readonly observed: E7VerifyObserved;
 }
+
+/**
+ * What a `capabilityProven` verdict does NOT establish — printed with every verdict.
+ *
+ * ★ WHY THIS EXISTS AND WHY IT IS ONLY TEXT. E7-F020 (open, HIGH, owned by CLI-008) measured
+ * that arm 2 of clause 6 — `eq(taskOutputs.createdByRunId, run.id)`, the whole predicate, at
+ * `e7-distributed-run-verifier-store.ts:213-216` — applies NO provenance filter, and that an
+ * ordinary internal heartbeat path writes exactly such a row before the run is handed off:
+ * `ensureRuntimeServicesForRun` (`heartbeat.ts:4524`) → `startLocalRuntimeService`
+ * (`workspace-runtime.ts:2649`) → `persistRuntimeServiceRecord` (`:2383`, at status "starting",
+ * BEFORE readiness) → `emitRuntimeServiceTaskOutput` → `createdByRunId = run.id`
+ * (`task-output-emitters.ts:113`). So one declared dev server, started fresh, clears arm 2 with
+ * zero agent output, no forgery and no authenticated caller.
+ *
+ * The obvious remedy — delete or narrow arm 2 — is NOT taken here and must not be taken here.
+ * E7-F015's register entry records that dropping the task-output arm and widening the artifact
+ * arm is REFUTED (input staging already commits `job_artifacts` rows on the same job id), and
+ * E7-F020 states the residual any real fix has to meet: arm 2 must count only rows whose
+ * provenance is a distributed agent's OUTPUT. Nothing in the current schema can express that.
+ * Until something can, the honest move is for the verifier to state its own limit rather than
+ * print a verdict whose reader has to already know the finding. That is all this is: the
+ * verdict is unchanged, the counts are unchanged, and a reader is told what the green means.
+ *
+ * ★ ARM 2 ONLY, deliberately. Arm 1 (committed `workspace_patch` `job_artifacts`) is a different
+ * arm with a different open question (E7-F019 — `kind` is the caller's declaration) and is
+ * short-circuited entirely by `if (run.distributedJobId)` at `…-store.ts:200`. Blurring the two
+ * would make this text unfalsifiable, which is the failure mode a disclosure is most prone to.
+ */
+export const E7_CAPABILITY_LIMITATIONS: readonly string[] = [
+  "E7-F020 (open, HIGH): the task_outputs arm — arm 2 of clause 6, `created_by_run_id = <this run>`",
+  "at e7-distributed-run-verifier-store.ts:213-216 — carries NO provenance filter, so it is",
+  "satisfiable with ZERO agent output: an ordinary heartbeat path writes exactly such a row when a",
+  "run freshly starts a declared dev server (heartbeat.ts:4524 ensureRuntimeServicesForRun ->",
+  "task-output-emitters.ts:113), before the distributed handoff. A PROVEN verdict reached through",
+  "arm 2 therefore does not by itself establish that anything the AGENT produced reached AoA.",
+  "This text is a DISCLOSURE, not a control: nothing here filters, rejects or corrects a count, and",
+  "no arm, predicate or conjunct was changed to add it. Confirm provenance before citing a green.",
+  "Scope: arm 2 ONLY. Arm 1 (committed workspace_patch job_artifacts) has a different open question",
+  "(E7-F019) and is not what this says.",
+];
 
 export interface E7DistributedRunVerifier {
   verify(input: {
@@ -347,6 +406,7 @@ export function createE7DistributedRunVerifier(deps: {
           failures: [],
           capabilityProven: false,
           capabilityFailures: [],
+          capabilityLimitations: E7_CAPABILITY_LIMITATIONS,
           observed: EMPTY_OBSERVED,
         };
       }
@@ -521,6 +581,8 @@ export function createE7DistributedRunVerifier(deps: {
         failures,
         capabilityProven: capabilityFailures.length === 0,
         capabilityFailures,
+        // Reported beside the verdict, never folded into it — see E7_CAPABILITY_LIMITATIONS.
+        capabilityLimitations: E7_CAPABILITY_LIMITATIONS,
         observed,
       };
     },
@@ -560,6 +622,16 @@ export function e7VerifyExitCode(
  * first line cannot come away believing capability was proven when it was not. The CAPABILITY
  * block below it prints on pass and fail alike — an unproven capability is exactly when it
  * matters, so it is never suppressed.
+ *
+ * ★ W7U2 — and a PROVEN capability is the other time it matters. The block now also prints
+ * `E7_CAPABILITY_LIMITATIONS`, so the rendered verdict states what its own green does not
+ * establish (E7-F020) instead of relying on the reader having read the finding. Text only:
+ * no arm, predicate, conjunct or count is touched.
+ *
+ * ★ W7U2-FIX — and the HEADLINE had to stop contradicting that block. Printing a caveat under
+ * a title that still asserted "output from the agent reached AoA" left the false claim in the
+ * one line a reader is most likely to quote. The PROVEN branch of the `capability` ternary now
+ * states the COUNT it made and defers to the limit below it; see the comment at that branch.
  */
 export function formatVerifyResult(result: E7VerifyResult): string {
   const lines: string[] = [];
@@ -571,8 +643,17 @@ export function formatVerifyResult(result: E7VerifyResult): string {
   const mechanism = result.ok
     ? "PASS (mechanism) — distributed journey corroborated"
     : "FAIL (mechanism) — does NOT prove the distributed journey";
+  // ★ W7U2-FIX — THE HEADLINE MAY NOT ASSERT WHAT THE CAVEAT DISCLAIMS. This branch used to
+  // read "CAPABILITY: PROVEN — output from the agent reached AoA", ten lines above a caveat
+  // explaining that arm 2 is satisfiable with NO agent output (E7-F020). A reader who stops at
+  // the headline — which is what a headline is for — took away the false half. So the PROVEN
+  // branch now states what was actually COUNTED (produced-output rows attributed to this run)
+  // and points DOWN to the limit instead of contradicting it. Still PROVEN, not "meaningless"
+  // and not "unproven": something was counted; what is unestablished is that it came from the
+  // agent. TEXT ONLY — `capabilityProven` and both arm counts are untouched.
   const capability = result.capabilityProven
-    ? "CAPABILITY: PROVEN — output from the agent reached AoA"
+    ? "CAPABILITY: PROVEN — produced-output rows were counted for this run;" +
+      " this does NOT by itself establish they came from the agent (see 'limit of this verdict' below)"
     : "CAPABILITY: NOT PROVEN — nothing the agent produced reached AoA";
   lines.push(`  RESULT: ${mechanism} | ${capability}`);
   const o = result.observed;
@@ -587,6 +668,23 @@ export function formatVerifyResult(result: E7VerifyResult): string {
   );
   for (const f of result.capabilityFailures) {
     lines.push(`    clause ${f.clause}: ${f.reason}`);
+  }
+  // ALWAYS printed, PROVEN and NOT PROVEN alike, for the same reason the capability line is:
+  // the verdict travels without its context otherwise. A limit stated only when the verdict is
+  // green is a limit nobody reads until it is the thing being quoted.
+  if (result.capabilityLimitations.length > 0) {
+    lines.push("    limit of this verdict (a DISCLOSURE — nothing below is enforced):");
+    for (const line of result.capabilityLimitations) {
+      lines.push(`      ${line}`);
+    }
+    // The sharpening: name it when THIS run's arm 2 actually carries weight. Reads the count,
+    // computes nothing — `o.producedArtifacts` is exactly what `countProducedOutputs` returned.
+    if (o.producedArtifacts.taskOutputs > 0) {
+      lines.push(
+        `      ^ THIS RUN: arm 2 is non-zero (task_outputs=${o.producedArtifacts.taskOutputs}), so the above is` +
+          " live here — confirm each row's provenance before citing this verdict.",
+      );
+    }
   }
   if (o.suspectedHeuristicHits.length > 0) {
     lines.push("    advisory heuristic hits (NOT a gate — likely session ids/hashes):");
