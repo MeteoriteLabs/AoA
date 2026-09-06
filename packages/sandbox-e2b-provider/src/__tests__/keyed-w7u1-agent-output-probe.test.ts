@@ -70,6 +70,7 @@ import {
 import {
   classifyProbeAArm,
   formatVerdict,
+  isListingUsable,
   packDisposition,
   redactSecrets,
   verdictProbeA,
@@ -77,6 +78,7 @@ import {
   verdictProbeC,
   withPermissionPosture,
 } from "../../../../scripts/lib/w7u1-agent-output-probe.mjs";
+import { E2bTransportNotFoundError } from "../transport.js";
 import type { E2bStagedFile, E2bTransport } from "../transport.js";
 
 const HAS_KEY = typeof process.env.E2B_API_KEY === "string" && process.env.E2B_API_KEY.length > 0;
@@ -232,15 +234,46 @@ async function run(
   }
 }
 
-/** Read a path back. `found:false` for a missing file — never a throw. */
-async function readBack(
-  t: E2bTransport,
-  sandboxId: string,
-  path: string,
-): Promise<{ found: boolean; content: string | null; bytes: number; detail: string }> {
+/** How a read terminated. See READ_ERROR_KINDS in the pure core. */
+type ReadErrorKind = "not-found" | "faulted";
+
+interface ReadBack {
+  readonly found: boolean;
+  readonly content: string | null;
+  readonly bytes: number;
+  readonly detail: string;
+  /** `null` when the read SUCCEEDED. */
+  readonly errorKind: ReadErrorKind | null;
+}
+
+/**
+ * ★★★ THE READ CHANNEL IS CLASSIFIED, NOT FLATTENED.
+ *
+ * This function used to catch EVERY error and answer `found:false`, which made a
+ * transport fault during the readback indistinguishable from "the agent wrote nothing".
+ * That is not hypothetical: a reviewer reproduced a transport read fault reporting as
+ * `NO — a1-did-not-write-and-the-posture-is-the-cause`, disposition `measured` — an
+ * apparatus failure delivered to the operator as a capability answer, on the one
+ * authorised run that is supposed to settle the question.
+ *
+ * The exec-side controls do not cover it. A0 proves the write+read path at the moment A0
+ * ran; A1's readback is LATER, not concurrent, and a fault that first appears there is
+ * outside A0's scope entirely. So the read gets its own channel.
+ *
+ * `real-transport.ts:238-249` already draws the line: `readFile` raises
+ * `E2bTransportNotFoundError` for a genuine missing sandbox-or-path and rethrows every
+ * other error verbatim (`mock-transport.ts:203` raises the same class). So the key is
+ * `err instanceof E2bTransportNotFoundError` — nothing is inferred from a message.
+ */
+function classifyReadError(err: unknown): ReadErrorKind {
+  return err instanceof E2bTransportNotFoundError ? "not-found" : "faulted";
+}
+
+/** Read a path back. Never throws; a failure is REPORTED with its kind. */
+async function readBack(t: E2bTransport, sandboxId: string, path: string): Promise<ReadBack> {
   try {
     const data = await t.readFile(sandboxId, path);
-    return { found: true, content: DEC.decode(data), bytes: data.byteLength, detail: "" };
+    return { found: true, content: DEC.decode(data), bytes: data.byteLength, detail: "", errorKind: null };
   } catch (err) {
     const e = err as { name?: unknown; message?: unknown };
     return {
@@ -248,6 +281,7 @@ async function readBack(
       content: null,
       bytes: 0,
       detail: `${typeof e.name === "string" ? e.name : "Error"}: ${typeof e.message === "string" ? e.message : String(err)}`,
+      errorKind: classifyReadError(err),
     };
   }
 }
@@ -275,12 +309,27 @@ async function probeB(): Promise<Verdict> {
     // E2B files API, not a command, so "before any exec" is literal here. The
     // directory enumeration below IS the sandbox's first command, and is reported as
     // context rather than as the load-bearing observation.
-    const candidates: { path: string; exists: boolean; bytes: number }[] = [];
+    // ★ EACH CANDIDATE CARRIES ITS READ CHANNEL. A path whose read FAULTED is not a path
+    // that is absent, and counting it as absent would feed `template-prefills-nothing`
+    // with a path nobody actually looked at. `verdictProbeB` refuses the NO when any
+    // candidate read faulted.
+    const candidates: {
+      path: string;
+      exists: boolean;
+      bytes: number;
+      errorKind: ReadErrorKind | null;
+      detail: string;
+    }[] = [];
     for (const path of CANDIDATE_OUTPUT_PATHS) {
       const r = await readBack(t, sandboxId, path);
-      candidates.push({ path, exists: r.found, bytes: r.bytes });
+      candidates.push({ path, exists: r.found, bytes: r.bytes, errorKind: r.errorKind, detail: safe(r.detail, 160) });
       // eslint-disable-next-line no-console
-      console.log(`[w7u1/probe-b] PRE-EXEC ${path}: ${r.found ? `EXISTS (${r.bytes} bytes)` : `absent (${safe(r.detail, 160)})`}`);
+      console.log(
+        `[w7u1/probe-b] PRE-EXEC ${path}: ` +
+          (r.found
+            ? `EXISTS (${r.bytes} bytes)`
+            : `${r.errorKind === "faulted" ? "READ FAULTED" : "absent"} (${safe(r.detail, 160)})`),
+      );
     }
 
     const entries: string[] = [];
@@ -290,9 +339,14 @@ async function probeB(): Promise<Verdict> {
       const res = await run(t, sandboxId, "sh", ["-c", 'ls -A "$1" 2>&1 || true', "sh", dir], {
         timeoutMs: SHELL_TIMEOUT_MS,
       });
-      if (res.channel === "threw") {
+      // ★ A LISTING THAT DID NOT RETURN IS NOT AN EMPTY DIRECTORY. `threw` was handled
+      // here before; `timedOut` (and `not-run` / `binary-missing`) fell through and left
+      // `listingOk` true, so probe B could report `template-prefills-nothing` on the
+      // strength of a command that never finished. Only `returned` is evidence — see
+      // `isListingUsable`.
+      if (!isListingUsable(res.channel)) {
         listingOk = false;
-        detail += `${dir}: ${safe(res.detail, 200)}; `;
+        detail += `${dir}: channel=${res.channel} ${safe(res.detail, 200)}; `;
         continue;
       }
       const names = res.stdout
@@ -487,7 +541,7 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
       });
       if (inv === null) throw new Error(`buildSandboxInvocation returned null for ${spec.adapterType}`);
 
-      // ★ A2 IS THE ONLY ARM THAT VARIES THE ARGV, AND IT VARIES IT HERE — INSIDE THE
+      // ★ A2 IS THE ONLY ARM THAT VARIES THE INVOCATION, AND IT VARIES IT HERE — INSIDE THE
       // PROBE. `task-run-sandbox-invocation.ts` is not touched. `withPermissionPosture`
       // THROWS rather than returning the script unchanged, so A2 can never silently
       // become a second copy of A1.
@@ -504,6 +558,7 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
       console.log(
         `[w7u1/${probeId}] ${label} posture=${String(applyPosture)} channel=${exec.channel} ` +
           `exit=${String(exec.exitCode)} preExisted=${String(preExisted)} file=${String(file.found)} ` +
+          `readErrorKind=${String(file.errorKind)} ` +
           `stdout=${JSON.stringify(safe(exec.stdout, 900))} stderr=${JSON.stringify(safe(exec.stderr, 600))}`,
       );
       return classifyProbeAArm({
@@ -511,7 +566,7 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
         nonce,
         targetPreExisted: preExisted,
         execution: { channel: exec.channel, exitCode: exec.exitCode, detail: safe(exec.detail, 200) },
-        file: { found: file.found, content: file.content },
+        file: { found: file.found, content: file.content, errorKind: file.errorKind, detail: safe(file.detail, 200) },
       });
     }
 
@@ -537,7 +592,12 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
       nonce: a0Nonce,
       targetPreExisted: a0Pre,
       execution: { channel: a0Exec.channel, exitCode: a0Exec.exitCode, detail: safe(a0Exec.detail, 200) },
-      file: { found: a0File.found, content: a0File.content },
+      file: {
+        found: a0File.found,
+        content: a0File.content,
+        errorKind: a0File.errorKind,
+        detail: safe(a0File.detail, 200),
+      },
     });
 
     const a1 = await agentArm("A1", writePrompt(target("A1"), nonceFor("A1")), false);
@@ -565,7 +625,12 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
 const ARM_SPECS: ArmSpec[] = [
   { label: "A0", what: "HARNESS CONTROL — plain shell writes the file; we read it back" },
   { label: "A1", what: "THE QUESTION — the exact production argv, no permission posture" },
-  { label: "A2", what: "THE DIFFERENTIAL — same prompt, permission posture ADDED inside the probe" },
+  {
+    label: "A2",
+    what:
+      "THE DIFFERENTIAL — permission posture ADDED inside the probe. The same prompt TEMPLATE as A1, " +
+      "differing only in the two lines naming this arm's own target path and nonce (arm separation, as A0 needs)",
+  },
   { label: "A3", what: "NEGATIVE CONTROL — a prompt that forbids writing; a file here kills attribution" },
 ];
 
@@ -631,4 +696,75 @@ describeKeyed("W7U1 — the output probe pack, against REAL E2B", () => {
     // caps the job at 60 minutes; this budget sits inside it.
     50 * 60 * 1000,
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE READ CHANNEL, PROVEN WITHOUT A KEY
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ★★★ THIS BLOCK IS NOT `describeKeyed`. Everything else in this file needs a real
+// sandbox; the read-channel classification does not, and it is exactly the code whose
+// absence turned a transport read fault into
+// `NO — a1-did-not-write-and-the-posture-is-the-cause` / disposition `measured`. The
+// pure core's own suite proves what a `faulted` kind DOES to a verdict; what it cannot
+// reach is the WIRING — that `readBack` produces the kind at all, and keys it off the
+// transport's error class rather than a message. That is proven here, on every PR, in
+// the same `verify` job as the rest of this package.
+
+describe("W7U1 — readBack classifies the read channel (no key required)", () => {
+  const stub = (readFile: (sandboxId: string, path: string) => Promise<Uint8Array>): E2bTransport =>
+    ({ readFile }) as unknown as E2bTransport;
+
+  it("a genuine missing path is 'not-found' — a negative result stays admissible", async () => {
+    const r = await readBack(
+      stub(async () => {
+        throw new E2bTransportNotFoundError("sbx-1:/home/user/x.txt");
+      }),
+      "sbx-1",
+      "/home/user/x.txt",
+    );
+    expect(r.found).toBe(false);
+    expect(r.errorKind).toBe("not-found");
+    // POSITIVE CONTROL: a not-found read still classifies as a real negative.
+    expect(classifyProbeAArm({
+      label: "A1",
+      nonce: "N",
+      targetPreExisted: false,
+      execution: { channel: "returned", exitCode: 0 },
+      file: { found: r.found, content: r.content, errorKind: r.errorKind, detail: r.detail },
+    }).state).toBe("did-not-write");
+  });
+
+  it("ANY other throw is 'faulted', and the arm becomes indeterminate rather than a negative", async () => {
+    const r = await readBack(
+      stub(async () => {
+        throw new Error("ECONNRESET: the e2b files channel dropped");
+      }),
+      "sbx-1",
+      "/home/user/x.txt",
+    );
+    expect(r.found).toBe(false);
+    expect(r.errorKind).toBe("faulted");
+    expect(r.detail).toContain("ECONNRESET");
+    const arm = classifyProbeAArm({
+      label: "A1",
+      nonce: "N",
+      targetPreExisted: false,
+      execution: { channel: "returned", exitCode: 0 },
+      file: { found: r.found, content: r.content, errorKind: r.errorKind, detail: r.detail },
+    });
+    expect(arm.state).toBe("indeterminate");
+    expect(arm.cause).toBe("read-faulted");
+  });
+
+  it("a successful read carries no error kind", async () => {
+    const r = await readBack(
+      stub(async () => new TextEncoder().encode("W7U1-NONCE\n")),
+      "sbx-1",
+      "/home/user/x.txt",
+    );
+    expect(r.found).toBe(true);
+    expect(r.errorKind).toBeNull();
+    expect(r.content).toContain("W7U1-NONCE");
+  });
 });

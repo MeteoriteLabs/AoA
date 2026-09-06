@@ -6,9 +6,11 @@ name: Keyed E2B — W7U1 output probe pack
 #   PROBE A (decisive)  Can a real `claude` / `codex`, invoked under the EXACT
 #                       PRODUCTION ARGV (`buildSandboxInvocation`), write a file inside
 #                       the sandbox at all? With four arms: A0 harness control, A1 the
-#                       production argv, A2 the same prompt with the permission posture
-#                       added INSIDE the probe, A3 a negative control that forbids
-#                       writing.
+#                       production argv, A2 the same prompt TEMPLATE with the permission
+#                       posture added INSIDE the probe (A1 and A2 differ additionally on
+#                       the two lines naming each arm's own target path and nonce — arm
+#                       separation, exactly as A0's path requires), A3 a negative control
+#                       that forbids writing.
 #   PROBE B             Does the configured TEMPLATE already pre-fill a candidate output
 #                       path? If it does, every location-based output convention is
 #                       satisfiable with no agent at all — E7-F020's class, with an
@@ -36,7 +38,9 @@ name: Keyed E2B — W7U1 output probe pack
 #     gh workflow run keyed-e2b-w7u1-output-probe.yml --ref docs/replatform-program
 #     # if that 404s:
 #     echo "W7U1 probe pack run #1 (<date>): <why>" >> .github/keyed-e2b-w7u1-output-probe-trigger
-#     git commit -am "chore(w7u1): fire the output probe pack" && git push
+#     # `-am` cannot stage a file git has never seen, and this one does not exist yet:
+#     git add .github/keyed-e2b-w7u1-output-probe-trigger
+#     git commit -m "chore(w7u1): fire the output probe pack" && git push
 #
 # Full operator instructions, including cost and how to read each three-state result:
 #   docs/replatform/epics/E7-coding-e2b/tickets/W7U1-output-probe-runbook.md
@@ -53,6 +57,9 @@ on:
   workflow_dispatch:
     inputs:
       e2b_template:
+        # NOTE: dispatch-only. A `push` event carries no inputs, so the push route below
+        # always runs bare "base" — see the runbook's §6 row for
+        # `template-has-no-node-runtime`.
         description: E2B sandbox template alias. Empty = bare "base".
         required: false
         default: ""

@@ -26,6 +26,7 @@ import {
   REDACTION_MARKER,
   classifyProbeAArm,
   countOccurrences,
+  isListingUsable,
   packDisposition,
   redactSecrets,
   verdictProbeA,
@@ -189,7 +190,11 @@ const arm = (over) => ({
   nonce: NONCE,
   targetPreExisted: false,
   execution: { channel: "returned", exitCode: 0 },
-  file: { found: false, content: null },
+  // `errorKind: "not-found"` is the DEFAULT because that is what an ordinary absent file
+  // looks like coming out of `readBack`: the transport raised `E2bTransportNotFoundError`
+  // and the read was sound. A `faulted` kind is the exceptional case, and the tests below
+  // pin that it can never produce a negative.
+  file: { found: false, content: null, errorKind: "not-found", detail: "" },
   ...over,
 });
 
@@ -230,6 +235,116 @@ test("a stall and a clean non-zero exit are BOTH negatives, and they are disting
   assert.equal(stalled.cause, "stalled");
   assert.equal(exited.cause, "exited-1");
   assert.notEqual(stalled.cause, exited.cause, "a hang and an exit must not collapse into one answer");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The READ channel — an apparatus fault must never become a capability answer
+//
+// ★★★ THE DEFECT THIS PINS. `readBack` used to catch EVERY error and answer
+// `found:false`, so a transport read fault was byte-identical to "the agent wrote
+// nothing". A reviewer reproduced it: a read fault printed as
+// `NO — a1-did-not-write-and-the-posture-is-the-cause`, disposition `measured`.
+//
+// ★★ THE EXEC-SIDE CONTROLS DO NOT COVER IT. A0's success is temporally PRIOR to A1's
+// readback, not concurrent with it, so a fault that first appears during A1's read is
+// outside A0's scope. The read needed its own channel, and this is where it is proven.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("a FAULTED read is indeterminate — a broken read must never become 'the agent did not write'", () => {
+  const c = classifyProbeAArm(
+    arm({ file: { found: false, content: null, errorKind: "faulted", detail: "Error: ECONNRESET" } }),
+  );
+  assert.equal(
+    c.state,
+    "indeterminate",
+    "a read that FAILED establishes nothing about the file; reporting it as a negative is an apparatus " +
+      "failure printed as a capability answer",
+  );
+  assert.equal(c.cause, "read-faulted");
+  assert.ok(c.detail.includes("ECONNRESET"), "the fault's own detail must survive into the verdict");
+});
+
+test("a faulted read on A1 makes PROBE A inconclusive, and the pack RED", () => {
+  const v = verdictProbeA({
+    a0: wrote("A0"),
+    a1: classifyProbeAArm(arm({ file: { found: false, content: null, errorKind: "faulted", detail: "socket hang up" } })),
+    a2: wrote("A2"),
+    a3: didNot("A3", "exited-0"),
+  });
+  assert.equal(v.state, "inconclusive");
+  assert.equal(
+    v.reason,
+    "a1-read-faulted",
+    "the faulted read must reach the operator as its OWN reason, not as a posture conviction",
+  );
+  const d = packDisposition([v]);
+  assert.equal(d.exitCode, 1);
+  assert.equal(d.disposition, "inconclusive");
+});
+
+// ★ THE POSITIVE CONTROL FOR THE ABOVE. If BOTH this and the two tests above go red under
+// the same edit, the fix has made every negative inconclusive — which destroys the whole
+// point of a pack chartered to be able to answer NO.
+test("a genuine NOT-FOUND read still yields a clean NO, and the pack stays MEASURED", () => {
+  const a1 = classifyProbeAArm(arm({ execution: { channel: "timedOut", exitCode: null } }));
+  assert.equal(a1.state, "did-not-write");
+  const v = verdictProbeA({ a0: wrote("A0"), a1, a2: wrote("A2"), a3: didNot("A3", "exited-0") });
+  assert.equal(v.state, "no");
+  assert.equal(v.reason, "a1-did-not-write-and-the-posture-is-the-cause");
+  const d = packDisposition([v]);
+  assert.equal(d.exitCode, 0);
+  assert.equal(d.disposition, "measured");
+});
+
+test("probe B refuses the NO when a candidate's read FAULTED — an unread path is not an absent path", () => {
+  const v = verdictProbeB({
+    listingOk: true,
+    entries: [".bashrc"],
+    candidates: [
+      { path: "/home/user/.aoa-run-output.jsonl", exists: false, bytes: 0, errorKind: "not-found", detail: "" },
+      { path: "/home/user/output.txt", exists: false, bytes: 0, errorKind: "faulted", detail: "Error: 502" },
+    ],
+  });
+  assert.equal(v.state, "inconclusive");
+  assert.equal(v.reason, "candidate-read-faulted");
+  assert.ok(v.detail.includes("/home/user/output.txt"));
+});
+
+// ★ THE POSITIVE CONTROL FOR THE ABOVE, again in the same run.
+test("probe B's NO survives when every candidate was genuinely NOT FOUND", () => {
+  const v = verdictProbeB({
+    listingOk: true,
+    entries: [".bashrc"],
+    candidates: [
+      { path: "/home/user/.aoa-run-output.jsonl", exists: false, bytes: 0, errorKind: "not-found", detail: "" },
+    ],
+  });
+  assert.equal(v.state, "no");
+  assert.equal(v.reason, "template-prefills-nothing");
+});
+
+// ★★ AND THE YES IS DELIBERATELY NOT GATED. An OBSERVED prefill is a positive that an
+// unread neighbour cannot unmake, and `inconclusive` means "run me again" — a confirmed
+// prefill is not made truer by a second run. It is the NO, which asserts something about
+// paths we did not see, that an unread path invalidates.
+test("probe B still says YES when a path was READ and found to exist, even beside a faulted read", () => {
+  const v = verdictProbeB({
+    listingOk: true,
+    entries: [".aoa-run-output.jsonl"],
+    candidates: [
+      { path: "/home/user/.aoa-run-output.jsonl", exists: true, bytes: 12, errorKind: null, detail: "" },
+      { path: "/home/user/output.txt", exists: false, bytes: 0, errorKind: "faulted", detail: "Error: 502" },
+    ],
+  });
+  assert.equal(v.state, "yes");
+  assert.equal(v.reason, "template-prefills-a-candidate-output-path");
+});
+
+test("ONLY a `returned` listing is evidence — a listing that TIMED OUT is not an empty directory", () => {
+  assert.equal(isListingUsable("returned"), true);
+  for (const channel of ["timedOut", "threw", "not-run", "binary-missing"]) {
+    assert.equal(isListingUsable(channel), false, `a ${channel} listing must not count as a look at the directory`);
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

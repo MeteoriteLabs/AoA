@@ -97,26 +97,37 @@ Every probe reports one of three states. **`no` is a result and the lane stays G
 > bad key, a template change or an outage — and the one authorised run would have bought an ambiguity
 > instead of an answer. A probe that can only pass is worthless.
 
-The summary looks like this:
+> ### ⚠ ILLUSTRATIVE FORMAT ONLY — the pack has never been fired and these verdicts are invented
+>
+> **No W7U1 run exists.** The block below shows the SHAPE of the report and nothing else: every
+> verdict, reason and disposition is a `<placeholder>`, not a measurement, and none of them should be
+> read as a prediction of what the run will say. (An earlier draft of this section printed specific
+> values here — including a decisive `NO` for probe A — which an operator could have mistaken for a
+> result, and which also contradicted §3's own statement that the claude arm cannot answer until
+> `ANTHROPIC_API_KEY` exists.) **When a run happens, replace this block with its real summary and
+> name the run id it came from.**
 
 ```
 ================ W7U1 OUTPUT PROBE PACK — RESULT ================
-run nonce: W7U1-...   template: base
+run nonce: W7U1-<...>   template: <template>
 
 Probe A arms:
   A0  HARNESS CONTROL — plain shell writes the file; we read it back
   A1  THE QUESTION — the exact production argv, no permission posture
-  A2  THE DIFFERENTIAL — same prompt, permission posture ADDED inside the probe
+  A2  THE DIFFERENTIAL — permission posture ADDED inside the probe. The same prompt TEMPLATE as
+      A1, differing only in the two lines naming this arm's own target path and nonce
   A3  NEGATIVE CONTROL — a prompt that forbids writing; a file here kills attribution
 
-PROBE B: NO — template-prefills-nothing
-    ...
-PROBE C: YES — both-streams-delivered
-    ...
-PROBE A/claude_local: NO — a1-did-not-write-and-the-posture-is-the-cause
-    ...
+PROBE B: <STATE> — <reason>
+    <detail>
+PROBE C: <STATE> — <reason>
+    <detail>
+PROBE A/claude_local: <STATE> — <reason>
+    <detail>
+PROBE A/codex_local: <STATE> — <reason>
+    <detail>
 
-DISPOSITION: measured — B=no C=yes A/claude_local=no A/codex_local=no
+DISPOSITION: <measured|inconclusive> — <probe>=<state> ...
 ```
 
 ### Probe A — can it write? (the decisive one)
@@ -124,19 +135,23 @@ DISPOSITION: measured — B=no C=yes A/claude_local=no A/codex_local=no
 | Verdict | What it means | What to do |
 |---|---|---|
 | `YES — a1-wrote-under-production-argv` | The **exact production argv, with no permission flag**, produced the requested file. Reading a convention path out of a sandbox is already solved (`transport.readFile`), so an output mechanism anchored on the agent writing a known path is **feasible today**. | Hand this to whoever owns the output question. |
-| `NO — ...-and-the-posture-is-the-cause` | A1 (production argv) did not write; A2 (**same prompt**, permission flag added) did. **This is a product finding**, not merely an input to a later ticket: the four script literals at `task-run-sandbox-invocation.ts:181-206` carry no permission posture, and the shipped product's own code says one is required for an unattended run. | File it against the invocation module. An output mechanism is feasible *once the posture is fixed*. |
+| `NO — ...-and-the-posture-is-the-cause` | A1 (production argv) did not write; A2 (**the same prompt template**, permission flag added) did. A1's and A2's prompts are **not byte-identical**: each names its own target path and its own nonce, on two lines, for the same reason A0 needs its own path — a file one arm left behind must never read back as another arm's success. That separation is the arms' identity, not a second experimental variable, and the permission flag remains the only difference in **how the agent is invoked**. **This is a product finding**, not merely an input to a later ticket: the four script literals at `task-run-sandbox-invocation.ts:181-206` carry no permission posture, and the shipped product's own code says one is required for an unattended run. | File it against the invocation module. An output mechanism is feasible *once the posture is fixed*. |
 | `NO — ...-and-the-posture-is-not-the-cause` | Neither A1 nor A2 wrote. The permission flag is **exonerated**; something else prevents the agent writing. A posture-only fix would not have helped. | Do not schedule a posture fix off this. The blocker is elsewhere and unidentified. |
 | `NO — ...-cause-unattributed` | A1 did not write and A2 could not be read. The NO is sound; the **cause is not established**. | Fix whatever made A2 unreadable (see its `cause`) and re-run. |
 | `INCONCLUSIVE — harness-control-failed` | **A0 failed**: plain shell wrote a file and we could not read it back. The write/read path itself is broken, so A1's empty result attributes to nothing. | The probe is broken, not the product. Nothing may be concluded. |
 | `INCONCLUSIVE — negative-control-violated` | **A3 was violated**: we told the agent *not* to write, named the path, and a file carrying A3's nonce appeared anyway. Something other than the agent is writing at the watched path. | Nothing in probe A may be attributed to the agent. This is E7-F020's class one layer down and is itself worth filing. |
+| `INCONCLUSIVE — a1-read-faulted` | **The readback itself failed**, for a reason that was *not* a genuine "no such file". The transport raises `E2bTransportNotFoundError` for a missing sandbox-or-path and rethrows everything else, so the probe can tell the two apart — and a fault establishes nothing about whether the agent wrote. A0 does **not** cover this: A0's success is *earlier* than A1's readback, not concurrent with it. | Re-run. Nothing about A1 may be concluded, and in particular the posture is neither convicted nor exonerated. |
 | `INCONCLUSIVE — a1-binary-not-runnable` / `cli-install-failed` / `cli-binary-not-on-path` / `template-has-no-node-runtime` | The agent CLI never ran. The experiment **did not happen**. | See §6. |
 | `INCONCLUSIVE — no-model-provider-key` | The adapter's key is not a repo secret. | Add it (§3) and re-run. |
 
 ★ **`no file`, `hung`, and `exited 127` are three different answers and the pack keeps them apart.**
 The `cause` field on each arm says which: `stalled` (no terminal inside 180 s — the shape a
 permission gate takes in `--print` mode), `exited-<n>` (a clean terminal and still no file), or
-`binary-not-runnable` (the experiment never happened). Exit code, stdout and stderr for every arm are
-in the step log, redacted.
+`binary-not-runnable` (the experiment never happened). **And the READ is a fourth channel:**
+`read-faulted` means the target path could not be read at all, which is not the same as reading it and
+finding nothing — collapsing those two is how an apparatus failure gets printed as a capability
+answer. Exit code, stdout, stderr and the read's `errorKind` for every arm are in the step log,
+redacted.
 
 > ★ **A3 runs with the permission posture, mirroring A2 rather than A1.** Under A1's conditions a
 > stalled agent writes nothing whatever it was asked, so "A3 wrote nothing" would be satisfied by the
@@ -149,7 +164,8 @@ in the step log, redacted.
 |---|---|
 | `YES — template-prefills-a-candidate-output-path` | A candidate output path **already exists in a fresh sandbox, before any exec**. Any location-based output convention anchored there is satisfiable **by the template alone, with no agent and no output** — E7-F020's class, with an input no protocol surface can see. The detail line names the paths and their sizes. |
 | `NO — template-prefills-nothing` | None of the candidate paths exist. The detail line still carries the **full directory listing**, because "what IS there" is the useful answer, not "is X there". |
-| `INCONCLUSIVE — enumeration-failed` | The directories could not be listed. |
+| `INCONCLUSIVE — candidate-read-faulted` | At least one candidate path's **read failed** for a reason other than "no such file". Its absence is therefore not established, so `template-prefills-nothing` may not be claimed. Note this gates the **NO only**: a candidate that was read and *found to exist* is an observed positive that an unread neighbour cannot unmake. |
+| `INCONCLUSIVE — enumeration-failed` | The directories could not be listed — including a listing command that **timed out**, which produces no directory contents and is not an empty directory. |
 
 The candidate reads use the E2B **files API and no exec at all**, so "before any exec" is literal.
 The directory listing that follows is the sandbox's first command and is reported as context.
@@ -176,9 +192,11 @@ The directory listing that follows is the sandbox's first command and is reporte
 |---|---|---|
 | Job fails at "Fail if the pack SKIPPED" | `E2B_API_KEY` was empty; the whole pack skipped and measured nothing. | Restore the secret. A skip is never a pass. |
 | `A/claude_local: INCONCLUSIVE — no-model-provider-key` | `ANTHROPIC_API_KEY` is not a repo secret. | §3. |
-| `INCONCLUSIVE — template-has-no-node-runtime` | The bare `base` template has no `node`/`npm`, so the agent CLI cannot be installed. | Re-dispatch with `e2b_template` set to an alias that carries a node runtime. |
+| `INCONCLUSIVE — template-has-no-node-runtime` | The bare `base` template has no `node`/`npm`, so the agent CLI cannot be installed. | Re-run with a template that carries a node runtime — but note **the push route cannot select one.** `E2B_TEMPLATE` comes from `inputs.e2b_template`, and a `push` event supplies no inputs, so the push route always runs bare `base`. Either use `gh workflow run keyed-e2b-w7u1-output-probe.yml --ref docs/replatform-program -f e2b_template=<alias>` (only if dispatch does not 404 — §2), or edit the lane's `E2B_TEMPLATE:` line and append to the trigger file **in the same commit**, which fires the push route with the template you chose. |
 | `INCONCLUSIVE — cli-install-failed` | `npm install -g` failed (plain **and** under `sudo`; the log carries the last 20 lines). Usually network or a package-name change. | Read the log, then re-run. |
 | `INCONCLUSIVE — probe-threw` | The probe itself raised. The redacted error is in the detail line. | This is an apparatus failure; nothing may be concluded from that probe. |
+| An arm's cause is `read-faulted` | The **readback** of the arm's target path faulted (a throw that was not `E2bTransportNotFoundError`). Deliberately **not** read as "the file is absent". | Re-run. |
+| A probe-B reason is `candidate-read-faulted` | Same fault, on one of probe B's pre-exec candidate reads. | Re-run. |
 | An arm's cause is `arm-faulted` | The sandbox or transport faulted mid-arm (a throw that is not a timeout). Deliberately **not** read as "the agent did not write" — that would manufacture a capability answer out of an infrastructure failure. | Re-run. |
 | `gh workflow run` answers 404 | The lane has never run, so GitHub has not indexed it for dispatch. | Use the push route in §2. |
 

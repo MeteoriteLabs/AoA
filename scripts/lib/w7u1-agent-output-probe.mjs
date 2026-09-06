@@ -47,6 +47,41 @@
 /** The three states every probe and every verdict reports. */
 export const PROBE_STATES = Object.freeze(["yes", "no", "inconclusive"]);
 
+/**
+ * How a READ of an in-sandbox path terminated.
+ *
+ * ★★★ THE READ CHANNEL IS A CHANNEL, EXACTLY LIKE THE EXEC CHANNEL. `readBack` used to
+ * catch EVERY throw and answer `found:false`, which made a transport fault during the
+ * readback byte-identical to "the agent wrote nothing" — an apparatus failure printed
+ * to the operator as a capability answer, on the single authorised run that is supposed
+ * to settle the question. The exec-side controls do NOT cover it: A0's success is
+ * temporally PRIOR to A1's readback, not concurrent with it, so a fault that first
+ * appears during A1's read is invisible to A0.
+ *
+ * `real-transport.ts` already draws the line the probe needs: `readFile` raises
+ * `E2bTransportNotFoundError` for a genuine "no such file" and rethrows anything else
+ * verbatim. So the caller keys off `err instanceof E2bTransportNotFoundError`:
+ *
+ *   "not-found" — the path is genuinely absent. A NEGATIVE RESULT is admissible.
+ *   "faulted"   — the read itself failed for any other reason. NOTHING may be concluded
+ *                 about the file, and the arm/probe is INCONCLUSIVE.
+ *   null        — the read succeeded.
+ */
+export const READ_ERROR_KINDS = Object.freeze(["not-found", "faulted"]);
+
+/**
+ * Is a listing command's terminal channel usable as evidence of what is in a directory?
+ *
+ * ★ ONLY `returned` IS. A listing that TIMED OUT produced no directory contents and yet
+ * used to leave `listingOk` true, so probe B would go on to report
+ * `template-prefills-nothing` on the strength of a listing that never happened — the
+ * same "a fault becomes a confident negative" shape as the read channel, one probe over.
+ * `timedOut`, `threw`, `not-run` and `binary-missing` are all "we did not look".
+ */
+export function isListingUsable(channel) {
+  return channel === "returned";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. THE PERMISSION POSTURE — probe A2's ONLY variable
 // ─────────────────────────────────────────────────────────────────────────────
@@ -225,6 +260,21 @@ export function classifyProbeAArm(arm) {
     );
   }
 
+  // ★★★ A FAULTED READ IS NOT AN ABSENT FILE, AND IT IS CHECKED BEFORE ANYTHING ELSE.
+  // See READ_ERROR_KINDS. Everything below this line reasons about a file that is
+  // present or genuinely absent; a read that FAILED establishes neither, and folding it
+  // into "absent" is how an infrastructure fault gets printed as
+  // "the agent did not write". The exec channel cannot stand in for this: a read fault
+  // occurring during A1's readback is later than A0's success and outside its scope.
+  if (file?.errorKind === "faulted") {
+    return at(
+      "indeterminate",
+      "read-faulted",
+      `the arm's target path could not be READ (a fault, not a genuine "no such file"): ${String(file?.detail ?? "")}. ` +
+        "Nothing may be concluded about whether the agent wrote; re-run.",
+    );
+  }
+
   const found = file?.found === true;
   const content = typeof file?.content === "string" ? file.content : "";
   const carriesNonce = found && typeof nonce === "string" && nonce.length > 0 && content.includes(nonce);
@@ -285,7 +335,13 @@ export function classifyProbeAArm(arm) {
  *                          PLAIN SHELL, and read it back. If A0 fails, nothing in A
  *                          means anything: the failure is in the probe.
  *   A1 THE QUESTION        production argv, no permission posture.
- *   A2 THE DIFFERENTIAL    same prompt, same sandbox, same everything, posture ADDED.
+ *   A2 THE DIFFERENTIAL    the same prompt TEMPLATE and the same sandbox, posture ADDED.
+ *                          A1's and A2's prompts are not byte-identical: each names its
+ *                          OWN target path and OWN nonce, for exactly the reason A0 needs
+ *                          its own path — a file one arm left behind must never read back
+ *                          as another arm's success. Those two lines are the arms' identity,
+ *                          not a second experimental variable, and the posture flag remains
+ *                          the only thing that differs about HOW the agent is invoked.
  *   A3 NEGATIVE CONTROL    a prompt that instructs the agent NOT to write. If a file
  *                          appears anyway, something other than the agent is writing at
  *                          that path and probe A can attribute nothing (E7-F020's class).
@@ -341,7 +397,8 @@ export function verdictProbeA(arms) {
     return line(
       "no",
       "a1-did-not-write-and-the-posture-is-the-cause",
-      `A1 (production argv) did not write (${a1.cause}); A2 (the SAME prompt with the permission posture added) DID. ` +
+      `A1 (production argv) did not write (${a1.cause}); A2 (the same prompt template — differing only in the two ` +
+        `lines naming its own target path and nonce, as arm separation requires — with the permission posture added) DID. ` +
         "The absent permission flag is the cause. That is a PRODUCT finding about " +
         "task-run-sandbox-invocation.ts's four script literals, not merely an input to a later ticket.",
     );
@@ -403,6 +460,30 @@ export function verdictProbeB(observation) {
         "A location-based output convention anchored at these is satisfiable by the template alone.",
     };
   }
+  // ★★★ A CANDIDATE WHOSE READ FAULTED IS NOT A CANDIDATE THAT IS ABSENT. Each candidate
+  // is read with the same `readBack` probe A uses, so each carries the same
+  // `errorKind` (READ_ERROR_KINDS). Counting a faulted read as `exists:false` would feed
+  // the "template-prefills-nothing" NO with a path nobody actually looked at.
+  //
+  // ★★ THIS GATES THE NEGATIVE ONLY, AND DELIBERATELY SO. It sits AFTER the
+  // `prefills-a-candidate` branch because that branch is an OBSERVED POSITIVE — a path
+  // that was read and found to exist — and an unread NEIGHBOUR cannot unmake it.
+  // `inconclusive` means "run me again"; a confirmed prefill is not made truer by a
+  // second run. It is the NO, which asserts something about paths we did not see, that
+  // an unread path invalidates.
+  const faultedReads = (candidates ?? []).filter((c) => c.errorKind === "faulted");
+  if (faultedReads.length > 0) {
+    return {
+      probe: "B",
+      state: "inconclusive",
+      reason: "candidate-read-faulted",
+      detail:
+        `${faultedReads.length} candidate output path(s) could not be READ (a fault, not a genuine "no such file"): ` +
+        `${faultedReads.map((c) => `${c.path} (${String(c.detail ?? "no detail")})`).join(", ")}. ` +
+        "Their absence is NOT established, so `template-prefills-nothing` may not be claimed. Re-run.",
+    };
+  }
+
   return {
     probe: "B",
     state: "no",
