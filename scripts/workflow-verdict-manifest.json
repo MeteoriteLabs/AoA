@@ -102,6 +102,12 @@
       "watch": "coverage",
       "note": "The ticket's own proving branch, declared because the workflow declares it. If the branch has been deleted the coverage evaluator is silent — nothing is owed for a branch with no commits — so a dead proving branch costs no false incident."
     },
+    "keyed-e2b-w7u1-output-probe.yml@docs/replatform-program": {
+      "workflow": "keyed-e2b-w7u1-output-probe.yml",
+      "branch": "docs/replatform-program",
+      "watch": "coverage",
+      "note": "W7U1's output probe pack. `coverage`, not `cadence`: the ONLY path in its push filter is `.github/keyed-e2b-w7u1-output-probe-trigger`, so it is correctly silent between operator bumps and a wall-clock rule would misreport it. Unlike its sibling keyed lanes it deliberately does NOT list its own source in `paths` — a run spends model tokens against an operator's authorisation, so an automatic re-fire would consume an authorisation nobody gave (see the lane's header and the W7U1 runbook). It declares no bootstrap branch pattern for the same reason: the pack's own PR must not fire it."
+    },
     "pr.yml@main": {
       "workflow": "pr.yml",
       "branch": "main",

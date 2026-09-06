@@ -364,6 +364,22 @@ jobs:
           node --test scripts/lib/__tests__/guard-inventory.test.mjs
           node scripts/check-guard-inventory.mjs
 
+      - name: W7U1 output-probe decision logic (proven WITHOUT the key)
+        run: |
+          # The keyed lane `keyed-e2b-w7u1-output-probe.yml` runs ONCE, on an operator's
+          # authorisation, against a real E2B sandbox and a real model key. Every
+          # decision it makes - which arm wrote, whether a control held, whether the
+          # verdict is yes/no/inconclusive, and the secret redactor that keeps the key
+          # out of a public log - is a pure function here, exercised on every PR. Without
+          # this step the keyed run would be the FIRST execution of the code that reads
+          # it, which is exactly how the first keyed conformance run produced 8 failures
+          # out of 18 (CLI-realE2B-hardening-result.md).
+          #
+          # It also pins W7U1's PREMISE: that none of the four production script literals
+          # in task-run-sandbox-invocation.ts carries a permission posture. If that ever
+          # stops being true, this step reds and says so - no key required.
+          node --test scripts/lib/__tests__/w7u1-agent-output-probe.test.mjs
+
       - name: Release admission gate (REL-004)
         run: |
           node --test scripts/lib/__tests__/release-manifest.test.mjs
