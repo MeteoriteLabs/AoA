@@ -953,10 +953,17 @@ test("the provider runtime no longer books managed-E2B egress as unlockable with
   // read back by getInfo(). What is unmeasured is ENFORCEMENT, which is W10B's subject.
   //
   // This test pins the correction so nobody restores the unqualified claim silently.
+  //
+  // ★★ THE ASSERTION IS ABOUT THE PROPERTY, NOT ABOUT WHO WROTE IT. Sibling unit W10A
+  // (branch `replatform/w10a-e2b-lockable-premise`) corrects the same comment for the same
+  // reason and files E8-F007 against the stale wording; whichever text survives the merge,
+  // the invariant this guard exists for is identical. Requiring the literal string "W10B"
+  // would have turned a real invariant into a territorial claim that reds the moment the
+  // better-owned text wins — so the pointer clause accepts either unit's id.
   const text = readFileSync(PROVIDER_RUNTIME_PATH, "utf8");
   assert.ok(
-    /W10B/.test(text),
-    "sandbox-provider-runtime.ts must point at W10B where it discusses egress lockability, so the next reader finds the measurement instead of the stale premise",
+    /W10B|E8-F007/.test(text),
+    "sandbox-provider-runtime.ts must point at the measurement (W10B's probe, or E8-F007's finding against the stale wording) where it discusses egress lockability, so the next reader finds it instead of the stale premise",
   );
   assert.ok(
     /SandboxOpts\.network/.test(text),
