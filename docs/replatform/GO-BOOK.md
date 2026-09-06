@@ -471,17 +471,31 @@ nothing checked in arms the dial. Past that point they diverge:
   ★★★ **The census is closed on the sole INSERT site, not on a grep for the field name.** R3's stated
   warrant was `grep -rn createdByRunId server/src --include=*.ts | grep -v __tests__`, and that method
   **provably cannot find its own counterexample** — `routes/task-outputs.ts:54` forwards `req.body`
-  and never writes the token. There is exactly ONE insert into `task_outputs` in the tree,
-  `.insert(taskOutputs)` at **`server/src/services/task-outputs.ts:181`** inside
-  `upsertTaskOutputForIssue`, so every writer passes through it and **enumerating that function's
-  callers closes the set** (`grep -rn "upsertTaskOutputForIssue\|upsertForIssue" server packages ui
+  and never writes the token. There is exactly ONE insert into `task_outputs` in **production
+  source**, `.insert(taskOutputs)` at **`server/src/services/task-outputs.ts:181`** inside
+  `upsertTaskOutputForIssue` (the only others in the tree are three raw-SQL admin fixtures under
+  `server/src/__tests__`), so every row **CREATION** passes through it and **enumerating that
+  function's callers closes the set of writers able to MINT a `created_by_run_id`**
+  (`grep -rn "upsertTaskOutputForIssue\|upsertForIssue" server packages ui
   --include=*.ts --include=*.tsx | grep -v __tests__` → 17 lines, ELEVEN of them call sites).
+
+  ★★★ **It closes the COLUMN too — but for a SECOND reason, not because every writer goes through
+  the chokepoint. Three UPDATE sites do NOT**: `updateMutable` (`task-outputs.ts:237`),
+  `clearSiblingPrimaries` (`:71`) and `workspace-runtime.ts:2890`. None can set the field — the
+  latter two touch only `is_primary`/`updated_at` and `status`/`health_status`/`url`/`updated_at`,
+  and `updateMutable` spreads a body validated by `mutableTaskOutputSchema`, which is **`.strict()`
+  and omits `createdByRunId`** (`packages/shared/src/validators/task-output.ts:55-63`).
+  ★★★ **THE SEAM, and the thing to re-check first:** if `createdByRunId` were ever added to that
+  schema, `PATCH /api/task-outputs/:id` (`routes/task-outputs.ts:87-97`) would become a writer this
+  warrant is **structurally unable to see**, because that route never calls the chokepoint and no
+  caller enumeration would list it. Re-check the schema, not only the callers.
+
   **FOUR of the ten legacy callers can carry a `heartbeat_runs` id; TWO of those can fire:**
 
   | | writer | verdict |
   |---|---|---|
   | 1 | `task-output-emitters.ts:150` ← `heartbeat.ts:5557/:5574` (sandbox preview) | **cannot** — sits after `return; // CLI-006-SUPPRESSION-RETURN` (`:5451`) |
-  | 2 | `routes/output-detection.ts:181/:201` — `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm`, run id from a **path param** | **cannot** — its only feed is written past the same suppression return. ★ **not** E7-F015's route |
+  | 2 | `routes/output-detection.ts:181/:201` — `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm`, run id from a **path param** | **cannot** — its only feed is `heartbeat_runs.detected_outputs`, whose sole **creating** writer (`heartbeat.ts:5907`) is past the same suppression return. That column has three writers, not one: `output-detection.ts:218`/`:286` also write it, but only ever rewrite an EXISTING array element, so neither can mint the array and the verdict is unchanged. ★ **not** E7-F015's route |
   | 3 | ★ `emitRuntimeServiceTaskOutput` (`task-output-emitters.ts:113`) | **CAN**, and fires BEFORE the handoff — **E7-F020** |
   | 4 | ★ `routes/task-outputs.ts:54` — `POST /api/issues/:issueId/outputs`, mounted `app.ts:566`, run id **body-supplied** | **CAN**, for any authenticated company-scoped caller — **E7-F015**, and R3's census omitted it |
 
