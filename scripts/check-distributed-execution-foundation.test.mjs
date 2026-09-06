@@ -2591,3 +2591,28 @@ test("W4U2 M10: a missing findings register fails closed", async (t) => {
   const { errors } = await runCheck(root);
   assert.ok(hasError(errors, "scripts/finding-ownership.json: missing"), report(errors));
 });
+
+// ---------------------------------------------------------------------------
+// W4U2-FIX — the review of PR #364 showed "delivered" was gated by NOTHING for
+// the 29 crossings no open finding names: DE-05 (Critical) could be flipped to
+// "delivered" with deliveryEvidence deleted outright and the checker passed,
+// exit 0. M11 pins that path. It is a prose-presence rule, not a proof: it does
+// not read a test file or execute the control — see checkCrossingDeliveryStatus.
+// ---------------------------------------------------------------------------
+
+test("W4U2 M11: \"delivered\" with no deliveryEvidence is refused, even for a crossing no finding names", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-05", (c) => {
+      c.deliveryStatus = "delivered";
+      delete c.deliveryEvidence;
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'crossing DE-05 is deliveryStatus "delivered" and must carry a non-empty "deliveryEvidence"'),
+    report(errors),
+  );
+  // POSITIVE CONTROL: DE-02 is "delivered" WITH real evidence and must stay green,
+  // or this case would prove only that every delivered crossing now reds.
+  assertDe02Unaffected(errors);
+});

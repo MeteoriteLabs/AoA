@@ -109,9 +109,21 @@ is that distinction, and the foundation checker requires it on every crossing:
 
 | Value | Meaning |
 |---|---|
-| `delivered` | The control is implemented **and** exercised by a test that drives the real mechanism. Refused while an open finding names the crossing. |
+| `delivered` | An **author's assertion**, not a machine-established fact, that the control is implemented and exercised by a test driving the real mechanism. The checker requires only that `deliveryEvidence` prose exists and that no open finding's free text names the crossing id; it reads no test file and executes no control. See the scope limit below. |
 | `not-delivered` | The control was **measured absent**. Must cite a live finding in `scripts/finding-ownership.json`. |
 | `unaudited` | **No delivery audit has been performed.** Read as *unknown*, never as *holds*. |
+
+**Scope limit — do not over-read a `delivered` value.** The refusal that backs
+`delivered` fires only for a crossing whose id appears as a literal token (`DE-nn`) in
+the `reason` or `successor` free text of an open finding in
+`scripts/finding-ownership.json`. Today that is **one crossing out of thirty**; for the
+other twenty-nine the refusal is vacuous and `delivered` is gated only by the presence
+of author-written `deliveryEvidence` prose, which nothing grades. The coupling is also
+editorial rather than structural: rewording a finding so its prose no longer contains
+the crossing id releases the refusal, without changing that finding's status, severity
+or ownership. A `delivered` value is therefore a human claim with a human citation —
+audit the citation; do not infer that the control is implemented, tested or safe from
+the fact that the checker passed.
 
 Most crossings are `unaudited`: the field was introduced by a register-repair change
 that audited two crossings, and an unaudited crossing gets an explicit deferral rather
@@ -157,3 +169,4 @@ residual risk carried forward to a later epic; none may be silently enabled.
 - **Unvalidated gVisor bridge egress.** The deferred gVisor pool is not implemented; unvalidated gVisor bridge egress is excluded until its isolation and egress controls are validated.
 - **Active-active multi-region writes.** DE-27 covers a two-replica shared-admission configuration only; active-active multi-region writes are excluded, and no AoA database is a peer replica of another.
 - **Unattended orphan-output application.** Late, replaced, or orphaned output is quarantined (DE-05, DE-28); unattended orphan-output application into authoritative state is excluded and never automatic.
+- **Sandbox egress to cloud metadata and the control plane (DE-08).** This is a residual risk, **not** a mitigated control, and its absence from this list until 2026-09-06 placed it on the mitigated side by the preamble above. Default-deny egress and blocked metadata/control-plane ranges are **required and absent**: finding `E8-F003` measured, against real E2B sandboxes with a positive control and an apparatus control that both held, that the declared egress allowlist is inert and that `169.254.169.254` answers from inside the guest. Unlike the other entries here, DE-08 is not a deliberate scope exclusion — it is a Critical control that was chartered, whose sole owner ticket (DAT-005) is complete, and that no layer enforces. See `deliveryStatus: not-delivered` on DE-08 and "Required vs delivered" above. Nothing in this document closes it.

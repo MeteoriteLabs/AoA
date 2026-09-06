@@ -189,8 +189,16 @@ const THREAT_CROSSING_REQUIRED_FIELDS = [
 ];
 
 // W4U2 delivery-status vocabulary. Deliberately three values, not two:
-//   delivered     — the control named in `control` is implemented AND exercised by a
-//                   test that drives the real mechanism. A claim, and it is checked.
+//   delivered     — an ASSERTION BY THE AUTHOR that the control named in `control` is
+//                   implemented and exercised by a test that drives the real mechanism.
+//                   THIS SCRIPT DOES NOT VERIFY THAT ASSERTION. It never reads a test
+//                   file, never resolves a test name, and never executes the control.
+//                   All it requires is (a) a non-empty `deliveryEvidence` saying who
+//                   audited it and against what, in prose no machine grades, and (b)
+//                   that no open finding's free text names this crossing id (see the
+//                   scope limit on checkCrossingDeliveryStatus, clause 4). A reader
+//                   must treat "delivered" as a human claim carrying a human's
+//                   citation — NOT as a fact this checker has established.
 //   not-delivered — the control was MEASURED absent. Requires `deliveryEvidence`
 //                   naming at least one live finding that records the measurement.
 //   unaudited     — no delivery audit has been performed for this crossing. Requires
@@ -200,8 +208,10 @@ const THREAT_CROSSING_REQUIRED_FIELDS = [
 //                   to claim delivery would have reproduced, at scale, exactly the
 //                   misrepresentation this field exists to end.
 const THREAT_DELIVERY_STATUSES = new Set(["delivered", "not-delivered", "unaudited"]);
-// The two statuses that must justify themselves in `deliveryEvidence`.
-const THREAT_DELIVERY_EVIDENCE_REQUIRED = new Set(["not-delivered", "unaudited"]);
+// Every status must justify itself in `deliveryEvidence` — including "delivered".
+// This forces a delivery claim to carry prose naming its audit; it does NOT check that
+// the prose is true, that any test exists, or that the named test drives the control.
+const THREAT_DELIVERY_EVIDENCE_REQUIRED = new Set(["delivered", "not-delivered", "unaudited"]);
 // The findings register: the external source both delivery rules resolve against.
 const FINDING_OWNERSHIP_JSON = "scripts/finding-ownership.json";
 // A finding id token (E8-F003, E7-F011, ...) as it appears inside free-text evidence.
@@ -1073,14 +1083,31 @@ async function loadFindingRegister(root, errors) {
 /**
  * W4U2: enforce the delivery-status contract for one crossing.
  *
- * THIS ENFORCES NOTHING ABOUT THE CONTROL ITSELF. It enforces only that the register
- * cannot claim more than the evidence supports:
+ * THIS ENFORCES NOTHING ABOUT THE CONTROL ITSELF, AND IT DOES NOT ESTABLISH THAT A
+ * "delivered" CLAIM IS TRUE. It enforces four syntactic rules over the register text:
  *   1. `deliveryStatus` is one of the three known values.
- *   2. not-delivered / unaudited must carry a non-empty `deliveryEvidence`.
+ *   2. every status — delivered included — must carry a non-empty `deliveryEvidence`.
+ *      The prose is required to EXIST; nothing here grades it. No test file is read,
+ *      no test name is resolved, no control is executed.
  *   3. not-delivered must cite at least one finding id, and every finding id it
  *      cites must exist in the findings register (a dangling citation is refused).
- *   4. delivered is refused while any finding in the register names this crossing.
- *      That is the clause that makes an unearned "delivered" impossible to write.
+ *   4. delivered is refused for a crossing whose id appears as a literal token
+ *      (CROSSING_ID_RE, e.g. "DE-08") in the `reason` or `successor` free text of an
+ *      OPEN finding in scripts/finding-ownership.json.
+ *
+ * SCOPE LIMIT OF CLAUSE 4 — read this before trusting any "delivered" value. Clause 4
+ * constrains ONLY those crossings some open finding's prose happens to name; at the
+ * time of writing that is 1 crossing out of 30. For the other 29 it is vacuous, and
+ * "delivered" is then gated by clause 2 alone — i.e. by the presence of author-written
+ * prose. Two consequences follow, both demonstrated by the review of PR #364:
+ *   - a crossing no finding names can be flipped to "delivered" by writing any
+ *     non-empty evidence string; this checker will pass it.
+ *   - the coupling is EDITORIAL, not structural: rewording a finding so its prose no
+ *     longer contains the crossing's id releases the refusal for that crossing too,
+ *     without changing the finding's status, severity or ownership.
+ * So a "delivered" value in this register is a human assertion with a human citation.
+ * A future unit MUST NOT conclude a control is implemented, tested, or safe because
+ * this guard passed — the guard did not look.
  */
 function checkCrossingDeliveryStatus(c, label, register, errors) {
   const status = c.deliveryStatus;
