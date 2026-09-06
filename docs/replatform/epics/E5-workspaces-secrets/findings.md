@@ -23,11 +23,11 @@ WOULD HAVE TO CHANGE for 'wired'":
 **Measured: "only" is false.** DSK-002's charter names a fence-aware egress path in its outcome
 sentence and in an acceptance clause:
 
-- `docs/replatform/epics/E10-desktop/tickets/DSK-002-design.md:15-16` — Outcome: "…mediate
+- `docs/replatform/epics/E10-desktop/tickets/DSK-002-design.md:15-17` — Outcome: "…mediate
   device-local handles through the DAT-004 broker **plus a fence-aware egress path**."
-- The same file's acceptance clause (4): "The sandbox cannot read OS credential storage or **bypass
-  the broker/proxy**."
-- `DSK-002-design.md:195-198` (D5) makes it concrete: "'Governed' means: committing a patch,
+- The same file's acceptance clause (4), `:25`: "The sandbox cannot read OS credential storage or
+  **bypass the broker/proxy**."
+- `DSK-002-design.md:198-200` (D5) makes it concrete: "'Governed' means: committing a patch,
   activating a device-local credential, or **performing an egress through the broker**."
 
 The symbol E5-6 declares — `createFenceAwareEgressProxy`, `server/src/services/egress-proxy.ts:146` —

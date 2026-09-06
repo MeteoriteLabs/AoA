@@ -2032,7 +2032,7 @@ somewhere" is the assumption that would make this finding wrong.**
   heartbeat-distributed-rollout.ts` returns ONE hit, and it is a comment about an Organization
   **concurrency-slot** budget, not money.
 - The pre-run cost read that DOES survive the handoff is `resolveCheapFallbackModel`
-  (`heartbeat.ts:4791`, before the return). It only downgrades the model in the workload; it caps
+  (`heartbeat.ts:4792`, guarded at `:4791`, both before the return). It only downgrades the model in the workload; it caps
   nothing, and it reads a `cost_events` sum that distributed runs never add to — so it gets
   *quieter*, not louder, the more distributed spend there is.
 
