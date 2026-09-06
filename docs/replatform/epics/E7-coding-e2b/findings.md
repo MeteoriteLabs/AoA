@@ -975,6 +975,13 @@ The chain, verified link by link at `d0b75be19`:
 2. `POST /api/issues/:issueId/outputs` passes `req.body` straight into `svc.upsertForIssue`
    (`server/src/routes/task-outputs.ts:45,53`), and the router is mounted unconditionally
    (`server/src/app.ts:566`) — outside the `distributedExecutionEnabled` gate.
+   ★ **This route, and no other. Added 2026-09-06 (W4U3-R4) because the confusion actually
+   happened.** E7-F018's fact (4) cited `server/src/routes/output-detection.ts:201` under this
+   finding's label for two rounds. That is a DIFFERENT route —
+   `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm`, whose run id is a **path param**,
+   not a body field, and which **cannot** fire for a handed-off run (its only feed is
+   `heartbeat_runs.detected_outputs`, written past the CLI-006 suppression return). E7-F015 is about
+   `server/src/routes/task-outputs.ts:45-53` alone.
 3. `upsertTaskOutputSchema` admits `createdByRunId: z.string().uuid().nullable().optional()`
    (`packages/shared/src/validators/task-output.ts:50`). Only `type` and `title` are required;
    `assetId`, `artifactId` and `executionWorkspaceId` are all optional.
@@ -1304,35 +1311,104 @@ NOT carry over to it. Arm 2 has to be derived on its own terms. Its predicate is
    `createdByRunId: input.output.createdByRunId ?? null`). So even a wired, flag-on caller must ALSO
    pass the heartbeat run id for `= run.id` to match; a bridge write carrying a null run id is
    invisible to arm 2.
-4. **Two of the three legacy writers cannot fire for a handed-off run — the THIRD can, and it fires
-   BEFORE the handoff.** ★★★ **CORRECTED 2026-09-06 (W4U3-R3).** This fact previously read *"the two
-   legacy writers that DO set the column cannot fire for a handed-off run"*, and that enumeration was
-   incomplete in the FAIL-OPEN direction. Kept and corrected rather than deleted, because the wrong
-   version is the sentence that made a green arm 2 look safe to read as capability. The three
-   production writers that can put a `heartbeat_runs` id in the column (`grep -rn createdByRunId
-   server/src --include=*.ts | grep -v __tests__`) are:
-   - **Heartbeat's sandbox-preview emitter** (`createdByRunId: run.id`,
-     `server/src/services/heartbeat.ts:5574`) — **cannot** fire: it sits AFTER
-     `return; // CLI-006-SUPPRESSION-RETURN` (`heartbeat.ts:5451`), so a handed-off run returns
-     before `adapter.execute` and never reaches it.
-   - **The board `POST /api/issues/:issueId/outputs`** (`server/src/routes/output-detection.ts:201`)
-     — a human/board provenance path, not a producer; forgeable, already filed as **E7-F015**.
-   - ★ **`emitRuntimeServiceTaskOutput`** (`server/src/services/task-output-emitters.ts:113`,
-     `createdByRunId: row.startedByRunId ?? null`), reached from
-     `ensureRuntimeServicesForRun` at **`heartbeat.ts:4524`** — which **CAN** fire, and does so
-     **before** the canary block (`:5258-5274`), before the handoff (`:5422`) and before the
-     suppression return (`:5451`), all inside the same `executeRun` (`heartbeat.ts:3061`; no other
-     inner function is declared between `3061` and `5500`, so there is no intervening boundary). The
-     path is `ensureRuntimeServicesForRun` → `startLocalRuntimeService` with
-     `startedByRunId: input.runId` (`workspace-runtime.ts:2649`, defaulted at `:2340`) →
-     `persistRuntimeServiceRecord` (`:1785`) → `emitRuntimeServiceTaskOutput` (`:1821`) →
-     `task_outputs.created_by_run_id = run.id`.
+4. **FOUR legacy writers can put a `heartbeat_runs` id in the column, and TWO of them can fire for a
+   handed-off run.** ★★★ **RE-DERIVED AND CORRECTED 2026-09-06 (W4U3-R4).** Two earlier versions of
+   this fact are kept visible rather than deleted, because a fail-open enumeration is precisely what
+   propagates — this one reached four documents and a machine-checked register before anyone counted
+   it independently. R2 said *"the two legacy writers that DO set the column cannot fire for a
+   handed-off run"* (fail-open). R3 said *"three production writers … two cannot fire, the THIRD
+   can"* — the right shape, the wrong count, and it cited `output-detection.ts:201` under the label
+   *"the board `POST /api/issues/:issueId/outputs`"*, which are **two different routes**.
 
-   So a handed-off run **can** write `task_outputs` under its own run id, and does so on the DEFAULT
-   isolated-workspace configuration whenever the run declares a `workspaceRuntime.services` entry.
-   The consequence — arm 2 reading non-zero for a run with zero agent output — is filed separately as
-   **E7-F020**; what it changes HERE is only the reason arm 2 sits at 0 today, which is the shared
-   blocker (nothing arms the dial), **not** an absence of writers.
+   ★★★ **THE WARRANT — how this census is closed, and how a future reader re-closes it.** R3 closed
+   it with `grep -rn createdByRunId server/src --include=*.ts | grep -v __tests__`. That method
+   **provably cannot find its own counterexample**: `server/src/routes/task-outputs.ts:54` forwards
+   `req.body` into the service and never writes the token `createdByRunId`, so no grep for that token
+   can see it. The census is closed instead **on the sole INSERT site**. There is exactly ONE insert
+   into `task_outputs` anywhere in the tree — `.insert(taskOutputs)` at
+   **`server/src/services/task-outputs.ts:181`**, inside `upsertTaskOutputForIssue` (`:135`). Every
+   writer therefore passes through that one function whether or not it ever names the field, and
+   **enumerating that function's callers closes the set**. Re-close it with:
+
+   ```
+   grep -rn "insert(taskOutputs" server packages --include=*.ts
+   #   -> exactly 1 hit: server/src/services/task-outputs.ts:181
+
+   grep -rniI "insert[[:space:]]\+into[[:space:]]\+\(public\.\)\?task_outputs\|copy[[:space:]]\+task_outputs" \
+        . --exclude-dir=node_modules --exclude-dir=.git | grep -v '^\./docs/\|^\./scripts/'
+   #   -> 3 hits, all server/src/__tests__ admin fixtures. No production raw-SQL insert.
+   #   * The trailing exclusion is REQUIRED and is the durable form: without it, the prose in
+   #     docs/ and E7-F018's register entry match the pattern back at you. Same self-match trap
+   #     E7-F018's own rollout-dial reproduction already documents.
+
+   grep -rn "upsertTaskOutputForIssue\|upsertForIssue" server packages ui \
+        --include=*.ts --include=*.tsx | grep -v __tests__
+   #   -> 17 lines. SIX are not call sites (one import, two declarations, three prose comments);
+   #     the remaining ELEVEN are: the ten legacy callers censused below, plus
+   #     job-output-bridge.ts:303, which is handled by facts (1)-(3) rather than here.
+   ```
+
+   ★ **What that method does NOT cover, stated so the next round does not have to guess.** It finds a
+   literal `.insert(taskOutputs)` and a literal `INSERT INTO` / `COPY` on the table. It would miss a
+   table name assembled at runtime and a database-side trigger or rule. Both were checked separately
+   and are absent at this tip: the only `sql.raw` INSERT in the tree targets `memory_items`
+   (`server/src/services/memory-projection.ts:151`), and the six migrations naming `task_outputs`
+   (`0114`, `0200`, `0213`, `0214`, `0246`, `0247`) contain only DDL, one column `UPDATE`, and
+   `GRANT`/RLS — no row INSERT and no trigger. If either of those becomes false, this census reopens.
+
+   **The chokepoint's callers — eleven production call sites, ten of them legacy.** Four of the ten
+   pass a value capable of being a `heartbeat_runs` id:
+
+   | # | call site | `createdByRunId` | can it fire for a handed-off run? |
+   |---|---|---|---|
+   | 1 | `task-output-emitters.ts:150` (`emitSandboxPreviewTaskOutput`), sole caller `heartbeat.ts:5557` | `run.id` (`heartbeat.ts:5574`) | **No.** It sits AFTER `return; // CLI-006-SUPPRESSION-RETURN` (`heartbeat.ts:5451`), so a handed-off run returns before `adapter.execute` and never reaches it |
+   | 2 | `routes/output-detection.ts:181` — `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm` | `runId`, a **path param** (`:201`) | **No.** Its only feed is `heartbeat_runs.detected_outputs`, whose sole writer (`heartbeat.ts:5907`) is also past the suppression return and additionally reads `adapterResult`, which only `adapter.execute` assigns. ★ This is **not** the route R3 labelled it — see below |
+   | 3 | ★ `task-output-emitters.ts:113` (`emitRuntimeServiceTaskOutput`) | `row.startedByRunId` | **YES**, and it fires **before** the handoff — **E7-F020** |
+   | 4 | ★ `routes/task-outputs.ts:54` — `POST /api/issues/:issueId/outputs`, mounted `app.ts:566` | **whatever the request body says** | **YES**, for any authenticated company-scoped caller — **E7-F015** |
+
+   Six more callers reach the same insert but can never carry a run id: `crew-output-capture.ts:129`
+   (hard-coded `null` — a crew run id lives in `internal_agent_runs`, the column FKs `heartbeat_runs`),
+   `attach-task-artifact-tool.ts:164` (sets only `createdByAgentId`), `task-output-backfill.ts:50`,
+   the two emitters that never set the field — `emitPullRequestTaskOutput` (`task-output-emitters.ts:71`)
+   and `emitBranchTaskOutput` (`:162`) — and `task-outputs.ts:213`, which is the service wrapper
+   delegating into the chokepoint rather than an independent writer. That is 4 + 6 = the ten legacy
+   call sites.
+
+   ★ **A fifth capable caller exists and is deliberately not counted here:**
+   `job-output-bridge.ts:303` passes `input.output.createdByRunId ?? null`. It is the DISTRIBUTED
+   producer, and it is exactly what facts (1)-(3) above close — zero production callers, a
+   fail-closed second flag, and a caller-supplied run id. Counting it among the *legacy* writers
+   would double-count facts 1-3.
+
+   ★ **Path 3's detail, since it is the one nobody has to do anything to trigger.**
+   `ensureRuntimeServicesForRun` at **`heartbeat.ts:4524`** → `startLocalRuntimeService` with
+   `startedByRunId: input.runId` (`workspace-runtime.ts:2649`, defaulted at `:2340`) →
+   `persistRuntimeServiceRecord` (`:1785`, called at `:2383` at status `"starting"`, before
+   `waitForReadiness`) → `emitRuntimeServiceTaskOutput` (`:1821`) →
+   `task_outputs.created_by_run_id = run.id`. `:4524` precedes the canary block (`:5258-5274`), the
+   handoff (`:5422`) and the suppression return (`:5451`), all inside the same `executeRun`
+   (`heartbeat.ts:3061`; no other inner function is declared between `3061` and `5500`, so there is no
+   intervening boundary). ★ It also has a **second, HTTP-reachable caller**:
+   `task-output-backfill.ts:91` re-emits every current runtime service for the issue's workspaces,
+   and that backfill runs from **GET** `/api/issues/:issueId/outputs` (`routes/task-outputs.ts:40`)
+   whenever the issue has zero outputs — so a plain read can mint the row from a pre-existing
+   `workspace_runtime_services.started_by_run_id`.
+
+   ★ **The R3 mis-attribution, named so it cannot recur.** R3's second bullet labelled *"the board
+   `POST /api/issues/:issueId/outputs`"* but cited `server/src/routes/output-detection.ts:201`.
+   Those are different routes: `output-detection.ts:201` is
+   `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm` (row 2, **cannot** fire), while
+   E7-F015's actual subject is `server/src/routes/task-outputs.ts:45-53` (row 4, **can** fire) — the
+   writer the R3 enumeration omitted entirely. So the finding that already warned about this exact
+   route was cited against the wrong file while its real route went uncounted. Row 2 is kept in the
+   census with its own verdict rather than deleted.
+
+   So a handed-off run **can** write `task_outputs` under its own run id by TWO independent paths —
+   one requiring an authenticated caller to pass a field (**E7-F015**), one requiring nobody to do
+   anything at all (**E7-F020**), and the latter fires on the DEFAULT isolated-workspace
+   configuration whenever the run declares a `workspaceRuntime.services` entry. What this changes
+   HERE is only the reason arm 2 sits at 0 today, which is the shared blocker (nothing arms the
+   dial), **not** an absence of writers.
 
 **Each arm's blocker, stated separately.** They SHARE one: no run in any checked-in configuration is a
 distributed run at all, because the handoff that mints `distributed_job_id` /
@@ -1501,7 +1577,7 @@ already says is owed:
 ★★ **The service does not have to work.** The first persist is at status `"starting"`, BEFORE
 `waitForReadiness` (`workspace-runtime.ts:2383` then `:2384`), so a dev server that never comes up has
 already written the row; the failure path re-persists the SAME `externalId`
-(`runtime-service:<id>`, `task-output-emitters.ts:97`) and therefore updates that row rather than
+(`runtime-service:<id>`, `task-output-emitters.ts:98`) and therefore updates that row rather than
 removing it. A preview URL is not required either — with no URL the row is typed `runtime_service`
 instead of `preview_url` (`task-output-emitters.ts:96`), and arm 2 counts rows, not types.
 
@@ -1554,6 +1630,35 @@ task-output arm and widen the artifact arm off `kind='workspace_patch'` — is *
 staging already commits `job_artifacts` rows on the same job id). This finding raises the bar on any
 replacement: the surviving arm has to distinguish *produced by the agent* from *emitted by the
 platform on the agent's behalf*, and nothing in the current schema does.
+
+★★ **Re-examined 2026-09-06 (W4U3-R4) against a corrected writer census, and NOT merged.** The census
+that fact (4) of E7-F018 now carries was re-derived on the sole `task_outputs` INSERT
+(`services/task-outputs.ts:181`) rather than on a grep for the field name, and it says that **two**
+legacy writers can fire for a handed-off run, not one. That is not new information for this finding —
+this finding's own comparison table above already named the other one, and already cited it correctly
+as `routes/task-outputs.ts:45-53` while the shared census was still citing `output-detection.ts:201`
+under E7-F015's label. Three consequences, recorded so the next reader does not have to re-derive them:
+
+- **Nothing in the statement above changes.** "no agent output, no forgery and no authenticated
+  caller" describes THIS path, and a second path existing elsewhere neither weakens nor strengthens it.
+- **The two findings still must not be folded together**, for the reason already argued: an
+  authorization-shaped fix closes E7-F015 and leaves this untouched. The corrected census makes that
+  argument checkable rather than rhetorical — the two live writers are exactly these two findings'
+  subjects, one per finding.
+- ★ **The census now has a closure property worth keeping.** Of the four legacy writers that can put a
+  `heartbeat_runs` id in the column, the two that can fire are E7-F015 (row 4) and E7-F020 (row 3);
+  the two that cannot are rows 1-2. **There is no live writer without a finding, and no finding
+  without a live writer.** If a future round finds a fifth caller of `upsertTaskOutputForIssue` that
+  can carry a run id, that property is the thing it breaks, and it should be re-stated rather than
+  quietly widened.
+
+★ One reachability detail this finding did not have when it was filed: `emitRuntimeServiceTaskOutput`
+is reached not only from `heartbeat.ts:4524` but also from `task-output-backfill.ts:91`, which runs
+from **GET** `/api/issues/:issueId/outputs` (`routes/task-outputs.ts:40`) whenever the issue has no
+task outputs yet. So a plain read can also mint the row, from a `started_by_run_id` a previous run
+already wrote. This does not change the fail-open configuration listed above (that path needs a
+`workspace_runtime_services` row to already exist); it is recorded because it means the write is not
+confined to `executeRun`.
 
 **Severity — HIGH, and argued in both directions because the honest answer is not obvious.**
 

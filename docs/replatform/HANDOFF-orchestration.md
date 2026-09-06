@@ -88,15 +88,43 @@ configuration** — and, importantly, **not for the same reason.** Re-derived pe
   caller-supplied and never derived (`job-output-bridge.ts:291`), so a wired flag-on caller must
   ALSO pass the heartbeat run id. ★★★ **There is no fact (4).** This list used to end *"the legacy
   writers that do set the column cannot fire for a handed-off run"* — **false, and false in the
-  FAIL-OPEN direction; corrected 2026-09-06 (W4U3-R3).** Two of the three writers cannot (heartbeat's
-  sandbox-preview emitter, `heartbeat.ts:5574`, sits after `return; // CLI-006-SUPPRESSION-RETURN`
-  at `:5451`; the board `POST .../outputs`, `output-detection.ts:201`, is a board provenance path
-  filed as **E7-F015**). **The third can, and fires BEFORE the handoff:**
-  `ensureRuntimeServicesForRun` (`heartbeat.ts:4524`) → `startLocalRuntimeService`
-  (`workspace-runtime.ts:2649`) → `emitRuntimeServiceTaskOutput` (`task-output-emitters.ts:113`)
-  writes `task_outputs.created_by_run_id = run.id`, and `:4524` precedes the canary block
-  (`:5258-5274`), the handoff (`:5422`) and the suppression return (`:5451`), all inside the same
-  `executeRun` (`:3061`).
+  FAIL-OPEN direction.** Corrected twice; the R3 correction was itself wrong on the count and on one
+  citation, and **re-derived 2026-09-06 (W4U3-R4)**: R3 said *"three writers, two cannot fire, the
+  THIRD can"* and cited `output-detection.ts:201` under the label *"the board
+  `POST /api/issues/:issueId/outputs`"*, which are two different routes.
+  ★★★ **How the census is now closed — re-close it this way, not with a grep for the field name.**
+  There is exactly ONE insert into `task_outputs` in the tree, `.insert(taskOutputs)` at
+  **`server/src/services/task-outputs.ts:181`** inside `upsertTaskOutputForIssue`, so every writer
+  passes through it and **enumerating that function's callers closes the set**. R3's stated method
+  (`grep -rn createdByRunId server/src …`) provably could not find its own counterexample, because
+  `routes/task-outputs.ts:54` forwards `req.body` and never names the field. That caller grep returns
+  17 lines, of which ELEVEN are call sites (the rest are one import, two declarations and three prose
+  comments); ten are legacy and the eleventh is `job-output-bridge.ts:303`. **FOUR of the ten legacy
+  callers can carry a `heartbeat_runs` id, and TWO of those can fire for a handed-off run**:
+  - `task-output-emitters.ts:150` ← `heartbeat.ts:5557/:5574` — **cannot**; it sits after
+    `return; // CLI-006-SUPPRESSION-RETURN` (`:5451`).
+  - `routes/output-detection.ts:181/:201` —
+    `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm`, run id from a **path param** —
+    **cannot**; its only feed is written past the same suppression return. ★ **This is not E7-F015's
+    route**, which is where R3 went wrong.
+  - ★ `emitRuntimeServiceTaskOutput` (`task-output-emitters.ts:113`) — **CAN**, and fires BEFORE the
+    handoff: `ensureRuntimeServicesForRun` (`heartbeat.ts:4524`) → `startLocalRuntimeService`
+    (`workspace-runtime.ts:2649`) → `emitRuntimeServiceTaskOutput` writes
+    `task_outputs.created_by_run_id = run.id`, and `:4524` precedes the canary block (`:5258-5274`),
+    the handoff (`:5422`) and the suppression return (`:5451`), all inside the same `executeRun`
+    (`:3061`). Filed as **E7-F020**.
+  - ★ `routes/task-outputs.ts:54` — `POST /api/issues/:issueId/outputs`, mounted `app.ts:566`,
+    `createdByRunId` **body-supplied** — **CAN**, for any authenticated company-scoped caller. This
+    is **E7-F015**'s actual route, and R3's enumeration omitted it.
+
+  The other six callers never set the field or hard-code `null`. A fifth capable caller,
+  `job-output-bridge.ts:303`, is the DISTRIBUTED producer and is what facts (1)-(3) above already
+  close — counting it among the legacy writers would double-count them. **Limits of the method,
+  named:** it finds a literal `.insert(taskOutputs)` and a literal `INSERT INTO` / `COPY` on the
+  table; a runtime-assembled table name or a DB-side trigger would evade it. Both were checked at
+  this tip and are absent. ★ The raw-SQL sweep must exclude `docs/` and `scripts/` or it matches this
+  paragraph and E7-F018's register entry back at you — the same self-match trap E7-F018's rollout-dial
+  reproduction already documents.
 
 **So arm 2 is not "unreachable" — it is REACHABLE WITHOUT PROVING ANYTHING (E7-F020, HIGH, owned by
 CLI-008).** What the dial ALONE yields on arm 2 is whatever the legacy pre-handoff code already wrote
