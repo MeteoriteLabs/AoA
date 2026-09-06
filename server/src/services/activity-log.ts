@@ -18,6 +18,10 @@ export interface LogActivityInput {
 }
 
 export interface PersistedActivity extends Omit<LogActivityInput, "details"> {
+  /** The inserted activity_log row id (JOB-013 — the audit bridge links its
+   * projection receipt's targetAggregateId to this). Additive/back-compatible:
+   * existing callers simply ignore it. */
+  id: string;
   details: Record<string, unknown> | null;
 }
 
@@ -28,7 +32,7 @@ export async function insertActivityLog(
 ): Promise<PersistedActivity> {
   assertUnreservedActivityNamespace(input);
   const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
-  await db.insert(activityLog).values({
+  const [row] = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
     actorId: input.actorId,
@@ -38,10 +42,11 @@ export async function insertActivityLog(
     agentId: input.agentId ?? null,
     runId: input.runId ?? null,
     details: sanitizedDetails,
-  });
+  }).returning({ id: activityLog.id });
 
   return {
     ...input,
+    id: row.id,
     agentId: input.agentId ?? null,
     runId: input.runId ?? null,
     details: sanitizedDetails,
@@ -72,6 +77,9 @@ export function publishActivityLogged(input: PersistedActivity): void {
 // insert path and redaction stays consistent (the live event carries sanitized details).
 
 export interface PreparedActivityEvent {
+  /** The inserted activity_log row id (JOB-013). Additive — existing consumers
+   * (mcp-connectors routes + token-refresh) ignore it. */
+  id: string;
   companyId: string;
   payload: {
     actorType: ActivityActorType;
@@ -89,6 +97,7 @@ export interface PreparedActivityEvent {
 export async function insertActivity(db: Db, input: LogActivityInput): Promise<PreparedActivityEvent> {
   const persisted = await insertActivityLog(db, input);
   return {
+    id: persisted.id,
     companyId: persisted.companyId,
     payload: {
       actorType: persisted.actorType,

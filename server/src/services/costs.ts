@@ -45,6 +45,13 @@ export function costService(db: Db) {
     createEvent: async (
       companyId: string,
       data: Omit<typeof costEvents.$inferInsert, "companyId" | "agentId"> & { agentId: string },
+      // JOB-012 — the authoritative-cost bridge charges via this path but drives
+      // budget evaluation SYNCHRONOUSLY inside its own tenant transaction (so an
+      // incident is visible in the same committed state and can trigger an
+      // exactly-once cancel). Passing `deferBudgetEvaluation` suppresses the legacy
+      // fire-and-forget below WITHOUT changing behavior for any existing caller
+      // (default false). New rate/idempotency columns flow through `data` unchanged.
+      options?: { deferBudgetEvaluation?: boolean },
     ) => {
       const agent = await db
         .select()
@@ -107,10 +114,13 @@ export function costService(db: Db) {
         return event;
       });
 
-      // Fire-and-forget budget evaluation
-      budgetService(db).evaluateCostEvent(agent.id, companyId).catch((err) =>
-        logger.error({ err }, "budget evaluation failed after cost event")
-      );
+      // Fire-and-forget budget evaluation (skipped when the caller drives it
+      // synchronously — JOB-012 authoritative-cost bridge).
+      if (!options?.deferBudgetEvaluation) {
+        budgetService(db).evaluateCostEvent(agent.id, companyId).catch((err) =>
+          logger.error({ err }, "budget evaluation failed after cost event")
+        );
+      }
 
       return event;
     },

@@ -211,8 +211,8 @@ beforeAll(async () => {
     // without FIX A's dynamic FK drop.
     const [{ id: orgId }] = await client<{ id: string }[]>`SELECT id FROM organizations LIMIT 1`;
     const [{ id: companyId }] = await client<{ id: string }[]>`
-      INSERT INTO companies (id, name, issue_prefix)
-      VALUES (gen_random_uuid(), 'Revert Co', 'RVT')
+      INSERT INTO companies (organization_id, id, name, issue_prefix)
+      VALUES ('00000000-0000-0000-0000-000000000001', gen_random_uuid(), 'Revert Co', 'RVT')
       RETURNING id`;
     // auth_method 'oauth' satisfies both provider_connections shape CHECKs
     // (neither 'api_key' nor 'personal_subscription') so no secret_ref is needed.
@@ -220,8 +220,8 @@ beforeAll(async () => {
       INSERT INTO provider_connections (id, organization_id, company_id, provider, auth_method)
       VALUES (gen_random_uuid(), ${orgId}, ${companyId}, 'anthropic', 'oauth')`;
     await client`
-      INSERT INTO execution_targets (id, organization_id, slug, kind, trust_class)
-      VALUES (gen_random_uuid(), ${orgId}, 'et-1', 'local', 'trusted')`;
+      INSERT INTO execution_targets (id, organization_id, slug, kind, trust_class, scope, target_authority_key)
+      VALUES (gen_random_uuid(), ${orgId}, 'et-1', 'local', 'trusted', 'organization', ${`organization:${orgId}`})`;
   } catch (err) {
     setupError = err;
     // eslint-disable-next-line no-console

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { logger } from "../middleware/logger.js";
 import { createGvisorSandboxRuntimeProvider } from "./gvisor-sandbox-provider.js";
+import type { JobControlMetrics } from "./job-control-metrics.js";
 
 export interface SandboxProviderAcquireInput {
   companyId: string;
@@ -779,10 +780,35 @@ export function createE2bSandboxRuntimeProvider(
           aoaProvider: "e2b",
           companyId: input.companyId,
           environmentId: input.environmentId,
-          // S4 — best-effort managed recording only (§11/§12: managed E2B
-          // egress is not fully lockable). Omitted entirely when no
-          // allowlist was supplied, so the pre-existing exact `create(...)`
-          // call assertions in sandbox-provider-runtime.test.ts stay green.
+          // S4 — best-effort managed recording only. This is a `metadata`
+          // string; nothing reads it back and nothing enforces it (E8-F003
+          // measured that, against real E2B, with both controls holding).
+          //
+          // ★ The old wording here said the spec's "§11/§12: managed E2B
+          // egress is not fully lockable" (E8-F007). Do not restate that as
+          // the reason. The installed, lockfile-pinned e2b@2.30.5 DOES expose
+          // an egress surface — `SandboxOpts.network` (allowOut/denyOut/rules)
+          // reaching the create body via `buildNetworkBody`, `updateNetwork`
+          // for a running sandbox, and a `getInfo()` read-back of what the
+          // server applied. What is UNMEASURED is whether the operator's E2B
+          // tier honours a network body at all; nothing client-side validates
+          // it, and the API target is per-company configurable, so a tolerant
+          // server can return 200 and leave the sandbox unpoliced. That is why
+          // this call still passes `metadata` and NOT `network`: adopting the
+          // real surface requires the probe plus a mandatory read-back, and is
+          // deliberately out of scope for a record-and-guard change.
+          //
+          // Unit W10B built the keyed probe that measures the tier question this
+          // comment leaves open, and the stop condition that would end the option
+          // (a guest DNS resolver inside the deny set: `denyOut` has no exclude, and
+          // any `allowOut` entry flips the whole policy to default-deny). It is built
+          // and NOT YET FIRED, so it is not a measurement. See
+          // `docs/replatform/epics/E8-browser-automation/tickets/W10B-egress-enforcement-runbook.md`.
+          // Nothing here applies a network policy: W10B measures, it does not enforce.
+          //
+          // Omitted entirely when no allowlist was supplied, so the
+          // pre-existing exact `create(...)` call assertions in
+          // sandbox-provider-runtime.test.ts stay green.
           ...(input.egressAllowlist && input.egressAllowlist.length > 0
             ? { egressAllowlist: input.egressAllowlist.join(",") }
             : {}),
@@ -1028,8 +1054,18 @@ export function createE2bSandboxRuntimeProvider(
 export function sandboxProviderRuntime(
   options: {
     providers?: SandboxRuntimeProvider[];
+    /** DEP-007 — count-only, id-free provider-lifecycle telemetry (acquire | release |
+     * resume × succeeded | failed). Defaults to no-op; the composition root threads the
+     * shared pino instance when distributed execution is enabled. Emitted AFTER the
+     * provider call resolves so it never alters the lifecycle path; best-effort. */
+    metrics?: JobControlMetrics;
   } = {},
 ) {
+  // Optional-chained at every call site (never a NOOP VALUE import) so this module —
+  // which loads on the flag-OFF legacy path — carries no runtime dependency on
+  // job-control-metrics (the distributed-execution dormancy gate, verified by
+  // distributed-execution-db-startup.integration.test.ts).
+  const metrics = options.metrics;
   const providers = new Map<string, SandboxRuntimeProvider>();
   for (const provider of options.providers ?? [
     createFakeSandboxRuntimeProvider(),
@@ -1054,12 +1090,34 @@ export function sandboxProviderRuntime(
   return {
     getProvider,
 
+    // DEP-007 — count-only provider-lifecycle telemetry is emitted in a `.then()` AFTER
+    // the provider call resolves (never `async`), so the synchronous `requireProvider`
+    // (and resume-support) guards keep throwing SYNCHRONOUSLY, exactly as before. The
+    // emit is best-effort and can never alter the lifecycle path.
     acquireLease(providerKey: string, input: SandboxProviderAcquireInput) {
-      return requireProvider(providerKey).acquireLease(input);
+      return requireProvider(providerKey).acquireLease(input).then((lease) => {
+        try {
+          metrics?.providerLifecycle({ operation: "acquire", outcome: "succeeded", count: 1 });
+        } catch {
+          /* best-effort telemetry */
+        }
+        return lease;
+      });
     },
 
     releaseLease(providerKey: string, input: SandboxProviderReleaseInput) {
-      return requireProvider(providerKey).releaseLease(input);
+      return requireProvider(providerKey).releaseLease(input).then((result) => {
+        try {
+          metrics?.providerLifecycle({
+            operation: "release",
+            outcome: result.cleanupStatus === "success" ? "succeeded" : "failed",
+            count: 1,
+          });
+        } catch {
+          /* best-effort telemetry */
+        }
+        return result;
+      });
     },
 
     // U7.4 — mirrors releaseLease's passthrough; guarded (like writeFiles/
@@ -1070,7 +1128,14 @@ export function sandboxProviderRuntime(
       if (typeof provider.resumeLease !== "function") {
         throw new Error(`Sandbox provider "${providerKey}" does not support resume.`);
       }
-      return provider.resumeLease(input);
+      return provider.resumeLease(input).then((result) => {
+        try {
+          metrics?.providerLifecycle({ operation: "resume", outcome: "succeeded", count: 1 });
+        } catch {
+          /* best-effort telemetry */
+        }
+        return result;
+      });
     },
 
     execute(providerKey: string, input: SandboxProviderExecuteInput) {

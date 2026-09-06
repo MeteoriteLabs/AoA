@@ -65,6 +65,8 @@ export const storageS3ConfigSchema = z.object({
   bucket: z.string().min(1).default("paperclip"),
   region: z.string().min(1).default("us-east-1"),
   endpoint: z.string().optional(),
+  // DAT-002 — worker-facing https endpoint for presigned artifact grant URLs.
+  presignEndpoint: z.string().optional(),
   prefix: z.string().default(""),
   forcePathStyle: z.boolean().default(false),
 });

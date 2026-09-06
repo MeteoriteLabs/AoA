@@ -23,6 +23,10 @@ import {
   resolveDefaultStorageDir,
   resolveHomeAwarePath,
 } from "./home-paths.js";
+import {
+  assertHostedExecutionStartupSafe,
+  readDistributedExecutionDeploymentFlag,
+} from "./config/distributed-execution.js";
 
 const AOA_ENV_FILE_PATH = resolveAoaEnvPath();
 if (existsSync(AOA_ENV_FILE_PATH)) {
@@ -33,6 +37,16 @@ type DatabaseMode = "embedded-postgres" | "postgres";
 
 export interface Config {
   deploymentMode: DeploymentMode;
+  /**
+   * FND-005: default-off deployment gate for the distributed execution rollout.
+   * Enabling it never starts a worker or registers a distributed route by
+   * itself — the Organization rollout flag (E3/E10) and per-workload flag remain
+   * separately required (see `resolveDistributedExecutionRollout`). The reserved
+   * public-ingress and cloud-plugin surfaces are NOT config booleans: their env
+   * sentinels are hard-negatives that stop startup via
+   * `assertHostedExecutionStartupSafe`.
+   */
+  distributedExecutionEnabled: boolean;
   deploymentExposure: DeploymentExposure;
   host: string;
   port: number;
@@ -68,6 +82,7 @@ export interface Config {
   storageS3Bucket: string;
   storageS3Region: string;
   storageS3Endpoint: string | undefined;
+  storageS3PresignEndpoint: string | undefined;
   storageS3Prefix: string;
   storageS3ForcePathStyle: boolean;
   heartbeatSchedulerEnabled: boolean;
@@ -157,6 +172,10 @@ export function loadConfig(): Config {
   const storageS3Bucket = process.env.AOA_STORAGE_S3_BUCKET ?? fileStorage?.s3?.bucket ?? "paperclip";
   const storageS3Region = process.env.AOA_STORAGE_S3_REGION ?? fileStorage?.s3?.region ?? "us-east-1";
   const storageS3Endpoint = process.env.AOA_STORAGE_S3_ENDPOINT ?? fileStorage?.s3?.endpoint ?? undefined;
+  // DAT-002 — worker-facing https endpoint used ONLY to mint presigned artifact
+  // grant URLs (distinct from the internal control-plane endpoint above).
+  const storageS3PresignEndpoint =
+    process.env.AOA_STORAGE_S3_PRESIGN_ENDPOINT ?? fileStorage?.s3?.presignEndpoint ?? undefined;
   const storageS3Prefix = process.env.AOA_STORAGE_S3_PREFIX ?? fileStorage?.s3?.prefix ?? "";
   const storageS3ForcePathStyle =
     process.env.AOA_STORAGE_S3_FORCE_PATH_STYLE !== undefined
@@ -169,6 +188,14 @@ export function loadConfig(): Config {
       ? (deploymentModeFromEnvRaw as DeploymentMode)
       : null;
   const deploymentMode: DeploymentMode = deploymentModeFromEnv ?? fileConfig?.server.deploymentMode ?? "local_trusted";
+  // FND-005: resolve the default-off distributed-execution deployment flag and
+  // assert hosted-execution startup safety immediately after the deployment mode
+  // is known. A truthy excluded surface (public ingress / cloud plugin) stops
+  // startup in every mode; the process-wide unsandboxed override is rejected in
+  // cloud_auth. Neither branch starts a scheduler, adapter, distributed route, or
+  // worker — the reserved distributed routes stay unregistered when absent/false.
+  const distributedExecutionEnabled = readDistributedExecutionDeploymentFlag(process.env);
+  assertHostedExecutionStartupSafe({ deploymentMode, env: process.env });
   const deploymentExposureFromEnvRaw = process.env.AOA_DEPLOYMENT_EXPOSURE;
   const deploymentExposureFromEnv =
     deploymentExposureFromEnvRaw &&
@@ -259,6 +286,7 @@ export function loadConfig(): Config {
 
   return {
     deploymentMode,
+    distributedExecutionEnabled,
     deploymentExposure,
     host: process.env.HOST ?? fileConfig?.server.host ?? "127.0.0.1",
     port: Number(process.env.PORT) || fileConfig?.server.port || 3100,
@@ -301,6 +329,7 @@ export function loadConfig(): Config {
     storageS3Bucket,
     storageS3Region,
     storageS3Endpoint,
+    storageS3PresignEndpoint,
     storageS3Prefix,
     storageS3ForcePathStyle,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",

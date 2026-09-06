@@ -67,6 +67,7 @@ export {
   EXECUTION_TARGET_KINDS,
   EXECUTION_TARGET_TRUST_CLASSES,
   EXECUTION_TARGET_STATUSES,
+  WORKER_CONTROL_HEADERS,
   ORG_MAX_CONCURRENT_RUNS_DEFAULT,
   ORG_MAX_CONCURRENT_RUNS_MAX,
   type ExecutionTargetKind,
@@ -1165,8 +1166,10 @@ export {
   gvisorEnvironmentConfigSchema,
   createExecutionTargetSchema,
   workerExecutionTargetHeartbeatSchema,
+  issueWorkerEnrollmentCodeSchema,
   type CreateExecutionTargetInput,
   type WorkerExecutionTargetHeartbeatInput,
+  type IssueWorkerEnrollmentCodeInput,
 } from "./validators/index.js";
 
 export {
@@ -1394,6 +1397,13 @@ export * from "./hub.js";
 export * from "./work-questions.js";
 export * from "./user-entity-follows.js";
 export * from "./notification-registry.js";
+export * from "./types/job-control.js";
+export * from "./job-control-source.js";
+export {
+  submitJobCommandSchema,
+  submitJobSourceSchema,
+  type SubmitJobCommandInput,
+} from "./validators/job-control.js";
 
 // ── API contract artifacts ──
 // Phase 1 thread coordination contract: shared by backend (Lane A) and UI (Lane B).

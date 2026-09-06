@@ -1277,10 +1277,11 @@ export function pluginLoader(
   ): Promise<PaperclipPluginManifestV1> {
     // JavaScript manifests are executable modules. Cloud must reject before
     // import(), even if a caller bypasses the normal install/lifecycle routes.
-    // RW5a: this is the ONLY sink that actually executes tenant code
-    // in-process in the control plane, so it is deliberately distinct from
-    // the outer "loader" boundary checks in installPlugin/upgradePlugin below
-    // (which stay allowed on cloud — see cloud-plugin-execution.ts).
+    // FND-006/FND-008: this "loader-import" sink is the ONLY one that actually
+    // executes tenant code in-process. It fails closed on cloud — as does the
+    // outer "loader" ENTRY boundary in installPlugin/upgradePlugin below, and
+    // every other sink (see cloud-plugin-execution.ts). The distinct sink name
+    // is retained for call-site clarity + metrics.
     assertCloudPluginExecutionAllowed({
       pluginId: "unregistered-plugin",
       source: "unknown",
@@ -1679,12 +1680,12 @@ export function pluginLoader(
       installOptions: PluginInstallOptions
     ): Promise<DiscoveredPlugin> {
       // Final install boundary: run before registry reads, npm download, local
-      // path inspection, or executable manifest import. RW5a: this is the
-      // ENTRY boundary only (download/write files, `--ignore-scripts` npm
-      // install) — always allowed on cloud. The executable manifest import
-      // that follows inside `fetchAndValidate` is separately gated by its
-      // own "loader-import" sink in `loadManifestFromPath`, which stays
-      // blocked on cloud in the control plane.
+      // path inspection, or executable manifest import. FND-006/FND-008: this
+      // "loader" ENTRY boundary (download/write files, `--ignore-scripts` npm
+      // install) fails closed on cloud — as does the executable manifest import
+      // that follows inside `fetchAndValidate` (gated separately by its own
+      // "loader-import" sink in `loadManifestFromPath`). Every plugin sink is
+      // blocked in the hosted control plane.
       assertCloudPluginExecutionAllowed({
         pluginId: "unregistered-plugin",
         companyId: installOptions.companyId,
@@ -1769,10 +1770,10 @@ export function pluginLoader(
       escalatedCaps: string[];
     }> {
       // Defense in depth for callers that reach the loader without lifecycle.
-      // This must precede package lookup/download and manifest import. RW5a:
-      // ENTRY boundary only — see the note on installPlugin's identical gate
-      // above; the manifest import itself is gated separately (sink
-      // "loader-import") and stays blocked on cloud.
+      // This must precede package lookup/download and manifest import. FND-006/
+      // FND-008: the "loader" ENTRY boundary fails closed on cloud — see the
+      // note on installPlugin's identical gate above; the manifest import itself
+      // is gated separately (sink "loader-import") and is likewise blocked.
       assertCloudPluginExecutionAllowed({
         pluginId,
         source: "direct",

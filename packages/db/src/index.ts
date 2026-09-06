@@ -1,5 +1,15 @@
 export {
   createDb,
+  createTenantAppDb,
+  createTenantAppDbConnection,
+  createOperatorDbConnection,
+  assertNonOwnerConnection,
+  type NonOwnerDbConnection,
+  type NonOwnerDbConnectionOptions,
+  loadRequiredMigrationIdentity,
+  type RequiredMigrationIdentity,
+  loadAppliedMigrationIdentity,
+  type AppliedMigrationIdentity,
   ensurePostgresDatabase,
   inspectMigrations,
   applyPendingMigrations,
@@ -30,3 +40,86 @@ export {
   type RunDatabaseBackupResult,
 } from "./backup-lib.js";
 export * from "./schema/index.js";
+// TEN-003: the tenant repository factory is the only sanctioned reader/writer of
+// the new-path tables; re-exported from the package barrel so the server's
+// `runInTenant` (server/src/db/tenant-context.ts) imports it as a bare specifier
+// alongside `createTenantAppDb`/`Db`. The factory's OWN module surface is still the
+// single `tenantRepositories` export (tenant-repository-surface.test.ts) — this
+// re-export does not add a raw unscoped reader.
+export { tenantRepositories, type TenantRepositories } from "./repositories/tenant/index.js";
+export type {
+  LeaseWorkerAuthority,
+  PlacementCandidateSnapshot,
+  TerminalCompletionStatus,
+  ServiceHealthStatus,
+  GuardedFenceResult,
+  AcceptEventInput,
+  AcceptEventBatchInput,
+  EventIngestOutcome,
+  ProjectionInput,
+  ProjectionTransition,
+  JobControlCommandKind,
+  GovernedProjectionKind,
+  GovernedProjectionInput,
+  GovernedControlCommandInput,
+  GovernedProjectionRecordResult,
+  GovernedControlQueueResult,
+  ControlCommandAckStatus,
+  QueuedControlCommand,
+  ControlCommandAckInput,
+  ControlCommandAckOutcome,
+  RequestCancellationInput,
+  CancellationStatus,
+  CancellationOutcome,
+  RetryAllocationInput,
+  RetryAllocationStatus,
+  RetryAllocationResult,
+  ReapExpiredLeasesInput,
+  ReapExpiredLeasesResult,
+  PatchApplyStateResult,
+  AuthorizedSecretResolution,
+} from "./repositories/tenant/job-control.js";
+export { computeRetryBackoffMs } from "./repositories/tenant/job-control.js";
+// DEP-011 reaper Slice B (B1) — the read-only lease-truth classification surface.
+export { classifyLeaseTruthRow, type LeaseTruthVerdict, type LeaseTruthRow } from "./repositories/tenant/lease-truth.js";
+// JOB-004: the ONE common active-fence predicate + the CLOSED governed-mutator
+// surface. Re-exported from the barrel so `server/src/services/job-fencing.ts`
+// shares the exact same seam the tenant repository's guarded mutators gate on.
+export {
+  isActiveFence,
+  classifyFence,
+  JobFenceError,
+  ArtifactCommitRejection,
+  PatchApplyRejection,
+  OrphanQuarantineRejection,
+  SecretResolveRejection,
+  authorizeSecretResolve,
+  SECRET_REF_KINDS,
+  SECRET_RESOLVE_REJECTION_REASONS,
+  GUARDED_JOB_MUTATORS,
+  TERMINAL_ATTEMPT_STATUSES,
+  type ActiveFenceRequest,
+  type ActiveFenceSnapshot,
+  type GuardedJobMutator,
+  type JobFenceErrorCode,
+  type ArtifactCommitRejectionReason,
+  type PatchApplyRejectionReason,
+  type OrphanQuarantineRejectionReason,
+  type SecretResolveRejectionReason,
+  type SecretResolveDecision,
+  type SecretResolveAuthzInput,
+  type SecretResolveHandleFacts,
+  type SecretResolveJobOwner,
+  type SecretRefKind,
+} from "./repositories/tenant/job-fence.js";
+export { operatorWorkerEnrollmentRepository } from "./repositories/operator/worker-enrollment.js";
+export { listPlatformPlacementCandidateSnapshots } from "./repositories/operator/job-placement.js";
+export {
+  configurePlatformTargetAuthorityLockTimeout,
+  acquirePlatformTargetAuthorityShared,
+  acquirePlatformTargetAuthorityExclusive,
+} from "./platform-target-authority-lock.js";
+export {
+  operatorJobLeasingRepository,
+  type PlatformPhysicalLeaseAuthority,
+} from "./repositories/operator/job-leasing.js";

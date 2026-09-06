@@ -15,6 +15,7 @@ import {
 } from "./sandbox-provider-runtime.js";
 import { runtimeProviderKeyService } from "./runtime-provider-keys.js";
 import { WARM_SANDBOX_MAX_PER_COMPANY_DEFAULT } from "./warm-sandbox-constants.js";
+import { deriveE2bKeyGeneration } from "./e2b-credential-authority-wiring.js";
 import { logger } from "../middleware/logger.js";
 
 type PersistedExecutionWorkspaceRef = {
@@ -595,6 +596,19 @@ function createSandboxDockerEnvironmentDriver(
               executionWorkspaceMode: leaseContext.executionWorkspaceMode,
               provider,
               providerMetadata: sanitizeProviderMetadata(providerLease.metadata),
+              // REL-004 Lane D (§5) — record the E2B key GENERATION this sandbox was created
+              // under. Inherited deferral #5 ("old-key kill-switch enforcement") was not
+              // implementable without it: `deriveE2bKeyGeneration` returns a company's CURRENT
+              // version, and nothing recorded what a given sandbox was made with, so
+              // "superseded" was not computable for an existing sandbox.
+              //
+              // e2b only, and never allowed to fail an acquire: a generation we could not derive
+              // is recorded as null, which the reaper reads as "no generation to compare" rather
+              // than as "superseded". Absence must never be evidence of supersession, or the
+              // first deploy would reap every pre-existing warm snapshot.
+              ...(provider === "e2b"
+                ? { keyGeneration: await deriveKeyGenerationSafely(db, input.companyId) }
+                : {}),
             },
           }));
         } catch (err) {
@@ -698,6 +712,21 @@ function createSandboxDockerEnvironmentDriver(
       return released ? normalizeEnvironmentLease(released) : null;
     },
   };
+}
+
+/**
+ * REL-004 Lane D (§5) — the acquire-time key-generation stamp, best-effort by construction.
+ *
+ * Never throws into the acquire path: creating a sandbox must not fail because a bookkeeping
+ * lookup did. A null generation is "unknown", and the reaper treats unknown as NOT superseded.
+ */
+async function deriveKeyGenerationSafely(db: Db, companyId: string): Promise<string | null> {
+  try {
+    return await deriveE2bKeyGeneration(db, companyId);
+  } catch (err) {
+    logger.warn({ err, companyId }, "environment runtime: could not derive the e2b key generation");
+    return null;
+  }
 }
 
 export function environmentRuntimeService(

@@ -317,6 +317,13 @@ export const queryKeys = {
   executionTargets: {
     list: (organizationId: string) => ["executionTargets", organizationId] as const,
   },
+  jobControl: {
+    jobs: (organizationId: string, companyId: string) =>
+      ["job-control", organizationId, companyId, "jobs"] as const,
+    job: (organizationId: string, companyId: string, jobId: string) =>
+      ["job-control", organizationId, companyId, "jobs", jobId] as const,
+    workers: (organizationId: string) => ["job-control", organizationId, "workers"] as const,
+  },
   cockpit: (companyId: string) => ["cockpit", companyId] as const,
   cockpitCounts: (companyId: string) => ["cockpit", companyId, "counts"] as const,
   plugins: {
