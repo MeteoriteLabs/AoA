@@ -390,9 +390,25 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
 
   return withSandbox(`probe-a-${spec.adapterType}`, AGENT_SANDBOX_TTL_MS, async (t, sandboxId) => {
     // ── 0. Is there a runtime to install into? ────────────────────────────────
-    const probe = await run(t, sandboxId, "sh", ["-c", "command -v node || echo NO_NODE; command -v npm || echo NO_NPM"], {
-      timeoutMs: SHELL_TIMEOUT_MS,
-    });
+    //
+    // ★ IT REPORTS WHAT IS THERE, NOT ONLY WHAT IS MISSING. If this run comes back
+    // `template-has-no-node-runtime`, the operator's one authorised run has bought an
+    // inconclusive verdict — and the least it can do is make the NEXT dispatch informed
+    // rather than guessed. So the versions and the neighbouring tools are printed too;
+    // it costs one extra shell command and nothing else.
+    const probe = await run(
+      t,
+      sandboxId,
+      "sh",
+      [
+        "-c",
+        "command -v node || echo NO_NODE; command -v npm || echo NO_NPM; " +
+          'echo "node=$(node -v 2>&1 | head -1) npm=$(npm -v 2>&1 | head -1) ' +
+          'curl=$(command -v curl || echo none) python3=$(command -v python3 || echo none) ' +
+          'os=$(uname -sr 2>&1)"',
+      ],
+      { timeoutMs: SHELL_TIMEOUT_MS },
+    );
     // eslint-disable-next-line no-console
     console.log(`[w7u1/${probeId}] runtime: ${JSON.stringify(safe(probe.stdout, 300))}`);
     if (probe.stdout.includes("NO_NODE") || probe.stdout.includes("NO_NPM")) {
@@ -400,6 +416,7 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
         probeId,
         "template-has-no-node-runtime",
         `template "${TEMPLATE}" has no node/npm, so the agent CLI cannot be installed and probe A never ran. ` +
+          `What the template DOES carry: ${safe(probe.stdout, 300).replace(/\s+/g, " ").trim()}. ` +
           "Re-dispatch with an `e2b_template` that carries a node runtime.",
       );
     }
