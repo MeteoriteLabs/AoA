@@ -86,10 +86,27 @@ configuration** — and, importantly, **not for the same reason.** Re-derived pe
   `AOA_DISTRIBUTED_EXECUTION_ENABLED` (`config/distributed-execution.ts:22-24`, default `false`),
   throwing `JobOutputBridgeDisabledError` and writing nothing; (3) `createdByRunId` is
   caller-supplied and never derived (`job-output-bridge.ts:291`), so a wired flag-on caller must
-  ALSO pass the heartbeat run id; (4) the legacy writers that do set the column cannot fire for a
-  handed-off run — heartbeat's sandbox-preview emitter (`heartbeat.ts:5557-5574`) sits after
-  `return; // CLI-006-SUPPRESSION-RETURN` (`:5451`), and the board `POST .../outputs`
-  (`output-detection.ts:201`) is a board provenance path, already filed as **E7-F015**.
+  ALSO pass the heartbeat run id. ★★★ **There is no fact (4).** This list used to end *"the legacy
+  writers that do set the column cannot fire for a handed-off run"* — **false, and false in the
+  FAIL-OPEN direction; corrected 2026-09-06 (W4U3-R3).** Two of the three writers cannot (heartbeat's
+  sandbox-preview emitter, `heartbeat.ts:5574`, sits after `return; // CLI-006-SUPPRESSION-RETURN`
+  at `:5451`; the board `POST .../outputs`, `output-detection.ts:201`, is a board provenance path
+  filed as **E7-F015**). **The third can, and fires BEFORE the handoff:**
+  `ensureRuntimeServicesForRun` (`heartbeat.ts:4524`) → `startLocalRuntimeService`
+  (`workspace-runtime.ts:2649`) → `emitRuntimeServiceTaskOutput` (`task-output-emitters.ts:113`)
+  writes `task_outputs.created_by_run_id = run.id`, and `:4524` precedes the canary block
+  (`:5258-5274`), the handoff (`:5422`) and the suppression return (`:5451`), all inside the same
+  `executeRun` (`:3061`).
+
+**So arm 2 is not "unreachable" — it is REACHABLE WITHOUT PROVING ANYTHING (E7-F020, HIGH, owned by
+CLI-008).** What the dial ALONE yields on arm 2 is whatever the legacy pre-handoff code already wrote
+for that run id. **It goes non-zero with zero agent output** when, in addition, the run is task-scoped
+and reaches `heartbeat.ts:4523` with instance `enableIsolatedWorkspaces` true (the DEFAULT), a realized
+workspace, and at least one `workspaceRuntime.services[]` entry that is freshly started rather than
+reused. A canary run in the ordinary software-engineering configuration that starts one dev server and
+produces nothing therefore reads `capability: PROVEN`. **Do not read a non-zero arm 2 as capability.**
+What is UNCHANGED: the shared blocker, arm 1's unreachability, facts (1)-(3) above — no PRODUCER moves
+arm 2 — and E7-F018's status, severity and `unowned` ownership.
 
 **So a `workspace_patch` producer is NECESSARY and NOT SUFFICIENT — and read that as a claim about
 SUFFICIENCY only.** E7-F018 refutes *"ship Unit F (output capture) and `capabilityProven` follows"*.

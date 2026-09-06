@@ -127,17 +127,38 @@ filesystem. On the E2B lane the agent's files are inside a remote sandbox the da
 So this arm is blocked on two things at once: a repository to diff (**Unit E**) and an in-sandbox
 manifest capture that **does not exist anywhere in the tree**.
 
-**`taskOutputs` — six writers, none of which can fire on a distributed run, and one that can be
-`curl`ed.**
+**`taskOutputs` — six writers. ★★★ CORRECTED 2026-09-06 (W4U3-R3): this heading used to read
+*"six writers, NONE of which can fire on a distributed run, and one that can be `curl`ed"*, and the
+census below dismissed the runtime-service writer on a reason that is false. TWO of the six can fire —
+one by `curl` (**E7-F015**) and one **with nobody doing anything at all** (**E7-F020**, and it fires
+BEFORE the handoff). The wrong version is kept visible because this census is where E7-F018's fact (4)
+came from, and a fail-open enumeration propagates.**
 
 | writer | `createdByRunId` | reachable on a distributed run? |
 |---|---|---|
 | `heartbeat.ts:5557` → `emitSandboxPreviewTaskOutput` | `run.id` (`:5574`) | **No.** `return; // CLI-006-SUPPRESSION-RETURN` at `heartbeat.ts:5451` fires whenever `shouldSuppressLegacyExecution(owner)` — i.e. `owner?.owner === "distributed"` — and sits above `adapter.execute` (`:5453`) and above this emitter, all inside `executeRun` (`3061`–`6119`) |
 | `routes/output-detection.ts:201` (founder confirm) | `runId` (a `heartbeat_runs` id) | **No.** Its only feed is `heartbeat_runs.detected_outputs`, whose sole creating writer is `heartbeat.ts:5907` — also past the suppression return, and additionally reading `adapterResult`, which only `adapter.execute` assigns |
-| `task-output-emitters.ts:113` (runtime service) | `row.startedByRunId` | No — needs a `workspace_runtime_services` row |
+| **`task-output-emitters.ts:113`** (runtime service) | `row.startedByRunId` | **YES — and the old "needs a `workspace_runtime_services` row" is not a blocker, because THE SAME RUN MINTS ONE.** `ensureRuntimeServicesForRun` (`heartbeat.ts:4524`) → `startLocalRuntimeService` (`workspace-runtime.ts:2649`, `startedByRunId: input.runId`) → `persistRuntimeServiceRecord` (`:2383`, status `"starting"`, before `waitForReadiness`) upserts the row AND emits (`:1821`), so `created_by_run_id = run.id`. `:4524` precedes the canary block (`:5258-5274`), the handoff (`:5422`) and the suppression return (`:5451`), all in the same `executeRun` (`:3061`). See **§1.3a / E7-F020** |
 | `crew-output-capture.ts:129` | **hard-coded `null`** — a crew run id lives in `internal_agent_runs` while the column FKs `heartbeat_runs` | Structurally incapable, by design |
 | `attach-task-artifact-tool.ts` (MCP) | never set — only `createdByAgentId` (`:162`) | Structurally incapable |
 | **`POST /api/issues/:issueId/outputs`** (`routes/task-outputs.ts:45-53`, mounted `app.ts:566`) | **whatever the request body says** | **YES — see §1.3** |
+
+### 1.2a ★ FINDING E7-F020 — and one of them needs no `curl` either
+
+The runtime-service row above is the second reachable writer, and it is the more dangerous of the two
+because **no actor is involved**. Full statement, fail-open configuration and the both-directions
+severity argument: **E7-F020** in
+[`../findings.md`](../findings.md). The short form for this document: on the DEFAULT isolated-workspace
+configuration, a canary run that declares one `workspaceRuntime.services[]` entry writes a
+`task_outputs` row under its own run id before it is handed off — so arm 2 reads non-zero, and
+`capabilityProven` reads TRUE, for a run whose agent produced nothing.
+
+★ **Why it is filed apart from E7-F015 rather than folded into it.** The natural fix for E7-F015 is an
+authorization one — refuse a caller-supplied `createdByRunId`, tighten the schema, guard the route.
+That fix is correct, it closes E7-F015, and **it does not touch E7-F020 at all**. Any replacement
+predicate for arm 2 must distinguish *produced by the agent* from *emitted by the platform on the
+agent's behalf*; excluding untrusted callers is not sufficient. Read both before designing §4.3's
+replacement.
 
 ### 1.3 ★ FINDING E7-F015 — the capability bar is forgeable by a board POST
 
