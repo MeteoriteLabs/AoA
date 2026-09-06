@@ -163,6 +163,11 @@ const THREAT_MODEL_FRAGMENTS = [
 // register and value-compared in per-ID parity, so they are required here too —
 // otherwise deleting one from a JSON crossing escaped detection (value-drift was
 // caught, field-deletion was not). All 30 crossings already carry them.
+// W4U2: `deliveryStatus` is required on EVERY crossing. The clause fields above
+// (authentication/authorization/confidentiality/integrity/revocation/audit) state
+// what the control REQUIRES; before this field the schema had no way to say whether
+// any of it had actually been built, so a Critical crossing measured absent read
+// identically to one that holds. `deliveryStatus` is that missing distinction.
 const THREAT_CROSSING_REQUIRED_FIELDS = [
   "id",
   "threat",
@@ -180,7 +185,39 @@ const THREAT_CROSSING_REQUIRED_FIELDS = [
   "verification",
   "ownerTickets",
   "verificationLane",
+  "deliveryStatus",
 ];
+
+// W4U2 delivery-status vocabulary. Deliberately three values, not two:
+//   delivered     — an ASSERTION BY THE AUTHOR that the control named in `control` is
+//                   implemented and exercised by a test that drives the real mechanism.
+//                   THIS SCRIPT DOES NOT VERIFY THAT ASSERTION. It never reads a test
+//                   file, never resolves a test name, and never executes the control.
+//                   All it requires is (a) a non-empty `deliveryEvidence` saying who
+//                   audited it and against what, in prose no machine grades, and (b)
+//                   that no open finding's free text names this crossing id (see the
+//                   scope limit on checkCrossingDeliveryStatus, clause 4). A reader
+//                   must treat "delivered" as a human claim carrying a human's
+//                   citation — NOT as a fact this checker has established.
+//   not-delivered — the control was MEASURED absent. Requires `deliveryEvidence`
+//                   naming at least one live finding that records the measurement.
+//   unaudited     — no delivery audit has been performed for this crossing. Requires
+//                   `deliveryEvidence` giving the reason. This is the deferral value:
+//                   it is what an un-audited crossing gets, NEVER a fabricated
+//                   "delivered". A hard require-exist flip that forced every crossing
+//                   to claim delivery would have reproduced, at scale, exactly the
+//                   misrepresentation this field exists to end.
+const THREAT_DELIVERY_STATUSES = new Set(["delivered", "not-delivered", "unaudited"]);
+// Every status must justify itself in `deliveryEvidence` — including "delivered".
+// This forces a delivery claim to carry prose naming its audit; it does NOT check that
+// the prose is true, that any test exists, or that the named test drives the control.
+const THREAT_DELIVERY_EVIDENCE_REQUIRED = new Set(["delivered", "not-delivered", "unaudited"]);
+// The findings register: the external source both delivery rules resolve against.
+const FINDING_OWNERSHIP_JSON = "scripts/finding-ownership.json";
+// A finding id token (E8-F003, E7-F011, ...) as it appears inside free-text evidence.
+const FINDING_ID_RE = /\b[A-Z][A-Z0-9]*-F\d+\b/g;
+// A crossing id token as it appears inside free-text finding prose.
+const CROSSING_ID_RE = /\bDE-\d+\b/g;
 
 const THREAT_KNOWN_SEVERITIES = new Set(["Critical", "High", "Medium", "Low"]);
 const THREAT_KNOWN_LANES = new Set(["D0", "D1", "D2", "D3", "D4", "D5", "D6"]);
@@ -997,6 +1034,128 @@ async function loadReleaseTestManifest(root, errors) {
 }
 
 /**
+ * W4U2: load the live findings register (scripts/finding-ownership.json) and return
+ * { ids, crossingsNamed } where `ids` is every finding id it carries and
+ * `crossingsNamed` maps a crossing id (DE-NN) to the finding ids whose prose names it.
+ *
+ * Presence in this file IS openness: `check-finding-ownership.mjs` forbids a RESOLVED
+ * finding from keeping an entry, so anything here is unresolved by construction. Both
+ * delivery rules resolve against this one source, in opposite directions:
+ *   not-delivered -> the evidence must name a finding that EXISTS here
+ *   delivered     -> no finding here may name this crossing
+ *
+ * Fail-closed: a missing or malformed register is an error and yields empty sets, so
+ * the "delivered" rule cannot be silenced by deleting its input (the empty set would
+ * make every delivered claim pass, but the missing-file error still reds the run).
+ */
+async function loadFindingRegister(root, errors) {
+  const empty = { ids: new Set(), crossingsNamed: new Map() };
+  const raw = await readOrError(root, FINDING_OWNERSHIP_JSON, errors);
+  if (raw == null) return empty;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    errors.push(`${FINDING_OWNERSHIP_JSON}: invalid JSON (${err.message})`);
+    return empty;
+  }
+  const findings = parsed == null ? null : parsed.findings;
+  if (findings == null || typeof findings !== "object" || Array.isArray(findings)) {
+    errors.push(`${FINDING_OWNERSHIP_JSON}: missing object "findings"`);
+    return empty;
+  }
+  const ids = new Set();
+  const crossingsNamed = new Map();
+  for (const [fid, entry] of Object.entries(findings)) {
+    ids.add(fid);
+    if (entry == null || typeof entry !== "object") continue;
+    const prose = [entry.reason, entry.successor]
+      .filter((v) => typeof v === "string")
+      .join(" ");
+    for (const de of prose.match(CROSSING_ID_RE) || []) {
+      if (!crossingsNamed.has(de)) crossingsNamed.set(de, new Set());
+      crossingsNamed.get(de).add(fid);
+    }
+  }
+  return { ids, crossingsNamed };
+}
+
+/**
+ * W4U2: enforce the delivery-status contract for one crossing.
+ *
+ * THIS ENFORCES NOTHING ABOUT THE CONTROL ITSELF, AND IT DOES NOT ESTABLISH THAT A
+ * "delivered" CLAIM IS TRUE. It enforces four syntactic rules over the register text:
+ *   1. `deliveryStatus` is one of the three known values.
+ *   2. every status — delivered included — must carry a non-empty `deliveryEvidence`.
+ *      The prose is required to EXIST; nothing here grades it. No test file is read,
+ *      no test name is resolved, no control is executed.
+ *   3. not-delivered must cite at least one finding id, and every finding id it
+ *      cites must exist in the findings register (a dangling citation is refused).
+ *   4. delivered is refused for a crossing whose id appears as a literal token
+ *      (CROSSING_ID_RE, e.g. "DE-08") in the `reason` or `successor` free text of an
+ *      OPEN finding in scripts/finding-ownership.json.
+ *
+ * SCOPE LIMIT OF CLAUSE 4 — read this before trusting any "delivered" value. Clause 4
+ * constrains ONLY those crossings some open finding's prose happens to name; at the
+ * time of writing that is 1 crossing out of 30. For the other 29 it is vacuous, and
+ * "delivered" is then gated by clause 2 alone — i.e. by the presence of author-written
+ * prose. Two consequences follow, both demonstrated by the review of PR #364:
+ *   - a crossing no finding names can be flipped to "delivered" by writing any
+ *     non-empty evidence string; this checker will pass it.
+ *   - the coupling is EDITORIAL, not structural: rewording a finding so its prose no
+ *     longer contains the crossing's id releases the refusal for that crossing too,
+ *     without changing the finding's status, severity or ownership.
+ * So a "delivered" value in this register is a human assertion with a human citation.
+ * A future unit MUST NOT conclude a control is implemented, tested, or safe because
+ * this guard passed — the guard did not look.
+ */
+function checkCrossingDeliveryStatus(c, label, register, errors) {
+  const status = c.deliveryStatus;
+  if (typeof status !== "string" || status.trim() === "") return; // reported by the required-field pass
+  if (!THREAT_DELIVERY_STATUSES.has(status)) {
+    errors.push(
+      `${THREAT_CONTROLS_JSON}: crossing ${label} has unknown deliveryStatus ${JSON.stringify(status)} (expected one of ${[...THREAT_DELIVERY_STATUSES].join(", ")})`,
+    );
+    return;
+  }
+
+  const evidence = typeof c.deliveryEvidence === "string" ? c.deliveryEvidence : "";
+  if (THREAT_DELIVERY_EVIDENCE_REQUIRED.has(status) && evidence.trim() === "") {
+    errors.push(
+      `${THREAT_CONTROLS_JSON}: crossing ${label} is deliveryStatus "${status}" and must carry a non-empty "deliveryEvidence"`,
+    );
+  }
+
+  if (status === "not-delivered") {
+    const cited = new Set(evidence.match(FINDING_ID_RE) || []);
+    if (cited.size === 0) {
+      if (evidence.trim() !== "") {
+        errors.push(
+          `${THREAT_CONTROLS_JSON}: crossing ${label} is deliveryStatus "not-delivered" but its "deliveryEvidence" cites no finding id (expected a token like E8-F003)`,
+        );
+      }
+    } else {
+      for (const fid of cited) {
+        if (!register.ids.has(fid)) {
+          errors.push(
+            `${THREAT_CONTROLS_JSON}: crossing ${label} cites finding ${fid} which is not in ${FINDING_OWNERSHIP_JSON}`,
+          );
+        }
+      }
+    }
+  }
+
+  if (status === "delivered" && typeof c.id === "string") {
+    const namers = register.crossingsNamed.get(c.id);
+    if (namers && namers.size > 0) {
+      errors.push(
+        `${THREAT_CONTROLS_JSON}: crossing ${label} claims deliveryStatus "delivered" but ${FINDING_OWNERSHIP_JSON} carries live finding(s) ${[...namers].sort().join(", ")} naming ${c.id}; an open finding against a crossing refutes a delivery claim`,
+      );
+    }
+  }
+}
+
+/**
  * Manifest-hygiene guards, each mirroring a named finding-ownership guard:
  *   malformed    — a deferral with no non-empty `reason`
  *   stale        — a deferral whose `<id>-design.md` now EXISTS (the ticket shipped;
@@ -1033,11 +1192,12 @@ function validateReleaseTestDeferrals(deferred, written, namedByCrossings, error
 /**
  * Validate the threat-controls JSON crossing objects: exact required fields,
  * non-empty string values, unique stable IDs, known severity/lane values,
- * non-empty owner-ticket arrays whose IDs all exist in the program backlog, and
- * a release test for every Critical/High crossing. Returns the set of JSON
+ * non-empty owner-ticket arrays whose IDs all exist in the program backlog, a
+ * release test for every Critical/High crossing, and (W4U2) a delivery status
+ * whose claim is backed by the findings register. Returns the set of JSON
  * crossing IDs (for Markdown parity) or null when the array is unusable.
  */
-function validateThreatCrossings(crossings, validTicketIds, written, deferred, errors) {
+function validateThreatCrossings(crossings, validTicketIds, written, deferred, findingRegister, errors) {
   const jsonIds = new Set();
   for (let idx = 0; idx < crossings.length; idx += 1) {
     const c = crossings[idx];
@@ -1096,6 +1256,9 @@ function validateThreatCrossings(crossings, validTicketIds, written, deferred, e
     if (typeof c.severity === "string" && THREAT_RELEASE_SEVERITIES.has(c.severity)) {
       checkCrossingReleaseTest(c, label, written, deferred, errors);
     }
+
+    // W4U2: required-on-every-crossing delivery status, and its evidence contract.
+    checkCrossingDeliveryStatus(c, label, findingRegister, errors);
   }
   return jsonIds;
 }
@@ -1197,6 +1360,10 @@ async function validateThreatModel(root, errors) {
   // gate resolves against `root` — REL tickets written on disk, and the deferral manifest.
   const writtenRelTickets = await parseWrittenRelTickets(root, errors);
   const deferredReleaseTests = await loadReleaseTestManifest(root, errors);
+  // W4U2: the findings register is the external truth source for the delivery-status
+  // contract (a not-delivered claim must cite a live finding; a delivered claim is
+  // refused while a live finding names the crossing).
+  const findingRegister = await loadFindingRegister(root, errors);
 
   let controls = null;
   if (rawJson != null) {
@@ -1223,7 +1390,7 @@ async function validateThreatModel(root, errors) {
 
   let jsonIds = null;
   if (crossings != null) {
-    jsonIds = validateThreatCrossings(crossings, validTicketIds, writtenRelTickets, deferredReleaseTests, errors);
+    jsonIds = validateThreatCrossings(crossings, validTicketIds, writtenRelTickets, deferredReleaseTests, findingRegister, errors);
     // Manifest hygiene (stale / malformed / unreferenced) needs the set of REL
     // tickets named by Critical/High crossings — the crossings the gate enforces.
     const namedByCrossings = new Set();
