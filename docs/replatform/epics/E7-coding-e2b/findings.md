@@ -1303,7 +1303,7 @@ predicate is untouched, the counter is untouched, no gate is redefined. What it 
 `capabilityProven` for bytes that are not a workspace patch. The system's own consumer refuses them —
 `server/src/services/patch-apply.ts:126-127` fetches the committed object and parses it with the
 FROZEN `workspacePatchManifestV1Schema`, returning `rejected("malformed")` on any parse failure,
-fail-closed, before any state change (and after the org/job/attempt prefix bind at `:112-116`, so the
+fail-closed, before any state change (and after the org/job/attempt prefix bind at `:111-116`, so the
 fetch itself cannot be pointed at a foreign namespace).
 
 ★ **Recording this matters because the refusal is at the APPLY path — not at the commit path and not
