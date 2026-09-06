@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Authoritative machine-readable trust-crossing and control-ownership record for Decision #121. docs/architecture/distributed-execution-threat-model.md is a rendered view of these IDs. Every Critical/High crossing carries a release test (a REL-* owner ticket or a releaseTest field). ownerTickets reference defined backlog tickets in docs/replatform/program-design.md.",
+  "note": "Authoritative machine-readable trust-crossing and control-ownership record for Decision #121. docs/architecture/distributed-execution-threat-model.md is a rendered view of these IDs. Every Critical/High crossing carries a release test (a REL-* owner ticket or a releaseTest field). ownerTickets reference defined backlog tickets in docs/replatform/program-design.md. Clause fields (authentication/authorization/confidentiality/integrity/revocation/audit) state what a crossing's control REQUIRES; they are a charter, not a report. `deliveryStatus` is the separate field that says whether the control has actually been built and measured -- delivered | not-delivered | unaudited -- and `deliveryEvidence` carries the backing. Before this field the two were indistinguishable, and a Critical crossing measured absent read exactly like one that holds. `unaudited` is the honest default for a crossing nobody has audited; it must never be upgraded to `delivered` except from a recorded measurement.",
   "crossings": [
     {
       "id": "DE-01",
@@ -20,7 +20,9 @@
       "verification": "real PostgreSQL adversarial tests",
       "verificationLane": "D0",
       "ownerTickets": ["TEN-002", "TEN-003", "TEN-005"],
-      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate"
+      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-02",
@@ -40,7 +42,9 @@
       "verification": "negative SQL integration",
       "verificationLane": "D0",
       "ownerTickets": ["TEN-004"],
-      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate"
+      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
+      "deliveryStatus": "delivered",
+      "deliveryEvidence": "delivered: the control named in `control` (composite tenant constraints) is implemented as schema-level DDL and is exercised by a real-PostgreSQL negative test that drives the actual mechanism -- packages/db/src/__tests__/tenant-composite-integrity.integration.test.ts, 9 cases, each mixed-tenant rejection paired with a same-tenant positive control that must insert cleanly. TEN-004-result.md records the RED-before/GREEN-after transition (8 failed pre-implementation because the constraints did not yet exist; 9 passed after) and the Postgres server log naming the constraint each rejection fired on (jobs_org_company_fk, job_attempts_org_job_fk, leases_org_attempt_fk, services_org_company_fk, service_instances_org_service_fk, job_artifacts_org_job_fk, job_secret_handles_org_job_fk as 23503; leases_active_per_attempt_idx as 23505). SCOPE OF THIS CLAIM: the authorization/integrity/revocation clauses, which are the constraint itself. The audit clause (constraint-violation events in the control-plane audit log) was NOT separately audited by W4U2."
     },
     {
       "id": "DE-03",
@@ -60,7 +64,9 @@
       "verification": "replay/expiry tests",
       "verificationLane": "D1",
       "ownerTickets": ["JOB-002", "WRK-002"],
-      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate"
+      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-04",
@@ -80,7 +86,9 @@
       "verification": "concurrent claim/stale fence",
       "verificationLane": "D1",
       "ownerTickets": ["JOB-003", "JOB-004"],
-      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate"
+      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-05",
@@ -100,7 +108,9 @@
       "verification": "lost-ACK/replacement tests",
       "verificationLane": "D1",
       "ownerTickets": ["JOB-005", "JOB-006"],
-      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate"
+      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-06",
@@ -120,7 +130,9 @@
       "verification": "MinIO malicious-key tests",
       "verificationLane": "D1",
       "ownerTickets": ["DAT-002"],
-      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate"
+      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-07",
@@ -139,7 +151,9 @@
       "control": "existing OAuth broker, opaque execution handles, live lease/fence, broker-owned refresh, audit, redaction",
       "verification": "wrong-tenant/fence/refresh/log corpus",
       "verificationLane": "D1",
-      "ownerTickets": ["DAT-004", "DAT-005", "REL-001"]
+      "ownerTickets": ["DAT-004", "DAT-005", "REL-001"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-08",
@@ -147,19 +161,21 @@
       "threat": "Metadata/control-plane SSRF",
       "trustedSide": "filtered egress and a credential-injecting proxy",
       "lessTrustedSide": "a tenant workload requesting a destination",
-      "authentication": "the egress proxy authenticates destinations against policy",
-      "authorization": "default-deny; only allowlisted destinations are permitted",
-      "confidentiality": "internal metadata and control-plane ranges are unreachable",
-      "integrity": "blocked IP/DNS ranges cannot be reached via rebinding",
-      "revocation": "policy changes take effect per lease; deny is the default",
-      "audit": "allowed and denied egress destinations are audited",
+      "authentication": "REQUIRED (not delivered): the egress proxy must authenticate destinations against policy",
+      "authorization": "REQUIRED (not delivered): default-deny; only allowlisted destinations may be permitted",
+      "confidentiality": "REQUIRED (not delivered): internal metadata and control-plane ranges must be unreachable",
+      "integrity": "REQUIRED (not delivered): blocked IP/DNS ranges must not be reachable via rebinding",
+      "revocation": "REQUIRED (not delivered): policy changes must take effect per lease; deny must be the default",
+      "audit": "REQUIRED (not delivered): allowed and denied egress destinations must be audited",
       "failureMode": "a workload reaches cloud metadata or the control plane",
       "severity": "Critical",
       "control": "default-deny egress and blocked ranges",
       "verification": "DNS/IP/metadata tests",
       "verificationLane": "D2",
       "ownerTickets": ["DAT-005"],
-      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate"
+      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
+      "deliveryStatus": "not-delivered",
+      "deliveryEvidence": "not-delivered: MEASURED ABSENT at every candidate enforcement layer. Finding E8-F003 (open, HIGH, in scripts/finding-ownership.json) records the measurement: against REAL E2B sandboxes in workflow run 33857218680, with a positive control (the allowlisted host was reached) and an apparatus control (an RFC-2606 .invalid host failed), both of which held -- a host NOT on the declared egressAllowlist was reached from inside the sandbox that declared it, identically to a control sandbox that declared none; and 169.254.169.254 answered HTTP 401 from inside the guest, a live IMDSv2 token challenge rather than a dropped packet. E8-F003 further records that no enforcement exists at the provider level, the in-sandbox level (BRW-004 slice (f), not attempted), or the proxy level (classifyEgressDestination's only non-test consumer is a module nothing in production imports). This entry does not close DE-08 and does not close E8-F003; it only stops the register from asserting the opposite of what was measured."
     },
     {
       "id": "DE-09",
@@ -178,7 +194,9 @@
       "control": "tenant commands only inside provider sandbox",
       "verification": "image/capability/provider tests",
       "verificationLane": "D2",
-      "ownerTickets": ["WRK-004", "REL-004"]
+      "ownerTickets": ["WRK-004", "REL-004"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-10",
@@ -198,7 +216,9 @@
       "verification": "crash-point suite",
       "verificationLane": "D1",
       "ownerTickets": ["WRK-007", "CLI-004"],
-      "releaseTest": "REL-004 signed images, SBOM, vulnerability and provider kill gates"
+      "releaseTest": "REL-004 signed images, SBOM, vulnerability and provider kill gates",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-11",
@@ -217,7 +237,9 @@
       "control": "job-scoped sensitive artifacts and TTL",
       "verification": "browser retention/authorization",
       "verificationLane": "D3",
-      "ownerTickets": ["BRW-003", "BRW-004", "REL-001"]
+      "ownerTickets": ["BRW-003", "BRW-004", "REL-001"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-12",
@@ -237,7 +259,9 @@
       "verification": "partition/drain/generation tests",
       "verificationLane": "D4",
       "ownerTickets": ["SVC-002", "SVC-003", "SVC-005"],
-      "releaseTest": "REL-002 load, fairness, and SLO gate"
+      "releaseTest": "REL-002 load, fairness, and SLO gate",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-13",
@@ -256,7 +280,9 @@
       "control": "per-Organization quotas/fair scheduling",
       "verification": "multi-tenant load",
       "verificationLane": "D5",
-      "ownerTickets": ["JOB-007", "REL-002"]
+      "ownerTickets": ["JOB-007", "REL-002"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-14",
@@ -276,7 +302,9 @@
       "verification": "configuration test",
       "verificationLane": "D0",
       "ownerTickets": ["FND-005"],
-      "releaseTest": "REL-005 private beta rollout and evidence pack"
+      "releaseTest": "REL-005 private beta rollout and evidence pack",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-15",
@@ -295,7 +323,9 @@
       "control": "pinned digest, scan, signature, kill switch",
       "verification": "release gate",
       "verificationLane": "D6",
-      "ownerTickets": ["REL-004"]
+      "ownerTickets": ["REL-004"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-16",
@@ -314,7 +344,9 @@
       "control": "cloud plugins remain disabled pending separate worker",
       "verification": "process/composition plus route/dispatcher/UI negatives and release regression",
       "verificationLane": "D0",
-      "ownerTickets": ["FND-006", "FND-008", "REL-005"]
+      "ownerTickets": ["FND-006", "FND-008", "REL-005"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-17",
@@ -333,7 +365,9 @@
       "control": "separate resource-bound monotonic cleanup authority with effect operations unrepresentable",
       "verification": "post-fence cleanup, cross-resource denial, and escalation corpus",
       "verificationLane": "D1",
-      "ownerTickets": ["WRK-004", "DEP-008", "CLI-004", "REL-004"]
+      "ownerTickets": ["WRK-004", "DEP-008", "CLI-004", "REL-004"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-18",
@@ -353,7 +387,9 @@
       "verification": "target-replacement and stale-generation tests",
       "verificationLane": "D1",
       "ownerTickets": ["JOB-004", "MIG-004"],
-      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate"
+      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-19",
@@ -372,7 +408,9 @@
       "control": "scoped context API, no memory-table access, actor and visibility enforcement",
       "verification": "actor-scope and visibility adversarial tests",
       "verificationLane": "D1",
-      "ownerTickets": ["DAT-007", "TEN-005", "REL-001"]
+      "ownerTickets": ["DAT-007", "TEN-005", "REL-001"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-20",
@@ -391,7 +429,9 @@
       "control": "single-writer owner and rollout flag",
       "verification": "cutover, drain, and rollback rehearsal",
       "verificationLane": "D5",
-      "ownerTickets": ["MIG-002", "MIG-008", "REL-003"]
+      "ownerTickets": ["MIG-002", "MIG-008", "REL-003"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-21",
@@ -411,7 +451,9 @@
       "verification": "realtime fan-out and catch-up authorization tests",
       "verificationLane": "D1",
       "ownerTickets": ["MIG-003"],
-      "releaseTest": "REL-002 load, fairness, and SLO gate"
+      "releaseTest": "REL-002 load, fairness, and SLO gate",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-22",
@@ -430,7 +472,9 @@
       "control": "append-only evidence with Supersedes and redaction on transmit",
       "verification": "append-only evidence and supersede-integrity tests",
       "verificationLane": "D0",
-      "ownerTickets": ["FND-005", "REL-005"]
+      "ownerTickets": ["FND-005", "REL-005"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-23",
@@ -449,7 +493,9 @@
       "control": "tenant-scoped encrypted backup and provenance-checked restore",
       "verification": "disaster-recovery and migration rehearsal",
       "verificationLane": "D5",
-      "ownerTickets": ["REL-003", "DAT-002"]
+      "ownerTickets": ["REL-003", "DAT-002"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-24",
@@ -469,7 +515,9 @@
       "verification": "signed-update, drain, and rollback tests",
       "verificationLane": "D6",
       "ownerTickets": ["DSK-003", "DSK-004"],
-      "releaseTest": "REL-004 signed images, SBOM, vulnerability and provider kill gates"
+      "releaseTest": "REL-004 signed images, SBOM, vulnerability and provider kill gates",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-25",
@@ -489,7 +537,9 @@
       "verification": "folder-grant and offline-policy tests",
       "verificationLane": "D1",
       "ownerTickets": ["DSK-002", "DAT-006"],
-      "releaseTest": "REL-005 private beta rollout and evidence pack"
+      "releaseTest": "REL-005 private beta rollout and evidence pack",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-26",
@@ -508,7 +558,9 @@
       "control": "managed sandbox isolation conformance on the real provider",
       "verification": "real-provider isolation conformance suite",
       "verificationLane": "D2",
-      "ownerTickets": ["DEP-008", "REL-004"]
+      "ownerTickets": ["DEP-008", "REL-004"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-27",
@@ -527,7 +579,9 @@
       "control": "shared-admission ownership and serialized admission",
       "verification": "two-replica admission and partition tests",
       "verificationLane": "D5",
-      "ownerTickets": ["FND-005", "REL-002"]
+      "ownerTickets": ["FND-005", "REL-002"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-28",
@@ -547,7 +601,9 @@
       "verification": "late-output quarantine and no-auto-promote tests",
       "verificationLane": "D1",
       "ownerTickets": ["JOB-005", "JOB-006"],
-      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate"
+      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-29",
@@ -566,7 +622,9 @@
       "control": "company-scoped grant and fenced refresh with owner routing",
       "verification": "wrong-owner routing and refusal corpus",
       "verificationLane": "D1",
-      "ownerTickets": ["DAT-004", "DAT-005", "REL-001"]
+      "ownerTickets": ["DAT-004", "DAT-005", "REL-001"],
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
     {
       "id": "DE-30",
@@ -586,7 +644,9 @@
       "verification": "capability-spoofing and stale-membership tests",
       "verificationLane": "D1",
       "ownerTickets": ["JOB-002", "TEN-002"],
-      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate"
+      "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
+      "deliveryStatus": "unaudited",
+      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     }
   ]
 }

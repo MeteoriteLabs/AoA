@@ -69,6 +69,12 @@ const REL = {
   // or the check reports "missing" and the unmutated baseline breaks — which is
   // the check working, not a reason to make it fail open.
   jobApprovalBridge: "server/src/services/job-approval-bridge.ts",
+  // W4U2: the findings register the delivery-status contract resolves against. Copied
+  // for the same reason as the release-test inputs — the checker must read the FIXTURE
+  // copy, or a mutation to a crossing's deliveryStatus could not be turned red against
+  // a mutated register, and the "delivered is refused while a finding names it" clause
+  // would be silently evaluated against the real tree.
+  findingOwnership: "scripts/finding-ownership.json",
 };
 
 function makeFixture(t, mutate) {
@@ -117,6 +123,8 @@ function makeFixture(t, mutate) {
     releaseTestsPath: path.join(root, REL.releaseTests),
     // BRW-004 slice (b)
     jobApprovalBridgePath: path.join(root, REL.jobApprovalBridge),
+    // W4U2
+    findingOwnershipPath: path.join(root, REL.findingOwnership),
   };
   fs.copyFileSync(path.join(repoRoot, REL.json), files.jsonPath);
   fs.copyFileSync(path.join(repoRoot, REL.md), files.mdPath);
@@ -169,6 +177,10 @@ function makeFixture(t, mutate) {
   // the FIXTURE root, not the real tree, or a mutation to the authority would be
   // silently ignored and the "authority mutated" cases below could not turn red.
   fs.copyFileSync(path.join(repoRoot, REL.jobApprovalBridge), files.jobApprovalBridgePath);
+  // W4U2: the findings register, the external source both delivery-status rules
+  // resolve against.
+  fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
+  fs.copyFileSync(path.join(repoRoot, REL.findingOwnership), files.findingOwnershipPath);
   if (mutate) mutate(files);
   return root;
 }
@@ -754,6 +766,9 @@ const THREAT_REQUIRED_FIELDS = [
   "verification",
   "ownerTickets",
   "verificationLane",
+  // W4U2: the delivery-status field. Included here so the deletion loop below proves
+  // it is required on a crossing OTHER than DE-08 too (crossings[0] is DE-01).
+  "deliveryStatus",
 ];
 
 test("missing file: distributed-execution-threat-model.md removed", async (t) => {
@@ -2403,4 +2418,176 @@ test("control parity: a missing authority file is an error, and the census says 
   assert.ok(hasError(errors, `${REL.jobApprovalBridge}: missing`), report(errors));
   assert.equal(divergenceCensus.authorityUnavailable, true);
   assert.ok(formatDivergenceCensus(divergenceCensus).includes("AUTHORITY UNAVAILABLE"));
+});
+
+// ---------------------------------------------------------------------------
+// W4U2 — delivery-status contract (register repair, NOT egress enforcement).
+//
+// The defect these cases pin: the crossing schema had no field able to
+// distinguish "this control is REQUIRED" from "this control is DELIVERED", so
+// DE-08 — Critical, whose sole owner ticket DAT-005 is complete, and whose
+// enforcement finding E8-F003 measured absence at every layer — read in the
+// register exactly like a control that holds.
+//
+// Every case below asserts TWO things: the mutated crossing reds, and DE-02
+// (genuinely delivered: composite tenant constraints, proven by a real-PG
+// negative test with same-tenant positive controls) stays GREEN. A mutation
+// that reds both would prove only that the harness broke.
+// ---------------------------------------------------------------------------
+
+/** POSITIVE CONTROL: no error may name the genuinely-delivered crossing DE-02. */
+function assertDe02Unaffected(errors) {
+  const de02 = errors.filter((e) => e.includes("DE-02"));
+  assert.deepEqual(
+    de02,
+    [],
+    `positive control failed: DE-02 (genuinely delivered) also reported errors${report(errors)}`,
+  );
+}
+
+function setCrossing(threatControlsPath, id, mutate) {
+  const j = readJson(threatControlsPath);
+  const c = j.crossings.find((x) => x.id === id);
+  assert.ok(c, `fixture is missing crossing ${id}`);
+  mutate(c);
+  writeJson(threatControlsPath, j);
+}
+
+test("W4U2 M1: DE-08 flipped back to \"delivered\" is refused (E8-F003 names it)", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-08", (c) => {
+      c.deliveryStatus = "delivered";
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'crossing DE-08 claims deliveryStatus "delivered" but'),
+    report(errors),
+  );
+  assert.ok(hasError(errors, "E8-F003"), report(errors));
+  assertDe02Unaffected(errors);
+});
+
+test("W4U2 M2: deleting deliveryStatus from DE-08 is refused", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-08", (c) => {
+      delete c.deliveryStatus;
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'crossing DE-08 is missing required field "deliveryStatus"'),
+    report(errors),
+  );
+  assertDe02Unaffected(errors);
+});
+
+test("W4U2 M3: an unknown deliveryStatus value is refused", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-08", (c) => {
+      c.deliveryStatus = "partially-delivered";
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'crossing DE-08 has unknown deliveryStatus "partially-delivered"'),
+    report(errors),
+  );
+  assertDe02Unaffected(errors);
+});
+
+test("W4U2 M4: not-delivered without deliveryEvidence is refused", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-08", (c) => {
+      c.deliveryEvidence = "   ";
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'crossing DE-08 is deliveryStatus "not-delivered" and must carry a non-empty "deliveryEvidence"'),
+    report(errors),
+  );
+  assertDe02Unaffected(errors);
+});
+
+test("W4U2 M5: an unaudited deferral without a reason is refused (no silent deferral)", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-01", (c) => {
+      delete c.deliveryEvidence;
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'crossing DE-01 is deliveryStatus "unaudited" and must carry a non-empty "deliveryEvidence"'),
+    report(errors),
+  );
+  assertDe02Unaffected(errors);
+});
+
+test("W4U2 M6: not-delivered whose evidence cites no finding id is refused", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-08", (c) => {
+      c.deliveryEvidence = "trust me, it is absent";
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'crossing DE-08 is deliveryStatus "not-delivered" but its "deliveryEvidence" cites no finding id'),
+    report(errors),
+  );
+  assertDe02Unaffected(errors);
+});
+
+test("W4U2 M7: not-delivered citing a finding that is not in the register is refused", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-08", (c) => {
+      c.deliveryEvidence = "measured absent, see E9-F999";
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "crossing DE-08 cites finding E9-F999 which is not in scripts/finding-ownership.json"),
+    report(errors),
+  );
+  assertDe02Unaffected(errors);
+});
+
+test("W4U2 M8: the checker reads the FIXTURE findings register, not the real tree", async (t) => {
+  // Delete E8-F003 from the fixture register only. If the checker were resolving
+  // scripts/finding-ownership.json against the repo root, this would be invisible.
+  const root = makeFixture(t, ({ findingOwnershipPath }) => {
+    const j = readJson(findingOwnershipPath);
+    delete j.findings["E8-F003"];
+    writeJson(findingOwnershipPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "crossing DE-08 cites finding E8-F003 which is not in scripts/finding-ownership.json"),
+    report(errors),
+  );
+});
+
+test("W4U2 M9: the delivered rule is not hard-coded to DE-08 — a live finding naming DE-02 refuses ITS claim", async (t) => {
+  // The negative counterpart of the positive control: DE-02 is green above only
+  // because nothing in the register names it. Give it a namer and it reds too.
+  const root = makeFixture(t, ({ findingOwnershipPath }) => {
+    const j = readJson(findingOwnershipPath);
+    j.findings["E2-F900"] = {
+      status: "unowned",
+      reason: "synthetic: DE-02's composite constraints were measured absent",
+    };
+    writeJson(findingOwnershipPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'crossing DE-02 claims deliveryStatus "delivered" but'),
+    report(errors),
+  );
+  assert.ok(hasError(errors, "E2-F900"), report(errors));
+});
+
+test("W4U2 M10: a missing findings register fails closed", async (t) => {
+  const root = makeFixture(t, ({ findingOwnershipPath }) => fs.rmSync(findingOwnershipPath));
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "scripts/finding-ownership.json: missing"), report(errors));
 });

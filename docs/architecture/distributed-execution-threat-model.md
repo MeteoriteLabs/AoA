@@ -97,6 +97,34 @@ exercises it.
 | DE-29 | Owner-credential misrouting | Critical | company-scoped grant and fenced refresh with owner routing | wrong-owner routing and refusal corpus | DAT-004/DAT-005/REL-001 |
 | DE-30 | Malicious capability claim | Critical | server-derived capabilities from verified identity and live membership | capability-spoofing and stale-membership tests | JOB-002/TEN-002 |
 
+### Required vs delivered
+
+**The `Required control` column above is a charter, not a report.** Every clause in
+the JSON record (`authentication`, `authorization`, `confidentiality`, `integrity`,
+`revocation`, `audit`) states what the control *must* do. Until 2026-09-06 the record
+carried no field able to say whether any of it had been *built*, so a Critical crossing
+measured absent read exactly like one that holds. `deliveryStatus` in
+[`distributed-execution-threat-controls.json`](distributed-execution-threat-controls.json)
+is that distinction, and the foundation checker requires it on every crossing:
+
+| Value | Meaning |
+|---|---|
+| `delivered` | The control is implemented **and** exercised by a test that drives the real mechanism. Refused while an open finding names the crossing. |
+| `not-delivered` | The control was **measured absent**. Must cite a live finding in `scripts/finding-ownership.json`. |
+| `unaudited` | **No delivery audit has been performed.** Read as *unknown*, never as *holds*. |
+
+Most crossings are `unaudited`: the field was introduced by a register-repair change
+that audited two crossings, and an unaudited crossing gets an explicit deferral rather
+than a fabricated delivery claim. Today exactly one crossing is `not-delivered`:
+
+- **DE-08 (Metadata/control-plane SSRF, Critical) is NOT DELIVERED.** Default-deny
+  egress and blocked metadata/control-plane ranges are **required and absent**, not
+  in force. Finding `E8-F003` records the measurement against real E2B sandboxes —
+  with a positive control and an apparatus control that both held — that the declared
+  egress allowlist is inert and that `169.254.169.254` answers from inside the guest.
+  DE-08's clause fields are written in the required form for this reason. The control
+  remains chartered and its severity is unchanged; nothing here closes it.
+
 ### Hardening-amendment coverage
 
 The register represents every crossing the foundation hardening amendment
