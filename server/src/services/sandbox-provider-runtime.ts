@@ -780,10 +780,27 @@ export function createE2bSandboxRuntimeProvider(
           aoaProvider: "e2b",
           companyId: input.companyId,
           environmentId: input.environmentId,
-          // S4 — best-effort managed recording only (§11/§12: managed E2B
-          // egress is not fully lockable). Omitted entirely when no
-          // allowlist was supplied, so the pre-existing exact `create(...)`
-          // call assertions in sandbox-provider-runtime.test.ts stay green.
+          // S4 — best-effort managed recording only. This is a `metadata`
+          // string; nothing reads it back and nothing enforces it (E8-F003
+          // measured that, against real E2B, with both controls holding).
+          //
+          // ★ The old wording here said the spec's "§11/§12: managed E2B
+          // egress is not fully lockable" (E8-F007). Do not restate that as
+          // the reason. The installed, lockfile-pinned e2b@2.30.5 DOES expose
+          // an egress surface — `SandboxOpts.network` (allowOut/denyOut/rules)
+          // reaching the create body via `buildNetworkBody`, `updateNetwork`
+          // for a running sandbox, and a `getInfo()` read-back of what the
+          // server applied. What is UNMEASURED is whether the operator's E2B
+          // tier honours a network body at all; nothing client-side validates
+          // it, and the API target is per-company configurable, so a tolerant
+          // server can return 200 and leave the sandbox unpoliced. That is why
+          // this call still passes `metadata` and NOT `network`: adopting the
+          // real surface requires the probe plus a mandatory read-back, and is
+          // deliberately out of scope for a record-and-guard change.
+          //
+          // Omitted entirely when no allowlist was supplied, so the
+          // pre-existing exact `create(...)` call assertions in
+          // sandbox-provider-runtime.test.ts stay green.
           ...(input.egressAllowlist && input.egressAllowlist.length > 0
             ? { egressAllowlist: input.egressAllowlist.join(",") }
             : {}),

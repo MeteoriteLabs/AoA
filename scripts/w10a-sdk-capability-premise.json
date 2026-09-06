@@ -1,0 +1,75 @@
+{
+  "_readme": [
+    "The declaration behind scripts/check-w10a-sdk-capability-premise.mjs. See E8-F007.",
+    "",
+    "`surfaceMarkers` are the literal strings a human READ in the resolved package on the",
+    "date below. They are quoted, not inferred: the defect this guard closes is a sentence",
+    "about a dependency that nobody re-read for a year.",
+    "",
+    "`stalePatterns` are stored as regex SOURCE strings so this file does not match the",
+    "pattern it declares (`not\\s+fully\\s+lockable` as literal text contains backslash-s,",
+    "not whitespace).",
+    "",
+    "This declaration asserts a CAPABILITY IN AN ARTIFACT. It asserts nothing about whether",
+    "the operator's E2B tier honours a network body at runtime — that is unmeasured, and a",
+    "probe is a separate unit. Do not read this file as 'egress is locked'."
+  ],
+  "package": "e2b",
+  "measuredVersion": "2.30.5",
+  "measuredOn": "2026-09-07",
+  "measuredBy": "W10A",
+  "finding": "E8-F007",
+  "resolveFrom": ["server/package.json", "packages/sandbox-e2b-provider/package.json"],
+  "correctionMarkers": ["E8-F007"],
+  "contextWindowLines": 6,
+  "surfaceMarkers": [
+    {
+      "file": "dist/index.d.ts",
+      "needle": "type SandboxNetworkOpts = {",
+      "why": "the egress option type exists at all: allowOut / denyOut / rules / allowPublicTraffic"
+    },
+    {
+      "file": "dist/index.d.ts",
+      "needle": "network?: SandboxNetworkOpts;",
+      "why": "SandboxOpts — i.e. Sandbox.create's own options — carries it"
+    },
+    {
+      "file": "dist/index.d.ts",
+      "needle": "network?: SandboxNetworkInfo;",
+      "why": "SandboxInfo carries it back, so an applied configuration is READABLE (the read-back that makes a tolerant or self-hosted 200 detectable)"
+    },
+    {
+      "file": "dist/index.d.ts",
+      "needle": "updateNetwork(network: SandboxNetworkUpdate",
+      "why": "a RUNNING sandbox's egress configuration can be replaced"
+    },
+    {
+      "file": "dist/index.js",
+      "needle": "function buildNetworkBody(",
+      "why": "the runtime actually serialises the option rather than declaring a type nothing sends"
+    },
+    {
+      "file": "dist/index.js",
+      "needle": "network: buildNetworkBody(",
+      "why": "and puts the result in the POST /sandboxes body"
+    },
+    {
+      "file": "dist/index.js",
+      "needle": "\"/sandboxes/{sandboxID}/network\"",
+      "why": "the update endpoint is real, not a type-only stub"
+    },
+    {
+      "file": "dist/index.js",
+      "needle": "network: res.data.network ?",
+      "why": "getInfo maps the server's response back, which is what a read-back verification would consume"
+    }
+  ],
+  "stalePatterns": [
+    {
+      "id": "not-fully-lockable",
+      "pattern": "not\\s+(?:fully\\s+)?lockable",
+      "minOccurrences": 1,
+      "why": "The sentence family that actually occurred, in six tracked files, for a year: 'Managed-E2B egress is not fully lockable' (REFUTED as a capability claim — E8-F007). It is a NEGATIVE CAPABILITY CLAIM about a dependency, and the installed dependency contradicts it (surfaceMarkers above). Quoting it stays legal — the record has to be able to quote what it corrects — but only with a correctionMarker within contextWindowLines. This pattern covers the sentence, NOT the idea: a rewording evades it, and saying so is cheaper than letting a reader believe the class is covered."
+    }
+  ]
+}
