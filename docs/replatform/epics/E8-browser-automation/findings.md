@@ -226,6 +226,40 @@ machine-readable register entry repaired, 2026-09-05** after review. Every claim
 re-measured rather than inherited. §7 states what changed on review — including a correction to
 this unit's own first commit, which took a downgrade it said it had not taken.
 
+### 0. CORRECTION, 2026-09-07 (W10A) — one of this finding's stated REASONS is unsupported. Its CONCLUSION is unchanged.
+
+**Status, severity and ownership are NOT touched by this note**, and nothing below is a downgrade.
+What changes is a premise, not a verdict.
+
+§2 concludes *"§D3 option (b) — constrain egress at the provider — is **unavailable**, so the
+in-sandbox enforcement point D3(c) is the ONLY layer rather than defence in depth."* The stated
+ground for "unavailable" was the 2026-08-05 spec's §12 bullet, quoted approvingly in §5 below:
+*"Managed-E2B egress is not fully lockable."* **That bullet is refuted as a CAPABILITY claim.**
+Finding **`E8-F007`** measured the installed, lockfile-pinned `e2b@2.30.5` and found
+`SandboxOpts.network` reaching the create body, `updateNetwork` for a running sandbox, and a
+`getInfo()` read-back of the applied configuration. The provider layer therefore has a real,
+shipped configuration surface that this finding recorded as absent.
+
+**Three things this note does NOT say, stated so it is not over-read:**
+
+1. **It does not close, weaken or reduce this finding.** §3's conclusion — *enforcement exists at
+   NO layer* — is untouched and was measured independently at each of the three points. A
+   capability that exists and is not called changes nothing about what runs.
+2. **It does not say egress can be locked.** Whether the operator's E2B tier honours a `network`
+   body is UNMEASURED. Nothing validates the body client-side (`buildNetworkEgress` is a
+   passthrough; the only error path is HTTP status) and the API target is per-company configurable,
+   so a tolerant or self-hosted server can return `200` and leave the sandbox unpoliced with
+   identical code and identical logs. A read-back is mandatory before anyone relies on it.
+3. **It does not move §2's measurement.** The probe measured `metadata.egressAllowlist`, which is
+   what AoA actually sends. That result stands exactly as recorded: a `metadata` string is inert,
+   and the SDK never claimed otherwise.
+
+**What it does change for the disposition.** "Option (b) is unavailable" must now be read as
+*"option (b) is UNADOPTED, and whether the operator's tier honours it is unmeasured"*. D3(c) is
+still the only layer that exists **today**, but the reason is a build gap, not a missing capability
+— and defence in depth at the provider is back on the table for whoever takes ownership. Do not
+cite the §12 bullet as a reason for anything without reading `E8-F007` first.
+
 ### 1. ★★★ The headline: four programme records state this control as fact, and one is a Critical crossing whose sole owner has already shipped
 
 This is what the finding is *for*. The measurement (§2–§4) is the evidence; **the misrepresentation
@@ -314,6 +348,9 @@ scoped to browser sessions alone would not close it.
 **Consequence for BRW-004's design.** §D3 option (b) — constrain egress at the provider — is
 **unavailable**, so the in-sandbox enforcement point D3(c) is the ONLY layer rather than defence in
 depth. A browser induced to reconfigure its own proxy is contained by nothing else.
+**★ CORRECTED 2026-09-07 — read §0 first: "unavailable" was grounded in a capability claim that
+`E8-F007` refutes. The correct reading is UNADOPTED-and-unmeasured, not absent. D3(c) being the
+only layer today is unchanged; the reason for it is not.**
 
 ### 3. There is no enforcement layer at ANY of the three candidate points
 
@@ -359,7 +396,10 @@ The measurement **confirms** every one of these; none is contradicted, and none 
   than quoting them.
 - **The deployed system's own spec.** `docs/aoa/plans/2026-08-05-cloud-execution-isolation-e2b-spec.md`
   §12, first bullet: *"Managed-E2B egress is not fully lockable. On managed E2B, sandboxes get
-  fairly open egress; the 'allowlist' (Q2) may be closer to open in practice there."* Its §9
+  fairly open egress; the 'allowlist' (Q2) may be closer to open in practice there."*
+  **★ The first sentence of that quotation is REFUTED as a capability claim — `E8-F007`, and §0
+  above. The rest of the bullet, and this section's point that the deployed layer is honest about
+  what it enforces, are unaffected: what is inert is `metadata`, which is what AoA sends.** Its §9
   **Security invariants** list contains **no egress invariant at all**, and Q2's rationale (§3)
   calls the choice *"not a cross-tenant control (data plane owns that)"*. Nothing at the deployed
   `cloud_auth` layer represents egress as a security boundary, so the measurement breaks no promise
@@ -571,3 +611,168 @@ or an entry in the existing `browser-spawn-expectation.json` / boot-root guards,
 reason about spawn sites rather than imports. Deliberately not built here: choosing E8-1's
 promotion observable is an E8 gate decision, and W5U1's charter is filing plus the one checker fix
 (E4-F018).
+
+---
+
+## E8-F007 — The programme booked "managed-E2B egress is not fully lockable" as fact for a year; the installed SDK exposes the surface, and that false premise is what wrote off the only enforcement layer outside the guest
+
+**Status:** open · **Owner:** `unowned`
+**Severity:** HIGH — argued in §4, with the counter-argument for MEDIUM recorded rather than
+settled.
+**Filed:** 2026-09-07 (W10A), by reading the installed dependency rather than the record.
+
+### 1. What was measured, and on what artifact
+
+**Resolved package inspected: `e2b@2.30.5`** — the version `pnpm-lock.yaml` resolves (`e2b@2.30.5:`
+in both the packages and snapshots sections) and the version installed on disk at
+`node_modules/.pnpm/e2b@2.30.5/node_modules/e2b/package.json` (`"version": "2.30.5"`). It resolves
+from both workspace packages that declare it — `server/package.json` and
+`packages/sandbox-e2b-provider/package.json`, both `"e2b": "^2.30.5"`. Line numbers below are from
+that build's `dist/`; they are given for a reader's convenience, and the literal strings — not the
+line numbers — are what `scripts/w10a-sdk-capability-premise.json` pins.
+
+**Types (`dist/index.d.ts`).** The option type exists, is carried by `Sandbox.create`'s own
+options, is returned by the info endpoint, and can be replaced on a running sandbox:
+
+```ts
+type SandboxNetworkOpts = {                    // :7168
+    allowOut?: SandboxNetworkSelector;         // "Allow outbound traffic … to the specified addresses"
+    denyOut?: SandboxNetworkSelector;          // "Block all egress: ({ allTraffic }) => [allTraffic]"
+    rules?: SandboxNetworkRules;
+    allowPublicTraffic?: boolean;
+    maskRequestHost?: string;
+};
+network?: SandboxNetworkOpts;                  // :7340 — on SandboxOpts, i.e. Sandbox.create
+network?: SandboxNetworkInfo;                  // :7507 — on SandboxInfo, i.e. READ BACK
+static updateNetwork(sandboxId: string, network: SandboxNetworkUpdate, opts?): Promise<void>; // :7622
+```
+
+**Runtime (`dist/index.js`).** The option is serialised and reaches the wire, and the read-back is
+mapped — this is not a type-only stub:
+
+```js
+function buildNetworkBody(network) { … }                        // :4221
+network: buildNetworkBody(opts?.network),                       // :4579, inside the POST /sandboxes body
+client.api.PUT("/sandboxes/{sandboxID}/network", { … body: buildNetworkUpdateBody(network) }) // :4429
+network: res.data.network ? { allowOut: …, denyOut: …, rules: … } : void 0  // :4307-4312, in getInfo
+```
+
+`SandboxOpts` additionally carries `allowInternetAccess`, documented as *"When set to false, it
+behaves the same as specifying denyOut to 0.0.0.0/0 in the network config"* (`:2010`, `:7327`).
+
+### 2. What the record says instead, in six tracked files
+
+The claim is stated as fact, in the present indicative, with no hedge and no citation to any
+measurement, in every one of these. The list came from scanning tracked files rather than from
+trusting a hand-list — the site list has been incomplete in every prior round of this programme.
+Every row below is a QUOTATION being corrected by this finding, `E8-F007`, not an assertion.
+
+| file | what it says |
+|---|---|
+| `docs/aoa/plans/2026-08-05-cloud-execution-isolation-e2b-spec.md:180` | *"Managed-E2B egress is not fully lockable."* — §12, the deployed system's own spec |
+| `docs/aoa/plans/2026-08-06-e2b-plan-wave4-files.md:16` | *"§11 documents managed egress is not fully lockable"* |
+| `docs/aoa/plans/2026-08-06-e2b-plan-wave4-files.md:105` | *"do not throw if managed E2B cannot enforce it (§11 — managed egress is not fully lockable; enforcement is a self-hosted concern)"* |
+| `server/src/services/sandbox-provider-runtime.ts:783-786` | a production comment, on the create call itself: *"§11/§12: managed E2B egress is not fully lockable"* |
+| `server/src/__tests__/sandbox-egress-allowlist.test.ts:5, :88` | the same sentence, twice, as the stated reason the provider records rather than enforces (both now annotated with `E8-F007`) |
+| `E8-F003` §5 above, and its `scripts/finding-ownership.json` entry | quotes the spec bullet approvingly, and §2's *"option (b) is unavailable"* rests on it |
+
+**The last row is the consequence, and it is why this is filed at HIGH rather than as a docs fix.**
+`E8-F003` is a HIGH finding about a `Critical` control (`DE-08`) that is enforced at no layer. Its
+own reasoning concludes that constraining egress **at the provider** — the one enforcement point
+outside the guest — is *unavailable*, leaving the in-guest point as the only layer. And every
+in-guest mechanism is agent-writable by construction: `buildE2bLoginShellScript`
+(`sandbox-provider-runtime.ts:647-655`) sources `/etc/profile`, `$HOME/.profile` and
+`$HOME/.bashrc` from an agent-writable home before `exec env … claude`. So the false premise did
+not merely sit in a document — **it wrote off the only layer the agent cannot edit.**
+
+### 3. What `E8-F007` claims, and three things it explicitly does NOT claim
+
+**Claims:** the capability EXISTS IN THE INSTALLED ARTIFACT, and the "not lockable" premise is
+unsupported by anything in the record. No measurement was ever written down behind it; it
+propagated by citation.
+
+**Does NOT claim:**
+
+1. **That the control works.** Nobody has run it. No AoA code path passes `network` to
+   `Sandbox.create` today — the allowlist crosses as `metadata`, which `E8-F003` measured inert.
+   Reading this finding as *"we can lock egress"* would be the same error in the opposite
+   direction, and would be worse, because it would be a false claim of enforcement.
+2. **That the operator's tier honours it.** UNMEASURED, and it is the open question. Two facts make
+   a read-back mandatory rather than optional: `buildNetworkEgress` (`dist/index.js:4214-4219`) is a
+   pure passthrough — nothing is validated client-side, and the only error path is HTTP status — and
+   the API target is per-company configurable (`resolveE2bDomain = config.domain ?? env.E2B_DOMAIN`,
+   `sandbox-provider-runtime.ts:577-578`, with a self-hosted branch at `:545`). **A tolerant or
+   self-hosted server that ignores an unknown field returns 200 and yields an UNPOLICED sandbox with
+   identical code and identical logs.** A probe unit is being built separately; its result belongs
+   here when it lands.
+3. **That `E8-F003` is closed, downgraded, or wrong in its conclusion.** It is none of those. Its
+   conclusion — enforcement exists at no layer — is untouched, and was measured independently at
+   each of the three candidate points. `E8-F003` §0 records the correction and says exactly this.
+
+### 4. Why HIGH
+
+Two reasons, neither of which is "a document was wrong".
+
+**(a) It is a false NEGATIVE capability claim, and those suppress work rather than merely
+misinform.** This programme's stated calibration is that a false claim of enforcement is the
+intolerable direction and a pessimistic error is the tolerable one. That calibration does not cover
+this case. A false claim that something is IMPOSSIBLE is pessimistic about capability and
+*permissive* about consequence: it closes the remedy rather than over-promising a protection. Here
+it closed the only out-of-guest remedy for a `Critical` control whose owner column is already
+exhausted. The under-claim was load-bearing.
+
+**(b) Nothing could have caught it, and that is the reusable half.** Every guard in this repository
+checks a claim about THIS repository — a clause against its symbol's caller count, a `reason`
+against the source file it cites. A sentence about what a THIRD-PARTY ARTIFACT cannot do had no
+checker of any kind, and it is exactly the sentence that rots on its own: the artifact ships a new
+version, nobody re-reads its types, and the claim keeps being cited forward. Six files, one year,
+zero red.
+
+**The argument for MEDIUM, recorded rather than settled.** No live system is less safe because of
+this: the `metadata` string is inert either way, distributed execution is default-off, and `DE-08`
+was already open at `Critical` with `E8-F003` filed at HIGH. On that reading this is a
+documentation defect whose only cost is a foreclosed design option. A reviewer could reasonably
+land there. I do not, for reason (a) — a foreclosed design option on a Critical control with no
+owner is one of the things keeping it un-owned — but the next reader should see both.
+
+### 5. What was done here, and what was deliberately not
+
+**Done (record + guard only; NO enforcement behaviour changed):**
+
+- The code comment at `sandbox-provider-runtime.ts` no longer asserts the premise. It states that
+  the capability exists in the installed SDK, that whether the operator's tier honours it is
+  unmeasured, and why the call still passes `metadata` — citing this finding. **No predicate, no
+  call, no argument changed.**
+- Every other site in §2 carries a dated correction adjacent to the claim. The historical documents
+  keep their original sentences: a record that silently rewrites what it used to believe is worse
+  than one that shows the correction next to it.
+- `E8-F003` gained §0 — a dated note that one of its stated reasons is unsupported, with its status,
+  severity, ownership and conclusion untouched.
+- `scripts/check-w10a-sdk-capability-premise.mjs` + `scripts/w10a-sdk-capability-premise.json`: the
+  premise cannot be reintroduced silently while the SDK exposes the surface. It pins the measured
+  version against the lockfile (a bump forces re-measurement), checks the declared surface markers
+  against the resolved package in the lane that installs dependencies, requires a correction marker
+  beside any quotation of the refuted sentence, and fails if its own ban pattern ever stops matching
+  anything — a ban that matches nothing is a check that nothing runs.
+
+**Deliberately not done:** passing `network` to `Sandbox.create`. That is an enforcement change; it
+needs the tier measurement, a mandatory `getInfo()` read-back (§3.2), a decision about what a failed
+read-back should do to a run, and an owner. Shipping it on the strength of a type declaration would
+be the false-enforcement error this finding exists to avoid.
+
+**Known limit of the guard, stated rather than implied.** It bans the sentence family that actually
+occurred, not the idea. A rewording evades it. Pretending otherwise would be a false claim of
+enforcement in a new place; the guard's own header says so.
+
+### 6. Disposition — why `unowned`
+
+No ticket in the roster is chartered to measure whether the E2B tier honours a `network` body, or to
+adopt the surface with a read-back. `E8-F003` remains the right home for the *enforcement gap*; this
+finding owns the *premise*, and its remaining half is a measurement nobody is assigned. Repoint it
+when a ticket takes provider-level egress adoption for the sandbox path — the same bar `E8-F003`
+sets, and for the same reason.
+
+**Do not close this by citing the type declarations.** A type is not a measurement, and this finding
+is the record of what happens when a capability claim is taken on citation. Close it when a probe
+records what the operator's tier does with a `network` body — in both directions, honoured and
+ignored — or when the surface is adopted with a read-back that fails closed.

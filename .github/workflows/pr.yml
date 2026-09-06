@@ -359,6 +359,28 @@ jobs:
           node --test scripts/lib/__tests__/register-id-uniqueness.test.mjs
           node scripts/check-register-id-uniqueness.mjs
 
+      - name: SDK capability premise (a negative claim about a dependency is a claim)
+        run: |
+          # E8-F007. "Managed-E2B egress is not fully lockable" was recorded as settled fact
+          # in six tracked files for a year - including a production comment on the create
+          # call, and inside E8-F003's own reasoning, where it supplied the premise for
+          # "option (b) is unavailable" and so wrote off the ONE enforcement layer outside
+          # the guest for a Critical control that no layer enforces. The installed,
+          # lockfile-pinned e2b@2.30.5 contradicts it.
+          #
+          # Nothing could have caught it: every other guard here checks a claim about THIS
+          # repository. A sentence about what a THIRD-PARTY ARTIFACT cannot do had no checker.
+          #
+          # This lane has no `pnpm install`, so it runs WITHOUT --require-sdk: the lockfile
+          # pin and the stale-claim ban run here and the live surface is measured in `verify`,
+          # which does install. The guard REPORTS the half it could not measure rather than
+          # counting it green - see the --require-sdk step in `verify`.
+          #
+          # Both commands in ONE step deliberately: two steps are two chances to run only one
+          # of them, and the one skipped is the one that failed.
+          node --test scripts/check-w10a-sdk-capability-premise.test.mjs
+          node scripts/check-w10a-sdk-capability-premise.mjs
+
       - name: Guard inventory (every check declares what runs it)
         run: |
           node --test scripts/lib/__tests__/guard-inventory.test.mjs
@@ -986,6 +1008,15 @@ jobs:
       # needs the built `dist`; the dependency-free `policy` job cannot run it.
       - name: Worker protocol package import smoke
         run: node scripts/check-worker-protocol-package.mjs
+
+      # The half of scripts/check-w10a-sdk-capability-premise.mjs that needs an installed
+      # dependency. Lives HERE, after `pnpm install`, for the same reason the worker-protocol
+      # import smoke does: the dependency-free `policy` job cannot resolve `e2b` and runs the
+      # same guard without --require-sdk. Under the flag, an unresolvable SDK is a FAILURE
+      # rather than a note, so the surface behind E8-F007 is measured somewhere on every PR
+      # and never merely asserted.
+      - name: SDK capability premise (live surface - E8-F007)
+        run: node scripts/check-w10a-sdk-capability-premise.mjs --require-sdk
 
       - name: Tool contract freshness
         run: |
