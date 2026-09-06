@@ -1754,12 +1754,26 @@ REQUIRED for an unattended run, in three independent places:
 - `packages/adapters/claude-local/src/server/execute.ts:735-748` builds the same
   `--print - --output-format stream-json --verbose` argv and then pushes EITHER `--settings`
   (the PreToolUse permission bridge) OR `--dangerously-skip-permissions`. The two are mutually
-  exclusive by an explicit comment at `:740-742`, but one of them is always chosen. It ALSO pushes
+  exclusive by an explicit comment at `:740-742`. **Precisely measured, the construct is
+  `if (hookSettingsFilePath) … else if (dangerouslySkipPermissions) …` with NO `else`** —
+  `dangerouslySkipPermissions` is `asBoolean(config.dangerouslySkipPermissions, false)` (`:368`,
+  defaults FALSE) and `hookSettingsFilePath` is non-null only when the caller explicitly opts in via
+  `runtimeHookBridge?.enabled` (`:567`, `:571-591`) — so a `claude_local` agent whose config sets
+  NEITHER gets NEITHER flag. What is always true is narrower: **crew-resolved** agents always carry a
+  posture, because `resolve-crew-adapter.ts:53` sets `dangerouslySkipPermissions: true` on every
+  claude crew row it mints and `:197` backfills legacy rows that lack it. It ALSO pushes
   `--allowedTools mcp__aoa` (`:756-758`) when a managed MCP config is present and skip-permissions is
   not, *"so a headless agent run would otherwise be denied every `mcp__aoa__*` call … with no human
   to grant it"*. The distributed literals choose NONE of the three.
+  ★ **That fall-through is STRENGTHENING, not weakening.** The no-posture state is not a benign
+  fourth option the adapter offers — it is exactly the state the crew backfill below exists to
+  eliminate, met in production and remedied by rewriting founder rows on boot. The distributed
+  literals put every run permanently into that state, with no resolver and no backfill above them.
 - `server/src/services/internal-agent/cli-mode.ts:598` / `:601` are the Commander/crew equivalents
-  (`claudeBypassArgs` / `codexBypassArgs`).
+  (`claudeBypassArgs` / `codexBypassArgs`). These are likewise conditional, not unconditional —
+  both are gated on `vendorCliBypassEnabled` (`:597-602`) and are `[]` when it is false. The point
+  is the same as above: where the shipped product runs this argv shape unattended, a posture is
+  resolved deliberately by a caller; the distributed literals have no such caller.
 - ★★★ **A UAT-measured production defect is recorded for the flag's ABSENCE.**
   `server/src/services/internal-agent/aoa-agents/resolve-crew-adapter.ts:145-153` records backfill
   case 2 — claude_local crew agents missing `dangerouslySkipPermissions` — because the pre-fix
