@@ -5,10 +5,11 @@
 // would have stopped four epics reporting `complete` while the capability they name had
 // never once run.
 
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { evaluateGateClauseWiring } from "../gate-clause-wiring.mjs";
+import { evaluateGateClauseWiring, evaluateProviderCapabilityClaims } from "../gate-clause-wiring.mjs";
 
 const kinds = (r) => r.problems.map((p) => p.kind);
 
@@ -114,4 +115,163 @@ test("★ expectedReferences allows a KNOWN-unreachable reference, and still cat
   // And an unacknowledged reference is still caught (default expected is 0).
   const at3 = evaluateGateClauseWiring({ declared: entry({}), callerCounts: { runBrowserSession: 1 } });
   assert.equal(at3.ok, false);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// W4U1 — provider-capability claims: the register's prose about source, checked against source.
+//
+// ★ The test that matters is `capability_claim_source_mismatch` on ONE claim while the OTHER
+// claim on the SAME clause stays green. E5-2's reason asserted a value for both shipped
+// providers; PR #353 falsified exactly one half. A guard that reddens on both halves proves
+// only that it noticed the file changed — not that it can tell a stale claim from a live one.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+const E2B = "packages/sandbox-e2b-provider/src/e2b-provider.ts";
+const WIRE = "packages/provider-wire/src/driver.ts";
+
+/** The register as it stands after W4U1: one provider moved, one did not. */
+function e5_2({ e2bExpect = "grant_upload", wireExpect = "none", reason } = {}) {
+  return {
+    "E5-2": {
+      status: "unwired",
+      symbol: "createArtifactExportSequencer",
+      reason:
+        reason ??
+        `e2b-provider.ts declares artifactExportMode = grant_upload while ${WIRE} still declares artifactExportMode = none.`,
+      providerCapabilityClaims: [
+        { file: E2B, property: "artifactExportMode", expect: e2bExpect },
+        { file: WIRE, property: "artifactExportMode", expect: wireExpect },
+      ],
+    },
+  };
+}
+
+const TRUE_SOURCE = {
+  [`${E2B}::artifactExportMode`]: "grant_upload",
+  [`${WIRE}::artifactExportMode`]: "none",
+};
+
+const claimKinds = (r) => r.problems.map((p) => p.kind);
+const mentions = (r, needle) => r.problems.filter((p) => String(p.detail ?? "").includes(needle));
+
+test("the register as corrected matches source and passes", () => {
+  const r = evaluateProviderCapabilityClaims({ declared: e5_2(), sourceValues: TRUE_SOURCE });
+  assert.equal(r.ok, true, JSON.stringify(r.problems));
+  assert.equal(r.claimCount, 2);
+});
+
+test("★ THE MUTATION — a stale claim about ONE provider FAILS, and the other provider's claim stays GREEN", () => {
+  // This is the pre-W4U1 register state: both halves asserted "none", which PR #353 made
+  // false for the E2B provider only.
+  const r = evaluateProviderCapabilityClaims({
+    declared: e5_2({
+      e2bExpect: "none",
+      reason: `BOTH shipped providers declare artifactExportMode=none (${E2B}, ${WIRE}).`,
+    }),
+    sourceValues: TRUE_SOURCE,
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(claimKinds(r), ["capability_claim_source_mismatch"]);
+  assert.match(r.problems[0].detail, /e2b-provider\.ts declares artifactExportMode = "grant_upload"/);
+
+  // ★ POSITIVE CONTROL, same evaluation: NOTHING is reported against the provider-wire half,
+  // whose claim is still true. A mutation that reddens both proves nothing specific.
+  assert.equal(mentions(r, WIRE).length, 0, "provider-wire's claim must stay green");
+});
+
+test("★ the PROSE is checked too — a correct structured claim beside a stale sentence still FAILS", () => {
+  // The half that actually rotted was the sentence, not a field. Checking only the new field
+  // would leave the stale-prone string untouched beside a checked one.
+  const r = evaluateProviderCapabilityClaims({
+    declared: e5_2({ reason: `BOTH shipped providers declare artifactExportMode=none (${E2B}, ${WIRE}).` }),
+    sourceValues: TRUE_SOURCE,
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(claimKinds(r), ["capability_claim_absent_from_reason"]);
+  assert.match(r.problems[0].detail, /never states artifactExportMode = "grant_upload"/);
+});
+
+test("prose asserting a value NO claim declares is caught in the other direction", () => {
+  const r = evaluateProviderCapabilityClaims({
+    declared: e5_2({
+      reason: "artifactExportMode = grant_upload here, artifactExportMode = none there, artifactExportMode = grant_download somewhere.",
+    }),
+    sourceValues: TRUE_SOURCE,
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(claimKinds(r), ["capability_claim_unbacked_in_reason"]);
+  assert.match(r.problems[0].detail, /grant_download/);
+});
+
+test("★ prose that names a watched property with NO claim at all is refused — the front-door loophole", () => {
+  const r = evaluateProviderCapabilityClaims({
+    declared: {
+      "E5-9": { status: "unwired", symbol: "x", reason: "both providers declare artifactExportMode none" },
+    },
+    sourceValues: {},
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(claimKinds(r), ["capability_claim_undeclared"]);
+});
+
+test("a clause that says nothing about a watched property is untouched", () => {
+  const r = evaluateProviderCapabilityClaims({
+    declared: { "E4-2": { status: "unwired", symbol: "createSupervisor", reason: "needs DEP-010" } },
+    sourceValues: {},
+  });
+  assert.equal(r.ok, true, JSON.stringify(r.problems));
+  assert.equal(r.claimCount, 0);
+});
+
+test("a file that declares the property nowhere, or declares it twice, is REFUSED rather than guessed", () => {
+  const missing = evaluateProviderCapabilityClaims({
+    declared: e5_2(),
+    sourceValues: { ...TRUE_SOURCE, [`${E2B}::artifactExportMode`]: null },
+  });
+  assert.deepEqual(claimKinds(missing), ["capability_claim_source_missing"]);
+
+  const ambiguous = evaluateProviderCapabilityClaims({
+    declared: e5_2(),
+    sourceValues: { ...TRUE_SOURCE, [`${E2B}::artifactExportMode`]: ["grant_upload", "none"] },
+  });
+  assert.deepEqual(claimKinds(ambiguous), ["capability_claim_source_ambiguous"]);
+
+  // An unmeasured symbol is not evidence of anything — same posture as symbol_not_measured.
+  const unmeasured = evaluateProviderCapabilityClaims({ declared: e5_2(), sourceValues: {} });
+  assert.deepEqual(claimKinds(unmeasured), ["capability_claim_not_measured", "capability_claim_not_measured"]);
+});
+
+test("a malformed claim is reported and does not silently pass as a checked one", () => {
+  for (const claim of [null, { property: "artifactExportMode", expect: "none" }, { file: "a.ts", expect: "none" }, { file: "a.ts", property: "checkpointMode", expect: "none" }, { file: "a.ts", property: "artifactExportMode" }]) {
+    const r = evaluateProviderCapabilityClaims({
+      declared: { C: { reason: "", providerCapabilityClaims: [claim] } },
+      sourceValues: {},
+    });
+    assert.equal(r.ok, false, JSON.stringify(claim));
+    assert.deepEqual(claimKinds(r), ["malformed_capability_claim"], JSON.stringify(claim));
+  }
+
+  const notArray = evaluateProviderCapabilityClaims({
+    declared: { C: { reason: "", providerCapabilityClaims: {} } },
+    sourceValues: {},
+  });
+  assert.deepEqual(claimKinds(notArray), ["malformed_capability_claim"]);
+});
+
+test("malformed input is refused, not assumed clean", () => {
+  assert.equal(evaluateProviderCapabilityClaims(null).ok, false);
+  assert.equal(evaluateProviderCapabilityClaims({ declared: [], sourceValues: {} }).ok, false);
+});
+
+// ── The LIVE register, read from disk. The tests above are hermetic; this one is the
+// anti-drift half: it asserts the shipped manifest declares the claims at all, so a future
+// edit cannot quietly delete `providerCapabilityClaims` and leave every hermetic test green.
+test("★ the shipped register declares E5-2's artifactExportMode claims for BOTH providers", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../../gate-clause-wiring.json", import.meta.url), "utf8"));
+  const entry = manifest.clauses["E5-2-fenced-object-commit-worker-half"];
+  assert.ok(entry, "E5-2 clause is missing from the register");
+  const claims = entry.providerCapabilityClaims ?? [];
+  const byFile = Object.fromEntries(claims.map((c) => [c.file, c]));
+  assert.equal(byFile[E2B]?.property, "artifactExportMode");
+  assert.equal(byFile[WIRE]?.property, "artifactExportMode");
 });
