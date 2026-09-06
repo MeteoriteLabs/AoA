@@ -402,6 +402,31 @@ jobs:
           # stops being true, this step reds and says so - no key required.
           node --test scripts/lib/__tests__/w7u1-agent-output-probe.test.mjs
 
+      - name: W10B egress-enforcement decision logic (proven WITHOUT the key)
+        run: |
+          # The keyed lane `keyed-e2b-w10b-egress-enforcement-probe.yml` runs on an
+          # operator's authorisation against real E2B. Every decision it makes - the CIDR
+          # containment behind the ABANDON question, the four mandatory control rows, each
+          # of the five three-state verdicts, the computed stop condition, and the secret
+          # redactor that keeps the key out of a public log - is a pure function here,
+          # exercised on every PR. Without this step the keyed run would be the FIRST
+          # execution of the code that reads it, which is how the first keyed conformance
+          # run produced 8 failures out of 18 (CLI-realE2B-hardening-result.md).
+          #
+          # It also asserts the lane's own YAML still carries its `always()` record guards,
+          # its fallback writer, its template default and its keyless positive control.
+          #
+          # It does NOT pin the stale-premise correction in sandbox-provider-runtime.ts, and
+          # an earlier version of this comment claimed it did. The check behind that claim
+          # read the file WHOLE, so one marked quotation anywhere in it satisfied the check
+          # while an unqualified restatement elsewhere in the same file passed unseen - a
+          # false claim of enforcement, made in a step comment. It is deleted rather than
+          # duplicated. The per-occurrence enforcement is the 'SDK capability premise' step
+          # above (plus its --require-sdk half in `verify`), which matches the stale sentence
+          # line by line in every tracked file and demands the E8-F007 correction marker
+          # within six lines of EACH match.
+          node --test scripts/lib/__tests__/w10b-egress-enforcement-probe.test.mjs
+
       - name: Release admission gate (REL-004)
         run: |
           node --test scripts/lib/__tests__/release-manifest.test.mjs

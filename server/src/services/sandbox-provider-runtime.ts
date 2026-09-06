@@ -798,6 +798,14 @@ export function createE2bSandboxRuntimeProvider(
           // real surface requires the probe plus a mandatory read-back, and is
           // deliberately out of scope for a record-and-guard change.
           //
+          // Unit W10B built the keyed probe that measures the tier question this
+          // comment leaves open, and the stop condition that would end the option
+          // (a guest DNS resolver inside the deny set: `denyOut` has no exclude, and
+          // any `allowOut` entry flips the whole policy to default-deny). It is built
+          // and NOT YET FIRED, so it is not a measurement. See
+          // `docs/replatform/epics/E8-browser-automation/tickets/W10B-egress-enforcement-runbook.md`.
+          // Nothing here applies a network policy: W10B measures, it does not enforce.
+          //
           // Omitted entirely when no allowlist was supplied, so the
           // pre-existing exact `create(...)` call assertions in
           // sandbox-provider-runtime.test.ts stay green.
