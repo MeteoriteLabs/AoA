@@ -57,6 +57,7 @@ import { describe, expect, it } from "vitest";
 // -----------------------------------------------------------------------------
 
 import { ALL_TRAFFIC, Sandbox } from "e2b";
+import type { SandboxNetworkOpts } from "e2b";
 
 import {
   AOA_API_TARGET_ID,
@@ -291,7 +292,7 @@ async function rawRow(sandbox: Sandbox, label: string, target: (typeof RAW_TARGE
  */
 async function runArm(
   label: string,
-  network: Record<string, unknown> | undefined,
+  network: SandboxNetworkOpts | undefined,
   opts: { httpTargets: { id: string; url: string }[]; raw: boolean; readResolvConf: boolean; readBack: boolean; ttlMs: number },
 ): Promise<Arm> {
   const arm = emptyArm(label);
@@ -305,7 +306,7 @@ async function runArm(
       timeoutMs: opts.ttlMs,
       metadata: { aoaProvider: "e2b", aoa_lane: `w10b-egress-${label}` },
       ...(network ? { network } : {}),
-    } as never);
+    });
     arm.created = true;
     arm.sandboxId = String(sandbox.sandboxId ?? "");
     // eslint-disable-next-line no-console
@@ -418,7 +419,7 @@ async function reuseArm(target: { id: string; url: string }): Promise<ReuseArm> 
       apiKey: KEY,
       timeoutMs: SMALL_TTL_MS,
       metadata: { aoaProvider: "e2b", aoa_lane: "w10b-egress-reuse" },
-    } as never);
+    });
     out.created = true;
     // eslint-disable-next-line no-console
     console.log(`[w10b/U/reuse] sandboxId = ${String(sandbox.sandboxId)} (created with NO network policy)`);
@@ -439,7 +440,7 @@ async function reuseArm(target: { id: string; url: string }): Promise<ReuseArm> 
     console.log(`[w10b/U/reuse] reuse shape = ${out.reuseShape} (${out.reuseShapeDetail})`);
 
     try {
-      await sandbox.updateNetwork({ denyOut: denyCidrs(DENY_SET_V4) } as never);
+      await sandbox.updateNetwork({ denyOut: denyCidrs(DENY_SET_V4) });
       out.updateOk = true;
     } catch (err) {
       out.updateOk = false;
