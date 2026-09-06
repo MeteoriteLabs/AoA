@@ -503,3 +503,71 @@ it is the "check that only exists where someone thought of it" pattern, not a gu
 blast radius across every schema file — larger than any E8 ticket and unrelated to browser
 automation. **Do not close it by adding more per-column pins.**
 
+
+## E8-F006 — E8-1's promotion check cannot detect E8-1's promotion: the live route stages and execs `runBrowserSession`, it never references it
+
+**Status:** open
+**Severity:** MEDIUM — the auditor rated this HIGH; the downgrade is argued below and is the only
+point on which this filing departs from the report.
+**Filed:** 2026-09-06 (W5U1), measured at `e1f723df2`.
+
+**What.** `E8-1-sandbox-local-browser` is declared `unwired` with `expectedReferences: 1`
+(`scripts/gate-clause-wiring.json`). For an `unwired` entry the evaluator gives exactly ONE
+mechanical signal, `scripts/lib/gate-clause-wiring.mjs:105-106`:
+
+```js
+const expected = typeof entry.expectedReferences === "number" ? entry.expectedReferences : 0;
+if (count > expected) { …unwired_but_now_has_caller… }
+```
+
+and the library's own comment states the intent: acknowledging a known count "keeps the
+promote-check sharp — it still fires the moment a NEW reference appears".
+
+**Measured: the promotion this clause exists to watch for adds no reference.** The route to live is
+written down in the code itself. `packages/browser-runtime/src/runner.ts:3-17` — "BRW-002 — THE
+IN-GUEST ENTRYPOINT. This is the boot root." — describes the host side as:
+
+```
+host: writeFiles(runner + session.json) -> exec(node runner.js session.json)
+```
+
+The host **stages a file and execs it**. Nothing on the host imports `browser-runtime`, calls
+`runFromConfig`, or names `runBrowserSession`; the package has no importer and is in no dependency
+list (the clause's own reason says so, and `grep -rn runBrowserSession --include=*.ts .` confirms
+the only non-test references are inside the package: the definition at `run-session.ts:139`, the
+`index.ts:35` re-export, the `runner.ts:43` import and the `runner.ts:65` call). Wiring BRW-004
+slice (f)+ — or any stage-and-exec delivery — leaves `countProductionCallers(runBrowserSession)` at
+exactly **1**, which is `expectedReferences`, which is not `> expected`. The check stays silent
+through the promotion.
+
+**This is the [[checks-that-nothing-runs]] shape, one field over from the one the register already
+guards.** `claimed_wired_but_no_caller` catches a clause claiming MORE than the code delivers.
+`unwired_but_now_has_caller` is the mirror, and for this clause the mirror is blind — not because
+the count is wrong, but because caller count is the wrong observable for a capability delivered by
+process exec rather than by import.
+
+**Why MEDIUM and not HIGH.** The error direction is PESSIMISTIC. If E8-1 goes live, the register
+keeps printing `DORMANT, on the record: … E8-1-sandbox-local-browser` on every green `policy` run —
+a false statement, but one that under-claims. Nothing ships on the strength of it; no gate opens
+that should have stayed shut. The programme's stated calibration is that a FALSE CLAIM OF
+ENFORCEMENT is the intolerable direction, and this is its opposite. A reviewer could argue HIGH on
+the ground that the register's comment asserts an enforcement ("it still fires the moment a NEW
+reference appears") that is untrue for this entry, and that argument is not silly — it is recorded
+here rather than settled, so the next reader sees both.
+
+**Scope, honestly — and this is wider than the report said.** `expectedReferences` is carried by
+exactly two clauses. The other, `E7-1-coding-journey` (`E2bSandboxProvider`, `expectedReferences: 4`),
+states its own promotion conditions as "the operator builds+deploys the adapter-manager image and
+DEP-011 wires the daemon consumer". The FIRST of those is a deploy action and adds no reference to
+anything, so at least half of E7-1's promotion is invisible to the same signal. I have not traced
+whether DEP-011's daemon consumer would add a fifth `E2bSandboxProvider` reference — that is a claim
+about unbuilt code and I will not guess it. What is measured is that the register's only
+promote-detector is reference count, and that BOTH clauses relying on it have promotion routes at
+least one of whose steps is invisible to it.
+
+**What would close it.** Something other than a reference count as E8-1's promotion signal — e.g. a
+declared assertion that no file outside `packages/browser-runtime` names `runner.js`/`run-session`,
+or an entry in the existing `browser-spawn-expectation.json` / boot-root guards, which already
+reason about spawn sites rather than imports. Deliberately not built here: choosing E8-1's
+promotion observable is an E8 gate decision, and W5U1's charter is filing plus the one checker fix
+(E4-F018).

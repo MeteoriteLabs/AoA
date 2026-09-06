@@ -850,3 +850,81 @@ entirely — is in **§5d**. Neither is closed, and no third claim replaces them
    step.
 
 **Disposition:** stays `unowned`. Item 1 is the remaining defect and is a diagnosis, not a line.
+
+## E6-F015 — The committed staging manifest boots a control plane against two NOLOGIN roles, and nothing in the manifest or any clause mints their credentials
+
+**Status:** open
+**Severity:** MEDIUM — corrected DOWN from the HIGH this was reported at; the correction is the
+substance of the finding and is stated first.
+**Filed:** 2026-09-06 (W5U1), measured at `e1f723df2`. Cross-links E7-F018 (the class: an
+operator/deployment precondition of a capability, recorded by no clause).
+
+### ★ FIRST — what was reported, and what measurement REFUTED
+
+This was handed over as: *"migrations `0211_tenant_rls_enforcement.sql:16` and
+`0213_e2_serving_role_correction.sql:11/:17` create `aoa_app` and `aoa_operator` NOLOGIN with no
+password. The only thing that mints credentials is
+`docker/control-plane/provision-d1-serving-roles.mjs`."*
+
+**The migration half is exactly right** and was re-measured:
+
+```
+sed -n '16p' packages/db/src/migrations/0211_tenant_rls_enforcement.sql
+sed -n '11p;17p' packages/db/src/migrations/0213_e2_serving_role_correction.sql
+```
+
+all three are `DO $$ … CREATE ROLE "aoa_app|aoa_operator" NOLOGIN NOSUPERUSER NOBYPASSRLS …`.
+
+**The "only minter" half is FALSE.** There is a second, in-repo, deployment-agnostic minter:
+`maybeProvisionDistributedExecutionRoles` (`server/src/index.ts:303`, called at `:562`), which runs
+`ALTER ROLE … WITH LOGIN PASSWORD …` on the owner connection immediately before
+`openDistributedExecutionDatabases` — gated on `config.distributedExecutionEnabled` AND on
+`AOA_APP_DB_PASSWORD` / `AOA_OPERATOR_DB_PASSWORD` being set. `0211`'s own header comment says so
+("the login credential is provisioned at boot from env (E2-D03, server/src/index.ts)"), and the
+campaign terrain doc records it as the RECOMMENDED route:
+`docs/replatform/qa/2026-08-31-campaign-blockers-and-fleet-terrain.md:161-166` lists **both** ways
+to grant LOGIN, calls the boot-env one "RECOMMENDED (works anywhere)", and warns that the passwords
+must match the ones embedded in the role URLs. Both env vars are also documented in
+`docs/deploy/environment-variables.md:110-111`.
+
+So "recorded by no clause" is true only in the narrowest sense (no `gate-clause-wiring.json` entry),
+and "recorded nowhere an operator looks" — the thing that would make it E7-F018-shaped — is **not**
+true. That is why the severity is MEDIUM, not HIGH.
+
+### What survives, and it is narrow
+
+The committed staging manifest cannot bring its own control plane up after its own `migrate` step.
+
+- `docker-compose.staging.yml:48-57` runs `migrate` with the owner URL. Migrations create both roles
+  **NOLOGIN**.
+- `docker-compose.staging.yml:61-86` and `:115-137` then start two control-plane replicas with
+  `AOA_DISTRIBUTED_EXECUTION_ENABLED: "true"` and `AOA_APP_DATABASE_URL` /
+  `AOA_OPERATOR_DATABASE_URL`.
+- Neither replica is given `AOA_APP_DB_PASSWORD` or `AOA_OPERATOR_DB_PASSWORD`
+  (`grep -n "AOA_APP_DB_PASSWORD\|AOA_OPERATOR_DB_PASSWORD" docker-compose.staging.yml` → **0 hits**),
+  so `maybeProvisionDistributedExecutionRoles` is a strict no-op there. No service in the manifest
+  runs `provision-d1-serving-roles.mjs` either — that script is reachable only from
+  `docker-compose.d1.yml`, whose own comment scopes it "D1 harness ONLY" (`:118`).
+- `server/src/index.ts:600-611` then opens both bounded pools with, in its own words, "deliberately
+  no owner fallback". So the boot **fails closed** on two roles that cannot log in.
+
+**The distinguishing detail, and why it is worth a finding at all rather than "one more `${…}`".**
+Every other operator input in that file appears in the file — as a named `${AOA_STAGING_*}`
+placeholder an operator reading the manifest can see and fill. The credential MINT is a *step*, not
+a variable: it appears nowhere in the manifest, in no comment in it, and in no checked-in guard.
+`scripts/check-staging-manifest.mjs` grades this exact file and prints "OK:
+docker-compose.staging.yml satisfies the DEP-006 staging config contract" without asking the
+question.
+
+### Why the error direction is benign, and why it is still worth recording
+
+The failure is loud: startup aborts before serving. Nothing runs unsafely, and no capability is
+over-claimed. What it costs is a deploy attempt and the time to rediscover a precondition that is
+written down two directories away and nowhere the operator is looking. That is a MEDIUM.
+
+**What would close it.** A comment in `docker-compose.staging.yml` beside the two role URLs pointing
+at `…campaign-blockers-and-fleet-terrain.md` §8, or the two password vars added as
+`${AOA_STAGING_*}` placeholders so the manifest names its own precondition. Not done here: W5U1's
+charter is "do not touch docker/ or the D1 compose files (another unit owns those)", and
+`docker-compose.staging.yml` is close enough to that boundary that editing it belongs to the
+deployment track.

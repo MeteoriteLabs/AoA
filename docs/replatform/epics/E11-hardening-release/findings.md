@@ -59,3 +59,58 @@ backupFile })`, or `pg_restore` for the custom-format dump — since there is no
 The finding resolves when a real operator restore entrypoint (an `aoa db:restore` command or an
 exercised harness wrapper) lands **and** the live staging rehearsal exercises it (the owed leg).
 Owned by REL-003.
+
+## E11-F003 — E11-5's register reason asserts a second call site that does not exist: the warm-sandbox reaper calls a DIFFERENT function
+
+**Status:** open
+**Severity:** MEDIUM (a register sentence describing source, refuted by source; the clause's
+`wired` verdict is unaffected)
+**Filed:** 2026-09-06 (W5U1), measured at `e1f723df2`.
+
+**What the register says.** `scripts/gate-clause-wiring.json` → `E11-5-provider-kill-switch`:
+
+> "Genuinely wired: called on the real poll path (job-leasing.ts) **and by the warm-sandbox
+> reaper**."
+
+**Measured.** `evaluateKillSwitches` (`server/src/services/execution-kill-switches.ts:230`) has
+exactly ONE production caller:
+
+```
+grep -rn "evaluateKillSwitches" --include=*.ts . | grep -v node_modules | grep -v __tests__ | grep -vi "\.test\."
+```
+
+→ `server/src/services/job-leasing.ts:49` (the import) and `:720` (the call), plus four COMMENTS
+that name it (`packages/db/src/schema/instance_settings.ts:18`,
+`server/src/services/execution-kill-switch-policy.ts:13,36`,
+`server/src/services/execution-kill-switches.ts:206`,
+`server/src/services/execution-target-resolver.ts:62`).
+`node scripts/check-gate-clause-wiring.mjs --counts` measures it at **1**.
+
+**What the reaper actually calls.** `server/src/services/warm-sandbox-reaper.ts:195` is:
+
+```js
+reclaimProviders = killedProviders(await readDocument(), EXECUTION_TARGET_KINDS);
+```
+
+`killedProviders` is a different function in the same module, and the comment two lines above says
+it is deliberately the OPPOSITE polarity: *"Fail-OPEN, inverted from leasing: `killedProviders`
+returns the empty set for an absent, malformed or unreadable document"* — where
+`evaluateKillSwitches` "refuses" an unreadable document (`execution-kill-switch-policy.ts:13`). So
+the register does not merely name the wrong symbol; it attributes to `evaluateKillSwitches` a second
+site whose actual occupant has the inverse failure mode.
+
+**What is NOT wrong.** `E11-5` is correctly `wired` — one real production caller is one, and
+`job-leasing.ts:720` is genuinely on the poll path. The clause's verdict, its `wired` status and
+its recorded REL-005 residual all stand. This finding is about the sentence beside them.
+
+**Why it matters at MEDIUM.** This is the failure class W4U1 built `providerCapabilityClaims` for,
+in the half that guard deliberately does not cover: the `symbol` field is machine-checked and has
+stayed honest, while the `reason` PROSE is read by nobody and rots. A reader auditing kill-switch
+coverage reads "and by the warm-sandbox reaper" and concludes the reaper refuses on an unreadable
+policy document. It does the opposite, by design and with a comment saying so — an inverted safety
+property inferred from a register string. No code is wrong; the map is.
+
+**What would close it.** Correct E11-5's `reason` to say `evaluateKillSwitches` has one production
+caller (`job-leasing.ts:720`) and that the warm-sandbox reaper reaches the same policy document
+through the deliberately fail-OPEN `killedProviders`. Not done here: W5U1's charter forbids
+changing an existing clause's declaration, and the `reason` is part of it.

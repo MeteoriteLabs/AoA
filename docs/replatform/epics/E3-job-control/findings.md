@@ -1974,3 +1974,155 @@ stripping the disclosure from the library, the register and the GO-BOOK; moving 
 
 **Disposition:** stays `unowned`. Items 1, 2 and 4 are the open remainder, and none of them is a line
 in a job-control ticket.
+
+## E3-F037 — A handed-off distributed attempt writes NO cost event, and E3-15's register reason asserts the opposite
+
+**Status:** open
+**Severity:** HIGH (arming the rollout dial produces spend no budget policy can see, cap or pause)
+**Filed:** 2026-09-06 (W5U1), measured at `e1f723df2`. Filed from a 35-agent dormancy audit; every
+number below was re-measured by hand in this worktree before filing, in both directions.
+
+**What the register says.** `scripts/gate-clause-wiring.json` → `E3-15-budget`:
+
+> "Parity bridge with zero callers; **budget/cost still flow through the legacy cost-event path**.
+> Wire at sink cutover (Sprint 6)."
+
+The second clause is the load-bearing one, and it is false for exactly the runs the rollout dial
+creates. It is printed as the standing answer to "what happens to money when a run goes
+distributed" on every green `policy` run.
+
+**Measurement 1 — every `cost_events` writer in the repository.**
+
+```
+grep -rn "insert(costEvents)" server/src packages --include=*.ts | grep -v __tests__ | grep -vi "\.test\."
+```
+
+FOUR, and none of them serves a handed-off run:
+
+| writer | reached by |
+|---|---|
+| `server/src/services/heartbeat.ts:2653` (inside `updateRuntimeState`) | the LEGACY executor only — see measurement 2 |
+| `server/src/services/costs.ts:69` (`costService.createEvent`) | `routes/costs.ts`, `aoa-agents/runner.ts` (crew), and `job-budget-cost-bridge.ts` |
+| `server/src/services/one-shot-cli-budget.ts:182` (`recordOneShotCliCost`) | `one-shot-sandbox-cli.ts` (extraction) and `job-budget-cost-bridge.ts` |
+| `server/src/services/company-portability.ts:3203` | bundle import |
+
+**Measurement 2 — heartbeat's one writer sits entirely on the legacy side of the suppression return.**
+
+- `updateRuntimeState` is declared at `heartbeat.ts:2622`; its `db.insert(costEvents)` is at `:2653`.
+- Its ONLY two call sites are `:5805` (the success path, after `adapter.execute` returns) and `:6013`
+  (the outer failure handler).
+- The CLI-006 suppression return is `heartbeat.ts:5451` — `return; // CLI-006-SUPPRESSION-RETURN`,
+  inside `if (shouldSuppressLegacyExecution(canaryExecutionOwner))`.
+- A `return` is not a throw, so it reaches neither `:5805` nor the catch at `:6013`. A handed-off run
+  therefore writes no `cost_events` row, does not increment `agents.spentMonthlyCents` or
+  `companies.spentMonthlyCents`, and never reaches `checkBudgetAlerts` (`:2676`, also inside
+  `updateRuntimeState`) — so the agent-pause-on-exceed path cannot fire either.
+
+**Measurement 3 — the distributed path bills NOWHERE ELSE. Checked, because "it must be billed
+somewhere" is the assumption that would make this finding wrong.**
+
+- `job-budget-cost-bridge.ts` is the designated authority (its header: "A distributed attempt's
+  ACCEPTED usage event must be priced by the EXISTING budget/cost authority EXACTLY ONCE"). Its
+  entrypoint `priceAcceptedUsage` has references in exactly two files, **both tests**
+  (`job-budget-cost-parity.integration.test.ts`, and `jobBudgetCostBridge` itself in
+  `job-distributed-drain.integration.test.ts`). `node scripts/check-gate-clause-wiring.mjs --counts`
+  measures `jobBudgetCostBridge` at **0**.
+- Nothing on the conversion path applies a SPEND gate before dispatch either:
+  `grep -n budget run-execution-owner.ts job-convert-orchestrator.ts job-admission-bridge.ts
+  heartbeat-distributed-rollout.ts` returns ONE hit, and it is a comment about an Organization
+  **concurrency-slot** budget, not money.
+- The pre-run cost read that DOES survive the handoff is `resolveCheapFallbackModel`
+  (`heartbeat.ts:4791`, before the return). It only downgrades the model in the workload; it caps
+  nothing, and it reads a `cost_events` sum that distributed runs never add to — so it gets
+  *quieter*, not louder, the more distributed spend there is.
+
+**Why this is HIGH rather than a documentation nit.** The register sentence is the artefact an
+operator or a later agent reads before arming `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`. Taken at face
+value it says the money question is already answered. Measured, arming the dial to `canary` for an
+Organization converts every eligible task run into spend that no `budget_policies` row, no agent
+`budgetMonthlyCents` pause, and no company hard-stop can observe — because the ledger they all read
+never receives a row. The defect is not that the bridge is dormant (that is honestly declared and
+correct); it is that the register's stated CONSEQUENCE of the dormancy is the opposite of the
+measured one.
+
+**Not claimed.** Nothing here says the dial is armed. E7-F018 measures that no checked-in
+configuration arms it, and that is unchanged: this is a precondition on arming, not a live leak.
+The bridge itself is correct code (JOB-012); the defect is the register's account of what its
+absence costs.
+
+**What would close it.** Either wire `jobBudgetCostBridge` into the accepted-usage path (Sprint 6
+sink cutover, as the clause already schedules), or — cheaply and immediately — correct E3-15's
+`reason` so it states the measured consequence: a distributed-owned run is UNBILLED, so the dial
+must not be armed for an Organization whose spend must be capped. This finding deliberately does
+NOT edit that reason: W5U1's charter forbids changing an existing clause's declaration, and the
+correction belongs with whoever owns the cutover.
+
+## E3-F038 — The wiring register's census is not closed, and three symbols the guard's own header names have no clause at all
+
+**Status:** open
+**Severity:** MEDIUM (the register under-reports its own subject; no wrong `wired` claim results)
+**Filed:** 2026-09-06 (W5U1), measured at `e1f723df2`.
+
+**What.** `scripts/lib/gate-clause-wiring.mjs:7-10` enumerates the symbols the register exists to
+surface — the 2026-08-25 exit-gate audit's fourteen named examples of "the clause names a
+capability, a ticket delivered the mechanism, and no boot root reaches it". Three of the fourteen
+have **no entry in `scripts/gate-clause-wiring.json`**, so the register is silent about them on
+every green run:
+
+| symbol named in the header | clause in the register | measured production callers |
+|---|---|---|
+| `jobAuditBridge` (`server/src/services/job-audit-bridge.ts:158`) | **none** | **0** |
+| `createResultCommitter` (`packages/worker-daemon/src/patch/result-commit.ts:66`) | **none** | **0** (was 1 before this unit's checker fix — the 1 was a string; see E4-F018) |
+| `openEventOutboxStore` (`packages/worker-daemon/src/events/event-outbox-store.ts:197`) | **none** | 2 |
+
+`jobAuditBridge` is the sharpest of the three because it is not an oversight of category: its
+**three sibling bridges each have a clause** — `jobApprovalBridge` (E3-5-product-approval),
+`jobBudgetCostBridge` (E3-15-budget), `jobOutputBridge` (E3-17-output) — all `unwired`, all at 0
+callers, all with the same "wire at sink cutover (Sprint 6)" disposition. The fourth bridge, in the
+same shape and the same sprint, is simply absent. The auditor who reported this named only
+`jobAuditBridge`; re-measuring the whole header list against the register found the other two.
+
+**Reproduction, one command per row:**
+
+```
+grep -c jobAuditBridge scripts/gate-clause-wiring.json          # -> 0
+grep -c createResultCommitter scripts/gate-clause-wiring.json   # -> 0
+grep -c openEventOutboxStore scripts/gate-clause-wiring.json    # -> 0
+```
+
+**Why it matters, stated at its real size.** This is NOT a false `wired` claim — the register makes
+no claim at all about these three, which is why nothing is red. The cost is the one the guard's own
+header names: `unwired` entries are "REPORTED ON A GREEN RUN, so a dormant capability stays visible
+instead of silently passing as complete". A capability with no entry gets neither the check nor the
+visibility. `jobAuditBridge` is dormant audit projection for the distributed path; a reader
+enumerating "what is dormant" from the green-run `DORMANT, on the record:` line gets a list that is
+three short, and one of the three is a bridge whose siblings are all listed.
+
+`openEventOutboxStore` is a different case within the same gap and is called out separately so it is
+not mis-scheduled: it has 2 real callers (`dispatch-runtime.ts:118` and its own `deps.openStore`
+type at `:92`) and would enrol `wired`, not `unwired` — E4-4's reason already asserts in prose that
+"composeDispatchRuntime opens the outbox store", which is exactly the kind of unchecked sentence
+W4U1 filed `providerCapabilityClaims` to stop.
+
+**★★★ AND THE `jobAuditBridge` HALF WAS ALREADY NOTICED TWICE, AND FILED ZERO TIMES.** This
+is the part that makes it worth a register entry rather than a one-line clause addition. Both
+Sprint 6 cutover designs name the gap and both state that a finding HAS BEEN FILED for it:
+
+- `MIG-005-cutover-design.md:183` — "`jobAuditBridge` | **none** | `unwired`, **tracked by NO
+  clause**"; `:356` — "The `jobAuditBridge` no-clause gap is filed as a finding"; `:402` lists
+  `findings.md` + `scripts/finding-ownership.json` among the files that ticket MODIFIES; `:513`
+  — "filed as a finding here; owner = whoever wires the audit bridge".
+- `MIG-007-cutover-design.md:268`, `:443`, `:474`, `:586` — the same four statements.
+
+`grep -rn jobAuditBridge docs/` at this tip returns those design lines and **no findings register
+entry anywhere** (before this one). MIG-005 has SHIPPED —
+`MIG-005-006-007-shadow-result.md` is on disk, so `findCompletedTicketIds` counts MIG-005
+complete — with the filing it declared still not done. This is `scripts/lib/finding-ownership.mjs`'s
+own headline failure, verbatim: *"the failure is not that nobody noticed. It is that NOTICING HAD NO
+CONSEQUENCE"* — and it happened in the interval between the two guards, where a claim of having
+filed something is itself unchecked.
+
+**Not claimed.** No clause entry is added here. Enrolling a clause is a declaration about an epic's
+gate, and W5U1's charter is explicitly "do not wire any dormant clause"; three new declarations
+authored by a filing unit would be the register drifting in the other direction. What is recorded is
+that the census is open.
