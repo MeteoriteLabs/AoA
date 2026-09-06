@@ -1198,3 +1198,130 @@ the call site needed *"did I get a grant"*. Those coincide for every outcome exc
 matters. **Before negating a shared predicate as a guard, check it against the case you are actually
 guarding against** — and note that the comment beside it was written from the intent, not from the
 function.
+
+## E7-F018 — Both `capabilityProven` arms are structurally unreachable in every checked-in configuration, so no producer can move either counter
+
+**Status:** open · **Owner:** UNOWNED — the precondition is an operator/deployment decision, not a code unit
+**Severity:** HIGH · **Filed:** 2026-09-06 (W4U1), measured at `472885d5e`. Established by a 20-agent
+scouting workflow; every claim below survived two independent refutation rounds and was re-measured
+by hand before filing.
+
+**What.** `capabilityProven` is an OR over two counters (predicate
+`server/src/services/e7-distributed-run-verifier.ts:506`, verdict `:522`). **Neither counter can be
+moved by any producer, however correct, in any configuration checked into this repository** — both
+are keyed on links that only a CANARY-mode distributed run creates, and nothing checked in puts any
+Organization into canary mode. This is a **reachability** defect, not a coverage one: it invalidates
+the premise under which E7-1's headline capability gate is being worked toward.
+
+★★★ **Filed because Track A — composing the `workspace_patch` producer chain — has now been attempted
+or proposed FOUR times, each dying on a different surface symptom, and the root cause has never been
+written down.** It is written down here so the fifth attempt does not happen.
+
+**Measurement 1 — nothing checked in arms the rollout dial. One command:**
+
+```
+grep -rn AOA_DISTRIBUTED_EXECUTION_ROLLOUT --include=*.yml --include=*.yaml --include=*.json --include=Dockerfile* .
+```
+
+→ **ZERO hits, exit 1**, repo-wide at `472885d5e`. The variable appears ONLY in `docs/`, in
+`server/src/config/distributed-execution-rollout-source.ts` (`:35`, which names it and is
+DEFAULT-DISABLED — an absent map resolves every Organization to `off`), in `server/src/index.ts`
+(`:1223`, the malformed-config warning), and in tests (`rollout-dial-live.test.ts`,
+`mig-shadow-evidence.integration.test.ts`). No compose file, no Dockerfile, no manifest sets it.
+
+**Measurement 2 — arm 1's key is written on the canary path and nowhere else.**
+
+- The SOLE writer of `heartbeat_runs.distributed_job_id` is `markRunHandedOffToDistributed`
+  (`server/src/services/heartbeat.ts:6921`).
+- Its ONLY call site is `server/src/services/heartbeat.ts:5422`, inside
+  `if (shouldSuppressLegacyExecution(canaryExecutionOwner))`.
+- `canaryExecutionOwner` is assigned only inside the block gated on
+  `distributedRolloutState === "canary"` (`server/src/services/heartbeat.ts:5259-5274`). With
+  measurement 1, that state is unreachable.
+- So arm 1 never issues a query at all: `if (run.distributedJobId) {`
+  (`server/src/services/e7-distributed-run-verifier-store.ts:200`) is false, and
+  `workspacePatchArtifacts` stays at its initialiser `0` (`:199`).
+
+**Measurement 3 — arm 2 has no producer either.** The task-output arm filters
+`eq(taskOutputs.createdByRunId, run.id)` (`server/src/services/e7-distributed-run-verifier-store.ts:216`).
+The distributed-job → `task_outputs` projection is `jobOutputBridge`, declared `unwired` with ZERO
+production callers in `scripts/gate-clause-wiring.json` (`E3-17-output`: *"JOB-014 output projection
+has zero callers; task_outputs is still written by the legacy path. Wire at sink cutover (Sprint 6)."*).
+No distributed run writes a `task_outputs` row. The one write that CAN set the field is a board
+`POST /api/issues/:issueId/outputs` — which is not a producer, and is already filed as **E7-F015**.
+
+**Consequence, stated precisely.** A `workspace_patch` producer is NECESSARY and NOT SUFFICIENT.
+Shipping `buildWorkspacePatch`, `createResultCommitter`, the export sequencer's supervisor hook and a
+real `exportArtifact` moves **nothing** while the dial is unarmed, because no `distributedJobId` is
+ever written and arm 1's `if` never opens. ★ Clause 6's own operator-facing text does NOT say this —
+it blames output capture alone (`e7-distributed-run-verifier.ts:509-515`), which is separately filed
+as **E7-F016**. Both are true; only this one is load-bearing for the next attempt.
+
+**Why UNOWNED, and why that is the honest status rather than a shrug.** The precondition is a
+DEPLOYMENT decision that no code ticket can make. It needs two artefacts, and this repository already
+declares both to be operator-owned and, on staging, forbidden:
+
+1. **A compose diff enabling dispatch on a worker.** `scripts/d1-dispatch-expectation.json:17` already
+   anticipates exactly this: `AOA_WORKER_DISPATCH_ENABLED` is declared `expect: "absent"` with the
+   reason *"dispatch is OFF; enabling it is a separate attributable compose diff."*
+2. **A rollout JSON naming an Organization canary.** And `scripts/lib/staging-manifest-invariants.mjs`
+   (`:516-541`) FORBIDS any staging worker from declaring the dispatch switches at all —
+   *"DISPATCH-DEFAULT VIOLATION: … dispatch stays OFF by default; no staging worker may set the
+   switches that turn it on (DEP-010)"*.
+
+Naming a code ticket as owner would be the false-ownership claim `check-finding-ownership.mjs` exists
+to prevent: the ticket could ship in full and the finding would not move. HIGH, and therefore never
+`accepted`.
+
+**Not resolvable by relabelling.** The apparent shortcut — label arbitrary exported bytes
+`kind='workspace_patch'` — is recorded and refuted as **E7-F019**.
+
+## E7-F019 — Labelling exported bytes `kind='workspace_patch'` moves arm 1's counter without redefining its predicate; only the patch CONSUMER refuses them
+
+**Status:** open · **Owner:** UNOWNED — recorded terrain; the refusal that makes this not-a-shortcut
+already exists and needs no change
+**Severity:** MEDIUM · **Filed:** 2026-09-06 (W4U1), measured at `472885d5e`. Cross-links **E7-F018**
+(the unreachability this appears to route around) and **E7-F015** (the same forgeability axis, on the
+other arm).
+
+**What.** `kind` on an exported artifact is the CALLER's declaration and the export module never
+substitutes a default. Its own comment names the counter it feeds
+(`packages/worker-daemon/src/lease/artifact-export.ts:58-70`): *"`kind` is honoured by the control
+plane AND is what the E7-1 capability counter filters on
+(`e7-distributed-run-verifier-store.ts:207` matches `workspace_patch` only), so a default picked here
+would silently decide someone else's gate."* The commit path validates size, sha256, object-key
+prefix and tenancy, and derives `retention` control-plane-side from `kind` — but takes `kind` ITSELF
+as declared (`server/src/services/artifact-commit.ts:167,177,192`; the sensitivity/retention split is
+DAT-010's deliberate choice and this finding does not disturb it).
+
+So a run that exports ANY bytes under that label commits a row satisfying arm 1's predicate exactly —
+`jobId`, `kind = 'workspace_patch'`, `status = 'committed'`
+(`server/src/services/e7-distributed-run-verifier-store.ts:206-208`).
+
+**Why this is a trap rather than an option.** It passes the standing prohibition **literally**: the
+predicate is untouched, the counter is untouched, no gate is redefined. What it produces is a green
+`capabilityProven` for bytes that are not a workspace patch. The system's own consumer refuses them —
+`server/src/services/patch-apply.ts:126-127` fetches the committed object and parses it with the
+FROZEN `workspacePatchManifestV1Schema`, returning `rejected("malformed")` on any parse failure,
+fail-closed, before any state change (and after the org/job/attempt prefix bind at `:111-116`, so the
+fetch itself cannot be pointed at a foreign namespace).
+
+★ **Recording this matters because the refusal is at the APPLY path — not at the commit path and not
+at the counter.** The forged label would still flip the verdict; what it could never do is produce a
+patch the system will apply. That gap between "the counter moved" and "the capability exists" is the
+exact thing a capability gate is for, which is why the shortcut is not one.
+
+**Severity justification — MEDIUM, argued in both directions.** Not HIGH: it is not reachable today.
+Arm 1 issues no query at all in any checked-in configuration (E7-F018), and `--require-capability` is
+OFF by default (`server/src/cli/verify-e7-1-distributed-run.ts:65`), so nothing is decided on this
+signal now. Not LOW: the moment E7-F018's operator precondition is satisfied this becomes the
+cheapest available path to a false green — and it is cheapest precisely for whoever is then under
+pressure to make Track A land, which is the population least able to price it. Same rung as E7-F015,
+deliberately: both are provenance defects in the same verdict, one per arm.
+
+**Disposition — UNOWNED, because there is nothing here to FIX.** `patch-apply`'s fail-closed
+validation is correct and must not be relaxed to make a producer land. Whether `artifact-commit`
+should ALSO validate `workspace_patch` bytes against the frozen schema at commit time is a real
+question this finding deliberately does not answer — it belongs with whoever ships the producer, and
+it is recorded here so that it is asked rather than rediscovered. No code unit owns this today, and
+inventing one would be a false ownership claim.

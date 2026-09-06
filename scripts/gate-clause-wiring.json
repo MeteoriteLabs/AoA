@@ -3,7 +3,8 @@
     "Gate-clause wiring register. Seeded 2026-08-25 from the E0..E11 exit-gate audit.",
     "wired   = a production path reaches the named symbol; the checker verifies it and fails on 0.",
     "unwired = honestly dormant; reason must say what would have to change. Reported on green runs.",
-    "Claiming wired when nothing calls it is the defect this register exists to make impossible."
+    "Claiming wired when nothing calls it is the defect this register exists to make impossible.",
+    "providerCapabilityClaims (optional) = the provider-capability values this clause's reason asserts, checked against the source that declares them. Added 2026-09-06 (W4U1) after E5-2's reason described artifactExportMode for weeks after PR #353 changed it, because nothing read the sentence."
   ],
   "clauses": {
     "E3-5-product-approval": {
@@ -64,7 +65,19 @@
       "epic": "E5",
       "status": "unwired",
       "symbol": "createArtifactExportSequencer",
-      "reason": "DAT-009 slice 3, slice a. The E5 gate says fenced object commit passes in D1, and its SERVER half does: mint (artifact-transfer-grant.ts), commit (artifact-commit.ts) and a real presigned PUT are live-proven on the D1 lane against real MinIO (DAT-002-live-minio-result.md, d1-merge-train 31885553697, 13/13). This clause is deliberately named for the WORKER half, which is the half that has never run: nothing in production sequences digest -> mint upload grant -> export -> commit. Do NOT read this entry as saying the commit path is unbuilt - that substitution is the exact error E5-3-patch-quarantine had to be corrected for. createArtifactExportSequencer has ZERO production callers by construction: its only consumers are its own tests until DAT-009 slice 3c adds the supervisor hook (SupervisorDeps.resolveExportArtifacts) and 3d composes it in dispatch-runtime.ts, following the createStagedInputResolver precedent at E7-1-staged-input-grant. Promote then, with evidence. Note that composing it is NOT sufficient for a byte to move: BOTH shipped providers declare artifactExportMode=none (e2b-provider.ts:178, provider-wire/src/driver.ts:83), so slice 3e must implement a real exportArtifact first, and NOTHING yet produces the ArtifactExportRequest[] it would consume - that producer is CLI-008 Unit F. This clause therefore does NOT gate, and must not be read as gating, the E7-1 capabilityProven counter, which filters kind=workspace_patch (e7-distributed-run-verifier-store.ts:207)."
+      "reason": "DAT-009 slice 3, slice a. The E5 gate says fenced object commit passes in D1, and its SERVER half does: mint (artifact-transfer-grant.ts), commit (artifact-commit.ts) and a real presigned PUT are live-proven on the D1 lane against real MinIO (DAT-002-live-minio-result.md, d1-merge-train 31885553697, 13/13). This clause is deliberately named for the WORKER half, which is the half that has never run: nothing in production sequences digest -> mint upload grant -> export -> commit. Do NOT read this entry as saying the commit path is unbuilt - that substitution is the exact error E5-3-patch-quarantine had to be corrected for. createArtifactExportSequencer has ZERO production callers by construction: its only consumers are its own tests until DAT-009 slice 3c adds the supervisor hook (SupervisorDeps.resolveExportArtifacts) and 3d composes it in dispatch-runtime.ts, following the createStagedInputResolver precedent at E7-1-staged-input-grant. Promote then, with evidence. Note that composing it is NOT sufficient for a byte to move. CORRECTED 2026-09-06 (W4U1): the previous sentence asserted that BOTH shipped providers were still at the provider-wire value, citing e2b-provider.ts:178 - a value AND a line that PR #353 invalidated, and that nothing read. Measured at this tip: packages/sandbox-e2b-provider/src/e2b-provider.ts:246 declares artifactExportMode = grant_upload and implements export for real, while packages/provider-wire/src/driver.ts:83 still declares artifactExportMode = none and its digestArtifact (:182-184) and exportArtifact (:185-192) throw UnsupportedProviderOperation UNCONDITIONALLY, never reading the property at all. READ THIS AS A CORRECTION TO THE REGISTER, NOT AS THE PRECONDITION BEING SATISFIED: the networked/container lane still cannot export, slice 3e still owes the wire route, and NOTHING yet produces the ArtifactExportRequest[] the sequencer would consume - that producer is CLI-008 Unit F. The two VALUES above are machine-checked against source by providerCapabilityClaims below; the line numbers deliberately are not (scripts/lib/gate-clause-wiring.mjs says why). This clause therefore does NOT gate, and must not be read as gating, the E7-1 capabilityProven counter, which filters kind=workspace_patch (e7-distributed-run-verifier-store.ts:207).",
+      "providerCapabilityClaims": [
+        {
+          "file": "packages/sandbox-e2b-provider/src/e2b-provider.ts",
+          "property": "artifactExportMode",
+          "expect": "grant_upload"
+        },
+        {
+          "file": "packages/provider-wire/src/driver.ts",
+          "property": "artifactExportMode",
+          "expect": "none"
+        }
+      ]
     },
     "E5-5-redaction": {
       "epic": "E5",

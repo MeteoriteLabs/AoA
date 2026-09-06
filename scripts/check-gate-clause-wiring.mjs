@@ -14,7 +14,11 @@ import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-import { evaluateGateClauseWiring } from "./lib/gate-clause-wiring.mjs";
+import {
+  evaluateGateClauseWiring,
+  evaluateProviderCapabilityClaims,
+  providerCapabilityClaimKey,
+} from "./lib/gate-clause-wiring.mjs";
 
 export const MANIFEST_RELATIVE_PATH = "scripts/gate-clause-wiring.json";
 
@@ -89,6 +93,37 @@ export function countProductionCallers(root, symbol) {
   return count;
 }
 
+/**
+ * W4U1 — read the literal a source file assigns to a class-property declaration.
+ *
+ * Returns the string literal, `null` when the file declares the property nowhere (or does
+ * not exist), or an ARRAY of the distinct literals when it declares it more than once — an
+ * ambiguity the caller must refuse rather than pick a winner from.
+ *
+ * Comments are stripped FIRST, using the same `stripComments` the caller-count above uses,
+ * and for the same reason: `e2b-provider.ts` carries a doc comment that still says
+ * `artifactExportMode` is "honestly `none`" three lines below the declaration that says
+ * `"grant_upload"`. Reading a comment as a declaration would have made this guard certify
+ * the very string it exists to refuse.
+ *
+ * `=(?!=)` excludes `if (this.artifactExportMode === "none")` — a comparison, not a
+ * declaration. Both shipped providers contain that exact line.
+ */
+export function readDeclaredPropertyLiteral(root, file, property) {
+  const abs = path.join(root, file);
+  if (!existsSync(abs) || !statSync(abs).isFile()) return null;
+  const text = stripComments(readFileSync(abs, "utf8"));
+  const pattern = new RegExp(
+    "\\b" + property + "\\b\\s*(?::[^=\\n;]*)?=(?!=)\\s*[\"']([^\"']+)[\"']",
+    "g",
+  );
+  const values = new Set();
+  for (const match of text.matchAll(pattern)) values.add(match[1]);
+  if (values.size === 0) return null;
+  if (values.size > 1) return [...values].sort();
+  return [...values][0];
+}
+
 const ROOT = process.cwd();
 const manifestPath = path.join(ROOT, MANIFEST_RELATIVE_PATH);
 const declared = existsSync(manifestPath)
@@ -105,13 +140,57 @@ if (process.argv.includes("--counts")) {
 
 const result = evaluateGateClauseWiring({ declared, callerCounts });
 
+// W4U1 — measure the source side of every declared provider-capability claim.
+const sourceValues = {};
+for (const entry of Object.values(declared)) {
+  if (!entry || !Array.isArray(entry.providerCapabilityClaims)) continue;
+  for (const claim of entry.providerCapabilityClaims) {
+    if (!claim || typeof claim.file !== "string" || typeof claim.property !== "string") continue;
+    sourceValues[providerCapabilityClaimKey(claim)] = readDeclaredPropertyLiteral(
+      ROOT,
+      claim.file,
+      claim.property,
+    );
+  }
+}
+const claims = evaluateProviderCapabilityClaims({ declared, sourceValues });
+
 const EXPLAIN = {
   claimed_wired_but_no_caller: "declared WIRED but nothing in production calls it — the capability cannot run",
   unwired_but_now_has_caller: "declared unwired but it now HAS a caller — promote it to wired",
   malformed_declaration: "entry needs status wired|unwired, a symbol, and (if unwired) a reason",
   symbol_not_measured: "internal: the symbol was not measured",
   malformed_input: "internal: the guard was handed something it could not read",
+  capability_claim_source_mismatch:
+    "the register's claim about a provider capability no longer matches the source that declares it",
+  capability_claim_source_missing: "the register names a capability the cited file does not declare",
+  capability_claim_source_ambiguous:
+    "the cited file declares the capability more than once — the guard refuses to pick a winner",
+  capability_claim_absent_from_reason:
+    "the structured claim and the clause's prose disagree — the sentence never states the declared value",
+  capability_claim_unbacked_in_reason:
+    "the clause's prose asserts a capability value no claim on this clause declares",
+  capability_claim_undeclared:
+    "the clause's prose names a watched provider capability with no `providerCapabilityClaims` entry to check it",
+  capability_claim_not_measured: "internal: the claim's source value was not measured",
+  malformed_capability_claim: "a `providerCapabilityClaims` entry needs file, property and expect",
 };
+
+if (!claims.ok) {
+  console.error(
+    "gate-clause-wiring: a register claim about provider capability does not match the source.\n",
+  );
+  for (const p of claims.problems) {
+    console.error(`  - ${p.clause}: ${EXPLAIN[p.kind] ?? p.kind}${p.detail ? ` (${p.detail})` : ""}`);
+  }
+  console.error(
+    "\nA `reason` that describes SOURCE must be checked against source. `E5-2`'s said BOTH\n" +
+      "shipped providers declared artifactExportMode=none for weeks after PR #353 changed one\n" +
+      "of them, because nothing read it. Update the claim AND the sentence together, or, if the\n" +
+      "source really did change, say so in the reason — but do not leave them disagreeing.",
+  );
+  process.exit(1);
+}
 
 if (!result.ok) {
   console.error("gate-clause-wiring: a gate clause claims a capability its code cannot deliver.\n");
@@ -126,7 +205,10 @@ if (!result.ok) {
   process.exit(1);
 }
 
-console.log(`gate-clause-wiring: OK (${result.wiredCount} wired clause(s), ${result.unwired.length} declared dormant)`);
+console.log(
+  `gate-clause-wiring: OK (${result.wiredCount} wired clause(s), ${result.unwired.length} declared dormant, ` +
+    `${claims.claimCount} provider-capability claim(s) matched to source)`,
+);
 if (result.unwired.length > 0) {
   // Printed on a GREEN run, deliberately: a dormant capability must stay visible rather
   // than passing silently as complete. This is the line the exit-gate audit had to
