@@ -380,6 +380,23 @@ jobs:
           # stops being true, this step reds and says so - no key required.
           node --test scripts/lib/__tests__/w7u1-agent-output-probe.test.mjs
 
+      - name: W10B egress-enforcement decision logic (proven WITHOUT the key)
+        run: |
+          # The keyed lane `keyed-e2b-w10b-egress-enforcement-probe.yml` runs on an
+          # operator's authorisation against real E2B. Every decision it makes - the CIDR
+          # containment behind the ABANDON question, the four mandatory control rows, each
+          # of the five three-state verdicts, the computed stop condition, and the secret
+          # redactor that keeps the key out of a public log - is a pure function here,
+          # exercised on every PR. Without this step the keyed run would be the FIRST
+          # execution of the code that reads it, which is how the first keyed conformance
+          # run produced 8 failures out of 18 (CLI-realE2B-hardening-result.md).
+          #
+          # It also asserts the lane's own YAML still carries its `always()` record guards,
+          # its fallback writer and its keyless positive control, and PINS the stale-premise
+          # correction in sandbox-provider-runtime.ts so nobody restores "managed E2B egress
+          # is not fully lockable" as an unqualified claim without this step going red.
+          node --test scripts/lib/__tests__/w10b-egress-enforcement-probe.test.mjs
+
       - name: Release admission gate (REL-004)
         run: |
           node --test scripts/lib/__tests__/release-manifest.test.mjs

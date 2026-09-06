@@ -780,10 +780,31 @@ export function createE2bSandboxRuntimeProvider(
           aoaProvider: "e2b",
           companyId: input.companyId,
           environmentId: input.environmentId,
-          // S4 — best-effort managed recording only (§11/§12: managed E2B
-          // egress is not fully lockable). Omitted entirely when no
+          // S4 — best-effort managed recording only. Omitted entirely when no
           // allowlist was supplied, so the pre-existing exact `create(...)`
           // call assertions in sandbox-provider-runtime.test.ts stay green.
+          //
+          // ★★★ MEASURED INERT, AND THE OLD REASON FOR IT WAS STALE. This comment used to
+          // cite "§11/§12: managed E2B egress is not fully lockable" as the reason no real
+          // boundary is attempted here. That the METADATA seam is inert is now measured
+          // rather than assumed: BRW-004 slice (a), workflow run 33857218680, reached a host
+          // that was NOT on the declared allowlist from inside the sandbox that declared it,
+          // with a positive control and an apparatus control both holding (finding E8-F003,
+          // HIGH, open). But the GENERAL claim — that managed E2B egress cannot be locked —
+          // is FALSE as a statement about the seam. The installed, lockfile-pinned
+          // `e2b@2.30.5` exposes `SandboxOpts.network` with `allowOut`/`denyOut`, puts it in
+          // the `POST /sandboxes` body, exposes `Sandbox.updateNetwork`, and maps the
+          // server's answer back through `getInfo()`. AoA has never called any of it.
+          //
+          // Whether the operator's tier ENFORCES what that seam declares is UNMEASURED, and
+          // it is what unit W10B's keyed probe measures — including the stop condition that
+          // would end the option (a guest DNS resolver inside the deny set: `denyOut` has no
+          // exclude, and any `allowOut` entry flips the whole policy to default-deny). Do NOT
+          // restore the unqualified "not fully lockable" line: it is what kept the only
+          // candidate enforcement layer outside the guest booked as unavailable. See
+          // `docs/replatform/epics/E8-browser-automation/tickets/W10B-egress-enforcement-runbook.md`.
+          //
+          // Nothing here applies a network policy: W10B measures, it does not enforce.
           ...(input.egressAllowlist && input.egressAllowlist.length > 0
             ? { egressAllowlist: input.egressAllowlist.join(",") }
             : {}),
