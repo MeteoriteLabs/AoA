@@ -183,13 +183,11 @@ describe("W10C internal-range deny set -- re-derived from isPrivateIP", () => {
     const all = [...INTERNAL_RANGE_DENY_CIDRS];
     for (const cidr of all) {
       const { lo, hi, bits, v6 } = bounds(cidr);
-      // Both edges must be inside the predicate's rejection set. (The two
-      // documentation-superset entries below are the sole exceptions.)
-      const edgeExempt = cidr === "::/16"; // holds `::a.b.c.d`, which isPrivateIP mis-parses
-      if (!edgeExempt) {
-        expect(isPrivateIP(render(lo, v6)), `${cidr} low edge`).toBe(true);
-        expect(isPrivateIP(render(hi, v6)), `${cidr} high edge`).toBe(true);
-      }
+      // Both edges must be inside the predicate's rejection set. NO exemptions --
+      // an exemption here is a hole, and the `::a.b.c.d` parser defect does not
+      // need one: `::/16`'s edges are spelled in hex, which isPrivateIP parses.
+      expect(isPrivateIP(render(lo, v6)), `${cidr} low edge`).toBe(true);
+      expect(isPrivateIP(render(hi, v6)), `${cidr} high edge`).toBe(true);
       // The addresses immediately outside must NOT be private -- unless some OTHER
       // frozen range covers them (adjacent blocks the minimal cover kept separate).
       const max = (1n << BigInt(bits)) - 1n;
