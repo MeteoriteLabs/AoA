@@ -686,6 +686,14 @@ describe("W7U2 SECOND CONTROL — the caveat says something FALSIFIABLE", () => 
     expect(text).toContain("task-output-emitters.ts:113");
   });
 
+  // ★ THE TWO ANTI-DRIFT GUARDS BELOW ARE BOUNDED, AND SAYING SO IS THE POINT. They assert on
+  // PHRASES, not on meaning: a fixed deny-list of substrings ("now handled", "meaningless", …)
+  // plus one required substring. They catch the drift that reuses the obvious wording; they do
+  // NOT catch a rewrite that overclaims in a synonym this list does not carry ("this risk is
+  // addressed", "amounts to nothing"), and they cannot tell whether a sentence is TRUE. Nothing
+  // here makes the caveat semantically correct — a human reader still owes that. They are cheap
+  // regression tripwires on the exact wordings this unit reviewed, and that is their whole claim.
+  // Do not read a green here as "the caveat has been checked for honesty".
   it("says it is a DISCLOSURE, not a control — it must not read as 'now handled'", () => {
     expect(text).toContain("DISCLOSURE, not a control");
     for (const claim of ["now handled", "is fixed", "no longer", "mitigated", "prevents"]) {
@@ -759,6 +767,123 @@ describe("W7U2 POSITIVE CONTROL — the verdict and the arm counts did not move"
     // exactly the same input it did before, and 0 stays 0.
     expect(e7VerifyExitCode({ ok: true, capabilityProven: true }, true)).toBe(0);
     expect(e7VerifyExitCode({ ok: true, capabilityProven: false }, false)).toBe(0);
+    expect(e7VerifyExitCode({ ok: true, capabilityProven: false }, true)).toBe(3);
+    expect(e7VerifyExitCode({ ok: false, capabilityProven: false }, true)).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W7U2-FIX — the HEADLINE may not assert what the caveat disclaims.
+//
+// W7U2 added an accurate caveat and left it sitting ten lines BELOW a RESULT line that still
+// read "CAPABILITY: PROVEN — output from the agent reached AoA". The report asserted in its
+// title the thing it disclaimed in its footnote, and a headline is exactly the part a reader
+// stops at. This block pins the fix: the PROVEN headline states the COUNT it made and points
+// DOWN to the limit, instead of contradicting it.
+//
+// TEXT ONLY. The positive control immediately after re-asserts that `capabilityProven` and
+// BOTH arm counts are byte-identical for the same inputs — if that reds, this stopped being a
+// wording fix and became a behaviour change, which is the one thing the unit forbids.
+// ---------------------------------------------------------------------------
+
+describe("W7U2-FIX — the PROVEN headline does not claim agent provenance", () => {
+  const resultLineOf = (printed: string) =>
+    printed.split("\n").find((l) => l.includes("RESULT:"))!;
+
+  it("the PROVEN headline drops the agent-provenance claim", async () => {
+    // The dangerous shape again: arm 2 alone carries the green, and arm 2 is the arm E7-F020
+    // measures as satisfiable with zero agent output.
+    const verifier = createE7DistributedRunVerifier({
+      store: goldenStore({ produced: { workspacePatchArtifacts: 0, taskOutputs: 1 } }),
+    });
+    const result = await verifier.verify({ runId: RUN_ID });
+    expect(result.capabilityProven).toBe(true);
+    const resultLine = resultLineOf(formatVerifyResult(result));
+    // ★ MUTATION: restore the old branch text
+    //     "CAPABILITY: PROVEN — output from the agent reached AoA"
+    //   and this assertion reds, while the positive control below stays green.
+    expect(resultLine).not.toContain("output from the agent reached AoA");
+    // Not a swing to the other overclaim: something WAS counted, and the line still says PROVEN.
+    expect(resultLine).toContain("CAPABILITY: PROVEN");
+    for (const overclaim of ["MEANINGLESS", "UNPROVEN"]) {
+      expect(resultLine).not.toContain(overclaim);
+    }
+  });
+
+  it("the PROVEN headline says what was actually counted and defers to the limit below", async () => {
+    const verifier = createE7DistributedRunVerifier({
+      store: goldenStore({ produced: { workspacePatchArtifacts: 0, taskOutputs: 1 } }),
+    });
+    const printed = formatVerifyResult(await verifier.verify({ runId: RUN_ID }));
+    const resultLine = resultLineOf(printed);
+    expect(resultLine).toContain("produced-output rows were counted for this run");
+    expect(resultLine).toContain("does NOT by itself establish they came from the agent");
+    // The pointer must not dangle: the phrase the headline sends the reader to has to exist in
+    // the SAME rendered report. A caveat reference to a block that got renamed is a dead end.
+    expect(resultLine).toContain("limit of this verdict");
+    expect(printed).toContain("limit of this verdict (a DISCLOSURE");
+  });
+
+  it("the NOT-PROVEN branch is untouched — the two branches stay distinct", async () => {
+    const verifier = createE7DistributedRunVerifier({
+      store: goldenStore({ produced: { workspacePatchArtifacts: 0, taskOutputs: 0 } }),
+    });
+    const resultLine = resultLineOf(formatVerifyResult(await verifier.verify({ runId: RUN_ID })));
+    expect(resultLine).toContain("CAPABILITY: NOT PROVEN — nothing the agent produced reached AoA");
+  });
+
+  it("the headline still carries BOTH dimensions, so neither can be quoted alone", async () => {
+    // The pre-existing property from Unit A: mechanism and capability share one line. The
+    // qualification must not have pushed the capability verdict off it.
+    const verifier = createE7DistributedRunVerifier({
+      store: goldenStore({ produced: { workspacePatchArtifacts: 2, taskOutputs: 3 } }),
+    });
+    const resultLine = resultLineOf(formatVerifyResult(await verifier.verify({ runId: RUN_ID })));
+    expect(resultLine).toContain("PASS (mechanism)");
+    expect(resultLine).toContain("CAPABILITY: PROVEN");
+    expect(resultLine).not.toContain("RESULT: PASS —"); // the old unqualified wording
+  });
+});
+
+describe("W7U2-FIX POSITIVE CONTROL — the headline reword moved NO count and NO verdict", () => {
+  // Same captured baseline table as the W7U2 positive control above, re-run against the
+  // reworded printer. It is here as well as there on purpose: this unit's single constraint is
+  // that a TEXT edit changed no behaviour, and the check for that has to sit beside the edit.
+  const BASELINE: ReadonlyArray<readonly [number, number, boolean, boolean]> = [
+    // wp, to,  ok,   capabilityProven
+    [0, 0, true, false],
+    [0, 1, true, true],
+    [1, 0, true, true],
+    [2, 3, true, true],
+  ];
+
+  for (const [wp, to, ok, capabilityProven] of BASELINE) {
+    it(`wp=${wp} to=${to} -> ok=${ok} capabilityProven=${capabilityProven}, counts passed through`, async () => {
+      const verifier = createE7DistributedRunVerifier({
+        store: goldenStore({ produced: { workspacePatchArtifacts: wp, taskOutputs: to } }),
+      });
+      const result = await verifier.verify({ runId: RUN_ID });
+      expect(result.ok).toBe(ok);
+      expect(result.capabilityProven).toBe(capabilityProven);
+      expect(result.observed.producedArtifacts).toEqual({
+        workspacePatchArtifacts: wp,
+        taskOutputs: to,
+      });
+    });
+  }
+
+  it("the count line under the headline is byte-identical to before the reword", async () => {
+    // The reword touched the RESULT line only. The `capability:` line that carries the actual
+    // numbers is the one a script parses, and it must be exactly what it was.
+    const verifier = createE7DistributedRunVerifier({
+      store: goldenStore({ produced: { workspacePatchArtifacts: 2, taskOutputs: 3 } }),
+    });
+    const printed = formatVerifyResult(await verifier.verify({ runId: RUN_ID }));
+    expect(printed).toContain("  capability: PROVEN (workspace_patch_artifacts=2 task_outputs=3)");
+  });
+
+  it("the exit decision is untouched by the reword", () => {
+    expect(e7VerifyExitCode({ ok: true, capabilityProven: true }, true)).toBe(0);
     expect(e7VerifyExitCode({ ok: true, capabilityProven: false }, true)).toBe(3);
     expect(e7VerifyExitCode({ ok: false, capabilityProven: false }, true)).toBe(1);
   });

@@ -627,6 +627,11 @@ export function e7VerifyExitCode(
  * `E7_CAPABILITY_LIMITATIONS`, so the rendered verdict states what its own green does not
  * establish (E7-F020) instead of relying on the reader having read the finding. Text only:
  * no arm, predicate, conjunct or count is touched.
+ *
+ * ★ W7U2-FIX — and the HEADLINE had to stop contradicting that block. Printing a caveat under
+ * a title that still asserted "output from the agent reached AoA" left the false claim in the
+ * one line a reader is most likely to quote. The PROVEN branch of the `capability` ternary now
+ * states the COUNT it made and defers to the limit below it; see the comment at that branch.
  */
 export function formatVerifyResult(result: E7VerifyResult): string {
   const lines: string[] = [];
@@ -638,8 +643,17 @@ export function formatVerifyResult(result: E7VerifyResult): string {
   const mechanism = result.ok
     ? "PASS (mechanism) — distributed journey corroborated"
     : "FAIL (mechanism) — does NOT prove the distributed journey";
+  // ★ W7U2-FIX — THE HEADLINE MAY NOT ASSERT WHAT THE CAVEAT DISCLAIMS. This branch used to
+  // read "CAPABILITY: PROVEN — output from the agent reached AoA", ten lines above a caveat
+  // explaining that arm 2 is satisfiable with NO agent output (E7-F020). A reader who stops at
+  // the headline — which is what a headline is for — took away the false half. So the PROVEN
+  // branch now states what was actually COUNTED (produced-output rows attributed to this run)
+  // and points DOWN to the limit instead of contradicting it. Still PROVEN, not "meaningless"
+  // and not "unproven": something was counted; what is unestablished is that it came from the
+  // agent. TEXT ONLY — `capabilityProven` and both arm counts are untouched.
   const capability = result.capabilityProven
-    ? "CAPABILITY: PROVEN — output from the agent reached AoA"
+    ? "CAPABILITY: PROVEN — produced-output rows were counted for this run;" +
+      " this does NOT by itself establish they came from the agent (see 'limit of this verdict' below)"
     : "CAPABILITY: NOT PROVEN — nothing the agent produced reached AoA";
   lines.push(`  RESULT: ${mechanism} | ${capability}`);
   const o = result.observed;
