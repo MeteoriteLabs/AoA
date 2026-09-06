@@ -1325,10 +1325,12 @@ NOT carry over to it. Arm 2 has to be derived on its own terms. Its predicate is
    **provably cannot find its own counterexample**: `server/src/routes/task-outputs.ts:54` forwards
    `req.body` into the service and never writes the token `createdByRunId`, so no grep for that token
    can see it. The census is closed instead **on the sole INSERT site**. There is exactly ONE insert
-   into `task_outputs` anywhere in the tree — `.insert(taskOutputs)` at
-   **`server/src/services/task-outputs.ts:181`**, inside `upsertTaskOutputForIssue` (`:135`). Every
-   writer therefore passes through that one function whether or not it ever names the field, and
-   **enumerating that function's callers closes the set**. Re-close it with:
+   into `task_outputs` in **production source** — `.insert(taskOutputs)` at
+   **`server/src/services/task-outputs.ts:181`**, inside `upsertTaskOutputForIssue` (`:135`); the
+   only other inserts in the tree are the three raw-SQL admin fixtures under `server/src/__tests__`
+   that the reproduction below enumerates. Every row **CREATION** therefore passes through that one
+   function whether or not the caller ever names the field, and **enumerating that function's
+   callers closes the set of writers able to MINT a `created_by_run_id`**. Re-close it with:
 
    ```
    grep -rn "insert(taskOutputs" server packages --include=*.ts
@@ -1356,13 +1358,35 @@ NOT carry over to it. Arm 2 has to be derived on its own terms. Its predicate is
    (`0114`, `0200`, `0213`, `0214`, `0246`, `0247`) contain only DDL, one column `UPDATE`, and
    `GRANT`/RLS — no row INSERT and no trigger. If either of those becomes false, this census reopens.
 
+   ★★★ **What the chokepoint actually warrants: row CREATION, plus the COLUMN for a SECOND reason.**
+   The insert census closes creation. It closes the *column* too, but not because every writer goes
+   through the chokepoint — **three UPDATE sites do not**. There are four `.update(taskOutputs)`
+   sites in production source and only ONE (`task-outputs.ts:167`, the upsert-by-`(provider,
+   externalId)` branch) is inside `upsertTaskOutputForIssue`. The other three bypass it entirely:
+   `updateMutable` (`task-outputs.ts:237`), `clearSiblingPrimaries` (`:71`, reached from
+   `updateMutable` at `:231` as well as from inside the chokepoint at `:147`), and
+   `workspace-runtime.ts:2890`. None can write `created_by_run_id`: the latter two set only
+   `is_primary`/`updated_at` and `status`/`health_status`/`url`/`updated_at` respectively, and
+   `updateMutable` spreads a body validated by **`mutableTaskOutputSchema`, which is `.strict()` and
+   omits `createdByRunId`** (`packages/shared/src/validators/task-output.ts:55-63`) — so
+   `validate()` (`schema.parse`, `middleware/validate.ts:6`) THROWS on a request carrying the field
+   rather than applying it.
+
+   ★★★ **THE SEAM, named because it is the thing a future reader most needs.** The column half of
+   this warrant rests entirely on that one `.strict()` omission, not on the INSERT census. **If
+   `createdByRunId` were ever added to `mutableTaskOutputSchema`, `PATCH /api/task-outputs/:id`
+   (`routes/task-outputs.ts:87-97`) would immediately become a writer this warrant is structurally
+   unable to see** — that route never calls `upsertTaskOutputForIssue`, so no enumeration of the
+   chokepoint's callers would ever list it. Re-checking the callers is not sufficient; re-check the
+   schema.
+
    **The chokepoint's callers — eleven production call sites, ten of them legacy.** Four of the ten
    pass a value capable of being a `heartbeat_runs` id:
 
    | # | call site | `createdByRunId` | can it fire for a handed-off run? |
    |---|---|---|---|
    | 1 | `task-output-emitters.ts:150` (`emitSandboxPreviewTaskOutput`), sole caller `heartbeat.ts:5557` | `run.id` (`heartbeat.ts:5574`) | **No.** It sits AFTER `return; // CLI-006-SUPPRESSION-RETURN` (`heartbeat.ts:5451`), so a handed-off run returns before `adapter.execute` and never reaches it |
-   | 2 | `routes/output-detection.ts:181` — `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm` | `runId`, a **path param** (`:201`) | **No.** Its only feed is `heartbeat_runs.detected_outputs`, whose sole writer (`heartbeat.ts:5907`) is also past the suppression return and additionally reads `adapterResult`, which only `adapter.execute` assigns. ★ This is **not** the route R3 labelled it — see below |
+   | 2 | `routes/output-detection.ts:181` — `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm` | `runId`, a **path param** (`:201`) | **No.** Its only feed is `heartbeat_runs.detected_outputs`, whose sole **creating** writer is `heartbeat.ts:5907` — also past the suppression return, and additionally reading `adapterResult`, which only `adapter.execute` assigns. (The column has three writers, not one: `output-detection.ts:218` and `:286` also write it, but both only rewrite an EXISTING array element — each 404s when `!outputs \|\| index >= outputs.length` — so neither can mint the array. The verdict is unchanged.) ★ This is **not** the route R3 labelled it — see below |
    | 3 | ★ `task-output-emitters.ts:113` (`emitRuntimeServiceTaskOutput`) | `row.startedByRunId` | **YES**, and it fires **before** the handoff — **E7-F020** |
    | 4 | ★ `routes/task-outputs.ts:54` — `POST /api/issues/:issueId/outputs`, mounted `app.ts:566` | **whatever the request body says** | **YES**, for any authenticated company-scoped caller — **E7-F015** |
 

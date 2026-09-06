@@ -93,9 +93,20 @@ configuration** — and, importantly, **not for the same reason.** Re-derived pe
   THIRD can"* and cited `output-detection.ts:201` under the label *"the board
   `POST /api/issues/:issueId/outputs`"*, which are two different routes.
   ★★★ **How the census is now closed — re-close it this way, not with a grep for the field name.**
-  There is exactly ONE insert into `task_outputs` in the tree, `.insert(taskOutputs)` at
-  **`server/src/services/task-outputs.ts:181`** inside `upsertTaskOutputForIssue`, so every writer
-  passes through it and **enumerating that function's callers closes the set**. R3's stated method
+  There is exactly ONE insert into `task_outputs` in **production source**, `.insert(taskOutputs)` at
+  **`server/src/services/task-outputs.ts:181`** inside `upsertTaskOutputForIssue` (the only others in
+  the tree are three raw-SQL admin fixtures under `server/src/__tests__`), so every row **CREATION**
+  passes through it and **enumerating that function's callers closes the set of writers able to MINT
+  a `created_by_run_id`**. ★★★ It closes the **column** too, but for a SECOND and independent reason,
+  because **three UPDATE sites do NOT pass through the chokepoint** — `updateMutable`
+  (`task-outputs.ts:237`), `clearSiblingPrimaries` (`:71`) and `workspace-runtime.ts:2890`. None can
+  set the field: the latter two touch only `is_primary`/`updated_at` and
+  `status`/`health_status`/`url`/`updated_at`, and `updateMutable` spreads a body validated by
+  `mutableTaskOutputSchema`, which is **`.strict()` and omits `createdByRunId`**
+  (`packages/shared/src/validators/task-output.ts:55-63`). ★★★ **THE SEAM:** if `createdByRunId` were
+  ever added to that schema, `PATCH /api/task-outputs/:id` (`routes/task-outputs.ts:87-97`) would
+  become a writer this warrant is **structurally unable to see** — it never calls the chokepoint, so
+  no caller enumeration would list it. Re-check the schema, not only the callers. R3's stated method
   (`grep -rn createdByRunId server/src …`) provably could not find its own counterexample, because
   `routes/task-outputs.ts:54` forwards `req.body` and never names the field. That caller grep returns
   17 lines, of which ELEVEN are call sites (the rest are one import, two declarations and three prose
@@ -105,7 +116,10 @@ configuration** — and, importantly, **not for the same reason.** Re-derived pe
     `return; // CLI-006-SUPPRESSION-RETURN` (`:5451`).
   - `routes/output-detection.ts:181/:201` —
     `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm`, run id from a **path param** —
-    **cannot**; its only feed is written past the same suppression return. ★ **This is not E7-F015's
+    **cannot**; its only feed is `heartbeat_runs.detected_outputs`, whose sole **creating** writer,
+    `heartbeat.ts:5907`, is past the same suppression return. (That column has three writers, not
+    one — `output-detection.ts:218`/`:286` also write it — but both only rewrite an EXISTING array
+    element and cannot mint the array, so the verdict is unchanged.) ★ **This is not E7-F015's
     route**, which is where R3 went wrong.
   - ★ `emitRuntimeServiceTaskOutput` (`task-output-emitters.ts:113`) — **CAN**, and fires BEFORE the
     handoff: `ensureRuntimeServicesForRun` (`heartbeat.ts:4524`) → `startLocalRuntimeService`

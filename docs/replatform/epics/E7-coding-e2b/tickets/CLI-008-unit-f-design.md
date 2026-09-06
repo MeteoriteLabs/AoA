@@ -136,10 +136,12 @@ runtime-service writer on a false reason; R3 corrected the verdicts but left the
 ("six writers") arbitrary — it listed six of the ten callers, omitting four while including two that
 cannot carry a run id at all.
 
-★★★ **THE WARRANT.** There is exactly ONE insert into `task_outputs` anywhere in the tree —
+★★★ **THE WARRANT.** There is exactly ONE insert into `task_outputs` in **production source** —
 `.insert(taskOutputs)` at **`server/src/services/task-outputs.ts:181`**, inside
-`upsertTaskOutputForIssue` (`:135`). So a writer cannot exist without calling that function, and
-enumerating **its callers** closes the census — which grepping for `createdByRunId` cannot do, because
+`upsertTaskOutputForIssue` (`:135`); the only others in the tree are three raw-SQL admin fixtures
+under `server/src/__tests__`. So a row cannot be **CREATED** without calling that function, and
+enumerating **its callers** closes the census of writers able to MINT a `created_by_run_id` — which
+grepping for `createdByRunId` cannot do, because
 `routes/task-outputs.ts:54` forwards `req.body` and never names the field. Re-close it with
 `grep -rn "insert(taskOutputs" server packages --include=*.ts` (exactly one hit) plus
 `grep -rn "upsertTaskOutputForIssue\|upsertForIssue" server packages ui --include=*.ts --include=*.tsx | grep -v __tests__`
@@ -150,6 +152,22 @@ trigger. Both were checked at this tip and are absent — the only `sql.raw` INS
 `memory_items` (`memory-projection.ts:151`), and the six migrations naming `task_outputs` carry DDL,
 one column `UPDATE`, and `GRANT`/RLS only. ★ A repo-wide raw-SQL sweep must exclude `docs/` and
 `scripts/`, or this paragraph and E7-F018's register entry match it back at you.
+
+★★★ **CREATION vs the COLUMN, and the seam.** The warrant above closes row CREATION. It closes the
+**column** for a SECOND and independent reason, because **three UPDATE sites do NOT pass through the
+chokepoint**: `updateMutable` (`task-outputs.ts:237`), `clearSiblingPrimaries` (`:71`, reached from
+`updateMutable:231` as well as from inside the chokepoint at `:147`) and `workspace-runtime.ts:2890`.
+(The fourth `.update(taskOutputs)`, `task-outputs.ts:167`, IS inside the chokepoint.) None of the
+three can set `created_by_run_id`: the latter two set only `is_primary`/`updated_at` and
+`status`/`health_status`/`url`/`updated_at`, and `updateMutable` spreads a body validated by
+**`mutableTaskOutputSchema`, which is `.strict()` and omits `createdByRunId`**
+(`packages/shared/src/validators/task-output.ts:55-63`) — `validate()`'s `schema.parse`
+(`middleware/validate.ts:6`) throws on a request carrying it. ★★★ **THE SEAM:** the column half of
+this warrant rests entirely on that `.strict()` omission. **If `createdByRunId` were ever added to
+`mutableTaskOutputSchema`, `PATCH /api/task-outputs/:id` (`routes/task-outputs.ts:87-97`) would
+become a writer this warrant is structurally unable to see** — it never calls
+`upsertTaskOutputForIssue`, so no enumeration of the chokepoint's callers would list it. A future
+round must re-check the schema, not only the caller list.
 
 **Eleven production call sites reach that insert; TEN are legacy and the eleventh is the distributed
 producer, kept out of the table below. FOUR of the ten can carry a `heartbeat_runs` id; TWO of those
