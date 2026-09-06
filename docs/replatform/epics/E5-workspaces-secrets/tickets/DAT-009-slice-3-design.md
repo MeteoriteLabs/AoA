@@ -9,6 +9,11 @@ LANDED) · DAT-002 + DAT-002-live-minio (the grant/commit halves, LANDED and liv
 (Option D, REVISION 2) — item **4** of its ordered list.
 **Terrain:** [`DAT-009-terrain.md`](./DAT-009-terrain.md) §1, §4, §9 · **Map:**
 [`CLI-008-unit-f-design.md`](../../E7-coding-e2b/tickets/CLI-008-unit-f-design.md) §1.5–§1.8.
+**AMENDED 2026-09-06 (W6U1).** The two implementer-level decisions slice c reserved are now
+RULED and recorded in §4 beside their reservations — **RULING A** (a failed export is BEST-EFFORT)
+and **RULING B** (only the normal terminal at `supervisor.ts:795` exports). Both are implementer
+defaults with their rationale and their cost, not founder calls; both are overturnable by
+measurement. No code changed.
 
 > **This ticket had no design file.** It is cited as chartered in three places — the decision
 > record's ordered list (`:78`), [`DAT-009-slice-1-design.md`](./DAT-009-slice-1-design.md):6
@@ -136,7 +141,10 @@ So the sequence must run:
   both refused `attempt_terminal`.
 
 In `supervisor.ts` that is exactly one place: **between step 3b (`observeRun`, `:774-791`) and step
-4 (`events.terminal`, `:795`).** It is also before step 5 `destroy` (`:808`), which it must be —
+4 (`events.terminal`, `:795`).** ★ **AMENDED (W6U1): that sentence answers *where in the
+happy path*, and leaves open *which of the terminals*. There are FOURTEEN `events.terminal(` call
+sites, all in `supervisor.ts`; RULING B in §4 slice c settles that only `:795` exports, counts them,
+and records what the other thirteen lose.** It is also before step 5 `destroy` (`:808`), which it must be —
 `exportArtifact` reads from a live sandbox.
 
 ★★ **The late edge is not the local `emit()`.** `DurableWorkerEventSink.emit` fsyncs the event to a
@@ -319,6 +327,138 @@ the work is already done, and failing the attempt would discard a successful run
 *evidence* could not be filed. The likely answer is **best-effort like `observeRun`** — log, emit
 `failed`, continue to a truthful terminal — but it is a real decision with a real cost (evidence
 silently missing), it needs its own mutant, and it belongs with the code that implements it.
+---
+
+#### ★★★ RULING A (slice c's reserved decision, now taken) — **a failed export is BEST-EFFORT, not a failed attempt**
+
+**Who ruled, and at what authority.** Recorded by the W6U1 output-ruling unit, 2026-09-06, measured at
+`31d33a3b0`. This is an **IMPLEMENTER-level** decision — the one the paragraph above explicitly
+reserves for "the code that implements it" — **not a founder call and not an architectural decision**.
+It settles what slice c does by default; a slice-c author with a measurement that contradicts the
+evidence below should overturn it and say so here, and nothing in this ruling binds anyone who has
+new evidence.
+
+**The ruling.** When the export sequence refuses or throws, slice c **logs, emits
+`emitOp("export_artifact", "failed")`, and continues to the truthful terminal**. It does **not** fail
+the attempt. This is `observeRun`'s posture (`supervisor.ts:774-786`), not `stageFiles`'s
+(`:686-690`).
+
+**Rationale, measured.**
+
+1. ★★★ **Failing closed would override a verdict the tenant command already earned.** The export sits
+   between `emitOp("execute", "success")` (`supervisor.ts:760`) and `events.terminal(...)` (`:795`),
+   and the status carried by that terminal is computed at `:792` from the tenant command's own result:
+   `const status = exec.exitCode === 0 && !exec.timedOut ? "succeeded" : "failed"`. A fail-closed
+   export would report the **agent** as FAILED on a run whose `exec.exitCode === 0`, because object
+   storage was unreachable. That is the inverse of the staging case: staging fails closed because an
+   agent that ran **without its input** produced a clean terminal for mutilated work, i.e. the
+   terminal would be a LIE. Here the terminal is TRUE and the export failure would make it a lie.
+2. **The likeliest refusals are lifecycle-window mistakes, not work failures.** The refusal reasons
+   the export path already surfaces by name are `attempt_terminal` / `stale_fence` /
+   `target_revoked` (`packages/worker-daemon/src/lease/artifact-export.ts:344-347`, and the
+   `rejected`-first branch at `:348-350` that carries them). All three mean *"this ran outside the
+   lifecycle window"* — a **placement** bug in slice c's own hook, not a statement about the agent's
+   work. Failing the attempt on those would convert every §3.1 timing error into a false red run.
+3. **A store outage would already fail every run, so fail-closed buys nothing at the margin.** An
+   S3-compatible store is a **hard precondition** for the whole export arm: `artifact-commit.ts:141-145`
+   fails closed when the store cannot supply a checksum (`if (typeof head.contentLength !== "number"
+   || !head.checksumSha256) return rejected("event_hash_mismatch")`, with its own comment *"integrity
+   unverifiable → fail closed"*), and `checksumSha256` is supplied only by `storage/s3-provider.ts`.
+   So the systemic-outage scenario a fail-closed export is imagined to protect against is one in
+   which **every** distributed run fails anyway; what fail-closed actually buys is turning
+   *individual, transient, mostly-our-fault* refusals into red runs.
+
+★★ **THE COST OF THIS RULING, RECORDED RATHER THAN GLOSSED — and it is real: evidence can be silently
+lost.** A best-effort export that refuses leaves a run that terminalized `succeeded` with no artifact
+and, unless something says otherwise, no trace of the attempt. Three obligations follow, and slice c
+is not done without them:
+
+- **It must emit.** `emitOp("export_artifact", "failed")` is mandatory on every refusal branch, not
+  best-effort about being best-effort. The metric labels already exist —
+  `packages/worker-daemon/src/metrics/metrics.ts:120-121` registers `digest_artifact` and
+  `export_artifact` — so this costs nothing and its absence is E7-F010's exact failure class (an
+  unregistered label throwing on the happy path).
+- **The reason must survive.** The export direction already reports the server's refusal reason by
+  name (`artifact-export.ts:341-350`); the download mirror does not, and reports every refusal as
+  *"malformed grant"* (**E7-F017**). A best-effort ruling is only safe while the log line names
+  `attempt_terminal` rather than a protocol-bug lookalike, so **E7-F017's asymmetry must not be
+  "fixed" by making the export side match the download side.**
+- **It needs its own mutant.** The reserved paragraph says so and it is right: a positive control in
+  which the export refuses and the run still reaches `succeeded` with a `failed` op — and its
+  converse, a run whose terminal is unchanged by the refusal.
+
+**The road not taken, and what it would have cost.** Fail-closed would have bought exactly one thing:
+"if the evidence is missing, the run is red, so nobody quotes a green run with no artifact." That is
+a genuine property and it is the property `capabilityProven` is *supposed* to provide — but at the
+price of (a) reporting a successful agent as failed on an infrastructure fault, (b) making every
+lifecycle-window placement error in slice c look like an agent failure, and (c) coupling the run's
+verdict to object storage on a path where storage is already a global precondition. The verdict a
+missing artifact should move is **clause 6**, which is a judge, not the attempt's terminal status,
+which is a fact about the tenant command.
+
+#### ★★★ RULING B (the placement question §3.1 leaves half-answered) — **only the NORMAL terminal (`:795`) exports**
+
+**Who ruled, and at what authority.** Same unit, same date, same standing as Ruling A: an
+implementer-level default for slice c, overturnable by measurement. §3.1 above already says the
+export goes *"between step 3b (`observeRun`, `:774-791`) and step 4 (`events.terminal`, `:795`)"*;
+what it does **not** say is what happens at the **other thirteen** terminal call sites. This ruling
+says: nothing. They do not export.
+
+**COUNTED, because the record disagreed with itself.** The tasking brief said 14 call sites; another
+reader said 15. **Measured at `31d33a3b0`: exactly 14**, and all 14 are in
+`packages/worker-daemon/src/supervisor/supervisor.ts` —
+`grep -c "events.terminal(" packages/worker-daemon/src/supervisor/supervisor.ts` → `14`, at lines
+**510, 519, 545, 574, 584, 594, 623, 643, 675, 697, 733, 751, 765, 795**. Nowhere else in
+`worker-daemon/src` calls it: `supervisor/events.ts` holds the method *definition*, and
+`lease/artifact-export.ts:249` mentions `events.terminal()` only in prose.
+
+**Of those 14, exactly TWO are downstream of `emitOp("execute", "success")` at `:760`** — the earliest
+point at which any file the agent wrote could exist — namely **`:765`** (cancelled while executing)
+and **`:795`** (the normal terminal). The other **twelve** precede `:760` and are therefore not
+candidates: they terminalize before the tenant command has returned at all.
+
+★★★ **THE LOAD-BEARING NUANCE: "only the normal terminal" is NOT "only successful runs."** `:795`
+carries **both** `succeeded` and `failed`, because `:792` computes
+`exec.exitCode === 0 && !exec.timedOut ? "succeeded" : "failed"` from a result the provider now
+**returns**. That is E7-F014's resolution (`packages/sandbox-e2b-provider/src/real-transport.ts:157-164`,
+PR #351): a `CommandExitError` with a numeric `exitCode` is narrowed and
+`return { exitCode, signal: null, timedOut: false, crashed: exitCode !== 0 }` — a non-zero exit
+**arrives as a result rather than a throw**. Before that fix, every failing run left through the
+`catch` at `:741` and this ruling would have excluded all of them, which is precisely why E7-F014 was
+recorded as a **prerequisite** for any return path rather than an objection to one
+(`CLI-008-unit-f-design.md` §3.7, §5, §11). ★ The narrowing fails closed: a `CommandExitError` whose
+`exitCode` is not a number, and any other error class, still throws (`real-transport.ts:161-168`), so
+a genuine sandbox/transport fault is still case (b) and still leaves via `:751`.
+
+★★ **WHAT THIS RULING LOSES — and the brief's grouping of it is CORRECTED.** The brief named three
+lost teardown paths as if they were equivalent. Measured, they are not, and the difference matters:
+
+| path | line | relative to `:760` | could a file exist? |
+|---|---|---|---|
+| cancelled while executing | `:765` | **DOWNSTREAM** | ★ **Yes, demonstrably** — `exec` already returned; the sandbox is still alive (`escalateCleanup` runs after `:765`) |
+| the `withDeadline` `execute_timeout` race | `:733` (block `:729-740`) | upstream | Possibly — the command ran and may have written before the deadline fired, but no exit status exists to attribute it to |
+| a genuine provider fault, and the common cancel/lease-loss rejection | `:751` (block `:741-758`) | upstream | Possibly, same caveat; the comment at `:745-748` records that the cancel/lease-loss teardown is what makes the in-flight `execute` reject here |
+
+So there is **one** loss with a provably-possible file (`:765`) and **two** where a partial file may
+exist with no verdict to attach it to.
+
+**Why `:765` is nevertheless excluded, stated as a judgement rather than a fact.** A cancelled run is
+the case where the fence is *most likely already gone*: an upload grant requires a live fence
+(`artifact-transfer-grant.ts:99` → `lockActiveFence`; `classifyFence` returns `attempt_terminal` the
+moment the attempt is terminal, `job-fence.ts:482-488`), and cancel/lease-loss is exactly the
+lifecycle edge §3.1 warns about. So exporting there would most often hit `stale_fence` /
+`target_revoked` / `attempt_terminal` — i.e. the refusals Ruling A has just declared best-effort —
+while adding a second, differently-shaped call site to a sequence whose whole difficulty is *where*
+it sits. **One placement, argued once, is worth more than two placements each argued half.** If a
+later measurement shows the fence is reliably live at `:765`, adding it is a small, separable change
+and this table is the argument to revisit.
+
+**What is NOT ruled here.** Nothing about the twelve upstream sites changes, no new terminal is added,
+and no cleanup path is touched. In particular this ruling does **not** endorse the frozen
+`late_output` quarantine reason as a fallback: §3.1 already records that `runOrphanQuarantine`'s only
+production caller is behind `E4-3-survives-restart`, which is `unwired`, so the late-output path is
+unreachable and must not be designed against.
+
 
 ### Slice d — composition in `dispatch-runtime.ts` + promote the gate clause
 
