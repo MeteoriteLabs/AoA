@@ -6,8 +6,10 @@ import { describe, expect, it } from "vitest";
 // A 26-agent decision wave concluded: build no output mechanism, MEASURE FIRST. The
 // founder authorised ONE keyed E2B run. This file is what that run executes. It
 // BUILDS NOTHING, MUTATES NO GATE, COUNTER OR REGISTER, and touches no database — it
-// creates short-TTL sandboxes, writes and reads files inside them, and prints a
-// verdict.
+// creates short-TTL sandboxes, writes and reads files inside them, and leaves a DURABLE
+// record of the verdict (job log + `$GITHUB_STEP_SUMMARY` + an uploaded JSON artefact),
+// because E7-F025 measured what a job-log-only verdict costs: the sibling keyed lane fired
+// twice and no document records either outcome.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // THE DECISIVE UNKNOWN, AND WHY IT IS IN DOUBT
@@ -68,11 +70,14 @@ import {
   buildSandboxInvocation,
 } from "../../../../server/src/services/task-run-sandbox-invocation.js";
 import {
+  CLI_BEARING_TEMPLATE_ALIAS,
+  buildProbeRecord,
   classifyProbeAArm,
   formatVerdict,
   isListingUsable,
   packDisposition,
   redactSecrets,
+  resolveTemplate,
   verdictProbeA,
   verdictProbeB,
   verdictProbeC,
@@ -83,7 +88,16 @@ import type { E2bStagedFile, E2bTransport } from "../transport.js";
 
 const HAS_KEY = typeof process.env.E2B_API_KEY === "string" && process.env.E2B_API_KEY.length > 0;
 const describeKeyed = HAS_KEY ? describe : describe.skip;
-const TEMPLATE = process.env.E2B_TEMPLATE && process.env.E2B_TEMPLATE.length > 0 ? process.env.E2B_TEMPLATE : "base";
+
+// ★★★ THE TEMPLATE IS RESOLVED, NOT DEFAULTED. This line used to read
+// `process.env.E2B_TEMPLATE && length > 0 ? ... : "base"` — the shape E7-F022 measured
+// across every keyed lane, and the one that would have run this pack's decisive probe
+// against an image with NO AGENT CLIs whenever an operator dispatched without naming a
+// template. `resolveTemplate` sends an omitted input to the CLI-bearing `aoa-base` and
+// SAYS SO; `TEMPLATE_RESOLUTION.source`/`.note` reach the report and the durable record so
+// a later reader can always tell which image answered and why.
+const TEMPLATE_RESOLUTION = resolveTemplate(process.env.E2B_TEMPLATE);
+const TEMPLATE = TEMPLATE_RESOLUTION.templateId;
 
 const DEC = new TextDecoder();
 
@@ -634,11 +648,20 @@ const ARM_SPECS: ArmSpec[] = [
   { label: "A3", what: "NEGATIVE CONTROL — a prompt that forbids writing; a file here kills attribution" },
 ];
 
+const COMMIT_SHA = process.env.GITHUB_SHA && process.env.GITHUB_SHA.length > 0 ? process.env.GITHUB_SHA : "unknown";
+const RUN_URL = process.env.W7U1_RUN_URL && process.env.W7U1_RUN_URL.length > 0 ? process.env.W7U1_RUN_URL : "unknown";
+
 function report(verdicts: Verdict[]): string {
   const lines: string[] = [];
   lines.push("");
   lines.push("================ W7U1 OUTPUT PROBE PACK — RESULT ================");
-  lines.push(`run nonce: ${RUN_NONCE}   template: ${TEMPLATE}`);
+  // ★ THE RESOLVED TEMPLATE IS THE FIRST THING THE READER SEES. E7-F022: the template is an
+  // operator input no protocol surface can see, and a result quoted without it cannot be
+  // interpreted — a run against an image with no agent reads exactly like a run against one
+  // that has it.
+  lines.push(`TEMPLATE: ${TEMPLATE}   (${TEMPLATE_RESOLUTION.source})`);
+  lines.push(`  ${TEMPLATE_RESOLUTION.note}`);
+  lines.push(`commit: ${COMMIT_SHA}   run nonce: ${RUN_NONCE}`);
   lines.push("");
   lines.push("Probe A arms:");
   for (const a of ARM_SPECS) lines.push(`  ${a.label}  ${a.what}`);
@@ -651,6 +674,69 @@ function report(verdicts: Verdict[]): string {
   lines.push("================================================================");
   lines.push("");
   return lines.join("\n");
+}
+
+/**
+ * Put the run's answer somewhere it SURVIVES.
+ *
+ * ★★★ E7-F025 IS THE REASON THIS FUNCTION EXISTS. It measured that the sibling keyed lane
+ * already fired twice — re-fires #3 (2026-08-19) and #4 (2026-08-26) per
+ * `.github/keyed-e2b-trigger` — and that no document in the repo records either outcome.
+ * The honest state of that measurement is "fired and unrecorded", and the next session
+ * re-asks the question. A pack whose verdict lives only in a job log loses the founder's
+ * one authorised run exactly the same way, so the verdict goes to THREE places:
+ *
+ *   1. the job log (always readable while the run is retained);
+ *   2. `$GITHUB_STEP_SUMMARY` — visible on the run page with nothing to download;
+ *   3. `W7U1_RECORD_PATH` — a structured JSON record the workflow uploads as an artefact,
+ *      on a red run as well as a green one.
+ *
+ * Each channel is attempted independently: losing one must not cost the others.
+ */
+async function emitDurableRecord(verdicts: Verdict[]): Promise<void> {
+  const text = report(verdicts);
+  // eslint-disable-next-line no-console
+  console.log(text);
+
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (typeof summaryPath === "string" && summaryPath.length > 0) {
+    try {
+      const { appendFileSync } = await import("node:fs");
+      appendFileSync(summaryPath, `\n\`\`\`\n${text}\n\`\`\`\n`, "utf8");
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`[w7u1] could not append to GITHUB_STEP_SUMMARY: ${safe(String(err), 300)}`);
+    }
+  }
+
+  const recordPath = process.env.W7U1_RECORD_PATH;
+  if (typeof recordPath !== "string" || recordPath.length === 0) return;
+  try {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const { dirname } = await import("node:path");
+    // `buildProbeRecord` REFUSES a record with no resolved template: a record that does not
+    // say which image answered cannot be interpreted later (E7-F022).
+    const record = buildProbeRecord({
+      verdicts,
+      disposition: packDisposition(verdicts),
+      template: TEMPLATE,
+      templateSource: TEMPLATE_RESOLUTION.source,
+      templateNote: TEMPLATE_RESOLUTION.note,
+      commitSha: COMMIT_SHA,
+      runNonce: RUN_NONCE,
+      generatedAt: new Date().toISOString(),
+      workflowRunUrl: RUN_URL,
+    });
+    mkdirSync(dirname(recordPath), { recursive: true });
+    // Redacted on the way out, exactly like every other string this pack emits: a probe
+    // detail can quote a CLI's own stderr, and this file is uploaded as a public artefact.
+    writeFileSync(recordPath, `${redactSecrets(JSON.stringify(record, null, 2), SECRETS)}\n`, "utf8");
+    // eslint-disable-next-line no-console
+    console.log(`[w7u1] durable record written to ${recordPath}`);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[w7u1] could not write the durable record: ${safe(String(err), 300)}`);
+  }
 }
 
 describeKeyed("W7U1 — the output probe pack, against REAL E2B", () => {
@@ -678,13 +764,19 @@ describeKeyed("W7U1 — the output probe pack, against REAL E2B", () => {
         verdicts.push(await guarded(`A/${spec.adapterType}`, () => probeA(spec)));
       }
 
-      const text = report(verdicts);
-      // eslint-disable-next-line no-console
-      console.log(text);
-      const summaryPath = process.env.GITHUB_STEP_SUMMARY;
-      if (typeof summaryPath === "string" && summaryPath.length > 0) {
-        const { appendFileSync } = await import("node:fs");
-        appendFileSync(summaryPath, `\n\`\`\`\n${text}\n\`\`\`\n`, "utf8");
+      // ★★★ THE RECORD IS EMITTED BEFORE THE ASSERTION, AND IN A `finally`. The run that
+      // most needs a durable record is the INCONCLUSIVE one, which is the run that throws
+      // here — and E7-F025 measured the cost of getting this wrong: this repo's sibling
+      // keyed lane fired TWICE with no document recording either outcome, so its honest
+      // state is "fired and unrecorded" and the question keeps being re-asked. Emission is
+      // best-effort per channel: a failed step-summary append must not cost us the JSON
+      // artefact, and neither must cost us the verdict.
+      try {
+        await emitDurableRecord(verdicts);
+      } finally {
+        const d0 = packDisposition(verdicts);
+        // eslint-disable-next-line no-console
+        console.log(`[w7u1] disposition=${d0.disposition} template=${TEMPLATE} commit=${COMMIT_SHA}`);
       }
 
       const d = packDisposition(verdicts);
@@ -766,5 +858,74 @@ describe("W7U1 — readBack classifies the read channel (no key required)", () =
     expect(r.found).toBe(true);
     expect(r.errorKind).toBeNull();
     expect(r.content).toContain("W7U1-NONCE");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WHICH IMAGE ANSWERED, AND WHERE THE ANSWER GOES — both proven WITHOUT a key
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ★★★ ALSO NOT `describeKeyed`. The pure core owns the DECISIONS (what an omitted template
+// resolves to; what a record must contain); this block owns the WIRING — that this file
+// actually calls them, and that bytes actually land on disk. Both defects being pinned were
+// live at 91e07abeb: the template line defaulted to bare `base` (E7-F022 — an image with no
+// agent CLIs), and the verdict existed only in the job log (E7-F025 — the sibling keyed lane
+// fired twice and left no record either time).
+
+describe("W7U1 — template resolution and the durable record (no key required)", () => {
+  // ★★★ THE TEMPLATE WIRING, PROVEN WITHOUT A KEY. The pure core's suite proves what
+  // `resolveTemplate` returns; what it cannot reach is whether THIS file uses it. The
+  // defect being pinned is the literal line that stood here before:
+  // `process.env.E2B_TEMPLATE && length > 0 ? ... : "base"` — an omitted dispatch input
+  // silently selecting an image with no agent CLIs (E7-F022), on the single authorised run.
+  it("an omitted E2B_TEMPLATE resolves to the CLI-BEARING template, never bare `base`", () => {
+    const raw = process.env.E2B_TEMPLATE;
+    if (typeof raw !== "string" || raw.trim().length === 0) {
+      expect(TEMPLATE).toBe(CLI_BEARING_TEMPLATE_ALIAS);
+      expect(TEMPLATE).not.toBe("base");
+      expect(TEMPLATE_RESOLUTION.source).toBe("default-cli-bearing");
+    } else {
+      // POSITIVE CONTROL: an explicitly supplied template is honoured unchanged.
+      expect(TEMPLATE).toBe(raw.trim());
+      expect(TEMPLATE_RESOLUTION.source).toBe("explicit");
+    }
+  });
+
+  // ★★★ THE RECORD WIRING, PROVEN WITHOUT A KEY. `buildProbeRecord` is pure and its own
+  // suite covers it; this proves the pack ACTUALLY CALLS IT and actually puts bytes on
+  // disk at `W7U1_RECORD_PATH`. Without this the emitter could be perfect and never fire —
+  // the failure class E7-F025 recorded from the other direction ("fired and unrecorded").
+  it("emitDurableRecord writes a retrievable record naming the template, the sha and every verdict", async () => {
+    const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "w7u1-record-"));
+    const target = join(dir, "nested", "record.json");
+    const previous = process.env.W7U1_RECORD_PATH;
+    process.env.W7U1_RECORD_PATH = target;
+    try {
+      await emitDurableRecord([
+        { probe: "B", state: "no", reason: "template-prefills-nothing", detail: "d1" },
+        { probe: "A/claude_local", state: "inconclusive", reason: "no-model-provider-key", detail: "d2" },
+      ]);
+      const parsed = JSON.parse(readFileSync(target, "utf8")) as {
+        commitSha: string;
+        template: { resolved: string; source: string };
+        disposition: { disposition: string };
+        probes: { probe: string; state: string; reason: string }[];
+      };
+      expect(parsed.template.resolved).toBe(TEMPLATE);
+      expect(parsed.template.source).toBe(TEMPLATE_RESOLUTION.source);
+      expect(parsed.commitSha).toBe(COMMIT_SHA);
+      expect(parsed.disposition.disposition).toBe("inconclusive");
+      expect(parsed.probes.map((p) => `${p.probe}=${p.state}/${p.reason}`)).toEqual([
+        "B=no/template-prefills-nothing",
+        "A/claude_local=inconclusive/no-model-provider-key",
+      ]);
+    } finally {
+      if (previous === undefined) delete process.env.W7U1_RECORD_PATH;
+      else process.env.W7U1_RECORD_PATH = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

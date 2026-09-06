@@ -13,7 +13,8 @@ question underneath every proposed mechanism is whether a real coding agent, inv
 distributed path actually invokes it, can write a file inside the sandbox **at all**. This pack
 answers that with one keyed E2B run, plus two cheaper questions worth answering in the same run. It
 **builds nothing**, **changes no gate, counter or register**, and touches no database. It creates
-short-TTL sandboxes, writes and reads files inside them, prints a verdict, and tears them down.
+short-TTL sandboxes, writes and reads files inside them, records a verdict **durably** (§5), and
+tears them down.
 
 ---
 
@@ -45,8 +46,45 @@ the pack's own source later fires nothing either.
 > sandbox seconds. This one spends **model tokens against an authorisation a person gave**, so an
 > automatic re-fire would consume an authorisation nobody granted.
 
-**Optional input.** `e2b_template` selects a different E2B template alias; empty means bare `base`.
-Use it if the run reports `template-has-no-node-runtime` (§6).
+### 2a. WHICH TEMPLATE TO PASS — and what happens if you do not
+
+**Pass `aoa-base`.** That is the alias `e2b/e2b.Dockerfile` builds, and its final layer is
+`RUN command -v claude && command -v codex && claude --version && codex --version`, so an image that
+built at all has both agent CLIs on PATH. It was measured `buildStatus: ready` on the operator's E2B
+account on 2026-08-31 (templateID `7vg8mu6gaoz2inw62lv8`,
+`docs/replatform/qa/2026-08-31-campaign-blockers-and-fleet-terrain.md` §9d).
+
+```bash
+gh workflow run keyed-e2b-w7u1-output-probe.yml --ref docs/replatform-program -f e2b_template=aoa-base
+```
+
+**If you pass nothing, the pack resolves to `aoa-base` anyway — it does NOT fall back to bare
+`base`.** This lane deliberately diverges from every sibling keyed lane here. E7-F022 measured that
+they all pipe `inputs.e2b_template` straight into `E2B_TEMPLATE`, so an omitted input silently
+selects the bare `base` template, which has **no agent CLIs** ("coreutils only",
+`.github/keyed-e2b-trigger` entry #4). For a lane whose subject is the invocation *shape* that costs
+nothing; for this pack it would spend your one authorised, token-spending run on an image that
+cannot host the thing being measured. `resolveTemplate`
+(`scripts/lib/w7u1-agent-output-probe.mjs`) therefore corrects **omission** — and only omission.
+
+* **The push route is safe too.** A `push` event carries no inputs, so `E2B_TEMPLATE` arrives empty
+  and the same resolution applies. There is no way to fire a bare-`base` run by omission from
+  either route.
+* **An explicitly supplied alias is honoured verbatim, including `base`.** If you deliberately want
+  the no-CLI measurement, type it; the report and the durable record will both say
+  `TEMPLATE: base (explicit)` and flag that it carries no CLIs.
+* **The resolved id is printed at the top of the report and stored in the durable record**, so a
+  reader six months from now can always tell which image answered.
+
+> ★ **What a bare-`base` run actually does, traced rather than assumed.** It cannot produce a false
+> NO. Probe A's first in-sandbox command is `command -v node || echo NO_NODE; command -v npm || echo
+> NO_NPM`, and a hit on either returns `inconclusive-because-template-has-no-node-runtime` before the
+> CLI install is attempted; a fault in that probe falls through to `cli-install-failed` or
+> `cli-binary-not-on-path`, both also inconclusive. Every bare-`base` path reds the lane as
+> "run me again", never as "the agent cannot write". The default is a **waste** guard, not a
+> correctness guard — but the waste is the founder's single authorised run.
+
+**Other optional inputs.** None. `e2b_template` is the only one.
 
 ---
 
@@ -86,8 +124,26 @@ every string the pack prints is passed through its own redactor first
 
 ## 5. How to read the result
 
-Open the run and read the **job summary** — the pack appends its whole report there. The same text
-is in the "Run the W7U1 output probe pack" step's log.
+The verdict is written to **three** places, on a red run as well as a green one:
+
+| Where | What is there | Why |
+|---|---|---|
+| **Job summary** (the run page, nothing to download) | the whole human report, as a fenced block | the fastest read |
+| **`w7u1-output-probe-record` artefact** (Artifacts section of the run, 90-day retention) | `w7u1-output-probe-record.json` — schema `aoa.w7u1.output-probe-record/1`: the disposition, **every probe's state AND reason**, the **resolved template id and how it was resolved**, the commit sha, the run url and the run nonce | the record that outlives the log |
+| **Step log** | the same report plus every per-arm line | the detail |
+
+> ★★★ **Why the pack is not allowed to answer only into a log.** E7-F025 measured this repo's own
+> instance of the failure: the sibling keyed lane `keyed-e2b-conformance.yml` **already fired twice**
+> — re-fires #3 (2026-08-19) and #4 (2026-08-26) per `.github/keyed-e2b-trigger` — and **no document
+> in the repo records either outcome**, so the honest state of that measurement is *fired and
+> unrecorded* and the next session re-asks the question. Both the fallback writer and the artefact
+> upload are `if: always()` for the same reason: the **inconclusive** run is exactly the run whose
+> detail somebody needs, and exactly the run a success-gated step throws away.
+> `evaluateDurableRecord` (`scripts/lib/w7u1-agent-output-probe.mjs`) asserts both guards against the
+> real YAML in the required `policy` job, so removing either one reds CI.
+
+**After the run: copy the record into a `-result.md` next to this file, naming the run id.** The
+artefact is retained for 90 days; the ticket record is not.
 
 Every probe reports one of three states. **`no` is a result and the lane stays GREEN for it.**
 `inconclusive` is the only state that reds, because it is the only one that means *run me again*.
@@ -109,7 +165,9 @@ Every probe reports one of three states. **`no` is a result and the lane stays G
 
 ```
 ================ W7U1 OUTPUT PROBE PACK — RESULT ================
-run nonce: W7U1-<...>   template: <template>
+TEMPLATE: <resolved template id>   (<explicit|default-cli-bearing>)
+  <why it resolved that way>
+commit: <sha>   run nonce: W7U1-<...>
 
 Probe A arms:
   A0  HARNESS CONTROL — plain shell writes the file; we read it back
@@ -192,7 +250,8 @@ The directory listing that follows is the sandbox's first command and is reporte
 |---|---|---|
 | Job fails at "Fail if the pack SKIPPED" | `E2B_API_KEY` was empty; the whole pack skipped and measured nothing. | Restore the secret. A skip is never a pass. |
 | `A/claude_local: INCONCLUSIVE — no-model-provider-key` | `ANTHROPIC_API_KEY` is not a repo secret. | §3. |
-| `INCONCLUSIVE — template-has-no-node-runtime` | The bare `base` template has no `node`/`npm`, so the agent CLI cannot be installed. | Re-run with a template that carries a node runtime — but note **the push route cannot select one.** `E2B_TEMPLATE` comes from `inputs.e2b_template`, and a `push` event supplies no inputs, so the push route always runs bare `base`. Either use `gh workflow run keyed-e2b-w7u1-output-probe.yml --ref docs/replatform-program -f e2b_template=<alias>` (only if dispatch does not 404 — §2), or edit the lane's `E2B_TEMPLATE:` line and append to the trigger file **in the same commit**, which fires the push route with the template you chose. |
+| `INCONCLUSIVE — template-has-no-node-runtime` | The template that ran has no `node`/`npm`, so the agent CLI cannot be installed. Read the report's `TEMPLATE:` line first — if it says `base (explicit)`, someone typed it; **omission can no longer produce this** (§2a). | Re-dispatch with `-f e2b_template=aoa-base`, or if `aoa-base` is not registered on the account behind `E2B_API_KEY`, build it: `cd e2b && e2b template create aoa-base -d e2b.Dockerfile` (the `e2b template build` form in older docs is a gutted no-op). |
+| The run failed and there is **no** `w7u1-output-probe-record` artefact | Should be impossible: both the fallback writer and the upload are `if: always()`. If it happens, the guard in `scripts/lib/__tests__/w7u1-agent-output-probe.test.mjs` has been weakened or the job died before its first step. | Treat the run as **unmeasured**, not as a result, and say so wherever you report it — that is the E7-F025 failure returning. |
 | `INCONCLUSIVE — cli-install-failed` | `npm install -g` failed (plain **and** under `sudo`; the log carries the last 20 lines). Usually network or a package-name change. | Read the log, then re-run. |
 | `INCONCLUSIVE — probe-threw` | The probe itself raised. The redacted error is in the detail line. | This is an apparatus failure; nothing may be concluded from that probe. |
 | An arm's cause is `read-faulted` | The **readback** of the arm's target path faulted (a throw that was not `E2bTransportNotFoundError`). Deliberately **not** read as "the file is absent". | Re-run. |
@@ -219,7 +278,7 @@ The directory listing that follows is the sandbox's first command and is reporte
 | File | Role |
 |---|---|
 | `packages/sandbox-e2b-provider/src/__tests__/keyed-w7u1-agent-output-probe.test.ts` | the pack: sandboxes, arms, the report. Skips cleanly without `E2B_API_KEY`. |
-| `scripts/lib/w7u1-agent-output-probe.mjs` | the pure core: the A2 transform, arm classification, all three verdicts, the redactor. Zero imports; no network, no filesystem. |
+| `scripts/lib/w7u1-agent-output-probe.mjs` | the pure core: template resolution, the A2 transform, arm classification, all three verdicts, the redactor, the durable-record builder, and `evaluateDurableRecord` (which asserts the lane's own `always()` guards). Zero imports; no network, no filesystem. |
 | `scripts/lib/__tests__/w7u1-agent-output-probe.test.mjs` | proves every one of those decisions **without a key**, on every PR, in the required `policy` job — and pins W7U1's premise (no permission posture in any of the four production script literals). |
-| `.github/workflows/keyed-e2b-w7u1-output-probe.yml` | the lane, plus the positive-control step that refuses to let a skip read as success. |
+| `.github/workflows/keyed-e2b-w7u1-output-probe.yml` | the lane: the pack step, the `always()` fallback record writer, the `always()` artefact upload, and the positive-control step that refuses to let a skip read as success. |
 | `.github/keyed-e2b-w7u1-output-probe-trigger` | **not created by the pack's PR.** Creating/appending it on `docs/replatform-program` is the push route to fire the lane. |

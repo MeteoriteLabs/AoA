@@ -47,6 +47,78 @@
 /** The three states every probe and every verdict reports. */
 export const PROBE_STATES = Object.freeze(["yes", "no", "inconclusive"]);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 0. WHICH IMAGE ANSWERED — the template is resolved EXPLICITLY, never by omission
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The E2B template alias that CARRIES THE AGENT CLIs.
+ *
+ * ★★★ MEASURED, not chosen. `e2b/e2b.Dockerfile` builds this alias and its final layer is
+ * `RUN command -v claude && command -v codex && claude --version && codex --version`, so a
+ * template that built at all has both binaries on PATH. `e2b/README.md` §2-3 registers it
+ * under this alias and threads it end to end as `E2B_TEMPLATE=aoa-base`; the campaign QA
+ * record (`docs/replatform/qa/2026-08-31-campaign-blockers-and-fleet-terrain.md` §9d)
+ * measured it `buildStatus: ready` on the operator's account (templateID
+ * `7vg8mu6gaoz2inw62lv8`).
+ */
+export const CLI_BEARING_TEMPLATE_ALIAS = "aoa-base";
+
+/**
+ * The E2B default, which has NO AGENT CLIs — and, per the last recorded push trigger
+ * (`.github/keyed-e2b-trigger` entry #4, 2026-08-26), "coreutils only".
+ *
+ * ★★★ IT IS NAMED HERE SO IT CAN BE REFUSED. E7-F022 measured that every keyed lane pipes
+ * `inputs.e2b_template` straight into `E2B_TEMPLATE` and that an omitted input therefore
+ * "silently defaults to the bare `base` template" — an image with no agent in it. For the
+ * sibling lanes that costs nothing (their subject is the invocation SHAPE). For THIS pack
+ * it would spend the founder's single authorised, token-spending run on a sandbox that
+ * cannot host the thing being measured.
+ */
+export const BARE_BASE_TEMPLATE_ALIAS = "base";
+
+/**
+ * Resolve the template the pack will actually run against.
+ *
+ * ★ AN OMITTED INPUT RESOLVES TO THE CLI-BEARING TEMPLATE, NOT TO BARE `base`. The
+ * alternative — requiring the input — was rejected because the lane's documented bootstrap
+ * route is a `push` to the trigger file, and a `push` event carries NO inputs at all: a
+ * hard requirement would make the only route that is guaranteed to work the only route
+ * that can never run. So omission resolves to the image that can answer the question, and
+ * the resolution is REPORTED (`source`, `note`) rather than assumed, so a reader of the
+ * durable record can always tell which image answered and why.
+ *
+ * An explicitly supplied alias is honoured VERBATIM — including `base`, if an operator
+ * deliberately wants the no-CLI measurement. Explicit is explicit; only omission is
+ * corrected.
+ *
+ * @param {unknown} raw the `E2B_TEMPLATE` / `inputs.e2b_template` value, possibly empty
+ * @returns {{templateId: string, source: "explicit"|"default-cli-bearing", note: string}}
+ */
+export function resolveTemplate(raw) {
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  if (trimmed.length > 0) {
+    return {
+      templateId: trimmed,
+      source: "explicit",
+      note:
+        trimmed === BARE_BASE_TEMPLATE_ALIAS
+          ? `EXPLICITLY set to the bare "${BARE_BASE_TEMPLATE_ALIAS}" template, which carries NO agent CLIs (E7-F022). ` +
+            "Probe A will report `template-has-no-node-runtime` / `cli-install-failed` and the lane will red."
+          : "explicitly supplied by the dispatch input",
+    };
+  }
+  return {
+    templateId: CLI_BEARING_TEMPLATE_ALIAS,
+    source: "default-cli-bearing",
+    note:
+      `no template was supplied, so the pack resolved to "${CLI_BEARING_TEMPLATE_ALIAS}" — the alias `
+      + `e2b/e2b.Dockerfile builds with claude+codex asserted on PATH. It does NOT fall back to `
+      + `"${BARE_BASE_TEMPLATE_ALIAS}": E7-F022 measured that bare base has no agent CLIs, and running the `
+      + "decisive probe against an image with no agent would spend the one authorised run on nothing.",
+  };
+}
+
 /**
  * How a READ of an in-sandbox path terminated.
  *
@@ -584,4 +656,198 @@ export function packDisposition(verdicts) {
 /** Human-readable one-liner per verdict, for the log and the job summary. */
 export function formatVerdict(v) {
   return `PROBE ${v.probe}: ${v.state.toUpperCase()} — ${v.reason}\n    ${v.detail}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. THE DURABLE RECORD — the run's answer must survive the job log
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The record's shape identifier, so a later reader can tell what it is holding. */
+export const PROBE_RECORD_SCHEMA = "aoa.w7u1.output-probe-record/1";
+
+/** Raised when a record would be written that cannot be interpreted later. */
+export class ProbeRecordError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ProbeRecordError";
+  }
+}
+
+/**
+ * Build the structured record the keyed run leaves behind.
+ *
+ * ★★★ THE VERDICT MUST NOT LIVE ONLY IN A JOB LOG. E7-F025 measured this programme's own
+ * instance of the failure: the sibling keyed lane ALREADY FIRED TWICE (re-fires #3 on
+ * 2026-08-19 and #4 on 2026-08-26, per `.github/keyed-e2b-trigger`) and NO document in the
+ * repo records either outcome, so the honest state of that measurement is "fired and
+ * unrecorded" and the next session re-asks the question. A pack that prints its verdict and
+ * nothing else loses the founder's ONE authorised run exactly the same way.
+ *
+ * ★★ A RECORD THAT OMITS WHICH TEMPLATE ANSWERED CANNOT BE INTERPRETED LATER. E7-F022
+ * measured that the template is an operator input invisible to every protocol surface, and
+ * that a keyed run against bare `base` "can be reported green while the CLIs were never
+ * present". So the resolved template id — and HOW it was resolved — is a required field,
+ * and this function REFUSES rather than writing a record without it.
+ */
+export function buildProbeRecord({
+  verdicts,
+  disposition,
+  template,
+  templateSource,
+  templateNote,
+  commitSha,
+  runNonce,
+  generatedAt,
+  workflowRunUrl,
+} = {}) {
+  const resolvedTemplate = typeof template === "string" ? template.trim() : "";
+  if (resolvedTemplate.length === 0) {
+    throw new ProbeRecordError(
+      "buildProbeRecord: the resolved template id is REQUIRED. A record that does not say which image " +
+        "answered cannot be interpreted later (E7-F022) — refusing to write one.",
+    );
+  }
+  const list = (verdicts ?? []).filter(Boolean);
+  const d = disposition ?? packDisposition(list);
+  return {
+    schema: PROBE_RECORD_SCHEMA,
+    generatedAt: typeof generatedAt === "string" && generatedAt.length > 0 ? generatedAt : "unknown",
+    commitSha: typeof commitSha === "string" && commitSha.length > 0 ? commitSha : "unknown",
+    workflowRunUrl: typeof workflowRunUrl === "string" && workflowRunUrl.length > 0 ? workflowRunUrl : "unknown",
+    runNonce: typeof runNonce === "string" && runNonce.length > 0 ? runNonce : "unknown",
+    template: {
+      resolved: resolvedTemplate,
+      source: typeof templateSource === "string" && templateSource.length > 0 ? templateSource : "unknown",
+      note: typeof templateNote === "string" ? templateNote : "",
+      carriesAgentClis: resolvedTemplate === CLI_BEARING_TEMPLATE_ALIAS,
+    },
+    disposition: { disposition: d.disposition, exitCode: d.exitCode, detail: d.detail },
+    // Every probe's THREE-STATE verdict AND its reason. `state` alone is not readable a
+    // month later; `reason` is the part that says what to do next.
+    probes: list.map((v) => ({
+      probe: String(v.probe),
+      state: String(v.state),
+      reason: String(v.reason),
+      detail: String(v.detail ?? ""),
+    })),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. THE LANE'S OWN DURABILITY, ASSERTED AGAINST THE WORKFLOW YAML
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ★★★ WITHOUT THIS, THE FIX ABOVE IS UNGUARDED. `buildProbeRecord` can be perfect and the
+// record still never reach anyone, because whether it is uploaded — and whether it is
+// uploaded on a RED run — is decided in YAML that no test reads. That is this programme's
+// [[checks-that-nothing-runs]] class: the mechanism exists, nothing asserts it fires.
+//
+// The shape is lifted from `scripts/lib/ci-lanes.mjs`'s `uploadsEvidenceBundleOnFailure`,
+// which already does exactly this for `d1-merge-train.yml`'s evidence bundle: bound the
+// step block by indentation, require an `if:` naming `always()`/`failure()`, and require
+// the step to reference the artefact SPECIFICALLY so a guarded upload of something else
+// cannot satisfy the rule.
+
+/** Extract the block of the step containing line `i`, bounded by indentation. */
+function stepBlockAround(lines, i) {
+  let start = i;
+  while (start >= 0 && !/^\s*-\s/.test(lines[start])) start -= 1;
+  if (start < 0) start = i;
+  const stepIndent = (lines[start].match(/^(\s*)-/) || [, ""])[1].length;
+  let end = start + 1;
+  while (end < lines.length) {
+    const l = lines[end];
+    if (l.trim() !== "" && l.match(/^(\s*)/)[1].length <= stepIndent) break;
+    end += 1;
+  }
+  return lines.slice(start, end).join("\n");
+}
+
+const GUARDED_IF = /(^|\n)\s*if:[^\n]*(failure\(\)|always\(\))/;
+
+/**
+ * Does the W7U1 lane leave a durable, retrievable record — on a RED run as well as a green
+ * one — and does its fallback default agree with the pure core?
+ *
+ * @param {string} workflowText the raw YAML of `keyed-e2b-w7u1-output-probe.yml`
+ * @param {{recordPathVar?: string, defaultTemplateVar?: string}} [opts]
+ * @returns {{violations: {code: string, detail: string}[]}}
+ */
+export function evaluateDurableRecord(workflowText, opts = {}) {
+  const recordPathVar = opts.recordPathVar ?? "W7U1_RECORD_PATH";
+  const defaultTemplateVar = opts.defaultTemplateVar ?? "W7U1_DEFAULT_TEMPLATE";
+  const text = String(workflowText ?? "");
+  const lines = text.split(/\r?\n/);
+  const violations = [];
+
+  // 1 + 2. The upload step: it must exist, it must reference the record, and it must be
+  // guarded so that the INCONCLUSIVE run — the one whose detail somebody will actually need
+  // — is not the one whose artefact gets dropped.
+  let uploadFound = false;
+  let uploadGuarded = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!/uses:\s*actions\/upload-artifact/.test(lines[i])) continue;
+    const block = stepBlockAround(lines, i);
+    const referencesRecord =
+      new RegExp(`(^|\\n)\\s*path:[^\\n]*${recordPathVar}`).test(block) ||
+      /(^|\n)\s*name:[^\n]*w7u1[^\n]*record/i.test(block);
+    if (!referencesRecord) continue;
+    uploadFound = true;
+    if (GUARDED_IF.test(block)) uploadGuarded = true;
+  }
+  if (!uploadFound) {
+    violations.push({
+      code: "record-upload-missing",
+      detail:
+        "no `actions/upload-artifact` step uploads the W7U1 probe record. The verdict would exist only in the " +
+        "job log — E7-F025's exact shape: a keyed lane that fired and left nothing behind.",
+    });
+  } else if (!uploadGuarded) {
+    violations.push({
+      code: "record-upload-unguarded",
+      detail:
+        "the record's `upload-artifact` step is not guarded by `if: always()` (or `failure()`), so it is SKIPPED " +
+        "on a red run. An inconclusive run is precisely the run whose detail someone needs, and precisely the run " +
+        "a success-gated upload throws away.",
+    });
+  }
+
+  // 3. The fallback writer: if the pack never reaches its own reporting stage (a crash, a
+  // failed install, a lost secret), something must still write a record saying so.
+  let fallbackFound = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!new RegExp(`${recordPathVar}`).test(lines[i])) continue;
+    const block = stepBlockAround(lines, i);
+    if (!/(^|\n)\s*run:/.test(block)) continue;
+    if (!GUARDED_IF.test(block)) continue;
+    fallbackFound = true;
+    break;
+  }
+  if (!fallbackFound) {
+    violations.push({
+      code: "record-fallback-missing",
+      detail:
+        `no \`always()\`-guarded \`run:\` step writes ${recordPathVar}. A pack that dies before its own reporting ` +
+        "stage would then upload nothing at all, and the run would again be `fired and unrecorded`.",
+    });
+  }
+
+  // 4. The fallback's template default is duplicated in shell (the pack itself resolves in
+  // JS). Pin the two together so they cannot drift into disagreeing about which image ran.
+  const declared = new RegExp(`${defaultTemplateVar}:\\s*"?([A-Za-z0-9._-]+)"?`).exec(text);
+  if (!declared) {
+    violations.push({
+      code: "default-template-undeclared",
+      detail: `the workflow declares no ${defaultTemplateVar}, so its fallback record cannot name the resolved template.`,
+    });
+  } else if (declared[1] !== CLI_BEARING_TEMPLATE_ALIAS) {
+    violations.push({
+      code: "default-template-mismatch",
+      detail:
+        `${defaultTemplateVar} is "${declared[1]}" but the pure core resolves an omitted input to ` +
+        `"${CLI_BEARING_TEMPLATE_ALIAS}". The record and the run would name different images.`,
+    });
+  }
+
+  return { violations };
 }

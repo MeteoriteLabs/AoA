@@ -20,15 +20,22 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  BARE_BASE_TEMPLATE_ALIAS,
+  CLI_BEARING_TEMPLATE_ALIAS,
   MIN_REDACTABLE_SECRET_LENGTH,
   PERMISSION_POSTURES,
+  PROBE_RECORD_SCHEMA,
   PermissionPostureAnchorError,
+  ProbeRecordError,
   REDACTION_MARKER,
+  buildProbeRecord,
   classifyProbeAArm,
   countOccurrences,
+  evaluateDurableRecord,
   isListingUsable,
   packDisposition,
   redactSecrets,
+  resolveTemplate,
   verdictProbeA,
   verdictProbeB,
   verdictProbeC,
@@ -44,6 +51,8 @@ const INVOCATION_MODULE = path.join(
   "services",
   "task-run-sandbox-invocation.ts",
 );
+const PROBE_WORKFLOW = path.join(REPO_ROOT, ".github", "workflows", "keyed-e2b-w7u1-output-probe.yml");
+const E2B_DOCKERFILE = path.join(REPO_ROOT, "e2b", "e2b.Dockerfile");
 
 // The four shapes, exactly as `buildSandboxInvocation` emits them (guard prefix elided;
 // the anchors live in the tail). Their fidelity is asserted by the first test.
@@ -474,4 +483,178 @@ test("ONE inconclusive probe reds the lane", () => {
 test("a pack with NO verdicts at all is inconclusive, never a silent pass", () => {
   assert.equal(packDisposition([]).exitCode, 1);
   assert.equal(packDisposition(undefined).exitCode, 1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WHICH IMAGE ANSWERS — an omitted template must not select one with no agent
+//
+// ★★★ THE DEFECT THIS PINS. Every keyed lane in this repo pipes `inputs.e2b_template`
+// straight into `E2B_TEMPLATE`, and E7-F022 measured the consequence: an omitted input
+// "silently defaults to the bare `base` template", which `e2b/e2b.Dockerfile:1-7` and the
+// last recorded push trigger both say carries NO agent CLIs ("coreutils only"). For the
+// sibling lanes, whose subject is the invocation SHAPE, that costs nothing. For THIS pack
+// it would spend the founder's single authorised, token-spending run on an image that
+// cannot host the thing being measured.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("an OMITTED template resolves to the CLI-bearing alias, NEVER to bare `base`", () => {
+  for (const raw of [undefined, null, "", "   ", 42]) {
+    const r = resolveTemplate(raw);
+    assert.equal(
+      r.templateId,
+      CLI_BEARING_TEMPLATE_ALIAS,
+      `an omitted template (${JSON.stringify(raw)}) must resolve to the image that carries the agent CLIs`,
+    );
+    assert.notEqual(
+      r.templateId,
+      BARE_BASE_TEMPLATE_ALIAS,
+      "resolving an omitted input to bare `base` runs the decisive probe against an image with no agent (E7-F022)",
+    );
+    assert.equal(r.source, "default-cli-bearing");
+    assert.ok(r.note.includes(CLI_BEARING_TEMPLATE_ALIAS), "the resolution must SAY what it chose and why");
+  }
+});
+
+// ★ THE POSITIVE CONTROL. If this goes red under the same edit, the fix has stopped the
+// operator selecting a template at all — which is a worse lane than the one being fixed.
+test("an EXPLICITLY supplied template is honoured unchanged", () => {
+  const r = resolveTemplate("  my-private-template  ");
+  assert.equal(r.templateId, "my-private-template", "an explicit alias must survive verbatim (trimmed only)");
+  assert.equal(r.source, "explicit");
+  // Including bare `base`, if an operator deliberately wants the no-CLI measurement:
+  // explicit is explicit, and only OMISSION is corrected.
+  const bare = resolveTemplate(BARE_BASE_TEMPLATE_ALIAS);
+  assert.equal(bare.templateId, BARE_BASE_TEMPLATE_ALIAS);
+  assert.equal(bare.source, "explicit");
+  assert.ok(bare.note.includes("NO agent CLIs"), "an explicit bare-base choice must still be flagged in the report");
+});
+
+test("the CLI-bearing alias is the one e2b/e2b.Dockerfile actually asserts the CLIs into", () => {
+  // Not a naming convention: the alias is only worth defaulting to because the image's
+  // final layer FAILS THE BUILD unless both binaries resolve.
+  const dockerfile = readFileSync(E2B_DOCKERFILE, "utf8");
+  assert.ok(
+    dockerfile.includes("command -v claude") && dockerfile.includes("command -v codex"),
+    "e2b/e2b.Dockerfile no longer asserts both CLIs — re-derive which template carries them before defaulting to one",
+  );
+  assert.ok(
+    dockerfile.includes(CLI_BEARING_TEMPLATE_ALIAS),
+    `e2b/e2b.Dockerfile no longer names "${CLI_BEARING_TEMPLATE_ALIAS}" — the default may be pointing at nothing`,
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE DURABLE RECORD — a verdict that lives only in a job log is a lost measurement
+//
+// ★★★ THE DEFECT THIS PINS. E7-F025 measured that the sibling keyed lane already fired
+// TWICE (`.github/keyed-e2b-trigger` re-fires #3 and #4) and that no document in the repo
+// records either outcome, so the honest state of that measurement is "fired and
+// unrecorded". This pack must not lose the founder's one authorised run the same way.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RECORD_VERDICTS = [
+  { probe: "B", state: "no", reason: "template-prefills-nothing", detail: "listing: .bashrc" },
+  { probe: "C", state: "yes", reason: "both-streams-delivered", detail: "" },
+  { probe: "A/claude_local", state: "inconclusive", reason: "no-model-provider-key", detail: "ANTHROPIC_API_KEY unset" },
+];
+
+test("the record carries the disposition, EVERY probe's state AND reason, the template and the sha", () => {
+  const rec = buildProbeRecord({
+    verdicts: RECORD_VERDICTS,
+    template: CLI_BEARING_TEMPLATE_ALIAS,
+    templateSource: "default-cli-bearing",
+    templateNote: "n",
+    commitSha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    runNonce: "W7U1-X",
+    generatedAt: "2026-09-06T00:00:00.000Z",
+  });
+  assert.equal(rec.schema, PROBE_RECORD_SCHEMA);
+  assert.equal(rec.template.resolved, CLI_BEARING_TEMPLATE_ALIAS);
+  assert.equal(rec.template.source, "default-cli-bearing");
+  assert.equal(rec.template.carriesAgentClis, true);
+  assert.equal(rec.commitSha, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+  assert.equal(rec.disposition.disposition, "inconclusive");
+  assert.equal(rec.disposition.exitCode, 1);
+  assert.deepEqual(
+    rec.probes.map((p) => `${p.probe}=${p.state}/${p.reason}`),
+    [
+      "B=no/template-prefills-nothing",
+      "C=yes/both-streams-delivered",
+      "A/claude_local=inconclusive/no-model-provider-key",
+    ],
+    "a record that drops a probe's REASON says what happened but not what to do next",
+  );
+});
+
+test("a record with NO resolved template is REFUSED — it could not be interpreted later", () => {
+  assert.throws(
+    () => buildProbeRecord({ verdicts: RECORD_VERDICTS, template: "  ", commitSha: "abc" }),
+    ProbeRecordError,
+    "a record that does not say which image answered is unreadable a month later (E7-F022)",
+  );
+});
+
+test("a record is buildable for a run that produced NO verdicts at all — the inconclusive run still records", () => {
+  const rec = buildProbeRecord({ verdicts: [], template: CLI_BEARING_TEMPLATE_ALIAS });
+  assert.equal(rec.disposition.disposition, "inconclusive");
+  assert.equal(rec.probes.length, 0);
+  assert.equal(rec.commitSha, "unknown", "an unknown sha is recorded as unknown, not omitted");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AND THE LANE ITSELF MUST ACTUALLY RETRIEVE IT — asserted against the REAL YAML
+//
+// ★★★ WITHOUT THIS, EVERY TEST ABOVE IS VACUOUS. `buildProbeRecord` can be perfect and the
+// record still reach nobody, because whether it is uploaded — and whether it is uploaded on
+// a RED run — is decided in YAML that no test reads. Same shape as `ci-lanes.mjs`'s
+// `uploadsEvidenceBundleOnFailure`, which already does this for `d1-merge-train.yml`'s
+// evidence bundle.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("the W7U1 keyed lane uploads its record, on a RED run as well as a green one", () => {
+  const { violations } = evaluateDurableRecord(readFileSync(PROBE_WORKFLOW, "utf8"));
+  assert.deepEqual(
+    violations.map((v) => v.code),
+    [],
+    `keyed-e2b-w7u1-output-probe.yml does not durably record its verdict:\n${violations
+      .map((v) => `  - ${v.code}: ${v.detail}`)
+      .join("\n")}`,
+  );
+});
+
+// ★ THE CHECKER'S OWN NEGATIVE CONTROLS. A guard that cannot go red is not a guard — this
+// programme's [[checks-that-nothing-runs]] class. Each fixture removes exactly one property
+// and the corresponding code must appear.
+test("evaluateDurableRecord goes RED when the guard, the upload, the fallback or the default is removed", () => {
+  const real = readFileSync(PROBE_WORKFLOW, "utf8");
+
+  // 1. The upload step loses its `if: always()` — the inconclusive run's artefact is dropped.
+  const unguarded = real.replace(/(uses: actions\/upload-artifact@[0-9a-f]+ # v[0-9.]+\r?\n\s*)if: always\(\)\r?\n/, "$1");
+  assert.notEqual(unguarded, real, "the fixture edit did not apply — re-derive it from the workflow");
+  assert.ok(
+    evaluateDurableRecord(unguarded).violations.some((v) => v.code === "record-upload-unguarded"),
+    "a success-gated upload must be caught: the red run is the one whose detail someone needs",
+  );
+
+  // 2. No upload step at all.
+  assert.ok(
+    evaluateDurableRecord(real.replace(/uses: actions\/upload-artifact[^\n]*/g, "uses: actions/checkout@v9")).violations.some(
+      (v) => v.code === "record-upload-missing",
+    ),
+  );
+
+  // 3. No always()-guarded writer, so a pack that dies early uploads nothing.
+  assert.ok(
+    evaluateDurableRecord(real.replace(/W7U1_RECORD_PATH/g, "SOME_OTHER_PATH")).violations.some(
+      (v) => v.code === "record-fallback-missing",
+    ),
+  );
+
+  // 4. The shell fallback's default drifts away from the pure core's.
+  assert.ok(
+    evaluateDurableRecord(real.replace(/W7U1_DEFAULT_TEMPLATE: aoa-base/, "W7U1_DEFAULT_TEMPLATE: base")).violations.some(
+      (v) => v.code === "default-template-mismatch",
+    ),
+    "the record and the run must not be able to name different images",
+  );
 });
