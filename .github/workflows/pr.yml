@@ -321,7 +321,12 @@ jobs:
           # Every ticket doc was honest; the aggregation was not. This gives "epic complete"
           # a mechanical meaning. Both commands in ONE step: two steps are two chances to run
           # only the one that passed.
+          # W5U1 adds the WALK-level half: `countProductionCallers` stripped comments but not
+          # STRING LITERALS, so a diagnostic sentence saying a symbol "has zero production
+          # callers" was itself counted as that symbol's production caller. All three commands
+          # in ONE step, for the reason above.
           node --test scripts/lib/__tests__/gate-clause-wiring.test.mjs
+          node --test scripts/check-gate-clause-wiring.test.mjs
           node scripts/check-gate-clause-wiring.mjs
 
       - name: Finding ownership (an open finding must name an owner, or say it has none)

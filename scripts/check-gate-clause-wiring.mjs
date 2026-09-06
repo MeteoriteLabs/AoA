@@ -39,6 +39,91 @@ export function stripComments(text) {
   return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
+/**
+ * W5U1 — strip the CONTENTS of string literals, for exactly the reason comments are stripped.
+ *
+ * ★ WHY. `stripComments`'s own docstring records that this repo "has mistaken a comment for a
+ * call site more than once — including a comment whose entire content was 'this function has
+ * zero callers'". The same sentence, one quoting style over, was still being counted:
+ * `createResultCommitter`'s ONLY non-test, non-comment, non-re-export reference in the entire
+ * tree is the STRING at `server/src/services/e7-distributed-run-verifier.ts:513`, whose text is
+ * *"buildWorkspacePatch/createResultCommitter have zero production callers"*. The guard read
+ * that as a production caller. `createSupervisor` was inflated the same way: 2 of its 4
+ * references are its own `throw new Error("createSupervisor: …")` messages.
+ *
+ * A count of 0 is the guard's only DEFINITIVE verdict, so anything that manufactures a
+ * phantom non-zero is a direct attack on the one thing it can prove.
+ *
+ * ★ SHAPE, and why it is a scanner rather than a regex. Quotes nest inside each other and
+ * template literals carry REAL CODE in `${…}` — a regex cannot tell `` `${createSupervisor()}` ``
+ * (a genuine reference) from `"createSupervisor: bad"` (prose). So:
+ *   - `"…"` / `'…'` — contents dropped, DELIMITERS KEPT. Keeping the quotes matters: the caller
+ *     blanks `import … from "…"` before calling this, and an emptied quote pair would break a
+ *     later reader's expectations for no gain.
+ *   - a quote with no closer ON ITS LINE is treated as not-a-string and abandoned at the newline.
+ *     JS string literals cannot contain a raw newline, so this BOUNDS any mis-detection (an
+ *     apostrophe in surviving prose, a quote inside a regex literal) to a single line instead of
+ *     letting it eat the rest of the file. Under-stripping over-counts, which is the safe
+ *     direction for this guard; over-stripping could fake a zero, which is not.
+ *   - `` `…` `` — literal text dropped, `${…}` interpolations COPIED VERBATIM (brace-depth
+ *     tracked), and newlines preserved so line structure survives for the caller's line scan.
+ *
+ * Deliberately NOT recursive: a string inside a `${…}` is copied through unstripped. That
+ * over-counts rather than under-counts, and the case does not occur in this tree.
+ */
+export function stripStringLiterals(text) {
+  let out = "";
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'") {
+      out += ch;
+      i += 1;
+      while (i < n && text[i] !== ch && text[i] !== "\n") i += text[i] === "\\" ? 2 : 1;
+      if (i < n && text[i] === ch) {
+        out += ch;
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === "`") {
+      out += ch;
+      i += 1;
+      while (i < n) {
+        if (text[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (text[i] === "`") {
+          out += "`";
+          i += 1;
+          break;
+        }
+        if (text[i] === "$" && text[i + 1] === "{") {
+          out += "${";
+          i += 2;
+          let depth = 1;
+          while (i < n && depth > 0) {
+            const c = text[i];
+            if (c === "{") depth += 1;
+            else if (c === "}") depth -= 1;
+            out += c;
+            i += 1;
+          }
+          continue;
+        }
+        if (text[i] === "\n") out += "\n";
+        i += 1;
+      }
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
 function* walk(root) {
   if (!existsSync(root)) return;
   for (const entry of readdirSync(root, { withFileTypes: true })) {
@@ -80,9 +165,16 @@ export function countProductionCallers(root, symbol) {
       const text = stripComments(readFileSync(file, "utf8"));
       // Blank out every import statement and every re-export block BEFORE scanning lines.
       // Doing it over the whole file — not line by line — is what makes multi-line work.
-      const scannable = text
-        .replace(/import\s[\s\S]*?from\s*["'][^"']+["']\s*;?/g, "")
-        .replace(/export\s*\{[\s\S]*?\}\s*from\s*["'][^"']+["']\s*;?/g, "");
+      //
+      // ★ ORDER IS LOAD-BEARING. String stripping runs AFTER this, never before: both
+      // expressions match a module SPECIFIER (`from "…"`), and an already-emptied
+      // `from ""` fails `["'][^"']+["']`, so stripping first would un-blank every import
+      // in the tree and inflate the count instead of correcting it.
+      const scannable = stripStringLiterals(
+        text
+          .replace(/import\s[\s\S]*?from\s*["'][^"']+["']\s*;?/g, "")
+          .replace(/export\s*\{[\s\S]*?\}\s*from\s*["'][^"']+["']\s*;?/g, ""),
+      );
       for (const line of scannable.split(/\r?\n/)) {
         if (!use.test(line)) continue;
         if (definition.test(line)) continue;

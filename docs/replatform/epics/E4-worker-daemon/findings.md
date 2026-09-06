@@ -590,3 +590,54 @@ violation returns); WRK-011's 8 embedded-PG integration tests (incl. the concurr
 throwing-signer rollback) stay green with the lock; `packages/db` typechecks. Out of CLI-006/D2's own scope,
 fixed opportunistically because it reddens `verify` on its own — the ONE `verify` red besides the deferred
 §2.0 timeout.
+
+## E4-F018 — `countProductionCallers` counted STRING LITERALS, so a sentence saying a symbol has zero callers was itself counted as that symbol's caller
+
+**Status:** resolved (2026-09-06, W5U1 — fixed in the same change that filed it; see "Fix" below)
+**Severity:** MEDIUM (a guard defect that manufactured phantom non-zero counts; it could not
+manufacture a phantom zero, and no declared clause verdict was ever wrong because of it)
+**Filed:** 2026-09-06 (W5U1), measured at `e1f723df2`.
+
+**What.** `countProductionCallers` (`scripts/check-gate-clause-wiring.mjs`) excluded test paths,
+comments, the definition line, imports and re-export blocks — but not string literals. Its sibling
+`stripComments` carries the docstring *"This repo has mistaken a comment for a call site more than
+once — including a comment whose entire content was 'this function has zero callers'."* The same
+sentence in double quotes was still being counted.
+
+**The two instances, measured before the fix:**
+
+1. `createResultCommitter` measured **1**. Its only non-test, non-comment, non-re-export reference
+   in the entire tree is the STRING at `server/src/services/e7-distributed-run-verifier.ts:513`:
+   `"uncomposed, and buildWorkspacePatch/createResultCommitter have zero production callers. So this run "`.
+   The guard read E7-1's own diagnostic message — a sentence asserting the symbol has no callers —
+   as the caller. `buildWorkspacePatch` was inflated by the same string (2 → 1).
+2. `createSupervisor` measured **4**, of which **2** are its own error messages:
+   `packages/worker-daemon/src/supervisor/supervisor.ts:267` and `:270`, both
+   `throw new Error("createSupervisor: …")`. Its real references are `dispatch-runtime.ts:95`
+   (`typeof createSupervisor`) and `:121` (the `?? createSupervisor` fallback). True count: 2.
+
+**Why it matters, at its real size.** The guard's own docstring states the asymmetry it depends on:
+*"A count of 0 is DEFINITIVE … A count > 0 is NECESSARY BUT NOT SUFFICIENT."* Everything the guard
+can PROVE rests on the zero. String counting attacks exactly that: it manufactures non-zero from
+prose, and prose that says "zero callers" is the most likely prose to name a zero-caller symbol —
+so the error correlates with the case the guard exists for. It cannot manufacture a phantom zero,
+which is why this is MEDIUM and not HIGH, and why **no declared clause's verdict was ever wrong**:
+`createSupervisor` (E4-2) had 2 real callers either way, and `createResultCommitter` is not declared
+at all (that omission is E3-F038).
+
+**Fix (W5U1).** `stripStringLiterals` in `scripts/check-gate-clause-wiring.mjs`, applied inside
+`countProductionCallers` AFTER the import/re-export blanking (order is load-bearing: both blanking
+expressions match `from "…"`, so stripping first would un-blank every import in the tree). Quoted
+contents are dropped and delimiters kept; a quote with no closer on its line is abandoned at the
+newline so a mis-detection costs one line rather than the file; template literals drop their literal
+text and copy `${…}` interpolations verbatim, so a real call inside an interpolation still counts.
+
+**Mutation evidence.** `scripts/check-gate-clause-wiring.test.mjs` (new; wired into `pr.yml`'s
+existing gate-clause-wiring step). Reverting the fix — dropping the `stripStringLiterals` call —
+reds exactly the two tests labelled `THE MUTATION` (`1 !== 0`, `3 !== 1`) and leaves the other eight
+green, including the real-call, template-interpolation, blanked-import and excluded-test-path
+controls. `node scripts/check-gate-clause-wiring.mjs` exits 0 on the real register in BOTH states.
+
+**Effect on the register, measured with `--counts` before and after.** Exactly ONE declared symbol
+moved: `createSupervisor` 4 → 2. Every other declared count is byte-identical, and **no clause's
+verdict changed** — `wiredCount` 9, dormant 11, exit 0 in both states.

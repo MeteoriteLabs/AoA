@@ -225,6 +225,11 @@
       "workflow": "pr.yml",
       "step": "Register id uniqueness (an id must name one thing)"
     },
+    "scripts/check-gate-clause-wiring.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Gate-clause wiring (an epic may not claim a capability nothing calls)"
+    },
     "scripts/lib/__tests__/gate-clause-wiring.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",
