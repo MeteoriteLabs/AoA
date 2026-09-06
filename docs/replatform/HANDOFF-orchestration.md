@@ -59,10 +59,121 @@ all, today).
 > [[checks-that-nothing-runs]] instances in the code it touched. Track A's next unit is **C**.
 
 ### What no track achieves
-**None of these flips `capabilityProven`.** That needs Unit F (output capture — four unbuilt links).
-A green E7-1 proves the **mechanism**, not capability; the verifier has computed and printed both
-since Unit A, and `--require-capability` is the flag the campaign flips at F. Do not let a green
-canary be reported as capability.
+**None of these flips `capabilityProven`.** A green E7-1 proves the **mechanism**, not capability; the
+verifier has computed and printed both since Unit A. **Do not let a green canary be reported as
+capability.**
+
+★★★ **But the reason is NOT "Unit F has not shipped yet".** Measured 2026-09-06 and filed as
+**E7-F018** (HIGH, `unowned`): **both arms are structurally unreachable in every checked-in
+configuration** — and, importantly, **not for the same reason.** Re-derived per arm:
+
+- **SHARED blocker (both arms).** No run in any checked-in configuration is a distributed run at all.
+  The sole writer of `heartbeat_runs.distributed_job_id` / `execution_owner = "distributed"` is
+  `markRunHandedOffToDistributed` (`heartbeat.ts:6921`), which has exactly one call site
+  (`heartbeat.ts:5422`), inside the block gated on `distributedRolloutState === "canary"`
+  (`heartbeat.ts:5259-5274`), and nothing checked in arms the rollout dial.
+- **ARM 1 (`workspace_patch` job_artifacts) — the shared blocker closes it outright, plus a producer.**
+  It short-circuits at `server/src/services/e7-distributed-run-verifier-store.ts:200` on
+  `if (run.distributedJobId)` and issues **no query at all**. Arming the dial opens that `if` but
+  still leaves it needing a **committed `workspace_patch` row** (`:206-208`), and
+  `buildWorkspacePatch` / `createResultCommitter` have zero production callers.
+- **ARM 2 (`task_outputs`) — NOT blocked by the rollout dial alone, and never short-circuited.**
+  Its query runs unconditionally (`e7-distributed-run-verifier-store.ts:213-216`), outside arm 1's
+  `if`, so arm 1's blocker does not carry over. It is held at 0 by four facts, **none of them the
+  dial**: (1) the distributed-job → `task_outputs` projection `jobOutputBridge.projectAcceptedOutput`
+  is `unwired` with zero production callers (`gate-clause-wiring.json`, `E3-17-output`) — arming a
+  dial creates no caller; (2) it refuses fail-closed on a **second, independent** flag,
+  `AOA_DISTRIBUTED_EXECUTION_ENABLED` (`config/distributed-execution.ts:22-24`, default `false`),
+  throwing `JobOutputBridgeDisabledError` and writing nothing; (3) `createdByRunId` is
+  caller-supplied and never derived (`job-output-bridge.ts:291`), so a wired flag-on caller must
+  ALSO pass the heartbeat run id. ★★★ **There is no fact (4).** This list used to end *"the legacy
+  writers that do set the column cannot fire for a handed-off run"* — **false, and false in the
+  FAIL-OPEN direction.** Corrected twice; the R3 correction was itself wrong on the count and on one
+  citation, and **re-derived 2026-09-06 (W4U3-R4)**: R3 said *"three writers, two cannot fire, the
+  THIRD can"* and cited `output-detection.ts:201` under the label *"the board
+  `POST /api/issues/:issueId/outputs`"*, which are two different routes.
+  ★★★ **How the census is now closed — re-close it this way, not with a grep for the field name.**
+  There is exactly ONE insert into `task_outputs` in **production source**, `.insert(taskOutputs)` at
+  **`server/src/services/task-outputs.ts:181`** inside `upsertTaskOutputForIssue` (the only others in
+  the tree are three raw-SQL admin fixtures under `server/src/__tests__`), so every row **CREATION**
+  passes through it and **enumerating that function's callers closes the set of writers able to MINT
+  a `created_by_run_id`**. ★★★ It closes the **column** too, but for a SECOND and independent reason,
+  because **three UPDATE sites do NOT pass through the chokepoint** — `updateMutable`
+  (`task-outputs.ts:237`), `clearSiblingPrimaries` (`:71`) and `workspace-runtime.ts:2890`. None can
+  set the field: the latter two touch only `is_primary`/`updated_at` and
+  `status`/`health_status`/`url`/`updated_at`, and `updateMutable` spreads a body validated by
+  `mutableTaskOutputSchema`, which is **`.strict()` and omits `createdByRunId`**
+  (`packages/shared/src/validators/task-output.ts:55-63`). ★★★ **THE SEAM:** if `createdByRunId` were
+  ever added to that schema, `PATCH /api/task-outputs/:id` (`routes/task-outputs.ts:87-97`) would
+  become a writer this warrant is **structurally unable to see** — it never calls the chokepoint, so
+  no caller enumeration would list it. Re-check the schema, not only the callers. R3's stated method
+  (`grep -rn createdByRunId server/src …`) provably could not find its own counterexample, because
+  `routes/task-outputs.ts:54` forwards `req.body` and never names the field. That caller grep returns
+  17 lines, of which ELEVEN are call sites (the rest are one import, two declarations and three prose
+  comments); ten are legacy and the eleventh is `job-output-bridge.ts:303`. **FOUR of the ten legacy
+  callers can carry a `heartbeat_runs` id, and TWO of those can fire for a handed-off run**:
+  - `task-output-emitters.ts:150` ← `heartbeat.ts:5557/:5574` — **cannot**; it sits after
+    `return; // CLI-006-SUPPRESSION-RETURN` (`:5451`).
+  - `routes/output-detection.ts:181/:201` —
+    `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm`, run id from a **path param** —
+    **cannot**; its only feed is `heartbeat_runs.detected_outputs`, whose sole **creating** writer,
+    `heartbeat.ts:5907`, is past the same suppression return. (That column has three writers, not
+    one — `output-detection.ts:218`/`:286` also write it — but both only rewrite an EXISTING array
+    element and cannot mint the array, so the verdict is unchanged.) ★ **This is not E7-F015's
+    route**, which is where R3 went wrong.
+  - ★ `emitRuntimeServiceTaskOutput` (`task-output-emitters.ts:113`) — **CAN**, and fires BEFORE the
+    handoff: `ensureRuntimeServicesForRun` (`heartbeat.ts:4524`) → `startLocalRuntimeService`
+    (`workspace-runtime.ts:2649`) → `emitRuntimeServiceTaskOutput` writes
+    `task_outputs.created_by_run_id = run.id`, and `:4524` precedes the canary block (`:5258-5274`),
+    the handoff (`:5422`) and the suppression return (`:5451`), all inside the same `executeRun`
+    (`:3061`). Filed as **E7-F020**.
+  - ★ `routes/task-outputs.ts:54` — `POST /api/issues/:issueId/outputs`, mounted `app.ts:566`,
+    `createdByRunId` **body-supplied** — **CAN**, for any authenticated company-scoped caller. This
+    is **E7-F015**'s actual route, and R3's enumeration omitted it.
+
+  The other six callers never set the field or hard-code `null`. A fifth capable caller,
+  `job-output-bridge.ts:303`, is the DISTRIBUTED producer and is what facts (1)-(3) above already
+  close — counting it among the legacy writers would double-count them. **Limits of the method,
+  named:** it finds a literal `.insert(taskOutputs)` and a literal `INSERT INTO` / `COPY` on the
+  table; a runtime-assembled table name or a DB-side trigger would evade it. Both were checked at
+  this tip and are absent. ★ The raw-SQL sweep must exclude `docs/` and `scripts/` or it matches this
+  paragraph and E7-F018's register entry back at you — the same self-match trap E7-F018's rollout-dial
+  reproduction already documents.
+
+**So arm 2 is not "unreachable" — it is REACHABLE WITHOUT PROVING ANYTHING (E7-F020, HIGH, owned by
+CLI-008).** What the dial ALONE yields on arm 2 is whatever the legacy pre-handoff code already wrote
+for that run id. **It goes non-zero with zero agent output** when, in addition, the run is task-scoped
+and reaches `heartbeat.ts:4523` with instance `enableIsolatedWorkspaces` true (the DEFAULT), a realized
+workspace, and at least one `workspaceRuntime.services[]` entry that is freshly started rather than
+reused. A canary run in the ordinary software-engineering configuration that starts one dev server and
+produces nothing therefore reads `capability: PROVEN`. **Do not read a non-zero arm 2 as capability.**
+What is UNCHANGED: the shared blocker, arm 1's unreachability, facts (1)-(3) above — no PRODUCER moves
+arm 2 — and E7-F018's status, severity and `unowned` ownership.
+
+**So a `workspace_patch` producer is NECESSARY and NOT SUFFICIENT — and read that as a claim about
+SUFFICIENCY only.** E7-F018 refutes *"ship Unit F (output capture) and `capabilityProven` follows"*.
+It does **not** establish that a producer is unnecessary: on arm 1 a committed `workspace_patch`
+producer stays strictly necessary. **Necessary: yes. Sufficient: measured false.** Do not take this
+away as either *"a producer is pointless"* or *"ship Unit F and we are done"*.
+
+What is owed FIRST is a **deployment precondition**, not a code unit: a compose diff enabling dispatch
+on a worker, and a rollout JSON naming an Organization canary. That precondition is the SHARED blocker,
+and it is necessary for both arms and sufficient for neither — arm 2 additionally needs the projection
+bridge wired (C4) and the deployment flag on. That is why E7-F018 is `unowned` — a ticket could ship in
+full and the finding would not move. ★ **Track A's producer chain has been attempted or proposed four
+times. Read E7-F018 before anyone starts a fifth.**
+
+★ **And `--require-capability` is not "the flag the campaign flips at F" in any load-bearing sense.**
+It is off by default (`server/src/cli/verify-e7-1-distributed-run.ts:65`), and `capabilityProven` is
+referenced by **no workflow and no script** — only the verifier, its own test, the CLI, a comment, one
+provider test, two registers and docs (re-measured 2026-09-06). Flipping it would gate only a verdict
+the campaign itself chooses to demand.
+
+★ **Keep the standing prohibition on redefining the counter — and know it is not airtight.**
+**E7-F019** (MEDIUM, `unowned`): `kind` is the caller's declaration, so exporting arbitrary bytes as
+`kind='workspace_patch'` satisfies arm 1's predicate *literally*, redefining nothing. The system's own
+consumer refuses them (`server/src/services/patch-apply.ts:126-127`, frozen manifest schema,
+fail-closed) — but at the **apply** path, not at the counter.
 
 ---
 
@@ -248,6 +359,7 @@ track write its GO-BOOK row in its **own** commit at the end, and land those las
 | "Lane B is an active parallel track" | 275 commits behind, ~10 days idle. The GO-BOOK says this in five places; it is a plan, not a state. |
 | "The `SandboxProvider` port is frozen" | Measured false 2026-09-03. `capabilities.ts` is a wire vocabulary; the port is non-frozen and already at 13 methods. |
 | "argv caps at ~8 KB per job" | The cliff is 8,192 chars **per argument**. What survives is E7-F008. |
+| ★★★ "Unit F / output capture is what flips `capabilityProven`" | **Measured false 2026-09-06 — E7-F018 (HIGH, unowned).** Both arms are structurally unreachable in every checked-in configuration, so a producer is **necessary and not sufficient**; the first thing owed is an operator/deployment precondition. One command: `grep -rn AOA_DISTRIBUTED_EXECUTION_ROLLOUT --include=*.yml --include=*.yaml --include=*.json --include=Dockerfile* .` → **the only hit is the finding register's own quotation of that command** (`scripts/finding-ownership.json:154`); add `\| grep -v finding-ownership.json` and it is **zero hits, exit 1**. No compose file, Dockerfile, workflow or manifest arms the dial, so `if (run.distributedJobId)` (`e7-distributed-run-verifier-store.ts:200`) is false and arm 1 issues no query. |
 | "E7 is code-complete, blocked only on deployment" | True of CLI-001…007. CLI-008 (size L) has four unbuilt units. |
 | "WRK-013 unblocks E5-3" | It unblocks **E4-3**. E5-3's symbol is `createPatchApplyService`, which WRK-013 never touches. |
 | "`verify` takes 30–40 minutes" | ~18 min since the 4-way shard. |

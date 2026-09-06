@@ -975,6 +975,13 @@ The chain, verified link by link at `d0b75be19`:
 2. `POST /api/issues/:issueId/outputs` passes `req.body` straight into `svc.upsertForIssue`
    (`server/src/routes/task-outputs.ts:45,53`), and the router is mounted unconditionally
    (`server/src/app.ts:566`) — outside the `distributedExecutionEnabled` gate.
+   ★ **This route, and no other. Added 2026-09-06 (W4U3-R4) because the confusion actually
+   happened.** E7-F018's fact (4) cited `server/src/routes/output-detection.ts:201` under this
+   finding's label for two rounds. That is a DIFFERENT route —
+   `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm`, whose run id is a **path param**,
+   not a body field, and which **cannot** fire for a handed-off run (its only feed is
+   `heartbeat_runs.detected_outputs`, written past the CLI-006 suppression return). E7-F015 is about
+   `server/src/routes/task-outputs.ts:45-53` alone.
 3. `upsertTaskOutputSchema` admits `createdByRunId: z.string().uuid().nullable().optional()`
    (`packages/shared/src/validators/task-output.ts:50`). Only `type` and `title` are required;
    `assetId`, `artifactId` and `executionWorkspaceId` are all optional.
@@ -1208,10 +1215,32 @@ by hand before filing.
 
 **What.** `capabilityProven` is an OR over two counters (predicate
 `server/src/services/e7-distributed-run-verifier.ts:506`, verdict `:522`). **Neither counter can be
-moved by any producer, however correct, in any configuration checked into this repository** — both
-are keyed on links that only a CANARY-mode distributed run creates, and nothing checked in puts any
-Organization into canary mode. This is a **reachability** defect, not a coverage one: it invalidates
-the premise under which E7-1's headline capability gate is being worked toward.
+moved by any producer, however correct, in any configuration checked into this repository** — and,
+★ importantly, **not for the same reason**: arm 1 is keyed on a link only a CANARY-mode distributed
+run creates (measurement 2), while arm 2 is never short-circuited and has no PRODUCER able to move
+it — an unwired projection, a second deployment flag and a caller-supplied run id (measurement 3).
+Nothing checked in puts any Organization into canary mode. This is a **reachability** defect, not a
+coverage one: it invalidates the premise under which E7-1's headline capability gate is being worked
+toward.
+
+★★★ **NARROWED 2026-09-06 (W4U3-R3) — arm 2's disposition, precisely.** This paragraph used to end
+*"and arming one would not open arm 2"*, and measurement 3's fact 4 used to say no writer could fire
+for a handed-off run. Both were wrong in the FAIL-OPEN direction, and the correction changes what
+arm 2 IS rather than whether this finding stands:
+
+- **Arm 1 is unreachable.** Unchanged, and the strongest of the two: it issues no query at all.
+- **Arm 2 is not "unreachable" — it is REACHABLE WITHOUT PROVING ANYTHING.** No *producer* can move
+  it (measurement 3, facts 1-3, all intact). But an ordinary internal path already writes
+  `task_outputs.created_by_run_id = run.id` before the handoff — `ensureRuntimeServicesForRun`
+  (`heartbeat.ts:4524`) — so once the dial is armed, arm 2 can read non-zero for a run whose agent
+  produced nothing. That is filed as **E7-F020** and is the reason to read arm 2's counter as
+  evidence of NOTHING rather than as a bar nobody has cleared.
+
+**What is UNCHANGED by the narrowing**, and was re-verified: the SHARED blocker (no checked-in
+configuration makes any run a distributed run — measurements 1 and 2), arm 1's blocker, measurement
+3's facts 1-3, this finding's **status**, **severity** and **UNOWNED** ownership, and the sufficiency
+conclusion. If anything the narrowing STRENGTHENS the reason not to schedule producer work off a green
+arm 2: the counter can be non-zero for reasons that have nothing to do with a producer existing.
 
 ★★★ **Filed because Track A — composing the `workspace_patch` producer chain — has now been attempted
 or proposed FOUR times, each dying on a different surface symptom, and the root cause has never been
@@ -1223,7 +1252,24 @@ written down.** It is written down here so the fifth attempt does not happen.
 grep -rn AOA_DISTRIBUTED_EXECUTION_ROLLOUT --include=*.yml --include=*.yaml --include=*.json --include=Dockerfile* .
 ```
 
-→ **ZERO hits, exit 1**, repo-wide at `472885d5e`. The variable appears ONLY in `docs/`, in
+→ At `472885d5e`, when this finding was filed: **ZERO hits, exit 1**, repo-wide.
+
+★★★ **Re-run 2026-09-06 (W4U3-FIX): the command now returns exactly ONE hit and exit 0 — and
+that hit is this finding's own register entry, quoting the command back at itself**
+(`scripts/finding-ownership.json`, the E7-F018 `reason` string; `*.md` is outside the `--include`
+filters, so this page does not match). That is a self-match, **not** an arming. The durable form
+excludes the register:
+
+```
+grep -rn AOA_DISTRIBUTED_EXECUTION_ROLLOUT --include=*.yml --include=*.yaml --include=*.json --include=Dockerfile* . | grep -v scripts/finding-ownership.json
+```
+
+→ **ZERO hits, exit 1**, repo-wide, at this tip. Recorded rather than quietly rewritten,
+because a one-command reproduction that contradicts its own text is how a live finding gets dismissed
+as stale — the same failure class as a check that cannot fire, in a register instead of in CI. The
+measurement itself is unchanged: no compose file, Dockerfile, workflow or manifest sets the variable.
+
+The variable appears ONLY in `docs/`, in
 `server/src/config/distributed-execution-rollout-source.ts` (`:35`, which names it and is
 DEFAULT-DISABLED — an absent map resolves every Organization to `off`), in `server/src/index.ts`
 (`:1223`, the malformed-config warning), and in tests (`rollout-dial-live.test.ts`,
@@ -1242,18 +1288,193 @@ DEFAULT-DISABLED — an absent map resolves every Organization to `off`), in `se
   (`server/src/services/e7-distributed-run-verifier-store.ts:200`) is false, and
   `workspacePatchArtifacts` stays at its initialiser `0` (`:199`).
 
-**Measurement 3 — arm 2 has no producer either.** The task-output arm filters
-`eq(taskOutputs.createdByRunId, run.id)` (`server/src/services/e7-distributed-run-verifier-store.ts:216`).
-The distributed-job → `task_outputs` projection is `jobOutputBridge`, declared `unwired` with ZERO
-production callers in `scripts/gate-clause-wiring.json` (`E3-17-output`: *"JOB-014 output projection
-has zero callers; task_outputs is still written by the legacy path. Wire at sink cutover (Sprint 6)."*).
-No distributed run writes a `task_outputs` row. The one write that CAN set the field is a board
-`POST /api/issues/:issueId/outputs` — which is not a producer, and is already filed as **E7-F015**.
+**Measurement 3 — arm 2's blocker is NOT arm 1's, and is not the rollout dial alone.** ★ Arm 2's
+query is issued **unconditionally** (`server/src/services/e7-distributed-run-verifier-store.ts:213-216`):
+it sits OUTSIDE the `if (run.distributedJobId)` block that short-circuits arm 1, so measurement 2 does
+NOT carry over to it. Arm 2 has to be derived on its own terms. Its predicate is
+`eq(taskOutputs.createdByRunId, run.id)` (`:216`), and **four independent facts** hold it at 0:
 
-**Consequence, stated precisely.** A `workspace_patch` producer is NECESSARY and NOT SUFFICIENT.
-Shipping `buildWorkspacePatch`, `createResultCommitter`, the export sequencer's supervisor hook and a
+1. **The distributed producer has no caller.** The distributed-job → `task_outputs` projection is
+   `jobOutputBridge.projectAcceptedOutput`, declared `unwired` with ZERO production callers in
+   `scripts/gate-clause-wiring.json` (`E3-17-output`: *"JOB-014 output projection has zero callers;
+   task_outputs is still written by the legacy path. Wire at sink cutover (Sprint 6)."*). Re-measured
+   by grep at this tip: `projectAcceptedOutput` occurs only in its own interface declaration and
+   implementation (`server/src/services/job-output-bridge.ts:175`, `:250`) plus one module-doc line.
+   **Arming the rollout dial creates no caller** — this is a wiring unit (C4 on the critical path),
+   not a dial setting.
+2. **A SECOND, INDEPENDENT flag refuses it fail-closed.** Every bridge entrypoint opens with
+   `assertEnabled()`, which reads **`AOA_DISTRIBUTED_EXECUTION_ENABLED`** — not the rollout dial —
+   via `readDistributedExecutionDeploymentFlag` (`server/src/config/distributed-execution.ts:22-24`,
+   default `false`) and throws `JobOutputBridgeDisabledError`, writing nothing
+   (`job-output-bridge.ts:231-235`, `:251`).
+3. **`createdByRunId` is caller-supplied and never derived** (`job-output-bridge.ts:291`:
+   `createdByRunId: input.output.createdByRunId ?? null`). So even a wired, flag-on caller must ALSO
+   pass the heartbeat run id for `= run.id` to match; a bridge write carrying a null run id is
+   invisible to arm 2.
+4. **FOUR legacy writers can put a `heartbeat_runs` id in the column, and TWO of them can fire for a
+   handed-off run.** ★★★ **RE-DERIVED AND CORRECTED 2026-09-06 (W4U3-R4).** Two earlier versions of
+   this fact are kept visible rather than deleted, because a fail-open enumeration is precisely what
+   propagates — this one reached four documents and a machine-checked register before anyone counted
+   it independently. R2 said *"the two legacy writers that DO set the column cannot fire for a
+   handed-off run"* (fail-open). R3 said *"three production writers … two cannot fire, the THIRD
+   can"* — the right shape, the wrong count, and it cited `output-detection.ts:201` under the label
+   *"the board `POST /api/issues/:issueId/outputs`"*, which are **two different routes**.
+
+   ★★★ **THE WARRANT — how this census is closed, and how a future reader re-closes it.** R3 closed
+   it with `grep -rn createdByRunId server/src --include=*.ts | grep -v __tests__`. That method
+   **provably cannot find its own counterexample**: `server/src/routes/task-outputs.ts:54` forwards
+   `req.body` into the service and never writes the token `createdByRunId`, so no grep for that token
+   can see it. The census is closed instead **on the sole INSERT site**. There is exactly ONE insert
+   into `task_outputs` in **production source** — `.insert(taskOutputs)` at
+   **`server/src/services/task-outputs.ts:181`**, inside `upsertTaskOutputForIssue` (`:135`); the
+   only other inserts in the tree are the three raw-SQL admin fixtures under `server/src/__tests__`
+   that the reproduction below enumerates. Every row **CREATION** therefore passes through that one
+   function whether or not the caller ever names the field, and **enumerating that function's
+   callers closes the set of writers able to MINT a `created_by_run_id`**. Re-close it with:
+
+   ```
+   grep -rn "insert(taskOutputs" server packages --include=*.ts
+   #   -> exactly 1 hit: server/src/services/task-outputs.ts:181
+
+   grep -rniI "insert[[:space:]]\+into[[:space:]]\+\(public\.\)\?task_outputs\|copy[[:space:]]\+task_outputs" \
+        . --exclude-dir=node_modules --exclude-dir=.git | grep -v '^\./docs/\|^\./scripts/'
+   #   -> 3 hits, all server/src/__tests__ admin fixtures. No production raw-SQL insert.
+   #   * The trailing exclusion is REQUIRED and is the durable form: without it, the prose in
+   #     docs/ and E7-F018's register entry match the pattern back at you. Same self-match trap
+   #     E7-F018's own rollout-dial reproduction already documents.
+
+   grep -rn "upsertTaskOutputForIssue\|upsertForIssue" server packages ui \
+        --include=*.ts --include=*.tsx | grep -v __tests__
+   #   -> 17 lines. SIX are not call sites (one import, two declarations, three prose comments);
+   #     the remaining ELEVEN are: the ten legacy callers censused below, plus
+   #     job-output-bridge.ts:303, which is handled by facts (1)-(3) rather than here.
+   ```
+
+   ★ **What that method does NOT cover, stated so the next round does not have to guess.** It finds a
+   literal `.insert(taskOutputs)` and a literal `INSERT INTO` / `COPY` on the table. It would miss a
+   table name assembled at runtime and a database-side trigger or rule. Both were checked separately
+   and are absent at this tip: the only `sql.raw` INSERT in the tree targets `memory_items`
+   (`server/src/services/memory-projection.ts:151`), and the six migrations naming `task_outputs`
+   (`0114`, `0200`, `0213`, `0214`, `0246`, `0247`) contain only DDL, one column `UPDATE`, and
+   `GRANT`/RLS — no row INSERT and no trigger. If either of those becomes false, this census reopens.
+
+   ★★★ **What the chokepoint actually warrants: row CREATION, plus the COLUMN for a SECOND reason.**
+   The insert census closes creation. It closes the *column* too, but not because every writer goes
+   through the chokepoint — **three UPDATE sites do not**. There are four `.update(taskOutputs)`
+   sites in production source and only ONE (`task-outputs.ts:167`, the upsert-by-`(provider,
+   externalId)` branch) is inside `upsertTaskOutputForIssue`. The other three bypass it entirely:
+   `updateMutable` (`task-outputs.ts:237`), `clearSiblingPrimaries` (`:71`, reached from
+   `updateMutable` at `:231` as well as from inside the chokepoint at `:147`), and
+   `workspace-runtime.ts:2890`. None can write `created_by_run_id`: the latter two set only
+   `is_primary`/`updated_at` and `status`/`health_status`/`url`/`updated_at` respectively, and
+   `updateMutable` spreads a body validated by **`mutableTaskOutputSchema`, which is `.strict()` and
+   omits `createdByRunId`** (`packages/shared/src/validators/task-output.ts:55-63`) — so
+   `validate()` (`schema.parse`, `middleware/validate.ts:6`) THROWS on a request carrying the field
+   rather than applying it.
+
+   ★★★ **THE SEAM, named because it is the thing a future reader most needs.** The column half of
+   this warrant rests entirely on that one `.strict()` omission, not on the INSERT census. **If
+   `createdByRunId` were ever added to `mutableTaskOutputSchema`, `PATCH /api/task-outputs/:id`
+   (`routes/task-outputs.ts:87-97`) would immediately become a writer this warrant is structurally
+   unable to see** — that route never calls `upsertTaskOutputForIssue`, so no enumeration of the
+   chokepoint's callers would ever list it. Re-checking the callers is not sufficient; re-check the
+   schema.
+
+   **The chokepoint's callers — eleven production call sites, ten of them legacy.** Four of the ten
+   pass a value capable of being a `heartbeat_runs` id:
+
+   | # | call site | `createdByRunId` | can it fire for a handed-off run? |
+   |---|---|---|---|
+   | 1 | `task-output-emitters.ts:150` (`emitSandboxPreviewTaskOutput`), sole caller `heartbeat.ts:5557` | `run.id` (`heartbeat.ts:5574`) | **No.** It sits AFTER `return; // CLI-006-SUPPRESSION-RETURN` (`heartbeat.ts:5451`), so a handed-off run returns before `adapter.execute` and never reaches it |
+   | 2 | `routes/output-detection.ts:181` — `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm` | `runId`, a **path param** (`:201`) | **No.** Its only feed is `heartbeat_runs.detected_outputs`, whose sole **creating** writer is `heartbeat.ts:5907` — also past the suppression return, and additionally reading `adapterResult`, which only `adapter.execute` assigns. (The column has three writers, not one: `output-detection.ts:218` and `:286` also write it, but both only rewrite an EXISTING array element — each 404s when `!outputs \|\| index >= outputs.length` — so neither can mint the array. The verdict is unchanged.) ★ This is **not** the route R3 labelled it — see below |
+   | 3 | ★ `task-output-emitters.ts:113` (`emitRuntimeServiceTaskOutput`) | `row.startedByRunId` | **YES**, and it fires **before** the handoff — **E7-F020** |
+   | 4 | ★ `routes/task-outputs.ts:54` — `POST /api/issues/:issueId/outputs`, mounted `app.ts:566` | **whatever the request body says** | **YES**, for any authenticated company-scoped caller — **E7-F015** |
+
+   Six more callers reach the same insert but can never carry a run id: `crew-output-capture.ts:129`
+   (hard-coded `null` — a crew run id lives in `internal_agent_runs`, the column FKs `heartbeat_runs`),
+   `attach-task-artifact-tool.ts:164` (sets only `createdByAgentId`), `task-output-backfill.ts:50`,
+   the two emitters that never set the field — `emitPullRequestTaskOutput` (`task-output-emitters.ts:71`)
+   and `emitBranchTaskOutput` (`:162`) — and `task-outputs.ts:213`, which is the service wrapper
+   delegating into the chokepoint rather than an independent writer. That is 4 + 6 = the ten legacy
+   call sites.
+
+   ★ **A fifth capable caller exists and is deliberately not counted here:**
+   `job-output-bridge.ts:303` passes `input.output.createdByRunId ?? null`. It is the DISTRIBUTED
+   producer, and it is exactly what facts (1)-(3) above close — zero production callers, a
+   fail-closed second flag, and a caller-supplied run id. Counting it among the *legacy* writers
+   would double-count facts 1-3.
+
+   ★ **Path 3's detail, since it is the one nobody has to do anything to trigger.**
+   `ensureRuntimeServicesForRun` at **`heartbeat.ts:4524`** → `startLocalRuntimeService` with
+   `startedByRunId: input.runId` (`workspace-runtime.ts:2649`, defaulted at `:2340`) →
+   `persistRuntimeServiceRecord` (`:1785`, called at `:2383` at status `"starting"`, before
+   `waitForReadiness`) → `emitRuntimeServiceTaskOutput` (`:1821`) →
+   `task_outputs.created_by_run_id = run.id`. `:4524` precedes the canary block (`:5258-5274`), the
+   handoff (`:5422`) and the suppression return (`:5451`), all inside the same `executeRun`
+   (`heartbeat.ts:3061`; no other inner function is declared between `3061` and `5500`, so there is no
+   intervening boundary). ★ It also has a **second, HTTP-reachable caller**:
+   `task-output-backfill.ts:91` re-emits every current runtime service for the issue's workspaces,
+   and that backfill runs from **GET** `/api/issues/:issueId/outputs` (`routes/task-outputs.ts:40`)
+   whenever the issue has zero outputs — so a plain read can mint the row from a pre-existing
+   `workspace_runtime_services.started_by_run_id`.
+
+   ★ **The R3 mis-attribution, named so it cannot recur.** R3's second bullet labelled *"the board
+   `POST /api/issues/:issueId/outputs`"* but cited `server/src/routes/output-detection.ts:201`.
+   Those are different routes: `output-detection.ts:201` is
+   `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm` (row 2, **cannot** fire), while
+   E7-F015's actual subject is `server/src/routes/task-outputs.ts:45-53` (row 4, **can** fire) — the
+   writer the R3 enumeration omitted entirely. So the finding that already warned about this exact
+   route was cited against the wrong file while its real route went uncounted. Row 2 is kept in the
+   census with its own verdict rather than deleted.
+
+   So a handed-off run **can** write `task_outputs` under its own run id by TWO independent paths —
+   one requiring an authenticated caller to pass a field (**E7-F015**), one requiring nobody to do
+   anything at all (**E7-F020**), and the latter fires on the DEFAULT isolated-workspace
+   configuration whenever the run declares a `workspaceRuntime.services` entry. What this changes
+   HERE is only the reason arm 2 sits at 0 today, which is the shared blocker (nothing arms the
+   dial), **not** an absence of writers.
+
+**Each arm's blocker, stated separately.** They SHARE one: no run in any checked-in configuration is a
+distributed run at all, because the handoff that mints `distributed_job_id` /
+`execution_owner = "distributed"` runs only in the canary block (measurements 1-2). Past that point
+they DIVERGE. **Arm 1** is closed by the shared blocker alone — it issues no query; arming the dial
+opens the `if` but leaves arm 1 still needing a **committed `workspace_patch` `job_artifacts` row**
+(`verifier-store:206-208`), and `buildWorkspacePatch` / `createResultCommitter` have zero production
+callers. **Arm 2** is never short-circuited, and **no producer moves it**: the DISTRIBUTED producer
+path is closed by facts 1-3 above, none of which is the rollout dial — wiring the projection bridge,
+turning on `AOA_DISTRIBUTED_EXECUTION_ENABLED` and passing the run id is work disjoint from arm 1's
+(ship a patch producer). So the dial is **necessary for both arms and sufficient for neither** *as a
+route to a producer-backed count*.
+
+★★★ **But arm 2 is not held at ZERO by that, and saying so was this finding's own fail-open.** An
+earlier version of this paragraph read *"an operator who armed the dial and changed nothing else
+would still read `task_outputs=0`"*. **That is false, and false in the dangerous direction** —
+corrected 2026-09-06 (W4U3-R3) and kept on the record because it is the sentence that would have made
+a green arm 2 safe to quote. What is actually true, stated so it can be checked:
+
+- **The dial alone yields:** a run that hands off, so arm 1's `if` opens and still finds no committed
+  `workspace_patch` row. On arm 2 it yields **whatever the legacy pre-handoff code already wrote for
+  that run id** — which is `0` only if the run wrote nothing before `heartbeat.ts:5451`.
+- **Arm 2 goes NON-ZERO with no agent output at all** when, in addition to the dial, the run is
+  task-scoped and reaches `heartbeat.ts:4523` with (a) instance `enableIsolatedWorkspaces` true (the
+  default; `workspace-resolution.ts:99-100`), (b) a realized workspace, and (c) at least one
+  `workspaceRuntime.services[]` entry in the run-scoped config (`workspace-runtime.ts:2593-2596`)
+  that is **freshly started** rather than reused. That writes
+  `task_outputs.created_by_run_id = run.id` at `:4524`, ahead of the handoff. Filed as **E7-F020**.
+
+So the honest summary is not *"the dial changes nothing on arm 2"*. It is: **the dial does not give
+arm 2 a PRODUCER, and arm 2 does not need one to read non-zero.**
+
+**Consequence, stated precisely — and it is a SUFFICIENCY claim, not a necessity one.** What this
+finding refutes is the reading *"ship Unit F (output capture) and `capabilityProven` follows"*. It does
+**not** establish that a producer is unnecessary: on arm 1 a committed `workspace_patch` producer stays
+strictly **necessary**, and nothing here argues for skipping or descoping it. Both statements hold at
+once because they answer different questions — **necessary: yes. Sufficient: measured false.** This
+finding licenses neither *"a producer is pointless"* nor *"ship Unit F and we are done"*. Concretely:
+shipping `buildWorkspacePatch`, `createResultCommitter`, the export sequencer's supervisor hook and a
 real `exportArtifact` moves **nothing** while the dial is unarmed, because no `distributedJobId` is
-ever written and arm 1's `if` never opens. ★ Clause 6's own operator-facing text does NOT say this —
+ever written and arm 1's `if` never opens — and it moves nothing on arm 2 in any case, whose
+blockers (measurement 3) a producer does not touch. ★ Clause 6's own operator-facing text does NOT say this —
 it blames output capture alone (`e7-distributed-run-verifier.ts:509-515`), which is separately filed
 as **E7-F016**. Both are true; only this one is load-bearing for the next attempt.
 
@@ -1325,3 +1546,182 @@ should ALSO validate `workspace_patch` bytes against the frozen schema at commit
 question this finding deliberately does not answer — it belongs with whoever ships the producer, and
 it is recorded here so that it is asked rather than rediscovered. No code unit owns this today, and
 inventing one would be a false ownership claim.
+
+## E7-F020 — Arm 2 of `capabilityProven` reads non-zero from an ordinary heartbeat code path, with no agent output, no forgery and no authenticated caller
+
+**Status:** open · **Owner:** CLI-008 · **Severity:** HIGH · **Filed:** 2026-09-06 (W4U3-R3), measured
+at `75920ef9a`. Found by an auditor re-deriving E7-F018's arm-2 analysis; every line number below was
+re-read by hand in this worktree before filing.
+
+**What.** `countProducedOutputs` applies **no provenance filter** to arm 2: it counts every
+`task_outputs` row whose `created_by_run_id` equals the run id
+(`server/src/services/e7-distributed-run-verifier-store.ts:213-216`), and one such row is enough to
+clear clause 6 (`e7-distributed-run-verifier.ts:506`) and set `capabilityProven: true` (`:522`).
+
+**An ordinary internal path writes exactly such a row, before the run is even handed off.** Inside
+`executeRun` (`server/src/services/heartbeat.ts:3061`; no other inner function is declared between
+`3061` and `5500`, so the ordering below is straight-line):
+
+```
+heartbeat.ts:4523   if (isolatedWorkspacesEnabled && realizedWorkspace) {
+heartbeat.ts:4524     await ensureRuntimeServicesForRun({ ... runId: run.id ... })
+                        -> workspace-runtime.ts:2707  (control locks, activation fence)
+                        -> workspace-runtime.ts:2649  startLocalRuntimeService({ startedByRunId: input.runId })
+                        -> workspace-runtime.ts:2340  const startedByRunId = input.startedByRunId ?? input.runId
+                        -> workspace-runtime.ts:2383  persistRuntimeServiceRecord(db, record)    // status "starting"
+                        -> workspace-runtime.ts:1821  emitRuntimeServiceTaskOutput(db, values)
+                        -> task-output-emitters.ts:113  createdByRunId: row.startedByRunId  ==  run.id
+                        -> task-outputs.ts:47           task_outputs.created_by_run_id = run.id
+heartbeat.ts:5258     let canaryExecutionOwner ...          // the canary block starts HERE
+heartbeat.ts:5422     markRunHandedOffToDistributed(...)    // the handoff
+heartbeat.ts:5451     return; // CLI-006-SUPPRESSION-RETURN
+```
+
+**The fail-open configuration, stated so it can be checked.** All of the following, and nothing else
+— no forged request, no authenticated caller, no unusual operator action beyond the one E7-F018
+already says is owed:
+
+1. **The rollout dial names the Organization `canary`** — E7-F018's shared blocker, and the single
+   operator artefact that turns a run into a distributed run at all.
+2. **Instance `enableIsolatedWorkspaces` is true** — the instance-wide DEFAULT
+   (`server/src/services/workspace-resolution.ts:99-100`).
+3. **The run realizes an execution workspace** (`realizedWorkspace` non-null;
+   `heartbeat.ts:3770` or `:3907`), so the `if` at `:4523` opens.
+4. **The run-scoped config carries at least one `workspaceRuntime.services[]` entry**
+   (`workspace-runtime.ts:2593-2596`) — i.e. an ordinary declared dev server.
+5. **That entry is freshly STARTED for this run, not reused.** A `lifecycle: "ephemeral"` entry always
+   is (no reuse key, so the reuse branch is skipped); a `shared` entry is whenever no tracked service
+   matches its reuse key. ★ The reuse branch persists `existing.startedByRunId` — the ORIGINAL
+   starter's run id — so a warm reuse credits a **different** run and does NOT trip this. Heartbeat
+   already draws exactly this distinction one block later (`heartbeat.ts:4561`,
+   `runtimeServices.some((service) => !service.reused)`).
+6. **The run is task-scoped** (`issue.id` non-null) — `emitRuntimeServiceTaskOutput` returns early
+   without it (`task-output-emitters.ts:92`). Canary requires `issueId` anyway (`heartbeat.ts:5272`).
+
+★★ **The service does not have to work.** The first persist is at status `"starting"`, BEFORE
+`waitForReadiness` (`workspace-runtime.ts:2383` then `:2384`), so a dev server that never comes up has
+already written the row; the failure path re-persists the SAME `externalId`
+(`runtime-service:<id>`, `task-output-emitters.ts:98`) and therefore updates that row rather than
+removing it. A preview URL is not required either — with no URL the row is typed `runtime_service`
+instead of `preview_url` (`task-output-emitters.ts:96`), and arm 2 counts rows, not types.
+
+**So the reading is:** a canary run that armed the dial, ran in the default isolated-workspace
+configuration, started one declared dev server and **produced nothing whatsoever** yields
+`capability: PROVEN`. If the distributed journey also corroborates — which is exactly what E7-1's
+harness is built to make happen — the verifier prints a fully green `ok: PASS / capability: PROVEN`
+for a run with zero agent output.
+
+★ **A weaker form needs no dial at all.** `verify` only early-returns on a run that does not exist
+(`e7-distributed-run-verifier.ts:341-352`); capability is computed for every run that does. So
+pointing the verifier at ANY ordinary heartbeat run that freshly started a runtime service already
+prints `capability: PROVEN` today. That form is much less dangerous — clause 1 refuses a
+non-distributed run, so the RESULT line reads `ok: FAIL / capability: PROVEN` and cannot be quoted as
+a green campaign — but it means the capability counter is meaningless *on its own* right now, not
+only after the dial is armed.
+
+**Reproduction (three greps, no database):**
+
+```
+grep -n "ensureRuntimeServicesForRun({\|CLI-006-SUPPRESSION-RETURN" server/src/services/heartbeat.ts
+#   4524   <- the write path
+#   5451   <- the suppression return.  4524 < 5451, same function (executeRun, :3061)
+grep -n "startedByRunId: input.runId" server/src/services/workspace-runtime.ts           # -> 2649
+grep -n "createdByRunId: row.startedByRunId" server/src/services/task-output-emitters.ts # -> 113
+```
+
+**Why NEW rather than an extension of E7-F015 — the two are not the same defect.** They share a root
+(arm 2 has no provenance filter) and a consequence, and they must be cross-linked; they are filed
+apart because a fix for one can leave the other wide open:
+
+| | **E7-F015** | **E7-F020** (this) |
+|---|---|---|
+| who acts | an authenticated board caller, deliberately | **nobody** |
+| the path | `POST /api/issues/:issueId/outputs` (`routes/task-outputs.ts:45-53`) | `heartbeat.ts:4524` → `emitRuntimeServiceTaskOutput` |
+| the run id | supplied in the request body | derived internally from `run.id` |
+| trace left | an HTTP request, a board-provenance row a reviewer can question | none — indistinguishable from ordinary operation |
+| triggered by | an intent to make the bar go green | the DEFAULT workspace configuration |
+
+★★★ **The decisive reason they must not be merged: an authorization-shaped fix closes E7-F015 and
+does nothing here.** Hardening the route — tightening `upsertTaskOutputSchema`, refusing a
+caller-supplied `createdByRunId`, adding an authz check — is the natural remedy for a forgeable
+endpoint, it would legitimately close E7-F015, and arm 2 would still read `PROVEN` off a dev server
+the platform started by itself. Folded into one finding, that fix would look complete. Kept apart,
+E7-F020 states the residual explicitly: **any fix must make arm 2 count only rows whose provenance is
+a distributed agent's output**, not merely exclude untrusted callers.
+
+Note also that E7-F015's register entry records that its originally recommended fix — drop the
+task-output arm and widen the artifact arm off `kind='workspace_patch'` — is **REFUTED** (input
+staging already commits `job_artifacts` rows on the same job id). This finding raises the bar on any
+replacement: the surviving arm has to distinguish *produced by the agent* from *emitted by the
+platform on the agent's behalf*, and nothing in the current schema does.
+
+★★ **Re-examined 2026-09-06 (W4U3-R4) against a corrected writer census, and NOT merged.** The census
+that fact (4) of E7-F018 now carries was re-derived on the sole `task_outputs` INSERT
+(`services/task-outputs.ts:181`) rather than on a grep for the field name, and it says that **two**
+legacy writers can fire for a handed-off run, not one. That is not new information for this finding —
+this finding's own comparison table above already named the other one, and already cited it correctly
+as `routes/task-outputs.ts:45-53` while the shared census was still citing `output-detection.ts:201`
+under E7-F015's label. Three consequences, recorded so the next reader does not have to re-derive them:
+
+- **Nothing in the statement above changes.** "no agent output, no forgery and no authenticated
+  caller" describes THIS path, and a second path existing elsewhere neither weakens nor strengthens it.
+- **The two findings still must not be folded together**, for the reason already argued: an
+  authorization-shaped fix closes E7-F015 and leaves this untouched. The corrected census makes that
+  argument checkable rather than rhetorical — the two live writers are exactly these two findings'
+  subjects, one per finding.
+- ★ **The census now has a closure property worth keeping.** Of the four legacy writers that can put a
+  `heartbeat_runs` id in the column, the two that can fire are E7-F015 (row 4) and E7-F020 (row 3);
+  the two that cannot are rows 1-2. **There is no live writer without a finding, and no finding
+  without a live writer.** If a future round finds a fifth caller of `upsertTaskOutputForIssue` that
+  can carry a run id, that property is the thing it breaks, and it should be re-stated rather than
+  quietly widened.
+
+★ One reachability detail this finding did not have when it was filed: `emitRuntimeServiceTaskOutput`
+is reached not only from `heartbeat.ts:4524` but also from `task-output-backfill.ts:91`, which runs
+from **GET** `/api/issues/:issueId/outputs` (`routes/task-outputs.ts:40`) whenever the issue has no
+task outputs yet. So a plain read can also mint the row, from a `started_by_run_id` a previous run
+already wrote. This does not change the fail-open configuration listed above (that path needs a
+`workspace_runtime_services` row to already exist); it is recorded because it means the write is not
+confined to `executeRun`.
+
+**Severity — HIGH, and argued in both directions because the honest answer is not obvious.**
+
+*The case for lower (this is why it is not CRITICAL, and why MEDIUM was seriously considered).*
+`capabilityProven` gates NOTHING today: `--require-capability` is off by default
+(`server/src/cli/verify-e7-1-distributed-run.ts:65`) and E7-F018 measured that the flag is referenced
+by no workflow and no script. The strong form additionally needs the rollout dial armed, which nothing
+checked in does (E7-F018 measurement 1) and which `scripts/lib/staging-manifest-invariants.mjs:516-541`
+FORBIDS on every staging worker. So the blast radius **today** is zero, and E7-F015 — the same arm,
+the same missing filter — is filed MEDIUM.
+
+*The case for HIGH, which is why it is filed there.* (a) **Error direction.** E7-F015 needs an actor
+doing something deliberate, so a reviewer looking at a green result has a question to ask — *did
+someone POST this?* Here there is no actor and no question; the row is produced by the platform doing
+its ordinary job, and nothing distinguishes it from a real one. A defect that removes the question is
+worse than one that merely answers it wrongly. (b) **It fires on the DEFAULT configuration** of
+exactly the runs the campaign will try first — isolated workspaces are instance-default on, and a
+declared dev server is the normal shape of a software-engineering task. (c) **It fires before the
+handoff**, so it is invariant to whether the distributed side works at all: the counter is non-zero
+even when the distributed execution fails outright. (d) **The trigger is E7-F018's own owed step.**
+The one action the programme says is owed next — arm the dial — is the action that opens this. A
+document set written to stop a green canary being reported as capability must not contain the sentence
+that makes that misreading safe, and until this round it did. (e) **E7-F015 already warns of exactly
+this**: *"it must close BEFORE Unit F makes the bar flippable and an operator starts trusting it."*
+This one is flippable **now**, without Unit F.
+
+HIGH may never be `accepted`, and it is not being accepted: it is `owned` by **CLI-008**.
+
+**Owner — CLI-008, on the same reasoning that put E7-F015 there.** This is a defect in the JUDGE, and
+CLI-008 owns the judge: Unit A built `capabilityProven`, and Units C, E and F are unbuilt, so the
+ticket is live and has no result doc. Unit F is the unit that would make this bar load-bearing, and
+separating a judge defect from the only unit able to prove a future fix fired is how E7-F015's
+predecessors went unnoticed. As with E7-F015, **the ticket carries the finding, not a designed fix** —
+no replacement predicate is proposed here, because the two obvious candidates (filter by `type`,
+filter by `provider`) are guesses that have not been measured against the corpus.
+
+**What this finding does NOT claim.** It does not claim the row is wrong to exist — a runtime service
+IS a legitimate task output and belongs in `task_outputs` with its run linkage; the defect is entirely
+in the verifier reading that linkage as *proof of agent capability*. It does not propose changing
+`emitRuntimeServiceTaskOutput`, and no code is changed by the round that filed it. And it does not
+weaken E7-F018: the shared blocker holds, arm 1 is still unreachable, and a `workspace_patch` producer
+is still necessary.

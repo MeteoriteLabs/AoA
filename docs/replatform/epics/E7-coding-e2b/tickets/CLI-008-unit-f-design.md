@@ -65,7 +65,7 @@ axes**:
 
 | arm | provenance | productivity |
 |---|---|---|
-| `task_outputs` where `created_by_run_id = run.id` | **none** — any company-scoped actor can POST it (§1.3, E7-F015) | none |
+| `task_outputs` where `created_by_run_id = run.id` | **none** — any company-scoped actor can POST it (§1.3, E7-F015), **and the platform writes one by itself on the default configuration** (§1.2a, E7-F020) | none |
 | a `committed` `job_artifacts` row | **full** — live fence, verified device proof, attempt-scoped object prefix, control-plane `headObject` re-verifying the declared SHA-256 | **none** |
 
 Collapsing that into one word ("non-probative") is what let round 1 argue both sides of a single
@@ -127,21 +127,96 @@ filesystem. On the E2B lane the agent's files are inside a remote sandbox the da
 So this arm is blocked on two things at once: a repository to diff (**Unit E**) and an in-sandbox
 manifest capture that **does not exist anywhere in the tree**.
 
-**`taskOutputs` — six writers, none of which can fire on a distributed run, and one that can be
-`curl`ed.**
+**`taskOutputs` — a census closed on the sole INSERT site, not on a grep.**
 
-| writer | `createdByRunId` | reachable on a distributed run? |
-|---|---|---|
-| `heartbeat.ts:5557` → `emitSandboxPreviewTaskOutput` | `run.id` (`:5574`) | **No.** `return; // CLI-006-SUPPRESSION-RETURN` at `heartbeat.ts:5451` fires whenever `shouldSuppressLegacyExecution(owner)` — i.e. `owner?.owner === "distributed"` — and sits above `adapter.execute` (`:5453`) and above this emitter, all inside `executeRun` (`3061`–`6119`) |
-| `routes/output-detection.ts:201` (founder confirm) | `runId` (a `heartbeat_runs` id) | **No.** Its only feed is `heartbeat_runs.detected_outputs`, whose sole creating writer is `heartbeat.ts:5907` — also past the suppression return, and additionally reading `adapterResult`, which only `adapter.execute` assigns |
-| `task-output-emitters.ts:113` (runtime service) | `row.startedByRunId` | No — needs a `workspace_runtime_services` row |
-| `crew-output-capture.ts:129` | **hard-coded `null`** — a crew run id lives in `internal_agent_runs` while the column FKs `heartbeat_runs` | Structurally incapable, by design |
-| `attach-task-artifact-tool.ts` (MCP) | never set — only `createdByAgentId` (`:162`) | Structurally incapable |
-| **`POST /api/issues/:issueId/outputs`** (`routes/task-outputs.ts:45-53`, mounted `app.ts:566`) | **whatever the request body says** | **YES — see §1.3** |
+★★★ **RE-DERIVED 2026-09-06 (W4U3-R4).** Two earlier headings are kept visible because this census is
+where E7-F018's fact (4) came from, and a fail-open enumeration propagates: R2 read *"six writers,
+NONE of which can fire on a distributed run, and one that can be `curl`ed"* and dismissed the
+runtime-service writer on a false reason; R3 corrected the verdicts but left the denominator
+("six writers") arbitrary — it listed six of the ten callers, omitting four while including two that
+cannot carry a run id at all.
+
+★★★ **THE WARRANT.** There is exactly ONE insert into `task_outputs` in **production source** —
+`.insert(taskOutputs)` at **`server/src/services/task-outputs.ts:181`**, inside
+`upsertTaskOutputForIssue` (`:135`); the only others in the tree are three raw-SQL admin fixtures
+under `server/src/__tests__`. So a row cannot be **CREATED** without calling that function, and
+enumerating **its callers** closes the census of writers able to MINT a `created_by_run_id` — which
+grepping for `createdByRunId` cannot do, because
+`routes/task-outputs.ts:54` forwards `req.body` and never names the field. Re-close it with
+`grep -rn "insert(taskOutputs" server packages --include=*.ts` (exactly one hit) plus
+`grep -rn "upsertTaskOutputForIssue\|upsertForIssue" server packages ui --include=*.ts --include=*.tsx | grep -v __tests__`
+(17 lines, of which ELEVEN are call sites — the rest are one import, two declarations and three prose
+comments). **Limits of that method, named:** it sees a literal `.insert(taskOutputs)` and a literal
+`INSERT INTO` / `COPY` on the table; it would miss a runtime-assembled table name or a DB-side
+trigger. Both were checked at this tip and are absent — the only `sql.raw` INSERT in the tree targets
+`memory_items` (`memory-projection.ts:151`), and the six migrations naming `task_outputs` carry DDL,
+one column `UPDATE`, and `GRANT`/RLS only. ★ A repo-wide raw-SQL sweep must exclude `docs/` and
+`scripts/`, or this paragraph and E7-F018's register entry match it back at you.
+
+★★★ **CREATION vs the COLUMN, and the seam.** The warrant above closes row CREATION. It closes the
+**column** for a SECOND and independent reason, because **three UPDATE sites do NOT pass through the
+chokepoint**: `updateMutable` (`task-outputs.ts:237`), `clearSiblingPrimaries` (`:71`, reached from
+`updateMutable:231` as well as from inside the chokepoint at `:147`) and `workspace-runtime.ts:2890`.
+(The fourth `.update(taskOutputs)`, `task-outputs.ts:167`, IS inside the chokepoint.) None of the
+three can set `created_by_run_id`: the latter two set only `is_primary`/`updated_at` and
+`status`/`health_status`/`url`/`updated_at`, and `updateMutable` spreads a body validated by
+**`mutableTaskOutputSchema`, which is `.strict()` and omits `createdByRunId`**
+(`packages/shared/src/validators/task-output.ts:55-63`) — `validate()`'s `schema.parse`
+(`middleware/validate.ts:6`) throws on a request carrying it. ★★★ **THE SEAM:** the column half of
+this warrant rests entirely on that `.strict()` omission. **If `createdByRunId` were ever added to
+`mutableTaskOutputSchema`, `PATCH /api/task-outputs/:id` (`routes/task-outputs.ts:87-97`) would
+become a writer this warrant is structurally unable to see** — it never calls
+`upsertTaskOutputForIssue`, so no enumeration of the chokepoint's callers would list it. A future
+round must re-check the schema, not only the caller list.
+
+**Eleven production call sites reach that insert; TEN are legacy and the eleventh is the distributed
+producer, kept out of the table below. FOUR of the ten can carry a `heartbeat_runs` id; TWO of those
+can fire on a distributed run.**
+
+| # | caller of the chokepoint | `createdByRunId` | reachable on a distributed run? |
+|---|---|---|---|
+| 1 | `task-output-emitters.ts:150` (`emitSandboxPreviewTaskOutput`), sole caller `heartbeat.ts:5557` | `run.id` (`:5574`) | **No.** `return; // CLI-006-SUPPRESSION-RETURN` at `heartbeat.ts:5451` fires whenever `shouldSuppressLegacyExecution(owner)` — i.e. `owner?.owner === "distributed"` — and sits above `adapter.execute` (`:5453`) and above this emitter, all inside `executeRun` (`3061`–`6119`) |
+| 2 | `routes/output-detection.ts:181` — `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm` (founder confirm) | `runId`, a **path param** (`:201`) | **No.** Its only feed is `heartbeat_runs.detected_outputs`, whose sole creating writer is `heartbeat.ts:5907` — also past the suppression return, and additionally reading `adapterResult`, which only `adapter.execute` assigns. ★ **This is not the route E7-F015 is about** — see §1.3 |
+| 3 | **`task-output-emitters.ts:113`** (runtime service) | `row.startedByRunId` | **YES — and the old "needs a `workspace_runtime_services` row" is not a blocker, because THE SAME RUN MINTS ONE.** `ensureRuntimeServicesForRun` (`heartbeat.ts:4524`) → `startLocalRuntimeService` (`workspace-runtime.ts:2649`, `startedByRunId: input.runId`) → `persistRuntimeServiceRecord` (`:2383`, status `"starting"`, before `waitForReadiness`) upserts the row AND emits (`:1821`), so `created_by_run_id = run.id`. `:4524` precedes the canary block (`:5258-5274`), the handoff (`:5422`) and the suppression return (`:5451`), all in the same `executeRun` (`:3061`). ★ It is ALSO reached from `task-output-backfill.ts:91`, which runs from **GET** `/api/issues/:issueId/outputs` (`routes/task-outputs.ts:40`) when the issue has no outputs yet. See **§1.3a / E7-F020** |
+| 4 | **`routes/task-outputs.ts:54`** — `POST /api/issues/:issueId/outputs`, mounted `app.ts:566` | **whatever the request body says** | **YES — see §1.3.** This is E7-F015's actual subject, and R2/R3 omitted it from the census while attributing E7-F015 to row 2 |
+| 5-10 | `crew-output-capture.ts:129` (hard-coded `null` — a crew run id lives in `internal_agent_runs` while the column FKs `heartbeat_runs`); `attach-task-artifact-tool.ts:164` (sets only `createdByAgentId`, `:162`); `task-output-backfill.ts:50`; `emitPullRequestTaskOutput` (`:71`); `emitBranchTaskOutput` (`:162`); `task-outputs.ts:213` (the service wrapper delegating into the chokepoint, not an independent writer) | never set | Structurally incapable |
+
+★ **A fifth capable caller is deliberately outside this table:** `job-output-bridge.ts:303`
+(`input.output.createdByRunId ?? null`). That is the DISTRIBUTED producer, closed by E7-F018's facts
+(1)-(3) — zero production callers, a fail-closed second flag, and a caller-supplied run id. Listing it
+among the *legacy* writers would double-count those facts.
+
+★ **Closure property.** Row 3 is E7-F020, row 4 is E7-F015: there is no live writer without a finding
+and no finding without a live writer. A future round that finds an eleventh caller able to carry a run
+id breaks that property, and should say so rather than widening the table quietly.
+
+### 1.2a ★ FINDING E7-F020 — and one of them needs no `curl` either
+
+The runtime-service row above is the second reachable writer, and it is the more dangerous of the two
+because **no actor is involved**. Full statement, fail-open configuration and the both-directions
+severity argument: **E7-F020** in
+[`../findings.md`](../findings.md). The short form for this document: on the DEFAULT isolated-workspace
+configuration, a canary run that declares one `workspaceRuntime.services[]` entry writes a
+`task_outputs` row under its own run id before it is handed off — so arm 2 reads non-zero, and
+`capabilityProven` reads TRUE, for a run whose agent produced nothing.
+
+★ **Why it is filed apart from E7-F015 rather than folded into it.** The natural fix for E7-F015 is an
+authorization one — refuse a caller-supplied `createdByRunId`, tighten the schema, guard the route.
+That fix is correct, it closes E7-F015, and **it does not touch E7-F020 at all**. Any replacement
+predicate for arm 2 must distinguish *produced by the agent* from *emitted by the platform on the
+agent's behalf*; excluding untrusted callers is not sufficient. Read both before designing §4.3's
+replacement.
 
 ### 1.3 ★ FINDING E7-F015 — the capability bar is forgeable by a board POST
 
-**This survived all three rounds and is the most valuable thing in this document.**
+**This survived all four rounds and is the most valuable thing in this document.**
+
+★ **The route is `server/src/routes/task-outputs.ts:45-53` (§1.2 row 4), and nothing else. Stated
+2026-09-06 (W4U3-R4) because the confusion actually happened:** E7-F018's fact (4) carried this
+finding's label against `routes/output-detection.ts:201` for two rounds. That is §1.2 row 2 — a
+different route, `POST /heartbeat-runs/:runId/detected-outputs/:index/confirm`, whose run id is a
+**path param** rather than a body field, and which **cannot** fire on a distributed run. Row 2 stays
+in the census with that verdict; E7-F015 is about row 4.
 
 `upsertTaskOutputSchema` (`packages/shared/src/validators/task-output.ts:50`) admits
 `createdByRunId: z.string().uuid().nullable().optional()`; the route hands `req.body` straight to
@@ -792,11 +867,12 @@ widening; a fourth pass must relieve it some other way or accept it explicitly.
 
 ## 8. Findings filed with this design
 
-Both are entered in `scripts/finding-ownership.json` with their register blocks.
+All three are entered in `scripts/finding-ownership.json` with their register blocks.
 
-| id | severity | what | round-3 status |
+| id | severity | what | round-4 status |
 |---|---|---|---|
-| **E7-F015** | MEDIUM | The capability bar is forgeable: `POST /api/issues/:id/outputs` accepts `createdByRunId` from the request body with only a company-ownership check, and `countProducedOutputs` applies no provenance filter — so one authenticated POST flips `capabilityProven` | ★★★ **SURVIVED all three rounds.** Its originally recommended fix is **REFUTED** (§4.3) and struck from its register entry; the finding stands **unfixed and unowned by a mechanism** |
+| **E7-F015** | MEDIUM | The capability bar is forgeable: `POST /api/issues/:issueId/outputs` (`routes/task-outputs.ts:45-53`, §1.2 row 4) accepts `createdByRunId` from the request body with only a company-ownership check, and `countProducedOutputs` applies no provenance filter — so one authenticated POST flips `capabilityProven` | ★★★ **SURVIVED all four rounds.** Its originally recommended fix is **REFUTED** (§4.3) and struck from its register entry; the finding stands **unfixed and unowned by a mechanism**. Round 4 corrected its ATTRIBUTION — E7-F018's census had cited `routes/output-detection.ts:201` (§1.2 row 2, a different route that cannot fire) under this finding's label |
+| **E7-F020** | HIGH | The same arm, no actor at all: `emitRuntimeServiceTaskOutput` (§1.2 row 3) writes `created_by_run_id = run.id` from `heartbeat.ts:4524`, before the handoff, on the DEFAULT isolated-workspace configuration — so arm 2 reads non-zero for a run with zero agent output | Filed round 3 (§1.2a); **re-examined round 4 against the corrected census and NOT merged into E7-F015** — an authorization-shaped fix closes E7-F015 and leaves this untouched |
 | **E7-F016** | LOW | Clause 6's operator-facing text misdescribes its own subject: (a) the failure reason names four unbuilt links, three of which cannot flip either counter, and omits the decisive ones; (b) the verdict is named `capabilityProven` while both arms are row counts that can only assert provenance | ★ **SURVIVED.** Part (a)'s repair — rewriting the reason string — is independent of any predicate change and remains available; part (b) is recorded rather than fixed (a rename touches 15 files across five epics) |
 
 **Observed, not filed** (each a candidate for a successor rather than a defect this unit carries):
