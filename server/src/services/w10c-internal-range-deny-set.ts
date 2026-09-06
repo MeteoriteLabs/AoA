@@ -65,35 +65,38 @@ import { isPrivateIP } from "./outbound-url-guard.js";
  * Derived by sweeping all 2^24 /24 blocks; re-derived and pinned in CI.
  */
 export const INTERNAL_RANGE_DENY_CIDRS_V4: readonly string[] = Object.freeze([
-  // "This network" / unspecified. Protects against `0.0.0.0` and `0.x.y.z` being
-  // routed to the local host by some stacks -- a loopback reach in disguise.
+  // "This network" / unspecified. Denying this WOULD block `0.0.0.0` and `0.x.y.z`,
+  // which some stacks route to the local host -- a loopback reach in disguise.
   "0.0.0.0/8",
-  // RFC1918 private-use. Protects the operator's own VPC/LAN: databases, control
-  // plane, other tenants' workers -- everything the sandbox must never reach.
+  // RFC1918 private-use. Covers the operator's own VPC/LAN: databases, control
+  // plane, other tenants' workers. Denying it WOULD put those out of reach of a
+  // sandbox; nothing in this unit denies anything.
   "10.0.0.0/8",
-  // RFC6598 carrier-grade NAT. Protects provider-internal fabric: managed runtimes
-  // commonly address host services and sibling sandboxes out of 100.64/10, so
-  // omitting it leaves a lateral path that looks "public" to a naive filter.
+  // RFC6598 carrier-grade NAT. Covers provider-internal fabric: managed runtimes
+  // commonly address host services and sibling sandboxes out of 100.64/10, so a
+  // future enforcer that OMITTED it would leave a lateral path that looks "public"
+  // to a naive filter.
   "100.64.0.0/10",
-  // Loopback. Protects services bound to 127.0.0.1 inside the sandbox -- the agent
+  // Loopback. Covers services bound to 127.0.0.1 inside a sandbox -- the agent
   // CLI's own auth broker, any debug port, any sidecar assumed unreachable.
+  // Denying it WOULD make those unreachable from sandbox-originated traffic.
   "127.0.0.0/8",
   // RFC3927 link-local. THE range that carries cloud instance metadata
   // (169.254.169.254 IMDS, 169.254.170.2 ECS task metadata). Credential-theft
   // range; the single most important entry in this table.
   "169.254.0.0/16",
-  // RFC1918 private-use (172.16-172.31). Same protection as 10/8; the /12 boundary
-  // is the classic off-by-one (172.32.x is PUBLIC and must stay allowed).
+  // RFC1918 private-use (172.16-172.31). Same rationale as 10/8; the /12 boundary
+  // is the classic off-by-one (172.32.x is PUBLIC and would have to stay allowed).
   "172.16.0.0/12",
   // RFC6890 IETF protocol assignments. Contains 192.0.0.170/171 (NAT64 discovery)
   // and other host-local protocol addresses; not globally routable, so denying
-  // costs nothing and closes a special-use surface.
+  // WOULD cost nothing and WOULD close a special-use surface.
   "192.0.0.0/24",
   // TEST-NET-1 (RFC5737). Documentation-only; a real connection attempt here is a
   // misconfiguration or a probe, never legitimate agent traffic.
   "192.0.2.0/24",
-  // Deprecated 6to4 relay anycast (RFC7526). Denying blocks a v6-over-v4 tunnel
-  // that would otherwise carry traffic past a v4-only egress filter.
+  // Deprecated 6to4 relay anycast (RFC7526). Denying this WOULD block a v6-over-v4
+  // tunnel that would otherwise carry traffic past a v4-only egress filter.
   // NOTE: this is the one range `mcp-connector-oauth.ts`'s table is missing.
   "192.88.99.0/24",
   // RFC1918 private-use. Home/office LAN range -- relevant for self-hosted and
@@ -106,9 +109,9 @@ export const INTERNAL_RANGE_DENY_CIDRS_V4: readonly string[] = Object.freeze([
   "198.51.100.0/24",
   // TEST-NET-3 (RFC5737). Documentation-only, same rationale as TEST-NET-1.
   "203.0.113.0/24",
-  // Multicast (224/4) + reserved-for-future-use (240/4), aggregated. Protects
-  // against local-network multicast discovery (mDNS 224.0.0.251, SSDP
-  // 239.255.255.250) being used to enumerate the host's network neighbours.
+  // Multicast (224/4) + reserved-for-future-use (240/4), aggregated. Covers
+  // local-network multicast discovery (mDNS 224.0.0.251, SSDP 239.255.255.250);
+  // denying it WOULD stop that being used to enumerate the host's neighbours.
   "224.0.0.0/3",
 ]);
 
@@ -123,7 +126,7 @@ export const INTERNAL_RANGE_DENY_CIDRS_V6: readonly string[] = Object.freeze([
   "::/16",
   // RFC6052 NAT64 well-known prefixes (64:ff9b::/96 and 64:ff9b:1::/48,
   // aggregated). A NAT64 translator turns these into arbitrary IPv4 destinations,
-  // so leaving them open re-opens every IPv4 range denied above.
+  // so an enforcer that left them open WOULD re-open every IPv4 range listed above.
   "64:ff9b::/47",
   // RFC6666 discard-only prefix. Sink route; no legitimate destination.
   "100::/64",
@@ -138,18 +141,18 @@ export const INTERNAL_RANGE_DENY_CIDRS_V6: readonly string[] = Object.freeze([
   // 2001:db8::/32 documentation. Documentation-only, same rationale as TEST-NET.
   "2001:db8::/32",
   // 2002::/16 6to4. The v6 side of the 192.88.99.0/24 tunnel; denying only one end
-  // of a tunnel is denying neither.
+  // of a tunnel WOULD be denying neither.
   "2002::/16",
   // 3fff::/20 additional documentation space (RFC9637); `isPrivateIP` rejects the
   // wider 3ff0-3fff span, so the exact cover of the predicate is /12.
   "3ff0::/12",
-  // fc00::/7 unique local addresses. The IPv6 equivalent of RFC1918 -- the
+  // fc00::/7 unique local addresses. The IPv6 equivalent of RFC1918 -- covers the
   // operator's own fabric.
   "fc00::/7",
   // fe80::/10 link-local + fec0::/10 deprecated site-local, aggregated. Link-local
   // is the v6 on-link neighbour range; site-local is the deprecated internal range.
   "fe80::/9",
-  // ff00::/8 multicast. Same neighbour-enumeration protection as 224/4.
+  // ff00::/8 multicast. Same neighbour-enumeration rationale as 224/4.
   "ff00::/8",
 ]);
 

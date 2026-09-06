@@ -21,7 +21,8 @@ import { isPrivateIP } from "../services/outbound-url-guard.js";
 // `isPrivateIP` itself on every run (a full 2^24 /24 sweep, ~8s) and asserted
 // equal to the frozen array, so the set cannot silently drift from the predicate
 // it renders. Corpus agreement alone could not do that -- see the "corpus
-// agreement is not a pin" test at the bottom.
+// agreement is not a pin" test, which sits with the pin in section 1 because it
+// reads the frozen export.
 
 // --- test-local CIDR arithmetic (BigInt; deliberately not imported from the
 // --- module under test, so a bug there cannot hide itself) -------------------
@@ -125,6 +126,19 @@ describe("W10C internal-range deny set -- the exact-set pin", () => {
     ]) {
       expect(INTERNAL_RANGE_DENY_CIDRS_V4).toContain(required);
     }
+  });
+
+  // Lives HERE, not with the explicit-input cases below, because it READS the
+  // frozen export: it is an argument for the pin above, so a mutation of the set
+  // is supposed to red it.
+  it("CORPUS AGREEMENT IS NOT A PIN -- this is why the exact-set test exists", () => {
+    // Delete 192.88.99.0/24 from a copy of the set. Over a corpus with no
+    // 192.88.99.x address, the agreement check still passes -- it cannot see the
+    // hole. Only the exact-set assertion and the re-derivation sweep catch it.
+    const holed = INTERNAL_RANGE_DENY_CIDRS.filter((c) => c !== "192.88.99.0/24");
+    const blindCorpus = ["169.254.169.254", "10.1.1.1", "127.0.0.1", "8.8.8.8"];
+    expect(isSupersetOfIsPrivateIp(holed, blindCorpus)).toBe(true); // blind
+    expect(isSupersetOfIsPrivateIp(holed, ["192.88.99.1"])).toBe(false); // only if asked
   });
 });
 
@@ -306,9 +320,22 @@ describe("W10C internal-range deny set -- agreement with isPrivateIP", () => {
 });
 
 // --- 4. THE SUPERSET PREDICATE'S OWN BEHAVIOUR -------------------------------
-// POSITIVE CONTROL. Every case here uses EXPLICIT CIDR lists and never reads the
-// frozen export, so it stays green while a mutation of the frozen set reds the
-// pin above -- proving the failure is localized to the data, not the harness.
+// POSITIVE CONTROL, and the property is checkable: all six cases below pass
+// EXPLICIT CIDR lists and none of them names any frozen export, so a mutation of
+// the frozen SET reds the pin in section 1 while these stay green -- the failure
+// is localized to the data, not to the harness.
+//
+// SCOPE, stated exactly: this is a control for mutations of the frozen SET only.
+// These cases DO call `isPrivateIP`, so a mutation of the REFERENCE PREDICATE
+// reds them too -- and should. MEASURED: deleting `isPrivateIP`'s `169.254.` arm
+// reds exactly one of the six ("reports a gap ...", expected [] to deeply equal
+// [ '169.254.169.254' ]). That is not a broken control; it is the control working
+// on a different mutation target.
+//
+// The "corpus agreement is not a pin" case used to sit in this describe and did
+// NOT have the property this header claims -- it reads `INTERNAL_RANGE_DENY_CIDRS`,
+// so removing "10.0.0.0/8" from the frozen set red it here. It now lives in
+// section 1 beside the pin it argues for, where a set mutation SHOULD red it.
 
 describe("W10C superset predicate -- behaviour on explicit inputs", () => {
   it("reports a gap when the given set misses a range isPrivateIP rejects", () => {
@@ -342,15 +369,5 @@ describe("W10C superset predicate -- behaviour on explicit inputs", () => {
   it("is family-aware: an IPv4 address is not matched by an IPv6 range or vice versa", () => {
     expect(isCoveredByDenySet("10.0.0.1", ["fc00::/7"])).toBe(false);
     expect(isCoveredByDenySet("fc00::1", ["10.0.0.0/8"])).toBe(false);
-  });
-
-  it("CORPUS AGREEMENT IS NOT A PIN -- this is why the exact-set test exists", () => {
-    // Delete 192.88.99.0/24 from a copy of the set. Over a corpus with no
-    // 192.88.99.x address, the agreement check still passes -- it cannot see the
-    // hole. Only the exact-set assertion and the re-derivation sweep catch it.
-    const holed = INTERNAL_RANGE_DENY_CIDRS.filter((c) => c !== "192.88.99.0/24");
-    const blindCorpus = ["169.254.169.254", "10.1.1.1", "127.0.0.1", "8.8.8.8"];
-    expect(isSupersetOfIsPrivateIp(holed, blindCorpus)).toBe(true); // blind
-    expect(isSupersetOfIsPrivateIp(holed, ["192.88.99.1"])).toBe(false); // only if asked
   });
 });
