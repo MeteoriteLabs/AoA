@@ -293,6 +293,11 @@
       "status": "unrun",
       "reason": "Self-test for scripts/verify-e3-perf-01-handoff.mjs, which guard-inventory.json already declares dormant for the same reason: a one-off E3 PERF-01 handoff verifier retained as the record of how that handoff was verified. TO WIRE: only if that handoff is ever re-run."
     },
+    "scripts/lib/__tests__/w7u1-agent-output-probe.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "W7U1 output-probe decision logic (proven WITHOUT the key)"
+    },
     "scripts/lib/__tests__/workflow-verdict.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",
