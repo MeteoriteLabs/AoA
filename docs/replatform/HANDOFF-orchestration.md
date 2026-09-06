@@ -63,19 +63,44 @@ all, today).
 verifier has computed and printed both since Unit A. **Do not let a green canary be reported as
 capability.**
 
-★★★ **But the reason is NOT "Unit F has not shipped yet", and no producer unit will change it.**
-Measured 2026-09-06 and filed as **E7-F018** (HIGH, `unowned`): **both arms are structurally
-unreachable in every checked-in configuration.** Arm 1 short-circuits at
-`server/src/services/e7-distributed-run-verifier-store.ts:200` on `if (run.distributedJobId)` and
-issues **no query at all**, because the sole writer of `heartbeat_runs.distributed_job_id`
-(`markRunHandedOffToDistributed`, `heartbeat.ts:6921`) has exactly one call site
-(`heartbeat.ts:5422`), inside the block gated on `distributedRolloutState === "canary"`
-(`heartbeat.ts:5259-5274`) — and nothing checked in arms the rollout dial. Arm 2's projection
-(`jobOutputBridge`) is `unwired` with zero production callers.
+★★★ **But the reason is NOT "Unit F has not shipped yet".** Measured 2026-09-06 and filed as
+**E7-F018** (HIGH, `unowned`): **both arms are structurally unreachable in every checked-in
+configuration** — and, importantly, **not for the same reason.** Re-derived per arm:
 
-**So a `workspace_patch` producer is NECESSARY and NOT SUFFICIENT.** What is owed first is a
-**deployment precondition**, not a code unit: a compose diff enabling dispatch on a worker, and a
-rollout JSON naming an Organization canary. That is why E7-F018 is `unowned` — a ticket could ship in
+- **SHARED blocker (both arms).** No run in any checked-in configuration is a distributed run at all.
+  The sole writer of `heartbeat_runs.distributed_job_id` / `execution_owner = "distributed"` is
+  `markRunHandedOffToDistributed` (`heartbeat.ts:6921`), which has exactly one call site
+  (`heartbeat.ts:5422`), inside the block gated on `distributedRolloutState === "canary"`
+  (`heartbeat.ts:5259-5274`), and nothing checked in arms the rollout dial.
+- **ARM 1 (`workspace_patch` job_artifacts) — the shared blocker closes it outright, plus a producer.**
+  It short-circuits at `server/src/services/e7-distributed-run-verifier-store.ts:200` on
+  `if (run.distributedJobId)` and issues **no query at all**. Arming the dial opens that `if` but
+  still leaves it needing a **committed `workspace_patch` row** (`:206-208`), and
+  `buildWorkspacePatch` / `createResultCommitter` have zero production callers.
+- **ARM 2 (`task_outputs`) — NOT blocked by the rollout dial alone, and never short-circuited.**
+  Its query runs unconditionally (`e7-distributed-run-verifier-store.ts:213-216`), outside arm 1's
+  `if`, so arm 1's blocker does not carry over. It is held at 0 by four facts, **none of them the
+  dial**: (1) the distributed-job → `task_outputs` projection `jobOutputBridge.projectAcceptedOutput`
+  is `unwired` with zero production callers (`gate-clause-wiring.json`, `E3-17-output`) — arming a
+  dial creates no caller; (2) it refuses fail-closed on a **second, independent** flag,
+  `AOA_DISTRIBUTED_EXECUTION_ENABLED` (`config/distributed-execution.ts:22-24`, default `false`),
+  throwing `JobOutputBridgeDisabledError` and writing nothing; (3) `createdByRunId` is
+  caller-supplied and never derived (`job-output-bridge.ts:291`), so a wired flag-on caller must
+  ALSO pass the heartbeat run id; (4) the legacy writers that do set the column cannot fire for a
+  handed-off run — heartbeat's sandbox-preview emitter (`heartbeat.ts:5557-5574`) sits after
+  `return; // CLI-006-SUPPRESSION-RETURN` (`:5451`), and the board `POST .../outputs`
+  (`output-detection.ts:201`) is a board provenance path, already filed as **E7-F015**.
+
+**So a `workspace_patch` producer is NECESSARY and NOT SUFFICIENT — and read that as a claim about
+SUFFICIENCY only.** E7-F018 refutes *"ship Unit F (output capture) and `capabilityProven` follows"*.
+It does **not** establish that a producer is unnecessary: on arm 1 a committed `workspace_patch`
+producer stays strictly necessary. **Necessary: yes. Sufficient: measured false.** Do not take this
+away as either *"a producer is pointless"* or *"ship Unit F and we are done"*.
+
+What is owed FIRST is a **deployment precondition**, not a code unit: a compose diff enabling dispatch
+on a worker, and a rollout JSON naming an Organization canary. That precondition is the SHARED blocker,
+and it is necessary for both arms and sufficient for neither — arm 2 additionally needs the projection
+bridge wired (C4) and the deployment flag on. That is why E7-F018 is `unowned` — a ticket could ship in
 full and the finding would not move. ★ **Track A's producer chain has been attempted or proposed four
 times. Read E7-F018 before anyone starts a fifth.**
 

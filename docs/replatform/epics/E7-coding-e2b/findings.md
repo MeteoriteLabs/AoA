@@ -1208,9 +1208,11 @@ by hand before filing.
 
 **What.** `capabilityProven` is an OR over two counters (predicate
 `server/src/services/e7-distributed-run-verifier.ts:506`, verdict `:522`). **Neither counter can be
-moved by any producer, however correct, in any configuration checked into this repository** — both
-are keyed on links that only a CANARY-mode distributed run creates, and nothing checked in puts any
-Organization into canary mode. This is a **reachability** defect, not a coverage one: it invalidates
+moved by any producer, however correct, in any configuration checked into this repository** — and,
+★ importantly, **not for the same reason**: arm 1 is keyed on a link only a CANARY-mode distributed
+run creates (measurement 2), while arm 2 is never short-circuited and is held at 0 by an unwired
+projection, a second deployment flag and a caller-supplied run id (measurement 3). Nothing checked in
+puts any Organization into canary mode, and arming one would not open arm 2. This is a **reachability** defect, not a coverage one: it invalidates
 the premise under which E7-1's headline capability gate is being worked toward.
 
 ★★★ **Filed because Track A — composing the `workspace_patch` producer chain — has now been attempted
@@ -1223,7 +1225,24 @@ written down.** It is written down here so the fifth attempt does not happen.
 grep -rn AOA_DISTRIBUTED_EXECUTION_ROLLOUT --include=*.yml --include=*.yaml --include=*.json --include=Dockerfile* .
 ```
 
-→ **ZERO hits, exit 1**, repo-wide at `472885d5e`. The variable appears ONLY in `docs/`, in
+→ At `472885d5e`, when this finding was filed: **ZERO hits, exit 1**, repo-wide.
+
+★★★ **Re-run 2026-09-06 (W4U3-FIX): the command now returns exactly ONE hit and exit 0 — and
+that hit is this finding's own register entry, quoting the command back at itself**
+(`scripts/finding-ownership.json`, the E7-F018 `reason` string; `*.md` is outside the `--include`
+filters, so this page does not match). That is a self-match, **not** an arming. The durable form
+excludes the register:
+
+```
+grep -rn AOA_DISTRIBUTED_EXECUTION_ROLLOUT --include=*.yml --include=*.yaml --include=*.json --include=Dockerfile* . | grep -v scripts/finding-ownership.json
+```
+
+→ **ZERO hits, exit 1**, repo-wide, at this tip. Recorded rather than quietly rewritten,
+because a one-command reproduction that contradicts its own text is how a live finding gets dismissed
+as stale — the same failure class as a check that cannot fire, in a register instead of in CI. The
+measurement itself is unchanged: no compose file, Dockerfile, workflow or manifest sets the variable.
+
+The variable appears ONLY in `docs/`, in
 `server/src/config/distributed-execution-rollout-source.ts` (`:35`, which names it and is
 DEFAULT-DISABLED — an absent map resolves every Organization to `off`), in `server/src/index.ts`
 (`:1223`, the malformed-config warning), and in tests (`rollout-dial-live.test.ts`,
@@ -1242,18 +1261,59 @@ DEFAULT-DISABLED — an absent map resolves every Organization to `off`), in `se
   (`server/src/services/e7-distributed-run-verifier-store.ts:200`) is false, and
   `workspacePatchArtifacts` stays at its initialiser `0` (`:199`).
 
-**Measurement 3 — arm 2 has no producer either.** The task-output arm filters
-`eq(taskOutputs.createdByRunId, run.id)` (`server/src/services/e7-distributed-run-verifier-store.ts:216`).
-The distributed-job → `task_outputs` projection is `jobOutputBridge`, declared `unwired` with ZERO
-production callers in `scripts/gate-clause-wiring.json` (`E3-17-output`: *"JOB-014 output projection
-has zero callers; task_outputs is still written by the legacy path. Wire at sink cutover (Sprint 6)."*).
-No distributed run writes a `task_outputs` row. The one write that CAN set the field is a board
-`POST /api/issues/:issueId/outputs` — which is not a producer, and is already filed as **E7-F015**.
+**Measurement 3 — arm 2's blocker is NOT arm 1's, and is not the rollout dial alone.** ★ Arm 2's
+query is issued **unconditionally** (`server/src/services/e7-distributed-run-verifier-store.ts:213-216`):
+it sits OUTSIDE the `if (run.distributedJobId)` block that short-circuits arm 1, so measurement 2 does
+NOT carry over to it. Arm 2 has to be derived on its own terms. Its predicate is
+`eq(taskOutputs.createdByRunId, run.id)` (`:216`), and **four independent facts** hold it at 0:
 
-**Consequence, stated precisely.** A `workspace_patch` producer is NECESSARY and NOT SUFFICIENT.
-Shipping `buildWorkspacePatch`, `createResultCommitter`, the export sequencer's supervisor hook and a
+1. **The distributed producer has no caller.** The distributed-job → `task_outputs` projection is
+   `jobOutputBridge.projectAcceptedOutput`, declared `unwired` with ZERO production callers in
+   `scripts/gate-clause-wiring.json` (`E3-17-output`: *"JOB-014 output projection has zero callers;
+   task_outputs is still written by the legacy path. Wire at sink cutover (Sprint 6)."*). Re-measured
+   by grep at this tip: `projectAcceptedOutput` occurs only in its own interface declaration and
+   implementation (`server/src/services/job-output-bridge.ts:175`, `:250`) plus one module-doc line.
+   **Arming the rollout dial creates no caller** — this is a wiring unit (C4 on the critical path),
+   not a dial setting.
+2. **A SECOND, INDEPENDENT flag refuses it fail-closed.** Every bridge entrypoint opens with
+   `assertEnabled()`, which reads **`AOA_DISTRIBUTED_EXECUTION_ENABLED`** — not the rollout dial —
+   via `readDistributedExecutionDeploymentFlag` (`server/src/config/distributed-execution.ts:22-24`,
+   default `false`) and throws `JobOutputBridgeDisabledError`, writing nothing
+   (`job-output-bridge.ts:231-235`, `:251`).
+3. **`createdByRunId` is caller-supplied and never derived** (`job-output-bridge.ts:291`:
+   `createdByRunId: input.output.createdByRunId ?? null`). So even a wired, flag-on caller must ALSO
+   pass the heartbeat run id for `= run.id` to match; a bridge write carrying a null run id is
+   invisible to arm 2.
+4. **The two legacy writers that DO set the column cannot fire for a handed-off run.** Heartbeat's
+   sandbox-preview emitter passes `createdByRunId: run.id`
+   (`server/src/services/heartbeat.ts:5557-5574`), but it sits AFTER
+   `return; // CLI-006-SUPPRESSION-RETURN` (`heartbeat.ts:5451`) — once a run is handed off the
+   legacy executor returns before `adapter.execute` and never reaches the emitter. The other is the
+   board `POST /api/issues/:issueId/outputs` (`server/src/routes/output-detection.ts:201`) — a
+   human/board provenance path, not a producer, already filed as **E7-F015**.
+
+**Each arm's blocker, stated separately.** They SHARE one: no run in any checked-in configuration is a
+distributed run at all, because the handoff that mints `distributed_job_id` /
+`execution_owner = "distributed"` runs only in the canary block (measurements 1-2). Past that point
+they DIVERGE. **Arm 1** is closed by the shared blocker alone — it issues no query; arming the dial
+opens the `if` but leaves arm 1 still needing a **committed `workspace_patch` `job_artifacts` row**
+(`verifier-store:206-208`), and `buildWorkspacePatch` / `createResultCommitter` have zero production
+callers. **Arm 2** is never short-circuited, and is closed instead by the four facts above —
+**none of which is the rollout dial**: an operator who armed the dial and changed nothing else would
+still read `task_outputs=0`. So the dial is **necessary for both arms and sufficient for neither**, and
+the work that would unblock arm 2 (wire the projection bridge, turn on the deployment flag, pass the
+run id) is disjoint from the work that would unblock arm 1 (ship a patch producer).
+
+**Consequence, stated precisely — and it is a SUFFICIENCY claim, not a necessity one.** What this
+finding refutes is the reading *"ship Unit F (output capture) and `capabilityProven` follows"*. It does
+**not** establish that a producer is unnecessary: on arm 1 a committed `workspace_patch` producer stays
+strictly **necessary**, and nothing here argues for skipping or descoping it. Both statements hold at
+once because they answer different questions — **necessary: yes. Sufficient: measured false.** This
+finding licenses neither *"a producer is pointless"* nor *"ship Unit F and we are done"*. Concretely:
+shipping `buildWorkspacePatch`, `createResultCommitter`, the export sequencer's supervisor hook and a
 real `exportArtifact` moves **nothing** while the dial is unarmed, because no `distributedJobId` is
-ever written and arm 1's `if` never opens. ★ Clause 6's own operator-facing text does NOT say this —
+ever written and arm 1's `if` never opens — and it moves nothing on arm 2 in any case, whose
+blockers (measurement 3) a producer does not touch. ★ Clause 6's own operator-facing text does NOT say this —
 it blames output capture alone (`e7-distributed-run-verifier.ts:509-515`), which is separately filed
 as **E7-F016**. Both are true; only this one is load-bearing for the next attempt.
 
