@@ -62,12 +62,45 @@ Owned by REL-003.
 
 ## E11-F003 — E11-5's register reason asserts a second call site that does not exist: the warm-sandbox reaper calls a DIFFERENT function
 
-**Status:** open
+**Status:** resolved_by_w16a · **Owner:** — (closed; the ownership entry is deleted in this commit)
 **Severity:** MEDIUM (a register sentence describing source, refuted by source; the clause's
 `wired` verdict is unaffected)
 **Filed:** 2026-09-06 (W5U1), measured at `e1f723df2`.
+**Resolved:** 2026-09-07 (W16A, branch `replatform/w16a-register-sentences`), re-measured at
+`8075cd7a1`.
 
-**What the register says.** `scripts/gate-clause-wiring.json` → `E11-5-provider-kill-switch`:
+> ★ **HOW IT WAS RESOLVED, AND THE ONE THING THAT COULD UNDO IT.** W16A rewrote
+> `E11-5-provider-kill-switch`'s `reason` to exactly what the "What would close it" section below
+> prescribes: `evaluateKillSwitches` has ONE production caller (`job-leasing.ts:720`), the
+> warm-sandbox reaper reaches the same policy document through the deliberately fail-OPEN
+> `killedProviders`, and the inverse-polarity comment is quoted verbatim so a reader cannot infer
+> the fail-closed property again. Nothing about the clause's `status`, `symbol` or
+> `expectedReferences` moved; this was prose only, which is all this finding ever alleged.
+>
+> **This is a BRANCH STATE.** It is true on `replatform/w16a-register-sentences`. If that PR is
+> not merged, the corrected sentence goes with it and this finding is `open` again — restore the
+> `E11-F003` key in `scripts/finding-ownership.json` at the same time.
+>
+> ★★★ **A FALSE NEGATIVE SWEEP, CORRECTED 2026-09-07 (W16A-FIX) — recorded here because a false
+> sweep inside a register-accuracy unit is the defect eating itself.** W16A's build report claimed
+> that `grep -rn 'evaluateKillSwitches' docs --include=*.md` returned "only E11-F003 plus
+> `REL-004-lane-C-design.md`". **Re-run at `75c3e42a2`: 46 hits across 8 files** —
+> `E11-hardening-release/findings.md`, `REL-004-lane-C-design.md`, `REL-004-lane-C-result.md`,
+> `REL-004-lane-D-design.md`, `REL-004-lane-D-result.md`, `REL-004-lane-D-terrain.md`,
+> `REL-FOUNDATION-GATE-design.md` and `GO-BOOK.md`.
+>
+> **The sweep's CONCLUSION survives; its STATED BASIS did not.** All six previously-unnamed files
+> were read: none repeats the "second caller" claim, and the three Lane-D documents refute it
+> independently — `REL-004-lane-D-design.md:122,133` and `REL-004-lane-D-result.md:60` both set
+> `evaluateKillSwitches` (fail-closed) against `killedProviders` (fail-open) as *two consumers of
+> one parse*, and `REL-004-lane-D-terrain.md:115` tabulates `evaluateKillSwitches` at **1** caller.
+> `GO-BOOK.md:1792` and `REL-FOUNDATION-GATE-design.md:223` name only the REL-005 write-path
+> residual. So the correction is complete and no other document needed one — but that is now a
+> **measured** statement rather than an asserted one, which is the whole difference this register
+> exists to keep.
+
+**What the register SAID.** `scripts/gate-clause-wiring.json` → `E11-5-provider-kill-switch`, as
+filed (this text no longer exists in the file):
 
 > "Genuinely wired: called on the real poll path (job-leasing.ts) **and by the warm-sandbox
 > reaper**."
@@ -79,7 +112,8 @@ exactly ONE production caller:
 grep -rn "evaluateKillSwitches" --include=*.ts . | grep -v node_modules | grep -v __tests__ | grep -vi "\.test\."
 ```
 
-→ `server/src/services/job-leasing.ts:49` (the import) and `:720` (the call), plus four COMMENTS
+→ `server/src/services/job-leasing.ts:49` (the import) and `:720` (the call), plus **five comment
+lines across four other production files** (corrected from "four COMMENTS" 2026-09-07, W16A-FIX)
 that name it (`packages/db/src/schema/instance_settings.ts:18`,
 `server/src/services/execution-kill-switch-policy.ts:13,36`,
 `server/src/services/execution-kill-switches.ts:206`,
@@ -112,5 +146,9 @@ property inferred from a register string. No code is wrong; the map is.
 
 **What would close it.** Correct E11-5's `reason` to say `evaluateKillSwitches` has one production
 caller (`job-leasing.ts:720`) and that the warm-sandbox reaper reaches the same policy document
-through the deliberately fail-OPEN `killedProviders`. Not done here: W5U1's charter forbids
-changing an existing clause's declaration, and the `reason` is part of it.
+through the deliberately fail-OPEN `killedProviders`. Not done by W5U1: its charter forbids
+changing an existing clause's declaration, and the `reason` is part of it. **DONE by W16A** —
+see the resolution note at the top of this entry. W16A additionally measured one fact this finding
+did not record: `killedProviders` returns only entries carrying `reclaim: true`
+(`execution-kill-switches.ts:213-222`), so the reaper is not a consumer of the kill VERDICT under
+any polarity, not merely a differently-polarised one.

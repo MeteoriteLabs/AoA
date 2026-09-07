@@ -1982,14 +1982,31 @@ in a job-control ticket.
 **Filed:** 2026-09-06 (W5U1), measured at `e1f723df2`. Filed from a 35-agent dormancy audit; every
 number below was re-measured by hand in this worktree before filing, in both directions.
 
-**What the register says.** `scripts/gate-clause-wiring.json` → `E3-15-budget`:
+**What the register SAID, and no longer says.** `scripts/gate-clause-wiring.json` → `E3-15-budget`,
+as filed:
 
 > "Parity bridge with zero callers; **budget/cost still flow through the legacy cost-event path**.
 > Wire at sink cutover (Sprint 6)."
 
 The second clause is the load-bearing one, and it is false for exactly the runs the rollout dial
-creates. It is printed as the standing answer to "what happens to money when a run goes
+creates. It was printed as the standing answer to "what happens to money when a run goes
 distributed" on every green `policy` run.
+
+> ★ **UPDATE 2026-09-07 (W16A, branch `replatform/w16a-register-sentences`).** That sentence is
+> GONE. `E3-15-budget`'s `reason` now states the measured consequence — a handed-off distributed
+> run is UNBILLED, with the four writer sites, the suppression return, and the three blind
+> controls cited by `file:line` — and it names this finding as still open. Every measurement
+> below was re-derived at `8075cd7a1` before the rewrite; all of it held, including the two
+> `updateRuntimeState` call sites, the four `insert(costEvents)` sites, and `priceAcceptedUsage`
+> at zero production references.
+>
+> **This finding stays OPEN.** See the amended "What would close it" below: correcting the
+> sentence removes the MISREPRESENTATION, not the unbilled spend, and the unbilled spend is what
+> the title's first clause names and what sets the HIGH severity.
+>
+> **W16A-FIX (same PR) additionally moved the operator warning to where an operator reads** —
+> `CLI-006-staging-canary-runbook.md` §2.1 — because a warning shelved in a CI register is a check
+> nobody runs. See the amendment under "Why this is HIGH" below.
 
 **Measurement 1 — every `cost_events` writer in the repository.**
 
@@ -2036,26 +2053,64 @@ somewhere" is the assumption that would make this finding wrong.**
   nothing, and it reads a `cost_events` sum that distributed runs never add to — so it gets
   *quieter*, not louder, the more distributed spend there is.
 
-**Why this is HIGH rather than a documentation nit.** The register sentence is the artefact an
-operator or a later agent reads before arming `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`. Taken at face
-value it says the money question is already answered. Measured, arming the dial to `canary` for an
+**Why this is HIGH rather than a documentation nit.** The register sentence is the artefact a later
+AGENT reads before arming `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`. Taken at face value it says the money
+question is already answered. Measured, arming the dial to `canary` for an
 Organization converts every eligible task run into spend that no `budget_policies` row, no agent
 `budgetMonthlyCents` pause, and no company hard-stop can observe — because the ledger they all read
 never receives a row. The defect is not that the bridge is dormant (that is honestly declared and
 correct); it is that the register's stated CONSEQUENCE of the dormancy is the opposite of the
 measured one.
 
+> ★ **AMENDED 2026-09-07 (W16A-FIX) — THE OPERATOR WAS NEVER READING THIS FILE.** As filed, this
+> paragraph said the register sentence is what "an operator **or** a later agent" reads before
+> arming. Half of that is wrong, and it is the half that decides where a warning belongs:
+> `scripts/gate-clause-wiring.json` is a CI register, printed on green `policy` runs and read by
+> whoever is auditing the gate. The document an **operator** follows to arm the dial is
+> `epics/E7-coding-e2b/tickets/CLI-006-staging-canary-runbook.md` ("Audience: the OPERATOR"),
+> §2.1 *The rollout dial (canary mode)* and §3 step 3 — and until W16A-FIX it said **nothing about
+> billing**. Measured, not assumed: `grep -nic 'budget|cost|billing|spend|unbilled'` over that
+> runbook returned exactly **2** hits, and both are something else — `:20` "authorize the real E2B
+> spend" (the operator/session boundary on handling `E2B_API_KEY`) and `:211` "the same org
+> budget", which §2.5(c) is using for the **concurrency-slot** cap, not money. W16A's
+> first pass wrote "READ IT BEFORE ARMING AOA_DISTRIBUTED_EXECUTION_ROLLOUT" into the register,
+> which addresses a reader who is not there. The warning now lives in the runbook at §2.1 and is
+> cross-referenced from §3 step 3; the register keeps the derivation and points at it.
+>
+> **A SECOND arming document, found by asking who else could arm without the runbook.**
+> `docs/deploy/environment-variables.md`'s `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` row is a complete
+> arming instruction on its own — the JSON shape, "edits take effect LIVE — no restart", and its own
+> "Rolling distributed execution back" section — so a reader who never opens the runbook can still
+> arm the dial. That row now carries a one-sentence POINTER to this finding and to the runbook box.
+> Deliberately a pointer and not a second copy: a second copy is a second thing to keep true, which
+> is how the sentence this finding is about got written in the first place.
+>
+> **The finding is unchanged in severity, status and every measurement** — this amendment is about
+> where the consequence is published, not what it is.
+
 **Not claimed.** Nothing here says the dial is armed. E7-F018 measures that no checked-in
 configuration arms it, and that is unchanged: this is a precondition on arming, not a live leak.
 The bridge itself is correct code (JOB-012); the defect is the register's account of what its
 absence costs.
 
-**What would close it.** Either wire `jobBudgetCostBridge` into the accepted-usage path (Sprint 6
-sink cutover, as the clause already schedules), or — cheaply and immediately — correct E3-15's
-`reason` so it states the measured consequence: a distributed-owned run is UNBILLED, so the dial
-must not be armed for an Organization whose spend must be capped. This finding deliberately does
-NOT edit that reason: W5U1's charter forbids changing an existing clause's declaration, and the
-correction belongs with whoever owns the cutover.
+**What would close it. ★ AMENDED 2026-09-07 (W16A) — the original sentence offered a DISJUNCTION,
+and the second arm of it was wrong.** As filed it read: *"Either wire `jobBudgetCostBridge` into the
+accepted-usage path (Sprint 6 sink cutover, as the clause already schedules), or — cheaply and
+immediately — correct E3-15's `reason` so it states the measured consequence."* W16A has now done
+the second arm, and doing it made the error visible: correcting the sentence removes the
+misrepresentation and changes **nothing** about the measured defect this finding's title leads with
+— a handed-off attempt still writes no `cost_events` row, and every control in Measurement 2 is
+still blind to it. Closing a HIGH finding about unbilled spend on a prose edit would be the
+false-claim-of-enforcement move this programme's guards exist to refuse. The two records already
+disagreed on this point and the manifest was the correct one: `scripts/finding-ownership.json`
+called the same edit a **"Cheapest partial close"** and added "HIGH may never be `accepted` and is
+not being accepted".
+
+**So: this closes only when `jobBudgetCostBridge` (or an equivalent) is called on the accepted-usage
+path, so that a distributed-owned run produces a `cost_events` row the budget controls read.** The
+prose half is DONE and is not a reason to close anything. Ownership is unchanged and still
+`unowned`: the sink cutover that would wire the bridge has no ticket (MIG-007 §3.3 — "None is
+promoted by this ticket").
 
 ## E3-F038 — The wiring register's census is not closed, and three symbols the guard's own header names have no clause at all
 
