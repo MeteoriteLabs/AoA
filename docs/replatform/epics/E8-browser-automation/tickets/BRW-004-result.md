@@ -605,9 +605,9 @@ convenience.**
   but is scoped to BROWSER sessions, while slice (a) measured org heartbeat runs and crew runs —
   and the metadata-reachability half is broader than E8 in any case. Severity stays HIGH. See
   `findings.md` E8-F003 §1 for the headline and §7 for the disposition.
-  **On the correction:** this paragraph already says four lines up that DAT-005's *chartered*
-  outcome was to enforce default-deny, so "the only chartered candidate" contradicted its own
-  sentence. **Two** tickets were chartered over this capability and shipped without it — DAT-005
+  **On the correction:** this same bullet already says that DE-08's "sole owner **DAT-005 is
+  COMPLETE** while its ***chartered*** outcome was to *enforce* default-deny", so "the only
+  chartered candidate" contradicted a sentence a few lines above it. **Two** tickets were chartered over this capability and shipped without it — DAT-005
   and DSK-002 — and a third, DSK-003, was only *nominated* as DSK-002's successor and never took
   it (its charter names no egress at all). Derivation: `scripts/gate-clause-wiring.json` →
   `E5-6-denied-egress`. Nothing else in this dated result doc is restated or re-graded.

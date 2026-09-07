@@ -2055,7 +2055,12 @@ somewhere" is the assumption that would make this finding wrong.**
 
 **Why this is HIGH rather than a documentation nit.** The register sentence is the artefact a later
 AGENT reads before arming `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`. Taken at face value it says the money
-question is already answered.
+question is already answered. Measured, arming the dial to `canary` for an
+Organization converts every eligible task run into spend that no `budget_policies` row, no agent
+`budgetMonthlyCents` pause, and no company hard-stop can observe — because the ledger they all read
+never receives a row. The defect is not that the bridge is dormant (that is honestly declared and
+correct); it is that the register's stated CONSEQUENCE of the dormancy is the opposite of the
+measured one.
 
 > ★ **AMENDED 2026-09-07 (W16A-FIX) — THE OPERATOR WAS NEVER READING THIS FILE.** As filed, this
 > paragraph said the register sentence is what "an operator **or** a later agent" reads before
@@ -2070,14 +2075,18 @@ question is already answered.
 > budget", which §2.5(c) is using for the **concurrency-slot** cap, not money. W16A's
 > first pass wrote "READ IT BEFORE ARMING AOA_DISTRIBUTED_EXECUTION_ROLLOUT" into the register,
 > which addresses a reader who is not there. The warning now lives in the runbook at §2.1 and is
-> cross-referenced from §3 step 3; the register keeps the derivation and points at it. **The finding
-> is unchanged in severity, status and every measurement** — this amendment is about where the
-> consequence is published, not what it is. Measured, arming the dial to `canary` for an
-Organization converts every eligible task run into spend that no `budget_policies` row, no agent
-`budgetMonthlyCents` pause, and no company hard-stop can observe — because the ledger they all read
-never receives a row. The defect is not that the bridge is dormant (that is honestly declared and
-correct); it is that the register's stated CONSEQUENCE of the dormancy is the opposite of the
-measured one.
+> cross-referenced from §3 step 3; the register keeps the derivation and points at it.
+>
+> **A SECOND arming document, found by asking who else could arm without the runbook.**
+> `docs/deploy/environment-variables.md`'s `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` row is a complete
+> arming instruction on its own — the JSON shape, "edits take effect LIVE — no restart", and its own
+> "Rolling distributed execution back" section — so a reader who never opens the runbook can still
+> arm the dial. That row now carries a one-sentence POINTER to this finding and to the runbook box.
+> Deliberately a pointer and not a second copy: a second copy is a second thing to keep true, which
+> is how the sentence this finding is about got written in the first place.
+>
+> **The finding is unchanged in severity, status and every measurement** — this amendment is about
+> where the consequence is published, not what it is.
 
 **Not claimed.** Nothing here says the dial is armed. E7-F018 measures that no checked-in
 configuration arms it, and that is unchanged: this is a precondition on arming, not a live leak.
