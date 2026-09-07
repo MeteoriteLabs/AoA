@@ -36,8 +36,14 @@ name: Keyed E2B — W10B DE-08 egress-enforcement probe
 # unavailable". Against the installed, lockfile-pinned `e2b@2.30.5` that sentence is FALSE AS
 # A STATEMENT ABOUT THE SEAM: `SandboxOpts.network` with `allowOut`/`denyOut` exists,
 # `buildNetworkBody` puts it in the `POST /sandboxes` body, `Sandbox.updateNetwork` exists,
-# and `getInfo()` maps the server's answer back. What is UNMEASURED is whether the operator's
+# and `getInfo()` maps the server's answer back. What was UNMEASURED is whether the operator's
 # tier ENFORCES it — which is exactly what this run answers, in both directions.
+#
+# ★★★ IT HAS NOW ANSWERED, ONCE: run 34085130892 (2026-09-07, ab23eabdc, template aoa-base) —
+# a=no b=yes c=no d=no e=no regression=no, DECISION abandon (denyout-is-inert-at-this-tier).
+# The tier accepts, validates, stores and echoes the deny set and enforces none of it. Finding
+# E8-F008; operator record in the runbook §12. Re-firing on the SAME tier is expected to
+# reproduce it and spends an authorisation the founder gives individually.
 #
 # ★★★ AND A READ-BACK IS MANDATORY. The SDK validates nothing client-side
 # (`buildNetworkEgress` is a pure passthrough; the only error path is the HTTP status) and the
@@ -45,6 +51,12 @@ name: Keyed E2B — W10B DE-08 egress-enforcement probe
 # branch). A tolerant or self-hosted server that ignores an unknown field returns 200 and
 # yields an UNPOLICED sandbox with identical code and identical logs. That is why (b) is a
 # first-class question.
+#
+# ★ AND THE ANSWER MADE (b) MORE IMPORTANT, NOT LESS — in the opposite direction to the one
+# this paragraph expected. (b) came back YES on a sandbox that reached its own denied range:
+# the measured tier is NOT the tolerant server described above, it is one that stores a policy
+# faithfully and does not apply it. So the read-back is real and is NOT a safeguard. Nobody may
+# cite (b) as the check that makes adoption safe. E8-F008 §3.
 #
 # ★ THIS LANE DOES NOT FIRE ON A SOURCE CHANGE. The founder authorises keyed E2B runs
 # individually. The ONLY path in the `push` filter is the trigger file, and this PR

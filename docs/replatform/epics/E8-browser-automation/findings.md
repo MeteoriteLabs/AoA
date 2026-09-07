@@ -250,12 +250,24 @@ shipped configuration surface that this finding recorded as absent.
    passthrough; the only error path is HTTP status) and the API target is per-company configurable,
    so a tolerant or self-hosted server can return `200` and leave the sandbox unpoliced with
    identical code and identical logs. A read-back is mandatory before anyone relies on it.
+   **★ SUPERSEDED 2026-09-07 (W11) — both halves of this item are now measured, and BOTH ARE
+   WORSE than they read here. The tier does NOT honour a `network` body (`E8-F008`, run
+   `34085130892`): it accepts, validates and echoes the deny set and routes the denied traffic
+   anyway. And the read-back this item calls mandatory PASSES on that sandbox — it was specified
+   against a tolerant server that IGNORES the field, and this tier does the opposite. Do not
+   cite "a read-back is mandatory" as a safeguard without reading `E8-F008` §3. The conclusion
+   of the item — that this note does not say egress can be locked — stands more firmly than
+   when it was written.**
 3. **It does not move §2's measurement.** The probe measured `metadata.egressAllowlist`, which is
    what AoA actually sends. That result stands exactly as recorded: a `metadata` string is inert,
    and the SDK never claimed otherwise.
 
 **What it does change for the disposition.** "Option (b) is unavailable" must now be read as
-*"option (b) is UNADOPTED, and whether the operator's tier honours it is unmeasured"*. D3(c) is
+*"option (b) is UNADOPTED, and whether the operator's tier honours it is unmeasured"*
+**— CORRECTED AGAIN 2026-09-07 (W11): it is now MEASURED, and the tier does not honour it
+(`E8-F008`; the full census is §8). "Back on the table" below is therefore withdrawn: the
+provider layer is available to DECLARE and unavailable to ENFORCE at the tier AoA's key reaches.**
+D3(c) is
 still the only layer that exists **today**, but the reason is a build gap, not a missing capability
 — and defence in depth at the provider is back on the table for whoever takes ownership. Do not
 cite the §12 bullet as a reason for anything without reading `E8-F007` first.
@@ -468,6 +480,42 @@ takes egress enforcement for the sandbox path — not for the browser path alone
 egress half alone. Do NOT close it by citing `classifyEgressDestination`, the `policy`-lane vectors
 gates, or `e6f-08`: the first two exercise a pure function no production path reaches, and the third
 measures a docker network, not a sandbox.**
+
+### 8. 2026-09-07 (W11) — THE CANDIDATE-LAYER CENSUS IS NOW CLOSED: every enumerated layer is refuted by measurement
+
+**Nothing above changes.** Status, severity, ownership and §3's conclusion are untouched; this section
+only completes §3's census, whose fourth entry was still an open question when §0 was written. It
+proposes and builds nothing.
+
+`E8-F008` (HIGH, open, `unowned`) records workflow run
+[`34085130892`](https://github.com/MeteoriteLabs/AoA/actions/runs/34085130892) at `ab23eabdc`: a
+sandbox declaring `denyOut: ["169.254.0.0/16", …]` **reached `169.254.169.254` (401)** identically to
+an anti-vacuity sandbox that denied a different range, while `getInfo()` returned the declared deny set
+**exactly**. All four controls held and the ABANDON condition did **not** fire, so the failure is
+genuine inertness rather than an experiment that broke itself.
+
+**The census, with the evidence class for each row stated so the strong and the weak are not mixed:**
+
+| candidate layer | verdict | how it was established |
+|---|---|---|
+| **1. Provider — `metadata.egressAllowlist`** (what AoA actually sends) | INERT | §2. MEASURED, real E2B, run `33857218680`, both controls held. |
+| **2. Provider — `network.denyOut` / `updateNetwork`** (the surface `E8-F007` found and AoA has never called) | ACCEPTED, VALIDATED, ECHOED, **INERT** | MEASURED, real E2B, run `34085130892`. `E8-F008`. |
+| **3. In-guest** — a proxy, or anything the login shell can reach | NOT A BOUNDARY against this workload | MEASURED (the proxy half): Node's global `fetch` ignores every proxy environment variable, with the proxy port never contacted and the request returning 200 — recorded at `W10B-egress-enforcement-runbook.md` §8, on a `node:22` image, which `aoa-base` is. STRUCTURAL (the shell half): `buildE2bLoginShellScript` (`sandbox-provider-runtime.ts:647-655`) sources `/etc/profile`, `$HOME/.profile` and `$HOME/.bashrc` from an **agent-writable** home before `exec env … claude`. |
+| **4. Control-plane deny** — `classifyEgressDestination` / `createFenceAwareEgressProxy` | INSPECTS ZERO PACKETS | STRUCTURAL, by caller count: §3 point 3 — `egress-proxy.ts` is imported by exactly one file in the tree, an integration test. A classifier the sandbox's traffic never traverses cannot deny anything, whatever it computes. Tracked as `E5-6-denied-egress` → `unwired` in `scripts/gate-clause-wiring.json`, printed on every green run. |
+| **5. Fail-closed on "no policy applied"** — refuse to run a sandbox whose egress policy could not be applied | **DISSOLVED** | DERIVED from row 2, and marked as derivation rather than measurement: the discriminator such a design would branch on is the read-back, and the read-back **passes** on an unpoliced sandbox (`E8-F008` §3). There is no observable that separates "policy applied" from "policy stored and ignored", so there is nothing for a fail-closed branch to test. |
+
+**★ Read this before proposing a sixth.** Rows 1, 2 and 3 are measurements against real infrastructure;
+rows 4 and 5 are structural and derived respectively, and are labelled that way on purpose. The
+programme has now spent four units arriving here, and the recurring error each time was to propose the
+next layer without measuring the last one. **If a sixth candidate is proposed, the first question is
+what packet would demonstrate it, and the second is what the positive control is** — not what the API
+accepts, not what a read-back returns, and not what a classifier computes.
+
+**What this does NOT do.** It does not close or downgrade this finding; it does not change `DE-08`'s
+`deliveryStatus`, clause text or scope — that record still reads `not-delivered`, which remains
+correct and is now supported by one more measurement. **What to do about a `Critical` control that
+cannot be enforced at any available layer is a founder decision that has not been taken.** Recording
+the facts that inform it is this section; taking it is not, and no successor here pre-empts it.
 
 ---
 
@@ -697,14 +745,18 @@ propagated by citation.
    `Sandbox.create` today — the allowlist crosses as `metadata`, which `E8-F003` measured inert.
    Reading this finding as *"we can lock egress"* would be the same error in the opposite
    direction, and would be worse, because it would be a false claim of enforcement.
-2. **That the operator's tier honours it.** UNMEASURED, and it is the open question. Two facts make
+2. **That the operator's tier honours it.** UNMEASURED, and it is the open question.
+   **★ ANSWERED 2026-09-07 (W11) — see §7: it is MEASURED and the tier does NOT honour it
+   (`E8-F008`). Read the rest of this item as the reasoning that was correct to demand a
+   read-back and wrong about what a read-back can prove: the measured tier is NOT the tolerant
+   server described below, and the read-back PASSES on an unpoliced sandbox.** Two facts make
    a read-back mandatory rather than optional: `buildNetworkEgress` (`dist/index.js:4214-4219`) is a
    pure passthrough — nothing is validated client-side, and the only error path is HTTP status — and
    the API target is per-company configurable (`resolveE2bDomain = config.domain ?? env.E2B_DOMAIN`,
    `sandbox-provider-runtime.ts:577-578`, with a self-hosted branch at `:545`). **A tolerant or
    self-hosted server that ignores an unknown field returns 200 and yields an UNPOLICED sandbox with
    identical code and identical logs.** A probe unit is being built separately; its result belongs
-   here when it lands.
+   here when it lands. **It landed: §7.**
 3. **That `E8-F003` is closed, downgraded, or wrong in its conclusion.** It is none of those. Its
    conclusion — enforcement exists at no layer — is untouched, and was measured independently at
    each of the three candidate points. `E8-F003` §0 records the correction and says exactly this.
@@ -776,3 +828,234 @@ sets, and for the same reason.
 is the record of what happens when a capability claim is taken on citation. Close it when a probe
 records what the operator's tier does with a `network` body — in both directions, honoured and
 ignored — or when the surface is adopted with a read-back that fails closed.
+**★ AMENDED 2026-09-07 (W11) — a read-back that fails closed is no longer a sufficient bar; see
+§7 and `E8-F008` §3.**
+
+### 7. 2026-09-07 (W11) — THE OPEN QUESTION IS NOW CLOSED BY MEASUREMENT. The finding stays open; here is exactly what moved and what did not
+
+§3.2 named one thing as *"UNMEASURED, and it is the open question"* — whether the operator's E2B tier
+honours a `network` body. **It is measured. The tier does not honour it.** Workflow run
+[`34085130892`](https://github.com/MeteoriteLabs/AoA/actions/runs/34085130892) at `ab23eabdc`,
+template `aoa-base`, artefact `w10b-egress-enforcement-record`; all four controls held and the probe's
+ABANDON condition did not fire. `E8-F008` (HIGH, open, `unowned`) is the finding that owns the result.
+
+**Be precise in BOTH directions, because the two halves of this finding move in opposite ways.**
+
+**(a) The CAPABILITY claim STANDS, and is not weakened by the measurement.** The surface really is in
+the installed, lockfile-pinned artifact — `SandboxOpts.network`, `updateNetwork`, the `getInfo()`
+read-back — exactly as §1 records, and the run **exercised all three of them successfully as API
+calls**. The old premise this finding refuted was not "the tier ignores the body"; it asserted that the
+API **did not exist**, and that assertion was, and remains, false. Anyone tempted to read the new
+result as "the old sentence was right after all" should read this paragraph twice: the old sentence's
+CONCLUSION happened to land near the truth while its REASON was wrong, which is the least useful kind
+of correct and is precisely why it was load-bearing for a year without anyone testing it. The guard
+`scripts/check-w10a-sdk-capability-premise.mjs` therefore stays exactly as it is.
+
+**(b) What is now established is NARROWER AND WORSE than either the old premise or this finding's own
+§3.2 anticipated.** The API exists, accepts, validates server-side (a sibling arm was refused with
+`400: invalid denied CIDR ::ffff:0:0/96`), persists, echoes the policy back **verbatim** — and routes
+the denied traffic anyway, through both the create body and `updateNetwork`. §3.2's stated failure
+mode was *"a tolerant or self-hosted server that ignores an unknown field"*; the measured tier is the
+**opposite** of that, which is why the read-back this finding calls mandatory **passes** on an
+unpoliced sandbox. `E8-F008` §3 is the record of that, and it is the more important half of the result.
+
+**What this section does NOT do.** It does not resolve this finding, and it does not change its status,
+severity or ownership. Two things stay open, both real and both checkable:
+
+1. **The tier question is closed for ONE tier only.** `resolveE2bDomain = config.domain ?? env.E2B_DOMAIN`
+   (`sandbox-provider-runtime.ts:577-578`, self-hosted branch `:545`) makes the API target per-company
+   configurable, and only the tier behind this repository's own `E2B_API_KEY` was measured. §3.2 named
+   that configurability as half of its reason; the measurement did not remove it.
+2. **The ADOPTION half has no owner and is now contraindicated rather than pending.** §5's
+   "deliberately not done" list is unchanged in substance and stronger in reason: passing `network` to
+   `Sandbox.create` at the measured tier would produce a control that verifies green and enforces
+   nothing. That is a change in the reason not to do it, not a closure of the question of who owns it.
+
+**Consequently `E8-F003` §0's reading of it — "defence in depth at the provider is back on the table"
+— is withdrawn** by that finding's own §8 census, which this run completes. Do not cite it.
+
+**How to close this finding.** §6's bar said *"in both directions, honoured and ignored"*. Only the
+ignored direction has ever been observed, on one tier. Close this when the premise correction is no
+longer load-bearing anywhere — i.e. when no record cites provider capability as a reason for anything
+— or when a tier is measured to honour the body. **Do not close it on `E8-F008`**: that finding
+inherits the enforcement result, not this one's premise.
+
+---
+
+## E8-F008 — The provider ACCEPTS a deny set, VALIDATES it, STORES it and READS IT BACK VERBATIM, and routes the denied traffic anyway; the `getInfo()` read-back that six records name as the mandatory safeguard PASSES on that unpoliced sandbox
+
+**Status:** open · **Owner:** `unowned`
+**Severity:** HIGH — argued in §5, with the counter-argument for MEDIUM recorded rather than settled.
+**Filed:** 2026-09-07 (W11), from workflow run
+[`34085130892`](https://github.com/MeteoriteLabs/AoA/actions/runs/34085130892)
+(`.github/workflows/keyed-e2b-w10b-egress-enforcement-probe.yml`) at `ab23eabdc`, template
+`aoa-base`, artefact `w10b-egress-enforcement-record` (schema `aoa.w10b.egress-enforcement-record/1`,
+run nonce `W10B-MTQRVDJP-2FEX4EOA`). Every row below was read from that run's own step log and durable
+record. This unit **built and proposed no enforcement of any kind**, and nothing in it should be read
+as one.
+
+### 1. The conjunction — which is the finding, not any one row of it
+
+Sandbox `iqxqyb6z125jm2el8fw11` was created with
+`network.denyOut = ["169.254.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]`. The
+anti-vacuity sandbox `ia4rtdajfwq487odec059` was created with the identical shape and a deny set that
+names a *different* range (`198.51.100.0/24`, RFC 5737 TEST-NET-2), so the two arms differ in **which**
+addresses are denied and in nothing else.
+
+| step | what the API did | evidence |
+|---|---|---|
+| `Sandbox.create` accepts | HTTP 200, sandbox created | `[w10b/P/policy] sandboxId = iqxqyb6z125jm2el8fw11` |
+| it **validates** the set server-side | a **sibling arm was REFUSED**: `SandboxError: 400: invalid denied CIDR ::ffff:0:0/96` | `[w10b/P6/ipv6-deny] ARM FAILED` |
+| it **stores and echoes** the set | `getInfo().network` = `{"denyOut":["169.254.0.0/16","10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"],"allowPublicTraffic":true}` — the declared set exactly | probe **b** = `yes / policy-materialized-exactly` |
+| it **enforces nothing** | `169.254.169.254` **REACHED, HTTP 401**, from inside the sandbox that declared `169.254.0.0/16` — byte-identically to the arm that did not deny it | probe **a** = `no / denied-target-still-reachable` |
+| the **update** endpoint behaves the same | `updateNetwork` returned success on a paused-and-resumed sandbox; the target was **REACHED (401) both before and after** | probe **d** = `no / update-did-not-take-effect` |
+
+**That is two API surfaces — the `POST /sandboxes` create body and `PUT /sandboxes/{sandboxID}/network`
+— each of which accepts, persists and reports a policy neither of them applies.** The 400 on the IPv6
+arm matters precisely because it proves the server is *not* a tolerant endpoint discarding an unknown
+field: it parses the deny set, rejects a spelling it dislikes, and keeps the rest. It is not ignoring
+the policy. It is storing it and not using it.
+
+### 2. The controls, all four of which held
+
+Read from the run log rather than from the pack's own summary line:
+
+| control | policy arm | anti-vacuity arm |
+|---|---|---|
+| POSITIVE `allowed_public` | `exit 0 / 200` | `exit 0 / 200` |
+| APPARATUS `…must-not-resolve.invalid` | `curl (6) Could not resolve host` | `curl (6) Could not resolve host` |
+| ANTI-VACUITY `metadata_v4` | `exit 0 / 401` | `exit 0 / 401` |
+| COMPLETENESS | every row `parsed=yes` | every row `parsed=yes` |
+
+The record's own `observations.controls` is `{"ok":true,"problems":[]}`. **The ABANDON condition did
+NOT fire** — probe **c** came back `no / resolver-outside-the-deny-set` (`/etc/resolv.conf` is
+`nameserver 8.8.8.8` in both arms, contained by no declared range, and name resolution worked under
+the policy). So this is not a misconfiguration that broke its own experiment: the policy arm's DNS,
+package registry and model API were all reachable under the deny set, and the denied destination was
+reachable too. **The deny set is genuinely inert; this is not "the apparatus took itself down".**
+
+### 3. ★★★ The lesson, and it is the reason this is filed rather than noted: the safeguard PASSES here
+
+The `getInfo()` read-back is named as the **mandatory** precondition for adopting this surface in six
+tracked places. This list was gathered by scanning tracked files rather than by trusting a hand-list,
+and every row is a sentence this finding is correcting:
+
+| file | what it says |
+|---|---|
+| `docs/replatform/epics/E8-browser-automation/findings.md` (`E8-F007` §3.2) | *"a read-back is therefore mandatory"* |
+| the same file (`E8-F007` §5, "Deliberately not done") | adoption *"needs the tier measurement, a mandatory `getInfo()` read-back (§3.2)…"* |
+| the same file (`E8-F003` §0.2) | *"A read-back is mandatory before anyone relies on it."* |
+| `docs/aoa/plans/2026-08-05-cloud-execution-isolation-e2b-spec.md:181` | *"a read-back is mandatory before anyone relies on it"* |
+| `server/src/services/sandbox-provider-runtime.ts` (the `acquireLease` metadata comment) | *"adopting the real surface requires the probe plus a mandatory read-back"* |
+| `docs/replatform/epics/E8-browser-automation/tickets/W10B-egress-enforcement-runbook.md` §3 | the read-back is *"a first-class question rather than a footnote"*, and *"a `no` on (b) makes the approach unshippable **even if (a) is yes**"* |
+
+**Probe (b) came back `YES`.** Every one of those safeguards passes on a sandbox that reaches the
+metadata endpoint it declared denied. Had an adoption unit shipped with the read-back as its
+safeguard — which is exactly the shape all six records prescribe — AoA would have had a control that
+looks correct **in the code, in the logs, and in its own verification step**, and enforces nothing.
+That is `E8-F003` again, one API surface over, and this time with a passing verification beside it.
+
+**Why it fails, stated precisely, because the precise version is the reusable half.** The read-back
+was specified against ONE failure mode, named in the same breath every time it is required: *"a
+tolerant or self-hosted server that ignores an unknown field returns 200 and yields an UNPOLICED
+sandbox with identical code and identical logs"* (`E8-F007` §3.2). Against **that** server the
+read-back works — the field would come back absent, and `no / network-not-materialized` is a verdict
+the pack can and does issue. The measured tier is the opposite of that server: it validates, persists
+and returns the policy faithfully. So the safeguard's trigger never fires, and it certifies the
+sandbox.
+
+> **A read-back verifies WHAT WAS DECLARED. It cannot verify WHAT IS ENFORCED, and no amount of
+> fidelity in the echo brings it closer.** The only instrument that answers the enforcement question
+> is a packet that tries to cross — which is what this run did, and is why the probe's question (a)
+> is a differential reachability test rather than a configuration assertion. Any future safeguard on
+> any provider surface has to be read against this: *"the API confirmed our policy"* is a statement
+> about the API's bookkeeping.
+
+### 4. The IPv6 flank, which an otherwise-working IPv4 deny set would still have
+
+Three spellings of the **same destination**, in the **same sandbox**, under the **same policy**:
+
+| spelling | result |
+|---|---|
+| `169.254.169.254` | REACHED 401 |
+| `[::ffff:169.254.169.254]` (v4-mapped, dotted) | **REACHED 401** |
+| `[::ffff:a9fe:a9fe]` (v4-mapped, hex — what URL parsers canonicalise to) | **REACHED 401** |
+| `[fd00:ec2::254]` (IMDS over IPv6) | `curl (7)`, but it failed in the anti-vacuity arm too, so **not attributable to the policy** |
+
+Two of them reached. On this tier the point is moot because nothing is enforced at all, but it is
+recorded because it is a property of the **surface**, not of this tier: the SDK's only sentinel is
+`ALL_TRAFFIC = "0.0.0.0/0"` (`node_modules/.pnpm/e2b@2.30.5/node_modules/e2b/dist/index.d.ts:7749`,
+read directly), and `::/0` occurs **zero** times in that file. And the one attempt to declare an IPv6
+deny set was **refused at create** (`400: invalid denied CIDR ::ffff:0:0/96`). So an IPv4 deny set
+that *did* work would still be routed around by the second and third spellings in this table, and the
+API declined the arm that would have closed them.
+
+### 5. Why HIGH, and the argument for MEDIUM recorded rather than settled
+
+**(a) It refutes the safeguard, not just the control.** `E8-F003` established that a Critical control
+(`DE-08`) is enforced nowhere. This establishes something narrower and worse about the layer that was
+left: adopting it would have produced a **false claim of enforcement carrying its own passing
+verification**. This programme's stated calibration is that a false claim of enforcement is the
+intolerable direction; a safeguard that certifies an unpoliced sandbox is the mechanism by which one
+gets made in good faith.
+
+**(b) It retires the last candidate outside the guest.** With this measured, every enumerated
+enforcement layer for `DE-08` is refuted — see `E8-F003` §8, which this finding writes. What to do
+about a `Critical` control with no available layer is a **founder decision that has not been taken**;
+this finding records the facts that inform it and takes none of it.
+
+**The argument for MEDIUM, recorded rather than settled.** No live system is worse off. AoA passes
+`metadata`, never `network`; no adoption unit was ever built; distributed execution is default-off;
+and `DE-08` already reads `not-delivered`. On that reading this is a design-time result that
+*prevented* a defect rather than describing one, and the prevention is exactly what the probe was
+built for — which is an argument that the process worked, not that the finding is small. A reviewer
+could reasonably land on MEDIUM. I do not, for (a): the defect this would have produced is the one
+this programme rates intolerable, and it would have shipped with a green verification beside it.
+
+### 6. What this measurement does NOT establish
+
+Stated so none of it is over-read. Each is a limit of the run, not a hedge on the verdict.
+
+1. **It measures one tier.** `resolveE2bDomain = config.domain ?? env.E2B_DOMAIN`
+   (`server/src/services/sandbox-provider-runtime.ts:577-578`, self-hosted branch at `:545`) makes the
+   API target per-company configurable. What some other tier or a self-hosted server does with a
+   `network` body is unmeasured, and this finding claims nothing about it.
+2. **It measures `denyOut`.** `allowOut` (the default-deny allowlist half) and
+   `allowInternetAccess: false` (documented as *"the same as specifying denyOut to 0.0.0.0/0"*,
+   `dist/index.d.ts:2010`) were not exercised. That a range-scoped `denyOut` is not applied is an
+   argument, **not a measurement**, about the other two, and is labelled as such here so nobody cites
+   it as one. Note also that total egress denial is not the `DE-08` control in any case: the
+   product-regression rows in this very run show the sandbox needs DNS, the package registry and the
+   model API.
+3. **Two denied-range rows are unattributable.** `rfc1918_10` timed out in **both** arms and
+   `metadata_v6` failed to connect in **both**, so neither says anything about the policy. The
+   verdict rests on `169.254.169.254`, which is reachable in both arms and inside a declared denied
+   range in one of them.
+4. **The product-regression check is PARTIAL.** No AoA control-plane URL was supplied on the push
+   route, so the `aoa_api_url` row was **not exercised**; the record names it. `dns_dependent` and
+   `model_api` were reached.
+5. **It says nothing about exploitability.** `169.254.169.254` answered `401` — an IMDSv2 token
+   challenge from a service the run's raw-socket row identifies as `Server: Firecracker API`. That it
+   is reachable and answering is measured; what it would yield to a token-bearing caller is not, and
+   the endpoint belongs to the provider's infrastructure.
+6. **It is E2B only.** Like every keyed lane here, this says nothing about the networked/container
+   lane (`E7-F011`).
+
+### 7. Disposition — why `unowned`, what it blocks, and how not to close it
+
+**`unowned`.** No ticket in the roster is chartered to own provider-level egress for the sandbox path
+— the same bar `E8-F003` and `E8-F007` set, and for the same reason. `BRW-004` slice (f) remains the
+only chartered enforcement candidate and is scoped to browser sessions, while what was measured is the
+sandbox path every workload shares. Naming it, or DAT-005/DSK-002 (both shipped), would be filing
+against work that cannot take this.
+
+**What it blocks.** The provider layer can no longer be described as an unadopted-but-available option
+for `DE-08`: at the tier AoA's own key reaches, it is available to *declare* and unavailable to
+*enforce*. `DE-08` stays `not-delivered`, its clause text is untouched, and the decision about a
+Critical control with no available layer is not this finding's to take.
+
+**Do not close this** by adopting `network` with a read-back — §3 is the record of why that is
+precisely the move that would produce a false claim of enforcement here. Do not close it by citing
+probe (b)'s `yes`: that is the defect, not the remedy. Close it when an enforcement point exists that
+was measured by traffic which tried to cross, or when the provider surface is measured to enforce on
+a tier AoA actually uses.

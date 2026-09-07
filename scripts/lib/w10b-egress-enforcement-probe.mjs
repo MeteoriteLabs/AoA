@@ -51,10 +51,17 @@
 //   * `Sandbox.updateNetwork` → `PUT /sandboxes/{sandboxID}/network`;
 //   * `getInfo()` mapping the server's answer back to `SandboxInfo.network`.
 //
-// What is STILL UNMEASURED — and is exactly what this pack measures — is whether the
+// What was STILL UNMEASURED — and is exactly what this pack measures — is whether the
 // OPERATOR'S TIER ENFORCES what the seam declares. The correction to the record is
 // therefore "the seam exists and was never called", not "the boundary works". This file
 // is written so that "it does not enforce" comes back as cleanly as "it does".
+//
+// ★★★ AND IT CAME BACK "IT DOES NOT ENFORCE": run 34085130892, 2026-09-07, at ab23eabdc,
+// template aoa-base — a=no b=yes c=no d=no e=no regression=no, DECISION abandon
+// (denyout-is-inert-at-this-tier). The tier ACCEPTS the deny set, VALIDATES it server-side,
+// STORES it and ECHOES it back verbatim, and routes the denied traffic anyway. Finding
+// E8-F008. NOTE FOR ANYONE EDITING THE PARAGRAPH BELOW: (b) is real and it is NOT a
+// safeguard — it passed on the unpoliced sandbox.
 //
 // ★★★ AND A READ-BACK IS MANDATORY, NOT HYGIENE. `buildNetworkEgress` is a pure
 // passthrough — the SDK validates NOTHING client-side, and the only error path is the HTTP
