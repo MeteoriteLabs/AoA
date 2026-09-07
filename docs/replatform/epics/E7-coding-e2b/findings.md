@@ -2351,7 +2351,7 @@ carries the finding, not a fix.** No argv change is proposed here.
 verdict this does NOT touch), E7-F014 (the same "a fault is not a negative result" distinction, one
 layer down).
 
-**What.** `classifyProbeAArm` (`scripts/lib/w7u1-agent-output-probe.mjs:323-390`) ends with a
+**What.** `classifyProbeAArm` (`scripts/lib/w7u1-agent-output-probe.mjs:323-393` (the catch-all is `:392`)) ends with a
 catch-all:
 
 ```js
@@ -2366,7 +2366,7 @@ above it are careful and thorough (`target-path-already-existed`, `read-faulted`
 of them distinguishes "the agent ran and chose not to write" from "the CLI refused before a model was
 ever contacted."**
 
-`verdictProbeA` (`:427-490`) then reads two `did-not-write` arms and emits:
+`verdictProbeA` (`:427-492`) then reads two `did-not-write` arms and emits:
 
 > `no` / `a1-did-not-write-and-the-posture-is-not-the-cause` — *"Neither A1 (…) nor A2 (…) produced
 > the file. Adding the permission posture does NOT make the agent able to write here; something else
@@ -2441,7 +2441,7 @@ concern from the opposite side: a verdict that survives *twice*, saying two diff
 **What.** The pack's no-key wiring test —
 `describe("W7U1 — template resolution and the durable record (no key required)")`, the case
 `"emitDurableRecord writes a retrievable record naming the template, the sha and every verdict"`
-(`:898-931`) — calls the **real** `emitDurableRecord` with fixture verdicts:
+(`:898-930`) — calls the **real** `emitDurableRecord` with fixture verdicts:
 
 ```ts
 await emitDurableRecord([
