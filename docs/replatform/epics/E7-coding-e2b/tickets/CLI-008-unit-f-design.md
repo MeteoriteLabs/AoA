@@ -34,12 +34,29 @@ stands) · Measured in `C:/uf` at `611a78bfb` (base `c48259358`), 2026-09-04, **
 > as the ticket's position and names the **three probes** that would decide it — (a) can a real
 > claude/codex under the EXACT production argv, with no permission flag, write a file in the
 > `aoa-base` template at all (**the decisive one**); (b) is the configured template already satisfying
-> a location-based convention; (c) does the stream handler deliver from real E2B. **A fourth
+> a location-based convention; (c) does the stream handler deliver from real E2B. ~~**A fourth
 > mechanism proposed before probe (a) returns will be refuted for the same reason as the first
-> three.** §13 records a fifth option — *"do not build it"* — that was LOST to a serialization
+> three.**~~ §13 records a fifth option — *"do not build it"* — that was LOST to a serialization
 > failure and therefore **never adversarially attacked**; it is recorded, NOT adopted, and §13.3 says
 > what must not be done with it. Six new findings were filed with this amendment: **E7-F021** (HIGH),
 > **E7-F022**, **E7-F023**, **E7-F024**, **E7-F025** (MEDIUM) and **E7-F026** (LOW).
+>
+> ★★★ **AMENDED AGAIN 2026-09-07 (W12) — ALL THREE PROBES HAVE RETURNED; THE DEFERRAL IS LIFTED AND
+> ITS STOP CONDITION IS REPLACED, NOT DELETED (§12.0, §12.3).** Run
+> [`34087197668`](https://github.com/MeteoriteLabs/AoA/actions/runs/34087197668) (record:
+> [`W7U1-output-probe-result.md`](./W7U1-output-probe-result.md)) measured: **(a)** a sandboxed
+> `claude` under the exact production argv exits **0 and writes nothing**, and **writes when the
+> permission posture is added** — a single-variable differential, so **E7-F021 is now a measured
+> product defect** rather than a missing measurement; **(b)** the template pre-fills **nothing**;
+> **(c)** both streams deliver. §12.0.1 records which of the four candidate answers this **revives**
+> (three, *conditionally*, and for `claude_local` only) and which it does not. The new stop condition
+> is **two clauses**: no mechanism before the posture is **in the product** (a reviewed, merged diff —
+> the literals are unchanged at this tip), and no **adapter-agnostic** mechanism before codex's own
+> blockers are characterised. Three further findings were filed: **E7-F027** (MEDIUM — codex is
+> refused by its own trusted-directory gate before any model call, so a posture-only fix would leave
+> it broken while looking like a fix), **E7-F028** (MEDIUM — the probe's codex verdict states a cause
+> its own stderr contradicts) and **E7-F029** (LOW — the pack's self-test emits a second, synthetic
+> report). ★ **This amendment ships NO product change**, and it is not permission to make one.
 
 **Governing decision:** [`DECISION-byte-egress-and-provider-topology.md`](../../../DECISION-byte-egress-and-provider-topology.md)
 — Option D, "the provider reads the file from inside its sandbox and PUTs it directly to object
@@ -1013,7 +1030,7 @@ contracts in `packages/worker-protocol`.
 
 ---
 
-## ★★★ 12. THE RULING: DEFERRED PENDING MEASUREMENT. Three probes decide it. A fourth mechanism proposed before probe (a) returns will be refuted for the same reason as the first three.
+## ★★★ 12. THE RULING: ~~DEFERRED PENDING MEASUREMENT~~ → **THE MEASUREMENT IS IN (§12.0). The deferral is LIFTED and REPLACED: the gate is now the PRODUCT FIX, not a probe.**
 
 **Recorded by the W6U1 output-ruling unit, 2026-09-06, measured at `31d33a3b0`.** This section exists
 because a 26-agent decision wave asked this document's question — *"what is an agent output?"* — and
@@ -1022,15 +1039,68 @@ sixteen, and **46 unrebutted fatal problems**. Its recommendation was to build *
 **measure first**. That is now the ticket's position, on the record, so that the next session does not
 invent a fifth answer to an unmeasured question.
 
+### ★★★ 12.0 AMENDED 2026-09-07 (W12) — PROBE (a) HAS RETURNED. All three probes have.
+
+**Run [`34087197668`](https://github.com/MeteoriteLabs/AoA/actions/runs/34087197668)**, 2026-09-07,
+commit `1c447fa8a`, template `aoa-base`, artefact `w7u1-output-probe-record`, run nonce
+`W7U1-MTQT1763-OJ2WYK7K`, disposition **`measured`**, exit 0. The full record — every arm, every
+exit code, and the four things the run does **not** establish — is
+[`W7U1-output-probe-result.md`](./W7U1-output-probe-result.md). Read that before acting on anything
+below; this section is the consequence, not the evidence.
+
+| probe | §12.2 asked | it answered |
+|---|---|---|
+| **(a)** decisive | can a real claude/codex, under the EXACT production argv with no permission flag, write a file in `aoa-base` at all? | **claude: NO — and the missing posture is the cause.** A1 (the exact `:184` literal) exited **0** and wrote nothing; A2 (same prompt template, `--dangerously-skip-permissions` added *inside the probe*) **wrote**. A0 held, A3 held. ★ The CLI self-reported the variable: `"permissionMode":"default"` on A1, `"bypassPermissions"` on A2. **codex: unmeasured** — both arms were refused upstream of the question (E7-F027), and the pack's own "the posture is not the cause" verdict is unsupported (E7-F028). |
+| **(b)** positive control | is the configured template already satisfying a location convention? | **NO — `template-prefills-nothing`.** None of the 7 candidate paths exists in a fresh `aoa-base` sandbox; neither `aoa-workspace` nor `~/.aoa` is there at all. |
+| **(c)** streams | does the stream handler deliver from real E2B? | **YES — `both-streams-delivered`.** `onStdout` and `onStderr` each received their marker, exit 0. A confirmation, as §12.2 already said it would be. |
+
+**This is the second of the three outcomes §12.2's own table predicted for (a)** — *"the run exits 0
+and the file does not exist"* — and that row's reading was: *"the 'silently no-op' shape reproduced
+in the distributed argv. **Every file-writing option is dead until the argv changes**, and the next
+unit is a permission-posture decision, not an output mechanism."* ★ **That reading holds, with one
+correction it did not anticipate: the differential also names the FIX, so the options are not dead
+— they are GATED.** Which is why the stop condition is replaced rather than deleted (§12.3).
+
+#### 12.0.1 What it revives, what it does not, and what it leaves untouched
+
+Stated per option, because "the premise holds" and "this option is now available" are different
+sentences and collapsing them is how a fourth round starts.
+
+| the four candidate answers | before probe (a) | after |
+|---|---|---|
+| **1. the agent DECLARES its output** (append a directive to the prompt, parse the announcement) | dead on an unmeasured premise | **REVIVED, CONDITIONALLY** — the capability exists *with the posture present*. Its own separate refutation is UNCHANGED: **E7-F026** measured that its "no test edits" completeness claim is false against three staged-prompt pins (five assertions across three tests). Reviving the premise does not revive the sizing claim. |
+| **2. a CONVENTIONAL path** (the output is whatever is at path P) | dead on an unmeasured premise, **and** exposed to "the image wrote it" | **REVIVED, CONDITIONALLY, and one objection is RETIRED** — probe (b) says the template pre-fills nothing, so a convention anchored at a candidate path would not be silently satisfied by the Dockerfile. ★ That retires **one** instance of E7-F020's class; it does not retire the class, because the template is still an operator input no protocol surface can see (**E7-F022**) and a different template would have to be re-measured. |
+| **3. a WORKSPACE PATCH** | dead on an unmeasured premise | **REVIVED, CONDITIONALLY.** ★ It carries an additional, independent blocker this probe does not touch: **E7-F019** — labelling exported bytes `kind='workspace_patch'` moves arm 1's counter without redefining its predicate. |
+| **4. the captured TRANSCRIPT** | never depended on the agent writing a file | **UNCHANGED — neither revived nor refuted by this run.** §3.8's refutation stands on its own terms and is not a premise question: a transcript is a **provenance** claim and never a **productivity** one, and *"a run in which the model never spoke still emits frames"*. ★ This run is a live demonstration of exactly that: codex's A2 emitted `thread.started` and `turn.started` frames while failing every model call with `401`. Probe (c)'s `YES` improves the **delivery** story for it and changes nothing about the predicate. |
+
+**What is revived for `claude_local` only.** Every "REVIVED" above is measured on the claude arm. For
+`codex_local` the premise is **still unmeasured** (E7-F027), so any mechanism written as
+adapter-agnostic is making a claim about codex that no run supports.
+
+**And what NOTHING here revives: the lettered slice plan.** §4.3 refuted round 3 **at the predicate
+itself**, which is a scope conclusion and not a premise question. Probe (a) does not touch it, and
+the deleted A–G plan, its positive-control table and its acceptance criteria stay deleted.
+
 ### 12.1 The status, stated so it cannot be misread in either direction
 
-**The output ruling is DEFERRED PENDING MEASUREMENT.** Precisely:
+**~~The output ruling is DEFERRED PENDING MEASUREMENT.~~ ★ AMENDED 2026-09-07 (W12): the output
+ruling is DEFERRED PENDING A PRODUCT FIX.** The four bullets below were written when a measurement
+was owed. Three are unchanged; the third is the one that moved, and it moved from *a measurement
+nobody had taken* to *a diff nobody has approved* — which is a different kind of "not yet" and
+licenses different next steps.
 
 - **NOT abandoned.** The question is still the epic's last open one (§9.1) and Unit F still owns it.
 - **NOT unowned by accident.** CLI-008 remains the owner of every finding in this family
-  (E7-F003, E7-F011, E7-F015, E7-F016, E7-F017, E7-F020, and now E7-F021, E7-F023, E7-F024, E7-F026).
-- **NOT "blocked on a decision."** Nobody owes an opinion. What is owed is a **measurement**, and
-  §12.2 names three, all cheap, all standalone, none requiring a design.
+  (E7-F003, E7-F011, E7-F015, E7-F016, E7-F017, E7-F020, E7-F021, E7-F023, E7-F024, E7-F026, and now
+  **E7-F027**).
+- ~~**NOT "blocked on a decision."** Nobody owes an opinion. What is owed is a **measurement**, and
+  §12.2 names three, all cheap, all standalone, none requiring a design.~~
+  **★ REPLACED: all three measurements are taken (§12.0), and what is owed now IS a decision — a
+  founder-reviewed change to a SHIPPED security posture.** `task-run-sandbox-invocation.ts`'s four
+  script literals are unchanged at this tip; A2 rewrote the emitted string *inside the probe*. Until
+  that diff lands, the capability a mechanism would be built on **is not in the product**, and a
+  mechanism built above it is above the same floor as before — just a measured one instead of an
+  unmeasured one. See E7-F021's *"WHAT THE DIFFERENTIAL DOES NOT ESTABLISH"*.
 - **NOT a licence to build the cheapest option once someone is impatient.** §12.3.
 
 ### 12.2 The three probes, in decision order
@@ -1112,21 +1182,53 @@ frozen `log` payload is truncated **silently** at 65,536 UTF-16 code units
 
 ### 12.3 ★★★ STATED PLAINLY, BECAUSE IT IS THE POINT OF THIS SECTION
 
-> **A fourth mechanism proposed before probe (a) returns will be refuted for the same reason as the
-> first three: it will be an invented answer to an unmeasured premise.**
+**The stop condition as originally written (W6U1, 2026-09-06), kept because a lifted deferral must
+show what it replaced:**
 
-Round 1 was refuted on argv shape, round 2 on argv size, round 3 on the predicate itself (§4). §4.4
-already names the pattern — *each round reasoned confidently about a surface it had not enumerated* —
-and a fourth round that assumes a sandboxed agent can write a file, without having watched one do it,
-is that pattern again with a new noun. The 26-agent wave is the strongest available evidence for this:
-sixteen adversarial passes over four options returned **two** `sound` verdicts and **46** unrebutted
-fatal problems, which is not a signal that the wrong option was picked. It is a signal that the
-question was being answered above an unmeasured floor.
+> ~~**A fourth mechanism proposed before probe (a) returns will be refuted for the same reason as the
+> first three: it will be an invented answer to an unmeasured premise.**~~
+> **★ DISCHARGED 2026-09-07 (W12): probe (a) has returned (§12.0). This condition is SATISFIED, not
+> deleted, and it is REPLACED by the two below — because the option space is now gated on a PRODUCT
+> FIX rather than on a measurement, and a deferral lifted into an open field is how the fourth
+> attempt happens.**
 
-**So: no mechanism section will be added to this document until probe (a) is on the record.** If a
-future author believes they have one anyway, the minimum bar is §9.1's census — *for the candidate
-predicate, enumerate every writer that can produce a row it admits* — plus probe (a)'s result quoted
-by run id. Anything less has already been tried three times.
+★★★ **THE REPLACEMENT STOP CONDITION. Both clauses, not either.**
+
+> **(i) A mechanism proposed before the permission posture is IN THE PRODUCT — a reviewed, merged
+> change to `task-run-sandbox-invocation.ts`'s script literals, not a probe-local rewrite — will be
+> refuted for the same reason as the first three: it will be an invented answer to a capability the
+> shipped code does not have.** The differential was run by rewriting the emitted string inside the
+> probe. The literals are unchanged at this tip. A mechanism that assumes a sandboxed agent writes
+> files is, today, assuming behaviour that exists only in a probe.
+>
+> **(ii) A mechanism proposed as ADAPTER-AGNOSTIC before E7-F027's two codex blockers are
+> characterised will be refuted a second way, on a premise that is still unmeasured.** Probe (a)
+> answered for `claude_local`. For `codex_local` both arms were refused upstream of the question —
+> the production argv by codex's own trusted-directory gate, the posture arm by a `401` — so nothing
+> is known about whether codex can write. ★ A posture-only fix would close the claude half and leave
+> codex broken **while looking like a fix**, which is precisely what (ii) exists to stop.
+
+**Why the old reasoning still applies, unchanged, to the new condition.** Round 1 was refuted on argv
+shape, round 2 on argv size, round 3 on the predicate itself (§4). §4.4 names the pattern — *each
+round reasoned confidently about a surface it had not enumerated*. A fourth round that assumes the
+product does something only a probe has done is that pattern again with a new noun, and the 26-agent
+wave remains the strongest available evidence for taking it seriously: sixteen adversarial passes
+over four options returned **two** `sound` verdicts and **46** unrebutted fatal problems. That is not
+a signal that the wrong option was picked; it is a signal that the question was being answered above
+a floor nobody had checked.
+
+**So: no mechanism section will be added to this document until BOTH clauses are met.** If a future
+author believes they have one anyway, the minimum bar is unchanged and now cheaper to meet, because
+two of its three inputs exist: §9.1's census — *for the candidate predicate, enumerate every writer
+that can produce a row it admits* — **plus** probe (a)'s result quoted by run id
+(`34087197668`, `W7U1-output-probe-result.md`) **plus** the merged posture diff quoted by commit.
+Anything less has already been tried three times.
+
+★ **What this section does NOT license, said explicitly because "the deferral is lifted" reads as
+permission:** it does not license shipping the posture change (that is a founder-reviewed security
+diff, E7-F021), it does not license choosing among the three revived options (§12.0.1 revives
+premises, not designs), and it does not revive the deleted A–G slice plan (§4.3 refuted round 3 at
+the predicate, which no probe touches).
 
 ---
 

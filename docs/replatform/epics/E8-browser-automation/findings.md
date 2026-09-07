@@ -965,16 +965,26 @@ reachable too. **The deny set is genuinely inert; this is not "the apparatus too
 
 The `getInfo()` read-back is named as the **mandatory** precondition for adopting this surface in six
 tracked places. This list was gathered by scanning tracked files rather than by trusting a hand-list,
-and every row is a sentence this finding is correcting:
+and every row is a sentence this finding is correcting.
+
+> ★ **CORRECTED 2026-09-07 (W12) — every quotation in the table below is now VERBATIM, and all six
+> rows were re-checked against source, not only the one that was flagged.** Two were not: row 1
+> attributed to `E8-F007` §3.2 the string *"a read-back is therefore mandatory"*, which appears
+> nowhere in that section — a **paraphrase inside quotation marks**, in a table headed "what it
+> says", in a finding whose whole thesis is that a claim must be re-derived rather than inherited.
+> Row 6's second quotation silently dropped the word *here* from *"even if (a) is yes here"*, which
+> is a truncation in the direction of a broader claim than the source makes. Rows 2, 3, 4 and 5 were
+> verified verbatim and are unchanged (rows 2 and 6a are fragments, and are marked with an ellipsis
+> or quoted as fragments rather than presented as whole sentences).
 
 | file | what it says |
 |---|---|
-| `docs/replatform/epics/E8-browser-automation/findings.md` (`E8-F007` §3.2) | *"a read-back is therefore mandatory"* |
+| `docs/replatform/epics/E8-browser-automation/findings.md` (`E8-F007` §3.2) | *"Two facts make a read-back mandatory rather than optional"* |
 | the same file (`E8-F007` §5, "Deliberately not done") | adoption *"needs the tier measurement, a mandatory `getInfo()` read-back (§3.2)…"* |
 | the same file (`E8-F003` §0.2) | *"A read-back is mandatory before anyone relies on it."* |
 | `docs/aoa/plans/2026-08-05-cloud-execution-isolation-e2b-spec.md:181` | *"a read-back is mandatory before anyone relies on it"* |
 | `server/src/services/sandbox-provider-runtime.ts` (the `acquireLease` metadata comment) | *"adopting the real surface requires the probe plus a mandatory read-back"* — **quoted as it stood at `ab23eabdc`; this finding's own change replaced that sentence, because it is the one site where leaving the refuted safeguard standing in PRODUCTION CODE would invite the adoption it warns against. The other five keep their original wording with a dated correction beside it.** |
-| `docs/replatform/epics/E8-browser-automation/tickets/W10B-egress-enforcement-runbook.md` §3 | the read-back is *"a first-class question rather than a footnote"*, and *"a `no` on (b) makes the approach unshippable **even if (a) is yes**"* |
+| `docs/replatform/epics/E8-browser-automation/tickets/W10B-egress-enforcement-runbook.md` §3 | the read-back is *"a first-class question rather than a footnote"*, and *"a `no` on (b) makes the approach unshippable **even if (a) is yes here**"* |
 
 **Probe (b) came back `YES`.** Every one of those safeguards passes on a sandbox that reaches the
 metadata endpoint it declared denied. Had an adoption unit shipped with the read-back as its
@@ -1086,3 +1096,184 @@ precisely the move that would produce a false claim of enforcement here. Do not 
 probe (b)'s `yes`: that is the defect, not the remedy. Close it when an enforcement point exists that
 was measured by traffic which tried to cross, or when the provider surface is measured to enforce on
 a tier AoA actually uses.
+
+---
+
+## E8-F009 — The LIVE OAuth SSRF deny table is a hand-written subset of the repo's own private-IP predicate: one IPv4 /24 and EIGHT IPv6 classes are missing, on a path whose next hop is chosen by the remote server
+
+**Status:** open · **Owner:** unowned (see reason)
+**Severity:** MEDIUM — argued in §6, with the case for HIGH recorded rather than dismissed.
+**Filed:** W12, 2026-09-07, by **re-deriving from source** the two facts
+`server/src/services/w10c-internal-range-deny-set.ts`'s module header records about SHIPPED code.
+Both hold. The IPv4 half is exactly as recorded; **the divergence is materially wider than the header
+states**, and the widening is this finding.
+**Cross-links:** `E8-F003` (sandbox egress is filtered nowhere — a *different* boundary; do not merge
+them), `E8-F008` (the W10C module's intended consumer, measured out of existence), the W10C module
+itself (a mechanically DERIVED cover, kept partly because it records these two facts).
+
+> ★★★ **NOTHING IS FIXED BY THIS ENTRY, DELIBERATELY.** `mcp-connector-oauth.ts` is a live SSRF
+> filter on a shipped path and `outbound-url-guard.ts` is imported by several production callers.
+> Editing either is a behaviour change to security-relevant code, and the founder has asked to see
+> that diff before it lands. This is a RECORDING. No file under `server/` or `packages/` is touched
+> by the commit that files it.
+
+### 1. What was re-derived, and how — so it can be repeated rather than believed
+
+`isPrivateIP` (`server/src/services/outbound-url-guard.ts:71`) is this repo's reference predicate for
+*"is this address internal"*. `mcp-connector-oauth.ts:11-22` holds two `node:net` `BlockList` tables,
+`blockedIpv4` / `blockedIpv6`, transcribed by hand. The two were compared directly: the real
+`BlockList` (not a reimplementation of it) against the real `isPrivateIP` (imported from source), by
+
+- **IPv4: a full sweep of all 2^24 /24 blocks.** Both predicates are /24-uniform — every rule on
+  either side is stated at /24 granularity or coarser — so one address per block is exhaustive.
+- **IPv6: one representative per rule** in `isPrivateIP`'s v6 branch, read off the source rather than
+  guessed, plus a public-address control (`2606:4700::1111`, correctly allowed by both).
+
+### 2. IPv4 — the header's claim holds EXACTLY, and there is nothing else
+
+| direction | result |
+|---|---|
+| `isPrivateIP` rejects, `BlockList` **allows** | **exactly one /24: `192.88.99.0/24`** (deprecated 6to4 relay anycast) |
+| `BlockList` rejects, `isPrivateIP` allows | **none** |
+
+So the W10C header's *"Exactly one /24 of disagreement across the whole IPv4 space"* is **true and
+precisely stated**, and re-derivation found no second IPv4 hole. ★ The word doing load-bearing work
+in that sentence is **IPv4**, and §3 is why that matters.
+
+### 3. ★★★ IPv6 — EIGHT classes are missing, and this is NOT in any existing record
+
+Each row: `isPrivateIP` rejects it, the OAuth `BlockList` **does not**.
+
+| what `isPrivateIP` rejects | the OAuth table's coverage | example that passes the filter |
+|---|---|---|
+| **any address with a zero leading word** (`::/16`) | only `::/128`, `::1/128`, `::ffff:0:0/96` | `::a9fe:a9fe` — the IPv4-compatible hex spelling of `169.254.169.254` |
+| `64:ff9b::/48` — contains the **NAT64 well-known prefix** `64:ff9b::/96` | absent | `64:ff9b::a9fe:a9fe` — carries `169.254.169.254` |
+| `64:ff9b:1::/48` — NAT64 local-use | absent | `64:ff9b:1::1` |
+| `2001:2::/32` benchmarking | absent (`2001::/32` and `2001:db8::/32` only) | `2001:2::1` |
+| `2001:` with second word `0x0010`–`0x002f` (ORCHID) | absent | `2001:10::1`, `2001:2f::1` |
+| **`2002::/16` — 6to4** | absent | `2002:a9fe:a9fe::1` — embeds `169.254.169.254` |
+| `3ff0::/12` — the predicate rejects the whole `0x3ff0`–`0x3fff` span, wider than RFC 9637's `3fff::/20` | absent | `3ff0::1`, `3fff::1` |
+| `fec0::/10` deprecated site-local | absent | `fec0::1` |
+
+★★★ **The 6to4 row is the one that reframes the whole entry.** The already-noticed IPv4 gap
+(`192.88.99.0/24`) is the **relay anycast end** of the 6to4 tunnel; `2002::/16` is the **address end**
+of the same tunnel. The W10C module says of its own `2002::/16` entry, verbatim: *"The v6 side of the
+192.88.99.0/24 tunnel; denying only one end of a tunnel WOULD be denying neither."* The OAuth table
+denies **neither** end. Reporting the divergence as "exactly one /24" is therefore true of IPv4 and
+misleading as a summary of the table's coverage, which is the reason this is filed as its own finding
+rather than left as a line in a module comment.
+
+**Two of these are translation vectors, not merely reserved ranges.** `64:ff9b::/96` (NAT64) and
+`2002::/16` (6to4) both *embed an IPv4 address* and both exist to be translated to it by a gateway.
+In a deployment with DNS64/NAT64 — an ordinary IPv6-only cluster configuration — an AAAA answer of
+`64:ff9b::a9fe:a9fe` passes this filter and lands on the IPv4 cloud-metadata endpoint. Whether AoA
+runs in such a deployment is **not** established here (§5).
+
+### 4. The parser defect, re-derived — and it is not confined to the deny-set module
+
+**`isPrivateIP('::169.254.169.254') === false`. Confirmed.** The mechanism, read off the source:
+
+- The IPv4-mapped unwrap at `outbound-url-guard.ts:75-76` matches `^::ffff:(dotted quad)$` **only**.
+- `parseIpv6Words` is then asked to parse `::169.254.169.254`; its per-token regex **forbids dots**,
+  so the address never becomes words and never reaches the v6 range checks.
+- The IPv4 branch then splits on `.` and gets `["::169","254","169","254"]`; `Number("::169")` is
+  `NaN`, so the octet guard rejects it and every `startsWith` check misses.
+
+Three things follow, and the second is the one the tasking brief asked to be checked:
+
+1. **The OAuth table allows it too.** `isIP("::169.254.169.254")` returns `6`, and
+   `blockedIpv6.check` finds no match — `::/128` and `::1/128` are single addresses and the value is
+   `::a9fe:a9fe`. So **both** the reference predicate and the live table let that literal through.
+2. ★★ **`isPrivateIP` is a production import with several callers, so the parser defect is not
+   confined to the deny-set module.** Measured by grep at this tip, the production call sites are:
+   `outbound-url-guard.ts:205` and `:239` (inside `validateAndResolveFetchUrl` — the shared outbound
+   SSRF defense used by the plugin HTTP service and the `http` adapter, per its own header) and
+   `egress-policy.ts:202` (`classifyAddress`, which returns `"private"`). The W10C module is a
+   **fourth** consumer and the only one that compensates: its `::/16` entry covers the address the
+   predicate misparses, which is why its header calls itself a strict superset that *"fails CLOSED"*.
+   The three production callers have no such compensation.
+3. **`egress-policy.ts`'s own `parseIp` DOES accept an embedded dotted quad** — so the tree already
+   contains a parser that handles this spelling correctly, one module away from the one that does
+   not. That is the divergence class the W10C module was built to make visible.
+
+### 5. The trust boundary — why this is a filter with a hole and not a hardening nice-to-have
+
+`assertSafeOAuthUrl` and `assertPublicResolvedAddress` are the **sole** address filter on this path,
+and they share these two tables. Both the literal-IP check and the DNS-resolved-address check go
+through them (`safeLookup` → `resolvePublicOAuthHost` → `assertPublicResolvedAddress`, wired into
+`https.request` as its `lookup` at `:141`, so the production path pins the resolved address rather
+than merely validating the URL).
+
+★★★ **What the filter is holding back is not an operator typo. It is a REMOTE party choosing the next
+hop.** Measured against `mcp-connector-oauth.ts` at this tip:
+
+| hop | who supplies the host | validated by |
+|---|---|---|
+| the connector URL | an AoA operator registering an MCP connector | `assertSafeOAuthUrl` (`:329`) |
+| `authorization_servers[0]` from the remote protected-resource metadata | **the remote server** | `assertSafeOAuthUrl` (`:341`) — and the server then fetches `{as.origin}/.well-known/oauth-authorization-server` |
+| `issuer`, `authorization_endpoint`, `token_endpoint`, `registration_endpoint` from the remote AS metadata | **the remote server** | `assertSafeOAuthUrl` (`:353-357`) |
+| `registrationEndpoint`, which is then **POSTed to** | **the remote server** | `assertSafeOAuthUrl` (`:382`) |
+| a redirect `Location` on any metadata fetch | **the remote server** | `assertSafeOAuthUrl` (`:245`), plus a same-origin constraint |
+
+Only the first row is operator-chosen. Rows two through five are attacker-influenceable by whoever
+controls the connector the operator registered, and the deny table is what stands between that party
+and an internal address. **A hole in it is a hole in the only control on that hop.**
+
+**What is NOT established, stated so none of it is over-read.**
+
+- **No exploit was run.** Nothing was fetched, no request was issued, and no deployment was probed.
+  This is a source-derived coverage diff plus a reading of the call graph.
+- **Routing is deployment-dependent.** Whether `64:ff9b::/96` or `2002::/16` actually reaches an
+  internal address depends on whether the host's network translates them. IPv4-compatible
+  (`::a.b.c.d`) is deprecated and most stacks do not translate it at all. **Unmeasured here.**
+- **The IPv4-MAPPED range is fully covered** (`::ffff:0:0/96`), so the most common bypass spelling —
+  `::ffff:169.254.169.254` — is blocked. That is the table doing its job, and it is recorded because
+  the finding would be dishonest without it.
+- **`E8-F008` §4's IPv6 flank is a DIFFERENT boundary.** That one is about a provider deny set on
+  sandbox egress. This one is about an in-process filter on control-plane HTTP. They share a lesson
+  (an IPv4-only table is routed around in IPv6 spellings) and nothing else; merging them would blur
+  two boundaries with different owners.
+
+### 6. Severity — MEDIUM, argued, with the case for HIGH recorded
+
+**For HIGH.** It is a live defect in shipped code, not a design-time result: the filter runs wherever
+an OAuth-bearing MCP connector is configured (**which deployment modes reach it was not checked here
+and is not claimed**), it is the *sole* address control on a hop whose host a remote party chooses,
+and two of the eight missing classes are translation prefixes that exist precisely to carry an IPv4
+destination. The failure direction is also silent — a request that should be refused is simply made.
+
+**For LOW.** Every missing range is deprecated, documentation, or special-use; the mapped range (the
+spelling a URL parser actually canonicalises to) IS covered; the first hop is operator-registered;
+and no exploit path has been demonstrated end to end.
+
+**MEDIUM is where it lands, and the reason is that the deciding fact is UNMEASURED rather than
+absent.** If AoA is deployed anywhere with DNS64/NAT64 — an ordinary IPv6-only cluster setup — the
+`64:ff9b::/96` row is a working metadata-SSRF vector and this is HIGH. If it is not, the entry is a
+coverage gap in ranges nobody routes and MEDIUM is generous. ★ **The measurement that would settle it
+is a deployment question, not a code question**, which is precisely why it is filed at MEDIUM with the
+condition named rather than argued to a number from the source alone.
+
+### 7. What would close it, and the trap in the obvious fix
+
+The obvious fix — hand-adding `192.88.99.0/24` and eight IPv6 rows to the two `BlockList` tables — is
+**how this defect was born**. A hand-transcribed table diverged from the predicate once and will
+again; the tree already carries four representations of "internal range" for exactly this reason (the
+W10C module's DIVERGENCE LEDGER). The durable close is to make the OAuth tables **derived** from the
+one predicate — which is what `INTERNAL_RANGE_DENY_CIDRS` already is, mechanically, and re-derived
+against `isPrivateIP` in CI on every run — or to have `assertSafeOAuthUrl` call `isPrivateIP`
+directly. ★ **Either move requires the parser defect in §4 to be fixed first**, or the OAuth path
+would *lose* coverage it has today: `isPrivateIP` returns `false` for `::169.254.169.254`, so
+delegating to it naively would be a regression on a v6 spelling. That ordering is the reusable half
+of this finding and is the reason it is filed with a remedy sketch rather than a patch.
+
+**Owner — `unowned`, and it is a real disposition rather than a shrug.** No ticket in the re-platform
+tree owns `mcp-connector-oauth.ts`: it is main-line product from the OAuth connector broker work
+(Decision #110), not re-platform surface, and E8's open tickets are about sandbox egress — a
+different boundary with a different threat model (`E8-F003`, `E8-F008`). Attaching it to one of them
+would be false ownership of the kind the ownership guard exists to catch. It is filed in E8's register
+because that is where the deny-set family and the derivation machinery already live, and because
+`w10c-internal-range-deny-set.ts` — the module that first recorded these two facts — is enrolled in
+`scripts/gate-clause-wiring.json` as `E8-w10c-internal-range-deny-set` and names *"fixing the measured
+`mcp-connector-oauth.ts` divergence against a derived source of truth"* as one of the four things that
+would promote it. **It blocks nothing in the re-platform programme.** It needs a founder decision
+about a live security path.

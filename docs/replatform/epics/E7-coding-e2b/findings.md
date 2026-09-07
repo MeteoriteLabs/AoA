@@ -1733,7 +1733,50 @@ is still necessary.
 **Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)
 **Severity:** HIGH
 **Filed:** W6U1, 2026-09-06, by re-verification of the 26-agent output-decision wave against source at `31d33a3b0`.
-**Cross-links:** E7-F003 (the run reaches the agent through argv only), E7-F018 (nothing in the distributed path runs today).
+**Cross-links:** E7-F003 (the run reaches the agent through argv only), E7-F018 (nothing in the distributed path runs today), E7-F027 (codex is blocked by something else entirely), E7-F028 (the probe's own codex verdict over-claims its cause).
+
+### ★★★ MEASURED 2026-09-07 (W12) — the premise is CONFIRMED, and this is now a product defect rather than a missing measurement
+
+**Run [`34087197668`](https://github.com/MeteoriteLabs/AoA/actions/runs/34087197668)** (2026-09-07,
+commit `1c447fa8a`, template `aoa-base`, artefact `w7u1-output-probe-record`, run nonce
+`W7U1-MTQT1763-OJ2WYK7K`, disposition `measured`, exit 0). Full record:
+`tickets/W7U1-output-probe-result.md`. Probe A's `claude_local` verdict is
+**`no / a1-did-not-write-and-the-posture-is-the-cause`**, from a four-arm single-variable
+differential in one sandbox (`ij2e209cz8ijkzgrzxqeb`):
+
+| arm | posture | exit | file | the CLI's own `permissionMode` |
+|---|---|---|---|---|
+| A0 harness control (plain shell) | — | `0` | **written** | — |
+| A1 the exact `:184` literal | **absent** | **`0`** | **NOT written** | `"default"` |
+| A2 the same prompt template, `--dangerously-skip-permissions` added inside the probe | added | `0` | **written** | `"bypassPermissions"` |
+| A3 negative control, prompt forbids writing | added | `0` | **NOT written** | `"bypassPermissions"` |
+
+**A sandboxed `claude` CAN write a file, and the absent flag is why the production argv does not.**
+A0 proves the write+read path, A3 proves the file is attributable to the agent obeying the prompt
+rather than to some other writer (E7-F020's class), and ★ the CLI's own `init` event reports
+`permissionMode` `default` on A1 and `bypassPermissions` on A2 — the *binary's* confirmation that the
+one varied thing took effect, independent of the probe's string rewrite. **A1 exited 0**: the
+"silently no-op" shape (`resolve-crew-adapter.ts:150-151`) reproduced in the distributed argv, with
+no MCP config involved at all.
+
+★★★ **WHAT THE DIFFERENTIAL DOES NOT ESTABLISH — read before acting on it.**
+
+1. **Nobody has run the PRODUCT with the posture added.** A2 rewrote the emitted script string
+   **inside the probe** (`withPermissionPosture`, `scripts/lib/w7u1-agent-output-probe.mjs`);
+   `task-run-sandbox-invocation.ts` is untouched and unchanged at this tip. Adding a permission flag
+   to a shipped path is a **security-posture change** to the argv of an agent running with a redeemed
+   Company provider key — the founder has asked to see that diff before it lands. The measurement
+   names the cause; it does not pre-approve the remedy, and the paragraph at the end of this finding
+   ("the ticket carries the finding, not a fix") **still stands**.
+2. **Only the NO-BUNDLE literals were exercised.** The pack passes `instructions: null`, so `:184`
+   (claude) and `:204` (codex) ran and the **instructions-bundle** branches `:183` and `:203` did
+   not. `:203` has a different failure surface — it pipes through `cat`, so its exit status is the
+   pipeline's last command's.
+3. **It says nothing about codex.** The codex arm returned `no` for two entirely different reasons
+   (E7-F027), and its *stated* cause is unsupported (E7-F028). **A posture-only fix would close the
+   claude half and leave codex broken while looking like a fix.**
+4. **One template, one tier.** `aoa-base` on this account. Nothing about bare `base` (E7-F022) or the
+   networked/container lane (E7-F011).
 
 **What.** `buildSandboxInvocation` (`server/src/services/task-run-sandbox-invocation.ts:149-213`) emits
 FOUR script literals — `:183`, `:184` (claude, bundle / no bundle) and `:203`, `:204` (codex, bundle /
@@ -1790,31 +1833,69 @@ literals it is not in the distributed invocation at all. (A settings FILE could 
 staged through CLI-008 Unit B's channel and named with `--settings`, but that is a mechanism nobody
 has proposed and it would still need an argv change here.)
 
-**WHAT THIS FINDING DOES NOT CLAIM, stated first because the temptation is to overstate it.** It does
-**not** claim that a sandboxed claude/codex provably cannot write a file. That has never been
-measured, on any lane, and the absence of the measurement is the point. The recorded UAT defect is
-about **MCP** tool calls, and the distributed invocation carries no MCP config at all (Unit C is
-unbuilt), so the exact recorded symptom is not the exact predicted symptom. What is measured is
-narrower and still decisive: the shipped product never runs this argv shape unattended without a
-permission decision attached, and the distributed path does.
+**WHAT THIS FINDING DID NOT CLAIM WHEN FILED — ★ SUPERSEDED 2026-09-07 (W12), kept because the
+supersession is the point.** As filed, this paragraph read: *"It does **not** claim that a sandboxed
+claude/codex provably cannot write a file. That has never been measured, on any lane, and the absence
+of the measurement is the point."* **The measurement now exists** (the block above), and for
+`claude_local` it lands on the second of the three outcomes the probe design predicted: the run exits
+0 and the file does not exist. The hedge is therefore withdrawn **for claude only**. Two things in
+the original paragraph still hold and are not withdrawn: the recorded UAT defect is about **MCP**
+tool calls while the distributed invocation carries no MCP config at all (Unit C is unbuilt), so the
+recorded symptom and the measured symptom coincide in *shape* (exit 0, no work) rather than in
+mechanism; and the narrower structural claim — the shipped product never runs this argv shape
+unattended without a permission decision attached, and the distributed path does — was true when
+filed and is true now.
 
 **WHY IT MATTERS BEYOND UNIT F.** It is the load-bearing premise under three of the four candidate
 answers to *"what is an agent output?"* — every option that assumes the agent writes a file
 (a declared path, a conventional path, a workspace patch) assumes a capability nobody has
 established the sandboxed agent has. A mechanism designed on top of an unmeasured premise is the
 shape all three of Unit F's refuted rounds already took (`CLI-008-unit-f-design.md` §4.4).
+★ **AMENDED 2026-09-07 (W12): the premise is now measured, and it holds CONDITIONALLY.** A sandboxed
+claude writes **when the posture is present**. So the three file-writing options are not dead — but
+they are gated on a **product fix that has not been made**, not on a measurement that has not been
+taken. `CLI-008-unit-f-design.md` §12.3 records the replacement stop condition; the difference
+matters because "unmeasured" and "measured, and blocked on a diff nobody has approved" license
+different next steps.
 
-**Severity — HIGH, argued both ways.** *For lower:* nothing in the distributed path runs in any
-checked-in configuration (E7-F018), so the blast radius TODAY is zero, and the defect might turn out
-to be a non-defect — a sandboxed `--print` run might tolerate built-in tool use without the flag,
-which is exactly probe (a). *For HIGH, which is why it is filed there:* (a) it is not a defect whose
-cost is bounded by a wrong answer — it is a MISSING MEASUREMENT under the entire remaining option
-space of the epic's last open question, and every hour spent designing above it is spent on sand;
-(b) the error direction is silent — the recorded symptom for this class is a run that *"silently
-no-op[s]"*, i.e. a green terminal with exit code 0 and no work, which is precisely the false-PASS
-shape clause 6 exists to exclude; (c) the omission is invisible at every review surface — the four
-literals read as complete, and the divergence from the shipped adapters is only visible by opening a
-different package.
+**Severity — HIGH, argued both ways, and RE-ARGUED after the measurement.**
+
+*As filed.* **For lower:** nothing in the distributed path runs in any checked-in configuration
+(E7-F018), so the blast radius TODAY is zero, and the defect might turn out to be a non-defect — a
+sandboxed `--print` run might tolerate built-in tool use without the flag, which is exactly probe
+(a). **For HIGH:** (a) it is not a defect whose cost is bounded by a wrong answer — it is a MISSING
+MEASUREMENT under the entire remaining option space of the epic's last open question, and every hour
+spent designing above it is spent on sand; (b) the error direction is silent — the recorded symptom
+for this class is a run that *"silently no-op[s]"*, i.e. a green terminal with exit code 0 and no
+work, which is precisely the false-PASS shape clause 6 exists to exclude; (c) the omission is
+invisible at every review surface — the four literals read as complete, and the divergence from the
+shipped adapters is only visible by opening a different package.
+
+★ **DOES THE MEASUREMENT RAISE IT? Argued explicitly, and the answer is NO — it REPLACES the ground
+for HIGH rather than adding to it.** What changed in each direction:
+
+- **The strongest argument for LOWER is now REFUTED.** *"The defect might turn out to be a
+  non-defect"* was a live possibility on 2026-09-06 and is dead on 2026-09-07: A1 exited 0 and wrote
+  nothing while A2 wrote. There is no reading of this run on which the missing flag is benign for
+  `claude_local`.
+- **The strongest argument for HIGH is now SPENT.** Reason (a) was *"a MISSING MEASUREMENT under the
+  entire option space"*. The measurement is taken, so that reason no longer applies — and a finding
+  does not keep a severity on the strength of a reason that has been discharged. It is replaced by a
+  narrower and firmer one: this is a **confirmed silent-no-op** on the only lane the epic is being
+  built for, and reasons (b) and (c) — silent error direction, invisible at every review surface —
+  are unchanged and now demonstrated rather than predicted.
+- **Why NOT CRITICAL.** Blast radius today is still zero: E7-F018's shared blocker holds, nothing in
+  the distributed path runs in any checked-in configuration, and `AOA_DISTRIBUTED_EXECUTION_ENABLED`
+  is default-off. Nothing was made worse by measuring it. A severity is a statement about the risk a
+  reader must weigh, and no reader is exposed today.
+- **Why NOT MEDIUM either, which is the tempting move once "it's only default-off code" is said out
+  loud.** The remedy is now known, small, and *blocked on a security review* rather than on more
+  work — precisely the state in which a defect quietly ages out. HIGH is what keeps it on the
+  unowned/owned board until the diff is seen.
+
+**HIGH stands.** ★ It is NOT lowered on the strength of the measurement, and the measurement is not a
+partial resolution: nothing in `task-run-sandbox-invocation.ts` changed, so every consequence this
+finding describes is still live in the tree.
 
 **Owner — CLI-008**, which has no result doc and whose Units C, E and F are unbuilt. The literals are
 Unit D's module and the consequence is Unit F's premise; splitting them would separate the argv from
@@ -1823,6 +1904,15 @@ a fix.** Adding `--dangerously-skip-permissions` to the two claude literals is t
 it is NOT recommended here: it is a security posture change to the argv of an agent running with a
 redeemed Company provider key, and it should be made *after* probe (a) says what the real behaviour
 is, not before.
+★ **AMENDED 2026-09-07 (W12): probe (a) has said, and the recommendation is UNCHANGED.** The
+condition in the sentence above is satisfied — the differential names the flag as the cause — and
+that discharges the *"we do not know yet"* objection, not the *"this is a security posture change"*
+one. The founder has asked to see this diff before it lands, and W12 is a recording unit: **the four
+script literals are untouched at this tip.** Two things the remedy must additionally account for,
+which did not exist when this paragraph was written: it closes **only** the claude half (**E7-F027**
+— codex is refused by a different gate, and a posture-only change would leave it broken while
+carrying a green measurement beside it), and the run's own codex verdict overstates what it knows
+(**E7-F028**).
 
 ---
 
@@ -2143,3 +2233,281 @@ already tells the next author to make first.
 **Owner — CLI-008**, which owns the option space this belongs to. ★ The ticket carries the finding,
 not a fix — there is nothing to fix until a mechanism is chosen, and choosing one before probe (a)
 is what §12 now forbids.
+★ **AMENDED 2026-09-07 (W12): probe (a) has returned and §12.3's stop condition is REPLACED, not
+lifted into an open field.** The new gate is the **product fix** (the posture must be in
+`task-run-sandbox-invocation.ts`, not in a probe) plus codex's blockers being characterised. **This
+finding is untouched by the measurement**: §12.0.1 revives this option's *premise* and explicitly
+does **not** revive its sizing claim — the three staged-prompt pins below still red, and the
+completeness claim is still false.
+
+---
+
+## E7-F027 — The distributed codex invocation is refused by codex's own trusted-directory gate before any model call, and the frozen workload cannot supply the missing input at all
+
+**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)
+**Severity:** MEDIUM
+**Filed:** W12, 2026-09-07, from workflow run
+[`34087197668`](https://github.com/MeteoriteLabs/AoA/actions/runs/34087197668) at `1c447fa8a`,
+template `aoa-base`, artefact `w7u1-output-probe-record`, run nonce `W7U1-MTQT1763-OJ2WYK7K`.
+Full record: `tickets/W7U1-output-probe-result.md` §4.
+**Cross-links:** E7-F021 (the claude half of the same four literals; a posture-only fix closes that
+one and NOT this one), E7-F028 (the probe reported this arm's cause wrongly), E7-F008 (the frozen
+workload's argument surface).
+
+**What.** Probe A's `codex_local` arm ran the exact production `:204` literal
+(`<guard>; exec "$0" exec --json - < "$1"`) in sandbox `i72skshv1vzdyk86rtigx`. It **exited 1 with
+empty stdout**, and codex's own stderr says why, verbatim:
+
+```
+Not inside a trusted directory and --skip-git-repo-check was not specified.
+```
+
+The sandbox's working directory is `/home/user`, which is not a git repository. **A1 never reached a
+model.** The A0 harness control on the same sandbox wrote and read back its file at exit 0, so this
+is codex refusing, not the apparatus failing.
+
+**Two facts make this a product finding and not a probe artefact.**
+
+1. **The same refusal is what the production path would meet.** The literal is the shipped one, run
+   unmodified; nothing in `buildSandboxInvocation`
+   (`server/src/services/task-run-sandbox-invocation.ts:149-213`) sets a working directory, and it
+   emits no `--skip-git-repo-check` on either codex branch (`:203`, `:204`).
+2. ★★★ **The frozen workload cannot supply the missing input from anywhere else.**
+   `batchWorkloadV1Schema` (`packages/worker-protocol/src/job.ts:289-296`) is `.strict()` with
+   exactly four fields — `command`, `args`, `stdinArtifactId`, `maxRuntimeSeconds`. **There is no
+   `cwd` and there is no `env`.** So a distributed codex run cannot be pointed at a trusted
+   directory, cannot be given configuration through the environment, and cannot be told to skip the
+   check by any channel except **the argv in these same four script literals**. This is the identical
+   structural conclusion E7-F021 reached for the permission posture, arrived at independently and for
+   a different flag.
+
+**Why this is filed separately from E7-F021 rather than as a row in it.** ★★★ **Because the two
+adapters have DIFFERENT blockers, and a single fix cannot close both.** E7-F021's remedy is a
+permission posture; this one's is a directory/repo-check decision. A change that adds
+`--dangerously-skip-permissions` to the two claude literals — the obvious reading of the W7U1 run —
+would leave the codex path exactly as broken as it is today **while carrying a green measurement
+beside it**, because the run that motivated the fix reports `no` for codex as well and a reader
+skimming the verdict line sees two `no`s and infers one cause. Filing one finding for both is how
+that happens.
+
+**What is NOT established, and it is deliberately more than one thing.**
+
+- **Whether codex can write in the sandbox at all is UNMEASURED.** A1 was refused at startup and A2
+  (with `--dangerously-bypass-approvals-and-sandbox`) got past this gate — `{"type":"thread.started"}`
+  — but then failed to authenticate: five reconnects, all `401 Unauthorized`, the server reporting
+  *"Missing bearer or basic authentication in header"* against `wss://api.openai.com/v1/responses`.
+  So **neither arm reached a model** and the capability question is open for codex.
+- **The 401 is NOT filed here as a product defect, deliberately.** The pack delivers the key as a
+  per-command env var (`envVars: { OPENAI_API_KEY: key }`) and the key was non-empty (an empty one
+  short-circuits to `inconclusive / no-model-provider-key` before any sandbox is created, which did
+  not happen). The **product** delivers a provider credential by a different route — a redeemed
+  execution-secret handle — so the probe's delivery is not the product's delivery, and asserting a
+  product defect from it would be exactly the inheritance this programme keeps filing findings about.
+  What IS recorded: the observation, the exact error, and that `OPENAI_API_KEY` alone did not
+  authenticate `codex exec` at `@openai/codex` as installed on 2026-09-07.
+- **Only the no-bundle literal ran.** `:203` (the bundle branch) pipes through `cat`, so its exit
+  status is the pipeline's last command's; it was not exercised.
+
+**WHAT WOULD IDENTIFY THE REMAINDER**, named so this is a real disposition and not a shrug. Two cheap
+arms on the next authorised keyed run, both inside the probe and neither touching the product:
+
+1. **For blocker 1** — re-run A1 with `--skip-git-repo-check` added and nothing else. If it then
+   reaches a model, blocker 1 is fully characterised and the argv change is specified. (A `git init`
+   in the sandbox before the arm is the same experiment from the other side, and distinguishes
+   "trusted directory" from "git repository", which the error message conflates.)
+2. **For blocker 2** — print `codex --version` and a credential self-check inside the sandbox, and
+   re-run A2 with the key ALSO delivered the way the product delivers one. That separates "codex does
+   not read `OPENAI_API_KEY` for this endpoint" from "the key is not valid for the Responses
+   websocket" from "the probe's env delivery does not reach the child". The 401 text — **missing**
+   header, not rejected credential — points at the first, but that is a reading of an error string
+   and not a measurement.
+
+**Severity — MEDIUM, argued.** *For lower:* blast radius today is zero (E7-F018; nothing in the
+distributed path runs in any checked-in configuration) and no operator can meet it. *For higher:* it
+makes one of the two supported coding adapters non-functional on the distributed lane, and the
+correction has to land in the same four literals a security review is already going to look at.
+**MEDIUM rather than HIGH, and the reason is the error direction:** this failure is **LOUD** — exit 1
+with a named cause on stderr — where E7-F021's is a **silent** exit 0. A loud failure is the strictly
+better one to have; it cannot be mistaken for work. The finding is filed at MEDIUM for that asymmetry
+and not because it is smaller in scope.
+
+**Owner — CLI-008**, the same unit and the same module as E7-F021, because the fix is an edit to the
+same four script literals and splitting them would let one land without the other. ★ **The ticket
+carries the finding, not a fix.** No argv change is proposed here.
+
+---
+
+## E7-F028 — Probe A's classifier collapses "the CLI refused before reaching a model" into "the agent did not write", so the durable record states a cause the run's own stderr contradicts
+
+**Status:** open · **Owner:** unowned (see reason)
+**Severity:** MEDIUM
+**Filed:** W12, 2026-09-07, from workflow run
+[`34087197668`](https://github.com/MeteoriteLabs/AoA/actions/runs/34087197668) and the source of
+`scripts/lib/w7u1-agent-output-probe.mjs` at `1c447fa8a`.
+**Cross-links:** E7-F027 (the codex arm whose cause was misreported), E7-F021 (the claude arm, whose
+verdict this does NOT touch), E7-F014 (the same "a fault is not a negative result" distinction, one
+layer down).
+
+**What.** `classifyProbeAArm` (`scripts/lib/w7u1-agent-output-probe.mjs:323-390`) ends with a
+catch-all:
+
+```js
+return at("did-not-write", `exited-${String(execution?.exitCode ?? "unknown")}`, "");
+```
+
+Everything that returns a non-zero exit through the normal channel — a permission refusal, a startup
+gate, a missing credential, a crashed binary — becomes the single state `did-not-write`. The guards
+above it are careful and thorough (`target-path-already-existed`, `read-faulted`,
+`file-present-without-the-nonce`, `arm-did-not-run`, `binary-not-runnable`/exit 127, `arm-faulted`,
+`stalled`), and every one of them distinguishes an apparatus problem from a capability answer. **None
+of them distinguishes "the agent ran and chose not to write" from "the CLI refused before a model was
+ever contacted."**
+
+`verdictProbeA` (`:427-490`) then reads two `did-not-write` arms and emits:
+
+> `no` / `a1-did-not-write-and-the-posture-is-not-the-cause` — *"Neither A1 (…) nor A2 (…) produced
+> the file. Adding the permission posture does NOT make the agent able to write here; something else
+> is in the way, and a posture-only fix would not have helped."*
+
+**That sentence is contradicted by the same run's captured stderr, in both halves.** A1 was refused by
+codex's trusted-directory gate; **A2, with the posture flag, got PAST that refusal** — it reached
+`{"type":"thread.started"}` and then failed on `401 Unauthorized`. So on the evidence available the
+posture **removed A1's actual blocker**, which is the opposite of "exonerated", and the capability
+question was never reached by either arm. The honest verdict is the one the function already has and
+did not select: `a1-did-not-write-cause-unattributed` — *"the NO is sound; the CAUSE is not
+established."*
+
+**Why this is worth a register entry rather than a code comment.**
+
+1. **It is written into the DURABLE RECORD, which outlives the log.** The uploaded
+   `w7u1-output-probe-record.json` carries
+   `"reason": "a1-did-not-write-and-the-posture-is-not-the-cause"` and a `detail` asserting *"a
+   posture-only fix would not have helped"*. The stderr that refutes it is in the job log, which is
+   not the artefact anyone will quote.
+2. **The operator-facing runbook restates it as a conclusion.** `W7U1-output-probe-runbook.md` §5's
+   probe-A table reads, for this verdict: *"The permission flag is **exonerated**; something else
+   prevents the agent writing… Do not schedule a posture fix off this."* An operator following the
+   runbook would have drawn the wrong inference from a green run. (Corrected in the same commit as
+   this finding.)
+3. ★★★ **The lane stayed GREEN.** `inconclusive` is the only state that reds the pack, by design and
+   correctly — but the design assumed the three-state split lands on the right state. Here a
+   fourth-state situation ("the experiment did not happen, for a reason we captured") was folded into
+   `no`, which is a RESULT, so nothing asked anyone to look. This is this programme's
+   *a check that nothing runs* class in its subtler form: the check ran, produced output, and the
+   output asserted more than the check could see.
+
+**What this does NOT touch.** The `claude_local` verdict is unaffected — A1 exited **0** with a
+model-contacted `init` event and A2 wrote the file, so its cause attribution is supported by four arms
+and by the CLI's self-reported `permissionMode`. This finding narrows one verdict; it does not weaken
+the other.
+
+**The shape of the fix, NOT implemented here.** The information needed is already captured — the
+classifier receives `execution.exitCode`, and the arm logger already prints `stdout`/`stderr`. What is
+missing is a state between "the agent did not write" and "the apparatus faulted": *the CLI terminated
+with a non-zero status and no evidence it reached a model*. A cheap and honest version would treat a
+non-zero exit with **empty stdout** as `indeterminate / cli-refused-at-startup`, and require
+`verdictProbeA`'s exoneration branch to see at least one arm that demonstrably ran (the stream-json
+`init` / `thread.started` event both CLIs emit). ★ **It is deliberately not implemented in this
+unit**: changing a classifier changes what the pack's next run is allowed to conclude, and this unit
+records rather than alters the instrument that produced the record it is recording.
+
+**Severity — MEDIUM.** No shipped behaviour, no gate, no counter. It is filed at MEDIUM rather than
+LOW because the artefact it corrupts is the *durable record of a founder-authorised, token-spending
+run* — the one thing E7-F025 exists to protect — and because the wrong inference it invites
+(*"codex is broken for reasons unrelated to the posture, so ship the posture fix"*) is precisely the
+inference E7-F027 exists to prevent.
+
+**Owner — `unowned`, deliberately.** The defect is in the W7U1 probe pack, whose unit has shipped
+(this run is its result). CLI-008 owns the *product* literals, not the instrument, and attaching an
+apparatus defect to it would be false ownership of the kind the ownership guard exists to catch. It
+blocks nothing: the pack has answered its decisive question, and the correction is owed by whoever
+next fires this lane — which E7-F027's "what would identify the remainder" already specifies.
+
+---
+
+## E7-F029 — The pack's no-key self-test renders a SECOND, synthetic RESULT report — fixture details `d1`/`d2`, `DISPOSITION: inconclusive` — into the same job log as the real one, and by derivation the same step summary
+
+**Status:** open · **Owner:** unowned (see reason)
+**Severity:** LOW
+**Filed:** W12, 2026-09-07, from workflow run
+[`34087197668`](https://github.com/MeteoriteLabs/AoA/actions/runs/34087197668) and the source of
+`packages/sandbox-e2b-provider/src/__tests__/keyed-w7u1-agent-output-probe.test.ts` at `1c447fa8a`.
+**Cross-links:** E7-F025 (a verdict that does not survive is not a measurement — this is the same
+concern from the opposite side: a verdict that survives *twice*, saying two different things).
+
+**What.** The pack's no-key wiring test —
+`describe("W7U1 — template resolution and the durable record (no key required)")`, the case
+`"emitDurableRecord writes a retrievable record naming the template, the sha and every verdict"`
+(`:898-931`) — calls the **real** `emitDurableRecord` with fixture verdicts:
+
+```ts
+await emitDurableRecord([
+  { probe: "B", state: "no", reason: "template-prefills-nothing", detail: "d1" },
+  { probe: "A/claude_local", state: "inconclusive", reason: "no-model-provider-key", detail: "d2" },
+]);
+```
+
+`emitDurableRecord` (`:696-740`) renders `report(verdicts)` and emits it to **three** channels. The
+test redirects only one: it saves and restores `W7U1_RECORD_PATH` around the call, so the uploaded
+artefact is safe. It does **not** touch `console.log`, and it does **not** touch
+`GITHUB_STEP_SUMMARY`.
+
+★ **Two claims, and they are NOT equally established — separated rather than merged.**
+
+- **OBSERVED, in the run's own step log:** the synthetic report is rendered to stdout. The table
+  below is read off it.
+- **DERIVED from source, NOT observed:** that the same block is also appended to the **run page's
+  step summary**. `emitDurableRecord` appends unconditionally whenever `GITHUB_STEP_SUMMARY` is a
+  non-empty string, Actions sets that variable for every step, and the test overrides only
+  `W7U1_RECORD_PATH` — so the append must have happened. It could not be confirmed after the fact:
+  a job summary's rendered text is not exposed by the API (`check-runs/101633392292` returns
+  `output.text: null`), and reading it needs the run page in a browser. **A reader who needs that
+  half certain should look at the run page, or fire the lane once more and look.**
+
+**Measured in the run, not inferred.** Two blocks headed
+`================ W7U1 OUTPUT PROBE PACK — RESULT ================` appear ~7 ms apart:
+
+| | timestamp | `TEMPLATE:` line | probe lines | last line |
+|---|---|---|---|---|
+| the REAL report | `05:34:20.5464` | `aoa-base (default-cli-bearing)` | four, with real details | `DISPOSITION: measured — B=no C=yes A/claude_local=no A/codex_local=no` |
+| the SYNTHETIC one | `05:34:20.5531` | **identical** | two, details `d1` and `d2` | `DISPOSITION: inconclusive — inconclusive probes: A/claude_local (no-model-provider-key)` |
+
+Everything that identifies the report as authentic is **shared**: the banner, the resolved-template
+line and its whole explanatory note, the commit sha, the **real run nonce**, and the full four-arm
+legend. The synthetic block is second, so it is the one a reader scrolling to the end of the step
+sees, and it says `inconclusive` — the pack's own word for *"run me again"* — at the bottom of a run
+that measured everything it set out to.
+
+★ **This is not hypothetical harm.** The orchestrating session reading this run's log nearly reported
+the pack's disposition as `inconclusive` from the trailing block, and only the artefact settled it.
+
+**The fix, and why it is NOT implemented here.** The smallest honest change is to make the fixture's
+identity visible **inside the rendered report** rather than only in the verdict details — e.g. a
+banner the renderer emits when the run nonce is a fixture, or a `fixture: true` flag threaded into
+`report()`. ★ **That is not a one-line change provable with a mutation**, which is the bar this unit
+set for touching anything: `report()` reads module-level constants (`TEMPLATE`, `TEMPLATE_RESOLUTION`,
+`COMMIT_SHA`, `RUN_NONCE`, `ARM_SPECS`) and takes only `verdicts`, so a fixture flag has to be
+threaded through `emitDurableRecord` into `report`, and the anti-regression test for it has to assert
+a rendered STRING that no current test asserts. The two smaller variants are both worse: silencing
+`console.log` in the test kills the very wiring assertion the test exists to make (that
+`emitDurableRecord` actually emits), and asserting on log output in a second test pins the defect
+without removing it.
+
+★★ A **cheaper and strictly safer** interim, recorded so the next author does not have to rediscover
+it: the test can point `GITHUB_STEP_SUMMARY` at a temp file for the duration of the call, exactly as
+it already does for `W7U1_RECORD_PATH`. That removes the synthetic block from the **run page** — the
+surface a human reads first — leaves the log-stream duplication (harmless once known, and still
+evidence that the emitter fired), and needs no change to `report()`. It is not applied here for the
+same reason: it is a change to the pack, and this unit records the pack's output rather than editing
+the instrument.
+
+**Severity — LOW.** It misleads no gate, corrupts no artefact, and changes no product behaviour; the
+durable record — the channel the whole design exists to protect — is correct. It is filed rather than
+noted because the confusion it causes lands on exactly the surface a founder-authorised run is read
+from, and because a report byte-similar to a real one *including the real run nonce* is a provenance
+problem, not a formatting one.
+
+**Owner — `unowned`, for the same reason as E7-F028:** it is a defect in the W7U1 instrument, whose
+unit has shipped, and CLI-008 owns the product literals rather than the pack. It blocks nothing —
+`tickets/W7U1-output-probe-result.md` §6 and the runbook both now say *read the artefact, not the last
+report block* — and it is owed by whoever next fires this lane.
