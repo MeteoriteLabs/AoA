@@ -80,6 +80,37 @@ Two env vars, BOTH required (the ENABLED flag is checked **first**, so the map a
   on `"canary"` at startup, or on a live edit fails CLOSED to legacy — so roll back by removing the key,
   never by downgrading the binary.)
 
+> ### ★ BEFORE YOU ARM IT — THE MONEY QUESTION IS NOT ANSWERED
+>
+> **A handed-off distributed run is UNBILLED.** Not billed elsewhere — billed nowhere. Measured
+> 2026-09-07 at `8075cd7a1`; the derivation is `scripts/gate-clause-wiring.json` → `E3-15-budget`,
+> and the finding — `epics/E3-job-control/findings.md` → **E3-F037** — stays **open**.
+>
+> The parity bridge that would price accepted usage (`jobBudgetCostBridge`,
+> `server/src/services/job-budget-cost-bridge.ts:150`) has **zero production callers**, and the one
+> ledger every budget control reads — `cost_events` — is never written for a suppressed run:
+> heartbeat's only writer sits downstream of `return; // CLI-006-SUPPRESSION-RETURN`
+> (`heartbeat.ts:5451`), and a `return` is not a throw.
+>
+> **All three caps are therefore blind to a canary's spend:** the `budget_policies`
+> warning/hard-stop (`budgets.ts` `getObservedCents`), the per-agent `budgetMonthlyCents` pause
+> (`checkBudgetAlerts`, never reached), and the crew/company hard-stop
+> (`crew-budget.ts` `preflightCrewDispatch`, which sums `cost_events`).
+>
+> **Operator consequence — the only instruction in this box.** Do **not** arm this dial for an
+> Organization whose spend must be capped. Choose a canary Org whose E2B spend you are willing to
+> govern **out of band**: the provider's own dashboard, and the `E2B_API_KEY` you authorized under
+> §0. Treat §3 step 6's "ONE coding task" as a real bound rather than a nominal one.
+>
+> **This is not the kill switch.** The rollback path (`docs/deploy/environment-variables.md`,
+> "Rolling distributed execution back") stops **new** leases; it does not account for spend that has
+> already happened, and no control in this repository will.
+>
+> Closes when the accepted-usage path calls the bridge (Sprint 6 sink cutover) — not before.
+>
+> *Placed here 2026-09-07 (W16A-FIX). Before that, the warning existed only inside the CI register,
+> which is not a document an operator reads while arming anything.*
+
 ### 2.2 The preflight's Company provider-key generation (CLI-007's authority)
 
 `canary-preflight.ts` `check()` enumerates **every Company under the canary Organization** and requires,
@@ -261,6 +292,8 @@ pnpm verify:cp-am-keypair
 2. **Provision the per-Company default `e2b` key** (§2.2) for every Company under it.
 3. **Arm the rollout dial** (§2.1): add `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` with the canary JSON to BOTH
    control planes and roll them (they already carry `AOA_DISTRIBUTED_EXECUTION_ENABLED=true`).
+   **★ Read §2.1's money box first.** A handed-off run is **UNBILLED** and all three budget caps are
+   blind to it (E3-F037, open). Do not arm this for an Organization whose spend must be capped.
 4. **Enroll the workers** (§2.3).
 5. **Set concurrency cap `> 1`** for the canary Org. **This is load-bearing** (CLI-006 seam-plan Task 5,
    R4): at `cap = 1` the suppressed run counts against itself before its attempt claims capacity → 429 →

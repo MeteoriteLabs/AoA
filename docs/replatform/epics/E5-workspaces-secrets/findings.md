@@ -9,13 +9,53 @@ Every OPEN finding must have a declaration in `scripts/finding-ownership.json` (
 
 ## E5-F001 — E5-6's register reason names the wrong owner, and the OTHER owner it omits shipped without the symbol and handed the residual to a ticket that never mentions it
 
-**Status:** open
+**Status:** resolved_by_w16a · **Owner:** — (closed; the ownership entry is deleted in this commit)
 **Severity:** MEDIUM (register accuracy plus an orphaned charter; the security substance is
 E8-F003's, which is already open)
 **Filed:** 2026-09-06 (W5U1), measured at `e1f723df2`.
+**Resolved:** 2026-09-07 (W16A, branch `replatform/w16a-register-sentences`), re-measured at
+`8075cd7a1`.
 
-**What the register says.** `scripts/gate-clause-wiring.json` -> `E5-6-denied-egress`, under "WHAT
-WOULD HAVE TO CHANGE for 'wired'":
+> ★ **HOW IT WAS RESOLVED, AND WHAT W16A ADDED TO IT.** `E5-6-denied-egress`'s `reason` now names
+> every ticket that passed over this capability and shipped, and says that BRW-004 slice (f) is the
+> only REMAINING named candidate rather than the only one there has ever been:
+>
+> - **CHARTERED (1) — DAT-005**, which BUILT the symbol and booked itself COMPLETE with zero
+>   production callers (`DAT-005-result.md:3`). This finding as filed named only DSK-002 and
+>   BRW-004 (f); W16A added DAT-005, because a reader planning the wiring should know the symbol's
+>   own author shipped it unwired.
+> - **CHARTERED (2) — DSK-002**, whose Outcome and acceptance clause (4) require the capability and
+>   which shipped having explicitly DECLINED it.
+> - **NOMINATED, NEVER CHARTERED — DSK-003.** It was named by DSK-002's *result*
+>   (`DSK-002-result.md:168-179`, "belongs with DSK-003"), which is a nomination and not a charter.
+>   Its own charter carries no egress requirement at all: the Outcome (`DSK-003-design.md:14-16`)
+>   is a least-privilege desktop background host with signed installers, none of the five
+>   acceptance clauses (`:20-24`) names egress, a proxy or a broker, and `grep -ni egress` over
+>   both DSK-003 documents returns zero hits. It shipped without taking the residual.
+>
+> ★★ **CORRECTED 2026-09-07 (W16A-FIX), and the correction is the point.** The first version of
+> this note and of the register sentence said "**three** chartered tickets". That was an
+> overstatement by one — flagged independently by Codex on PR #380 and by an adversarial reviewer,
+> and refuted by `scripts/finding-ownership.json` itself, whose `E8-F008` `successor` field already
+> said "DAT-005 and DSK-002, **the two tickets that were chartered** to reach this path". Counting a
+> nominee as a charter inside the very PR that exists to fix register overstatement is the defect
+> eating itself, so the count is now stated as **two chartered plus one nominee who declined by
+> silence**. Both spellings are load-bearing: two tickets were *told* to build this and did not;
+> one was *asked* to inherit it and never acknowledged it.
+>
+> One thing this finding said that W16A did NOT copy forward as written: BRW-004 slice (f) is
+> described in the register as **deferred**, not "unattempted". `BRW-004-result.md` is on disk
+> at Status `gate_review`, covering slices (a)-(d) only, with (f)-(h) recorded not attempted
+> (`:15`, `:99`) and the acceptance condition "allowed domains … are enforced" booked `deferred`
+> (`:366`). The programme's newest record (`E8-F003`'s successor field) calls that slice "real and
+> still open", so calling it *shipped past* would have been a correction that was itself wrong.
+>
+> **This is a BRANCH STATE.** True on `replatform/w16a-register-sentences`. If that PR is not
+> merged, restore the `E5-F001` key in `scripts/finding-ownership.json` and set this back to
+> `open`.
+
+**What the register SAID.** `scripts/gate-clause-wiring.json` -> `E5-6-denied-egress`, under "WHAT
+WOULD HAVE TO CHANGE for 'wired'" (this text no longer exists in the file):
 
 > "**BRW-004 slice (f) is the only chartered candidate**, is unattempted, and is browser-scoped;
 > the org/crew sandbox egress path that E8-F003 measured has no chartered owner at all."
@@ -61,8 +101,10 @@ narrower fact that the register's account of WHO WOULD WIRE IT names one candida
 two, and the second one's residual has no holder.
 
 **What would close it.** Correct E5-6's `reason` to name both charters and to say that DSK-002's
-half is currently held by nobody. Not done here: W5U1's charter forbids changing an existing
-clause's declaration.
+half is currently held by nobody. Not done by W5U1: its charter forbids changing an existing
+clause's declaration. **DONE by W16A** — see the resolution note at the top of this entry, which
+also records the chartered ticket this entry missed (DAT-005, the symbol's own author) and, after
+W16A-FIX, keeps DSK-003 out of the charter count it never belonged in.
 
 ## E5-F002 — The two-header upload contract has a designated single home with zero callers, and the code that actually runs re-derives it differently — including one header it omits
 
