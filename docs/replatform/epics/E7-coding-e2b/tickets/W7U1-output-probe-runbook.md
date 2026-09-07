@@ -94,12 +94,16 @@ cannot host the thing being measured. `resolveTemplate`
 |---|---|---|
 | `E2B_API_KEY` | **exists** as a repo secret | everything. Without it the whole pack **skips** and the workflow's positive-control step fails the job with a message saying so. |
 | `OPENAI_API_KEY` | **exists** as a repo secret | probe A's **codex** arm. Runs with no operator action. |
-| `ANTHROPIC_API_KEY` | **does NOT exist** (`gh secret list`, 2026-09-06) | probe A's **claude** arm. Without it that arm reports `inconclusive-because-no-model-provider-key` and, because an inconclusive probe reds the lane, **the job will fail** — see §5. |
+| `ANTHROPIC_API_KEY` | ~~does NOT exist (`gh secret list`, 2026-09-06)~~ → **★ EXISTS as of run `34087197668` (2026-09-07)**: the claude arm authenticated, reached a model on all three agent arms, and returned a decisive verdict. An operator added it between the pack landing and the run. | probe A's **claude** arm. Without it that arm reports `inconclusive-because-no-model-provider-key` and, because an inconclusive probe reds the lane, **the job will fail** — see §5. |
 
 **Decide before you fire:** if you want the claude arm (and you probably do — `claude_local` is the
 adapter the distributed path is being built for), add `ANTHROPIC_API_KEY` as a repository secret
 first. Otherwise expect a red job whose summary reads `A/claude_local: INCONCLUSIVE —
 no-model-provider-key`, which is an honest report of a question not reached, not a bug.
+★ **This paragraph is retained rather than deleted**: a secret can be rotated or removed, and the
+row above records when it was observed present, not that it is permanent. The workflow file's own
+header still says the key does not exist — it is dated `2026-09-06` and self-limiting, and it is
+**not** edited here because this unit changes no CI configuration.
 
 No key is written into the repository, printed, or embedded in a fixture. The keys reach the sandbox
 as **per-command environment variables** (never as argv elements, never staged into a file), and
@@ -144,6 +148,19 @@ The verdict is written to **three** places, on a red run as well as a green one:
 
 **After the run: copy the record into a `-result.md` next to this file, naming the run id.** The
 artefact is retained for 90 days; the ticket record is not.
+★ **DONE for run 1 — [`W7U1-output-probe-result.md`](./W7U1-output-probe-result.md).**
+
+> ### ⚠ READ THE ARTEFACT, NOT THE LAST REPORT BLOCK IN THE LOG
+>
+> **A successful run emits TWO blocks headed `W7U1 OUTPUT PROBE PACK — RESULT`.** The pack's no-key
+> self-test calls the real `emitDurableRecord` with fixture verdicts (details literally `d1` and
+> `d2`), so a **synthetic** report — same banner, same `TEMPLATE:` line, same commit sha, same **real
+> run nonce**, same arm legend, ending `DISPOSITION: inconclusive` — is rendered milliseconds after
+> the real one and *below* it. The test redirects `W7U1_RECORD_PATH` but not `GITHUB_STEP_SUMMARY`,
+> so the **uploaded artefact is correct** and the human-readable channels are not.
+> **Observed in the log of run `34087197668`; the step-summary half is derived from the same source
+> and was not separately confirmed** (a job summary's text is not retrievable through the API).
+> Filed as **E7-F029**.
 
 Every probe reports one of three states. **`no` is a result and the lane stays GREEN for it.**
 `inconclusive` is the only state that reds, because it is the only one that means *run me again*.
@@ -153,21 +170,22 @@ Every probe reports one of three states. **`no` is a result and the lane stays G
 > bad key, a template change or an outage — and the one authorised run would have bought an ambiguity
 > instead of an answer. A probe that can only pass is worthless.
 
-> ### ⚠ ILLUSTRATIVE FORMAT ONLY — the pack has never been fired and these verdicts are invented
+> ### ✅ REAL SUMMARY — run [`34087197668`](https://github.com/MeteoriteLabs/AoA/actions/runs/34087197668), 2026-09-07
 >
-> **No W7U1 run exists.** The block below shows the SHAPE of the report and nothing else: every
-> verdict, reason and disposition is a `<placeholder>`, not a measurement, and none of them should be
-> read as a prediction of what the run will say. (An earlier draft of this section printed specific
-> values here — including a decisive `NO` for probe A — which an operator could have mistaken for a
-> result, and which also contradicted §3's own statement that the claude arm cannot answer until
-> `ANTHROPIC_API_KEY` exists.) **When a run happens, replace this block with its real summary and
-> name the run id it came from.**
+> The pack has been fired **once**. The block below is that run's real report, abridged only by
+> truncating the long `detail` lines — nothing is invented. Commit `1c447fa8a`, template `aoa-base`,
+> conclusion `success`. Full record, including the per-arm exit codes and the four things the run
+> does **not** establish: [`W7U1-output-probe-result.md`](./W7U1-output-probe-result.md).
+> (This block replaced an `<placeholder>` illustration; an earlier draft than that one printed
+> *invented* specific values, including a decisive `NO` for probe A, which an operator could have
+> mistaken for a result.)
 
 ```
 ================ W7U1 OUTPUT PROBE PACK — RESULT ================
-TEMPLATE: <resolved template id>   (<explicit|default-cli-bearing>)
-  <why it resolved that way>
-commit: <sha>   run nonce: W7U1-<...>
+TEMPLATE: aoa-base   (default-cli-bearing)
+  no template was supplied, so the pack resolved to "aoa-base" — the alias e2b/e2b.Dockerfile
+  builds with claude+codex asserted on PATH. It does NOT fall back to "base" …
+commit: 1c447fa8abe774b95fe1f7c24a95c66c460e66a7   run nonce: W7U1-MTQT1763-OJ2WYK7K
 
 Probe A arms:
   A0  HARNESS CONTROL — plain shell writes the file; we read it back
@@ -176,17 +194,27 @@ Probe A arms:
       A1, differing only in the two lines naming this arm's own target path and nonce
   A3  NEGATIVE CONTROL — a prompt that forbids writing; a file here kills attribution
 
-PROBE B: <STATE> — <reason>
-    <detail>
-PROBE C: <STATE> — <reason>
-    <detail>
-PROBE A/claude_local: <STATE> — <reason>
-    <detail>
-PROBE A/codex_local: <STATE> — <reason>
-    <detail>
+PROBE B: NO — template-prefills-nothing
+    none of the 7 candidate output paths exist in a fresh sandbox. Directory listing (5 entries):
+    /home/user/.bash_logout /home/user/.bashrc /home/user/.profile … (aoa-workspace and .aoa absent)
+PROBE C: YES — both-streams-delivered
+    onStdout and onStderr each received their marker from a real E2B sandbox, and the command exited 0.
+PROBE A/claude_local: NO — a1-did-not-write-and-the-posture-is-the-cause
+    A1 (production argv) did not write (exited-0); A2 … with the permission posture added … DID.
+    The absent permission flag is the cause. That is a PRODUCT finding about
+    task-run-sandbox-invocation.ts's four script literals …
+PROBE A/codex_local: NO — a1-did-not-write-and-the-posture-is-not-the-cause
+    Neither A1 (exited-1) nor A2 (exited-1) produced the file. …
 
-DISPOSITION: <measured|inconclusive> — <probe>=<state> ...
+DISPOSITION: measured — B=no C=yes A/claude_local=no A/codex_local=no
 ```
+
+> ★★★ **The `codex_local` REASON STRING ABOVE IS WRONG, and the run's own stderr says so.** A1 was
+> refused by codex's trusted-directory gate (*"Not inside a trusted directory and
+> `--skip-git-repo-check` was not specified."*) and **A2, with the posture, got PAST that refusal**
+> before failing on five `401 Unauthorized` reconnects. So the posture removed A1's actual blocker,
+> and **neither arm reached the capability question**. The verdict `no` stands; the stated **cause**
+> does not. See **E7-F027** (the codex blockers) and **E7-F028** (why the classifier said this).
 
 ### Probe A — can it write? (the decisive one)
 
@@ -194,7 +222,7 @@ DISPOSITION: <measured|inconclusive> — <probe>=<state> ...
 |---|---|---|
 | `YES — a1-wrote-under-production-argv` | The **exact production argv, with no permission flag**, produced the requested file. Reading a convention path out of a sandbox is already solved (`transport.readFile`), so an output mechanism anchored on the agent writing a known path is **feasible today**. | Hand this to whoever owns the output question. |
 | `NO — ...-and-the-posture-is-the-cause` | A1 (production argv) did not write; A2 (**the same prompt template**, permission flag added) did. A1's and A2's prompts are **not byte-identical**: each names its own target path and its own nonce, on two lines, for the same reason A0 needs its own path — a file one arm left behind must never read back as another arm's success. That separation is the arms' identity, not a second experimental variable, and the permission flag remains the only difference in **how the agent is invoked**. **This is a product finding**, not merely an input to a later ticket: the four script literals at `task-run-sandbox-invocation.ts:181-206` carry no permission posture, and the shipped product's own code says one is required for an unattended run. | File it against the invocation module. An output mechanism is feasible *once the posture is fixed*. |
-| `NO — ...-and-the-posture-is-not-the-cause` | Neither A1 nor A2 wrote. The permission flag is **exonerated**; something else prevents the agent writing. A posture-only fix would not have helped. | Do not schedule a posture fix off this. The blocker is elsewhere and unidentified. |
+| `NO — ...-and-the-posture-is-not-the-cause` | ★★★ **DO NOT READ THIS VERDICT AS WRITTEN — corrected 2026-09-07, E7-F028.** It claims the permission flag is *"exonerated"* and that *"a posture-only fix would not have helped"*. The classifier cannot support that: `classifyProbeAArm` maps **every** non-zero exit to `did-not-write`, so an arm the CLI **refused at startup** — before any model was contacted — is indistinguishable from an arm that ran and chose not to write. In run `34087197668` that is exactly what happened to codex, and A2 in fact got **past** A1's blocker. | **Read the arm's `stderr` in the job log before concluding anything.** If either arm shows the CLI refusing at startup (empty stdout, a named refusal), the honest verdict is `cause-unattributed`, not exoneration. |
 | `NO — ...-cause-unattributed` | A1 did not write and A2 could not be read. The NO is sound; the **cause is not established**. | Fix whatever made A2 unreadable (see its `cause`) and re-run. |
 | `INCONCLUSIVE — harness-control-failed` | **A0 failed**: plain shell wrote a file and we could not read it back. The write/read path itself is broken, so A1's empty result attributes to nothing. | The probe is broken, not the product. Nothing may be concluded. |
 | `INCONCLUSIVE — negative-control-violated` | **A3 was violated**: we told the agent *not* to write, named the path, and a file carrying A3's nonce appeared anyway. Something other than the agent is writing at the watched path. | Nothing in probe A may be attributed to the agent. This is E7-F020's class one layer down and is itself worth filing. |
