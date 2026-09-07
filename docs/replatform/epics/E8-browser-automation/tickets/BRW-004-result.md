@@ -600,10 +600,17 @@ convenience.**
   under "Security invariants"; the threat model's residual-risk list, which omits DE-08 while
   listing a sibling egress exclusion; the E5 exit-gate audit's `proven_in_d1` grade for "denied
   egress"). Enforcement is absent at ALL THREE candidate points (provider measured inert,
-  in-sandbox unbuilt, proxy zero-caller). BRW-004 slice (f) is still the only chartered candidate
+  in-sandbox unbuilt, proxy zero-caller). BRW-004 slice (f) is still ~~the only chartered
+  candidate~~ **the only REMAINING chartered candidate (corrected 2026-09-07, W16A-FIX)**
   but is scoped to BROWSER sessions, while slice (a) measured org heartbeat runs and crew runs —
   and the metadata-reachability half is broader than E8 in any case. Severity stays HIGH. See
   `findings.md` E8-F003 §1 for the headline and §7 for the disposition.
+  **On the correction:** this paragraph already says four lines up that DAT-005's *chartered*
+  outcome was to enforce default-deny, so "the only chartered candidate" contradicted its own
+  sentence. **Two** tickets were chartered over this capability and shipped without it — DAT-005
+  and DSK-002 — and a third, DSK-003, was only *nominated* as DSK-002's successor and never took
+  it (its charter names no egress at all). Derivation: `scripts/gate-clause-wiring.json` →
+  `E5-6-denied-egress`. Nothing else in this dated result doc is restated or re-graded.
 - **`E8-F004`** — **NEW, LOW, unowned.** No stranded-delivery sweep for a distributed decision;
   it cannot exist before JOB-015. Successor named; must not be closed by deleting the join.
 - **`E8-F005`** — **NEW, MED, unowned.** Nothing in CI compares the Drizzle schema to the

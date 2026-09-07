@@ -17,13 +17,31 @@ E8-F003's, which is already open)
 `8075cd7a1`.
 
 > ★ **HOW IT WAS RESOLVED, AND WHAT W16A ADDED TO IT.** `E5-6-denied-egress`'s `reason` now names
-> all three chartered tickets that passed over this capability — **DAT-005**, which BUILT the
-> symbol and booked itself COMPLETE with zero production callers (`DAT-005-result.md:3`); DSK-002,
-> which shipped having explicitly DECLINED it; and DSK-003, which never took it (zero `egress`
-> hits in either of its documents, and it has a result doc) — and says that BRW-004 slice (f) is
-> the only REMAINING named candidate rather than the only one there has ever been. DAT-005 is the
-> third ticket and this finding named only two; W16A added it, because a reader planning the
-> wiring should know the symbol's own author shipped it unwired.
+> every ticket that passed over this capability and shipped, and says that BRW-004 slice (f) is the
+> only REMAINING named candidate rather than the only one there has ever been:
+>
+> - **CHARTERED (1) — DAT-005**, which BUILT the symbol and booked itself COMPLETE with zero
+>   production callers (`DAT-005-result.md:3`). This finding as filed named only DSK-002 and
+>   BRW-004 (f); W16A added DAT-005, because a reader planning the wiring should know the symbol's
+>   own author shipped it unwired.
+> - **CHARTERED (2) — DSK-002**, whose Outcome and acceptance clause (4) require the capability and
+>   which shipped having explicitly DECLINED it.
+> - **NOMINATED, NEVER CHARTERED — DSK-003.** It was named by DSK-002's *result*
+>   (`DSK-002-result.md:168-179`, "belongs with DSK-003"), which is a nomination and not a charter.
+>   Its own charter carries no egress requirement at all: the Outcome (`DSK-003-design.md:14-16`)
+>   is a least-privilege desktop background host with signed installers, none of the five
+>   acceptance clauses (`:20-24`) names egress, a proxy or a broker, and `grep -ni egress` over
+>   both DSK-003 documents returns zero hits. It shipped without taking the residual.
+>
+> ★★ **CORRECTED 2026-09-07 (W16A-FIX), and the correction is the point.** The first version of
+> this note and of the register sentence said "**three** chartered tickets". That was an
+> overstatement by one — flagged independently by Codex on PR #380 and by an adversarial reviewer,
+> and refuted by `scripts/finding-ownership.json` itself, whose `E8-F008` `successor` field already
+> said "DAT-005 and DSK-002, **the two tickets that were chartered** to reach this path". Counting a
+> nominee as a charter inside the very PR that exists to fix register overstatement is the defect
+> eating itself, so the count is now stated as **two chartered plus one nominee who declined by
+> silence**. Both spellings are load-bearing: two tickets were *told* to build this and did not;
+> one was *asked* to inherit it and never acknowledged it.
 >
 > One thing this finding said that W16A did NOT copy forward as written: BRW-004 slice (f) is
 > described in the register as **deferred**, not "unattempted". `BRW-004-result.md` is on disk
@@ -85,7 +103,8 @@ two, and the second one's residual has no holder.
 **What would close it.** Correct E5-6's `reason` to name both charters and to say that DSK-002's
 half is currently held by nobody. Not done by W5U1: its charter forbids changing an existing
 clause's declaration. **DONE by W16A** — see the resolution note at the top of this entry, which
-also records the THIRD charter (DAT-005) this entry missed.
+also records the chartered ticket this entry missed (DAT-005, the symbol's own author) and, after
+W16A-FIX, keeps DSK-003 out of the charter count it never belonged in.
 
 ## E5-F002 — The two-header upload contract has a designated single home with zero callers, and the code that actually runs re-derives it differently — including one header it omits
 

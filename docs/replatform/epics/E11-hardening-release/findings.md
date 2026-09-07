@@ -80,6 +80,24 @@ Owned by REL-003.
 > **This is a BRANCH STATE.** It is true on `replatform/w16a-register-sentences`. If that PR is
 > not merged, the corrected sentence goes with it and this finding is `open` again — restore the
 > `E11-F003` key in `scripts/finding-ownership.json` at the same time.
+>
+> ★★★ **A FALSE NEGATIVE SWEEP, CORRECTED 2026-09-07 (W16A-FIX) — recorded here because a false
+> sweep inside a register-accuracy unit is the defect eating itself.** W16A's build report claimed
+> that `grep -rn 'evaluateKillSwitches' docs --include=*.md` returned "only E11-F003 plus
+> `REL-004-lane-C-design.md`". **Re-run at `75c3e42a2`: 46 hits across 8 files** —
+> `E11-hardening-release/findings.md`, `REL-004-lane-C-design.md`, `REL-004-lane-C-result.md`,
+> `REL-004-lane-D-design.md`, `REL-004-lane-D-result.md`, `REL-004-lane-D-terrain.md`,
+> `REL-FOUNDATION-GATE-design.md` and `GO-BOOK.md`.
+>
+> **The sweep's CONCLUSION survives; its STATED BASIS did not.** All six previously-unnamed files
+> were read: none repeats the "second caller" claim, and the three Lane-D documents refute it
+> independently — `REL-004-lane-D-design.md:122,133` and `REL-004-lane-D-result.md:60` both set
+> `evaluateKillSwitches` (fail-closed) against `killedProviders` (fail-open) as *two consumers of
+> one parse*, and `REL-004-lane-D-terrain.md:115` tabulates `evaluateKillSwitches` at **1** caller.
+> `GO-BOOK.md:1792` and `REL-FOUNDATION-GATE-design.md:223` name only the REL-005 write-path
+> residual. So the correction is complete and no other document needed one — but that is now a
+> **measured** statement rather than an asserted one, which is the whole difference this register
+> exists to keep.
 
 **What the register SAID.** `scripts/gate-clause-wiring.json` → `E11-5-provider-kill-switch`, as
 filed (this text no longer exists in the file):
@@ -94,7 +112,8 @@ exactly ONE production caller:
 grep -rn "evaluateKillSwitches" --include=*.ts . | grep -v node_modules | grep -v __tests__ | grep -vi "\.test\."
 ```
 
-→ `server/src/services/job-leasing.ts:49` (the import) and `:720` (the call), plus four COMMENTS
+→ `server/src/services/job-leasing.ts:49` (the import) and `:720` (the call), plus **five comment
+lines across four other production files** (corrected from "four COMMENTS" 2026-09-07, W16A-FIX)
 that name it (`packages/db/src/schema/instance_settings.ts:18`,
 `server/src/services/execution-kill-switch-policy.ts:13,36`,
 `server/src/services/execution-kill-switches.ts:206`,

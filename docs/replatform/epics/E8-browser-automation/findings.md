@@ -267,7 +267,11 @@ shipped configuration surface that this finding recorded as absent.
 **— CORRECTED AGAIN 2026-09-07 (W11): it is now MEASURED, and the tier does not honour it
 (`E8-F008`; the full census is §8). "Back on the table" below is therefore withdrawn: the
 provider layer is available to DECLARE and unavailable to ENFORCE at the tier AoA's key reaches.
-AND THE SENTENCE BELOW IS ALSO NARROWED: D3(c) is still the only CHARTERED enforcement point, but
+AND THE SENTENCE BELOW IS ALSO NARROWED: D3(c) (= BRW-004 slice (f)) is still the only REMAINING
+CHARTERED enforcement point — "REMAINING" inserted 2026-09-07 (W16A-FIX): DAT-005 and DSK-002 were
+also chartered over this capability and shipped without it, which §1 of this same finding already
+says of DAT-005 two paragraphs down, so an absolute "only" contradicted the finding's own headline
+(derivation: `scripts/gate-clause-wiring.json` → `E5-6-denied-egress`) — but
 §8 measures that it is not a BOUNDARY — every in-guest mechanism is agent-writable, and Node's
 global `fetch` ignores every proxy variable on the `node:22` image AoA runs. "The only layer that
 exists today" must not be read as "a layer that would work". Nothing is left standing; read §8.**
@@ -470,7 +474,9 @@ caller is unmeasured. Nothing here asserts a cross-tenant breach: the deployed b
 
 **Why `unowned`, and what it blocks.** No ticket in the roster is chartered to wire egress
 enforcement for the path that was measured. BRW-004 slice (f) is real, open (`gate_review`) and the
-only chartered candidate — but it is scoped to browser sessions, and the measurement is of org
+only **remaining** chartered candidate (word inserted 2026-09-07, W16A-FIX — the sentence two lines
+down already names the two earlier charters, so "only" was never meant absolutely) — but it is
+scoped to browser sessions, and the measurement is of org
 heartbeat runs and crew runs, neither of which is a browser session; and the metadata half (§2) is
 broader still, since every sandboxed workload shares the reachability. The two tickets that *were*
 chartered to reach this path have both shipped without it and said so: DAT-005 (COMPLETE) and
@@ -1084,10 +1090,13 @@ Stated so none of it is over-read. Each is a limit of the run, not a hedge on th
 ### 7. Disposition — why `unowned`, what it blocks, and how not to close it
 
 **`unowned`.** No ticket in the roster is chartered to own provider-level egress for the sandbox path
-— the same bar `E8-F003` and `E8-F007` set, and for the same reason. `BRW-004` slice (f) remains the
-only chartered enforcement candidate and is scoped to browser sessions, while what was measured is the
+— the same bar `E8-F003` and `E8-F007` set, and for the same reason. `BRW-004` slice (f) is the
+only **remaining** chartered enforcement candidate and is scoped to browser sessions, while what was measured is the
 sandbox path every workload shares. Naming it, or DAT-005/DSK-002 (both shipped), would be filing
-against work that cannot take this.
+against work that cannot take this. *(Word "remaining" inserted 2026-09-07, W16A-FIX: DAT-005 and
+DSK-002 were also chartered over this capability and shipped without it — see `E5-6-denied-egress`'s
+`reason` — so an unqualified "the only chartered candidate" reads as a claim source refutes. The
+substance of this paragraph, which already named both shipped charters, is unchanged.)*
 
 **What it blocks.** The provider layer can no longer be described as an unadopted-but-available option
 for `DE-08`: at the tier AoA's own key reaches, it is available to *declare* and unavailable to

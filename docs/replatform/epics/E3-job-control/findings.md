@@ -2003,6 +2003,10 @@ distributed" on every green `policy` run.
 > **This finding stays OPEN.** See the amended "What would close it" below: correcting the
 > sentence removes the MISREPRESENTATION, not the unbilled spend, and the unbilled spend is what
 > the title's first clause names and what sets the HIGH severity.
+>
+> **W16A-FIX (same PR) additionally moved the operator warning to where an operator reads** —
+> `CLI-006-staging-canary-runbook.md` §2.1 — because a warning shelved in a CI register is a check
+> nobody runs. See the amendment under "Why this is HIGH" below.
 
 **Measurement 1 — every `cost_events` writer in the repository.**
 
@@ -2049,9 +2053,26 @@ somewhere" is the assumption that would make this finding wrong.**
   nothing, and it reads a `cost_events` sum that distributed runs never add to — so it gets
   *quieter*, not louder, the more distributed spend there is.
 
-**Why this is HIGH rather than a documentation nit.** The register sentence is the artefact an
-operator or a later agent reads before arming `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`. Taken at face
-value it says the money question is already answered. Measured, arming the dial to `canary` for an
+**Why this is HIGH rather than a documentation nit.** The register sentence is the artefact a later
+AGENT reads before arming `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`. Taken at face value it says the money
+question is already answered.
+
+> ★ **AMENDED 2026-09-07 (W16A-FIX) — THE OPERATOR WAS NEVER READING THIS FILE.** As filed, this
+> paragraph said the register sentence is what "an operator **or** a later agent" reads before
+> arming. Half of that is wrong, and it is the half that decides where a warning belongs:
+> `scripts/gate-clause-wiring.json` is a CI register, printed on green `policy` runs and read by
+> whoever is auditing the gate. The document an **operator** follows to arm the dial is
+> `epics/E7-coding-e2b/tickets/CLI-006-staging-canary-runbook.md` ("Audience: the OPERATOR"),
+> §2.1 *The rollout dial (canary mode)* and §3 step 3 — and until W16A-FIX it said **nothing about
+> billing**. Measured, not assumed: `grep -nic 'budget|cost|billing|spend|unbilled'` over that
+> runbook returned exactly **2** hits, and both are something else — `:20` "authorize the real E2B
+> spend" (the operator/session boundary on handling `E2B_API_KEY`) and `:211` "the same org
+> budget", which §2.5(c) is using for the **concurrency-slot** cap, not money. W16A's
+> first pass wrote "READ IT BEFORE ARMING AOA_DISTRIBUTED_EXECUTION_ROLLOUT" into the register,
+> which addresses a reader who is not there. The warning now lives in the runbook at §2.1 and is
+> cross-referenced from §3 step 3; the register keeps the derivation and points at it. **The finding
+> is unchanged in severity, status and every measurement** — this amendment is about where the
+> consequence is published, not what it is. Measured, arming the dial to `canary` for an
 Organization converts every eligible task run into spend that no `budget_policies` row, no agent
 `budgetMonthlyCents` pause, and no company hard-stop can observe — because the ledger they all read
 never receives a row. The defect is not that the bridge is dormant (that is honestly declared and
