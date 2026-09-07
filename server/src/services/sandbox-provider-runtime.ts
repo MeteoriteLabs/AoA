@@ -790,21 +790,35 @@ export function createE2bSandboxRuntimeProvider(
           // an egress surface — `SandboxOpts.network` (allowOut/denyOut/rules)
           // reaching the create body via `buildNetworkBody`, `updateNetwork`
           // for a running sandbox, and a `getInfo()` read-back of what the
-          // server applied. What is UNMEASURED is whether the operator's E2B
-          // tier honours a network body at all; nothing client-side validates
-          // it, and the API target is per-company configurable, so a tolerant
-          // server can return 200 and leave the sandbox unpoliced. That is why
-          // this call still passes `metadata` and NOT `network`: adopting the
-          // real surface requires the probe plus a mandatory read-back, and is
-          // deliberately out of scope for a record-and-guard change.
+          // server applied.
           //
-          // Unit W10B built the keyed probe that measures the tier question this
-          // comment leaves open, and the stop condition that would end the option
-          // (a guest DNS resolver inside the deny set: `denyOut` has no exclude, and
-          // any `allowOut` entry flips the whole policy to default-deny). It is built
-          // and NOT YET FIRED, so it is not a measurement. See
-          // `docs/replatform/epics/E8-browser-automation/tickets/W10B-egress-enforcement-runbook.md`.
-          // Nothing here applies a network policy: W10B measures, it does not enforce.
+          // ★★★ MEASURED 2026-09-07 (E8-F008, workflow run 34085130892): the
+          // tier does NOT honour a network body. It ACCEPTS the deny set,
+          // VALIDATES it server-side, STORES it, returns it VERBATIM from
+          // getInfo() -- and routes the denied traffic anyway. A sandbox
+          // declaring denyOut 169.254.0.0/16 reached 169.254.169.254 (401)
+          // exactly as an anti-vacuity sandbox that denied a different range.
+          // updateNetwork behaves the same way.
+          //
+          // So this call still passes `metadata` and NOT `network` -- and the
+          // reason has changed from "unmeasured" to "measured inert". DO NOT
+          // adopt `network` here on the strength of a getInfo() read-back: the
+          // read-back PASSES on that unpoliced sandbox, so it verifies what was
+          // DECLARED and not what is ENFORCED. Adopting it would ship a control
+          // that looks correct in the code, in the logs and in its own
+          // verification, and enforces nothing. E8-F008 sections 1 and 3.
+          //
+          // Unit W10B built the keyed probe that answered the tier question, and the
+          // stop condition that would have ended the option a different way (a guest
+          // DNS resolver inside the deny set: `denyOut` has no exclude, and any
+          // `allowOut` entry flips the whole policy to default-deny). THAT STOP
+          // CONDITION DID NOT FIRE -- the resolver was outside every declared range and
+          // resolution worked under the policy -- so the result is genuine inertness and
+          // not a broken experiment. The run and its record are in
+          // `docs/replatform/epics/E8-browser-automation/tickets/W10B-egress-enforcement-runbook.md`
+          // (section 12) and `W10B-egress-enforcement-result.md` beside it.
+          // Nothing here applies a network policy: W10B measured, it did not enforce,
+          // and no enforcement exists at any layer (E8-F003 section 8 census).
           //
           // Omitted entirely when no allowlist was supplied, so the
           // pre-existing exact `create(...)` call assertions in

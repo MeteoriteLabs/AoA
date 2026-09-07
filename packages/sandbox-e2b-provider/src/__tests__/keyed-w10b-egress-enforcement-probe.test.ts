@@ -36,9 +36,15 @@ import { describe, expect, it } from "vitest";
 // (pnpm-lock.yaml) exposes `SandboxOpts.network`
 // with `allowOut`/`denyOut`, puts it in the `POST /sandboxes` body, exposes
 // `Sandbox.updateNetwork`, and maps the server's answer back through `getInfo()`. AoA has
-// never called any of it. What is UNMEASURED is ENFORCEMENT — and the no-key block at the
+// never called any of it. What was UNMEASURED is ENFORCEMENT — and the no-key block at the
 // bottom of this file PINS those SDK facts on every PR, so the premise cannot silently rot
 // in the other direction either.
+//
+// ★★★ ENFORCEMENT IS NOW MEASURED, ONCE: run 34085130892 (2026-09-07, ab23eabdc, aoa-base).
+// a=no b=yes c=no d=no e=no regression=no; DECISION abandon (denyout-is-inert-at-this-tier).
+// The tier accepts, validates, stores and echoes the deny set and enforces none of it, on
+// both Sandbox.create and updateNetwork. Finding E8-F008; the operator record is the runbook
+// §12 and W10B-egress-enforcement-result.md.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // HOW TO READ THE RESULT — and why a NO, and the ABANDON YES, keep this lane GREEN

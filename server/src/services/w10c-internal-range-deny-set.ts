@@ -3,9 +3,53 @@
 // W10C — THE PINNED INTERNAL-RANGE DENY SET, AS A PURE MODULE.
 //
 // This module is DATA + PURE FUNCTIONS. It wires nothing, enforces nothing, and
-// is referenced by no call site. A later unit applies it (to the provider-layer
-// network body); that wiring is deliberately separate so this set can be reviewed
-// on its own merits first.
+// is referenced by NO PRODUCTION CALL SITE -- only by its own test.
+//
+// ★★★ ITS INTENDED CONSUMER IS DEAD, AND THIS MODULE IS KNOWINGLY ORPHANED.
+//
+// This set was built for one consumer: applying it to the E2B provider-layer
+// `network.denyOut` body. On 2026-09-07 that consumer was measured out of
+// existence -- workflow run 34085130892 (E8-F008): the tier ACCEPTS a deny set,
+// VALIDATES it server-side, STORES it, returns it VERBATIM from getInfo(), and
+// routes the denied traffic anyway. Both `Sandbox.create` and `updateNetwork`
+// behave that way. So there is no unit coming to apply this, and the sentence
+// that used to stand here -- 'a later unit applies it' -- was withdrawn rather
+// than left to read as a plan.
+//
+// ★ DO NOT READ THIS FILE AS A LIVE CONTROL, A PLANNED ONE, OR EVIDENCE THAT
+// EGRESS IS FILTERED ANYWHERE. Nothing in this tree filters sandbox egress at
+// any layer: E8-F003 §8 carries the census, and every candidate in it is
+// refuted. DE-08 (severity Critical) reads `not-delivered`.
+//
+// -- WHY IT IS KEPT RATHER THAN REVERTED, AND WHAT WOULD REVIVE IT ------------
+// Kept because the DERIVATION, not the array, is the asset, and the derivation
+// is checked against LIVE code on every CI run: `w10c-internal-range-deny-set.test.ts`
+// re-derives the IPv4 cover from `isPrivateIP` (server/src/services/outbound-url-guard.ts)
+// by a full 2^24 sweep and asserts equality, so a change to that live predicate
+// reds this module. The header below also records two MEASURED facts about
+// shipped code -- the `mcp-connector-oauth.ts` BlockList's missing
+// 192.88.99.0/24, and `isPrivateIP('::169.254.169.254') === false` -- which are
+// findings about live SSRF surfaces rather than about the dead consumer.
+//
+// WHAT WOULD REVIVE IT, named so this is a real disposition and not 'it might be
+// handy'. Any enforcement point that consumes a CIDR LIST rather than a boolean
+// predicate:
+//   * an in-guest packet filter (E8-F003 §3 point 2 / BRW-004 D3 option (c));
+//   * a container/networked-lane egress policy (docker network, nftables);
+//   * a provider tier MEASURED to honour a deny set -- `resolveE2bDomain` is
+//     per-company configurable (sandbox-provider-runtime.ts:577-578, self-hosted
+//     branch :545) and only one tier has ever been measured;
+//   * fixing the measured `mcp-connector-oauth.ts` divergence against a derived
+//     source of truth rather than by hand.
+// WHAT IS DEAD, explicitly: adopting this into the managed-E2B `network` body at
+// the measured tier. That is refuted, not pending.
+//
+// IF NONE OF THOSE IS TAKEN, DELETING THIS MODULE AND ITS TEST IS THE RIGHT MOVE.
+// The dormancy is on the record so that decision is made deliberately rather than
+// by nobody noticing: `scripts/gate-clause-wiring.json` carries
+// `E8-w10c-internal-range-deny-set` as `unwired`, which `check-gate-clause-wiring.mjs`
+// prints in the DORMANT line on every green run, and which turns RED the moment a
+// production caller appears (promote it then, and say what consumes it).
 //
 // -- WHY THIS SET EXISTS AT ALL -----------------------------------------------
 // The repo's authority on "is this address internal" is `isPrivateIP`

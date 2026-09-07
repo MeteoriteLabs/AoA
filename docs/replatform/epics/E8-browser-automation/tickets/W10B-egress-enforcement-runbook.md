@@ -1,6 +1,8 @@
 # W10B — the DE-08 egress-enforcement probe: operator runbook
 
-**Status:** built, CI-green, **never fired**. Firing it is an operator action.
+**Status:** built, CI-green, **FIRED ONCE** — run [`34085130892`](https://github.com/MeteoriteLabs/AoA/actions/runs/34085130892), 2026-09-07, on `docs/replatform-program` at `ab23eabdc`, template `aoa-base`.
+**Verdict: `measured` — `a=no b=yes c=no d=no e=no regression=no`; `DECISION: abandon (denyout-is-inert-at-this-tier)`.** §12 is the record; §7's block is that run's real report.
+Firing it again is an operator action.
 **Written:** 2026-09-07, against `73f3b00fd`.
 **Read this instead of the source.** Everything you need to run the probe and read its answer is here.
 
@@ -18,6 +20,8 @@ layer outside the guest** is real, by measuring the E2B network seam AoA has **n
 register, spends **no model tokens**, and touches no database. It creates four short-TTL sandboxes,
 runs read-only reachability probes inside them, records a verdict **durably** (§6), and tears them
 down.
+**★ It has now run, and the answer was the inert one. §12 carries the record, the verdicts and what
+they closed; finding `E8-F008` carries the analysis. Read §12 before re-firing it.**
 
 ---
 
@@ -73,12 +77,21 @@ the seam**:
 * `Sandbox.updateNetwork` → `PUT /sandboxes/{sandboxID}/network`;
 * `getInfo()` mapping the server's answer back to `SandboxInfo.network`.
 
-**AoA has never called any of it.** What is *still unmeasured* is whether the operator's tier
-**enforces** what the seam declares — and that is precisely what this run answers. The honest
-correction is therefore *"the seam exists and was never called"*, **not** *"the boundary works"*.
+**AoA has never called any of it.** What was still unmeasured when this runbook was written is whether
+the operator's tier **enforces** what the seam declares — and that is precisely what this run
+answered. The honest correction is therefore *"the seam exists and was never called"*, **not**
+*"the boundary works"*.
+**★ MEASURED 2026-09-07 (run `34085130892`): the tier does NOT enforce it. It accepts the deny set,
+validates it server-side, stores it, reads it back verbatim — and routes the denied traffic anyway.
+`E8-F008`. §12.**
 
 > ★★★ **And that is why the read-back, question (b), is a first-class question rather than a
-> footnote.** `buildNetworkEgress` is a **pure passthrough** — the SDK validates nothing client-side,
+> footnote.** **★ SUPERSEDED BY THE RUN, and this is the single most important correction in this
+> document: question (b) came back `YES` on a sandbox that reached its own declared denied range. The
+> read-back is REAL and it is NOT A SAFEGUARD. It was specified against the tolerant server described
+> below; the measured tier is the opposite of that server, so the trigger never fires and the check
+> certifies an unpoliced sandbox. A read-back verifies what was DECLARED, never what is ENFORCED.
+> Do not carry the paragraph below forward as a design safeguard — read `E8-F008` §3.** `buildNetworkEgress` is a **pure passthrough** — the SDK validates nothing client-side,
 > and the only error path is the HTTP status. The API target is per-company configurable
 > (`resolveE2bDomain` = `config.domain ?? env.E2B_DOMAIN`, with a self-hosted branch). A **tolerant or
 > self-hosted server that ignores an unknown field returns 200** and hands back an **unpoliced sandbox
@@ -219,28 +232,49 @@ that means *run me again*.
 > template change or an outage — and your one authorised run would have bought an ambiguity instead of
 > an answer. A probe that can only pass is worthless.
 
-> ### ⚠ ILLUSTRATIVE FORMAT ONLY — the probe has never been fired
+> ### ✅ THE REAL REPORT — run [`34085130892`](https://github.com/MeteoriteLabs/AoA/actions/runs/34085130892), 2026-09-07
 >
-> **No W10B run exists.** The block below shows the SHAPE of the report and nothing else: every state
-> is a `<placeholder>`, not a measurement, and none should be read as a prediction. **When a run
-> happens, replace this block with its real summary and name the run id it came from.**
+> The illustrative placeholder block that stood here has been **replaced by the actual summary**, as
+> this section's own instruction required. Every state below is a measurement at `ab23eabdc`, template
+> `aoa-base`. The same text is in the run's job summary and in the
+> `w10b-egress-enforcement-record` artefact (90-day retention); the durable copy that outlives the
+> artefact is `W10B-egress-enforcement-result.md`, beside this file.
 
 ```
 ========== W10B DE-08 EGRESS-ENFORCEMENT PROBE — RESULT ==========
-TEMPLATE: <resolved template id>   (<explicit|default-product-image>)
+TEMPLATE: aoa-base   (default-product-image)
+  no template was supplied, so the pack resolved to "aoa-base" — the image AoA production runs, built FROM node:22 with curl and python3 installed. It does NOT fall back to "base": that image has no raw-socket tool, so question (e) would be inconclusive for want of a tool rather than an answer.
 DENY SET (policy arm): 169.254.0.0/16, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
 ANTI-VACUITY SET     : 198.51.100.0/24
-commit: <sha>   run nonce: W10B-<...>
+commit: ab23eabdc0504b05156829207940be80d3ec5bd4   run nonce: W10B-MTQRVDJP-2FEX4EOA
 
-PROBE a: <STATE> — <reason>
-PROBE b: <STATE> — <reason>
-PROBE c: <STATE> — <reason>
-PROBE d: <STATE> — <reason>
-PROBE e: <STATE> — <reason>
-PROBE regression: <STATE> — <reason>
+Questions:
+  a  HONOURED?   is a target inside the declared deny set actually unreachable?
+  b  VERIFIABLE? does getInfo() materialize the policy back?
+  c  ★ ABANDON?  is the guest's DNS resolver inside the deny set?
+  d  RE-ASSERT?  does updateNetwork work on a reused sandbox?
+  e  WHERE?      packet path, or an L7 proxy the guest can route around?
 
-DISPOSITION: <measured|inconclusive> — <probe>=<state> ...
-DECISION   : <abandon|viable|blocked-on-regression|undecided> (<because>)
+PROBE a: NO — denied-target-still-reachable
+    169.254.169.254 was REACHED (401) from inside the sandbox that declared 169.254.0.0/16 in denyOut, exactly as from the anti-vacuity arm. The declared deny set is INERT at this tier — the same result the metadata.egressAllowlist seam already produced (E8-F003), one API surface over. That closes the provider-network option and it is a RESULT, not a failure. IPv6 spellings of the SAME destination under the same policy: metadata_v4_mapped=reached/reached metadata_v4_mapped_hex=reached/reached metadata_v6=blocked/refused-or-unrouted. ★ 2 of them REACHED — an IPv4-only deny set has an open IPv6 flank, which is expected: the SDK's only sentinel is ALL_TRAFFIC = 0.0.0.0/0, with no ::/0.
+PROBE b: YES — policy-materialized-exactly
+    getInfo() returned denyOut = [10.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16], exactly the declared set. A run CAN verify what was applied instead of assuming it.
+PROBE c: NO — resolver-outside-the-deny-set
+    The approach SURVIVES this question. 8.8.8.8: no declared IPv4 deny entry contains it. nameservers: 8.8.8.8; deny set: 169.254.0.0/16, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16. Name resolution also worked under the policy, so the deny set does not sit between the guest and its resolver.
+PROBE d: NO — update-did-not-take-effect
+    updateNetwork returned successfully and the target was still REACHED afterwards (401). A reused lease CANNOT be re-policed through this call, so any design that re-asserts policy on reuse is unavailable. The sandbox was paused and resumed before the update, so this is the warm-resume shape.
+PROBE e: NO — nothing-was-blocked-so-there-is-no-layer-to-locate
+    question (a) measured the deny set INERT: the target was reached under the policy. There is no enforcement anywhere, so asking which layer holds it is dissolved rather than unanswered.
+PROBE regression: NO — the-deny-set-does-not-break-the-product
+    every exercised product-regression row was REACHED under the deny set: dns_dependent=reached/reached model_api=reached/reached. NOT EXERCISED: aoa_api_url — this check is PARTIAL.
+
+OBSERVATIONS: {"aoaApiRow":"no AOA control-plane URL was supplied; that product-regression row was NOT exercised","denySetV4":["169.254.0.0/16","10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"],"denySetV6":["fe80::/10","fd00::/8","::ffff:0:0/96"],"antiVacuitySet":["198.51.100.0/24"],"controls":{"ok":true,"problems":[]},"policySandboxId":"iqxqyb6z125jm2el8fw11","antiVacuitySandboxId":"ia4rtdajfwq487odec059","getInfoNetwork":{"denyOut":["169.254.0.0/16","10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"],"allowPublicTraffic":true},"resolvConfPolicyArm":"nameserver 8.8.8.8","resolvConfControlArm":"nameserver 8.8.8.8","reuseShape":"warm-resume","reuseShapeDetail":"betaPause() then connect() — the sandbox came back from a pause","ipv6DenyArm":{"created":false,"detail":"SandboxError: 400: invalid denied CIDR ::ffff:0:0/96","readBack":"getInfo failed: not attempted","rows":{},"note":"Whether the API even ACCEPTS IPv6 deny entries is unknown territory: the SDK validates nothing client-side and its only sentinel is ALL_TRAFFIC = 0.0.0.0/0, with no ::/0. A create failure here is a RESULT."}}
+
+DISPOSITION: measured — a=no b=yes c=no d=no e=no regression=no
+DECISION   : abandon (denyout-is-inert-at-this-tier)
+  The declared deny set had no effect: the target was reached under the policy exactly as without it. The provider-network option is unavailable at this tier for the same reason the metadata.egressAllowlist seam was (E8-F003), one API surface over.
+A `no`, and (c)'s ABANDON `yes`, are RESULTS and this lane stays green for them. Only `inconclusive` reds.
+=================================================================
 ```
 
 ### (a) HONOURED? — is a denied target actually unreachable?
@@ -248,7 +282,7 @@ DECISION   : <abandon|viable|blocked-on-regression|undecided> (<because>)
 | Verdict | What it means | What to do |
 |---|---|---|
 | `YES — denied-target-unreachable-under-policy` | The target was blocked in the arm that denied it and **reached in the anti-vacuity arm**. The tier honours `denyOut` at `Sandbox.create`. | Read (b) next; enforcement you cannot verify is not shippable. |
-| `NO — denied-target-still-reachable` | The target was reached **under the policy**, exactly as without it. The declared deny set is **inert at this tier** — the same result the `metadata.egressAllowlist` seam produced (E8-F003), one API surface over. | **The option closes.** Record it against DE-08 and E8-F003; the in-guest point is then the only candidate, with the agent-writability problem in §8 unresolved. |
+| `NO — denied-target-still-reachable` | The target was reached **under the policy**, exactly as without it. The declared deny set is **inert at this tier** — the same result the `metadata.egressAllowlist` seam produced (E8-F003), one API surface over. | **The option closes.** Record it against DE-08 and E8-F003; the in-guest point is then the only candidate, with the agent-writability problem in §8 unresolved. **★ THIS IS WHAT HAPPENED — §12. And the in-guest point is not a candidate either: §8's own measurement retires it, so the census is closed rather than reduced to one. `E8-F003` §8.** |
 | `INCONCLUSIVE — controls-failed` | One of §5b's control rows did not hold; the detail names which. | Fix the apparatus and re-run. Nothing may be read. |
 | `INCONCLUSIVE — question-row-missing` | The question target produced no result line. | Re-run; the log carries the raw channel for every row, parsed or not. |
 
@@ -355,7 +389,7 @@ route around is not a boundary against the very workload it is meant to contain.
 | `scripts/lib/w10b-egress-enforcement-probe.mjs` | the pure core: template resolution, the deny sets, the CIDR engine behind the ABANDON question, the command builder and line parser, the four control rows, all five verdicts plus the regression verdict, the computed decision, the redactor, the durable-record builder, and `evaluateDurableRecord`. Zero imports; no network, no filesystem. |
 | `scripts/lib/__tests__/w10b-egress-enforcement-probe.test.mjs` | proves every one of those decisions **without a key**, on every PR, in the required `policy` job. It does **not** pin the stale-premise correction: an earlier draft did, FILE-WIDE, which could not fail on the thing it named. Section 15 of that file records the deletion; W10A's per-occurrence guard is the enforcement. |
 | `.github/workflows/keyed-e2b-w10b-egress-enforcement-probe.yml` | the lane: the probe step, the `always()` fallback record writer, the `always()` artefact upload, and the positive-control step that refuses to let a skip read as success. |
-| `.github/keyed-e2b-w10b-egress-enforcement-trigger` | **not created by this PR.** Creating/appending it on `docs/replatform-program` is the push route to fire the lane. |
+| `.github/keyed-e2b-w10b-egress-enforcement-trigger` | **NOW EXISTS** — created by `ab23eabdc` to fire run `34085130892`. It was not created by the probe's own PR. **★ APPENDING TO THIS FILE ON `docs/replatform-program` FIRES ANOTHER KEYED E2B RUN**, which spends an authorisation the founder gives individually — so do not edit it to record an outcome. Outcomes go in §12 and in `W10B-egress-enforcement-result.md`. |
 
 ---
 
@@ -370,3 +404,86 @@ route around is not a boundary against the very workload it is meant to contain.
 | An arm reports `ARM FAILED` with an HTTP status | `Sandbox.create` rejected the `network` body. The SDK validates nothing client-side, so an unknown or unsupported field surfaces only here. | Read the status. For the **IPv6 arm** this is a *result*, recorded in `observations.ipv6DenyArm` — the API refuses IPv6 deny entries. |
 | The run failed and there is **no** `w10b-egress-enforcement-record` artefact | Should be impossible: both the fallback writer and the upload are `if: always()`. | Treat the run as **unmeasured**, not as a result, and say so wherever you report it — that is the E7-F025 failure returning. |
 | `gh workflow run` answers 404 | The lane has never run, so GitHub has not indexed it for dispatch. | Use the push route in §4. |
+
+---
+
+## 12. THE RUN — `34085130892`, 2026-09-07
+
+**This lane has fired exactly once.** Recorded here rather than only in the run page, because a keyed lane
+that fires and is not written down is the `E7-F025` failure this pack's own §6 exists to avoid.
+
+| | |
+|---|---|
+| Run | [`34085130892`](https://github.com/MeteoriteLabs/AoA/actions/runs/34085130892), job `probe`, 1m33s |
+| Fired by | the **push route** (§4) — commit `ab23eabdc` *"chore(w10b): fire the egress-enforcement probe"* on `docs/replatform-program` |
+| Template | `aoa-base` (resolved from an empty input — `default-product-image`) |
+| Inputs | `aoa_api_url` empty (push route carries no inputs), so the `aoa_api_url` regression row was **not exercised** |
+| Run nonce | `W10B-MTQRVDJP-2FEX4EOA` |
+| Artefact | `w10b-egress-enforcement-record` → `w10b-egress-enforcement-record.json`, schema `aoa.w10b.egress-enforcement-record/1` |
+| Sandboxes | policy `iqxqyb6z125jm2el8fw11`, anti-vacuity `ia4rtdajfwq487odec059`, reuse `i7y52on39wdczxyhrm94v`, IPv6 arm **not created** |
+
+### 12.1 The verdicts
+
+| question | state | reason |
+|---|---|---|
+| **a** HONOURED? | **NO** | `denied-target-still-reachable` — `169.254.169.254` REACHED (401) from inside the sandbox declaring `169.254.0.0/16`, identically to the anti-vacuity arm |
+| **b** VERIFIABLE? | **YES** | `policy-materialized-exactly` — `getInfo()` returned the declared `denyOut` exactly |
+| **c** ★ ABANDON? | **NO** | `resolver-outside-the-deny-set` — `nameserver 8.8.8.8`, inside no declared range; resolution worked under the policy |
+| **d** RE-ASSERT? | **NO** | `update-did-not-take-effect` — `updateNetwork` succeeded; target REACHED before and after, on a warm-resumed sandbox |
+| **e** WHERE? | **NO** | `nothing-was-blocked-so-there-is-no-layer-to-locate` — the question dissolves |
+| PRODUCT REGRESSION | **NO** (PARTIAL) | `dns_dependent` and `model_api` REACHED under the deny set; `aoa_api_url` **not exercised** |
+
+`DISPOSITION: measured` · `DECISION: abandon (denyout-is-inert-at-this-tier)`.
+
+### 12.2 ★★★ THE ABANDON CONDITION DID NOT FIRE — so this is inertness, not misconfiguration
+
+This is the distinction that makes the run readable, and it is why §2's stop condition is a *separate*
+question from §7's (a). **Question (c) came back `no`.** The guest's nameserver is `8.8.8.8` in **both**
+arms, contained by none of the four declared ranges, and name resolution measurably **worked** under the
+policy. So the deny set did not sit between the guest and its resolver, nothing in the policy arm was
+starved of DNS, and the product-regression rows (`dns_dependent`, `model_api`) were **reached**.
+
+> **The policy arm was a healthy sandbox that could reach everything it needed — and could also reach the
+> destination it had declared denied.** Had (c) come back `yes`, the correct reading would have been *"we
+> broke our own experiment and the option is unusable for that reason"*. It did not. The deny set is
+> genuinely inert at this tier.
+
+All four mandatory controls (§5b) held: positive `allowed_public` 200 in both arms, apparatus `.invalid`
+curl exit 6 in both arms, anti-vacuity `metadata_v4` 401, and every row `parsed=yes`. The record's own
+`observations.controls` is `{"ok":true,"problems":[]}`.
+
+### 12.3 What the run added that no question asked for
+
+- **The API validates server-side.** The IPv6 arm was **refused at create**: `SandboxError: 400: invalid denied CIDR ::ffff:0:0/96`. So the endpoint parses and range-checks the
+  deny set — it is *not* a tolerant server discarding an unknown field. It stores a policy it does not
+  apply, which is a different and worse shape than the one §3 anticipated.
+- **Two of three IPv6 spellings of the same destination reached** under the policy (`[::ffff:169.254.169.254]`, `[::ffff:a9fe:a9fe]`); `[fd00:ec2::254]` failed in **both** arms and is
+  therefore unattributable.
+- **`rfc1918_10` timed out in both arms**, so the `10.0.0.0/8` row says nothing either way. The verdict
+  rests entirely on `169.254.169.254`.
+- **The raw-socket row identifies the answering service**: hand-written bytes to port 80 came back
+  `HTTP/1.0 401 … Server: Firecracker API`, in **both** arms.
+
+### 12.4 What it closed, and what it did NOT
+
+**Closed.** The provider-network option, and with it the candidate-layer census for `DE-08` — see
+`E8-F003` §8, which lists all five candidates with each row labelled *measurement*, *structural* or
+*derived*. Finding **`E8-F008`** (HIGH, open, `unowned`) owns the result and the read-back lesson;
+**`E8-F007`** §7 records the closure of its own open tier question, in both directions.
+
+**NOT closed, and deliberately.** `DE-08` keeps `deliveryStatus: not-delivered` and its clause text is
+untouched; `E8-F003` and `E8-F007` keep their status, severity and ownership. **What to do about a
+`Critical` control that cannot be enforced at any available layer is a founder decision that has not
+been taken**, and nothing in this record pre-empts it. No enforcement was proposed or built.
+
+### 12.5 Before firing it again
+
+The founder authorises keyed E2B runs individually, so a re-fire spends an authorisation. Three things
+are worth knowing first:
+
+1. **A repeat on the same tier is expected to reproduce this**, and would add nothing. What would be new
+   is a **different tier** (`resolveE2bDomain = config.domain ?? env.E2B_DOMAIN`, self-hosted branch),
+   which this run says nothing about.
+2. **Pass `-f aoa_api_url=…`** if you want the regression check to stop reporting PARTIAL.
+3. **The IPv6 arm cannot be created as written** — `::ffff:0:0/96` is refused with a 400. That is a
+   recorded result, not a bug to route around; changing the arm's CIDRs changes what the arm measures.
