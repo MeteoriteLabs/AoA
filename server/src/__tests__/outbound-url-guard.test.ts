@@ -95,6 +95,52 @@ describe("isPrivateIP", () => {
     expect(isPrivateIP("1.1.1.1")).toBe(false);
     expect(isPrivateIP("2606:4700:4700::1111")).toBe(false); // Cloudflare DNS IPv6
   });
+
+  // --- W13 / E8-F009 §4 — THE PARSER DEFECT, PINNED ------------------------
+  //
+  // `isPrivateIP('::169.254.169.254')` returned FALSE. The local IPv6 tokenizer's
+  // per-token regex forbade a dot, so an address with an EMBEDDED DOTTED QUAD never
+  // became words, never reached the IPv6 range checks below, and then fell through
+  // to the IPv4 branch where `Number("::169")` is NaN and every `startsWith` missed.
+  // Both this predicate AND the OAuth BlockList let that literal through.
+  //
+  // Reverting `outbound-url-guard.ts` to its own `parseIpv6Words` (the dot-forbidding
+  // one) reds the first assertion here. That is the anti-regression pin.
+  it("W13/E8-F009: parses an embedded dotted quad — ::169.254.169.254 is PRIVATE", () => {
+    expect(isPrivateIP("::169.254.169.254")).toBe(true);
+    // The same address, hex-spelled, was always caught — the defect was the SPELLING,
+    // not the range. Both spellings must now agree.
+    expect(isPrivateIP("::a9fe:a9fe")).toBe(true);
+  });
+
+  it.each([
+    // every spelling of an embedded dotted quad that lands in a range isPrivateIP owns
+    ["::169.254.169.254", true], // IPv4-compatible (RFC 4291 §2.5.5.1, deprecated)
+    ["::10.0.0.1", true],
+    ["::8.8.8.8", true], // still a ZERO leading word — the range, not the payload
+    ["64:ff9b::169.254.169.254", true], // NAT64 well-known prefix (RFC 6052)
+    ["2002::169.254.169.254", true], // 6to4 (RFC 3056)
+    ["fe80::192.168.1.1", true], // link-local
+    ["0:0:0:0:0:ffff:10.0.0.1", true], // uncompressed IPv4-mapped — was ALSO missed
+    ["0:0:0:0:0:ffff:8.8.8.8", false], // ...and the public one must stay allowed
+    ["::ffff:8.8.8.8", false],
+    ["2606:4700:4700::8.8.8.8", false], // a public prefix stays public
+  ])("W13: dotted-quad IPv6 spelling %s → isPrivateIP %s", (ip, expected) => {
+    expect(isPrivateIP(ip as string)).toBe(expected as boolean);
+  });
+
+  it("W13: the parser fix cannot UN-block anything — it only ever adds denials", () => {
+    // The pre-fix parser returned null for these, and a null parse skipped the whole
+    // IPv6 arm, so the old verdict was necessarily `false`. Anything that was TRUE
+    // before did not go through that arm at all and is unaffected; this asserts the
+    // representative set of those still holds.
+    for (const ip of ["10.0.0.1", "169.254.169.254", "::1", "fc00::1", "::ffff:127.0.0.1"]) {
+      expect(isPrivateIP(ip), ip).toBe(true);
+    }
+    for (const ip of ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "172.32.0.1"]) {
+      expect(isPrivateIP(ip), ip).toBe(false);
+    }
+  });
 });
 
 describe("validateAndResolveFetchUrl — protocol gate", () => {

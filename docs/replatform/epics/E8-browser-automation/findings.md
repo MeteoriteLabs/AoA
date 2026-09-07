@@ -1104,7 +1104,29 @@ a tier AoA actually uses.
 
 ## E8-F009 — The LIVE OAuth SSRF deny table is a hand-written subset of the repo's own private-IP predicate: one IPv4 /24 and EIGHT IPv6 classes are missing, on a path whose next hop is chosen by the remote server
 
-**Status:** open · **Owner:** unowned (see reason)
+**Status:** resolved_by_w13 · **Owner:** — (closed; the ownership entry is deleted in this commit)
+**Successor:** **W13 — PR `replatform/w13-ssrf-parser-consolidation`**, which implements §7's
+remedy in §7's order (parser first, then derive the table). See §8 for what it does, what it
+proves, and the one class it changes that has a conditional legitimate use.
+
+> ★★★ **THE RESOLUTION IS CARRIED BY THE COMMIT THAT LANDS THE FIX, AND IT IS BRANCH STATE
+> UNTIL THAT BRANCH MERGES.** An earlier revision of this entry left it `open` on the reasoning
+> that merging is the founder's call, so the finding should not pre-announce its own closure.
+> External review (Codex, on `86f2a8644`) argued the mechanics run the other way and **it was
+> right**: this PR *is* the commit that satisfies §7's stated resolution condition, so if the
+> register still says `open` at the moment it merges, the register is wrong from that instant and
+> `finding-ownership.json` reports a live defect that no longer exists. The manifest entry's own
+> closing sentence prescribed the same move — *"Resolve = flip findings.md Status + DELETE this key
+> in the SAME commit"* — and `check-finding-ownership.mjs` enforces it: a non-open finding that
+> keeps a manifest entry is a `stale_declaration` failure.
+>
+> **Read this as a branch state, not a landed one.** This line is true on
+> `replatform/w13-ssrf-parser-consolidation`. **If the founder declines to merge that PR, this
+> resolution is discarded with the branch and the finding is `open` again** — there is no separate
+> revert to remember, because the register and the fix travel in the same commit history.
+> Nothing about the CODE is contingent: the parser fix and the derived table are measured below.
+> What is contingent is whether they reach `main`.
+
 **Severity:** MEDIUM — argued in §6, with the case for HIGH recorded rather than dismissed.
 **Filed:** W12, 2026-09-07, by **re-deriving from source** the two facts
 `server/src/services/w10c-internal-range-deny-set.ts`'s module header records about SHIPPED code.
@@ -1114,12 +1136,14 @@ states**, and the widening is this finding.
 them), `E8-F008` (the W10C module's intended consumer, measured out of existence), the W10C module
 itself (a mechanically DERIVED cover, kept partly because it records these two facts).
 
-> ★★★ **NOTHING IS FIXED BY THIS ENTRY, DELIBERATELY.** `mcp-connector-oauth.ts` is a live SSRF
-> filter on a shipped path and `outbound-url-guard.ts` is imported by several production callers.
-> Editing either is a behaviour change to security-relevant code, and this unit was tasked to record
-> rather than fix on the stated ground that the founder wants to see that diff first — a relayed
-> instruction, marked as such. This is a RECORDING. No file under `server/` or `packages/` is touched
-> by the commit that files it.
+> ★★★ **NOTHING WAS FIXED BY THE COMMIT THAT FILED THIS ENTRY, DELIBERATELY.**
+> `mcp-connector-oauth.ts` is a live SSRF filter on a shipped path and `outbound-url-guard.ts` is
+> imported by several production callers. Editing either is a behaviour change to security-relevant
+> code, and the FILING unit was tasked to record rather than fix on the stated ground that the
+> founder wants to see that diff first — a relayed instruction, marked as such. That filing commit
+> touched no file under `server/` or `packages/`. **§8 is a separate, later commit and it does
+> change those files.** §1–§7 below are the original diagnosis, left exactly as filed so the
+> measurement can still be repeated against the pre-fix tree; §8 records the fix.
 
 ### 1. What was re-derived, and how — so it can be repeated rather than believed
 
@@ -1270,7 +1294,75 @@ would *lose* coverage it has today: `isPrivateIP` returns `false` for `::169.254
 delegating to it naively would be a regression on a v6 spelling. That ordering is the reusable half
 of this finding and is the reason it is filed with a remedy sketch rather than a patch.
 
-**Owner — `unowned`, and it is a real disposition rather than a shrug.** No ticket in the re-platform
+### 8. The successor — what W13 does, and the one thing it changes that is not free
+
+Filed as an addendum on 2026-09-07 by the unit that built it, so this register carries the
+outcome rather than only the diagnosis. **This section IS the resolution**, on the terms set out
+under **Status** above: it is true on the successor's branch, and it goes with that branch if the
+branch does not merge.
+
+**WHAT IS CLOSED, CLAIM BY CLAIM, so "resolved" is checkable rather than asserted.** This finding
+made two independent claims and both are closed by the successor:
+
+| claim | where filed | closed by | measured at the successor's tip |
+|---|---|---|---|
+| **A — range divergence**: the OAuth table misses one IPv4 /24 and EIGHT IPv6 classes that `isPrivateIP` rejects | §2, §3 | the derived table (item 2 below) | the full 2^24 IPv4 sweep reports **zero** addresses where `isPrivateIP` rejects and the table allows; the IPv6 difference is computed exactly over 2^128 and `OLD \ NEW` is empty — `w13-oauth-deny-table-divergence.test.ts` §1–§2 |
+| **B — parser defect**: `isPrivateIP('::169.254.169.254') === false`, **and** it is not confined to the deny-set module because `isPrivateIP` has three production callers with no compensation | §4 | the single leaf parser (item 1 below) | `isPrivateIP('::169.254.169.254')` is now `true`. The three call sites are the same three, re-grepped: `outbound-url-guard.ts:188` and `:222` (was `:205`/`:239` — the lines moved because the local parser was deleted) and `egress-policy.ts:119` (was `:202`). All three read the FIXED predicate, so there is nothing left for them to compensate for |
+
+★ **ONE THING §5 RECORDED IS DELIBERATELY *NOT* CHANGED, AND IT IS NOT PART OF EITHER CLAIM.**
+§5 noted — correctly — that the IPv4-mapped range `::ffff:0:0/96` is *fully covered* by the table.
+It still is. External review (Codex) then observed that `isPrivateIP` **allows**
+`::ffff:<public v4>` while the table **denies** it, in either table, and that the divergence suite's
+probes never generated that case. That is a **DENY-MORE** divergence in the opposite direction to
+this finding, it is **pre-existing and identical before and after W13**, and it is now exercised and
+pinned as an intentional superset exception rather than described in prose — see the two
+`IPv4-MAPPED:` tests. **It does not hold this finding open**: E8-F009 is about the table denying too
+LITTLE, and nothing here denies too little any more.
+
+**It follows §7's ORDER, because §7's ordering was the reusable half of this finding.**
+
+1. **The parser first.** `outbound-url-guard.ts`'s local `parseIpv6Words` and
+   `egress-policy.ts`'s `parseIpv4`/`parseIpv6Value`/`parseIp` are both deleted and replaced
+   by ONE leaf module, `server/src/services/ip-literal.ts`, which both import.
+   `egress-policy.ts` already imports `isPrivateIP` from `outbound-url-guard.ts`, so reusing
+   its `parseIp` in the other direction would close an import cycle — the grammar is lifted
+   BELOW both instead. Parser count goes 2 → 1, not 2 → 3.
+   `isPrivateIP('::169.254.169.254')` is now `true`.
+2. **Then the table.** `mcp-connector-oauth.ts` builds its two `BlockList`s from
+   `INTERNAL_RANGE_DENY_CIDRS` — the mechanically derived, CI-re-derived cover of
+   `isPrivateIP` — instead of a hand-typed list. `scripts/gate-clause-wiring.json` moves
+   `E8-w10c-internal-range-deny-set` from `unwired` to `wired`; that entry had already named
+   this exact promotion condition.
+
+**What was proven, and how.** IPv4: a full 2^24 sweep of the old table against the new one —
+**zero** addresses move denied → allowed, and the allowed → denied set is **exactly**
+`192.88.99.0/24`. IPv6: both tables are CIDR lists, so their difference is computed by exact
+interval arithmetic over the **whole 2^128 space** — `OLD \ NEW` is empty, and `NEW \ OLD` is
+exactly the eight classes §3 lists. The superset property is therefore proven, not sampled.
+
+★★★ **THE ONE CLASS THAT IS NOT FREE, AND IT IS NAMED HERE RATHER THAN BURIED.**
+`64:ff9b::/96` is a **translation** prefix, not a host range. Nothing *lives* there — but in an
+IPv6-only deployment running DNS64/NAT64, a perfectly legitimate IPv4-only destination (an
+OAuth issuer with only an A record, say) is presented to the host *as* `64:ff9b::<v4>`. Denying
+the prefix would refuse it. Two facts bound that risk and neither is an argument that the risk
+is zero: (a) `isPrivateIP` **already** denies `64:ff9b::/48`, so the shared outbound guard —
+the plugin HTTP service and the `http` adapter — already takes this posture on every other
+outbound path, and an IPv6-only AoA deployment would already be failing there; (b) this is the
+same deployment question §6 says is the deciding fact for severity, and it remains
+**unmeasured**. The successor makes the OAuth path consistent with the rest of the product; it
+does not settle (b). **A founder who knows AoA runs anywhere IPv6-only should say so before
+this merges.**
+
+### 9. Ownership — historical, and why the manifest entry is now GONE
+
+**This section records why the finding was `unowned` while it was open. It is kept because the
+reasoning is reusable, not because anything still needs an owner** — the finding is resolved above
+and `scripts/finding-ownership.json` no longer carries an `E8-F009` key. `check-finding-ownership.mjs`
+requires exactly that pairing: it reports `stale_declaration` for any manifest entry whose finding is
+no longer open, so leaving the entry behind would have converted a closed defect into a permanent
+phantom on the open-findings list.
+
+**Owner — was `unowned`, and it was a real disposition rather than a shrug.** No ticket in the re-platform
 tree owns `mcp-connector-oauth.ts`: it is main-line product from the OAuth connector broker work
 (Decision #110), not re-platform surface, and E8's open tickets are about sandbox egress — a
 different boundary with a different threat model (`E8-F003`, `E8-F008`). Attaching it to one of them
@@ -1279,5 +1371,6 @@ because that is where the deny-set family and the derivation machinery already l
 `w10c-internal-range-deny-set.ts` — the module that first recorded these two facts — is enrolled in
 `scripts/gate-clause-wiring.json` as `E8-w10c-internal-range-deny-set` and names *"fixing the measured
 `mcp-connector-oauth.ts` divergence against a derived source of truth"* as one of the four things that
-would promote it. **It blocks nothing in the re-platform programme.** It needs a founder decision
-about a live security path.
+would promote it — **which W13 has now done, so that clause reads `wired` on this PR's branch.**
+**It blocks nothing in the re-platform programme.** It needs a founder decision about a live
+security path, and W13's PR is the shape that decision can take.

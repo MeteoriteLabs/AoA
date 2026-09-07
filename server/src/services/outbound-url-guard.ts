@@ -15,35 +15,18 @@ import {
 } from "node:http";
 import { request as httpsRequest } from "node:https";
 
+// W13 — the ONE IP-literal parser (./ip-literal.ts). The local `parseIpv6Words`
+// that used to live here forbade an embedded dotted quad in its per-token regex,
+// so `::169.254.169.254` never became words, never reached the IPv6 range checks
+// below, and this predicate returned FALSE for it (E8-F009 §4). The shared parser
+// accepts that spelling; the ranges below are unchanged.
+import { parseIpv6Words } from "./ip-literal.js";
+
 /** Only these protocols are allowed for outbound HTTP requests. */
 export const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 
 /** Maximum time (ms) to wait for a DNS lookup before aborting. */
 export const DNS_LOOKUP_TIMEOUT_MS = 5_000;
-
-function parseIpv6Words(ip: string): number[] | null {
-  const normalized = ip.toLowerCase().replace(/^\[|\]$/g, "").split("%", 1)[0]!;
-  if (!normalized.includes(":")) return null;
-  const halves = normalized.split("::");
-  if (halves.length > 2) return null;
-
-  const parseHalf = (value: string): number[] | null => {
-    if (!value) return [];
-    const words: number[] = [];
-    for (const token of value.split(":")) {
-      if (!/^[0-9a-f]{1,4}$/.test(token)) return null;
-      words.push(Number.parseInt(token, 16));
-    }
-    return words;
-  };
-  const left = parseHalf(halves[0] ?? "");
-  const right = parseHalf(halves[1] ?? "");
-  if (!left || !right) return null;
-  if (halves.length === 1) return left.length === 8 ? left : null;
-  const omitted = 8 - left.length - right.length;
-  if (omitted < 1) return null;
-  return [...left, ...Array<number>(omitted).fill(0), ...right];
-}
 
 function mappedIpv4(words: readonly number[]): string | null {
   if (

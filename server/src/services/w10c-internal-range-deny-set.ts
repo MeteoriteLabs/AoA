@@ -2,10 +2,19 @@
 //
 // W10C — THE PINNED INTERNAL-RANGE DENY SET, AS A PURE MODULE.
 //
-// This module is DATA + PURE FUNCTIONS. It wires nothing, enforces nothing, and
-// is referenced by NO PRODUCTION CALL SITE -- only by its own test.
+// This module is DATA + PURE FUNCTIONS. It enforces nothing itself.
 //
-// ★★★ ITS INTENDED CONSUMER IS DEAD, AND THIS MODULE IS KNOWINGLY ORPHANED.
+// ★ W13 UPDATE (2026-09-07): IT NOW HAS ONE PRODUCTION CONSUMER.
+// `mcp-connector-oauth.ts` builds its two `node:net` BlockList SSRF tables from
+// `INTERNAL_RANGE_DENY_CIDRS` instead of the hand-typed range lists it carried
+// before, closing the divergence E8-F009 measured (one IPv4 /24 and eight IPv6
+// classes). That is exactly the fourth promotion condition named below --
+// "fixing the measured mcp-connector-oauth.ts divergence against a derived source
+// of truth" -- so `scripts/gate-clause-wiring.json` moves this clause from
+// `unwired` to `wired`. Everything the header says about the module's ORIGINAL
+// consumer is still true and is kept below, unedited, because it is a measurement.
+//
+// ★★★ ITS ORIGINAL INTENDED CONSUMER IS DEAD, AND WAS THE REASON THIS WAS ORPHANED.
 //
 // This set was built for one consumer: applying it to the E2B provider-layer
 // `network.denyOut` body. On 2026-09-07 that consumer was measured out of
@@ -26,10 +35,12 @@
 // is checked against LIVE code on every CI run: `w10c-internal-range-deny-set.test.ts`
 // re-derives the IPv4 cover from `isPrivateIP` (server/src/services/outbound-url-guard.ts)
 // by a full 2^24 sweep and asserts equality, so a change to that live predicate
-// reds this module. The header below also records two MEASURED facts about
-// shipped code -- the `mcp-connector-oauth.ts` BlockList's missing
-// 192.88.99.0/24, and `isPrivateIP('::169.254.169.254') === false` -- which are
-// findings about live SSRF surfaces rather than about the dead consumer.
+// reds this module. The header below USED TO record two MEASURED facts about
+// shipped code -- the `mcp-connector-oauth.ts` BlockList's missing 192.88.99.0/24,
+// and `isPrivateIP('::169.254.169.254') === false`. BOTH ARE CLOSED AS OF W13: the
+// OAuth BlockList now DERIVES from this list rather than being transcribed beside
+// it, and the parser defect behind the second is fixed. They are kept below as a
+// record of what the divergence WAS, not as live gaps in shipped code.
 //
 // WHAT WOULD REVIVE IT, named so this is a real disposition and not 'it might be
 // handy'. Any enforcement point that consumes a CIDR LIST rather than a boolean
@@ -44,12 +55,21 @@
 // WHAT IS DEAD, explicitly: adopting this into the managed-E2B `network` body at
 // the measured tier. That is refuted, not pending.
 //
-// IF NONE OF THOSE IS TAKEN, DELETING THIS MODULE AND ITS TEST IS THE RIGHT MOVE.
-// The dormancy is on the record so that decision is made deliberately rather than
-// by nobody noticing: `scripts/gate-clause-wiring.json` carries
-// `E8-w10c-internal-range-deny-set` as `unwired`, which `check-gate-clause-wiring.mjs`
-// prints in the DORMANT line on every green run, and which turns RED the moment a
-// production caller appears (promote it then, and say what consumes it).
+// THAT DELETION QUESTION IS NOW ANSWERED: the fourth condition was taken in W13, so
+// this module is live and deleting it would delete a shipped SSRF table's data source.
+// `scripts/gate-clause-wiring.json` carries `E8-w10c-internal-range-deny-set` as
+// `wired`, naming `mcp-connector-oauth.ts` as what consumes it.
+//
+// ★ WHAT THAT GUARD ACTUALLY DOES -- stated exactly, because an overstated guard
+// claim is the same defect one level up from the one this module exists to stop.
+// `check-gate-clause-wiring.mjs` reds a `wired` clause ONLY when its symbol's
+// production reference count reaches ZERO. `INTERNAL_RANGE_DENY_CIDRS` measures 2
+// (`node scripts/check-gate-clause-wiring.mjs --counts`): the module-scope loop in
+// `mcp-connector-oauth.ts`, and the default parameter of `isCoveredByDenySet` below
+// -- which is INTRA-MODULE and cannot disappear while this file exists. So deleting
+// the OAuth consumer would take the count 2 -> 1 and the guard would STAY GREEN.
+// It catches deleting the whole thing. It does NOT catch orphaning this module
+// again, and it must not be cited as if it did.
 //
 // -- WHY THIS SET EXISTS AT ALL -----------------------------------------------
 // The repo's authority on "is this address internal" is `isPrivateIP`
@@ -59,12 +79,17 @@
 // is how divergent private-range tables get born; this tree already has three
 // (see the DIVERGENCE LEDGER below).
 //
-// So this array is NOT hand-copied. It is the MECHANICALLY DERIVED exact minimal
-// CIDR cover of `isPrivateIP`'s own IPv4 rejection set (a full 2^24 sweep of the
-// /24 space) and of its IPv6 rejection set (a recursive uniformity descent over
-// the leading words). `w10c-internal-range-deny-set.test.ts` RE-DERIVES the IPv4
-// cover from `isPrivateIP` on every CI run and asserts equality, so the two
-// cannot drift apart silently: editing `isPrivateIP` reds this module's test.
+// So this array is NOT hand-copied. It is MECHANICALLY DERIVED from `isPrivateIP`:
+// on IPv4, the exact minimal CIDR cover of the predicate's rejection set (a full
+// 2^24 sweep of the /24 space); on IPv6, the exact minimal cover of the predicate's
+// LEADING-WORD rules (a recursive uniformity descent over the leading words), which
+// is a STRICT SUPERSET of the predicate's actual IPv6 rejection set -- see the
+// superset section below for the measured witness and why it is kept that way.
+// `w10c-internal-range-deny-set.test.ts` RE-DERIVES the IPv4 cover from `isPrivateIP`
+// on every CI run and asserts equality, and sweeps all 65536 leading words on the
+// IPv6 side asserting that nothing the predicate rejects is MISSING here -- superset,
+// not equality. So the two cannot drift apart silently: editing `isPrivateIP` reds
+// this module's test.
 //
 // -- DIVERGENCE LEDGER (measured 2026-09-07, not assumed) ---------------------
 // Four representations of "internal range" already exist in the tree:
@@ -77,12 +102,14 @@
 //      with `isPrivateIP` on all 2^24 /24 blocks -- zero divergence. It is NOT
 //      reused here on purpose: importing the oracle into the code it checks would
 //      destroy its independence.
-//   3. `blockedIpv4`/`blockedIpv6` (server/src/services/mcp-connector-oauth.ts:11)
-//      -- node `BlockList` tables for OAuth-metadata SSRF. MEASURED DIVERGENCE:
-//      missing `192.88.99.0/24` (deprecated 6to4 relay anycast), which
-//      `isPrivateIP` DOES reject. Exactly one /24 of disagreement across the whole
-//      IPv4 space. Real, low-severity, and NOT fixed by this unit -- editing a live
-//      SSRF table is a behaviour change, and this unit changes no behaviour.
+//   3. `blockedIpv4`/`blockedIpv6` (server/src/services/mcp-connector-oauth.ts)
+//      -- node `BlockList` tables for OAuth-metadata SSRF. NO LONGER A SEPARATE
+//      REPRESENTATION: W13 rebuilt them FROM `INTERNAL_RANGE_DENY_CIDRS`, so they
+//      are a rendering of (1) rather than a hand transcription of it. What they
+//      used to diverge by, kept on the record: `192.88.99.0/24` on the IPv4 side
+//      (deprecated 6to4 relay anycast) and eight IPv6 classes -- including
+//      `2002::/16`, the ADDRESS end of the same 6to4 tunnel, and `64:ff9b::/96`,
+//      the NAT64 well-known prefix (E8-F009 §3).
 //   4. `METADATA_DENY_CIDRS` (server/src/services/egress-policy.ts:60) -- NOT a
 //      private-range table. Three cloud-metadata host routes whose only job is to
 //      make the REPORTED denial class more specific. Not a peer of this set.
@@ -90,16 +117,53 @@
 // This module is therefore a fifth FILE but not a fifth POLICY: it is a derived
 // rendering of representation (1), regenerated and pinned in CI.
 //
-// -- THE ONE DELIBERATE DIVERGENCE FROM `isPrivateIP` -------------------------
-// MEASURED: `isPrivateIP('::169.254.169.254') === false`. That is a PARSER
-// defect, not a range-coverage gap -- `isPrivateIP`'s `parseIpv6Words` rejects the
-// IPv4-compatible IPv6 spelling `::a.b.c.d` (its per-token regex forbids dots), so
-// the address never reaches the range checks at all. The address's actual value
-// has a zero leading word, so `::/16` in this set covers it, and
-// `egress-policy.ts`'s `parseIp` (which DOES accept an embedded dotted quad)
-// resolves it that way. This set is therefore a STRICT SUPERSET of `isPrivateIP`:
-// it covers the address that has already bitten. Kept as a superset deliberately --
-// a deny set that is wider than the predicate fails CLOSED.
+// -- THIS SET IS A STRICT SUPERSET OF `isPrivateIP`, DELIBERATELY --------------
+// It always has been, it still is, and it MUST STAY THAT WAY: a deny set that is
+// WIDER than the predicate it renders fails CLOSED. W13 made the superset
+// NARROWER by closing one of its two causes. It did NOT make it exact, and it was
+// never exact. (An earlier revision of this header claimed W13 made this "an EXACT
+// cover again". That was false twice over -- wrong about now, and wrong about
+// "again" -- and it is corrected here rather than quietly dropped, because this
+// array is what the live OAuth SSRF BlockList is built from, and a reader who
+// believes it is exact will one day "fix" the superset. That moves addresses
+// denied -> allowed, which is the one direction W13 promised never to move.)
+//
+// CAUSE (1), CLOSED IN W13 -- the parser defect. This USED TO READ:
+// `isPrivateIP('::169.254.169.254') === false`, a PARSER defect rather than a
+// range gap -- `isPrivateIP`'s local `parseIpv6Words` rejected the IPv4-compatible
+// spelling `::a.b.c.d` (its per-token regex forbade dots), so the address never
+// reached the range checks at all. This set covered it anyway via `::/16`. W13
+// FIXED THE PARSER: both modules now share one grammar (`./ip-literal.ts`),
+// lifted from `egress-policy.ts`'s `parseIp`, which already accepted an embedded
+// dotted quad. `isPrivateIP('::169.254.169.254')` is now TRUE. No range in this
+// set changed -- `::/16` had always covered that address; what changed is that the
+// predicate agrees ON THAT ADDRESS.
+//
+// CAUSE (2), STILL OPEN, PRE-EXISTING, AND NOT W13's TO CLOSE -- IPv4-MAPPED
+// PUBLIC ADDRESSES. `::/16` numerically contains every `::ffff:a.b.c.d`, so a
+// consumer that matches these CIDRs as NUMBERS -- which is what a CIDR list is
+// FOR: a `node:net` BlockList, a firewall rule, a provider network body -- denies
+// mapped PUBLIC addresses that `isPrivateIP` allows (the predicate unwraps
+// `::ffff:` and judges the embedded IPv4 on its merits). MEASURED at the live
+// consumer, on this tip:
+//     isPrivateIP('::ffff:8.8.8.8')            === false
+//     isBlockedOAuthAddress('::ffff:8.8.8.8')  === true
+// -- a witness, so "strict" is checked rather than asserted. The pre-W13 hand-typed
+// OAuth table denied the same `/96` explicitly, so this predates W13, and narrowing
+// it would move addresses denied -> allowed on a live SSRF filter for zero security
+// gain (every address spellable `::ffff:a.b.c.d` is equally spellable `a.b.c.d`,
+// which the table judges on its true merits). It is PINNED as an intentional
+// exception by the two `IPv4-MAPPED:` tests in
+// `w13-oauth-deny-table-divergence.test.ts`.
+//
+// ★ WHY THAT WITNESS DOES NOT REPRODUCE THROUGH `isCoveredByDenySet` BELOW -- said
+// here so the next reader who checks does not conclude the superset claim is bogus.
+// That helper resolves membership via `egress-policy.ipInCidr` -> `ip-literal.parseIp`,
+// which unwraps `::ffff:` to IPv4 exactly as `isPrivateIP` does, so through THAT
+// helper the two agree and `isCoveredByDenySet('::ffff:8.8.8.8')` is `false`. The
+// strictness is a property of the CIDR LIST as handed to an outside matcher -- the
+// only form in which this module's data is ever consumed. Both statements are true;
+// do not use the second to refute the first.
 
 import { ipInCidr } from "./egress-policy.js";
 import { isPrivateIP } from "./outbound-url-guard.js";
@@ -141,7 +205,9 @@ export const INTERNAL_RANGE_DENY_CIDRS_V4: readonly string[] = Object.freeze([
   "192.0.2.0/24",
   // Deprecated 6to4 relay anycast (RFC7526). Denying this WOULD block a v6-over-v4
   // tunnel that would otherwise carry traffic past a v4-only egress filter.
-  // NOTE: this is the one range `mcp-connector-oauth.ts`'s table is missing.
+  // NOTE: this USED TO be the one range `mcp-connector-oauth.ts`'s hand-typed table
+  // was missing (E8-F009). W13 closed that -- the OAuth table DERIVES from this list,
+  // so it carries this range precisely because this line is here.
   "192.88.99.0/24",
   // RFC1918 private-use. Home/office LAN range -- relevant for self-hosted and
   // desktop deployments where the sandbox host sits on a real LAN.
@@ -160,13 +226,25 @@ export const INTERNAL_RANGE_DENY_CIDRS_V4: readonly string[] = Object.freeze([
 ]);
 
 /**
- * The exact minimal CIDR cover of `isPrivateIP`'s IPv6 rejection set, derived by
- * a recursive uniformity descent over the leading 16-bit words.
+ * A deliberate STRICT SUPERSET of `isPrivateIP`'s IPv6 rejection set: the exact
+ * minimal cover of the predicate's LEADING-WORD rules, derived by a recursive
+ * uniformity descent over the leading 16-bit words.
+ *
+ * It is NOT an exact cover, and never was. `::/16` numerically contains every
+ * IPv4-mapped address `::ffff:a.b.c.d`, including the mapped PUBLIC ones that
+ * `isPrivateIP` allows -- measured, `isPrivateIP('::ffff:8.8.8.8')` is `false` while
+ * the `BlockList` built from this list denies that address. Wider than the predicate
+ * is the safe direction: it fails CLOSED. See the module header for why it stays.
  */
 export const INTERNAL_RANGE_DENY_CIDRS_V6: readonly string[] = Object.freeze([
   // Everything with a zero leading word: `::` unspecified, `::1` loopback, and the
   // IPv4-compatible form `::a.b.c.d`. THIS is the entry that covers
-  // `::169.254.169.254` -- the address `isPrivateIP` currently fails to parse.
+  // `::169.254.169.254` -- the address `isPrivateIP` failed to parse until W13 fixed
+  // the shared parser. The predicate now agrees with this entry ON THAT ADDRESS --
+  // but NOT everywhere: this entry also contains every IPv4-MAPPED address
+  // `::ffff:a.b.c.d`, and `isPrivateIP` ALLOWS the mapped-public ones. That is the
+  // deliberate strict-superset exception described in the module header. It is
+  // pre-existing, it fails closed, and it is pinned by test rather than by prose.
   "::/16",
   // RFC6052 NAT64 well-known prefixes (64:ff9b::/96 and 64:ff9b:1::/48,
   // aggregated). A NAT64 translator turns these into arbitrary IPv4 destinations,
@@ -252,7 +330,7 @@ export const PRIVATE_RANGE_AGREEMENT_CORPUS: readonly string[] = Object.freeze([
   "169.254.169.254", // AWS/GCP/Azure/OpenStack IMDS
   "::ffff:169.254.169.254", // v4-mapped dotted spelling
   "::ffff:a9fe:a9fe", // v4-mapped HEX spelling (URL parsers canonicalize to this)
-  "::169.254.169.254", // v4-COMPATIBLE spelling -- isPrivateIP returns FALSE here
+  "::169.254.169.254", // v4-COMPATIBLE spelling -- isPrivateIP missed this until W13
   "169.254.170.2", // AWS ECS task metadata
   "fd00:ec2::254", // AWS IMDS over IPv6 (inside fc00::/7)
   // -- one interior address per IPv4 range --
