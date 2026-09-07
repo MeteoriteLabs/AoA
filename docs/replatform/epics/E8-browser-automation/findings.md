@@ -1314,6 +1314,8 @@ same deployment question §6 says is the deciding fact for severity, and it rema
 does not settle (b). **A founder who knows AoA runs anywhere IPv6-only should say so before
 this merges.**
 
+### 9. Ownership
+
 **Owner — `unowned`, and it is a real disposition rather than a shrug.** No ticket in the re-platform
 tree owns `mcp-connector-oauth.ts`: it is main-line product from the OAuth connector broker work
 (Decision #110), not re-platform surface, and E8's open tickets are about sandbox egress — a
@@ -1323,5 +1325,6 @@ because that is where the deny-set family and the derivation machinery already l
 `w10c-internal-range-deny-set.ts` — the module that first recorded these two facts — is enrolled in
 `scripts/gate-clause-wiring.json` as `E8-w10c-internal-range-deny-set` and names *"fixing the measured
 `mcp-connector-oauth.ts` divergence against a derived source of truth"* as one of the four things that
-would promote it. **It blocks nothing in the re-platform programme.** It needs a founder decision
-about a live security path.
+would promote it — **which W13 has now done, so that clause reads `wired` on this PR's branch.**
+**It blocks nothing in the re-platform programme.** It needs a founder decision about a live
+security path, and W13's PR is the shape that decision can take.
