@@ -73,8 +73,10 @@ record carries, verbatim:
 /home/user/.aoa           -> ls: cannot access '/home/user/.aoa': No such file or directory
 ```
 
-Neither `STAGED_INPUT_DIR`'s parent nor `~/.aoa` exists in a fresh `aoa-base` sandbox. A location
-convention anchored at either would not have been silently pre-satisfied by the image.
+★ `STAGED_INPUT_DIR` **is** `/home/user` (`task-run-sandbox-invocation.ts:56`), so the staging
+directory itself exists and is the sandbox's home — what is absent is everything a convention would
+anchor **inside** it: no `aoa-workspace`, no `~/.aoa`, and none of the 7 candidate output paths. A
+location convention anchored at any of them would not have been silently pre-satisfied by the image.
 
 **C — `yes / both-streams-delivered`.** Both markers arrived through the handlers and the command
 exited 0.

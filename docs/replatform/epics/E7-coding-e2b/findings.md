@@ -2262,9 +2262,12 @@ empty stdout**, and codex's own stderr says why, verbatim:
 Not inside a trusted directory and --skip-git-repo-check was not specified.
 ```
 
-The sandbox's working directory is `/home/user`, which is not a git repository. **A1 never reached a
-model.** The A0 harness control on the same sandbox wrote and read back its file at exit 0, so this
-is codex refusing, not the apparatus failing.
+The sandbox's working directory is `/home/user`, which is not a git repository. ★ **That directory is
+not an assumption**: it is `STAGED_INPUT_DIR` itself (`task-run-sandbox-invocation.ts:56`), the same
+directory the production invocation stages its prompt into, and the claude arm's own `init` event on
+the sibling sandbox reports `"cwd":"/home/user"`. **A1 never reached a model.** The A0 harness control
+on the same sandbox wrote and read back its file at exit 0, so this is codex refusing, not the
+apparatus failing.
 
 **Two facts make this a product finding and not a probe artefact.**
 
