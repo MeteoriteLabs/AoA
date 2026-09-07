@@ -917,8 +917,9 @@ addresses are denied and in nothing else.
 **That is two API surfaces — the `POST /sandboxes` create body and `PUT /sandboxes/{sandboxID}/network`
 — each of which accepts, persists and reports a policy neither of them applies.** The 400 on the IPv6
 arm matters precisely because it proves the server is *not* a tolerant endpoint discarding an unknown
-field: it parses the deny set, rejects a spelling it dislikes, and keeps the rest. It is not ignoring
-the policy. It is storing it and not using it.
+field: it PARSES and RANGE-CHECKS the deny set, and **refuses the whole `create` call** over one entry
+it will not accept (the arm was never created — no sandbox, no partial policy). It is not ignoring the
+policy. It is validating it, storing it, reporting it, and not using it.
 
 ### 2. The controls, all four of which held
 
