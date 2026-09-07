@@ -973,9 +973,12 @@ and every row is a sentence this finding is correcting.
 > nowhere in that section — a **paraphrase inside quotation marks**, in a table headed "what it
 > says", in a finding whose whole thesis is that a claim must be re-derived rather than inherited.
 > Row 6's second quotation silently dropped the word *here* from *"even if (a) is yes here"*, which
-> is a truncation in the direction of a broader claim than the source makes. Rows 2, 3, 4 and 5 were
-> verified verbatim and are unchanged (rows 2 and 6a are fragments, and are marked with an ellipsis
-> or quoted as fragments rather than presented as whole sentences).
+> is a truncation in the direction of a broader claim than the source makes. **Rows 2, 3, 4 and 5
+> were verified verbatim and are unchanged.** ★ Precisely, because "verbatim" needs saying exactly:
+> row 3 is a whole sentence; rows 2, 4, 5 and 6a quote **fragments**, each byte-identical to its
+> source as a fragment, and row 2 is the only one that additionally elides a tail (marked with its
+> own ellipsis). Fragments were left as fragments — the defect being corrected is invented wording,
+> not partial quotation.
 
 | file | what it says |
 |---|---|
