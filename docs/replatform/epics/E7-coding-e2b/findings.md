@@ -1948,7 +1948,7 @@ worker package.
    |---|---|---|
    | `AOA_WORKER_E2B_TEMPLATE` | the distributed worker's provider resolver (`sandbox-provider.ts:34`) | **refuses to boot** (fail-closed) |
    | `AOA_ADAPTER_MANAGER_E2B_TEMPLATE` | `packages/adapter-manager/src/bin/adapter-manager.ts:55`; fed from `AOA_STAGING_E2B_TEMPLATE` at `docker-compose.staging.yml:340` | — |
-   | `E2B_TEMPLATE` | every keyed real-E2B test lane and probe (`keyed-real-e2b.test.ts:33`, `keyed-cli-008-unit-d-invocation.test.ts:61`, `keyed-dat-009-artifact-export.test.ts:55`, `probe-e2b-egress-constraint.mjs:48`, `probe-e2b-port-exposure.mjs:28`) and `docker-compose.yml:74` | **silently defaults to the bare `base` template** |
+   | `E2B_TEMPLATE` | every keyed real-E2B test lane and probe (`keyed-real-e2b.test.ts:33`, `keyed-cli-008-unit-d-invocation.test.ts:61`, `keyed-dat-009-artifact-export.test.ts:55`, `probe-e2b-egress-constraint.mjs:48`, `probe-e2b-port-exposure.mjs:28`), `docker-compose.yml:74`, and ★ **the shipping product** (`server/src/services/platform-default-environment.ts:63`) | **silently defaults to the bare `base` template** |
 
    So **the lane that produces real-E2B evidence and the lane that would run a distributed agent read
    different variables with opposite defaults.** A green keyed run does not pin the production
@@ -2032,8 +2032,35 @@ and the guard would have had it.
   `keyed-real-e2b.test.ts:33`, `keyed-cli-008-unit-d-invocation.test.ts:61`,
   `keyed-dat-009-artifact-export.test.ts:55`,
   `packages/sandbox-e2b-provider/scripts/probe-e2b-port-exposure.mjs:28` and
-  `.../probe-e2b-egress-constraint.mjs:48` — exactly the five this finding listed when it was filed,
+  `.../probe-e2b-egress-constraint.mjs:48` — the five this finding listed when it was filed,
   unchanged;
+* ★★★ **A SIXTH CONSUMER, AND IT IS THE SHIPPING PRODUCT — measured W16B, 2026-09-07, and
+  NOT in this finding's original list.** The five above are evidence lanes, and this finding has always
+  been framed as *"the evidence lanes silently default to a template with no CLIs"*. That framing is
+  incomplete. `server/src/services/platform-default-environment.ts:63` builds the `cloud_auth`
+  platform-default environment with `template: read(env, "E2B_TEMPLATE") ?? "base"` — the same
+  fail-open default, in product code on the run path, not in a test lane.
+  **Measured, four ways:**
+  1. `read` (`:15-18`) returns `null` for an absent OR empty-after-trim value, so `?? "base"` fires on
+     both — and `docker-compose.yml:74` emits `E2B_TEMPLATE: ${E2B_TEMPLATE:-}`, i.e. exactly the
+     empty string, whenever the operator has not set it.
+  2. It is gated only on `deploymentMode === "cloud_auth"` (`:44`) and a present `E2B_API_KEY` (`:47`)
+     — the posture the deployed testing stack runs in. No other precondition.
+  3. It is REACHABLE, not dead: `ensurePlatformDefaultEnvironmentRow` is imported by
+     `server/src/services/environment-run-orchestrator.ts:13`, and `one-shot-sandbox-cli.ts:379`
+     names the same environment as the one whose config it inherits.
+  4. The fallback is UNTESTED — `server/src/__tests__/platform-default-environment.test.ts` supplies
+     `E2B_TEMPLATE: "aoa-base"` explicitly (`:16`, asserted `:21`) and never exercises the omitted
+     case, which is why the default reads as an oversight rather than a decision.
+  **Consequence:** on a `cloud_auth` instance with a key and no `E2B_TEMPLATE`, every agent run
+  launches into bare `base` — the image `e2b/e2b.Dockerfile:1-7` says has no `claude` and no `codex`
+  and fails with `env: 'claude': No such file or directory`. W16B's probe T closes this for the W7U1
+  lane only; it does NOT reach the product, which is a boot-side assertion this finding already asks
+  for in the bullet below and still nobody has built. **This bullet is a scope correction, not a fix.**
+  ★ How it was missed: a single-line grep for `E2B_TEMPLATE.*\|\| *"base"` finds only the two
+  `.mjs` probes and this product line; the three keyed tests spell the same default as a ternary
+  (`process.env.E2B_TEMPLATE && ... .length > 0 ? ... : "base"`), so neither spelling's grep finds the
+  other's sites. Both spellings must be searched;
 * the **three uncoordinated variable names** still disagree — `AOA_WORKER_E2B_TEMPLATE` (fail-closed),
   `AOA_ADAPTER_MANAGER_E2B_TEMPLATE`, `E2B_TEMPLATE` (fail-open) — so a proof on one lane is still
   quoted for another;
