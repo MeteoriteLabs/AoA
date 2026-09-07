@@ -269,8 +269,9 @@ shipped configuration surface that this finding recorded as absent.
 provider layer is available to DECLARE and unavailable to ENFORCE at the tier AoA's key reaches.
 AND THE SENTENCE BELOW IS ALSO NARROWED: D3(c) (= BRW-004 slice (f)) is still the only REMAINING
 CHARTERED enforcement point — "REMAINING" inserted 2026-09-07 (W16A-FIX): DAT-005 and DSK-002 were
-also chartered over this capability and shipped without it, which §1 of this same finding already
-says of DAT-005 two paragraphs down, so an absolute "only" contradicted the finding's own headline
+also chartered over this capability and shipped without it, which **§1 of this same finding already
+says of DAT-005** ("whose chartered outcome … was to *Enforce* default-deny … and whose result doc
+reads `Status: COMPLETE`"), so an absolute "only" contradicted this finding's own headline
 (derivation: `scripts/gate-clause-wiring.json` → `E5-6-denied-egress`) — but
 §8 measures that it is not a BOUNDARY — every in-guest mechanism is agent-writable, and Node's
 global `fetch` ignores every proxy variable on the `node:22` image AoA runs. "The only layer that
@@ -474,9 +475,9 @@ caller is unmeasured. Nothing here asserts a cross-tenant breach: the deployed b
 
 **Why `unowned`, and what it blocks.** No ticket in the roster is chartered to wire egress
 enforcement for the path that was measured. BRW-004 slice (f) is real, open (`gate_review`) and the
-only **remaining** chartered candidate (word inserted 2026-09-07, W16A-FIX — the sentence two lines
-down already names the two earlier charters, so "only" was never meant absolutely) — but it is
-scoped to browser sessions, and the measurement is of org
+only **remaining** chartered candidate (word inserted 2026-09-07, W16A-FIX — this same paragraph
+names the two earlier charters, DAT-005 and DSK-002, below, so "only" was never meant absolutely)
+— but it is scoped to browser sessions, and the measurement is of org
 heartbeat runs and crew runs, neither of which is a browser session; and the metadata half (§2) is
 broader still, since every sandboxed workload shares the reachability. The two tickets that *were*
 chartered to reach this path have both shipped without it and said so: DAT-005 (COMPLETE) and
