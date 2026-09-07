@@ -31,11 +31,15 @@ import {
   buildProbeRecord,
   classifyProbeAArm,
   countOccurrences,
+  detectStartupEvidence,
   evaluateDurableRecord,
+  evaluateTemplateCliPreflight,
   isListingUsable,
   packDisposition,
   redactSecrets,
   resolveTemplate,
+  TEMPLATE_CLI_BINARIES,
+  TEMPLATE_CLI_PROBE_SCRIPT,
   verdictProbeA,
   verdictProbeB,
   verdictProbeC,
@@ -236,14 +240,116 @@ test("a sandbox FAULT is indeterminate, not a negative — a throw must not beco
   assert.equal(c.cause, "arm-faulted");
 });
 
-test("a stall and a clean non-zero exit are BOTH negatives, and they are distinguishable", () => {
+test("a stall and a non-zero exit THAT PRODUCED OUTPUT are BOTH negatives, and they are distinguishable", () => {
   const stalled = classifyProbeAArm(arm({ execution: { channel: "timedOut", exitCode: null } }));
-  const exited = classifyProbeAArm(arm({ execution: { channel: "returned", exitCode: 1 } }));
+  // ★ `exited` now has to have SAID something. A non-zero exit with empty stdout is the
+  // refusal shape and is `indeterminate` — see the E7-F028 block below. A CLI that streamed
+  // its head event and then exited 1 did reach the work and is still a genuine negative.
+  const exited = classifyProbeAArm(
+    arm({
+      adapterType: "codex_local",
+      execution: {
+        channel: "returned",
+        exitCode: 1,
+        stdout: '{"type":"thread.started","thread_id":"t-1"}\n{"type":"turn.started"}\n',
+      },
+    }),
+  );
   assert.equal(stalled.state, "did-not-write");
   assert.equal(exited.state, "did-not-write");
   assert.equal(stalled.cause, "stalled");
   assert.equal(exited.cause, "exited-1");
   assert.notEqual(stalled.cause, exited.cause, "a hang and an exit must not collapse into one answer");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E7-F028 — A REFUSAL IS NOT A RESULT
+//
+// ★★★ THE DEFECT THIS PINS, MEASURED. Run 34087197668's codex A1 ran the exact production
+// `:204` literal, exited 1, and wrote NOTHING to stdout — its stderr said
+// "Not inside a trusted directory and --skip-git-repo-check was not specified." The
+// classifier's catch-all mapped that to `did-not-write`, `verdictProbeA` read two such arms
+// and announced `a1-did-not-write-and-the-posture-is-not-the-cause`, and the LANE STAYED
+// GREEN: a fourth-state situation folded into `no`, which is a RESULT, so nothing asked
+// anyone to look. Meanwhile A2 — with the posture — got PAST that refusal
+// (`{"type":"thread.started"}`), i.e. the posture REMOVED A1's actual blocker, the exact
+// opposite of "exonerated".
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("a non-zero exit with EMPTY stdout is INDETERMINATE — a refusal must never book as a result", () => {
+  const c = classifyProbeAArm(
+    arm({ adapterType: "codex_local", execution: { channel: "returned", exitCode: 1, stdout: "" } }),
+  );
+  assert.equal(c.state, "indeterminate", "a CLI that produced no bytes before exiting non-zero measured nothing");
+  assert.equal(c.cause, "cli-refused-at-startup");
+  assert.equal(c.ran, false);
+});
+
+test("the codex A1 arm of run 34087197668, replayed, is indeterminate rather than a negative", () => {
+  const c = classifyProbeAArm({
+    label: "A1",
+    nonce: NONCE,
+    adapterType: "codex_local",
+    targetPreExisted: false,
+    // Verbatim from the run's own step log: `exit=1 … stdout="" stderr="Not inside a
+    // trusted directory and --skip-git-repo-check was not specified.\n"`.
+    execution: {
+      channel: "returned",
+      exitCode: 1,
+      stdout: "",
+      stderr: "Not inside a trusted directory and --skip-git-repo-check was not specified.\n",
+    },
+    file: { found: false, content: null, errorKind: "not-found", detail: "" },
+  });
+  assert.equal(c.state, "indeterminate");
+  assert.equal(c.cause, "cli-refused-at-startup");
+});
+
+test("exit 0 with empty stdout is STILL a negative — the new branch keys off the NON-ZERO exit", () => {
+  // POSITIVE CONTROL for the branch above: it must not swallow the ordinary silent-exit
+  // negative, which is the shape claude A1 produced in the same run.
+  const c = classifyProbeAArm(arm({ adapterType: "claude_local", execution: { channel: "returned", exitCode: 0, stdout: "" } }));
+  assert.equal(c.state, "did-not-write");
+  assert.equal(c.cause, "exited-0");
+});
+
+test("the startup head event is detected per CLI, from the shapes the ADAPTERS parse", () => {
+  // claude — `parse.ts:19`: type "system" AND subtype "init", on ONE line.
+  const claude = detectStartupEvidence(
+    '{"type":"system","subtype":"init","cwd":"/home/user","session_id":"de6ba132"}\n{"type":"assistant"}\n',
+    "claude_local",
+  );
+  assert.equal(claude.ran, true);
+  // codex — `parse.ts:64`/`:136`: type "thread.started".
+  const codex = detectStartupEvidence('{"type":"thread.started","thread_id":"01a07a5b"}\n', "codex_local");
+  assert.equal(codex.ran, true);
+  // ★ A `system` EVENT THAT IS NOT `init` IS NOT A START. Matching `"type":"system"` alone
+  // would call the CLI started on an event that says nothing of the kind.
+  assert.equal(detectStartupEvidence('{"type":"system","subtype":"compact_boundary"}\n', "claude_local").ran, false);
+  // ★ AND THE PAIR MUST BE ON ONE LINE — two unrelated events must not combine.
+  assert.equal(detectStartupEvidence('{"type":"system"}\n{"subtype":"init"}\n', "claude_local").ran, false);
+  // Cross-CLI: codex's head event is not claude's, and vice versa.
+  assert.equal(detectStartupEvidence('{"type":"thread.started"}', "claude_local").ran, false);
+  assert.equal(detectStartupEvidence('{"type":"system","subtype":"init"}', "codex_local").ran, false);
+  // Empty, and an adapter nobody declared: both FAIL CLOSED.
+  assert.equal(detectStartupEvidence("", "codex_local").ran, false);
+  assert.equal(detectStartupEvidence('{"type":"thread.started"}', "gemini_local").ran, false);
+});
+
+test("the declared startup shapes are the ones the shipped adapters actually parse", () => {
+  // ★ READ OFF DISK, not asserted from memory: if an adapter's head event is renamed, this
+  // pack's "demonstrably ran" evidence would silently stop matching and every exoneration
+  // would turn inconclusive with no explanation. Fail loudly instead.
+  const claudeParse = readFileSync(
+    path.join(REPO_ROOT, "packages", "adapters", "claude-local", "src", "server", "parse.ts"),
+    "utf8",
+  );
+  assert.match(claudeParse, /type === "system" && asString\(event\.subtype, ""\) === "init"/);
+  const codexParse = readFileSync(
+    path.join(REPO_ROOT, "packages", "adapters", "codex-local", "src", "server", "parse.ts"),
+    "utf8",
+  );
+  assert.match(codexParse, /type === "thread\.started"/);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -360,9 +466,35 @@ test("ONLY a `returned` listing is evidence — a listing that TIMED OUT is not 
 // Probe A's verdict — the controls gate the measurement
 // ─────────────────────────────────────────────────────────────────────────────
 
-const wrote = (label) => ({ label, state: "wrote", cause: "nonce-present", detail: "" });
-const didNot = (label, cause) => ({ label, state: "did-not-write", cause, detail: "" });
-const indet = (label, cause) => ({ label, state: "indeterminate", cause, detail: "" });
+// ★ `ran` IS PART OF AN ARM NOW, and the defaults encode the fail-closed rule: an arm that
+// WROTE obviously ran, and an arm that produced nothing is NOT SHOWN to have run unless a
+// case says so explicitly. Anything reading these fixtures as "ran unless stated" would
+// re-open E7-F028 in the test suite itself.
+const ranDetail = (ran) => (ran ? "the CLI's head event was present on this arm's stdout" : "no head event was seen");
+const wrote = (label, ran = true) => ({
+  label,
+  state: "wrote",
+  cause: "nonce-present",
+  detail: "",
+  ran,
+  runEvidenceDetail: ranDetail(ran),
+});
+const didNot = (label, cause, ran = false) => ({
+  label,
+  state: "did-not-write",
+  cause,
+  detail: "",
+  ran,
+  runEvidenceDetail: ranDetail(ran),
+});
+const indet = (label, cause, ran = false) => ({
+  label,
+  state: "indeterminate",
+  cause,
+  detail: "",
+  ran,
+  runEvidenceDetail: ranDetail(ran),
+});
 
 test("a failed HARNESS control makes probe A inconclusive whatever A1 did", () => {
   const v = verdictProbeA({ a0: didNot("A0", "exited-1"), a1: didNot("A1", "stalled"), a2: wrote("A2"), a3: didNot("A3", "exited-0") });
@@ -377,8 +509,10 @@ test("a violated NEGATIVE control makes probe A inconclusive even when A1 wrote"
 });
 
 test("A1 writing under the production argv is a YES", () => {
-  const v = verdictProbeA({ a0: wrote("A0"), a1: wrote("A1"), a2: wrote("A2"), a3: didNot("A3", "exited-0") });
+  const v = verdictProbeA({ a0: wrote("A0"), a1: wrote("A1"), a2: wrote("A2"), a3: didNot("A3", "exited-0", true) });
   assert.equal(v.state, "yes");
+  // ★ NAMED POSITIVE CONTROL: a genuine write still answers YES, and the lane stays green.
+  assert.equal(packDisposition([v]).disposition, "measured");
 });
 
 test("A1 silent + A2 writing is a NO that CONVICTS the missing permission posture", () => {
@@ -387,15 +521,101 @@ test("A1 silent + A2 writing is a NO that CONVICTS the missing permission postur
   assert.equal(v.reason, "a1-did-not-write-and-the-posture-is-the-cause");
 });
 
-test("A1 and A2 both silent is a NO that EXONERATES the posture", () => {
+test("A1 and A2 both silent is a NO that EXONERATES the posture — ONLY when an arm demonstrably RAN", () => {
   const v = verdictProbeA({
     a0: wrote("A0"),
-    a1: didNot("A1", "exited-1"),
-    a2: didNot("A2", "exited-1"),
-    a3: didNot("A3", "exited-0"),
+    // Both arms streamed their CLI's head event and then exited without writing. That is
+    // an agent that ran and did not write — a genuine negative, and a real exoneration.
+    a1: didNot("A1", "exited-1", true),
+    a2: didNot("A2", "exited-1", true),
+    a3: didNot("A3", "exited-0", true),
   });
   assert.equal(v.state, "no");
   assert.equal(v.reason, "a1-did-not-write-and-the-posture-is-not-the-cause");
+  // ★ NAMED POSITIVE CONTROL. A genuine did-not-write must still produce a CLEAN NO and a
+  // `measured` disposition. If a repair to the classifier or the verdict reds this, the
+  // pack has been made unable to answer, which destroys its purpose.
+  assert.equal(packDisposition([v]).disposition, "measured");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E7-F028, second half — AN EXONERATION NEEDS POSITIVE EVIDENCE THAT SOMETHING RAN
+//
+// ★★★ This is the only verdict in the pack that asserts a NEGATIVE about a CAUSE. Two
+// silences are consistent with an agent that never started, in which case the posture was
+// never tested at all — so "the posture is not the cause" is unsupported. Concluding it
+// from two refusals is the same error class as concluding a control is enforced because
+// `getInfo()` echoed the policy back.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("two arms that cannot be shown to have RUN yield INCONCLUSIVE, never an exoneration", () => {
+  const v = verdictProbeA({
+    a0: wrote("A0"),
+    // Both stalled: no terminal, no stdout, nothing showing either arm ever started.
+    a1: didNot("A1", "stalled", false),
+    a2: didNot("A2", "stalled", false),
+    a3: didNot("A3", "stalled", false),
+  });
+  assert.equal(v.state, "inconclusive", "an unrun pair may not exonerate the variable it never tested");
+  assert.equal(v.reason, "posture-exoneration-unsupported-no-arm-demonstrably-ran");
+  assert.notEqual(v.reason, "a1-did-not-write-and-the-posture-is-not-the-cause");
+  assert.equal(packDisposition([v]).disposition, "inconclusive", "and it must RED the lane, not pass as a result");
+});
+
+test("ONE arm that demonstrably ran is enough — the gate is evidence, not unanimity", () => {
+  const v = verdictProbeA({
+    a0: wrote("A0"),
+    a1: didNot("A1", "exited-1", false),
+    a2: didNot("A2", "exited-1", true),
+    a3: didNot("A3", "exited-0", true),
+  });
+  assert.equal(v.state, "no");
+  assert.equal(v.reason, "a1-did-not-write-and-the-posture-is-not-the-cause");
+});
+
+test("the CONVICTION branch is NOT gated on startup evidence — a write IS the evidence", () => {
+  // POSITIVE CONTROL: A2 wrote, so A2 self-evidently ran, and the differential holds even
+  // if A1 never emitted a head event at all. A gate here would red the run that actually
+  // answered the pack's question (claude, run 34087197668).
+  const v = verdictProbeA({
+    a0: wrote("A0"),
+    a1: didNot("A1", "exited-0", false),
+    a2: wrote("A2", true),
+    a3: didNot("A3", "exited-0", true),
+  });
+  assert.equal(v.state, "no");
+  assert.equal(v.reason, "a1-did-not-write-and-the-posture-is-the-cause");
+  assert.equal(packDisposition([v]).disposition, "measured");
+});
+
+test("the codex half of run 34087197668, replayed END TO END, no longer exonerates the posture", () => {
+  // Arms classified by the REAL classifier from the run's REAL captured stdout, then fed to
+  // the REAL verdict function. A1 exited 1 saying nothing (the trusted-directory refusal);
+  // A2 got past it and failed on 401.
+  const codexArm = (label, stdout, exitCode) =>
+    classifyProbeAArm({
+      label,
+      nonce: NONCE,
+      adapterType: "codex_local",
+      targetPreExisted: false,
+      execution: { channel: "returned", exitCode, stdout },
+      file: { found: false, content: null, errorKind: "not-found", detail: "" },
+    });
+  const a2Stdout =
+    '{"type":"thread.started","thread_id":"01a07a5b-b6b9-7fe2-9729-999757da1442"}\n{"type":"turn.started"}\n' +
+    '{"type":"error","message":"Reconnecting... 2/5 (unexpected status 401 Unauthorized)"}\n';
+  const v = verdictProbeA({
+    a0: wrote("A0"),
+    a1: codexArm("A1", "", 1),
+    a2: codexArm("A2", a2Stdout, 1),
+    a3: codexArm("A3", a2Stdout, 1),
+  });
+  assert.equal(v.state, "inconclusive");
+  // A1 is now `indeterminate / cli-refused-at-startup`, so the verdict stops at the A1 gate
+  // — earlier and more honestly than the exoneration branch would have.
+  assert.equal(v.reason, "a1-cli-refused-at-startup");
+  assert.notEqual(v.reason, "a1-did-not-write-and-the-posture-is-not-the-cause");
+  assert.equal(packDisposition([v]).disposition, "inconclusive");
 });
 
 test("A1 silent + A2 unreadable is still a NO, but the cause is explicitly unattributed", () => {
@@ -541,6 +761,99 @@ test("the CLI-bearing alias is the one e2b/e2b.Dockerfile actually asserts the C
     dockerfile.includes(CLI_BEARING_TEMPLATE_ALIAS),
     `e2b/e2b.Dockerfile no longer names "${CLI_BEARING_TEMPLATE_ALIAS}" — the default may be pointing at nothing`,
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROBE T — E7-F022: A TEMPLATE NAME IS NOT A TEMPLATE FILESYSTEM
+//
+// ★★★ E7-F022 measured that `E2B_TEMPLATE` "silently defaults to the bare `base`
+// template" on every keyed lane, that bare base has no agent CLIs, and that therefore
+// "a keyed run against bare `base` can be reported green while the CLIs were never
+// present". `resolveTemplate` fixes the NAME on this lane; nothing checked the IMAGE.
+// E7-F022's own owner paragraph names the missing piece: "a boot-time or lane-time
+// assertion that the registered template contains what the Dockerfile promises".
+// ─────────────────────────────────────────────────────────────────────────────
+
+const preflightStdout = (haveClaude, haveCodex) =>
+  `${haveClaude ? "W7U1_HAVE:claude" : "W7U1_MISSING:claude"}\n${haveCodex ? "W7U1_HAVE:codex" : "W7U1_MISSING:codex"}\n`;
+
+test("a template carrying BOTH CLIs satisfies the precondition", () => {
+  const v = evaluateTemplateCliPreflight({
+    channel: "returned",
+    exitCode: 0,
+    stdout: preflightStdout(true, true),
+    template: CLI_BEARING_TEMPLATE_ALIAS,
+  });
+  assert.equal(v.state, "yes");
+  assert.equal(v.reason, "template-carries-the-agent-clis");
+  assert.equal(packDisposition([v]).disposition, "measured", "a satisfied precondition must not red the lane");
+});
+
+test("a template MISSING a CLI reds the lane BEFORE any model tokens are spent", () => {
+  const v = evaluateTemplateCliPreflight({
+    channel: "returned",
+    exitCode: 0,
+    stdout: preflightStdout(false, false),
+    template: BARE_BASE_TEMPLATE_ALIAS,
+  });
+  assert.equal(v.state, "inconclusive");
+  assert.equal(v.reason, "template-does-not-carry-the-agent-clis");
+  assert.match(v.detail, /claude \+ codex/);
+  assert.match(v.detail, new RegExp(BARE_BASE_TEMPLATE_ALIAS));
+  assert.match(v.detail, /NO model tokens were spent/);
+  assert.equal(packDisposition([v]).disposition, "inconclusive");
+});
+
+test("ONE missing CLI is enough — a half-equipped image is not the image the question is about", () => {
+  const v = evaluateTemplateCliPreflight({
+    channel: "returned",
+    exitCode: 0,
+    stdout: preflightStdout(true, false),
+    template: "aoa-base-stale",
+  });
+  assert.equal(v.state, "inconclusive");
+  assert.equal(v.reason, "template-does-not-carry-the-agent-clis");
+  assert.match(v.detail, /codex/);
+});
+
+test("SILENCE IS NOT PRESENCE — a check that said nothing about a binary refuses, it does not pass", () => {
+  // ★★★ [[checks-that-nothing-runs]], head on. If the shell died, the capture truncated or
+  // the script was replaced with one that only reports failures, "no MISSING line" would
+  // read as "both present" and the precondition would certify an image nobody looked at.
+  const v = evaluateTemplateCliPreflight({ channel: "returned", exitCode: 0, stdout: "", template: "aoa-base" });
+  assert.equal(v.state, "inconclusive");
+  assert.equal(v.reason, "template-preflight-unreadable");
+  assert.notEqual(v.reason, "template-carries-the-agent-clis");
+});
+
+test("a preflight that never reached a terminal establishes nothing", () => {
+  for (const channel of ["timedOut", "threw", "not-run", "binary-missing"]) {
+    const v = evaluateTemplateCliPreflight({ channel, stdout: preflightStdout(true, true), template: "aoa-base" });
+    assert.equal(v.state, "inconclusive", `channel=${channel} must not certify the image`);
+    assert.equal(v.reason, "template-preflight-did-not-run");
+  }
+});
+
+test("the preflight SCRIPT prints a positive marker per binary, and names both of them", () => {
+  // The script and the reader are a pair; a script that stopped emitting HAVE lines would
+  // turn every green run into `template-preflight-unreadable` rather than a silent pass,
+  // but pinning it here makes the pairing explicit rather than incidental.
+  for (const bin of TEMPLATE_CLI_BINARIES) {
+    assert.ok(TEMPLATE_CLI_PROBE_SCRIPT.includes(bin), `the preflight script no longer probes ${bin}`);
+  }
+  assert.ok(TEMPLATE_CLI_PROBE_SCRIPT.includes("W7U1_HAVE:"), "the script must emit an explicit PRESENT marker");
+  assert.ok(TEMPLATE_CLI_PROBE_SCRIPT.includes("W7U1_MISSING:"), "the script must emit an explicit ABSENT marker");
+});
+
+test("the binaries the preflight demands are exactly the ones e2b/e2b.Dockerfile asserts", () => {
+  const dockerfile = readFileSync(E2B_DOCKERFILE, "utf8");
+  for (const bin of TEMPLATE_CLI_BINARIES) {
+    assert.ok(
+      dockerfile.includes(`command -v ${bin}`),
+      `e2b/e2b.Dockerfile no longer asserts \`command -v ${bin}\` — the lane-time precondition and the image's own ` +
+        "build guard have drifted apart",
+    );
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

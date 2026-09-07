@@ -1996,6 +1996,54 @@ quoting a keyed-lane result.
 
 ---
 
+### PARTLY ADDRESSED — W16B, 2026-09-07. ONE lane now asserts the image, not just the name
+
+★ **THE STATUS STAYS `open`.** One of the two remedies this finding names is now built, for exactly
+one lane. The finding is broader than that lane, and closing it here would be a false claim.
+
+**Built.** The W7U1 output-probe lane — the only keyed lane that spends **model tokens** — now runs a
+**probe T** before anything else: one cheap sandbox from the **resolved** template, running
+`command -v claude` / `command -v codex`, which is the same assertion `e2b/e2b.Dockerfile`'s final
+layer makes at build time (`RUN command -v claude && command -v codex && …`). Its verdict **gates
+probe A**: an image missing either binary means probe A creates no sandbox, installs nothing, and
+spends nothing, and the lane reds with a message naming the template and the missing binary. This is
+literally the *"lane-time assertion that the registered template contains what the Dockerfile
+promises"* the paragraph above asked for. `scripts/lib/w7u1-agent-output-probe.mjs`
+(`evaluateTemplateCliPreflight`), pinned in the required `policy` job.
+
+★★ **A NAME IS NOT A FILESYSTEM, and that gap is what this closes for one lane.**
+`resolveTemplate` already corrected an *omitted* input to `aoa-base` — but an operator may name any
+alias explicitly (honoured verbatim, deliberately), and an account may hold a stale or half-built
+`aoa-base`. The pack would then `npm install -g` its own CLI over the top and answer as though the
+image had been the one the Dockerfile describes. ★★★ **The preflight is fail-closed on silence:** a
+binary the check said *nothing* about is `template-preflight-unreadable`, never "present". Inferring
+presence from the absence of a failure line is this programme's [[checks-that-nothing-runs]] class,
+and the guard would have had it.
+
+**NOT addressed, and still the bulk of the finding:**
+
+* **the sibling lanes, re-measured at this tip rather than quoted.** Eight workflow files set
+  `E2B_TEMPLATE: ${{ inputs.e2b_template }}` — `keyed-e2b-cdp-probe.yml:66`,
+  `keyed-e2b-conformance.yml:78`, `keyed-e2b-dat-009-export.yml:101`,
+  `keyed-e2b-egress-constraint-probe.yml:95`, `keyed-e2b-unit-d.yml:101`,
+  `keyed-e2b-w10b-egress-enforcement-probe.yml:174`, `keyed-e2b-w7u1-output-probe.yml:152`, and
+  `deploy-testing.yml:117`. **Only the last two of the keyed ones correct an omission**, via
+  `resolveTemplate`. The other five consumers still hard-default to bare `base` at the JS line —
+  `keyed-real-e2b.test.ts:33`, `keyed-cli-008-unit-d-invocation.test.ts:61`,
+  `keyed-dat-009-artifact-export.test.ts:55`,
+  `packages/sandbox-e2b-provider/scripts/probe-e2b-port-exposure.mjs:28` and
+  `.../probe-e2b-egress-constraint.mjs:48` — exactly the five this finding listed when it was filed,
+  unchanged;
+* the **three uncoordinated variable names** still disagree — `AOA_WORKER_E2B_TEMPLATE` (fail-closed),
+  `AOA_ADAPTER_MANAGER_E2B_TEMPLATE`, `E2B_TEMPLATE` (fail-open) — so a proof on one lane is still
+  quoted for another;
+* nothing verifies that the registered template matches the Dockerfile at the **production/boot**
+  side, which is the half that matters once anything distributed actually runs;
+* ★ the re-derive-to-HIGH trigger above is untouched: the moment a candidate output mechanism becomes
+  location-based, this goes to HIGH regardless of the W7U1 preflight.
+
+---
+
 ## E7-F023 — Clause 4 DOES scan `job_events`, so a hard-fail gate clause reads model-influenced content; two reviewers contradicted each other and both were half right
 
 **Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)
@@ -2345,9 +2393,49 @@ carries the finding, not a fix.** No argv change is proposed here.
 
 ---
 
+### NARROWED — W16B, 2026-09-07. What survives the classifier repair, and what does not
+
+★★★ **This finding's own recorded conclusion partly rested on the defective classifier E7-F028
+names, so it is re-derived here rather than left standing.** E7-F028 is now fixed; a finding whose
+reachability came from a defect that has closed must be re-examined, not inherited.
+
+**WHAT STANDS, unchanged — the whole of the "What" section above.** It never depended on the
+classifier at all. It rests on three things the run captured directly:
+
+1. codex's own stderr, verbatim: *"Not inside a trusted directory and `--skip-git-repo-check` was not
+   specified."* — read off the arm, not inferred from a state name.
+2. The production `:204` literal, run unmodified, with no `cwd` and no `--skip-git-repo-check`
+   anywhere in `buildSandboxInvocation`.
+3. `batchWorkloadV1Schema`'s `.strict()` four fields — no `cwd`, no `env` — so the argv is the only
+   channel that could supply the missing input. A source fact, independent of any run.
+
+**WHAT IS NARROWED.** The row that reported this arm as
+`no / a1-did-not-write-and-the-posture-is-not-the-cause` was never supportable and the pack no longer
+emits it here: replayed against the repaired classifier, codex A1 is
+`indeterminate / cli-refused-at-startup` and probe A returns
+`inconclusive / a1-cli-refused-at-startup`. So the honest statement of the codex result is:
+
+> **Both arms exited 1. The permission posture did not change the exit. And the cause of codex's
+> inability to write is UNKNOWN — because the apparatus could not, at the time, tell a refusal from a
+> null result.** Blocker 1 (the trusted-directory gate) is measured and named. Blocker 2 (the 401) is
+> measured and named. **Neither arm reached the capability question**, so nothing is established about
+> whether codex can write under the production argv.
+
+★ **This narrowing does not shrink the finding's scope and must not be read as doing so.** The
+trusted-directory refusal is still a product-shaped defect in the `:203`/`:204` literals, still
+MEDIUM, still owned by CLI-008, and still unfixed. What is withdrawn is only the *pack's* over-claim
+beside it — a claim this finding already flagged as unsupported. The two cheap arms named in
+**WHAT WOULD IDENTIFY THE REMAINDER** above are unchanged and still owed.
+
+★★ **The apparatus half of the remedy is now in place.** The next keyed run will report a codex
+refusal as `cli-refused-at-startup` and will not exonerate anything from it, so the ambiguity that
+produced this finding's mis-stated cause cannot recur silently.
+
+---
+
 ## E7-F028 — Probe A's classifier collapses "the CLI refused before reaching a model" into "the agent did not write", so the durable record states a cause the run's own stderr contradicts
 
-**Status:** open · **Owner:** unowned (see reason)
+**Status:** **resolved** · **Resolved by:** W16B, 2026-09-07 (`replatform/w16b-probe-apparatus-repair`).
 **Severity:** MEDIUM
 **Filed:** W12, 2026-09-07, from workflow run
 [`34087197668`](https://github.com/MeteoriteLabs/AoA/actions/runs/34087197668) and the source of
@@ -2425,11 +2513,59 @@ run* — the one thing E7-F025 exists to protect — and because the wrong infer
 (*"codex is broken for reasons unrelated to the posture, so ship the posture fix"*) is precisely the
 inference E7-F027 exists to prevent.
 
-**Owner — `unowned`, deliberately.** The defect is in the W7U1 probe pack, whose unit has shipped
-(this run is its result). CLI-008 owns the *product* literals, not the instrument, and attaching an
-apparatus defect to it would be false ownership of the kind the ownership guard exists to catch. It
-blocks nothing: the pack has answered its decisive question, and the correction is owed by whoever
-next fires this lane — which E7-F027's "what would identify the remainder" already specifies.
+**Owner — was `unowned`, deliberately.** The defect was in the W7U1 probe pack, whose unit had
+shipped (that run was its result). CLI-008 owns the *product* literals, not the instrument, and
+attaching an apparatus defect to it would have been false ownership of the kind the ownership guard
+exists to catch. The correction was owed by whoever next fired this lane, and W16B did it before the
+next keyed run rather than during it.
+
+---
+
+### RESOLVED — W16B, 2026-09-07. Both halves, and what each one is worth
+
+**Both parts of the shape-of-the-fix above are implemented, and each is pinned by a mutation observed
+red.** Neither touches the four arms, the three-state model, the green-on-`no`/red-on-`inconclusive`
+asymmetry, the durable record or the premise pin.
+
+1. **A refusal is no longer a result.** `classifyProbeAArm` gains a branch, ordered after every
+   existing guard and before the catch-all: a `returned` channel with a **non-zero exit and empty
+   stdout** is `indeterminate` / **`cli-refused-at-startup`**, never `did-not-write`. The detail line
+   says the CLI "never reached the point of doing or declining the work" and sends the reader to the
+   arm's stderr. ★ The test is **empty stdout**, deliberately kept separate from the "did it start"
+   question below, so that a future repair to either cannot silently satisfy the other.
+2. ★★★ **The exoneration branch now demands positive evidence that something ran.** Every arm carries
+   `ran`, computed by a new `detectStartupEvidence(stdout, adapterType)` from the CLI's **own head
+   stream event**. When A1 and A2 are both `did-not-write` and **neither** shows that event, the
+   verdict is `inconclusive` / **`posture-exoneration-unsupported-no-arm-demonstrably-ran`** rather
+   than an exoneration. It is **fail-closed**: an arm with no evidence — including one classified by
+   a caller that never passed stdout — counts as *not shown to have run*. The conviction branch
+   (`a2` wrote) is deliberately **not** gated: a write is itself proof the arm ran, and gating it
+   would red the run that actually answered the pack's question.
+
+**The head-event shapes are MEASURED per CLI, twice over, not guessed** — from the adapters that
+parse them in the shipped product **and** from this pack's own recorded stdout in run `34087197668`:
+
+| adapter | head event | adapter source | run `34087197668` |
+|---|---|---|---|
+| `claude_local` | `{"type":"system","subtype":"init",…}` | `packages/adapters/claude-local/src/server/parse.ts:19` — `type === "system" && asString(event.subtype, "") === "init"` (same pair at `cli/format-event.ts:34`, `ui/parse-stdout.ts:44`) | `[w7u1/A/claude_local] A1 … stdout="{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/home/user\",…"` |
+| `codex_local` | `{"type":"thread.started","thread_id":…}` | `packages/adapters/codex-local/src/server/parse.ts:64` and `:136` — `type === "thread.started"` | `[w7u1/A/codex_local] A2 … stdout="{\"type\":\"thread.started\",\"thread_id\":\"01a07a5b-…\"}
+{\"type\":\"turn.started\"}…"` against `A1 … exit=1 … stdout=""` |
+
+★ **Both claude keys are required on ONE line.** `"type":"system"` alone also heads non-`init` system
+events, so matching it alone would certify a start from an event that says nothing of the kind; and
+requiring the pair on one line stops two unrelated events from combining into false evidence. A test
+reads both adapter files off disk, so a renamed head event fails loudly instead of silently turning
+every future exoneration inconclusive.
+
+**Replayed, run `34087197668`'s codex half now returns `inconclusive` / `a1-cli-refused-at-startup`**
+— it stops at the A1 gate, *earlier* than the exoneration branch, which is the more honest place. A
+test drives the real classifier from that run's real captured stdout into the real verdict function
+and asserts exactly that.
+
+★★ **The lane would have gone RED for that run, and that is correct.** The claude verdict is
+untouched and still `no / …-posture-is-the-cause`; the codex half now says "the apparatus did not
+answer", which is what `inconclusive` means. Nothing about the green-on-`no` asymmetry changed — what
+changed is which state a refusal lands in.
 
 ---
 
@@ -2522,3 +2658,47 @@ problem, not a formatting one.
 unit has shipped, and CLI-008 owns the product literals rather than the pack. It blocks nothing —
 `tickets/W7U1-output-probe-result.md` §6 and the runbook both now say *read the artefact, not the last
 report block* — and it is owed by whoever next fires this lane.
+
+---
+
+### PARTLY FIXED — W16B, 2026-09-07. The run page is clean; the step log still shows two blocks
+
+★ **THE STATUS STAYS `open`, DELIBERATELY.** Half the defect is gone and half is not, and marking it
+resolved would be a false claim about the surface that still carries it.
+
+**Applied — exactly the "cheaper and strictly safer interim" this finding recorded.** The no-key
+wiring test now points `GITHUB_STEP_SUMMARY` at a temp file for the duration of the
+`emitDurableRecord` call, precisely as it already did for `W7U1_RECORD_PATH`, and restores it in the
+same `finally`. **The synthetic block no longer reaches the run page** — the surface a human reads
+first, and the one whose trailing `DISPOSITION: inconclusive` the orchestrating session nearly
+reported as the run's verdict.
+
+★★ **It ADDS coverage rather than removing it, which is why it was safe to do.** The summary channel
+had **no assertion at all** before: the append simply happened to land on the real summary in CI. The
+redirected file is now read back and asserted to contain both the banner and the rendered
+disposition, so the emitter's third channel is wired-tested for the first time.
+
+**NOT fixed, and named so nobody has to rediscover it.** The **step log** still shows two
+`W7U1 OUTPUT PROBE PACK — RESULT` blocks. Silencing `console.log` would kill the only assertion that
+`emitDurableRecord` emits at all, and the structural fix — a fixture banner rendered by `report()`
+itself — needs a flag threaded from `emitDurableRecord` into `report()` (which today reads
+module-level constants and takes only `verdicts`) plus an assertion on a rendered STRING that no
+current test makes. That remains the shape of the real repair; it was out of scope for a unit whose
+job was to make the instrument safe before the next keyed run, not to redesign its renderer.
+
+**So the operator guidance is now three lines, not two:** the uploaded **artefact** is correct, the
+**run page** is correct, and the **raw step log** still shows two blocks — read the second one as the
+self-test's fixture, not as a result. The runbook's warning box says exactly this.
+
+★★★ **A SECOND SITE, FOUND BY GREP AND FIXED IN THE SAME COMMIT — the brief named one.**
+`packages/sandbox-e2b-provider/src/__tests__/keyed-w10b-egress-enforcement-probe.test.ts` carries the
+**identical** shape: its `emitDurableRecord` (`:521`) appends to `GITHUB_STEP_SUMMARY`
+unconditionally, and its no-key wiring test saved and restored only `W10B_RECORD_PATH`. So the first
+time an operator fires the W10B DE-08 lane, a synthetic
+`========== W10B DE-08 EGRESS-ENFORCEMENT PROBE — RESULT ==========` block with fixture details
+`d1`/`d2` and a trailing `DISPOSITION: inconclusive` would have landed on that run's page too.
+★ **DERIVED FROM SOURCE, NOT OBSERVED** — that lane has not fired, so there is no run log to point
+at; the claim is the code shape, and it is marked as such rather than borrowed from W7U1's
+observation. Fixed identically (redirect + a new assertion on the redirected file). **Measured scope
+of the class: two sites, both `emitDurableRecord`-shaped packs; no third.** No other test in the repo
+calls a function that writes to `GITHUB_STEP_SUMMARY`.

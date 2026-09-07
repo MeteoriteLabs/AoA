@@ -84,6 +84,16 @@ cannot host the thing being measured. `resolveTemplate`
 > "run me again", never as "the agent cannot write". The default is a **waste** guard, not a
 > correctness guard — but the waste is the founder's single authorised run.
 
+> ★★★ **AND SINCE 2026-09-07 THE IMAGE IS CHECKED, NOT JUST THE NAME (probe T, §5).** `aoa-base` on
+> `base` is a *name*; `resolveTemplate` corrects the name and nothing looked at the filesystem. Probe
+> T now creates one cheap sandbox from the **resolved** template, runs the same
+> `command -v claude` / `command -v codex` assertion `e2b/e2b.Dockerfile`'s final layer makes, and
+> **gates probe A on the answer** — so a stale, half-built or explicitly bare image stops the run
+> *before* a single model token is spent, with a message naming the template and the missing binary.
+> This is the "lane-time assertion" E7-F022's own owner paragraph asked for. It does not close that
+> finding: the sibling keyed lanes still default to bare `base`, and the three template variable
+> names still disagree.
+
 **Other optional inputs.** None. `e2b_template` is the only one.
 
 ---
@@ -152,15 +162,21 @@ artefact is retained for 90 days; the ticket record is not.
 
 > ### ⚠ READ THE ARTEFACT, NOT THE LAST REPORT BLOCK IN THE LOG
 >
-> **A successful run emits TWO blocks headed `W7U1 OUTPUT PROBE PACK — RESULT`.** The pack's no-key
-> self-test calls the real `emitDurableRecord` with fixture verdicts (details literally `d1` and
-> `d2`), so a **synthetic** report — same banner, same `TEMPLATE:` line, same commit sha, same **real
-> run nonce**, same arm legend, ending `DISPOSITION: inconclusive` — is rendered milliseconds after
-> the real one and *below* it. The test redirects `W7U1_RECORD_PATH` but not `GITHUB_STEP_SUMMARY`,
-> so the **uploaded artefact is correct** and the human-readable channels are not.
-> **Observed in the log of run `34087197668`; the step-summary half is derived from the same source
-> and was not separately confirmed** (a job summary's text is not retrievable through the API).
-> Filed as **E7-F029**.
+> **A successful run still emits TWO blocks headed `W7U1 OUTPUT PROBE PACK — RESULT` in the STEP
+> LOG.** The pack's no-key self-test calls the real `emitDurableRecord` with fixture verdicts
+> (details literally `d1` and `d2`), so a **synthetic** report — same banner, same `TEMPLATE:` line,
+> same commit sha, same **real run nonce**, same arm legend, ending `DISPOSITION: inconclusive` — is
+> rendered milliseconds after the real one and *below* it. Observed in run `34087197668`. Filed as
+> **E7-F029**.
+>
+> ★ **HALF FIXED, 2026-09-07 (W16B).** The self-test now points `GITHUB_STEP_SUMMARY` at a temp file
+> for the duration of the call, exactly as it already did for `W7U1_RECORD_PATH`, and asserts the
+> rendered block landed there. **The RUN PAGE — the surface a human reads first — no longer carries
+> the synthetic block**, and the summary channel now has a wiring assertion it never had. The
+> **step-log** duplicate remains, deliberately: silencing `console.log` would kill the only assertion
+> that `emitDurableRecord` emits at all, and the structural fix (a fixture banner rendered by
+> `report()` itself) is a larger change. So: the uploaded artefact is correct, the run page is
+> correct, **and the raw step log still shows two blocks.**
 
 Every probe reports one of three states. **`no` is a result and the lane stays GREEN for it.**
 `inconclusive` is the only state that reds, because it is the only one that means *run me again*.
@@ -222,7 +238,9 @@ DISPOSITION: measured — B=no C=yes A/claude_local=no A/codex_local=no
 |---|---|---|
 | `YES — a1-wrote-under-production-argv` | The **exact production argv, with no permission flag**, produced the requested file. Reading a convention path out of a sandbox is already solved (`transport.readFile`), so an output mechanism anchored on the agent writing a known path is **feasible today**. | Hand this to whoever owns the output question. |
 | `NO — ...-and-the-posture-is-the-cause` | A1 (production argv) did not write; A2 (**the same prompt template**, permission flag added) did. A1's and A2's prompts are **not byte-identical**: each names its own target path and its own nonce, on two lines, for the same reason A0 needs its own path — a file one arm left behind must never read back as another arm's success. That separation is the arms' identity, not a second experimental variable, and the permission flag remains the only difference in **how the agent is invoked**. **This is a product finding**, not merely an input to a later ticket: the four script literals at `task-run-sandbox-invocation.ts:181-206` carry no permission posture, and the shipped product's own code says one is required for an unattended run. | File it against the invocation module. An output mechanism is feasible *once the posture is fixed*. |
-| `NO — ...-and-the-posture-is-not-the-cause` | ★★★ **DO NOT READ THIS VERDICT AS WRITTEN — corrected 2026-09-07, E7-F028.** It claims the permission flag is *"exonerated"* and that *"a posture-only fix would not have helped"*. The classifier cannot support that: `classifyProbeAArm` maps **every** non-zero exit to `did-not-write`, so an arm the CLI **refused at startup** — before any model was contacted — is indistinguishable from an arm that ran and chose not to write. In run `34087197668` that is exactly what happened to codex, and A2 in fact got **past** A1's blocker. | **Read the arm's `stderr` in the job log before concluding anything.** If either arm shows the CLI refusing at startup (empty stdout, a named refusal), the honest verdict is `cause-unattributed`, not exoneration. |
+| `NO — ...-and-the-posture-is-not-the-cause` | Neither A1 nor A2 wrote, **and at least one of them demonstrably RAN** — the detail line names which arm and what evidence (the CLI's own head stream event). Adding the posture does not make the agent able to write here. ★ **This verdict was UNSAFE before 2026-09-07 and is now gated (E7-F028, fixed in W16B).** It used to be emitted from two arms that had merely exited non-zero, which is what happened to codex in run `34087197668`: A1 was refused at startup and A2, with the posture, got **past** that refusal — the posture removed A1's blocker, the opposite of exoneration. The exoneration branch now REFUSES without positive evidence that an arm started. | Trust it only with the detail line's named run evidence in front of you. It is a real exoneration of the posture; it is still not a statement about any other blocker. |
+| `INCONCLUSIVE — posture-exoneration-unsupported-no-arm-demonstrably-ran` | Neither A1 nor A2 wrote **and neither can be shown to have started** (no `{"type":"system","subtype":"init"}` from claude, no `{"type":"thread.started"}` from codex). Two silences do not exonerate a variable that may never have been tested. | Read both arms' `stderr` in the job log, remove the blocker it names, re-run. Do **not** schedule work off a posture conclusion this run did not support. |
+| `INCONCLUSIVE — a1-cli-refused-at-startup` | A1 exited **non-zero having written nothing at all to stdout** — the CLI refused before it got as far as doing or declining the work. That is an apparatus-level miss, not a capability answer. ★ This is the state codex A1 should have been given in run `34087197668`, where its stderr read *"Not inside a trusted directory and `--skip-git-repo-check` was not specified."* | Read the arm's `stderr`, remove the refusal (see **E7-F027**), re-run. Nothing about codex's ability to write has been measured. |
 | `NO — ...-cause-unattributed` | A1 did not write and A2 could not be read. The NO is sound; the **cause is not established**. | Fix whatever made A2 unreadable (see its `cause`) and re-run. |
 | `INCONCLUSIVE — harness-control-failed` | **A0 failed**: plain shell wrote a file and we could not read it back. The write/read path itself is broken, so A1's empty result attributes to nothing. | The probe is broken, not the product. Nothing may be concluded. |
 | `INCONCLUSIVE — negative-control-violated` | **A3 was violated**: we told the agent *not* to write, named the path, and a file carrying A3's nonce appeared anyway. Something other than the agent is writing at the watched path. | Nothing in probe A may be attributed to the agent. This is E7-F020's class one layer down and is itself worth filing. |
@@ -243,6 +261,28 @@ redacted.
 > stalled agent writes nothing whatever it was asked, so "A3 wrote nothing" would be satisfied by the
 > stall and would prove nothing about attribution. Run under the arm most able to write, "asked not
 > to, and did not" is a real statement.
+
+### Probe T — does the resolved image actually carry the agent CLIs?
+
+Added 2026-09-07 (W16B), against **E7-F022**. It runs **FIRST**, in its own cheap sandbox, and it
+**gates probe A**: a template that does not carry the CLIs means probe A creates no sandbox, installs
+nothing and **spends no model tokens**.
+
+| Verdict | What it means | What to do |
+|---|---|---|
+| `YES — template-carries-the-agent-clis` | `command -v claude` and `command -v codex` both resolved inside a fresh sandbox of the **resolved** template — the same assertion `e2b/e2b.Dockerfile`'s final layer makes at build time, re-made against the image that actually answered. | Nothing. Probe A proceeds. |
+| `INCONCLUSIVE — template-does-not-carry-the-agent-clis` | The image is missing at least one CLI. **Probe A did not run.** | Re-dispatch with `e2b_template: aoa-base`, or rebuild that template on the account (`e2b/README.md` §2-3), then re-run. |
+| `INCONCLUSIVE — template-preflight-unreadable` | The check returned but said nothing about a binary. ★ **Silence is not presence** — the pack refuses rather than inferring the CLIs are there because no `MISSING` line appeared. | Read the step log for what the sandbox actually printed. |
+| `INCONCLUSIVE — template-preflight-did-not-run` | The check never reached a terminal (timed out, threw, no binary). Nothing is established about the image. | Re-run. |
+
+> ★★★ **Why a NAME was not enough.** `resolveTemplate` already corrects an *omitted* dispatch input to
+> `aoa-base` rather than bare `base`. But an operator may name any alias explicitly (and that is
+> honoured verbatim, deliberately), and an account may hold a stale or half-built `aoa-base`. Probe A
+> then `npm install -g`s its own CLI over the top and answers **as though** the image had been the one
+> the Dockerfile describes. E7-F022's own owner paragraph names the missing piece: *"a boot-time or
+> lane-time assertion that the registered template contains what the Dockerfile promises."* This is it,
+> for this lane. It does **not** close E7-F022 — the sibling lanes still default to bare `base`, and
+> the three template variable names still disagree.
 
 ### Probe B — is the template already satisfying the convention?
 

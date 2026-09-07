@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 // -----------------------------------------------------------------------------
-// W7U1 — THE OUTPUT PROBE PACK. ONE KEYED RUN, THREE PROBES, THREE-STATE ANSWERS.
+// W7U1 — THE OUTPUT PROBE PACK. ONE KEYED RUN, FOUR PROBES, THREE-STATE ANSWERS.
+//
+// T (the gate, added W16B) / B / C / A-per-adapter. Probe T asserts the RESOLVED template
+// actually carries the agent CLIs and gates probe A on the answer, so a stale or bare image
+// stops the run before any model tokens are spent (E7-F022).
 //
 // A 26-agent decision wave concluded: build no output mechanism, MEASURE FIRST. The
 // founder authorised ONE keyed E2B run. This file is what that run executes. It
@@ -71,8 +75,10 @@ import {
 } from "../../../../server/src/services/task-run-sandbox-invocation.js";
 import {
   CLI_BEARING_TEMPLATE_ALIAS,
+  TEMPLATE_CLI_PROBE_SCRIPT,
   buildProbeRecord,
   classifyProbeAArm,
+  evaluateTemplateCliPreflight,
   formatVerdict,
   isListingUsable,
   packDisposition,
@@ -312,6 +318,70 @@ const inconclusive = (probe: string, reason: string, detail: string): Verdict =>
   reason,
   detail,
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROBE T — DOES THE RESOLVED IMAGE ACTUALLY CARRY THE AGENT CLIs?
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The lane-time template precondition, run FIRST and gating probe A.
+ *
+ * ★★★ E7-F022 NAMED THIS AND NOBODY BUILT IT. That finding measured that every keyed lane
+ * pipes `inputs.e2b_template` straight into `E2B_TEMPLATE`, that an omitted input therefore
+ * resolves to the bare `base` image which has NO agent CLIs, and that consequently "a keyed
+ * run against bare `base` can be reported green while the CLIs were never present". Its own
+ * owner paragraph says the remedy is "a boot-time or LANE-TIME assertion that the registered
+ * template contains what the Dockerfile promises".
+ *
+ * ★★ `resolveTemplate` ALREADY FIXED THE NAME. It is not enough: a name is not a filesystem.
+ * An operator may dispatch any alias explicitly (and `resolveTemplate` honours it verbatim,
+ * deliberately); an account may hold a stale or half-built `aoa-base`. Either way this pack
+ * would `npm install -g` its own CLI over the top and answer as though the image had been
+ * the one `e2b/e2b.Dockerfile` describes — the founder's authorised, token-spending run
+ * spent on a different question than the one asked.
+ *
+ * ★ IT RUNS IN ITS OWN CHEAP SANDBOX AND SPENDS NO MODEL TOKENS. `TEMPLATE_CLI_PROBE_SCRIPT`
+ * is the same assertion the image's final build layer makes (`command -v claude` /
+ * `command -v codex`), re-made against the image that actually answered.
+ */
+async function templatePreflight(): Promise<Verdict> {
+  return withSandbox("template-preflight", PROBE_SANDBOX_TTL_MS, async (t, sandboxId) => {
+    const res = await run(t, sandboxId, "sh", ["-c", TEMPLATE_CLI_PROBE_SCRIPT], { timeoutMs: SHELL_TIMEOUT_MS });
+    // eslint-disable-next-line no-console
+    console.log(
+      `[w7u1/T] channel=${res.channel} exit=${String(res.exitCode)} stdout=${JSON.stringify(safe(res.stdout, 400))} ` +
+        `stderr=${JSON.stringify(safe(res.stderr, 200))}`,
+    );
+    return evaluateTemplateCliPreflight({
+      channel: res.channel,
+      exitCode: res.exitCode,
+      stdout: res.stdout,
+      template: TEMPLATE,
+    }) as Verdict;
+  });
+}
+
+/**
+ * The gate itself: probe A does not run unless probe T said `yes`.
+ *
+ * ★★★ IT IS A SEPARATE, PURE, MODULE-LOCAL FUNCTION SO IT CAN BE PROVEN WITHOUT A KEY.
+ * A gate whose only exercise is the one keyed run is a gate nobody has tested — this
+ * programme's [[checks-that-nothing-runs]] class, applied to the check that exists to stop
+ * a wasted run. The no-key block at the foot of this file exercises both directions.
+ *
+ * Returns the inconclusive verdict to record INSTEAD of probe A, or `null` to proceed.
+ * It is called BEFORE `probeA`, so a blocked adapter creates no sandbox, installs no CLI
+ * and spends no model tokens.
+ */
+function probeAPreflightGate(adapterType: string, preflight: Verdict): Verdict | null {
+  if (preflight.state === "yes") return null;
+  return inconclusive(
+    `A/${adapterType}`,
+    "template-preflight-not-satisfied",
+    `probe T did not certify the image (${preflight.state}/${preflight.reason}): ${preflight.detail} ` +
+      `Probe A for ${adapterType} was NOT run, so no sandbox was created for it and NO model tokens were spent.`,
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PROBE B — is the TEMPLATE already satisfying a location convention?
@@ -578,8 +648,24 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
       return classifyProbeAArm({
         label,
         nonce,
+        // ★★★ THE ADAPTER AND THE STDOUT REACH THE CLASSIFIER NOW, AND BOTH ARE REQUIRED.
+        // E7-F028: without them a non-zero exit was indistinguishable from "the agent ran
+        // and chose not to write", and `verdictProbeA` went on to EXONERATE the permission
+        // posture from two arms that had never started. `adapterType` selects which head
+        // event counts as evidence of starting; `stdout` is where that evidence lives.
+        //
+        // ★ THE SLICE IS GENEROUS AND THE REASON MATTERS: the head event is the FIRST line
+        // both CLIs emit (measured, run 34087197668), so a prefix cannot lose it — but a
+        // stingy slice could turn a real stdout into an apparent empty one and mint a false
+        // `cli-refused-at-startup`. Redacted, like every other string this pack handles.
+        adapterType: spec.adapterType,
         targetPreExisted: preExisted,
-        execution: { channel: exec.channel, exitCode: exec.exitCode, detail: safe(exec.detail, 200) },
+        execution: {
+          channel: exec.channel,
+          exitCode: exec.exitCode,
+          stdout: safe(exec.stdout, 8000),
+          detail: safe(exec.detail, 200),
+        },
         file: { found: file.found, content: file.content, errorKind: file.errorKind, detail: safe(file.detail, 200) },
       });
     }
@@ -604,8 +690,17 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
     const a0 = classifyProbeAArm({
       label: "A0",
       nonce: a0Nonce,
+      // ★ A0 CARRIES NO `adapterType` ON PURPOSE: it is PLAIN SHELL, not an agent CLI, so
+      // no head event exists for it to emit and its `ran` is fail-closed `false`. Nothing
+      // consults it — A0's proof that it ran is the file it wrote — and inventing an
+      // adapter here would let a shell arm supply "the agent started" evidence.
       targetPreExisted: a0Pre,
-      execution: { channel: a0Exec.channel, exitCode: a0Exec.exitCode, detail: safe(a0Exec.detail, 200) },
+      execution: {
+        channel: a0Exec.channel,
+        exitCode: a0Exec.exitCode,
+        stdout: safe(a0Exec.stdout, 2000),
+        detail: safe(a0Exec.detail, 200),
+      },
       file: {
         found: a0File.found,
         content: a0File.content,
@@ -758,9 +853,21 @@ describeKeyed("W7U1 — the output probe pack, against REAL E2B", () => {
         }
       };
 
+      // ★★★ PROBE T RUNS FIRST, AND IT GATES PROBE A. E7-F022: the resolved template is an
+      // operator input no protocol surface can see, and running the decisive, token-spending
+      // probe against an image with no agent in it would spend the founder's one authorised
+      // run on a different question. `guarded` makes a THROWN preflight inconclusive too, so
+      // the gate is fail-closed in every direction.
+      const preflight = await guarded("T", templatePreflight);
+      verdicts.push(preflight);
       verdicts.push(await guarded("B", probeB));
       verdicts.push(await guarded("C", probeC));
       for (const spec of ADAPTER_ARMS) {
+        const blocked = probeAPreflightGate(spec.adapterType, preflight);
+        if (blocked) {
+          verdicts.push(blocked);
+          continue;
+        }
         verdicts.push(await guarded(`A/${spec.adapterType}`, () => probeA(spec)));
       }
 
@@ -901,8 +1008,26 @@ describe("W7U1 — template resolution and the durable record (no key required)"
     const { join } = await import("node:path");
     const dir = mkdtempSync(join(tmpdir(), "w7u1-record-"));
     const target = join(dir, "nested", "record.json");
+    const summaryTarget = join(dir, "step-summary.md");
     const previous = process.env.W7U1_RECORD_PATH;
+    // ★★★ E7-F029 — THE FIXTURE'S REPORT MUST NOT LAND ON THE RUN PAGE. `emitDurableRecord`
+    // renders `report(verdicts)` to THREE channels. This test used to redirect only ONE of
+    // them (`W7U1_RECORD_PATH`), so on a real Actions run the SECOND channel appended a
+    // SYNTHETIC report — same banner, same arm legend, same commit sha, the REAL run nonce,
+    // details `d1`/`d2` and a trailing `DISPOSITION: inconclusive` — to
+    // `$GITHUB_STEP_SUMMARY`, beneath a run that had measured everything it set out to.
+    // Measured in run 34087197668: two `W7U1 OUTPUT PROBE PACK — RESULT` blocks 7 ms apart,
+    // and the orchestrating session nearly reported the run's disposition from the trailing
+    // one.
+    //
+    // ★★ REDIRECTING IS STRICTLY BETTER THAN SILENCING. Pointing the variable at a temp file
+    // keeps the wiring assertion this test exists to make — and STRENGTHENS it: the summary
+    // channel had NO assertion at all before, and now the rendered block is read back and
+    // checked. The log-stream duplicate remains (harmless once known, and still evidence the
+    // emitter fired); the PR body records the structural fix that would remove it too.
+    const previousSummary = process.env.GITHUB_STEP_SUMMARY;
     process.env.W7U1_RECORD_PATH = target;
+    process.env.GITHUB_STEP_SUMMARY = summaryTarget;
     try {
       await emitDurableRecord([
         { probe: "B", state: "no", reason: "template-prefills-nothing", detail: "d1" },
@@ -922,10 +1047,84 @@ describe("W7U1 — template resolution and the durable record (no key required)"
         "B=no/template-prefills-nothing",
         "A/claude_local=inconclusive/no-model-provider-key",
       ]);
+      // The summary channel fired — INTO THE TEMP FILE, not the run page. Both halves
+      // matter: the first proves the redirect did not silently disable the emitter, the
+      // second is the E7-F029 fix itself.
+      const summary = readFileSync(summaryTarget, "utf8");
+      expect(summary).toContain("W7U1 OUTPUT PROBE PACK");
+      expect(summary).toContain("DISPOSITION: inconclusive");
     } finally {
       if (previous === undefined) delete process.env.W7U1_RECORD_PATH;
       else process.env.W7U1_RECORD_PATH = previous;
+      if (previousSummary === undefined) delete process.env.GITHUB_STEP_SUMMARY;
+      else process.env.GITHUB_STEP_SUMMARY = previousSummary;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE TEMPLATE PRECONDITION GATES PROBE A — proven WITHOUT a key
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ★★★ THE PURE CORE OWNS THE DECISION (`evaluateTemplateCliPreflight`: what a preflight
+// observation MEANS); this block owns the WIRING — that a failed precondition actually
+// STOPS probe A rather than merely being recorded beside it. E7-F022's cost is a
+// token-spending run against an image with no agent in it, and a gate whose only exercise
+// is that same run is a gate nobody has tested.
+
+describe("W7U1 — the template precondition gates probe A (no key required)", () => {
+  const preflight = (state: string, reason: string): Verdict => ({ probe: "T", state, reason, detail: "d" });
+
+  it("an UNSATISFIED precondition blocks probe A, and says no tokens were spent", () => {
+    for (const [state, reason] of [
+      ["inconclusive", "template-does-not-carry-the-agent-clis"],
+      ["inconclusive", "template-preflight-unreadable"],
+      ["inconclusive", "template-preflight-did-not-run"],
+      ["inconclusive", "probe-threw"],
+      // Defensive: any state that is not exactly `yes` blocks. A precondition that
+      // answered `no` is still not a certification.
+      ["no", "whatever-a-future-edit-invents"],
+    ] as const) {
+      const blocked = probeAPreflightGate("codex_local", preflight(state, reason));
+      expect(blocked, `${state}/${reason} must block probe A`).not.toBeNull();
+      expect(blocked?.state).toBe("inconclusive");
+      expect(blocked?.probe).toBe("A/codex_local");
+      expect(blocked?.reason).toBe("template-preflight-not-satisfied");
+      expect(blocked?.detail).toContain("NO model tokens were spent");
+      // And an inconclusive probe reds the lane — the gate is not a silent skip.
+      expect(packDisposition([blocked as Verdict]).disposition).toBe("inconclusive");
+    }
+  });
+
+  it("POSITIVE CONTROL: a SATISFIED precondition lets probe A run", () => {
+    // If this ever fails the pack can no longer answer its own question, which is the
+    // failure mode a preflight is most likely to introduce.
+    expect(probeAPreflightGate("claude_local", preflight("yes", "template-carries-the-agent-clis"))).toBeNull();
+    expect(probeAPreflightGate("codex_local", preflight("yes", "template-carries-the-agent-clis"))).toBeNull();
+  });
+
+  it("this file's preflight observation is read by the pure core, from the SAME script constant", () => {
+    // The sandbox half cannot run without a key; what CAN be proven here is that the
+    // observation shape this file produces is the one the evaluator reads, and that both
+    // sides share ONE script constant rather than two copies that can drift.
+    expect(TEMPLATE_CLI_PROBE_SCRIPT).toContain("claude");
+    expect(TEMPLATE_CLI_PROBE_SCRIPT).toContain("codex");
+    const satisfied = evaluateTemplateCliPreflight({
+      channel: "returned",
+      exitCode: 0,
+      stdout: "W7U1_HAVE:claude\nW7U1_HAVE:codex\n",
+      template: TEMPLATE,
+    }) as Verdict;
+    expect(satisfied.state).toBe("yes");
+    expect(probeAPreflightGate("claude_local", satisfied)).toBeNull();
+    const bare = evaluateTemplateCliPreflight({
+      channel: "returned",
+      exitCode: 0,
+      stdout: "W7U1_MISSING:claude\nW7U1_MISSING:codex\n",
+      template: "base",
+    }) as Verdict;
+    expect(bare.state).toBe("inconclusive");
+    expect(probeAPreflightGate("claude_local", bare)).not.toBeNull();
   });
 });

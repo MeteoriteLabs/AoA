@@ -3,6 +3,12 @@ name: Keyed E2B — W7U1 output probe pack
 # W7U1's LIVE lane. ONE keyed run answers three questions that source analysis cannot
 # settle, and it must be able to answer NO to each of them as cleanly as it answers yes.
 #
+#   PROBE T (gate)      Does the RESOLVED template actually carry `claude` and `codex` on
+#                       PATH — the assertion e2b/e2b.Dockerfile's final layer makes at build
+#                       time, re-made against the image that answered? It runs FIRST and
+#                       GATES probe A, so a stale, half-built or explicitly bare image stops
+#                       the run BEFORE any model tokens are spent (E7-F022). A name is not a
+#                       filesystem: `resolveTemplate` fixes the name, this checks the image.
 #   PROBE A (decisive)  Can a real `claude` / `codex`, invoked under the EXACT
 #                       PRODUCTION ARGV (`buildSandboxInvocation`), write a file inside
 #                       the sandbox at all? With four arms: A0 harness control, A1 the

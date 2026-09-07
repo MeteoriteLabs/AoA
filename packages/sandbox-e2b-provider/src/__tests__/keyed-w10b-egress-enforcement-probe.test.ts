@@ -841,8 +841,25 @@ describe("W10B — template resolution and the durable record (no key required)"
     const { join } = await import("node:path");
     const dir = mkdtempSync(join(tmpdir(), "w10b-record-"));
     const target = join(dir, "nested", "record.json");
+    const summaryTarget = join(dir, "step-summary.md");
     const previous = process.env.W10B_RECORD_PATH;
+    // ★★★ E7-F029's SHAPE, FOUND HERE BY GREP RATHER THAN BY A RUN. That finding was filed
+    // from an OBSERVED W7U1 run: the no-key wiring test redirected only the record path, so
+    // `emitDurableRecord`'s OTHER two channels rendered a SYNTHETIC report — same banner,
+    // same template line, same commit sha, fixture details `d1`/`d2`, ending
+    // `DISPOSITION: inconclusive` — into the job log AND the step summary of a run that had
+    // measured everything it set out to. This lane's test is byte-for-byte the same shape
+    // (`emitDurableRecord` at :521 appends to `GITHUB_STEP_SUMMARY` unconditionally, and only
+    // `W10B_RECORD_PATH` was saved/restored here), so the same synthetic block would land on
+    // the run page the first time an operator fires this lane.
+    //
+    // ★★ DERIVED FROM SOURCE, NOT OBSERVED: this lane has not fired, so unlike W7U1 there is
+    // no run log showing two blocks. The fix is applied anyway because it is the same one
+    // line, and rediscovering the defect by wasting a founder-authorised run is the outcome
+    // the whole W7U1 durability design exists to avoid.
+    const previousSummary = process.env.GITHUB_STEP_SUMMARY;
     process.env.W10B_RECORD_PATH = target;
+    process.env.GITHUB_STEP_SUMMARY = summaryTarget;
     try {
       await emitDurableRecord(
         [
@@ -870,9 +887,16 @@ describe("W10B — template resolution and the durable record (no key required)"
         "a=no/denied-target-still-reachable",
         "c=inconclusive/resolv-conf-unreadable",
       ]);
+      // The summary channel fired — INTO THE TEMP FILE, not the run page. It had no
+      // assertion at all before; redirecting it adds one rather than removing coverage.
+      const summary = readFileSync(summaryTarget, "utf8");
+      expect(summary).toContain("W10B DE-08 EGRESS-ENFORCEMENT PROBE");
+      expect(summary).toContain("DISPOSITION: inconclusive");
     } finally {
       if (previous === undefined) delete process.env.W10B_RECORD_PATH;
       else process.env.W10B_RECORD_PATH = previous;
+      if (previousSummary === undefined) delete process.env.GITHUB_STEP_SUMMARY;
+      else process.env.GITHUB_STEP_SUMMARY = previousSummary;
       rmSync(dir, { recursive: true, force: true });
     }
   });

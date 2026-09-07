@@ -170,3 +170,39 @@ text is not retrievable through the API, so it was not confirmed after the fact.
 
 **Consumed by:** `CLI-008-unit-f-design.md` §12 — probe (a) has returned, and §12.3's stop condition
 is replaced rather than deleted.
+
+---
+
+## 8. AMENDMENT — W16B, 2026-09-07: the apparatus that produced §4 has been repaired
+
+★★★ **Nothing above is rewritten.** This run happened as recorded; what follows is what the same
+inputs produce through the repaired instrument, so a later reader is not left choosing between a
+document and the code.
+
+**E7-F028 is RESOLVED.** `classifyProbeAArm` now returns `indeterminate / cli-refused-at-startup` for
+a non-zero exit with empty stdout, and `verdictProbeA`'s exoneration branch refuses to fire unless at
+least one arm shows its CLI's own head stream event (claude
+`{"type":"system","subtype":"init",…}`, codex `{"type":"thread.started",…}` — both shapes measured
+from the adapters *and* from this run's own captured stdout).
+
+**Replayed through the repaired classifier, §1's codex row would read:**
+
+| probe | verdict | what it establishes |
+|---|---|---|
+| **A / `codex_local`** | `inconclusive` — `a1-cli-refused-at-startup` | A1 exited 1 having written nothing; the CLI refused before it did or declined the work. **Nothing about codex's ability to write is measured.** |
+
+★ **The disposition of this run would therefore have been `inconclusive`, and the lane RED.** That is
+the correct outcome: for codex the pack did not answer. The claude half — §2, four arms, the CLI's own
+`permissionMode` self-report — is **untouched** and still `no / …-posture-is-the-cause`. A pinned
+regression test drives this run's real captured stdout through the real classifier and the real
+verdict function and asserts exactly that.
+
+**E7-F029 is PARTLY fixed.** The self-test now redirects `GITHUB_STEP_SUMMARY` to a temp file, so the
+synthetic report no longer reaches the **run page**. The **step log** still shows two blocks. §6's
+instruction stands and gains a line: read the artefact, the run page is now safe too, and in the raw
+log the second block is the self-test's fixture.
+
+**E7-F022 is partly addressed.** A new **probe T** runs first and gates probe A on
+`command -v claude` / `command -v codex` inside the **resolved** template — so a future run against a
+stale or bare image stops before any model tokens are spent. §5's limit 3 ("one template, one tier,
+one image") is unchanged: it is still only `aoa-base` on this account that was measured.

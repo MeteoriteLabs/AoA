@@ -303,6 +303,211 @@ export function redactSecrets(text, secrets) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 2b. DID THE CLI ACTUALLY START? — the positive evidence an exoneration needs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The head stream event each agent CLI emits once it has started, and nothing else does.
+ *
+ * ★★★ THIS EXISTS BECAUSE A REFUSAL AND A RESULT LOOKED THE SAME. E7-F028 measured the
+ * cost on a founder-authorised, token-spending run: `classifyProbeAArm` mapped EVERY
+ * non-zero exit to `did-not-write`, so codex — which exited 1 having refused before it
+ * ever contacted a model — was recorded as a capability answer, and `verdictProbeA` went
+ * on to state `a1-did-not-write-and-the-posture-is-not-the-cause`: a sentence the same
+ * run's own stderr contradicts. Concluding "the posture is not the cause" from two
+ * refusals is [[e2b-denyOut-accepted-echoed-inert]]'s error class — deciding a control is
+ * inert from a signal that never exercised it.
+ *
+ * ★★ MEASURED PER CLI, TWICE OVER — from the adapters that parse these events in the
+ * shipped product, AND from this pack's own recorded stdout in run 34087197668. Not
+ * guessed, and not inherited from the brief:
+ *
+ *   claude_local → `{"type":"system","subtype":"init",…}`
+ *     * `packages/adapters/claude-local/src/server/parse.ts:19`
+ *       `if (type === "system" && asString(event.subtype, "") === "init")`
+ *       (same pair at `claude-local/src/cli/format-event.ts:34` and
+ *       `claude-local/src/ui/parse-stdout.ts:44`).
+ *     * Run 34087197668, `[w7u1/A/claude_local] A1 … stdout="{\"type\":\"system\",
+ *       \"subtype\":\"init\",\"cwd\":\"/home/user\",\"session_id\":\"de6ba132-…\",…"`.
+ *       ★ BOTH keys are required, and on the SAME LINE: `"type":"system"` alone also
+ *       heads non-init system events, so matching it alone would call a CLI "started"
+ *       on an event that says nothing of the kind.
+ *
+ *   codex_local  → `{"type":"thread.started","thread_id":…}`
+ *     * `packages/adapters/codex-local/src/server/parse.ts:64` (`extractCodexSessionId`,
+ *       `if (asString(event.type, "") !== "thread.started") continue;`) and `:136`
+ *       (`parseCodexJsonl`, `if (type === "thread.started")`).
+ *     * Run 34087197668, `[w7u1/A/codex_local] A2 … stdout="{\"type\":\"thread.started\",
+ *       \"thread_id\":\"01a07a5b-b6b9-7fe2-9729-999757da1442\"}\n{\"type\":\"turn.started\"}…"`,
+ *       against `[w7u1/A/codex_local] A1 … exit=1 … stdout=""` — the refusal, with no
+ *       head event at all. That contrast IS the measurement.
+ *
+ * ★ WHITESPACE-TOLERANT, LINE-SCOPED. The measured output is compact JSONL, but a
+ * pretty-printed variant must not silently read as "did not start"; equally, requiring
+ * the pair on ONE line stops two unrelated events from combining into false evidence.
+ */
+export const STARTUP_STREAM_EVIDENCE = Object.freeze({
+  claude_local: Object.freeze({
+    describe: 'claude\'s stream-json head event `{"type":"system","subtype":"init",…}`',
+    required: Object.freeze([/"type"\s*:\s*"system"/, /"subtype"\s*:\s*"init"/]),
+  }),
+  codex_local: Object.freeze({
+    describe: 'codex\'s JSONL head event `{"type":"thread.started","thread_id":…}`',
+    required: Object.freeze([/"type"\s*:\s*"thread\.started"/]),
+  }),
+});
+
+/**
+ * Did THIS arm's stdout show the CLI reaching its own startup?
+ *
+ * ★★★ IT ANSWERS ONLY THE POSITIVE DIRECTION, AND THAT IS THE POINT. `ran:true` means a
+ * head event was seen. `ran:false` means NO SUCH EVENT WAS SEEN — never "the CLI did not
+ * run". The distinction matters because this value is consumed fail-closed: absence of
+ * evidence blocks an exoneration, it never manufactures one.
+ *
+ * An unknown adapter yields `ran:false` with a reason, for the same fail-closed cause: a
+ * pack that cannot say what starting looks like cannot certify that anything started.
+ *
+ * @param {unknown} stdout the arm's captured stdout (already redacted by the caller)
+ * @param {unknown} adapterType `"claude_local"` | `"codex_local"`
+ * @returns {{ran: boolean, evidence: string, detail: string}}
+ */
+export function detectStartupEvidence(stdout, adapterType) {
+  const spec = STARTUP_STREAM_EVIDENCE[adapterType];
+  if (!spec) {
+    return {
+      ran: false,
+      evidence: "",
+      detail:
+        `no startup stream event is defined for adapterType ${JSON.stringify(String(adapterType ?? ""))}, so this ` +
+        "arm cannot be shown to have run at all",
+    };
+  }
+  const text = typeof stdout === "string" ? stdout : "";
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.length === 0) continue;
+    if (spec.required.every((re) => re.test(line))) {
+      return { ran: true, evidence: line.slice(0, 200), detail: `${spec.describe} was present on this arm's stdout` };
+    }
+  }
+  return {
+    ran: false,
+    evidence: "",
+    detail:
+      `${spec.describe} was NOT present on this arm's stdout (${text.trim().length} chars captured), so nothing ` +
+      "shows the CLI reached its own startup",
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2c. DOES THE RESOLVED TEMPLATE ACTUALLY CARRY THE AGENT CLIs?
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The two binaries `e2b/e2b.Dockerfile` PROMISES are on PATH in the CLI-bearing image.
+ *
+ * Its final assertion layer is, verbatim:
+ *   `RUN command -v claude && command -v codex && claude --version && codex --version`
+ * with the comment *"Fail the build if either CLI is not resolvable — the whole point of
+ * the template."* This constant, and the script below, are that same assertion moved to
+ * the one place it was never made: the lane that spends the founder's model tokens.
+ */
+export const TEMPLATE_CLI_BINARIES = Object.freeze(["claude", "codex"]);
+
+/**
+ * The in-sandbox script whose output `evaluateTemplateCliPreflight` reads.
+ *
+ * ★ IT PRINTS A POSITIVE MARKER PER BINARY, NOT JUST FAILURES. A script that printed only
+ * what is missing would make "nothing was printed" — a script that never ran, a shell that
+ * died, a truncated capture — indistinguishable from "both are present", which is this
+ * programme's [[checks-that-nothing-runs]] class exactly. Every binary must be explicitly
+ * accounted for or the preflight refuses.
+ */
+export const TEMPLATE_CLI_PROBE_SCRIPT =
+  'for b in claude codex; do if command -v "$b" >/dev/null 2>&1; ' +
+  'then echo "W7U1_HAVE:$b"; else echo "W7U1_MISSING:$b"; fi; done';
+
+export const TEMPLATE_CLI_HAVE_PREFIX = "W7U1_HAVE:";
+export const TEMPLATE_CLI_MISSING_PREFIX = "W7U1_MISSING:";
+
+/**
+ * Probe T — the lane-time template precondition, evaluated BEFORE any model tokens.
+ *
+ * ★★★ E7-F022 NAMED THIS FIX AND NOBODY HAD BUILT IT. That finding's own owner paragraph
+ * says the remedy is *"a boot-time or lane-time assertion that the registered template
+ * contains what the Dockerfile promises"*, and measured why: `E2B_TEMPLATE` silently
+ * defaults to the bare `base` image on the sibling keyed lanes, so *"a keyed run against
+ * bare `base` can be reported green while the CLIs were never present"*. This lane already
+ * corrects an OMITTED input to `aoa-base` (`resolveTemplate`) — but a NAME is not a
+ * FILESYSTEM. An operator can dispatch any alias, an account can hold a stale build of
+ * `aoa-base`, and either way the pack would install its own CLI over the top and answer as
+ * if the image had been the one the Dockerfile describes.
+ *
+ * ★★ IT IS A THREE-STATE VERDICT LIKE EVERY OTHER PROBE, NOT A THROW. A failed precondition
+ * is `inconclusive` — "the apparatus was not in a state to answer; run me again" — which is
+ * the only state that reds this lane. It is emitted into the durable record beside the
+ * others, so a green run carries POSITIVE evidence that the image was checked rather than
+ * the silence of a check nobody can see.
+ *
+ * @param {{channel?: string, exitCode?: number|null, stdout?: unknown, template?: unknown}} [obs]
+ * @returns {{probe: string, state: string, reason: string, detail: string}}
+ */
+export function evaluateTemplateCliPreflight(obs = {}) {
+  const { channel, exitCode, stdout, template } = obs;
+  const named = typeof template === "string" && template.length > 0 ? template : "(unnamed)";
+  const line = (state, reason, detail) => ({ probe: "T", state, reason, detail });
+
+  if (channel !== "returned") {
+    return line(
+      "inconclusive",
+      "template-preflight-did-not-run",
+      `the CLI-presence check did not reach a terminal in template "${named}" (channel=${String(channel)}). ` +
+        "Nothing is established about what the image carries, so probe A must not spend model tokens against it.",
+    );
+  }
+
+  const text = typeof stdout === "string" ? stdout : "";
+  const missing = [];
+  const unreadable = [];
+  const present = [];
+  for (const bin of TEMPLATE_CLI_BINARIES) {
+    // ★ EXPLICIT PRESENCE IS REQUIRED. "no MISSING line" is NOT presence.
+    if (text.includes(`${TEMPLATE_CLI_HAVE_PREFIX}${bin}`)) present.push(bin);
+    else if (text.includes(`${TEMPLATE_CLI_MISSING_PREFIX}${bin}`)) missing.push(bin);
+    else unreadable.push(bin);
+  }
+
+  if (missing.length > 0) {
+    return line(
+      "inconclusive",
+      "template-does-not-carry-the-agent-clis",
+      `template "${named}" does NOT carry ${missing.join(" + ")} on PATH` +
+        (unreadable.length > 0 ? ` (and said nothing at all about ${unreadable.join(" + ")})` : "") +
+        `. e2b/e2b.Dockerfile's final layer asserts \`command -v claude && command -v codex\` for the CLI-bearing ` +
+        `alias "${CLI_BEARING_TEMPLATE_ALIAS}", so this image is not the one the pack's question is about ` +
+        "(E7-F022). Probe A was NOT run and NO model tokens were spent. Re-dispatch with " +
+        `\`e2b_template: ${CLI_BEARING_TEMPLATE_ALIAS}\`, or rebuild that template on this account, then re-run.`,
+    );
+  }
+  if (unreadable.length > 0) {
+    return line(
+      "inconclusive",
+      "template-preflight-unreadable",
+      `the CLI-presence check returned (exit=${String(exitCode)}) but said nothing about ${unreadable.join(" + ")} ` +
+        `in template "${named}": ${JSON.stringify(text.slice(0, 200))}. Presence is NOT inferred from the absence ` +
+        "of a MISSING line, so nothing is established and probe A was not run.",
+    );
+  }
+  return line(
+    "yes",
+    "template-carries-the-agent-clis",
+    `template "${named}" carries ${present.join(" + ")} on PATH — the same assertion e2b/e2b.Dockerfile's final ` +
+      "layer makes at build time, re-made here against the image that actually answered.",
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 3. ONE ARM OF PROBE A
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -317,12 +522,30 @@ export function redactSecrets(text, secrets) {
  *   "did-not-write"  — the arm reached a terminal and the file is absent (or empty of
  *                      the nonce) — a genuine negative
  *   "indeterminate"  — nothing can be read from this arm: the binary was not runnable,
- *                      the target path already existed, or SOMETHING ELSE wrote content
- *                      we did not ask for
+ *                      the target path already existed, SOMETHING ELSE wrote content we
+ *                      did not ask for, or ★ THE CLI REFUSED BEFORE IT PRODUCED A BYTE
+ *                      (`cli-refused-at-startup`, E7-F028)
+ *
+ * Every arm additionally carries `ran` — whether its stdout showed the CLI's OWN head
+ * event (`detectStartupEvidence`). That is separate from `state` because a `did-not-write`
+ * arm can be a CLI that never started, which is precisely the collapse E7-F028 measured.
  */
 export function classifyProbeAArm(arm) {
-  const { label, targetPreExisted, execution, file, nonce } = arm;
-  const at = (state, cause, detail) => ({ label, state, cause, detail: detail ?? "" });
+  const { label, targetPreExisted, execution, file, nonce, adapterType } = arm;
+  // ★★★ EVERY ARM CARRIES ITS OWN "DID IT START" EVIDENCE, WHATEVER ITS STATE. The
+  // exoneration branch of `verdictProbeA` consumes it, and it must be present on a
+  // `did-not-write` arm as well as an `indeterminate` one — the whole defect E7-F028
+  // measured is that a `did-not-write` arm can be a CLI that never ran.
+  const startup = detectStartupEvidence(execution?.stdout, adapterType);
+  const at = (state, cause, detail) => ({
+    label,
+    state,
+    cause,
+    detail: detail ?? "",
+    ran: startup.ran,
+    runEvidence: startup.evidence,
+    runEvidenceDetail: startup.detail,
+  });
 
   if (targetPreExisted === true) {
     return at(
@@ -389,6 +612,32 @@ export function classifyProbeAArm(arm) {
       "the invocation did not terminate within its budget and no file appeared — the shape a permission gate takes in --print mode",
     );
   }
+
+  // ★★★ A REFUSAL IS NOT A RESULT. E7-F028: this function's catch-all used to map EVERY
+  // non-zero exit to `did-not-write`, so "the CLI refused before it ever reached a model"
+  // was recorded as the agent's answer. It is not hypothetical — run 34087197668's codex
+  // A1 exited 1 with `stdout=""` and the stderr
+  // `"Not inside a trusted directory and --skip-git-repo-check was not specified."`,
+  // and the pack booked it as a capability measurement and stayed GREEN.
+  //
+  // ★★ THE TEST IS EMPTY STDOUT, NOT "no startup event", AND THE TWO ARE KEPT SEPARATE ON
+  // PURPOSE. A CLI that produced no bytes at all before a non-zero exit did not get far
+  // enough to say anything — that is an apparatus-level miss whatever the reason. The
+  // richer question ("did it demonstrably START?") rides `ran`, is computed for every arm
+  // above, and is consumed by `verdictProbeA`'s exoneration branch. Folding the two into
+  // one test would let a fix to either silently satisfy the other.
+  const stdoutText = typeof execution?.stdout === "string" ? execution.stdout : "";
+  const exitCode = execution?.exitCode;
+  if (channel === "returned" && typeof exitCode === "number" && exitCode !== 0 && stdoutText.trim().length === 0) {
+    return at(
+      "indeterminate",
+      "cli-refused-at-startup",
+      `the CLI exited ${String(exitCode)} having written NOTHING to stdout, so it never reached the point of doing ` +
+        "or declining the work. That is an apparatus-level miss, not a capability answer: read this arm's stderr in " +
+        "the job log for the refusal it named.",
+    );
+  }
+
   return at("did-not-write", `exited-${String(execution?.exitCode ?? "unknown")}`, "");
 }
 
@@ -476,10 +725,40 @@ export function verdictProbeA(arms) {
     );
   }
   if (a2 && a2.state === "did-not-write") {
+    // ★★★ THE EXONERATION BRANCH REQUIRES POSITIVE EVIDENCE THAT SOMETHING RAN, AND IT IS
+    // THE ONLY BRANCH THAT DOES. This is the one verdict in the whole pack that asserts a
+    // NEGATIVE about a cause — "the posture is not it" — from two arms that each produced
+    // nothing. Two silences do not exonerate a variable; they are consistent with an agent
+    // that never started, in which case the posture was never tested at all. E7-F028
+    // measured exactly that outcome on a founder-authorised run and the lane stayed green,
+    // because a fourth-state situation had been folded into `no`, which is a RESULT.
+    //
+    // ★★ IT IS FAIL-CLOSED ON MISSING EVIDENCE. `ran` is true only when the arm's stdout
+    // carried the CLI's own head event (`detectStartupEvidence`, shapes measured from the
+    // adapters AND from run 34087197668). An arm with no such evidence — including an arm
+    // classified by an older caller that never passed stdout — counts as NOT SHOWN TO HAVE
+    // RUN. Absence of evidence must never manufacture an exoneration; that is the same
+    // error as reading a policy back from `getInfo()` and calling it enforced.
+    //
+    // ★ THE CONVICTION BRANCH ABOVE NEEDS NO SUCH GATE: A2 WROTE, which is itself proof
+    // that A2 ran, and the differential is then a real one.
+    const ranArms = [a1, a2].filter((x) => x && x.ran === true);
+    if (ranArms.length === 0) {
+      return line(
+        "inconclusive",
+        "posture-exoneration-unsupported-no-arm-demonstrably-ran",
+        `Neither A1 (${a1.cause}) nor A2 (${a2.cause}) produced the file, and NEITHER shows the CLI's own startup ` +
+          `stream event on stdout (A1: ${String(a1.runEvidenceDetail ?? "no startup evidence recorded")}; ` +
+          `A2: ${String(a2.runEvidenceDetail ?? "no startup evidence recorded")}). Two arms that cannot be shown to ` +
+          "have STARTED cannot exonerate the permission posture — the posture may never have been tested. Read both " +
+          "arms' stderr in the job log, then re-run with the blocker removed.",
+      );
+    }
     return line(
       "no",
       "a1-did-not-write-and-the-posture-is-not-the-cause",
-      `Neither A1 (${a1.cause}) nor A2 (${a2.cause}) produced the file. Adding the permission posture does NOT make ` +
+      `Neither A1 (${a1.cause}) nor A2 (${a2.cause}) produced the file, and ${ranArms.map((x) => x.label).join(" + ")} ` +
+        `demonstrably RAN (${ranArms[0].runEvidenceDetail}). Adding the permission posture does NOT make ` +
         "the agent able to write here; something else is in the way, and a posture-only fix would not have helped.",
     );
   }
