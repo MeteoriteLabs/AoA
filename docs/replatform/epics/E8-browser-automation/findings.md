@@ -504,10 +504,29 @@ genuine inertness rather than an experiment that broke itself.
 |---|---|---|
 | **1. Provider — `metadata.egressAllowlist`** (what AoA actually sends) | INERT | §2. MEASURED, real E2B, run `33857218680`, both controls held. |
 | **2. Provider — `network.denyOut` / `updateNetwork`** (the surface `E8-F007` found and AoA has never called) | ACCEPTED, VALIDATED, ECHOED, **INERT** | MEASURED, real E2B, run `34085130892`. `E8-F008`. |
-| **3. In-guest** — a proxy, or anything the login shell can reach | NOT A BOUNDARY against this workload | MEASURED (the proxy half): Node's global `fetch` ignores every proxy environment variable, with the proxy port never contacted and the request returning 200 — recorded at `W10B-egress-enforcement-runbook.md` §8, on a `node:22` image, which `aoa-base` is. STRUCTURAL (the shell half): `buildE2bLoginShellScript` (`sandbox-provider-runtime.ts:647-655`) sources `/etc/profile`, `$HOME/.profile` and `$HOME/.bashrc` from an **agent-writable** home before `exec env … claude`. |
+| **3. In-guest** — a proxy, or anything the login shell can reach | NOT A BOUNDARY against this workload | **MIXED, and the weakest row here — read the note below it.** Proxy half: REPRODUCED locally (see ★). Shell half: STRUCTURAL — `buildE2bLoginShellScript` (`sandbox-provider-runtime.ts:647-655`) sources `/etc/profile`, `$HOME/.profile` and `$HOME/.bashrc` from an **agent-writable** home before `exec env … claude`, so anything the guest can edit, the agent can edit. |
 | **4. Control-plane deny** — `classifyEgressDestination` / `createFenceAwareEgressProxy` | INSPECTS ZERO PACKETS | STRUCTURAL, by caller count: §3 point 3 — `egress-proxy.ts` is imported by exactly one file in the tree, an integration test. A classifier the sandbox's traffic never traverses cannot deny anything, whatever it computes. Tracked as `E5-6-denied-egress` → `unwired` in `scripts/gate-clause-wiring.json`, printed on every green run. |
 | **5. Fail-closed on "no policy applied"** — refuse to run a sandbox whose egress policy could not be applied | **DISSOLVED** | DERIVED from row 2, and marked as derivation rather than measurement: the discriminator such a design would branch on is the read-back, and the read-back **passes** on an unpoliced sandbox (`E8-F008` §3). There is no observable that separates "policy applied" from "policy stored and ignored", so there is nothing for a fail-closed branch to test. |
 
+> **★ THE PROXY HALF'S PROVENANCE, STATED RATHER THAN INHERITED — and this row is the reason the
+> census labels every row by evidence class.** `W10B-egress-enforcement-runbook.md` §8 and the keyed
+> pack's header both assert that Node's global `fetch` *"ignores every proxy environment variable —
+> measured, with the proxy port never contacted and the request returning 200"*. **Neither cites a run
+> id, an artefact or a test**, and a grep of the tree finds no other record of it. Writing this census
+> is what surfaced that: it was about to be booked as MEASURED on an assertion, which is the exact
+> move `E8-F007` exists to record the cost of.
+>
+> **What I did instead of inheriting it.** Reproduced the mechanism directly, W11, 2026-09-07: two
+> loopback HTTP servers, `HTTP_PROXY` + `http_proxy` + `ALL_PROXY` all pointed at the first, one
+> `fetch()` to the second. Result: **status 200 from the origin, proxy contacted 0 times.** So global
+> `fetch` does not consult those variables — which is expected (undici honours a proxy only through an
+> explicit `ProxyAgent`/`setGlobalDispatcher`), and is now recorded rather than assumed.
+>
+> **The honest limit:** that reproduction ran on **Node v24.14.0 on Windows**, not on the `node:22`
+> guest of the `aoa-base` image. It establishes the MECHANISM; the guest-side claim is still
+> inherited, and the row is labelled MIXED for that reason and not promoted. It would not change the
+> census either way — the shell half alone already makes an in-guest mechanism agent-editable — but a
+> reader is entitled to know which half is which.
 **★ Read this before proposing a sixth.** Rows 1, 2 and 3 are measurements against real infrastructure;
 rows 4 and 5 are structural and derived respectively, and are labelled that way on purpose. The
 programme has now spent four units arriving here, and the recurring error each time was to propose the
