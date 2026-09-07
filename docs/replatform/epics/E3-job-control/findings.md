@@ -1982,14 +1982,27 @@ in a job-control ticket.
 **Filed:** 2026-09-06 (W5U1), measured at `e1f723df2`. Filed from a 35-agent dormancy audit; every
 number below was re-measured by hand in this worktree before filing, in both directions.
 
-**What the register says.** `scripts/gate-clause-wiring.json` → `E3-15-budget`:
+**What the register SAID, and no longer says.** `scripts/gate-clause-wiring.json` → `E3-15-budget`,
+as filed:
 
 > "Parity bridge with zero callers; **budget/cost still flow through the legacy cost-event path**.
 > Wire at sink cutover (Sprint 6)."
 
 The second clause is the load-bearing one, and it is false for exactly the runs the rollout dial
-creates. It is printed as the standing answer to "what happens to money when a run goes
+creates. It was printed as the standing answer to "what happens to money when a run goes
 distributed" on every green `policy` run.
+
+> ★ **UPDATE 2026-09-07 (W16A, branch `replatform/w16a-register-sentences`).** That sentence is
+> GONE. `E3-15-budget`'s `reason` now states the measured consequence — a handed-off distributed
+> run is UNBILLED, with the four writer sites, the suppression return, and the three blind
+> controls cited by `file:line` — and it names this finding as still open. Every measurement
+> below was re-derived at `8075cd7a1` before the rewrite; all of it held, including the two
+> `updateRuntimeState` call sites, the four `insert(costEvents)` sites, and `priceAcceptedUsage`
+> at zero production references.
+>
+> **This finding stays OPEN.** See the amended "What would close it" below: correcting the
+> sentence removes the MISREPRESENTATION, not the unbilled spend, and the unbilled spend is what
+> the title's first clause names and what sets the HIGH severity.
 
 **Measurement 1 — every `cost_events` writer in the repository.**
 
@@ -2050,12 +2063,24 @@ configuration arms it, and that is unchanged: this is a precondition on arming, 
 The bridge itself is correct code (JOB-012); the defect is the register's account of what its
 absence costs.
 
-**What would close it.** Either wire `jobBudgetCostBridge` into the accepted-usage path (Sprint 6
-sink cutover, as the clause already schedules), or — cheaply and immediately — correct E3-15's
-`reason` so it states the measured consequence: a distributed-owned run is UNBILLED, so the dial
-must not be armed for an Organization whose spend must be capped. This finding deliberately does
-NOT edit that reason: W5U1's charter forbids changing an existing clause's declaration, and the
-correction belongs with whoever owns the cutover.
+**What would close it. ★ AMENDED 2026-09-07 (W16A) — the original sentence offered a DISJUNCTION,
+and the second arm of it was wrong.** As filed it read: *"Either wire `jobBudgetCostBridge` into the
+accepted-usage path (Sprint 6 sink cutover, as the clause already schedules), or — cheaply and
+immediately — correct E3-15's `reason` so it states the measured consequence."* W16A has now done
+the second arm, and doing it made the error visible: correcting the sentence removes the
+misrepresentation and changes **nothing** about the measured defect this finding's title leads with
+— a handed-off attempt still writes no `cost_events` row, and every control in Measurement 2 is
+still blind to it. Closing a HIGH finding about unbilled spend on a prose edit would be the
+false-claim-of-enforcement move this programme's guards exist to refuse. The two records already
+disagreed on this point and the manifest was the correct one: `scripts/finding-ownership.json`
+called the same edit a **"Cheapest partial close"** and added "HIGH may never be `accepted` and is
+not being accepted".
+
+**So: this closes only when `jobBudgetCostBridge` (or an equivalent) is called on the accepted-usage
+path, so that a distributed-owned run produces a `cost_events` row the budget controls read.** The
+prose half is DONE and is not a reason to close anything. Ownership is unchanged and still
+`unowned`: the sink cutover that would wire the bridge has no ticket (MIG-007 §3.3 — "None is
+promoted by this ticket").
 
 ## E3-F038 — The wiring register's census is not closed, and three symbols the guard's own header names have no clause at all
 
