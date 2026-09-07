@@ -485,11 +485,14 @@ egress half alone. Do NOT close it by citing `classifyEgressDestination`, the `p
 gates, or `e6f-08`: the first two exercise a pure function no production path reaches, and the third
 measures a docker network, not a sandbox.**
 
-### 8. 2026-09-07 (W11) — THE CANDIDATE-LAYER CENSUS IS NOW CLOSED: every enumerated layer is refuted by measurement
+### 8. 2026-09-07 (W11) — THE CANDIDATE-LAYER CENSUS IS NOW CLOSED: every enumerated layer is refuted, and each row says on what
 
-**Nothing above changes.** Status, severity, ownership and §3's conclusion are untouched; this section
-only completes §3's census, whose fourth entry was still an open question when §0 was written. It
-proposes and builds nothing.
+**Nothing above changes.** Status, severity, ownership and §3's conclusion are untouched. This section
+extends §3's three-point census to the two candidates raised since — the provider `network` surface
+(§0, still an open question when §0 was written) and the fail-closed-on-no-policy design — and states
+an evidence class for every row. **The heading says "refuted", not "measured": rows 1 and 2 are
+measurements against real infrastructure, row 3 is mixed, row 4 is structural and row 5 is derived.**
+Collapsing those into one word is how a census stops being trustworthy. It proposes and builds nothing.
 
 `E8-F008` (HIGH, open, `unowned`) records workflow run
 [`34085130892`](https://github.com/MeteoriteLabs/AoA/actions/runs/34085130892) at `ab23eabdc`: a
