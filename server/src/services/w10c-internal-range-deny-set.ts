@@ -35,10 +35,12 @@
 // is checked against LIVE code on every CI run: `w10c-internal-range-deny-set.test.ts`
 // re-derives the IPv4 cover from `isPrivateIP` (server/src/services/outbound-url-guard.ts)
 // by a full 2^24 sweep and asserts equality, so a change to that live predicate
-// reds this module. The header below also records two MEASURED facts about
-// shipped code -- the `mcp-connector-oauth.ts` BlockList's missing
-// 192.88.99.0/24, and `isPrivateIP('::169.254.169.254') === false` -- which are
-// findings about live SSRF surfaces rather than about the dead consumer.
+// reds this module. The header below USED TO record two MEASURED facts about
+// shipped code -- the `mcp-connector-oauth.ts` BlockList's missing 192.88.99.0/24,
+// and `isPrivateIP('::169.254.169.254') === false`. BOTH ARE CLOSED AS OF W13: the
+// OAuth BlockList now DERIVES from this list rather than being transcribed beside
+// it, and the parser defect behind the second is fixed. They are kept below as a
+// record of what the divergence WAS, not as live gaps in shipped code.
 //
 // WHAT WOULD REVIVE IT, named so this is a real disposition and not 'it might be
 // handy'. Any enforcement point that consumes a CIDR LIST rather than a boolean
@@ -56,9 +58,18 @@
 // THAT DELETION QUESTION IS NOW ANSWERED: the fourth condition was taken in W13, so
 // this module is live and deleting it would delete a shipped SSRF table's data source.
 // `scripts/gate-clause-wiring.json` carries `E8-w10c-internal-range-deny-set` as
-// `wired`, naming `mcp-connector-oauth.ts` as what consumes it -- and
-// `check-gate-clause-wiring.mjs` turns that entry RED again the day the last
-// production reference disappears.
+// `wired`, naming `mcp-connector-oauth.ts` as what consumes it.
+//
+// ★ WHAT THAT GUARD ACTUALLY DOES -- stated exactly, because an overstated guard
+// claim is the same defect one level up from the one this module exists to stop.
+// `check-gate-clause-wiring.mjs` reds a `wired` clause ONLY when its symbol's
+// production reference count reaches ZERO. `INTERNAL_RANGE_DENY_CIDRS` measures 2
+// (`node scripts/check-gate-clause-wiring.mjs --counts`): the module-scope loop in
+// `mcp-connector-oauth.ts`, and the default parameter of `isCoveredByDenySet` below
+// -- which is INTRA-MODULE and cannot disappear while this file exists. So deleting
+// the OAuth consumer would take the count 2 -> 1 and the guard would STAY GREEN.
+// It catches deleting the whole thing. It does NOT catch orphaning this module
+// again, and it must not be cited as if it did.
 //
 // -- WHY THIS SET EXISTS AT ALL -----------------------------------------------
 // The repo's authority on "is this address internal" is `isPrivateIP`
@@ -154,7 +165,9 @@ export const INTERNAL_RANGE_DENY_CIDRS_V4: readonly string[] = Object.freeze([
   "192.0.2.0/24",
   // Deprecated 6to4 relay anycast (RFC7526). Denying this WOULD block a v6-over-v4
   // tunnel that would otherwise carry traffic past a v4-only egress filter.
-  // NOTE: this is the one range `mcp-connector-oauth.ts`'s table is missing.
+  // NOTE: this USED TO be the one range `mcp-connector-oauth.ts`'s hand-typed table
+  // was missing (E8-F009). W13 closed that -- the OAuth table DERIVES from this list,
+  // so it carries this range precisely because this line is here.
   "192.88.99.0/24",
   // RFC1918 private-use. Home/office LAN range -- relevant for self-hosted and
   // desktop deployments where the sandbox host sits on a real LAN.
@@ -179,7 +192,8 @@ export const INTERNAL_RANGE_DENY_CIDRS_V4: readonly string[] = Object.freeze([
 export const INTERNAL_RANGE_DENY_CIDRS_V6: readonly string[] = Object.freeze([
   // Everything with a zero leading word: `::` unspecified, `::1` loopback, and the
   // IPv4-compatible form `::a.b.c.d`. THIS is the entry that covers
-  // `::169.254.169.254` -- the address `isPrivateIP` currently fails to parse.
+  // `::169.254.169.254` -- the address `isPrivateIP` failed to parse until W13 fixed
+  // the shared parser. The predicate now agrees with this entry.
   "::/16",
   // RFC6052 NAT64 well-known prefixes (64:ff9b::/96 and 64:ff9b:1::/48,
   // aggregated). A NAT64 translator turns these into arbitrary IPv4 destinations,

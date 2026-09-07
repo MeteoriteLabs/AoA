@@ -212,10 +212,24 @@ describe("W13 OAuth deny table -- the LIVE BlockList is the derived set", () => 
     // isPrivateIP's IPv6 arm reads only the first four words and every arm keys off
     // the first, so sweeping all 2^16 leading words with suffixes that exercise the
     // deeper arms finds any disagreement at /16 granularity or coarser.
-    // METHOD LIMIT, STATED: this cannot see a divergence confined to a range
-    // NARROWER than these probes reach -- e.g. one keyed on the fifth word. No rule
-    // in either implementation reads that far today; if one is ever added, this
-    // sweep goes blind to it and section 2's arithmetic is the backstop.
+    // ★ METHOD LIMIT, STATED -- and THIS is the authoritative copy of it.
+    // This sweep cannot see a divergence confined to a rule keyed on the FIFTH WORD
+    // OR DEEPER (`words[4]`..`words[7]`), EXCEPT where such a rule is already covered
+    // by a coarser entry.
+    //
+    // ONE SUCH RULE EXISTS TODAY, so do not read this as "nothing reads that far".
+    // `isPrivateIP`'s `mappedIpv4` (outbound-url-guard.ts) keys on `words[4]`..`words[7]`
+    // to unwrap `::ffff:a.b.c.d`, and every probe below pins words 4-7 to `0:0:0:1`,
+    // so the sweep never reaches it: `isPrivateIP('::ffff:8.8.8.8')` is FALSE while the
+    // table denies that address.
+    //
+    // IT IS HARMLESS *HERE*, and only for a reason that has to be checked rather than
+    // assumed: the rule's ENTIRE domain, `::ffff:0:0/96`, sits inside a coarser entry
+    // that BOTH tables deny outright -- `::/16` after W13, an explicit `::ffff:0:0/96`
+    // before it. The deeper words therefore cannot change either table's verdict there,
+    // so the blind spot yields a pre-existing DENY-MORE gap and nothing moved
+    // denied -> allowed. A future deeper rule NOT subsumed by a coarser entry would be a
+    // real blind spot; section 2's exact interval arithmetic is the backstop.
     const suffixes: Array<[number, number, number]> = [
       [0, 0, 0], [0, 0, 1], [0xff9b, 0, 0], [0xff9b, 1, 0], [0, 0, 0xffff],
       [0x0db8, 0, 1], [0x0002, 0, 0], [0x0010, 0, 0], [0x0020, 0, 0],
