@@ -30,7 +30,9 @@ import {
   REDACTION_MARKER,
   buildProbeRecord,
   classifyProbeAArm,
+  EXONERATION_RESIDUAL,
   countOccurrences,
+  detectModelContactEvidence,
   detectStartupEvidence,
   evaluateDurableRecord,
   evaluateTemplateCliPreflight,
@@ -466,35 +468,37 @@ test("ONLY a `returned` listing is evidence — a listing that TIMED OUT is not 
 // Probe A's verdict — the controls gate the measurement
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ★ `ran` IS PART OF AN ARM NOW, and the defaults encode the fail-closed rule: an arm that
-// WROTE obviously ran, and an arm that produced nothing is NOT SHOWN to have run unless a
-// case says so explicitly. Anything reading these fixtures as "ran unless stated" would
+// ★ `ran` AND `reachedModel` ARE BOTH PART OF AN ARM, AND THEY ARE SET INDEPENDENTLY. The
+// defaults encode the fail-closed rule: an arm that WROTE obviously ran and obviously
+// reached a model, and an arm that produced nothing is NOT SHOWN to have done either unless
+// a case says so explicitly. Anything reading these fixtures as "ran unless stated" would
 // re-open E7-F028 in the test suite itself.
+//
+// ★★ THE THIRD ARGUMENT IS THE ONE THAT MATTERS NOW. `didNot("A2", "exited-1", true)` is an
+// arm that STARTED; `didNot("A2", "exited-1", true, true)` is an arm that started AND
+// reached a model. The gap between those two fixtures is exactly the v4 defect: codex A2 in
+// run 34087197668 was the first, and the pack read it as the second.
 const ranDetail = (ran) => (ran ? "the CLI's head event was present on this arm's stdout" : "no head event was seen");
-const wrote = (label, ran = true) => ({
+const modelDetail = (reached) =>
+  reached
+    ? "an `assistant` event carrying a non-empty message.content was present on this arm's stdout (model-authored-content)"
+    : "no model-contact event was seen on this arm's stdout";
+const armFixture = (state, cause, label, ran, reachedModel) => ({
   label,
-  state: "wrote",
-  cause: "nonce-present",
-  detail: "",
-  ran,
-  runEvidenceDetail: ranDetail(ran),
-});
-const didNot = (label, cause, ran = false) => ({
-  label,
-  state: "did-not-write",
+  state,
   cause,
   detail: "",
   ran,
   runEvidenceDetail: ranDetail(ran),
+  reachedModel,
+  modelEvidenceKind: reachedModel ? "model-authored-content" : "none",
+  modelEvidenceDetail: modelDetail(reachedModel),
 });
-const indet = (label, cause, ran = false) => ({
-  label,
-  state: "indeterminate",
-  cause,
-  detail: "",
-  ran,
-  runEvidenceDetail: ranDetail(ran),
-});
+const wrote = (label, ran = true, reachedModel = true) => armFixture("wrote", "nonce-present", label, ran, reachedModel);
+const didNot = (label, cause, ran = false, reachedModel = false) =>
+  armFixture("did-not-write", cause, label, ran, reachedModel);
+const indet = (label, cause, ran = false, reachedModel = false) =>
+  armFixture("indeterminate", cause, label, ran, reachedModel);
 
 test("a failed HARNESS control makes probe A inconclusive whatever A1 did", () => {
   const v = verdictProbeA({ a0: didNot("A0", "exited-1"), a1: didNot("A1", "stalled"), a2: wrote("A2"), a3: didNot("A3", "exited-0") });
@@ -521,14 +525,15 @@ test("A1 silent + A2 writing is a NO that CONVICTS the missing permission postur
   assert.equal(v.reason, "a1-did-not-write-and-the-posture-is-the-cause");
 });
 
-test("A1 and A2 both silent is a NO that EXONERATES the posture — ONLY when an arm demonstrably RAN", () => {
+test("A1 and A2 both silent is a NO that EXONERATES the posture — ONLY when A2 REACHED A MODEL", () => {
   const v = verdictProbeA({
     a0: wrote("A0"),
-    // Both arms streamed their CLI's head event and then exited without writing. That is
-    // an agent that ran and did not write — a genuine negative, and a real exoneration.
-    a1: didNot("A1", "exited-1", true),
-    a2: didNot("A2", "exited-1", true),
-    a3: didNot("A3", "exited-0", true),
+    // Both arms started; A2 — the arm carrying the posture — also received model output and
+    // still wrote nothing. That is an agent that got as far as the question and answered it
+    // in the negative: a genuine negative, and a real exoneration.
+    a1: didNot("A1", "exited-1", true, true),
+    a2: didNot("A2", "exited-1", true, true),
+    a3: didNot("A3", "exited-0", true, true),
   });
   assert.equal(v.state, "no");
   assert.equal(v.reason, "a1-did-not-write-and-the-posture-is-not-the-cause");
@@ -536,41 +541,260 @@ test("A1 and A2 both silent is a NO that EXONERATES the posture — ONLY when an
   // `measured` disposition. If a repair to the classifier or the verdict reds this, the
   // pack has been made unable to answer, which destroys its purpose.
   assert.equal(packDisposition([v]).disposition, "measured");
+  // ★★ AND THE RESIDUAL RIDES THE VERDICT. The reviewer's instruction on the third repair
+  // of this predicate was explicit: the limit must not live only in a PR body. `detail` is
+  // what `buildProbeRecord` copies into the durable record and what the job summary prints,
+  // so asserting it here is asserting that the reader six months from now sees the bound.
+  assert.ok(
+    v.detail.includes(EXONERATION_RESIDUAL),
+    "the exoneration must carry its own residual into the durable record",
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// E7-F028, second half — AN EXONERATION NEEDS POSITIVE EVIDENCE THAT SOMETHING RAN
+// THE EXONERATION PREDICATE — three wrong versions, and the bound on the fourth
 //
-// ★★★ This is the only verdict in the pack that asserts a NEGATIVE about a CAUSE. Two
-// silences are consistent with an agent that never started, in which case the posture was
-// never tested at all — so "the posture is not the cause" is unsupported. Concluding it
-// from two refusals is the same error class as concluding a control is enforced because
-// `getInfo()` echoed the policy back.
+// ★★★ This is the only verdict in the pack that asserts a NEGATIVE about a CAUSE, and the
+// predicate guarding it has now been wrong three times, each fix NECESSARY AND INSUFFICIENT:
+//
+//   v1  any non-zero exit ⇒ did-not-write        (could not tell a refusal from a result)
+//   v2  "at least one arm demonstrably ran"      (WRONG ARM — only A2 carries the posture)
+//   v3  `a2.ran === true`                        (still head-event-only)
+//   v4  `ran` comes from the HEAD EVENT ALONE, so an arm that STARTS and then dies before
+//       any model satisfies it. Measured shape: codex A2 in run 34087197668 emitted
+//       `thread.started` + `turn.started`, then five 401 reconnects, and reached nothing.
+//
+// The two tests below are the ANTI-REGRESSION MUTATIONS for v3 and v2 respectively. Each
+// was OBSERVED RED against the reverted predicate before being committed; neither is a
+// restatement of the passing case above.
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("two arms that cannot be shown to have RUN yield INCONCLUSIVE, never an exoneration", () => {
-  const v = verdictProbeA({
-    a0: wrote("A0"),
-    // Both stalled: no terminal, no stdout, nothing showing either arm ever started.
-    a1: didNot("A1", "stalled", false),
-    a2: didNot("A2", "stalled", false),
-    a3: didNot("A3", "stalled", false),
-  });
-  assert.equal(v.state, "inconclusive", "an unrun pair may not exonerate the variable it never tested");
-  assert.equal(v.reason, "posture-exoneration-unsupported-no-arm-demonstrably-ran");
+test("MUTATION (i) — two arms that STARTED and died before a model may NOT exonerate the posture", () => {
+  // ★★★ THE v4 CASE, BUILT FROM RUN 34087197668's REAL CODEX STDOUT, through the REAL
+  // classifier. Both arms emit `thread.started` (so `ran` is TRUE for both) and then only
+  // 401 reconnect errors. Under the head-event-only predicate this pair EXONERATES the
+  // posture and the lane goes green with a false cause in the durable record.
+  const dyingStdout =
+    '{"type":"thread.started","thread_id":"01a07a5b-b6b9-7fe2-9729-999757da1442"}\n{"type":"turn.started"}\n' +
+    '{"type":"error","message":"Reconnecting... 2/5 (unexpected status 401 Unauthorized)"}\n' +
+    '{"type":"error","message":"Reconnecting... 5/5 (unexpected status 401 Unauthorized)"}\n';
+  const codexArm = (label) =>
+    classifyProbeAArm({
+      label,
+      nonce: NONCE,
+      adapterType: "codex_local",
+      targetPreExisted: false,
+      execution: { channel: "returned", exitCode: 1, stdout: dyingStdout },
+      file: { found: false, content: null, errorKind: "not-found", detail: "" },
+    });
+  const a1 = codexArm("A1");
+  const a2 = codexArm("A2");
+  // The mutation's own premise, pinned: BOTH arms satisfy the OLD predicate.
+  assert.equal(a1.ran, true, "the head-event-only predicate is satisfied by A1 — that is the point");
+  assert.equal(a2.ran, true, "and by A2 — so v3 would have exonerated");
+  assert.equal(a2.reachedModel, false, "and NEITHER reached a model");
+
+  const v = verdictProbeA({ a0: wrote("A0"), a1, a2, a3: codexArm("A3") });
+  assert.equal(v.state, "inconclusive", "an arm that started and died before a model leaves the posture UNTESTED");
+  assert.equal(v.reason, "posture-exoneration-unsupported-a2-did-not-reach-a-model");
   assert.notEqual(v.reason, "a1-did-not-write-and-the-posture-is-not-the-cause");
   assert.equal(packDisposition([v]).disposition, "inconclusive", "and it must RED the lane, not pass as a result");
 });
 
-test("ONE arm that demonstrably ran is enough — the gate is evidence, not unanimity", () => {
+test("MUTATION (ii) — A1 reaching a model does NOT license an exoneration when A2 did not", () => {
+  // ★★★ THE v2 CASE. Only A2 carries the permission posture, so A1's progress says nothing
+  // about whether a posture-only fix would have helped. A predicate reading "at least one
+  // arm" is satisfied here and exonerates on the WRONG ARM's evidence.
   const v = verdictProbeA({
     a0: wrote("A0"),
-    a1: didNot("A1", "exited-1", false),
-    a2: didNot("A2", "exited-1", true),
-    a3: didNot("A3", "exited-0", true),
+    a1: didNot("A1", "exited-1", true, true),
+    a2: didNot("A2", "exited-1", true, false),
+    a3: didNot("A3", "exited-0", true, true),
   });
-  assert.equal(v.state, "no");
+  assert.equal(v.state, "inconclusive", "the posture rides A2; A1's evidence cannot stand in for it");
+  assert.equal(v.reason, "posture-exoneration-unsupported-a2-did-not-reach-a-model");
+  assert.equal(packDisposition([v]).disposition, "inconclusive");
+});
+
+test("neither arm shown to have started is still INCONCLUSIVE — the older failure has not been traded away", () => {
+  // The v1/v2 case must NOT regress while v4 is being fixed: two stalls, no stdout at all.
+  const v = verdictProbeA({
+    a0: wrote("A0"),
+    a1: didNot("A1", "stalled", false, false),
+    a2: didNot("A2", "stalled", false, false),
+    a3: didNot("A3", "stalled", false, false),
+  });
+  assert.equal(v.state, "inconclusive", "an unrun pair may not exonerate the variable it never tested");
+  assert.equal(v.reason, "posture-exoneration-unsupported-a2-did-not-reach-a-model");
+  assert.ok(
+    v.detail.includes("no model-contact"),
+    "the verdict must say WHICH evidence was missing, not merely that something was",
+  );
+  assert.equal(packDisposition([v]).disposition, "inconclusive");
+});
+
+test("the model-contact evidence is detected per CLI, from the shapes the ADAPTERS actually parse", () => {
+  // claude — `parse.ts:25-37` reads `event.message.content`'s blocks off an `assistant` event.
+  const claudeMsg = detectModelContactEvidence(
+    '{"type":"system","subtype":"init","session_id":"de6ba132"}\n' +
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}\n',
+    "claude_local",
+  );
+  assert.equal(claudeMsg.reached, true);
+  assert.equal(claudeMsg.evidenceKind, "model-authored-content");
+  // claude — `parse.ts:40-64`: a non-error `result` carrying billed output tokens.
+  assert.equal(
+    detectModelContactEvidence('{"type":"result","usage":{"output_tokens":12}}', "claude_local").evidenceKind,
+    "billed-usage",
+  );
+  // ★★★ AND THE 401 `result` DOES NOT COUNT. `claude-local/src/server/parse.ts:127-128`
+  // records the real shape of a revoked-token run: `subtype` is misleadingly "success" and
+  // `is_error` is true. Accepting `result` unconditionally would re-open the whole defect
+  // one event later.
+  assert.equal(
+    detectModelContactEvidence(
+      '{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"usage":{"output_tokens":3}}',
+      "claude_local",
+    ).reached,
+    false,
+    "an errored result event is not evidence that a model was reached",
+  );
+  // ...nor is a `result` with no billed output.
+  assert.equal(
+    detectModelContactEvidence('{"type":"result","usage":{"output_tokens":0}}', "claude_local").reached,
+    false,
+  );
+  // ...nor an `assistant` event with an empty content array.
+  assert.equal(
+    detectModelContactEvidence('{"type":"assistant","message":{"content":[]}}', "claude_local").reached,
+    false,
+  );
+
+  // codex — `parse.ts:189-201` (agent_message / reasoning items) and `:229-235` (turn.completed usage).
+  assert.equal(
+    detectModelContactEvidence(
+      '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"done"}}',
+      "codex_local",
+    ).evidenceKind,
+    "model-authored-content",
+  );
+  assert.equal(
+    detectModelContactEvidence(
+      '{"type":"item.completed","item":{"id":"item_1","type":"reasoning","text":"thinking"}}',
+      "codex_local",
+    ).reached,
+    true,
+  );
+  assert.equal(
+    detectModelContactEvidence('{"type":"turn.completed","usage":{"output_tokens":41}}', "codex_local").evidenceKind,
+    "billed-usage",
+  );
+  // ★★★ THE HEAD EVENTS ARE NOT MODEL CONTACT. These two lines ARE the v4 defect, and an
+  // `item.completed` whose item is neither a message nor reasoning is not either.
+  //
+  // ★ THE THIRD CASE IS A CONSTRUCTED SHAPE, NOT A MEASURED ONE, AND SAYING SO IS THE POINT
+  // OF THIS UNIT. Run 34087197668's codex A3 DID emit an `item.completed` after five failed
+  // reconnects, but the pack's log capture truncated at `{"id":"item_0` and the durable
+  // record carries no stdout, so THE ITEM'S TYPE IS UNKNOWN. The `"type":"error"` below is
+  // therefore a shape this predicate must reject, not a shape that was observed — and that
+  // asymmetry is why the predicate whitelists two item types instead of blacklisting one.
+  assert.equal(detectModelContactEvidence('{"type":"thread.started","thread_id":"x"}', "codex_local").reached, false);
+  assert.equal(detectModelContactEvidence('{"type":"turn.started"}', "codex_local").reached, false);
+  assert.equal(
+    detectModelContactEvidence('{"type":"item.completed","item":{"id":"item_0","type":"error"}}', "codex_local").reached,
+    false,
+  );
+  assert.equal(
+    detectModelContactEvidence('{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"  "}}', "codex_local")
+      .reached,
+    false,
+    "an empty agent_message is not model output",
+  );
+  assert.equal(
+    detectModelContactEvidence('{"type":"turn.completed","usage":{"output_tokens":0}}', "codex_local").reached,
+    false,
+  );
+
+  // Cross-CLI, empty, unparseable, and an adapter nobody declared: all FAIL CLOSED.
+  assert.equal(
+    detectModelContactEvidence('{"type":"item.completed","item":{"type":"agent_message","text":"x"}}', "claude_local")
+      .reached,
+    false,
+  );
+  assert.equal(detectModelContactEvidence("", "codex_local").reached, false);
+  assert.equal(detectModelContactEvidence("not json at all\n{oops", "codex_local").reached, false);
+  assert.equal(
+    detectModelContactEvidence('{"type":"assistant","message":{"content":[{"type":"text"}]}}', "gemini_local").reached,
+    false,
+  );
+});
+
+test("the declared model-contact shapes are the ones the shipped adapters actually parse", () => {
+  // ★ READ OFF DISK, exactly like the startup-shape guard above it. If an adapter renames
+  // these events, this pack's "reached a model" evidence would silently stop matching and
+  // EVERY exoneration would turn inconclusive with no explanation. Fail loudly instead.
+  const claudeParse = readFileSync(
+    path.join(REPO_ROOT, "packages", "adapters", "claude-local", "src", "server", "parse.ts"),
+    "utf8",
+  );
+  const codexParse = readFileSync(
+    path.join(REPO_ROOT, "packages", "adapters", "codex-local", "src", "server", "parse.ts"),
+    "utf8",
+  );
+  assert.ok(claudeParse.includes('if (type === "assistant")'), "claude's assistant event is no longer parsed as such");
+  assert.ok(claudeParse.includes("cache_read_input_tokens"), "claude's result usage block has moved");
+  assert.ok(claudeParse.includes("api_error_status"), "the errored-result shape the is_error guard exists for has moved");
+  assert.ok(codexParse.includes('type === "item.completed"'), "codex's item.completed event has moved");
+  assert.ok(codexParse.includes('"agent_message"'), "codex's agent_message item type has moved");
+  assert.ok(codexParse.includes('type === "turn.completed"'), "codex's turn.completed event has moved");
+});
+
+test("the RESIDUAL survives into the DURABLE RECORD, not just the verdict object", () => {
+  // ★★★ THE CLAIM "it is in the durable record" IS PROVEN, NOT INFERRED. The verdict object
+  // carrying the text is not the same fact as the uploaded artefact carrying it —
+  // `buildProbeRecord` could drop `detail` and every other assertion here would still pass.
+  // This drives the real exoneration verdict through the real record builder and reads the
+  // residual back out of the serialized JSON.
+  const v = verdictProbeA({
+    a0: wrote("A0"),
+    a1: didNot("A1", "exited-1", true, true),
+    a2: didNot("A2", "exited-1", true, true),
+    a3: didNot("A3", "exited-0", true, true),
+  });
   assert.equal(v.reason, "a1-did-not-write-and-the-posture-is-not-the-cause");
+  const rec = buildProbeRecord({
+    verdicts: [v],
+    template: CLI_BEARING_TEMPLATE_ALIAS,
+    templateSource: "default-cli-bearing",
+    templateNote: "n",
+    commitSha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    runNonce: "W7U1-X",
+    generatedAt: "2026-09-06T00:00:00.000Z",
+  });
+  assert.ok(
+    JSON.parse(JSON.stringify(rec)).probes[0].detail.includes(EXONERATION_RESIDUAL),
+    "the record that outlives the log must carry the bound on the claim it records",
+  );
+});
+
+test("the RESIDUAL is stated in the runbook's verdict row, not only in the code", () => {
+  // ★★★ [[checks-that-nothing-runs]], applied to a LIMIT rather than to a check. The
+  // reviewer's instruction on this repair was that the residual must not live only in a PR
+  // body — a bound stated where nobody reads it is not stated. The code emits
+  // EXONERATION_RESIDUAL into the verdict; this pins that the OPERATOR-FACING document
+  // carries the same four bounds, so the two cannot drift apart silently.
+  const runbook = readFileSync(
+    path.join(REPO_ROOT, "docs", "replatform", "epics", "E7-coding-e2b", "tickets", "W7U1-output-probe-runbook.md"),
+    "utf8",
+  );
+  for (const phrase of [
+    "does NOT establish that the model was given the intended prompt",
+    "It says nothing about A1",
+    "first 8000 characters",
+    "billed-usage",
+  ]) {
+    assert.ok(runbook.includes(phrase), `the runbook no longer states the residual bound: "${phrase}"`);
+  }
 });
 
 test("the CONVICTION branch is NOT gated on startup evidence — a write IS the evidence", () => {
@@ -846,14 +1070,36 @@ test("the preflight SCRIPT prints a positive marker per binary, and names both o
 });
 
 test("the binaries the preflight demands are exactly the ones e2b/e2b.Dockerfile asserts", () => {
+  // ★★★ IT IS A SET EQUALITY, IN BOTH DIRECTIONS, AND IT DID NOT USED TO BE. This test
+  // previously looped over TEMPLATE_CLI_BINARIES and checked each appeared in the file —
+  // which cannot catch the OTHER drift: the Dockerfile adding a third CLI the lane-time
+  // preflight never demands, so the image asserts more than the precondition checks and
+  // the title's word "exactly" is false. One-directional containment titled as equality is
+  // this programme's [[checks-that-nothing-runs]] class in its quietest form.
+  //
+  // ★★ COMMENT LINES ARE EXCLUDED, AND THAT IS LOAD-BEARING. `e2b/e2b.Dockerfile:53` is a
+  // COMMENT that itself contains "`command -v claude` / `command -v codex`". Scanning the
+  // whole file would let the comment satisfy the assertion after someone deleted the RUN
+  // layer at :54 — a check passing on the prose that describes the thing it is checking.
   const dockerfile = readFileSync(E2B_DOCKERFILE, "utf8");
-  for (const bin of TEMPLATE_CLI_BINARIES) {
-    assert.ok(
-      dockerfile.includes(`command -v ${bin}`),
-      `e2b/e2b.Dockerfile no longer asserts \`command -v ${bin}\` — the lane-time precondition and the image's own ` +
-        "build guard have drifted apart",
-    );
-  }
+  const executable = dockerfile
+    .split(/\r?\n/)
+    .filter((l) => !l.trimStart().startsWith("#"))
+    .join("\n");
+  const asserted = [...executable.matchAll(/command -v ([A-Za-z0-9_.-]+)/g)].map((m) => m[1]);
+  assert.ok(
+    asserted.length > 0,
+    "e2b/e2b.Dockerfile has no `command -v` assertion on any NON-COMMENT line — either the build guard was deleted " +
+      "or this scan has stopped matching. A ban/scan that matches nothing is a check that nothing runs.",
+  );
+  assert.deepEqual(
+    [...new Set(asserted)].sort(),
+    [...TEMPLATE_CLI_BINARIES].sort(),
+    "the lane-time precondition and the image's own build guard have drifted apart: the Dockerfile asserts " +
+      `${JSON.stringify([...new Set(asserted)].sort())} and the preflight demands ` +
+      `${JSON.stringify([...TEMPLATE_CLI_BINARIES].sort())}. Reconcile them — a binary asserted at build time and ` +
+      "not demanded at lane time is an unchecked promise, and the reverse is a precondition nobody guarantees.",
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

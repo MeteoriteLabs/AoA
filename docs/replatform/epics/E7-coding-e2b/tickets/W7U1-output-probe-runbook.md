@@ -88,11 +88,13 @@ cannot host the thing being measured. `resolveTemplate`
 > `base` is a *name*; `resolveTemplate` corrects the name and nothing looked at the filesystem. Probe
 > T now creates one cheap sandbox from the **resolved** template, runs the same
 > `command -v claude` / `command -v codex` assertion `e2b/e2b.Dockerfile`'s final layer makes, and
-> **gates probe A on the answer** — so a stale, half-built or explicitly bare image stops the run
-> *before* a single model token is spent, with a message naming the template and the missing binary.
-> This is the "lane-time assertion" E7-F022's own owner paragraph asked for. It does not close that
-> finding: the sibling keyed lanes still default to bare `base`, and the three template variable
-> names still disagree.
+> **records the answer beside probe A's** — so the durable record names the template and any missing
+> binary, and probe A's verdict carries a `CAVEAT:` when the image was not certified.
+> This is the "lane-time assertion" E7-F022's own owner paragraph asked for. ★ It is a **caveat, not a
+> gate**: probe A installs its own CLI and does not depend on the image carrying one, so blocking on
+> probe T could only turn an unknown into a guaranteed zero-information run — the argument is in §5's
+> probe T box. It does not close that finding: the sibling keyed lanes still default to bare `base`,
+> and the three template variable names still disagree.
 
 **Other optional inputs.** None. `e2b_template` is the only one.
 
@@ -238,8 +240,9 @@ DISPOSITION: measured — B=no C=yes A/claude_local=no A/codex_local=no
 |---|---|---|
 | `YES — a1-wrote-under-production-argv` | The **exact production argv, with no permission flag**, produced the requested file. Reading a convention path out of a sandbox is already solved (`transport.readFile`), so an output mechanism anchored on the agent writing a known path is **feasible today**. | Hand this to whoever owns the output question. |
 | `NO — ...-and-the-posture-is-the-cause` | A1 (production argv) did not write; A2 (**the same prompt template**, permission flag added) did. A1's and A2's prompts are **not byte-identical**: each names its own target path and its own nonce, on two lines, for the same reason A0 needs its own path — a file one arm left behind must never read back as another arm's success. That separation is the arms' identity, not a second experimental variable, and the permission flag remains the only difference in **how the agent is invoked**. **This is a product finding**, not merely an input to a later ticket: the four script literals at `task-run-sandbox-invocation.ts:181-206` carry no permission posture, and the shipped product's own code says one is required for an unattended run. | File it against the invocation module. An output mechanism is feasible *once the posture is fixed*. |
-| `NO — ...-and-the-posture-is-not-the-cause` | Neither A1 nor A2 wrote, **and at least one of them demonstrably RAN** — the detail line names which arm and what evidence (the CLI's own head stream event). Adding the posture does not make the agent able to write here. ★ **This verdict was UNSAFE before 2026-09-07 and is now gated (E7-F028, fixed in W16B).** It used to be emitted from two arms that had merely exited non-zero, which is what happened to codex in run `34087197668`: A1 was refused at startup and A2, with the posture, got **past** that refusal — the posture removed A1's blocker, the opposite of exoneration. The exoneration branch now REFUSES without positive evidence that an arm started. | Trust it only with the detail line's named run evidence in front of you. It is a real exoneration of the posture; it is still not a statement about any other blocker. |
-| `INCONCLUSIVE — posture-exoneration-unsupported-no-arm-demonstrably-ran` | Neither A1 nor A2 wrote **and neither can be shown to have started** (no `{"type":"system","subtype":"init"}` from claude, no `{"type":"thread.started"}` from codex). Two silences do not exonerate a variable that may never have been tested. | Read both arms' `stderr` in the job log, remove the blocker it names, re-run. Do **not** schedule work off a posture conclusion this run did not support. |
+| `NO — ...-and-the-posture-is-not-the-cause` | Neither A1 nor A2 wrote, **and A2 — the only arm carrying the posture — demonstrably REACHED A MODEL**. The detail line names the evidence and its strength: `billed-usage` (a `result`/`turn.completed` reporting output tokens — a round trip that cannot be produced locally) or `model-authored-content` (an `assistant` / `agent_message` / `reasoning` event — text the CLI *attributes* to the model). Adding the posture does not make the agent able to write here. ★ **THIS VERDICT'S GUARD HAS BEEN WRONG THREE TIMES; READ THE RESIDUAL ROW BELOW BEFORE ACTING ON IT.** v1 emitted it from any two non-zero exits (E7-F028: codex in run `34087197668`, where A1 was refused at startup and A2 with the posture got *past* that refusal — the posture removed A1's blocker, the opposite of exoneration). v2 required "at least one arm started" — the wrong arm. v3 required A2 to have started — but *started* is a head event, and codex A2 in that same run emitted `thread.started` and then died on five 401s having reached nothing. v4 (this) requires model **output** on A2's stdout. | Trust it with the detail line's named evidence in front of you, and only for the claim it makes: **adding the posture is not sufficient**. |
+| ★ **THE RESIDUAL — what that `NO` does *not* establish** | The predicate is a **proxy**, and this row is the bound, stated where the verdict is read rather than in a PR body. (1) **Reached ≠ tried.** Model output does NOT establish that the model was given the intended prompt, that it understood the task, or that it ever ATTEMPTED a write; an agent that answered and then declined for its own reasons is indistinguishable here from one that tried and was denied. (2) **It says nothing about A1**, which this branch does not gate — the accompanying "A1 did not write" may itself rest on an arm that died early. (3) **The capture bounds it**: the evidence must fall within the **first 8000 characters** of stdout the pack records (`safe(exec.stdout, 8000)`), so a CLI that emitted more than that before its first model output reads as "did not reach a model" — fail-closed, a false *inconclusive*, never a false exoneration. (4) **`model-authored-content` is CLI-attributed**: a future CLI that synthesised an assistant/agent message locally on a transport failure would satisfy it. Only **`billed-usage`** is a round trip that cannot be faked in-guest. | If your decision turns on any of (1)–(4), this run does not support it. The same sentences are emitted verbatim into the verdict's `detail`, so they are in the durable record too (`EXONERATION_RESIDUAL`). |
+| `INCONCLUSIVE — posture-exoneration-unsupported-a2-did-not-reach-a-model` | Neither A1 nor A2 wrote **and A2 cannot be shown to have received output from a model**. Two sub-cases, and the detail line distinguishes them: A2 never started at all (no `{"type":"system","subtype":"init"}` from claude, no `{"type":"thread.started"}` from codex), or A2 **started and then died before any model output** — the codex-A2 shape from run `34087197668`: `thread.started`, `turn.started`, then `{"type":"error","message":"Reconnecting… 401 Unauthorized"}`. Either way the posture was never exercised, so it may not be exonerated. | Read both arms' `stderr` in the job log, remove the blocker it names, re-run. Do **not** schedule work off a posture conclusion this run did not support. |
 | `INCONCLUSIVE — a1-cli-refused-at-startup` | A1 exited **non-zero having written nothing at all to stdout** — the CLI refused before it got as far as doing or declining the work. That is an apparatus-level miss, not a capability answer. ★ This is the state codex A1 should have been given in run `34087197668`, where its stderr read *"Not inside a trusted directory and `--skip-git-repo-check` was not specified."* | Read the arm's `stderr`, remove the refusal (see **E7-F027**), re-run. Nothing about codex's ability to write has been measured. |
 | `NO — ...-cause-unattributed` | A1 did not write and A2 could not be read. The NO is sound; the **cause is not established**. | Fix whatever made A2 unreadable (see its `cause`) and re-run. |
 | `INCONCLUSIVE — harness-control-failed` | **A0 failed**: plain shell wrote a file and we could not read it back. The write/read path itself is broken, so A1's empty result attributes to nothing. | The probe is broken, not the product. Nothing may be concluded. |
@@ -264,25 +267,45 @@ redacted.
 
 ### Probe T — does the resolved image actually carry the agent CLIs?
 
-Added 2026-09-07 (W16B), against **E7-F022**. It runs **FIRST**, in its own cheap sandbox, and it
-**gates probe A**: a template that does not carry the CLIs means probe A creates no sandbox, installs
-nothing and **spends no model tokens**.
+Added 2026-09-07 (W16B), against **E7-F022**. It runs **FIRST**, in its own cheap sandbox, spending no
+model tokens, and it **records a caveat on probe A**. It does **not** gate probe A — see the box below
+for why that gate was removed the same day it was proposed.
 
 | Verdict | What it means | What to do |
 |---|---|---|
-| `YES — template-carries-the-agent-clis` | `command -v claude` and `command -v codex` both resolved inside a fresh sandbox of the **resolved** template — the same assertion `e2b/e2b.Dockerfile`'s final layer makes at build time, re-made against the image that actually answered. | Nothing. Probe A proceeds. |
-| `INCONCLUSIVE — template-does-not-carry-the-agent-clis` | The image is missing at least one CLI. **Probe A did not run.** | Re-dispatch with `e2b_template: aoa-base`, or rebuild that template on the account (`e2b/README.md` §2-3), then re-run. |
-| `INCONCLUSIVE — template-preflight-unreadable` | The check returned but said nothing about a binary. ★ **Silence is not presence** — the pack refuses rather than inferring the CLIs are there because no `MISSING` line appeared. | Read the step log for what the sandbox actually printed. |
-| `INCONCLUSIVE — template-preflight-did-not-run` | The check never reached a terminal (timed out, threw, no binary). Nothing is established about the image. | Re-run. |
+| `YES — template-carries-the-agent-clis` | `command -v claude` and `command -v codex` both resolved inside a fresh sandbox of the **resolved** template — the same assertion `e2b/e2b.Dockerfile`'s final layer makes at build time, re-made against the image that actually answered. | Nothing. Probe A carries no caveat. |
+| `INCONCLUSIVE — template-does-not-carry-the-agent-clis` | The image is missing at least one CLI. **Probe A still ran** (it installs its own), and its verdict carries a `CAVEAT:` naming this. The lane is red on probe T's own account. | Read probe A's answer — it stands. Then re-dispatch with `e2b_template: aoa-base`, or rebuild that template on the account (`e2b/README.md` §2-3). |
+| `INCONCLUSIVE — template-preflight-unreadable` | The check returned but said nothing about a binary. ★ **Silence is not presence** — the pack refuses rather than inferring the CLIs are there because no `MISSING` line appeared. **Probe A still ran**, caveated. | Read the step log for what the sandbox actually printed. |
+| `INCONCLUSIVE — template-preflight-did-not-run` | The check never reached a terminal (timed out, threw, no binary). Nothing is established about the image. **Probe A still ran**, caveated. | Re-run probe T. Probe A's answer from this run is still usable. |
 
-> ★★★ **Why a NAME was not enough.** `resolveTemplate` already corrects an *omitted* dispatch input to
-> `aoa-base` rather than bare `base`. But an operator may name any alias explicitly (and that is
-> honoured verbatim, deliberately), and an account may hold a stale or half-built `aoa-base`. Probe A
-> then `npm install -g`s its own CLI over the top and answers **as though** the image had been the one
-> the Dockerfile describes. E7-F022's own owner paragraph names the missing piece: *"a boot-time or
-> lane-time assertion that the registered template contains what the Dockerfile promises."* This is it,
-> for this lane. It does **not** close E7-F022 — the sibling lanes still default to bare `base`, and
-> the three template variable names still disagree.
+> ★★★ **Why a NAME was not enough, and why a GATE was too much.** `resolveTemplate` already corrects an
+> *omitted* dispatch input to `aoa-base` rather than bare `base`. But an operator may name any alias
+> explicitly (and that is honoured verbatim, deliberately), and an account may hold a stale or
+> half-built `aoa-base` — so the image that answered is worth **recording**. E7-F022's own owner
+> paragraph names the missing piece: *"a boot-time or lane-time assertion that the registered template
+> contains what the Dockerfile promises."* This is that assertion, for this lane. It does **not** close
+> E7-F022 — the sibling lanes still default to bare `base`, and the three template variable names still
+> disagree.
+>
+> ★★ **It was briefly a hard gate, and that was wrong.** Three reasons, recorded because they are the
+> general shape of a bad gate. (1) **Probe A does not depend on what probe T checks**: probe A
+> `npm install -g`s its own agent CLI unconditionally, with a `sudo` fallback, and already has its own
+> preconditions for every way that can fail (`template-has-no-node-runtime`, `cli-install-failed`,
+> `cli-binary-not-on-path`) — run `34087197668` shows both lanes taking exactly that path
+> (`install: "INSTALL_PLAIN"`, `binary = /usr/local/bin/claude`). So the false green E7-F022 feared,
+> *"reported green while the CLIs were never present"*, is not reachable through probe A, which cannot
+> answer at all without a CLI it put there itself. (2) **The gate had never passed anywhere**: it did
+> not exist when the pack last fired, so its first execution would have been on the founder's next
+> authorised, token-spending run — an unverified hard gate in front of the only run that answers the
+> question converts an unknown into a *guaranteed* zero-information outcome, which is the cost it was
+> written to avoid, inverted. (3) **Fail-closed is for wrong answers, not missing ones**: refusing to
+> answer is right when answering would assert something unsupported (that is why the exoneration branch
+> refuses); here the answer is supported either way and only the note beside it changes.
+>
+> ★ **What was kept.** Probe T's three-state verdict still goes into the durable record, so the record
+> still says which image answered and whether it carried the CLIs, and an `inconclusive` probe T still
+> **reds the lane** exactly as any unreadable probe does. The difference is that probe A's answer now
+> survives that red instead of being replaced by it.
 
 ### Probe B — is the template already satisfying the convention?
 

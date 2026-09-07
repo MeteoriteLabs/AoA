@@ -180,10 +180,25 @@ inputs produce through the repaired instrument, so a later reader is not left ch
 document and the code.
 
 **E7-F028 is RESOLVED.** `classifyProbeAArm` now returns `indeterminate / cli-refused-at-startup` for
-a non-zero exit with empty stdout, and `verdictProbeA`'s exoneration branch refuses to fire unless at
-least one arm shows its CLI's own head stream event (claude
-`{"type":"system","subtype":"init",…}`, codex `{"type":"thread.started",…}` — both shapes measured
-from the adapters *and* from this run's own captured stdout).
+a non-zero exit with empty stdout, and `verdictProbeA`'s exoneration branch refuses to fire unless
+**A2 — the only arm carrying the permission posture — demonstrably reached a model**: an `assistant`
+event or a non-error `result` with billed output tokens for claude, an `agent_message`/`reasoning`
+item or a `turn.completed` with billed output tokens for codex. Shapes measured from the adapters
+*and* from this run's own captured stdout.
+
+★★★ **THE EXONERATION PREDICATE WAS WRONG THREE TIMES AND THIS IS THE FOURTH VERSION, so read it with
+its bound attached.** The first repair said "at least one arm demonstrably ran", which gates the
+**wrong arm** — only A2 carries the posture. The second said `a2.ran`, but `ran` is the CLI's *head*
+event, and **this very run** shows why that is not enough: codex A2 emitted
+`{"type":"thread.started",…}` and `{"type":"turn.started"}` and then five
+`401 Unauthorized` reconnects against `wss://api.openai.com/v1/responses`. It started. It reached
+nothing. Under the head-event predicate that pair EXONERATES the posture, green, in the durable
+record. ★ **And v4 is still a proxy**: it does not establish that the model was given the intended
+prompt, understood it, or ever *attempted* a write; it says nothing about A1, which it does not gate;
+it sees only the first 8000 characters of captured stdout; and `model-authored-content` is text the
+CLI *attributes* to a model, where only `billed-usage` is a round trip that cannot be produced
+locally. Those four sentences are emitted verbatim into every exoneration verdict's `detail` — so
+they are in the **durable record** — and are a row in the runbook's probe-A table, pinned by a test.
 
 **Replayed through the repaired classifier, §1's codex row would read:**
 
@@ -197,12 +212,18 @@ the correct outcome: for codex the pack did not answer. The claude half — §2,
 regression test drives this run's real captured stdout through the real classifier and the real
 verdict function and asserts exactly that.
 
-**E7-F029 is PARTLY fixed.** The self-test now redirects `GITHUB_STEP_SUMMARY` to a temp file, so the
-synthetic report no longer reaches the **run page**. The **step log** still shows two blocks. §6's
-instruction stands and gains a line: read the artefact, the run page is now safe too, and in the raw
-log the second block is the self-test's fixture.
+**E7-F029 is PARTLY fixed, and the register now says so.** The self-test redirects
+`GITHUB_STEP_SUMMARY` to a temp file **and reads the redirected block back**, so the synthetic report
+no longer reaches the **run page** and the summary channel gained its first assertion of any kind.
+The **step log** still shows two blocks — `console.log` is untouched — so the finding stays open,
+narrowed to the log channel. ★ Its ownership-register reason said *"not applied here because it is
+still a change to the instrument"*, which was true when filed and false on this tip; that sentence is
+corrected in the same commit as this line.
 
-**E7-F022 is partly addressed.** A new **probe T** runs first and gates probe A on
-`command -v claude` / `command -v codex` inside the **resolved** template — so a future run against a
-stale or bare image stops before any model tokens are spent. §5's limit 3 ("one template, one tier,
-one image") is unchanged: it is still only `aoa-base` on this account that was measured.
+**E7-F022 is partly addressed.** A new **probe T** runs first and asserts
+`command -v claude` / `command -v codex` inside the **resolved** template, in its own cheap sandbox,
+so the durable record names the image that answered. ★ It **caveats** probe A rather than gating it:
+probe A installs its own CLI and does not depend on the image carrying one, so blocking on probe T
+could only convert an unverified precondition into a guaranteed zero-information run — the argument
+is in the runbook's probe T box. §5's limit 3 ("one template, one tier, one image") is unchanged: it
+is still only `aoa-base` on this account that was measured.

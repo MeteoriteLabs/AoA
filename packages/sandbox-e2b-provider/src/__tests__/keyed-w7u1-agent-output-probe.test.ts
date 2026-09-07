@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 // -----------------------------------------------------------------------------
 // W7U1 — THE OUTPUT PROBE PACK. ONE KEYED RUN, FOUR PROBES, THREE-STATE ANSWERS.
 //
-// T (the gate, added W16B) / B / C / A-per-adapter. Probe T asserts the RESOLVED template
-// actually carries the agent CLIs and gates probe A on the answer, so a stale or bare image
-// stops the run before any model tokens are spent (E7-F022).
+// T (the template precondition, added W16B) / B / C / A-per-adapter. Probe T asserts the
+// RESOLVED template actually carries the agent CLIs, in its own cheap sandbox, and RECORDS
+// the answer beside probe A's (E7-F022). It is a caveat, not a gate: probe A installs its
+// own CLI and does not depend on the image carrying one, so blocking on T could only turn
+// an unknown into a guaranteed zero-information run. See `probeAPreflightCaveat`.
 //
 // A 26-agent decision wave concluded: build no output mechanism, MEASURE FIRST. The
 // founder authorised ONE keyed E2B run. This file is what that run executes. It
@@ -362,24 +364,50 @@ async function templatePreflight(): Promise<Verdict> {
 }
 
 /**
- * The gate itself: probe A does not run unless probe T said `yes`.
+ * ★★★ PROBE T IS A RECORDED CAVEAT, NOT A GATE — AND THIS IS AN ARGUED CHANGE, NOT A
+ * PREFERENCE. It used to BLOCK probe A whenever it did not answer `yes`. That was wrong,
+ * and the reasoning is worth keeping because it is the general shape of a bad gate:
  *
- * ★★★ IT IS A SEPARATE, PURE, MODULE-LOCAL FUNCTION SO IT CAN BE PROVEN WITHOUT A KEY.
- * A gate whose only exercise is the one keyed run is a gate nobody has tested — this
- * programme's [[checks-that-nothing-runs]] class, applied to the check that exists to stop
- * a wasted run. The no-key block at the foot of this file exercises both directions.
+ *   1. PROBE A DOES NOT DEPEND ON WHAT PROBE T CHECKS. Probe A `npm install -g`s its own
+ *      agent CLI unconditionally (plain, then `sudo` as a fallback) and has its OWN
+ *      preconditions for every way that can fail — `template-has-no-node-runtime`,
+ *      `cli-install-failed`, `cli-binary-not-on-path`. Run 34087197668 shows both lanes
+ *      taking that path (`install: "INSTALL_PLAIN"`, `binary = /usr/local/bin/claude`).
+ *      So the CLIs being PRE-BAKED into the image is a property of the image, not a
+ *      precondition of probe A's validity, and the false green E7-F022 feared — "reported
+ *      green while the CLIs were never present" — is not reachable through probe A, which
+ *      cannot answer at all without a CLI it put there itself.
+ *   2. THE GATE HAS NEVER PASSED ANYWHERE. It did not exist when the pack last fired, so
+ *      its first execution would be on the founder's next authorised, token-spending run.
+ *      An unverified hard gate in front of the only run that answers the question converts
+ *      an unknown into a GUARANTEED zero-information outcome — the exact cost it was
+ *      written to avoid, inverted.
+ *   3. FAIL-CLOSED IS FOR WRONG ANSWERS, NOT FOR MISSING ONES. Refusing to answer is right
+ *      when answering would assert something unsupported (that is why the exoneration
+ *      branch refuses). Here the answer is supported either way; only the note beside it
+ *      changes. So the honest move is to answer AND caveat.
  *
- * Returns the inconclusive verdict to record INSTEAD of probe A, or `null` to proceed.
- * It is called BEFORE `probeA`, so a blocked adapter creates no sandbox, installs no CLI
- * and spends no model tokens.
+ * WHAT IS KEPT, so E7-F022 is not quietly dropped: probe T still RUNS FIRST, in its own
+ * cheap sandbox, spending no model tokens, and its three-state verdict still goes into the
+ * durable record — so the record still says which image answered and whether it carried the
+ * CLIs. An `inconclusive` T still reds the lane through `packDisposition`, exactly as any
+ * unreadable probe does; the difference is that probe A's answer now SURVIVES that red
+ * instead of being replaced by it. Every cell of the matrix is strictly better than before:
+ * `no` from T is a RESULT and stays green with A answered; `inconclusive` from T reds
+ * honestly with A answered.
+ *
+ * ★★ STILL A SEPARATE, PURE, MODULE-LOCAL FUNCTION SO IT CAN BE PROVEN WITHOUT A KEY. A
+ * caveat whose only exercise is the one keyed run is no better tested than a gate whose
+ * only exercise is the one keyed run.
+ *
+ * @returns the sentence to append to probe A's detail, or `null` when T certified the image.
  */
-function probeAPreflightGate(adapterType: string, preflight: Verdict): Verdict | null {
+function probeAPreflightCaveat(adapterType: string, preflight: Verdict): string | null {
   if (preflight.state === "yes") return null;
-  return inconclusive(
-    `A/${adapterType}`,
-    "template-preflight-not-satisfied",
-    `probe T did not certify the image (${preflight.state}/${preflight.reason}): ${preflight.detail} ` +
-      `Probe A for ${adapterType} was NOT run, so no sandbox was created for it and NO model tokens were spent.`,
+  return (
+    ` CAVEAT: probe T did not certify the image (${preflight.state}/${preflight.reason}): ${preflight.detail} ` +
+    `Probe A for ${adapterType} RAN ANYWAY — it installs its own CLI and does not depend on the image carrying ` +
+    "one — so this answer stands, but it was measured in an image whose pre-baked agent CLIs were not confirmed."
   );
 }
 
@@ -853,22 +881,22 @@ describeKeyed("W7U1 — the output probe pack, against REAL E2B", () => {
         }
       };
 
-      // ★★★ PROBE T RUNS FIRST, AND IT GATES PROBE A. E7-F022: the resolved template is an
-      // operator input no protocol surface can see, and running the decisive, token-spending
-      // probe against an image with no agent in it would spend the founder's one authorised
-      // run on a different question. `guarded` makes a THROWN preflight inconclusive too, so
-      // the gate is fail-closed in every direction.
+      // ★★★ PROBE T RUNS FIRST AND CAVEATS PROBE A; IT NO LONGER BLOCKS IT. E7-F022's
+      // concern — the resolved template is an operator input no protocol surface can see —
+      // is answered by RECORDING which image answered, which probe T still does. Blocking
+      // was the wrong remedy: probe A installs its own CLI and does not depend on the
+      // image carrying one, so the gate could only ever turn an unknown into a guaranteed
+      // zero-information run. See `probeAPreflightCaveat` for the full argument. `guarded`
+      // still makes a THROWN preflight inconclusive, so an unreadable T still reds the lane
+      // — it just no longer takes probe A's answer down with it.
       const preflight = await guarded("T", templatePreflight);
       verdicts.push(preflight);
       verdicts.push(await guarded("B", probeB));
       verdicts.push(await guarded("C", probeC));
       for (const spec of ADAPTER_ARMS) {
-        const blocked = probeAPreflightGate(spec.adapterType, preflight);
-        if (blocked) {
-          verdicts.push(blocked);
-          continue;
-        }
-        verdicts.push(await guarded(`A/${spec.adapterType}`, () => probeA(spec)));
+        const caveat = probeAPreflightCaveat(spec.adapterType, preflight);
+        const answer = await guarded(`A/${spec.adapterType}`, () => probeA(spec));
+        verdicts.push(caveat ? { ...answer, detail: `${answer.detail}${caveat}` } : answer);
       }
 
       // ★★★ THE RECORD IS EMITTED BEFORE THE ASSERTION, AND IN A `finally`. The run that
@@ -1064,44 +1092,70 @@ describe("W7U1 — template resolution and the durable record (no key required)"
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// THE TEMPLATE PRECONDITION GATES PROBE A — proven WITHOUT a key
+// THE TEMPLATE PRECONDITION CAVEATS PROBE A — proven WITHOUT a key
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // ★★★ THE PURE CORE OWNS THE DECISION (`evaluateTemplateCliPreflight`: what a preflight
-// observation MEANS); this block owns the WIRING — that a failed precondition actually
-// STOPS probe A rather than merely being recorded beside it. E7-F022's cost is a
-// token-spending run against an image with no agent in it, and a gate whose only exercise
-// is that same run is a gate nobody has tested.
+// observation MEANS); this block owns the WIRING — that a failed precondition is RECORDED
+// ON probe A's answer rather than silently dropped. It used to assert the opposite (that a
+// failed precondition STOPS probe A); see `probeAPreflightCaveat` for why that gate was
+// removed. A caveat whose only exercise is the one keyed run is no better tested than a
+// gate whose only exercise is the one keyed run, so both directions are proven here.
 
-describe("W7U1 — the template precondition gates probe A (no key required)", () => {
+describe("W7U1 — the template precondition caveats probe A (no key required)", () => {
   const preflight = (state: string, reason: string): Verdict => ({ probe: "T", state, reason, detail: "d" });
 
-  it("an UNSATISFIED precondition blocks probe A, and says no tokens were spent", () => {
+  it("an UNSATISFIED precondition CAVEATS probe A, and says the answer still stands", () => {
     for (const [state, reason] of [
       ["inconclusive", "template-does-not-carry-the-agent-clis"],
       ["inconclusive", "template-preflight-unreadable"],
       ["inconclusive", "template-preflight-did-not-run"],
       ["inconclusive", "probe-threw"],
-      // Defensive: any state that is not exactly `yes` blocks. A precondition that
+      // Defensive: any state that is not exactly `yes` caveats. A precondition that
       // answered `no` is still not a certification.
       ["no", "whatever-a-future-edit-invents"],
     ] as const) {
-      const blocked = probeAPreflightGate("codex_local", preflight(state, reason));
-      expect(blocked, `${state}/${reason} must block probe A`).not.toBeNull();
-      expect(blocked?.state).toBe("inconclusive");
-      expect(blocked?.probe).toBe("A/codex_local");
-      expect(blocked?.reason).toBe("template-preflight-not-satisfied");
-      expect(blocked?.detail).toContain("NO model tokens were spent");
-      // And an inconclusive probe reds the lane — the gate is not a silent skip.
-      expect(packDisposition([blocked as Verdict]).disposition).toBe("inconclusive");
+      const caveat = probeAPreflightCaveat("codex_local", preflight(state, reason));
+      expect(caveat, `${state}/${reason} must caveat probe A`).not.toBeNull();
+      expect(caveat).toContain(reason);
+      expect(caveat).toContain("RAN ANYWAY");
+      // ★ AND IT MUST NOT CLAIM A SKIP. The old gate's detail said "NO model tokens were
+      // spent"; that sentence would now be FALSE, and a false sentence in the durable
+      // record is worse than the gate it came from.
+      expect(caveat).not.toContain("NO model tokens were spent");
     }
   });
 
-  it("POSITIVE CONTROL: a SATISFIED precondition lets probe A run", () => {
-    // If this ever fails the pack can no longer answer its own question, which is the
-    // failure mode a preflight is most likely to introduce.
-    expect(probeAPreflightGate("claude_local", preflight("yes", "template-carries-the-agent-clis"))).toBeNull();
-    expect(probeAPreflightGate("codex_local", preflight("yes", "template-carries-the-agent-clis"))).toBeNull();
+  it("POSITIVE CONTROL: a SATISFIED precondition adds no caveat at all", () => {
+    // If this ever fails, every clean run acquires a caveat it did not earn, which is the
+    // failure mode a caveat is most likely to introduce.
+    expect(probeAPreflightCaveat("claude_local", preflight("yes", "template-carries-the-agent-clis"))).toBeNull();
+    expect(probeAPreflightCaveat("codex_local", preflight("yes", "template-carries-the-agent-clis"))).toBeNull();
+  });
+
+  it("an unreadable probe T still REDS the lane on its own account — softening the gate did not soften the record", () => {
+    // ★★★ THE HALF THAT MUST NOT BE LOST. Probe T no longer decides whether probe A runs,
+    // but it is still a probe, and an `inconclusive` probe reds the lane exactly as any
+    // other does. The change is that probe A's ANSWER now survives that red instead of
+    // being replaced by it — so the founder's authorised run yields information either way.
+    const t = evaluateTemplateCliPreflight({
+      channel: "returned",
+      exitCode: 0,
+      stdout: "",
+      template: TEMPLATE,
+    }) as Verdict;
+    expect(t.state).toBe("inconclusive");
+    expect(packDisposition([t]).disposition).toBe("inconclusive");
+    // ...and a `no` from T is a RESULT, so a stale image no longer costs the whole run.
+    const bareT = evaluateTemplateCliPreflight({
+      channel: "returned",
+      exitCode: 0,
+      stdout: "W7U1_MISSING:claude\nW7U1_HAVE:codex\n",
+      template: "base",
+    }) as Verdict;
+    expect(packDisposition([bareT, { probe: "A/claude_local", state: "no", reason: "r", detail: "" }]).disposition).toBe(
+      bareT.state === "inconclusive" ? "inconclusive" : "measured",
+    );
   });
 
   it("this file's preflight observation is read by the pure core, from the SAME script constant", () => {
@@ -1117,7 +1171,7 @@ describe("W7U1 — the template precondition gates probe A (no key required)", (
       template: TEMPLATE,
     }) as Verdict;
     expect(satisfied.state).toBe("yes");
-    expect(probeAPreflightGate("claude_local", satisfied)).toBeNull();
+    expect(probeAPreflightCaveat("claude_local", satisfied)).toBeNull();
     const bare = evaluateTemplateCliPreflight({
       channel: "returned",
       exitCode: 0,
@@ -1125,6 +1179,6 @@ describe("W7U1 — the template precondition gates probe A (no key required)", (
       template: "base",
     }) as Verdict;
     expect(bare.state).toBe("inconclusive");
-    expect(probeAPreflightGate("claude_local", bare)).not.toBeNull();
+    expect(probeAPreflightCaveat("claude_local", bare)).not.toBeNull();
   });
 });

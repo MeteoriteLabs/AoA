@@ -2004,11 +2004,22 @@ one lane. The finding is broader than that lane, and closing it here would be a 
 **Built.** The W7U1 output-probe lane — the only keyed lane that spends **model tokens** — now runs a
 **probe T** before anything else: one cheap sandbox from the **resolved** template, running
 `command -v claude` / `command -v codex`, which is the same assertion `e2b/e2b.Dockerfile`'s final
-layer makes at build time (`RUN command -v claude && command -v codex && …`). Its verdict **gates
-probe A**: an image missing either binary means probe A creates no sandbox, installs nothing, and
-spends nothing, and the lane reds with a message naming the template and the missing binary. This is
-literally the *"lane-time assertion that the registered template contains what the Dockerfile
-promises"* the paragraph above asked for. `scripts/lib/w7u1-agent-output-probe.mjs`
+layer makes at build time (`RUN command -v claude && command -v codex && …`). Its verdict is
+**recorded beside probe A's**, and the lane reds with a message naming the template and the missing
+binary. This is literally the *"lane-time assertion that the registered template contains what the
+Dockerfile promises"* the paragraph above asked for.
+
+★★ **IT IS A CAVEAT, NOT A GATE, AND THAT WAS A CORRECTION MADE THE SAME DAY.** Probe T shipped
+blocking probe A. That was wrong on three counts, recorded here because they generalise: probe A
+`npm install -g`s its own agent CLI unconditionally and already fails its own way when that cannot
+work (`template-has-no-node-runtime` / `cli-install-failed` / `cli-binary-not-on-path`), so the CLIs
+being pre-baked is a property of the image and not a precondition of probe A's validity — run
+`34087197668` shows both lanes installing their own (`install: "INSTALL_PLAIN"`); the gate had never
+passed anywhere, so its first execution would have been on the founder's next authorised run, turning
+an unknown into a *guaranteed* zero-information outcome; and fail-closed is for answers that would be
+unsupported, not for answers that are supported but want a footnote. Probe A now always runs and
+carries a `CAVEAT:` naming probe T's state; an `inconclusive` probe T still reds the lane on its own
+account. `scripts/lib/w7u1-agent-output-probe.mjs`
 (`evaluateTemplateCliPreflight`), pinned in the required `policy` job.
 
 ★★ **A NAME IS NOT A FILESYSTEM, and that gap is what this closes for one lane.**
@@ -2054,7 +2065,7 @@ and the guard would have had it.
      case, which is why the default reads as an oversight rather than a decision.
   **Consequence:** on a `cloud_auth` instance with a key and no `E2B_TEMPLATE`, every agent run
   launches into bare `base` — the image `e2b/e2b.Dockerfile:1-7` says has no `claude` and no `codex`
-  and fails with `env: 'claude': No such file or directory`. W16B's probe T closes this for the W7U1
+  and fails with `env: 'claude': No such file or directory`. W16B's probe T records this for the W7U1
   lane only; it does NOT reach the product, which is a boot-side assertion this finding already asks
   for in the bullet below and still nobody has built. **This bullet is a scope correction, not a fix.**
   ★ How it was missed: a single-line grep for `E2B_TEMPLATE.*\|\| *"base"` finds only the two
@@ -2530,8 +2541,10 @@ missing is a state between "the agent did not write" and "the apparatus faulted"
 with a non-zero status and no evidence it reached a model*. A cheap and honest version would treat a
 non-zero exit with **empty stdout** as `indeterminate / cli-refused-at-startup`, and require
 `verdictProbeA`'s exoneration branch to see at least one arm that demonstrably ran (the stream-json
-`init` / `thread.started` event both CLIs emit). ★ **It is deliberately not implemented in this
-unit**: changing a classifier changes what the pack's next run is allowed to conclude, and this unit
+`init` / `thread.started` event both CLIs emit). ★★ **THAT PROPOSAL WAS ITSELF WRONG — do not read
+this paragraph as the shipped predicate.** "At least one arm" gates the wrong arm, and the head event
+alone is not enough; see the RESOLVED section below for the v1→v4 cascade and what actually shipped.
+★ **It is deliberately not implemented in this unit**: changing a classifier changes what the pack's next run is allowed to conclude, and this unit
 records rather than alters the instrument that produced the record it is recording.
 
 **Severity — MEDIUM.** No shipped behaviour, no gate, no counter. It is filed at MEDIUM rather than
@@ -2560,14 +2573,35 @@ asymmetry, the durable record or the premise pin.
    says the CLI "never reached the point of doing or declining the work" and sends the reader to the
    arm's stderr. ★ The test is **empty stdout**, deliberately kept separate from the "did it start"
    question below, so that a future repair to either cannot silently satisfy the other.
-2. ★★★ **The exoneration branch now demands positive evidence that something ran.** Every arm carries
-   `ran`, computed by a new `detectStartupEvidence(stdout, adapterType)` from the CLI's **own head
-   stream event**. When A1 and A2 are both `did-not-write` and **neither** shows that event, the
-   verdict is `inconclusive` / **`posture-exoneration-unsupported-no-arm-demonstrably-ran`** rather
-   than an exoneration. It is **fail-closed**: an arm with no evidence — including one classified by
-   a caller that never passed stdout — counts as *not shown to have run*. The conviction branch
-   (`a2` wrote) is deliberately **not** gated: a write is itself proof the arm ran, and gating it
+2. ★★★ **The exoneration branch now demands positive evidence that A2 REACHED A MODEL.** Every arm
+   carries two independent progress signals: `ran`, from `detectStartupEvidence(stdout, adapterType)`
+   (the CLI's **own head stream event**), and `reachedModel`, from
+   `detectModelContactEvidence(stdout, adapterType)` (**model output** on that arm's stdout). The
+   branch gates on `a2.reachedModel`; when it is absent the verdict is `inconclusive` /
+   **`posture-exoneration-unsupported-a2-did-not-reach-a-model`** rather than an exoneration. It is
+   **fail-closed**: an arm with no evidence — including one classified by a caller that never passed
+   stdout — counts as *not shown to have reached a model*. The conviction branch (`a2` wrote) is
+   deliberately **not** gated: a write is stronger evidence than any stream event, and gating it
    would red the run that actually answered the pack's question.
+
+   ★★ **THIS PREDICATE WAS WRONG TWICE MORE BEFORE IT WAS RIGHT, AND THE CASCADE IS THE LESSON.** As
+   first written this clause said *"at least one arm demonstrably ran"*. Two reviewers took it apart
+   in sequence, each fix necessary and insufficient:
+
+   | v | predicate | why it was still wrong |
+   |---|---|---|
+   | v1 | any non-zero exit ⇒ `did-not-write` | cannot tell a refusal from a result — the finding above |
+   | v2 | at least one arm demonstrably ran | **wrong arm.** Only A2 carries the posture, so A1 running proves nothing about a posture-only fix |
+   | v3 | `a2.ran === true` | better, and still head-event-only |
+   | v4 | `a2.reachedModel === true` | `ran` is computed from the HEAD EVENT ALONE, so two arms that **start and then die before a model** exonerate a posture nothing exercised — codex A2 in run `34087197668` emitted `thread.started` + `turn.started` and then five 401 reconnects |
+
+   ★ **Assume v4 is insufficient too.** It is a proxy and says so, in the code (`EXONERATION_RESIDUAL`),
+   in the verdict `detail` it emits verbatim (so the **durable record** carries it), and in the
+   runbook's own verdict table, with a test pinning the runbook to the code. What it does not
+   establish: that the model was given the intended prompt, understood it, or ever *attempted* a
+   write; anything about A1, which this branch does not gate; anything beyond the first 8000
+   characters of captured stdout; and, for `model-authored-content`, anything a CLI could synthesise
+   locally on a transport failure — only `billed-usage` is a round trip that cannot be faked in-guest.
 
 **The head-event shapes are MEASURED per CLI, twice over, not guessed** — from the adapters that
 parse them in the shipped product **and** from this pack's own recorded stdout in run `34087197668`:
@@ -2583,6 +2617,21 @@ events, so matching it alone would certify a start from an event that says nothi
 requiring the pair on one line stops two unrelated events from combining into false evidence. A test
 reads both adapter files off disk, so a renamed head event fails loudly instead of silently turning
 every future exoneration inconclusive.
+
+**The MODEL-CONTACT shapes are measured the same way, and the negative direction is the load-bearing
+half** — a head event is not model contact, and the events below were chosen because they are not:
+
+| adapter | counts as model contact | adapter source | does NOT count |
+|---|---|---|---|
+| `claude_local` | `{"type":"assistant","message":{"content":[…]}}`; `{"type":"result",…,"usage":{"output_tokens":N>0}}` with `is_error !== true` | `claude-local/src/server/parse.ts:25-37` and `:40-64` | ★ a `result` with `is_error: true` — `parse.ts:127-128` records the real revoked-token shape `{"subtype":"success","is_error":true,"api_error_status":401,…}`, so accepting `result` unconditionally would re-open the defect one event later |
+| `codex_local` | `{"type":"item.completed","item":{"type":"agent_message"\|"reasoning","text":…}}`; `{"type":"turn.completed","usage":{"output_tokens":N>0}}` | `codex-local/src/server/parse.ts:189-201` and `:229-235` | ★ `thread.started` and `turn.started` — **these two are the v4 defect in stream form** — and an `item.completed` whose item is neither a message nor reasoning |
+
+★ **Three mutations, each observed red with real output:** reverting the gate to `a2.ran` (the v3
+predicate) reds a case built from run `34087197668`'s real codex stdout through the real classifier;
+reverting it to "at least one arm ran" (v2) reds a case where A1 reached a model and A2 did not;
+removing the `is_error` guard reds the 401-`result` case. The named positive controls — a genuine
+`did-not-write` with A2 having reached a model, and a genuine write — stay green and `measured` in
+all three.
 
 **Replayed, run `34087197668`'s codex half now returns `inconclusive` / `a1-cli-refused-at-startup`**
 — it stops at the A1 gate, *earlier* than the exoneration branch, which is the more honest place. A
