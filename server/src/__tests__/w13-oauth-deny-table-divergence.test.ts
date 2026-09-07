@@ -24,7 +24,12 @@ import {
 //   2. THE ALLOWED -> DENIED SET IS EXACTLY THE ENUMERATED CLASSES AND NOTHING ELSE.
 //      This is the anti-regression half: it is what reds if a future edit denies a
 //      PUBLIC address. "Deny more" is not the goal; "deny exactly the right more" is.
-//   3. The live table now agrees with `isPrivateIP` in BOTH directions.
+//   3. The live table agrees with `isPrivateIP` in BOTH directions -- EXCEPT for ONE
+//      enumerated class, `::ffff:<public v4>`, where the table denies and the predicate
+//      allows. That exception is PRE-EXISTING (identical before and after W13), it is a
+//      DENY-MORE divergence, and section 3 EXERCISES it rather than only describing it.
+//      An unqualified "agrees in both directions" would be a FALSE claim that passes only
+//      because no probe generates the falsifying case -- so it is not made here.
 //
 // WHAT IT DELIBERATELY DOES NOT DO: reimplement `isPrivateIP` or the table. Both are
 // imported from the modules that ship them. A reimplementation is what produced the
@@ -208,28 +213,32 @@ describe("W13 OAuth deny table -- the LIVE BlockList is the derived set", () => 
     }
   });
 
-  it("IPv6: agrees with isPrivateIP across all 65536 leading words", () => {
+  it("IPv6: agrees with isPrivateIP across all 65536 leading words, for words 4-7 = 0:0:0:1", () => {
     // isPrivateIP's IPv6 arm reads only the first four words and every arm keys off
     // the first, so sweeping all 2^16 leading words with suffixes that exercise the
     // deeper arms finds any disagreement at /16 granularity or coarser.
     // ★ METHOD LIMIT, STATED -- and THIS is the authoritative copy of it.
     // This sweep cannot see a divergence confined to a rule keyed on the FIFTH WORD
-    // OR DEEPER (`words[4]`..`words[7]`), EXCEPT where such a rule is already covered
-    // by a coarser entry.
+    // OR DEEPER (`words[4]`..`words[7]`): every probe below pins words 4-7 to `0:0:0:1`.
     //
     // ONE SUCH RULE EXISTS TODAY, so do not read this as "nothing reads that far".
     // `isPrivateIP`'s `mappedIpv4` (outbound-url-guard.ts) keys on `words[4]`..`words[7]`
-    // to unwrap `::ffff:a.b.c.d`, and every probe below pins words 4-7 to `0:0:0:1`,
-    // so the sweep never reaches it: `isPrivateIP('::ffff:8.8.8.8')` is FALSE while the
-    // table denies that address.
+    // to unwrap `::ffff:a.b.c.d`, and its `^::ffff:<dotted quad>$` fast path does the same,
+    // so `isPrivateIP('::ffff:8.8.8.8')` is FALSE while the table denies that address.
     //
-    // IT IS HARMLESS *HERE*, and only for a reason that has to be checked rather than
-    // assumed: the rule's ENTIRE domain, `::ffff:0:0/96`, sits inside a coarser entry
+    // ★★★ DESCRIBING THAT LIMIT DOES NOT MAKE THIS TEST'S CLAIM TRUE, SO THE LIMIT IS
+    // NOT LEFT AS PROSE. `expect(disagreements).toEqual([])` below is scoped, by
+    // construction, to `words[4..7] === 0:0:0:1` -- and the assertion's NAME now says so.
+    // The falsifying class is generated and asserted in the NEXT TWO TESTS instead, which
+    // is the only thing that turns a stated limit into evidence.
+    //
+    // The exception is HARMLESS, for a reason CHECKED rather than assumed and pinned in
+    // those tests: the rule's ENTIRE domain, `::ffff:0:0/96`, sits inside a coarser entry
     // that BOTH tables deny outright -- `::/16` after W13, an explicit `::ffff:0:0/96`
-    // before it. The deeper words therefore cannot change either table's verdict there,
-    // so the blind spot yields a pre-existing DENY-MORE gap and nothing moved
-    // denied -> allowed. A future deeper rule NOT subsumed by a coarser entry would be a
-    // real blind spot; section 2's exact interval arithmetic is the backstop.
+    // before it. The deeper words therefore cannot change either table's verdict there, so
+    // it is a PRE-EXISTING DENY-MORE divergence, identical before and after W13, and
+    // nothing moved denied -> allowed. A future deeper rule NOT subsumed by a coarser entry
+    // would be a real blind spot; section 2's exact interval arithmetic is the backstop.
     const suffixes: Array<[number, number, number]> = [
       [0, 0, 0], [0, 0, 1], [0xff9b, 0, 0], [0xff9b, 1, 0], [0, 0, 0xffff],
       [0x0db8, 0, 1], [0x0002, 0, 0], [0x0010, 0, 0], [0x0020, 0, 0],
@@ -246,6 +255,99 @@ describe("W13 OAuth deny table -- the LIVE BlockList is the derived set", () => 
     }
     expect(disagreements).toEqual([]);
   }, 120_000);
+
+  // --- THE FIFTH-WORD RULE, EXERCISED -------------------------------------------
+  // Codex review of 86f2a8644: "the claimed bidirectional agreement is not actually
+  // tested for IPv4-mapped IPv6 addresses ... every generated probe fixes those later
+  // words to 0:0:0:1, so the suite passes despite this existing divergence". TRUE, and it
+  // is this programme's signature defect -- a VACUOUS ASSERTION -- shipped inside the very
+  // file whose job is to prove agreement. These two tests generate the falsifying case,
+  // characterise the exception EXACTLY, and pin it as pre-existing.
+  //
+  // ★ THE DISPOSITION, DECIDED RATHER THAN INHERITED: this is an INTENTIONAL SUPERSET
+  // EXCEPTION, not a bug to be fixed in the table. Every address spellable as
+  // `::ffff:a.b.c.d` is equally spellable as `a.b.c.d`, which the table judges on its true
+  // merits -- so an attacker gains no reachability from the mapped spelling, and a
+  // legitimate caller loses none they cannot recover by using the v4 spelling. Narrowing
+  // the table to match `isPrivateIP` here would move `::ffff:<public v4>` from denied to
+  // ALLOWED on BOTH the pre-W13 and the post-W13 table -- the one direction this change
+  // promised never to move, on a shipped SSRF filter, for zero security gain.
+  // `::ffff:0:0/96` in an SSRF deny list is the standard posture precisely so a mapped
+  // literal cannot smuggle a v4 target past a v6 rule set. It is PINNED here, not repaired.
+
+  it("IPv4-MAPPED: the table denies the WHOLE ::ffff:0:0/96, and its ONLY divergence from isPrivateIP is the mapped-PUBLIC half", () => {
+    // Sweeps all 65536 (a,b) pairs of `::ffff:a.b.0.7` -- every /16 of the embedded IPv4
+    // space. `isPrivateIP`'s finer (/24) v4 rules are swept exhaustively in section 1; what
+    // is being characterised here is the MAPPING, not the v4 ranges.
+    const tableAllowedSomeMapped: string[] = [];
+    const unwrapMismatch: string[] = [];
+    let divergent = 0; // table denies, isPrivateIP allows -- the exception class
+    let agreeing = 0; // both deny -- mapped-PRIVATE
+    for (let a = 0; a < 256; a++) {
+      for (let b = 0; b < 256; b++) {
+        const v4 = `${a}.${b}.0.7`;
+        const ip = `::ffff:${v4}`;
+        if (!isBlockedOAuthAddress(ip) && tableAllowedSomeMapped.length < 8) {
+          tableAllowedSomeMapped.push(ip);
+        }
+        // The unwrap must be FAITHFUL: the mapped form and the bare form must get the same
+        // verdict from the predicate. If this ever reds, the exception is no longer
+        // characterised by "the embedded v4 is public" and has to be re-derived.
+        if (isPrivateIP(ip) !== isPrivateIP(v4) && unwrapMismatch.length < 8) {
+          unwrapMismatch.push(ip);
+        }
+        if (isPrivateIP(ip)) agreeing++;
+        else divergent++;
+      }
+    }
+    // (1) The table denies EVERY mapped address. No hole, public or private.
+    expect(tableAllowedSomeMapped).toEqual([]);
+    // (2) `isPrivateIP` unwraps faithfully, so the divergence class is exactly "the
+    //     embedded IPv4 is public" -- nothing else lurks in the /96.
+    expect(unwrapMismatch).toEqual([]);
+    // (3) BOTH halves are non-empty -- THE ANTI-VACUITY GUARD, which is the whole point of
+    //     this test. Without it a future edit that stopped generating either half would
+    //     leave (1) and (2) passing while proving nothing, which is the exact failure this
+    //     test was added to remove.
+    expect(divergent, "mapped-PUBLIC probes generated").toBeGreaterThan(0);
+    expect(agreeing, "mapped-PRIVATE probes generated").toBeGreaterThan(0);
+  });
+
+  it("IPv4-MAPPED: the exception is PRE-EXISTING -- denied before AND after -- and its domain is subsumed by a coarser entry in BOTH tables", () => {
+    // The whole weight of "pre-existing" rests here: W13 must not be what introduced it.
+    for (const [ip, v4] of [
+      ["::ffff:8.8.8.8", "8.8.8.8"],
+      ["::ffff:1.1.1.1", "1.1.1.1"],
+      ["::ffff:104.18.0.1", "104.18.0.1"],
+      ["::ffff:140.82.121.4", "140.82.121.4"],
+      ["::ffff:808:808", "8.8.8.8"], // the hextet spelling of the same address
+    ] as const) {
+      expect(isPrivateIP(ip), `isPrivateIP ${ip}`).toBe(false);
+      expect(isPrivateIP(v4), `isPrivateIP ${v4}`).toBe(false);
+      expect(blockedBefore(ip), `PRE-W13 table ${ip}`).toBe(true);
+      expect(isBlockedOAuthAddress(ip), `post-W13 table ${ip}`).toBe(true);
+    }
+    // The mapped-PRIVATE control: here table and predicate AGREE, which is what makes the
+    // exception specific to the public half rather than to the mapped form as such.
+    for (const ip of ["::ffff:169.254.169.254", "::ffff:127.0.0.1", "::ffff:10.0.0.1"]) {
+      expect(isPrivateIP(ip), `isPrivateIP ${ip}`).toBe(true);
+      expect(blockedBefore(ip), `PRE-W13 table ${ip}`).toBe(true);
+      expect(isBlockedOAuthAddress(ip), `post-W13 table ${ip}`).toBe(true);
+    }
+    // ★ THE LOAD-BEARING STRUCTURAL CLAIM, checked rather than asserted in prose: the
+    // rule's entire domain sits inside a CIDR that BOTH lists carry, which is why the
+    // deeper words cannot change either verdict and why nothing moved denied -> allowed.
+    const mappedDomain = toIv("::ffff:0:0/96", 128n);
+    const inside = (cidrs: string[]): boolean =>
+      normalize(cidrs.map((c) => toIv(c, 128n))).some(
+        (iv) => iv.lo <= mappedDomain.lo && iv.hi >= mappedDomain.hi,
+      );
+    expect(inside(cidrsOf(PRE_W13_V6)), "::ffff:0:0/96 inside the PRE-W13 list").toBe(true);
+    expect(
+      inside([...INTERNAL_RANGE_DENY_CIDRS_V6]),
+      "::ffff:0:0/96 inside the derived list",
+    ).toBe(true);
+  });
 
   it("catches the metadata address in EVERY spelling that reaches this filter", () => {
     for (const ip of [
