@@ -950,7 +950,7 @@ and every row is a sentence this finding is correcting:
 | the same file (`E8-F007` §5, "Deliberately not done") | adoption *"needs the tier measurement, a mandatory `getInfo()` read-back (§3.2)…"* |
 | the same file (`E8-F003` §0.2) | *"A read-back is mandatory before anyone relies on it."* |
 | `docs/aoa/plans/2026-08-05-cloud-execution-isolation-e2b-spec.md:181` | *"a read-back is mandatory before anyone relies on it"* |
-| `server/src/services/sandbox-provider-runtime.ts` (the `acquireLease` metadata comment) | *"adopting the real surface requires the probe plus a mandatory read-back"* |
+| `server/src/services/sandbox-provider-runtime.ts` (the `acquireLease` metadata comment) | *"adopting the real surface requires the probe plus a mandatory read-back"* — **quoted as it stood at `ab23eabdc`; this finding's own change replaced that sentence, because it is the one site where leaving the refuted safeguard standing in PRODUCTION CODE would invite the adoption it warns against. The other five keep their original wording with a dated correction beside it.** |
 | `docs/replatform/epics/E8-browser-automation/tickets/W10B-egress-enforcement-runbook.md` §3 | the read-back is *"a first-class question rather than a footnote"*, and *"a `no` on (b) makes the approach unshippable **even if (a) is yes**"* |
 
 **Probe (b) came back `YES`.** Every one of those safeguards passes on a sandbox that reaches the
