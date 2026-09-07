@@ -1113,8 +1113,9 @@ itself (a mechanically DERIVED cover, kept partly because it records these two f
 
 > ★★★ **NOTHING IS FIXED BY THIS ENTRY, DELIBERATELY.** `mcp-connector-oauth.ts` is a live SSRF
 > filter on a shipped path and `outbound-url-guard.ts` is imported by several production callers.
-> Editing either is a behaviour change to security-relevant code, and the founder has asked to see
-> that diff before it lands. This is a RECORDING. No file under `server/` or `packages/` is touched
+> Editing either is a behaviour change to security-relevant code, and this unit was tasked to record
+> rather than fix on the stated ground that the founder wants to see that diff first — a relayed
+> instruction, marked as such. This is a RECORDING. No file under `server/` or `packages/` is touched
 > by the commit that files it.
 
 ### 1. What was re-derived, and how — so it can be repeated rather than believed

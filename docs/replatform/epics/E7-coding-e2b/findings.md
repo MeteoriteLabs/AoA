@@ -1765,9 +1765,13 @@ no MCP config involved at all.
    **inside the probe** (`withPermissionPosture`, `scripts/lib/w7u1-agent-output-probe.mjs`);
    `task-run-sandbox-invocation.ts` is untouched and unchanged at this tip. Adding a permission flag
    to a shipped path is a **security-posture change** to the argv of an agent running with a redeemed
-   Company provider key — the founder has asked to see that diff before it lands. The measurement
-   names the cause; it does not pre-approve the remedy, and the paragraph at the end of this finding
-   ("the ticket carries the finding, not a fix") **still stands**.
+   Company provider key. ★ **This unit was tasked with recording rather than fixing, on the stated
+   ground that the founder wants to see that diff before it lands** — a relayed instruction, marked
+   as such rather than presented as a measured fact. What stands independently of it is this
+   finding's own pre-existing position (at the end of this entry) that the change should not be made
+   from inside the ticket. The measurement names the cause; it does not pre-approve the remedy, and
+   the paragraph at the end of this finding ("the ticket carries the finding, not a fix")
+   **still stands**.
 2. **Only the NO-BUNDLE literals were exercised.** The pack passes `instructions: null`, so `:184`
    (claude) and `:204` (codex) ran and the **instructions-bundle** branches `:183` and `:203` did
    not. `:203` has a different failure surface — it pipes through `cat`, so its exit status is the
@@ -1907,8 +1911,9 @@ is, not before.
 ★ **AMENDED 2026-09-07 (W12): probe (a) has said, and the recommendation is UNCHANGED.** The
 condition in the sentence above is satisfied — the differential names the flag as the cause — and
 that discharges the *"we do not know yet"* objection, not the *"this is a security posture change"*
-one. The founder has asked to see this diff before it lands, and W12 is a recording unit: **the four
-script literals are untouched at this tip.** Two things the remedy must additionally account for,
+one. W12 was tasked as a recording unit on the stated ground that the founder wants to see this diff
+first — a relayed instruction, not a measurement — and it behaved as one: **the four script literals
+are untouched at this tip.** Two things the remedy must additionally account for,
 which did not exist when this paragraph was written: it closes **only** the claude half (**E7-F027**
 — codex is refused by a different gate, and a posture-only change would leave it broken while
 carrying a green measurement beside it), and the run's own codex verdict overstates what it knows
@@ -2481,8 +2486,11 @@ legend. The synthetic block is second, so it is the one a reader scrolling to th
 sees, and it says `inconclusive` — the pack's own word for *"run me again"* — at the bottom of a run
 that measured everything it set out to.
 
-★ **This is not hypothetical harm.** The orchestrating session reading this run's log nearly reported
-the pack's disposition as `inconclusive` from the trailing block, and only the artefact settled it.
+★ **This is not hypothetical harm — though the report of it is second-hand, and is marked so.** The
+session that commissioned this recording states that it nearly reported the pack's disposition as
+`inconclusive` from the trailing block, and that only the artefact settled it. That is a relayed
+account rather than something this unit observed; what this unit DID observe is the two blocks above,
+which carry the finding on their own.
 
 **The fix, and why it is NOT implemented here.** The smallest honest change is to make the fixture's
 identity visible **inside the rendered report** rather than only in the verdict details — e.g. a
