@@ -18,11 +18,22 @@ const MAX_METADATA_REDIRECTS = 3;
 // end of that same tunnel (2002::/16) and the NAT64 well-known prefix (64:ff9b::/96),
 // which embeds an IPv4 destination and so re-opened every IPv4 range this table denies.
 //
-// They are now built from `INTERNAL_RANGE_DENY_CIDRS` — the MECHANICALLY DERIVED exact
-// minimal CIDR cover of `isPrivateIP`, re-derived from that live predicate by a full
-// 2^24 sweep in CI on every run (w10c-internal-range-deny-set.test.ts). So a change to
-// the predicate now propagates here instead of silently leaving this table behind, and
-// there is no second list to keep in step by hand.
+// They are now built from `INTERNAL_RANGE_DENY_CIDRS` — the MECHANICALLY DERIVED cover
+// of `isPrivateIP`, re-derived from that live predicate in CI on every run
+// (w10c-internal-range-deny-set.test.ts: a full 2^24 sweep on IPv4, all 65536 leading
+// words on IPv6). So a change to the predicate now propagates here instead of silently
+// leaving this table behind, and there is no second list to keep in step by hand.
+//
+// ★ THAT COVER IS A STRICT SUPERSET OF THE PREDICATE, NOT AN EXACT RENDERING OF IT,
+// and this table inherits the difference. On IPv4 it is the exact minimal cover; on
+// IPv6 it is deliberately wider, by one enumerated class — `::/16` numerically contains
+// every IPv4-mapped address, so this `BlockList` denies `::ffff:<public v4>` while
+// `isPrivateIP` allows it (measured: `isBlockedOAuthAddress('::ffff:8.8.8.8')` is
+// `true`, `isPrivateIP('::ffff:8.8.8.8')` is `false`). That is PRE-EXISTING — the
+// hand-typed table this replaced denied the same `::ffff:0:0/96` explicitly — it fails
+// CLOSED, and it is pinned by the two `IPv4-MAPPED:` tests in
+// `w13-oauth-deny-table-divergence.test.ts`. Do not "correct" it into exactness: that
+// moves addresses denied -> allowed on a live SSRF filter.
 //
 // `BlockList` is kept as the runtime mechanism (native, and the two `assert*` call sites
 // below are unchanged); only the DATA it is loaded with changed.

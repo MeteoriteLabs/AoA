@@ -79,12 +79,17 @@
 // is how divergent private-range tables get born; this tree already has three
 // (see the DIVERGENCE LEDGER below).
 //
-// So this array is NOT hand-copied. It is the MECHANICALLY DERIVED exact minimal
-// CIDR cover of `isPrivateIP`'s own IPv4 rejection set (a full 2^24 sweep of the
-// /24 space) and of its IPv6 rejection set (a recursive uniformity descent over
-// the leading words). `w10c-internal-range-deny-set.test.ts` RE-DERIVES the IPv4
-// cover from `isPrivateIP` on every CI run and asserts equality, so the two
-// cannot drift apart silently: editing `isPrivateIP` reds this module's test.
+// So this array is NOT hand-copied. It is MECHANICALLY DERIVED from `isPrivateIP`:
+// on IPv4, the exact minimal CIDR cover of the predicate's rejection set (a full
+// 2^24 sweep of the /24 space); on IPv6, the exact minimal cover of the predicate's
+// LEADING-WORD rules (a recursive uniformity descent over the leading words), which
+// is a STRICT SUPERSET of the predicate's actual IPv6 rejection set -- see the
+// superset section below for the measured witness and why it is kept that way.
+// `w10c-internal-range-deny-set.test.ts` RE-DERIVES the IPv4 cover from `isPrivateIP`
+// on every CI run and asserts equality, and sweeps all 65536 leading words on the
+// IPv6 side asserting that nothing the predicate rejects is MISSING here -- superset,
+// not equality. So the two cannot drift apart silently: editing `isPrivateIP` reds
+// this module's test.
 //
 // -- DIVERGENCE LEDGER (measured 2026-09-07, not assumed) ---------------------
 // Four representations of "internal range" already exist in the tree:
@@ -112,18 +117,53 @@
 // This module is therefore a fifth FILE but not a fifth POLICY: it is a derived
 // rendering of representation (1), regenerated and pinned in CI.
 //
-// -- THE ONE DELIBERATE DIVERGENCE FROM `isPrivateIP` -- CLOSED IN W13 ---------
-// It USED TO READ: `isPrivateIP('::169.254.169.254') === false`, a PARSER defect
-// rather than a range gap -- `isPrivateIP`'s local `parseIpv6Words` rejected the
-// IPv4-compatible spelling `::a.b.c.d` (its per-token regex forbade dots), so the
-// address never reached the range checks at all. This set covered it anyway via
-// `::/16`, which made the set a STRICT superset of the predicate it renders.
+// -- THIS SET IS A STRICT SUPERSET OF `isPrivateIP`, DELIBERATELY --------------
+// It always has been, it still is, and it MUST STAY THAT WAY: a deny set that is
+// WIDER than the predicate it renders fails CLOSED. W13 made the superset
+// NARROWER by closing one of its two causes. It did NOT make it exact, and it was
+// never exact. (An earlier revision of this header claimed W13 made this "an EXACT
+// cover again". That was false twice over -- wrong about now, and wrong about
+// "again" -- and it is corrected here rather than quietly dropped, because this
+// array is what the live OAuth SSRF BlockList is built from, and a reader who
+// believes it is exact will one day "fix" the superset. That moves addresses
+// denied -> allowed, which is the one direction W13 promised never to move.)
 //
-// W13 FIXED THE PARSER: both modules now share one grammar (`./ip-literal.ts`),
+// CAUSE (1), CLOSED IN W13 -- the parser defect. This USED TO READ:
+// `isPrivateIP('::169.254.169.254') === false`, a PARSER defect rather than a
+// range gap -- `isPrivateIP`'s local `parseIpv6Words` rejected the IPv4-compatible
+// spelling `::a.b.c.d` (its per-token regex forbade dots), so the address never
+// reached the range checks at all. This set covered it anyway via `::/16`. W13
+// FIXED THE PARSER: both modules now share one grammar (`./ip-literal.ts`),
 // lifted from `egress-policy.ts`'s `parseIp`, which already accepted an embedded
-// dotted quad. `isPrivateIP('::169.254.169.254')` is now TRUE, so this set is an
-// EXACT cover again rather than a superset. No range in it changed -- `::/16` had
-// always covered that address; what changed is that the predicate now agrees.
+// dotted quad. `isPrivateIP('::169.254.169.254')` is now TRUE. No range in this
+// set changed -- `::/16` had always covered that address; what changed is that the
+// predicate agrees ON THAT ADDRESS.
+//
+// CAUSE (2), STILL OPEN, PRE-EXISTING, AND NOT W13's TO CLOSE -- IPv4-MAPPED
+// PUBLIC ADDRESSES. `::/16` numerically contains every `::ffff:a.b.c.d`, so a
+// consumer that matches these CIDRs as NUMBERS -- which is what a CIDR list is
+// FOR: a `node:net` BlockList, a firewall rule, a provider network body -- denies
+// mapped PUBLIC addresses that `isPrivateIP` allows (the predicate unwraps
+// `::ffff:` and judges the embedded IPv4 on its merits). MEASURED at the live
+// consumer, on this tip:
+//     isPrivateIP('::ffff:8.8.8.8')            === false
+//     isBlockedOAuthAddress('::ffff:8.8.8.8')  === true
+// -- a witness, so "strict" is checked rather than asserted. The pre-W13 hand-typed
+// OAuth table denied the same `/96` explicitly, so this predates W13, and narrowing
+// it would move addresses denied -> allowed on a live SSRF filter for zero security
+// gain (every address spellable `::ffff:a.b.c.d` is equally spellable `a.b.c.d`,
+// which the table judges on its true merits). It is PINNED as an intentional
+// exception by the two `IPv4-MAPPED:` tests in
+// `w13-oauth-deny-table-divergence.test.ts`.
+//
+// ★ WHY THAT WITNESS DOES NOT REPRODUCE THROUGH `isCoveredByDenySet` BELOW -- said
+// here so the next reader who checks does not conclude the superset claim is bogus.
+// That helper resolves membership via `egress-policy.ipInCidr` -> `ip-literal.parseIp`,
+// which unwraps `::ffff:` to IPv4 exactly as `isPrivateIP` does, so through THAT
+// helper the two agree and `isCoveredByDenySet('::ffff:8.8.8.8')` is `false`. The
+// strictness is a property of the CIDR LIST as handed to an outside matcher -- the
+// only form in which this module's data is ever consumed. Both statements are true;
+// do not use the second to refute the first.
 
 import { ipInCidr } from "./egress-policy.js";
 import { isPrivateIP } from "./outbound-url-guard.js";
@@ -186,14 +226,25 @@ export const INTERNAL_RANGE_DENY_CIDRS_V4: readonly string[] = Object.freeze([
 ]);
 
 /**
- * The exact minimal CIDR cover of `isPrivateIP`'s IPv6 rejection set, derived by
- * a recursive uniformity descent over the leading 16-bit words.
+ * A deliberate STRICT SUPERSET of `isPrivateIP`'s IPv6 rejection set: the exact
+ * minimal cover of the predicate's LEADING-WORD rules, derived by a recursive
+ * uniformity descent over the leading 16-bit words.
+ *
+ * It is NOT an exact cover, and never was. `::/16` numerically contains every
+ * IPv4-mapped address `::ffff:a.b.c.d`, including the mapped PUBLIC ones that
+ * `isPrivateIP` allows -- measured, `isPrivateIP('::ffff:8.8.8.8')` is `false` while
+ * the `BlockList` built from this list denies that address. Wider than the predicate
+ * is the safe direction: it fails CLOSED. See the module header for why it stays.
  */
 export const INTERNAL_RANGE_DENY_CIDRS_V6: readonly string[] = Object.freeze([
   // Everything with a zero leading word: `::` unspecified, `::1` loopback, and the
   // IPv4-compatible form `::a.b.c.d`. THIS is the entry that covers
   // `::169.254.169.254` -- the address `isPrivateIP` failed to parse until W13 fixed
-  // the shared parser. The predicate now agrees with this entry.
+  // the shared parser. The predicate now agrees with this entry ON THAT ADDRESS --
+  // but NOT everywhere: this entry also contains every IPv4-MAPPED address
+  // `::ffff:a.b.c.d`, and `isPrivateIP` ALLOWS the mapped-public ones. That is the
+  // deliberate strict-superset exception described in the module header. It is
+  // pre-existing, it fails closed, and it is pinned by test rather than by prose.
   "::/16",
   // RFC6052 NAT64 well-known prefixes (64:ff9b::/96 and 64:ff9b:1::/48,
   // aggregated). A NAT64 translator turns these into arbitrary IPv4 destinations,

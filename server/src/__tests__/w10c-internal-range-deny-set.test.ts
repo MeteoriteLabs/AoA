@@ -296,7 +296,15 @@ describe("W10C internal-range deny set -- agreement with isPrivateIP", () => {
     // This assertion used to read `.toBe(false)`, with a comment saying that the day
     // the parser was fixed it should red so the fix was noticed rather than absorbed.
     // W13 fixed it (both modules now share ./ip-literal.ts), so this is that notice:
-    // the set was a deliberate STRICT SUPERSET here and is now an EXACT cover.
+    // at THIS address the set and the predicate now agree, where before the set covered
+    // an address the predicate misparsed.
+    //
+    // ★ IT DOES NOT MAKE THE SET AN EXACT COVER, and an earlier revision of this
+    // comment said it did. The set is STILL a deliberate strict superset, for a
+    // different and pre-existing reason: `::/16` numerically contains every
+    // `::ffff:a.b.c.d`, so the `BlockList` built from this list denies mapped PUBLIC
+    // addresses that `isPrivateIP` allows. That class is measured and pinned by the
+    // two `IPv4-MAPPED:` tests in w13-oauth-deny-table-divergence.test.ts.
     expect(isPrivateIP("::169.254.169.254")).toBe(true);
     expect(isPrivateIP("::ffff:169.254.169.254")).toBe(true); // the mapped form always was
     expect(isCoveredByDenySet("::169.254.169.254")).toBe(true);
