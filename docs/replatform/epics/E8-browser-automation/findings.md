@@ -1126,6 +1126,7 @@ proves, and the one class it changes that has a conditional legitimate use.
 > revert to remember, because the register and the fix travel in the same commit history.
 > Nothing about the CODE is contingent: the parser fix and the derived table are measured below.
 > What is contingent is whether they reach `main`.
+
 **Severity:** MEDIUM — argued in §6, with the case for HIGH recorded rather than dismissed.
 **Filed:** W12, 2026-09-07, by **re-deriving from source** the two facts
 `server/src/services/w10c-internal-range-deny-set.ts`'s module header records about SHIPPED code.
