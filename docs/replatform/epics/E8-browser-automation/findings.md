@@ -266,7 +266,11 @@ shipped configuration surface that this finding recorded as absent.
 *"option (b) is UNADOPTED, and whether the operator's tier honours it is unmeasured"*
 **— CORRECTED AGAIN 2026-09-07 (W11): it is now MEASURED, and the tier does not honour it
 (`E8-F008`; the full census is §8). "Back on the table" below is therefore withdrawn: the
-provider layer is available to DECLARE and unavailable to ENFORCE at the tier AoA's key reaches.**
+provider layer is available to DECLARE and unavailable to ENFORCE at the tier AoA's key reaches.
+AND THE SENTENCE BELOW IS ALSO NARROWED: D3(c) is still the only CHARTERED enforcement point, but
+§8 measures that it is not a BOUNDARY — every in-guest mechanism is agent-writable, and Node's
+global `fetch` ignores every proxy variable on the `node:22` image AoA runs. "The only layer that
+exists today" must not be read as "a layer that would work". Nothing is left standing; read §8.**
 D3(c) is
 still the only layer that exists **today**, but the reason is a build gap, not a missing capability
 — and defence in depth at the provider is back on the table for whoever takes ownership. Do not
