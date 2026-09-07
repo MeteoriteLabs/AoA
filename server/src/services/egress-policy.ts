@@ -41,6 +41,7 @@ import {
   type NetworkDeniedPayloadV1,
   type NetworkPolicyV1,
 } from "@armyofagents/worker-protocol";
+import { parseIp } from "./ip-literal.js";
 import { isPrivateIP } from "./outbound-url-guard.js";
 
 /** The frozen network-denial destination classes (`NETWORK_DENIAL_CLASSES`). */
@@ -70,96 +71,12 @@ const DENY_SEVERITY: Record<NetworkDenialClass, number> = {
   not_allowlisted: 1,
 };
 
-// --- IP parsing + CIDR matching (pure, family-aware) -------------------------
-
-interface ParsedIp {
-  readonly family: 4 | 6;
-  readonly value: bigint;
-}
-
-function parseIpv4(ip: string): bigint | null {
-  const parts = ip.split(".");
-  if (parts.length !== 4) return null;
-  let value = 0n;
-  for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) return null;
-    const octet = Number(part);
-    if (octet > 255) return null;
-    value = (value << 8n) | BigInt(octet);
-  }
-  return value;
-}
-
-/** Parse an IPv6 address into its 128-bit value, or null. Handles `::`
- * compression, a `%zone` suffix, brackets, and `::ffff:1.2.3.4` mapped form
- * (which is normalized to IPv4 by {@link parseIp}, not here). */
-function parseIpv6Value(ip: string): bigint | null {
-  const normalized = ip.replace(/^\[|\]$/g, "").split("%", 1)[0]!;
-  if (!normalized.includes(":")) return null;
-  const halves = normalized.split("::");
-  if (halves.length > 2) return null;
-
-  const parseHalf = (value: string): number[] | null => {
-    if (!value) return [];
-    const words: number[] = [];
-    for (const token of value.split(":")) {
-      // Allow a trailing embedded IPv4 (e.g. `::ffff:1.2.3.4`) → two words.
-      if (token.includes(".")) {
-        const v4 = parseIpv4(token);
-        if (v4 === null) return null;
-        words.push(Number((v4 >> 16n) & 0xffffn), Number(v4 & 0xffffn));
-        continue;
-      }
-      if (!/^[0-9a-f]{1,4}$/i.test(token)) return null;
-      words.push(Number.parseInt(token, 16));
-    }
-    return words;
-  };
-
-  const left = parseHalf(halves[0] ?? "");
-  const right = parseHalf(halves[1] ?? "");
-  if (!left || !right) return null;
-  let words: number[];
-  if (halves.length === 1) {
-    if (left.length !== 8) return null;
-    words = left;
-  } else {
-    const omitted = 8 - left.length - right.length;
-    if (omitted < 1) return null;
-    words = [...left, ...Array<number>(omitted).fill(0), ...right];
-  }
-  if (words.length !== 8) return null;
-  let value = 0n;
-  for (const word of words) value = (value << 16n) | BigInt(word & 0xffff);
-  return value;
-}
-
-/** Parse an IP literal, unwrapping IPv4-mapped IPv6 (`::ffff:x.x.x.x`) to IPv4 so
- * a mapped address is classified with the same authority as its IPv4 form. */
-export function parseIp(ip: string): ParsedIp | null {
-  const trimmed = ip.trim().toLowerCase().replace(/^\[|\]$/g, "").split("%", 1)[0]!;
-  const mapped = trimmed.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (mapped) {
-    const v4 = parseIpv4(mapped[1]!);
-    return v4 === null ? null : { family: 4, value: v4 };
-  }
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(trimmed)) {
-    const v4 = parseIpv4(trimmed);
-    return v4 === null ? null : { family: 4, value: v4 };
-  }
-  const v6 = parseIpv6Value(trimmed);
-  if (v6 === null) return null;
-  // Canonicalize EVERY IPv4-mapped IPv6 form to family-4. The dotted spelling was
-  // unwrapped above, but the HEX spelling (`::ffff:a9fe:a9fe`) reaches here as a
-  // 128-bit value whose top 96 bits are `::ffff` (`value >> 32 === 0xffff`). Re-emit
-  // it as IPv4 so the family-aware CIDR checks (metadata/control_plane) and
-  // `isPrivateIP` treat a mapped address with the SAME authority as its IPv4 form —
-  // closing the family asymmetry that would otherwise let a hex-mapped PUBLIC
-  // control-plane IP evade the family-4 control_plane gate (isPrivateIP does not
-  // catch a public control-plane address).
-  if ((v6 >> 32n) === 0xffffn) return { family: 4, value: v6 & 0xffffffffn };
-  return { family: 6, value: v6 };
-}
+// --- CIDR matching (pure, family-aware) --------------------------------------
+//
+// W13 — the IP-literal GRAMMAR moved to ./ip-literal.ts, unchanged. It used to live
+// here in `parseIpv4`/`parseIpv6Value`/`parseIp` while `outbound-url-guard.ts` carried
+// a SECOND, stricter copy that rejected an embedded dotted quad. One grammar, one file,
+// two importers; the CIDR arithmetic below stays here because it is this module's.
 
 /** True iff `ip` falls inside `cidr` (a CIDR block or a bare IP literal treated as
  * a host route). Families must match. */
@@ -265,4 +182,8 @@ export function resolveControlPlaneDenySet(
 }
 
 /** Re-exported for the vectors gate's dual-driven contract (D5). */
+/** Re-exported so this module's public surface is unchanged: the implementation now
+ * lives in ./ip-literal.ts, which `outbound-url-guard.ts` shares. */
+export { parseIp };
+
 export { NETWORK_DENIAL_CLASSES };

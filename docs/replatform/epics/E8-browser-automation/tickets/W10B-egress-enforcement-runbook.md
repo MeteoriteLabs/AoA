@@ -357,7 +357,10 @@ Every in-guest mechanism is **agent-writable by construction**: `buildE2bLoginSh
 `$HOME/.bashrc` from an **agent-writable home** before `exec env … claude`. An in-guest **proxy** is no
 better: Node's global `fetch` **ignores every proxy environment variable** — measured, with the proxy
 port never contacted and the request returning 200 — and the image is `node:22`, so the agent's own
-WebFetch walks straight past it. `isPrivateIP('::169.254.169.254')` returns `false`. And
+WebFetch walks straight past it. (`isPrivateIP('::169.254.169.254')` returned `false` when this was
+written; **W13 fixed that parser defect** — E8-F009 §8 — which changes nothing about this section's
+argument, since the point is that an in-guest filter is routed around rather than that it was wrong.)
+And
 `one-shot-sandbox-cli.ts` composes its own env and calls `runtime.execute` directly, bypassing
 `execution-target.ts` entirely.
 

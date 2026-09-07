@@ -292,15 +292,16 @@ describe("W10C internal-range deny set -- agreement with isPrivateIP", () => {
     }
   });
 
-  it("MEASURED DEFECT: isPrivateIP('::169.254.169.254') is FALSE; the deny set covers it anyway", () => {
-    // This is a PARSER defect in isPrivateIP (its IPv6 tokenizer forbids an
-    // embedded dotted quad), not a range gap. Recorded here so the day the parser
-    // is fixed, this assertion reds and the fix is noticed rather than absorbed.
-    expect(isPrivateIP("::169.254.169.254")).toBe(false);
-    expect(isPrivateIP("::ffff:169.254.169.254")).toBe(true); // the mapped form IS caught
-    // The deny set is a deliberate STRICT SUPERSET here: `::/16` covers it, and a
-    // deny set wider than the predicate fails CLOSED.
+  it("W13: the parser defect is CLOSED — isPrivateIP and the deny set now AGREE on '::169.254.169.254'", () => {
+    // This assertion used to read `.toBe(false)`, with a comment saying that the day
+    // the parser was fixed it should red so the fix was noticed rather than absorbed.
+    // W13 fixed it (both modules now share ./ip-literal.ts), so this is that notice:
+    // the set was a deliberate STRICT SUPERSET here and is now an EXACT cover.
+    expect(isPrivateIP("::169.254.169.254")).toBe(true);
+    expect(isPrivateIP("::ffff:169.254.169.254")).toBe(true); // the mapped form always was
     expect(isCoveredByDenySet("::169.254.169.254")).toBe(true);
+    // No RANGE moved to achieve that: `::/16` covered the address before the fix too.
+    expect(INTERNAL_RANGE_DENY_CIDRS_V6[0]).toBe("::/16");
   });
 
   it("does NOT cover public addresses (the set is not a blanket deny)", () => {

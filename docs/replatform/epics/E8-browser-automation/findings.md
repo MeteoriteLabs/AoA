@@ -1105,6 +1105,11 @@ a tier AoA actually uses.
 ## E8-F009 — The LIVE OAuth SSRF deny table is a hand-written subset of the repo's own private-IP predicate: one IPv4 /24 and EIGHT IPv6 classes are missing, on a path whose next hop is chosen by the remote server
 
 **Status:** open · **Owner:** unowned (see reason)
+**Successor:** **W13 — PR `replatform/w13-ssrf-parser-consolidation`**, which implements §7's
+remedy in §7's order (parser first, then derive the table). ★ **STILL OPEN, DELIBERATELY.** That
+PR is a security change to shipped code and the founder reviews it before it lands; this entry is
+resolved when it MERGES, and that is their call. See §8 for what the successor does, what it
+proves, and the one class it changes that has a conditional legitimate use.
 **Severity:** MEDIUM — argued in §6, with the case for HIGH recorded rather than dismissed.
 **Filed:** W12, 2026-09-07, by **re-deriving from source** the two facts
 `server/src/services/w10c-internal-range-deny-set.ts`'s module header records about SHIPPED code.
@@ -1269,6 +1274,45 @@ directly. ★ **Either move requires the parser defect in §4 to be fixed first*
 would *lose* coverage it has today: `isPrivateIP` returns `false` for `::169.254.169.254`, so
 delegating to it naively would be a regression on a v6 spelling. That ordering is the reusable half
 of this finding and is the reason it is filed with a remedy sketch rather than a patch.
+
+### 8. The successor — what W13 does, and the one thing it changes that is not free
+
+Filed as an addendum on 2026-09-07 by the unit that built it, so this register carries the
+outcome rather than only the diagnosis. **Nothing below is a resolution claim.**
+
+**It follows §7's ORDER, because §7's ordering was the reusable half of this finding.**
+
+1. **The parser first.** `outbound-url-guard.ts`'s local `parseIpv6Words` and
+   `egress-policy.ts`'s `parseIpv4`/`parseIpv6Value`/`parseIp` are both deleted and replaced
+   by ONE leaf module, `server/src/services/ip-literal.ts`, which both import.
+   `egress-policy.ts` already imports `isPrivateIP` from `outbound-url-guard.ts`, so reusing
+   its `parseIp` in the other direction would close an import cycle — the grammar is lifted
+   BELOW both instead. Parser count goes 2 → 1, not 2 → 3.
+   `isPrivateIP('::169.254.169.254')` is now `true`.
+2. **Then the table.** `mcp-connector-oauth.ts` builds its two `BlockList`s from
+   `INTERNAL_RANGE_DENY_CIDRS` — the mechanically derived, CI-re-derived cover of
+   `isPrivateIP` — instead of a hand-typed list. `scripts/gate-clause-wiring.json` moves
+   `E8-w10c-internal-range-deny-set` from `unwired` to `wired`; that entry had already named
+   this exact promotion condition.
+
+**What was proven, and how.** IPv4: a full 2^24 sweep of the old table against the new one —
+**zero** addresses move denied → allowed, and the allowed → denied set is **exactly**
+`192.88.99.0/24`. IPv6: both tables are CIDR lists, so their difference is computed by exact
+interval arithmetic over the **whole 2^128 space** — `OLD \ NEW` is empty, and `NEW \ OLD` is
+exactly the eight classes §3 lists. The superset property is therefore proven, not sampled.
+
+★★★ **THE ONE CLASS THAT IS NOT FREE, AND IT IS NAMED HERE RATHER THAN BURIED.**
+`64:ff9b::/96` is a **translation** prefix, not a host range. Nothing *lives* there — but in an
+IPv6-only deployment running DNS64/NAT64, a perfectly legitimate IPv4-only destination (an
+OAuth issuer with only an A record, say) is presented to the host *as* `64:ff9b::<v4>`. Denying
+the prefix would refuse it. Two facts bound that risk and neither is an argument that the risk
+is zero: (a) `isPrivateIP` **already** denies `64:ff9b::/48`, so the shared outbound guard —
+the plugin HTTP service and the `http` adapter — already takes this posture on every other
+outbound path, and an IPv6-only AoA deployment would already be failing there; (b) this is the
+same deployment question §6 says is the deciding fact for severity, and it remains
+**unmeasured**. The successor makes the OAuth path consistent with the rest of the product; it
+does not settle (b). **A founder who knows AoA runs anywhere IPv6-only should say so before
+this merges.**
 
 **Owner — `unowned`, and it is a real disposition rather than a shrug.** No ticket in the re-platform
 tree owns `mcp-connector-oauth.ts`: it is main-line product from the OAuth connector broker work
