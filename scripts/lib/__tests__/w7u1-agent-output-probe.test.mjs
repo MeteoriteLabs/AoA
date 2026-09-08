@@ -1312,4 +1312,22 @@ test("evaluateDurableRecord goes RED when the guard, the upload, the fallback or
     ),
     "the record and the run must not be able to name different images",
   );
+
+  // 5. The shell fallback's SCHEMA drifts away from `buildProbeRecord`'s.
+  //
+  // ★★★ THIS DRIFT ACTUALLY HAPPENED. Bumping `PROBE_RECORD_SCHEMA` to `/2` for
+  // `armEvidence` left this workflow's heredoc emitting `/1`, and nothing said so — one lane
+  // shipping two record shapes under two version numbers, which is worse than no version at
+  // all because a reader would trust the number.
+  assert.ok(
+    evaluateDurableRecord(real.replace(/output-probe-record\/2/, "output-probe-record/1")).violations.some(
+      (v) => v.code === "fallback-schema-mismatch",
+    ),
+    "one lane must not ship two record shapes under two version numbers",
+  );
+  // POSITIVE CONTROL: the real workflow agrees with the pure core today.
+  assert.ok(
+    !evaluateDurableRecord(real).violations.some((v) => v.code.startsWith("fallback-schema-")),
+    "the checked-in workflow's fallback schema must match PROBE_RECORD_SCHEMA",
+  );
 });

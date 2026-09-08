@@ -1424,5 +1424,29 @@ export function evaluateDurableRecord(workflowText, opts = {}) {
     });
   }
 
+  // 5. The fallback's SCHEMA STRING is duplicated in shell too, and it drifts the same way
+  // the template default would.
+  //
+  // ★★★ THIS CHECK IS ADDED BECAUSE THE DRIFT ALREADY HAPPENED, IN THE SAME COMMIT THAT
+  // CREATED IT. Bumping `PROBE_RECORD_SCHEMA` to `/2` for `armEvidence` left this workflow's
+  // heredoc emitting `/1`, so the two record producers for one lane would have disagreed
+  // about the shape a reader should expect — and nothing would have said so. A schema
+  // version is only useful if every writer of that schema agrees on it.
+  const fallbackSchema = /"schema"\s*:\s*"([^"]+)"/.exec(text);
+  if (!fallbackSchema) {
+    violations.push({
+      code: "fallback-schema-undeclared",
+      detail:
+        "the fallback record writer names no `schema`, so a reader cannot tell which record shape it produced.",
+    });
+  } else if (fallbackSchema[1] !== PROBE_RECORD_SCHEMA) {
+    violations.push({
+      code: "fallback-schema-mismatch",
+      detail:
+        `the fallback record declares schema "${fallbackSchema[1]}" but \`buildProbeRecord\` emits ` +
+        `"${PROBE_RECORD_SCHEMA}". One lane must not ship two record shapes under two version numbers.`,
+    });
+  }
+
   return { violations };
 }
