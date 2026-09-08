@@ -609,29 +609,90 @@ describe("W17 -- production vs the independent oracle, exact over 2^128", () => 
     ]);
   }, 120_000);
 
+  // ★ THE THREE SHAPES A PRODUCTION IMPORT CAN TAKE, each with a fixture it is KNOWN
+  // to match. W17-BACKSPACE: two of these patterns shipped carrying a RAW 0x08
+  // BACKSPACE byte where the `\b` word-boundary escape was intended. A backspace
+  // renders invisibly in every editor, every terminal and every diff view, so three
+  // agents and a reviewer read these lines and only one caught it -- and the old
+  // anti-vacuity clause (`specifiers.length > 0`) was satisfied by the STATIC matches
+  // ALONE, so two dead patterns cost nothing and the guard would have passed GREEN on
+  // an oracle that loaded production dynamically. An anti-vacuity check that its own
+  // siblings satisfy is not an anti-vacuity check. Each pattern is now proven alive
+  // against its own fixture, in its OWN NAMED TEST, so a dead one reds by name.
+  const PRODUCTION_SPECIFIER = "../server/src/services/outbound-url-guard.js";
+  const SPECIFIER_PATTERNS: ReadonlyArray<{ name: string; re: RegExp; fixture: string }> = [
+    {
+      name: "static `import ... from`",
+      re: /^\s*(?:import|export)[^;]*?\sfrom\s+["']([^"']+)["']/gm,
+      fixture: `import { isPrivateIP } from "${PRODUCTION_SPECIFIER}";`,
+    },
+    {
+      name: "dynamic `import(...)`",
+      re: /\bimport\(\s*["']([^"']+)["']\s*\)/g,
+      fixture: `const { isPrivateIP } = await import("${PRODUCTION_SPECIFIER}");`,
+    },
+    {
+      name: "`require(...)`",
+      re: /\brequire\(\s*["']([^"']+)["']\s*\)/g,
+      fixture: `const { isPrivateIP } = require("${PRODUCTION_SPECIFIER}");`,
+    },
+  ];
+  // ONE scanner, shared by the real-file check and by the rejection proof below, so the
+  // proof cannot succeed against a copy of the logic that the real check does not run.
+  const specifiersIn = (text: string): string[] =>
+    SPECIFIER_PATTERNS.flatMap((p) => [...text.matchAll(p.re)].map((m) => m[1]!));
+  const readOracleSource = (): string =>
+    readFileSync(join(__dirname, "../../../scripts/check-egress-policy-vectors.mjs"), "utf8");
+
+  it.each(
+    SPECIFIER_PATTERNS.map(
+      (p) => [p.name, p] as [string, (typeof SPECIFIER_PATTERNS)[number]],
+    ),
+  )("PER-PATTERN ANTI-VACUITY: the %s matcher can still match", (name, pattern) => {
+    expect(
+      [...pattern.fixture.matchAll(pattern.re)].map((m) => m[1]!),
+      `specifier pattern ${name} matched NOTHING in a string it is known to match -- ` +
+        `it is DEAD, and the independence scan below is silently blind to that shape`,
+    ).toEqual([PRODUCTION_SPECIFIER]);
+  });
+
   it("the oracle is still INDEPENDENT: it imports nothing from server/src", () => {
     // The guard on the guard. If someone "fixes" the oracle by importing the
     // predicate, the divergence sets above become vacuously empty and the only
     // mechanism that has ever caught this class here is gone. That is a source-text
     // property, so it is checked as one.
-    const source = readFileSync(
-      join(__dirname, "../../../scripts/check-egress-policy-vectors.mjs"),
-      "utf8",
-    );
+    const source = readOracleSource();
     // IMPORT STATEMENTS ONLY -- the file NAMES production modules in its comments on
     // purpose (that is where it explains what it diverges from), so a raw substring
     // scan would red on the documentation and teach the next author to delete it.
-    const specifiers = [
-      ...source.matchAll(/^\s*(?:import|export)[^;]*?\sfrom\s+["']([^"']+)["']/gm),
-      ...source.matchAll(/import\(\s*["']([^"']+)["']\s*\)/g),
-      ...source.matchAll(/require\(\s*["']([^"']+)["']\s*\)/g),
-    ].map((m) => m[1]!);
-    expect(specifiers.length).toBeGreaterThan(0); // anti-vacuity: the regex must match
+    const specifiers = specifiersIn(source);
+    // Aggregate floor. This is NOT the anti-vacuity clause any more -- the per-pattern
+    // cases above are; this only says the oracle still has imports to inspect at all.
+    expect(specifiers.length).toBeGreaterThan(0);
     for (const spec of specifiers) {
       expect(spec.startsWith("node:"), `oracle imports non-node module ${spec}`).toBe(true);
     }
     // ...and it must still be a real implementation, not a stub.
     expect(ORACLE_IPV6_CIDRS.length).toBeGreaterThanOrEqual(17);
+  });
+
+  it("★ THE GUARD IS OBSERVED REFUSING: every import shape, injected into a COPY, is caught", () => {
+    // Until now this guard had only ever been run against a file that PASSES, which
+    // proves nothing about what it would do with a violation -- the exact class this
+    // programme exists to catch. Here it is shown rejecting one. The injection happens
+    // in a fixture STRING; the file on disk is never written.
+    const source = readOracleSource();
+    const offenders = (text: string): string[] =>
+      specifiersIn(text).filter((s) => !s.startsWith("node:"));
+    // POSITIVE CONTROL: the real oracle, unmodified, is clean.
+    expect(offenders(source), "the real oracle already imports a non-node module").toEqual([]);
+    // ...and each shape a future author might reach for is refused, BY SPECIFIER.
+    for (const pattern of SPECIFIER_PATTERNS) {
+      expect(
+        offenders(`${source}\n${pattern.fixture}\n`),
+        `a production import written as ${pattern.name} was NOT caught by the independence scan`,
+      ).toEqual([PRODUCTION_SPECIFIER]);
+    }
   });
 
   it("RANDOMIZED BACKSTOP: every sampled disagreement lands inside the pinned set", () => {
