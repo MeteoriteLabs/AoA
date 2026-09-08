@@ -3362,3 +3362,192 @@ column**. Adding a column with only a recall arm re-opens this class.
 mention such as `E2B_API_KEY: (unset)`. Both are contrived rather than observed on a real surface, and
 re-deriving every matcher's error direction was outside this unit; recorded so the next scanner change
 asks the question instead of rediscovering it.
+
+---
+
+## E7-F034 — `RealE2bTransport.signal` is a metadata READ that always reports `delivered: true`, so the cleanup ladder's `kill` rung is structurally unreachable in production — and every double that exercises that rung is more capable than the shipping transport
+
+**Status:** open · **Owner:** unowned (see reason)
+**Severity:** MEDIUM
+**Filed:** 2026-09-09, on the E9 branch `replatform/e9-f002-service-dispatch`, by re-verifying at source a
+mechanism established during the SVC-008 revision-2 review. That review **correctly declined to file it
+into E9's register** (`epics/E9-service-agents/tickets/SVC-008-design.md` §10) — it is not E9's defect —
+but the decline left a **live defect affecting the shipping batch lane recorded only inside a design
+document's §10**, where `scripts/check-finding-ownership.mjs` cannot see it (it globs only
+`docs/replatform/epics/*/findings.md`). This entry closes that invisibility, and **corrects four details
+of the referring account** (below).
+
+**Why THIS register, and why it is not split.** The root cause is one function in
+`packages/sandbox-e2b-provider` — E7's own package, whose conformance suite header calls itself
+"CLI-001/D3". E7 carries **10** references to these symbols, against E0-foundation's 7 and
+E6-deployment-test-harness's 3. E0 was rejected because it holds the **DE audit crossings**: this is not
+a crossing and not a security control, so filing it there would classify by importance rather than by
+jurisdiction. E6 was tempting — half the finding is a test-double defect and E6 owns the harness — but
+the cause is production transport code, and the three doubles involved live in *three different
+packages* (§2), so no harness register covers them either; splitting cause from symptom across E6/E7 is
+exactly the split this finding must not make. **DE-10** (`E0-foundation/findings.md:243`, orphan sandbox
+destruction disarmed) is adjacent but distinct: DE-10 is about the reaper being **disarmed**, this is
+about a rung of the ladder the armed reaper runs being **inert**. They are not the same defect and
+neither subsumes the other.
+
+---
+
+### Half 1 — the unreachable rung (production)
+
+`RealE2bTransport.signal` (`packages/sandbox-e2b-provider/src/real-transport.ts:177-187`) takes a
+`_kind: "cancel" | "kill"` **and never reads it**. Its whole body is one `getInfo` metadata read, and it
+returns `{ delivered: true }` on **both** branches — including the `catch`, i.e. it reports delivery
+even when the read it performed **threw**. It stops nothing; E2B has no in-sandbox graceful-stop
+primitive distinct from teardown, which the function's own comment says.
+
+`E2bSandboxProvider.cancel` (`e2b-provider.ts:378-381`) and `.kill` (`:383-386`) are both that same
+read, mapped `delivered ? "stopped" : "ignored"`. Because `delivered` is a constant `true`,
+**`outcome` is `"stopped"` unconditionally and `"ignored"` is not producible by the real provider.**
+
+Two call sites branch on exactly that value:
+
+- `CleanupAuthority.#convergeOne` (`packages/worker-daemon/src/supervisor/cleanup-authority.ts:279-292`)
+  — `cancel` at `:279`, and the escalation block `if (cancel.outcome === "ignored")` at `:284-292`.
+- its deliberate mirror in `perOpToInvokeDriver` (`sandbox-e2b-provider/src/per-op-adapter.ts:265-276`),
+  `if (cancel.outcome === "ignored")` at `:267-270`.
+
+Neither `if` can be true against real E2B. The `kill` rung has never executed in production and cannot.
+Two further values are dead the same way: `per-op-adapter.ts:319` and `:365` compute
+`faultInjected: stop.outcome === "ignored"`, which is permanently `false` on the real transport.
+
+**★ What is NOT true, and the referring account overstates it.** Both call sites run a **forced
+`destroy` unconditionally**, outside the `if` (`cleanup-authority.ts:293-307`;
+`per-op-adapter.ts:271-275`), and `destroy` → `#reclaim` (`e2b-provider.ts:399-402`) is the first and
+only real termination — `this.#transport.terminate` at `:401`, reached from `destroy` (`:388-390`) and
+`reconcileCleanup` (`:392-394`). The supervisor's own cancel path also routes here
+(`supervisor.ts:397` → `run.cleanup.converge`). **So no sandbox is leaked today and no paid resource is
+orphaned by this defect.** The framing "an orphaned paid resource" does not survive reading the ten
+lines after the `if`. What is lost is the **rung**, not the sandbox.
+
+**The realized harm, stated exactly.**
+
+1. **There is no graceful stop on the real provider at all.** `#convergeOne`'s comment (`:275`) says
+   "Graceful cancel first"; in production every cancellation is a hard teardown with no drain or flush
+   window. SVC-008 §3.4/T3 is about to build a `gracefulStopSeconds` supervisor on this primitive, and
+   T3's own text records that a T3 written against `cancel`/`kill` "is green on the mock and meaningless
+   on E2B".
+2. **A false claim of effect, which the next caller inherits.** `cancel` returns `outcome: "stopped"` —
+   an affirmative claim that the workload was stopped — from a function that only read metadata, *and
+   from the catch branch where even that read failed*. Today both callers destroy afterwards so nothing
+   acts on the lie; the contract is nonetheless unsound, and this is the programme's "a false claim of
+   enforcement is worse than a missing check" class.
+3. **The escalation metric is pinned to the lowest rung.** `cleanup_escalation{escalation_stage=…}`
+   (`startup-reconcile.ts:444`, `supervisor.ts:399`) can only ever report `"cancel"` in production. It
+   is *accurate* about the authority and *useless* as the operator signal it looks like: a real E2B
+   sandbox that resists teardown is indistinguishable from one that stopped politely. The pinning tests
+   assert `escalation_stage="destroy"` (`startup-sandbox-classification.test.ts:108`,
+   `supervisor-cancel-escalation.test.ts:40`) — a value production cannot emit.
+
+---
+
+### Half 2 — the doubles are strictly more capable than production, so the suites cannot see Half 1
+
+`MockE2bTransport.signal` (`sandbox-e2b-provider/src/mock-transport.ts:140-147`) **does** honour `kind`,
+**does** return `{ delivered: false }` under the `ignoreCancel` / `ignoreKill` fault directives
+(`:143-144`), and sets `record.state = "stopped"` (`:145`) — a state transition the real transport never
+performs. It is not a faithful stand-in; it is a **more capable** one, in exactly the dimension under
+test.
+
+**★ COUNT — and the referring account is wrong about the mechanism in the majority of cases.** The claim
+under test was "every ladder test passes against `MockE2bTransport`". Measured on this tree: **5 vitest
+cases, in 4 files, against 3 distinct doubles — and only 1 of the 5 uses `MockE2bTransport`.**
+
+| # | Test | Ladder site | Double that supplies `"ignored"` |
+|---|---|---|---|
+| 1 | `worker-daemon/src/__tests__/supervisor-cancel-escalation.test.ts` › "withdraws effect authority and escalates the whole process tree to destroy" | `CleanupAuthority.#convergeOne` | `worker-daemon/src/__tests__/support/fake-provider.ts:423-425, 440-442` |
+| 2 | `worker-daemon/src/__tests__/startup-sandbox-classification.test.ts` › "kills the revoked-fence sandbox (converge escalates to a forced destroy), keeps the live one, records the unknown" | same | same (via `mixedProvider()`, `:45-48`) |
+| 3 | `…startup-sandbox-classification.test.ts` › "is idempotent: a second pass finds the stale sandbox already gone — no double-kill" (first pass only) | same | same |
+| 4 | `sandbox-e2b-provider/src/__tests__/conformance.test.ts` › "all eight isolation invariants pass" | `per-op-adapter.ts:265-276` | **`MockE2bTransport`** |
+| 5 | `sandbox-provider-contract/src/__tests__/isolation-contract.test.ts` › "the hostile reference driver passes all eight isolation invariants" | same | `sandbox-fake-provider/src/hostile-driver.ts:257-262` |
+
+Cases 4 and 5 reach the rung through the shared suite's `monotonic-cleanup-convergence` (§2.4,
+`isolation-contract.ts:273`, faults at `:278`) and `bounded-lifecycle-faults` (§2.8, `:445`, faults at
+`:480-481`).
+
+**Not counted, deliberately, in both directions:**
+
+- `isolation-contract.test.ts`'s two §2.4 non-vacuousness cases (`:119`, `:131`) re-enter the same check
+  body against *sabotaged* drivers; whether the rung executes depends on the sabotage (a "never sweeps"
+  driver fails sub-case (a) before escalating), so they are excluded rather than guessed at.
+- `worker-daemon/src/__tests__/cleanup-expiry-escalation.test.ts` **looks** like a ladder test and is
+  not one: its three cases call `escalate()` directly (`:34-62`) and never enter `#convergeOne`. They
+  test the stage machine, are unaffected by this defect, and remain sound. Counting them would have
+  inflated the number to 8.
+
+**★ "Every ladder test is vacuous" is too strong, and the precise version is more useful.** Cases 1-3
+never touch E2B code at all — they are *correct* unit tests of `CleanupAuthority`, whose only fault is
+that production never supplies their precondition. The overstated claim belongs to **case 4 alone**:
+`conformance.test.ts`'s header calls itself "the no-key core's central proof" that the driver's
+"monotonic convergence" is validated, and for the escalation rung specifically it validates
+`MockE2bTransport`'s behaviour, not `RealE2bTransport`'s. **One suite makes a claim about the shipping
+driver that its double cannot support.** That is the defect; the other four are collateral.
+
+---
+
+### Severity — MEDIUM, argued
+
+**Not HIGH/P1.** No security control false-PASSes. Nothing is leaked: the unconditional `destroy` after
+both `if`s reclaims the sandbox regardless. No gate, admission verifier or `capabilityProven` clause
+reads `StopOutcome`, so no `check-gate-clause-wiring.mjs` clause is affected and no run is falsely
+certified. A HIGH here would be filed on the *shape* of the defect (an unreachable branch, a
+more-capable double — both shapes this programme has learned to fear) rather than on its measured
+consequence, and the register already carries the cost of that.
+
+**Not LOW/MINOR.** Three things are actually wrong today, not hypothetically: a graceful-stop stage that
+does not exist on the shipping path; an operator metric that cannot distinguish a resisting sandbox from
+a compliant one; and a conformance suite whose stated proof about the E2B driver exceeds what its double
+can establish. And the latent half is about to become load-bearing — SVC-008 plans a `gracefulStopSeconds`
+supervisor directly on this primitive, and its §6/T3 already records that building it on `cancel`/`kill`
+yields a test that is "green on the mock and meaningless on E2B".
+
+**MEDIUM** is therefore the honest rung: an inert escalation stage plus a suite that cannot see it,
+with no realized leak, no false admission, and a named consumer that will make it worse if unfixed.
+
+### Owner — `unowned`, with the reason on the record
+
+No ticket owns `real-transport.ts`'s signal semantics. CLI-008 owns the neighbouring verifier findings
+(E7-F030/F031/F032/F033) but is the capability-scoping/verifier lane, not the transport lane; declaring
+it owner here would be the **false claim of ownership** `scripts/lib/finding-ownership.mjs` exists to
+prevent. E9/SVC-008 is a **consumer** and explicitly refused jurisdiction. It is filed `unowned` so it is
+refusable rather than lost, and it is blocked on someone taking the `packages/sandbox-e2b-provider`
+transport lane.
+
+### Resolution test — T8, already specified
+
+`SVC-008-design.md` §6 **T8** is the resolution test and it is already written down: a **transport-level**
+conformance test asserting, for **every** `E2bTransport` implementation in the tree (by directory walk,
+*not* a hand-listed pair), that a signal refusal is representable — a target configured to ignore the
+signal must still report the process running on the follow-up status read. It runs against
+`MockE2bTransport` **and** against `RealE2bTransport` in the keyed lane, and **the real arm must report
+SKIPPED, never passed, when `E2B_API_KEY` is absent** — a keyless "green" on the arm whose entire purpose
+is to disagree with the double would be this same failure class one level up. T8 is red today *because*
+the two arms disagree, and that disagreement is this finding.
+
+**Resolve = give the real transport a signal primitive whose refusal is representable (SVC-008 §3.4
+proposes `signalProcess`/`processStatus`), land T8 as a directory walk over transport implementers, then
+flip this Status and DELETE the `finding-ownership.json` key in the SAME commit.** Fixing the transport
+without T8 leaves the doubles more capable than production and re-opens the class.
+
+### Citation corrections to the referring account (SVC-008 §10 / §1.3d)
+
+Recorded because this register cites by line and a wrong pin is worse than none.
+
+1. `RealE2bTransport.signal` spans **`:177-187`**, not `:177-186` (`:187` closes the method).
+2. `E2bSandboxProvider.cancel` is **`:378-381`** and `.kill` **`:383-386`**; `378-386` is the pair's
+   span, not either method's.
+3. The first real termination is **`#reclaim`'s `this.#transport.terminate` at `:401`**, reached *from*
+   `destroy` (`:388-390`) and `reconcileCleanup` (`:392-394`) — not "inside `destroy` (`:388-393`)",
+   which spans two methods and contains no `terminate` call.
+4. `#convergeOne`'s escalation branch is **`:284-292`**; `:279` is the `cancel` call and `:279-290`
+   truncates the block mid-statement.
+
+**Cross-links:** SVC-008 (`epics/E9-service-agents/tickets/SVC-008-design.md` §1.3d, §3.4, §6 T3+T8,
+§10) — the consumer that will build on this primitive and the source of T8. **DE-10**
+(`E0-foundation/findings.md:243`) — adjacent, not overlapping: DE-10 is a *disarmed* reaper, this is an
+*inert rung* inside the armed one. **E7-F020/F030/F031** — the false-PROVEN family; this is deliberately
+*not* one of them (nothing is certified that is untrue about a run), which is the argument for MEDIUM.

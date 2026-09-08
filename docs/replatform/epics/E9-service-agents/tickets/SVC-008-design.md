@@ -698,15 +698,28 @@ split and names what a ruling would have to say.
   **and (revision 2) the two provider gaps**. Its current §1 chain is correct and incomplete, and a
   finding that names only the smallest of five blockers will be closed by fixing the smallest of
   five.
-- **★ The provider defect of §1.3(d) is NOT filed here, and the reason is jurisdiction, not
-  convenience.** "`RealE2bTransport.signal` ignores `_kind` and always reports delivered, so
+- **★ The provider defect of §1.3(d) is FILED, and it is filed in E7 — not here.** It is now
+  **[E7-F034](../../E7-coding-e2b/findings.md#e7-f034)** (`open` · `unowned` · **MEDIUM**), with
+  **T8 (§6) named as its resolution test**. The jurisdiction
+  reasoning stands: "`RealE2bTransport.signal` ignores `_kind` and always reports delivered, so
   `CleanupAuthority`'s `kill` rung is unreachable on the real provider and `MockE2bTransport` is
-  strictly more capable than production" is a defect in **E4/CLI's transport lane**, affecting
-  **batch today**, not only services. E9 does not file into another epic's register, and inventing
-  an ID here with no owner would produce an `unowned` finding whose successor does not exist —
-  precisely the shape `finding-ownership.json` already carries too many of. **It should be filed by
-  whoever owns `packages/sandbox-e2b-provider`, with T8 (§6) as its resolution test.** Recorded here
-  so the obligation is refusable rather than lost.
+  strictly more capable than production" is a defect in the **`packages/sandbox-e2b-provider`
+  transport lane**, affecting **batch today**, not only services, and E9 does not file into another
+  epic's register. **What was wrong was leaving it recorded ONLY here.** A live defect in this §10
+  is invisible to `scripts/check-finding-ownership.mjs`, which globs only
+  `docs/replatform/epics/*/findings.md` — the same invisibility class this programme closed
+  elsewhere. Filing it `unowned` **with a reason** is the manifest's own provision for "no successor
+  exists yet"; that is not an orphan, it is the orphan being declared. **This document is no longer
+  the record — E7-F034 is.**
+- **★ Two of this document's own claims were CORRECTED by that re-verification**, and the corrected
+  versions are in E7-F034 rather than here. (i) **Nothing is leaked.** Both ladder call sites run a
+  forced `destroy` *unconditionally, outside the `if`* (`cleanup-authority.ts:293-307`;
+  `per-op-adapter.ts:271-275`), so the sandbox is reclaimed regardless of the cancel outcome — what
+  is lost is the **rung**, not the resource. (ii) **The "vacuous ladder tests" are 5 cases across 3
+  distinct doubles, only 1 of which is `MockE2bTransport`**; the three `CleanupAuthority` tests use
+  `worker-daemon/src/__tests__/support/fake-provider.ts` and never touch E2B code at all. §1.3(d)'s
+  and T8's wording are left as written — they record what was measured on the day — and E7-F034
+  carries the corrected pins.
 - **A gate-clause entry is NOT added.** `countProductionCallers`
   (`scripts/check-gate-clause-wiring.mjs:155-186`) returns 0 for a symbol that does not exist and an
   `unwired` clause with count 0 **passes**, so a clause naming `runServiceLifecycle` today would be
