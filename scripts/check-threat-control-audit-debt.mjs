@@ -87,6 +87,46 @@ export function crossingIdsNamedBy(text) {
   return [...new Set(text.replace(CROSSING_RANGE_RE, " ").match(CROSSING_ID_RE) ?? [])];
 }
 
+/** A character that can sit INSIDE a filename token, so a match touching one is part of a longer name. */
+const NAME_CHAR = /[A-Za-z0-9._-]/;
+const WORD_CHAR = /[A-Za-z0-9_-]/;
+const ALNUM = /[A-Za-z0-9]/;
+
+/**
+ * Does `text` name `basename` as a WHOLE filename or path token?
+ *
+ * ★★ W22B — `text.includes(basename)` was still a substring test one layer down. With two
+ * top-level documents whose names overlap, an open finding naming only the LONGER
+ * (`FINDING-other-FINDING-probe.md`) also satisfied the shorter (`FINDING-probe.md`), leaving
+ * the shorter document exactly as invisible to the ownership census as an unregistered one —
+ * the failure this clause exists to close.
+ *
+ * The two ends are NOT symmetric, and conflating them is how the first attempt at this fix
+ * red-lit a real registration. A path prefix (`docs/replatform/FINDING-probe.md`) is a
+ * legitimate mention, so `/` delimits on the left while `.`/`-` do not. On the right the
+ * common case is ordinary prose — "See FINDING-probe.md." — so a SENTENCE-ENDING period must
+ * delimit, while an extension-continuing one (`FINDING-probe.md.bak`) must not.
+ *
+ * @param {unknown} text
+ * @param {string} basename
+ * @returns {boolean}
+ */
+export function namesFileToken(text, basename) {
+  if (typeof text !== "string" || typeof basename !== "string" || basename.length === 0) return false;
+  for (let from = 0; ; ) {
+    const at = text.indexOf(basename, from);
+    if (at === -1) return false;
+    const end = at + basename.length;
+    const before = at > 0 ? text[at - 1] : "";
+    const after = end < text.length ? text[end] : "";
+    const afterNext = end + 1 < text.length ? text[end + 1] : "";
+    const leftDelimited = !NAME_CHAR.test(before);
+    const rightDelimited = !WORD_CHAR.test(after) && !(after === "." && ALNUM.test(afterNext));
+    if (leftDelimited && rightDelimited) return true;
+    from = at + 1;
+  }
+}
+
 /** Every `findings.md` under the epic tree — the same notion `check-finding-ownership.mjs` uses. */
 export function findEpicRegisters(root) {
   const epics = path.join(root, EPICS_RELATIVE_PATH);
@@ -346,7 +386,7 @@ export function evaluateAuditDebt(input) {
     .filter((f) => classifyStatus(f.status) === "open");
   for (const rel of input.topLevelFindingDocPaths ?? []) {
     const basename = path.posix.basename(rel);
-    if (!openFindingBlocks.some((f) => f.text.includes(basename))) {
+    if (!openFindingBlocks.some((f) => namesFileToken(f.text, basename))) {
       errors.push(
         `${rel}: a top-level FINDING document is named by no OPEN finding entry in any epic findings register, so ` +
           "scripts/check-finding-ownership.mjs (which globs only docs/replatform/epics/*/findings.md and reasons only " +

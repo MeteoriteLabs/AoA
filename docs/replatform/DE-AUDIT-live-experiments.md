@@ -39,7 +39,7 @@ in the system's own echo of the thing you asked for.
 | [DE-07](#de-07) | Does the resolve path deny four ways live? Is there any surface that can revoke a handle? | Yes — an operator-facing revoke would refute the dead-lever finding. |
 | [DE-09](#de-09) | **Is a capability restriction expressible on e2b create at all?** Which template does a live create receive? What can a tenant reach from inside the guest? | Yes, in both directions — and it may show the clause is unbuildable as written. |
 | [DE-10](#de-10) | With the reaper armed, is an orphan sandbox actually destroyed — as seen by the provider, not by our own code? | Yes — this is the only route to `delivered` for the destroy half. |
-| [DE-11](#de-11) | Does the artifact bucket carry default encryption or a lifecycle rule out of band? | Yes — for **three** clauses (TTL, encryption, purge), all three now recorded `UNKNOWN` rather than absent. |
+| [DE-11](#de-11) | Does the artifact bucket carry default encryption or a lifecycle rule out of band? | Yes — for `confidentiality` (both halves) and the **TTL-expiry half** of `revocation`, now recorded `UNKNOWN`. Purge-on-job-completion and `audit` stay measured absences. |
 | [DE-12](#de-12) | **Nothing.** | No — see the entry for why this is a finding, not a gap in this document. |
 | [DE-13](#de-13) | Does one noisy Organization starve another? | Yes — this is REL-002's acceptance and it has never been run. |
 | [DE-14](#de-14) | **Nothing.** Settled by executing the assertion. | No. |
@@ -365,12 +365,27 @@ Both checks are **read-only, cost nothing, and need only read access to the depl
 revocation verdicts … only (a) could change the encryption verdict"*, and it contradicted the
 entry directly below it, which says in as many words that (b) would confirm *"the `revocation`
 clause has no out-of-band implementation **either**"* — a check that can confirm an absence can
-equally refute it. **(a) and (b) between them settle three of DE-11's four clauses**: the TTL
-half of `confidentiality`, its encryption half, and the purge half of `revocation`. All three
-are now recorded in the register as **`UNKNOWN` pending this inspection**, not as measured
-absences, because each can be delivered entirely by bucket configuration the application never
-expresses. **The `audit` clause is the one these cannot touch** — the record it names is an
-application artefact, and no bucket setting supplies it.
+equally refute it.
+
+★★ **Corrected again 2026-09-09 (W22B), on external review, and this is the more important
+correction: THE UNIT IS THE CONJUNCT, NOT THE CLAUSE.** The paragraph W22 wrote here said (a)
+and (b) "settle three of DE-11's four clauses" and that all three were now `UNKNOWN`. That
+over-corrected. What they actually settle is **two clauses and one half**:
+
+- **`confidentiality`** — "sensitive browser artifacts are encrypted **and** TTL-bounded".
+  Both halves are bucket-settable, so **(a) and (b) settle the whole clause**; it is `UNKNOWN`.
+- **`revocation`** — "**TTL expiry and job completion** purge sensitive artifacts". Only the
+  first half is bucket-settable. **(b) settles the TTL-expiry half → `UNKNOWN`. The
+  job-completion half is a MEASURED ABSENCE and stays one whatever (b) returns**, because an
+  S3 expiration rule fires on object age plus prefix/tag and *cannot observe job completion* —
+  nothing in the commit path writes a completion-derived tag, and no code calls
+  `PutBucketLifecycle` to install one. The application half is structurally refused
+  (`isSweepEligible` rejects `status='committed'`).
+- **`audit`** — untouchable by either check; the record it names is an application artefact and
+  no bucket setting supplies it. Measured absent.
+
+So: **`audit` absent, half of `revocation` absent, and two and a half sub-properties `UNKNOWN`
+pending this inspection.**
 
 - **(a) Encryption at rest.** `aws s3api get-bucket-encryption --bucket <artifact-bucket>`.
   A `ServerSideEncryptionConfiguration` means the bytes are encrypted by bucket policy even
@@ -378,8 +393,10 @@ application artefact, and no bucket setting supplies it.
   delivered, since `PutObjectCommand` provably never sets it. `NoSuchEncryptionConfiguration`
   confirms plaintext at rest.
 - **(b) Lifecycle purge.** `aws s3api get-bucket-lifecycle-configuration --bucket <artifact-bucket>`.
-  A `NoSuchLifecycleConfiguration` error confirms the `revocation` clause has no out-of-band
-  implementation either.
+  A `NoSuchLifecycleConfiguration` error confirms the **TTL-expiry** half of `revocation` — and
+  the TTL half of `confidentiality` — has no out-of-band implementation either. An expiration
+  rule that *is* present refutes those two halves and **still leaves purge-on-job-completion
+  absent**; do not read a green (b) as settling the clause.
 
 ---
 
@@ -725,9 +742,13 @@ register used to list *"no encryption at rest"* among DE-23's settled absences. 
 out **per-tenant keys** — that needs a key parameter `RunDatabaseBackupOptions` does not have —
 but it cannot rule out **encryption at rest**, because an encrypted volume, an encrypted
 filesystem, or an object store with default SSE encrypts the dump with no application code at
-all. That clause now reads `UNKNOWN`, and settling it is an inspection of wherever the deployment
-writes the file, not a rehearsal step. **It changes nothing about the verdict**: the other five
-absences are missing tenant *decisions*, and no storage setting supplies a decision.
+all. **Only that half reads `UNKNOWN`** (corrected again by W22B — the clause is the conjunction
+"encrypted at rest **with keys scoped per tenant**", and marking the whole of it unknown
+discarded a control already established as missing). Settling the generic half is an inspection
+of wherever the deployment writes the file, not a rehearsal step — and **it cannot satisfy the
+conjunction**, because the documented invocation dumps every tenant into one file that no
+per-tenant key can cover. **It changes nothing about the verdict**: the other five absences are
+missing tenant *decisions*, and no storage setting supplies a decision or a key selection.
 
 The crossing's own chartered verification is nonetheless an **owed operator leg**.
 

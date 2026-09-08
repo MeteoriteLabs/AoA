@@ -543,6 +543,51 @@ test("POSITIVE CONTROL: a genuine OPEN finding naming the document stays GREEN",
   assert.deepEqual(errors, [], report(errors));
 });
 
+// --- W22B: THE SUBSTRING BUG CAME BACK ONE LAYER DOWN -----------------------------------
+//
+// The W22 fix moved the bar to a PARSED OPEN finding but still matched with
+// `f.text.includes(basename)`. Two top-level documents with overlapping names therefore
+// collapsed into one: an open finding naming ONLY the longer registered BOTH, leaving the
+// shorter invisible to the ownership census — the exact failure the clause exists to close.
+
+const LONG_DOC = "docs/replatform/FINDING-other-FINDING-w22-substring-probe.md";
+
+/** Register BOTH overlapping docs as top-level, and seed one open finding with `text`. */
+function overlappingRegistration(text) {
+  const input = baseInput();
+  input.topLevelFindingDocPaths.push(ORPHAN_DOC, LONG_DOC);
+  input.findingDocuments.push({ path: "docs/replatform/epics/E0-foundation/findings.md", text });
+  return evaluateAuditDebt(input).errors;
+}
+
+const LONG_ERROR = `${LONG_DOC}: a top-level FINDING document is named by no OPEN finding entry`;
+
+test("M18d FINDING-VISIBLE: an open finding naming ONLY the longer overlapping name leaves the shorter RED", () => {
+  const errors = overlappingRegistration(
+    `## E0-F994 — the longer document only\n\n**Status:** open · **Severity:** LOW\n\n` +
+      `This finding is the register home of ${path.posix.basename(LONG_DOC)}.\n`,
+  );
+  assert.ok(hasError(errors, ORPHAN_ERROR), report(errors));
+  assert.ok(!hasError(errors, LONG_ERROR), report(errors));
+});
+
+test("M18e POSITIVE CONTROL: an open finding naming EACH overlapping document stays GREEN", () => {
+  const errors = overlappingRegistration(
+    `## E0-F994 — the longer document\n\n**Status:** open · **Severity:** LOW\n\n` +
+      `Register home of ${path.posix.basename(LONG_DOC)}.\n\n` +
+      `## E0-F993 — the shorter document\n\n**Status:** open · **Severity:** LOW\n\n` +
+      `Register home of ${path.posix.basename(ORPHAN_DOC)}.\n`,
+  );
+  assert.deepEqual(errors, [], report(errors));
+});
+
+test("M18f FINDING-VISIBLE: a PATH-QUALIFIED mention still registers (the `/` delimiter is not a false red)", () => {
+  const errors = probeRegistration(
+    `## E0-F992 — path-qualified\n\n**Status:** open · **Severity:** LOW\n\n` + `See \`${ORPHAN_DOC}\`.\n`,
+  );
+  assert.ok(!hasError(errors, ORPHAN_ERROR), report(errors));
+});
+
 test("M18 FINDING-VISIBLE: removing E8-F011's reference re-orphans the retention document", () => {
   const input = baseInput();
   for (const doc of input.findingDocuments) {
