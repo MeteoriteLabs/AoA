@@ -2492,10 +2492,13 @@ forward from the earlier write-up.** The line, verbatim and complete:
 
 ```
 [w7u1/A/codex_local] A1 posture=false channel=returned exit=1 preExisted=false file=false
-readErrorKind=not-found stdout="" stderr="Not inside a trusted directory and --skip-git-repo-check
-was not specified.
+readErrorKind=not-found stdout="" stderr="Not inside a trusted directory and
+--skip-git-repo-check was not specified.
 "
 ```
+
+(wrapped for width; it is one line in the log, and the trailing `
+` is part of the captured stderr.)
 
 `--skip-git-repo-check` appears **exactly once** in the whole log, in that stderr. So this finding's
 headline is measured, not inferred, and **"the codex cause is unknown" is answerable and answered**:
@@ -2523,7 +2526,7 @@ through the same single channel, because `batchWorkloadV1Schema` is `.strict()` 
 ★★ **And this is what the earlier `posture-is-not-the-cause` verdict was groping at — for the wrong
 reason.** That verdict was right that a posture change alone would not have made the codex arm write,
 and wrong in every step it used to get there: it inferred exoneration from two non-zero exits, when
-in fact the posture had *removed* A1's blocker (the opposite of exoneration) and A2 then died on a
+in fact the posture had *removed* A1's blocker (the opposite of exoneration) and A2 then hit a
 credential failure that says nothing about postures at all. A conclusion reached that way is not
 evidence for itself; it is recorded here so the correct version replaces it rather than inheriting
 its credit.
