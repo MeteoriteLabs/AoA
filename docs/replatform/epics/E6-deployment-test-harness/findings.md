@@ -1013,33 +1013,103 @@ would usually NOT run, with a side effect on a tracked file. Skipping it is the 
 
 ---
 
-## E6-F017 — eight raw control bytes sat in seven tracked text files, three of them corrupting the prose that explains this very defect — RESOLVED
+## E6-F017 — sixteen raw control bytes sat in nine tracked text files, six of them corrupting explanatory prose including the post-mortem for this very defect — RESOLVED
 
 **Status:** resolved
 **Severity:** LOW individually; the reason it is filed is the CLASS, which has shipped three times,
 twice after its own post-mortem was written down.
-**Filed and resolved:** 2026-09-08 (W19), measured at `3814b90f3`.
+**Filed and resolved:** 2026-09-08 (W19). Census measured at `3814b90f3` and re-measured at this
+PR's parent `c78a6827d`; the two trees give byte-for-byte the same result, so the rev is not what
+moved the number.
 
 ### What was measured
 
-A byte scan of every tracked text file found eight raw control bytes in seven files. Every one of
-them is the same shell-eaten-escape corruption or an authored byte written raw; **none** required
-deleting an explanation to fix:
+A byte scan of every tracked text file found **16 raw control bytes in 9 files**. Every one of them
+is the same shell-eaten-escape corruption or an authored byte written raw; **none** required
+deleting an explanation to fix. The `bytes` column is the unit — a file can hold more than one:
 
-| file | byte | disposition |
-|---|---|---|
-| `docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md` | 4× 0x08 | prose meant `` `\b5\d{2}\b` ``; the four `\b` were eaten, leaving the sentence naming a character it could not show. **Restored.** |
-| `docs/replatform/qa/2026-08-31-blocker-ab-fix-design.md` | 0x08 | a Windows path `C:\pn\blockab\` with `\b` eaten. **Restored.** |
-| `scripts/lib/worker-keystore-boundary.mjs` | 0x08 | the POST-MORTEM comment for this defect class, reading "where `<0x08>` was intended". **Restored.** |
-| `packages/worker-daemon/src/supervisor/provider.ts` | NUL | authored join separator → `"\0"` |
-| `scripts/lib/__tests__/embedded-secret-scan.test.mjs` | NUL | authored fixture → `"\x00\x01\x02\uFFFD"` |
-| `server/src/services/asset-content-guard.ts` | NUL, 0x1f, 0x7f | authored strip class → `/[\x00-\x1f\x7f]/` |
-| `server/src/services/mcp-connectors.ts` | NUL | authored sentinel → `"\u0000bound"` |
-| `packages/browser-runtime/src/__tests__/path-adapter.test.ts` | 0x7f | authored test input → `"evil\x7f.pdf"`; the two lines above it already used `\u0000` and `\n` |
+| file | bytes | raw byte(s) | disposition |
+|---|---|---|---|
+| `docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md` | 4 | 4× 0x08 BS | prose meant `` `\b5\d{2}\b` ``; the four `\b` were eaten, leaving the sentence naming a character it could not show. **Restored.** |
+| `docs/replatform/qa/2026-08-31-blocker-ab-fix-design.md` | 1 | 0x08 BS | a Windows path `C:\pn\blockab\` with `\b` eaten. **Restored.** |
+| `scripts/lib/worker-keystore-boundary.mjs` | 1 | 0x08 BS | the POST-MORTEM comment for this defect class, reading "where `<0x08>` was intended". **Restored.** |
+| `packages/worker-daemon/src/supervisor/provider.ts` | 1 | 0x00 NUL | authored join separator → `"\0"` |
+| `scripts/lib/__tests__/embedded-secret-scan.test.mjs` | **3** | 0x00 NUL, 0x01 SOH, 0x02 STX | authored fixture → `"\x00\x01\x02\uFFFD"` |
+| `server/src/services/asset-content-guard.ts` | **3** | 0x00 NUL, 0x1f, 0x7f DEL | authored strip class → `/[\x00-\x1f\x7f]/` |
+| `server/src/services/mcp-connectors.ts` | 1 | 0x00 NUL | authored sentinel → `"\u0000bound"` |
+| `packages/browser-runtime/src/__tests__/path-adapter.test.ts` | 1 | 0x7f DEL | authored test input → `"evil\x7f.pdf"`; the two lines above it already used `\u0000` and `\n` |
+| **subtotal repaired under this finding** | **15** | | across **8** files |
+| `scripts/ci-local.mjs` | 1 | 0x08 BS | not this finding's repair — it is E6-F016's defect, filed and fixed directly above. Counted here because the scan does not know the difference. |
+| **TOTAL, full-tree scan** | **16** | | across **9** files |
 
-The hand-picked six-byte reconnaissance list (00 07 08 0b 0c 1b) **missed three of these**: the
-0x1f, the 0x7f beside it, and the path-adapter hit which was 0x7f alone. That is why the guard bans
-a RANGE (C0 minus tab/LF/CR, plus DEL) rather than a list.
+### ★★★ How to re-derive this census in one step
+
+The number below is stated so it does not have to be trusted. **Banned set** is the guard's own
+unit, `isBannedByte()` in `scripts/check-invisible-control-chars.mjs`: every C0 control byte
+(0x00–0x1f) EXCEPT TAB 0x09, LF 0x0a and CR 0x0d, plus DEL 0x7f. **Scanned set** is every tracked
+file `classifyPath()` calls `text`, decided by path and extension only, never by content — so the
+62 binary blobs (PNG screenshots and the like), which hold ~800k of these bytes between them, are
+out of scope by construction, and an unclassified type FAILS rather than being skipped.
+
+Run the guard *from this branch* against a checkout of the parent, because the parent tree does not
+contain the guard:
+
+```
+git worktree add --detach ../w19-parent c78a6827d
+node scripts/check-invisible-control-chars.mjs --root ../w19-parent   # exits 1
+git worktree remove ../w19-parent
+```
+
+It prints **one line per BYTE**, `path:line:col  NAME`. Verbatim, 2026-09-08:
+
+```
+invisible control characters in 9 file(s):
+  docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md:283:7  BS
+  docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md:283:14  BS
+  docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md:283:65  BS
+  docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md:283:72  BS
+  docs/replatform/qa/2026-08-31-blocker-ab-fix-design.md:400:57  BS
+  packages/browser-runtime/src/__tests__/path-adapter.test.ts:52:34  DEL
+  packages/worker-daemon/src/supervisor/provider.ts:213:11  NUL
+  scripts/ci-local.mjs:145:25  BS
+  scripts/lib/__tests__/embedded-secret-scan.test.mjs:131:39  NUL
+  scripts/lib/__tests__/embedded-secret-scan.test.mjs:131:40  SOH
+  scripts/lib/__tests__/embedded-secret-scan.test.mjs:131:41  STX
+  scripts/lib/worker-keystore-boundary.mjs:117:44  BS
+  server/src/services/asset-content-guard.ts:77:16  NUL
+  server/src/services/asset-content-guard.ts:77:18  0x1f
+  server/src/services/asset-content-guard.ts:77:19  DEL
+  server/src/services/mcp-connectors.ts:563:33  NUL
+```
+
+Sixteen lines, nine distinct paths — that is the whole derivation. Substituting `3814b90f3` for
+`c78a6827d` prints the identical sixteen lines. Substituting this PR's head prints
+`invisible control characters: PASS` and exits 0.
+
+### ★ The number this record carried before, and why it was wrong
+
+This finding first said "eight raw control bytes in seven text files". **Both numbers were wrong,
+and wrong in the same way: they counted SITES, not BYTES** — one row per file-and-repair — so the
+two files carrying three bytes each (`embedded-secret-scan.test.mjs` NUL/SOH/STX and
+`asset-content-guard.ts` NUL/0x1f/DEL) were each counted as one, and an eight-row table was
+summarised as "seven files". The total is precisely what hid them, which is why the per-file
+breakdown above is now part of the record rather than a total standing alone.
+
+It is worth stating plainly that this was the **third** count of the same corpus and the first
+re-derivable one: 11-in-8 (which included a binary `.docx` and missed three bytes), then 8-in-7
+(sites, not bytes), and only the external review on PR #384 noticed that neither reproduced from
+the parent blobs. Three attempts to count invisible characters by eye produced three different
+answers — the best argument this guard could have, and the reason a command now sits beside the
+number. A false figure in the record justifying a guard is the exact class the guard exists to
+prevent.
+
+The hand-picked six-byte reconnaissance list (00 07 08 0b 0c 1b) would have **missed five of the
+sixteen bytes**, and one file entirely: the 0x01 and 0x02 in `embedded-secret-scan.test.mjs` (whose
+NUL it would have caught, so the file would have looked handled), the 0x1f and the 0x7f in
+`asset-content-guard.ts` (likewise), and the `path-adapter.test.ts` hit, which is 0x7f alone and so
+invisible to the list at file level too. (The earlier "missed three" here was the same
+site-counting error, carried through.) That is why the guard bans a RANGE — C0 minus tab/LF/CR,
+plus DEL — rather than a list.
 
 ### The objective harm, independent of taste
 

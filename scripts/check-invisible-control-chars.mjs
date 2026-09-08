@@ -37,20 +37,36 @@
  *   injected" WITHOUT guessing: an author who means the character can always say so in a form
  *   a human can see, and the repair for a legitimate use is a rewrite that denotes the
  *   identical character. Nothing is ever deleted. This was measured, not assumed. At the time
- *   this guard was written the tree held eight raw control bytes in seven text files:
+ *   this guard was written the tree held SIXTEEN raw control bytes in NINE text files. The count
+ *   below is per BYTE, not per file or per repair -- two of these files carry three bytes each,
+ *   and counting rows instead of bytes is exactly how this census was first published wrong
+ *   ("eight in seven"); see E6-F017 for the correction and the one-line re-derivation.
  *
  *     REPAIRED BY RESTORING MEANING (the byte WAS the corruption; the prose said nothing):
- *       docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md   `\b5\d{2}\b` written with the
- *                                                              four \b eaten
- *       docs/replatform/qa/2026-08-31-blocker-ab-fix-design.md `C:\pn\blockab\` likewise
- *       scripts/lib/worker-keystore-boundary.mjs               the post-mortem comment above
+ *       4  docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md   `\b5\d{2}\b` written with the
+ *                                                                 four \b eaten
+ *       1  docs/replatform/qa/2026-08-31-blocker-ab-fix-design.md `C:\pn\blockab\` likewise
+ *       1  scripts/lib/worker-keystore-boundary.mjs               the post-mortem comment above
  *
  *     REPAIRED BY REWRITING AN AUTHORED BYTE AS THE IDENTICAL ESCAPE (behaviour unchanged):
- *       packages/worker-daemon/src/supervisor/provider.ts      join("\0") separator
- *       scripts/lib/__tests__/embedded-secret-scan.test.mjs    "\x00\x01\x02\uFFFD" fixture
- *       server/src/services/asset-content-guard.ts             /[\x00-\x1f\x7f]/ strip class
- *       server/src/services/mcp-connectors.ts                  "\u0000bound" sentinel
- *       packages/browser-runtime/src/__tests__/path-adapter.test.ts  "evil\x7f.pdf"
+ *       1  packages/worker-daemon/src/supervisor/provider.ts      join("\0") separator
+ *       3  scripts/lib/__tests__/embedded-secret-scan.test.mjs    "\x00\x01\x02\uFFFD" fixture
+ *       3  server/src/services/asset-content-guard.ts             /[\x00-\x1f\x7f]/ strip class
+ *       1  server/src/services/mcp-connectors.ts                  "\u0000bound" sentinel
+ *       1  packages/browser-runtime/src/__tests__/path-adapter.test.ts  "evil\x7f.pdf"
+ *
+ *     FOUND BY THE SAME SCAN, REPAIRED UNDER ITS OWN FINDING (E6-F016, defect 2 above):
+ *       1  scripts/ci-local.mjs                                   the dead install guard
+ *
+ *     15 bytes in 8 files repaired here + 1 byte in 1 file as E6-F016  =  16 bytes in 9 files.
+ *
+ *   Re-derive it from the parent blobs in one step -- run THIS script (the parent tree has no
+ *   copy of it) against a detached checkout of the parent commit:
+ *
+ *       git worktree add --detach ../w19-parent c78a6827d
+ *       node scripts/check-invisible-control-chars.mjs --root ../w19-parent   # exits 1
+ *
+ *   It prints one line per BYTE: sixteen lines over nine distinct paths.
  *
  *   So the feared annoyance did not materialise: the tree reached zero hits with no allowlist,
  *   no suppression comment, and not one word of explanation removed. Three explanations were
@@ -86,9 +102,13 @@ import { pathToFileURL } from "node:url";
  * C0 controls except the three whitespace characters text files are made of, plus DEL.
  *
  * ★ WHY A RANGE AND NOT A HAND-PICKED LIST. The reconnaissance for this guard began with six
- * hand-picked bytes (00 07 08 0b 0c 1b) and MISSED, in sequence: the 0x1f closing
- * asset-content-guard.ts's strip range, the 0x7f DEL after it, and a whole further hit in
- * path-adapter.test.ts that was 0x7f alone. Three misses from one list is the argument.
+ * hand-picked bytes (00 07 08 0b 0c 1b). Measured against the census above, that list MISSES FIVE
+ * of the sixteen bytes, and one file entirely: the 0x01 and 0x02 in embedded-secret-scan.test.mjs
+ * and the 0x1f and 0x7f in asset-content-guard.ts (in both files it catches the NUL, so the file
+ * looks handled while two of its bytes are not), plus path-adapter.test.ts, whose only byte is a
+ * 0x7f and which the list therefore cannot see at all. Five misses from one list is the argument.
+ * (An earlier note here said "three misses"; that was the same count-the-sites error E6-F017
+ * corrects, carried through.)
  */
 export function isBannedByte(code) {
   if (code === 0x09 || code === 0x0a || code === 0x0d) return false; // TAB, LF, CR
