@@ -418,12 +418,21 @@ export function detectStartupEvidence(stdout, adapterType) {
  *       running proves nothing about a posture-only fix — the gate could be satisfied by
  *       the arm the claim is not about.
  *   v3  require `a2.ran === true`. Better, and still insufficient.
- *   v4  ★ `ran` IS COMPUTED FROM THE HEAD EVENT ALONE. Two arms that START and then die
- *       before reaching a model satisfy v3 and exonerate a posture nothing ever exercised
- *       — GREEN, in the durable record. That is not hypothetical: codex A2 in run
+ *   v4  ★ `ran` IS COMPUTED FROM THE HEAD EVENT ALONE. Two arms that START and then show no
+ *       model-contact evidence satisfy v3 and exonerate a posture nothing was shown to have
+ *       exercised — GREEN, in the durable record. That is not hypothetical: codex A2 in run
  *       34087197668 emitted `{"type":"thread.started",…}` and `{"type":"turn.started"}` and
- *       then five `{"type":"error","message":"Reconnecting… 401 Unauthorized"}` lines
- *       against `wss://api.openai.com/v1/responses`. It started. It reached nothing.
+ *       then FOUR `{"type":"error","message":"Reconnecting… N/5 … 401 Unauthorized"}` lines
+ *       — numbered 2/5, 3/5, 4/5, 5/5 — against `wss://api.openai.com/v1/responses`.
+ *       ★★ THE SECOND HALF OF THAT SENTENCE IS ABOUT THE RECORD, NOT ABOUT THE AGENT, and
+ *       it is stated that way deliberately. A2 STARTED, and NO model-contact evidence is
+ *       present in the ~889 characters of its stdout the run preserved. It is NOT known
+ *       that it reached nothing: that capture is `safe(exec.stdout, 900)` and it ends
+ *       MID-TOKEN at `{"type":"i`, while codex A3's parallel line shows the same position
+ *       reads `{"type":"item.completed","item":{"id":"item_0` with the item type cut off.
+ *       So whether A2 emitted an `agent_message` after its reconnects CANNOT BE DETERMINED
+ *       from what was preserved — which is exactly why v4 fails CLOSED (§`reachedModel !==
+ *       true` ⇒ `inconclusive`) instead of concluding anything about the agent.
  *
  * So the gate is not "did the CLI start" but "did THIS ARM get far enough that the posture
  * could matter", and the nearest checkable proxy is MODEL OUTPUT ON ITS OWN STDOUT.
@@ -684,8 +693,17 @@ export function evaluateTemplateCliPreflight(obs = {}) {
         (unreadable.length > 0 ? ` (and said nothing at all about ${unreadable.join(" + ")})` : "") +
         `. e2b/e2b.Dockerfile's final layer asserts \`command -v claude && command -v codex\` for the CLI-bearing ` +
         `alias "${CLI_BEARING_TEMPLATE_ALIAS}", so this image is not the one the pack's question is about ` +
-        "(E7-F022). Probe A was NOT run and NO model tokens were spent. Re-dispatch with " +
-        `\`e2b_template: ${CLI_BEARING_TEMPLATE_ALIAS}\`, or rebuild that template on this account, then re-run.`,
+        // ★★★ THIS SENTENCE USED TO READ "Probe A was NOT run and NO model tokens were spent."
+        // IT WAS FALSE FROM THE MOMENT THE PREFLIGHT GATE BECAME A CAVEAT: probe A now RUNS
+        // on an uncertified image (it installs its own CLI), and this detail is INTERPOLATED
+        // INTO PROBE A'S OWN ANSWER by `probeAPreflightCaveat` — so the durable record
+        // carried "probe A was NOT run" appended to probe A's result. The keyed test that
+        // banned the phrase could not see it: it drove the caveat with a SYNTHETIC verdict
+        // whose detail was the string "d". It is now driven by this function.
+        "(E7-F022). Probe A RUNS ANYWAY — it installs its own CLI and does not depend on the image " +
+        "carrying one — so its answer stands, measured in an image whose pre-baked CLIs were not " +
+        `confirmed. Re-dispatch with \`e2b_template: ${CLI_BEARING_TEMPLATE_ALIAS}\`, or rebuild that ` +
+        "template on this account, then re-run to remove the caveat.",
     );
   }
   if (unreadable.length > 0) {
@@ -953,9 +971,14 @@ export function verdictProbeA(arms) {
     //     whether a posture-only fix would have helped, so a gate A1 can satisfy is a gate
     //     on the wrong arm.
     //   * REACHED A MODEL, NOT STARTED. `ran` comes from the HEAD event alone, so two arms
-    //     that start and then die before any model still satisfy it — the exact shape codex
-    //     A2 produced in run 34087197668 (`thread.started`, `turn.started`, then five 401
-    //     reconnects). `reachedModel` requires model OUTPUT on A2's own stdout.
+    //     that start and then show no model-contact evidence still satisfy it — the exact
+    //     shape codex A2 produced in run 34087197668 (`thread.started`, `turn.started`, then
+    //     FOUR `Reconnecting… N/5` 401 lines, 2/5 through 5/5). ★ THAT IS A STATEMENT ABOUT
+    //     THE RECORD: the run preserved ~889 characters of A2's stdout and they end mid-token
+    //     at `{"type":"i`, so "A2 reached nothing" is NOT established — only that no
+    //     model-contact evidence was present in what was preserved. `reachedModel` requires
+    //     model OUTPUT on A2's own stdout, and its absence yields `inconclusive`, not a
+    //     finding about the agent.
     //
     // See MODEL_CONTACT_EVIDENCE for the full v1→v4 cascade and the per-CLI shapes, and
     // EXONERATION_RESIDUAL — emitted verbatim below — for what this still cannot see.
@@ -1169,7 +1192,33 @@ export function formatVerdict(v) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The record's shape identifier, so a later reader can tell what it is holding. */
-export const PROBE_RECORD_SCHEMA = "aoa.w7u1.output-probe-record/1";
+export const PROBE_RECORD_SCHEMA = "aoa.w7u1.output-probe-record/2";
+
+/**
+ * How much of an arm's stdout the CLASSIFIER reads, and — because it is the same constant —
+ * how much the DURABLE RECORD preserves.
+ *
+ * ★★★ THIS CONSTANT EXISTS BECAUSE THE TWO NUMBERS DIVERGED AND A VERDICT BECAME
+ * UNAUDITABLE. In run `34087197668` the keyed pack logged `safe(exec.stdout, 900)` to the
+ * console and handed `safe(exec.stdout, 8000)` to the classifier, and the record carried NO
+ * stdout at all. The consequence is measurable in that run's job log: it contains ZERO
+ * instances of `assistant`, `output_tokens`, `agent_message` or `turn.completed` — none of
+ * the four shapes the model-contact predicate looks for — INCLUDING for the claude arms that
+ * demonstrably did reach a model. So no verdict from that run can be checked against its own
+ * record, and six sentences in this repo went on to assert more about codex A2 than the ~889
+ * preserved characters could support.
+ *
+ * ★★ WHY EXACTLY WHAT THE CLASSIFIER CONSUMED, AND NOT MORE. The record's job is to let a
+ * later reader re-derive the verdict. The classifier cannot see past this limit, so a record
+ * carrying exactly this much is COMPLETE for that purpose: every byte the verdict could have
+ * turned on is in it. Bytes beyond it would enlarge a public (redacted) artefact while
+ * auditing nothing. Bytes below it — any value at all below it — reintroduce the defect.
+ *
+ * ★ THE CONSOLE LINE IS DELIBERATELY LEFT SHORTER. A 900-character console line is a
+ * reasonable console line; the fix is not to make the log bigger but to stop treating the log
+ * as the record. See the runbook: THE RECORD IS THE AUDITABLE ARTEFACT, THE CONSOLE IS NOT.
+ */
+export const CLASSIFIER_STDOUT_LIMIT = 8000;
 
 /** Raised when a record would be written that cannot be interpreted later. */
 export class ProbeRecordError extends Error {
@@ -1205,6 +1254,7 @@ export function buildProbeRecord({
   runNonce,
   generatedAt,
   workflowRunUrl,
+  armEvidence,
 } = {}) {
   const resolvedTemplate = typeof template === "string" ? template.trim() : "";
   if (resolvedTemplate.length === 0) {
@@ -1235,6 +1285,25 @@ export function buildProbeRecord({
       state: String(v.state),
       reason: String(v.reason),
       detail: String(v.detail ?? ""),
+    })),
+    // ★★★ THE STDOUT THE CLASSIFIER ACTUALLY READ, so a verdict can be re-derived from its
+    // own record instead of from a job log that outlives nothing and preserved less. See
+    // `CLASSIFIER_STDOUT_LIMIT` for the measured reason this field exists. `stdout` here is
+    // the SAME STRING the classifier was handed — not a shorter one — and it is redacted on
+    // the way out by the caller, exactly like every other string in this artefact.
+    armEvidence: (armEvidence ?? []).filter(Boolean).map((a) => ({
+      probe: String(a.probe ?? ""),
+      label: String(a.label ?? ""),
+      adapterType: String(a.adapterType ?? ""),
+      posture: a.posture === true,
+      channel: String(a.channel ?? ""),
+      exitCode: a.exitCode === null || a.exitCode === undefined ? null : Number(a.exitCode),
+      // ★ THE BOUND TRAVELS WITH THE BYTES. A reader must be able to tell "no model-contact
+      // evidence in the whole of stdout" from "no model-contact evidence in the prefix the
+      // classifier could see", and that difference is exactly `stdoutTruncated`.
+      stdoutLimit: CLASSIFIER_STDOUT_LIMIT,
+      stdoutTruncated: a.stdoutTruncated === true,
+      stdout: String(a.stdout ?? ""),
     })),
   };
 }

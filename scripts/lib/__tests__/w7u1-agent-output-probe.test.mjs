@@ -24,6 +24,7 @@ import {
   CLI_BEARING_TEMPLATE_ALIAS,
   MIN_REDACTABLE_SECRET_LENGTH,
   PERMISSION_POSTURES,
+  CLASSIFIER_STDOUT_LIMIT,
   PROBE_RECORD_SCHEMA,
   PermissionPostureAnchorError,
   ProbeRecordError,
@@ -560,20 +561,30 @@ test("A1 and A2 both silent is a NO that EXONERATES the posture — ONLY when A2
 //   v1  any non-zero exit ⇒ did-not-write        (could not tell a refusal from a result)
 //   v2  "at least one arm demonstrably ran"      (WRONG ARM — only A2 carries the posture)
 //   v3  `a2.ran === true`                        (still head-event-only)
-//   v4  `ran` comes from the HEAD EVENT ALONE, so an arm that STARTS and then dies before
-//       any model satisfies it. Measured shape: codex A2 in run 34087197668 emitted
-//       `thread.started` + `turn.started`, then five 401 reconnects, and reached nothing.
+//   v4  `ran` comes from the HEAD EVENT ALONE, so an arm that STARTS and shows no
+//       model-contact evidence satisfies it. Measured shape: codex A2 in run 34087197668
+//       emitted `thread.started` + `turn.started`, then FOUR `Reconnecting… N/5` 401 lines
+//       (2/5, 3/5, 4/5, 5/5). ★ THE RECORD, NOT THE AGENT: the run preserved ~889 chars of
+//       A2's stdout, ending mid-token at `{"type":"i`, so "it reached nothing" is NOT
+//       established — only that no model-contact evidence was present in what was kept.
 //
 // The two tests below are the ANTI-REGRESSION MUTATIONS for v3 and v2 respectively. Each
 // was OBSERVED RED against the reverted predicate before being committed; neither is a
 // restatement of the passing case above.
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("MUTATION (i) — two arms that STARTED and died before a model may NOT exonerate the posture", () => {
-  // ★★★ THE v4 CASE, BUILT FROM RUN 34087197668's REAL CODEX STDOUT, through the REAL
+test("MUTATION (i) — two arms that STARTED with no model-contact evidence may NOT exonerate the posture", () => {
+  // ★★★ THE v4 CASE, BUILT FROM RUN 34087197668's PRESERVED CODEX STDOUT, through the REAL
   // classifier. Both arms emit `thread.started` (so `ran` is TRUE for both) and then only
   // 401 reconnect errors. Under the head-event-only predicate this pair EXONERATES the
   // posture and the lane goes green with a false cause in the durable record.
+  //
+  // ★ THIS FIXTURE IS THE PRESERVED PREFIX, NOT THE ARM'S WHOLE STDOUT, and the distinction
+  // is the point of the assertion below. The run kept ~889 characters of A2's stdout and
+  // they end MID-TOKEN at `{"type":"i`; A3's parallel line shows that position reads
+  // `{"type":"item.completed","item":{"id":"item_0`. So the fixture proves what v4 does
+  // with a stdout carrying no model-contact evidence — it does NOT establish that codex A2
+  // reached nothing, and nothing below asserts that it did.
   const dyingStdout =
     '{"type":"thread.started","thread_id":"01a07a5b-b6b9-7fe2-9729-999757da1442"}\n{"type":"turn.started"}\n' +
     '{"type":"error","message":"Reconnecting... 2/5 (unexpected status 401 Unauthorized)"}\n' +
@@ -592,10 +603,10 @@ test("MUTATION (i) — two arms that STARTED and died before a model may NOT exo
   // The mutation's own premise, pinned: BOTH arms satisfy the OLD predicate.
   assert.equal(a1.ran, true, "the head-event-only predicate is satisfied by A1 — that is the point");
   assert.equal(a2.ran, true, "and by A2 — so v3 would have exonerated");
-  assert.equal(a2.reachedModel, false, "and NEITHER reached a model");
+  assert.equal(a2.reachedModel, false, "and NEITHER shows model-contact evidence on this stdout");
 
   const v = verdictProbeA({ a0: wrote("A0"), a1, a2, a3: codexArm("A3") });
-  assert.equal(v.state, "inconclusive", "an arm that started and died before a model leaves the posture UNTESTED");
+  assert.equal(v.state, "inconclusive", "an arm that started with no model-contact evidence leaves the posture UNTESTED");
   assert.equal(v.reason, "posture-exoneration-unsupported-a2-did-not-reach-a-model");
   assert.notEqual(v.reason, "a1-did-not-write-and-the-posture-is-not-the-cause");
   assert.equal(packDisposition([v]).disposition, "inconclusive", "and it must RED the lane, not pass as a result");
@@ -693,9 +704,10 @@ test("the model-contact evidence is detected per CLI, from the shapes the ADAPTE
   // `item.completed` whose item is neither a message nor reasoning is not either.
   //
   // ★ THE THIRD CASE IS A CONSTRUCTED SHAPE, NOT A MEASURED ONE, AND SAYING SO IS THE POINT
-  // OF THIS UNIT. Run 34087197668's codex A3 DID emit an `item.completed` after five failed
-  // reconnects, but the pack's log capture truncated at `{"id":"item_0` and the durable
-  // record carries no stdout, so THE ITEM'S TYPE IS UNKNOWN. The `"type":"error"` below is
+  // OF THIS UNIT. Run 34087197668's codex A3 DID emit an `item.completed` after FOUR failed
+  // reconnects (2/5 through 5/5), but the pack's log capture truncated at `{"id":"item_0`
+  // and the durable record carried no stdout, so THE ITEM'S TYPE IS UNKNOWN — and by the
+  // same truncation, so is whether A2 emitted one at all. The `"type":"error"` below is
   // therefore a shape this predicate must reject, not a shape that was observed — and that
   // asymmetry is why the predicate whitelists two item types instead of blacklisting one.
   assert.equal(detectModelContactEvidence('{"type":"thread.started","thread_id":"x"}', "codex_local").reached, false);
@@ -775,6 +787,82 @@ test("the RESIDUAL survives into the DURABLE RECORD, not just the verdict object
     JSON.parse(JSON.stringify(rec)).probes[0].detail.includes(EXONERATION_RESIDUAL),
     "the record that outlives the log must carry the bound on the claim it records",
   );
+});
+
+test("the STDOUT THE CLASSIFIER READ survives into the durable record — a verdict must be auditable against its own artefact", () => {
+  // ★★★ THIS IS THE ANTI-REGRESSION FOR A MEASURED DEFECT, not a shape test.
+  // In run 34087197668 the keyed pack handed the classifier `safe(exec.stdout, 8000)` and
+  // preserved `safe(exec.stdout, 900)` in a CONSOLE LINE, while the durable record carried
+  // no stdout at all. The whole of that run's job log contains ZERO instances of
+  // `assistant`, `output_tokens`, `agent_message` or `turn.completed` — none of the four
+  // shapes the model-contact predicate looks for — INCLUDING for the claude arms that
+  // demonstrably reached a model. So no verdict from that run can be re-derived from what it
+  // shipped, and that is precisely how six sentences came to assert more about codex A2 than
+  // the ~889 preserved characters could support.
+  //
+  // MUTATION: drop `armEvidence` from `buildProbeRecord`'s return, or slice it shorter than
+  // `CLASSIFIER_STDOUT_LIMIT` at the call site, and this test reds.
+  // ★★★ THE FIXTURE IS DELIBERATELY LONGER THAN THE 900-CHARACTER CONSOLE LINE, AND THE
+  // MODEL-CONTACT EVIDENCE SITS BEYOND IT. That is the exact geometry of the defect: the
+  // console kept 900 characters, the classifier read 8000, and a `turn.completed` past
+  // character 900 was therefore invisible to anyone auditing the verdict afterwards. A
+  // record preserving only what the console preserved would drop the last line here, so a
+  // record slice shorter than `CLASSIFIER_STDOUT_LIMIT` reds this test.
+  const filler = '{"type":"error","message":"Reconnecting... 2/5 (unexpected status 401 Unauthorized)"}\n'.repeat(12);
+  const stdout =
+    '{"type":"thread.started","thread_id":"t"}\n{"type":"turn.started"}\n' +
+    filler +
+    '{"type":"turn.completed","usage":{"output_tokens":41}}\n';
+  assert.ok(stdout.length > 900, "the fixture must exceed the console line's limit or this test cannot bite");
+  assert.ok(stdout.length < CLASSIFIER_STDOUT_LIMIT, "and must fit inside what the classifier reads");
+  const rec = JSON.parse(
+    JSON.stringify(
+      buildProbeRecord({
+        verdicts: [],
+        template: CLI_BEARING_TEMPLATE_ALIAS,
+        armEvidence: [
+          {
+            probe: "A/codex_local",
+            label: "A2",
+            adapterType: "codex_local",
+            posture: true,
+            channel: "returned",
+            exitCode: 1,
+            stdoutTruncated: false,
+            stdout,
+          },
+        ],
+      }),
+    ),
+  );
+  assert.equal(rec.armEvidence.length, 1, "the record must carry the evidence the verdict was computed from");
+  const a = rec.armEvidence[0];
+  assert.equal(a.label, "A2");
+  assert.equal(a.adapterType, "codex_local");
+  assert.equal(a.posture, true);
+  assert.equal(a.exitCode, 1);
+  // ★ THE BYTES THEMSELVES, not a summary of them. A record that says "no model output was
+  // found" without the stdout it searched is the unauditable state this test exists to stop.
+  assert.equal(a.stdout, stdout);
+  // ★ AND THE EVIDENCE PAST CHARACTER 900 IS STILL THERE. Without these two lines a
+  // 900-character record slice survives every other assertion in this test — measured: that
+  // mutation passed until they were added.
+  assert.ok(a.stdout.includes('"type":"turn.completed"'), "the record dropped model-contact evidence the classifier read");
+  assert.ok(a.stdout.length > 900, "the record must preserve more than the console line did");
+  // ★ AND THE BOUND TRAVELS WITH THEM: "nothing in the whole stdout" and "nothing in the
+  // prefix the classifier could see" are different claims, and only `stdoutTruncated`
+  // separates them.
+  assert.equal(a.stdoutLimit, CLASSIFIER_STDOUT_LIMIT);
+  assert.equal(a.stdoutTruncated, false);
+  // The schema version moved with the field, so a v1 reader cannot silently mistake a record
+  // with no evidence for a record whose arms produced none.
+  assert.equal(rec.schema, "aoa.w7u1.output-probe-record/2");
+});
+
+test("a record built with NO armEvidence still writes the field, empty — absent is not the same as unrecorded", () => {
+  const rec = buildProbeRecord({ verdicts: [], template: CLI_BEARING_TEMPLATE_ALIAS });
+  assert.ok(Array.isArray(rec.armEvidence), "the field must always exist so a reader can tell empty from missing");
+  assert.equal(rec.armEvidence.length, 0);
 });
 
 test("the RESIDUAL is stated in the runbook's verdict row, not only in the code", () => {
@@ -1013,7 +1101,7 @@ test("a template carrying BOTH CLIs satisfies the precondition", () => {
   assert.equal(packDisposition([v]).disposition, "measured", "a satisfied precondition must not red the lane");
 });
 
-test("a template MISSING a CLI reds the lane BEFORE any model tokens are spent", () => {
+test("a template MISSING a CLI reds the lane, and its detail does NOT claim probe A was skipped", () => {
   const v = evaluateTemplateCliPreflight({
     channel: "returned",
     exitCode: 0,
@@ -1024,7 +1112,15 @@ test("a template MISSING a CLI reds the lane BEFORE any model tokens are spent",
   assert.equal(v.reason, "template-does-not-carry-the-agent-clis");
   assert.match(v.detail, /claude \+ codex/);
   assert.match(v.detail, new RegExp(BARE_BASE_TEMPLATE_ALIAS));
-  assert.match(v.detail, /NO model tokens were spent/);
+  // ★★★ THE ASSERTION IS INVERTED FROM WHAT IT USED TO BE, AND THAT IS THE FIX.
+  // It used to REQUIRE `/NO model tokens were spent/` — a sentence that became FALSE when
+  // the preflight gate was softened to a caveat. `probeAPreflightCaveat` interpolates THIS
+  // detail into probe A's own answer, so the durable record was carrying "Probe A was NOT
+  // run" appended to probe A's result. A detail that reaches another probe's answer may not
+  // claim a skip.
+  assert.doesNotMatch(v.detail, /NO model tokens were spent/);
+  assert.doesNotMatch(v.detail, /Probe A was NOT run/);
+  assert.match(v.detail, /RUNS ANYWAY/);
   assert.equal(packDisposition([v]).disposition, "inconclusive");
 });
 

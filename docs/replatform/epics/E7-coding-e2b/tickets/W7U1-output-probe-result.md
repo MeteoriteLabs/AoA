@@ -103,14 +103,22 @@ captured both blockers in its own stderr, and they are at **different layers**:
   sandbox's cwd (`/home/user`) is not a git repository. **A1 never reached a model.** This is a
   product-shaped defect in the `:203`/`:204` literals and is filed as **E7-F027**.
 - **Blocker 2 — credential delivery, hit only by A2/A3.** With the bypass flag on, codex got past
-  blocker 1 and then failed to authenticate: five reconnects, all `401`, with the server saying the
-  bearer header was **missing** rather than wrong. The pack delivered `OPENAI_API_KEY` as a
-  per-command env var (`envVars: { OPENAI_API_KEY: key }`) and the key was non-empty — an empty one
-  returns `inconclusive / no-model-provider-key` before any sandbox is created, which did not
-  happen. So **A2 never reached a model either.**
+  blocker 1 and then failed to authenticate: **FOUR** reconnect attempts (`Reconnecting… 2/5`,
+  `3/5`, `4/5`, `5/5`), all `401`, with the server saying the bearer header was **missing** rather
+  than wrong. The pack delivered `OPENAI_API_KEY` as a per-command env var
+  (`envVars: { OPENAI_API_KEY: key }`) and the key was non-empty — an empty one returns
+  `inconclusive / no-model-provider-key` before any sandbox is created, which did not happen.
+  ★ **What follows about A2 is a statement about the RECORD, not about the agent.** No
+  model-contact evidence is present in the ~889 characters of A2's stdout this run preserved
+  (`safe(exec.stdout, 900)`), and that capture ends **mid-token** at `{"type":"i` — while A3's
+  parallel line shows the same position reads `{"type":"item.completed","item":{"id":"item_0`,
+  with the item type itself cut off. So **whether A2 emitted an `agent_message` after its
+  reconnects cannot be determined from what was preserved.** A1's failure to reach a model IS
+  established (exit 1, empty stdout, a named refusal); A2's is not established either way.
 
 **Consequence, and it is the important one: codex's ability to write under the production argv is
-still UNMEASURED.** Both arms failed upstream of the capability question. The pack nevertheless
+still UNMEASURED.** A1 failed upstream of the capability question and A2 cannot be shown from the
+preserved record to have reached it. The pack nevertheless
 reported `the-posture-is-not-the-cause`, which is contradicted by its own log — the posture removed
 A1's actual blocker. That classifier gap is filed as **E7-F028**.
 
@@ -190,10 +198,12 @@ item or a `turn.completed` with billed output tokens for codex. Shapes measured 
 its bound attached.** The first repair said "at least one arm demonstrably ran", which gates the
 **wrong arm** — only A2 carries the posture. The second said `a2.ran`, but `ran` is the CLI's *head*
 event, and **this very run** shows why that is not enough: codex A2 emitted
-`{"type":"thread.started",…}` and `{"type":"turn.started"}` and then five
-`401 Unauthorized` reconnects against `wss://api.openai.com/v1/responses`. It started. It reached
-nothing. Under the head-event predicate that pair EXONERATES the posture, green, in the durable
-record. ★ **And v4 is still a proxy**: it does not establish that the model was given the intended
+`{"type":"thread.started",…}` and `{"type":"turn.started"}` and then **FOUR**
+`401 Unauthorized` reconnect lines (`2/5` through `5/5`) against `wss://api.openai.com/v1/responses`.
+It started, and **no model-contact evidence is present in the ~889 characters of its stdout this run
+preserved** — a statement about the RECORD (that capture ends mid-token at `{"type":"i`), not the
+claim that the agent reached nothing. Under the head-event predicate that pair EXONERATES the
+posture, green, in the durable record. ★ **And v4 is still a proxy**: it does not establish that the model was given the intended
 prompt, understood it, or ever *attempted* a write; it says nothing about A1, which it does not gate;
 it sees only the first 8000 characters of captured stdout; and `model-authored-content` is text the
 CLI *attributes* to a model, where only `billed-usage` is a round trip that cannot be produced

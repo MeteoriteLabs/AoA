@@ -76,6 +76,7 @@ import {
   buildSandboxInvocation,
 } from "../../../../server/src/services/task-run-sandbox-invocation.js";
 import {
+  CLASSIFIER_STDOUT_LIMIT,
   CLI_BEARING_TEMPLATE_ALIAS,
   TEMPLATE_CLI_PROBE_SCRIPT,
   buildProbeRecord,
@@ -117,6 +118,27 @@ const safe = (text: unknown, max = 1200): string => redactSecrets(String(text ??
 
 /** One nonce per RUN, so a file left by an earlier run can never pass an arm. */
 const RUN_NONCE = `W7U1-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`.toUpperCase();
+
+/**
+ * The stdout the CLASSIFIER read, per arm, on its way into the durable record.
+ *
+ * ★★★ MODULE-LEVEL BECAUSE THE ARMS AND THE RECORD ARE IN DIFFERENT SCOPES, and the run
+ * that proved this necessary is `34087197668`: its verdicts were computed from up to 8000
+ * characters of stdout and its record preserved NONE, so the verdicts cannot be re-derived
+ * from the artefact they shipped in. Appended by every probe-A arm, read once by
+ * `emitDurableRecord`.
+ */
+type ArmEvidence = {
+  probe: string;
+  label: string;
+  adapterType: string;
+  posture: boolean;
+  channel: string;
+  exitCode: number | null;
+  stdoutTruncated: boolean;
+  stdout: string;
+};
+const ARM_EVIDENCE: ArmEvidence[] = [];
 
 /** The candidate output paths probe B reads BEFORE any exec. */
 const CANDIDATE_OUTPUT_PATHS = [
@@ -666,12 +688,39 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
         envVars: { [spec.keyEnvVar]: key },
       });
       const file = await readBack(t, sandboxId, path);
+
+      // ★★★ ONE SLICE, TAKEN ONCE, USED BY BOTH THE CLASSIFIER AND THE RECORD.
+      // This variable is the whole point of the repair. It used to be taken TWICE with two
+      // different limits — `safe(exec.stdout, 900)` into the console and
+      // `safe(exec.stdout, 8000)` into the classifier — and the durable record got neither.
+      // Run 34087197668's log is the consequence: it contains none of the four shapes the
+      // model-contact predicate looks for, not even for the claude arms that DID reach a
+      // model, so no verdict from it can be audited against its own record. Now the
+      // classifier and the record are handed the SAME STRING, and the console keeps its own
+      // shorter line on purpose — a 900-character console line is a reasonable console line,
+      // and THE RECORD, NOT THE CONSOLE, IS THE AUDITABLE ARTEFACT.
+      const classifierStdout = safe(exec.stdout, CLASSIFIER_STDOUT_LIMIT);
+      const rawStdout = String(exec.stdout ?? "");
+      ARM_EVIDENCE.push({
+        probe: probeId,
+        label,
+        adapterType: spec.adapterType,
+        posture: applyPosture,
+        channel: String(exec.channel),
+        exitCode: exec.exitCode,
+        // A verdict that says "no model-contact evidence" means something different when the
+        // bytes ran out, so the record says which it was.
+        stdoutTruncated: rawStdout.length > CLASSIFIER_STDOUT_LIMIT,
+        stdout: classifierStdout,
+      });
+
       // eslint-disable-next-line no-console
       console.log(
         `[w7u1/${probeId}] ${label} posture=${String(applyPosture)} channel=${exec.channel} ` +
           `exit=${String(exec.exitCode)} preExisted=${String(preExisted)} file=${String(file.found)} ` +
           `readErrorKind=${String(file.errorKind)} ` +
-          `stdout=${JSON.stringify(safe(exec.stdout, 900))} stderr=${JSON.stringify(safe(exec.stderr, 600))}`,
+          `stdout=${JSON.stringify(safe(exec.stdout, 900))} stderr=${JSON.stringify(safe(exec.stderr, 600))} ` +
+          `stdoutInRecord=${String(classifierStdout.length)}/${String(rawStdout.length)}`,
       );
       return classifyProbeAArm({
         label,
@@ -691,7 +740,8 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
         execution: {
           channel: exec.channel,
           exitCode: exec.exitCode,
-          stdout: safe(exec.stdout, 8000),
+          // The SAME string that went into `armEvidence` above. Not a second slice.
+          stdout: classifierStdout,
           detail: safe(exec.detail, 200),
         },
         file: { found: file.found, content: file.content, errorKind: file.errorKind, detail: safe(file.detail, 200) },
@@ -849,6 +899,11 @@ async function emitDurableRecord(verdicts: Verdict[]): Promise<void> {
       runNonce: RUN_NONCE,
       generatedAt: new Date().toISOString(),
       workflowRunUrl: RUN_URL,
+      // ★★★ WITHOUT THIS THE RECORD CANNOT AUDIT ITS OWN VERDICT — the defect measured on
+      // run 34087197668. `CLASSIFIER_STDOUT_LIMIT` says why, and the anti-drop test in
+      // `scripts/lib/__tests__/w7u1-agent-output-probe.test.mjs` reds if the field is
+      // silently dropped from `buildProbeRecord`.
+      armEvidence: ARM_EVIDENCE,
     });
     mkdirSync(dirname(recordPath), { recursive: true });
     // Redacted on the way out, exactly like every other string this pack emits: a probe
@@ -1105,6 +1160,19 @@ describe("W7U1 — template resolution and the durable record (no key required)"
 describe("W7U1 — the template precondition caveats probe A (no key required)", () => {
   const preflight = (state: string, reason: string): Verdict => ({ probe: "T", state, reason, detail: "d" });
 
+  /**
+   * The REAL preflight verdict for the one reason whose detail is written by
+   * `evaluateTemplateCliPreflight` rather than by this file — i.e. the only reason whose
+   * caveat text this file does not itself author.
+   */
+  const realMissingCliPreflight = (): Verdict =>
+    evaluateTemplateCliPreflight({
+      channel: "returned",
+      exitCode: 0,
+      stdout: "W7U1_MISSING:claude\nW7U1_MISSING:codex\n",
+      template: "base",
+    }) as Verdict;
+
   it("an UNSATISFIED precondition CAVEATS probe A, and says the answer still stands", () => {
     for (const [state, reason] of [
       ["inconclusive", "template-does-not-carry-the-agent-clis"],
@@ -1119,11 +1187,41 @@ describe("W7U1 — the template precondition caveats probe A (no key required)",
       expect(caveat, `${state}/${reason} must caveat probe A`).not.toBeNull();
       expect(caveat).toContain(reason);
       expect(caveat).toContain("RAN ANYWAY");
-      // ★ AND IT MUST NOT CLAIM A SKIP. The old gate's detail said "NO model tokens were
-      // spent"; that sentence would now be FALSE, and a false sentence in the durable
-      // record is worse than the gate it came from.
-      expect(caveat).not.toContain("NO model tokens were spent");
     }
+  });
+
+  // ★★★ THIS TEST REPLACES A VACUOUS ONE, AND THE VACUITY HID A LIVE DEFECT.
+  //
+  // The ban on "NO model tokens were spent" used to be asserted against a caveat built from
+  // a SYNTHETIC verdict whose `detail` was the string `"d"`. `probeAPreflightCaveat`
+  // interpolates `preflight.detail`, so the banned phrase could only ever have arrived
+  // through that field — and with `"d"` in it the assertion could not fail no matter what
+  // the real detail said. It said the phrase. `evaluateTemplateCliPreflight`'s
+  // `template-does-not-carry-the-agent-clis` detail read "Probe A was NOT run and NO model
+  // tokens were spent", which stopped being true the moment the preflight GATE became a
+  // CAVEAT — and that sentence was being appended to probe A's OWN answer, in the durable
+  // record, on a run where probe A had just run.
+  //
+  // ★ SO THE ASSERTION IS NOW DRIVEN BY THE PRODUCING FUNCTION. Re-introduce the sentence in
+  // `evaluateTemplateCliPreflight` (scripts/lib/w7u1-agent-output-probe.mjs, the
+  // `template-does-not-carry-the-agent-clis` branch) and this test goes RED. That mutation
+  // was run against this test before it was committed.
+  it("MUTATION-BACKED: the caveat carries the REAL preflight detail and that detail may not claim a skip", () => {
+    const real = realMissingCliPreflight();
+    // The premise, pinned: this is the branch whose detail the caveat interpolates.
+    expect(real.state).toBe("inconclusive");
+    expect(real.reason).toBe("template-does-not-carry-the-agent-clis");
+
+    const caveat = probeAPreflightCaveat("codex_local", real);
+    expect(caveat).not.toBeNull();
+    // The detail REALLY IS inside the caveat — without this the ban below is vacuous again.
+    expect(caveat).toContain(real.detail);
+    expect(caveat).toContain("RAN ANYWAY");
+
+    // A sentence that reaches probe A's answer may not claim probe A was skipped.
+    expect(caveat).not.toContain("NO model tokens were spent");
+    expect(caveat).not.toContain("Probe A was NOT run");
+    expect(real.detail).not.toContain("NO model tokens were spent");
   });
 
   it("POSITIVE CONTROL: a SATISFIED precondition adds no caveat at all", () => {

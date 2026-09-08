@@ -2388,9 +2388,16 @@ that happens.
 
 - **Whether codex can write in the sandbox at all is UNMEASURED.** A1 was refused at startup and A2
   (with `--dangerously-bypass-approvals-and-sandbox`) got past this gate — `{"type":"thread.started"}`
-  — but then failed to authenticate: five reconnects, all `401 Unauthorized`, the server reporting
-  *"Missing bearer or basic authentication in header"* against `wss://api.openai.com/v1/responses`.
-  So **neither arm reached a model** and the capability question is open for codex.
+  — but then failed to authenticate: **FOUR** `Reconnecting… N/5` lines (numbered 2/5, 3/5, 4/5,
+  5/5), all `401 Unauthorized`, the server reporting *"Missing bearer or basic authentication in
+  header"* against `wss://api.openai.com/v1/responses`.
+  ★ **A1 reached no model — that is established** (exit 1, empty stdout, a named refusal on stderr).
+  **A2's is a statement about the RECORD:** no model-contact evidence is present in the ~889
+  characters of its stdout the run preserved, and that capture ends **mid-token** at `{"type":"i`
+  while A3's parallel line shows the same position reads
+  `{"type":"item.completed","item":{"id":"item_0`. So whether A2 emitted an `agent_message` after
+  its reconnects is **not determinable from what was preserved**. Either way the capability question
+  is open for codex.
 - **The 401 is NOT filed here as a product defect, deliberately.** The pack delivers the key as a
   per-command env var (`envVars: { OPENAI_API_KEY: key }`) and the key was non-empty (an empty one
   short-circuits to `inconclusive / no-model-provider-key` before any sandbox is created, which did
@@ -2453,11 +2460,15 @@ emits it here: replayed against the repaired classifier, codex A1 is
 `indeterminate / cli-refused-at-startup` and probe A returns
 `inconclusive / a1-cli-refused-at-startup`. So the honest statement of the codex result is:
 
-> **Both arms exited 1. The permission posture did not change the exit. And the cause of codex's
-> inability to write is UNKNOWN — because the apparatus could not, at the time, tell a refusal from a
-> null result.** Blocker 1 (the trusted-directory gate) is measured and named. Blocker 2 (the 401) is
-> measured and named. **Neither arm reached the capability question**, so nothing is established about
-> whether codex can write under the production argv.
+> **Both arms exited 1, and the permission posture did not change the exit.** ★ **The CAUSE OF A1's
+> REFUSAL IS NOT UNKNOWN — it is measured, and it is quoted above:** *"Not inside a trusted directory
+> and `--skip-git-repo-check` was not specified."* What is unknown is **codex's CAPABILITY**, which is
+> a different question. Blocker 1 (the trusted-directory gate) is measured and named; blocker 2 (the
+> 401) is measured and named; and what the *apparatus* could not do at the time was tell a refusal
+> from a null result, which is why the pack mis-stated the cause even though the run had captured it.
+> **Neither arm was shown to reach the capability question** — A1 demonstrably did not, and A2 cannot
+> be shown either way from the ~889 characters of stdout the run preserved — so nothing is
+> established about whether codex can write under the production argv.
 
 ★ **This narrowing does not shrink the finding's scope and must not be read as doing so.** The
 trusted-directory refusal is still a product-shaped defect in the `:203`/`:204` literals, still
@@ -2468,6 +2479,56 @@ beside it — a claim this finding already flagged as unsupported. The two cheap
 ★★ **The apparatus half of the remedy is now in place.** The next keyed run will report a codex
 refusal as `cli-refused-at-startup` and will not exonerate anything from it, so the ambiguity that
 produced this finding's mis-stated cause cannot recur silently.
+
+---
+
+### RE-VERIFIED AGAINST THE JOB LOG — W16B-FINAL, 2026-09-08
+
+★★★ **The stderr above was re-read off run `34087197668`'s own job log this session, not carried
+forward from the earlier write-up.** The line, verbatim and complete:
+
+```
+[w7u1/A/codex_local] A1 posture=false channel=returned exit=1 preExisted=false file=false
+readErrorKind=not-found stdout="" stderr="Not inside a trusted directory and --skip-git-repo-check
+was not specified.
+"
+```
+
+`--skip-git-repo-check` appears **exactly once** in the whole log, in that stderr. So this finding's
+headline is measured, not inferred, and **"the codex cause is unknown" is answerable and answered**:
+codex refused at startup because the sandbox working directory is not a trusted git repository and
+the flag that would skip that check was not passed.
+
+**What that establishes, and what it does NOT — stated precisely because the two get merged.**
+
+- ✅ **It explains the A1 REFUSAL.** Exit 1, empty stdout, a named cause, `/home/user` not a repo.
+- ❌ **It does NOT establish what codex would do once past that gate.** A2 carried
+  `--dangerously-bypass-approvals-and-sandbox`, cleared this gate, and then hit `401 Unauthorized` on
+  four reconnect attempts (2/5 → 5/5) before any model contact was observable. Codex's ability to
+  write under the production argv remains **UNMEASURED**, exactly as the section above says.
+
+★★★ **THE CONSEQUENCE FOR E7-F021 (the posture fix), and it is the operative one.** The
+trusted-directory refusal is a **distinct missing-argv class from the permission posture**, sitting on
+**the same four script literals** (`task-run-sandbox-invocation.ts:183/184/203/204`) and reachable
+through the same single channel, because `batchWorkloadV1Schema` is `.strict()` with no `cwd` and no
+`env`. Therefore:
+
+> **A posture-only diff fixes claude and does not fix codex.** Adding a permission flag alone leaves
+> the codex branches refusing at the trusted-directory gate, *while a green claude measurement sits
+> beside them* — the exact mis-read this finding was split from E7-F021 to prevent.
+
+★★ **And this is what the earlier `posture-is-not-the-cause` verdict was groping at — for the wrong
+reason.** That verdict was right that a posture change alone would not have made the codex arm write,
+and wrong in every step it used to get there: it inferred exoneration from two non-zero exits, when
+in fact the posture had *removed* A1's blocker (the opposite of exoneration) and A2 then died on a
+credential failure that says nothing about postures at all. A conclusion reached that way is not
+evidence for itself; it is recorded here so the correct version replaces it rather than inheriting
+its credit.
+
+★ **NO ARGV CHANGE IS PROPOSED, AND NONE IS MADE.** The flag is deliberately NOT added to the
+product in this unit. Changing the permission or sandbox posture of a shipped execution path is a
+security review the founder has asked to see, and this finding continues to carry the measurement
+only. `--skip-git-repo-check` appears nowhere in `server/src/`.
 
 ---
 
@@ -2506,8 +2567,9 @@ ever contacted."**
 **That sentence is contradicted by the same run's captured stderr, in both halves.** A1 was refused by
 codex's trusted-directory gate; **A2, with the posture flag, got PAST that refusal** — it reached
 `{"type":"thread.started"}` and then failed on `401 Unauthorized`. So on the evidence available the
-posture **removed A1's actual blocker**, which is the opposite of "exonerated", and the capability
-question was never reached by either arm. The honest verdict is the one the function already has and
+posture **removed A1's actual blocker**, which is the opposite of "exonerated", and **neither arm was
+shown to reach the capability question** (A1 demonstrably did not; A2's preserved stdout is too short
+to say). The honest verdict is the one the function already has and
 did not select: `a1-did-not-write-cause-unattributed` — *"the NO is sound; the CAUSE is not
 established."*
 
@@ -2593,7 +2655,7 @@ asymmetry, the durable record or the premise pin.
    | v1 | any non-zero exit ⇒ `did-not-write` | cannot tell a refusal from a result — the finding above |
    | v2 | at least one arm demonstrably ran | **wrong arm.** Only A2 carries the posture, so A1 running proves nothing about a posture-only fix |
    | v3 | `a2.ran === true` | better, and still head-event-only |
-   | v4 | `a2.reachedModel === true` | `ran` is computed from the HEAD EVENT ALONE, so two arms that **start and then die before a model** exonerate a posture nothing exercised — codex A2 in run `34087197668` emitted `thread.started` + `turn.started` and then five 401 reconnects |
+   | v4 | `a2.reachedModel === true` | `ran` is computed from the HEAD EVENT ALONE, so two arms that **start and show no model-contact evidence** exonerate a posture nothing was shown to have exercised — codex A2 in run `34087197668` emitted `thread.started` + `turn.started` and then FOUR `Reconnecting… N/5` 401 lines (2/5–5/5), with no model-contact evidence in the ~889 chars of stdout the run preserved (a fact about the record: it ends mid-token at `{"type":"i`) |
 
    ★ **Assume v4 is insufficient too.** It is a proxy and says so, in the code (`EXONERATION_RESIDUAL`),
    in the verdict `detail` it emits verbatim (so the **durable record** carries it), and in the
