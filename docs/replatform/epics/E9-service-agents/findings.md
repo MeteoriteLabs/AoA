@@ -70,7 +70,8 @@ which CORRECTION 6a reserved for SVC-003. Then flip this Status and DELETE the
 (`tickets/SVC-008-design.md`, repointed 2026-09-09 — see §4)
 **Filed:** 2026-09-08, by SVC-002 terrain mapping (§2) and re-verified line-by-line for the design's
 adversarial review. **Amended 2026-09-09** with §1.5: the capability constant is the *smallest* of
-three blockers, and the other two were not in this register.
+**five** blockers, and the other four were not in this register. (§1.5 items 4-5 were added the same
+day by external review of the SVC-008 design; the first amendment named three.)
 **Affected tickets:** SVC-002 through SVC-007 (all of E9's dispatch half), DE-12.
 **Blocks gate:** yes for any E9 clause asserting a service is dispatched, leased or run.
 
@@ -93,7 +94,7 @@ three blockers, and the other two were not in this register.
 Pinned by `server/src/__tests__/u0-d1-placement-reachability.test.ts:324`, which asserts the constant
 equals `["workload.batch"]` so the conclusion cannot go stale unnoticed.
 
-### 1.5 ★★★ AMENDMENT (2026-09-09) — the constant is the smallest of THREE blockers
+### 1.5 ★★★ AMENDMENT (2026-09-09) — the constant is the smallest of FIVE blockers
 
 Measured at `afebb0e51` while designing SVC-008. Closing §1 alone would make service dispatch
 reachable and structurally broken, which is worse than the current inert state.
@@ -121,8 +122,41 @@ reachable and structurally broken, which is worse than the current inert state.
    is called only from `create` (`e2b-provider.ts:326-327`) and the frozen provider port
    (`worker-daemon/src/supervisor/provider.ts:385-404`) has **no TTL-extension operation**.
 
-(3) is the binding one. It is an **effect-authority** question, not a daemon-coding one, and it is
-recorded unresolved as SVC-008 design §9.1.
+4. **★★★ Nothing on the provider port can witness that a process STARTED.**
+   `SandboxProvider.execute` (`worker-daemon/src/supervisor/provider.ts:395`) returns a
+   **completion** — `exitCode`/`signal`/`timedOut` — with no launch acknowledgement and no process
+   handle, and `RealE2bTransport.runCommand` (`sandbox-e2b-provider/src/real-transport.ts:107-175`)
+   settles only when the command exits (its own comment at `:128-131` records that
+   `sandbox.commands.run()` is `start()` then `CommandHandle.wait()`). The two ops that could stand
+   in describe the **sandbox**, not the command: `inspect` → `getInfo` (`e2b-provider.ts:436-448`)
+   and `health` → `sandbox.isRunning()` (`:597-601`, `real-transport.ts:263-270`), both of which
+   answer "up" from the moment `create` resolves. **So a failed or hung launch would be durably
+   recorded as `service_instance_started` and then as an unbroken stream of `service_health:
+   healthy` — mis-supervision that reads as success, which is (1) with more confidence.**
+5. **★★★ There is no stop primitive, so `gracefulStopSeconds` cannot be honoured.**
+   `RealE2bTransport.signal` (`real-transport.ts:177-187`) **ignores `_kind`**, performs a `getInfo`,
+   and returns `{delivered: true}` on both branches including the catch. `E2bSandboxProvider.cancel`
+   and `.kill` (`e2b-provider.ts:378-386`) are therefore the same read, and the first actual
+   termination on this lane is `terminate` inside `destroy` (`:388-393`). A cancel→wait→kill ladder
+   would emit `service_instance_stopped` while the command is still running and then hard-kill the
+   sandbox in cleanup. ★ **This is already live for batch:** `CleanupAuthority.#convergeOne`
+   (`worker-daemon/src/supervisor/cleanup-authority.ts:279-290`) escalates to `kill` only when
+   `cancel.outcome === "ignored"`, which real E2B never returns, so the ladder's `kill` rung is
+   structurally unreachable on the real provider — and it is masked by `MockE2bTransport.signal`
+   (`mock-transport.ts:140-147`), which **does** honour `kind` and **is therefore more capable than
+   production**. Batch survives it (the unconditional `destroy` reclaims anyway), so it is a
+   fabricated outcome value and a dead rung rather than a leak. **It belongs in E4/CLI's register,
+   not this one** — SVC-008 design §10 records who should file it.
+
+(3) is the binding one for **runtime**; (4) and (5) are the binding ones for **honesty**, and unlike
+(1)-(3) they cannot be fixed daemon-side at all. (3) is an **effect-authority** question, recorded
+unresolved as SVC-008 design §9.1. (4) and (5) require a **provider-port primitive** —
+`startProcess`/`processStatus`/`signalProcess` behind a `processSupervisionMode` field, following the
+non-frozen `stageFiles`/`artifactExport` precedent so no wire change is needed — specified as SVC-008
+design §3.4 and left open as §9.5. **The wire being ready does not help if the provider cannot
+produce what the events assert**, and SVC-008 design §11 restates its conclusion around that: no
+Protocol Custodian STOP, but a provider change IS required, and the provider half is the larger unit
+and belongs to E4/CLI.
 
 ### 2. Consequence, and why it is filed at HIGH
 
