@@ -197,6 +197,22 @@ jobs:
           node scripts/check-distributed-execution-foundation.mjs
           node --test scripts/check-distributed-execution-foundation.test.mjs
 
+      - name: Threat-control audit debt (an unaudited Critical control must not sit forever)
+        run: |
+          # The foundation checker above validates the SHAPE of deliveryStatus and imposes
+          # NO CAP, DEADLINE OR COUNT on `unaudited`, and check-finding-ownership.mjs globs
+          # only docs/replatform/epics/*/findings.md so the threat register is structurally
+          # invisible to it. Twenty-eight Critical/High controls sat unaudited with policy
+          # green, and DE-11 sat `unaudited` - literally "no delivery audit has been
+          # performed" - while a committed hand audit of that same crossing concluded all
+          # four of its controls were absent. Nothing anywhere could see the contradiction.
+          #
+          # Both commands in ONE step deliberately, for the reason the ownership step below
+          # gives: two steps are two chances to run only one of them, and the one skipped is
+          # the one that failed.
+          node --test scripts/check-threat-control-audit-debt.test.mjs
+          node scripts/check-threat-control-audit-debt.mjs
+
       - name: Worker protocol dependency boundary
         run: |
           node scripts/check-worker-protocol-boundary.mjs

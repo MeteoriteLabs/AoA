@@ -140,6 +140,11 @@
       "workflow": "pr.yml",
       "step": "Test-suite inventory (may not silently shrink)"
     },
+    "scripts/check-threat-control-audit-debt.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Threat-control audit debt (an unaudited Critical control must not sit forever)"
+    },
     "scripts/check-verdict-consumer-freshness.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",

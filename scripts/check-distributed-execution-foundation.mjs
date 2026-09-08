@@ -207,11 +207,28 @@ const THREAT_CROSSING_REQUIRED_FIELDS = [
 //                   "delivered". A hard require-exist flip that forced every crossing
 //                   to claim delivery would have reproduced, at scale, exactly the
 //                   misrepresentation this field exists to end.
-const THREAT_DELIVERY_STATUSES = new Set(["delivered", "not-delivered", "unaudited"]);
+// `partial` — added by W20, when twelve crossings were audited at once and every one of
+//             them came back split (W20B then recorded sixteen more, of which thirteen are
+//             also `partial` — so do NOT read "twelve" here as the register's current count;
+//             it is the cohort that occasioned the value):
+//             some asserted clauses enforced by a named line that
+//             was exhibited denying, others absent. Neither of the two existing verdicts
+//             could say that. Recording such a row `delivered` would assert controls that
+//             are not there; recording it `not-delivered` would erase enforcement that was
+//             measured; leaving it `unaudited` would discard the measurement entirely and
+//             is the option that produced the DE-11 contradiction this vocabulary now
+//             forbids. ★ `partial` IS NOT A SOFTER `delivered`. It carries the same
+//             finding-citation duty as `not-delivered` (see below), so a row can never use
+//             it to park an absent control outside every census.
+const THREAT_DELIVERY_STATUSES = new Set(["delivered", "partial", "not-delivered", "unaudited"]);
 // Every status must justify itself in `deliveryEvidence` — including "delivered".
 // This forces a delivery claim to carry prose naming its audit; it does NOT check that
 // the prose is true, that any test exists, or that the named test drives the control.
-const THREAT_DELIVERY_EVIDENCE_REQUIRED = new Set(["delivered", "not-delivered", "unaudited"]);
+const THREAT_DELIVERY_EVIDENCE_REQUIRED = new Set(["delivered", "partial", "not-delivered", "unaudited"]);
+// The statuses whose evidence must cite at least one finding id that exists in the
+// findings register. Both of these say, in part or in whole, "a control is absent"; that
+// absence must be OWNED by something the ownership census can see, or it is invisible.
+const THREAT_DELIVERY_FINDING_REQUIRED = new Set(["partial", "not-delivered"]);
 // The findings register: the external source both delivery rules resolve against.
 const FINDING_OWNERSHIP_JSON = "scripts/finding-ownership.json";
 // A finding id token (E8-F003, E7-F011, ...) as it appears inside free-text evidence.
@@ -1089,17 +1106,24 @@ async function loadFindingRegister(root, errors) {
  *   2. every status — delivered included — must carry a non-empty `deliveryEvidence`.
  *      The prose is required to EXIST; nothing here grades it. No test file is read,
  *      no test name is resolved, no control is executed.
- *   3. not-delivered must cite at least one finding id, and every finding id it
- *      cites must exist in the findings register (a dangling citation is refused).
+ *   3. not-delivered AND partial must each cite at least one finding id, and every
+ *      finding id cited must exist in the findings register (a dangling citation is
+ *      refused). Both statuses assert that some control is absent; the citation is what
+ *      keeps that absence inside the ownership census instead of only in this file.
  *   4. delivered is refused for a crossing whose id appears as a literal token
  *      (CROSSING_ID_RE, e.g. "DE-08") in the `reason` or `successor` free text of an
  *      OPEN finding in scripts/finding-ownership.json.
  *
  * SCOPE LIMIT OF CLAUSE 4 — read this before trusting any "delivered" value. Clause 4
- * constrains ONLY those crossings some open finding's prose happens to name; at the
- * time of writing that is 1 crossing out of 30. For the other 29 it is vacuous, and
- * "delivered" is then gated by clause 2 alone — i.e. by the presence of author-written
- * prose. Two consequences follow, both demonstrated by the review of PR #364:
+ * constrains ONLY those crossings some open finding's prose happens to name. When this
+ * comment was first written that was 1 crossing out of 30; after the W20 and W20B audits
+ * it is 29 of 30, and the ONE crossing it does not name is DE-02 — the register's only
+ * "delivered" row. So the clause is now a strong ratchet against flipping a
+ * measured-absent row to "delivered", and it remains exactly as vacuous as before for
+ * the one row that actually claims delivery, which is the row a reader most wants
+ * checked. Where it is vacuous, "delivered" is gated by clause 2 alone — i.e. by the
+ * presence of author-written prose. Two consequences follow, both demonstrated by the
+ * review of PR #364:
  *   - a crossing no finding names can be flipped to "delivered" by writing any
  *     non-empty evidence string; this checker will pass it.
  *   - the coupling is EDITORIAL, not structural: rewording a finding so its prose no
@@ -1126,12 +1150,12 @@ function checkCrossingDeliveryStatus(c, label, register, errors) {
     );
   }
 
-  if (status === "not-delivered") {
+  if (THREAT_DELIVERY_FINDING_REQUIRED.has(status)) {
     const cited = new Set(evidence.match(FINDING_ID_RE) || []);
     if (cited.size === 0) {
       if (evidence.trim() !== "") {
         errors.push(
-          `${THREAT_CONTROLS_JSON}: crossing ${label} is deliveryStatus "not-delivered" but its "deliveryEvidence" cites no finding id (expected a token like E8-F003)`,
+          `${THREAT_CONTROLS_JSON}: crossing ${label} is deliveryStatus "${status}" but its "deliveryEvidence" cites no finding id (expected a token like E8-F003)`,
         );
       }
     } else {
@@ -1261,6 +1285,117 @@ function validateThreatCrossings(crossings, validTicketIds, written, deferred, f
     checkCrossingDeliveryStatus(c, label, findingRegister, errors);
   }
   return jsonIds;
+}
+
+// W20C: the delivery tally, rendered in prose, is drift the ID/severity/owner
+// parity checks above cannot see. A crossing flipped from `partial` to
+// `delivered` in the JSON leaves every per-row check green while the document's
+// summary sentence silently becomes a lie — and a summary that overstates is the
+// exact defect this register exists to record. So the tally is derived from the
+// JSON here and required to appear, verbatim, in the document HEAD (the text
+// before the first `## ` heading), where a cold reader meets it before the
+// boundary table and the register. Two clauses, deliberately:
+//   (a) the head must state the current tally and the current crossing count;
+//   (b) NO tally-shaped sentence anywhere in the document may disagree with it,
+//       so a second, stale copy further down cannot survive an update to the head.
+const THREAT_TALLY_STATUSES = ["delivered", "partial", "not-delivered", "unaudited"];
+const THREAT_TALLY_SHAPE =
+  /\d+ `delivered`, \d+ `partial`, \d+ `not-delivered`, \d+ `unaudited`/g;
+// The threat model is not the only rendered view any more: a reader arrives from the
+// orchestration handoff, the decision, the epic README and the delivery policy, and each
+// of those may quote the tally. None is REQUIRED to quote it — but any that does must
+// quote the current one, or the drift simply moves one document over. A file that is not
+// present states no tally and is skipped; there is nothing there to be stale.
+const THREAT_TALLY_SECONDARY_MD = [
+  "docs/replatform/GO-BOOK.md",
+  "docs/replatform/HANDOFF-orchestration.md",
+  "docs/architecture/decisions.md",
+  "docs/architecture/distributed-execution-delivery-policy.md",
+  "docs/replatform/epics/E0-foundation/README.md",
+];
+
+/** The canonical delivery tally fragment for a crossing array. */
+function threatTallyFragment(crossings) {
+  return THREAT_TALLY_STATUSES.map((status) => {
+    const n = crossings.filter(
+      (c) => c != null && typeof c === "object" && c.deliveryStatus === status,
+    ).length;
+    return `${n} \`${status}\``;
+  }).join(", ");
+}
+
+/** Everything before the first `## ` heading: what a cold reader meets first. */
+function markdownHead(md) {
+  const lines = md.split(/\r?\n/);
+  const end = lines.findIndex((l) => /^##\s/.test(l));
+  return (end === -1 ? lines : lines.slice(0, end)).join("\n");
+}
+
+/**
+ * Collapse whitespace runs so a required fragment matches across a hard-wrapped
+ * paragraph. Without this the check would enforce a line-break position, not a
+ * sentence, and would red on a pure re-wrap.
+ */
+function flattenProse(text) {
+  return text.replace(/\s+/g, " ");
+}
+
+/**
+ * W20C: require the document head to state the measured delivery tally and the
+ * crossing count, both recomputed from the JSON, and require every other
+ * tally-shaped sentence in the document to agree with it.
+ */
+async function validateThreatModelHeadTally(root, md, crossings, errors) {
+  const tally = threatTallyFragment(crossings);
+  const count = `${crossings.length} crossings`;
+  const severities = crossings.filter((c) => c != null && typeof c === "object");
+  const critical = severities.filter((c) => c.severity === "Critical").length;
+  const high = severities.filter((c) => c.severity === "High").length;
+  const head = flattenProse(markdownHead(md));
+
+  if (!head.includes(tally)) {
+    errors.push(
+      `${THREAT_MODEL_MD}: the document head (before the first "## " heading) must state the ` +
+        `measured delivery tally exactly as ${JSON.stringify(tally)} — a reader meets the head ` +
+        `before the register, and the tally is derived from ${THREAT_CONTROLS_JSON}`,
+    );
+  }
+  if (!head.includes(count)) {
+    errors.push(
+      `${THREAT_MODEL_MD}: the document head must state the crossing count as ${JSON.stringify(count)}`,
+    );
+  }
+  if (!head.includes(`Critical (${critical})`) || !head.includes(`High (${high})`)) {
+    errors.push(
+      `${THREAT_MODEL_MD}: the document head must state the severity split as ` +
+        `${JSON.stringify(`Critical (${critical})`)} and ${JSON.stringify(`High (${high})`)}`,
+    );
+  }
+
+  const scan = (relPath, text) => {
+    for (const found of flattenProse(text).match(THREAT_TALLY_SHAPE) ?? []) {
+      if (found !== tally) {
+        errors.push(
+          `${relPath}: stale delivery tally ${JSON.stringify(found)} — every tally-shaped ` +
+            `sentence in a rendered view must read ${JSON.stringify(tally)}`,
+        );
+      }
+    }
+  };
+
+  scan(THREAT_MODEL_MD, md);
+  for (const relPath of THREAT_TALLY_SECONDARY_MD) {
+    let text = null;
+    try {
+      text = await readFile(path.join(root, relPath), "utf8");
+    } catch {
+      // Absent here means this root does not carry that view at all — it states no
+      // tally, so there is nothing to be stale. Not a fail-open: the tally the
+      // reader actually meets first is required, above, on a file that must exist.
+      continue;
+    }
+    scan(relPath, text);
+  }
 }
 
 /**
@@ -1410,6 +1545,11 @@ async function validateThreatModel(root, errors) {
 
   if (md != null && crossings != null && jsonIds != null) {
     validateThreatRegisterParity(md, crossings, jsonIds, errors);
+  }
+
+  // W20C: the head must lead with the measured state, recomputed from the JSON.
+  if (md != null && crossings != null) {
+    await validateThreatModelHeadTally(root, md, crossings, errors);
   }
 
   // Residual-risk release exclusions.

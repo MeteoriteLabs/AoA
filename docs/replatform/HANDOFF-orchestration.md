@@ -364,6 +364,7 @@ track write its GO-BOOK row in its **own** commit at the end, and land those las
 | "WRK-013 unblocks E5-3" | It unblocks **E4-3**. E5-3's symbol is `createPatchApplyService`, which WRK-013 never touches. |
 | "`verify` takes 30–40 minutes" | ~18 min since the 4-way shard. |
 | "A cancelled run means another lane cancelled yours" | An in-progress run is never cancelled on this branch. The **pending** one is, and it never runs at all — which looks like nothing happened. |
+| ★★ "The threat model locks the mandatory controls, so those controls are in place" | It locks a **charter**. `docs/architecture/distributed-execution-threat-model.md` names what each crossing *must* do; `deliveryStatus` is the only field saying what was *built*. Audited end to end on 2026-09-08: **1 `delivered`, 25 `partial`, 4 `not-delivered`, 0 `unaudited`** — one crossing whole, and `partial` means *audited and missing at least one control*. The zero in `unaudited` is not health; it is the end of ignorance. |
 
 ---
 

@@ -12,6 +12,25 @@ better than the daemon's own stdout.**
 **Traced, not executed:** the live D1 half. No Docker in this environment; the probe is
 written and committed at `tests/d1/u1-provenance-probe.mjs` for an operator to run.
 
+> ## ★ REGISTER HOME — recorded by W20, 2026-09-08
+>
+> This document's **release-gate consequence** is filed as `E11-F005` in
+> [`epics/E11-hardening-release/findings.md`](./epics/E11-hardening-release/findings.md) (`unowned`,
+> HIGH, declared in `scripts/finding-ownership.json`); that register also names this document by
+> filename at `:288`, and `epics/E11-hardening-release/decisions.md:124` cites §1–§7 plus §8. The
+> **mechanism** stays here, so the premise lives in exactly one place.
+>
+> That reference is now **load-bearing rather than incidental**:
+> `scripts/check-threat-control-audit-debt.mjs` reds if any top-level
+> `docs/replatform/FINDING-*.md` is named by no epic findings register — because
+> `scripts/check-finding-ownership.mjs` globs only `docs/replatform/epics/*/findings.md`
+> (`findRegisters`, `:29-37`) and so can never see a top-level document on its own. `E11-F005`'s
+> own manifest entry states that invisibility as its reason for extending U1 rather than filing a
+> second provenance finding; the guard is what stops the next such document from being invisible
+> by accident rather than by that entry's good judgement. **Removing the filename from the E11
+> register now reds CI** (`M18` in `scripts/check-threat-control-audit-debt.test.mjs` pins the
+> equivalent case for the sibling document).
+
 ---
 
 ## 0. Why this question decides the lane

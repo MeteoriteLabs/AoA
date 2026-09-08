@@ -1958,7 +1958,7 @@ The canonical lifecycle status sets, allowed transitions, cancellation behavior,
 
 Authority, synchronization, single-writer cutover, and late-result quarantine are locked in [`distributed-execution-authority.md`](distributed-execution-authority.md). No desktop or worker database is a peer replica of the hosted control plane.
 
-The trust boundaries, mandatory controls, verification gates, and residual release exclusions are locked in [`distributed-execution-threat-model.md`](distributed-execution-threat-model.md).
+The trust boundaries, the **required** controls, verification gates, and residual release exclusions are locked in [`distributed-execution-threat-model.md`](distributed-execution-threat-model.md). ★ That record locks a **charter, not a report**: locking a control does not establish that it exists. Every crossing has now been audited for delivery, and as of 2026-09-08 the tally is **1 `delivered`, 25 `partial`, 4 `not-delivered`, 0 `unaudited`** — read that record's head before treating any control named here as in force.
 
 The custodian roles, one-ticket/branch/worktree rule, testing cadence, phased rollout/rollback order, isolation invariants, executable hard-negative controls, and reproducible authoritative build are locked in [`distributed-execution-delivery-policy.md`](distributed-execution-delivery-policy.md), which links the threat model and [`../replatform/test-gates.md`](../replatform/test-gates.md).
 

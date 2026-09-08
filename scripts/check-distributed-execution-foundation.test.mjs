@@ -2510,7 +2510,36 @@ test("W4U2 M4: not-delivered without deliveryEvidence is refused", async (t) => 
   assertDe02Unaffected(errors);
 });
 
+// DE-15 (not DE-01) because W20 audited DE-01 and moved it to `partial`. The test needs a
+// crossing that is still genuinely `unaudited`; picking one that has since been audited is
+// how a mutation test quietly stops testing the arm it names.
+// W20B: this fixture used to borrow whichever crossing happened to be `unaudited` in the
+// real register, and DE-15 was one. After W20B recorded the last sixteen audits NO crossing
+// is `unaudited` any more, so the fixture must now MINT the state it is testing rather than
+// assume the tree still supplies it. The mutation is unchanged and still real — an unaudited
+// crossing with no `deliveryEvidence` must be refused — but it is now stated explicitly
+// instead of riding on a tree property that has (rightly) gone away.
 test("W4U2 M5: an unaudited deferral without a reason is refused (no silent deferral)", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-15", (c) => {
+      c.deliveryStatus = "unaudited";
+      delete c.deliveryEvidence;
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'crossing DE-15 is deliveryStatus "unaudited" and must carry a non-empty "deliveryEvidence"'),
+    report(errors),
+  );
+  assertDe02Unaffected(errors);
+});
+
+// --- W20: the `partial` status carries not-delivered's citation duty ------------------
+// `partial` says "some of this control is absent". If it could be written without naming a
+// finding, it would be a strictly WEAKER `unaudited` — a place to park absent controls that
+// no ownership census can see — which is the opposite of why it was added.
+
+test("W20 M12: partial with no deliveryEvidence is refused", async (t) => {
   const root = makeFixture(t, ({ threatControlsPath }) => {
     setCrossing(threatControlsPath, "DE-01", (c) => {
       delete c.deliveryEvidence;
@@ -2518,10 +2547,49 @@ test("W4U2 M5: an unaudited deferral without a reason is refused (no silent defe
   });
   const { errors } = await runCheck(root);
   assert.ok(
-    hasError(errors, 'crossing DE-01 is deliveryStatus "unaudited" and must carry a non-empty "deliveryEvidence"'),
+    hasError(errors, 'crossing DE-01 is deliveryStatus "partial" and must carry a non-empty "deliveryEvidence"'),
     report(errors),
   );
   assertDe02Unaffected(errors);
+});
+
+test("W20 M13: partial whose evidence cites no finding id is refused", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-01", (c) => {
+      c.deliveryEvidence = "half of it works, trust me";
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'crossing DE-01 is deliveryStatus "partial" but its "deliveryEvidence" cites no finding id'),
+    report(errors),
+  );
+  assertDe02Unaffected(errors);
+});
+
+test("W20 M14: partial citing a finding that is not in the register is refused", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-01", (c) => {
+      c.deliveryEvidence = "the audit half is absent, see E9-F999";
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "crossing DE-01 cites finding E9-F999 which is not in"),
+    report(errors),
+  );
+  assertDe02Unaffected(errors);
+});
+
+// W20B: the title used to say "twelve", which was true when W20 wrote it and stopped being
+// true the moment the remaining sixteen audits landed. The assertion never read a count —
+// it checks EVERY partial row — so the number was decoration that could only go stale.
+// Named for what it does instead.
+test("W20 M15: every partial row in the shipped register satisfies the citation rule (positive control)", async (t) => {
+  const root = makeFixture(t, () => {});
+  const { errors } = await runCheck(root);
+  const offenders = errors.filter((e) => /deliveryStatus "partial"/.test(e) || /cites finding .* which is not in/.test(e));
+  assert.deepEqual(offenders, [], report(errors));
 });
 
 test("W4U2 M6: not-delivered whose evidence cites no finding id is refused", async (t) => {
@@ -2615,4 +2683,130 @@ test("W4U2 M11: \"delivered\" with no deliveryEvidence is refused, even for a cr
   // POSITIVE CONTROL: DE-02 is "delivered" WITH real evidence and must stay green,
   // or this case would prove only that every delivered crossing now reds.
   assertDe02Unaffected(errors);
+});
+
+// ---------------------------------------------------------------------------
+// W20C — the rendered view must LEAD with the measured state.
+//
+// The defect this pins: every per-row parity check above compares a register ROW
+// to its JSON crossing, so a document whose head asserts more than the register
+// delivers passes all of them. The head of this document did exactly that — it
+// opened "This record locks the trust boundaries, mandatory controls, verification
+// gates ..." over a register in which one crossing of thirty was `delivered`, and
+// the honest tally sat 130 lines down. A prose tally also goes stale silently,
+// which is how the head got there. These four cases pin both halves.
+// ---------------------------------------------------------------------------
+
+const HEAD_TALLY = "1 `delivered`, 25 `partial`, 4 `not-delivered`, 0 `unaudited`";
+
+function readMd(p) {
+  return fs.readFileSync(p, "utf8");
+}
+function writeMd(p, text) {
+  fs.writeFileSync(p, text);
+}
+
+test("W20C M16: the shipped head states the tally, the count and the severity split (positive control)", async (t) => {
+  const root = makeFixture(t, () => {});
+  const { errors } = await runCheck(root);
+  const offenders = errors.filter((e) => /document head|stale delivery tally/.test(e));
+  assert.deepEqual(offenders, [], report(errors));
+  // And the fragment this corpus mutates is really the one the shipped head carries,
+  // collapsed the same way the checker collapses it — otherwise M17/M18 could pass
+  // by deleting text the check never read.
+  const head = readMd(path.join(root, REL.threatModel)).split(/\n##\s/)[0];
+  assert.ok(head.replace(/\s+/g, " ").includes(HEAD_TALLY), "shipped head does not carry the tally");
+});
+
+test("W20C M17: a head with the tally REMOVED is refused (the register's own honest tally does not rescue it)", async (t) => {
+  const root = makeFixture(t, ({ threatModelPath }) => {
+    const md = readMd(threatModelPath);
+    const head = md.split(/\n##\s/)[0];
+    // Delete the tally from the head ONLY. The identical sentence in "Required vs
+    // delivered" further down is left untouched, so this case proves the check is
+    // head-scoped and not a document-wide grep that any copy anywhere satisfies.
+    const strippedHead = head.replace(/and the tally is[\s\S]*?came back whole\.\*\*/, "and it is fine.");
+    writeMd(threatModelPath, strippedHead + md.slice(head.length));
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "the document head (before the first \"## \" heading) must state the measured delivery tally"),
+    report(errors),
+  );
+});
+
+test("W20C M18: flipping a crossing's deliveryStatus reds the now-stale head tally", async (t) => {
+  // DE-05 is `partial`; `not-delivered` carries the same evidence/citation contract,
+  // so this mutation changes NOTHING except the counts — which is the point. Every
+  // per-row parity check stays green and only the head tally moves.
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-05", (c) => {
+      c.deliveryStatus = "not-delivered";
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "1 `delivered`, 24 `partial`, 5 `not-delivered`, 0 `unaudited`"),
+    report(errors),
+  );
+});
+
+test("W20C M19: a SECOND, stale tally further down the document is refused", async (t) => {
+  const root = makeFixture(t, ({ threatModelPath }) => {
+    const md = readMd(threatModelPath);
+    // The head keeps the true tally; the copy in "Required vs delivered" is edited to
+    // the pre-audit numbers. This is the drift a head-only check would let through.
+    const anchor = `The tally today: ${HEAD_TALLY}`;
+    assert.ok(md.includes(anchor), "expected the register's own tally sentence");
+    writeMd(
+      threatModelPath,
+      md.replace(anchor, "The tally today: 1 `delivered`, 1 `partial`, 0 `not-delivered`, 28 `unaudited`"),
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "stale delivery tally \"1 `delivered`, 1 `partial`, 0 `not-delivered`, 28 `unaudited`\""),
+    report(errors),
+  );
+});
+
+test("W20C M21: a stale tally in a SECONDARY rendered view (decisions.md) is refused", async (t) => {
+  // decisions.md is copied into the fixture root, so this also proves the secondary
+  // scan resolves against `root` rather than silently reading the real tree.
+  const root = makeFixture(t, ({ decisionsPath }) => {
+    const md = readMd(decisionsPath);
+    assert.ok(md.includes(HEAD_TALLY), "expected Decision #121 to quote the tally");
+    writeMd(decisionsPath, md.replace(HEAD_TALLY, "9 `delivered`, 21 `partial`, 0 `not-delivered`, 0 `unaudited`"));
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "docs/architecture/decisions.md: stale delivery tally"),
+    report(errors),
+  );
+});
+
+test("W20C M22: a secondary view the fixture does not otherwise carry is still READ (the skip-if-absent arm is not a hole)", async (t) => {
+  // The orchestration handoff is not part of the fixture corpus, so the unmutated
+  // baseline skips it. Writing one with a stale tally must turn red — otherwise
+  // "skip when absent" would be indistinguishable from "never read at all".
+  const rel = "docs/replatform/HANDOFF-orchestration.md";
+  const root = makeFixture(t, ({ root: r }) => {
+    fs.mkdirSync(path.join(r, "docs", "replatform"), { recursive: true });
+    writeMd(
+      path.join(r, rel),
+      "# handoff\n\nAudited: 0 `delivered`, 0 `partial`, 30 `not-delivered`, 0 `unaudited`.\n",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${rel}: stale delivery tally`), report(errors));
+});
+
+test("W20C M20: the severity split is derived, not decoration — a Critical→High flip reds the head", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-05", (c) => {
+      c.severity = "High";
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "must state the severity split as"), report(errors));
 });

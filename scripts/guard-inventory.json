@@ -134,6 +134,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-threat-control-audit-debt.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow"
+    },
     "scripts/check-ticket-graph-coverage.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"

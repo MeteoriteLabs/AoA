@@ -856,6 +856,31 @@ Three things measured while building it, worth carrying:
    exact closing steps, the first of which is: after the landing merge, confirm the next PR
    prints `OK (fresh)`.
 
+### 1.9.9 The security register is now audited end to end — and it reads WORSE, correctly
+
+★★★ **Added 2026-09-08 (W20/W20B/W20C).** `docs/architecture/distributed-execution-threat-model.md`
+carries 30 trust crossings, all Critical (22) or High (8). Until W20 the register said what each
+control **must** do and had no field able to say whether any of it was **built**, so a Critical
+crossing measured absent read exactly like one that holds. `deliveryStatus` is that field, and all
+30 crossings have now been audited: **1 `delivered`, 25 `partial`, 4 `not-delivered`,
+0 `unaudited`**.
+
+- **`partial` is not a softer `delivered`.** It means the crossing was audited and its clauses
+  split — at least one control enforced by a named line exhibited *denying*, and **at least one
+  control that is not there**, owned by a live finding.
+- ★ **The zero in `unaudited` is not health.** Going from twenty-eight unaudited to none moved the
+  register from *unknown* to *known-bad*. Nothing got safer.
+- **Accuracy runs both ways.** Real enforcement was measured on several rows — DE-01's tenant RLS
+  was exhibited denying across 4,460 adversarial operations with PostgreSQL's refusal text read
+  back. Four rows were measured absent: DE-08, DE-23, DE-25, DE-26.
+- **What a scheduler does with this:** treat no control in that register as in force without
+  reading its row's `deliveryEvidence` first. The absent halves are filed as findings
+  (`E0-F010`…`E0-F016`, `E8-F003`, `E8-F011`), not left in prose, so they are schedulable.
+
+The tally above is not hand-maintained: `scripts/check-distributed-execution-foundation.mjs`
+recomputes it from the JSON and fails on any rendered view — this one included — that states a
+different one.
+
 ---
 
 ## 2. How to run a sprint (read once, applies to every sprint)
